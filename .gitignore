@@ -1,0 +1,18 @@
+# Nix
+.direnv/
+.bin/
+result
+
+# SBCL/Lisp
+*.fasl
+*.lx64fsl
+*.dx64fsl
+*.wx64fsl
+
+# Editor
+*~
+\#*\#
+.#*
+
+# Output
+*.wasm
