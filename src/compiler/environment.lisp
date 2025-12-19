@@ -12,7 +12,9 @@
   (types nil :type list)            ; Type definitions
   (module nil)                      ; The wasm-module being built
   (local-count 0 :type integer)
-  (func-count 0 :type integer))
+  (func-count 0 :type integer)
+  (blocks nil :type list)           ; List of (name . depth) for block/return-from
+  (block-depth 0 :type integer))    ; Current block nesting depth
 
 (defstruct local-info
   "Information about a local variable."

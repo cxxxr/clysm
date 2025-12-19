@@ -27,13 +27,21 @@
 
 ;;; IF
 
+(defun env-increment-block-depth (env)
+  "Increment block depth for entering a WASM block scope."
+  (let ((new-env (copy-compile-env env)))
+    (incf (compile-env-block-depth new-env))
+    new-env))
+
 (define-special-form if (form env)
   (destructuring-bind (test then &optional else) (cdr form)
-    (let ((test-code (compile-form test env))
-          (then-code (compile-form then env))
-          (else-code (if else
-                         (compile-form else env)
-                         `((,+op-i32-const+ 0)))))  ; nil = 0
+    (let* ((test-code (compile-form test env))
+           ;; WASM 'if' creates a block scope, so increment depth for branches
+           (branch-env (env-increment-block-depth env))
+           (then-code (compile-form then branch-env))
+           (else-code (if else
+                          (compile-form else branch-env)
+                          `((,+op-i32-const+ 0)))))  ; nil = 0
       `(,@test-code
         (,+op-if+ ,+type-i32+)
         ,@then-code
@@ -234,6 +242,49 @@
                               `(let* ,(rest bindings) ,@body)
                               new-env)))
               (append init-code rest-code)))))))
+
+;;; BLOCK and RETURN-FROM
+
+(defun env-add-block (env name)
+  "Add a named block to the environment. Returns new env."
+  (let ((new-env (copy-compile-env env)))
+    (push (cons name (compile-env-block-depth env))
+          (compile-env-blocks new-env))
+    (incf (compile-env-block-depth new-env))
+    new-env))
+
+(defun env-lookup-block (env name)
+  "Look up a block by name. Returns the relative branch depth or nil."
+  (let ((entry (assoc name (compile-env-blocks env))))
+    (when entry
+      ;; Calculate relative depth: current depth - block depth - 1
+      (- (compile-env-block-depth env) (cdr entry) 1))))
+
+(define-special-form block (form env)
+  "Compile a block that can be exited with return-from."
+  (destructuring-bind (name &rest body) (cdr form)
+    (let* ((block-env (env-add-block env name))
+           (body-code (compile-progn body block-env)))
+      ;; Wrap in a WASM block
+      `((,+op-block+ ,+type-i32+)
+        ,@body-code
+        ,+op-end+))))
+
+(define-special-form return-from (form env)
+  "Compile a return-from that exits a named block."
+  (destructuring-bind (name &optional value) (cdr form)
+    (let ((depth (env-lookup-block env name)))
+      (unless depth
+        (error "No block named ~A in scope" name))
+      (let ((value-code (if value
+                            (compile-form value env)
+                            `((,+op-i32-const+ 0)))))
+        `(,@value-code
+          (,+op-br+ ,depth))))))
+
+(define-special-form return (form env)
+  "Compile a return (return-from nil)."
+  (compile-special-form `(return-from nil ,@(cdr form)) env))
 
 ;;; LAMBDA (placeholder - full closure support comes later)
 

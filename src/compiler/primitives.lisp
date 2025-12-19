@@ -335,3 +335,115 @@
        (dolist (arg (reverse (butlast args)))
          (setf form `(cons ,arg ,form)))
        (compile-form form env)))))
+
+;;; List accessors
+
+(define-primitive first (args env)
+  "Get the first element of a list (same as car)."
+  (compile-form `(car ,(first args)) env))
+
+(define-primitive rest (args env)
+  "Get the rest of a list (same as cdr)."
+  (compile-form `(cdr ,(first args)) env))
+
+(define-primitive second (args env)
+  "Get the second element of a list."
+  (compile-form `(car (cdr ,(first args))) env))
+
+(define-primitive third (args env)
+  "Get the third element of a list."
+  (compile-form `(car (cdr (cdr ,(first args)))) env))
+
+(define-primitive fourth (args env)
+  "Get the fourth element of a list."
+  (compile-form `(car (cdr (cdr (cdr ,(first args))))) env))
+
+(define-primitive nth (args env)
+  "Get the nth element of a list (0-indexed)."
+  (unless (= (length args) 2)
+    (error "nth requires exactly 2 arguments"))
+  ;; For now, only handle constant indices
+  (let ((n (first args))
+        (lst (second args)))
+    (if (integerp n)
+        ;; Constant index - expand inline
+        (let ((form lst))
+          (dotimes (i n)
+            (setf form `(cdr ,form)))
+          (compile-form `(car ,form) env))
+        ;; Variable index - need a loop (not implemented yet)
+        (error "nth with variable index not yet supported"))))
+
+(define-primitive nthcdr (args env)
+  "Get the nth cdr of a list (0-indexed)."
+  (unless (= (length args) 2)
+    (error "nthcdr requires exactly 2 arguments"))
+  (let ((n (first args))
+        (lst (second args)))
+    (if (integerp n)
+        ;; Constant index - expand inline
+        (let ((form lst))
+          (dotimes (i n)
+            (setf form `(cdr ,form)))
+          (compile-form form env))
+        (error "nthcdr with variable index not yet supported"))))
+
+;;; Number predicates
+
+(define-primitive zerop (args env)
+  "Check if argument is zero."
+  (unless (= (length args) 1)
+    (error "zerop requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    ,+op-i32-eqz+))
+
+(define-primitive plusp (args env)
+  "Check if argument is positive."
+  (unless (= (length args) 1)
+    (error "plusp requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 0)
+    ,+op-i32-gt-s+))
+
+(define-primitive minusp (args env)
+  "Check if argument is negative."
+  (unless (= (length args) 1)
+    (error "minusp requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 0)
+    ,+op-i32-lt-s+))
+
+(define-primitive 1+ (args env)
+  "Add 1 to argument."
+  (unless (= (length args) 1)
+    (error "1+ requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 1)
+    ,+op-i32-add+))
+
+(define-primitive 1- (args env)
+  "Subtract 1 from argument."
+  (unless (= (length args) 1)
+    (error "1- requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 1)
+    ,+op-i32-sub+))
+
+;;; Equality predicates
+
+(define-primitive eq (args env)
+  "Check if two arguments are the same object (pointer equality)."
+  (unless (= (length args) 2)
+    (error "eq requires exactly 2 arguments"))
+  `(,@(compile-form (first args) env)
+    ,@(compile-form (second args) env)
+    ,+op-i32-eq+))
+
+(define-primitive eql (args env)
+  "Check equality (for now, same as eq for fixnums)."
+  (unless (= (length args) 2)
+    (error "eql requires exactly 2 arguments"))
+  ;; For fixnums, eql is same as eq
+  `(,@(compile-form (first args) env)
+    ,@(compile-form (second args) env)
+    ,+op-i32-eq+))

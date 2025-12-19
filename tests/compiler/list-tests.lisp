@@ -88,3 +88,81 @@
   (let* ((module (cl-wasm/compiler:compile-module '((list* 1 2 3))))
          (bytes (cl-wasm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; List accessor tests
+
+(test compile-first
+  "Test compiling first."
+  (let* ((module (cl-wasm/compiler:compile-module '((first (cons 1 2)))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-rest
+  "Test compiling rest."
+  (let* ((module (cl-wasm/compiler:compile-module '((rest (cons 1 2)))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-second
+  "Test compiling second."
+  (let* ((module (cl-wasm/compiler:compile-module '((second (list 1 2 3)))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-nth
+  "Test compiling nth with constant index."
+  (let* ((module (cl-wasm/compiler:compile-module '((nth 2 (list 10 20 30)))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-nthcdr
+  "Test compiling nthcdr with constant index."
+  (let* ((module (cl-wasm/compiler:compile-module '((nthcdr 1 (list 1 2 3)))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Number predicate tests
+
+(test compile-zerop
+  "Test compiling zerop."
+  (let* ((module (cl-wasm/compiler:compile-module '((zerop 0))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-plusp
+  "Test compiling plusp."
+  (let* ((module (cl-wasm/compiler:compile-module '((plusp 5))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-minusp
+  "Test compiling minusp."
+  (let* ((module (cl-wasm/compiler:compile-module '((minusp -5))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-1+
+  "Test compiling 1+."
+  (let* ((module (cl-wasm/compiler:compile-module '((1+ 5))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-1-
+  "Test compiling 1-."
+  (let* ((module (cl-wasm/compiler:compile-module '((1- 5))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Equality tests
+
+(test compile-eq
+  "Test compiling eq."
+  (let* ((module (cl-wasm/compiler:compile-module '((eq 1 1))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-eql
+  "Test compiling eql."
+  (let* ((module (cl-wasm/compiler:compile-module '((eql 42 42))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

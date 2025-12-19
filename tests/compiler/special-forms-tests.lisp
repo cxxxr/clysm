@@ -176,3 +176,50 @@
   (let* ((module (cl-wasm/compiler:compile-module '((or nil 42))))
          (bytes (cl-wasm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; block/return-from tests
+
+(test compile-block-simple
+  "Test compiling a simple block."
+  (let* ((module (cl-wasm/compiler:compile-module '((block foo 42))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-block-with-return
+  "Test compiling a block with return-from."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((block done
+                      (return-from done 99)
+                      42))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-block-nil-name
+  "Test compiling a block with nil name and return."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((block nil
+                      (return 100)
+                      0))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-nested-blocks
+  "Test compiling nested blocks."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((block outer
+                      (block inner
+                        (return-from outer 1))
+                      2))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-block-in-defun
+  "Test compiling block inside a function."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((defun early-exit (x)
+                      (block nil
+                        (when (< x 0)
+                          (return 0))
+                        (* x 2))))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
