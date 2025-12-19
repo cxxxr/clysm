@@ -50,9 +50,29 @@ Source (.lisp) -> Reader -> Macro Expand (SBCL) -> AST -> IR -> Codegen -> WASM
 - Export public API from package.lisp
 - Write tests with FiveAM
 
-## Current Status: Phase 1 Complete
-- Basic arithmetic (+, -, *, /)
+## Current Status: Phase 2 In Progress
+
+### Phase 1 (Complete)
+- Basic arithmetic (+, -, *, /, mod, rem)
 - Comparisons (<, >, <=, >=, =, /=)
+- Boolean (not, null)
+- Bitwise (logand, logior, logxor, ash)
 - Control flow (if)
 - Local bindings (let)
 - Function definitions (defun)
+
+### Phase 2 (In Progress)
+- Memory and heap management
+- List primitives (cons, car, cdr, consp, atom, rplaca, rplacd)
+- List constructors (list, list*)
+- quote for literals (numbers, lists)
+- let* (sequential bindings)
+- Conditionals (when, unless, cond, and, or)
+- Recursive function calls
+- Multiple function definitions with mutual calls
+
+### Remaining
+- Closures with environment capture
+- block/return-from
+- tagbody/go
+- Symbols

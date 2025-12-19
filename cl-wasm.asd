@@ -60,7 +60,8 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                (:module "wasm"
                 :components ((:file "encoder-tests")))
                (:module "compiler"
-                :components ((:file "special-forms-tests")))
+                :components ((:file "special-forms-tests")
+                             (:file "list-tests")))
                (:module "integration"
                 :components ((:file "compilation-tests"))))
   :perform (test-op (o c)

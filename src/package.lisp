@@ -101,6 +101,15 @@
    #:+op-i32-le-u+
    #:+op-i32-ge-s+
    #:+op-i32-ge-u+
+   ;; Memory instructions
+   #:+op-i32-load+
+   #:+op-i32-load8-s+
+   #:+op-i32-load8-u+
+   #:+op-i32-load16-s+
+   #:+op-i32-load16-u+
+   #:+op-i32-store+
+   #:+op-i32-store8+
+   #:+op-i32-store16+
    ;; GC opcodes
    #:+gc-prefix+
    #:+op-struct-new+
@@ -132,6 +141,8 @@
    #:wasm-module-types
    #:wasm-module-functions
    #:wasm-module-exports
+   #:wasm-module-memories
+   #:wasm-module-globals
    #:add-type
    #:add-func-type
    #:add-function
@@ -242,7 +253,11 @@
    #:compile-module
    #:compile-progn
    ;; Code generation
-   #:generate-code))
+   #:generate-code
+   ;; Runtime
+   #:*heap-pointer-global*
+   #:*cons-size*
+   #:setup-runtime))
 
 (defpackage #:cl-wasm/runtime
   (:use #:cl)

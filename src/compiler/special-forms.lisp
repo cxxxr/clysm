@@ -97,16 +97,143 @@
 
 ;;; QUOTE
 
+(defun compile-quoted-value (value env)
+  "Compile a quoted value to code that constructs it at runtime."
+  (cond
+    ;; NIL
+    ((null value)
+     `((,+op-i32-const+ 0)))
+    ;; T (true)
+    ((eq value t)
+     `((,+op-i32-const+ 1)))
+    ;; Integer
+    ((integerp value)
+     `((,+op-i32-const+ ,value)))
+    ;; Float
+    ((floatp value)
+     `((,+op-f64-const+ ,(float value 1.0d0))))
+    ;; List - build using cons at runtime
+    ((consp value)
+     (let ((car-code (compile-quoted-value (car value) env))
+           (cdr-code (compile-quoted-value (cdr value) env)))
+       ;; Use the cons primitive to build the cell
+       `(;; Get heap pointer (return value)
+         (,+op-global-get+ ,*heap-pointer-global*)
+         ;; Store car
+         (,+op-global-get+ ,*heap-pointer-global*)
+         ,@car-code
+         (,+op-i32-store+ 2 0)
+         ;; Store cdr
+         (,+op-global-get+ ,*heap-pointer-global*)
+         ,@cdr-code
+         (,+op-i32-store+ 2 4)
+         ;; Increment heap pointer
+         (,+op-global-get+ ,*heap-pointer-global*)
+         (,+op-i32-const+ ,*cons-size*)
+         ,+op-i32-add+
+         (,+op-global-set+ ,*heap-pointer-global*))))
+    ;; Symbol - not yet implemented (would need symbol table)
+    ((symbolp value)
+     (error "Cannot quote symbol yet: ~A" value))
+    ;; Other
+    (t
+     (error "Cannot quote: ~A" value))))
+
 (define-special-form quote (form env)
-  (declare (ignore env))
   (let ((value (cadr form)))
+    (compile-quoted-value value env)))
+
+;;; WHEN and UNLESS
+
+(define-special-form when (form env)
+  (destructuring-bind (test &rest body) (cdr form)
+    ;; (when test body...) => (if test (progn body...) nil)
+    (compile-form `(if ,test (progn ,@body) nil) env)))
+
+(define-special-form unless (form env)
+  (destructuring-bind (test &rest body) (cdr form)
+    ;; (unless test body...) => (if test nil (progn body...))
+    (compile-form `(if ,test nil (progn ,@body)) env)))
+
+;;; COND
+
+(define-special-form cond (form env)
+  (let ((clauses (cdr form)))
+    (if (null clauses)
+        ;; No clauses - return NIL
+        `((,+op-i32-const+ 0))
+        ;; Transform to nested if
+        (let ((clause (first clauses)))
+          (if (eq (car clause) t)
+              ;; (t body...) - always execute
+              (compile-progn (cdr clause) env)
+              ;; (test body...) => (if test (progn body...) (cond rest...))
+              (compile-form
+               `(if ,(car clause)
+                    (progn ,@(or (cdr clause) (list (car clause))))
+                    (cond ,@(rest clauses)))
+               env))))))
+
+;;; AND
+
+(define-special-form and (form env)
+  (let ((args (cdr form)))
     (cond
-      ((null value)
-       `((,+op-i32-const+ 0)))
-      ((integerp value)
-       `((,+op-i32-const+ ,value)))
+      ((null args)
+       ;; (and) => t
+       `((,+op-i32-const+ 1)))
+      ((null (cdr args))
+       ;; (and x) => x
+       (compile-form (first args) env))
       (t
-       (error "Cannot quote: ~A" value)))))
+       ;; (and x y ...) => (if x (and y ...) nil)
+       (compile-form `(if ,(first args)
+                          (and ,@(rest args))
+                          nil)
+                     env)))))
+
+;;; OR
+
+(define-special-form or (form env)
+  (let ((args (cdr form)))
+    (cond
+      ((null args)
+       ;; (or) => nil
+       `((,+op-i32-const+ 0)))
+      ((null (cdr args))
+       ;; (or x) => x
+       (compile-form (first args) env))
+      (t
+       ;; (or x y ...) => (let ((temp x)) (if temp temp (or y ...)))
+       ;; Simplified: since we don't have side effects in expressions yet,
+       ;; we can evaluate x twice
+       (compile-form `(if ,(first args)
+                          ,(first args)
+                          (or ,@(rest args)))
+                     env)))))
+
+;;; LET*
+
+(define-special-form let* (form env)
+  (destructuring-bind (bindings &rest body) (cdr form)
+    (if (null bindings)
+        ;; No bindings, just compile body
+        (compile-progn body env)
+        ;; Process first binding, then recurse
+        (let* ((binding (first bindings))
+               (name (if (consp binding) (car binding) binding))
+               (init (if (consp binding) (cadr binding) nil)))
+          (multiple-value-bind (new-env index)
+              (env-add-local env name +type-i32+)
+            (let ((init-code (if init
+                                 (append (compile-form init env)
+                                         `((,+op-local-set+ ,index)))
+                                 nil))
+                  ;; Compile rest as nested let*
+                  (rest-code (compile-special-form
+                              `(let* ,(rest bindings) ,@body)
+                              new-env)))
+              (append init-code rest-code)))))))
 
 ;;; LAMBDA (placeholder - full closure support comes later)
 
