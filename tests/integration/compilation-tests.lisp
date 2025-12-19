@@ -78,3 +78,33 @@
     (is (not (null module)))
     (let ((bytes (encode-module module)))
       (is (> (length bytes) 8)))))
+
+;;; Closure Tests
+
+(test compile-lambda-no-capture
+  "Test compiling a lambda that doesn't capture variables."
+  (let ((module (compile-module
+                 '((defun test-lambda ()
+                     (funcall (lambda (x) (+ x 1)) 5))))))
+    (is (not (null module)))
+    (let ((bytes (encode-module module)))
+      (is (> (length bytes) 8)))))
+
+(test compile-lambda-with-capture
+  "Test compiling a lambda that captures a variable."
+  (let ((module (compile-module
+                 '((defun make-adder (n)
+                     (lambda (x) (+ x n)))))))
+    (is (not (null module)))
+    (let ((bytes (encode-module module)))
+      (is (> (length bytes) 8)))))
+
+(test compile-closure-funcall
+  "Test compiling funcall with a closure."
+  (let ((module (compile-module
+                 '((defun test-closure ()
+                     (let ((f (lambda (x) (* x 2))))
+                       (funcall f 21)))))))
+    (is (not (null module)))
+    (let ((bytes (encode-module module)))
+      (is (> (length bytes) 8)))))

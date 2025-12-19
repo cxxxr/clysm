@@ -85,3 +85,10 @@
   ;; For now, primitives are handled specially during codegen
   ;; This is a placeholder for when we have actual primitive functions
   env)
+
+;;; Lambda/Closure Support Variables
+;;; Defined here so they're available when special-forms.lisp is loaded
+
+(defvar *pending-lambdas* nil
+  "Box containing list of pending lambda functions to add after defuns.
+   Set by compile-module during two-pass compilation.")

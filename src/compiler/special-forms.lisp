@@ -286,14 +286,316 @@
   "Compile a return (return-from nil)."
   (compile-special-form `(return-from nil ,@(cdr form)) env))
 
-;;; LAMBDA (placeholder - full closure support comes later)
+;;; DOTIMES
+
+(define-special-form dotimes (form env)
+  "Compile (dotimes (var count [result]) body...).
+  Executes body count times with var bound to 0, 1, ..., count-1."
+  (destructuring-bind ((var count &optional result) &rest body) (cdr form)
+    ;; We need two locals: one for var, one for limit
+    (multiple-value-bind (env1 var-idx)
+        (env-add-local env var +type-i32+)
+      (multiple-value-bind (env2 limit-idx)
+          (env-add-local env1 (gensym "LIMIT") +type-i32+)
+        ;; Increment block depth for the block and loop
+        (let* ((loop-env (env-increment-block-depth
+                          (env-increment-block-depth env2)))
+               (body-code (compile-progn body loop-env))
+               (result-code (if result
+                                (compile-form result env2)
+                                `((,+op-i32-const+ 0)))))
+          `(;; Initialize var to 0
+            (,+op-i32-const+ 0)
+            (,+op-local-set+ ,var-idx)
+            ;; Evaluate count and store in limit
+            ,@(compile-form count env)
+            (,+op-local-set+ ,limit-idx)
+            ;; Loop structure: block wraps loop for exit
+            (,+op-block+ ,+type-void+)  ; exit block
+            (,+op-loop+ ,+type-void+)   ; continue loop
+            ;; Check: if var >= limit, exit
+            (,+op-local-get+ ,var-idx)
+            (,+op-local-get+ ,limit-idx)
+            ,+op-i32-ge-s+
+            (,+op-br-if+ 1)  ; br to exit block (depth 1)
+            ;; Execute body (drop result since dotimes is for side effects)
+            ,@body-code
+            ,+op-drop+
+            ;; Increment var
+            (,+op-local-get+ ,var-idx)
+            (,+op-i32-const+ 1)
+            ,+op-i32-add+
+            (,+op-local-set+ ,var-idx)
+            ;; Branch back to loop start
+            (,+op-br+ 0)  ; br to loop (depth 0)
+            ,+op-end+  ; end loop
+            ,+op-end+  ; end block
+            ;; Return result
+            ,@result-code))))))
+
+;;; DOLIST
+
+(define-special-form dolist (form env)
+  "Compile (dolist (var list [result]) body...).
+  Iterates over list elements."
+  (destructuring-bind ((var list-form &optional result) &rest body) (cdr form)
+    ;; We need two locals: one for var (current element), one for the list tail
+    (multiple-value-bind (env1 var-idx)
+        (env-add-local env var +type-i32+)
+      (multiple-value-bind (env2 tail-idx)
+          (env-add-local env1 (gensym "TAIL") +type-i32+)
+        (let* ((loop-env (env-increment-block-depth
+                          (env-increment-block-depth env2)))
+               (body-code (compile-progn body loop-env))
+               (result-code (if result
+                                (compile-form result env2)
+                                `((,+op-i32-const+ 0)))))
+          `(;; Evaluate list and store in tail
+            ,@(compile-form list-form env)
+            (,+op-local-set+ ,tail-idx)
+            ;; Loop structure
+            (,+op-block+ ,+type-void+)  ; exit block
+            (,+op-loop+ ,+type-void+)   ; continue loop
+            ;; Check: if tail is null (0), exit
+            (,+op-local-get+ ,tail-idx)
+            ,+op-i32-eqz+
+            (,+op-br-if+ 1)  ; br to exit block
+            ;; Get car of tail into var
+            (,+op-local-get+ ,tail-idx)
+            (,+op-i32-load+ 2 0)  ; load car
+            (,+op-local-set+ ,var-idx)
+            ;; Execute body (drop result)
+            ,@body-code
+            ,+op-drop+
+            ;; Move to cdr
+            (,+op-local-get+ ,tail-idx)
+            (,+op-i32-load+ 2 4)  ; load cdr
+            (,+op-local-set+ ,tail-idx)
+            ;; Continue loop
+            (,+op-br+ 0)
+            ,+op-end+  ; end loop
+            ,+op-end+  ; end block
+            ;; Return result
+            ,@result-code))))))
+
+;;; LAMBDA and FUNCALL - Closure support
+
+;;; Free Variable Analysis
+
+(defun find-free-variables (form bound-vars)
+  "Find variables in FORM that are not in BOUND-VARS.
+   Returns a list of free variable names."
+  (let ((free-vars nil))
+    (labels ((collect (expr bound)
+               (cond
+                 ;; Atoms
+                 ((null expr) nil)
+                 ((eq expr t) nil)
+                 ((numberp expr) nil)
+                 ;; Variable reference
+                 ((symbolp expr)
+                  (when (and (not (member expr bound))
+                             (not (member expr free-vars))
+                             (not (special-form-p expr))
+                             (not (primitive-p expr)))
+                    (push expr free-vars)))
+                 ;; Special forms
+                 ((and (consp expr) (eq (car expr) 'quote))
+                  nil)  ; Don't look inside quote
+                 ((and (consp expr) (eq (car expr) 'lambda))
+                  ;; Lambda introduces new bindings
+                  (destructuring-bind (params &rest body) (cdr expr)
+                    (let ((new-bound (append params bound)))
+                      (dolist (b body)
+                        (collect b new-bound)))))
+                 ((and (consp expr) (eq (car expr) 'let))
+                  (destructuring-bind (bindings &rest body) (cdr expr)
+                    ;; First process init forms with current bindings
+                    (dolist (b bindings)
+                      (when (consp b)
+                        (collect (second b) bound)))
+                    ;; Then body with extended bindings
+                    (let ((new-bound (append (mapcar (lambda (b)
+                                                       (if (consp b) (car b) b))
+                                                     bindings)
+                                             bound)))
+                      (dolist (b body)
+                        (collect b new-bound)))))
+                 ((and (consp expr) (eq (car expr) 'let*))
+                  (destructuring-bind (bindings &rest body) (cdr expr)
+                    ;; Process sequentially
+                    (let ((current-bound bound))
+                      (dolist (b bindings)
+                        (when (consp b)
+                          (collect (second b) current-bound))
+                        (push (if (consp b) (car b) b) current-bound))
+                      (dolist (b body)
+                        (collect b current-bound)))))
+                 ((and (consp expr) (member (car expr) '(dotimes dolist)))
+                  ;; Loop variable is bound in body
+                  (destructuring-bind ((var init &optional result) &rest body)
+                      (cdr expr)
+                    (collect init bound)
+                    (let ((new-bound (cons var bound)))
+                      (dolist (b body)
+                        (collect b new-bound))
+                      (when result
+                        (collect result new-bound)))))
+                 ;; General list - process all elements
+                 ((consp expr)
+                  (dolist (e expr)
+                    (collect e bound))))))
+      (collect form bound-vars))
+    (nreverse free-vars)))
+
+;;; Closure Representation
+;;; A closure is stored on the heap as:
+;;;   [func_index: i32, env_size: i32, captured_val1, captured_val2, ...]
+;;; Total size = 8 + 4 * num_captured bytes
+
+(defparameter *closure-header-size* 8
+  "Size of closure header (func_index + env_size) in bytes.")
+
+(defparameter *closure-func-offset* 0
+  "Offset of function index in closure.")
+
+(defparameter *closure-envsize-offset* 4
+  "Offset of environment size in closure.")
+
+(defparameter *closure-env-offset* 8
+  "Offset of first captured variable in closure.")
+
+;;; Lambda compilation creates a closure
+;;; For non-capturing lambdas, we still create a closure structure for uniformity
 
 (define-special-form lambda (form env)
-  (declare (ignore form env))
-  (error "Lambda not yet implemented in Phase 1"))
+  "Compile a lambda expression. Creates a closure on the heap."
+  (destructuring-bind (params &rest body) (cdr form)
+    ;; Find free variables
+    (let* ((free-vars (find-free-variables `(progn ,@body) params))
+           (num-captured (length free-vars))
+           (closure-size (+ *closure-header-size* (* 4 num-captured)))
+           (module (compile-env-module env))
+           (arity (length params)))
 
-;;; FUNCALL (placeholder)
+      ;; Get the shared type index for this arity
+      (let* ((type-idx (get-closure-type-index module arity))
+             ;; Calculate function index: defuns first, then lambdas
+             (defun-count (compile-env-func-count env))
+             (lambda-idx (if *pending-lambdas*
+                             (length (car *pending-lambdas*))
+                             (wasm-module-func-count module)))
+             (func-idx (+ defun-count lambda-idx)))
+
+          ;; Create body environment with parameters as locals
+          (let ((body-env (make-compile-env :module module)))
+            ;; Add closure-env as local 0
+            (setf body-env (env-add-local body-env 'closure-env +type-i32+))
+            ;; Add declared parameters as locals
+            (dolist (param params)
+              (setf body-env (env-add-local body-env param +type-i32+)))
+
+            ;; Add captured variables as real locals
+            ;; and initialize them from the closure at function start
+            (let* ((init-code nil))
+
+              ;; Add each captured variable as a local
+              (dolist (var free-vars)
+                (multiple-value-bind (env* idx)
+                    (env-add-local body-env var +type-i32+)
+                  (setf body-env env*)
+                  ;; Load from closure into local
+                  (let ((offset (+ *closure-env-offset*
+                                   (* 4 (position var free-vars)))))
+                    (setf init-code
+                          (append init-code
+                                  `((,+op-local-get+ 0)  ; closure-env
+                                    (,+op-i32-load+ 2 ,offset)
+                                    (,+op-local-set+ ,idx)))))))
+
+              ;; Compile the body
+              (let* ((body-code (compile-progn body body-env))
+                     (full-code (append init-code body-code))
+                     ;; Find max local index
+                     (max-local-idx (find-max-local-index full-code))
+                     ;; Locals = indices beyond params (closure-env + declared params)
+                     (param-count (1+ arity))  ; closure-env + params
+                     (num-extra-locals (max 0 (- max-local-idx param-count -1)))
+                     (locals (if (> num-extra-locals 0)
+                                 (list (cons num-extra-locals +type-i32+))
+                                 nil)))
+
+                ;; Add function to pending list if available, else directly to module
+                (if *pending-lambdas*
+                    (push (list type-idx locals full-code) (car *pending-lambdas*))
+                    (add-function module type-idx locals full-code))
+
+                ;; Now generate code to create the closure structure
+                `(;; Reserve space for closure
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-i32-const+ ,closure-size)
+                  ,+op-i32-add+
+                  (,+op-global-set+ ,*heap-pointer-global*)
+
+                  ;; Push closure address (return value)
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-i32-const+ ,closure-size)
+                  ,+op-i32-sub+
+
+                  ;; Store function index
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-i32-const+ ,closure-size)
+                  ,+op-i32-sub+
+                  (,+op-i32-const+ ,func-idx)
+                  (,+op-i32-store+ 2 ,*closure-func-offset*)
+
+                  ;; Store env size
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-i32-const+ ,closure-size)
+                  ,+op-i32-sub+
+                  (,+op-i32-const+ ,num-captured)
+                  (,+op-i32-store+ 2 ,*closure-envsize-offset*)
+
+                  ;; Store captured variables
+                  ,@(loop for var in free-vars
+                          for i from 0
+                          for var-info = (env-lookup env var)
+                          for offset = (+ *closure-env-offset* (* 4 i))
+                          when var-info
+                          append `((,+op-global-get+ ,*heap-pointer-global*)
+                                   (,+op-i32-const+ ,closure-size)
+                                   ,+op-i32-sub+
+                                   (,+op-local-get+ ,(local-info-index var-info))
+                                   (,+op-i32-store+ 2 ,offset)))
+                  ;; Closure address is already on stack
+                  ))))))))
+
+;;; FUNCALL - Call a closure
 
 (define-special-form funcall (form env)
-  (declare (ignore form env))
-  (error "Funcall not yet implemented in Phase 1"))
+  "Call a closure. The closure is the first argument."
+  (let* ((closure-form (second form))
+         (args (cddr form))
+         (arity (length args))
+         (module (compile-env-module env))
+         (type-idx (get-closure-type-index module arity)))
+    ;; Compile closure to get its address
+    (let ((closure-code (compile-form closure-form env)))
+      ;; Need a local to hold the closure address
+      (multiple-value-bind (env* closure-idx)
+          (env-add-local env (gensym "CLOSURE") +type-i32+)
+        (let ((args-code nil))
+          ;; Compile all arguments
+          (dolist (arg args)
+            (setf args-code (append args-code (compile-form arg env*))))
+
+          `(;; Evaluate closure and save address
+            ,@closure-code
+            (,+op-local-set+ ,closure-idx)
+            ;; Push closure address as first argument (for captured vars)
+            (,+op-local-get+ ,closure-idx)
+            ,@args-code
+            ;; Get function index from closure and call indirectly
+            (,+op-local-get+ ,closure-idx)
+            (,+op-i32-load+ 2 ,*closure-func-offset*)
+            (,+op-call-indirect+ ,type-idx 0)))))))

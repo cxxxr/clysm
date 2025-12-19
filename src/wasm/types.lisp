@@ -111,6 +111,12 @@
   (min 0 :type (unsigned-byte 32))
   (max nil :type (or null (unsigned-byte 32))))
 
+(defstruct (wasm-element (:constructor make-wasm-element (table-idx offset func-indices)))
+  "A WebAssembly element segment for populating tables."
+  (table-idx 0 :type (unsigned-byte 32))
+  (offset nil :type list)                    ; Init expression for offset
+  (func-indices nil :type list))             ; List of function indices
+
 ;;; GC Type Definitions (for WasmGC)
 
 (defstruct (gc-struct-type (:constructor make-gc-struct-type (fields)))

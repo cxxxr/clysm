@@ -149,6 +149,12 @@
    #:add-export
    #:add-memory
    #:add-global
+   #:add-table
+   #:add-element
+   #:wasm-module-tables
+   #:wasm-module-elements
+   #:wasm-module-import-func-count
+   #:wasm-module-func-count
    #:finalize-module
    ;; Type definitions
    #:make-func-type
@@ -169,7 +175,8 @@
    #:+export-memory+
    #:+export-global+
    ;; Encoding
-   #:encode-module))
+   #:encode-module
+   #:save-module))
 
 (defpackage #:cl-wasm/reader
   (:use #:cl)

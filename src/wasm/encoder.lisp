@@ -177,6 +177,30 @@ CONTENT-FN is called with a temporary buffer to generate content."
       (lambda (buf)
         (buffer-write-uleb128 buf start-idx)))))
 
+;;; Element Section
+
+(defun encode-element-section (buffer elements)
+  "Encode the element section."
+  (when elements
+    (encode-section buffer +section-element+
+      (lambda (buf)
+        (buffer-write-uleb128 buf (length elements))
+        (dolist (elem elements)
+          (encode-element buf elem))))))
+
+(defun encode-element (buffer elem)
+  "Encode a single element segment.
+   MVP format: table_idx, offset expr, vec of func indices."
+  ;; Table index (always 0 for MVP, but can be specified)
+  (buffer-write-uleb128 buffer (wasm-element-table-idx elem))
+  ;; Offset expression
+  (encode-init-expr buffer (wasm-element-offset elem))
+  ;; Function indices
+  (let ((indices (wasm-element-func-indices elem)))
+    (buffer-write-uleb128 buffer (length indices))
+    (dolist (idx indices)
+      (buffer-write-uleb128 buffer idx))))
+
 ;;; Code Section
 
 (defun encode-code-section (buffer functions)
@@ -278,7 +302,7 @@ INSTR is either an opcode byte or a list (opcode . args)."
     (encode-global-section buffer (wasm-module-globals module))
     (encode-export-section buffer (wasm-module-exports module))
     (encode-start-section buffer (wasm-module-start module))
-    ;; Element section (TODO)
+    (encode-element-section buffer (wasm-module-elements module))
     (encode-code-section buffer (wasm-module-functions module))
     ;; Data section (TODO)
     (buffer-contents buffer)))

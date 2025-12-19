@@ -92,12 +92,13 @@
            (result-types (list +type-i32+)))
       (multiple-value-bind (new-env func-idx type-idx)
           (env-add-function env name param-types result-types)
+        (declare (ignore func-idx))  ; We'll get actual index from add-function
         ;; Create local environment for function body
         (let ((body-env new-env))
           ;; Add parameters as locals
           (loop for param in params
                 do (setf body-env (env-add-local body-env param +type-i32+)))
-          ;; Compile body
+          ;; Compile body (may add lambda functions to module first!)
           (let* ((body-code (compile-progn body body-env))
                  ;; Find max local index used in the code
                  (max-local-idx (find-max-local-index body-code))
@@ -105,12 +106,12 @@
                  (num-extra-locals (max 0 (- max-local-idx (1- (length params)))))
                  (locals (if (> num-extra-locals 0)
                              (list (cons num-extra-locals +type-i32+))
-                             nil)))
-            ;; Add function to module
-            (add-function module type-idx locals body-code)
-            ;; Export function
+                             nil))
+                 ;; Add function to module and get ACTUAL function index
+                 (actual-func-idx (add-function module type-idx locals body-code)))
+            ;; Export function with actual index (not the pre-calculated one)
             (add-export module (string-downcase (symbol-name name))
-                        +export-func+ func-idx)
+                        +export-func+ actual-func-idx)
             new-env))))))
 
 (defun compile-main (form env)
@@ -125,17 +126,82 @@
 ;;; Module Compilation
 
 (defun compile-module (forms &key (enable-memory t))
-  "Compile a list of top-level forms to a WASM module."
+  "Compile a list of top-level forms to a WASM module.
+   Uses two-pass compilation to give defuns stable indices."
   (let* ((module (make-wasm-module))
-         (env (make-initial-env module)))
+         (env (make-initial-env module))
+         (defuns nil)
+         (lambda-holder (list nil)))  ; Box to collect lambda functions
+    ;; Reset closure type cache for fresh compilation
+    (reset-closure-type-cache)
     ;; Add memory and heap pointer if enabled
     (when enable-memory
       (setup-runtime module))
-    ;; Compile forms
+    ;; First pass: collect all defuns and register them
     (dolist (form forms)
-      (setf env (compile-toplevel form env)))
+      (when (and (consp form) (eq (car form) 'defun))
+        (push form defuns)
+        (destructuring-bind (name params &rest body) (cdr form)
+          (declare (ignore body))
+          (let ((param-types (make-list (length params) :initial-element +type-i32+))
+                (result-types (list +type-i32+)))
+            (setf env (env-add-function env name param-types result-types))))))
+    (setf defuns (nreverse defuns))
+    ;; Store lambda-holder in a dynamic variable for lambda compilation to use
+    (let ((*pending-lambdas* lambda-holder))
+      ;; Second pass: compile defun bodies (lambdas go to pending list)
+      (dolist (form defuns)
+        (compile-defun-body form env lambda-holder module))
+      ;; Compile any non-defun forms
+      (dolist (form forms)
+        (unless (and (consp form) (eq (car form) 'defun))
+          (setf env (compile-toplevel form env))))
+      ;; Add pending lambda functions to module
+      (dolist (lambda-entry (car lambda-holder))
+        (destructuring-bind (type-idx locals body) lambda-entry
+          (add-function module type-idx locals body))))
+    ;; Add element section with all functions for indirect calls
+    (setup-element-section module)
     (finalize-module module)
     module))
+
+
+(defun compile-defun-body (form env lambda-holder module)
+  "Compile a defun body after registration."
+  (destructuring-bind (name params &rest body) (cdr form)
+    (let ((func-info (env-lookup env name :function)))
+      (unless func-info
+        (error "Function ~A not registered" name))
+      (let ((type-idx (func-info-type-index func-info))
+            (func-idx (func-info-index func-info)))
+        ;; Create local environment for function body
+        (let ((body-env env))
+          ;; Add parameters as locals
+          (loop for param in params
+                do (setf body-env (env-add-local body-env param +type-i32+)))
+          ;; Compile body
+          (let* ((body-code (compile-progn body body-env))
+                 (max-local-idx (find-max-local-index body-code))
+                 (num-extra-locals (max 0 (- max-local-idx (1- (length params)))))
+                 (locals (if (> num-extra-locals 0)
+                             (list (cons num-extra-locals +type-i32+))
+                             nil)))
+            ;; Add function to module
+            (add-function module type-idx locals body-code)
+            ;; Export function
+            (add-export module (string-downcase (symbol-name name))
+                        +export-func+ func-idx)))))))
+
+(defun setup-element-section (module)
+  "Populate the function table with all functions for indirect calls."
+  (let ((func-count (+ (wasm-module-import-func-count module)
+                       (wasm-module-func-count module))))
+    (when (plusp func-count)
+      ;; Create element segment with all functions starting at index 0
+      (add-element module
+                   0  ; table index
+                   `((,+op-i32-const+ 0))  ; offset expression
+                   (loop for i from 0 below func-count collect i)))))
 
 ;;; Runtime Setup
 
@@ -146,10 +212,35 @@
   "Size of a cons cell in bytes (car + cdr).")
 
 (defun setup-runtime (module)
-  "Set up runtime support: memory and heap pointer."
+  "Set up runtime support: memory, heap pointer, and function table."
   ;; Add memory (1 page = 64KB, can grow)
   (add-memory module 1 16)
   ;; Add heap pointer global (starts at 1024 to leave room for constants)
   (setf *heap-pointer-global*
         (length (wasm-module-globals module)))
-  (add-global module +type-i32+ t `((,+op-i32-const+ 1024))))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 1024)))
+  ;; Add function table for indirect calls (closures)
+  ;; Initial size 256, can grow to 4096
+  (add-table module +type-funcref+ 256 4096))
+
+;;; Closure Type Index Cache
+
+(defparameter *closure-type-indices* (make-hash-table)
+  "Cache of type indices for closure types by arity.
+   Key is arity (number of declared params, not including closure-env).
+   Value is type index.")
+
+(defun get-closure-type-index (module arity)
+  "Get or create type index for a closure with ARITY parameters.
+   All closures have signature (closure-env, arg1, ..., argN) -> i32."
+  (or (gethash arity *closure-type-indices*)
+      (let* ((param-count (1+ arity))  ; +1 for closure-env
+             (params (make-list param-count :initial-element +type-i32+))
+             (results (list +type-i32+))
+             (type-idx (add-func-type module params results)))
+        (setf (gethash arity *closure-type-indices*) type-idx)
+        type-idx)))
+
+(defun reset-closure-type-cache ()
+  "Reset the closure type cache (called at start of compile-module)."
+  (clrhash *closure-type-indices*))

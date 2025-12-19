@@ -223,3 +223,36 @@
                         (* x 2))))))
          (bytes (cl-wasm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; dotimes/dolist tests
+
+(test compile-dotimes-simple
+  "Test compiling simple dotimes."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((defun sum-to-n (n)
+                      (let ((sum 0))
+                        (dotimes (i n sum)
+                          (setq sum (+ sum i))))))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-dotimes-with-body
+  "Test compiling dotimes with multiple body forms."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((defun count-up (n)
+                      (let ((result 0))
+                        (dotimes (i n result)
+                          (setq result (+ result 1))
+                          (setq result (+ result i))))))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-dolist-simple
+  "Test compiling simple dolist."
+  (let* ((module (cl-wasm/compiler:compile-module
+                  '((defun sum-list (lst)
+                      (let ((sum 0))
+                        (dolist (x lst sum)
+                          (setq sum (+ sum x))))))))
+         (bytes (cl-wasm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

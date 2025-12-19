@@ -83,6 +83,12 @@
   "Set the start function for the module."
   (setf (wasm-module-start module) func-idx))
 
+(defun add-element (module table-idx offset func-indices)
+  "Add an element segment to the module."
+  (let ((elem (make-wasm-element table-idx offset func-indices)))
+    (push elem (wasm-module-elements module))
+    elem))
+
 ;;; Module Finalization
 
 (defun finalize-module (module)
@@ -94,6 +100,7 @@
   (setf (wasm-module-memories module) (nreverse (wasm-module-memories module)))
   (setf (wasm-module-globals module) (nreverse (wasm-module-globals module)))
   (setf (wasm-module-exports module) (nreverse (wasm-module-exports module)))
+  (setf (wasm-module-elements module) (nreverse (wasm-module-elements module)))
   module)
 
 ;;; Convenience Builders

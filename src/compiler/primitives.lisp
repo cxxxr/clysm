@@ -222,27 +222,36 @@
   "Allocate a cons cell and store car and cdr."
   (unless (= (length args) 2)
     (error "cons requires exactly 2 arguments"))
-  ;; Code sequence:
-  ;; 1. Get heap pointer
-  ;; 2. Store car at heap pointer
-  ;; 3. Store cdr at heap pointer + 4
-  ;; 4. Save old heap pointer (return value)
-  ;; 5. Increment heap pointer by 8
-  `(;; Get current heap pointer (this will be the cons cell address)
-    (,+op-global-get+ ,*heap-pointer-global*)
-    ;; Store car: memory[hp] = car
-    (,+op-global-get+ ,*heap-pointer-global*)
-    ,@(compile-form (first args) env)
-    (,+op-i32-store+ 2 0)  ; align=2 (4 bytes), offset=0
-    ;; Store cdr: memory[hp+4] = cdr
-    (,+op-global-get+ ,*heap-pointer-global*)
-    ,@(compile-form (second args) env)
-    (,+op-i32-store+ 2 4)  ; align=2, offset=4
-    ;; Increment heap pointer by 8
+  ;; Important: We must reserve space BEFORE evaluating arguments,
+  ;; because argument evaluation might allocate more cons cells.
+  ;;
+  ;; Strategy: Increment hp first to reserve space, then evaluate args
+  ;; and store them. The cell address is (hp - 8).
+  `(;; First increment hp to reserve space for this cons cell
     (,+op-global-get+ ,*heap-pointer-global*)
     (,+op-i32-const+ ,*cons-size*)
     ,+op-i32-add+
-    (,+op-global-set+ ,*heap-pointer-global*)))
+    (,+op-global-set+ ,*heap-pointer-global*)
+    ;; Now hp points past the reserved cell. The cell is at hp-8.
+    ;; Push cell address as return value
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ ,*cons-size*)
+    ,+op-i32-sub+
+    ;; Stack: [cell-addr]
+    ;; Store car at cell-addr (need: addr, value)
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ ,*cons-size*)
+    ,+op-i32-sub+
+    ,@(compile-form (first args) env)
+    (,+op-i32-store+ 2 0)
+    ;; Store cdr at cell-addr+4
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ ,*cons-size*)
+    ,+op-i32-sub+
+    ,@(compile-form (second args) env)
+    (,+op-i32-store+ 2 4)
+    ;; Return value (cell-addr) is already on stack
+    ))
 
 (define-primitive car (args env)
   "Get the car of a cons cell."
