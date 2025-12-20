@@ -611,3 +611,36 @@
                         x)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Labels tests
+
+(test compile-labels-simple
+  "Test compiling simple labels with one local function."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-labels ()
+                      (labels ((add1 (x) (+ x 1)))
+                        (add1 5))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-labels-multiple
+  "Test compiling labels with multiple local functions."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-multi-labels ()
+                      (labels ((add1 (x) (+ x 1))
+                               (double (x) (* x 2)))
+                        (add1 (double 3)))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-labels-recursive
+  "Test compiling labels with recursive local function."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-recursive-labels ()
+                      (labels ((fact (n)
+                                 (if (<= n 1)
+                                     1
+                                     (* n (fact (- n 1))))))
+                        (fact 5))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

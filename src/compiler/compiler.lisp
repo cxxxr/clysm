@@ -61,7 +61,7 @@
     ;; Special forms we handle - expand their subforms
     ((member (car form) '(if let let* progn setq when unless cond and or
                           block return-from return dotimes dolist
-                          tagbody go
+                          tagbody go labels
                           lambda funcall defun defparameter defconstant
                           defvar defstruct))
      (cons (car form) (mapcar #'expand-macros (cdr form))))
@@ -118,6 +118,10 @@
          ;; User-defined function call
          ((and (symbolp op) (env-lookup env op :function))
           (compile-call form env))
+         ;; Local function (from labels - closure in variable)
+         ((and (symbolp op) (env-lookup env op :variable))
+          ;; Compile as funcall
+          (compile-special-form `(funcall ,op ,@(cdr form)) env))
          ;; Unknown function
          (t
           (error "Unknown function: ~A" op)))))

@@ -781,3 +781,41 @@
             (,+op-local-get+ ,closure-idx)
             (,+op-i32-load+ 2 ,*closure-func-offset*)
             (,+op-call-indirect+ ,type-idx 0)))))))
+
+;;; LABELS - Local function definitions
+
+(define-special-form labels (form env)
+  "Compile (labels ((name1 (params) body1) ...) body).
+  Each local function is compiled as a closure and bound to its name."
+  (destructuring-bind (definitions &rest body) (cdr form)
+    ;; First pass: create locals for all function closures
+    (let ((func-locals nil)
+          (env* env))
+      ;; Create a local variable for each labeled function
+      (dolist (def definitions)
+        (let ((name (car def)))
+          (multiple-value-bind (new-env idx)
+              (env-add-local env* name +type-i32+)
+            (setf env* new-env)
+            (push (cons name idx) func-locals))))
+
+      ;; Now all function names are in scope as variables
+      ;; Second pass: compile each function as a lambda and store in its local
+      (let ((init-code nil))
+        (dolist (def definitions)
+          (let* ((name (car def))
+                 (params (second def))
+                 (func-body (cddr def))
+                 (local-idx (cdr (assoc name func-locals)))
+                 ;; Compile as lambda
+                 (lambda-form `(lambda ,params ,@func-body))
+                 (lambda-code (compile-form lambda-form env*)))
+            ;; Store closure in local
+            (setf init-code
+                  (append init-code
+                          lambda-code
+                          `((,+op-local-set+ ,local-idx))))))
+
+        ;; Compile the body with all functions in scope
+        (let ((body-code (compile-progn body env*)))
+          (append init-code body-code))))))
