@@ -542,3 +542,27 @@
                       (append a b)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+(test compile-copy-list
+  "Test compiling copy-list."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun copy-it (lst)
+                      (copy-list lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-butlast
+  "Test compiling butlast."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun all-but-last (lst)
+                      (butlast lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-not
+  "Test compiling not."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun negate (x)
+                      (not x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

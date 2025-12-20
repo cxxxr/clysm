@@ -1291,3 +1291,115 @@
       (,+op-end+)
       ;; Return count
       (,+op-local-get+ ,count-local))))
+
+;;; Copy-list - create a shallow copy of a list
+
+(define-primitive copy-list (args env)
+  "Create a shallow copy of a list."
+  (unless (= (length args) 1)
+    (error "copy-list requires exactly 1 argument"))
+  ;; Use append with nil to copy: (append lst nil)
+  (compile-form `(append ,(first args) nil) env))
+
+;;; Butlast - return list without last n elements
+
+(define-primitive butlast (args env)
+  "Return list without the last n elements (default n=1)."
+  (let ((list-arg (first args))
+        (n (if (cdr args) (second args) 1)))
+    (cond
+      ((not (integerp n))
+       (error "butlast: n must be a constant integer for now"))
+      ((= n 1)
+       ;; Common case: butlast with n=1
+       ;; Loop until (cdr list) is nil, collecting elements
+       (let* ((list-code (compile-form list-arg env))
+              (env-count (compile-env-local-count env))
+              (list-local env-count)
+              (result-local (1+ env-count))
+              (tail-local (+ 2 env-count)))
+         `(;; Store list in local
+           ,@list-code
+           (,+op-local-set+ ,list-local)
+           ;; Initialize result to nil
+           (,+op-i32-const+ 0)
+           (,+op-local-set+ ,result-local)
+           (,+op-i32-const+ 0)
+           (,+op-local-set+ ,tail-local)
+           ;; Loop through list until cdr is nil
+           (,+op-block+ ,+type-void+)
+             (,+op-loop+ ,+type-void+)
+               ;; if list is nil or cdr(list) is nil, break
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-eqz+)
+               (,+op-br-if+ 1)
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-load+ 2 4)  ; cdr
+               (,+op-i32-eqz+)
+               (,+op-br-if+ 1)
+               ;; Append car(list) to result
+               ;; Allocate cons cell
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-add+
+               (,+op-global-set+ ,*heap-pointer-global*)
+               ;; new-cell address
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               ;; Store car
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-load+ 2 0)  ; car
+               (,+op-i32-store+ 2 0)
+               ;; Store cdr = nil for now
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-i32-const+ 0)
+               (,+op-i32-store+ 2 4)
+               ;; If result is nil, set result to new cell
+               ;; Otherwise, set cdr of tail to new cell
+               (,+op-local-get+ ,result-local)
+               (,+op-i32-eqz+)
+               (,+op-if+ ,+type-void+)
+                 ;; result = new cell
+                 (,+op-global-get+ ,*heap-pointer-global*)
+                 (,+op-i32-const+ 8)
+                 ,+op-i32-sub+
+                 (,+op-local-set+ ,result-local)
+               (,+op-else+)
+                 ;; cdr(tail) = new cell
+                 (,+op-local-get+ ,tail-local)
+                 (,+op-global-get+ ,*heap-pointer-global*)
+                 (,+op-i32-const+ 8)
+                 ,+op-i32-sub+
+                 (,+op-i32-store+ 2 4)
+               (,+op-end+)
+               ;; tail = new cell
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-set+ ,tail-local)
+               ;; list = cdr(list)
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-load+ 2 4)
+               (,+op-local-set+ ,list-local)
+               (,+op-br+ 0)
+             (,+op-end+)
+           (,+op-end+)
+           ;; Return result
+           (,+op-local-get+ ,result-local))))
+      (t
+       (error "butlast with n != 1 not yet supported")))))
+
+;;; not - logical negation
+
+(define-primitive not (args env)
+  "Logical negation: (not x) returns t if x is nil, nil otherwise."
+  (unless (= (length args) 1)
+    (error "not requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    ,+op-i32-eqz+))
