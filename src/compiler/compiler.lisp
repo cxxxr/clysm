@@ -87,6 +87,10 @@
     ((eq (car form) 'the)
      ;; (the type value) => value
      (normalize-sbcl-internals (third form)))
+    ;; SB-KERNEL:THE* - similar to THE, just return the value
+    ((eq (car form) 'sb-kernel:the*)
+     ;; (sb-kernel:the* type-spec value) => value (third arg)
+     (normalize-sbcl-internals (third form)))
     ;; SB-INT:BINDING* - used by destructuring-bind
     ;; (sb-int:binding* (((var1 init1) (var2 init2) ...)) body)
     ;; Transform POP patterns to car/cdr chains

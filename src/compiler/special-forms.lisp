@@ -212,25 +212,11 @@
     ((stringp value)
      (compile-string-literal value env))
     ;; List - build using cons at runtime
+    ;; Use the cons primitive which handles memory allocation correctly
     ((consp value)
-     (let ((car-code (compile-quoted-value (car value) env))
-           (cdr-code (compile-quoted-value (cdr value) env)))
-       ;; Use the cons primitive to build the cell
-       `(;; Get heap pointer (return value)
-         (,+op-global-get+ ,*heap-pointer-global*)
-         ;; Store car
-         (,+op-global-get+ ,*heap-pointer-global*)
-         ,@car-code
-         (,+op-i32-store+ 2 0)
-         ;; Store cdr
-         (,+op-global-get+ ,*heap-pointer-global*)
-         ,@cdr-code
-         (,+op-i32-store+ 2 4)
-         ;; Increment heap pointer
-         (,+op-global-get+ ,*heap-pointer-global*)
-         (,+op-i32-const+ ,*cons-size*)
-         ,+op-i32-add+
-         (,+op-global-set+ ,*heap-pointer-global*))))
+     ;; Compile as (cons car-value cdr-value)
+     ;; This uses the existing cons primitive which allocates and stores properly
+     (compile-form `(cons ',(car value) ',(cdr value)) env))
     ;; Symbol - intern at compile time and return address
     ((symbolp value)
      (let* ((sym-info (intern-compile-time-symbol value))
@@ -388,6 +374,9 @@
 (defvar *tagbody-state-local* nil
   "Dynamically bound index of the state variable local for current tagbody.")
 
+(defvar *tagbody-loop-depth* nil
+  "Dynamically bound block depth of the tagbody's loop.")
+
 (defun tagbody-tag-p (form)
   "Check if FORM is a tag (symbol or integer, not a list)."
   (or (symbolp form) (integerp form)))
@@ -432,11 +421,13 @@
           ;; Create state variable
           (multiple-value-bind (env1 state-idx)
               (env-add-local env (gensym "TAGBODY-STATE") +type-i32+)
-            (let* ((*tagbody-tags* tags-alist)
-                   (*tagbody-state-local* state-idx)
-                   ;; Increment block depth for loop structure
+            (let* (;; Increment block depth for loop structure (block + loop)
                    (loop-env (env-increment-block-depth
                               (env-increment-block-depth env1)))
+                   (*tagbody-tags* tags-alist)
+                   (*tagbody-state-local* state-idx)
+                   ;; Store the loop's block depth for 'go' to use
+                   (*tagbody-loop-depth* (compile-env-block-depth loop-env))
                    (num-states (length sections)))
               ;; Generate code
               `(;; Initialize state to 0
@@ -458,11 +449,13 @@
   ;; For simplicity, use nested if-else instead of br_table
   ;; (br_table would be more efficient for many states)
   (let ((code nil)
-        (state 0))
+        (state 0)
+        ;; Increment block depth for the dispatch 'if' blocks
+        (body-env (env-increment-block-depth env)))
     (dolist (section sections)
       (let* ((forms (cdr section))
              (section-code (if forms
-                               (compile-progn forms env)
+                               (compile-progn forms body-env)
                                nil)))
         ;; if state == this-state, execute forms
         (setf code
@@ -494,16 +487,19 @@
 
 (define-special-form go (form env)
   "Compile a go that jumps to a tag in the enclosing tagbody."
-  (declare (ignore env))
   (let* ((tag (second form))
          (entry (assoc tag *tagbody-tags*)))
     (unless entry
       (error "No tag ~A in enclosing tagbody" tag))
-    (let ((state (cdr entry)))
+    (let* ((state (cdr entry))
+           ;; Calculate branch depth: current depth - loop depth
+           ;; This gives us how many blocks to skip to reach the loop
+           (current-depth (compile-env-block-depth env))
+           (br-depth (- current-depth *tagbody-loop-depth*)))
       `(;; Set state and branch to loop start
         (,+op-i32-const+ ,state)
         (,+op-local-set+ ,*tagbody-state-local*)
-        (,+op-br+ 0)))))  ; branch to loop (innermost)
+        (,+op-br+ ,br-depth)))))
 
 ;;; DOTIMES
 

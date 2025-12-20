@@ -1639,3 +1639,40 @@
                        (setq x (+ x 100)))
                      x)))))
     (is (= 111 result))))  ; x = 1 + 10 + 100
+
+;;; Loop Tests (SBCL loop macro expansion)
+
+(test loop-for-from-to
+  "Test loop for i from x to y."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sum 0))
+                     (loop for i from 1 to 5
+                           do (setq sum (+ sum i)))
+                     sum)))))
+    (is (= 15 result))))  ; 1+2+3+4+5 = 15
+
+(test loop-for-in-list
+  "Test loop for x in list."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sum 0))
+                     (loop for x in '(10 20 30)
+                           do (setq sum (+ sum x)))
+                     sum)))))
+    (is (= 60 result))))  ; 10+20+30 = 60
+
+(test loop-for-from-below
+  "Test loop for i from x below y."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((count 0))
+                     (loop for i from 0 below 4
+                           do (setq count (+ count 1)))
+                     count)))))
+    (is (= 4 result))))  ; 0,1,2,3 = 4 iterations
+
+(test loop-with-return
+  "Test loop with early return."
+  (let ((result (clysm/compiler:eval-forms
+                 '((loop for i from 1
+                         do (when (> i 3)
+                              (return (* i 10))))))))
+    (is (= 40 result))))  ; returns when i=4
