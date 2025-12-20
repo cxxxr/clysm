@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache Quicklisp
+        uses: actions/cache@v4
+        with:
+          path: ~/.quicklisp
+          key: quicklisp-${{ runner.os }}-${{ hashFiles('clysm.asd') }}
+          restore-keys: |
+            quicklisp-${{ runner.os }}-
+
+      - name: Run tests
+        run: nix develop --command bash -c 'clysm-test'
+        timeout-minutes: 10
