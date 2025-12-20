@@ -1091,6 +1091,429 @@
   `(,@(compile-form (first args) env)
     (,+op-i32-load+ 2 0)))  ; align=2, offset=0
 
+(define-primitive char-code (args env)
+  "Return the character code of a character."
+  (unless (= (length args) 1)
+    (error "char-code requires exactly 1 argument"))
+  ;; Characters are represented as their code points (i32)
+  (compile-form (first args) env))
+
+(define-primitive code-char (args env)
+  "Return the character with the given code."
+  (unless (= (length args) 1)
+    (error "code-char requires exactly 1 argument"))
+  ;; Characters are represented as their code points (i32)
+  (compile-form (first args) env))
+
+(define-primitive char= (args env)
+  "Compare two characters for equality."
+  (unless (= (length args) 2)
+    (error "char= requires exactly 2 arguments"))
+  `(,@(compile-form (first args) env)
+    ,@(compile-form (second args) env)
+    ,+op-i32-eq+))
+
+(define-primitive char< (args env)
+  "Compare two characters."
+  (unless (= (length args) 2)
+    (error "char< requires exactly 2 arguments"))
+  `(,@(compile-form (first args) env)
+    ,@(compile-form (second args) env)
+    ,+op-i32-lt-s+))
+
+(define-primitive char-upcase (args env)
+  "Convert character to uppercase."
+  (unless (= (length args) 1)
+    (error "char-upcase requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check if lowercase a-z (97-122)
+      (,+op-i32-const+ 97)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 122)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      (,+op-if+ ,+type-i32+)
+        ;; Convert to uppercase: subtract 32
+        (,+op-local-get+ ,char-local)
+        (,+op-i32-const+ 32)
+        ,+op-i32-sub+
+      (,+op-else+)
+        (,+op-local-get+ ,char-local)
+      (,+op-end+))))
+
+(define-primitive char-downcase (args env)
+  "Convert character to lowercase."
+  (unless (= (length args) 1)
+    (error "char-downcase requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check if uppercase A-Z (65-90)
+      (,+op-i32-const+ 65)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 90)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      (,+op-if+ ,+type-i32+)
+        ;; Convert to lowercase: add 32
+        (,+op-local-get+ ,char-local)
+        (,+op-i32-const+ 32)
+        ,+op-i32-add+
+      (,+op-else+)
+        (,+op-local-get+ ,char-local)
+      (,+op-end+))))
+
+(define-primitive schar (args env)
+  "Get character at index from a simple string."
+  (unless (= (length args) 2)
+    (error "schar requires exactly 2 arguments"))
+  ;; String layout: [length:i32][utf8-bytes...]
+  ;; Load byte at offset 4 + index
+  `(,@(compile-form (first args) env)   ; string pointer
+    (,+op-i32-const+ 4)
+    ,+op-i32-add+                        ; skip length field
+    ,@(compile-form (second args) env)  ; index
+    ,+op-i32-add+                        ; byte address
+    (,+op-i32-load8-u+ 0 0)))            ; load unsigned byte
+
+(define-primitive string= (args env)
+  "Compare two strings for equality."
+  (unless (= (length args) 2)
+    (error "string= requires exactly 2 arguments"))
+  ;; Compare strings byte by byte
+  (let* ((env-count (compile-env-local-count env))
+         (str1-local env-count)
+         (str2-local (+ env-count 1))
+         (len1-local (+ env-count 2))
+         (len2-local (+ env-count 3))
+         (idx-local (+ env-count 4)))
+    `(;; Store string pointers
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,str1-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,str2-local)
+      ;; Get lengths
+      (,+op-local-get+ ,str1-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len1-local)
+      (,+op-local-get+ ,str2-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len2-local)
+      ;; If lengths differ, return false
+      (,+op-local-get+ ,len1-local)
+      (,+op-local-get+ ,len2-local)
+      ,+op-i32-ne+
+      (,+op-if+ ,+type-i32+)
+        (,+op-i32-const+ 0)  ; false
+      (,+op-else+)
+        ;; Initialize index to 0
+        (,+op-i32-const+ 0)
+        (,+op-local-set+ ,idx-local)
+        ;; Compare loop
+        (,+op-block+ ,+type-i32+)
+          (,+op-loop+ ,+type-void+)
+            ;; If idx >= len, strings are equal
+            (,+op-local-get+ ,idx-local)
+            (,+op-local-get+ ,len1-local)
+            ,+op-i32-ge-s+
+            (,+op-if+ ,+type-void+)
+              (,+op-i32-const+ 1)  ; true
+              (,+op-br+ 2)
+            (,+op-end+)
+            ;; Compare bytes at idx
+            (,+op-local-get+ ,str1-local)
+            (,+op-i32-const+ 4)
+            ,+op-i32-add+
+            (,+op-local-get+ ,idx-local)
+            ,+op-i32-add+
+            (,+op-i32-load8-u+ 0 0)
+            (,+op-local-get+ ,str2-local)
+            (,+op-i32-const+ 4)
+            ,+op-i32-add+
+            (,+op-local-get+ ,idx-local)
+            ,+op-i32-add+
+            (,+op-i32-load8-u+ 0 0)
+            ,+op-i32-ne+
+            (,+op-if+ ,+type-void+)
+              (,+op-i32-const+ 0)  ; false
+              (,+op-br+ 2)
+            (,+op-end+)
+            ;; Increment index
+            (,+op-local-get+ ,idx-local)
+            (,+op-i32-const+ 1)
+            ,+op-i32-add+
+            (,+op-local-set+ ,idx-local)
+            (,+op-br+ 0)
+          (,+op-end+)
+          ;; Should not reach here
+          (,+op-i32-const+ 0)
+        (,+op-end+)
+      (,+op-end+))))
+
+(define-primitive string-downcase (args env)
+  "Convert string to lowercase, returning a new string."
+  (unless (= (length args) 1)
+    (error "string-downcase requires exactly 1 argument"))
+  ;; Allocate new string and copy with conversion
+  (let* ((env-count (compile-env-local-count env))
+         (src-local env-count)
+         (len-local (+ env-count 1))
+         (dst-local (+ env-count 2))
+         (idx-local (+ env-count 3))
+         (char-local (+ env-count 4)))
+    `(;; Get source string and length
+      ,@(compile-form (first args) env)
+      (,+op-local-tee+ ,src-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len-local)
+      ;; Allocate new string: length field + bytes
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-const+ 4)
+      ,+op-i32-add+  ; total size = 4 + len
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Store length in new string
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-store+ 2 0)
+      ;; Copy and convert bytes
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; If idx >= len, done
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          ;; Load source byte
+          (,+op-local-get+ ,src-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          (,+op-local-set+ ,char-local)
+          ;; Convert to lowercase if A-Z
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-const+ 65)
+          ,+op-i32-ge-s+
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-const+ 90)
+          ,+op-i32-le-s+
+          ,+op-i32-and+
+          (,+op-if+ ,+type-void+)
+            (,+op-local-get+ ,char-local)
+            (,+op-i32-const+ 32)
+            ,+op-i32-add+
+            (,+op-local-set+ ,char-local)
+          (,+op-end+)
+          ;; Store converted byte
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-store8+ 0 0)
+          ;; Increment index
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return new string pointer
+      (,+op-local-get+ ,dst-local))))
+
+(define-primitive string-upcase (args env)
+  "Convert string to uppercase, returning a new string."
+  (unless (= (length args) 1)
+    (error "string-upcase requires exactly 1 argument"))
+  ;; Allocate new string and copy with conversion
+  (let* ((env-count (compile-env-local-count env))
+         (src-local env-count)
+         (len-local (+ env-count 1))
+         (dst-local (+ env-count 2))
+         (idx-local (+ env-count 3))
+         (char-local (+ env-count 4)))
+    `(;; Get source string and length
+      ,@(compile-form (first args) env)
+      (,+op-local-tee+ ,src-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len-local)
+      ;; Allocate new string: length field + bytes
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-const+ 4)
+      ,+op-i32-add+  ; total size = 4 + len
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Store length in new string
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-store+ 2 0)
+      ;; Copy and convert bytes
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; If idx >= len, done
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          ;; Load source byte
+          (,+op-local-get+ ,src-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          (,+op-local-set+ ,char-local)
+          ;; Convert to uppercase if a-z
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-const+ 97)
+          ,+op-i32-ge-s+
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-const+ 122)
+          ,+op-i32-le-s+
+          ,+op-i32-and+
+          (,+op-if+ ,+type-void+)
+            (,+op-local-get+ ,char-local)
+            (,+op-i32-const+ 32)
+            ,+op-i32-sub+
+            (,+op-local-set+ ,char-local)
+          (,+op-end+)
+          ;; Store converted byte
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,char-local)
+          (,+op-i32-store8+ 0 0)
+          ;; Increment index
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return new string pointer
+      (,+op-local-get+ ,dst-local))))
+
+(define-primitive string-append (args env)
+  "Concatenate two strings, returning a new string."
+  (unless (= (length args) 2)
+    (error "string-append requires exactly 2 arguments"))
+  (let* ((env-count (compile-env-local-count env))
+         (str1-local env-count)
+         (str2-local (+ env-count 1))
+         (len1-local (+ env-count 2))
+         (len2-local (+ env-count 3))
+         (dst-local (+ env-count 4))
+         (idx-local (+ env-count 5)))
+    `(;; Get strings and their lengths
+      ,@(compile-form (first args) env)
+      (,+op-local-tee+ ,str1-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len1-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-tee+ ,str2-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,len2-local)
+      ;; Allocate new string: 4 + len1 + len2
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-get+ ,len1-local)
+      (,+op-local-get+ ,len2-local)
+      ,+op-i32-add+
+      (,+op-i32-const+ 4)
+      ,+op-i32-add+
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Store total length
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,len1-local)
+      (,+op-local-get+ ,len2-local)
+      ,+op-i32-add+
+      (,+op-i32-store+ 2 0)
+      ;; Copy first string bytes
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len1-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,str1-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          (,+op-i32-store8+ 0 0)
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Copy second string bytes
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len2-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,len1-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,str2-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          (,+op-i32-store8+ 0 0)
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return new string pointer
+      (,+op-local-get+ ,dst-local))))
+
 ;;; Higher-order list functions
 
 (define-primitive reverse (args env)

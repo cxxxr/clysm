@@ -948,3 +948,93 @@
                         (point-x p))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; String primitive tests
+
+(test compile-char-code
+  "Test compiling char-code."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-char-code (c)
+                      (char-code c)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-code-char
+  "Test compiling code-char."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-code-char (n)
+                      (code-char n)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-char=
+  "Test compiling char=."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-char= (a b)
+                      (char= a b)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-char-upcase
+  "Test compiling char-upcase."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-char-upcase (c)
+                      (char-upcase c)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-char-downcase
+  "Test compiling char-downcase."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-char-downcase (c)
+                      (char-downcase c)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-schar
+  "Test compiling schar."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-schar (s i)
+                      (schar s i)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-string=
+  "Test compiling string=."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-string= (a b)
+                      (string= a b)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-string-downcase
+  "Test compiling string-downcase."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-string-downcase (s)
+                      (string-downcase s)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-string-upcase
+  "Test compiling string-upcase."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-string-upcase (s)
+                      (string-upcase s)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-string-length
+  "Test compiling string-length."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-string-length (s)
+                      (string-length s)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-string-append
+  "Test compiling string-append."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-string-append (a b)
+                      (string-append a b)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

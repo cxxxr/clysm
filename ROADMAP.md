@@ -15,7 +15,7 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 | 実行環境 | WasmGC + Node.js |
 | メモリモデル | 線形メモリ上のcons cell（8バイト/cell） |
 | テスト基盤 | ANSIテストスイート統合済み（20,000+テスト） |
-| ユニットテスト | 205テストパス |
+| ユニットテスト | 216テストパス |
 | ブートストラップ | 基盤機能実装中 |
 
 ### 1.3 実装済み機能
@@ -53,6 +53,7 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 - エラー: `error`（WASMのunreachableにコンパイル）
 - setf: `car`, `cdr`, `first`-`third`, `nth`, `gethash`, 構造体アクセサ
 - マクロ: `defmacro`（ホスト展開戦略）、バッククォート
+- 文字列: `string=`, `string-downcase`, `string-upcase`, `string-append`, `schar`, `char-code`, `code-char`
 
 ---
 
@@ -96,9 +97,9 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 | `multiple-value-bind` | 中 | [x] |
 | `defmacro`, `macroexpand` | 高 | [x] |
 | バッククォート (`, ,, ,@) | 高 | [x] |
-| 文字列操作 | 中 | [ ] |
-| `format` | 中 | [ ] |
-| CLOS除去（defstruct化） | 高 | [ ] |
+| 文字列操作 | 中 | [x] |
+| `format` | 中 | [x] |
+| CLOS除去（defstruct化） | 高 | [x] |
 
 **マイルストーン**: ミニコンパイラのコンパイル成功 ✓
 
@@ -332,6 +333,7 @@ Phase 2.5 (基盤強化)
 | 2025-12-20 | 2.5 | 180 | values, multiple-value-bind, destructuring-bind |
 | 2025-12-20 | Bootstrap | 200 | hash-table, setf, error, ブートストラップテスト追加 |
 | 2025-12-20 | Bootstrap | 205 | defmacro, バッククォート（ホスト展開戦略） |
+| 2025-12-20 | Bootstrap | 216 | 文字列プリミティブ、CLOS除去確認完了 |
 
 ---
 
