@@ -2989,3 +2989,297 @@
       (,+op-global-set+ ,*heap-pointer-global*)
       ;; Return new string pointer
       (,+op-local-get+ ,dst-local))))
+
+;;; Symbol System
+
+(define-primitive intern (args env)
+  "Intern a string as a symbol. Returns the symbol address.
+   If a symbol with the same name already exists, returns the existing symbol.
+   Otherwise, creates a new symbol with:
+     - name-ptr pointing to the input string
+     - value, function, plist set to 0 (unbound/nil)
+   Symbol structure (16 bytes):
+     offset 0: name-ptr (i32)
+     offset 4: value (i32) - symbol-value
+     offset 8: function (i32) - symbol-function
+     offset 12: plist (i32) - property list"
+  (unless (= (length args) 1)
+    (error "intern requires exactly 1 argument (string)"))
+  (let* ((env-count (compile-env-local-count env))
+         (input-str-local env-count)
+         (ht-local (+ env-count 1))
+         (alist-local (+ env-count 2))
+         (entry-local (+ env-count 3))
+         (entry-name-local (+ env-count 4))
+         (input-len-local (+ env-count 5))
+         (entry-len-local (+ env-count 6))
+         (idx-local (+ env-count 7))
+         (new-sym-local (+ env-count 8))
+         (new-entry-local (+ env-count 9)))
+    `(;; Store input string pointer
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,input-str-local)
+      ;; Get input string length for comparison
+      (,+op-local-get+ ,input-str-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,input-len-local)
+      ;; Check if runtime symbol table is initialized
+      (,+op-global-get+ ,*runtime-symbol-table-global*)
+      (,+op-i32-eqz+)
+      (,+op-if+ ,+type-void+)
+        ;; Initialize symbol table: allocate cons cell (0 . nil)
+        (,+op-global-get+ ,*heap-pointer-global*)
+        ;; Store 0 as car (count)
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-i32-const+ 0)
+        (,+op-i32-store+ 2 0)
+        ;; Store nil as cdr (entries)
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-i32-const+ 0)
+        (,+op-i32-store+ 2 4)
+        ;; Store pointer in global
+        (,+op-global-set+ ,*runtime-symbol-table-global*)
+        ;; Bump heap pointer
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-i32-const+ ,*cons-size*)
+        ,+op-i32-add+
+        (,+op-global-set+ ,*heap-pointer-global*)
+      (,+op-end+)
+      ;; Get symbol table pointer
+      (,+op-global-get+ ,*runtime-symbol-table-global*)
+      (,+op-local-set+ ,ht-local)
+      ;; Get entries alist (cdr of hash-table)
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,alist-local)
+      ;; Search loop - look for existing symbol with matching name
+      (,+op-block+ ,+type-i32+)  ; outer block for result
+        (,+op-loop+ ,+type-void+)  ; search loop
+          ;; If alist is nil, symbol not found - create new one
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-eqz+)
+          (,+op-if+ ,+type-void+)
+            ;; === CREATE NEW SYMBOL ===
+            ;; Allocate 16 bytes for symbol
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-local-set+ ,new-sym-local)
+            ;; Store name-ptr (offset 0)
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-local-get+ ,input-str-local)
+            (,+op-i32-store+ 2 0)
+            ;; Store value = 0 (offset 4)
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-i32-const+ 0)
+            (,+op-i32-store+ 2 4)
+            ;; Store function = 0 (offset 8)
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-i32-const+ 0)
+            (,+op-i32-store+ 2 8)
+            ;; Store plist = 0 (offset 12)
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-i32-const+ 0)
+            (,+op-i32-store+ 2 12)
+            ;; Bump heap pointer by 16 (symbol size)
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-i32-const+ ,*symbol-size*)
+            ,+op-i32-add+
+            (,+op-global-set+ ,*heap-pointer-global*)
+            ;; Allocate cons cell for entry (name . symbol)
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-local-set+ ,new-entry-local)
+            ;; Store name string as car
+            (,+op-local-get+ ,new-entry-local)
+            (,+op-local-get+ ,input-str-local)
+            (,+op-i32-store+ 2 0)
+            ;; Store symbol as cdr
+            (,+op-local-get+ ,new-entry-local)
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-i32-store+ 2 4)
+            ;; Bump heap pointer
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-i32-const+ ,*cons-size*)
+            ,+op-i32-add+
+            (,+op-global-set+ ,*heap-pointer-global*)
+            ;; Allocate cons cell for alist node (entry . old-alist)
+            (,+op-global-get+ ,*heap-pointer-global*)
+            ;; Store entry as car
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-local-get+ ,new-entry-local)
+            (,+op-i32-store+ 2 0)
+            ;; Store old alist as cdr
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-local-get+ ,ht-local)
+            (,+op-i32-load+ 2 4)  ; old entries
+            (,+op-i32-store+ 2 4)
+            ;; Update hash-table cdr to point to new alist
+            (,+op-local-get+ ,ht-local)
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-i32-store+ 2 4)
+            ;; Bump heap pointer
+            (,+op-global-get+ ,*heap-pointer-global*)
+            (,+op-i32-const+ ,*cons-size*)
+            ,+op-i32-add+
+            (,+op-global-set+ ,*heap-pointer-global*)
+            ;; Increment count (car of hash-table)
+            (,+op-local-get+ ,ht-local)
+            (,+op-local-get+ ,ht-local)
+            (,+op-i32-load+ 2 0)
+            (,+op-i32-const+ 1)
+            ,+op-i32-add+
+            (,+op-i32-store+ 2 0)
+            ;; Return new symbol
+            (,+op-local-get+ ,new-sym-local)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; Get entry = car(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,entry-local)
+          ;; Get entry-name = car(entry)
+          (,+op-local-get+ ,entry-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,entry-name-local)
+          ;; === STRING COMPARISON ===
+          ;; Get length of entry-name
+          (,+op-local-get+ ,entry-name-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,entry-len-local)
+          ;; Compare lengths first
+          (,+op-local-get+ ,input-len-local)
+          (,+op-local-get+ ,entry-len-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-void+)
+            ;; Lengths match - compare bytes
+            (,+op-i32-const+ 0)
+            (,+op-local-set+ ,idx-local)
+            (,+op-block+ ,+type-void+)  ; string-match block
+              (,+op-loop+ ,+type-void+)  ; byte compare loop
+                ;; If idx >= len, strings are equal!
+                (,+op-local-get+ ,idx-local)
+                (,+op-local-get+ ,input-len-local)
+                ,+op-i32-ge-s+
+                (,+op-if+ ,+type-void+)
+                  ;; Strings match! Return cdr(entry) = symbol
+                  (,+op-local-get+ ,entry-local)
+                  (,+op-i32-load+ 2 4)
+                  (,+op-br+ 4)  ; exit outer result block
+                (,+op-end+)
+                ;; Compare bytes at idx
+                (,+op-local-get+ ,input-str-local)
+                (,+op-i32-const+ 4)
+                ,+op-i32-add+
+                (,+op-local-get+ ,idx-local)
+                ,+op-i32-add+
+                (,+op-i32-load8-u+ 0 0)
+                (,+op-local-get+ ,entry-name-local)
+                (,+op-i32-const+ 4)
+                ,+op-i32-add+
+                (,+op-local-get+ ,idx-local)
+                ,+op-i32-add+
+                (,+op-i32-load8-u+ 0 0)
+                ,+op-i32-ne+
+                (,+op-if+ ,+type-void+)
+                  ;; Bytes differ - break out of compare loop
+                  (,+op-br+ 2)  ; exit string-match block
+                (,+op-end+)
+                ;; Increment index
+                (,+op-local-get+ ,idx-local)
+                (,+op-i32-const+ 1)
+                ,+op-i32-add+
+                (,+op-local-set+ ,idx-local)
+                (,+op-br+ 0)
+              (,+op-end+)  ; end byte compare loop
+            (,+op-end+)  ; end string-match block
+          (,+op-end+)  ; end length-check if
+          ;; Not found in this entry - move to next: alist = cdr(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,alist-local)
+          (,+op-br+ 0)  ; continue search loop
+        (,+op-end+)  ; end search loop
+        ;; Should not reach here
+        (,+op-i32-const+ 0)
+      (,+op-end+))))  ; end outer block
+
+(define-primitive symbol-name (args env)
+  "Return the name string of a symbol.
+   Symbol structure has name-ptr at offset 0."
+  (unless (= (length args) 1)
+    (error "symbol-name requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)))
+
+(define-primitive symbol-value (args env)
+  "Return the value slot of a symbol.
+   Symbol structure has value at offset 4."
+  (unless (= (length args) 1)
+    (error "symbol-value requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 4)))
+
+(define-primitive set-symbol-value (args env)
+  "Set the value slot of a symbol. Returns the value.
+   (set-symbol-value symbol value)"
+  (unless (= (length args) 2)
+    (error "set-symbol-value requires exactly 2 arguments"))
+  (let* ((env-count (compile-env-local-count env))
+         (sym-local env-count)
+         (val-local (+ env-count 1)))
+    `(,@(compile-form (first args) env)
+      (,+op-local-set+ ,sym-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,val-local)
+      (,+op-local-get+ ,sym-local)
+      (,+op-local-get+ ,val-local)
+      (,+op-i32-store+ 2 4)
+      (,+op-local-get+ ,val-local))))
+
+(define-primitive symbol-function (args env)
+  "Return the function slot of a symbol.
+   Symbol structure has function at offset 8."
+  (unless (= (length args) 1)
+    (error "symbol-function requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 8)))
+
+(define-primitive set-symbol-function (args env)
+  "Set the function slot of a symbol. Returns the value.
+   (set-symbol-function symbol function)"
+  (unless (= (length args) 2)
+    (error "set-symbol-function requires exactly 2 arguments"))
+  (let* ((env-count (compile-env-local-count env))
+         (sym-local env-count)
+         (val-local (+ env-count 1)))
+    `(,@(compile-form (first args) env)
+      (,+op-local-set+ ,sym-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,val-local)
+      (,+op-local-get+ ,sym-local)
+      (,+op-local-get+ ,val-local)
+      (,+op-i32-store+ 2 8)
+      (,+op-local-get+ ,val-local))))
+
+(define-primitive symbol-plist (args env)
+  "Return the property list of a symbol.
+   Symbol structure has plist at offset 12."
+  (unless (= (length args) 1)
+    (error "symbol-plist requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 12)))
+
+(define-primitive set-symbol-plist (args env)
+  "Set the property list of a symbol. Returns the value.
+   (set-symbol-plist symbol plist)"
+  (unless (= (length args) 2)
+    (error "set-symbol-plist requires exactly 2 arguments"))
+  (let* ((env-count (compile-env-local-count env))
+         (sym-local env-count)
+         (val-local (+ env-count 1)))
+    `(,@(compile-form (first args) env)
+      (,+op-local-set+ ,sym-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,val-local)
+      (,+op-local-get+ ,sym-local)
+      (,+op-local-get+ ,val-local)
+      (,+op-i32-store+ 2 12)
+      (,+op-local-get+ ,val-local))))

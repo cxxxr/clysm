@@ -420,8 +420,16 @@
 (defparameter *heap-pointer-global* 0
   "Index of the heap pointer global variable.")
 
+(defparameter *runtime-symbol-table-global* 0
+  "Index of the runtime symbol table global variable.
+   Holds a pointer to a hash-table (alist implementation).
+   Initialized to 0, created lazily on first intern call.")
+
 (defparameter *cons-size* 8
   "Size of a cons cell in bytes (car + cdr).")
+
+(defparameter *symbol-size* 16
+  "Size of a symbol in bytes (name-ptr + value + function + plist).")
 
 ;; Multiple value globals - defined in special-forms.lisp, set by setup-runtime
 
@@ -445,7 +453,11 @@
         (loop for i below +max-multiple-values+
               collect (let ((idx (length (wasm-module-globals module))))
                         (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
-                        idx))))
+                        idx)))
+  ;; Add runtime symbol table global (initialized to 0, created lazily)
+  (setf *runtime-symbol-table-global*
+        (length (wasm-module-globals module)))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 0))))
 
 ;;; Closure Type Index Cache
 

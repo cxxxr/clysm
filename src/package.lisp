@@ -293,7 +293,9 @@
    #:generate-code
    ;; Runtime
    #:*heap-pointer-global*
+   #:*runtime-symbol-table-global*
    #:*cons-size*
+   #:*symbol-size*
    #:setup-runtime
    ;; Eval
    #:*node-command*

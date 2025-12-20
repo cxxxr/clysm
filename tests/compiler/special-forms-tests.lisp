@@ -1388,3 +1388,86 @@
              (append *full-reader-preamble*
                      `((let ((rs (make-reader-state ,(format nil "; comment~%42"))))
                          (read-form rs))))))))
+
+;;; ============================================================
+;;; Symbol System Tests
+;;; ============================================================
+
+(test symbol-intern-creates-symbol
+  "Test that intern creates a symbol from a string."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "HELLO")))
+                     ;; Symbol should be non-nil (a valid address)
+                     (if sym 1 0))))))
+    (is (= 1 result))))
+
+(test symbol-intern-same-name
+  "Test that interning the same name twice returns the same symbol."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym1 (intern "FOO"))
+                         (sym2 (intern "FOO")))
+                     ;; Same name should return same symbol (eq)
+                     (if (= sym1 sym2) 1 0))))))
+    (is (= 1 result))))
+
+(test symbol-intern-different-names
+  "Test that different names create different symbols."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym1 (intern "AAA"))
+                         (sym2 (intern "BBB")))
+                     ;; Different names should return different symbols
+                     (if (= sym1 sym2) 0 1))))))
+    (is (= 1 result))))
+
+(test symbol-name-returns-string
+  "Test that symbol-name returns the original string."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "TEST")))
+                     (let ((name (symbol-name sym)))
+                       ;; Check the string length (should be 4)
+                       (string-length name)))))))
+    (is (= 4 result))))
+
+(test symbol-value-initial
+  "Test that newly interned symbol has value 0 (unbound)."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "UNBOUND-SYM")))
+                     (symbol-value sym))))))
+    (is (= 0 result))))
+
+(test symbol-value-set-and-get
+  "Test setting and getting symbol value."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "MY-VAR")))
+                     (set-symbol-value sym 42)
+                     (symbol-value sym))))))
+    (is (= 42 result))))
+
+(test symbol-function-set-and-get
+  "Test setting and getting symbol function."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "MY-FUNC")))
+                     (set-symbol-function sym 123)
+                     (symbol-function sym))))))
+    (is (= 123 result))))
+
+(test symbol-plist-initial
+  "Test that newly interned symbol has empty plist (0/nil)."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((sym (intern "PLIST-SYM")))
+                     (symbol-plist sym))))))
+    (is (= 0 result))))
+
+(test symbol-multiple-interns
+  "Test interning multiple symbols in sequence."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s1 (intern "ONE"))
+                         (s2 (intern "TWO"))
+                         (s3 (intern "THREE")))
+                     (set-symbol-value s1 1)
+                     (set-symbol-value s2 2)
+                     (set-symbol-value s3 3)
+                     (+ (symbol-value s1)
+                        (+ (symbol-value s2)
+                           (symbol-value s3))))))))
+    (is (= 6 result))))
