@@ -177,6 +177,48 @@
           :body body
           :key (nreverse key))))
 
+(defun generate-destructuring-bindings (pattern value-form)
+  "Generate let* bindings to destructure VALUE-FORM according to PATTERN.
+   PATTERN can be a symbol or a nested list of symbols.
+   Returns a list of bindings for let*."
+  (cond
+    ;; Simple symbol - just bind it
+    ((symbolp pattern)
+     (list (list pattern value-form)))
+    ;; Nested list pattern - destructure recursively
+    ((consp pattern)
+     (let ((bindings nil)
+           (temp (gensym "DESTRUCT"))
+           (rest-var nil))
+       ;; First bind the whole value to a temp
+       (push (list temp value-form) bindings)
+       ;; Process each element
+       (let ((index 0)
+             (current-rest temp))
+         (dolist (elem pattern)
+           (cond
+             ;; &rest or &body in nested pattern
+             ((member elem '(&rest &body))
+              (setf rest-var t))
+             ;; The parameter after &rest/&body
+             (rest-var
+              (setf bindings
+                    (append bindings
+                            (generate-destructuring-bindings elem current-rest)))
+              (setf rest-var nil))
+             ;; Regular element
+             (t
+              (let ((accessor `(nth ,index ,temp)))
+                (setf bindings
+                      (append bindings
+                              (generate-destructuring-bindings elem accessor))))
+              (incf index)
+              ;; Update current-rest for potential &rest
+              (setf current-rest `(nthcdr ,(1+ index) ,temp))))))
+       bindings))
+    ;; Other (nil, etc.) - no bindings
+    (t nil)))
+
 (defun generate-macro-bindings (lambda-list form-var)
   "Generate let* bindings to destructure FORM-VAR according to LAMBDA-LIST.
    Returns (bindings . body-var) where bindings is a list for let*."
@@ -197,11 +239,12 @@
       ;; Required parameters
       (dolist (param required)
         (if (consp param)
-            ;; Destructuring - need recursive handling
+            ;; Nested destructuring pattern
             (let ((temp (gensym "TEMP")))
               (push (list temp `(car ,rest-form)) bindings)
-              ;; TODO: recursive destructuring
-              (push (list param temp) bindings))
+              ;; Recursively generate bindings for the nested pattern
+              (dolist (binding (generate-destructuring-bindings param temp))
+                (push binding bindings)))
             ;; Simple binding
             (push (list param `(car ,rest-form)) bindings))
         (let ((next (gensym "REST")))
@@ -216,7 +259,13 @@
                                nil)))
           (when supplied-p
             (push (list supplied-p `(not (null ,rest-form))) bindings))
-          (push (list param `(if ,rest-form (car ,rest-form) ,default)) bindings)
+          ;; Handle nested destructuring in optional params too
+          (if (consp param)
+              (let ((temp (gensym "OPT-TEMP")))
+                (push (list temp `(if ,rest-form (car ,rest-form) ,default)) bindings)
+                (dolist (binding (generate-destructuring-bindings param temp))
+                  (push binding bindings)))
+              (push (list param `(if ,rest-form (car ,rest-form) ,default)) bindings))
           (let ((next (gensym "REST")))
             (push (list next `(if ,rest-form (cdr ,rest-form) nil)) bindings)
             (setf rest-form next))))

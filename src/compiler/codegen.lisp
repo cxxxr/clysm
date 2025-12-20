@@ -20,7 +20,7 @@
          (t
           (error "Cannot generate code for constant: ~A" value)))))
     (ir-local-ref
-     `((,+op-local-get+ ,(ir-local-index node))))
+     `((,+op-local-get+ ,(ir-local-ref-index node))))
     (ir-local-set
      `(,@(generate-code (ir-local-set-value node))
        (,+op-local-set+ ,(ir-local-set-index node))))

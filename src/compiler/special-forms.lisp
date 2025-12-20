@@ -694,6 +694,56 @@
 (defparameter *closure-env-offset* 8
   "Offset of first captured variable in closure.")
 
+;;; FUNCTION special form (#'name or #'(lambda ...))
+
+(define-special-form function (form env)
+  "Compile (function name) or (function (lambda ...)).
+   For named functions, creates a closure pointing to the function.
+   For lambda forms, delegates to lambda compilation."
+  (let ((arg (cadr form)))
+    (cond
+      ;; (function (lambda ...)) - delegate to lambda
+      ((and (consp arg) (eq (car arg) 'lambda))
+       (compile-form arg env))
+      ;; (function name) - lookup function and create closure
+      ((symbolp arg)
+       (let ((func-info (env-lookup env arg :function)))
+         (cond
+           (func-info
+            ;; User-defined function - create closure
+            ;; Closure layout: [func-index, env-size=0]
+            (let ((func-idx (func-info-index func-info)))
+              `(;; Allocate closure (8 bytes: func-index + env-size)
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ 8)
+                ,+op-i32-add+
+                (,+op-global-set+ ,*heap-pointer-global*)
+                ;; Store func-index at offset 0
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ 8)
+                ,+op-i32-sub+
+                (,+op-i32-const+ ,func-idx)
+                (,+op-i32-store+ 2 0)
+                ;; Store env-size (0) at offset 4
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ 8)
+                ,+op-i32-sub+
+                (,+op-i32-const+ 0)
+                (,+op-i32-store+ 2 4)
+                ;; Return closure pointer
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ 8)
+                ,+op-i32-sub+)))
+           ;; Check if it's a primitive - primitives can't be used as first-class values yet
+           ((primitive-p arg)
+            (error "Primitive ~A cannot be used as a first-class function. ~
+                    Use a lambda wrapper instead: (lambda (a b) (~A a b))" arg arg))
+           (t
+            (error "Unknown function: ~A" arg)))))
+      (t
+       (error "FUNCTION requires a function name or lambda form")))))
+
 ;;; Lambda compilation creates a closure
 ;;; For non-capturing lambdas, we still create a closure structure for uniformity
 

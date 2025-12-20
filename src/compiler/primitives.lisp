@@ -795,6 +795,23 @@
     ,+op-drop+
     (,+op-i32-const+ 1)))
 
+(define-primitive floatp (args env)
+  "Check if argument is a float."
+  (unless (= (length args) 1)
+    (error "floatp requires exactly 1 argument"))
+  ;; Currently we don't have float support, so always false
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 0)))
+
+(define-primitive float (args env)
+  "Convert a number to a float."
+  (unless (member (length args) '(1 2))
+    (error "float requires 1 or 2 arguments"))
+  ;; Currently we don't have float support, just return the value
+  ;; TODO: Implement proper float conversion
+  (compile-form (first args) env))
+
 ;;; GCD and LCM
 ;;; GCD uses Euclidean algorithm: while b≠0, (a,b) = (b, a mod b), return |a|
 
@@ -2426,6 +2443,74 @@
     ;; Set entries to nil
     (,+op-i32-const+ 0)
     (,+op-i32-store+ 2 4)))
+
+(define-primitive maphash (args env)
+  "Apply function to each key-value pair in hash table.
+   (maphash function hash-table) - calls (function key value) for each entry.
+   Returns nil."
+  (unless (= (length args) 2)
+    (error "maphash requires exactly 2 arguments"))
+  ;; Hash table structure: (count . entries-alist)
+  ;; We iterate over entries-alist and call function on each (key . value)
+  (let* ((env-count (compile-env-local-count env))
+         (func-local env-count)
+         (entries-local (1+ env-count))
+         (pair-local (+ 2 env-count)))
+    `(;; Store function in local
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,func-local)
+      ;; Get entries alist from hash table (cdr of hash table)
+      ,@(compile-form (second args) env)
+      (,+op-i32-load+ 2 4)  ; load cdr = entries alist
+      (,+op-local-set+ ,entries-local)
+      ;; Loop through entries
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; if entries is nil, exit
+          (,+op-local-get+ ,entries-local)
+          (,+op-i32-eqz+)
+          (,+op-br-if+ 1)
+          ;; pair = car(entries)
+          (,+op-local-get+ ,entries-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,pair-local)
+          ;; Call function with (closure, key, value)
+          ;; Push closure (function) as first arg
+          (,+op-local-get+ ,func-local)
+          ;; Push key = car(pair)
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-load+ 2 0)
+          ;; Push value = cdr(pair)
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-load+ 2 4)
+          ;; Load function index from closure and call indirectly
+          ;; Closure layout: [func-index, env-size, ...captured-vars...]
+          (,+op-local-get+ ,func-local)
+          (,+op-i32-load+ 2 0)  ; load func-index
+          ;; call_indirect with type for (closure, key, value) -> result
+          ;; Type index 3 = 3 params (i32, i32, i32) -> i32
+          (,+op-call-indirect+ 3 0)
+          ,+op-drop+  ; discard result
+          ;; entries = cdr(entries)
+          (,+op-local-get+ ,entries-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,entries-local)
+          (,+op-br+ 0)  ; continue loop
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return nil
+      (,+op-i32-const+ 0))))
+
+(define-primitive hash-table-p (args env)
+  "Check if argument is a hash table.
+   Hash tables are cons cells with count in car and alist in cdr."
+  (unless (= (length args) 1)
+    (error "hash-table-p requires exactly 1 argument"))
+  ;; Simple check: is it a non-nil cons?
+  ;; In full implementation, we'd check for a tag
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 0)
+    ,+op-i32-ne+))
 
 ;;; Reader Primitives
 ;;; These primitives support the S-expression reader implementation.
