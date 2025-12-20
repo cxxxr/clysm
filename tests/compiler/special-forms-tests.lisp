@@ -484,3 +484,61 @@
                       `(+ ,x 1)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Standard library function tests
+
+(test compile-reverse
+  "Test compiling reverse."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun rev (lst)
+                      (reverse lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-nreverse
+  "Test compiling nreverse."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun nrev (lst)
+                      (nreverse lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-member
+  "Test compiling member."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun find-in-list (x lst)
+                      (member x lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-assoc
+  "Test compiling assoc."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun lookup (key alist)
+                      (assoc key alist)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-last
+  "Test compiling last."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun get-last (lst)
+                      (last lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-length
+  "Test compiling length."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun list-length (lst)
+                      (length lst)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-append
+  "Test compiling append."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun concat-lists (a b)
+                      (append a b)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

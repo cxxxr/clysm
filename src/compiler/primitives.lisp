@@ -1022,3 +1022,272 @@
   ;; Load the length field from offset 0 of the string structure
   `(,@(compile-form (first args) env)
     (,+op-i32-load+ 2 0)))  ; align=2, offset=0
+
+;;; Higher-order list functions
+
+(define-primitive reverse (args env)
+  "Reverse a list, creating a new list."
+  (unless (= (length args) 1)
+    (error "reverse requires exactly 1 argument"))
+  (let* ((list-code (compile-form (first args) env))
+         (env-count (compile-env-local-count env))
+         (list-local env-count)
+         (result-local (1+ env-count)))
+    `(;; Store list in local
+      ,@list-code
+      (,+op-local-set+ ,list-local)
+      ;; Initialize result to nil
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,result-local)
+      ;; Loop through list, consing each element onto result
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; if list is nil, break
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-eqz+)
+          (,+op-br-if+ 1)
+          ;; result = cons(car(list), result)
+          ;; Allocate cons cell
+          (,+op-global-get+ ,*heap-pointer-global*)
+          (,+op-i32-const+ 8)
+          ,+op-i32-add+
+          (,+op-global-set+ ,*heap-pointer-global*)
+          ;; Store car
+          (,+op-global-get+ ,*heap-pointer-global*)
+          (,+op-i32-const+ 8)
+          ,+op-i32-sub+
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-i32-store+ 2 0)
+          ;; Store cdr (old result)
+          (,+op-global-get+ ,*heap-pointer-global*)
+          (,+op-i32-const+ 8)
+          ,+op-i32-sub+
+          (,+op-local-get+ ,result-local)
+          (,+op-i32-store+ 2 4)
+          ;; Update result
+          (,+op-global-get+ ,*heap-pointer-global*)
+          (,+op-i32-const+ 8)
+          ,+op-i32-sub+
+          (,+op-local-set+ ,result-local)
+          ;; list = cdr(list)
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,list-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return result
+      (,+op-local-get+ ,result-local))))
+
+(define-primitive nreverse (args env)
+  "Destructively reverse a list in place."
+  (unless (= (length args) 1)
+    (error "nreverse requires exactly 1 argument"))
+  (let* ((list-code (compile-form (first args) env))
+         (env-count (compile-env-local-count env))
+         (current-local env-count)
+         (prev-local (1+ env-count))
+         (next-local (+ 2 env-count)))
+    `(;; Store list in current
+      ,@list-code
+      (,+op-local-set+ ,current-local)
+      ;; prev = nil
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,prev-local)
+      ;; Loop through list, reversing cdr pointers
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; if current is nil, break
+          (,+op-local-get+ ,current-local)
+          (,+op-i32-eqz+)
+          (,+op-br-if+ 1)
+          ;; next = cdr(current)
+          (,+op-local-get+ ,current-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,next-local)
+          ;; cdr(current) = prev
+          (,+op-local-get+ ,current-local)
+          (,+op-local-get+ ,prev-local)
+          (,+op-i32-store+ 2 4)
+          ;; prev = current
+          (,+op-local-get+ ,current-local)
+          (,+op-local-set+ ,prev-local)
+          ;; current = next
+          (,+op-local-get+ ,next-local)
+          (,+op-local-set+ ,current-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return prev (new head)
+      (,+op-local-get+ ,prev-local))))
+
+(define-primitive member (args env)
+  "Find item in list using eq. Returns sublist starting with item, or nil."
+  (unless (= (length args) 2)
+    (error "member requires exactly 2 arguments"))
+  (let* ((item-code (compile-form (first args) env))
+         (list-code (compile-form (second args) env))
+         (env-count (compile-env-local-count env))
+         (item-local env-count)
+         (list-local (1+ env-count)))
+    `(;; Store item and list in locals
+      ,@item-code
+      (,+op-local-set+ ,item-local)
+      ,@list-code
+      (,+op-local-set+ ,list-local)
+      ;; Loop through list
+      (,+op-block+ ,+type-i32+)  ; outer block returns i32
+        (,+op-loop+ ,+type-void+)
+          ;; if list is nil, return nil
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-eqz+)
+          (,+op-if+ ,+type-void+)
+            (,+op-i32-const+ 0)
+            (,+op-br+ 2)  ; break to outer block with nil
+          (,+op-end+)
+          ;; if car(list) == item, return list
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-load+ 2 0)  ; car
+          (,+op-local-get+ ,item-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-void+)
+            (,+op-local-get+ ,list-local)
+            (,+op-br+ 2)  ; break to outer block with list
+          (,+op-end+)
+          ;; list = cdr(list)
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,list-local)
+          (,+op-br+ 0)  ; continue loop
+        (,+op-end+)
+        ;; Fallthrough (shouldn't happen, but need a value)
+        (,+op-i32-const+ 0)
+      (,+op-end+))))
+
+(define-primitive assoc (args env)
+  "Find pair in alist where car equals key. Returns pair or nil."
+  (unless (= (length args) 2)
+    (error "assoc requires exactly 2 arguments"))
+  (let* ((key-code (compile-form (first args) env))
+         (alist-code (compile-form (second args) env))
+         (env-count (compile-env-local-count env))
+         (key-local env-count)
+         (alist-local (1+ env-count))
+         (pair-local (+ 2 env-count)))
+    `(;; Store key and alist in locals
+      ,@key-code
+      (,+op-local-set+ ,key-local)
+      ,@alist-code
+      (,+op-local-set+ ,alist-local)
+      ;; Loop through alist
+      (,+op-block+ ,+type-i32+)
+        (,+op-loop+ ,+type-void+)
+          ;; if alist is nil, return nil
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-eqz+)
+          (,+op-if+ ,+type-void+)
+            (,+op-i32-const+ 0)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; pair = car(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,pair-local)
+          ;; if pair is not nil and car(pair) == key, return pair
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-eqz+)
+          (,+op-i32-eqz+)  ; not nil
+          (,+op-if+ ,+type-void+)
+            (,+op-local-get+ ,pair-local)
+            (,+op-i32-load+ 2 0)  ; car of pair
+            (,+op-local-get+ ,key-local)
+            ,+op-i32-eq+
+            (,+op-if+ ,+type-void+)
+              (,+op-local-get+ ,pair-local)
+              (,+op-br+ 3)
+            (,+op-end+)
+          (,+op-end+)
+          ;; alist = cdr(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,alist-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+        (,+op-i32-const+ 0)
+      (,+op-end+))))
+
+(define-primitive last (args env)
+  "Return the last cons of a list."
+  (cond
+    ((null args)
+     (error "last requires at least 1 argument"))
+    ((= (length args) 1)
+     (let* ((list-code (compile-form (first args) env))
+            (env-count (compile-env-local-count env))
+            (list-local env-count))
+       `(;; Store list in local
+         ,@list-code
+         (,+op-local-set+ ,list-local)
+         ;; Check if list is nil
+         (,+op-local-get+ ,list-local)
+         (,+op-i32-eqz+)
+         (,+op-if+ ,+type-i32+)
+           (,+op-i32-const+ 0)
+         (,+op-else+)
+           ;; Loop until cdr is nil
+           (,+op-block+ ,+type-void+)
+             (,+op-loop+ ,+type-void+)
+               ;; if cdr(list) is nil, break
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-load+ 2 4)
+               (,+op-i32-eqz+)
+               (,+op-br-if+ 1)
+               ;; list = cdr(list)
+               (,+op-local-get+ ,list-local)
+               (,+op-i32-load+ 2 4)
+               (,+op-local-set+ ,list-local)
+               (,+op-br+ 0)
+             (,+op-end+)
+           (,+op-end+)
+           ;; Return list (last cons)
+           (,+op-local-get+ ,list-local)
+         (,+op-end+))))
+    (t
+     (error "last with n not yet supported"))))
+
+(define-primitive length (args env)
+  "Return the length of a list."
+  (unless (= (length args) 1)
+    (error "length requires exactly 1 argument"))
+  (let* ((list-code (compile-form (first args) env))
+         (env-count (compile-env-local-count env))
+         (list-local env-count)
+         (count-local (1+ env-count)))
+    `(;; Store list in local
+      ,@list-code
+      (,+op-local-set+ ,list-local)
+      ;; Initialize count to 0
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,count-local)
+      ;; Loop through list, counting
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; if list is nil, break
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-eqz+)
+          (,+op-br-if+ 1)
+          ;; count++
+          (,+op-local-get+ ,count-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,count-local)
+          ;; list = cdr(list)
+          (,+op-local-get+ ,list-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,list-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Return count
+      (,+op-local-get+ ,count-local))))
