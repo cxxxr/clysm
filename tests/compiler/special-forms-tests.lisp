@@ -1588,3 +1588,54 @@
                        (+ 1 1)
                        (throw 'tag 77)))))))
     (is (= 77 result))))
+
+;;; Unwind-Protect Tests
+
+(test unwind-protect-normal
+  "Test unwind-protect with normal return."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((x 0))
+                     (unwind-protect
+                         (setq x 10)
+                       (setq x (+ x 5)))
+                     x)))))
+    (is (= 15 result))))  ; cleanup runs, x = 10 + 5
+
+(test unwind-protect-returns-protected-value
+  "Test unwind-protect returns protected form value."
+  (let ((result (clysm/compiler:eval-forms
+                 '((unwind-protect
+                       42
+                     (+ 1 2))))))
+    (is (= 42 result))))  ; returns 42, not 3
+
+(test unwind-protect-with-throw
+  "Test unwind-protect cleanup runs during throw."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((cleanup-ran 0))
+                     (catch 'test
+                       (unwind-protect
+                           (throw 'test 99)
+                         (setq cleanup-ran 1)))
+                     cleanup-ran)))))
+    (is (= 1 result))))  ; cleanup ran
+
+(test unwind-protect-propagates-throw
+  "Test unwind-protect propagates throw after cleanup."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'outer
+                     (unwind-protect
+                         (throw 'outer 88)
+                       (+ 1 1)))))))
+    (is (= 88 result))))  ; throw propagates
+
+(test unwind-protect-multiple-cleanup
+  "Test unwind-protect with multiple cleanup forms."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((x 0))
+                     (unwind-protect
+                         (setq x 1)
+                       (setq x (+ x 10))
+                       (setq x (+ x 100)))
+                     x)))))
+    (is (= 111 result))))  ; x = 1 + 10 + 100

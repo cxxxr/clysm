@@ -1174,3 +1174,45 @@
       (,+op-global-set+ ,*throw-pending-global*)
       ;; Return the throw value
       (,+op-global-get+ ,*throw-value-global*))))
+
+;;; UNWIND-PROTECT - Ensure cleanup forms are always executed
+;;;
+;;; (unwind-protect protected-form cleanup-forms...)
+;;; Executes protected-form, then always executes cleanup-forms regardless
+;;; of whether protected-form returns normally or exits via throw.
+
+(define-special-form unwind-protect (form env)
+  "Compile unwind-protect. Cleanup forms always execute."
+  (destructuring-bind (protected-form &rest cleanup-forms) (cdr form)
+    (let* ((env-count (compile-env-local-count env))
+           (result-local env-count)
+           (saved-pending-local (1+ env-count))
+           (saved-tag-local (+ env-count 2))
+           (saved-value-local (+ env-count 3)))
+      `(;; Execute protected form and save result
+        ,@(compile-form protected-form env)
+        (,+op-local-set+ ,result-local)
+        ;; Save current throw state
+        (,+op-global-get+ ,*throw-pending-global*)
+        (,+op-local-set+ ,saved-pending-local)
+        (,+op-global-get+ ,*throw-tag-global*)
+        (,+op-local-set+ ,saved-tag-local)
+        (,+op-global-get+ ,*throw-value-global*)
+        (,+op-local-set+ ,saved-value-local)
+        ;; Clear throw-pending so cleanup runs normally
+        (,+op-i32-const+ 0)
+        (,+op-global-set+ ,*throw-pending-global*)
+        ;; Execute cleanup forms (discard results)
+        ,@(if cleanup-forms
+              (let ((cleanup-code (compile-progn cleanup-forms env)))
+                (append cleanup-code `(,+op-drop+)))
+              nil)
+        ;; Restore throw state if it was set
+        (,+op-local-get+ ,saved-pending-local)
+        (,+op-global-set+ ,*throw-pending-global*)
+        (,+op-local-get+ ,saved-tag-local)
+        (,+op-global-set+ ,*throw-tag-global*)
+        (,+op-local-get+ ,saved-value-local)
+        (,+op-global-set+ ,*throw-value-global*)
+        ;; Return protected form result
+        (,+op-local-get+ ,result-local)))))
