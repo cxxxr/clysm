@@ -15,7 +15,7 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 | 実行環境 | WasmGC + Node.js |
 | メモリモデル | 線形メモリ上のcons cell（8バイト/cell） |
 | テスト基盤 | ANSIテストスイート統合済み（20,000+テスト） |
-| ユニットテスト | 216テストパス |
+| ユニットテスト | 227テストパス |
 | ブートストラップ | 基盤機能実装中 |
 
 ### 1.3 実装済み機能
@@ -54,6 +54,7 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 - setf: `car`, `cdr`, `first`-`third`, `nth`, `gethash`, 構造体アクセサ
 - マクロ: `defmacro`（ホスト展開戦略）、バッククォート
 - 文字列: `string=`, `string-downcase`, `string-upcase`, `string-append`, `schar`, `char-code`, `code-char`
+- 評価: `eval-form`, `eval-forms`（コンパイル→Node.js実行）
 
 ---
 
@@ -334,6 +335,7 @@ Phase 2.5 (基盤強化)
 | 2025-12-20 | Bootstrap | 200 | hash-table, setf, error, ブートストラップテスト追加 |
 | 2025-12-20 | Bootstrap | 205 | defmacro, バッククォート（ホスト展開戦略） |
 | 2025-12-20 | Bootstrap | 216 | 文字列プリミティブ、CLOS除去確認完了 |
+| 2025-12-20 | Bootstrap | 227 | eval-form/eval-forms API追加、main関数のlet修正 |
 
 ---
 

@@ -294,7 +294,11 @@
    ;; Runtime
    #:*heap-pointer-global*
    #:*cons-size*
-   #:setup-runtime))
+   #:setup-runtime
+   ;; Eval
+   #:*node-command*
+   #:eval-form
+   #:eval-forms))
 
 (defpackage #:clysm/runtime
   (:use #:cl)

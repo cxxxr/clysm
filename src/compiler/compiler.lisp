@@ -273,7 +273,13 @@
   (let* ((module (compile-env-module env))
          (type-idx (add-func-type module nil (list +type-i32+)))
          (body-code (compile-form form env))
-         (func-idx (add-function module type-idx nil body-code)))
+         ;; Find max local index used in the code (for let bindings)
+         (max-local-idx (find-max-local-index body-code))
+         (num-locals (max 0 (1+ max-local-idx)))
+         (locals (if (> num-locals 0)
+                     (list (cons num-locals +type-i32+))
+                     nil))
+         (func-idx (add-function module type-idx locals body-code)))
     (add-export module "main" +export-func+ func-idx)
     env))
 
@@ -637,3 +643,71 @@
                 0  ; memory index
                 `((,+op-i32-const+ ,*static-data-base*))
                 (coerce data-buffer '(vector (unsigned-byte 8)))))))
+
+;;; Eval - Compile and Execute
+
+(defparameter *node-command* "node"
+  "Path to Node.js executable for running WASM.")
+
+(defun eval-form (form)
+  "Compile FORM to WASM and execute it, returning the result as an integer.
+   This uses Node.js to run the generated WebAssembly.
+
+   Example:
+     (eval-form '(+ 1 2))  => 3
+     (eval-form '(let ((x 10)) (* x x)))  => 100
+     (eval-form '(car (cons 42 99)))  => 42"
+  (let* ((wasm-file (format nil "/tmp/clysm-eval-~A.wasm" (random 1000000)))
+         (module (compile-module (list form))))
+    (unwind-protect
+        (progn
+          (clysm/wasm:save-module module wasm-file)
+          (let* ((js-code (format nil "
+const fs = require('fs');
+WebAssembly.instantiate(fs.readFileSync('~A'))
+  .then(r => console.log(r.instance.exports.main()))
+  .catch(e => { console.error('WASM_ERROR:', e.message); process.exit(1); });
+" wasm-file))
+                 (result (with-output-to-string (s)
+                           (uiop:run-program
+                            (list *node-command* "-e" js-code)
+                            :output s
+                            :error-output *error-output*))))
+            (let ((trimmed (string-trim '(#\Newline #\Space #\Tab) result)))
+              (if (string= trimmed "")
+                  (error "WASM execution returned no result")
+                  (parse-integer trimmed)))))
+      ;; Cleanup
+      (when (probe-file wasm-file)
+        (delete-file wasm-file)))))
+
+(defun eval-forms (forms)
+  "Compile and execute a list of FORMS, returning the result of the last form.
+   Functions defined with defun are available to subsequent forms.
+
+   Example:
+     (eval-forms '((defun square (x) (* x x))
+                   (square 5)))  => 25"
+  (let* ((wasm-file (format nil "/tmp/clysm-eval-~A.wasm" (random 1000000)))
+         (module (compile-module forms)))
+    (unwind-protect
+        (progn
+          (clysm/wasm:save-module module wasm-file)
+          (let* ((js-code (format nil "
+const fs = require('fs');
+WebAssembly.instantiate(fs.readFileSync('~A'))
+  .then(r => console.log(r.instance.exports.main()))
+  .catch(e => { console.error('WASM_ERROR:', e.message); process.exit(1); });
+" wasm-file))
+                 (result (with-output-to-string (s)
+                           (uiop:run-program
+                            (list *node-command* "-e" js-code)
+                            :output s
+                            :error-output *error-output*))))
+            (let ((trimmed (string-trim '(#\Newline #\Space #\Tab) result)))
+              (if (string= trimmed "")
+                  (error "WASM execution returned no result")
+                  (parse-integer trimmed)))))
+      ;; Cleanup
+      (when (probe-file wasm-file)
+        (delete-file wasm-file)))))

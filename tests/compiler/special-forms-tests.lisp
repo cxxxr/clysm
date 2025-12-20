@@ -1038,3 +1038,36 @@
                       (string-append a b)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Eval API tests (require Node.js)
+
+(test eval-form-arithmetic
+  "Test eval-form with arithmetic."
+  (is (= 3 (clysm/compiler:eval-form '(+ 1 2))))
+  (is (= 42 (clysm/compiler:eval-form '(* 6 7))))
+  (is (= 10 (clysm/compiler:eval-form '(+ (+ 1 2) (+ 3 4))))))
+
+(test eval-form-conditionals
+  "Test eval-form with conditionals."
+  (is (= 100 (clysm/compiler:eval-form '(if (> 5 3) 100 200))))
+  (is (= 200 (clysm/compiler:eval-form '(if (< 5 3) 100 200)))))
+
+(test eval-form-let
+  "Test eval-form with let bindings."
+  (is (= 100 (clysm/compiler:eval-form '(let ((x 10)) (* x x)))))
+  (is (= 30 (clysm/compiler:eval-form '(let ((a 10) (b 20)) (+ a b))))))
+
+(test eval-form-cons
+  "Test eval-form with cons cells."
+  (is (= 42 (clysm/compiler:eval-form '(car (cons 42 99)))))
+  (is (= 99 (clysm/compiler:eval-form '(cdr (cons 42 99))))))
+
+(test eval-forms-defun
+  "Test eval-forms with function definitions."
+  (is (= 120 (clysm/compiler:eval-forms
+              '((defun factorial (n)
+                  (if (<= n 1) 1 (* n (factorial (- n 1)))))
+                (factorial 5)))))
+  (is (= 25 (clysm/compiler:eval-forms
+              '((defun square (x) (* x x))
+                (square 5))))))
