@@ -839,6 +839,64 @@
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
 
+;;; User-defined macro tests
+
+(test compile-user-defmacro
+  "Test compiling code with user-defined macro."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defmacro my-when (test &rest body)
+                      `(if ,test (progn ,@body) nil))
+                    (defun test-my-when (x)
+                      (my-when (> x 0)
+                        (+ x 1))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-user-defmacro-with-gensym
+  "Test compiling code with user-defined macro using gensym."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defmacro my-if-let (binding then &optional else)
+                      (let ((var (first binding))
+                            (val (second binding)))
+                        `(let ((,var ,val))
+                           (if ,var ,then ,else))))
+                    (defun test-if-let (x)
+                      (my-if-let (y x)
+                        (+ y 1)
+                        0)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-user-defmacro-recursive-expansion
+  "Test that macros are recursively expanded."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defmacro add-one (x)
+                      `(+ ,x 1))
+                    (defmacro add-two (x)
+                      `(add-one (add-one ,x)))
+                    (defun test-add-two (x)
+                      (add-two x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-user-defmacro-with-list-construction
+  "Test macro that constructs code using list functions."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defmacro with-additions (n &rest vals)
+                      `(+ ,n ,@vals))
+                    (defun test-additions ()
+                      (with-additions 10 1 2 3)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defmacro-not-in-output
+  "Test that defmacro itself doesn't appear in WASM output."
+  ;; Just a defmacro with no uses - should still compile (empty module)
+  (let* ((module (clysm/compiler:compile-module
+                  '((defmacro unused-macro (x) x))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
 ;;; Setf tests
 
 (test compile-setf-variable

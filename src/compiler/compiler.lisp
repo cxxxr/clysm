@@ -279,6 +279,22 @@
 
 ;;; Module Compilation
 
+(defun eval-defmacros (forms)
+  "Find and evaluate defmacro forms on the host Lisp.
+   This makes user-defined macros available for subsequent macro expansion.
+   Returns forms with defmacros removed (they don't compile to WASM)."
+  (let ((result nil))
+    (dolist (form forms)
+      (cond
+        ;; defmacro - evaluate on host, don't include in output
+        ((and (consp form) (eq (car form) 'defmacro))
+         ;; Evaluate the defmacro on SBCL so the macro becomes available
+         (eval form))
+        ;; Other forms - keep for compilation
+        (t
+         (push form result))))
+    (nreverse result)))
+
 (defun compile-module (forms &key (enable-memory t))
   "Compile a list of top-level forms to a WASM module.
    Uses two-pass compilation to give defuns stable indices."
@@ -290,6 +306,8 @@
     (reset-symbol-table)
     (reset-closure-type-cache)
     (reset-struct-registry)
+    ;; First, evaluate any defmacros on the host (makes them available for expansion)
+    (setf forms (eval-defmacros forms))
     ;; Expand macros using host Lisp before compilation
     (setf forms (expand-toplevel-macros forms))
     ;; Add memory and heap pointer if enabled
