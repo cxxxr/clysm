@@ -7,6 +7,36 @@
 ;;; This allows us to use defmacro in source code and have it expanded
 ;;; on the host before generating WASM.
 
+(defun normalize-binding* (bindings body)
+  "Transform SB-INT:BINDING* to LET* with POP expanded.
+   POP patterns are expanded to car/cdr chains."
+  ;; Track which gensym vars are used for destructuring
+  ;; We need to replace (POP gensym) with (car gensym) + update gensym to (cdr gensym)
+  (let ((let-bindings nil)
+        (pop-counters (make-hash-table :test 'eq)))
+    ;; Process each binding
+    (dolist (binding bindings)
+      (let* ((var (first binding))
+             (init (second binding)))
+        (cond
+          ;; Regular binding - just normalize
+          ((not (and (consp init) (eq (car init) 'pop)))
+           (push (list var (normalize-sbcl-internals init)) let-bindings))
+          ;; POP binding - expand to car with cdr chain
+          (t
+           (let* ((pop-var (second init))
+                  (pop-count (or (gethash pop-var pop-counters) 0)))
+             ;; Build accessor: (car (cdr^n var))
+             (let ((accessor pop-var))
+               (dotimes (i pop-count)
+                 (setf accessor `(cdr ,accessor)))
+               (push (list var `(car ,accessor)) let-bindings))
+             ;; Increment counter for next pop
+             (setf (gethash pop-var pop-counters) (1+ pop-count)))))))
+    ;; Build the let* form
+    `(let* ,(nreverse let-bindings)
+       ,@(mapcar #'normalize-sbcl-internals body))))
+
 (defun normalize-sbcl-internals (form)
   "Replace SBCL internal functions with standard equivalents."
   (cond
@@ -57,6 +87,16 @@
     ((eq (car form) 'the)
      ;; (the type value) => value
      (normalize-sbcl-internals (third form)))
+    ;; SB-INT:BINDING* - used by destructuring-bind
+    ;; (sb-int:binding* (((var1 init1) (var2 init2) ...)) body)
+    ;; Transform POP patterns to car/cdr chains
+    ((eq (car form) 'sb-int:binding*)
+     (let* ((bindings (second form))
+            (body (cddr form)))
+       (normalize-binding* bindings body)))
+    ;; SB-C::CHECK-DS-LIST - just return the list (skip validation)
+    ((eq (car form) 'sb-c::check-ds-list)
+     (normalize-sbcl-internals (second form)))
     ;; LET/LET* - strip DECLARE forms
     ((or (eq (car form) 'let) (eq (car form) 'let*))
      (let* ((bindings (second form))
@@ -89,6 +129,9 @@
                           lambda funcall defun defparameter defconstant
                           defvar defstruct))
      (cons (car form) (mapcar #'expand-macros (cdr form))))
+    ;; SB-INT:BINDING* - intercept before further expansion and normalize
+    ((eq (car form) 'sb-int:binding*)
+     (expand-macros (normalize-binding* (second form) (cddr form))))
     ;; Try to macroexpand the form
     (t
      (multiple-value-bind (expanded expandedp)

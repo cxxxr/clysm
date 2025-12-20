@@ -758,3 +758,23 @@
                         (+ a b))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Destructuring-bind tests
+
+(test compile-destructuring-bind-simple
+  "Test compiling simple destructuring-bind."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-dsb ()
+                      (destructuring-bind (a b c) (list 1 2 3)
+                        (+ a b c))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-destructuring-bind-nested
+  "Test compiling nested destructuring-bind."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-dsb2 (lst)
+                      (destructuring-bind (a b) lst
+                        (+ a b))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
