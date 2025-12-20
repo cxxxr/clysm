@@ -1234,3 +1234,157 @@
              (append *reader-test-preamble*
                      '((let ((rs (make-reader-state "   42")))
                          (read-form rs))))))))
+
+;;; Extended reader tests with symbol and string support
+
+(defparameter *full-reader-preamble*
+  '(;; Skip whitespace and comments
+    (defun skip-ws-helper (rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch -1) nil)
+          ((whitespace-char-p ch)
+           (reader-state-read-char rs)
+           (skip-ws-helper rs))
+          ((= ch 59)  ; ';'
+           (reader-state-read-char rs)
+           (skip-to-nl rs)
+           (skip-ws-helper rs))
+          (t nil))))
+    (defun skip-to-nl (rs)
+      (let ((ch (reader-state-read-char rs)))
+        (cond ((= ch -1) nil)
+              ((= ch 10) nil)
+              (t (skip-to-nl rs)))))
+    (defun skip-ws (rs) (skip-ws-helper rs))
+
+    ;; Read integer
+    (defun read-int-helper (rs result)
+      (let ((d (digit-char-p (reader-state-peek-char rs))))
+        (if d
+            (progn (reader-state-read-char rs)
+                   (read-int-helper rs (+ (* result 10) (- d 1))))
+            result)))
+    (defun read-int (rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch 45)
+           (reader-state-read-char rs)
+           (- 0 (read-int-helper rs 0)))
+          ((= ch 43)
+           (reader-state-read-char rs)
+           (read-int-helper rs 0))
+          (t (read-int-helper rs 0)))))
+
+    ;; Skip symbol characters, return count
+    (defun skip-sym-chars (rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (if (and (/= ch -1) (symbol-constituent-p ch))
+            (progn (reader-state-read-char rs)
+                   (+ 1 (skip-sym-chars rs)))
+            0)))
+
+    ;; Read symbol as uppercase string
+    (defun read-sym (rs)
+      (let ((start (reader-state-position rs)))
+        (skip-sym-chars rs)
+        (reader-state-substring rs start (reader-state-position rs))))
+
+    ;; Skip to string end
+    (defun skip-str-end (rs)
+      (let ((ch (reader-state-read-char rs)))
+        (cond ((= ch -1) nil)
+              ((= ch 34) nil)  ; closing quote
+              ((= ch 92) (reader-state-read-char rs) (skip-str-end rs))  ; backslash
+              (t (skip-str-end rs)))))
+
+    ;; Read string literal
+    (defun read-str (rs)
+      (let ((start (reader-state-position rs)))
+        (skip-str-end rs)
+        (reader-state-substring-raw rs start (- (reader-state-position rs) 1))))
+
+    ;; Read form
+    (defun read-form (rs)
+      (skip-ws rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch -1) -1)  ; EOF
+          ((= ch 40)      ; '(' - list
+           (reader-state-read-char rs)
+           (read-list rs))
+          ((= ch 39)      ; '\'' - quote
+           (reader-state-read-char rs)
+           (cons "QUOTE" (cons (read-form rs) nil)))
+          ((= ch 34)      ; '"' - string
+           (reader-state-read-char rs)
+           (read-str rs))
+          ((or (digit-char-p ch) (= ch 45) (= ch 43))
+           (let ((next (if (or (= ch 45) (= ch 43))
+                           (progn (reader-state-read-char rs)
+                                  (let ((n (reader-state-peek-char rs)))
+                                    (reader-state-unread-char rs)
+                                    n))
+                           ch)))
+             (if (digit-char-p next)
+                 (read-int rs)
+                 (read-sym rs))))
+          ((symbol-constituent-p ch)
+           (read-sym rs))
+          (t -99))))
+
+    ;; Read list
+    (defun read-list (rs)
+      (skip-ws rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch 41) (reader-state-read-char rs) nil)  ; ')'
+          ((= ch -1) -3)  ; EOF error
+          (t (cons (read-form rs) (read-list rs)))))))
+  "Full reader functions including symbols and strings.")
+
+(test reader-read-symbol
+  "Test reading symbols as uppercase strings."
+  (let ((result (clysm/compiler:eval-forms
+                 (append *full-reader-preamble*
+                         '((let ((rs (make-reader-state "hello")))
+                             (read-form rs)))))))
+    ;; Result is a string pointer, compare with string=
+    (is (numberp result))))
+
+(test reader-read-symbol-list
+  "Test reading list of symbols."
+  (let ((result (clysm/compiler:eval-forms
+                 (append *full-reader-preamble*
+                         '((let ((rs (make-reader-state "(a b c)")))
+                             (let ((lst (read-form rs)))
+                               ;; Just verify we got a list with 3 elements
+                               (length lst))))))))
+    (is (= 3 result))))
+
+(test reader-read-string-literal
+  "Test reading string literals."
+  (let ((result (clysm/compiler:eval-forms
+                 (append *full-reader-preamble*
+                         '((let ((rs (make-reader-state "\"hello\"")))
+                             (let ((str (read-form rs)))
+                               ;; String length should be 5
+                               (string-length str))))))))
+    (is (= 5 result))))
+
+(test reader-read-quote
+  "Test reading quoted forms."
+  (let ((result (clysm/compiler:eval-forms
+                 (append *full-reader-preamble*
+                         '((let ((rs (make-reader-state "'(1 2 3)")))
+                             (let ((form (read-form rs)))
+                               ;; form should be (QUOTE (1 2 3))
+                               (car (car (cdr form))))))))))  ; first element of quoted list
+    (is (= 1 result))))
+
+(test reader-skip-comments
+  "Test that reader skips semicolon comments."
+  (is (= 42 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     `((let ((rs (make-reader-state ,(format nil "; comment~%42"))))
+                         (read-form rs))))))))

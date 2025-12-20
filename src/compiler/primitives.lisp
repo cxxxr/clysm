@@ -267,35 +267,39 @@
   (unless (= (length args) 2)
     (error "cons requires exactly 2 arguments"))
   ;; Important: We must reserve space BEFORE evaluating arguments,
-  ;; because argument evaluation might allocate more cons cells.
+  ;; because argument evaluation might allocate more heap space (strings, etc).
   ;;
-  ;; Strategy: Increment hp first to reserve space, then evaluate args
-  ;; and store them. The cell address is (hp - 8).
-  `(;; First increment hp to reserve space for this cons cell
-    (,+op-global-get+ ,*heap-pointer-global*)
-    (,+op-i32-const+ ,*cons-size*)
-    ,+op-i32-add+
-    (,+op-global-set+ ,*heap-pointer-global*)
-    ;; Now hp points past the reserved cell. The cell is at hp-8.
-    ;; Push cell address as return value
-    (,+op-global-get+ ,*heap-pointer-global*)
-    (,+op-i32-const+ ,*cons-size*)
-    ,+op-i32-sub+
-    ;; Stack: [cell-addr]
-    ;; Store car at cell-addr (need: addr, value)
-    (,+op-global-get+ ,*heap-pointer-global*)
-    (,+op-i32-const+ ,*cons-size*)
-    ,+op-i32-sub+
-    ,@(compile-form (first args) env)
-    (,+op-i32-store+ 2 0)
-    ;; Store cdr at cell-addr+4
-    (,+op-global-get+ ,*heap-pointer-global*)
-    (,+op-i32-const+ ,*cons-size*)
-    ,+op-i32-sub+
-    ,@(compile-form (second args) env)
-    (,+op-i32-store+ 2 4)
-    ;; Return value (cell-addr) is already on stack
-    ))
+  ;; Strategy: Increment hp first to reserve space, save cell address in a local,
+  ;; then evaluate args and store them using the saved address.
+  ;; We must allocate a new local and create a new env to prevent collisions
+  ;; with nested cons calls.
+  (let* ((env-count (compile-env-local-count env))
+         (cell-local env-count)
+         ;; Create new env with incremented local count for nested calls
+         (inner-env (let ((new-env (copy-compile-env env)))
+                      (incf (compile-env-local-count new-env))
+                      new-env)))
+    `(;; First increment hp to reserve space for this cons cell
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,*cons-size*)
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Save cell address (hp-8) in local variable
+      ;; This is crucial because argument evaluation may change hp!
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,*cons-size*)
+      ,+op-i32-sub+
+      (,+op-local-set+ ,cell-local)
+      ;; Store car at cell-addr (need: addr, value)
+      (,+op-local-get+ ,cell-local)
+      ,@(compile-form (first args) inner-env)
+      (,+op-i32-store+ 2 0)
+      ;; Store cdr at cell-addr+4
+      (,+op-local-get+ ,cell-local)
+      ,@(compile-form (second args) inner-env)
+      (,+op-i32-store+ 2 4)
+      ;; Return cell address
+      (,+op-local-get+ ,cell-local))))
 
 (define-primitive car (args env)
   "Get the car of a cons cell."
@@ -2796,3 +2800,192 @@
       (,+op-i32-const+ 58)  ; :
       ,+op-i32-eq+
       ,+op-i32-or+)))
+
+;;; String Building Primitives for Reader
+
+(define-primitive reader-state-substring (args env)
+  "Create a substring from reader state's input, from START to END positions.
+   Returns a new string. Converts to uppercase for symbol names."
+  (unless (= (length args) 3)
+    (error "reader-state-substring requires exactly 3 arguments (rs start end)"))
+  (let* ((env-count (compile-env-local-count env))
+         (rs-local env-count)
+         (start-local (+ env-count 1))
+         (end-local (+ env-count 2))
+         (len-local (+ env-count 3))
+         (dst-local (+ env-count 4))
+         (src-local (+ env-count 5))
+         (idx-local (+ env-count 6))
+         (ch-local (+ env-count 7)))
+    `(;; Get arguments
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,rs-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,start-local)
+      ,@(compile-form (third args) env)
+      (,+op-local-set+ ,end-local)
+      ;; Calculate length
+      (,+op-local-get+ ,end-local)
+      (,+op-local-get+ ,start-local)
+      ,+op-i32-sub+
+      (,+op-local-set+ ,len-local)
+      ;; Allocate new string: [length:i32][bytes...]
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      ;; Store length
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-store+ 2 0)
+      ;; Get source string pointer from reader state
+      (,+op-local-get+ ,rs-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,src-local)
+      ;; Copy bytes with uppercase conversion
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; Check if done
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          ;; Load byte from source
+          (,+op-local-get+ ,src-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,start-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          (,+op-local-set+ ,ch-local)
+          ;; Convert to uppercase if lowercase
+          (,+op-local-get+ ,ch-local)
+          (,+op-i32-const+ 97)
+          ,+op-i32-ge-s+
+          (,+op-local-get+ ,ch-local)
+          (,+op-i32-const+ 122)
+          ,+op-i32-le-s+
+          ,+op-i32-and+
+          (,+op-if+ ,+type-void+)
+            (,+op-local-get+ ,ch-local)
+            (,+op-i32-const+ 32)
+            ,+op-i32-sub+
+            (,+op-local-set+ ,ch-local)
+          (,+op-end+)
+          ;; Store byte to destination
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,ch-local)
+          (,+op-i32-store8+ 0 0)
+          ;; Increment index
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Update heap pointer (align to 4 bytes)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ 4)
+      ,+op-i32-add+
+      (,+op-local-get+ ,len-local)
+      ,+op-i32-add+
+      (,+op-i32-const+ 3)
+      ,+op-i32-add+
+      (,+op-i32-const+ -4)
+      ,+op-i32-and+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Return new string pointer
+      (,+op-local-get+ ,dst-local))))
+
+(define-primitive reader-state-substring-raw (args env)
+  "Create a substring from reader state's input, from START to END positions.
+   Returns a new string WITHOUT case conversion (for string literals)."
+  (unless (= (length args) 3)
+    (error "reader-state-substring-raw requires exactly 3 arguments (rs start end)"))
+  (let* ((env-count (compile-env-local-count env))
+         (rs-local env-count)
+         (start-local (+ env-count 1))
+         (end-local (+ env-count 2))
+         (len-local (+ env-count 3))
+         (dst-local (+ env-count 4))
+         (src-local (+ env-count 5))
+         (idx-local (+ env-count 6))
+         (ch-local (+ env-count 7)))
+    `(;; Get arguments
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,rs-local)
+      ,@(compile-form (second args) env)
+      (,+op-local-set+ ,start-local)
+      ,@(compile-form (third args) env)
+      (,+op-local-set+ ,end-local)
+      ;; Calculate length
+      (,+op-local-get+ ,end-local)
+      (,+op-local-get+ ,start-local)
+      ,+op-i32-sub+
+      (,+op-local-set+ ,len-local)
+      ;; Allocate new string: [length:i32][bytes...]
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      ;; Store length
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,len-local)
+      (,+op-i32-store+ 2 0)
+      ;; Get source string pointer from reader state
+      (,+op-local-get+ ,rs-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-local-set+ ,src-local)
+      ;; Copy bytes directly (no case conversion)
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,idx-local)
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; Check if done
+          (,+op-local-get+ ,idx-local)
+          (,+op-local-get+ ,len-local)
+          ,+op-i32-ge-s+
+          (,+op-br-if+ 1)
+          ;; Load byte from source and store directly
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          ;; Load source byte
+          (,+op-local-get+ ,src-local)
+          (,+op-i32-const+ 4)
+          ,+op-i32-add+
+          (,+op-local-get+ ,start-local)
+          ,+op-i32-add+
+          (,+op-local-get+ ,idx-local)
+          ,+op-i32-add+
+          (,+op-i32-load8-u+ 0 0)
+          ;; Store directly (no conversion)
+          (,+op-i32-store8+ 0 0)
+          ;; Increment index
+          (,+op-local-get+ ,idx-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,idx-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Update heap pointer (align to 4 bytes)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ 4)
+      ,+op-i32-add+
+      (,+op-local-get+ ,len-local)
+      ,+op-i32-add+
+      (,+op-i32-const+ 3)
+      ,+op-i32-add+
+      (,+op-i32-const+ -4)
+      ,+op-i32-and+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Return new string pointer
+      (,+op-local-get+ ,dst-local))))
