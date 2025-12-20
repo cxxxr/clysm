@@ -36,6 +36,16 @@
   (mutable t :type boolean)
   (constant-p nil :type boolean))
 
+(defstruct struct-info
+  "Information about a structure type."
+  (name nil :type symbol)
+  (type-id 0 :type integer)
+  (slots nil :type list)         ; List of (slot-name default-value)
+  (parent nil :type (or null symbol))
+  (constructor nil :type symbol) ; make-XXX
+  (copier nil :type symbol)      ; copy-XXX
+  (predicate nil :type symbol))  ; XXX-p
+
 ;;; Environment Operations
 
 (defun env-lookup (env name &optional (namespace :variable))
@@ -134,6 +144,58 @@
   (setf *symbol-table* (make-hash-table :test 'equal))
   (setf *string-table* (make-hash-table :test 'equal))
   (setf *static-data-offset* 256))  ; Reserve first 256 bytes
+
+;;; Structure Type Registry
+
+(defvar *struct-registry* nil
+  "Hash table mapping structure names to struct-info objects.
+   Reset at the start of each compile-module.")
+
+(defvar *struct-type-counter* 0
+  "Counter for generating unique structure type IDs.")
+
+(defun reset-struct-registry ()
+  "Reset structure registry for a fresh compilation."
+  (setf *struct-registry* (make-hash-table :test 'eq))
+  (setf *struct-type-counter* 1))  ; Start at 1, 0 reserved for nil
+
+(defun register-struct (name slots &key parent)
+  "Register a new structure type. Returns struct-info."
+  (let* ((type-id (prog1 *struct-type-counter*
+                    (incf *struct-type-counter*)))
+         (constructor (intern (format nil "MAKE-~A" name)))
+         (copier (intern (format nil "COPY-~A" name)))
+         (predicate (intern (format nil "~A-P" name)))
+         (info (make-struct-info :name name
+                                 :type-id type-id
+                                 :slots slots
+                                 :parent parent
+                                 :constructor constructor
+                                 :copier copier
+                                 :predicate predicate)))
+    (setf (gethash name *struct-registry*) info)
+    info))
+
+(defun lookup-struct (name)
+  "Look up a structure type by name."
+  (gethash name *struct-registry*))
+
+(defun struct-all-slots (struct-info)
+  "Get all slots including inherited slots from parent."
+  (if (struct-info-parent struct-info)
+      (let ((parent-info (lookup-struct (struct-info-parent struct-info))))
+        (if parent-info
+            (append (struct-all-slots parent-info) (struct-info-slots struct-info))
+            (struct-info-slots struct-info)))
+      (struct-info-slots struct-info)))
+
+(defun struct-slot-offset (struct-info slot-name)
+  "Get the memory offset for a slot (in bytes). Returns nil if not found."
+  (let ((all-slots (struct-all-slots struct-info)))
+    (loop for (name default) in all-slots
+          for offset from 4 by 4  ; First slot at offset 4 (after type-id)
+          when (eq name slot-name)
+          return offset)))
 
 (defun intern-compile-time-string (string)
   "Intern a string at compile time, returning its address.

@@ -136,9 +136,10 @@
          (env (make-initial-env module))
          (defuns nil)
          (lambda-holder (list nil)))  ; Box to collect lambda functions
-    ;; Reset symbol table and closure type cache for fresh compilation
+    ;; Reset symbol table, closure type cache, and structure registry
     (reset-symbol-table)
     (reset-closure-type-cache)
+    (reset-struct-registry)
     ;; Add memory and heap pointer if enabled
     (when enable-memory
       (setup-runtime module))
@@ -171,17 +172,20 @@
            (declare (ignore doc))
            (unless (env-lookup env name :global)
              (when (integerp value)
-               (setf env (env-add-global env name +type-i32+ t value :constant-p nil))))))))
+               (setf env (env-add-global env name +type-i32+ t value :constant-p nil))))))
+        ;; Register defstruct
+        ((and (consp form) (eq (car form) 'defstruct))
+         (register-defstruct-type (cdr form)))))
     (setf defuns (nreverse defuns))
     ;; Store lambda-holder in a dynamic variable for lambda compilation to use
     (let ((*pending-lambdas* lambda-holder))
       ;; Second pass: compile defun bodies (lambdas go to pending list)
       (dolist (form defuns)
         (compile-defun-body form env lambda-holder module))
-      ;; Compile any non-defun, non-global forms as main
+      ;; Compile any non-defun, non-global, non-defstruct forms as main
       (dolist (form forms)
         (unless (and (consp form)
-                     (member (car form) '(defun defconstant defparameter defvar)))
+                     (member (car form) '(defun defconstant defparameter defvar defstruct)))
           (setf env (compile-toplevel form env))))
       ;; Add pending lambda functions to module
       (dolist (lambda-entry (car lambda-holder))
@@ -278,6 +282,118 @@
 
 (defparameter *static-data-base* 256
   "Base address for static data in linear memory.")
+
+;;; Structure Support
+
+(defun parse-defstruct-options (name-and-options)
+  "Parse defstruct name and options. Returns (name . options-alist)."
+  (if (consp name-and-options)
+      (let ((name (car name-and-options))
+            (options (cdr name-and-options)))
+        (cons name
+              (loop for opt in options
+                    collect (if (consp opt)
+                                (cons (car opt) (cdr opt))
+                                (cons opt nil)))))
+      (cons name-and-options nil)))
+
+(defun parse-defstruct-slots (slot-descriptions)
+  "Parse defstruct slot descriptions. Returns list of (name default)."
+  (loop for slot in slot-descriptions
+        collect (if (consp slot)
+                    (list (car slot) (or (cadr slot) 0))
+                    (list slot 0))))
+
+(defun register-defstruct-type (form)
+  "Parse and register a defstruct definition."
+  (destructuring-bind (name-and-options &rest slot-descriptions) form
+    (let* ((parsed (parse-defstruct-options name-and-options))
+           (name (car parsed))
+           (options (cdr parsed))
+           (include-opt (assoc :include options))
+           (parent (when include-opt (cadr include-opt)))
+           (slots (parse-defstruct-slots slot-descriptions)))
+      (let ((struct-info (register-struct name slots :parent parent)))
+        ;; Register accessor primitives for each slot
+        (let ((all-slots (struct-all-slots struct-info)))
+          (loop for (slot-name default) in all-slots
+                for offset from 4 by 4
+                do (register-struct-accessor name slot-name offset)))
+        ;; Register constructor primitive
+        (register-struct-constructor struct-info)
+        ;; Register predicate primitive
+        (register-struct-predicate struct-info)
+        struct-info))))
+
+(defun register-struct-accessor (struct-name slot-name offset)
+  "Register a structure accessor as a primitive."
+  (let ((accessor-name (intern (format nil "~A-~A" struct-name slot-name))))
+    (setf (gethash accessor-name *primitives*)
+          (lambda (args env)
+            (declare (ignorable env))
+            (unless (= (length args) 1)
+              (error "~A requires exactly 1 argument" accessor-name))
+            `(,@(compile-form (first args) env)
+              (,+op-i32-load+ 2 ,offset))))))
+
+(defun register-struct-constructor (struct-info)
+  "Register a structure constructor as a primitive."
+  (let* ((name (struct-info-name struct-info))
+         (constructor (struct-info-constructor struct-info))
+         (all-slots (struct-all-slots struct-info))
+         (num-slots (length all-slots))
+         (struct-size (+ 4 (* 4 num-slots)))  ; type-id + slots
+         (type-id (struct-info-type-id struct-info)))
+    (setf (gethash constructor *primitives*)
+          (lambda (args env)
+            (declare (ignorable env))
+            ;; For now, only support positional arguments matching slot order
+            (when (> (length args) num-slots)
+              (error "~A: too many arguments" constructor))
+            `(;; Reserve space
+              (,+op-global-get+ ,*heap-pointer-global*)
+              (,+op-i32-const+ ,struct-size)
+              ,+op-i32-add+
+              (,+op-global-set+ ,*heap-pointer-global*)
+              ;; Push struct address as return value
+              (,+op-global-get+ ,*heap-pointer-global*)
+              (,+op-i32-const+ ,struct-size)
+              ,+op-i32-sub+
+              ;; Store type-id at offset 0
+              (,+op-global-get+ ,*heap-pointer-global*)
+              (,+op-i32-const+ ,struct-size)
+              ,+op-i32-sub+
+              (,+op-i32-const+ ,type-id)
+              (,+op-i32-store+ 2 0)
+              ;; Store each slot
+              ,@(loop for (slot-name default) in all-slots
+                      for i from 0
+                      for offset from 4 by 4
+                      for arg = (nth i args)
+                      append `((,+op-global-get+ ,*heap-pointer-global*)
+                               (,+op-i32-const+ ,struct-size)
+                               ,+op-i32-sub+
+                               ,@(if arg
+                                     (compile-form arg env)
+                                     `((,+op-i32-const+ ,default)))
+                               (,+op-i32-store+ 2 ,offset)))
+              ;; Struct address already on stack
+              )))))
+
+(defun register-struct-predicate (struct-info)
+  "Register a structure predicate as a primitive."
+  (let ((predicate (struct-info-predicate struct-info))
+        (type-id (struct-info-type-id struct-info)))
+    (setf (gethash predicate *primitives*)
+          (lambda (args env)
+            (declare (ignorable env))
+            (unless (= (length args) 1)
+              (error "~A requires exactly 1 argument" predicate))
+            ;; Check if type-id at offset 0 matches
+            `(,@(compile-form (first args) env)
+              (,+op-i32-load+ 2 0)  ; load type-id
+              (,+op-i32-const+ ,type-id)
+              ,+op-i32-eq+)))))
 
 (defun setup-static-data (module)
   "Add data segments for interned symbols and strings."

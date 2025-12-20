@@ -341,3 +341,54 @@
                       (setq *counter* (+ *counter* 1))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; defstruct tests
+
+(test compile-defstruct-simple
+  "Test compiling a simple defstruct."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defstruct-constructor
+  "Test using a defstruct constructor."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y)
+                    (make-point 10 20))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defstruct-accessor
+  "Test using defstruct accessors."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y)
+                    (defun get-x (p) (point-x p))
+                    (defun get-y (p) (point-y p)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defstruct-predicate
+  "Test using defstruct predicate."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y)
+                    (defun is-point (obj) (point-p obj)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defstruct-with-defaults
+  "Test defstruct with slot defaults."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct rect (width 10) (height 20))
+                    (make-rect))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defstruct-include
+  "Test defstruct with :include option."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y)
+                    (defstruct (point-3d (:include point)) z)
+                    (defun make-3d () (make-point-3d 1 2 3)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

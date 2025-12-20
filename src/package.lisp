@@ -274,6 +274,16 @@
    #:global-info-index
    #:global-info-mutable
    #:global-info-constant-p
+   ;; Structure support
+   #:struct-info
+   #:struct-info-name
+   #:struct-info-type-id
+   #:struct-info-slots
+   #:register-struct
+   #:lookup-struct
+   #:struct-all-slots
+   #:struct-slot-offset
+   #:reset-struct-registry
    ;; Compilation
    #:compile-form
    #:compile-toplevel
