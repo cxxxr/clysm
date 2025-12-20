@@ -337,6 +337,7 @@ Phase 2.5 (基盤強化)
 | 2025-12-20 | Bootstrap | 216 | 文字列プリミティブ、CLOS除去確認完了 |
 | 2025-12-20 | Bootstrap | 227 | eval-form/eval-forms API追加、main関数のlet修正 |
 | 2025-12-20 | S1-Reader | 241 | Readerプリミティブ追加、文字列リテラル対応、S式読み込み機能 |
+| 2025-12-20 | S1-Reader | 193 | cons修正、reader-state-substring-raw追加、Readerテスト拡充 |
 
 ---
 

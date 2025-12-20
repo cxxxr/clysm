@@ -37,7 +37,7 @@ Clysmコンパイラ自身をWASMにコンパイルし、Node.js上で完全なR
 
 ## フェーズ計画
 
-### Phase S1: Reader実装 [進行中]
+### Phase S1: Reader実装 [ほぼ完了]
 
 REPLの最重要コンポーネント。S式を読み込む機能。
 
@@ -45,16 +45,18 @@ REPLの最重要コンポーネント。S式を読み込む機能。
 1. [x] 文字入力ストリーム (make-reader-state, peek-char, read-char等)
 2. [x] 数値パーサー (整数の読み込み)
 3. [x] リストパーサー (ネスト対応)
-4. [ ] シンボルパーサー (現在はハッシュコードのみ)
-5. [ ] 文字列リテラルパーサー
-6. [ ] クォート/バッククォート処理
-7. [ ] コメント処理 (; と #|...|#)
+4. [x] シンボルパーサー (大文字変換、reader-state-substring)
+5. [x] 文字列リテラルパーサー (reader-state-substring-raw)
+6. [x] クォート/バッククォート処理 (quote, backquote, unquote, splice-unquote)
+7. [x] コメント処理 (; のみ、#|...|# は未実装)
 
 **実装済み:**
 - 文字列リテラルのコンパイル
 - reader-state構造体とプリミティブ
 - whitespace-char-p, digit-char-p, alpha-char-p, symbol-constituent-p
 - 再帰的なread-form, read-list実装
+- reader-state-substring (大文字変換)、reader-state-substring-raw (変換なし)
+- cons修正: ネストしたcons呼び出しでヒープ破壊を防止
 
 **マイルストーン:** `(read-from-string "(1 2 3)")` → リスト ✓
 
