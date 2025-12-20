@@ -1,107 +1,78 @@
 ;;;; nodes.lisp - AST node definitions for clysm
+;;;; Converted from CLOS to defstruct for bootstrap compatibility
 
 (in-package #:clysm/ast)
 
 ;;; Base AST Node
 
-(defclass ast-node ()
-  ((source-info :initarg :source-info :accessor node-source-info :initform nil))
-  (:documentation "Base class for all AST nodes."))
+(defstruct ast-node
+  "Base structure for all AST nodes."
+  (source-info nil))
 
 ;;; Literal/Constant Node
 
-(defclass const-node (ast-node)
-  ((value :initarg :value :accessor const-node-value))
-  (:documentation "A constant value (number, string, etc.)."))
-
-(defun make-const-node (value)
-  (make-instance 'const-node :value value))
+(defstruct (const-node (:include ast-node))
+  "A constant value (number, string, etc.)."
+  (value nil))
 
 ;;; Variable Reference Node
 
-(defclass var-node (ast-node)
-  ((name :initarg :name :accessor var-node-name))
-  (:documentation "A variable reference."))
-
-(defun make-var-node (name)
-  (make-instance 'var-node :name name))
+(defstruct (var-node (:include ast-node))
+  "A variable reference."
+  (name nil))
 
 ;;; If Node
 
-(defclass if-node (ast-node)
-  ((test :initarg :test :accessor if-node-test)
-   (then :initarg :then :accessor if-node-then)
-   (else :initarg :else :accessor if-node-else :initform nil))
-  (:documentation "A conditional expression."))
-
-(defun make-if-node (test then &optional else)
-  (make-instance 'if-node :test test :then then :else else))
+(defstruct (if-node (:include ast-node))
+  "A conditional expression."
+  (test nil)
+  (then nil)
+  (else nil))
 
 ;;; Let Node
 
-(defclass let-node (ast-node)
-  ((bindings :initarg :bindings :accessor let-node-bindings)
-   (body :initarg :body :accessor let-node-body))
-  (:documentation "A let binding expression."))
-
-(defun make-let-node (bindings body)
-  (make-instance 'let-node :bindings bindings :body body))
+(defstruct (let-node (:include ast-node))
+  "A let binding expression."
+  (bindings nil)
+  (body nil))
 
 ;;; Lambda Node
 
-(defclass lambda-node (ast-node)
-  ((params :initarg :params :accessor lambda-node-params)
-   (body :initarg :body :accessor lambda-node-body))
-  (:documentation "A lambda expression."))
-
-(defun make-lambda-node (params body)
-  (make-instance 'lambda-node :params params :body body))
+(defstruct (lambda-node (:include ast-node))
+  "A lambda expression."
+  (params nil)
+  (body nil))
 
 ;;; Function Call Node
 
-(defclass call-node (ast-node)
-  ((func :initarg :func :accessor call-node-func)
-   (args :initarg :args :accessor call-node-args))
-  (:documentation "A function call."))
-
-(defun make-call-node (func args)
-  (make-instance 'call-node :func func :args args))
+(defstruct (call-node (:include ast-node))
+  "A function call."
+  (func nil)
+  (args nil))
 
 ;;; Progn Node (Sequence)
 
-(defclass progn-node (ast-node)
-  ((forms :initarg :forms :accessor progn-node-forms))
-  (:documentation "A sequence of expressions."))
-
-(defun make-progn-node (forms)
-  (make-instance 'progn-node :forms forms))
+(defstruct (progn-node (:include ast-node))
+  "A sequence of expressions."
+  (forms nil))
 
 ;;; Setq Node
 
-(defclass setq-node (ast-node)
-  ((var :initarg :var :accessor setq-node-var)
-   (value :initarg :value :accessor setq-node-value))
-  (:documentation "A variable assignment."))
-
-(defun make-setq-node (var value)
-  (make-instance 'setq-node :var var :value value))
+(defstruct (setq-node (:include ast-node))
+  "A variable assignment."
+  (var nil)
+  (value nil))
 
 ;;; Quote Node
 
-(defclass quote-node (ast-node)
-  ((value :initarg :value :accessor quote-node-value))
-  (:documentation "A quoted form."))
-
-(defun make-quote-node (value)
-  (make-instance 'quote-node :value value))
+(defstruct (quote-node (:include ast-node))
+  "A quoted form."
+  (value nil))
 
 ;;; Defun Node
 
-(defclass defun-node (ast-node)
-  ((name :initarg :name :accessor defun-node-name)
-   (params :initarg :params :accessor defun-node-params)
-   (body :initarg :body :accessor defun-node-body))
-  (:documentation "A function definition."))
-
-(defun make-defun-node (name params body)
-  (make-instance 'defun-node :name name :params params :body body))
+(defstruct (defun-node (:include ast-node))
+  "A function definition."
+  (name nil)
+  (params nil)
+  (body nil))

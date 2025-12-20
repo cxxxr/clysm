@@ -1,4 +1,5 @@
 ;;;; convert.lisp - AST to IR conversion
+;;;; Converted from CLOS generic functions to defstruct-based dispatch
 
 (in-package #:clysm/ir)
 
@@ -36,61 +37,70 @@
 
 ;;; AST to IR Conversion
 
-(defgeneric ast-to-ir (node ctx)
-  (:documentation "Convert an AST node to IR."))
-
-(defmethod ast-to-ir ((node const-node) ctx)
-  (declare (ignore ctx))
-  (make-ir-const (const-node-value node)))
-
-(defmethod ast-to-ir ((node var-node) ctx)
-  (let ((index (context-lookup ctx (var-node-name node))))
-    (if index
-        (make-ir-local-ref index)
-        (error "Undefined variable: ~A" (var-node-name node)))))
-
-(defmethod ast-to-ir ((node if-node) ctx)
-  (make-ir-if
-   (ast-to-ir (if-node-test node) ctx)
-   (ast-to-ir (if-node-then node) ctx)
-   (if (if-node-else node)
-       (ast-to-ir (if-node-else node) ctx)
-       (make-ir-const nil))))
-
-(defmethod ast-to-ir ((node let-node) ctx)
-  (let ((new-ctx ctx)
-        (init-forms nil))
-    ;; Process bindings
-    (dolist (binding (let-node-bindings node))
-      (let ((init-ir (ast-to-ir (cdr binding) new-ctx)))
-        (multiple-value-bind (ctx* index)
-            (context-extend new-ctx (car binding))
-          (setf new-ctx ctx*)
-          (push (make-ir-local-set index init-ir) init-forms))))
-    ;; Process body
-    (let ((body-ir (mapcar (lambda (f) (ast-to-ir f new-ctx))
-                           (let-node-body node))))
-      (make-ir-seq (append (nreverse init-forms) body-ir)))))
-
-(defmethod ast-to-ir ((node call-node) ctx)
-  (let ((func (call-node-func node)))
-    (if (and (typep func 'var-node)
-             (primitive-op-p (var-node-name func)))
-        ;; Primitive operation
-        (make-ir-primop
-         (var-node-name func)
-         (mapcar (lambda (a) (ast-to-ir a ctx))
-                 (call-node-args node)))
-        ;; Regular function call
-        (make-ir-call
-         (ast-to-ir func ctx)
-         (mapcar (lambda (a) (ast-to-ir a ctx))
-                 (call-node-args node))))))
-
-(defmethod ast-to-ir ((node progn-node) ctx)
-  (make-ir-seq
-   (mapcar (lambda (f) (ast-to-ir f ctx))
-           (progn-node-forms node))))
+(defun ast-to-ir (node ctx)
+  "Convert an AST node to IR."
+  (etypecase node
+    (const-node
+     (make-ir-const :value (const-node-value node)))
+    (var-node
+     (let ((index (context-lookup ctx (var-node-name node))))
+       (if index
+           (make-ir-local-ref :index index)
+           (error "Undefined variable: ~A" (var-node-name node)))))
+    (if-node
+     (make-ir-if
+      :test (ast-to-ir (if-node-test node) ctx)
+      :then (ast-to-ir (if-node-then node) ctx)
+      :else (if (if-node-else node)
+                (ast-to-ir (if-node-else node) ctx)
+                (make-ir-const :value nil))))
+    (let-node
+     (let ((new-ctx ctx)
+           (init-forms nil))
+       ;; Process bindings
+       (dolist (binding (let-node-bindings node))
+         (let ((init-ir (ast-to-ir (cdr binding) new-ctx)))
+           (multiple-value-bind (ctx* index)
+               (context-extend new-ctx (car binding))
+             (setf new-ctx ctx*)
+             (push (make-ir-local-set :index index :value init-ir) init-forms))))
+       ;; Process body
+       (let ((body-ir (mapcar (lambda (f) (ast-to-ir f new-ctx))
+                              (let-node-body node))))
+         (make-ir-seq :forms (append (nreverse init-forms) body-ir)))))
+    (call-node
+     (let ((func (call-node-func node)))
+       (if (and (var-node-p func)
+                (primitive-op-p (var-node-name func)))
+           ;; Primitive operation
+           (make-ir-primop
+            :op (var-node-name func)
+            :args (mapcar (lambda (a) (ast-to-ir a ctx))
+                          (call-node-args node)))
+           ;; Regular function call
+           (make-ir-call
+            :func (ast-to-ir func ctx)
+            :args (mapcar (lambda (a) (ast-to-ir a ctx))
+                          (call-node-args node))))))
+    (progn-node
+     (make-ir-seq
+      :forms (mapcar (lambda (f) (ast-to-ir f ctx))
+                     (progn-node-forms node))))
+    (lambda-node
+     ;; Lambda nodes need special handling - for now just error
+     (error "Lambda conversion not implemented in IR layer"))
+    (setq-node
+     (let ((index (context-lookup ctx (setq-node-var node))))
+       (if index
+           (make-ir-local-set
+            :index index
+            :value (ast-to-ir (setq-node-value node) ctx))
+           (error "Undefined variable: ~A" (setq-node-var node)))))
+    (quote-node
+     (make-ir-const :value (quote-node-value node)))
+    (defun-node
+     ;; Defun nodes are handled at top-level, not in IR conversion
+     (error "Defun cannot appear in expression context"))))
 
 ;;; Primitive Operations
 
