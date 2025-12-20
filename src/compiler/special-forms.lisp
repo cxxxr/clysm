@@ -164,6 +164,30 @@
 
 ;;; QUOTE
 
+(defun compile-string-literal (str env)
+  "Compile a string literal. Allocates string in heap at runtime.
+   String layout: [length:i32][utf8-bytes...]"
+  (declare (ignorable env))
+  (let ((bytes (flexi-streams:string-to-octets str :external-format :utf-8)))
+    ;; Generate code to allocate and initialize string
+    `(;; Save heap pointer (return value = string address)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      ;; Store length at offset 0
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,(length bytes))
+      (,+op-i32-store+ 2 0)
+      ;; Store each byte at offset 4+i
+      ,@(loop for byte across bytes
+              for i from 0
+              collect `(,+op-global-get+ ,*heap-pointer-global*)
+              collect `(,+op-i32-const+ ,byte)
+              collect `(,+op-i32-store8+ 0 ,(+ 4 i)))
+      ;; Increment heap pointer (4 bytes for length + string bytes, aligned to 4)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,(+ 4 (logand (+ (length bytes) 3) (lognot 3))))
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*))))
+
 (defun compile-quoted-value (value env)
   "Compile a quoted value to code that constructs it at runtime."
   (cond
@@ -179,6 +203,9 @@
     ;; Float
     ((floatp value)
      `((,+op-f64-const+ ,(float value 1.0d0))))
+    ;; String literal
+    ((stringp value)
+     (compile-string-literal value env))
     ;; List - build using cons at runtime
     ((consp value)
      (let ((car-code (compile-quoted-value (car value) env))

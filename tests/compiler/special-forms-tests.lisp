@@ -1071,3 +1071,166 @@
   (is (= 25 (clysm/compiler:eval-forms
               '((defun square (x) (* x x))
                 (square 5))))))
+
+;;; Reader Primitives Tests
+
+(test reader-state-creation
+  "Test make-reader-state creates a reader state."
+  ;; We test by creating a reader state and checking if it's non-nil
+  (is (not (zerop (clysm/compiler:eval-form
+                   '(make-reader-state "hello"))))))
+
+(test reader-state-peek-char
+  "Test reader-state-peek-char returns first character."
+  ;; 'h' = 104
+  (is (= 104 (clysm/compiler:eval-form
+              '(let ((rs (make-reader-state "hello")))
+                 (reader-state-peek-char rs))))))
+
+(test reader-state-peek-char-no-advance
+  "Test reader-state-peek-char doesn't advance position."
+  ;; Multiple peeks should return same char
+  (is (= 104 (clysm/compiler:eval-form
+              '(let ((rs (make-reader-state "hello")))
+                 (reader-state-peek-char rs)
+                 (reader-state-peek-char rs))))))
+
+(test reader-state-read-char
+  "Test reader-state-read-char returns and advances."
+  ;; Read 'h' then 'e'
+  ;; 'h' = 104, 'e' = 101
+  (is (= 101 (clysm/compiler:eval-form
+              '(let ((rs (make-reader-state "hello")))
+                 (reader-state-read-char rs)  ; read 'h'
+                 (reader-state-read-char rs))))) ; read 'e'
+  (is (= 104 (clysm/compiler:eval-form
+              '(let ((rs (make-reader-state "hello")))
+                 (reader-state-read-char rs))))))
+
+(test reader-state-eof
+  "Test reader-state-eof-p detects end of input."
+  (is (= 1 (clysm/compiler:eval-form
+            '(let ((rs (make-reader-state "")))
+               (reader-state-eof-p rs)))))
+  (is (= 0 (clysm/compiler:eval-form
+            '(let ((rs (make-reader-state "x")))
+               (reader-state-eof-p rs))))))
+
+(test reader-state-unread-char
+  "Test reader-state-unread-char moves position back."
+  ;; Read 'h', unread, read again should give 'h'
+  (is (= 104 (clysm/compiler:eval-form
+              '(let ((rs (make-reader-state "hello")))
+                 (reader-state-read-char rs)  ; read 'h'
+                 (reader-state-unread-char rs)
+                 (reader-state-read-char rs)))))) ; read 'h' again
+
+(test whitespace-char-p
+  "Test whitespace-char-p identifies whitespace."
+  (is (= 1 (clysm/compiler:eval-form '(whitespace-char-p 32))))  ; space
+  (is (= 1 (clysm/compiler:eval-form '(whitespace-char-p 9))))   ; tab
+  (is (= 1 (clysm/compiler:eval-form '(whitespace-char-p 10))))  ; newline
+  (is (= 0 (clysm/compiler:eval-form '(whitespace-char-p 65))))) ; 'A'
+
+(test digit-char-p
+  "Test digit-char-p identifies digits and returns value."
+  ;; digit-char-p returns value+1 for digits (so 0 is distinguishable from nil)
+  (is (= 1 (clysm/compiler:eval-form '(digit-char-p 48))))  ; '0' -> 1 (0+1)
+  (is (= 10 (clysm/compiler:eval-form '(digit-char-p 57)))) ; '9' -> 10 (9+1)
+  (is (= 0 (clysm/compiler:eval-form '(digit-char-p 65))))) ; 'A' -> nil
+
+(test alpha-char-p
+  "Test alpha-char-p identifies alphabetic characters."
+  (is (= 1 (clysm/compiler:eval-form '(alpha-char-p 65))))  ; 'A'
+  (is (= 1 (clysm/compiler:eval-form '(alpha-char-p 90))))  ; 'Z'
+  (is (= 1 (clysm/compiler:eval-form '(alpha-char-p 97))))  ; 'a'
+  (is (= 1 (clysm/compiler:eval-form '(alpha-char-p 122)))) ; 'z'
+  (is (= 0 (clysm/compiler:eval-form '(alpha-char-p 48))))) ; '0'
+
+(test symbol-constituent-p
+  "Test symbol-constituent-p identifies valid symbol characters."
+  (is (= 1 (clysm/compiler:eval-form '(symbol-constituent-p 65))))  ; 'A'
+  (is (= 1 (clysm/compiler:eval-form '(symbol-constituent-p 43))))  ; '+'
+  (is (= 1 (clysm/compiler:eval-form '(symbol-constituent-p 45))))  ; '-'
+  (is (= 1 (clysm/compiler:eval-form '(symbol-constituent-p 42))))  ; '*'
+  (is (= 0 (clysm/compiler:eval-form '(symbol-constituent-p 40))))  ; '('
+  (is (= 0 (clysm/compiler:eval-form '(symbol-constituent-p 41))))  ; ')'
+  (is (= 0 (clysm/compiler:eval-form '(symbol-constituent-p 32))))) ; space
+
+;;; Reader Function Tests
+
+(defparameter *reader-test-preamble*
+  '(;; Skip whitespace
+    (defun skip-ws-helper (rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (if (whitespace-char-p ch)
+            (progn (reader-state-read-char rs) (skip-ws-helper rs))
+            nil)))
+    (defun skip-ws (rs) (skip-ws-helper rs))
+    ;; Read integer
+    (defun read-int-helper (rs result)
+      (let ((d (digit-char-p (reader-state-peek-char rs))))
+        (if d
+            (progn (reader-state-read-char rs)
+                   (read-int-helper rs (+ (* result 10) (- d 1))))
+            result)))
+    (defun read-int (rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch 45)
+           (reader-state-read-char rs)
+           (- 0 (read-int-helper rs 0)))
+          ((= ch 43)
+           (reader-state-read-char rs)
+           (read-int-helper rs 0))
+          (t (read-int-helper rs 0)))))
+    ;; Read form
+    (defun read-form (rs)
+      (skip-ws rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch -1) -1)
+          ((= ch 40) (reader-state-read-char rs) (read-list rs))
+          ((or (digit-char-p ch) (= ch 45) (= ch 43)) (read-int rs))
+          (t -99))))
+    ;; Read list
+    (defun read-list (rs)
+      (skip-ws rs)
+      (let ((ch (reader-state-peek-char rs)))
+        (cond
+          ((= ch 41) (reader-state-read-char rs) nil)
+          ((= ch -1) -3)
+          (t (cons (read-form rs) (read-list rs)))))))
+  "Common reader functions for tests.")
+
+(test reader-read-integer
+  "Test reading integers from string."
+  (is (= 123 (clysm/compiler:eval-forms
+              (append *reader-test-preamble*
+                      '((let ((rs (make-reader-state "123")))
+                          (read-form rs)))))))
+  (is (= -42 (clysm/compiler:eval-forms
+              (append *reader-test-preamble*
+                      '((let ((rs (make-reader-state "-42")))
+                          (read-form rs))))))))
+
+(test reader-read-simple-list
+  "Test reading simple lists from string."
+  (is (= 2 (clysm/compiler:eval-forms
+            (append *reader-test-preamble*
+                    '((let ((rs (make-reader-state "(1 2 3)")))
+                        (car (cdr (read-form rs))))))))))  ; second element
+
+(test reader-read-nested-list
+  "Test reading nested lists from string."
+  (is (= 10 (clysm/compiler:eval-forms
+             (append *reader-test-preamble*
+                     '((let ((rs (make-reader-state "((10 20) 30)")))
+                         (car (car (read-form rs))))))))))  ; first of first
+
+(test reader-skip-whitespace
+  "Test that reader skips leading whitespace."
+  (is (= 42 (clysm/compiler:eval-forms
+             (append *reader-test-preamble*
+                     '((let ((rs (make-reader-state "   42")))
+                         (read-form rs))))))))

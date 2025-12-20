@@ -162,6 +162,9 @@
      `((,+op-i32-const+ ,form)))
     ((floatp form)
      `((,+op-f64-const+ ,(float form 1.0d0))))
+    ;; String literal - compile as quoted value
+    ((stringp form)
+     (compile-string-literal form env))
     ;; Variable reference
     ((symbolp form)
      (let ((local-info (env-lookup env form :variable)))

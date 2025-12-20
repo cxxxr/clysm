@@ -2419,3 +2419,380 @@
     ;; Set entries to nil
     (,+op-i32-const+ 0)
     (,+op-i32-store+ 2 4)))
+
+;;; Reader Primitives
+;;; These primitives support the S-expression reader implementation.
+;;; The reader state is stored in a reader-state structure:
+;;;   [string-ptr:i32] [position:i32] [length:i32]
+;;; Reader-state structure size: 12 bytes
+
+(define-primitive make-reader-state (args env)
+  "Create a reader state from a string. Returns pointer to reader state.
+   Structure: [string-ptr:i32][position:i32][length:i32]"
+  (unless (= (length args) 1)
+    (error "make-reader-state requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (str-local env-count)
+         (state-local (+ env-count 1)))
+    `(;; Get string pointer
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,str-local)
+      ;; Allocate reader state (12 bytes)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,state-local)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ 12)
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; Store string pointer
+      (,+op-local-get+ ,state-local)
+      (,+op-local-get+ ,str-local)
+      (,+op-i32-store+ 2 0)
+      ;; Store initial position (0)
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-const+ 0)
+      (,+op-i32-store+ 2 4)
+      ;; Store string length
+      (,+op-local-get+ ,state-local)
+      (,+op-local-get+ ,str-local)
+      (,+op-i32-load+ 2 0)  ; load string length
+      (,+op-i32-store+ 2 8)
+      ;; Return state pointer
+      (,+op-local-get+ ,state-local))))
+
+(define-primitive reader-state-peek-char (args env)
+  "Peek at the next character without advancing position.
+   Returns character code, or -1 for EOF."
+  (unless (= (length args) 1)
+    (error "reader-state-peek-char requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (state-local env-count)
+         (pos-local (+ env-count 1))
+         (len-local (+ env-count 2))
+         (str-local (+ env-count 3)))
+    `(;; Get state
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,state-local)
+      ;; Get position and length
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,pos-local)
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 8)
+      (,+op-local-set+ ,len-local)
+      ;; Check if at EOF
+      (,+op-local-get+ ,pos-local)
+      (,+op-local-get+ ,len-local)
+      ,+op-i32-ge-s+
+      (,+op-if+ ,+type-i32+)
+        ;; EOF - return -1
+        (,+op-i32-const+ -1)
+      (,+op-else+)
+        ;; Get string pointer
+        (,+op-local-get+ ,state-local)
+        (,+op-i32-load+ 2 0)
+        (,+op-local-set+ ,str-local)
+        ;; Load byte at string + 4 (skip length) + position
+        (,+op-local-get+ ,str-local)
+        (,+op-i32-const+ 4)
+        ,+op-i32-add+
+        (,+op-local-get+ ,pos-local)
+        ,+op-i32-add+
+        (,+op-i32-load8-u+ 0 0)
+      (,+op-end+))))
+
+(define-primitive reader-state-read-char (args env)
+  "Read the next character and advance position.
+   Returns character code, or -1 for EOF."
+  (unless (= (length args) 1)
+    (error "reader-state-read-char requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (state-local env-count)
+         (pos-local (+ env-count 1))
+         (len-local (+ env-count 2))
+         (str-local (+ env-count 3))
+         (char-local (+ env-count 4)))
+    `(;; Get state
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,state-local)
+      ;; Get position and length
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,pos-local)
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 8)
+      (,+op-local-set+ ,len-local)
+      ;; Check if at EOF
+      (,+op-local-get+ ,pos-local)
+      (,+op-local-get+ ,len-local)
+      ,+op-i32-ge-s+
+      (,+op-if+ ,+type-i32+)
+        ;; EOF - return -1
+        (,+op-i32-const+ -1)
+      (,+op-else+)
+        ;; Get string pointer
+        (,+op-local-get+ ,state-local)
+        (,+op-i32-load+ 2 0)
+        (,+op-local-set+ ,str-local)
+        ;; Load byte at string + 4 + position and save to local
+        (,+op-local-get+ ,str-local)
+        (,+op-i32-const+ 4)
+        ,+op-i32-add+
+        (,+op-local-get+ ,pos-local)
+        ,+op-i32-add+
+        (,+op-i32-load8-u+ 0 0)
+        (,+op-local-set+ ,char-local)  ; Use set, not tee
+        ;; Increment position
+        (,+op-local-get+ ,state-local)
+        (,+op-local-get+ ,pos-local)
+        (,+op-i32-const+ 1)
+        ,+op-i32-add+
+        (,+op-i32-store+ 2 4)
+        ;; Return char
+        (,+op-local-get+ ,char-local)
+      (,+op-end+))))
+
+(define-primitive reader-state-unread-char (args env)
+  "Move position back by 1. Returns nil (0)."
+  (unless (= (length args) 1)
+    (error "reader-state-unread-char requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (state-local env-count)
+         (pos-local (+ env-count 1)))
+    `(;; Get state
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,state-local)
+      ;; Get position
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,pos-local)
+      ;; Decrement position if > 0
+      (,+op-local-get+ ,pos-local)
+      (,+op-i32-const+ 0)
+      ,+op-i32-gt-s+
+      (,+op-if+ ,+type-void+)
+        (,+op-local-get+ ,state-local)
+        (,+op-local-get+ ,pos-local)
+        (,+op-i32-const+ 1)
+        ,+op-i32-sub+
+        (,+op-i32-store+ 2 4)
+      (,+op-end+)
+      ;; Return nil
+      (,+op-i32-const+ 0))))
+
+(define-primitive reader-state-eof-p (args env)
+  "Check if at end of input. Returns 1 (true) or 0 (false)."
+  (unless (= (length args) 1)
+    (error "reader-state-eof-p requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (state-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-set+ ,state-local)
+      ;; Compare position >= length
+      ;; position at offset 4, length at offset 8
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 4)  ; position
+      (,+op-local-get+ ,state-local)
+      (,+op-i32-load+ 2 8)  ; length
+      ,+op-i32-ge-s+)))
+
+(define-primitive reader-state-position (args env)
+  "Get current position in input stream."
+  (unless (= (length args) 1)
+    (error "reader-state-position requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 4)))
+
+(define-primitive reader-state-set-position (args env)
+  "Set current position in input stream."
+  (unless (= (length args) 2)
+    (error "reader-state-set-position requires exactly 2 arguments"))
+  `(,@(compile-form (first args) env)
+    ,@(compile-form (second args) env)
+    (,+op-i32-store+ 2 4)
+    (,+op-i32-const+ 0)))  ; return nil
+
+;;; Character Classification Primitives
+
+(define-primitive whitespace-char-p (args env)
+  "Check if character is whitespace (space, tab, newline, return)."
+  (unless (= (length args) 1)
+    (error "whitespace-char-p requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check for space (32)
+      (,+op-i32-const+ 32)
+      ,+op-i32-eq+
+      ;; Check for tab (9)
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 9)
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      ;; Check for newline (10)
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 10)
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      ;; Check for carriage return (13)
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 13)
+      ,+op-i32-eq+
+      ,+op-i32-or+)))
+
+(define-primitive digit-char-p (args env)
+  "Check if character is a digit (0-9). Returns digit value or nil (0)."
+  (unless (= (length args) 1)
+    (error "digit-char-p requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check if >= '0' (48) and <= '9' (57)
+      (,+op-i32-const+ 48)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 57)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      (,+op-if+ ,+type-i32+)
+        ;; Return digit value (char - '0')
+        (,+op-local-get+ ,char-local)
+        (,+op-i32-const+ 48)
+        ,+op-i32-sub+
+        (,+op-i32-const+ 1)
+        ,+op-i32-add+  ; add 1 so 0 becomes 1 (truthy, distinguishable from nil)
+      (,+op-else+)
+        (,+op-i32-const+ 0)  ; nil
+      (,+op-end+))))
+
+(define-primitive alpha-char-p (args env)
+  "Check if character is alphabetic (a-z, A-Z)."
+  (unless (= (length args) 1)
+    (error "alpha-char-p requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check if >= 'A' (65) and <= 'Z' (90)
+      (,+op-i32-const+ 65)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 90)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      ;; Or check if >= 'a' (97) and <= 'z' (122)
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 97)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 122)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      ,+op-i32-or+)))
+
+(define-primitive symbol-constituent-p (args env)
+  "Check if character can be part of a symbol name."
+  (unless (= (length args) 1)
+    (error "symbol-constituent-p requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (char-local env-count))
+    `(,@(compile-form (first args) env)
+      (,+op-local-tee+ ,char-local)
+      ;; Check alphanumeric first
+      ;; a-z: 97-122
+      (,+op-i32-const+ 97)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 122)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      ;; A-Z: 65-90
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 65)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 90)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      ,+op-i32-or+
+      ;; 0-9: 48-57
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 48)
+      ,+op-i32-ge-s+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 57)
+      ,+op-i32-le-s+
+      ,+op-i32-and+
+      ,+op-i32-or+
+      ;; Special symbols: + - * / = < > ! ? _ & % $ @ ~ ^ :
+      ;; Check each one
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 43)  ; +
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 45)  ; -
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 42)  ; *
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 47)  ; /
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 61)  ; =
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 60)  ; <
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 62)  ; >
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 33)  ; !
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 63)  ; ?
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 95)  ; _
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 38)  ; &
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 37)  ; %
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 36)  ; $
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 64)  ; @
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 126) ; ~
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 94)  ; ^
+      ,+op-i32-eq+
+      ,+op-i32-or+
+      (,+op-local-get+ ,char-local)
+      (,+op-i32-const+ 58)  ; :
+      ,+op-i32-eq+
+      ,+op-i32-or+)))
