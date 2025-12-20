@@ -323,7 +323,37 @@
     (lambda (form)
       (let ((place (second form))
             (delta (or (third form) 1)))
-        `(setf ,place (- ,place ,delta))))))
+        `(setf ,place (- ,place ,delta)))))
+  ;; TYPEP - compile-time expansion to predicate calls
+  (register-macro 'typep
+    (lambda (form)
+      (let ((obj (second form))
+            (type-spec (third form)))
+        (expand-typep obj type-spec))))
+  ;; TYPECASE
+  (register-macro 'typecase
+    (lambda (form)
+      (let ((keyform (second form))
+            (clauses (cddr form)))
+        (expand-typecase keyform clauses nil))))
+  ;; ETYPECASE
+  (register-macro 'etypecase
+    (lambda (form)
+      (let ((keyform (second form))
+            (clauses (cddr form)))
+        (expand-typecase keyform clauses t))))
+  ;; CASE
+  (register-macro 'case
+    (lambda (form)
+      (let ((keyform (second form))
+            (clauses (cddr form)))
+        (expand-case keyform clauses nil))))
+  ;; ECASE
+  (register-macro 'ecase
+    (lambda (form)
+      (let ((keyform (second form))
+            (clauses (cddr form)))
+        (expand-case keyform clauses t)))))
 
 (defun expand-cond (clauses)
   "Expand cond clauses into nested if forms."
@@ -342,6 +372,33 @@
                 `(if ,test
                      (progn ,@body)
                      ,(expand-cond (rest clauses))))))))
+
+(defun expand-case (keyform clauses error-p)
+  "Expand CASE or ECASE into cond form.
+   If ERROR-P is true, generate error for no match (ecase)."
+  (let ((temp (gensym "KEYFORM")))
+    `(let ((,temp ,keyform))
+       (cond
+         ,@(mapcar
+            (lambda (clause)
+              (let ((keys (first clause))
+                    (body (rest clause)))
+                (cond
+                  ;; otherwise/t clause
+                  ((or (eq keys 'otherwise) (eq keys 't))
+                   `(t ,@body))
+                  ;; Single key
+                  ((atom keys)
+                   `((eql ,temp ',keys) ,@body))
+                  ;; Multiple keys
+                  (t
+                   `((or ,@(mapcar (lambda (k) `(eql ,temp ',k)) keys))
+                     ,@body)))))
+            clauses)
+         ;; Error clause for ecase
+         ,@(when error-p
+             `((t (error "~S fell through ECASE expression. Wanted one of ~S"
+                         ,temp ',(mapcar #'first clauses)))))))))
 
 (defun expand-and (forms)
   "Expand AND into nested if forms."
@@ -403,3 +460,144 @@
             (go ,loop-tag)
             ,end-tag)
          ,result))))
+
+;;; Type Predicate Expansion
+
+(defun type-to-predicate (type-name)
+  "Map a type name to its predicate function."
+  (case type-name
+    (cons 'consp)
+    (list 'listp)
+    (null 'null)
+    (atom 'atom)
+    (symbol 'symbolp)
+    (keyword 'keywordp)
+    (number 'numberp)
+    (integer 'integerp)
+    (fixnum 'integerp)  ; In WASM, all integers are fixnums
+    (float 'floatp)
+    (single-float 'floatp)
+    (double-float 'floatp)
+    (string 'stringp)
+    (character 'characterp)
+    (function 'functionp)
+    (hash-table 'hash-table-p)
+    (array 'arrayp)
+    (vector 'vectorp)
+    (t nil)))  ; Return nil for unknown types
+
+(defun expand-typep (obj type-spec)
+  "Expand (typep obj type-spec) into a predicate call.
+   TYPE-SPEC should be quoted, e.g., (typep x 'cons)"
+  (cond
+    ;; (typep x 't) - always true
+    ((eq type-spec 't)
+     t)
+    ;; (typep x 'type) - quoted type specifier
+    ((and (consp type-spec)
+          (eq (car type-spec) 'quote)
+          (symbolp (second type-spec)))
+     (let* ((type-name (second type-spec))
+            (predicate (type-to-predicate type-name)))
+       (cond
+         ;; Known predicate
+         (predicate
+          `(,predicate ,obj))
+         ;; null special case
+         ((eq type-name 'null)
+          `(null ,obj))
+         ;; t - always true
+         ((eq type-name 't)
+          t)
+         ;; Unknown type - return nil for SBCL-specific types, etc.
+         ;; In self-hosted environment, these types won't exist
+         (t
+          ;; For types from external packages (like sb-impl::comma), return nil
+          (warn "Unknown type specifier ~S - will always return NIL" type-name)
+          nil))))
+    ;; Compound type specifiers like (or ...) (and ...)
+    ((and (consp type-spec)
+          (eq (car type-spec) 'quote)
+          (consp (second type-spec)))
+     (let ((compound (second type-spec)))
+       (case (car compound)
+         ;; (or type1 type2 ...)
+         (or
+          (let ((temp (gensym "OBJ")))
+            `(let ((,temp ,obj))
+               (or ,@(mapcar (lambda (subtype)
+                               (expand-typep temp `(quote ,subtype)))
+                             (cdr compound))))))
+         ;; (and type1 type2 ...)
+         (and
+          (let ((temp (gensym "OBJ")))
+            `(let ((,temp ,obj))
+               (and ,@(mapcar (lambda (subtype)
+                                (expand-typep temp `(quote ,subtype)))
+                              (cdr compound))))))
+         ;; (not type)
+         (not
+          `(not ,(expand-typep obj `(quote ,(second compound)))))
+         ;; (member item1 item2 ...) - check if obj is one of the items
+         (member
+          (let ((temp (gensym "OBJ")))
+            `(let ((,temp ,obj))
+               (or ,@(mapcar (lambda (item)
+                               `(eql ,temp ',item))
+                             (cdr compound))))))
+         ;; (eql value) - check if obj equals value
+         (eql
+          `(eql ,obj ',(second compound)))
+         ;; (unsigned-byte n) - check if obj is an integer in range
+         (unsigned-byte
+          (let ((bits (second compound)))
+            (let ((temp (gensym "OBJ")))
+              `(let ((,temp ,obj))
+                 (and (integerp ,temp)
+                      (>= ,temp 0)
+                      (< ,temp ,(expt 2 bits)))))))
+         ;; (signed-byte n) - check if obj is an integer in range
+         (signed-byte
+          (let ((bits (second compound)))
+            (let ((temp (gensym "OBJ"))
+                  (limit (expt 2 (1- bits))))
+              `(let ((,temp ,obj))
+                 (and (integerp ,temp)
+                      (>= ,temp ,(- limit))
+                      (< ,temp ,limit))))))
+         ;; Unknown compound type
+         (t
+          (error "Unknown compound type specifier: ~S" compound)))))
+    ;; Unquoted type name (direct symbol)
+    ((symbolp type-spec)
+     (let ((predicate (type-to-predicate type-spec)))
+       (if predicate
+           `(,predicate ,obj)
+           (error "Unknown type specifier: ~S" type-spec))))
+    ;; Other cases
+    (t
+     (error "Invalid type specifier: ~S" type-spec))))
+
+(defun expand-typecase (keyform clauses error-p)
+  "Expand TYPECASE or ETYPECASE into cond form.
+   If ERROR-P is true, generate error for no match (etypecase)."
+  (let ((temp (gensym "KEYFORM")))
+    `(let ((,temp ,keyform))
+       (cond
+         ,@(mapcar
+            (lambda (clause)
+              (let ((type-spec (first clause))
+                    (body (rest clause)))
+                (cond
+                  ;; otherwise/t clause
+                  ((or (eq type-spec 'otherwise) (eq type-spec 't))
+                   `(t ,@body))
+                  ;; Regular type clause
+                  (t
+                   `(,(expand-typep temp `(quote ,type-spec))
+                     ,@body)))))
+            clauses)
+         ;; Error clause for etypecase
+         ,@(when error-p
+             `((t (error "~S fell through ETYPECASE expression. Wanted one of ~S"
+                         ,temp ',(mapcar #'first clauses)))))))))

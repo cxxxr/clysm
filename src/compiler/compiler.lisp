@@ -201,8 +201,19 @@
     ;; Backquote - expand to list-building code
     ((eq (car form) 'backquote)
      (expand-macros (expand-backquote (second form))))
-    ;; Special forms we handle - expand their subforms
-    ((member (car form) '(if let let* progn setq setf
+    ;; LET and LET* need special handling to not expand binding variable names
+    ((member (car form) '(let let*))
+     (let ((bindings (second form))
+           (body (cddr form)))
+       `(,(car form)
+         ,(mapcar (lambda (binding)
+                    (if (consp binding)
+                        (list (car binding) (expand-macros (cadr binding)))
+                        binding))
+                  bindings)
+         ,@(mapcar #'expand-macros body))))
+    ;; Other special forms - expand their subforms
+    ((member (car form) '(if progn setq setf
                           block return-from return
                           tagbody go labels values multiple-value-bind
                           lambda funcall defun defparameter defconstant
@@ -249,6 +260,9 @@
     ;; String literal - compile as quoted value
     ((stringp form)
      (compile-string-literal form env))
+    ;; Keywords are self-evaluating - compile as interned symbols
+    ((keywordp form)
+     (compile-quoted-value form env))
     ;; Variable reference
     ((symbolp form)
      (let ((local-info (env-lookup env form :variable)))
@@ -257,7 +271,11 @@
            ;; Check for global variable
            (let ((global-info (env-lookup env form :global)))
              (if global-info
-                 `((,+op-global-get+ ,(global-info-index global-info)))
+                 ;; For constants, inline the value instead of global.get
+                 (if (and (global-info-constant-p global-info)
+                          (global-info-value global-info))
+                     `((,+op-i32-const+ ,(global-info-value global-info)))
+                     `((,+op-global-get+ ,(global-info-index global-info))))
                  (error "Undefined variable: ~A" form))))))
     ;; Compound form
     ((consp form)
@@ -324,12 +342,35 @@
       (scan code))
     max-idx))
 
+(defun extract-param-names (lambda-list)
+  "Extract parameter names from a lambda list, handling &optional, &rest, &key, etc.
+   Returns just the parameter names (symbols), skipping lambda list keywords."
+  (let ((names nil)
+        (skip-next nil))
+    (dolist (item lambda-list)
+      (cond
+        ;; Lambda list keywords - skip them
+        ((member item '(&optional &rest &body &key &allow-other-keys &aux))
+         nil)  ; Just skip
+        ;; Simple symbol - it's a parameter name
+        ((symbolp item)
+         (push item names))
+        ;; Complex spec like (name default) or (name default supplied-p)
+        ((consp item)
+         (push (if (consp (car item))
+                   (caar item)  ; For ((name) default) form
+                   (car item))
+               names))))
+    (nreverse names)))
+
 (defun compile-defun (form env)
   "Compile a function definition."
   (destructuring-bind (name params &rest body) (cdr form)
     (let* ((module (compile-env-module env))
+           ;; Extract actual parameter names from lambda list
+           (param-names (extract-param-names params))
            ;; Add function type
-           (param-types (make-list (length params) :initial-element +type-i32+))
+           (param-types (make-list (length param-names) :initial-element +type-i32+))
            (result-types (list +type-i32+)))
       (multiple-value-bind (new-env func-idx type-idx)
           (env-add-function env name param-types result-types)
@@ -337,14 +378,14 @@
         ;; Create local environment for function body
         (let ((body-env new-env))
           ;; Add parameters as locals
-          (dolist (param params)
+          (dolist (param param-names)
             (setf body-env (env-add-local body-env param +type-i32+)))
           ;; Compile body (may add lambda functions to module first!)
           (let* ((body-code (compile-progn body body-env))
                  ;; Find max local index used in the code
                  (max-local-idx (find-max-local-index body-code))
-                 ;; Locals = indices from (length params) to max-local-idx
-                 (num-extra-locals (max 0 (- max-local-idx (1- (length params)))))
+                 ;; Locals = indices from (length param-names) to max-local-idx
+                 (num-extra-locals (max 0 (- max-local-idx (1- (length param-names)))))
                  (locals (if (> num-extra-locals 0)
                              (list (cons num-extra-locals +type-i32+))
                              nil))
@@ -420,8 +461,9 @@
          (push form defuns)
          (destructuring-bind (name params &rest body) (cdr form)
            (declare (ignore body))
-           (let ((param-types (make-list (length params) :initial-element +type-i32+))
-                 (result-types (list +type-i32+)))
+           (let* ((param-names (extract-param-names params))
+                  (param-types (make-list (length param-names) :initial-element +type-i32+))
+                  (result-types (list +type-i32+)))
              (setf env (env-add-function env name param-types result-types)))))
         ;; Register global constants
         ((and (consp form) (eq (car form) 'defconstant))
@@ -445,8 +487,12 @@
          (destructuring-bind (name &optional (value 0) doc) (cdr form)
            (declare (ignore doc))
            (unless (env-lookup env name :global)
-             (when (integerp value)
-               (setf env (env-add-global env name +type-i32+ t value :constant-p nil))))))
+             ;; Handle nil as 0, integers directly, others deferred
+             (let ((init-val (cond ((null value) 0)
+                                   ((integerp value) value)
+                                   (t nil))))
+               (when init-val
+                 (setf env (env-add-global env name +type-i32+ t init-val :constant-p nil)))))))
         ;; Register defstruct
         ((and (consp form) (eq (car form) 'defstruct))
          (register-defstruct-type (cdr form)))))
@@ -478,21 +524,24 @@
 
 (defun compile-defun-body (form env lambda-holder module)
   "Compile a defun body after registration."
+  (declare (ignore lambda-holder))
   (destructuring-bind (name params &rest body) (cdr form)
     (let ((func-info (env-lookup env name :function)))
       (unless func-info
         (error "Function ~A not registered" name))
-      (let ((type-idx (func-info-type-index func-info))
-            (func-idx (func-info-index func-info)))
+      (let* ((type-idx (func-info-type-index func-info))
+             (func-idx (func-info-index func-info))
+             ;; Extract actual parameter names from lambda list
+             (param-names (extract-param-names params)))
         ;; Create local environment for function body
         (let ((body-env env))
           ;; Add parameters as locals
-          (dolist (param params)
+          (dolist (param param-names)
             (setf body-env (env-add-local body-env param +type-i32+)))
           ;; Compile body
           (let* ((body-code (compile-progn body body-env))
                  (max-local-idx (find-max-local-index body-code))
-                 (num-extra-locals (max 0 (- max-local-idx (1- (length params)))))
+                 (num-extra-locals (max 0 (- max-local-idx (1- (length param-names)))))
                  (locals (if (> num-extra-locals 0)
                              (list (cons num-extra-locals +type-i32+))
                              nil)))
@@ -670,8 +719,27 @@
            (options (cdr parsed))
            (include-opt (assoc :include options))
            (parent (when include-opt (cadr include-opt)))
-           (slots (parse-defstruct-slots slot-descriptions)))
-      (let ((struct-info (register-struct name slots :parent parent)))
+           ;; Parse :constructor option - can be symbol or (name args)
+           (constructor-opt (assoc :constructor options))
+           (constructor-name (when constructor-opt
+                               (let ((cval (cadr constructor-opt)))
+                                 (if (consp cval) (car cval) cval))))
+           ;; Parse :copier option
+           (copier-opt (assoc :copier options))
+           (copier-name (when copier-opt (cadr copier-opt)))
+           ;; Parse :predicate option
+           (predicate-opt (assoc :predicate options))
+           (predicate-name (when predicate-opt (cadr predicate-opt)))
+           ;; Skip docstring if present (first element is a string)
+           (actual-slots (if (and slot-descriptions (stringp (car slot-descriptions)))
+                             (cdr slot-descriptions)
+                             slot-descriptions))
+           (slots (parse-defstruct-slots actual-slots)))
+      (let ((struct-info (register-struct name slots
+                                          :parent parent
+                                          :constructor-name constructor-name
+                                          :copier-name copier-name
+                                          :predicate-name predicate-name)))
         ;; Register accessor primitives for each slot
         (let ((all-slots (struct-all-slots struct-info)))
           (do ((slots all-slots (cdr slots))
@@ -683,6 +751,8 @@
         (register-struct-constructor struct-info)
         ;; Register predicate primitive
         (register-struct-predicate struct-info)
+        ;; Register copier primitive
+        (register-struct-copier struct-info)
         struct-info))))
 
 (defun register-struct-accessor (struct-name slot-name offset)
@@ -696,6 +766,30 @@
             `(,@(compile-form (first args) env)
               (,+op-i32-load+ 2 ,offset))))))
 
+(defun parse-keyword-args (args all-slots)
+  "Parse keyword arguments into a slot value alist.
+   Returns an alist of (slot-index . value-form) or NIL for errors."
+  (let ((slot-values (make-list (length all-slots) :initial-element nil)))
+    (do ((rest args (cddr rest)))
+        ((null rest) slot-values)
+      (unless (and (keywordp (car rest)) (cdr rest))
+        (return nil))  ; Invalid keyword arguments
+      (let* ((key (car rest))
+             (key-name (symbol-name key))
+             (value (cadr rest))
+             (slot-idx nil))
+        ;; Find matching slot
+        (do ((slots all-slots (cdr slots))
+             (i 0 (1+ i)))
+            ((null slots))
+          (when (string-equal key-name (symbol-name (caar slots)))
+            (setf slot-idx i)
+            (return)))
+        (unless slot-idx
+          (return nil))  ; Unknown keyword
+        (setf (nth slot-idx slot-values) value)))
+    slot-values))
+
 (defun register-struct-constructor (struct-info)
   "Register a structure constructor as a primitive."
   (let* ((name (struct-info-name struct-info))
@@ -707,45 +801,53 @@
     (setf (gethash constructor *primitives*)
           (lambda (args env)
             (declare (ignorable env))
-            ;; For now, only support positional arguments matching slot order
-            (when (> (length args) num-slots)
-              (error "~A: too many arguments" constructor))
-            `(;; Reserve space
-              (,+op-global-get+ ,*heap-pointer-global*)
-              (,+op-i32-const+ ,struct-size)
-              ,+op-i32-add+
-              (,+op-global-set+ ,*heap-pointer-global*)
-              ;; Push struct address as return value
-              (,+op-global-get+ ,*heap-pointer-global*)
-              (,+op-i32-const+ ,struct-size)
-              ,+op-i32-sub+
-              ;; Store type-id at offset 0
-              (,+op-global-get+ ,*heap-pointer-global*)
-              (,+op-i32-const+ ,struct-size)
-              ,+op-i32-sub+
-              (,+op-i32-const+ ,type-id)
-              (,+op-i32-store+ 2 0)
-              ;; Store each slot
-              ,@(let ((result nil)
-                      (i 0))
-                  (do ((slots all-slots (cdr slots))
-                       (offset 4 (+ offset 4)))
-                      ((null slots))
-                    (let* ((default (cadar slots))
-                           (arg (nth i args)))
-                      (setf result
-                            (append result
-                                    `((,+op-global-get+ ,*heap-pointer-global*)
-                                      (,+op-i32-const+ ,struct-size)
-                                      ,+op-i32-sub+
-                                      ,@(if arg
-                                            (compile-form arg env)
-                                            `((,+op-i32-const+ ,default)))
-                                      (,+op-i32-store+ 2 ,offset)))))
-                    (incf i))
-                  result)
+            ;; Determine if using keyword or positional arguments
+            (let ((slot-values
+                    (if (and args (keywordp (car args)))
+                        ;; Keyword arguments
+                        (or (parse-keyword-args args all-slots)
+                            (error "~A: invalid keyword arguments" constructor))
+                        ;; Positional arguments
+                        (progn
+                          (when (> (length args) num-slots)
+                            (error "~A: too many arguments" constructor))
+                          args))))
+              `(;; Reserve space
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ ,struct-size)
+                ,+op-i32-add+
+                (,+op-global-set+ ,*heap-pointer-global*)
+                ;; Push struct address as return value
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ ,struct-size)
+                ,+op-i32-sub+
+                ;; Store type-id at offset 0
+                (,+op-global-get+ ,*heap-pointer-global*)
+                (,+op-i32-const+ ,struct-size)
+                ,+op-i32-sub+
+                (,+op-i32-const+ ,type-id)
+                (,+op-i32-store+ 2 0)
+                ;; Store each slot
+                ,@(let ((result nil)
+                        (i 0))
+                    (do ((slots all-slots (cdr slots))
+                         (offset 4 (+ offset 4)))
+                        ((null slots))
+                      (let* ((default (cadar slots))
+                             (arg (nth i slot-values)))
+                        (setf result
+                              (append result
+                                      `((,+op-global-get+ ,*heap-pointer-global*)
+                                        (,+op-i32-const+ ,struct-size)
+                                        ,+op-i32-sub+
+                                        ,@(if arg
+                                              (compile-form arg env)
+                                              `((,+op-i32-const+ ,(or default 0))))
+                                        (,+op-i32-store+ 2 ,offset)))))
+                      (incf i))
+                    result)
               ;; Struct address already on stack
-              )))))
+              ))))))  ; close backquote, let, lambda, setf, let*, defun
 
 (defun register-struct-predicate (struct-info)
   "Register a structure predicate as a primitive."
@@ -761,6 +863,50 @@
               (,+op-i32-load+ 2 0)  ; load type-id
               (,+op-i32-const+ ,type-id)
               ,+op-i32-eq+)))))
+
+(defun register-struct-copier (struct-info)
+  "Register a structure copier as a primitive.
+   Generates code to: allocate new struct, copy all slots, return new struct."
+  (let* ((name (struct-info-name struct-info))
+         (copier-name (intern (format nil "COPY-~A" name)))
+         (all-slots (struct-all-slots struct-info))
+         (num-slots (length all-slots))
+         (struct-size (+ 4 (* 4 num-slots))))  ; 4 bytes for type-id + 4 bytes per slot
+    (setf (gethash copier-name *primitives*)
+          (lambda (args env)
+            (declare (ignorable env))
+            (unless (= (length args) 1)
+              (error "~A requires exactly 1 argument" copier-name))
+            (let ((local-count (compile-env-local-count env)))
+              ;; Need 2 locals: source struct and new struct
+              (let ((src-local local-count)
+                    (dst-local (1+ local-count)))
+                ;; Code to:
+                ;; 1. Evaluate source, store in src-local
+                ;; 2. Allocate new struct, store in dst-local
+                ;; 3. Copy each field from src to dst
+                ;; 4. Return dst
+                `(;; Evaluate source struct
+                  ,@(compile-form (first args) env)
+                  (,+op-local-set+ ,src-local)
+                  ;; Allocate new struct (bump heap pointer)
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-local-set+ ,dst-local)
+                  (,+op-global-get+ ,*heap-pointer-global*)
+                  (,+op-i32-const+ ,struct-size)
+                  ,+op-i32-add+
+                  (,+op-global-set+ ,*heap-pointer-global*)
+                  ;; Copy all fields including type-id (at offset 0)
+                  ,@(let ((copy-code nil))
+                      (dotimes (i (1+ num-slots))  ; Include type-id at offset 0
+                        (let ((offset (* 4 i)))
+                          (push `(,+op-local-get+ ,dst-local) copy-code)
+                          (push `(,+op-local-get+ ,src-local) copy-code)
+                          (push `(,+op-i32-load+ 2 ,offset) copy-code)
+                          (push `(,+op-i32-store+ 2 ,offset) copy-code)))
+                      (nreverse copy-code))
+                  ;; Return new struct address
+                  (,+op-local-get+ ,dst-local))))))))
 
 (defun setup-static-data (module)
   "Add data segments for interned symbols and strings."

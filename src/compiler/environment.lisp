@@ -34,7 +34,8 @@
   (index 0 :type integer)
   (type +type-i32+)
   (mutable t :type boolean)
-  (constant-p nil :type boolean))
+  (constant-p nil :type boolean)
+  (value nil))
 
 (defstruct struct-info
   "Information about a structure type."
@@ -100,7 +101,8 @@
          (info (make-global-info :index global-idx
                                  :type type
                                  :mutable mutable
-                                 :constant-p constant-p))
+                                 :constant-p constant-p
+                                 :value (when constant-p init-value)))
          (new-env (env-extend env name info :global)))
     ;; Add the global to the WASM module
     (add-global module type mutable `((,+op-i32-const+ ,init-value)))
@@ -159,13 +161,17 @@
   (setf *struct-registry* (make-hash-table :test 'eq))
   (setf *struct-type-counter* 1))  ; Start at 1, 0 reserved for nil
 
-(defun register-struct (name slots &key parent)
-  "Register a new structure type. Returns struct-info."
+(defun register-struct (name slots &key parent constructor-name copier-name predicate-name)
+  "Register a new structure type. Returns struct-info.
+   CONSTRUCTOR-NAME, COPIER-NAME, PREDICATE-NAME can override defaults."
   (let* ((type-id (prog1 *struct-type-counter*
                     (incf *struct-type-counter*)))
-         (constructor (intern (format nil "MAKE-~A" name)))
-         (copier (intern (format nil "COPY-~A" name)))
-         (predicate (intern (format nil "~A-P" name)))
+         (constructor (or constructor-name
+                          (intern (format nil "MAKE-~A" name))))
+         (copier (or copier-name
+                     (intern (format nil "COPY-~A" name))))
+         (predicate (or predicate-name
+                        (intern (format nil "~A-P" name))))
          (info (make-struct-info :name name
                                  :type-id type-id
                                  :slots slots
