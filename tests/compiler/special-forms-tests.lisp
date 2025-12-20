@@ -1471,3 +1471,71 @@
                         (+ (symbol-value s2)
                            (symbol-value s3))))))))
     (is (= 6 result))))
+
+;;; ============================================================
+;;; Format Tests
+;;; ============================================================
+
+(test integer-to-string-zero
+  "Test integer-to-string with zero."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (integer-to-string 0)))
+                     (string-length s))))))
+    (is (= 1 result))))  ; "0" has length 1
+
+(test integer-to-string-positive
+  "Test integer-to-string with positive number."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (integer-to-string 42)))
+                     (string-length s))))))
+    (is (= 2 result))))  ; "42" has length 2
+
+(test integer-to-string-negative
+  "Test integer-to-string with negative number."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (integer-to-string -123)))
+                     (string-length s))))))
+    (is (= 4 result))))  ; "-123" has length 4
+
+(test integer-to-string-value
+  "Test integer-to-string produces correct string."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (integer-to-string 5)))
+                     ;; Check first char is '5' (ASCII 53)
+                     (schar s 0))))))
+    (is (= 53 result))))
+
+(test format-simple-string
+  "Test format with just a string, no directives."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (format nil "hello")))
+                     (string-length s))))))
+    (is (= 5 result))))
+
+(test format-single-arg
+  "Test format with ~A and one argument."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (format nil "x=~A" "42")))
+                     (string-length s))))))
+    (is (= 4 result))))  ; "x=42" has length 4
+
+(test format-two-args
+  "Test format with ~A-~A pattern (common usage)."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (format nil "~A-~A" "FOO" "BAR")))
+                     (string-length s))))))
+    (is (= 7 result))))  ; "FOO-BAR" has length 7
+
+(test format-tilde-escape
+  "Test format with ~~ (tilde escape)."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (format nil "a~~b")))
+                     (string-length s))))))
+    (is (= 3 result))))  ; "a~b" has length 3
+
+(test format-newline
+  "Test format with ~% (newline)."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((s (format nil "a~%b")))
+                     (string-length s))))))
+    (is (= 3 result))))  ; "a\nb" has length 3

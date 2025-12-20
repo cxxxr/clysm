@@ -1029,3 +1029,84 @@
 
       (t
        (error "Invalid setf place: ~A" place)))))
+
+;;; Format special form
+;;; Only supports (format nil ...) with ~A, ~%, and ~~ directives
+
+(defun parse-format-string (format-string)
+  "Parse a format string into segments.
+   Returns a list of (:literal \"text\") or (:directive char) elements."
+  (let ((result nil)
+        (current-literal nil)
+        (i 0)
+        (len (length format-string)))
+    (loop while (< i len) do
+      (let ((ch (char format-string i)))
+        (if (char= ch #\~)
+            (progn
+              ;; Flush current literal if any
+              (when current-literal
+                (push (list :literal (coerce (nreverse current-literal) 'string)) result)
+                (setf current-literal nil))
+              ;; Check next character for directive
+              (incf i)
+              (when (< i len)
+                (let ((directive (char format-string i)))
+                  (push (list :directive directive) result))))
+            ;; Regular character
+            (push ch current-literal)))
+      (incf i))
+    ;; Flush remaining literal
+    (when current-literal
+      (push (list :literal (coerce (nreverse current-literal) 'string)) result))
+    (nreverse result)))
+
+(define-special-form format (form env)
+  "Compile format. Only (format nil format-string args...) is supported.
+   Supported directives: ~A (aesthetic), ~% (newline), ~~ (tilde)."
+  (let ((destination (second form))
+        (format-string (third form))
+        (args (cdddr form)))
+    ;; Only support (format nil ...)
+    (unless (null destination)
+      (error "format: only nil destination is supported"))
+    (unless (stringp format-string)
+      (error "format: format string must be a literal string"))
+    (let* ((segments (parse-format-string format-string))
+           (arg-index 0)
+           (pieces nil))
+      ;; Build list of pieces to concatenate
+      (dolist (seg segments)
+        (ecase (first seg)
+          (:literal
+           (let ((text (second seg)))
+             (when (plusp (length text))
+               (push text pieces))))
+          (:directive
+           (let ((ch (second seg)))
+             (case ch
+               ((#\A #\a)
+                ;; ~A: use next argument (assumed to be a string)
+                (when (>= arg-index (length args))
+                  (error "format: not enough arguments for ~~A"))
+                (push (nth arg-index args) pieces)
+                (incf arg-index))
+               ((#\%)
+                ;; ~%: newline character (ASCII 10)
+                (push '(make-string-from-char 10) pieces))
+               ((#\~)
+                ;; ~~: literal tilde
+                (push "~" pieces))
+               (t
+                (error "format: unsupported directive ~~~A" ch)))))))
+      ;; Reverse pieces to get correct order
+      (setf pieces (nreverse pieces))
+      ;; Generate concatenation code
+      (if (null pieces)
+          ;; Empty format string
+          (compile-form "" env)
+          ;; Concatenate all pieces
+          (let ((result-form (first pieces)))
+            (dolist (piece (rest pieces))
+              (setf result-form `(string-append ,result-form ,piece)))
+            (compile-form result-form env))))))

@@ -3283,3 +3283,171 @@
       (,+op-local-get+ ,val-local)
       (,+op-i32-store+ 2 12)
       (,+op-local-get+ ,val-local))))
+
+;;; Format and Printing Primitives
+
+(define-primitive integer-to-string (args env)
+  "Convert an integer to its decimal string representation.
+   Handles negative numbers. Returns a heap-allocated string."
+  (unless (= (length args) 1)
+    (error "integer-to-string requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (num-local env-count)
+         (is-neg-local (+ env-count 1))
+         (abs-val-local (+ env-count 2))
+         (digit-count-local (+ env-count 3))
+         (temp-local (+ env-count 4))
+         (dst-local (+ env-count 5))
+         (idx-local (+ env-count 6)))
+    `(;; Get the number
+      ,@(compile-form (first args) env)
+      (,+op-local-set+ ,num-local)
+      ;; Check if negative
+      (,+op-local-get+ ,num-local)
+      (,+op-i32-const+ 0)
+      ,+op-i32-lt-s+
+      (,+op-local-set+ ,is-neg-local)
+      ;; Get absolute value
+      (,+op-local-get+ ,is-neg-local)
+      (,+op-if+ ,+type-i32+)
+        (,+op-i32-const+ 0)
+        (,+op-local-get+ ,num-local)
+        ,+op-i32-sub+
+      (,+op-else+)
+        (,+op-local-get+ ,num-local)
+      (,+op-end+)
+      (,+op-local-set+ ,abs-val-local)
+      ;; Handle special case: 0
+      (,+op-local-get+ ,abs-val-local)
+      (,+op-i32-eqz+)
+      (,+op-if+ ,+type-i32+)
+        ;; Allocate string "0" (length=1, byte='0')
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-local-set+ ,dst-local)
+        (,+op-local-get+ ,dst-local)
+        (,+op-i32-const+ 1)
+        (,+op-i32-store+ 2 0)
+        (,+op-local-get+ ,dst-local)
+        (,+op-i32-const+ 48)  ; '0'
+        (,+op-i32-store8+ 0 4)
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-i32-const+ 8)  ; 4 + 1 + padding
+        ,+op-i32-add+
+        (,+op-global-set+ ,*heap-pointer-global*)
+        (,+op-local-get+ ,dst-local)
+      (,+op-else+)
+        ;; Count digits
+        (,+op-i32-const+ 0)
+        (,+op-local-set+ ,digit-count-local)
+        (,+op-local-get+ ,abs-val-local)
+        (,+op-local-set+ ,temp-local)
+        (,+op-block+ ,+type-void+)
+          (,+op-loop+ ,+type-void+)
+            (,+op-local-get+ ,temp-local)
+            (,+op-i32-eqz+)
+            (,+op-br-if+ 1)
+            (,+op-local-get+ ,digit-count-local)
+            (,+op-i32-const+ 1)
+            ,+op-i32-add+
+            (,+op-local-set+ ,digit-count-local)
+            (,+op-local-get+ ,temp-local)
+            (,+op-i32-const+ 10)
+            ,+op-i32-div-u+
+            (,+op-local-set+ ,temp-local)
+            (,+op-br+ 0)
+          (,+op-end+)
+        (,+op-end+)
+        ;; Add 1 for '-' sign if negative
+        (,+op-local-get+ ,is-neg-local)
+        (,+op-if+ ,+type-void+)
+          (,+op-local-get+ ,digit-count-local)
+          (,+op-i32-const+ 1)
+          ,+op-i32-add+
+          (,+op-local-set+ ,digit-count-local)
+        (,+op-end+)
+        ;; Allocate string
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-local-set+ ,dst-local)
+        (,+op-local-get+ ,dst-local)
+        (,+op-local-get+ ,digit-count-local)
+        (,+op-i32-store+ 2 0)
+        ;; Fill digits from right to left
+        (,+op-local-get+ ,digit-count-local)
+        (,+op-local-set+ ,idx-local)
+        (,+op-local-get+ ,abs-val-local)
+        (,+op-local-set+ ,temp-local)
+        (,+op-block+ ,+type-void+)
+          (,+op-loop+ ,+type-void+)
+            (,+op-local-get+ ,temp-local)
+            (,+op-i32-eqz+)
+            (,+op-br-if+ 1)
+            ;; idx = idx - 1
+            (,+op-local-get+ ,idx-local)
+            (,+op-i32-const+ 1)
+            ,+op-i32-sub+
+            (,+op-local-set+ ,idx-local)
+            ;; Store digit: dst[4+idx] = '0' + (temp % 10)
+            (,+op-local-get+ ,dst-local)
+            (,+op-i32-const+ 4)
+            ,+op-i32-add+
+            (,+op-local-get+ ,idx-local)
+            ,+op-i32-add+
+            (,+op-i32-const+ 48)  ; '0'
+            (,+op-local-get+ ,temp-local)
+            (,+op-i32-const+ 10)
+            ,+op-i32-rem-u+
+            ,+op-i32-add+
+            (,+op-i32-store8+ 0 0)
+            ;; temp = temp / 10
+            (,+op-local-get+ ,temp-local)
+            (,+op-i32-const+ 10)
+            ,+op-i32-div-u+
+            (,+op-local-set+ ,temp-local)
+            (,+op-br+ 0)
+          (,+op-end+)
+        (,+op-end+)
+        ;; Add '-' sign if negative
+        (,+op-local-get+ ,is-neg-local)
+        (,+op-if+ ,+type-void+)
+          (,+op-local-get+ ,dst-local)
+          (,+op-i32-const+ 45)  ; '-'
+          (,+op-i32-store8+ 0 4)
+        (,+op-end+)
+        ;; Update heap pointer (align to 4 bytes)
+        (,+op-global-get+ ,*heap-pointer-global*)
+        (,+op-i32-const+ 4)
+        ,+op-i32-add+
+        (,+op-local-get+ ,digit-count-local)
+        ,+op-i32-add+
+        (,+op-i32-const+ 3)
+        ,+op-i32-add+
+        (,+op-i32-const+ -4)
+        ,+op-i32-and+
+        (,+op-global-set+ ,*heap-pointer-global*)
+        ;; Return string pointer
+        (,+op-local-get+ ,dst-local)
+      (,+op-end+))))
+
+(define-primitive make-string-from-char (args env)
+  "Create a 1-character string from a character code."
+  (unless (= (length args) 1)
+    (error "make-string-from-char requires exactly 1 argument"))
+  (let* ((env-count (compile-env-local-count env))
+         (ch-local env-count)
+         (dst-local (+ env-count 1)))
+    `(,@(compile-form (first args) env)
+      (,+op-local-set+ ,ch-local)
+      ;; Allocate 1-char string
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,dst-local)
+      (,+op-local-get+ ,dst-local)
+      (,+op-i32-const+ 1)
+      (,+op-i32-store+ 2 0)
+      (,+op-local-get+ ,dst-local)
+      (,+op-local-get+ ,ch-local)
+      (,+op-i32-store8+ 0 4)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ 8)
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      (,+op-local-get+ ,dst-local))))
