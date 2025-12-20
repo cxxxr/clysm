@@ -1,6 +1,6 @@
 ;;;; binary.lisp - Binary encoding utilities for WASM
 
-(in-package #:cl-wasm/utils)
+(in-package #:clysm/utils)
 
 ;;; LEB128 Encoding
 ;;; Little Endian Base 128 - variable length integer encoding used by WASM

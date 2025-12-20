@@ -1,6 +1,6 @@
 ;;;; walker.lisp - AST traversal utilities
 
-(in-package #:cl-wasm/ast)
+(in-package #:clysm/ast)
 
 ;;; Generic AST Walker
 

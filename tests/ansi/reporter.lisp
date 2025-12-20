@@ -1,6 +1,6 @@
 ;;;; reporter.lisp - Generate reports from test results
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
 ;;; Report structure
 

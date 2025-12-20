@@ -1,6 +1,6 @@
 ;;;; compilation-tests.lisp - End-to-end compilation tests
 
-(in-package #:cl-wasm/tests)
+(in-package #:clysm/tests)
 
 (in-suite :integration)
 

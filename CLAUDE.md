@@ -1,4 +1,4 @@
-# cl-wasm
+# clysm
 
 Common Lisp to WebAssembly compiler using WasmGC.
 
@@ -10,22 +10,22 @@ Common Lisp to WebAssembly compiler using WasmGC.
 
 ### Loading
 ```lisp
-(push #p"/path/to/cl-wasm/" asdf:*central-registry*)
-(ql:quickload :cl-wasm)
+(push #p"/path/to/clysm/" asdf:*central-registry*)
+(ql:quickload :clysm)
 ```
 
 ### Running Tests
 ```lisp
-(ql:quickload :cl-wasm/tests)
-(cl-wasm/tests:run-tests)
+(ql:quickload :clysm/tests)
+(clysm/tests:run-tests)
 ```
 
 ### Basic Usage
 ```lisp
 ;; Compile an expression to WASM module
-(let* ((module (cl-wasm/compiler:compile-module '((+ 1 2))))
-       (bytes (cl-wasm/wasm:encode-module module)))
-  (cl-wasm/wasm:save-module module "output.wasm"))
+(let* ((module (clysm/compiler:compile-module '((+ 1 2))))
+       (bytes (clysm/wasm:encode-module module)))
+  (clysm/wasm:save-module module "output.wasm"))
 ```
 
 ## Architecture
@@ -35,14 +35,14 @@ Source (.lisp) -> Reader -> Macro Expand (SBCL) -> AST -> IR -> Codegen -> WASM
 ```
 
 ### Packages
-- `cl-wasm/utils` - LEB128 encoding, byte buffers
-- `cl-wasm/wasm` - WASM types, instructions, encoder
-- `cl-wasm/reader` - S-expression reader
-- `cl-wasm/ast` - AST node definitions
-- `cl-wasm/ir` - Intermediate representation
-- `cl-wasm/compiler` - Compilation and code generation
-- `cl-wasm/runtime` - Runtime type definitions
-- `cl-wasm/stdlib` - Standard library primitives
+- `clysm/utils` - LEB128 encoding, byte buffers
+- `clysm/wasm` - WASM types, instructions, encoder
+- `clysm/reader` - S-expression reader
+- `clysm/ast` - AST node definitions
+- `clysm/ir` - Intermediate representation
+- `clysm/compiler` - Compilation and code generation
+- `clysm/runtime` - Runtime type definitions
+- `clysm/stdlib` - Standard library primitives
 
 ## Code Style
 - Follow standard Common Lisp conventions

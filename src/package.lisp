@@ -1,6 +1,6 @@
-;;;; package.lisp - Package definitions for cl-wasm
+;;;; package.lisp - Package definitions for clysm
 
-(defpackage #:cl-wasm/utils
+(defpackage #:clysm/utils
   (:use #:cl)
   (:export
    ;; LEB128 encoding
@@ -23,8 +23,8 @@
    #:buffer-write-name
    #:buffer-length))
 
-(defpackage #:cl-wasm/wasm
-  (:use #:cl #:cl-wasm/utils)
+(defpackage #:clysm/wasm
+  (:use #:cl #:clysm/utils)
   (:export
    ;; WASM types
    #:+type-i32+
@@ -185,13 +185,13 @@
    #:encode-module
    #:save-module))
 
-(defpackage #:cl-wasm/reader
+(defpackage #:clysm/reader
   (:use #:cl)
   (:export
    #:read-source
    #:read-file))
 
-(defpackage #:cl-wasm/ast
+(defpackage #:clysm/ast
   (:use #:cl)
   (:export
    ;; AST nodes
@@ -227,8 +227,8 @@
    #:walk-ast
    #:map-ast))
 
-(defpackage #:cl-wasm/ir
-  (:use #:cl #:cl-wasm/ast)
+(defpackage #:clysm/ir
+  (:use #:cl #:clysm/ast)
   (:export
    ;; IR nodes
    #:ir-node
@@ -248,8 +248,8 @@
    ;; Optimization
    #:optimize-ir))
 
-(defpackage #:cl-wasm/compiler
-  (:use #:cl #:cl-wasm/wasm #:cl-wasm/ast #:cl-wasm/ir)
+(defpackage #:clysm/compiler
+  (:use #:cl #:clysm/wasm #:clysm/ast #:clysm/ir)
   (:export
    ;; Environment
    #:make-compile-env
@@ -273,7 +273,7 @@
    #:*cons-size*
    #:setup-runtime))
 
-(defpackage #:cl-wasm/runtime
+(defpackage #:clysm/runtime
   (:use #:cl)
   (:export
    ;; Runtime type tags
@@ -285,23 +285,23 @@
    #:+tag-closure+
    #:+tag-float+))
 
-(defpackage #:cl-wasm/stdlib
+(defpackage #:clysm/stdlib
   (:use #:cl)
   (:export
    ;; Primitive operations
    #:primitive-p
    #:get-primitive))
 
-(defpackage #:cl-wasm
+(defpackage #:clysm
   (:use #:cl
-        #:cl-wasm/utils
-        #:cl-wasm/wasm
-        #:cl-wasm/reader
-        #:cl-wasm/ast
-        #:cl-wasm/ir
-        #:cl-wasm/compiler
-        #:cl-wasm/runtime
-        #:cl-wasm/stdlib)
+        #:clysm/utils
+        #:clysm/wasm
+        #:clysm/reader
+        #:clysm/ast
+        #:clysm/ir
+        #:clysm/compiler
+        #:clysm/runtime
+        #:clysm/stdlib)
   (:export
    ;; Main API
    #:compile-to-wasm

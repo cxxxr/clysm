@@ -1,6 +1,6 @@
 ;;;; convert.lisp - AST to IR conversion
 
-(in-package #:cl-wasm/ir)
+(in-package #:clysm/ir)
 
 ;;; Conversion Context
 

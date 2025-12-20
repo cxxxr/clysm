@@ -1,6 +1,6 @@
 ;;;; codegen.lisp - WASM code generation from IR
 
-(in-package #:cl-wasm/compiler)
+(in-package #:clysm/compiler)
 
 ;;; Code Generation from IR
 

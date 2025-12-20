@@ -1,6 +1,6 @@
 ;;;; package.lisp - Package definitions for ANSI test integration
 
-(defpackage #:cl-wasm/ansi-tests
+(defpackage #:clysm/ansi-tests
   (:use #:cl)
   (:export
    ;; Main API

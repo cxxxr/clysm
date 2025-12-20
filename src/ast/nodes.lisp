@@ -1,6 +1,6 @@
-;;;; nodes.lisp - AST node definitions for cl-wasm
+;;;; nodes.lisp - AST node definitions for clysm
 
-(in-package #:cl-wasm/ast)
+(in-package #:clysm/ast)
 
 ;;; Base AST Node
 

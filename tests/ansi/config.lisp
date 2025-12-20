@@ -1,11 +1,11 @@
 ;;;; config.lisp - Configuration for ANSI test integration
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
 ;;; Paths
 (defvar *project-root*
-  (asdf:system-source-directory :cl-wasm)
-  "Root directory of the cl-wasm project.")
+  (asdf:system-source-directory :clysm)
+  "Root directory of the clysm project.")
 
 (defvar *ansi-test-directory*
   (merge-pathnames "vendor/ansi-test/" *project-root*)

@@ -1,6 +1,6 @@
 ;;;; encoder.lisp - WebAssembly binary encoder
 
-(in-package #:cl-wasm/wasm)
+(in-package #:clysm/wasm)
 
 ;;; Section Encoding
 

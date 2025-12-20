@@ -1,6 +1,6 @@
 ;;;; runtime.lisp - Runtime type definitions
 
-(in-package #:cl-wasm/runtime)
+(in-package #:clysm/runtime)
 
 ;;; Runtime Type Tags
 ;;; These are used for runtime type checking with WasmGC

@@ -1,6 +1,6 @@
 ;;;; primitives.lisp - Primitive function compilation
 
-(in-package #:cl-wasm/compiler)
+(in-package #:clysm/compiler)
 
 ;;; Primitive Operations
 

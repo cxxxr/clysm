@@ -1,6 +1,6 @@
 ;;;; optimize.lisp - IR optimization passes
 
-(in-package #:cl-wasm/ir)
+(in-package #:clysm/ir)
 
 ;;; IR Optimization
 

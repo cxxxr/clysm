@@ -1,8 +1,8 @@
 ;;;; package.lisp - Test package definitions
 
-(defpackage #:cl-wasm/tests
+(defpackage #:clysm/tests
   (:use #:cl #:fiveam)
-  (:import-from #:cl-wasm/utils
+  (:import-from #:clysm/utils
                 #:encode-uleb128
                 #:encode-sleb128
                 #:make-byte-buffer
@@ -10,7 +10,7 @@
                 #:buffer-write-byte
                 #:buffer-write-bytes
                 #:buffer-write-u32)
-  (:import-from #:cl-wasm/wasm
+  (:import-from #:clysm/wasm
                 #:make-wasm-module
                 #:add-func-type
                 #:add-function
@@ -22,7 +22,7 @@
                 #:+op-i32-const+
                 #:+op-i32-add+
                 #:+op-end+)
-  (:import-from #:cl-wasm/compiler
+  (:import-from #:clysm/compiler
                 #:compile-form
                 #:compile-module
                 #:make-compile-env

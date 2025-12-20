@@ -1,6 +1,6 @@
 ;;;; environment.lisp - Compilation environment
 
-(in-package #:cl-wasm/compiler)
+(in-package #:clysm/compiler)
 
 ;;; Compilation Environment
 

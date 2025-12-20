@@ -1,9 +1,9 @@
 ;;;; comparator.lisp - Compare WASM execution results with expected values
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
 ;;; WASM representation constants
-;;; In cl-wasm:
+;;; In clysm:
 ;;; - NIL is represented as 0
 ;;; - T is represented as 1 (non-zero)
 ;;; - Integers are i32 values

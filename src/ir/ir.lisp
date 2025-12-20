@@ -1,6 +1,6 @@
-;;;; ir.lisp - Intermediate Representation for cl-wasm
+;;;; ir.lisp - Intermediate Representation for clysm
 
-(in-package #:cl-wasm/ir)
+(in-package #:clysm/ir)
 
 ;;; IR Node Base
 

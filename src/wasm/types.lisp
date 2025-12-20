@@ -1,6 +1,6 @@
 ;;;; types.lisp - WebAssembly type definitions
 
-(in-package #:cl-wasm/wasm)
+(in-package #:clysm/wasm)
 
 ;;; WASM Magic and Version
 (defconstant +wasm-magic+ #x6d736100)  ; "\0asm" in little-endian

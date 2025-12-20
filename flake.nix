@@ -1,5 +1,5 @@
 {
-  description = "cl-wasm - Common Lisp to WebAssembly compiler";
+  description = "clysm - Common Lisp to WebAssembly compiler";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -27,42 +27,42 @@
           fi
         '';
 
-        # Load cl-wasm script
-        loadScript = pkgs.writeShellScript "cl-wasm-load" ''
+        # Load clysm script
+        loadScript = pkgs.writeShellScript "clysm-load" ''
           ${quicklispSetup}
           exec ${pkgs.sbcl}/bin/sbcl \
             --load "$HOME/.quicklisp/setup.lisp" \
             --eval "(push #p\"$PWD/\" asdf:*central-registry*)" \
-            --eval "(ql:quickload :cl-wasm)" \
+            --eval "(ql:quickload :clysm)" \
             "$@"
         '';
 
         # Run tests script
-        testScript = pkgs.writeShellScript "cl-wasm-test" ''
+        testScript = pkgs.writeShellScript "clysm-test" ''
           ${quicklispSetup}
           exec ${pkgs.sbcl}/bin/sbcl --non-interactive \
             --load "$HOME/.quicklisp/setup.lisp" \
             --eval "(push #p\"$PWD/\" asdf:*central-registry*)" \
-            --eval "(ql:quickload :cl-wasm/tests)" \
-            --eval "(let ((results (fiveam:run :cl-wasm))) (if (fiveam:results-status results) (sb-ext:exit :code 0) (sb-ext:exit :code 1)))"
+            --eval "(ql:quickload :clysm/tests)" \
+            --eval "(let ((results (fiveam:run :clysm))) (if (fiveam:results-status results) (sb-ext:exit :code 0) (sb-ext:exit :code 1)))"
         '';
 
         # Compile to WASM script
-        compileScript = pkgs.writeShellScript "cl-wasm-compile" ''
+        compileScript = pkgs.writeShellScript "clysm-compile" ''
           ${quicklispSetup}
           INPUT="$1"
           OUTPUT="''${2:-output.wasm}"
           if [ -z "$INPUT" ]; then
-            echo "Usage: cl-wasm-compile <input.lisp> [output.wasm]"
+            echo "Usage: clysm-compile <input.lisp> [output.wasm]"
             exit 1
           fi
           ${pkgs.sbcl}/bin/sbcl --non-interactive \
             --load "$HOME/.quicklisp/setup.lisp" \
             --eval "(push #p\"$PWD/\" asdf:*central-registry*)" \
-            --eval "(ql:quickload :cl-wasm)" \
-            --eval "(let* ((forms (cl-wasm/reader:read-file \"$INPUT\"))
-                          (module (cl-wasm/compiler:compile-module forms))
-                          (bytes (cl-wasm/wasm:encode-module module)))
+            --eval "(ql:quickload :clysm)" \
+            --eval "(let* ((forms (clysm/reader:read-file \"$INPUT\"))
+                          (module (clysm/compiler:compile-module forms))
+                          (bytes (clysm/wasm:encode-module module)))
                      (with-open-file (out \"$OUTPUT\" :direction :output
                                           :if-exists :supersede
                                           :element-type '(unsigned-byte 8))
@@ -80,12 +80,12 @@
           ];
 
           shellHook = ''
-            echo "cl-wasm development environment"
+            echo "clysm development environment"
             echo ""
             echo "Commands:"
-            echo "  cl-wasm-load    - Start SBCL with cl-wasm loaded"
-            echo "  cl-wasm-test    - Run test suite"
-            echo "  cl-wasm-compile - Compile Lisp to WASM"
+            echo "  clysm-load    - Start SBCL with clysm loaded"
+            echo "  clysm-test    - Run test suite"
+            echo "  clysm-compile - Compile Lisp to WASM"
             echo ""
 
             # Ensure Quicklisp is installed
@@ -95,15 +95,15 @@
 
             # Create wrapper scripts in current directory
             mkdir -p .bin
-            ln -sf ${loadScript} .bin/cl-wasm-load
-            ln -sf ${testScript} .bin/cl-wasm-test
-            ln -sf ${compileScript} .bin/cl-wasm-compile
+            ln -sf ${loadScript} .bin/clysm-load
+            ln -sf ${testScript} .bin/clysm-test
+            ln -sf ${compileScript} .bin/clysm-compile
             export PATH="$PWD/.bin:$PATH"
           '';
         };
 
         packages.default = pkgs.stdenv.mkDerivation {
-          pname = "cl-wasm";
+          pname = "clysm";
           version = "0.1.0";
           src = ./.;
 
@@ -113,8 +113,8 @@
           dontBuild = true;
 
           installPhase = ''
-            mkdir -p $out/share/common-lisp/source/cl-wasm
-            cp -r . $out/share/common-lisp/source/cl-wasm/
+            mkdir -p $out/share/common-lisp/source/clysm
+            cp -r . $out/share/common-lisp/source/clysm/
           '';
         };
       }

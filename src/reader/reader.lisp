@@ -1,6 +1,6 @@
-;;;; reader.lisp - S-expression reader for cl-wasm
+;;;; reader.lisp - S-expression reader for clysm
 
-(in-package #:cl-wasm/reader)
+(in-package #:clysm/reader)
 
 ;;; Reader Interface
 ;;; We use the host CL's reader for now, with potential customization later.

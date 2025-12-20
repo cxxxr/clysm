@@ -1,29 +1,29 @@
 ;;;; suite.lisp - Test suite definitions
 
-(in-package #:cl-wasm/tests)
+(in-package #:clysm/tests)
 
 ;;; Define test suites
 
-(def-suite :cl-wasm
-  :description "All cl-wasm tests")
+(def-suite :clysm
+  :description "All clysm tests")
 
-(def-suite :utils :in :cl-wasm
+(def-suite :utils :in :clysm
   :description "Utility function tests")
 
-(def-suite :wasm :in :cl-wasm
+(def-suite :wasm :in :clysm
   :description "WASM encoding tests")
 
-(def-suite :compiler :in :cl-wasm
+(def-suite :compiler :in :clysm
   :description "Compiler tests")
 
-(def-suite :integration :in :cl-wasm
+(def-suite :integration :in :clysm
   :description "Integration tests")
 
 ;;; Test runner
 
 (defun run-tests ()
-  "Run all cl-wasm tests."
-  (run! :cl-wasm))
+  "Run all clysm tests."
+  (run! :clysm))
 
 ;;; Utility Tests
 

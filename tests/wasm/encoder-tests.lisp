@@ -1,6 +1,6 @@
 ;;;; encoder-tests.lisp - WASM encoder tests
 
-(in-package #:cl-wasm/tests)
+(in-package #:clysm/tests)
 
 (in-suite :wasm)
 

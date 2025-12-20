@@ -1,4 +1,4 @@
-# cl-wasm ANSI準拠化 ロードマップ
+# clysm ANSI準拠化 ロードマップ
 
 ## 1. プロジェクト概要
 
@@ -256,7 +256,7 @@ Phase 2.5 (基盤強化)
 
 ```lisp
 ;; 1. 失敗テストを特定
-(cl-wasm/ansi-tests:test-form '(abs -5) :expected 5)
+(clysm/ansi-tests:test-form '(abs -5) :expected 5)
 ;; => :fail
 
 ;; 2. primitives.lispに実装追加
@@ -267,11 +267,11 @@ Phase 2.5 (基盤強化)
       ...)))
 
 ;; 3. 再テスト
-(cl-wasm/ansi-tests:test-form '(abs -5) :expected 5)
+(clysm/ansi-tests:test-form '(abs -5) :expected 5)
 ;; => :pass
 
 ;; 4. カテゴリテスト実行
-(cl-wasm/ansi-tests:run-category :numbers :filter :simple)
+(clysm/ansi-tests:run-category :numbers :filter :simple)
 ```
 
 ---

@@ -1,6 +1,6 @@
 ;;;; compiler.lisp - Main compilation driver
 
-(in-package #:cl-wasm/compiler)
+(in-package #:clysm/compiler)
 
 ;;; Form Compilation
 

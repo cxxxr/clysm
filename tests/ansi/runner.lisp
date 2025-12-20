@@ -1,6 +1,6 @@
 ;;;; runner.lisp - Execute ANSI tests via WASM
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
 ;;; Test result structure
 

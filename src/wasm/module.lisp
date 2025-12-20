@@ -1,6 +1,6 @@
 ;;;; module.lisp - WebAssembly module structure
 
-(in-package #:cl-wasm/wasm)
+(in-package #:clysm/wasm)
 
 ;;; WASM Module Structure
 

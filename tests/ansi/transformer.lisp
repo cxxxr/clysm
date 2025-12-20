@@ -1,6 +1,6 @@
-;;;; transformer.lisp - Transform ANSI tests for cl-wasm execution
+;;;; transformer.lisp - Transform ANSI tests for clysm execution
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
 ;;; Test specification structure
 
@@ -97,7 +97,7 @@
 ;;; Filtering tests
 
 (defun filter-runnable-tests (tests)
-  "Filter tests to those that can potentially run on cl-wasm."
+  "Filter tests to those that can potentially run on clysm."
   (remove-if-not (lambda (test)
                    (runnable-test-p (test-spec-form test)
                                     (test-spec-expected test)))
@@ -160,8 +160,8 @@
   "Compile a test-spec to WASM bytes.
    Returns WASM bytes or signals an error."
   (let ((forms (wrap-test-for-wasm test-spec)))
-    (let ((module (cl-wasm/compiler:compile-module forms)))
-      (cl-wasm/wasm:encode-module module))))
+    (let ((module (clysm/compiler:compile-module forms)))
+      (clysm/wasm:encode-module module))))
 
 ;;; Test categorization helpers
 

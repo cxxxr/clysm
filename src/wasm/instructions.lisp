@@ -1,6 +1,6 @@
 ;;;; instructions.lisp - WebAssembly instruction opcodes
 
-(in-package #:cl-wasm/wasm)
+(in-package #:clysm/wasm)
 
 ;;; Control Instructions
 (defconstant +op-unreachable+ #x00)

@@ -1,6 +1,6 @@
 ;;;; special-forms.lisp - Special form compilation
 
-(in-package #:cl-wasm/compiler)
+(in-package #:clysm/compiler)
 
 ;;; Special Form Handlers
 

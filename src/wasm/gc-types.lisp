@@ -1,6 +1,6 @@
 ;;;; gc-types.lisp - WasmGC type definitions for Lisp values
 
-(in-package #:cl-wasm/wasm)
+(in-package #:clysm/wasm)
 
 ;;; WasmGC Type Indices
 ;;; These are the type indices for our Lisp value representations

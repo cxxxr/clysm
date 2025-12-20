@@ -1,6 +1,6 @@
-;;;; cl-wasm.asd - ASDF system definition for cl-wasm
+;;;; clysm.asd - ASDF system definition for clysm
 
-(defsystem "cl-wasm"
+(defsystem "clysm"
   :version "0.1.0"
   :license "MIT"
   :description "Common Lisp to WebAssembly compiler using WasmGC"
@@ -47,11 +47,11 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                (:module "stdlib"
                 :serial t
                 :components ((:file "arithmetic"))))
-  :in-order-to ((test-op (test-op "cl-wasm/tests"))))
+  :in-order-to ((test-op (test-op "clysm/tests"))))
 
-(defsystem "cl-wasm/tests"
-  :description "Test suite for cl-wasm"
-  :depends-on ("cl-wasm"
+(defsystem "clysm/tests"
+  :description "Test suite for clysm"
+  :depends-on ("clysm"
                "fiveam")
   :pathname "tests/"
   :serial t
@@ -65,11 +65,11 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                (:module "integration"
                 :components ((:file "compilation-tests"))))
   :perform (test-op (o c)
-             (symbol-call :fiveam :run! :cl-wasm)))
+             (symbol-call :fiveam :run! :clysm)))
 
-(defsystem "cl-wasm/ansi-tests"
-  :description "ANSI Common Lisp conformance tests for cl-wasm"
-  :depends-on ("cl-wasm"
+(defsystem "clysm/ansi-tests"
+  :description "ANSI Common Lisp conformance tests for clysm"
+  :depends-on ("clysm"
                "uiop")
   :pathname "tests/ansi/"
   :serial t

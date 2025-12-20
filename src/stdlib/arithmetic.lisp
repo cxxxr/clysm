@@ -1,6 +1,6 @@
 ;;;; arithmetic.lisp - Standard library arithmetic functions
 
-(in-package #:cl-wasm/stdlib)
+(in-package #:clysm/stdlib)
 
 ;;; Primitive Operations Registry
 

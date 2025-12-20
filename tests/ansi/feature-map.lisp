@@ -1,8 +1,8 @@
-;;;; feature-map.lisp - Map cl-wasm implementation status
+;;;; feature-map.lisp - Map clysm implementation status
 
-(in-package #:cl-wasm/ansi-tests)
+(in-package #:clysm/ansi-tests)
 
-;;; Feature implementation status for cl-wasm
+;;; Feature implementation status for clysm
 ;;; Used to determine which ANSI tests can be run
 
 ;; Implemented special forms
@@ -12,7 +12,7 @@
     block return-from return
     dotimes dolist
     lambda funcall)
-  "Special forms implemented in cl-wasm.")
+  "Special forms implemented in clysm.")
 
 ;; Implemented primitive functions
 (defparameter *implemented-primitives*
@@ -37,7 +37,7 @@
     first rest second third fourth
     nth nthcdr
     length)
-  "Primitive functions implemented in cl-wasm.")
+  "Primitive functions implemented in clysm.")
 
 ;; Features that are NOT implemented yet
 (defparameter *unimplemented-features*
@@ -53,7 +53,7 @@
     :eval :compile :load
     ;; Misc
     :loop :type-declarations :documentation)
-  "Features not yet implemented in cl-wasm.")
+  "Features not yet implemented in clysm.")
 
 ;; Forms that require specific unimplemented features
 (defparameter *form-requirements*
@@ -165,7 +165,7 @@
     missing-features))
 
 (defun form-can-be-compiled-p (form)
-  "Check if FORM can potentially be compiled by cl-wasm."
+  "Check if FORM can potentially be compiled by clysm."
   (null (analyze-form-requirements form)))
 
 ;;; Test filtering
@@ -187,7 +187,7 @@
                 (member (first expected) '(t nil))))))
 
 (defun runnable-test-p (form expected)
-  "Determine if a test can be run on cl-wasm."
+  "Determine if a test can be run on clysm."
   (or (simple-arithmetic-test-p form expected)
       (simple-boolean-test-p form expected)))
 
