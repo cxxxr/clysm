@@ -778,3 +778,115 @@
                         (+ a b))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Error handling tests
+
+(test compile-error
+  "Test compiling error function."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-error (x)
+                      (if (< x 0)
+                          (error "negative value")
+                          x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Hash table tests
+
+(test compile-make-hash-table
+  "Test compiling make-hash-table."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-ht ()
+                      (make-hash-table)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-hash-table-count
+  "Test compiling hash-table-count."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-htc ()
+                      (hash-table-count (make-hash-table))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-sethash-gethash
+  "Test compiling sethash and gethash."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-sethash ()
+                      (let ((ht (make-hash-table)))
+                        (sethash 'key 42 ht)
+                        (gethash 'key ht))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-remhash
+  "Test compiling remhash."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-remhash ()
+                      (let ((ht (make-hash-table)))
+                        (sethash 'key 42 ht)
+                        (remhash 'key ht))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-clrhash
+  "Test compiling clrhash."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-clrhash ()
+                      (let ((ht (make-hash-table)))
+                        (sethash 'key 42 ht)
+                        (clrhash ht))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Setf tests
+
+(test compile-setf-variable
+  "Test compiling setf for simple variable."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-setf-var (x)
+                      (setf x 10)
+                      x))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-setf-car
+  "Test compiling setf for car."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-setf-car ()
+                      (let ((c (cons 1 2)))
+                        (setf (car c) 10)
+                        (car c))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-setf-cdr
+  "Test compiling setf for cdr."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-setf-cdr ()
+                      (let ((c (cons 1 2)))
+                        (setf (cdr c) 20)
+                        (cdr c))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-setf-gethash
+  "Test compiling setf for gethash."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-setf-gethash ()
+                      (let ((ht (make-hash-table)))
+                        (setf (gethash 'key ht) 42)
+                        (gethash 'key ht))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-setf-struct
+  "Test compiling setf for struct accessor."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defstruct point x y)
+                    (defun test-setf-struct ()
+                      (let ((p (make-point)))
+                        (setf (point-x p) 10)
+                        (point-x p))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

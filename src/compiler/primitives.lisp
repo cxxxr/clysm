@@ -15,13 +15,25 @@
            (declare (ignorable ,env))
            ,@body)))
 
+(defun find-primitive (symbol)
+  "Find a primitive by SYMBOL, matching by symbol-name.
+   This allows primitives to work across packages."
+  (let ((name (symbol-name symbol)))
+    (or (gethash symbol *primitives*)  ; Fast path: exact symbol match
+        (block found
+          (maphash (lambda (key val)
+                     (when (string= (symbol-name key) name)
+                       (return-from found val)))
+                   *primitives*)
+          nil))))
+
 (defun primitive-p (symbol)
   "Check if SYMBOL names a primitive."
-  (gethash symbol *primitives*))
+  (find-primitive symbol))
 
 (defun compile-primitive (name args env)
   "Compile a primitive function call."
-  (let ((handler (gethash name *primitives*)))
+  (let ((handler (find-primitive name)))
     (if handler
         (funcall handler args env)
         (error "Unknown primitive: ~A" name))))
@@ -1689,3 +1701,298 @@
               (,+op-end+)
               ;; Return accumulator
               (,+op-local-get+ ,acc-local))))))))
+
+;;; Error handling
+
+(define-primitive error (args env)
+  "Compile error to unreachable instruction. Arguments are ignored.
+   The WASM unreachable instruction traps execution immediately."
+  (declare (ignore args env))
+  `((,+op-unreachable+)))
+
+;;; Hash Tables (alist-based implementation for bootstrap)
+;;; Hash table structure: (count . entries-alist)
+;;; Each entry is a cons cell: (key . value)
+
+(define-primitive make-hash-table (args env)
+  "Create a new hash table. Arguments (:test) are ignored in this simple implementation.
+   Returns (cons 0 nil) - count=0, empty alist."
+  (declare (ignore args))
+  ;; Allocate cons cell for (0 . nil)
+  `(;; Allocate 8 bytes for cons cell
+    (,+op-global-get+ ,*heap-pointer-global*)
+    ;; Store 0 as car (count)
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ 0)
+    (,+op-i32-store+ 2 0)
+    ;; Store nil as cdr (entries)
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ 0)
+    (,+op-i32-store+ 2 4)
+    ;; Bump heap pointer
+    (,+op-global-get+ ,*heap-pointer-global*)
+    (,+op-i32-const+ ,*cons-size*)
+    ,+op-i32-add+
+    (,+op-global-set+ ,*heap-pointer-global*)))
+
+(define-primitive hash-table-count (args env)
+  "Return the number of entries in a hash table."
+  (unless (= (length args) 1)
+    (error "hash-table-count requires exactly 1 argument"))
+  ;; Hash table is (count . entries), return car
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)))
+
+(define-primitive gethash (args env)
+  "Get value from hash table. Returns value if found, nil otherwise.
+   Also sets mv-1 to t if found, nil if not (for multiple-value-bind)."
+  (unless (member (length args) '(2 3))
+    (error "gethash requires 2 or 3 arguments"))
+  (let* ((key-code (compile-form (first args) env))
+         (ht-code (compile-form (second args) env))
+         (env-count (compile-env-local-count env))
+         (key-local env-count)
+         (ht-local (1+ env-count))
+         (pair-local (+ 2 env-count))
+         (alist-local (+ 3 env-count)))
+    `(;; Store key and hash-table
+      ,@key-code
+      (,+op-local-set+ ,key-local)
+      ,@ht-code
+      (,+op-local-set+ ,ht-local)
+      ;; Get entries alist: cdr of hash-table
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,alist-local)
+      ;; Loop through alist to find key
+      (,+op-block+ ,+type-i32+)
+        (,+op-loop+ ,+type-void+)
+          ;; if alist is nil, return nil and set mv-1 to nil (not found)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-eqz+)
+          (,+op-if+ ,+type-void+)
+            ;; Set mv-1 to nil (not found)
+            (,+op-i32-const+ 0)
+            (,+op-global-set+ ,(+ *mv-count-global* 1))
+            ;; Return nil
+            (,+op-i32-const+ 0)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; pair = car(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,pair-local)
+          ;; if car(pair) == key, return cdr(pair)
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-load+ 2 0)  ; car(pair) = key
+          (,+op-local-get+ ,key-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-void+)
+            ;; Set mv-1 to t (found) - use 1 as t
+            (,+op-i32-const+ 1)
+            (,+op-global-set+ ,(+ *mv-count-global* 1))
+            ;; Return cdr(pair) = value
+            (,+op-local-get+ ,pair-local)
+            (,+op-i32-load+ 2 4)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; alist = cdr(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,alist-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+))))
+
+(define-primitive sethash (args env)
+  "Set value in hash table: (sethash key value hash-table). Returns value.
+   This is a simplified alternative to (setf (gethash key ht) value)."
+  (unless (= (length args) 3)
+    (error "sethash requires exactly 3 arguments: key, value, hash-table"))
+  (let* ((key-code (compile-form (first args) env))
+         (value-code (compile-form (second args) env))
+         (ht-code (compile-form (third args) env))
+         (env-count (compile-env-local-count env))
+         (key-local env-count)
+         (value-local (1+ env-count))
+         (ht-local (+ 2 env-count))
+         (alist-local (+ 3 env-count))
+         (pair-local (+ 4 env-count)))
+    `(;; Store key, value, hash-table
+      ,@key-code
+      (,+op-local-set+ ,key-local)
+      ,@value-code
+      (,+op-local-set+ ,value-local)
+      ,@ht-code
+      (,+op-local-set+ ,ht-local)
+      ;; Get entries alist
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,alist-local)
+      ;; Search for existing entry
+      (,+op-block+ ,+type-void+)
+        (,+op-loop+ ,+type-void+)
+          ;; if alist is nil, add new entry
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-eqz+)
+          (,+op-br-if+ 1)  ; break out to add new entry
+          ;; pair = car(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,pair-local)
+          ;; if car(pair) == key, update cdr(pair)
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-get+ ,key-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-void+)
+            ;; rplacd pair with new value
+            (,+op-local-get+ ,pair-local)
+            (,+op-local-get+ ,value-local)
+            (,+op-i32-store+ 2 4)
+            (,+op-br+ 2)  ; exit both loops, value already set
+          (,+op-end+)
+          ;; alist = cdr(alist)
+          (,+op-local-get+ ,alist-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,alist-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+)
+      ;; Key not found, add new entry:
+      ;; 1. Allocate new pair (key . value)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,pair-local)
+      (,+op-local-get+ ,pair-local)
+      (,+op-local-get+ ,key-local)
+      (,+op-i32-store+ 2 0)
+      (,+op-local-get+ ,pair-local)
+      (,+op-local-get+ ,value-local)
+      (,+op-i32-store+ 2 4)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,*cons-size*)
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; 2. Allocate new cons for alist: (pair . old-entries)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-local-set+ ,alist-local)
+      (,+op-local-get+ ,alist-local)
+      (,+op-local-get+ ,pair-local)
+      (,+op-i32-store+ 2 0)
+      (,+op-local-get+ ,alist-local)
+      ;; Get old entries
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-i32-store+ 2 4)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,*cons-size*)
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*)
+      ;; 3. Update hash-table cdr to new alist
+      (,+op-local-get+ ,ht-local)
+      (,+op-local-get+ ,alist-local)
+      (,+op-i32-store+ 2 4)
+      ;; 4. Increment count
+      (,+op-local-get+ ,ht-local)
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 0)
+      (,+op-i32-const+ 1)
+      ,+op-i32-add+
+      (,+op-i32-store+ 2 0)
+      ;; Return value
+      (,+op-local-get+ ,value-local))))
+
+(define-primitive remhash (args env)
+  "Remove entry from hash table. Returns t if found and removed, nil otherwise."
+  (unless (= (length args) 2)
+    (error "remhash requires exactly 2 arguments"))
+  (let* ((key-code (compile-form (first args) env))
+         (ht-code (compile-form (second args) env))
+         (env-count (compile-env-local-count env))
+         (key-local env-count)
+         (ht-local (1+ env-count))
+         (prev-local (+ 2 env-count))
+         (curr-local (+ 3 env-count))
+         (pair-local (+ 4 env-count)))
+    `(;; Store key and hash-table
+      ,@key-code
+      (,+op-local-set+ ,key-local)
+      ,@ht-code
+      (,+op-local-set+ ,ht-local)
+      ;; prev = nil, curr = entries
+      (,+op-i32-const+ 0)
+      (,+op-local-set+ ,prev-local)
+      (,+op-local-get+ ,ht-local)
+      (,+op-i32-load+ 2 4)
+      (,+op-local-set+ ,curr-local)
+      ;; Loop through alist
+      (,+op-block+ ,+type-i32+)
+        (,+op-loop+ ,+type-void+)
+          ;; if curr is nil, return nil (not found)
+          (,+op-local-get+ ,curr-local)
+          (,+op-i32-eqz+)
+          (,+op-if+ ,+type-void+)
+            (,+op-i32-const+ 0)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; pair = car(curr)
+          (,+op-local-get+ ,curr-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-set+ ,pair-local)
+          ;; if car(pair) == key, remove this entry
+          (,+op-local-get+ ,pair-local)
+          (,+op-i32-load+ 2 0)
+          (,+op-local-get+ ,key-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-void+)
+            ;; If prev is nil, update hash-table cdr
+            (,+op-local-get+ ,prev-local)
+            (,+op-i32-eqz+)
+            (,+op-if+ ,+type-void+)
+              (,+op-local-get+ ,ht-local)
+              (,+op-local-get+ ,curr-local)
+              (,+op-i32-load+ 2 4)  ; cdr(curr)
+              (,+op-i32-store+ 2 4)
+            (,+op-else+)
+              ;; rplacd prev with cdr(curr)
+              (,+op-local-get+ ,prev-local)
+              (,+op-local-get+ ,curr-local)
+              (,+op-i32-load+ 2 4)
+              (,+op-i32-store+ 2 4)
+            (,+op-end+)
+            ;; Decrement count
+            (,+op-local-get+ ,ht-local)
+            (,+op-local-get+ ,ht-local)
+            (,+op-i32-load+ 2 0)
+            (,+op-i32-const+ 1)
+            ,+op-i32-sub+
+            (,+op-i32-store+ 2 0)
+            ;; Return t (1)
+            (,+op-i32-const+ 1)
+            (,+op-br+ 2)
+          (,+op-end+)
+          ;; prev = curr, curr = cdr(curr)
+          (,+op-local-get+ ,curr-local)
+          (,+op-local-set+ ,prev-local)
+          (,+op-local-get+ ,curr-local)
+          (,+op-i32-load+ 2 4)
+          (,+op-local-set+ ,curr-local)
+          (,+op-br+ 0)
+        (,+op-end+)
+      (,+op-end+))))
+
+(define-primitive clrhash (args env)
+  "Clear all entries from hash table. Returns the hash table."
+  (unless (= (length args) 1)
+    (error "clrhash requires exactly 1 argument"))
+  ;; Set count to 0 and entries to nil
+  `(,@(compile-form (first args) env)
+    ;; Duplicate for return value
+    ,@(compile-form (first args) env)
+    ;; Set count to 0
+    ,@(compile-form (first args) env)
+    (,+op-i32-const+ 0)
+    (,+op-i32-store+ 2 0)
+    ;; Set entries to nil
+    (,+op-i32-const+ 0)
+    (,+op-i32-store+ 2 4)))

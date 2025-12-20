@@ -892,3 +892,113 @@
                                        `((,+op-global-get+ ,global-idx)
                                          (,+op-local-set+ ,idx))))))
             (append value-code bind-code (compile-progn body env*)))))))
+
+;;; Setf special form for general place assignment
+
+(define-special-form setf (form env)
+  "Set a place to a value. Handles variables, car/cdr, gethash, and struct accessors."
+  (let ((place (second form))
+        (value (third form)))
+    (cond
+      ;; Simple variable: (setf x val) -> (setq x val)
+      ((symbolp place)
+       (compile-special-form `(setq ,place ,value) env))
+
+      ;; Compound place
+      ((consp place)
+       (let ((accessor (car place)))
+         (cond
+           ;; (setf (car x) val) -> rplaca, but return val
+           ((member accessor '(car first) :test #'string-equal :key #'symbol-name)
+            (let* ((target (second place))
+                   (env-count (compile-env-local-count env))
+                   (val-local env-count))
+              `(;; Evaluate value, store in local for return
+                ,@(compile-form value env)
+                (,+op-local-tee+ ,val-local)
+                ;; Evaluate target, perform rplaca
+                ,@(compile-form target env)
+                (,+op-local-get+ ,val-local)
+                (,+op-i32-store+ 2 0)  ; store at car
+                ;; Return the value
+                (,+op-local-get+ ,val-local))))
+
+           ;; (setf (cdr x) val) -> rplacd, but return val
+           ((member accessor '(cdr rest) :test #'string-equal :key #'symbol-name)
+            (let* ((target (second place))
+                   (env-count (compile-env-local-count env))
+                   (val-local env-count))
+              `(;; Evaluate value, store in local for return
+                ,@(compile-form value env)
+                (,+op-local-tee+ ,val-local)
+                ;; Evaluate target, perform rplacd
+                ,@(compile-form target env)
+                (,+op-local-get+ ,val-local)
+                (,+op-i32-store+ 2 4)  ; store at cdr
+                ;; Return the value
+                (,+op-local-get+ ,val-local))))
+
+           ;; (setf (second x) val) -> (setf (car (cdr x)) val)
+           ((string-equal (symbol-name accessor) "SECOND")
+            (compile-special-form
+             `(setf (car (cdr ,(second place))) ,value) env))
+
+           ;; (setf (third x) val) -> (setf (car (cdr (cdr x))) val)
+           ((string-equal (symbol-name accessor) "THIRD")
+            (compile-special-form
+             `(setf (car (cdr (cdr ,(second place)))) ,value) env))
+
+           ;; (setf (nth n x) val) - compile to loop equivalent
+           ((string-equal (symbol-name accessor) "NTH")
+            (let* ((n-form (second place))
+                   (list-form (third place)))
+              (compile-special-form
+               `(setf (car (nthcdr ,n-form ,list-form)) ,value) env)))
+
+           ;; (setf (gethash key ht) val) -> (sethash key val ht)
+           ((string-equal (symbol-name accessor) "GETHASH")
+            (let* ((key-form (second place))
+                   (ht-form (third place)))
+              (compile-form `(sethash ,key-form ,value ,ht-form) env)))
+
+           ;; Check for struct accessor (name-slot)
+           ;; Struct setf accessors set field and return value
+           (t
+            (let* ((accessor-name (symbol-name accessor))
+                   ;; Try to find a struct info where this is an accessor
+                   (struct-info nil)
+                   (slot-idx nil))
+              ;; Search struct registry for matching accessor
+              ;; Slots are stored as ((slot-name default) ...) so we need (first slot)
+              (maphash (lambda (name info)
+                         (declare (ignore name))
+                         (loop for slot in (struct-info-slots info)
+                               for i from 0
+                               when (string-equal accessor-name
+                                                  (format nil "~A-~A"
+                                                          (struct-info-name info)
+                                                          (first slot)))  ; slot is (name default)
+                               do (setf struct-info info
+                                        slot-idx i)
+                                  (return)))
+                       *struct-registry*)
+              (if struct-info
+                  ;; Found struct accessor - compile setf for it
+                  (let* ((struct-form (second place))
+                         (slot-offset (* (1+ slot-idx) 4))  ; +1 for type-id, *4 for i32
+                         (env-count (compile-env-local-count env))
+                         (val-local env-count))
+                    `(;; Evaluate value
+                      ,@(compile-form value env)
+                      (,+op-local-tee+ ,val-local)
+                      ;; Evaluate struct, store at slot offset
+                      ,@(compile-form struct-form env)
+                      (,+op-local-get+ ,val-local)
+                      (,+op-i32-store+ 2 ,slot-offset)
+                      ;; Return value
+                      (,+op-local-get+ ,val-local)))
+                  ;; Unknown place
+                  (error "Cannot compile setf for place: ~A" place)))))))
+
+      (t
+       (error "Invalid setf place: ~A" place)))))

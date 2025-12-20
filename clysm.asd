@@ -63,7 +63,9 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                 :components ((:file "special-forms-tests")
                              (:file "list-tests")))
                (:module "integration"
-                :components ((:file "compilation-tests"))))
+                :components ((:file "compilation-tests")))
+               (:module "bootstrap"
+                :components ((:file "bootstrap-test"))))
   :perform (test-op (o c)
              (symbol-call :fiveam :run! :clysm)))
 

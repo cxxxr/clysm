@@ -123,7 +123,7 @@
     ;; Quote - don't expand inside
     ((eq (car form) 'quote) form)
     ;; Special forms we handle - expand their subforms
-    ((member (car form) '(if let let* progn setq when unless cond and or
+    ((member (car form) '(if let let* progn setq setf when unless cond and or
                           block return-from return dotimes dolist
                           tagbody go labels values multiple-value-bind
                           lambda funcall defun defparameter defconstant
