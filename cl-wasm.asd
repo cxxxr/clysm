@@ -66,3 +66,17 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                 :components ((:file "compilation-tests"))))
   :perform (test-op (o c)
              (symbol-call :fiveam :run! :cl-wasm)))
+
+(defsystem "cl-wasm/ansi-tests"
+  :description "ANSI Common Lisp conformance tests for cl-wasm"
+  :depends-on ("cl-wasm"
+               "uiop")
+  :pathname "tests/ansi/"
+  :serial t
+  :components ((:file "package")
+               (:file "config")
+               (:file "feature-map")
+               (:file "transformer")
+               (:file "comparator")
+               (:file "runner")
+               (:file "reporter")))

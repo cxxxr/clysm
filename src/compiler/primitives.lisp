@@ -109,47 +109,79 @@
 
 ;;; Comparison Primitives
 
+;;; Helper for multi-argument comparisons
+;;; (< a b c) => (and (< a b) (< b c))
+(defun compile-chained-comparison (op args env)
+  "Compile a chained comparison like (< a b c) => (and (< a b) (< b c))."
+  (cond
+    ((null args)
+     (error "~A requires at least 1 argument" op))
+    ((null (cdr args))
+     ;; Single argument: always true
+     `(,@(compile-form (first args) env)
+       ,+op-drop+
+       (,+op-i32-const+ 1)))
+    ((null (cddr args))
+     ;; Two arguments: simple comparison
+     (let ((wasm-op (ecase op
+                      (< +op-i32-lt-s+)
+                      (> +op-i32-gt-s+)
+                      (<= +op-i32-le-s+)
+                      (>= +op-i32-ge-s+)
+                      (= +op-i32-eq+))))
+       `(,@(compile-form (first args) env)
+         ,@(compile-form (second args) env)
+         ,wasm-op)))
+    (t
+     ;; Multiple arguments: expand to AND form
+     ;; (< a b c) => (and (< a b) (< b c))
+     (let ((comparisons nil))
+       (loop for (a b) on args
+             while b
+             do (push `(,op ,a ,b) comparisons))
+       (compile-form `(and ,@(nreverse comparisons)) env)))))
+
 (define-primitive < (args env)
-  (unless (= (length args) 2)
-    (error "< requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-lt-s+))
+  (compile-chained-comparison '< args env))
 
 (define-primitive > (args env)
-  (unless (= (length args) 2)
-    (error "> requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-gt-s+))
+  (compile-chained-comparison '> args env))
 
 (define-primitive <= (args env)
-  (unless (= (length args) 2)
-    (error "<= requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-le-s+))
+  (compile-chained-comparison '<= args env))
 
 (define-primitive >= (args env)
-  (unless (= (length args) 2)
-    (error ">= requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-ge-s+))
+  (compile-chained-comparison '>= args env))
 
 (define-primitive = (args env)
-  (unless (= (length args) 2)
-    (error "= requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-eq+))
+  (compile-chained-comparison '= args env))
 
 (define-primitive /= (args env)
-  (unless (= (length args) 2)
-    (error "/= requires exactly 2 arguments"))
-  `(,@(compile-form (first args) env)
-    ,@(compile-form (second args) env)
-    ,+op-i32-ne+))
+  ;; Note: /= is special - it checks that ALL pairs are different
+  ;; (/= a b c) means a≠b AND a≠c AND b≠c (not just adjacent pairs)
+  ;; For now, implement pairwise for 2 args only
+  (cond
+    ((null args)
+     (error "/= requires at least 1 argument"))
+    ((null (cdr args))
+     ;; Single argument: always true
+     `(,@(compile-form (first args) env)
+       ,+op-drop+
+       (,+op-i32-const+ 1)))
+    ((null (cddr args))
+     ;; Two arguments: simple comparison
+     `(,@(compile-form (first args) env)
+       ,@(compile-form (second args) env)
+       ,+op-i32-ne+))
+    (t
+     ;; Multiple arguments: check ALL pairs are different
+     ;; (/= a b c) => (and (/= a b) (/= a c) (/= b c))
+     (let ((comparisons nil))
+       (loop for rest on args
+             for a = (car rest)
+             do (loop for b in (cdr rest)
+                      do (push `(/= ,a ,b) comparisons)))
+       (compile-form `(and ,@(nreverse comparisons)) env)))))
 
 ;;; Boolean Primitives
 
@@ -456,3 +488,343 @@
   `(,@(compile-form (first args) env)
     ,@(compile-form (second args) env)
     ,+op-i32-eq+))
+
+;;; Additional numeric primitives
+
+(define-primitive abs (args env)
+  "Return absolute value of a number."
+  (unless (= (length args) 1)
+    (error "abs requires exactly 1 argument"))
+  ;; Implementation: (if (< x 0) (- 0 x) x)
+  ;; WASM select: if cond≠0 then val1 else val2
+  ;; Stack: [val1, val2, cond] -> [result]
+  ;; We want: if x<0 then (0-x) else x
+  ;; So: val1 = (0-x), val2 = x, cond = x<0
+  (let ((arg-code (compile-form (first args) env)))
+    `((,+op-i32-const+ 0)
+      ,@arg-code                    ; compute 0 - x
+      ,+op-i32-sub+                 ; val1 = (0 - x)
+      ,@arg-code                    ; val2 = x
+      ,@arg-code
+      (,+op-i32-const+ 0)
+      ,+op-i32-lt-s+                ; cond = x < 0
+      ,+op-select+)))
+
+(define-primitive max (args env)
+  "Return the maximum of the arguments."
+  (case (length args)
+    (0 (error "max requires at least 1 argument"))
+    (1 (compile-form (first args) env))
+    (2 (let ((a-code (compile-form (first args) env))
+             (b-code (compile-form (second args) env)))
+         ;; WASM select: if cond≠0 then val1 else val2
+         ;; We want: if a>b then a else b
+         ;; So: val1=a, val2=b, cond=a>b
+         `(,@a-code                  ; val1 = a
+           ,@b-code                  ; val2 = b
+           ,@a-code
+           ,@b-code
+           ,+op-i32-gt-s+            ; cond = a > b
+           ,+op-select+)))
+    (otherwise
+     ;; Reduce: (max a b c) => (max (max a b) c)
+     (compile-form `(max (max ,(first args) ,(second args))
+                         ,@(cddr args))
+                   env))))
+
+(define-primitive min (args env)
+  "Return the minimum of the arguments."
+  (case (length args)
+    (0 (error "min requires at least 1 argument"))
+    (1 (compile-form (first args) env))
+    (2 (let ((a-code (compile-form (first args) env))
+             (b-code (compile-form (second args) env)))
+         ;; WASM select: if cond≠0 then val1 else val2
+         ;; We want: if a<b then a else b
+         ;; So: val1=a, val2=b, cond=a<b
+         `(,@a-code                  ; val1 = a
+           ,@b-code                  ; val2 = b
+           ,@a-code
+           ,@b-code
+           ,+op-i32-lt-s+            ; cond = a < b
+           ,+op-select+)))
+    (otherwise
+     ;; Reduce: (min a b c) => (min (min a b) c)
+     (compile-form `(min (min ,(first args) ,(second args))
+                         ,@(cddr args))
+                   env))))
+
+(define-primitive evenp (args env)
+  "Check if number is even."
+  (unless (= (length args) 1)
+    (error "evenp requires exactly 1 argument"))
+  ;; (= (logand x 1) 0)
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 1)
+    ,+op-i32-and+
+    ,+op-i32-eqz+))                  ; result is 0 if even
+
+(define-primitive oddp (args env)
+  "Check if number is odd."
+  (unless (= (length args) 1)
+    (error "oddp requires exactly 1 argument"))
+  ;; (= (logand x 1) 1)
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 1)
+    ,+op-i32-and+))                  ; result is 1 if odd, 0 if even
+
+(define-primitive numberp (args env)
+  "Check if argument is a number (currently only fixnums)."
+  (unless (= (length args) 1)
+    (error "numberp requires exactly 1 argument"))
+  ;; For now, all values are fixnums, so always true
+  ;; TODO: Update when other types are added
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 1)))
+
+(define-primitive integerp (args env)
+  "Check if argument is an integer."
+  (unless (= (length args) 1)
+    (error "integerp requires exactly 1 argument"))
+  ;; For now, all values are fixnums (integers), so always true
+  ;; TODO: Update when floats are added
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 1)))
+
+;;; GCD and LCM
+;;; GCD uses Euclidean algorithm: while b≠0, (a,b) = (b, a mod b), return |a|
+
+(define-primitive gcd (args env)
+  "Compute greatest common divisor."
+  (case (length args)
+    (0 `((,+op-i32-const+ 0)))
+    (1 ;; (gcd n) = |n|
+     (compile-form `(abs ,(first args)) env))
+    (2 ;; Two argument case - use Euclidean algorithm
+     ;; Need locals for the loop and temp storage
+     (multiple-value-bind (env1 a-idx)
+         (env-add-local env (gensym "A") +type-i32+)
+       (multiple-value-bind (env2 b-idx)
+           (env-add-local env1 (gensym "B") +type-i32+)
+         (multiple-value-bind (env3 tmp-idx)
+             (env-add-local env2 (gensym "TMP") +type-i32+)
+           (let ((a-code (compile-form (first args) env3))
+                 (b-code (compile-form (second args) env3)))
+             `(;; Store first arg in tmp, compute abs, store in a
+               ,@a-code
+               (,+op-local-set+ ,tmp-idx)
+               ;; abs: if tmp<0 then 0-tmp else tmp
+               (,+op-i32-const+ 0)
+               (,+op-local-get+ ,tmp-idx)
+               ,+op-i32-sub+              ; 0 - tmp = -tmp (val1)
+               (,+op-local-get+ ,tmp-idx) ; tmp (val2)
+               (,+op-local-get+ ,tmp-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+             ; tmp < 0 (cond)
+               ,+op-select+               ; if cond then val1 else val2
+               (,+op-local-set+ ,a-idx)
+               ;; Store second arg in tmp, compute abs, store in b
+               ,@b-code
+               (,+op-local-set+ ,tmp-idx)
+               ;; abs
+               (,+op-i32-const+ 0)
+               (,+op-local-get+ ,tmp-idx)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,tmp-idx)
+               (,+op-local-get+ ,tmp-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+
+               ,+op-select+
+               (,+op-local-set+ ,b-idx)
+               ;; Loop while b != 0
+               (,+op-block+ ,+type-void+)  ; outer block for exit
+               (,+op-loop+ ,+type-void+)   ; loop
+               ;; Check b == 0
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-eqz+
+               (,+op-br-if+ 1)             ; if b==0, exit to outer block
+               ;; tmp = b
+               (,+op-local-get+ ,b-idx)
+               (,+op-local-set+ ,tmp-idx)
+               ;; b = a mod b
+               (,+op-local-get+ ,a-idx)
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-rem-s+
+               (,+op-local-set+ ,b-idx)
+               ;; a = tmp
+               (,+op-local-get+ ,tmp-idx)
+               (,+op-local-set+ ,a-idx)
+               ;; Continue loop
+               (,+op-br+ 0)
+               ,+op-end+  ; end loop
+               ,+op-end+  ; end block
+               ;; Return a (already positive)
+               (,+op-local-get+ ,a-idx)))))))
+    (otherwise
+     ;; Reduce: (gcd a b c) => (gcd (gcd a b) c)
+     (compile-form `(gcd (gcd ,(first args) ,(second args))
+                         ,@(cddr args))
+                   env))))
+
+(define-primitive lcm (args env)
+  "Compute least common multiple."
+  (case (length args)
+    (0 `((,+op-i32-const+ 1)))
+    (1 ;; (lcm n) = |n|
+     (compile-form `(abs ,(first args)) env))
+    (2 ;; lcm(a,b) = |a*b| / gcd(a,b)
+     ;; To avoid overflow, use: |a| / gcd(a,b) * |b|
+     (compile-form `(* (/ (abs ,(first args))
+                          (gcd ,(first args) ,(second args)))
+                       (abs ,(second args)))
+                   env))
+    (otherwise
+     ;; Reduce: (lcm a b c) => (lcm (lcm a b) c)
+     (compile-form `(lcm (lcm ,(first args) ,(second args))
+                         ,@(cddr args))
+                   env))))
+
+;;; Division functions with different rounding modes
+;;; For integers, these return two values: quotient and remainder
+;;; But since we don't have multiple-values yet, they return just the quotient
+
+(define-primitive truncate (args env)
+  "Truncate toward zero (standard integer division)."
+  (case (length args)
+    (1 ;; (truncate x) = x for integers
+     (compile-form (first args) env))
+    (2 ;; (truncate a b) = integer division toward zero
+     ;; This is exactly what WASM i32.div_s does
+     `(,@(compile-form (first args) env)
+       ,@(compile-form (second args) env)
+       ,+op-i32-div-s+))
+    (otherwise
+     (error "truncate requires 1 or 2 arguments"))))
+
+(define-primitive floor (args env)
+  "Floor toward negative infinity."
+  (case (length args)
+    (1 ;; (floor x) = x for integers
+     (compile-form (first args) env))
+    (2 ;; (floor a b) - round toward -infinity
+     ;; floor differs from truncate when result is negative and remainder != 0
+     ;; floor(a,b) = truncate(a,b) - 1 if (a<0 xor b<0) and rem(a,b) != 0
+     (multiple-value-bind (env1 a-idx)
+         (env-add-local env (gensym "A") +type-i32+)
+       (multiple-value-bind (env2 b-idx)
+           (env-add-local env1 (gensym "B") +type-i32+)
+         (multiple-value-bind (env3 q-idx)
+             (env-add-local env2 (gensym "Q") +type-i32+)
+           (let ((a-code (compile-form (first args) env3))
+                 (b-code (compile-form (second args) env3)))
+             `(;; Store a and b
+               ,@a-code
+               (,+op-local-set+ ,a-idx)
+               ,@b-code
+               (,+op-local-set+ ,b-idx)
+               ;; Compute q = a / b (truncate)
+               (,+op-local-get+ ,a-idx)
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-div-s+
+               (,+op-local-set+ ,q-idx)
+               ;; val1 = q - 1
+               (,+op-local-get+ ,q-idx)
+               (,+op-i32-const+ 1)
+               ,+op-i32-sub+
+               ;; val2 = q
+               (,+op-local-get+ ,q-idx)
+               ;; cond = (rem != 0) AND (signs differ)
+               ;; Compute remainder != 0
+               (,+op-local-get+ ,a-idx)
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-rem-s+
+               (,+op-i32-const+ 0)
+               ,+op-i32-ne+
+               ;; Compute (a < 0) xor (b < 0)
+               (,+op-local-get+ ,a-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+
+               (,+op-local-get+ ,b-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+
+               ,+op-i32-xor+
+               ;; AND the two conditions
+               ,+op-i32-and+
+               ;; select: if cond then val1 else val2
+               ,+op-select+))))))
+    (otherwise
+     (error "floor requires 1 or 2 arguments"))))
+
+(define-primitive ceiling (args env)
+  "Ceiling toward positive infinity."
+  (case (length args)
+    (1 ;; (ceiling x) = x for integers
+     (compile-form (first args) env))
+    (2 ;; (ceiling a b) - round toward +infinity
+     ;; ceiling differs from truncate when result is positive and remainder != 0
+     ;; ceiling(a,b) = truncate(a,b) + 1 if (a>=0 == b>=0) and rem(a,b) != 0
+     (multiple-value-bind (env1 a-idx)
+         (env-add-local env (gensym "A") +type-i32+)
+       (multiple-value-bind (env2 b-idx)
+           (env-add-local env1 (gensym "B") +type-i32+)
+         (multiple-value-bind (env3 q-idx)
+             (env-add-local env2 (gensym "Q") +type-i32+)
+           (let ((a-code (compile-form (first args) env3))
+                 (b-code (compile-form (second args) env3)))
+             `(;; Store a and b
+               ,@a-code
+               (,+op-local-set+ ,a-idx)
+               ,@b-code
+               (,+op-local-set+ ,b-idx)
+               ;; Compute q = a / b (truncate)
+               (,+op-local-get+ ,a-idx)
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-div-s+
+               (,+op-local-set+ ,q-idx)
+               ;; val1 = q + 1
+               (,+op-local-get+ ,q-idx)
+               (,+op-i32-const+ 1)
+               ,+op-i32-add+
+               ;; val2 = q
+               (,+op-local-get+ ,q-idx)
+               ;; cond = (rem != 0) AND (signs same)
+               ;; Compute remainder != 0
+               (,+op-local-get+ ,a-idx)
+               (,+op-local-get+ ,b-idx)
+               ,+op-i32-rem-s+
+               (,+op-i32-const+ 0)
+               ,+op-i32-ne+
+               ;; Compute (a >= 0) == (b >= 0) - same signs
+               ;; Using: NOT((a < 0) xor (b < 0))
+               (,+op-local-get+ ,a-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+
+               (,+op-local-get+ ,b-idx)
+               (,+op-i32-const+ 0)
+               ,+op-i32-lt-s+
+               ,+op-i32-xor+
+               ,+op-i32-eqz+             ; NOT of xor = same signs
+               ;; AND the two conditions
+               ,+op-i32-and+
+               ;; select: if cond then val1 else val2
+               ,+op-select+))))))
+    (otherwise
+     (error "ceiling requires 1 or 2 arguments"))))
+
+(define-primitive round (args env)
+  "Round to nearest integer (ties to even)."
+  (case (length args)
+    (1 ;; (round x) = x for integers
+     (compile-form (first args) env))
+    (2 ;; (round a b) - round to nearest
+     ;; For integers: round(a,b) = truncate(a + b/2, b) for positive
+     ;; This is simplified - proper rounding to even is complex
+     ;; For now, use: if |rem| * 2 >= |b| then adjust toward larger magnitude
+     ;; Simplified: just use truncate for now (TODO: proper rounding)
+     `(,@(compile-form (first args) env)
+       ,@(compile-form (second args) env)
+       ,+op-i32-div-s+))
+    (otherwise
+     (error "round requires 1 or 2 arguments"))))

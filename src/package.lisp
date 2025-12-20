@@ -101,6 +101,13 @@
    #:+op-i32-le-u+
    #:+op-i32-ge-s+
    #:+op-i32-ge-u+
+   ;; Bitwise operations
+   #:+op-i32-and+
+   #:+op-i32-or+
+   #:+op-i32-xor+
+   #:+op-i32-shl+
+   #:+op-i32-shr-s+
+   #:+op-i32-shr-u+
    ;; Memory instructions
    #:+op-i32-load+
    #:+op-i32-load8-s+
