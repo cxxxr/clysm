@@ -377,6 +377,135 @@
          (setf form `(cons ,arg ,form)))
        (compile-form form env)))))
 
+;;; append - concatenate two lists
+;;; Implementation: iterate backwards through first list using temp local,
+;;; cons each element onto second list
+;;; This is O(n) but creates a fresh copy of the first list
+
+(defvar *append-helper-added* nil
+  "Flag to track if append helper has been added to the current module.")
+
+(define-primitive append (args env)
+  "Concatenate two lists. (append list1 list2) => new list"
+  (cond
+    ((null args)
+     ;; (append) => nil
+     `((,+op-i32-const+ 0)))
+    ((null (cdr args))
+     ;; (append x) => x
+     (compile-form (first args) env))
+    ((> (length args) 2)
+     ;; (append a b c ...) => (append a (append b c ...))
+     (compile-form `(append ,(first args) (append ,@(rest args))) env))
+    (t
+     ;; Two-argument case: (append list1 list2)
+     ;; If list1 is nil, return list2
+     ;; Otherwise, build (cons (car list1) ... (cons (car last1) list2))
+     ;; We use WASM block/loop with local variables
+     (let* ((list1-code (compile-form (first args) env))
+            (list2-code (compile-form (second args) env))
+            ;; We need 3 locals: list1-ptr, result-end, current
+            (env-count (compile-env-local-count env))
+            (list1-local env-count)
+            (result-local (1+ env-count))
+            (temp-local (+ 2 env-count)))
+       `(;; Store list1 in local
+         ,@list1-code
+         (,+op-local-set+ ,list1-local)
+         ;; Store list2 as initial result
+         ,@list2-code
+         (,+op-local-set+ ,result-local)
+         ;; Check if list1 is nil - if so, just return list2
+         (,+op-local-get+ ,list1-local)
+         (,+op-i32-eqz+)
+         (,+op-if+ ,+type-i32+)
+           ;; list1 is nil - return list2
+           (,+op-local-get+ ,result-local)
+         (,+op-else+)
+           ;; list1 is not nil - we need to reverse it, then cons onto list2
+           ;; First pass: reverse list1 onto temp
+           (,+op-i32-const+ 0)  ; temp = nil
+           (,+op-local-set+ ,temp-local)
+           (,+op-block+ ,+type-void+)  ; outer block for breaking
+             (,+op-loop+ ,+type-void+)  ; loop to reverse
+               ;; if list1 is nil, break
+               (,+op-local-get+ ,list1-local)
+               (,+op-i32-eqz+)
+               (,+op-br-if+ 1)  ; break to outer block
+               ;; temp = cons(car(list1), temp)
+               ;; Allocate cons cell
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-add+
+               (,+op-global-set+ ,*heap-pointer-global*)
+               ;; Store car
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,list1-local)
+               (,+op-i32-load+ 2 0)  ; car of list1
+               (,+op-i32-store+ 2 0)
+               ;; Store cdr (old temp)
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,temp-local)
+               (,+op-i32-store+ 2 4)
+               ;; Update temp
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-set+ ,temp-local)
+               ;; list1 = cdr(list1)
+               (,+op-local-get+ ,list1-local)
+               (,+op-i32-load+ 2 4)
+               (,+op-local-set+ ,list1-local)
+               ;; continue loop
+               (,+op-br+ 0)
+             (,+op-end+)  ; end loop
+           (,+op-end+)  ; end block
+           ;; Second pass: cons temp onto result (list2)
+           (,+op-block+ ,+type-void+)
+             (,+op-loop+ ,+type-void+)
+               ;; if temp is nil, break
+               (,+op-local-get+ ,temp-local)
+               (,+op-i32-eqz+)
+               (,+op-br-if+ 1)
+               ;; result = cons(car(temp), result)
+               ;; Allocate cons cell
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-add+
+               (,+op-global-set+ ,*heap-pointer-global*)
+               ;; Store car
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,temp-local)
+               (,+op-i32-load+ 2 0)
+               (,+op-i32-store+ 2 0)
+               ;; Store cdr (old result)
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-get+ ,result-local)
+               (,+op-i32-store+ 2 4)
+               ;; Update result
+               (,+op-global-get+ ,*heap-pointer-global*)
+               (,+op-i32-const+ 8)
+               ,+op-i32-sub+
+               (,+op-local-set+ ,result-local)
+               ;; temp = cdr(temp)
+               (,+op-local-get+ ,temp-local)
+               (,+op-i32-load+ 2 4)
+               (,+op-local-set+ ,temp-local)
+               (,+op-br+ 0)
+             (,+op-end+)
+           (,+op-end+)
+           ;; Return result
+           (,+op-local-get+ ,result-local)
+         (,+op-end+))))))
+
 ;;; List accessors
 
 (define-primitive first (args env)

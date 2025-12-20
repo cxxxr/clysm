@@ -450,3 +450,37 @@
                         x)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Backquote tests
+
+(test compile-backquote-simple
+  "Test that backquote with no unquotes compiles."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun make-list ()
+                      `(1 2 3)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-backquote-unquote
+  "Test that backquote with unquote compiles."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun make-list (x)
+                      `(a ,x c)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-backquote-splice
+  "Test that backquote with splice compiles."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun make-list (lst)
+                      `(a ,@lst c)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-backquote-nested
+  "Test that nested backquotes compile."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun make-code (x)
+                      `(+ ,x 1)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
