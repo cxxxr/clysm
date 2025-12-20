@@ -304,3 +304,40 @@
                   '((eq (quote foo) (quote foo)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; defparameter/defconstant tests
+
+(test compile-defconstant
+  "Test compiling (defconstant +my-const+ 42)."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defconstant +my-const+ 42))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))
+    ;; Should have added a global
+    (is (not (null (clysm/wasm:wasm-module-globals module))))))
+
+(test compile-defparameter
+  "Test compiling (defparameter *my-var* 10)."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defparameter *my-var* 10))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))
+    ;; Should have added a global
+    (is (not (null (clysm/wasm:wasm-module-globals module))))))
+
+(test compile-defconstant-use
+  "Test using a defconstant value."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defconstant +my-const+ 42)
+                    (+ +my-const+ 1))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-defparameter-setq
+  "Test modifying a defparameter with setq."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defparameter *counter* 0)
+                    (defun increment ()
+                      (setq *counter* (+ *counter* 1))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

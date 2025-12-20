@@ -29,6 +29,13 @@
   (params nil :type list)
   (results nil :type list))
 
+(defstruct global-info
+  "Information about a global variable."
+  (index 0 :type integer)
+  (type +type-i32+)
+  (mutable t :type boolean)
+  (constant-p nil :type boolean))
+
 ;;; Environment Operations
 
 (defun env-lookup (env name &optional (namespace :variable))
@@ -73,6 +80,21 @@
          (new-env (env-extend env name info :function)))
     (incf (compile-env-func-count new-env))
     (values new-env func-idx type-idx)))
+
+(defun env-add-global (env name type mutable init-value &key constant-p)
+  "Add a global variable to the environment and module. Returns (new-env . index).
+   INIT-VALUE must be a constant expression (just the value for now)."
+  (let* ((module (compile-env-module env))
+         ;; Count existing globals (runtime globals like heap pointer come first)
+         (global-idx (length (wasm-module-globals module)))
+         (info (make-global-info :index global-idx
+                                 :type type
+                                 :mutable mutable
+                                 :constant-p constant-p))
+         (new-env (env-extend env name info :global)))
+    ;; Add the global to the WASM module
+    (add-global module type mutable `((,+op-i32-const+ ,init-value)))
+    (values new-env global-idx)))
 
 (defun make-initial-env (module)
   "Create an initial compilation environment with a module."

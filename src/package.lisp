@@ -267,8 +267,13 @@
    #:env-extend
    #:env-add-local
    #:env-add-function
+   #:env-add-global
    #:local-info
    #:local-info-index
+   #:global-info
+   #:global-info-index
+   #:global-info-mutable
+   #:global-info-constant-p
    ;; Compilation
    #:compile-form
    #:compile-toplevel

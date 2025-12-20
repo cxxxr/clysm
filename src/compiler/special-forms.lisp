@@ -96,12 +96,66 @@
 
 (define-special-form setq (form env)
   (destructuring-bind (var value) (cdr form)
-    (let ((info (env-lookup env var)))
-      (if info
+    ;; Check for local first, then global
+    (let ((local-info (env-lookup env var :variable)))
+      (if local-info
           (let ((value-code (compile-form value env)))
             `(,@value-code
-              (,+op-local-tee+ ,(local-info-index info))))
-          (error "Undefined variable: ~A" var)))))
+              (,+op-local-tee+ ,(local-info-index local-info))))
+          ;; Check for global
+          (let ((global-info (env-lookup env var :global)))
+            (if global-info
+                (if (global-info-mutable global-info)
+                    (let ((value-code (compile-form value env)))
+                      `(,@value-code
+                        (,+op-global-set+ ,(global-info-index global-info))
+                        (,+op-global-get+ ,(global-info-index global-info))))
+                    (error "Cannot assign to constant: ~A" var))
+                (error "Undefined variable: ~A" var)))))))
+
+;;; DEFPARAMETER / DEFCONSTANT / DEFVAR
+
+(define-special-form defparameter (form env)
+  "Define a global parameter (mutable global variable).
+   (defparameter name value [doc-string])"
+  (destructuring-bind (name value &optional doc) (cdr form)
+    (declare (ignore doc))
+    ;; For now, only support constant integer values
+    (unless (integerp value)
+      (error "defparameter currently only supports integer values: ~A" value))
+    (env-add-global env name +type-i32+ t value :constant-p nil)
+    ;; Return the symbol name as a value
+    `((,+op-i32-const+ 0))))
+
+(define-special-form defconstant (form env)
+  "Define a named constant (immutable global).
+   (defconstant name value [doc-string])"
+  (destructuring-bind (name value &optional doc) (cdr form)
+    (declare (ignore doc))
+    ;; For now, only support constant integer values
+    (unless (integerp value)
+      (error "defconstant currently only supports integer values: ~A" value))
+    (env-add-global env name +type-i32+ nil value :constant-p t)
+    ;; Return the symbol name as a value
+    `((,+op-i32-const+ 0))))
+
+(define-special-form defvar (form env)
+  "Define a special variable (only if not already defined).
+   (defvar name [value [doc-string]])
+   For now, acts like defparameter."
+  (destructuring-bind (name &optional (value 0) doc) (cdr form)
+    (declare (ignore doc))
+    ;; Check if already defined
+    (let ((existing (env-lookup env name :global)))
+      (if existing
+          ;; Already defined, do nothing
+          `((,+op-i32-const+ 0))
+          (progn
+            ;; For now, only support constant integer values
+            (unless (integerp value)
+              (error "defvar currently only supports integer values: ~A" value))
+            (env-add-global env name +type-i32+ t value :constant-p nil)
+            `((,+op-i32-const+ 0)))))))
 
 ;;; QUOTE
 

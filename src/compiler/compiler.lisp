@@ -18,10 +18,14 @@
      `((,+op-f64-const+ ,(float form 1.0d0))))
     ;; Variable reference
     ((symbolp form)
-     (let ((info (env-lookup env form)))
-       (if info
-           `((,+op-local-get+ ,(local-info-index info)))
-           (error "Undefined variable: ~A" form))))
+     (let ((local-info (env-lookup env form :variable)))
+       (if local-info
+           `((,+op-local-get+ ,(local-info-index local-info)))
+           ;; Check for global variable
+           (let ((global-info (env-lookup env form :global)))
+             (if global-info
+                 `((,+op-global-get+ ,(global-info-index global-info)))
+                 (error "Undefined variable: ~A" form))))))
     ;; Compound form
     ((consp form)
      (let ((op (car form)))
@@ -138,24 +142,46 @@
     ;; Add memory and heap pointer if enabled
     (when enable-memory
       (setup-runtime module))
-    ;; First pass: collect all defuns and register them
+    ;; First pass: collect all defuns and register globals (defparameter/defconstant)
     (dolist (form forms)
-      (when (and (consp form) (eq (car form) 'defun))
-        (push form defuns)
-        (destructuring-bind (name params &rest body) (cdr form)
-          (declare (ignore body))
-          (let ((param-types (make-list (length params) :initial-element +type-i32+))
-                (result-types (list +type-i32+)))
-            (setf env (env-add-function env name param-types result-types))))))
+      (cond
+        ;; Register defuns
+        ((and (consp form) (eq (car form) 'defun))
+         (push form defuns)
+         (destructuring-bind (name params &rest body) (cdr form)
+           (declare (ignore body))
+           (let ((param-types (make-list (length params) :initial-element +type-i32+))
+                 (result-types (list +type-i32+)))
+             (setf env (env-add-function env name param-types result-types)))))
+        ;; Register global constants
+        ((and (consp form) (eq (car form) 'defconstant))
+         (destructuring-bind (name value &optional doc) (cdr form)
+           (declare (ignore doc))
+           (when (integerp value)
+             (setf env (env-add-global env name +type-i32+ nil value :constant-p t)))))
+        ;; Register global parameters
+        ((and (consp form) (eq (car form) 'defparameter))
+         (destructuring-bind (name value &optional doc) (cdr form)
+           (declare (ignore doc))
+           (when (integerp value)
+             (setf env (env-add-global env name +type-i32+ t value :constant-p nil)))))
+        ;; Register defvar
+        ((and (consp form) (eq (car form) 'defvar))
+         (destructuring-bind (name &optional (value 0) doc) (cdr form)
+           (declare (ignore doc))
+           (unless (env-lookup env name :global)
+             (when (integerp value)
+               (setf env (env-add-global env name +type-i32+ t value :constant-p nil))))))))
     (setf defuns (nreverse defuns))
     ;; Store lambda-holder in a dynamic variable for lambda compilation to use
     (let ((*pending-lambdas* lambda-holder))
       ;; Second pass: compile defun bodies (lambdas go to pending list)
       (dolist (form defuns)
         (compile-defun-body form env lambda-holder module))
-      ;; Compile any non-defun forms
+      ;; Compile any non-defun, non-global forms as main
       (dolist (form forms)
-        (unless (and (consp form) (eq (car form) 'defun))
+        (unless (and (consp form)
+                     (member (car form) '(defun defconstant defparameter defvar)))
           (setf env (compile-toplevel form env))))
       ;; Add pending lambda functions to module
       (dolist (lambda-entry (car lambda-holder))
