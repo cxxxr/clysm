@@ -148,9 +148,9 @@
      ;; Multiple arguments: expand to AND form
      ;; (< a b c) => (and (< a b) (< b c))
      (let ((comparisons nil))
-       (loop for (a b) on args
-             while b
-             do (push `(,op ,a ,b) comparisons))
+       (do ((rest args (cdr rest)))
+           ((null (cdr rest)))
+         (push `(,op ,(car rest) ,(cadr rest)) comparisons))
        (compile-form `(and ,@(nreverse comparisons)) env)))))
 
 (define-primitive < (args env)
@@ -189,10 +189,11 @@
      ;; Multiple arguments: check ALL pairs are different
      ;; (/= a b c) => (and (/= a b) (/= a c) (/= b c))
      (let ((comparisons nil))
-       (loop for rest on args
-             for a = (car rest)
-             do (loop for b in (cdr rest)
-                      do (push `(/= ,a ,b) comparisons)))
+       (do ((rest args (cdr rest)))
+           ((null rest))
+         (let ((a (car rest)))
+           (dolist (b (cdr rest))
+             (push `(/= ,a ,b) comparisons))))
        (compile-form `(and ,@(nreverse comparisons)) env)))))
 
 ;;; Boolean Primitives
@@ -2229,6 +2230,8 @@
           (,+op-local-set+ ,alist-local)
           (,+op-br+ 0)
         (,+op-end+)
+        ;; Unreachable - loop always exits via br
+        ,+op-unreachable+
       (,+op-end+))))
 
 (define-primitive sethash (args env)

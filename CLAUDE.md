@@ -6,7 +6,7 @@ Common Lisp to WebAssembly compiler using WasmGC.
 
 ### Requirements
 - SBCL
-- Quicklisp with: alexandria, serapeum, trivia, flexi-streams, fiveam
+- Quicklisp with: alexandria, serapeum, trivia, fiveam
 
 ### Loading
 ```lisp
@@ -50,29 +50,46 @@ Source (.lisp) -> Reader -> Macro Expand (SBCL) -> AST -> IR -> Codegen -> WASM
 - Export public API from package.lisp
 - Write tests with FiveAM
 
-## Current Status: Phase 2 In Progress
+## Current Status: Bootstrap In Progress
 
 ### Phase 1 (Complete)
-- Basic arithmetic (+, -, *, /, mod, rem)
-- Comparisons (<, >, <=, >=, =, /=)
-- Boolean (not, null)
-- Bitwise (logand, logior, logxor, ash)
-- Control flow (if)
-- Local bindings (let)
-- Function definitions (defun)
+- Arithmetic: +, -, *, /, mod, rem, 1+, 1-
+- Comparisons: <, >, <=, >=, =, /= (multi-arg)
+- Boolean: not, null, zerop, plusp, minusp
+- Bitwise: logand, logior, logxor, ash
+- Control: if, when, unless, cond, and, or, case, ecase
+- Bindings: let, let*, setq, setf
+- Functions: defun, lambda, funcall
 
-### Phase 2 (In Progress)
-- Memory and heap management
-- List primitives (cons, car, cdr, consp, atom, rplaca, rplacd)
-- List constructors (list, list*)
-- quote for literals (numbers, lists)
-- let* (sequential bindings)
-- Conditionals (when, unless, cond, and, or)
-- Recursive function calls
-- Multiple function definitions with mutual calls
+### Phase 2 (Complete)
+- Lists: cons, car, cdr, list, list*, first-fourth, nth, nthcdr
+- Destructive: rplaca, rplacd
+- Predicates: eq, eql, consp, atom, listp, numberp, symbolp
+- List ops: append, reverse, nreverse, member, assoc, last, length, butlast, copy-list
+- Higher-order: mapcar, mapc, reduce
+
+### Phase 2.5 (Complete)
+- Math: abs, max, min, evenp, oddp, gcd, lcm
+- Rounding: floor, ceiling, truncate, round
+- Multiple values: values, multiple-value-bind
+- Destructuring: destructuring-bind
+- Local functions: labels
+- Control: block, return-from, tagbody, go
+- Loops: dotimes, dolist, loop (via SBCL)
+
+### Bootstrap (In Progress)
+- Structs: defstruct (constructor, accessors, predicate, setf)
+- Globals: defparameter, defconstant, defvar
+- Hash tables: make-hash-table, gethash, sethash, remhash
+- Macros: defmacro (host expansion), backquote
+- Strings: string=, string-downcase, string-upcase, string-append, schar
+- Control: catch, throw, unwind-protect
+- Format: ~A, ~%, ~~
+- Reader: S-expression parser (Phase S1 almost complete)
 
 ### Remaining
-- Closures with environment capture
-- block/return-from
-- tagbody/go
-- Symbols
+- Runtime symbol intern
+- Full loop implementation (self-hosted)
+- Arrays and vectors
+- CLOS
+- Condition system

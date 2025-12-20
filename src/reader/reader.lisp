@@ -8,13 +8,15 @@
 (defun read-source (source)
   "Read Lisp source from a string. Returns a list of top-level forms."
   (with-input-from-string (stream source)
-    (loop for form = (read stream nil :eof)
-          until (eq form :eof)
-          collect form)))
+    (let ((forms nil))
+      (do ((form (read stream nil :eof) (read stream nil :eof)))
+          ((eq form :eof) (nreverse forms))
+        (push form forms)))))
 
 (defun read-file (pathname)
   "Read Lisp source from a file. Returns a list of top-level forms."
   (with-open-file (stream pathname :direction :input)
-    (loop for form = (read stream nil :eof)
-          until (eq form :eof)
-          collect form)))
+    (let ((forms nil))
+      (do ((form (read stream nil :eof) (read stream nil :eof)))
+          ((eq form :eof) (nreverse forms))
+        (push form forms)))))

@@ -35,12 +35,13 @@
          ,@else-code
          ,+op-end+)))
     (ir-seq
-     (let ((code nil))
-       (loop for (form . rest) on (ir-seq-forms node)
-             do (setf code (append code (generate-code form)))
-                (when rest
-                  (setf code (append code `(,+op-drop+)))))
-       code))
+     (let ((code nil)
+           (forms (ir-seq-forms node)))
+       (do ((rest forms (cdr rest)))
+           ((null rest) code)
+         (setf code (append code (generate-code (car rest))))
+         (when (cdr rest)
+           (setf code (append code `(,+op-drop+)))))))
     (ir-primop
      (let ((op (ir-primop-op node))
            (args (ir-primop-args node)))

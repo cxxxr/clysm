@@ -1238,7 +1238,30 @@
 ;;; Extended reader tests with symbol and string support
 
 (defparameter *full-reader-preamble*
-  '(;; Skip whitespace and comments
+  '(;; Skip block comment #|...|#
+    (defun skip-block-comment (rs depth)
+      (let ((ch (reader-state-read-char rs)))
+        (cond
+          ((= ch -1) nil)
+          ((= ch 124)  ; '|'
+           (let ((next (reader-state-peek-char rs)))
+             (if (= next 35)  ; '#'
+                 (progn
+                   (reader-state-read-char rs)
+                   (if (= depth 1)
+                       nil
+                       (skip-block-comment rs (- depth 1))))
+                 (skip-block-comment rs depth))))
+          ((= ch 35)  ; '#'
+           (let ((next (reader-state-peek-char rs)))
+             (if (= next 124)  ; '|'
+                 (progn
+                   (reader-state-read-char rs)
+                   (skip-block-comment rs (+ depth 1)))
+                 (skip-block-comment rs depth))))
+          (t (skip-block-comment rs depth)))))
+
+    ;; Skip whitespace and comments
     (defun skip-ws-helper (rs)
       (let ((ch (reader-state-peek-char rs)))
         (cond
@@ -1250,6 +1273,17 @@
            (reader-state-read-char rs)
            (skip-to-nl rs)
            (skip-ws-helper rs))
+          ((= ch 35)  ; '#' - check for block comment
+           (reader-state-read-char rs)
+           (let ((next (reader-state-peek-char rs)))
+             (if (= next 124)  ; '|'
+                 (progn
+                   (reader-state-read-char rs)
+                   (skip-block-comment rs 1)
+                   (skip-ws-helper rs))
+                 (progn
+                   (reader-state-unread-char rs)
+                   nil))))
           (t nil))))
     (defun skip-to-nl (rs)
       (let ((ch (reader-state-read-char rs)))
@@ -1304,6 +1338,54 @@
         (skip-str-end rs)
         (reader-state-substring-raw rs start (- (reader-state-position rs) 1))))
 
+    ;; Character literal helpers
+    (defun upcase-ch (ch)
+      (if (and (>= ch 97) (<= ch 122))
+          (- ch 32)
+          ch))
+
+    (defun read-char-name (rs acc)
+      (let ((ch (reader-state-peek-char rs)))
+        (if (alpha-char-p ch)
+            (progn
+              (reader-state-read-char rs)
+              (read-char-name rs (cons ch acc)))
+            (reverse-lst acc))))
+
+    (defun reverse-lst (lst)
+      (reverse-lst-h lst nil))
+
+    (defun reverse-lst-h (lst acc)
+      (if (null lst)
+          acc
+          (reverse-lst-h (cdr lst) (cons (car lst) acc))))
+
+    (defun match-name (chars target)
+      (cond
+        ((and (null chars) (null target)) t)
+        ((or (null chars) (null target)) nil)
+        ((= (upcase-ch (car chars)) (car target))
+         (match-name (cdr chars) (cdr target)))
+        (t nil)))
+
+    (defun read-char-literal (rs)
+      (let ((ch (reader-state-read-char rs)))
+        (cond
+          ((= ch -1) -1)
+          ((alpha-char-p ch)
+           (let ((next (reader-state-peek-char rs)))
+             (if (alpha-char-p next)
+                 ;; Named character
+                 (let ((name (read-char-name rs (list ch))))
+                   (cond
+                     ((match-name name (list 83 80 65 67 69)) 32)       ; SPACE
+                     ((match-name name (list 78 69 87 76 73 78 69)) 10) ; NEWLINE
+                     ((match-name name (list 84 65 66)) 9)              ; TAB
+                     ((match-name name (list 82 69 84 85 82 78)) 13)    ; RETURN
+                     (t ch)))  ; Unknown, return first char
+                 ch)))  ; Single letter
+          (t ch))))  ; Non-alpha character
+
     ;; Read form
     (defun read-form (rs)
       (skip-ws rs)
@@ -1316,6 +1398,21 @@
           ((= ch 39)      ; '\'' - quote
            (reader-state-read-char rs)
            (cons "QUOTE" (cons (read-form rs) nil)))
+          ((= ch 35)      ; '#' - dispatch
+           (reader-state-read-char rs)
+           (let ((dispatch (reader-state-peek-char rs)))
+             (cond
+               ((= dispatch 39)  ; #' - function quote
+                (reader-state-read-char rs)
+                (cons "FUNCTION" (cons (read-form rs) nil)))
+               ((= dispatch 92)  ; #\ - character literal
+                (reader-state-read-char rs)
+                (read-char-literal rs))
+               ((= dispatch 124) ; #| - block comment
+                (reader-state-read-char rs)
+                (skip-block-comment rs 1)
+                (read-form rs))
+               (t -5))))  ; Unknown dispatch
           ((= ch 34)      ; '"' - string
            (reader-state-read-char rs)
            (read-str rs))
@@ -1388,6 +1485,59 @@
              (append *full-reader-preamble*
                      `((let ((rs (make-reader-state ,(format nil "; comment~%42"))))
                          (read-form rs))))))))
+
+(test reader-skip-block-comments
+  "Test that reader skips #|...|# block comments."
+  (is (= 42 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     '((let ((rs (make-reader-state "#| block comment |# 42")))
+                         (read-form rs))))))))
+
+(test reader-skip-nested-block-comments
+  "Test that reader handles nested block comments."
+  (is (= 99 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     '((let ((rs (make-reader-state "#| outer #| inner |# still outer |# 99")))
+                         (read-form rs))))))))
+
+(test reader-function-quote
+  "Test that reader handles #'function syntax."
+  (let ((result (clysm/compiler:eval-forms
+                 (append *full-reader-preamble*
+                         '((let ((rs (make-reader-state "#'foo")))
+                             (let ((form (read-form rs)))
+                               ;; form should be (FUNCTION FOO)
+                               ;; car is "FUNCTION" string
+                               (string-length (car form)))))))))
+    (is (= 8 result))))  ; "FUNCTION" has 8 characters
+
+(test reader-character-literal-simple
+  "Test that reader handles #\\x character literals."
+  (is (= 65 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     '((let ((rs (make-reader-state "#\\A")))
+                         (read-form rs))))))))
+
+(test reader-character-literal-space
+  "Test that reader handles #\\Space named character."
+  (is (= 32 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     '((let ((rs (make-reader-state "#\\Space")))
+                         (read-form rs))))))))
+
+(test reader-character-literal-newline
+  "Test that reader handles #\\Newline named character."
+  (is (= 10 (clysm/compiler:eval-forms
+             (append *full-reader-preamble*
+                     '((let ((rs (make-reader-state "#\\Newline")))
+                         (read-form rs))))))))
+
+(test reader-character-literal-tab
+  "Test that reader handles #\\Tab named character."
+  (is (= 9 (clysm/compiler:eval-forms
+            (append *full-reader-preamble*
+                    '((let ((rs (make-reader-state "#\\Tab")))
+                        (read-form rs))))))))
 
 ;;; ============================================================
 ;;; Symbol System Tests

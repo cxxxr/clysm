@@ -192,16 +192,17 @@
 (defun struct-slot-offset (struct-info slot-name)
   "Get the memory offset for a slot (in bytes). Returns nil if not found."
   (let ((all-slots (struct-all-slots struct-info)))
-    (loop for (name default) in all-slots
-          for offset from 4 by 4  ; First slot at offset 4 (after type-id)
-          when (eq name slot-name)
-          return offset)))
+    (do ((slots all-slots (cdr slots))
+         (offset 4 (+ offset 4)))
+        ((null slots) nil)
+      (when (eq (caar slots) slot-name)
+        (return offset)))))
 
 (defun intern-compile-time-string (string)
   "Intern a string at compile time, returning its address.
    Strings are stored as: [length:i32][utf8-bytes...]"
   (or (gethash string *string-table*)
-      (let* ((bytes (flexi-streams:string-to-octets string :external-format :utf-8))
+      (let* ((bytes (clysm/utils:string-to-utf8 string))
              (len (length bytes))
              (addr *static-data-offset*))
         ;; Allocate space: 4 bytes for length + bytes

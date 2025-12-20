@@ -21,7 +21,9 @@
    #:buffer-write-uleb128
    #:buffer-write-sleb128
    #:buffer-write-name
-   #:buffer-length))
+   #:buffer-length
+   ;; UTF-8 encoding
+   #:string-to-utf8))
 
 (defpackage #:clysm/wasm
   (:use #:cl #:clysm/utils)
@@ -159,9 +161,11 @@
    #:add-table
    #:add-element
    #:add-data
+   #:set-start
    #:wasm-module-tables
    #:wasm-module-elements
    #:wasm-module-data
+   #:wasm-module-start
    #:wasm-module-import-func-count
    #:wasm-module-func-count
    #:finalize-module
@@ -300,7 +304,18 @@
    ;; Eval
    #:*node-command*
    #:eval-form
-   #:eval-forms))
+   #:eval-forms
+   ;; Macro expansion
+   #:*macro-table*
+   #:reset-macro-table
+   #:macro-function-p
+   #:register-macro
+   #:clysm-macroexpand-1
+   #:expand-backquote
+   #:register-defmacro
+   #:install-standard-macros
+   ;; Self-hosting mode
+   #:*self-hosting-mode*))
 
 (defpackage #:clysm/runtime
   (:use #:cl)

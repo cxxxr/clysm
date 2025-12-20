@@ -2,10 +2,55 @@
 
 (in-package #:clysm/compiler)
 
-;;; Macro Expansion (using host Lisp)
-;;; We use SBCL's macroexpand to expand macros before compilation.
-;;; This allows us to use defmacro in source code and have it expanded
-;;; on the host before generating WASM.
+;;; Self-Hosting Mode
+;;; When *self-hosting-mode* is T, we skip SBCL-specific normalization
+;;; because our own macro expander produces standard CL forms.
+
+(defvar *self-hosting-mode* nil
+  "When T, skip SBCL internal form normalization.
+   Set to T when running in self-hosted mode (not using SBCL as host).")
+
+(defun normalize-standard-forms (form)
+  "Normalize standard CL forms for self-hosting mode.
+   Unlike normalize-sbcl-internals, this only handles standard CL constructs
+   that our macro expander might produce (no SBCL internals)."
+  (cond
+    ((atom form) form)
+    ;; THE type annotation - just return the value
+    ((eq (car form) 'the)
+     (normalize-standard-forms (third form)))
+    ;; LET/LET* - strip DECLARE forms
+    ((or (eq (car form) 'let) (eq (car form) 'let*))
+     (let* ((bindings (second form))
+            (body (cddr form))
+            (filtered-body (remove-if (lambda (f)
+                                        (and (consp f) (eq (car f) 'declare)))
+                                      body)))
+       `(,(car form) ,(mapcar (lambda (binding)
+                                (if (consp binding)
+                                    (list (first binding)
+                                          (normalize-standard-forms (second binding)))
+                                    binding))
+                              bindings)
+         ,@(mapcar #'normalize-standard-forms filtered-body))))
+    ;; LOCALLY - strip declarations and process body
+    ((eq (car form) 'locally)
+     (let ((filtered-body (remove-if (lambda (f)
+                                       (and (consp f) (eq (car f) 'declare)))
+                                     (cdr form))))
+       (if (= (length filtered-body) 1)
+           (normalize-standard-forms (first filtered-body))
+           `(progn ,@(mapcar #'normalize-standard-forms filtered-body)))))
+    ;; ENDP - same as null for proper lists
+    ((eq (car form) 'endp)
+     `(null ,(normalize-standard-forms (second form))))
+    ;; Default: recursively process
+    (t
+     (cons (normalize-standard-forms (car form))
+           (mapcar #'normalize-standard-forms (cdr form))))))
+
+;;; Macro Expansion
+;;; Uses self-hosted macro expansion with host fallback for bootstrap.
 
 (defun normalize-binding* (bindings body)
   "Transform SB-INT:BINDING* to LET* with POP expanded.
@@ -38,10 +83,15 @@
        ,@(mapcar #'normalize-sbcl-internals body))))
 
 (defun normalize-sbcl-internals (form)
-  "Replace SBCL internal functions with standard equivalents."
+  "Replace SBCL internal functions with standard equivalents.
+   In self-hosting mode, this is mostly a no-op since our macro expander
+   produces standard CL forms without SBCL internals."
   (cond
     ((atom form) form)
-    ;; Arithmetic
+    ;; In self-hosting mode, only handle standard forms
+    (*self-hosting-mode*
+     (normalize-standard-forms form))
+    ;; Arithmetic (SBCL-specific)
     ((eq (car form) 'sb-impl::xsubtract)
      ;; (sb-impl::xsubtract a b) => (- b a)
      `(- ,(normalize-sbcl-internals (third form))
@@ -119,32 +169,40 @@
            (mapcar #'normalize-sbcl-internals (cdr form))))))
 
 (defun expand-macros (form)
-  "Recursively expand all macros in FORM using the host Lisp's macroexpand.
-   This is similar to macroexpand-all but handles our special forms."
+  "Recursively expand all macros in FORM.
+   Uses self-hosted macro expansion with fallback to host for bootstrap."
   (cond
     ;; Atoms don't need expansion
     ((atom form) form)
     ;; Quote - don't expand inside
     ((eq (car form) 'quote) form)
+    ;; Backquote - expand to list-building code
+    ((eq (car form) 'backquote)
+     (expand-macros (expand-backquote (second form))))
     ;; Special forms we handle - expand their subforms
-    ((member (car form) '(if let let* progn setq setf when unless cond and or
-                          block return-from return dotimes dolist
+    ((member (car form) '(if let let* progn setq setf
+                          block return-from return
                           tagbody go labels values multiple-value-bind
                           lambda funcall defun defparameter defconstant
-                          defvar defstruct))
+                          defvar defstruct catch throw unwind-protect format))
      (cons (car form) (mapcar #'expand-macros (cdr form))))
     ;; SB-INT:BINDING* - intercept before further expansion and normalize
     ((eq (car form) 'sb-int:binding*)
      (expand-macros (normalize-binding* (second form) (cddr form))))
-    ;; Try to macroexpand the form
+    ;; Try self-hosted macro expansion first
     (t
      (multiple-value-bind (expanded expandedp)
-         (macroexpand-1 form)
+         (clysm-macroexpand-1 form)
        (if expandedp
-           ;; Was expanded - recursively expand the result
+           ;; Was expanded by our macros - recursively expand
            (expand-macros expanded)
-           ;; Not a macro - expand subforms
-           (cons (car form) (mapcar #'expand-macros (cdr form))))))))
+           ;; Try host macroexpand as fallback (for bootstrap)
+           (multiple-value-bind (host-expanded host-expandedp)
+               (macroexpand-1 form)
+             (if host-expandedp
+                 (expand-macros host-expanded)
+                 ;; Not a macro - expand subforms
+                 (cons (car form) (mapcar #'expand-macros (cdr form))))))))))
 
 (defun expand-toplevel-macros (forms)
   "Expand macros in a list of top-level forms."
@@ -257,8 +315,8 @@
         ;; Create local environment for function body
         (let ((body-env new-env))
           ;; Add parameters as locals
-          (loop for param in params
-                do (setf body-env (env-add-local body-env param +type-i32+)))
+          (dolist (param params)
+            (setf body-env (env-add-local body-env param +type-i32+)))
           ;; Compile body (may add lambda functions to module first!)
           (let* ((body-code (compile-progn body body-env))
                  ;; Find max local index used in the code
@@ -293,15 +351,17 @@
 ;;; Module Compilation
 
 (defun eval-defmacros (forms)
-  "Find and evaluate defmacro forms on the host Lisp.
-   This makes user-defined macros available for subsequent macro expansion.
+  "Process defmacro forms and register them.
+   Uses self-hosted macro registration with fallback to host for bootstrap.
    Returns forms with defmacros removed (they don't compile to WASM)."
   (let ((result nil))
     (dolist (form forms)
       (cond
-        ;; defmacro - evaluate on host, don't include in output
+        ;; defmacro - register in our table and on host
         ((and (consp form) (eq (car form) 'defmacro))
-         ;; Evaluate the defmacro on SBCL so the macro becomes available
+         ;; Register with our macro system
+         (register-defmacro form)
+         ;; Also evaluate on host for bootstrap/fallback
          (eval form))
         ;; Other forms - keep for compilation
         (t
@@ -314,14 +374,18 @@
   (let* ((module (make-wasm-module))
          (env (make-initial-env module))
          (defuns nil)
-         (lambda-holder (list nil)))  ; Box to collect lambda functions
-    ;; Reset symbol table, closure type cache, and structure registry
+         (lambda-holder (list nil))    ; Box to collect lambda functions
+         (init-forms nil))             ; Accumulator for non-integer defparameter initializations
+    ;; Reset symbol table, closure type cache, structure registry, and macro table
     (reset-symbol-table)
     (reset-closure-type-cache)
     (reset-struct-registry)
-    ;; First, evaluate any defmacros on the host (makes them available for expansion)
+    (reset-macro-table)
+    ;; Install standard macros (when, unless, cond, and, or, etc.)
+    (install-standard-macros)
+    ;; Process any defmacros (makes them available for expansion)
     (setf forms (eval-defmacros forms))
-    ;; Expand macros using host Lisp before compilation
+    ;; Expand macros using self-hosted expansion with host fallback
     (setf forms (expand-toplevel-macros forms))
     ;; Add memory and heap pointer if enabled
     (when enable-memory
@@ -347,8 +411,13 @@
         ((and (consp form) (eq (car form) 'defparameter))
          (destructuring-bind (name value &optional doc) (cdr form)
            (declare (ignore doc))
-           (when (integerp value)
-             (setf env (env-add-global env name +type-i32+ t value :constant-p nil)))))
+           (if (integerp value)
+               ;; Integer value: initialize directly
+               (setf env (env-add-global env name +type-i32+ t value :constant-p nil))
+               ;; Non-integer value: initialize to 0, add to init-forms
+               (progn
+                 (setf env (env-add-global env name +type-i32+ t 0 :constant-p nil))
+                 (push `(setq ,name ,value) init-forms)))))
         ;; Register defvar
         ((and (consp form) (eq (car form) 'defvar))
          (destructuring-bind (name &optional (value 0) doc) (cdr form)
@@ -365,6 +434,9 @@
       ;; Second pass: compile defun bodies (lambdas go to pending list)
       (dolist (form defuns)
         (compile-defun-body form env lambda-holder module))
+      ;; Generate __clysm_init__ for non-integer defparameters
+      (when init-forms
+        (generate-init-function module env (nreverse init-forms)))
       ;; Compile any non-defun, non-global, non-defstruct forms as main
       (dolist (form forms)
         (unless (and (consp form)
@@ -393,8 +465,8 @@
         ;; Create local environment for function body
         (let ((body-env env))
           ;; Add parameters as locals
-          (loop for param in params
-                do (setf body-env (env-add-local body-env param +type-i32+)))
+          (dolist (param params)
+            (setf body-env (env-add-local body-env param +type-i32+)))
           ;; Compile body
           (let* ((body-code (compile-progn body body-env))
                  (max-local-idx (find-max-local-index body-code))
@@ -408,6 +480,46 @@
             (add-export module (string-downcase (symbol-name name))
                         +export-func+ func-idx)))))))
 
+(defun find-or-add-void-type (module)
+  "Find or add a () -> () function type. Returns type index."
+  (let ((types (wasm-module-types module)))
+    ;; Search for existing void->void type
+    (dotimes (i (length types))
+      (let ((ft (nth i types)))
+        (when (and (typep ft 'func-type)
+                   (null (func-type-params ft))
+                   (null (func-type-results ft)))
+          (return-from find-or-add-void-type i))))
+    ;; Not found, add new type
+    (add-func-type module nil nil)))
+
+(defun generate-init-function (module env init-forms)
+  "Generate __clysm_init__ function for non-integer defparameter initialization.
+   This function is set as the WASM start function to run on module instantiation."
+  (let* (;; Find or create () -> () type
+         (void-type-idx (find-or-add-void-type module))
+         ;; Compile each init-form with drop to discard the result
+         (init-code nil))
+    ;; Compile each setq and drop its result (start function must leave no values)
+    (dolist (init-form init-forms)
+      (let ((form-code (compile-form init-form env)))
+        (setf init-code (append init-code form-code (list +op-drop+)))))
+    ;; Get function index before adding
+    (let ((func-idx (+ (wasm-module-import-func-count module)
+                       (wasm-module-func-count module))))
+      ;; Find max local index used in init code
+      (let* ((max-local-idx (find-max-local-index init-code))
+             (num-locals (max 0 (1+ max-local-idx)))
+             (locals (if (plusp num-locals)
+                         (list (cons num-locals +type-i32+))
+                         nil)))
+        ;; Add function to module
+        (add-function module void-type-idx locals init-code)
+        ;; Set as start function
+        (set-start module func-idx)
+        ;; Also export for debugging/manual calling
+        (add-export module "__clysm_init__" +export-func+ func-idx)))))
+
 (defun setup-element-section (module)
   "Populate the function table with all functions for indirect calls."
   (let ((func-count (+ (wasm-module-import-func-count module)
@@ -417,7 +529,10 @@
       (add-element module
                    0  ; table index
                    `((,+op-i32-const+ 0))  ; offset expression
-                   (loop for i from 0 below func-count collect i)))))
+                   (let ((result nil))
+                     (dotimes (i func-count)
+                       (push i result))
+                     (nreverse result))))))
 
 ;;; Runtime Setup
 
@@ -454,10 +569,12 @@
   (add-global module +type-i32+ t `((,+op-i32-const+ 1)))
   ;; $mv-0 through $mv-7 hold the values (first 8)
   (setf *mv-globals*
-        (loop for i below +max-multiple-values+
-              collect (let ((idx (length (wasm-module-globals module))))
-                        (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
-                        idx)))
+        (let ((result nil))
+          (dotimes (i +max-multiple-values+)
+            (let ((idx (length (wasm-module-globals module))))
+              (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
+              (push idx result)))
+          (nreverse result)))
   ;; Add runtime symbol table global (initialized to 0, created lazily)
   (setf *runtime-symbol-table-global*
         (length (wasm-module-globals module)))
@@ -508,18 +625,20 @@
       (let ((name (car name-and-options))
             (options (cdr name-and-options)))
         (cons name
-              (loop for opt in options
-                    collect (if (consp opt)
-                                (cons (car opt) (cdr opt))
-                                (cons opt nil)))))
+              (mapcar (lambda (opt)
+                        (if (consp opt)
+                            (cons (car opt) (cdr opt))
+                            (cons opt nil)))
+                      options)))
       (cons name-and-options nil)))
 
 (defun parse-defstruct-slots (slot-descriptions)
   "Parse defstruct slot descriptions. Returns list of (name default)."
-  (loop for slot in slot-descriptions
-        collect (if (consp slot)
-                    (list (car slot) (or (cadr slot) 0))
-                    (list slot 0))))
+  (mapcar (lambda (slot)
+            (if (consp slot)
+                (list (car slot) (or (cadr slot) 0))
+                (list slot 0)))
+          slot-descriptions))
 
 (defun register-defstruct-type (form)
   "Parse and register a defstruct definition."
@@ -533,9 +652,11 @@
       (let ((struct-info (register-struct name slots :parent parent)))
         ;; Register accessor primitives for each slot
         (let ((all-slots (struct-all-slots struct-info)))
-          (loop for (slot-name default) in all-slots
-                for offset from 4 by 4
-                do (register-struct-accessor name slot-name offset)))
+          (do ((slots all-slots (cdr slots))
+               (offset 4 (+ offset 4)))
+              ((null slots))
+            (let ((slot-name (caar slots)))
+              (register-struct-accessor name slot-name offset))))
         ;; Register constructor primitive
         (register-struct-constructor struct-info)
         ;; Register predicate primitive
@@ -583,17 +704,24 @@
               (,+op-i32-const+ ,type-id)
               (,+op-i32-store+ 2 0)
               ;; Store each slot
-              ,@(loop for (slot-name default) in all-slots
-                      for i from 0
-                      for offset from 4 by 4
-                      for arg = (nth i args)
-                      append `((,+op-global-get+ ,*heap-pointer-global*)
-                               (,+op-i32-const+ ,struct-size)
-                               ,+op-i32-sub+
-                               ,@(if arg
-                                     (compile-form arg env)
-                                     `((,+op-i32-const+ ,default)))
-                               (,+op-i32-store+ 2 ,offset)))
+              ,@(let ((result nil)
+                      (i 0))
+                  (do ((slots all-slots (cdr slots))
+                       (offset 4 (+ offset 4)))
+                      ((null slots))
+                    (let* ((default (cadar slots))
+                           (arg (nth i args)))
+                      (setf result
+                            (append result
+                                    `((,+op-global-get+ ,*heap-pointer-global*)
+                                      (,+op-i32-const+ ,struct-size)
+                                      ,+op-i32-sub+
+                                      ,@(if arg
+                                            (compile-form arg env)
+                                            `((,+op-i32-const+ ,default)))
+                                      (,+op-i32-store+ 2 ,offset)))))
+                    (incf i))
+                  result)
               ;; Struct address already on stack
               )))))
 
@@ -630,16 +758,17 @@
         (destructuring-bind (addr len bytes) entry
           (let ((relative-addr (- addr *static-data-base*)))
             ;; Pad to the correct offset
-            (loop while (< (length data-buffer) relative-addr)
-                  do (vector-push-extend 0 data-buffer))
+            (do ()
+                ((>= (length data-buffer) relative-addr))
+              (vector-push-extend 0 data-buffer))
             ;; Write length (little-endian i32)
             (vector-push-extend (ldb (byte 8 0) len) data-buffer)
             (vector-push-extend (ldb (byte 8 8) len) data-buffer)
             (vector-push-extend (ldb (byte 8 16) len) data-buffer)
             (vector-push-extend (ldb (byte 8 24) len) data-buffer)
             ;; Write UTF-8 bytes
-            (loop for byte across bytes
-                  do (vector-push-extend byte data-buffer))))))
+            (dotimes (i (length bytes))
+              (vector-push-extend (aref bytes i) data-buffer))))))
     ;; Collect all symbol entries sorted by address
     (let ((symbols nil))
       (maphash (lambda (key value)
@@ -653,8 +782,9 @@
           (declare (ignore sym))
           (let ((relative-addr (- sym-addr *static-data-base*)))
             ;; Pad to the correct offset
-            (loop while (< (length data-buffer) relative-addr)
-                  do (vector-push-extend 0 data-buffer))
+            (do ()
+                ((>= (length data-buffer) relative-addr))
+              (vector-push-extend 0 data-buffer))
             ;; Write name-ptr (little-endian i32)
             (vector-push-extend (ldb (byte 8 0) string-addr) data-buffer)
             (vector-push-extend (ldb (byte 8 8) string-addr) data-buffer)

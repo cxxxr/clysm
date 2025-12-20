@@ -8,14 +8,14 @@
 leveraging WasmGC for garbage collection and targeting browser execution."
   :depends-on ("alexandria"
                "serapeum"
-               "trivia"
-               "flexi-streams")
+               "trivia")
   :pathname "src/"
   :serial t
   :components ((:file "package")
                (:module "utils"
                 :serial t
-                :components ((:file "binary")))
+                :components ((:file "binary")
+                             (:file "utf8")))
                (:module "wasm"
                 :serial t
                 :components ((:file "types")
@@ -37,6 +37,7 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                (:module "compiler"
                 :serial t
                 :components ((:file "environment")
+                             (:file "macroexpand")
                              (:file "special-forms")
                              (:file "primitives")
                              (:file "codegen")

@@ -31,11 +31,11 @@
      (let ((forms (mapcar #'optimize-ir (ir-seq-forms node))))
        ;; Flatten nested sequences
        (let ((flattened
-               (loop for form in forms
-                     if (ir-seq-p form)
-                       append (ir-seq-forms form)
-                     else
-                       collect form)))
+               (mapcan (lambda (form)
+                         (if (ir-seq-p form)
+                             (copy-list (ir-seq-forms form))
+                             (list form)))
+                       forms)))
          (if (= 1 (length flattened))
              (first flattened)
              (make-ir-seq :forms flattened)))))

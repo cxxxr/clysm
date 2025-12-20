@@ -30,6 +30,19 @@
        (reader-state-read-char rs)
        (skip-to-newline rs)
        (skip-whitespace-helper rs))
+      ;; Hash - check for block comment #|
+      ((= ch 35)  ; '#'
+       (reader-state-read-char rs)
+       (let ((next (reader-state-peek-char rs)))
+         (if (= next 124)  ; '|'
+             (progn
+               (reader-state-read-char rs)
+               (skip-block-comment rs 1)
+               (skip-whitespace-helper rs))
+             ;; Not a block comment - unread the # and stop
+             (progn
+               (reader-state-unread-char rs)
+               nil))))
       ;; Not whitespace - done
       (t nil))))
 
@@ -40,6 +53,120 @@
       ((= ch -1) nil)     ; EOF
       ((= ch 10) nil)     ; newline
       (t (skip-to-newline rs)))))
+
+;;; Character literal #\x
+(defun read-character-literal (rs)
+  "Read a character literal after #\\. Returns the character code."
+  (let ((ch (reader-state-read-char rs)))
+    (cond
+      ((= ch -1) -1)  ; EOF
+      ;; Check for named characters (Space, Newline, Tab, Return)
+      ((alpha-char-p ch)
+       (let ((start (- (reader-state-position rs) 1)))
+         ;; Peek to see if more letters follow
+         (let ((next (reader-state-peek-char rs)))
+           (if (alpha-char-p next)
+               ;; Named character - read the rest
+               (read-named-character rs ch)
+               ;; Single letter character
+               ch))))
+      ;; Single non-alpha character
+      (t ch))))
+
+(defun read-named-character (rs first-char)
+  "Read a named character like Space, Newline, Tab."
+  ;; Read remaining characters
+  (let ((name (read-character-name-rest rs (list first-char))))
+    (let ((upcased (upcase-char-list name)))
+      (cond
+        ((char-list-equal upcased (list 83 80 65 67 69))  ; "SPACE"
+         32)
+        ((char-list-equal upcased (list 78 69 87 76 73 78 69))  ; "NEWLINE"
+         10)
+        ((char-list-equal upcased (list 84 65 66))  ; "TAB"
+         9)
+        ((char-list-equal upcased (list 82 69 84 85 82 78))  ; "RETURN"
+         13)
+        ((char-list-equal upcased (list 76 73 78 69 70 69 69 68))  ; "LINEFEED"
+         10)
+        ((char-list-equal upcased (list 80 65 71 69))  ; "PAGE"
+         12)
+        ((char-list-equal upcased (list 82 85 66 79 85 84))  ; "RUBOUT"
+         127)
+        ((char-list-equal upcased (list 66 65 67 75 83 80 65 67 69))  ; "BACKSPACE"
+         8)
+        ((char-list-equal upcased (list 78 85 76))  ; "NUL"
+         0)
+        ;; Unknown named character - return first char
+        (t first-char)))))
+
+(defun read-character-name-rest (rs acc)
+  "Read remaining characters of a named character."
+  (let ((ch (reader-state-peek-char rs)))
+    (if (alpha-char-p ch)
+        (progn
+          (reader-state-read-char rs)
+          (read-character-name-rest rs (cons ch acc)))
+        (reverse-list acc))))
+
+(defun upcase-char-list (chars)
+  "Convert a list of character codes to uppercase."
+  (if (null chars)
+      nil
+      (cons (upcase-char (car chars))
+            (upcase-char-list (cdr chars)))))
+
+(defun upcase-char (ch)
+  "Convert a single character code to uppercase."
+  (if (and (>= ch 97) (<= ch 122))  ; a-z
+      (- ch 32)
+      ch))
+
+(defun char-list-equal (a b)
+  "Compare two lists of character codes for equality."
+  (cond
+    ((and (null a) (null b)) t)
+    ((or (null a) (null b)) nil)
+    ((= (car a) (car b))
+     (char-list-equal (cdr a) (cdr b)))
+    (t nil)))
+
+(defun reverse-list (lst)
+  "Reverse a list."
+  (reverse-list-helper lst nil))
+
+(defun reverse-list-helper (lst acc)
+  (if (null lst)
+      acc
+      (reverse-list-helper (cdr lst) (cons (car lst) acc))))
+
+;;; Block comment #|...|# (supports nesting)
+(defun skip-block-comment (rs depth)
+  "Skip block comment. DEPTH tracks nesting level."
+  (let ((ch (reader-state-read-char rs)))
+    (cond
+      ;; EOF - error but just return
+      ((= ch -1) nil)
+      ;; Potential end: |#
+      ((= ch 124)  ; '|'
+       (let ((next (reader-state-peek-char rs)))
+         (if (= next 35)  ; '#'
+             (progn
+               (reader-state-read-char rs)
+               (if (= depth 1)
+                   nil  ; End of outermost comment
+                   (skip-block-comment rs (- depth 1))))
+             (skip-block-comment rs depth))))
+      ;; Potential nested start: #|
+      ((= ch 35)  ; '#'
+       (let ((next (reader-state-peek-char rs)))
+         (if (= next 124)  ; '|'
+             (progn
+               (reader-state-read-char rs)
+               (skip-block-comment rs (+ depth 1)))
+             (skip-block-comment rs depth))))
+      ;; Any other character
+      (t (skip-block-comment rs depth)))))
 
 (defun skip-whitespace (rs)
   "Skip whitespace characters in reader state RS."
@@ -205,6 +332,27 @@
                  (cons (read-symbol-from-string "SPLICE-UNQUOTE") (cons form nil))))
              (let ((form (read-form rs)))
                (cons (read-symbol-from-string "UNQUOTE") (cons form nil))))))
+      ;; Hash dispatch (#' #\ #|)
+      ((= ch 35)  ; '#'
+       (reader-state-read-char rs)
+       (let ((dispatch (reader-state-peek-char rs)))
+         (cond
+           ;; #' - function quote
+           ((= dispatch 39)  ; '\''
+            (reader-state-read-char rs)
+            (let ((func-form (read-form rs)))
+              (cons (read-symbol-from-string "FUNCTION") (cons func-form nil))))
+           ;; #\ - character literal
+           ((= dispatch 92)  ; '\\'
+            (reader-state-read-char rs)
+            (read-character-literal rs))
+           ;; #| - block comment (already consumed in skip-whitespace, but handle here too)
+           ((= dispatch 124)  ; '|'
+            (reader-state-read-char rs)
+            (skip-block-comment rs 1)
+            (read-form rs))  ; Continue reading after comment
+           ;; Unknown dispatch - error
+           (t -5))))
       ;; String literal
       ((= ch 34)  ; '"'
        (reader-state-read-char rs)

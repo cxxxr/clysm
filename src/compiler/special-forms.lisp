@@ -103,12 +103,14 @@
   (if (null forms)
       `((,+op-i32-const+ 0))  ; nil
       (let ((code nil))
-        (loop for (form . rest) on forms
-              for form-code = (compile-form form env)
-              do (setf code (append code form-code))
-                 ;; Drop intermediate values
-                 (when rest
-                   (setf code (append code `(,+op-drop+)))))
+        (do ((rest forms (cdr rest)))
+            ((null rest))
+          (let ((form (car rest))
+                (more (cdr rest)))
+            (setf code (append code (compile-form form env)))
+            ;; Drop intermediate values
+            (when more
+              (setf code (append code `(,+op-drop+))))))
         code)))
 
 ;;; SETQ
@@ -182,7 +184,7 @@
   "Compile a string literal. Allocates string in heap at runtime.
    String layout: [length:i32][utf8-bytes...]"
   (declare (ignorable env))
-  (let ((bytes (flexi-streams:string-to-octets str :external-format :utf-8)))
+  (let ((bytes (clysm/utils:string-to-utf8 str)))
     ;; Generate code to allocate and initialize string
     `(;; Save heap pointer (return value = string address)
       (,+op-global-get+ ,*heap-pointer-global*)
@@ -191,11 +193,14 @@
       (,+op-i32-const+ ,(length bytes))
       (,+op-i32-store+ 2 0)
       ;; Store each byte at offset 4+i
-      ,@(loop for byte across bytes
-              for i from 0
-              collect `(,+op-global-get+ ,*heap-pointer-global*)
-              collect `(,+op-i32-const+ ,byte)
-              collect `(,+op-i32-store8+ 0 ,(+ 4 i)))
+      ,@(let ((result nil)
+              (len (length bytes)))
+          (dotimes (i len)
+            (let ((byte (aref bytes i)))
+              (push `(,+op-global-get+ ,*heap-pointer-global*) result)
+              (push `(,+op-i32-const+ ,byte) result)
+              (push `(,+op-i32-store8+ 0 ,(+ 4 i)) result)))
+          (nreverse result))
       ;; Increment heap pointer (4 bytes for length + string bytes, aligned to 4)
       (,+op-global-get+ ,*heap-pointer-global*)
       (,+op-i32-const+ ,(+ 4 (logand (+ (length bytes) 3) (lognot 3))))
@@ -781,16 +786,19 @@
                   (,+op-i32-store+ 2 ,*closure-envsize-offset*)
 
                   ;; Store captured variables
-                  ,@(loop for var in free-vars
-                          for i from 0
-                          for var-info = (env-lookup env var)
-                          for offset = (+ *closure-env-offset* (* 4 i))
-                          when var-info
-                          append `((,+op-global-get+ ,*heap-pointer-global*)
-                                   (,+op-i32-const+ ,closure-size)
-                                   ,+op-i32-sub+
-                                   (,+op-local-get+ ,(local-info-index var-info))
-                                   (,+op-i32-store+ 2 ,offset)))
+                  ,@(let ((result nil)
+                          (i 0))
+                      (dolist (var free-vars)
+                        (let* ((var-info (env-lookup env var))
+                               (offset (+ *closure-env-offset* (* 4 i))))
+                          (when var-info
+                            (push `(,+op-global-get+ ,*heap-pointer-global*) result)
+                            (push `(,+op-i32-const+ ,closure-size) result)
+                            (push +op-i32-sub+ result)
+                            (push `(,+op-local-get+ ,(local-info-index var-info)) result)
+                            (push `(,+op-i32-store+ 2 ,offset) result)))
+                        (incf i))
+                      (nreverse result))
                   ;; Closure address is already on stack
                   ))))))))
 
@@ -876,13 +884,14 @@
         ;; Store each value in its global
         (let ((code nil))
           ;; Compile and store each value
-          (loop for form in values-forms
-                for i from 0 below +max-multiple-values+
-                for global-idx in *mv-globals*
-                do (setf code
-                         (append code
-                                 (compile-form form env)
-                                 `((,+op-global-set+ ,global-idx)))))
+          (do ((forms values-forms (cdr forms))
+               (i 0 (1+ i))
+               (globals *mv-globals* (cdr globals)))
+              ((or (null forms) (>= i +max-multiple-values+) (null globals)))
+            (setf code
+                  (append code
+                          (compile-form (car forms) env)
+                          `((,+op-global-set+ ,(car globals))))))
           ;; Set count
           (setf code
                 (append code
@@ -917,17 +926,19 @@
           (let ((value-code (compile-form value-form env*))
                 (bind-code nil))
             ;; Bind each variable from its global (or nil if past count)
-            (loop for (var . idx) in var-indices
-                  for i from 0
-                  for global-idx in *mv-globals*
-                  do (setf bind-code
-                           (append bind-code
-                                   (if (zerop i)
-                                       ;; First var gets the primary value (already on stack)
-                                       `((,+op-local-set+ ,idx))
-                                       ;; Other vars get from globals
-                                       `((,+op-global-get+ ,global-idx)
-                                         (,+op-local-set+ ,idx))))))
+            (do ((vis var-indices (cdr vis))
+                 (i 0 (1+ i))
+                 (globals *mv-globals* (cdr globals)))
+                ((or (null vis) (null globals)))
+              (let ((idx (cdar vis)))
+                (setf bind-code
+                      (append bind-code
+                              (if (zerop i)
+                                  ;; First var gets the primary value (already on stack)
+                                  `((,+op-local-set+ ,idx))
+                                  ;; Other vars get from globals
+                                  `((,+op-global-get+ ,(car globals))
+                                    (,+op-local-set+ ,idx)))))))
             (append value-code bind-code (compile-progn body env*)))))))
 
 ;;; Setf special form for general place assignment
@@ -1009,15 +1020,17 @@
               ;; Slots are stored as ((slot-name default) ...) so we need (first slot)
               (maphash (lambda (name info)
                          (declare (ignore name))
-                         (loop for slot in (struct-info-slots info)
-                               for i from 0
-                               when (string-equal accessor-name
-                                                  (format nil "~A-~A"
-                                                          (struct-info-name info)
-                                                          (first slot)))  ; slot is (name default)
-                               do (setf struct-info info
-                                        slot-idx i)
-                                  (return)))
+                         (do ((slots (struct-info-slots info) (cdr slots))
+                              (i 0 (1+ i)))
+                             ((null slots))
+                           (let ((slot (car slots)))
+                             (when (string-equal accessor-name
+                                                 (format nil "~A-~A"
+                                                         (struct-info-name info)
+                                                         (first slot)))  ; slot is (name default)
+                               (setf struct-info info
+                                     slot-idx i)
+                               (return)))))
                        *struct-registry*)
               (if struct-info
                   ;; Found struct accessor - compile setf for it
@@ -1050,7 +1063,8 @@
         (current-literal nil)
         (i 0)
         (len (length format-string)))
-    (loop while (< i len) do
+    (do ()
+        ((>= i len))
       (let ((ch (char format-string i)))
         (if (char= ch #\~)
             (progn
