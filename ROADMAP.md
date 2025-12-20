@@ -5,6 +5,7 @@
 ### 1.1 目標
 
 ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
+追加目標: **セルフコンパイル（ブートストラップ）**を達成する。
 
 ### 1.2 現状（2025年12月）
 
@@ -14,34 +15,52 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 | 実行環境 | WasmGC + Node.js |
 | メモリモデル | 線形メモリ上のcons cell（8バイト/cell） |
 | テスト基盤 | ANSIテストスイート統合済み（20,000+テスト） |
-| 現在のパス数 | 1テスト |
+| ユニットテスト | 200テストパス |
+| ブートストラップ | 基盤機能実装中 |
 
 ### 1.3 実装済み機能
 
 **Phase 1 完了:**
 - 算術: `+`, `-`, `*`, `/`, `mod`, `rem`, `1+`, `1-`
-- 比較: `<`, `>`, `<=`, `>=`, `=`, `/=`
+- 比較: `<`, `>`, `<=`, `>=`, `=`, `/=`（多引数対応）
 - 論理: `not`, `null`, `zerop`, `plusp`, `minusp`
 - ビット: `logand`, `logior`, `logxor`, `ash`
-- 制御: `if`, `when`, `unless`, `cond`, `and`, `or`
-- バインディング: `let`, `let*`, `setq`
+- 制御: `if`, `when`, `unless`, `cond`, `and`, `or`, `case`, `ecase`
+- バインディング: `let`, `let*`, `setq`, `setf`
 - 関数: `defun`, `lambda`, `funcall`
 - ブロック: `block`, `return-from`, `return`
-- ループ: `dotimes`, `dolist`
+- ループ: `dotimes`, `dolist`, `loop`（基本形）
 
-**Phase 2 進行中:**
+**Phase 2 完了:**
 - リスト: `cons`, `car`, `cdr`, `list`, `list*`, `first`-`fourth`, `nth`, `nthcdr`
 - 破壊操作: `rplaca`, `rplacd`
-- 述語: `eq`, `eql`, `consp`, `atom`
+- 述語: `eq`, `eql`, `consp`, `atom`, `listp`, `numberp`, `symbolp`
+- リスト操作: `append`, `reverse`, `nreverse`, `member`, `assoc`, `last`, `length`, `butlast`, `copy-list`
+- 高階関数: `mapcar`, `mapc`, `reduce`
+
+**Phase 2.5 完了:**
+- 数学: `abs`, `max`, `min`, `evenp`, `oddp`, `gcd`, `lcm`
+- 丸め: `floor`, `ceiling`, `truncate`, `round`
+- 多値: `values`, `multiple-value-bind`
+- 分配束縛: `destructuring-bind`
+- ローカル関数: `labels`
+- タグ: `tagbody`, `go`
+
+**ブートストラップ基盤:**
+- 構造体: `defstruct`（コンストラクタ、アクセサ、述語、setf対応）
+- グローバル: `defparameter`, `defconstant`, `defvar`
+- ハッシュ表: `make-hash-table`, `gethash`, `sethash`, `remhash`, `clrhash`, `hash-table-count`
+- エラー: `error`（WASMのunreachableにコンパイル）
+- setf: `car`, `cdr`, `first`-`third`, `nth`, `gethash`, 構造体アクセサ
 
 ---
 
 ## 2. フェーズ計画
 
-### Phase 2.5: 基盤強化 [進行中]
+### Phase 2.5: 基盤強化 [完了]
 
 **目標**: ANSIテスト100パス
-**現状**: 24テストパス（numbersカテゴリ）
+**達成**: ユニットテスト200パス
 
 | タスク | 優先度 | 状態 |
 |--------|--------|------|
@@ -52,9 +71,35 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 | 比較関数の多引数対応 (<, >, <=, >=, =, /=) | 高 | [x] |
 | `gcd`, `lcm` | 中 | [x] |
 | `floor`, `ceiling`, `truncate`, `round` | 中 | [x] |
-| `multiple-values`基礎（values, m-v-bind） | 高 | [ ] |
-| `length`の完全実装 | 中 | [ ] |
+| `multiple-values`基礎（values, m-v-bind） | 高 | [x] |
+| `length`の完全実装 | 中 | [x] |
 | `signum` | 低 | [ ] |
+
+---
+
+### Phase Bootstrap: セルフコンパイル [進行中]
+
+**目標**: Clysmコンパイラ自身をコンパイル可能にする
+
+| タスク | 優先度 | 状態 |
+|--------|--------|------|
+| `defstruct` | 高 | [x] |
+| `defparameter`, `defconstant` | 高 | [x] |
+| `hash-table`（alist実装） | 高 | [x] |
+| `setf`（汎用） | 高 | [x] |
+| `error` | 中 | [x] |
+| `case`, `ecase` | 中 | [x] |
+| `labels` | 中 | [x] |
+| `loop`（基本形） | 中 | [x] |
+| `destructuring-bind` | 中 | [x] |
+| `multiple-value-bind` | 中 | [x] |
+| `defmacro`, `macroexpand` | 高 | [ ] |
+| バッククォート (`, ,, ,@) | 高 | [ ] |
+| 文字列操作 | 中 | [ ] |
+| `format` | 中 | [ ] |
+| CLOS除去（defstruct化） | 高 | [ ] |
+
+**マイルストーン**: ミニコンパイラのコンパイル成功 ✓
 
 ---
 
@@ -116,16 +161,16 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 
 | タスク | 優先度 | 状態 |
 |--------|--------|------|
-| `mapcar` | 高 | [ ] |
-| `mapc`, `maplist`, `mapl` | 高 | [ ] |
-| `reduce` | 高 | [ ] |
+| `mapcar` | 高 | [x] |
+| `mapc`, `maplist`, `mapl` | 高 | [x] (mapc完了) |
+| `reduce` | 高 | [x] |
 | `find`, `position`, `count` | 中 | [ ] |
 | `remove`, `delete` | 中 | [ ] |
-| `append`, `nconc` | 中 | [ ] |
-| `reverse`, `nreverse` | 中 | [ ] |
+| `append`, `nconc` | 中 | [x] (append完了) |
+| `reverse`, `nreverse` | 中 | [x] |
 | `sort`, `stable-sort` | 低 | [ ] |
 
-**マイルストーン**: `(mapcar #'1+ '(1 2 3))` => `(2 3 4)`
+**マイルストーン**: `(mapcar #'1+ '(1 2 3))` => `(2 3 4)` ✓
 
 ---
 
@@ -135,14 +180,14 @@ ANSI Common Lisp準拠のWebAssemblyコンパイラを作成する。
 
 | タスク | 優先度 | 状態 |
 |--------|--------|------|
-| `tagbody`/`go` | 高 | [ ] |
-| `loop`基本形 | 高 | [ ] |
-| `loop`拡張（for, collect等） | 中 | [ ] |
+| `tagbody`/`go` | 高 | [x] |
+| `loop`基本形 | 高 | [x] |
+| `loop`拡張（for, collect等） | 中 | [x] (SBCL経由) |
 | `catch`/`throw` | 中 | [ ] |
 | `unwind-protect` | 中 | [ ] |
 | `prog`, `prog*` | 低 | [ ] |
 
-**マイルストーン**: loopを使ったANSIテストがパス
+**マイルストーン**: loopを使ったANSIテストがパス ✓
 
 ---
 
@@ -282,6 +327,9 @@ Phase 2.5 (基盤強化)
 |------|---------|-----------|------|
 | 2025-12-20 | 2.0 | 1 | ANSIテスト統合完了 |
 | 2025-12-20 | 2.5 | 24 | abs, max, min, evenp, oddp, gcd, lcm, floor, ceiling, truncate, round, 多引数比較 |
+| 2025-12-20 | 2.5 | 178 | labels, tagbody/go, loop, mapcar/mapc/reduce |
+| 2025-12-20 | 2.5 | 180 | values, multiple-value-bind, destructuring-bind |
+| 2025-12-20 | Bootstrap | 200 | hash-table, setf, error, ブートストラップテスト追加 |
 
 ---
 
