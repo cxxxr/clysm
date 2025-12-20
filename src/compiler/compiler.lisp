@@ -46,6 +46,30 @@
     ((eq (car form) 'endp)
      ;; endp is same as null/atom for proper lists
      `(null ,(normalize-sbcl-internals (second form))))
+    ;; SBCL kernel internals
+    ((eq (car form) 'sb-kernel:unaligned-dx-cons)
+     ;; Stack-allocated cons, just use regular cons
+     `(cons ,(normalize-sbcl-internals (second form))
+            ,(if (cddr form)
+                 (normalize-sbcl-internals (third form))
+                 nil)))
+    ;; THE type annotation - just return the value
+    ((eq (car form) 'the)
+     ;; (the type value) => value
+     (normalize-sbcl-internals (third form)))
+    ;; LET/LET* - strip DECLARE forms
+    ((or (eq (car form) 'let) (eq (car form) 'let*))
+     (let* ((bindings (second form))
+            (body (cddr form))
+            ;; Filter out DECLARE forms from body
+            (filtered-body (remove-if (lambda (f) (and (consp f) (eq (car f) 'declare))) body)))
+       `(,(car form) ,(mapcar (lambda (binding)
+                                (if (consp binding)
+                                    (list (first binding)
+                                          (normalize-sbcl-internals (second binding)))
+                                    binding))
+                              bindings)
+         ,@(mapcar #'normalize-sbcl-internals filtered-body))))
     (t
      (cons (normalize-sbcl-internals (car form))
            (mapcar #'normalize-sbcl-internals (cdr form))))))

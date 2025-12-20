@@ -644,3 +644,23 @@
                         (fact 5))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Loop macro tests
+
+(test compile-loop-for-collect
+  "Test compiling loop for...collect."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-loop-collect ()
+                      (loop for i from 1 to 5 collect i)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-loop-for-do
+  "Test compiling loop for...do."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-loop-do ()
+                      (let ((sum 0))
+                        (loop for i from 1 to 5 do (setq sum (+ sum i)))
+                        sum)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
