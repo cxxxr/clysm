@@ -1403,3 +1403,233 @@
     (error "not requires exactly 1 argument"))
   `(,@(compile-form (first args) env)
     ,+op-i32-eqz+))
+
+;;; Higher-order functions
+
+(define-primitive mapcar (args env)
+  "Apply function to each element of list and collect results.
+  Only supports single-list mapcar with unary function."
+  (unless (= (length args) 2)
+    (error "mapcar requires exactly 2 arguments (function and list)"))
+  (let* ((func-form (first args))
+         (list-form (second args))
+         (module (compile-env-module env))
+         ;; Get type index for arity 1 (closure-env + 1 arg)
+         (type-idx (get-closure-type-index module 1)))
+    ;; Allocate locals
+    (multiple-value-bind (env1 func-local)
+        (env-add-local env (gensym "MAPCAR-FUNC") +type-i32+)
+      (multiple-value-bind (env2 list-local)
+          (env-add-local env1 (gensym "MAPCAR-LIST") +type-i32+)
+        (multiple-value-bind (env3 result-local)
+            (env-add-local env2 (gensym "MAPCAR-RESULT") +type-i32+)
+          (multiple-value-bind (env4 tail-local)
+              (env-add-local env3 (gensym "MAPCAR-TAIL") +type-i32+)
+            (multiple-value-bind (env5 value-local)
+                (env-add-local env4 (gensym "MAPCAR-VALUE") +type-i32+)
+              (let ((func-code (compile-form func-form env))
+                    (list-code (compile-form list-form env)))
+                `(;; Store function closure
+                  ,@func-code
+                  (,+op-local-set+ ,func-local)
+                  ;; Store initial list
+                  ,@list-code
+                  (,+op-local-set+ ,list-local)
+                  ;; result = nil
+                  (,+op-i32-const+ 0)
+                  (,+op-local-set+ ,result-local)
+                  ;; tail = nil
+                  (,+op-i32-const+ 0)
+                  (,+op-local-set+ ,tail-local)
+                  ;; Loop
+                  (,+op-block+ ,+type-void+)
+                    (,+op-loop+ ,+type-void+)
+                      ;; if list == nil, exit
+                      (,+op-local-get+ ,list-local)
+                      ,+op-i32-eqz+
+                      (,+op-br-if+ 1)
+                      ;; value = funcall(func, car(list))
+                      ;; Push closure address as first arg
+                      (,+op-local-get+ ,func-local)
+                      ;; Push car(list) as second arg
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 0)  ; car
+                      ;; Get function index and call
+                      (,+op-local-get+ ,func-local)
+                      (,+op-i32-load+ 2 ,*closure-func-offset*)
+                      (,+op-call-indirect+ ,type-idx 0)
+                      ;; Store value in temp local
+                      (,+op-local-set+ ,value-local)
+                      ;; Allocate new cons cell
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ 8)
+                      ,+op-i32-add+
+                      (,+op-global-set+ ,*heap-pointer-global*)
+                      ;; cell address = heap - 8
+                      ;; Store value in car
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ 8)
+                      ,+op-i32-sub+
+                      (,+op-local-get+ ,value-local)
+                      (,+op-i32-store+ 2 0)  ; store car
+                      ;; Store nil in cdr
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ 8)
+                      ,+op-i32-sub+
+                      (,+op-i32-const+ 0)
+                      (,+op-i32-store+ 2 4)  ; store cdr = nil
+                      ;; If result is nil, set result and tail to new cell
+                      (,+op-local-get+ ,result-local)
+                      ,+op-i32-eqz+
+                      (,+op-if+ ,+type-void+)
+                        ;; result = tail = new cell
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ 8)
+                        ,+op-i32-sub+
+                        (,+op-local-set+ ,result-local)
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ 8)
+                        ,+op-i32-sub+
+                        (,+op-local-set+ ,tail-local)
+                      (,+op-else+)
+                        ;; cdr(tail) = new cell
+                        (,+op-local-get+ ,tail-local)
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ 8)
+                        ,+op-i32-sub+
+                        (,+op-i32-store+ 2 4)  ; store cdr
+                        ;; tail = new cell
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ 8)
+                        ,+op-i32-sub+
+                        (,+op-local-set+ ,tail-local)
+                      (,+op-end+)
+                      ;; list = cdr(list)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)  ; cdr
+                      (,+op-local-set+ ,list-local)
+                      (,+op-br+ 0)
+                    (,+op-end+)
+                  (,+op-end+)
+                  ;; Return result
+                  (,+op-local-get+ ,result-local))))))))))
+
+(define-primitive mapc (args env)
+  "Apply function to each element of list for side effects.
+  Returns the original list."
+  (unless (= (length args) 2)
+    (error "mapc requires exactly 2 arguments (function and list)"))
+  (let* ((func-form (first args))
+         (list-form (second args))
+         (module (compile-env-module env))
+         (type-idx (get-closure-type-index module 1)))
+    (multiple-value-bind (env1 func-local)
+        (env-add-local env (gensym "MAPC-FUNC") +type-i32+)
+      (multiple-value-bind (env2 list-local)
+          (env-add-local env1 (gensym "MAPC-LIST") +type-i32+)
+        (multiple-value-bind (env3 orig-list-local)
+            (env-add-local env2 (gensym "MAPC-ORIG") +type-i32+)
+          (let ((func-code (compile-form func-form env))
+                (list-code (compile-form list-form env)))
+            `(;; Store function closure
+              ,@func-code
+              (,+op-local-set+ ,func-local)
+              ;; Store initial list and save original
+              ,@list-code
+              (,+op-local-tee+ ,list-local)
+              (,+op-local-set+ ,orig-list-local)
+              ;; Loop
+              (,+op-block+ ,+type-void+)
+                (,+op-loop+ ,+type-void+)
+                  ;; if list == nil, exit
+                  (,+op-local-get+ ,list-local)
+                  ,+op-i32-eqz+
+                  (,+op-br-if+ 1)
+                  ;; funcall(func, car(list))
+                  (,+op-local-get+ ,func-local)
+                  (,+op-local-get+ ,list-local)
+                  (,+op-i32-load+ 2 0)  ; car
+                  (,+op-local-get+ ,func-local)
+                  (,+op-i32-load+ 2 ,*closure-func-offset*)
+                  (,+op-call-indirect+ ,type-idx 0)
+                  ,+op-drop+  ; discard result
+                  ;; list = cdr(list)
+                  (,+op-local-get+ ,list-local)
+                  (,+op-i32-load+ 2 4)  ; cdr
+                  (,+op-local-set+ ,list-local)
+                  (,+op-br+ 0)
+                (,+op-end+)
+              (,+op-end+)
+              ;; Return original list
+              (,+op-local-get+ ,orig-list-local))))))))
+
+(define-primitive reduce (args env)
+  "Reduce a list with a binary function.
+  (reduce func list) applies func cumulatively.
+  (reduce func list :initial-value init) uses init as starting value."
+  (unless (>= (length args) 2)
+    (error "reduce requires at least 2 arguments (function and list)"))
+  (let* ((func-form (first args))
+         (list-form (second args))
+         ;; Check for :initial-value keyword
+         (rest-args (cddr args))
+         (has-initial-value (and rest-args
+                                  (eq (first rest-args) :initial-value)))
+         (initial-value (if has-initial-value (second rest-args) nil))
+         (module (compile-env-module env))
+         ;; Type for binary function (closure-env + 2 args)
+         (type-idx (get-closure-type-index module 2)))
+    (multiple-value-bind (env1 func-local)
+        (env-add-local env (gensym "REDUCE-FUNC") +type-i32+)
+      (multiple-value-bind (env2 list-local)
+          (env-add-local env1 (gensym "REDUCE-LIST") +type-i32+)
+        (multiple-value-bind (env3 acc-local)
+            (env-add-local env2 (gensym "REDUCE-ACC") +type-i32+)
+          (let ((func-code (compile-form func-form env))
+                (list-code (compile-form list-form env))
+                (init-code (if has-initial-value
+                               (compile-form initial-value env)
+                               nil)))
+            `(;; Store function closure
+              ,@func-code
+              (,+op-local-set+ ,func-local)
+              ;; Store list
+              ,@list-code
+              (,+op-local-set+ ,list-local)
+              ;; Initialize accumulator
+              ,@(if has-initial-value
+                    `(,@init-code
+                      (,+op-local-set+ ,acc-local))
+                    ;; No initial value: use first element
+                    `((,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 0)  ; car
+                      (,+op-local-set+ ,acc-local)
+                      ;; list = cdr(list)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)
+                      (,+op-local-set+ ,list-local)))
+              ;; Loop
+              (,+op-block+ ,+type-void+)
+                (,+op-loop+ ,+type-void+)
+                  ;; if list == nil, exit
+                  (,+op-local-get+ ,list-local)
+                  ,+op-i32-eqz+
+                  (,+op-br-if+ 1)
+                  ;; acc = funcall(func, acc, car(list))
+                  (,+op-local-get+ ,func-local)
+                  (,+op-local-get+ ,acc-local)
+                  (,+op-local-get+ ,list-local)
+                  (,+op-i32-load+ 2 0)  ; car
+                  (,+op-local-get+ ,func-local)
+                  (,+op-i32-load+ 2 ,*closure-func-offset*)
+                  (,+op-call-indirect+ ,type-idx 0)
+                  (,+op-local-set+ ,acc-local)
+                  ;; list = cdr(list)
+                  (,+op-local-get+ ,list-local)
+                  (,+op-i32-load+ 2 4)  ; cdr
+                  (,+op-local-set+ ,list-local)
+                  (,+op-br+ 0)
+                (,+op-end+)
+              (,+op-end+)
+              ;; Return accumulator
+              (,+op-local-get+ ,acc-local))))))))

@@ -664,3 +664,39 @@
                         sum)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Higher-order function tests
+
+(test compile-mapcar
+  "Test compiling mapcar with lambda."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-mapcar ()
+                      (mapcar (lambda (x) (+ x 1)) (list 1 2 3))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-mapc
+  "Test compiling mapc for side effects."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-mapc ()
+                      (let ((sum 0))
+                        (mapc (lambda (x) (setq sum (+ sum x))) (list 1 2 3))
+                        sum)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-reduce
+  "Test compiling reduce."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-reduce ()
+                      (reduce (lambda (a b) (+ a b)) (list 1 2 3 4))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-reduce-with-initial
+  "Test compiling reduce with initial value."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-reduce-init ()
+                      (reduce (lambda (a b) (+ a b)) (list 1 2 3) :initial-value 10)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
