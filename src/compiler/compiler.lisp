@@ -11,12 +11,41 @@
   "Replace SBCL internal functions with standard equivalents."
   (cond
     ((atom form) form)
+    ;; Arithmetic
     ((eq (car form) 'sb-impl::xsubtract)
      ;; (sb-impl::xsubtract a b) => (- b a)
-     `(- ,(third form) ,(second form)))
+     `(- ,(normalize-sbcl-internals (third form))
+         ,(normalize-sbcl-internals (second form))))
+    ;; Lambda
     ((eq (car form) 'sb-int:named-lambda)
      ;; (sb-int:named-lambda name (...) body) => (lambda (...) body)
-     `(lambda ,(third form) ,@(cdddr form)))
+     `(lambda ,(third form) ,@(mapcar #'normalize-sbcl-internals (cdddr form))))
+    ;; Loop internals
+    ((eq (car form) 'sb-loop::loop-desetq)
+     ;; (sb-loop::loop-desetq var value) => (setq var value)
+     `(setq ,(second form) ,(normalize-sbcl-internals (third form))))
+    ((eq (car form) 'sb-loop::loop-collect-rplacd)
+     ;; (sb-loop::loop-collect-rplacd (head tail) list-form)
+     ;; This adds list-form to the tail of the collection list
+     ;; Simplified: (progn (rplacd tail list-form) (setq tail (last tail)))
+     ;; For now, we'll just evaluate list-form and let it be handled later
+     (let ((vars (second form))
+            (list-form (normalize-sbcl-internals (third form))))
+       (let ((head (first vars))
+             (tail (second vars)))
+         `(if (null ,head)
+              (progn
+                (setq ,head ,list-form)
+                (setq ,tail (last ,head)))
+              (progn
+                (rplacd ,tail ,list-form)
+                (setq ,tail (last ,tail)))))))
+    ((eq (car form) 'sb-loop::loop-collect-answer)
+     ;; (sb-loop::loop-collect-answer head) => head
+     (normalize-sbcl-internals (second form)))
+    ((eq (car form) 'endp)
+     ;; endp is same as null/atom for proper lists
+     `(null ,(normalize-sbcl-internals (second form))))
     (t
      (cons (normalize-sbcl-internals (car form))
            (mapcar #'normalize-sbcl-internals (cdr form))))))
@@ -32,6 +61,7 @@
     ;; Special forms we handle - expand their subforms
     ((member (car form) '(if let let* progn setq when unless cond and or
                           block return-from return dotimes dolist
+                          tagbody go
                           lambda funcall defun defparameter defconstant
                           defvar defstruct))
      (cons (car form) (mapcar #'expand-macros (cdr form))))

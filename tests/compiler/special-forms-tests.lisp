@@ -566,3 +566,48 @@
                       (not x)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Tagbody/go tests
+
+(test compile-tagbody-simple
+  "Test compiling simple tagbody."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-tagbody ()
+                      (let ((x 0))
+                        (tagbody
+                         start
+                          (setq x (+ x 1))
+                          (when (< x 5)
+                            (go start)))
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-tagbody-multiple-tags
+  "Test compiling tagbody with multiple tags."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-multi-tag ()
+                      (let ((x 0))
+                        (tagbody
+                         tag1
+                          (setq x (+ x 1))
+                          (go tag2)
+                         tag2
+                          (setq x (+ x 10)))
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-tagbody-early-exit
+  "Test compiling tagbody with go to end."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-early-exit (n)
+                      (let ((x 0))
+                        (tagbody
+                          (when (< n 0)
+                            (go done))
+                          (setq x n)
+                         done)
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

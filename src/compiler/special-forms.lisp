@@ -342,6 +342,132 @@
   "Compile a return (return-from nil)."
   (compile-special-form `(return-from nil ,@(cdr form)) env))
 
+;;; TAGBODY and GO
+;;; Uses state-machine approach since WASM doesn't have arbitrary goto
+
+(defvar *tagbody-tags* nil
+  "Dynamically bound alist of (tag-name . state-number) for current tagbody.")
+
+(defvar *tagbody-state-local* nil
+  "Dynamically bound index of the state variable local for current tagbody.")
+
+(defun tagbody-tag-p (form)
+  "Check if FORM is a tag (symbol or integer, not a list)."
+  (or (symbolp form) (integerp form)))
+
+(defun parse-tagbody (body)
+  "Parse tagbody body into list of (tag . forms).
+   Returns ((nil form1 form2...) (tag1 form3 form4...) (tag2 ...))."
+  (let ((sections nil)
+        (current-tag nil)
+        (current-forms nil))
+    (dolist (item body)
+      (if (tagbody-tag-p item)
+          (progn
+            ;; Save previous section
+            (push (cons current-tag (nreverse current-forms)) sections)
+            ;; Start new section
+            (setf current-tag item)
+            (setf current-forms nil))
+          ;; Add to current section
+          (push item current-forms)))
+    ;; Save final section
+    (push (cons current-tag (nreverse current-forms)) sections)
+    (nreverse sections)))
+
+(define-special-form tagbody (form env)
+  "Compile a tagbody using state-machine approach."
+  (let* ((body (cdr form))
+         (sections (parse-tagbody body)))
+    (if (null sections)
+        ;; Empty tagbody
+        `((,+op-i32-const+ 0))  ; returns nil
+        ;; Build tag->state mapping
+        (let* ((tags-alist nil)
+               (state 0))
+          ;; First section (before any tag) has state 0
+          (dolist (section sections)
+            (when (car section)  ; Has a tag
+              (push (cons (car section) state) tags-alist))
+            (incf state))
+          (setf tags-alist (nreverse tags-alist))
+
+          ;; Create state variable
+          (multiple-value-bind (env1 state-idx)
+              (env-add-local env (gensym "TAGBODY-STATE") +type-i32+)
+            (let* ((*tagbody-tags* tags-alist)
+                   (*tagbody-state-local* state-idx)
+                   ;; Increment block depth for loop structure
+                   (loop-env (env-increment-block-depth
+                              (env-increment-block-depth env1)))
+                   (num-states (length sections)))
+              ;; Generate code
+              `(;; Initialize state to 0
+                (,+op-i32-const+ 0)
+                (,+op-local-set+ ,state-idx)
+                ;; Outer block for exit
+                (,+op-block+ ,+type-void+)
+                  ;; Main loop
+                  (,+op-loop+ ,+type-void+)
+                    ;; Dispatch based on state using br_table
+                    ,@(generate-tagbody-dispatch sections loop-env state-idx num-states)
+                  ,+op-end+  ; end loop
+                ,+op-end+  ; end block
+                ;; Tagbody returns nil
+                (,+op-i32-const+ 0))))))))
+
+(defun generate-tagbody-dispatch (sections env state-idx num-states)
+  "Generate dispatch code for tagbody states."
+  ;; For simplicity, use nested if-else instead of br_table
+  ;; (br_table would be more efficient for many states)
+  (let ((code nil)
+        (state 0))
+    (dolist (section sections)
+      (let* ((forms (cdr section))
+             (section-code (if forms
+                               (compile-progn forms env)
+                               nil)))
+        ;; if state == this-state, execute forms
+        (setf code
+              (append code
+                      `((,+op-local-get+ ,state-idx)
+                        (,+op-i32-const+ ,state)
+                        ,+op-i32-eq+
+                        (,+op-if+ ,+type-void+)
+                          ,@(if section-code
+                                (append section-code `(,+op-drop+))
+                                nil)
+                          ;; Advance to next state (or exit if last)
+                          ,(if (= state (1- num-states))
+                               ;; Last state - exit loop
+                               `(,+op-br+ 2)  ; break to outer block
+                               ;; Advance to next state and continue
+                               `(progn
+                                  (,+op-i32-const+ ,(1+ state))
+                                  (,+op-local-set+ ,state-idx)
+                                  (,+op-br+ 1)))  ; continue loop
+                        ,+op-end+)))
+        (incf state)))
+    ;; Flatten any progn markers - use mapcan to splice lists
+    (mapcan (lambda (item)
+              (if (and (consp item) (eq (car item) 'progn))
+                  (copy-list (cdr item))  ; splice the progn contents
+                  (list item)))           ; wrap single items in list
+            code)))
+
+(define-special-form go (form env)
+  "Compile a go that jumps to a tag in the enclosing tagbody."
+  (declare (ignore env))
+  (let* ((tag (second form))
+         (entry (assoc tag *tagbody-tags*)))
+    (unless entry
+      (error "No tag ~A in enclosing tagbody" tag))
+    (let ((state (cdr entry)))
+      `(;; Set state and branch to loop start
+        (,+op-i32-const+ ,state)
+        (,+op-local-set+ ,*tagbody-state-local*)
+        (,+op-br+ 0)))))  ; branch to loop (innermost)
+
 ;;; DOTIMES
 
 (define-special-form dotimes (form env)
