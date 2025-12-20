@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -21,5 +22,14 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      - name: Cache Quicklisp
+        uses: actions/cache@v4
+        with:
+          path: ~/.quicklisp
+          key: quicklisp-${{ runner.os }}-${{ hashFiles('clysm.asd') }}
+          restore-keys: |
+            quicklisp-${{ runner.os }}-
+
       - name: Run tests
         run: nix develop --command bash -c 'clysm-test'
+        timeout-minutes: 10
