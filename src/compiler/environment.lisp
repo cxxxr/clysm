@@ -92,3 +92,53 @@
 (defvar *pending-lambdas* nil
   "Box containing list of pending lambda functions to add after defuns.
    Set by compile-module during two-pass compilation.")
+
+;;; Symbol Table for Compilation
+;;; Tracks interned symbols and their memory addresses
+
+(defvar *symbol-table* nil
+  "Hash table mapping symbol names (strings) to their addresses.
+   Reset at the start of each compile-module.")
+
+(defvar *string-table* nil
+  "Hash table mapping strings to their addresses in the data section.
+   Reset at the start of each compile-module.")
+
+(defvar *static-data-offset* 0
+  "Current offset in static data area (starts after heap base).")
+
+(defun reset-symbol-table ()
+  "Reset symbol and string tables for a fresh compilation."
+  (setf *symbol-table* (make-hash-table :test 'equal))
+  (setf *string-table* (make-hash-table :test 'equal))
+  (setf *static-data-offset* 256))  ; Reserve first 256 bytes
+
+(defun intern-compile-time-string (string)
+  "Intern a string at compile time, returning its address.
+   Strings are stored as: [length:i32][utf8-bytes...]"
+  (or (gethash string *string-table*)
+      (let* ((bytes (flexi-streams:string-to-octets string :external-format :utf-8))
+             (len (length bytes))
+             (addr *static-data-offset*))
+        ;; Allocate space: 4 bytes for length + bytes
+        (incf *static-data-offset* (+ 4 len))
+        ;; Align to 4 bytes
+        (setf *static-data-offset*
+              (* 4 (ceiling *static-data-offset* 4)))
+        (setf (gethash string *string-table*)
+              (list addr len bytes))
+        (gethash string *string-table*))))
+
+(defun intern-compile-time-symbol (symbol)
+  "Intern a symbol at compile time, returning its address.
+   Symbols are stored as: [name-ptr:i32][value:i32][function:i32][plist:i32]"
+  (let ((name (symbol-name symbol)))
+    (or (gethash name *symbol-table*)
+        (let* ((string-info (intern-compile-time-string name))
+               (string-addr (first string-info))
+               (sym-addr *static-data-offset*))
+          ;; Allocate 16 bytes for symbol
+          (incf *static-data-offset* 16)
+          (setf (gethash name *symbol-table*)
+                (list sym-addr string-addr symbol))
+          (gethash name *symbol-table*)))))

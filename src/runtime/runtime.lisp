@@ -14,6 +14,28 @@
 (defconstant +tag-float+ 6)
 (defconstant +tag-bignum+ 7)
 
+;;; Symbol Layout (in linear memory)
+;;; Offset 0: name-ptr (i32) - pointer to string
+;;; Offset 4: value (i32) - symbol-value
+;;; Offset 8: function (i32) - symbol-function
+;;; Offset 12: plist (i32) - property list
+;;; Total size: 16 bytes
+
+(defconstant +symbol-size+ 16)
+(defconstant +symbol-name-offset+ 0)
+(defconstant +symbol-value-offset+ 4)
+(defconstant +symbol-function-offset+ 8)
+(defconstant +symbol-plist-offset+ 12)
+
+;;; String Layout (in linear memory)
+;;; Offset 0: length (i32) - byte length
+;;; Offset 4: data (variable) - UTF-8 bytes
+;;; Header size: 4 bytes
+
+(defconstant +string-header-size+ 4)
+(defconstant +string-length-offset+ 0)
+(defconstant +string-data-offset+ 4)
+
 ;;; Value Representation Notes
 ;;;
 ;;; With WasmGC, we use the following representation:

@@ -212,6 +212,29 @@ CONTENT-FN is called with a temporary buffer to generate content."
         (dolist (func functions)
           (encode-func-body buf func))))))
 
+;;; Data Section
+
+(defun encode-data-section (buffer data-segments)
+  "Encode the data section."
+  (when data-segments
+    (encode-section buffer +section-data+
+      (lambda (buf)
+        (buffer-write-uleb128 buf (length data-segments))
+        (dolist (segment data-segments)
+          (encode-data-segment buf segment))))))
+
+(defun encode-data-segment (buffer segment)
+  "Encode a single data segment.
+   Active segment format: 0x00, offset expr, vec(byte)"
+  ;; Segment flags: 0 = active segment with memory 0
+  (buffer-write-uleb128 buffer 0)
+  ;; Offset expression
+  (encode-init-expr buffer (wasm-data-offset segment))
+  ;; Data bytes
+  (let ((data (wasm-data-data segment)))
+    (buffer-write-uleb128 buffer (length data))
+    (buffer-write-bytes buffer data)))
+
 (defun encode-func-body (buffer func)
   "Encode a function body."
   (let ((body-buffer (make-byte-buffer)))
@@ -304,7 +327,7 @@ INSTR is either an opcode byte or a list (opcode . args)."
     (encode-start-section buffer (wasm-module-start module))
     (encode-element-section buffer (wasm-module-elements module))
     (encode-code-section buffer (wasm-module-functions module))
-    ;; Data section (TODO)
+    (encode-data-section buffer (wasm-module-data module))
     (buffer-contents buffer)))
 
 ;;; Convenience Functions

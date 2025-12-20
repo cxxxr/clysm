@@ -828,3 +828,68 @@
        ,+op-i32-div-s+))
     (otherwise
      (error "round requires 1 or 2 arguments"))))
+
+;;; Symbol Primitives
+;;; Symbols are represented as pointers to symbol structures in memory.
+;;; Symbol structure layout (see runtime.lisp):
+;;;   [name-ptr:i32] [value:i32] [function:i32] [plist:i32]
+;;; name-ptr points to a string: [length:i32][utf8-bytes...]
+
+(define-primitive symbolp (args env)
+  "Check if argument is a symbol.
+   For now, we check if the pointer is in the valid static data area.
+   TODO: Use proper tag bits when we implement tagged values."
+  (unless (= (length args) 1)
+    (error "symbolp requires exactly 1 argument"))
+  ;; Simplified check: is it a non-nil pointer in the static data range?
+  ;; In a proper implementation, we'd check tag bits.
+  ;; For now, check if pointer >= 256 (static data base) and is properly aligned
+  `(,@(compile-form (first args) env)
+    ;; Check if >= 256 (static data base)
+    (,+op-i32-const+ 256)
+    ,+op-i32-ge-u+))
+
+(define-primitive symbol-name (args env)
+  "Get the name-ptr from a symbol.
+   Returns a pointer to the string (not the string itself)."
+  (unless (= (length args) 1)
+    (error "symbol-name requires exactly 1 argument"))
+  ;; Load the name-ptr field from offset 0 of the symbol structure
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)))  ; align=2, offset=0
+
+(define-primitive symbol-value (args env)
+  "Get the value from a symbol."
+  (unless (= (length args) 1)
+    (error "symbol-value requires exactly 1 argument"))
+  ;; Load the value field from offset 4 of the symbol structure
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 4)))  ; align=2, offset=4
+
+(define-primitive symbol-function (args env)
+  "Get the function from a symbol."
+  (unless (= (length args) 1)
+    (error "symbol-function requires exactly 1 argument"))
+  ;; Load the function field from offset 8 of the symbol structure
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 8)))  ; align=2, offset=8
+
+(define-primitive symbol-plist (args env)
+  "Get the property list from a symbol."
+  (unless (= (length args) 1)
+    (error "symbol-plist requires exactly 1 argument"))
+  ;; Load the plist field from offset 12 of the symbol structure
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 12)))  ; align=2, offset=12
+
+;;; String Primitives
+;;; Strings are represented as pointers to string structures in memory.
+;;; String structure layout: [length:i32][utf8-bytes...]
+
+(define-primitive string-length (args env)
+  "Get the length of a string in bytes."
+  (unless (= (length args) 1)
+    (error "string-length requires exactly 1 argument"))
+  ;; Load the length field from offset 0 of the string structure
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)))  ; align=2, offset=0

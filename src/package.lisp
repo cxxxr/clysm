@@ -158,11 +158,19 @@
    #:add-global
    #:add-table
    #:add-element
+   #:add-data
    #:wasm-module-tables
    #:wasm-module-elements
+   #:wasm-module-data
    #:wasm-module-import-func-count
    #:wasm-module-func-count
    #:finalize-module
+   ;; Data segment structure
+   #:make-wasm-data
+   #:wasm-data
+   #:wasm-data-memory-idx
+   #:wasm-data-offset
+   #:wasm-data-data
    ;; Type definitions
    #:make-func-type
    #:func-type
@@ -283,7 +291,17 @@
    #:+tag-string+
    #:+tag-vector+
    #:+tag-closure+
-   #:+tag-float+))
+   #:+tag-float+
+   ;; Symbol layout
+   #:+symbol-size+
+   #:+symbol-name-offset+
+   #:+symbol-value-offset+
+   #:+symbol-function-offset+
+   #:+symbol-plist-offset+
+   ;; String layout
+   #:+string-header-size+
+   #:+string-length-offset+
+   #:+string-data-offset+))
 
 (defpackage #:clysm/stdlib
   (:use #:cl)

@@ -89,6 +89,14 @@
     (push elem (wasm-module-elements module))
     elem))
 
+(defun add-data (module memory-idx offset data)
+  "Add a data segment to the module.
+   OFFSET is an init expression (list of instructions).
+   DATA is a vector of bytes."
+  (let ((segment (make-wasm-data memory-idx offset data)))
+    (push segment (wasm-module-data module))
+    segment))
+
 ;;; Module Finalization
 
 (defun finalize-module (module)
@@ -101,6 +109,7 @@
   (setf (wasm-module-globals module) (nreverse (wasm-module-globals module)))
   (setf (wasm-module-exports module) (nreverse (wasm-module-exports module)))
   (setf (wasm-module-elements module) (nreverse (wasm-module-elements module)))
+  (setf (wasm-module-data module) (nreverse (wasm-module-data module)))
   module)
 
 ;;; Convenience Builders

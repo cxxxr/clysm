@@ -140,9 +140,11 @@
          (,+op-i32-const+ ,*cons-size*)
          ,+op-i32-add+
          (,+op-global-set+ ,*heap-pointer-global*))))
-    ;; Symbol - not yet implemented (would need symbol table)
+    ;; Symbol - intern at compile time and return address
     ((symbolp value)
-     (error "Cannot quote symbol yet: ~A" value))
+     (let* ((sym-info (intern-compile-time-symbol value))
+            (sym-addr (first sym-info)))
+       `((,+op-i32-const+ ,sym-addr))))
     ;; Other
     (t
      (error "Cannot quote: ~A" value))))

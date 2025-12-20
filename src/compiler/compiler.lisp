@@ -132,7 +132,8 @@
          (env (make-initial-env module))
          (defuns nil)
          (lambda-holder (list nil)))  ; Box to collect lambda functions
-    ;; Reset closure type cache for fresh compilation
+    ;; Reset symbol table and closure type cache for fresh compilation
+    (reset-symbol-table)
     (reset-closure-type-cache)
     ;; Add memory and heap pointer if enabled
     (when enable-memory
@@ -162,6 +163,8 @@
           (add-function module type-idx locals body))))
     ;; Add element section with all functions for indirect calls
     (setup-element-section module)
+    ;; Add data section for symbols and strings
+    (setup-static-data module)
     (finalize-module module)
     module))
 
@@ -244,3 +247,69 @@
 (defun reset-closure-type-cache ()
   "Reset the closure type cache (called at start of compile-module)."
   (clrhash *closure-type-indices*))
+
+;;; Static Data Setup
+
+(defparameter *static-data-base* 256
+  "Base address for static data in linear memory.")
+
+(defun setup-static-data (module)
+  "Add data segments for interned symbols and strings."
+  (let ((data-buffer (make-array 1024
+                                 :element-type '(unsigned-byte 8)
+                                 :adjustable t
+                                 :fill-pointer 0)))
+    ;; Collect all string entries sorted by address
+    (let ((strings nil))
+      (maphash (lambda (key value)
+                 (declare (ignore key))
+                 (push value strings))
+               *string-table*)
+      (setf strings (sort strings #'< :key #'first))
+      ;; Write strings to data buffer
+      (dolist (entry strings)
+        (destructuring-bind (addr len bytes) entry
+          (let ((relative-addr (- addr *static-data-base*)))
+            ;; Pad to the correct offset
+            (loop while (< (length data-buffer) relative-addr)
+                  do (vector-push-extend 0 data-buffer))
+            ;; Write length (little-endian i32)
+            (vector-push-extend (ldb (byte 8 0) len) data-buffer)
+            (vector-push-extend (ldb (byte 8 8) len) data-buffer)
+            (vector-push-extend (ldb (byte 8 16) len) data-buffer)
+            (vector-push-extend (ldb (byte 8 24) len) data-buffer)
+            ;; Write UTF-8 bytes
+            (loop for byte across bytes
+                  do (vector-push-extend byte data-buffer))))))
+    ;; Collect all symbol entries sorted by address
+    (let ((symbols nil))
+      (maphash (lambda (key value)
+                 (declare (ignore key))
+                 (push value symbols))
+               *symbol-table*)
+      (setf symbols (sort symbols #'< :key #'first))
+      ;; Write symbols to data buffer
+      (dolist (entry symbols)
+        (destructuring-bind (sym-addr string-addr sym) entry
+          (declare (ignore sym))
+          (let ((relative-addr (- sym-addr *static-data-base*)))
+            ;; Pad to the correct offset
+            (loop while (< (length data-buffer) relative-addr)
+                  do (vector-push-extend 0 data-buffer))
+            ;; Write name-ptr (little-endian i32)
+            (vector-push-extend (ldb (byte 8 0) string-addr) data-buffer)
+            (vector-push-extend (ldb (byte 8 8) string-addr) data-buffer)
+            (vector-push-extend (ldb (byte 8 16) string-addr) data-buffer)
+            (vector-push-extend (ldb (byte 8 24) string-addr) data-buffer)
+            ;; Write value (0 = unbound, little-endian i32)
+            (dotimes (i 4) (vector-push-extend 0 data-buffer))
+            ;; Write function (0 = unbound, little-endian i32)
+            (dotimes (i 4) (vector-push-extend 0 data-buffer))
+            ;; Write plist (0 = nil, little-endian i32)
+            (dotimes (i 4) (vector-push-extend 0 data-buffer))))))
+    ;; Add data segment if there's any data
+    (when (plusp (length data-buffer))
+      (add-data module
+                0  ; memory index
+                `((,+op-i32-const+ ,*static-data-base*))
+                (coerce data-buffer '(vector (unsigned-byte 8)))))))

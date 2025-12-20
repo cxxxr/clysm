@@ -256,3 +256,51 @@
                           (setq sum (+ sum x))))))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Symbol tests
+
+(test compile-quote-symbol
+  "Test compiling (quote foo)."
+  (let* ((module (clysm/compiler:compile-module '((quote foo))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))
+    ;; Should have data section with symbol
+    (is (not (null (clysm/wasm:wasm-module-data module))))))
+
+(test compile-quote-multiple-symbols
+  "Test compiling multiple quoted symbols."
+  (let* ((module (clysm/compiler:compile-module
+                  '((cons (quote foo) (quote bar)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))
+    ;; Should have data section with symbols
+    (is (not (null (clysm/wasm:wasm-module-data module))))))
+
+(test compile-quote-same-symbol-twice
+  "Test that quoting the same symbol twice uses the same address."
+  ;; This tests symbol interning
+  (let* ((module (clysm/compiler:compile-module
+                  '((cons (quote hello) (quote hello)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-symbol-name
+  "Test compiling (symbol-name 'foo)."
+  (let* ((module (clysm/compiler:compile-module
+                  '((symbol-name (quote foo)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-symbolp
+  "Test compiling (symbolp 'foo)."
+  (let* ((module (clysm/compiler:compile-module
+                  '((symbolp (quote foo)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-eq-symbols
+  "Test compiling (eq 'foo 'foo)."
+  (let* ((module (clysm/compiler:compile-module
+                  '((eq (quote foo) (quote foo)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

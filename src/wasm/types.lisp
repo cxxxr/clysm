@@ -132,3 +132,9 @@
   "A WasmGC struct field."
   (type 0 :type t)  ; Can be value type or type index
   (mutable t :type boolean))
+
+(defstruct (wasm-data (:constructor make-wasm-data (memory-idx offset data)))
+  "A WebAssembly data segment for initializing linear memory."
+  (memory-idx 0 :type (unsigned-byte 32))  ; Memory index (usually 0)
+  (offset nil :type list)                   ; Init expression for offset
+  (data #() :type (vector (unsigned-byte 8))))  ; Raw byte data
