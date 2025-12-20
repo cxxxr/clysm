@@ -62,27 +62,36 @@
 ;;; LET
 
 (define-special-form let (form env)
+  "Compile a let form.
+   Fix: Compile ALL init expressions first (leaving results on stack),
+   then store all results into locals. This prevents init expressions
+   from corrupting each other's scratch locals."
   (destructuring-bind (bindings &rest body) (cdr form)
     (let ((new-env env)
           (init-code nil)
-          (local-indices nil))
-      ;; Process bindings
+          (local-indices nil))  ; list of (index . has-init-p)
+      ;; First pass: allocate locals and compile init expressions
+      ;; Results stay on the stack to avoid local variable conflicts
       (dolist (binding bindings)
         (let* ((name (if (consp binding) (car binding) binding))
                (init (if (consp binding) (cadr binding) nil)))
           (multiple-value-bind (env* index)
               (env-add-local new-env name +type-i32+)
             (setf new-env env*)
-            (push index local-indices)
-            (when init
-              (let ((init-code* (compile-form init env)))
-                (setf init-code
-                      (append init-code
-                              init-code*
-                              `((,+op-local-set+ ,index)))))))))
-      ;; Compile body
-      (let ((body-code (compile-progn body new-env)))
-        (append init-code body-code)))))
+            (push (cons index (not (null init))) local-indices)
+            ;; Always push a value onto the stack for each binding
+            (let ((init-code* (if init
+                                  (compile-form init env)
+                                  `((,+op-i32-const+ 0)))))  ; nil for no init
+              (setf init-code (append init-code init-code*))))))
+      ;; Second pass: store results into locals (in reverse order due to stack LIFO)
+      (let ((store-code nil))
+        (dolist (entry local-indices)  ; local-indices is already reversed
+          (push `(,+op-local-set+ ,(car entry)) store-code))
+        (setf store-code (nreverse store-code))
+        ;; Compile body
+        (let ((body-code (compile-progn body new-env)))
+          (append init-code store-code body-code))))))
 
 ;;; PROGN
 

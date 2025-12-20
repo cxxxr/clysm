@@ -3162,7 +3162,7 @@
                   ;; Strings match! Return cdr(entry) = symbol
                   (,+op-local-get+ ,entry-local)
                   (,+op-i32-load+ 2 4)
-                  (,+op-br+ 4)  ; exit outer result block
+                  (,+op-br+ 5)  ; exit outer result block (6 levels up: if,loop,block,if,loop,block)
                 (,+op-end+)
                 ;; Compare bytes at idx
                 (,+op-local-get+ ,input-str-local)
