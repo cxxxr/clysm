@@ -87,10 +87,22 @@
    In self-hosting mode, this is mostly a no-op since our macro expander
    produces standard CL forms without SBCL internals."
   (cond
+    ;; Handle SBCL COMMA objects (from backquote reader)
+    ((typep form 'sb-impl::comma)
+     (let ((expr (sb-impl::comma-expr form))
+           (kind (sb-impl::comma-kind form)))
+       (if (= kind 0)
+           ;; Regular unquote: ,x -> (unquote x)
+           `(unquote ,(normalize-sbcl-internals expr))
+           ;; Splice unquote: ,@x -> (unquote-splicing x)
+           `(unquote-splicing ,(normalize-sbcl-internals expr)))))
     ((atom form) form)
     ;; In self-hosting mode, only handle standard forms
     (*self-hosting-mode*
      (normalize-standard-forms form))
+    ;; Handle SBCL quasiquote
+    ((eq (car form) 'sb-int:quasiquote)
+     `(backquote ,(normalize-sbcl-internals (second form))))
     ;; Arithmetic (SBCL-specific)
     ((eq (car form) 'sb-impl::xsubtract)
      ;; (sb-impl::xsubtract a b) => (- b a)
@@ -172,10 +184,20 @@
   "Recursively expand all macros in FORM.
    Uses self-hosted macro expansion with fallback to host for bootstrap."
   (cond
+    ;; Handle SBCL COMMA objects first (before atom check)
+    ((typep form 'sb-impl::comma)
+     (let ((expr (sb-impl::comma-expr form))
+           (kind (sb-impl::comma-kind form)))
+       (if (= kind 0)
+           `(unquote ,(expand-macros expr))
+           `(unquote-splicing ,(expand-macros expr)))))
     ;; Atoms don't need expansion
     ((atom form) form)
     ;; Quote - don't expand inside
     ((eq (car form) 'quote) form)
+    ;; SBCL quasiquote - convert to backquote and expand
+    ((eq (car form) 'sb-int:quasiquote)
+     (expand-macros `(backquote ,(second form))))
     ;; Backquote - expand to list-building code
     ((eq (car form) 'backquote)
      (expand-macros (expand-backquote (second form))))

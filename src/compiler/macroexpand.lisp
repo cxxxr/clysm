@@ -31,6 +31,16 @@
 (defun expand-backquote (form)
   "Expand a backquoted form into list-building code."
   (cond
+    ;; SBCL COMMA object - convert to unquote/splice-unquote
+    #+sbcl
+    ((typep form 'sb-impl::comma)
+     (let ((expr (sb-impl::comma-expr form))
+           (kind (sb-impl::comma-kind form)))
+       (if (= kind 0)
+           ;; Regular unquote - return the expression directly
+           expr
+           ;; Splice unquote - wrap so expand-backquote-list can detect it
+           `(splice-unquote ,expr))))
     ;; Atom - just quote it
     ((atom form)
      (if (or (null form) (eq form t) (numberp form) (stringp form))
@@ -54,6 +64,14 @@
     ;; Each segment is either a list of quoted/unquoted items or a splice
     (dolist (item forms)
       (cond
+        ;; SBCL COMMA object with splice (kind != 0)
+        #+sbcl
+        ((and (typep item 'sb-impl::comma)
+              (/= (sb-impl::comma-kind item) 0))
+         (when current-items
+           (push (cons :items (nreverse current-items)) segments)
+           (setf current-items nil))
+         (push (cons :splice (sb-impl::comma-expr item)) segments))
         ;; Splice-unquote - flush current items and add splice
         ((and (consp item) (eq (car item) 'splice-unquote))
          (when current-items
