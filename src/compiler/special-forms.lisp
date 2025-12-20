@@ -186,66 +186,7 @@
             `((,+op-i32-const+ 0)))))))
 
 ;;; QUOTE
-
-(defun compile-string-literal (str env)
-  "Compile a string literal. Allocates string in heap at runtime.
-   String layout: [length:i32][utf8-bytes...]"
-  (declare (ignorable env))
-  (let ((bytes (clysm/utils:string-to-utf8 str)))
-    ;; Generate code to allocate and initialize string
-    `(;; Save heap pointer (return value = string address)
-      (,+op-global-get+ ,*heap-pointer-global*)
-      ;; Store length at offset 0
-      (,+op-global-get+ ,*heap-pointer-global*)
-      (,+op-i32-const+ ,(length bytes))
-      (,+op-i32-store+ 2 0)
-      ;; Store each byte at offset 4+i
-      ,@(let ((result nil)
-              (len (length bytes)))
-          (dotimes (i len)
-            (let ((byte (aref bytes i)))
-              (push `(,+op-global-get+ ,*heap-pointer-global*) result)
-              (push `(,+op-i32-const+ ,byte) result)
-              (push `(,+op-i32-store8+ 0 ,(+ 4 i)) result)))
-          (nreverse result))
-      ;; Increment heap pointer (4 bytes for length + string bytes, aligned to 4)
-      (,+op-global-get+ ,*heap-pointer-global*)
-      (,+op-i32-const+ ,(+ 4 (logand (+ (length bytes) 3) (lognot 3))))
-      ,+op-i32-add+
-      (,+op-global-set+ ,*heap-pointer-global*))))
-
-(defun compile-quoted-value (value env)
-  "Compile a quoted value to code that constructs it at runtime."
-  (cond
-    ;; NIL
-    ((null value)
-     `((,+op-i32-const+ 0)))
-    ;; T (true)
-    ((eq value t)
-     `((,+op-i32-const+ 1)))
-    ;; Integer
-    ((integerp value)
-     `((,+op-i32-const+ ,value)))
-    ;; Float
-    ((floatp value)
-     `((,+op-f64-const+ ,(float value 1.0d0))))
-    ;; String literal
-    ((stringp value)
-     (compile-string-literal value env))
-    ;; List - build using cons at runtime
-    ;; Use the cons primitive which handles memory allocation correctly
-    ((consp value)
-     ;; Compile as (cons car-value cdr-value)
-     ;; This uses the existing cons primitive which allocates and stores properly
-     (compile-form `(cons ',(car value) ',(cdr value)) env))
-    ;; Symbol - intern at compile time and return address
-    ((symbolp value)
-     (let* ((sym-info (intern-compile-time-symbol value))
-            (sym-addr (first sym-info)))
-       `((,+op-i32-const+ ,sym-addr))))
-    ;; Other
-    (t
-     (error "Cannot quote: ~A" value))))
+;;; Note: compile-string-literal and compile-quoted-value are defined in compiler.lisp
 
 (define-special-form quote (form env)
   (let ((value (cadr form)))

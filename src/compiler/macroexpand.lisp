@@ -24,34 +24,58 @@
 
 ;;; Backquote Expansion
 ;;;
-;;; Transforms (BACKQUOTE form) into list-building code.
+;;; Transforms (QUASIQUOTE form) into list-building code.
 ;;; (UNQUOTE x) => x
-;;; (SPLICE-UNQUOTE x) => ,@x (spliced into list)
+;;; (UNQUOTE-SPLICING x) => ,@x (spliced into list)
+;;;
+;;; For CLtL2 compatibility, we use:
+;;;   QUASIQUOTE instead of BACKQUOTE
+;;;   UNQUOTE-SPLICING instead of SPLICE-UNQUOTE
+;;;
+;;; The reader produces these forms, and expand-backquote consumes them.
+
+(defun self-evaluating-p (form)
+  "Return T if FORM evaluates to itself."
+  (or (null form)
+      (eq form t)
+      (numberp form)
+      (stringp form)
+      (characterp form)
+      (keywordp form)))
 
 (defun expand-backquote (form)
   "Expand a backquoted form into list-building code."
   (cond
-    ;; SBCL COMMA object - convert to unquote/splice-unquote
+    ;; SBCL COMMA object - convert to unquote/unquote-splicing
+    ;; Only active during bootstrap (not in self-hosting mode)
     #+sbcl
-    ((typep form 'sb-impl::comma)
+    ((and (not *self-hosting-mode*)
+          (typep form 'sb-impl::comma))
      (let ((expr (sb-impl::comma-expr form))
            (kind (sb-impl::comma-kind form)))
        (if (= kind 0)
            ;; Regular unquote - return the expression directly
            expr
            ;; Splice unquote - wrap so expand-backquote-list can detect it
-           `(splice-unquote ,expr))))
-    ;; Atom - just quote it
+           `(unquote-splicing ,expr))))
+    ;; Atom - just quote it (unless self-evaluating)
     ((atom form)
-     (if (or (null form) (eq form t) (numberp form) (stringp form))
+     (if (self-evaluating-p form)
          form
          `(quote ,form)))
     ;; Unquote - return the form directly
     ((eq (car form) 'unquote)
      (second form))
-    ;; Splice-unquote at top level is an error
-    ((eq (car form) 'splice-unquote)
-     (error "Splice-unquote ,@ not inside list"))
+    ;; Unquote-splicing at top level:
+    ;; - In self-hosting mode: this is an error (actual splice at top level)
+    ;; - In bootstrap mode: (unquote-splicing ...) is a literal list to quote,
+    ;;   since SBCL represents actual splices as comma objects, not this form
+    ((or (eq (car form) 'unquote-splicing)
+         (eq (car form) 'splice-unquote))
+     (if *self-hosting-mode*
+         (error "Unquote-splicing ,@ not inside list")
+         ;; In bootstrap mode, treat as a regular list to build
+         (expand-backquote-list form)))
     ;; List - build with list/cons/append
     (t
      (expand-backquote-list form))))
@@ -65,15 +89,20 @@
     (dolist (item forms)
       (cond
         ;; SBCL COMMA object with splice (kind != 0)
+        ;; Only active during bootstrap (not in self-hosting mode)
         #+sbcl
-        ((and (typep item 'sb-impl::comma)
+        ((and (not *self-hosting-mode*)
+              (typep item 'sb-impl::comma)
               (/= (sb-impl::comma-kind item) 0))
          (when current-items
            (push (cons :items (nreverse current-items)) segments)
            (setf current-items nil))
          (push (cons :splice (sb-impl::comma-expr item)) segments))
-        ;; Splice-unquote - flush current items and add splice
-        ((and (consp item) (eq (car item) 'splice-unquote))
+        ;; Unquote-splicing - flush current items and add splice
+        ;; (supports both new unquote-splicing and legacy splice-unquote)
+        ((and (consp item)
+              (or (eq (car item) 'unquote-splicing)
+                  (eq (car item) 'splice-unquote)))
          (when current-items
            (push (cons :items (nreverse current-items)) segments)
            (setf current-items nil))

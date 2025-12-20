@@ -201,7 +201,14 @@
   (:use #:cl)
   (:export
    #:read-source
-   #:read-file))
+   #:read-file
+   ;; Quasiquote reader support (for self-hosting)
+   #:read-quasiquote
+   #:read-unquote
+   #:make-quasiquote-readtable
+   #:*quasiquote-readtable*
+   #:install-quasiquote-reader
+   #:uninstall-quasiquote-reader))
 
 (defpackage #:clysm/ast
   (:use #:cl)

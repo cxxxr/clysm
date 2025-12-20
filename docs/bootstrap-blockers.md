@@ -1,6 +1,6 @@
 # Bootstrap Blockers Analysis
 
-Date: 2025-12-20 (Updated)
+Date: 2025-12-20 (Updated - Session 3)
 
 ## Overview
 
@@ -8,124 +8,146 @@ This document catalogs the blockers preventing the clysm compiler from being ful
 
 ## Test Results (Latest)
 
-With extended prerequisites (types.lisp, instructions.lisp, module.lisp, utf8.lisp, environment.lisp, compiler.lisp) and filtering SBCL-specific code:
+Compiling core compiler files (environment, special-forms, primitives, compiler, codegen):
 
-| File | Forms Total | Forms Compiled | Success Rate | First Blocker |
-|------|-------------|----------------|--------------|---------------|
-| special-forms.lisp | 363 | 315 | 87% | COMPILE-DEFUN (user function) |
-| primitives.lisp | 353 | 315 | 89% | COMPILE-DEFUN (user function) |
-| codegen.lisp | 290 | 290 | 100% | N/A (fully compiles) |
+| Metric | Value |
+|--------|-------|
+| Total forms | 275 |
+| expand-macros pass | 100% (275/275) |
+| compile-module | Progressing (stopped at WASM infrastructure) |
+| First blocker | Unknown function: ADD-FUNC-TYPE (from wasm/module.lisp) |
 
-## Fixed Issues (This Session)
+## Fixed Issues (Session 3)
 
-### 1. codegen.lisp #'append Usage (FIXED)
+### 1. Backquote Expansion (Major Fix)
+
+**Problem:** Compiler was failing with "The value ,(REST BINDINGS) is not of type LIST" when processing forms containing backquotes.
+
+**Root Causes:**
+1. SBCL's backquote reader creates comma objects as elements in lists
+2. The LET/LET* case in `normalize-sbcl-internals` was matching forms with comma objects in the bindings position
+3. `(unquote-splicing ...)` as a literal list was treated as an error, not as a form to quote
+
+**Fixes Applied:**
+- Added check `(listp (second form))` to LET/LET* case to skip forms with comma objects
+- Updated `expand-backquote` to treat `(unquote-splicing ...)` as a regular list in bootstrap mode
+- Added `FUNCTION` to the list of special forms in `expand-macros`
+- Added `SB-INT:NAMED-LAMBDA` handling in `expand-macros` (converts to LAMBDA)
+
+### 2. Infinite Recursion Fix
+
+**Problem:** `expand-macros` was recursing infinitely on `(FUNCTION (SB-INT:NAMED-LAMBDA ...))` forms.
+
+**Fix:** Added `function` to the special forms list and added explicit handling for `sb-int:named-lambda`.
+
+### 3. Moved *self-hosting-mode* Definition
+
+**Problem:** `*self-hosting-mode*` was undefined in macroexpand.lisp due to load order.
+
+**Fix:** Moved the definition to environment.lisp which loads first.
+
+## Fixed Issues (Session 2)
+
+### 1. SBCL-Specific Filter Improvements
+- Changed test filter to only block truly internal SBCL packages (SB-IMPL, SB-INT, etc.)
+- Allow SB-EXT symbols (public extensions like `GLOBAL` variable name)
+- Allow `sb-int:quasiquote` as it's standard backquote syntax
+
+### 2. Restored normalize-binding* Function
+- Re-added `normalize-binding*` function with `#+sbcl` conditional
+- Function is called from both `normalize-sbcl-internals` and `expand-macros`
+
+### 3. New Primitives Added
+- **LOGNOT**: Bitwise NOT using XOR with -1
+- **KEYWORDP**: Check if symbol is a keyword
+- **COERCE**: Stub for bootstrap (runs at compile time on host)
+- **AREF**: Stub for bootstrap (runs at compile time on host)
+
+### 4. Code Movement for Dependencies
+- Moved `*heap-pointer-global*` earlier in compiler.lisp (before compile-string-literal)
+- Moved `compile-string-literal` to compiler.lisp (from special-forms.lisp)
+- Moved `compile-quoted-value` to compiler.lisp (from special-forms.lisp)
+
+### 5. compile-string-literal Rewritten
+- Changed from using AREF to using DOLIST over a list
+- Uses `(coerce bytes-vec 'list)` then iterates with DOLIST
+- Avoids direct array access for bootstrap compatibility
+
+## Previously Fixed Issues (Session 1)
+
+### codegen.lisp Fixes
 - Replaced `#'append` with `(lambda (a b) (append a b))`
 - Replaced `#'generate-code` with `(lambda (n) (generate-code n))`
 - Reordered functions to put `primop-to-wasm-op` before `generate-code`
 - Result: 100% compilation (290/290 forms)
 
-### 2. DECLARE Special Form (FIXED)
-- Added DECLARE special form that returns nil (ignores declarations)
+### Special Form Additions
+- Added DECLARE special form (ignores declarations)
 
-### 3. Mutual Recursion in compiler.lisp (FIXED)
+### Mutual Recursion in compiler.lisp
 - Inlined `normalize-binding*` into `normalize-sbcl-internals`
 - Added `#+sbcl` conditionals to SBCL-specific code paths
-- Reordered `*self-hosting-mode*` check to come first
+- Moved `*self-hosting-mode*` check to top of cond
 
-### 4. Missing CxR Accessors (FIXED)
-- Added CAAR, CADR, CDAR, CDDR primitives
+### Missing Primitives
+- CAAR, CADR, CDAR, CDDR
+- STRING-TO-UTF8 (stub)
+- INTERN-COMPILE-TIME-STRING (stub)
+- INTERN-COMPILE-TIME-SYMBOL (stub)
+- REMOVE-IF, REMOVE-IF-NOT
 
-### 5. Missing Primitives (FIXED)
-- Added STRING-TO-UTF8 (stub)
-- Added INTERN-COMPILE-TIME-STRING (stub)
-- Added INTERN-COMPILE-TIME-SYMBOL (stub)
-- Added REMOVE-IF, REMOVE-IF-NOT
-
-### 6. BLOCK in Lambda (catch/throw) (FIXED)
+### BLOCK in Lambda Fix
 - Changed `find-primitive` to use catch/throw instead of return-from inside lambda
-- return-from inside lambda requires non-local exit which WASM doesn't support directly
-
-## Previously Fixed Issues
-
-### Destructuring in defmacro Lambda Lists
-- Added `generate-destructuring-bindings` function in macroexpand.lisp
-- Recursively handles nested destructuring patterns like `(form env)`
-
-### Missing Hash Table Primitives
-- Added MAPHASH, HASH-TABLE-P
-
-### Float Primitives
-- Added FLOATP, FLOAT
-
-### FUNCTION Special Form
-- Added support for `#'name` and `#'(lambda ...)`
-- Detects primitives and provides helpful error message
-
-### IR Accessor Bug
-- Fixed `ir-local-index` to `ir-local-ref-index` in codegen.lisp
 
 ## Remaining Blockers
 
-### 1. User-Defined Function Recognition
-
-**Affected Files:**
-- All compiler source files
+### 1. WASM Infrastructure Functions
 
 **Problem:**
 
-When incrementally compiling forms, user-defined functions (via DEFUN) are not
-recognized by later forms. The compiler starts fresh for each compilation and
-doesn't maintain a registry of defined functions across forms.
+The compiler calls functions from the WASM module (e.g., `add-func-type`, `add-function`) that are defined in `src/wasm/module.lisp`.
 
-**Example:**
+**Current Behavior:**
 
-```lisp
-;; Form 100: (defun foo ...)
-;; Form 200: (defun bar ... (foo x) ...)  ; Error: Unknown function FOO
-```
+When compiling only the core compiler files (environment, special-forms, primitives, compiler, codegen), these functions are unknown.
 
 **Solution:**
 
-Implement function forward declaration or multi-pass compilation:
-1. First pass: Collect all function signatures
-2. Second pass: Compile function bodies with all signatures known
+Include the WASM infrastructure files in the bootstrap compilation:
+- `src/wasm/types.lisp`
+- `src/wasm/instructions.lisp`
+- `src/wasm/module.lisp`
+- `src/wasm/utf8.lisp`
 
-### 2. etypecase Type Specifiers (WARNING)
+### 2. Mutual Dependencies Between Functions
 
-**Affected Files:**
-- `src/compiler/codegen.lisp` (etypecase with IR types)
+**Status:** Partially resolved - the two-pass system handles this when all forms are compiled together.
+
+### 3. Compile-Time vs Runtime Operations
 
 **Problem:**
+
+Functions like `compile-string-literal` use operations (COERCE, etc.) that:
+- Run at compile time on the host (SBCL)
+- But the self-hosted compiler still needs to "compile" them
+- We've added stubs but they don't do actual work at WASM runtime
+
+**Implication:**
+
+The compiler can compile itself, but the resulting WASM code won't actually
+implement COERCE/AREF properly until we add full array support.
+
+### 4. etypecase Type Specifiers (WARNING)
 
 `etypecase` uses IR struct types (ir-const, ir-local-ref, etc.) that aren't
 registered as known types in `type-to-predicate`.
 
-**Current Behavior:**
-
-Generates warnings but continues. At runtime, the type checks would fail.
-
 **Solution:**
 
-Register struct types automatically when defstruct is processed, or check for
-`typename-p` predicate existence.
-
-### 3. SBCL-Specific Code
-
-**Affected Files:**
-- `src/compiler/compiler.lisp` (normalize-sbcl-internals)
-
-**Problem:**
-
-Code that handles SBCL internal forms (sb-impl::*, sb-int::*, etc.) cannot be
-compiled when not running on SBCL.
-
-**Solution:**
-
-Use `#+sbcl` reader conditionals (already implemented) to exclude SBCL-specific
-code when compiling for self-hosting.
+Register struct types automatically when defstruct is processed.
 
 ## Test Command
 
 ```bash
-sbcl --noinform --non-interactive --load /tmp/test-with-module.lisp
+sbcl --noinform --non-interactive --load /tmp/test-compiler-bootstrap.lisp
 ```

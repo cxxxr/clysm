@@ -249,6 +249,14 @@
                             (list +op-i32-xor+))))
        code))))
 
+(define-primitive lognot (args env)
+  "Bitwise NOT (one's complement). Implemented as XOR with -1."
+  (unless (= (length args) 1)
+    (error "lognot requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ -1)
+    ,+op-i32-xor+))
+
 (define-primitive ash (args env)
   (unless (= (length args) 2)
     (error "ash requires exactly 2 arguments"))
@@ -403,6 +411,17 @@
     (error "symbolp requires exactly 1 argument"))
   ;; Check if value has symbol tag (simplified: check if it's interned)
   ;; For now, return nil as we don't have full symbol support in target
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 0)))  ; placeholder
+
+(define-primitive keywordp (args env)
+  "Check if argument is a keyword symbol.
+   Keywords are symbols in the KEYWORD package."
+  (unless (= (length args) 1)
+    (error "keywordp requires exactly 1 argument"))
+  ;; For now, return nil as we don't have full keyword support in target
+  ;; A proper implementation would check if symbol is in keyword package
   `(,@(compile-form (first args) env)
     ,+op-drop+
     (,+op-i32-const+ 0)))  ; placeholder
@@ -1591,6 +1610,24 @@
   (unless (= (length args) 1)
     (error "intern-compile-time-symbol requires exactly 1 argument"))
   ;; For bootstrap: just return 0 (nil) as placeholder
+  `((,+op-i32-const+ 0)))
+
+(define-primitive coerce (args env)
+  "Coerce a value to a type. Stub for bootstrap.
+   This runs at compile time on host, so just compile the value."
+  (unless (= (length args) 2)
+    (error "coerce requires exactly 2 arguments"))
+  ;; For bootstrap: just return the first argument unchanged
+  ;; Real implementation would need runtime type conversion
+  (compile-form (first args) env))
+
+(define-primitive aref (args env)
+  "Access an array element. Stub for bootstrap.
+   This runs at compile time on host, so actual array access works."
+  (unless (>= (length args) 2)
+    (error "aref requires at least 2 arguments"))
+  ;; For bootstrap: just return 0 as placeholder
+  ;; Real implementation would need array memory layout
   `((,+op-i32-const+ 0)))
 
 ;;; Higher-order list functions

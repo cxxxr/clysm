@@ -3,12 +3,9 @@
 (in-package #:clysm/compiler)
 
 ;;; Self-Hosting Mode
-;;; When *self-hosting-mode* is T, we skip SBCL-specific normalization
-;;; because our own macro expander produces standard CL forms.
-
-(defvar *self-hosting-mode* nil
-  "When T, skip SBCL internal form normalization.
-   Set to T when running in self-hosted mode (not using SBCL as host).")
+;;; *self-hosting-mode* is defined in environment.lisp (loaded earlier).
+;;; When it's T, we skip SBCL-specific normalization because our own
+;;; macro expander produces standard CL forms.
 
 (defun normalize-standard-forms (form)
   "Normalize standard CL forms for self-hosting mode.
@@ -49,6 +46,29 @@
      (cons (normalize-standard-forms (car form))
            (mapcar #'normalize-standard-forms (cdr form))))))
 
+#+sbcl
+(defun normalize-binding* (bindings body)
+  "Convert SBCL's SB-INT:BINDING* to standard LET*.
+   Handles special (POP var) forms in bindings that destructure lists."
+  (let ((let-bindings nil)
+        (pop-counters (make-hash-table :test 'eq)))
+    (dolist (binding bindings)
+      (let* ((var (first binding))
+             (init (second binding)))
+        (cond
+          ((not (and (consp init) (eq (car init) 'pop)))
+           (push (list var (normalize-sbcl-internals init)) let-bindings))
+          (t
+           (let* ((pop-var (second init))
+                  (pop-count (or (gethash pop-var pop-counters) 0)))
+             (let ((accessor pop-var))
+               (dotimes (i pop-count)
+                 (setf accessor `(cdr ,accessor)))
+               (push (list var `(car ,accessor)) let-bindings))
+             (setf (gethash pop-var pop-counters) (1+ pop-count)))))))
+    `(let* ,(nreverse let-bindings)
+       ,@(mapcar #'normalize-sbcl-internals body))))
+
 ;;; Macro Expansion
 ;;; Uses self-hosted macro expansion with host fallback for bootstrap.
 
@@ -77,7 +97,7 @@
     ;; SBCL-specific handlers (only active when running on SBCL)
     #+sbcl
     ((eq (car form) 'sb-int:quasiquote)
-     `(backquote ,(normalize-sbcl-internals (second form))))
+     `(quasiquote ,(normalize-sbcl-internals (second form))))
     #+sbcl
     ((eq (car form) 'sb-impl::xsubtract)
      `(- ,(normalize-sbcl-internals (third form))
@@ -145,7 +165,11 @@
     ((eq (car form) 'sb-c::check-ds-list)
      (normalize-sbcl-internals (second form)))
     ;; LET/LET* - strip DECLARE forms
-    ((or (eq (car form) 'let) (eq (car form) 'let*))
+    ;; BUT only if it's a real LET/LET* form (not a template inside backquote)
+    ((and (or (eq (car form) 'let) (eq (car form) 'let*))
+          (listp (cdr form))        ; Not an atom as cdr
+          (listp (cddr form))       ; Proper list structure
+          (listp (second form)))    ; Bindings must be a list, not a comma object
      (let* ((bindings (second form))
             (body (cddr form))
             ;; Filter out DECLARE forms from body
@@ -158,15 +182,57 @@
                               bindings)
          ,@(mapcar #'normalize-sbcl-internals filtered-body))))
     (t
+     ;; Handle improper lists (dotted pairs from backquote with ,@)
+     ;; SBCL represents `(a ,@b) as (a . #<COMMA-SPLICE b>) which is improper
+     ;; We need to walk the list handling comma objects at any position
+     #+sbcl
+     (if (not *self-hosting-mode*)
+         (normalize-sbcl-list form)
+         (cons (normalize-sbcl-internals (car form))
+               (mapcar #'normalize-sbcl-internals (cdr form))))
+     #-sbcl
      (cons (normalize-sbcl-internals (car form))
            (mapcar #'normalize-sbcl-internals (cdr form))))))
+
+#+sbcl
+(defun normalize-sbcl-list (form)
+  "Normalize a list that may contain SBCL comma objects or be improper.
+   Handles the case where backquote creates improper lists like (a . ,@b)."
+  (let ((result nil))
+    (labels ((process (rest)
+               (cond
+                 ;; End of proper list
+                 ((null rest)
+                  (nreverse result))
+                 ;; Improper tail: comma object
+                 ((typep rest 'sb-impl::comma)
+                  (let ((expr (sb-impl::comma-expr rest))
+                        (kind (sb-impl::comma-kind rest)))
+                    (if (= kind 0)
+                        ;; Regular unquote at tail: result ends with unquote
+                        (nconc (nreverse result)
+                               `(unquote ,(normalize-sbcl-internals expr)))
+                        ;; Splice at tail: append the unquote-splicing form
+                        (nconc (nreverse result)
+                               (list `(unquote-splicing ,(normalize-sbcl-internals expr)))))))
+                 ;; Regular cons cell
+                 ((consp rest)
+                  (push (normalize-sbcl-internals (car rest)) result)
+                  (process (cdr rest)))
+                 ;; Other improper tail (non-comma atom)
+                 (t
+                  (nconc (nreverse result) rest)))))
+      (process form))))
 
 (defun expand-macros (form)
   "Recursively expand all macros in FORM.
    Uses self-hosted macro expansion with fallback to host for bootstrap."
   (cond
     ;; Handle SBCL COMMA objects first (before atom check)
-    ((typep form 'sb-impl::comma)
+    ;; Only active during bootstrap (not in self-hosting mode)
+    #+sbcl
+    ((and (not *self-hosting-mode*)
+          (typep form 'sb-impl::comma))
      (let ((expr (sb-impl::comma-expr form))
            (kind (sb-impl::comma-kind form)))
        (if (= kind 0)
@@ -176,10 +242,16 @@
     ((atom form) form)
     ;; Quote - don't expand inside
     ((eq (car form) 'quote) form)
-    ;; SBCL quasiquote - convert to backquote and expand
-    ((eq (car form) 'sb-int:quasiquote)
-     (expand-macros `(backquote ,(second form))))
-    ;; Backquote - expand to list-building code
+    ;; SBCL quasiquote - convert to quasiquote and expand
+    ;; Only active during bootstrap
+    #+sbcl
+    ((and (not *self-hosting-mode*)
+          (eq (car form) 'sb-int:quasiquote))
+     (expand-macros `(quasiquote ,(second form))))
+    ;; Quasiquote (portable form) - expand to list-building code
+    ((eq (car form) 'quasiquote)
+     (expand-macros (expand-backquote (second form))))
+    ;; Backquote (legacy name) - same as quasiquote
     ((eq (car form) 'backquote)
      (expand-macros (expand-backquote (second form))))
     ;; LET and LET* need special handling to not expand binding variable names
@@ -197,11 +269,21 @@
     ((member (car form) '(if progn setq setf
                           block return-from return
                           tagbody go labels values multiple-value-bind
-                          lambda funcall defun defparameter defconstant
+                          lambda function funcall defun defparameter defconstant
                           defvar defstruct catch throw unwind-protect format))
      (cons (car form) (mapcar #'expand-macros (cdr form))))
+    ;; SB-INT:NAMED-LAMBDA - convert to lambda and expand body
+    ;; Only active during bootstrap
+    #+sbcl
+    ((and (not *self-hosting-mode*)
+          (eq (car form) 'sb-int:named-lambda))
+     ;; (sb-int:named-lambda name params . body) -> (lambda params . expanded-body)
+     `(lambda ,(third form) ,@(mapcar #'expand-macros (cdddr form))))
     ;; SB-INT:BINDING* - intercept before further expansion and normalize
-    ((eq (car form) 'sb-int:binding*)
+    ;; Only active during bootstrap
+    #+sbcl
+    ((and (not *self-hosting-mode*)
+          (eq (car form) 'sb-int:binding*))
      (expand-macros (normalize-binding* (second form) (cddr form))))
     ;; Try self-hosted macro expansion first
     (t
@@ -211,18 +293,93 @@
            ;; Was expanded by our macros - recursively expand
            (expand-macros expanded)
            ;; Try host macroexpand as fallback (for bootstrap)
-           (multiple-value-bind (host-expanded host-expandedp)
-               (macroexpand-1 form)
-             (if host-expandedp
-                 (expand-macros host-expanded)
-                 ;; Not a macro - expand subforms
-                 (cons (car form) (mapcar #'expand-macros (cdr form))))))))))
+           ;; In self-hosting mode, only use our own macros
+           (if *self-hosting-mode*
+               ;; Not a macro - expand subforms
+               (cons (car form) (mapcar #'expand-macros (cdr form)))
+               ;; Bootstrap: try host macroexpand
+               (multiple-value-bind (host-expanded host-expandedp)
+                   (macroexpand-1 form)
+                 (if host-expandedp
+                     (expand-macros host-expanded)
+                     ;; Not a macro - expand subforms
+                     (cons (car form) (mapcar #'expand-macros (cdr form)))))))))))
 
 (defun expand-toplevel-macros (forms)
   "Expand macros in a list of top-level forms."
   (mapcar (lambda (form)
             (normalize-sbcl-internals (expand-macros form)))
           forms))
+
+;;; Form Compilation Helpers
+
+;; Define heap pointer global early so compile-string-literal can use it
+(defparameter *heap-pointer-global* 0
+  "Index of the heap pointer global variable.")
+
+(defun compile-string-literal (str env)
+  "Compile a string literal. Allocates string in heap at runtime.
+   String layout: [length:i32][utf8-bytes...]
+   Note: Uses list operations instead of AREF for bootstrap compatibility."
+  (declare (ignorable env))
+  (let* ((bytes-vec (clysm/utils:string-to-utf8 str))
+         (bytes-list (coerce bytes-vec 'list))
+         (len (length bytes-list)))
+    ;; Generate code to allocate and initialize string
+    `(;; Save heap pointer (return value = string address)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      ;; Store length at offset 0
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,len)
+      (,+op-i32-store+ 2 0)
+      ;; Store each byte at offset 4+i
+      ,@(let ((result nil)
+              (i 0))
+          (dolist (byte bytes-list)
+            (push `(,+op-global-get+ ,*heap-pointer-global*) result)
+            (push `(,+op-i32-const+ ,byte) result)
+            (push `(,+op-i32-store8+ 0 ,(+ 4 i)) result)
+            (incf i))
+          (nreverse result))
+      ;; Increment heap pointer (4 bytes for length + string bytes, aligned to 4)
+      (,+op-global-get+ ,*heap-pointer-global*)
+      (,+op-i32-const+ ,(+ 4 (logand (+ len 3) (lognot 3))))
+      ,+op-i32-add+
+      (,+op-global-set+ ,*heap-pointer-global*))))
+
+(defun compile-quoted-value (value env)
+  "Compile a quoted value to code that constructs it at runtime.
+   Moved here from special-forms.lisp for compile-form dependency."
+  (cond
+    ;; NIL
+    ((null value)
+     `((,+op-i32-const+ 0)))
+    ;; T (true)
+    ((eq value t)
+     `((,+op-i32-const+ 1)))
+    ;; Integer
+    ((integerp value)
+     `((,+op-i32-const+ ,value)))
+    ;; Float
+    ((floatp value)
+     `((,+op-f64-const+ ,(float value 1.0d0))))
+    ;; String literal
+    ((stringp value)
+     (compile-string-literal value env))
+    ;; List - build using cons at runtime
+    ;; Use the cons primitive which handles memory allocation correctly
+    ((consp value)
+     ;; Compile as (cons car-value cdr-value)
+     ;; This uses the existing cons primitive which allocates and stores properly
+     (compile-form `(cons ',(car value) ',(cdr value)) env))
+    ;; Symbol - intern at compile time and return address
+    ((symbolp value)
+     (let* ((sym-info (intern-compile-time-symbol value))
+            (sym-addr (first sym-info)))
+       `((,+op-i32-const+ ,sym-addr))))
+    ;; Other
+    (t
+     (error "Cannot quote: ~A" value))))
 
 ;;; Form Compilation
 
@@ -587,9 +744,6 @@
                      (nreverse result))))))
 
 ;;; Runtime Setup
-
-(defparameter *heap-pointer-global* 0
-  "Index of the heap pointer global variable.")
 
 (defparameter *runtime-symbol-table-global* 0
   "Index of the runtime symbol table global variable.
