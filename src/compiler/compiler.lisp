@@ -457,6 +457,16 @@
   ;; Add runtime symbol table global (initialized to 0, created lazily)
   (setf *runtime-symbol-table-global*
         (length (wasm-module-globals module)))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
+  ;; Add catch/throw globals
+  ;; $throw-pending: 0 = no throw pending, 1 = throw in progress
+  (setf *throw-pending-global* (length (wasm-module-globals module)))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
+  ;; $throw-tag: the tag being thrown
+  (setf *throw-tag-global* (length (wasm-module-globals module)))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
+  ;; $throw-value: the value being thrown
+  (setf *throw-value-global* (length (wasm-module-globals module)))
   (add-global module +type-i32+ t `((,+op-i32-const+ 0))))
 
 ;;; Closure Type Index Cache

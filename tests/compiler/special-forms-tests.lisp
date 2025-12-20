@@ -1539,3 +1539,52 @@
                  '((let ((s (format nil "a~%b")))
                      (string-length s))))))
     (is (= 3 result))))  ; "a\nb" has length 3
+
+;;; Catch/Throw Tests
+
+(test catch-no-throw
+  "Test catch without throw returns body value."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'foo
+                     (+ 1 2))))))
+    (is (= 3 result))))
+
+(test catch-simple-throw
+  "Test catch with matching throw returns thrown value."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'foo
+                     (throw 'foo 42))))))
+    (is (= 42 result))))
+
+(test catch-throw-with-computation
+  "Test throw with computed value."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'bar
+                     (throw 'bar (+ 10 20)))))))
+    (is (= 30 result))))
+
+(test catch-body-before-throw
+  "Test catch executes body before throw."
+  (let ((result (clysm/compiler:eval-forms
+                 '((let ((x 5))
+                     (catch 'test
+                       (setq x 10)
+                       (throw 'test x)))))))
+    (is (= 10 result))))
+
+(test catch-matching-tag
+  "Test that only matching catch catches the throw."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'outer
+                     (catch 'inner
+                       (throw 'inner 99)))))))
+    (is (= 99 result))))
+
+(test catch-with-progn
+  "Test catch with progn body."
+  (let ((result (clysm/compiler:eval-forms
+                 '((catch 'tag
+                     (progn
+                       (+ 1 1)
+                       (throw 'tag 77)))))))
+    (is (= 77 result))))

@@ -7,6 +7,11 @@
 (defvar *mv-globals* nil "List of global indices for multiple values (0-based).")
 (defconstant +max-multiple-values+ 8 "Maximum number of multiple values supported.")
 
+;;; Catch/throw globals - set by setup-runtime in compiler.lisp
+(defvar *throw-pending-global* nil "Global index for throw pending flag.")
+(defvar *throw-tag-global* nil "Global index for throw tag.")
+(defvar *throw-value-global* nil "Global index for throw value.")
+
 ;;; Special Form Handlers
 
 (defparameter *special-forms*
@@ -1110,3 +1115,62 @@
             (dolist (piece (rest pieces))
               (setf result-form `(string-append ,result-form ,piece)))
             (compile-form result-form env))))))
+
+;;; CATCH - Establish a catch point for dynamic control transfer
+;;;
+;;; (catch tag body...) evaluates tag and body. If throw is called during
+;;; body evaluation with a matching tag, catch returns the thrown value.
+;;; Otherwise, it returns the value of the last body form.
+
+(define-special-form catch (form env)
+  "Compile catch. Establishes a catch point with evaluated tag."
+  (destructuring-bind (tag-form &rest body) (cdr form)
+    (let* ((env-count (compile-env-local-count env))
+           (tag-local env-count)
+           (result-local (1+ env-count)))
+      `(;; Evaluate and save the catch tag
+        ,@(compile-form tag-form env)
+        (,+op-local-set+ ,tag-local)
+        ;; Evaluate body
+        ,@(compile-progn body env)
+        (,+op-local-set+ ,result-local)
+        ;; Check if a throw is pending
+        (,+op-global-get+ ,*throw-pending-global*)
+        (,+op-if+ ,+type-i32+)
+          ;; Throw is pending - check if tag matches
+          (,+op-global-get+ ,*throw-tag-global*)
+          (,+op-local-get+ ,tag-local)
+          ,+op-i32-eq+
+          (,+op-if+ ,+type-i32+)
+            ;; Tag matches - clear throw and return thrown value
+            (,+op-i32-const+ 0)
+            (,+op-global-set+ ,*throw-pending-global*)
+            (,+op-global-get+ ,*throw-value-global*)
+          ,+op-else+
+            ;; Tag doesn't match - return throw value (propagate)
+            (,+op-global-get+ ,*throw-value-global*)
+          ,+op-end+
+        ,+op-else+
+          ;; No throw - return body result
+          (,+op-local-get+ ,result-local)
+        ,+op-end+))))
+
+;;; THROW - Transfer control to a matching catch
+;;;
+;;; (throw tag value) searches for a catch with a matching tag and
+;;; transfers control to it, returning the value from the catch.
+
+(define-special-form throw (form env)
+  "Compile throw. Sets throw globals and returns the value."
+  (destructuring-bind (tag-form value-form) (cdr form)
+    `(;; Evaluate tag and save to global
+      ,@(compile-form tag-form env)
+      (,+op-global-set+ ,*throw-tag-global*)
+      ;; Evaluate value and save to global
+      ,@(compile-form value-form env)
+      (,+op-global-set+ ,*throw-value-global*)
+      ;; Set throw-pending flag
+      (,+op-i32-const+ 1)
+      (,+op-global-set+ ,*throw-pending-global*)
+      ;; Return the throw value
+      (,+op-global-get+ ,*throw-value-global*))))
