@@ -2,6 +2,55 @@
 
 (in-package #:clysm/compiler)
 
+;;; Macro Expansion (using host Lisp)
+;;; We use SBCL's macroexpand to expand macros before compilation.
+;;; This allows us to use defmacro in source code and have it expanded
+;;; on the host before generating WASM.
+
+(defun normalize-sbcl-internals (form)
+  "Replace SBCL internal functions with standard equivalents."
+  (cond
+    ((atom form) form)
+    ((eq (car form) 'sb-impl::xsubtract)
+     ;; (sb-impl::xsubtract a b) => (- b a)
+     `(- ,(third form) ,(second form)))
+    ((eq (car form) 'sb-int:named-lambda)
+     ;; (sb-int:named-lambda name (...) body) => (lambda (...) body)
+     `(lambda ,(third form) ,@(cdddr form)))
+    (t
+     (cons (normalize-sbcl-internals (car form))
+           (mapcar #'normalize-sbcl-internals (cdr form))))))
+
+(defun expand-macros (form)
+  "Recursively expand all macros in FORM using the host Lisp's macroexpand.
+   This is similar to macroexpand-all but handles our special forms."
+  (cond
+    ;; Atoms don't need expansion
+    ((atom form) form)
+    ;; Quote - don't expand inside
+    ((eq (car form) 'quote) form)
+    ;; Special forms we handle - expand their subforms
+    ((member (car form) '(if let let* progn setq when unless cond and or
+                          block return-from return dotimes dolist
+                          lambda funcall defun defparameter defconstant
+                          defvar defstruct))
+     (cons (car form) (mapcar #'expand-macros (cdr form))))
+    ;; Try to macroexpand the form
+    (t
+     (multiple-value-bind (expanded expandedp)
+         (macroexpand-1 form)
+       (if expandedp
+           ;; Was expanded - recursively expand the result
+           (expand-macros expanded)
+           ;; Not a macro - expand subforms
+           (cons (car form) (mapcar #'expand-macros (cdr form))))))))
+
+(defun expand-toplevel-macros (forms)
+  "Expand macros in a list of top-level forms."
+  (mapcar (lambda (form)
+            (normalize-sbcl-internals (expand-macros form)))
+          forms))
+
 ;;; Form Compilation
 
 (defun compile-form (form env)
@@ -140,6 +189,8 @@
     (reset-symbol-table)
     (reset-closure-type-cache)
     (reset-struct-registry)
+    ;; Expand macros using host Lisp before compilation
+    (setf forms (expand-toplevel-macros forms))
     ;; Add memory and heap pointer if enabled
     (when enable-memory
       (setup-runtime module))

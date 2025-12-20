@@ -392,3 +392,61 @@
                     (defun make-3d () (make-point-3d 1 2 3)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Macro expansion tests
+
+(test compile-incf-macro
+  "Test that incf macro is expanded and compiled."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-incf ()
+                      (let ((x 0))
+                        (incf x)
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-decf-macro
+  "Test that decf macro is expanded and compiled."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-decf ()
+                      (let ((x 10))
+                        (decf x)
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-1+-macro
+  "Test that 1+ is expanded and compiled."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-1+ (n)
+                      (1+ n)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-1--macro
+  "Test that 1- is expanded and compiled."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-1- (n)
+                      (1- n)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-prog1-macro
+  "Test that prog1 macro is expanded and compiled."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-prog1 ()
+                      (let ((x 1))
+                        (prog1 x
+                          (setq x 2)))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-nested-macro
+  "Test nested macro expansion."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-nested ()
+                      (let ((x 0))
+                        (incf x (1+ 1))
+                        x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
