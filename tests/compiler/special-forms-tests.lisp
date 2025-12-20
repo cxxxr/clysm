@@ -700,3 +700,61 @@
                       (reduce (lambda (a b) (+ a b)) (list 1 2 3) :initial-value 10)))))
          (bytes (clysm/wasm:encode-module module)))
     (is (> (length bytes) 8))))
+
+;;; Case and ecase macro tests
+
+(test compile-case-macro
+  "Test compiling case macro."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-case (x)
+                      (case x
+                        (1 10)
+                        (2 20)
+                        (t 0))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Type predicate tests
+
+(test compile-listp
+  "Test compiling listp."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-listp (x)
+                      (listp x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-numberp
+  "Test compiling numberp."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-numberp (x)
+                      (numberp x)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+;;; Multiple values tests
+
+(test compile-values-single
+  "Test compiling values with single value."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-values ()
+                      (values 42)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-values-multiple
+  "Test compiling values with multiple values."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-values2 ()
+                      (values 1 2 3)))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))
+
+(test compile-multiple-value-bind
+  "Test compiling multiple-value-bind."
+  (let* ((module (clysm/compiler:compile-module
+                  '((defun test-mvb ()
+                      (multiple-value-bind (a b) (values 10 20)
+                        (+ a b))))))
+         (bytes (clysm/wasm:encode-module module)))
+    (is (> (length bytes) 8))))

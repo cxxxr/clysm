@@ -2,6 +2,11 @@
 
 (in-package #:clysm/compiler)
 
+;;; Multiple value globals - set by setup-runtime in compiler.lisp
+(defvar *mv-count-global* nil "Global index for multiple value count.")
+(defvar *mv-globals* nil "List of global indices for multiple values (0-based).")
+(defconstant +max-multiple-values+ 8 "Maximum number of multiple values supported.")
+
 ;;; Special Form Handlers
 
 (defparameter *special-forms*
@@ -819,3 +824,71 @@
         ;; Compile the body with all functions in scope
         (let ((body-code (compile-progn body env*)))
           (append init-code body-code))))))
+
+;;; VALUES - Return multiple values
+
+(define-special-form values (form env)
+  "Return multiple values. Stores values in global variables."
+  (let* ((values-forms (cdr form))
+         (num-values (length values-forms)))
+    (if (zerop num-values)
+        ;; (values) => nil with count 0
+        `((,+op-i32-const+ 0)
+          (,+op-global-set+ ,*mv-count-global*)
+          (,+op-i32-const+ 0))
+        ;; Store each value in its global
+        (let ((code nil))
+          ;; Compile and store each value
+          (loop for form in values-forms
+                for i from 0 below +max-multiple-values+
+                for global-idx in *mv-globals*
+                do (setf code
+                         (append code
+                                 (compile-form form env)
+                                 `((,+op-global-set+ ,global-idx)))))
+          ;; Set count
+          (setf code
+                (append code
+                        `((,+op-i32-const+ ,num-values)
+                          (,+op-global-set+ ,*mv-count-global*))))
+          ;; Return first value
+          (append code
+                  `((,+op-global-get+ ,(first *mv-globals*))))))))
+
+;;; MULTIPLE-VALUE-BIND - Bind multiple return values
+
+(define-special-form multiple-value-bind (form env)
+  "Bind variables to multiple values from a form."
+  (destructuring-bind (vars value-form &rest body) (cdr form)
+    (if (null vars)
+        ;; No vars - just evaluate form and run body
+        (let ((value-code (compile-form value-form env)))
+          (append value-code
+                  `(,+op-drop+)
+                  (compile-progn body env)))
+        ;; Bind each var to its corresponding global
+        (let ((env* env)
+              (var-indices nil))
+          ;; Add locals for each variable
+          (dolist (var vars)
+            (multiple-value-bind (new-env idx)
+                (env-add-local env* var +type-i32+)
+              (setf env* new-env)
+              (push (cons var idx) var-indices)))
+          (setf var-indices (nreverse var-indices))
+          ;; Generate code
+          (let ((value-code (compile-form value-form env*))
+                (bind-code nil))
+            ;; Bind each variable from its global (or nil if past count)
+            (loop for (var . idx) in var-indices
+                  for i from 0
+                  for global-idx in *mv-globals*
+                  do (setf bind-code
+                           (append bind-code
+                                   (if (zerop i)
+                                       ;; First var gets the primary value (already on stack)
+                                       `((,+op-local-set+ ,idx))
+                                       ;; Other vars get from globals
+                                       `((,+op-global-get+ ,global-idx)
+                                         (,+op-local-set+ ,idx))))))
+            (append value-code bind-code (compile-progn body env*)))))))

@@ -85,7 +85,7 @@
     ;; Special forms we handle - expand their subforms
     ((member (car form) '(if let let* progn setq when unless cond and or
                           block return-from return dotimes dolist
-                          tagbody go labels
+                          tagbody go labels values multiple-value-bind
                           lambda funcall defun defparameter defconstant
                           defvar defstruct))
      (cons (car form) (mapcar #'expand-macros (cdr form))))
@@ -353,8 +353,10 @@
 (defparameter *cons-size* 8
   "Size of a cons cell in bytes (car + cdr).")
 
+;; Multiple value globals - defined in special-forms.lisp, set by setup-runtime
+
 (defun setup-runtime (module)
-  "Set up runtime support: memory, heap pointer, and function table."
+  "Set up runtime support: memory, heap pointer, function table, and multiple values."
   ;; Add memory (1 page = 64KB, can grow)
   (add-memory module 1 16)
   ;; Add heap pointer global (starts at 1024 to leave room for constants)
@@ -363,7 +365,17 @@
   (add-global module +type-i32+ t `((,+op-i32-const+ 1024)))
   ;; Add function table for indirect calls (closures)
   ;; Initial size 256, can grow to 4096
-  (add-table module +type-funcref+ 256 4096))
+  (add-table module +type-funcref+ 256 4096)
+  ;; Add multiple value globals
+  ;; $mv-count holds the number of values returned
+  (setf *mv-count-global* (length (wasm-module-globals module)))
+  (add-global module +type-i32+ t `((,+op-i32-const+ 1)))
+  ;; $mv-0 through $mv-7 hold the values (first 8)
+  (setf *mv-globals*
+        (loop for i below +max-multiple-values+
+              collect (let ((idx (length (wasm-module-globals module))))
+                        (add-global module +type-i32+ t `((,+op-i32-const+ 0)))
+                        idx))))
 
 ;;; Closure Type Index Cache
 

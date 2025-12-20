@@ -334,6 +334,62 @@
   `(,@(compile-form (first args) env)
     ,+op-i32-eqz+))
 
+(define-primitive listp (args env)
+  "Check if argument is a list (nil or cons)."
+  (unless (= (length args) 1)
+    (error "listp requires exactly 1 argument"))
+  ;; listp = (or (null x) (consp x))
+  ;; Since our consp is just non-nil check, listp is always true for now
+  ;; A proper implementation would check tag bits
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 1)))  ; always true for now
+
+(define-primitive symbolp (args env)
+  "Check if argument is a symbol."
+  (unless (= (length args) 1)
+    (error "symbolp requires exactly 1 argument"))
+  ;; Check if value has symbol tag (simplified: check if it's interned)
+  ;; For now, return nil as we don't have full symbol support in target
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 0)))  ; placeholder
+
+(define-primitive numberp (args env)
+  "Check if argument is a number."
+  (unless (= (length args) 1)
+    (error "numberp requires exactly 1 argument"))
+  ;; For now, assume all non-cons values could be numbers
+  ;; A proper implementation would check tag bits
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 1)))  ; placeholder - assume true
+
+(define-primitive integerp (args env)
+  "Check if argument is an integer."
+  (unless (= (length args) 1)
+    (error "integerp requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 1)))  ; placeholder
+
+(define-primitive stringp (args env)
+  "Check if argument is a string."
+  (unless (= (length args) 1)
+    (error "stringp requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    ,+op-drop+
+    (,+op-i32-const+ 0)))  ; placeholder
+
+(define-primitive functionp (args env)
+  "Check if argument is a function."
+  (unless (= (length args) 1)
+    (error "functionp requires exactly 1 argument"))
+  ;; For closures, check if it has a valid function index at offset 0
+  `(,@(compile-form (first args) env)
+    (,+op-i32-const+ 0)
+    ,+op-i32-ne+))  ; non-nil = function (simplified)
+
 ;;; List length and access
 
 (define-primitive length (args env)
