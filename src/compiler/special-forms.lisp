@@ -98,6 +98,13 @@
 (define-special-form progn (form env)
   (compile-progn (cdr form) env))
 
+;;; DECLARE - compiler declarations, ignored for now
+(define-special-form declare (form env)
+  (declare (ignore form env))
+  ;; Declarations are hints to the compiler, not executable code
+  ;; Just return empty code
+  nil)
+
 (defun compile-progn (forms env)
   "Compile a sequence of forms, returning the value of the last."
   (if (null forms)

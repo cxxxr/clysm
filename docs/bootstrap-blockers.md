@@ -8,69 +8,89 @@ This document catalogs the blockers preventing the clysm compiler from being ful
 
 ## Test Results (Latest)
 
-With proper prerequisites (types.lisp, instructions.lisp, environment.lisp, ir.lisp):
+With extended prerequisites (types.lisp, instructions.lisp, module.lisp, utf8.lisp, environment.lisp, compiler.lisp) and filtering SBCL-specific code:
 
 | File | Forms Total | Forms Compiled | Success Rate | First Blocker |
 |------|-------------|----------------|--------------|---------------|
-| codegen.lisp | 290 | 288 | 99% | #'append (primitive as function) |
-| special-forms.lisp | 362 | 284 | 78% | ADD-FUNC-TYPE (module.lisp) |
-| primitives.lisp | 434 | 284 | 65% | ADD-FUNC-TYPE (module.lisp) |
+| special-forms.lisp | 363 | 315 | 87% | COMPILE-DEFUN (user function) |
+| primitives.lisp | 353 | 315 | 89% | COMPILE-DEFUN (user function) |
+| codegen.lisp | 290 | 290 | 100% | N/A (fully compiles) |
 
-## Fixed Issues
+## Fixed Issues (This Session)
 
-### 1. Destructuring in defmacro Lambda Lists (FIXED)
+### 1. codegen.lisp #'append Usage (FIXED)
+- Replaced `#'append` with `(lambda (a b) (append a b))`
+- Replaced `#'generate-code` with `(lambda (n) (generate-code n))`
+- Reordered functions to put `primop-to-wasm-op` before `generate-code`
+- Result: 100% compilation (290/290 forms)
+
+### 2. DECLARE Special Form (FIXED)
+- Added DECLARE special form that returns nil (ignores declarations)
+
+### 3. Mutual Recursion in compiler.lisp (FIXED)
+- Inlined `normalize-binding*` into `normalize-sbcl-internals`
+- Added `#+sbcl` conditionals to SBCL-specific code paths
+- Reordered `*self-hosting-mode*` check to come first
+
+### 4. Missing CxR Accessors (FIXED)
+- Added CAAR, CADR, CDAR, CDDR primitives
+
+### 5. Missing Primitives (FIXED)
+- Added STRING-TO-UTF8 (stub)
+- Added INTERN-COMPILE-TIME-STRING (stub)
+- Added INTERN-COMPILE-TIME-SYMBOL (stub)
+- Added REMOVE-IF, REMOVE-IF-NOT
+
+### 6. BLOCK in Lambda (catch/throw) (FIXED)
+- Changed `find-primitive` to use catch/throw instead of return-from inside lambda
+- return-from inside lambda requires non-local exit which WASM doesn't support directly
+
+## Previously Fixed Issues
+
+### Destructuring in defmacro Lambda Lists
 - Added `generate-destructuring-bindings` function in macroexpand.lisp
 - Recursively handles nested destructuring patterns like `(form env)`
 
-### 2. Missing Primitives (FIXED)
+### Missing Hash Table Primitives
 - Added MAPHASH, HASH-TABLE-P
+
+### Float Primitives
 - Added FLOATP, FLOAT
 
-### 3. FUNCTION Special Form (FIXED)
+### FUNCTION Special Form
 - Added support for `#'name` and `#'(lambda ...)`
 - Detects primitives and provides helpful error message
 
-### 4. IR Accessor Bug (FIXED)
+### IR Accessor Bug
 - Fixed `ir-local-index` to `ir-local-ref-index` in codegen.lisp
 
 ## Remaining Blockers
 
-### 1. Primitives as First-Class Functions
+### 1. User-Defined Function Recognition
 
 **Affected Files:**
-- `src/compiler/codegen.lisp` (uses `#'append` with reduce/mapcar)
+- All compiler source files
 
 **Problem:**
 
-Code like `(reduce #'append ...)` tries to use APPEND as a first-class function.
-Primitives are compiled inline at compile-time and don't have runtime function objects.
+When incrementally compiling forms, user-defined functions (via DEFUN) are not
+recognized by later forms. The compiler starts fresh for each compilation and
+doesn't maintain a registry of defined functions across forms.
 
-**Workaround:**
+**Example:**
 
-Replace `#'primitive` with a lambda wrapper:
 ```lisp
-;; Instead of:
-(reduce #'append lists)
-;; Use:
-(reduce (lambda (a b) (append a b)) lists)
+;; Form 100: (defun foo ...)
+;; Form 200: (defun bar ... (foo x) ...)  ; Error: Unknown function FOO
 ```
-
-### 2. ADD-FUNC-TYPE Dependency
-
-**Affected Files:**
-- `src/compiler/special-forms.lisp`
-- `src/compiler/primitives.lisp`
-
-**Problem:**
-
-Both files use functions from `module.lisp` (like ADD-FUNC-TYPE) which isn't
-included in the prerequisite files.
 
 **Solution:**
 
-Add `module.lisp` to prerequisites, which requires resolving its dependencies first.
+Implement function forward declaration or multi-pass compilation:
+1. First pass: Collect all function signatures
+2. Second pass: Compile function bodies with all signatures known
 
-### 3. etypecase Type Specifiers (WARNING)
+### 2. etypecase Type Specifiers (WARNING)
 
 **Affected Files:**
 - `src/compiler/codegen.lisp` (etypecase with IR types)
@@ -89,8 +109,23 @@ Generates warnings but continues. At runtime, the type checks would fail.
 Register struct types automatically when defstruct is processed, or check for
 `typename-p` predicate existence.
 
+### 3. SBCL-Specific Code
+
+**Affected Files:**
+- `src/compiler/compiler.lisp` (normalize-sbcl-internals)
+
+**Problem:**
+
+Code that handles SBCL internal forms (sb-impl::*, sb-int::*, etc.) cannot be
+compiled when not running on SBCL.
+
+**Solution:**
+
+Use `#+sbcl` reader conditionals (already implemented) to exclude SBCL-specific
+code when compiling for self-hosting.
+
 ## Test Command
 
 ```bash
-sbcl --noinform --non-interactive --load /tmp/test-with-deps.lisp
+sbcl --noinform --non-interactive --load /tmp/test-with-module.lisp
 ```

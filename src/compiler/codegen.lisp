@@ -3,6 +3,33 @@
 
 (in-package #:clysm/compiler)
 
+;;; Primitive to WASM opcode mapping
+;;; (Defined first to avoid forward reference in generate-code)
+
+(defun primop-to-wasm-op (op arg-count)
+  "Map a Lisp primitive operation to WASM opcode."
+  (declare (ignore arg-count))
+  (case op
+    (+ +op-i32-add+)
+    (- +op-i32-sub+)
+    (* +op-i32-mul+)
+    (/ +op-i32-div-s+)
+    (mod +op-i32-rem-s+)
+    (rem +op-i32-rem-s+)
+    (< +op-i32-lt-s+)
+    (> +op-i32-gt-s+)
+    (<= +op-i32-le-s+)
+    (>= +op-i32-ge-s+)
+    (= +op-i32-eq+)
+    (/= +op-i32-ne+)
+    (logand +op-i32-and+)
+    (logior +op-i32-or+)
+    (logxor +op-i32-xor+)
+    (ash +op-i32-shl+)
+    (not +op-i32-eqz+)
+    (null +op-i32-eqz+)
+    (t (error "Unknown primitive: ~A" op))))
+
 ;;; Code Generation from IR
 
 (defun generate-code (node)
@@ -45,14 +72,15 @@
     (ir-primop
      (let ((op (ir-primop-op node))
            (args (ir-primop-args node)))
-       (let ((arg-code (reduce #'append (mapcar #'generate-code args)
+       (let ((arg-code (reduce (lambda (a b) (append a b))
+                               (mapcar (lambda (n) (generate-code n)) args)
                                :initial-value nil)))
          (append arg-code
                  (list (primop-to-wasm-op op (length args)))))))
     (ir-call
      (let ((func-code (generate-code (ir-call-func node)))
-           (arg-codes (mapcar #'generate-code (ir-call-args node))))
-       `(,@(reduce #'append arg-codes :initial-value nil)
+           (arg-codes (mapcar (lambda (n) (generate-code n)) (ir-call-args node))))
+       `(,@(reduce (lambda (a b) (append a b)) arg-codes :initial-value nil)
          ,@func-code
          ;; TODO: call_ref for indirect calls
          )))
@@ -61,12 +89,14 @@
        ,+op-return+))
     (ir-block
      `((,+op-block+ ,(ir-node-type node))
-       ,@(reduce #'append (mapcar #'generate-code (ir-block-body node))
+       ,@(reduce (lambda (a b) (append a b))
+                 (mapcar (lambda (n) (generate-code n)) (ir-block-body node))
                  :initial-value nil)
        ,+op-end+))
     (ir-loop
      `((,+op-loop+ ,+type-void+)
-       ,@(reduce #'append (mapcar #'generate-code (ir-loop-body node))
+       ,@(reduce (lambda (a b) (append a b))
+                 (mapcar (lambda (n) (generate-code n)) (ir-loop-body node))
                  :initial-value nil)
        ,+op-end+))
     (ir-br
@@ -74,29 +104,3 @@
          `(,@(generate-code (ir-br-condition node))
            (,+op-br-if+ ,(ir-br-label node)))
          `((,+op-br+ ,(ir-br-label node)))))))
-
-;;; Primitive to WASM opcode mapping
-
-(defun primop-to-wasm-op (op arg-count)
-  "Map a Lisp primitive operation to WASM opcode."
-  (declare (ignore arg-count))
-  (case op
-    (+ +op-i32-add+)
-    (- +op-i32-sub+)
-    (* +op-i32-mul+)
-    (/ +op-i32-div-s+)
-    (mod +op-i32-rem-s+)
-    (rem +op-i32-rem-s+)
-    (< +op-i32-lt-s+)
-    (> +op-i32-gt-s+)
-    (<= +op-i32-le-s+)
-    (>= +op-i32-ge-s+)
-    (= +op-i32-eq+)
-    (/= +op-i32-ne+)
-    (logand +op-i32-and+)
-    (logior +op-i32-or+)
-    (logxor +op-i32-xor+)
-    (ash +op-i32-shl+)
-    (not +op-i32-eqz+)
-    (null +op-i32-eqz+)
-    (t (error "Unknown primitive: ~A" op))))

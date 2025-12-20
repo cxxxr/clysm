@@ -20,10 +20,11 @@
    This allows primitives to work across packages."
   (let ((name (symbol-name symbol)))
     (or (gethash symbol *primitives*)  ; Fast path: exact symbol match
-        (block found
+        ;; Use catch/throw instead of return-from for non-local exit from lambda
+        (catch 'found
           (maphash (lambda (key val)
                      (when (string= (symbol-name key) name)
-                       (return-from found val)))
+                       (throw 'found val)))
                    *primitives*)
           nil))))
 
@@ -315,6 +316,40 @@
     (error "cdr requires exactly 1 argument"))
   `(,@(compile-form (first args) env)
     (,+op-i32-load+ 2 4)))  ; align=2, offset=4
+
+;;; CxR accessors
+
+(define-primitive caar (args env)
+  "Get the car of the car."
+  (unless (= (length args) 1)
+    (error "caar requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)   ; car
+    (,+op-i32-load+ 2 0))) ; car
+
+(define-primitive cadr (args env)
+  "Get the car of the cdr."
+  (unless (= (length args) 1)
+    (error "cadr requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 4)   ; cdr
+    (,+op-i32-load+ 2 0))) ; car
+
+(define-primitive cdar (args env)
+  "Get the cdr of the car."
+  (unless (= (length args) 1)
+    (error "cdar requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 0)   ; car
+    (,+op-i32-load+ 2 4))) ; cdr
+
+(define-primitive cddr (args env)
+  "Get the cdr of the cdr."
+  (unless (= (length args) 1)
+    (error "cddr requires exactly 1 argument"))
+  `(,@(compile-form (first args) env)
+    (,+op-i32-load+ 2 4)   ; cdr
+    (,+op-i32-load+ 2 4))) ; cdr
 
 (define-primitive rplaca (args env)
   "Replace the car of a cons cell. Returns the cons cell."
@@ -1536,6 +1571,28 @@
       ;; Return new string pointer
       (,+op-local-get+ ,dst-local))))
 
+(define-primitive string-to-utf8 (args env)
+  "Convert a string to UTF-8 byte vector. Stub for bootstrap."
+  (unless (= (length args) 1)
+    (error "string-to-utf8 requires exactly 1 argument"))
+  ;; For bootstrap: just return the string pointer
+  ;; Full implementation would create a byte array
+  (compile-form (first args) env))
+
+(define-primitive intern-compile-time-string (args env)
+  "Intern a string at compile time. Stub for bootstrap."
+  (unless (= (length args) 1)
+    (error "intern-compile-time-string requires exactly 1 argument"))
+  ;; For bootstrap: just return the string as-is
+  (compile-form (first args) env))
+
+(define-primitive intern-compile-time-symbol (args env)
+  "Intern a symbol at compile time. Stub for bootstrap."
+  (unless (= (length args) 1)
+    (error "intern-compile-time-symbol requires exactly 1 argument"))
+  ;; For bootstrap: just return 0 (nil) as placeholder
+  `((,+op-i32-const+ 0)))
+
 ;;; Higher-order list functions
 
 (define-primitive reverse (args env)
@@ -2154,6 +2211,193 @@
    The WASM unreachable instruction traps execution immediately."
   (declare (ignore args env))
   `((,+op-unreachable+)))
+
+(define-primitive remove-if (args env)
+  "Remove items from list where predicate returns true."
+  (unless (= (length args) 2)
+    (error "remove-if requires exactly 2 arguments"))
+  (let* ((func-form (first args))
+         (list-form (second args))
+         (env-count (compile-env-local-count env))
+         (func-local env-count)
+         (list-local (+ env-count 1))
+         (result-local (+ env-count 2))
+         (tail-local (+ env-count 3))
+         (item-local (+ env-count 4))
+         (new-cell-local (+ env-count 5)))
+    (multiple-value-bind (env2 func-local)
+        (env-add-local env (gensym "REMOVE-FUNC") +type-i32+)
+      (multiple-value-bind (env3 list-local)
+          (env-add-local env2 (gensym "REMOVE-LIST") +type-i32+)
+        (multiple-value-bind (env4 result-local)
+            (env-add-local env3 (gensym "REMOVE-RESULT") +type-i32+)
+          (multiple-value-bind (env5 tail-local)
+              (env-add-local env4 (gensym "REMOVE-TAIL") +type-i32+)
+            (let ((func-code (compile-form func-form env))
+                  (list-code (compile-form list-form env)))
+              `(;; Store function and list
+                ,@func-code
+                (,+op-local-set+ ,func-local)
+                ,@list-code
+                (,+op-local-set+ ,list-local)
+                ;; Initialize result to nil
+                (,+op-i32-const+ 0)
+                (,+op-local-set+ ,result-local)
+                (,+op-i32-const+ 0)
+                (,+op-local-set+ ,tail-local)
+                ;; Loop through list
+                (,+op-block+ ,+type-void+)
+                  (,+op-loop+ ,+type-void+)
+                    ;; If list is nil, exit loop
+                    (,+op-local-get+ ,list-local)
+                    ,+op-i32-eqz+
+                    (,+op-br-if+ 1)
+                    ;; Get car of list - this is the item
+                    (,+op-local-get+ ,list-local)
+                    (,+op-i32-load+ 2 0)
+                    ;; Check if predicate returns true
+                    (,+op-local-get+ ,func-local)
+                    (,+op-local-get+ ,list-local)
+                    (,+op-i32-load+ 2 0)  ; get car
+                    (,+op-call-indirect+ 1 0)  ; call func(item)
+                    ;; If predicate true, skip this item
+                    (,+op-if+ ,+type-void+)
+                      ;; Predicate true - skip item, just advance
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)  ; cdr
+                      (,+op-local-set+ ,list-local)
+                      (,+op-br+ 1)  ; continue loop
+                    (,+op-else+)
+                      ;; Predicate false - cons item to result
+                      ;; Allocate new cons cell
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      ;; Store car (the item)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 0)
+                      (,+op-i32-store+ 2 0)
+                      ;; Store cdr (nil for now)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ 0)
+                      (,+op-i32-store+ 2 4)
+                      ;; Bump heap
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ ,*cons-size*)
+                      ,+op-i32-add+
+                      (,+op-global-set+ ,*heap-pointer-global*)
+                      ;; Link to previous
+                      (,+op-local-get+ ,tail-local)
+                      (,+op-if+ ,+type-void+)
+                        ;; Have tail - link it
+                        (,+op-local-get+ ,tail-local)
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ ,*cons-size*)
+                        ,+op-i32-sub+
+                        (,+op-i32-store+ 2 4)
+                      (,+op-else+)
+                        ;; No tail - this is first element, set result
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ ,*cons-size*)
+                        ,+op-i32-sub+
+                        (,+op-local-set+ ,result-local)
+                      (,+op-end+)
+                      ;; Update tail to point to new cell
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ ,*cons-size*)
+                      ,+op-i32-sub+
+                      (,+op-local-set+ ,tail-local)
+                      ;; Advance list
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)
+                      (,+op-local-set+ ,list-local)
+                    (,+op-end+)
+                    (,+op-br+ 0)  ; continue loop
+                  (,+op-end+)
+                (,+op-end+)
+                ;; Return result
+                (,+op-local-get+ ,result-local)))))))))
+
+(define-primitive remove-if-not (args env)
+  "Remove items from list where predicate returns false."
+  (unless (= (length args) 2)
+    (error "remove-if-not requires exactly 2 arguments"))
+  ;; For simplicity, implement as complement of remove-if logic
+  ;; This is a simplified version that keeps items where predicate is true
+  (let* ((func-form (first args))
+         (list-form (second args))
+         (env-count (compile-env-local-count env)))
+    (multiple-value-bind (env2 func-local)
+        (env-add-local env (gensym "REMOVE-FUNC") +type-i32+)
+      (multiple-value-bind (env3 list-local)
+          (env-add-local env2 (gensym "REMOVE-LIST") +type-i32+)
+        (multiple-value-bind (env4 result-local)
+            (env-add-local env3 (gensym "REMOVE-RESULT") +type-i32+)
+          (multiple-value-bind (env5 tail-local)
+              (env-add-local env4 (gensym "REMOVE-TAIL") +type-i32+)
+            (let ((func-code (compile-form func-form env))
+                  (list-code (compile-form list-form env)))
+              `(;; Same as remove-if but with inverted condition
+                ,@func-code
+                (,+op-local-set+ ,func-local)
+                ,@list-code
+                (,+op-local-set+ ,list-local)
+                (,+op-i32-const+ 0)
+                (,+op-local-set+ ,result-local)
+                (,+op-i32-const+ 0)
+                (,+op-local-set+ ,tail-local)
+                (,+op-block+ ,+type-void+)
+                  (,+op-loop+ ,+type-void+)
+                    (,+op-local-get+ ,list-local)
+                    ,+op-i32-eqz+
+                    (,+op-br-if+ 1)
+                    (,+op-local-get+ ,func-local)
+                    (,+op-local-get+ ,list-local)
+                    (,+op-i32-load+ 2 0)
+                    (,+op-call-indirect+ 1 0)
+                    ,+op-i32-eqz+  ; Invert the condition
+                    (,+op-if+ ,+type-void+)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)
+                      (,+op-local-set+ ,list-local)
+                      (,+op-br+ 1)
+                    (,+op-else+)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 0)
+                      (,+op-i32-store+ 2 0)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ 0)
+                      (,+op-i32-store+ 2 4)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ ,*cons-size*)
+                      ,+op-i32-add+
+                      (,+op-global-set+ ,*heap-pointer-global*)
+                      (,+op-local-get+ ,tail-local)
+                      (,+op-if+ ,+type-void+)
+                        (,+op-local-get+ ,tail-local)
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ ,*cons-size*)
+                        ,+op-i32-sub+
+                        (,+op-i32-store+ 2 4)
+                      (,+op-else+)
+                        (,+op-global-get+ ,*heap-pointer-global*)
+                        (,+op-i32-const+ ,*cons-size*)
+                        ,+op-i32-sub+
+                        (,+op-local-set+ ,result-local)
+                      (,+op-end+)
+                      (,+op-global-get+ ,*heap-pointer-global*)
+                      (,+op-i32-const+ ,*cons-size*)
+                      ,+op-i32-sub+
+                      (,+op-local-set+ ,tail-local)
+                      (,+op-local-get+ ,list-local)
+                      (,+op-i32-load+ 2 4)
+                      (,+op-local-set+ ,list-local)
+                    (,+op-end+)
+                    (,+op-br+ 0)
+                  (,+op-end+)
+                (,+op-end+)
+                (,+op-local-get+ ,result-local)))))))))
 
 ;;; Hash Tables (alist-based implementation for bootstrap)
 ;;; Hash table structure: (count . entries-alist)

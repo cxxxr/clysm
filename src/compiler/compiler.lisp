@@ -52,42 +52,19 @@
 ;;; Macro Expansion
 ;;; Uses self-hosted macro expansion with host fallback for bootstrap.
 
-(defun normalize-binding* (bindings body)
-  "Transform SB-INT:BINDING* to LET* with POP expanded.
-   POP patterns are expanded to car/cdr chains."
-  ;; Track which gensym vars are used for destructuring
-  ;; We need to replace (POP gensym) with (car gensym) + update gensym to (cdr gensym)
-  (let ((let-bindings nil)
-        (pop-counters (make-hash-table :test 'eq)))
-    ;; Process each binding
-    (dolist (binding bindings)
-      (let* ((var (first binding))
-             (init (second binding)))
-        (cond
-          ;; Regular binding - just normalize
-          ((not (and (consp init) (eq (car init) 'pop)))
-           (push (list var (normalize-sbcl-internals init)) let-bindings))
-          ;; POP binding - expand to car with cdr chain
-          (t
-           (let* ((pop-var (second init))
-                  (pop-count (or (gethash pop-var pop-counters) 0)))
-             ;; Build accessor: (car (cdr^n var))
-             (let ((accessor pop-var))
-               (dotimes (i pop-count)
-                 (setf accessor `(cdr ,accessor)))
-               (push (list var `(car ,accessor)) let-bindings))
-             ;; Increment counter for next pop
-             (setf (gethash pop-var pop-counters) (1+ pop-count)))))))
-    ;; Build the let* form
-    `(let* ,(nreverse let-bindings)
-       ,@(mapcar #'normalize-sbcl-internals body))))
-
 (defun normalize-sbcl-internals (form)
   "Replace SBCL internal functions with standard equivalents.
    In self-hosting mode, this is mostly a no-op since our macro expander
    produces standard CL forms without SBCL internals."
   (cond
+    ;; In self-hosting mode, only handle standard forms (check first)
+    (*self-hosting-mode*
+     (if (atom form)
+         form
+         (normalize-standard-forms form)))
     ;; Handle SBCL COMMA objects (from backquote reader)
+    ;; Only when running on SBCL (not self-hosting)
+    #+sbcl
     ((typep form 'sb-impl::comma)
      (let ((expr (sb-impl::comma-expr form))
            (kind (sb-impl::comma-kind form)))
@@ -97,32 +74,24 @@
            ;; Splice unquote: ,@x -> (unquote-splicing x)
            `(unquote-splicing ,(normalize-sbcl-internals expr)))))
     ((atom form) form)
-    ;; In self-hosting mode, only handle standard forms
-    (*self-hosting-mode*
-     (normalize-standard-forms form))
-    ;; Handle SBCL quasiquote
+    ;; SBCL-specific handlers (only active when running on SBCL)
+    #+sbcl
     ((eq (car form) 'sb-int:quasiquote)
      `(backquote ,(normalize-sbcl-internals (second form))))
-    ;; Arithmetic (SBCL-specific)
+    #+sbcl
     ((eq (car form) 'sb-impl::xsubtract)
-     ;; (sb-impl::xsubtract a b) => (- b a)
      `(- ,(normalize-sbcl-internals (third form))
          ,(normalize-sbcl-internals (second form))))
-    ;; Lambda
+    #+sbcl
     ((eq (car form) 'sb-int:named-lambda)
-     ;; (sb-int:named-lambda name (...) body) => (lambda (...) body)
      `(lambda ,(third form) ,@(mapcar #'normalize-sbcl-internals (cdddr form))))
-    ;; Loop internals
+    #+sbcl
     ((eq (car form) 'sb-loop::loop-desetq)
-     ;; (sb-loop::loop-desetq var value) => (setq var value)
      `(setq ,(second form) ,(normalize-sbcl-internals (third form))))
+    #+sbcl
     ((eq (car form) 'sb-loop::loop-collect-rplacd)
-     ;; (sb-loop::loop-collect-rplacd (head tail) list-form)
-     ;; This adds list-form to the tail of the collection list
-     ;; Simplified: (progn (rplacd tail list-form) (setq tail (last tail)))
-     ;; For now, we'll just evaluate list-form and let it be handled later
      (let ((vars (second form))
-            (list-form (normalize-sbcl-internals (third form))))
+           (list-form (normalize-sbcl-internals (third form))))
        (let ((head (first vars))
              (tail (second vars)))
          `(if (null ,head)
@@ -132,35 +101,47 @@
               (progn
                 (rplacd ,tail ,list-form)
                 (setq ,tail (last ,tail)))))))
+    #+sbcl
     ((eq (car form) 'sb-loop::loop-collect-answer)
-     ;; (sb-loop::loop-collect-answer head) => head
      (normalize-sbcl-internals (second form)))
+    ;; ENDP - standard CL, keep for all implementations
     ((eq (car form) 'endp)
-     ;; endp is same as null/atom for proper lists
      `(null ,(normalize-sbcl-internals (second form))))
-    ;; SBCL kernel internals
+    #+sbcl
     ((eq (car form) 'sb-kernel:unaligned-dx-cons)
-     ;; Stack-allocated cons, just use regular cons
      `(cons ,(normalize-sbcl-internals (second form))
             ,(if (cddr form)
                  (normalize-sbcl-internals (third form))
                  nil)))
-    ;; THE type annotation - just return the value
+    ;; THE - standard CL, keep for all implementations
     ((eq (car form) 'the)
-     ;; (the type value) => value
      (normalize-sbcl-internals (third form)))
-    ;; SB-KERNEL:THE* - similar to THE, just return the value
+    #+sbcl
     ((eq (car form) 'sb-kernel:the*)
-     ;; (sb-kernel:the* type-spec value) => value (third arg)
      (normalize-sbcl-internals (third form)))
-    ;; SB-INT:BINDING* - used by destructuring-bind
-    ;; (sb-int:binding* (((var1 init1) (var2 init2) ...)) body)
-    ;; Transform POP patterns to car/cdr chains
+    #+sbcl
     ((eq (car form) 'sb-int:binding*)
      (let* ((bindings (second form))
-            (body (cddr form)))
-       (normalize-binding* bindings body)))
-    ;; SB-C::CHECK-DS-LIST - just return the list (skip validation)
+            (body (cddr form))
+            (let-bindings nil)
+            (pop-counters (make-hash-table :test 'eq)))
+       (dolist (binding bindings)
+         (let* ((var (first binding))
+                (init (second binding)))
+           (cond
+             ((not (and (consp init) (eq (car init) 'pop)))
+              (push (list var (normalize-sbcl-internals init)) let-bindings))
+             (t
+              (let* ((pop-var (second init))
+                     (pop-count (or (gethash pop-var pop-counters) 0)))
+                (let ((accessor pop-var))
+                  (dotimes (i pop-count)
+                    (setf accessor `(cdr ,accessor)))
+                  (push (list var `(car ,accessor)) let-bindings))
+                (setf (gethash pop-var pop-counters) (1+ pop-count)))))))
+       `(let* ,(nreverse let-bindings)
+          ,@(mapcar #'normalize-sbcl-internals body))))
+    #+sbcl
     ((eq (car form) 'sb-c::check-ds-list)
      (normalize-sbcl-internals (second form)))
     ;; LET/LET* - strip DECLARE forms
