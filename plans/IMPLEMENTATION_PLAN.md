@@ -162,7 +162,7 @@ Tier 2: 動的Wasmモジュール生成
 
 ## 4. マイルストーン計画
 
-### Milestone 1: カーネル・ランタイム構築
+### Milestone 1: カーネル・ランタイム構築 ✅ 完了
 
 **目標**: Wasm GCを利用したLispデータ構造と基本操作の実装
 
@@ -250,6 +250,25 @@ const sum = kernel.exports.add(
 );
 console.log(kernel.printer(sum)); // 30
 ```
+
+#### 1.5 実装状況 (2025-12-21)
+
+| 項目 | 状態 |
+|---|---|
+| Fixnum (タグビット LSB=0) | ✅ |
+| Character (タグビット LSB=1) | ✅ |
+| Cons / car / cdr / rplaca / rplacd | ✅ |
+| Symbol (NIL, T) / symbolp / null | ✅ |
+| String (UTF-8) / schar / schar_set | ✅ |
+| Vector / svref / svset | ✅ |
+| eq / Fixnum算術・比較 | ✅ |
+| JSブリッジ (loadKernel, LispKernel) | ✅ |
+| テスト (63 tests, 100% pass) | ✅ |
+
+**技術的な学び**:
+- wabt (wat2wasm) は Wasm GC 非対応 → **wasm-tools** を使用
+- `anyref` に `ref.eq` は直接使えない → `ref.cast (ref eq)` が必要
+- Node.js 22 では `--experimental-wasm-gc` フラグ不要
 
 ---
 
@@ -465,11 +484,11 @@ func_ref をシンボルにリンク
 ## 5. 開発ロードマップ
 
 ```
-Phase 1: カーネル (M1)
-├── 型定義 (WAT)
-├── プリミティブ関数
-├── JSブリッジ
-└── 単体テスト
+Phase 1: カーネル (M1) ✅ 完了
+├── 型定義 (WAT) ✅
+├── プリミティブ関数 ✅
+├── JSブリッジ ✅
+└── 単体テスト ✅
 
 Phase 2: インタプリタ (M2)
 ├── 特殊形式
@@ -510,8 +529,8 @@ Phase 6: 環境 (M6)
 |---|---|
 | カーネル実装 | WAT (WebAssembly Text) |
 | ブリッジ | JavaScript / TypeScript |
-| ビルドツール | wat2wasm (wabt), wasm-tools |
-| テスト | Node.js + Wasm GC |
+| ビルドツール | ~~wat2wasm (wabt)~~, **wasm-tools** |
+| テスト | Node.js 22 + 組み込みテストランナー |
 | CI | GitHub Actions |
 | ドキュメント | Markdown |
 
@@ -540,10 +559,13 @@ Phase 6: 環境 (M6)
 
 ## 9. 次のアクション
 
-1. **プロジェクト初期化**: ディレクトリ構造、ビルドシステム構築
-2. **M1着手**: WAT手書きでCons/Symbol/Fixnumの型定義
-3. **テスト環境**: Node.js + wasm-tools でWasm GCモジュールの実行環境
-4. **JSブリッジ**: 最小限のReader/Printer実装
+1. ~~**プロジェクト初期化**: ディレクトリ構造、ビルドシステム構築~~ ✅
+2. ~~**M1着手**: WAT手書きでCons/Symbol/Fixnumの型定義~~ ✅
+3. ~~**テスト環境**: Node.js + wasm-tools でWasm GCモジュールの実行環境~~ ✅
+4. ~~**JSブリッジ**: 最小限のReader/Printer実装~~ ✅
+5. **M2着手**: シンボルテーブルと `intern` 関数の実装
+6. **Reader/Printer**: S式パーサーとオブジェクト表示の拡充
+7. **eval関数**: 最小限のインタプリタ（quote, if, lambda）
 
 ---
 
