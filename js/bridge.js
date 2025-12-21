@@ -36,6 +36,9 @@ export class LispKernel {
     this.exports = exports;
     this.NIL = exports.get_nil();
     this.T = exports.get_t();
+    this.UNBOUND = exports.get_unbound();
+    this.CL_USER = exports.get_cl_user_package();
+    this.KEYWORD = exports.get_keyword_package();
   }
 
   // === Fixnum operations ===
@@ -116,6 +119,74 @@ export class LispKernel {
 
   setSymbolFunction(sym, val) {
     return this.exports.set_symbol_function(sym, val);
+  }
+
+  symbolName(sym) {
+    return this.exports.symbol_name(sym);
+  }
+
+  symbolPackage(sym) {
+    return this.exports.symbol_package(sym);
+  }
+
+  // === Intern operations ===
+
+  /**
+   * Intern a symbol in the default (CL-USER) package
+   */
+  intern(name) {
+    const s = this.stringFromJS(name);
+    return this.exports.intern_default(s);
+  }
+
+  /**
+   * Intern a symbol in a specific package
+   */
+  internInPackage(name, pkg) {
+    const s = this.stringFromJS(name);
+    return this.exports.intern(s, pkg);
+  }
+
+  /**
+   * Intern a keyword symbol
+   */
+  internKeyword(name) {
+    const s = this.stringFromJS(name);
+    return this.exports.intern_keyword(s);
+  }
+
+  /**
+   * Find a symbol in a package (returns NIL if not found)
+   */
+  findSymbol(name, pkg) {
+    const s = this.stringFromJS(name);
+    return this.exports.find_symbol(s, pkg);
+  }
+
+  // === Package operations ===
+
+  isPackage(x) {
+    return this.exports.packagep(x) === 1;
+  }
+
+  packageName(pkg) {
+    return this.exports.package_name(pkg);
+  }
+
+  // === Unbound marker ===
+
+  isUnbound(x) {
+    return this.exports.unboundp(x) === 1;
+  }
+
+  // === String utility ===
+
+  stringHash(s) {
+    return this.exports.string_hash(s);
+  }
+
+  stringEqual(a, b) {
+    return this.exports.string_equal(a, b) === 1;
   }
 
   // === Comparison ===
@@ -226,6 +297,94 @@ export class LispKernel {
 
   svset(v, i, val) {
     return this.exports.svset(v, i, val);
+  }
+
+  // === Environment operations ===
+
+  makeEnvFrame(parent, size) {
+    return this.exports.make_env_frame(parent, size);
+  }
+
+  isEnvFrame(x) {
+    return this.exports.env_framep(x) === 1;
+  }
+
+  envRef(env, index) {
+    return this.exports.env_ref(env, index);
+  }
+
+  envSet(env, index, val) {
+    return this.exports.env_set(env, index, val);
+  }
+
+  envParent(env) {
+    return this.exports.env_parent(env);
+  }
+
+  envSize(env) {
+    return this.exports.env_size(env);
+  }
+
+  envLookup(env, depth, index) {
+    return this.exports.env_lookup(env, depth, index);
+  }
+
+  envSetAt(env, depth, index, val) {
+    return this.exports.env_set_at(env, depth, index, val);
+  }
+
+  // === Closure operations ===
+
+  isClosure(x) {
+    return this.exports.closurep(x) === 1;
+  }
+
+  closureEnv(c) {
+    return this.exports.closure_env(c);
+  }
+
+  closureName(c) {
+    return this.exports.closure_name(c);
+  }
+
+  closureLambdaList(c) {
+    return this.exports.closure_lambda_list(c);
+  }
+
+  closureArity(c) {
+    return this.exports.closure_arity(c);
+  }
+
+  setClosureName(c, name) {
+    return this.exports.set_closure_name(c, name);
+  }
+
+  applyClosure(c, args) {
+    return this.exports.apply_closure(c, args);
+  }
+
+  // === Primitive operations ===
+
+  isPrimitive(x) {
+    return this.exports.primitivep(x) === 1;
+  }
+
+  primitiveName(p) {
+    return this.exports.primitive_name(p);
+  }
+
+  primitiveArity(p) {
+    return this.exports.primitive_arity(p);
+  }
+
+  applyPrimitive(p, args) {
+    return this.exports.apply_primitive(p, args);
+  }
+
+  // === Function type check ===
+
+  isFunction(x) {
+    return this.exports.functionp(x) === 1;
   }
 
   // === Utilities ===

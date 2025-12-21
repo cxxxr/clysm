@@ -430,4 +430,274 @@ describe('Kernel Types', () => {
       assert.strictEqual(arr.length, 0);
     });
   });
+
+  describe('String utilities', () => {
+    it('computes hash for strings', () => {
+      const s = kernel.stringFromJS('hello');
+      const hash = kernel.stringHash(s);
+      assert.strictEqual(typeof hash, 'number');
+      assert.ok(hash >= 0);
+    });
+
+    it('same strings have same hash', () => {
+      const s1 = kernel.stringFromJS('test');
+      const s2 = kernel.stringFromJS('test');
+      assert.strictEqual(kernel.stringHash(s1), kernel.stringHash(s2));
+    });
+
+    it('different strings likely have different hashes', () => {
+      const s1 = kernel.stringFromJS('foo');
+      const s2 = kernel.stringFromJS('bar');
+      // Note: Hash collisions are possible but unlikely for distinct short strings
+      assert.notStrictEqual(kernel.stringHash(s1), kernel.stringHash(s2));
+    });
+
+    it('compares equal strings', () => {
+      const s1 = kernel.stringFromJS('hello');
+      const s2 = kernel.stringFromJS('hello');
+      assert.strictEqual(kernel.stringEqual(s1, s2), true);
+    });
+
+    it('compares different strings', () => {
+      const s1 = kernel.stringFromJS('hello');
+      const s2 = kernel.stringFromJS('world');
+      assert.strictEqual(kernel.stringEqual(s1, s2), false);
+    });
+
+    it('compares strings of different lengths', () => {
+      const s1 = kernel.stringFromJS('hello');
+      const s2 = kernel.stringFromJS('hi');
+      assert.strictEqual(kernel.stringEqual(s1, s2), false);
+    });
+
+    it('compares empty strings', () => {
+      const s1 = kernel.stringFromJS('');
+      const s2 = kernel.stringFromJS('');
+      assert.strictEqual(kernel.stringEqual(s1, s2), true);
+    });
+  });
+
+  describe('Package', () => {
+    it('CL-USER package exists', () => {
+      assert.strictEqual(kernel.isPackage(kernel.CL_USER), true);
+    });
+
+    it('KEYWORD package exists', () => {
+      assert.strictEqual(kernel.isPackage(kernel.KEYWORD), true);
+    });
+
+    it('CL-USER package has correct name', () => {
+      const name = kernel.packageName(kernel.CL_USER);
+      assert.strictEqual(kernel.stringToJS(name), 'COMMON-LISP-USER');
+    });
+
+    it('KEYWORD package has correct name', () => {
+      const name = kernel.packageName(kernel.KEYWORD);
+      assert.strictEqual(kernel.stringToJS(name), 'KEYWORD');
+    });
+
+    it('NIL is not a package', () => {
+      assert.strictEqual(kernel.isPackage(kernel.NIL), false);
+    });
+  });
+
+  describe('Intern', () => {
+    it('interns a new symbol', () => {
+      const sym = kernel.intern('FOO');
+      assert.strictEqual(kernel.isSymbol(sym), true);
+    });
+
+    it('interned symbol has correct name', () => {
+      const sym = kernel.intern('BAR');
+      const name = kernel.symbolName(sym);
+      assert.strictEqual(kernel.stringToJS(name), 'BAR');
+    });
+
+    it('interning same name returns same symbol', () => {
+      const sym1 = kernel.intern('SAME');
+      const sym2 = kernel.intern('SAME');
+      assert.strictEqual(kernel.eq(sym1, sym2), true);
+    });
+
+    it('interning different names returns different symbols', () => {
+      const sym1 = kernel.intern('AAA');
+      const sym2 = kernel.intern('BBB');
+      assert.strictEqual(kernel.eq(sym1, sym2), false);
+    });
+
+    it('NIL is already interned', () => {
+      const nil = kernel.intern('NIL');
+      // Debug: check if both are symbols with same name
+      const nilName = kernel.symbolName(nil);
+      const globalNilName = kernel.symbolName(kernel.NIL);
+      assert.strictEqual(kernel.stringToJS(nilName), 'NIL', 'interned NIL should have name NIL');
+      assert.strictEqual(kernel.stringToJS(globalNilName), 'NIL', 'global NIL should have name NIL');
+      // Check string equality of names
+      assert.strictEqual(kernel.stringEqual(nilName, globalNilName), true, 'names should be string-equal');
+      // Check hash values match
+      const jsNilStr = kernel.stringFromJS('NIL');
+      const hashFromJS = kernel.stringHash(jsNilStr);
+      const hashFromGlobal = kernel.stringHash(globalNilName);
+      assert.strictEqual(hashFromJS, hashFromGlobal, `hashes should match: JS=${hashFromJS}, global=${hashFromGlobal}`);
+      // Check findSymbol directly (returns UNBOUND if not found)
+      const found = kernel.findSymbol('NIL', kernel.CL_USER);
+      assert.strictEqual(kernel.isUnbound(found), false, 'findSymbol should find NIL (not return UNBOUND)');
+      assert.strictEqual(kernel.eq(found, kernel.NIL), true, 'findSymbol should return global NIL');
+      // Now check symbol equality
+      assert.strictEqual(kernel.eq(nil, kernel.NIL), true, 'symbols should be eq');
+    });
+
+    it('T is already interned', () => {
+      const t = kernel.intern('T');
+      assert.strictEqual(kernel.eq(t, kernel.T), true);
+    });
+
+    it('interned symbol belongs to CL-USER', () => {
+      const sym = kernel.intern('TESTPKG');
+      const pkg = kernel.symbolPackage(sym);
+      assert.strictEqual(kernel.eq(pkg, kernel.CL_USER), true);
+    });
+
+    it('new symbol value is unbound', () => {
+      const sym = kernel.intern('UNBOUND-TEST');
+      const val = kernel.symbolValue(sym);
+      assert.strictEqual(kernel.isUnbound(val), true);
+    });
+
+    it('findSymbol returns existing symbol', () => {
+      const sym = kernel.intern('FINDME');
+      const found = kernel.findSymbol('FINDME', kernel.CL_USER);
+      assert.strictEqual(kernel.eq(found, sym), true);
+    });
+
+    it('findSymbol returns UNBOUND for non-existent symbol', () => {
+      const found = kernel.findSymbol('NONEXISTENT-12345', kernel.CL_USER);
+      assert.strictEqual(kernel.isUnbound(found), true);
+    });
+  });
+
+  describe('Keyword', () => {
+    it('interns keyword symbol', () => {
+      const kw = kernel.internKeyword('TEST');
+      assert.strictEqual(kernel.isSymbol(kw), true);
+    });
+
+    it('keyword evaluates to itself', () => {
+      const kw = kernel.internKeyword('SELF');
+      const val = kernel.symbolValue(kw);
+      assert.strictEqual(kernel.eq(kw, val), true);
+    });
+
+    it('keyword belongs to KEYWORD package', () => {
+      const kw = kernel.internKeyword('PKGTEST');
+      const pkg = kernel.symbolPackage(kw);
+      assert.strictEqual(kernel.eq(pkg, kernel.KEYWORD), true);
+    });
+
+    it('same keyword name returns same symbol', () => {
+      const kw1 = kernel.internKeyword('SAMEKW');
+      const kw2 = kernel.internKeyword('SAMEKW');
+      assert.strictEqual(kernel.eq(kw1, kw2), true);
+    });
+  });
+
+  describe('Unbound', () => {
+    it('UNBOUND marker exists', () => {
+      assert.ok(kernel.UNBOUND !== undefined);
+    });
+
+    it('UNBOUND is unbound', () => {
+      assert.strictEqual(kernel.isUnbound(kernel.UNBOUND), true);
+    });
+
+    it('NIL is not unbound', () => {
+      assert.strictEqual(kernel.isUnbound(kernel.NIL), false);
+    });
+
+    it('T is not unbound', () => {
+      assert.strictEqual(kernel.isUnbound(kernel.T), false);
+    });
+  });
+
+  describe('Environment', () => {
+    it('creates environment frame', () => {
+      const env = kernel.makeEnvFrame(kernel.NIL, 3);
+      assert.strictEqual(kernel.isEnvFrame(env), true);
+    });
+
+    it('environment has correct size', () => {
+      const env = kernel.makeEnvFrame(kernel.NIL, 5);
+      assert.strictEqual(kernel.envSize(env), 5);
+    });
+
+    it('bindings are initialized to UNBOUND', () => {
+      const env = kernel.makeEnvFrame(kernel.NIL, 3);
+      assert.strictEqual(kernel.isUnbound(kernel.envRef(env, 0)), true);
+      assert.strictEqual(kernel.isUnbound(kernel.envRef(env, 1)), true);
+      assert.strictEqual(kernel.isUnbound(kernel.envRef(env, 2)), true);
+    });
+
+    it('can set and get bindings', () => {
+      const env = kernel.makeEnvFrame(kernel.NIL, 2);
+      const val1 = kernel.makeFixnum(42);
+      const val2 = kernel.makeFixnum(99);
+      kernel.envSet(env, 0, val1);
+      kernel.envSet(env, 1, val2);
+      assert.strictEqual(kernel.eq(kernel.envRef(env, 0), val1), true);
+      assert.strictEqual(kernel.eq(kernel.envRef(env, 1), val2), true);
+    });
+
+    it('can get parent environment', () => {
+      const parent = kernel.makeEnvFrame(kernel.NIL, 2);
+      const child = kernel.makeEnvFrame(parent, 3);
+      assert.strictEqual(kernel.eq(kernel.envParent(child), parent), true);
+      assert.strictEqual(kernel.eq(kernel.envParent(parent), kernel.NIL), true);
+    });
+
+    it('can lookup through environment chain', () => {
+      const parent = kernel.makeEnvFrame(kernel.NIL, 2);
+      const child = kernel.makeEnvFrame(parent, 3);
+      const val = kernel.makeFixnum(123);
+      kernel.envSet(parent, 1, val);
+      // depth=0 means current frame
+      assert.strictEqual(kernel.isUnbound(kernel.envLookup(child, 0, 0)), true);
+      // depth=1 means parent frame
+      assert.strictEqual(kernel.eq(kernel.envLookup(child, 1, 1), val), true);
+    });
+
+    it('can set at specific depth', () => {
+      const parent = kernel.makeEnvFrame(kernel.NIL, 2);
+      const child = kernel.makeEnvFrame(parent, 3);
+      const val = kernel.makeFixnum(456);
+      kernel.envSetAt(child, 1, 0, val);
+      assert.strictEqual(kernel.eq(kernel.envRef(parent, 0), val), true);
+    });
+
+    it('nested environments work correctly', () => {
+      const grandparent = kernel.makeEnvFrame(kernel.NIL, 1);
+      const parent = kernel.makeEnvFrame(grandparent, 1);
+      const child = kernel.makeEnvFrame(parent, 1);
+      kernel.envSet(grandparent, 0, kernel.makeFixnum(1));
+      kernel.envSet(parent, 0, kernel.makeFixnum(2));
+      kernel.envSet(child, 0, kernel.makeFixnum(3));
+      assert.strictEqual(kernel.fixnumValue(kernel.envLookup(child, 0, 0)), 3);
+      assert.strictEqual(kernel.fixnumValue(kernel.envLookup(child, 1, 0)), 2);
+      assert.strictEqual(kernel.fixnumValue(kernel.envLookup(child, 2, 0)), 1);
+    });
+  });
+
+  describe('Closure', () => {
+    it('closure type check works', () => {
+      assert.strictEqual(kernel.isClosure(kernel.NIL), false);
+      assert.strictEqual(kernel.isClosure(kernel.makeFixnum(42)), false);
+    });
+
+    it('function type check includes closure', () => {
+      assert.strictEqual(kernel.isFunction(kernel.NIL), false);
+    });
+
+    it('primitive type check works', () => {
+      assert.strictEqual(kernel.isPrimitive(kernel.NIL), false);
+    });
+  });
 });
