@@ -128,8 +128,22 @@ class Evaluator {
     });
 
     // Cons operations
-    this.primitives.set('CAR', (args) => k.car(this.nth(args, 0)));
-    this.primitives.set('CDR', (args) => k.cdr(this.nth(args, 0)));
+    this.primitives.set('CAR', (args) => {
+      const x = this.nth(args, 0);
+      if (k.isNull(x)) return k.NIL;
+      if (!k.isCons(x)) {
+        throw new Error(`CAR: ${this.typeNameOf(x)} is not a list`);
+      }
+      return k.car(x);
+    });
+    this.primitives.set('CDR', (args) => {
+      const x = this.nth(args, 0);
+      if (k.isNull(x)) return k.NIL;
+      if (!k.isCons(x)) {
+        throw new Error(`CDR: ${this.typeNameOf(x)} is not a list`);
+      }
+      return k.cdr(x);
+    });
     this.primitives.set('CONS', (args) => k.cons(this.nth(args, 0), this.nth(args, 1)));
     this.primitives.set('RPLACA', (args) => k.rplaca(this.nth(args, 0), this.nth(args, 1)));
     this.primitives.set('RPLACD', (args) => k.rplacd(this.nth(args, 0), this.nth(args, 1)));
@@ -194,6 +208,29 @@ class Evaluator {
       current = this.kernel.cdr(current);
     }
     return count;
+  }
+
+  /**
+   * Get type name for error messages
+   */
+  typeNameOf(x) {
+    const k = this.kernel;
+    if (k.isNull(x)) return 'NIL';
+    if (k.isFixnum(x)) return 'FIXNUM';
+    if (k.isCharacter(x)) return 'CHARACTER';
+    if (k.isString(x)) return 'STRING';
+    if (k.isCons(x)) return 'CONS';
+    if (k.isSymbol(x)) {
+      const name = k.stringToJS(k.symbolName(x));
+      return `SYMBOL ${name}`;
+    }
+    if (k.isVector(x)) return 'VECTOR';
+    if (k.isPackage(x)) return 'PACKAGE';
+    if (k.isEnvFrame(x)) return 'ENV-FRAME';
+    if (k.isClosure(x)) return 'CLOSURE';
+    if (k.isPrimitive(x)) return 'PRIMITIVE';
+    if (this.isInterpretedClosure(x)) return 'FUNCTION';
+    return 'UNKNOWN';
   }
 
   /**

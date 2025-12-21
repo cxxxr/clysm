@@ -246,6 +246,27 @@ describe('Evaluator', () => {
     it('cdr of nil is nil', () => {
       assert.strictEqual(evalPrint('(cdr nil)'), 'NIL');
     });
+
+    it('car of symbol throws error', () => {
+      assert.throws(
+        () => evalString("(car '+)"),
+        /CAR:.*SYMBOL.*is not a list/
+      );
+    });
+
+    it('cdr of number throws error', () => {
+      assert.throws(
+        () => evalString('(cdr 42)'),
+        /CDR:.*FIXNUM.*is not a list/
+      );
+    });
+
+    it('car of string throws error', () => {
+      assert.throws(
+        () => evalString('(car "hello")'),
+        /CAR:.*STRING.*is not a list/
+      );
+    });
   });
 
   describe('Equality', () => {
