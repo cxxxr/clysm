@@ -1,0 +1,56 @@
+# Common Lisp
+*.fasl
+*.fas
+*.lib
+*.lx64fsl
+*.dx64fsl
+*.o
+*.x86f
+*.err
+*.pfsl
+*.dfsl
+*.fsl
+*.core
+*.mem
+*.lisp-temp
+
+# SBCL specific
+*.sb64f
+*.abcl
+*.asdf-install
+
+# ASDF cache
+~/.cache/common-lisp/
+.cache/
+
+# Generated Wasm files
+*.wasm
+*.wat
+output/
+
+# Nix
+result
+result-*
+
+# Environment
+.envrc.local
+.direnv/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test artifacts
+test-output/
+coverage/
