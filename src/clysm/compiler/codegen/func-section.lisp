@@ -139,7 +139,7 @@
 (defun compile-literal (ast)
   "Compile a literal value to Wasm instructions."
   (let ((value (clysm/compiler/ast:ast-literal-value ast))
-        (type (clysm/compiler/ast:ast-literal-type ast)))
+        (type (clysm/compiler/ast:ast-literal-literal-type ast)))
     (case type
       (:fixnum
        ;; Fixnums are represented as i31ref (T047)
@@ -335,7 +335,7 @@
   (let ((bindings (clysm/compiler/ast:ast-let-bindings ast))
         (body (clysm/compiler/ast:ast-let-body ast))
         (sequential-p (clysm/compiler/ast:ast-let-sequential-p ast))
-        (new-env (copy-compilation-env env))
+        (new-env (extend-compilation-env env))
         (result '())
         (local-indices '()))
     ;; For let*, bindings are sequential; for let, parallel
@@ -373,8 +373,8 @@
                            (compile-to-instructions (car (last body)) new-env))))
     result))
 
-(defun copy-compilation-env (env)
-  "Create a copy of the compilation environment."
+(defun extend-compilation-env (env)
+  "Create an extended copy of the compilation environment for a new scope."
   (make-compilation-env
    :locals (copy-list (cenv-locals env))
    :local-counter (cenv-local-counter env)

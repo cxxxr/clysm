@@ -77,3 +77,34 @@
     (when (and (< shift 64) (not (zerop (logand byte #x40))))
       (setf result (logior result (ash -1 shift))))
     (values result (- index start))))
+
+;;; Stream-based encoding (for binary output)
+
+(defun encode-unsigned-leb128-to-stream (value stream)
+  "Encode an unsigned integer as LEB128 directly to a binary stream."
+  (declare (type (integer 0) value))
+  (loop
+    (let ((byte (logand value #x7f)))
+      (setf value (ash value -7))
+      (if (zerop value)
+          (progn (write-byte byte stream) (return))
+          (write-byte (logior byte #x80) stream)))))
+
+(defun encode-signed-leb128-to-stream (value stream)
+  "Encode a signed integer as LEB128 directly to a binary stream."
+  (declare (type integer value))
+  (let ((more t))
+    (loop while more do
+      (let* ((byte (logand value #x7f))
+             (value-next (ash value -7))
+             (sign-bit (logand byte #x40)))
+        (setf value value-next)
+        (cond
+          ((and (zerop value) (zerop sign-bit))
+           (write-byte byte stream)
+           (setf more nil))
+          ((and (= value -1) (not (zerop sign-bit)))
+           (write-byte byte stream)
+           (setf more nil))
+          (t
+           (write-byte (logior byte #x80) stream)))))))

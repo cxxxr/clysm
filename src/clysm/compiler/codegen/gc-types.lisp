@@ -20,18 +20,18 @@
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
-(defstruct (wasm-type (:constructor nil))
-  "Base structure for Wasm types"
+(defstruct (gc-type (:constructor nil))
+  "Base structure for WasmGC types"
   (index nil :type (or null fixnum)))
 
-(defstruct (wasm-struct-type (:include wasm-type)
+(defstruct (wasm-struct-type (:include gc-type)
                              (:constructor make-wasm-struct-type))
   "WasmGC struct type definition"
   (name nil :type symbol)
   (fields nil :type list)
   (super nil :type (or null wasm-struct-type)))
 
-(defstruct (wasm-array-type (:include wasm-type)
+(defstruct (wasm-array-type (:include gc-type)
                             (:constructor make-wasm-array-type))
   "WasmGC array type definition"
   (name nil :type symbol)

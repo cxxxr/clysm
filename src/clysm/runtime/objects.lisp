@@ -14,15 +14,9 @@
   "The UNBOUND sentinel for unbound symbols.")
 
 ;;; ============================================================
-;;; Wasm Global Definitions
+;;; Global Index Management
 ;;; ============================================================
-
-(defstruct (wasm-global (:constructor make-wasm-global))
-  "Wasm global variable definition"
-  (name nil :type symbol)
-  (type nil :type keyword)  ; :i32, :anyref, etc.
-  (mutability :const :type (member :const :var))
-  (init-expr nil :type list))  ; initialization expression
+;;; Note: wasm-global struct is defined in clysm/backend/sections
 
 ;; Global indices (assigned during module construction)
 (defvar *nil-global-index* 0

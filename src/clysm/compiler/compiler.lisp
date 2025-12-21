@@ -37,8 +37,8 @@
 ;;; Module Compilation
 ;;; ============================================================
 
-(defstruct (wasm-module (:conc-name wasm-module-))
-  "Compiled Wasm module"
+(defstruct (compiled-module (:conc-name compiled-module-))
+  "Compiled Wasm module (compiler's internal representation)"
   (types nil :type list)
   (functions nil :type list)
   (globals nil :type list)
@@ -50,16 +50,16 @@
   ;; Parse expression to AST
   (let* ((ast (clysm/compiler/ast:parse-expr expr))
          (env (clysm/compiler/codegen/func-section:make-env))
-         (module (make-wasm-module)))
+         (module (make-compiled-module)))
     ;; Set up runtime globals
-    (setf (wasm-module-globals module)
+    (setf (compiled-module-globals module)
           (list (clysm/runtime/objects:make-nil-global)
                 (clysm/runtime/objects:make-unbound-global)))
     ;; Compile the expression as the main function
     (let ((main-func (compile-main-function ast env)))
-      (setf (wasm-module-functions module) (list main-func))
-      (setf (wasm-module-main-func-idx module) 0)
-      (setf (wasm-module-exports module)
+      (setf (compiled-module-functions module) (list main-func))
+      (setf (compiled-module-main-func-idx module) 0)
+      (setf (compiled-module-exports module)
             (list (list "_start" :func 0))))
     module))
 
@@ -85,16 +85,16 @@
     ;; Module header (magic + version)
     (emit-header buffer)
     ;; Type section
-    (emit-type-section buffer (wasm-module-functions module))
+    (emit-type-section buffer (compiled-module-functions module))
     ;; Function section
-    (emit-function-section buffer (wasm-module-functions module))
+    (emit-function-section buffer (compiled-module-functions module))
     ;; Global section
-    (when (wasm-module-globals module)
-      (emit-global-section buffer (wasm-module-globals module)))
+    (when (compiled-module-globals module)
+      (emit-global-section buffer (compiled-module-globals module)))
     ;; Export section
-    (emit-export-section buffer (wasm-module-exports module))
+    (emit-export-section buffer (compiled-module-exports module))
     ;; Code section
-    (emit-code-section buffer (wasm-module-functions module))
+    (emit-code-section buffer (compiled-module-functions module))
     ;; Return as simple vector
     (coerce buffer '(simple-array (unsigned-byte 8) (*)))))
 
@@ -351,7 +351,7 @@
   (with-output-to-string (s)
     (format s "(module~%")
     ;; Types
-    (loop for func in (wasm-module-functions module)
+    (loop for func in (compiled-module-functions module)
           for i from 0
           do (format s "  (type $t~D (func" i)
              (let ((params (getf func :params)))
@@ -365,13 +365,13 @@
                  (format s " (result ~A)" (keyword-to-wat-type result))))
              (format s "))~%"))
     ;; Functions
-    (loop for func in (wasm-module-functions module)
+    (loop for func in (compiled-module-functions module)
           for i from 0
           do (format s "  (func $f~D (type $t~D)~%" i i)
              (format s "    ;; body~%")
              (format s "  )~%"))
     ;; Exports
-    (dolist (export (wasm-module-exports module))
+    (dolist (export (compiled-module-exports module))
       (destructuring-bind (name kind index) export
         (format s "  (export ~S (~A $f~D))~%"
                 name

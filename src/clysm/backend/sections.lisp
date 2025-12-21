@@ -3,6 +3,17 @@
 
 (in-package #:clysm/backend/sections)
 
+;;; ============================================================
+;;; Wasm Global Structure
+;;; ============================================================
+
+(defstruct (wasm-global (:constructor make-wasm-global))
+  "Wasm global variable definition"
+  (name nil :type symbol)
+  (type nil :type keyword)  ; :i32, :anyref, etc.
+  (mutability :const :type (member :const :var))
+  (init-expr nil :type list))  ; initialization expression
+
 ;;; Section IDs (must be emitted in ascending order)
 (defconstant +section-id-custom+ 0)
 (defconstant +section-id-type+ 1)
@@ -103,9 +114,9 @@
 
 (defun encode-global (global buffer)
   "Encode a global variable definition to the buffer."
-  (let ((type (clysm/runtime/objects:wasm-global-type global))
-        (mutability (clysm/runtime/objects:wasm-global-mutability global))
-        (init-expr (clysm/runtime/objects:wasm-global-init-expr global)))
+  (let ((type (wasm-global-type global))
+        (mutability (wasm-global-mutability global))
+        (init-expr (wasm-global-init-expr global)))
     ;; Global type: valtype + mutability
     (encode-valtype type buffer)
     (vector-push-extend (if (eq mutability :const) 0 1) buffer)
