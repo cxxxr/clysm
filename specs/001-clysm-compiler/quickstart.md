@@ -1,12 +1,14 @@
 # Quickstart: Clysm Development
 
-**Date**: 2025-12-21
+**Date**: 2025-12-22
 **Plan Reference**: [plan.md](./plan.md)
+**Status**: Phase 1-2 complete, Phase 3 in progress
 
 ## Prerequisites
 
 - Nix Package Manager (with flakes enabled)
 - Git
+- (Optional) direnv for automatic environment activation
 
 ## Getting Started
 
@@ -15,6 +17,11 @@
 ```bash
 git clone <repository-url> clysm
 cd clysm
+
+# Option A: Using direnv (recommended)
+direnv allow
+
+# Option B: Manual nix develop
 nix develop
 ```
 
@@ -233,7 +240,12 @@ Verify tail call optimization:
 
 ## Next Steps
 
-1. Complete Phase 0 tasks (see [plan.md](./plan.md))
-2. Implement LEB128 encoder
-3. Generate empty module
-4. Add Type Section with GC types
+See [tasks.md](./tasks.md) for the current implementation progress.
+
+Current focus:
+1. **Phase 3**: Complete US2 (reproducible development environment)
+2. **Phase 4**: Implement US1 MVP - compile `(+ 1 2)` to Wasm
+
+Completed:
+- Phase 1: Project setup (Nix Flakes, ASDF, directory structure)
+- Phase 2: Wasm backend foundation (LEB128, sections, empty module generation)

@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  nix-flake-check:
+    name: Nix Flake Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Run Flake Check
+        run: nix flake check
+
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: nix-flake-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Verify Dev Shell
+        run: |
+          nix develop --command bash -c '
+            echo "==> Tool versions:"
+            sbcl --version
+            wasmtime --version
+            wasm-tools --version
+            wat2wasm --version
+            echo ""
+            echo "==> All tools available!"
+          '
+
+      - name: Validate Wasm Module Format
+        run: |
+          nix develop --command bash -c '
+            # Test that we can create and validate a Wasm module
+            printf "\x00\x61\x73\x6d\x01\x00\x00\x00" > /tmp/test.wasm
+            wasm-tools validate /tmp/test.wasm
+            echo "Wasm module validation passed"
+          '
+
+      - name: Check ASDF System Definition
+        run: |
+          nix develop --command sbcl --non-interactive --eval '
+            (require :asdf)
+            (push (truename ".") asdf:*central-registry*)
+            (handler-case
+                (progn
+                  (asdf:find-system :clysm)
+                  (format t "~%ASDF system :clysm found successfully~%")
+                  (sb-ext:exit :code 0))
+              (error (e)
+                (format *error-output* "~%Error: ~A~%" e)
+                (sb-ext:exit :code 1)))
+          '
+
+  # Future: Add test job when Rove tests are implemented
+  # test:
+  #   name: Run Tests
+  #   runs-on: ubuntu-latest
+  #   needs: build
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: DeterminateSystems/nix-installer-action@v14
+  #     - uses: DeterminateSystems/magic-nix-cache-action@v8
+  #     - name: Run Rove Tests
+  #       run: |
+  #         nix develop --command sbcl --non-interactive --eval '
+  #           (ql:quickload :clysm/tests)
+  #           (asdf:test-system :clysm)
+  #         '

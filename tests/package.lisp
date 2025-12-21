@@ -2,7 +2,8 @@
 
 (defpackage #:clysm/tests
   (:use #:cl #:rove)
-  (:export #:run-all-tests))
+  (:export #:run-all-tests
+           #:compile-and-run))
 
 (defpackage #:clysm/tests/helpers
   (:use #:cl)
