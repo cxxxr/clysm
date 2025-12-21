@@ -6,11 +6,26 @@ Milestone 1で構築したカーネル・ランタイム（データ構造とプ
 Common Lispの「言語学的層」を実装する。この層は制御構造と動的機能を提供し、
 最小限のLispインタプリタとして動作する。
 
+## 実装状況
+
+| Phase | 内容 | 状態 | テスト数 |
+|-------|------|------|----------|
+| 2.1 | シンボルテーブル・intern | ✅ 完了 | 93 |
+| 2.2 | Reader（S式パーサー） | ✅ 完了 | 58 |
+| 2.3 | Printer（オブジェクト表示） | ✅ 完了 | 41 |
+| 2.4 | クロージャと環境 | ✅ 完了 | 11 |
+| 2.5 | eval関数（基本） | ✅ 完了 | 72 |
+| 2.6 | 動的スコープ | ✅ 完了 | 7 |
+| 2.7 | 非局所脱出 | ⏳ 未実装 | - |
+| 2.8 | 組み込み関数 | ⏳ 未実装 | - |
+
+**合計: 282テスト パス**
+
 ## 目標
 
 - シンボルテーブル（パッケージシステムの基盤）と`intern`関数
 - S式Reader/Printer
-- Wasm内インタプリタ（eval関数）
+- JavaScript評価器（eval関数）※ Wasm interop制約によりJS実装
 - 動的スコープ（スペシャル変数）
 - 非局所脱出（block/return-from, catch/throw）
 
@@ -19,22 +34,33 @@ Common Lispの「言語学的層」を実装する。この層は制御構造と
 ```
 src/
 ├── kernel/
-│   ├── kernel.wat      # (既存) 基本データ構造
-│   └── eval.wat        # (新規) インタプリタ・制御構造
+│   └── kernel.wat      # (拡張) 環境フレーム・クロージャ型追加
 js/
-├── bridge.js           # (既存) カーネルブリッジ
+├── bridge.js           # (拡張) 環境・クロージャ操作追加
 ├── reader.js           # (新規) S式パーサー
-└── printer.js          # (新規) オブジェクト表示
+├── printer.js          # (新規) オブジェクト表示
+└── eval.js             # (新規) JavaScript評価器
 test/
-├── kernel.test.js      # (既存) カーネルテスト
+├── kernel.test.js      # (拡張) 環境・クロージャテスト追加
 ├── reader.test.js      # (新規) Readerテスト
 ├── printer.test.js     # (新規) Printerテスト
-└── eval.test.js        # (新規) インタプリタテスト
+└── eval.test.js        # (新規) 評価器テスト
 ```
+
+### 実装上の重要な決定
+
+1. **JavaScript評価器の採用**: Wasm GCでは`ref $func_sig`型をJavaScriptに渡せないため、
+   クロージャは`InterpretedClosure`クラスとしてJavaScript側で実装。
+
+2. **NILシンボル検索バグの修正**: `find_symbol_in_package`が「見つからない」場合にNILを返すと、
+   NILシンボル自体の検索で誤判定。UNBOUNDマーカーを返すよう修正。
+
+3. **浅いバインディング（Shallow Binding）**: 動的スコープはバインディングスタックで実装。
+   シンボルの値セルを直接書き換え、try/finallyで確実に復元。
 
 ---
 
-## Phase 2.1: シンボルテーブルとintern
+## Phase 2.1: シンボルテーブルとintern ✅
 
 ### 2.1.1 パッケージ構造体の定義 (kernel.wat)
 
@@ -101,7 +127,7 @@ assert(!kernel.eq(sym1, bar)); // 異なるオブジェクト
 
 ---
 
-## Phase 2.2: Reader（S式パーサー）
+## Phase 2.2: Reader（S式パーサー） ✅
 
 ### 2.2.1 トークナイザ (reader.js)
 
@@ -170,7 +196,7 @@ const expr = reader.readFromString("(+ 1 2)");
 
 ---
 
-## Phase 2.3: Printer（オブジェクト表示）
+## Phase 2.3: Printer（オブジェクト表示） ✅
 
 ### 2.3.1 実装 (printer.js)
 
@@ -219,7 +245,7 @@ class Printer {
 
 ---
 
-## Phase 2.4: クロージャと環境
+## Phase 2.4: クロージャと環境 ✅
 
 ### 2.4.1 クロージャ構造体 (kernel.wat)
 
@@ -260,17 +286,31 @@ class Printer {
 
 ---
 
-## Phase 2.5: インタプリタ (eval)
+## Phase 2.5: インタプリタ (eval) ✅
 
-### 2.5.1 eval関数の構造 (eval.wat)
+> **実装注記**: Wasm GCの制約により、eval関数はJavaScript (`js/eval.js`) で実装。
+> クロージャは`InterpretedClosure`クラスで表現。
 
-```wat
-;; メインのeval関数
-(func $eval (param $expr anyref) (param $env anyref) (result anyref)
-  ;; 1. 自己評価オブジェクト（数値、文字列）
-  ;; 2. シンボル → 変数参照
-  ;; 3. リスト → 特殊形式 or 関数呼び出し
-)
+### 2.5.1 eval関数の構造 (eval.js)
+
+```javascript
+class InterpretedClosure {
+  constructor(params, body, env, evaluator, name = null) {
+    this.params = params;    // パラメータリスト
+    this.body = body;        // ボディフォーム
+    this.env = env;          // レキシカル環境（Wasm env_frame）
+    this.evaluator = evaluator;
+    this.name = name;
+  }
+}
+
+class Evaluator {
+  eval(expr, env = null) {
+    // 1. 自己評価オブジェクト（数値、文字列）
+    // 2. シンボル → 変数参照
+    // 3. リスト → 特殊形式 or 関数呼び出し
+  }
+}
 ```
 
 ### 2.5.2 特殊形式（Phase 2.5で実装）
@@ -321,36 +361,40 @@ class Printer {
 
 ---
 
-## Phase 2.6: 動的スコープ（スペシャル変数）
+## Phase 2.6: 動的スコープ（スペシャル変数） ✅
 
-### 2.6.1 バインディングスタック
+> **実装注記**: JavaScript側 (`js/eval.js`) でバインディングスタックを管理。
+> シンボルの値セルを直接書き換え、try/finallyで確実に復元。
 
-```wat
-;; バインディングスタックエントリ
-(type $binding_entry (struct
-  (field $symbol (ref $symbol))
-  (field $old_value anyref)
-))
+### 2.6.1 バインディングスタック (eval.js)
 
-;; グローバルなバインディングスタック
-(global $binding_stack (mut (ref $vector)) ...)
-(global $binding_sp (mut i32) (i32.const 0))
-```
+```javascript
+class Evaluator {
+  constructor(kernel) {
+    this.specialVariables = new Set();  // 特殊変数のセット
+    this.bindingStack = [];  // {symbol, oldValue} のスタック
+  }
 
-### 2.6.2 動的バインディング操作
+  isSpecialVariable(sym) {
+    // *foo* 形式の名前、またはdeclareSpecialで宣言されたシンボル
+    const name = this.kernel.stringToJS(this.kernel.symbolName(sym));
+    return (name.startsWith('*') && name.endsWith('*') && name.length > 2) ||
+           this.specialVariables.has(sym);
+  }
 
-```wat
-;; スペシャル変数をバインド
-(func $bind_special (param $sym (ref $symbol)) (param $val anyref)
-  ;; 1. 現在の symbol.$value をスタックにプッシュ
-  ;; 2. symbol.$value を新しい値で上書き
-)
+  bindSpecial(sym, value) {
+    const oldValue = this.kernel.symbolValue(sym);
+    this.bindingStack.push({ symbol: sym, oldValue: oldValue });
+    this.kernel.setSymbolValue(sym, value);
+  }
 
-;; スペシャル変数をアンバインド
-(func $unbind_special (param $sym (ref $symbol))
-  ;; 1. スタックから古い値をポップ
-  ;; 2. symbol.$value を復元
-)
+  unbindSpecials(count) {
+    for (let i = 0; i < count; i++) {
+      const entry = this.bindingStack.pop();
+      this.kernel.setSymbolValue(entry.symbol, entry.oldValue);
+    }
+  }
+}
 ```
 
 ### 2.6.3 スペシャル変数の宣言
@@ -374,9 +418,12 @@ class Printer {
 
 ---
 
-## Phase 2.7: 非局所脱出
+## Phase 2.7: 非局所脱出 ⏳
 
-### 2.7.1 Wasm Exception Handling
+> **実装方針**: JavaScript例外機構を使用して実装予定。
+> Wasm Exception Handlingは将来の最適化オプション。
+
+### 2.7.1 JavaScript Exception Handling (予定)
 
 ```wat
 ;; 例外タグの定義
@@ -467,93 +514,105 @@ class Printer {
 
 ---
 
-## Phase 2.8: 組み込み関数
+## Phase 2.8: 組み込み関数 ⏳
 
-### 2.8.1 基本関数
+> **注記**: 基本的なプリミティブはPhase 2.5で実装済み。
+> 追加の組み込み関数は必要に応じて実装。
 
-| 関数 | 説明 |
-|------|------|
-| `car`, `cdr` | リスト操作 |
-| `cons` | コンス生成 |
-| `eq`, `eql`, `equal` | 等価性判定 |
-| `atom`, `consp`, `symbolp`, `numberp` | 型述語 |
-| `+`, `-`, `*`, `/` | 算術演算 |
-| `<`, `>`, `<=`, `>=`, `=` | 比較演算 |
-| `not`, `null` | 論理演算 |
+### 2.8.1 実装済みプリミティブ
 
-### 2.8.2 リスト関数
+| 関数 | 説明 | 状態 |
+|------|------|------|
+| `car`, `cdr` | リスト操作 | ✅ |
+| `cons` | コンス生成 | ✅ |
+| `rplaca`, `rplacd` | 破壊的更新 | ✅ |
+| `eq`, `eql`, `equal` | 等価性判定 | ✅ |
+| `atom`, `consp`, `symbolp`, `numberp`, `stringp`, `functionp` | 型述語 | ✅ |
+| `null`, `not` | 論理演算 | ✅ |
+| `+`, `-`, `*`, `/` | 算術演算 | ✅ |
+| `<`, `>`, `<=`, `>=`, `=` | 比較演算 | ✅ |
+| `list` | リスト生成 | ✅ |
+| `length` | リスト長 | ✅ |
+| `funcall` | 関数呼び出し | ✅ |
+| `apply` | 引数リストで関数呼び出し | ✅ |
 
-| 関数 | 説明 |
-|------|------|
-| `list` | リスト生成 |
-| `append` | リスト連結 |
-| `reverse` | リスト反転 |
-| `length` | リスト長 |
-| `nth` | N番目の要素 |
-| `nthcdr` | N番目のcdr |
+### 2.8.2 未実装リスト関数
 
-### 2.8.3 高階関数
+| 関数 | 説明 | 状態 |
+|------|------|------|
+| `append` | リスト連結 | ⏳ |
+| `reverse` | リスト反転 | ⏳ |
+| `nth` | N番目の要素 | ⏳ |
+| `nthcdr` | N番目のcdr | ⏳ |
+| `last` | 最後のコンス | ⏳ |
+| `butlast` | 最後以外 | ⏳ |
 
-| 関数 | 説明 |
-|------|------|
-| `funcall` | 関数呼び出し |
-| `apply` | 引数リストで関数呼び出し |
-| `mapcar` | マップ関数 |
+### 2.8.3 未実装高階関数
+
+| 関数 | 説明 | 状態 |
+|------|------|------|
+| `mapcar` | マップ関数 | ⏳ |
+| `mapc` | 副作用マップ | ⏳ |
+| `reduce` | 畳み込み | ⏳ |
+| `remove-if` | フィルター | ⏳ |
+| `find-if` | 検索 | ⏳ |
 
 ---
 
 ## 実装順序
 
 ```
-Phase 2.1: シンボルテーブル・intern
-├── 文字列ハッシュ関数
-├── ハッシュテーブル実装
-├── パッケージ構造体
-├── intern/find_symbol
-└── テスト
+Phase 2.1: シンボルテーブル・intern ✅
+├── djb2ハッシュ関数 (kernel.wat)
+├── ハッシュテーブル・チェイン法 (kernel.wat)
+├── パッケージ構造体 (CL-USER, KEYWORD)
+├── intern/find_symbol (NIL検索バグ修正済み)
+└── テスト (93)
 
-Phase 2.2: Reader
-├── Tokenizer
-├── Parser (数値、シンボル、リスト)
-├── クォート展開
-└── テスト
+Phase 2.2: Reader ✅
+├── Tokenizer (reader.js)
+├── Parser (数値、シンボル、文字列、リスト、ドット対)
+├── クォート展開 ('x → (quote x))
+├── コメント処理 (;)
+└── テスト (58)
 
-Phase 2.3: Printer
-├── 型別表示関数
-├── リスト表示（循環検出なし）
-└── テスト
+Phase 2.3: Printer ✅
+├── 型別表示関数 (printer.js)
+├── リスト表示（正規リスト、ドット対）
+├── エスケープシーケンス
+└── テスト (41)
 
-Phase 2.4: クロージャ・環境
-├── クロージャ構造体
-├── 環境フレーム
-├── 環境操作関数
-└── テスト
+Phase 2.4: クロージャ・環境 ✅
+├── 環境フレーム構造体 (kernel.wat)
+├── env_ref, env_set, env_lookup, env_set_at
+├── クロージャ・プリミティブ型定義
+└── テスト (11)
 
-Phase 2.5: eval（基本）
-├── 自己評価オブジェクト
-├── シンボル評価
-├── quote, if, progn
-├── lambda, let, let*
-├── 関数呼び出し (apply)
-└── テスト
+Phase 2.5: eval（基本） ✅
+├── InterpretedClosure クラス (eval.js)
+├── 自己評価オブジェクト、シンボル評価
+├── quote, if, progn, setq
+├── lambda, let, let*, defun, defvar, function
+├── プリミティブ関数 (22種)
+└── テスト (72)
 
-Phase 2.6: 動的スコープ
-├── バインディングスタック
-├── bind_special / unbind_special
-├── defvar サポート
-└── テスト
+Phase 2.6: 動的スコープ ✅
+├── specialVariables Set
+├── bindingStack (shallow binding)
+├── bindSpecial / unbindSpecials
+├── try/finally による確実な復元
+└── テスト (7)
 
-Phase 2.7: 非局所脱出
-├── Wasm EH タグ定義
+Phase 2.7: 非局所脱出 ⏳
+├── BlockExit / CatchThrow 例外クラス
 ├── block / return-from
 ├── catch / throw
 ├── unwind-protect
 └── テスト
 
-Phase 2.8: 組み込み関数
-├── 基本関数
-├── リスト関数
-├── 高階関数
+Phase 2.8: 組み込み関数 ⏳
+├── リスト関数 (append, reverse, nth, etc.)
+├── 高階関数 (mapcar, reduce, etc.)
 └── 統合テスト
 ```
 
@@ -561,17 +620,23 @@ Phase 2.8: 組み込み関数
 
 ## 技術的考慮事項
 
-### Wasm Exception Handling
+### Wasm GC と JavaScript Interop
 
-- `try_table` / `throw` / `catch` を使用
-- Node.js 22では `--experimental-wasm-exnref` フラグが必要な場合あり
-- wasm-tools は最新のEH仕様をサポート
+- **クロージャ問題**: Wasm GCの`ref $func_sig`型はJavaScriptに渡せない
+- **解決策**: `InterpretedClosure`クラスをJavaScript側で実装
+- **将来**: Wasm内完結の評価器はMilestone 3以降で検討
+
+### 非局所脱出の実装方針
+
+- **Phase 2.7**: JavaScript例外機構 (`throw`/`catch`) を使用
+- **将来の最適化**: Wasm Exception Handling (`try_table`/`throw`/`catch`)
+- Node.js 22では Wasm EH がネイティブサポート
 
 ### パフォーマンス
 
 - インタプリタは即応性優先（Tier 1）
 - ホットパスの最適化はMilestone 3（JITコンパイラ）で対応
-- シンボルルックアップはO(1)を目指す（ハッシュテーブル）
+- シンボルルックアップはO(1)（ハッシュテーブル + djb2）
 
 ### 制限事項（Milestone 2では未実装）
 
@@ -585,37 +650,51 @@ Phase 2.8: 組み込み関数
 
 ## 検証基準
 
-### 機能テスト
+### 実装済みテスト ✅
 
 ```lisp
-;; 全フェーズ完了後の統合テスト
-
-;; 階乗
+;; 階乗 (test/eval.test.js)
 (defun factorial (n)
   (if (<= n 1)
       1
       (* n (factorial (- n 1)))))
-(factorial 5)  ; => 120
+(factorial 5)  ; => 120 ✅
 
-;; フィボナッチ
+;; フィボナッチ (test/eval.test.js)
 (defun fib (n)
   (if (<= n 1)
       n
       (+ (fib (- n 1)) (fib (- n 2)))))
-(fib 10)  ; => 55
+(fib 10)  ; => 55 ✅
 
-;; 高階関数
+;; 高階関数 (test/eval.test.js)
+(defun apply-twice (f x)
+  (funcall f (funcall f x)))
+(defun addone (x) (+ x 1))
+(apply-twice (function addone) 0)  ; => 2 ✅
+
+;; クロージャ (test/eval.test.js)
+(defun make-adder (n)
+  (lambda (x) (+ x n)))
+(defvar *add5* (make-adder 5))
+(funcall *add5* 10)  ; => 15 ✅
+
+;; 動的スコープ (test/eval.test.js)
+(defvar *multiplier* 2)
+(defun multiply (x) (* x *multiplier*))
+(multiply 10)                    ; => 20 ✅
+(let ((*multiplier* 10))
+  (multiply 10))                 ; => 100 ✅
+```
+
+### 未実装テスト ⏳
+
+```lisp
+;; mapcar (Phase 2.8で実装予定)
 (mapcar (lambda (x) (* x x)) '(1 2 3 4 5))
 ; => (1 4 9 16 25)
 
-;; 動的スコープ
-(defvar *multiplier* 2)
-(defun multiply (x) (* x *multiplier*))
-(multiply 10)                    ; => 20
-(let ((*multiplier* 10))
-  (multiply 10))                 ; => 100
-
-;; 非局所脱出
+;; 非局所脱出 (Phase 2.7で実装予定)
 (defun find-first (pred list)
   (catch 'found
     (mapcar (lambda (x)
@@ -629,9 +708,20 @@ Phase 2.8: 組み込み関数
 
 ---
 
-## 次のステップ（Milestone 3への接続）
+## 次のステップ
 
-Milestone 2完了後：
+### Milestone 2 残り作業
+
+1. **Phase 2.7: 非局所脱出**
+   - `block` / `return-from`
+   - `catch` / `throw`
+   - `unwind-protect`
+
+2. **Phase 2.8: 組み込み関数**
+   - `mapcar`, `reduce`, `remove-if`, `find-if`
+   - `append`, `reverse`, `nth`, `nthcdr`
+
+### Milestone 3への接続
 
 1. **JITコンパイラ**: eval済みS式からWasmバイナリ生成
 2. **compile関数**: 関数をネイティブWasmにコンパイル
@@ -640,4 +730,4 @@ Milestone 2完了後：
 
 ---
 
-*このプランは実装を進める中で適宜更新する。*
+*最終更新: 2025-12-21 (Phase 2.1-2.6 完了)*
