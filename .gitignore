@@ -1,1 +1,14 @@
+# Nix/direnv
 .direnv/
+result
+
+# Build artifacts
+build/
+
+# Node
+node_modules/
+
+# Editor
+*.swp
+*~
+.vscode/

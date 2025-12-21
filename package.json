@@ -1,0 +1,13 @@
+{
+  "name": "clysm",
+  "version": "0.1.0",
+  "description": "Common Lisp for WebAssembly",
+  "type": "module",
+  "scripts": {
+    "build": "make build",
+    "test": "node --experimental-wasm-gc --test test/*.test.js",
+    "clean": "make clean"
+  },
+  "keywords": ["common-lisp", "webassembly", "wasm-gc"],
+  "license": "MIT"
+}
