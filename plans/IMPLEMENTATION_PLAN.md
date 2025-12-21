@@ -563,9 +563,48 @@ Phase 6: 環境 (M6)
 2. ~~**M1着手**: WAT手書きでCons/Symbol/Fixnumの型定義~~ ✅
 3. ~~**テスト環境**: Node.js + wasm-tools でWasm GCモジュールの実行環境~~ ✅
 4. ~~**JSブリッジ**: 最小限のReader/Printer実装~~ ✅
-5. **M2着手**: シンボルテーブルと `intern` 関数の実装
-6. **Reader/Printer**: S式パーサーとオブジェクト表示の拡充
-7. **eval関数**: 最小限のインタプリタ（quote, if, lambda）
+
+### Milestone 2 実装順序（詳細は `plans/MILESTONE_2_PLAN.md` 参照）
+
+5. **Phase 2.1**: シンボルテーブルと `intern` 関数
+   - 文字列ハッシュ関数（kernel.wat）
+   - ハッシュテーブル実装
+   - パッケージ構造体
+   - `intern` / `find_symbol` 関数
+
+6. **Phase 2.2**: Reader（S式パーサー）
+   - Tokenizer（js/reader.js）
+   - Parser（数値、シンボル、リスト、クォート）
+
+7. **Phase 2.3**: Printer（オブジェクト表示）
+   - 型別表示関数（js/printer.js）
+   - リスト表示
+
+8. **Phase 2.4**: クロージャと環境
+   - クロージャ構造体（$closure）
+   - 環境フレーム（$env_frame）
+   - 環境操作関数
+
+9. **Phase 2.5**: eval関数（基本）
+   - 自己評価オブジェクト、シンボル評価
+   - 特殊形式: quote, if, progn, setq
+   - 特殊形式: lambda, let, let*
+   - 関数呼び出し（apply）
+
+10. **Phase 2.6**: 動的スコープ（スペシャル変数）
+    - バインディングスタック
+    - `bind_special` / `unbind_special`
+
+11. **Phase 2.7**: 非局所脱出
+    - Wasm EH タグ定義
+    - block / return-from
+    - catch / throw
+    - unwind-protect
+
+12. **Phase 2.8**: 組み込み関数
+    - 基本関数（car, cdr, cons, eq, atom, etc.）
+    - リスト関数（list, append, reverse, length）
+    - 高階関数（funcall, apply, mapcar）
 
 ---
 
