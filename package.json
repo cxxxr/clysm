@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "make build",
-    "test": "node --experimental-wasm-gc --test test/*.test.js",
+    "test": "make build && node --test test/*.test.js",
     "clean": "make clean"
   },
   "keywords": ["common-lisp", "webassembly", "wasm-gc"],

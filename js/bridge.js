@@ -17,14 +17,81 @@ export async function loadKernel() {
   const wasmPath = join(__dirname, '..', 'build', 'kernel.wasm');
   const wasmBytes = await readFile(wasmPath);
 
+  /** @type {any} */
+  let exports;
+
+  const stringToJS = (s) => {
+    const len = exports.string_length(s);
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = exports.schar(s, i);
+    }
+    return new TextDecoder().decode(bytes);
+  };
+
+  const typeNameOf = (x) => {
+    if (exports.null_(x) === 1) return 'NIL';
+    if (exports.fixnump(x) === 1) return 'FIXNUM';
+    if (exports.characterp(x) === 1) return 'CHARACTER';
+    if (exports.stringp(x) === 1) return 'STRING';
+    if (exports.consp(x) === 1) return 'CONS';
+    if (exports.symbolp(x) === 1) {
+      const name = stringToJS(exports.symbol_name(x));
+      return `SYMBOL ${name}`;
+    }
+    if (exports.vectorp(x) === 1) return 'VECTOR';
+    if (exports.packagep(x) === 1) return 'PACKAGE';
+    if (exports.env_framep(x) === 1) return 'ENV-FRAME';
+    if (exports.closurep(x) === 1) return 'CLOSURE';
+    if (exports.primitivep(x) === 1) return 'PRIMITIVE';
+    if (exports.interpreted_closurep?.(x) === 1) return 'FUNCTION';
+    return 'UNKNOWN';
+  };
+
   const imports = {
     env: {
-      // Placeholder for future JS callbacks
+      /**
+       * Raise a Lisp-level error from Wasm.
+       * @param {number} code
+       * @param {any} a
+       * @param {any} b
+       */
+      raise_error: (code, a, b) => {
+        switch (code) {
+          case 1:
+            throw new Error(`CAR: ${typeNameOf(a)} is not a list`);
+          case 2:
+            throw new Error(`CDR: ${typeNameOf(a)} is not a list`);
+          case 3: {
+            const name = stringToJS(exports.symbol_name(a));
+            throw new Error(`Unbound variable: ${name}`);
+          }
+          case 4: {
+            const name = stringToJS(exports.symbol_name(a));
+            throw new Error(`Undefined function: ${name}`);
+          }
+          case 5:
+            throw new Error('Odd number of arguments to SETQ');
+          case 6:
+            throw new Error('Invalid function specifier');
+          case 7:
+            throw new Error(`Not a function: ${typeNameOf(a)}`);
+          case 8: {
+            const name = stringToJS(exports.symbol_name(a));
+            throw new Error(`Uncaught return-from: ${name}`);
+          }
+          case 9:
+            throw new Error('Uncaught throw');
+          default:
+            throw new Error(`Wasm error ${code}: ${typeNameOf(a)}`);
+        }
+      }
     }
   };
 
   const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
 
+  exports = instance.exports;
   return new LispKernel(instance.exports);
 }
 
@@ -177,6 +244,16 @@ export class LispKernel {
 
   isUnbound(x) {
     return this.exports.unboundp(x) === 1;
+  }
+
+  // === Evaluator ===
+
+  eval(expr) {
+    return this.exports.eval(expr);
+  }
+
+  isInterpretedClosure(x) {
+    return this.exports.interpreted_closurep(x) === 1;
   }
 
   // === String utility ===

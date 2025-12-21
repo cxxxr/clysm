@@ -2,25 +2,23 @@
  * Eval tests for CLYSM
  */
 
-import { describe, it, before, beforeEach } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadKernel } from '../js/bridge.js';
 import { Reader } from '../js/reader.js';
 import { Printer } from '../js/printer.js';
-import { Evaluator } from '../js/eval.js';
 
 describe('Evaluator', () => {
   let kernel;
   let reader;
   let printer;
-  let evaluator;
 
   /**
    * Helper to evaluate a string and return the result
    */
   function evalString(input) {
     const expr = reader.readFromString(input);
-    return evaluator.eval(expr);
+    return kernel.eval(expr);
   }
 
   /**
@@ -34,11 +32,6 @@ describe('Evaluator', () => {
     kernel = await loadKernel();
     reader = new Reader(kernel);
     printer = new Printer(kernel);
-  });
-
-  beforeEach(() => {
-    // Create fresh evaluator for each test to avoid state leakage
-    evaluator = new Evaluator(kernel);
   });
 
   describe('Self-evaluating objects', () => {
@@ -332,7 +325,7 @@ describe('Evaluator', () => {
   describe('Lambda', () => {
     it('creates function', () => {
       const result = evalString('(lambda (x) x)');
-      assert.strictEqual(evaluator.isInterpretedClosure(result), true);
+      assert.strictEqual(kernel.isInterpretedClosure(result), true);
     });
 
     it('can be called directly', () => {
@@ -392,7 +385,7 @@ describe('Evaluator', () => {
     it('gets function from symbol', () => {
       evalString('(defun my-fn (x) x)');
       const result = evalString("(function my-fn)");
-      assert.strictEqual(evaluator.isInterpretedClosure(result), true);
+      assert.strictEqual(kernel.isInterpretedClosure(result), true);
     });
   });
 
@@ -555,6 +548,34 @@ describe('Evaluator', () => {
         `),
         '30'
       );
+    });
+  });
+
+  describe('Non-local exits', () => {
+    it('block/return-from exits with value', () => {
+      assert.strictEqual(evalPrint('(block foo (return-from foo 42) 1)'), '42');
+    });
+
+    it('catch/throw exits with value', () => {
+      assert.strictEqual(evalPrint("(catch 'tag (throw 'tag 123) 0)"), '123');
+    });
+
+    it('unwind-protect runs cleanup on throw and restores special bindings', () => {
+      evalString('(defvar *unwind-x* 1)');
+      assert.strictEqual(
+        evalPrint("(catch 'tag (let ((*unwind-x* 2)) (unwind-protect (throw 'tag *unwind-x*) (setq *unwind-x* 3))))"),
+        '2'
+      );
+      assert.strictEqual(evalPrint('*unwind-x*'), '1');
+    });
+
+    it('unwind-protect runs cleanup on return-from', () => {
+      evalString('(defvar *unwind-y* 0)');
+      assert.strictEqual(
+        evalPrint('(block foo (unwind-protect (return-from foo 10) (setq *unwind-y* 1)) 99)'),
+        '10'
+      );
+      assert.strictEqual(evalPrint('*unwind-y*'), '1');
     });
   });
 });

@@ -16,16 +16,16 @@ Common Lispの「言語学的層」を実装する。この層は制御構造と
 | 2.4 | クロージャと環境 | ✅ 完了 | 11 |
 | 2.5 | eval関数（基本） | ✅ 完了 | 72 |
 | 2.6 | 動的スコープ | ✅ 完了 | 7 |
-| 2.7 | 非局所脱出 | ⏳ 未実装 | - |
-| 2.8 | 組み込み関数 | ⏳ 未実装 | - |
+| 2.7 | 非局所脱出 | ✅ 完了 | 4 |
+| 2.8 | 組み込み関数 | ✅ 完了 | - |
 
-**合計: 282テスト パス**
+**合計: 289テスト パス**
 
 ## 目標
 
 - シンボルテーブル（パッケージシステムの基盤）と`intern`関数
 - S式Reader/Printer
-- JavaScript評価器（eval関数）※ Wasm interop制約によりJS実装
+- Wasm評価器（eval/apply）をカーネルへ統合
 - 動的スコープ（スペシャル変数）
 - 非局所脱出（block/return-from, catch/throw）
 
@@ -34,12 +34,11 @@ Common Lispの「言語学的層」を実装する。この層は制御構造と
 ```
 src/
 ├── kernel/
-│   └── kernel.wat      # (拡張) 環境フレーム・クロージャ型追加
+│   └── kernel.wat      # (拡張) eval/apply/動的束縛/非局所脱出
 js/
 ├── bridge.js           # (拡張) 環境・クロージャ操作追加
 ├── reader.js           # (新規) S式パーサー
 ├── printer.js          # (新規) オブジェクト表示
-└── eval.js             # (新規) JavaScript評価器
 test/
 ├── kernel.test.js      # (拡張) 環境・クロージャテスト追加
 ├── reader.test.js      # (新規) Readerテスト
@@ -49,14 +48,14 @@ test/
 
 ### 実装上の重要な決定
 
-1. **JavaScript評価器の採用**: Wasm GCでは`ref $func_sig`型をJavaScriptに渡せないため、
-   クロージャは`InterpretedClosure`クラスとしてJavaScript側で実装。
+1. **Wasm評価器へ回帰**: `eval/apply` と解釈クロージャ（GC struct）を `src/kernel/kernel.wat` に統合し、
+   JS側は Reader/Printer/instantiate（＋エラーブリッジ）に限定する。
 
 2. **NILシンボル検索バグの修正**: `find_symbol_in_package`が「見つからない」場合にNILを返すと、
    NILシンボル自体の検索で誤判定。UNBOUNDマーカーを返すよう修正。
 
-3. **浅いバインディング（Shallow Binding）**: 動的スコープはバインディングスタックで実装。
-   シンボルの値セルを直接書き換え、try/finallyで確実に復元。
+3. **浅いバインディング（Shallow Binding）**: 動的スコープはWasm側トレイルで実装。
+   シンボルの値セルを直接書き換え、評価器が確実に復元する。
 
 ---
 
@@ -288,29 +287,20 @@ class Printer {
 
 ## Phase 2.5: インタプリタ (eval) ✅
 
-> **実装注記**: Wasm GCの制約により、eval関数はJavaScript (`js/eval.js`) で実装。
-> クロージャは`InterpretedClosure`クラスで表現。
+> **実装注記**: eval/apply は Wasm 側（`src/kernel/kernel.wat`）に統合。
+> 解釈クロージャは GC struct（`$interpreted_closure`）で表現。
 
-### 2.5.1 eval関数の構造 (eval.js)
+### 2.5.1 eval関数の構造 (kernel.wat)
 
-```javascript
-class InterpretedClosure {
-  constructor(params, body, env, evaluator, name = null) {
-    this.params = params;    // パラメータリスト
-    this.body = body;        // ボディフォーム
-    this.env = env;          // レキシカル環境（Wasm env_frame）
-    this.evaluator = evaluator;
-    this.name = name;
-  }
-}
+```wat
+;; exported entry point (top-level env is NIL)
+(func (export "eval") (param anyref) (result anyref))
 
-class Evaluator {
-  eval(expr, env = null) {
-    // 1. 自己評価オブジェクト（数値、文字列）
-    // 2. シンボル → 変数参照
-    // 3. リスト → 特殊形式 or 関数呼び出し
-  }
-}
+;; interpreted closure object
+(type $interpreted_closure (struct
+  (field $params anyref)
+  (field $body anyref)
+  (field $env anyref)))
 ```
 
 ### 2.5.2 特殊形式（Phase 2.5で実装）
@@ -363,38 +353,18 @@ class Evaluator {
 
 ## Phase 2.6: 動的スコープ（スペシャル変数） ✅
 
-> **実装注記**: JavaScript側 (`js/eval.js`) でバインディングスタックを管理。
-> シンボルの値セルを直接書き換え、try/finallyで確実に復元。
+> **実装注記**: Wasm 側トレイル（`$TRAIL`）で shallow binding を実装。
+> 非局所脱出でも評価器が必ず復元する。
 
-### 2.6.1 バインディングスタック (eval.js)
+### 2.6.1 バインディングトレイル (kernel.wat)
 
-```javascript
-class Evaluator {
-  constructor(kernel) {
-    this.specialVariables = new Set();  // 特殊変数のセット
-    this.bindingStack = [];  // {symbol, oldValue} のスタック
-  }
+```wat
+;; global trail stack (symbol, oldValue) pairs
+(global $TRAIL (mut (ref null $vector)) (ref.null $vector))
+(global $TRAIL_SP (mut i32) (i32.const 0))
 
-  isSpecialVariable(sym) {
-    // *foo* 形式の名前、またはdeclareSpecialで宣言されたシンボル
-    const name = this.kernel.stringToJS(this.kernel.symbolName(sym));
-    return (name.startsWith('*') && name.endsWith('*') && name.length > 2) ||
-           this.specialVariables.has(sym);
-  }
-
-  bindSpecial(sym, value) {
-    const oldValue = this.kernel.symbolValue(sym);
-    this.bindingStack.push({ symbol: sym, oldValue: oldValue });
-    this.kernel.setSymbolValue(sym, value);
-  }
-
-  unbindSpecials(count) {
-    for (let i = 0; i < count; i++) {
-      const entry = this.bindingStack.pop();
-      this.kernel.setSymbolValue(entry.symbol, entry.oldValue);
-    }
-  }
-}
+;; push old binding, then write new value
+(func $bind_special (param (ref $symbol)) (param anyref))
 ```
 
 ### 2.6.3 スペシャル変数の宣言
@@ -418,81 +388,12 @@ class Evaluator {
 
 ---
 
-## Phase 2.7: 非局所脱出 ⏳
+## Phase 2.7: 非局所脱出 ✅
 
-> **実装方針**: JavaScript例外機構を使用して実装予定。
-> Wasm Exception Handlingは将来の最適化オプション。
+> **実装注記**: Wasm評価器内で「制御オブジェクト（RETURN-FROM/THROW/ERROR）を返して伝播させる」方式で実装。
+> `unwind-protect` は cleanup を必ず評価し、cleanup の非局所脱出があればそれを優先する。
 
-### 2.7.1 JavaScript Exception Handling (予定)
-
-```wat
-;; 例外タグの定義
-(tag $block_exit (param anyref anyref))  ;; (tag-id, value)
-(tag $catch_throw (param anyref anyref)) ;; (tag, value)
-```
-
-### 2.7.2 block / return-from
-
-```wat
-;; block の実装
-(func $eval_block (param $name anyref) (param $body anyref) (param $env anyref) (result anyref)
-  (local $tag_id anyref)
-  ;; 一意なタグIDを生成
-  (local.set $tag_id (call $make_block_tag (local.get $name)))
-
-  (try_table (result anyref)
-    (catch $block_exit ...)
-    ;; bodyを評価
-    (call $eval_progn (local.get $body) (local.get $env))
-  )
-)
-
-;; return-from の実装
-(func $eval_return_from (param $name anyref) (param $value anyref) (param $env anyref) (result anyref)
-  ;; タグIDを検索して throw
-  (throw $block_exit
-    (call $find_block_tag (local.get $name) (local.get $env))
-    (local.get $value))
-)
-```
-
-### 2.7.3 catch / throw
-
-```wat
-;; catch の実装
-(func $eval_catch (param $tag anyref) (param $body anyref) (param $env anyref) (result anyref)
-  (try_table (result anyref)
-    (catch $catch_throw ...)
-    (call $eval_progn (local.get $body) (local.get $env))
-  )
-)
-
-;; throw の実装
-(func $eval_throw (param $tag anyref) (param $value anyref) (result anyref)
-  (throw $catch_throw (local.get $tag) (local.get $value))
-)
-```
-
-### 2.7.4 unwind-protect
-
-```wat
-(func $eval_unwind_protect (param $protected anyref) (param $cleanup anyref) (param $env anyref) (result anyref)
-  (local $result anyref)
-  (local $exception_caught i32)
-
-  (try_table (result anyref)
-    (catch_all ...)
-    ;; protected formを評価
-    (local.set $result (call $eval (local.get $protected) (local.get $env)))
-    (local.get $result)
-  )
-  ;; catch_all で例外捕捉時:
-  ;; 1. cleanupを実行
-  ;; 2. rethrowで例外を再送出
-)
-```
-
-### 2.7.5 検証コード
+### 2.7.1 検証コード
 
 ```lisp
 ;; block / return-from
@@ -514,7 +415,7 @@ class Evaluator {
 
 ---
 
-## Phase 2.8: 組み込み関数 ⏳
+## Phase 2.8: 組み込み関数 ✅
 
 > **注記**: 基本的なプリミティブはPhase 2.5で実装済み。
 > 追加の組み込み関数は必要に応じて実装。
@@ -589,7 +490,7 @@ Phase 2.4: クロージャ・環境 ✅
 └── テスト (11)
 
 Phase 2.5: eval（基本） ✅
-├── InterpretedClosure クラス (eval.js)
+├── $interpreted_closure (kernel.wat)
 ├── 自己評価オブジェクト、シンボル評価
 ├── quote, if, progn, setq
 ├── lambda, let, let*, defun, defvar, function
@@ -597,20 +498,18 @@ Phase 2.5: eval（基本） ✅
 └── テスト (72)
 
 Phase 2.6: 動的スコープ ✅
-├── specialVariables Set
-├── bindingStack (shallow binding)
-├── bindSpecial / unbindSpecials
-├── try/finally による確実な復元
+├── special 判定（*foo* 規約 + defvarでのマーク）
+├── トレイル（shallow binding）
+├── bind_special / trail_restore_to
 └── テスト (7)
 
-Phase 2.7: 非局所脱出 ⏳
-├── BlockExit / CatchThrow 例外クラス
+Phase 2.7: 非局所脱出 ✅
 ├── block / return-from
 ├── catch / throw
 ├── unwind-protect
-└── テスト
+└── テスト (4)
 
-Phase 2.8: 組み込み関数 ⏳
+Phase 2.8: 組み込み関数 ✅
 ├── リスト関数 (append, reverse, nth, etc.)
 ├── 高階関数 (mapcar, reduce, etc.)
 └── 統合テスト
