@@ -1173,3 +1173,42 @@ WebAssembly.instantiate(fs.readFileSync('~A'))
       ;; Cleanup
       (when (probe-file wasm-file)
         (delete-file wasm-file)))))
+
+;;; WAT (WebAssembly Text) Output
+
+(defun compile-to-wat (forms &key (stream *standard-output*) (style :flat))
+  "Compile Lisp forms to WAT text format.
+   STYLE can be :flat (default) or :folded for S-expression format."
+  (let ((module (compile-module forms))
+        ;; Collect source info for comments
+        (source-info (mapcar (lambda (f)
+                               (when (and (consp f)
+                                          (member (car f) '(defun defmacro)))
+                                 f))
+                             forms)))
+    (clysm/wasm:module-to-wat module
+                              :stream stream
+                              :source-info source-info
+                              :style style)))
+
+(defun disassemble-form (form &key (style :flat))
+  "Compile a single form and display as WAT.
+   STYLE can be :flat (default) or :folded for S-expression format."
+  (compile-to-wat (list form) :style style))
+
+(defun disassemble-to-string (forms &key (style :flat))
+  "Compile forms and return WAT as a string."
+  (with-output-to-string (s)
+    (compile-to-wat forms :stream s :style style)))
+
+(defun save-as-wat (forms filename &key (style :flat))
+  "Compile forms and save as WAT file."
+  (let ((module (compile-module forms))
+        (source-info (mapcar (lambda (f)
+                               (when (and (consp f)
+                                          (member (car f) '(defun defmacro)))
+                                 f))
+                             forms)))
+    (clysm/wasm:save-module-as-wat module filename
+                                   :source-info source-info
+                                   :style style)))

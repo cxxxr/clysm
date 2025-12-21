@@ -22,7 +22,8 @@ leveraging WasmGC for garbage collection and targeting browser execution."
                              (:file "instructions")
                              (:file "gc-types")
                              (:file "module")
-                             (:file "encoder")))
+                             (:file "encoder")
+                             (:file "wat")))
                (:module "reader"
                 :components ((:file "reader")))
                (:module "ast"
@@ -59,7 +60,8 @@ leveraging WasmGC for garbage collection and targeting browser execution."
   :components ((:file "package")
                (:file "suite")
                (:module "wasm"
-                :components ((:file "encoder-tests")))
+                :components ((:file "encoder-tests")
+                             (:file "wat-tests")))
                (:module "compiler"
                 :components ((:file "special-forms-tests")
                              (:file "list-tests")))

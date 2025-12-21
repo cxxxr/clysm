@@ -195,7 +195,14 @@
    #:+export-global+
    ;; Encoding
    #:encode-module
-   #:save-module))
+   #:save-module
+   ;; WAT output (S-expression format with source comments)
+   #:module-to-wat
+   #:save-module-as-wat
+   #:opcode-name
+   #:gc-opcode-name
+   #:value-type-name
+   #:build-expression-tree))
 
 (defpackage #:clysm/reader
   (:use #:cl)
@@ -322,7 +329,12 @@
    #:register-defmacro
    #:install-standard-macros
    ;; Self-hosting mode
-   #:*self-hosting-mode*))
+   #:*self-hosting-mode*
+   ;; WAT output
+   #:compile-to-wat
+   #:disassemble-form
+   #:disassemble-to-string
+   #:save-as-wat))
 
 (defpackage #:clysm/runtime
   (:use #:cl)
