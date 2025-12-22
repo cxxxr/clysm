@@ -1,15 +1,33 @@
 ;;;; package.lisp - Test package definitions
 
-(defpackage #:clysm/tests
-  (:use #:cl #:rove)
-  (:export #:run-all-tests
-           #:compile-and-run))
-
 (defpackage #:clysm/tests/helpers
   (:use #:cl)
   (:export #:compile-and-run
            #:validate-wasm
-           #:with-temp-wasm-file))
+           #:validate-wasm-silent
+           #:with-temp-wasm-file
+           #:assert-compiles
+           #:assert-validates
+           #:assert-equals))
+
+(defpackage #:clysm/tests
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers
+                #:compile-and-run
+                #:validate-wasm
+                #:validate-wasm-silent
+                #:with-temp-wasm-file
+                #:assert-compiles
+                #:assert-validates
+                #:assert-equals)
+  (:export #:run-all-tests
+           #:compile-and-run
+           #:validate-wasm
+           #:validate-wasm-silent
+           #:with-temp-wasm-file
+           #:assert-compiles
+           #:assert-validates
+           #:assert-equals))
 
 (defpackage #:clysm/tests/contract/leb128
   (:use #:cl #:rove #:clysm/backend/leb128))

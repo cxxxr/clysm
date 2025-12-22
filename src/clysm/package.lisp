@@ -227,13 +227,16 @@
   (:export #:generate-func-section
            #:compile-expression
            #:compile-to-instructions
+           #:compile-defun
            #:make-env
            #:compilation-env
            #:make-compilation-env
+           #:cenv-local-counter
            #:env-add-local
            #:env-lookup-local
            #:env-add-function
-           #:env-lookup-function))
+           #:env-lookup-function
+           #:env-set-function-counter))
 
 (defpackage #:clysm/compiler
   (:use #:cl

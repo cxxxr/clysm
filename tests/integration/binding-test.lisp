@@ -33,11 +33,11 @@
 
 (deftest test-let-parallel-binding
   "LET bindings are parallel (not sequential)"
-  (ok (= 3 (clysm/tests:compile-and-run
+  (ok (= 4 (clysm/tests:compile-and-run
             '(let ((x 1))
                (let ((x 2) (y (+ x 1)))
                  (+ x y)))))
-      "y should see old x value (1), so y=2, x=2, result=4... wait, x+y=4"))
+      "y sees old x (1), so y=2; new x=2; result: x+y=4"))
 
 (deftest test-let*-sequential-binding
   "LET* bindings are sequential"

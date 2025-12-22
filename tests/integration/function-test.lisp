@@ -37,11 +37,11 @@
 
 (deftest test-function-calling-function
   "Function calling another function"
-  (ok (= 10 (clysm/tests:compile-and-run
+  (ok (= 8 (clysm/tests:compile-and-run
              '(progn
                 (defun double-it (x) (* x 2))
                 (defun quad-it (x) (double-it (double-it x)))
-                (quad-it 2))))  ; 2 -> 4 -> 8... wait, that's wrong. 2*2=4, 4*2=8
+                (quad-it 2))))  ; 2*2=4, 4*2=8
       "(quad-it 2) should equal 8"))
 
 (deftest test-recursive-factorial

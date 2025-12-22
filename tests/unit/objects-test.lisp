@@ -37,8 +37,9 @@
         "NIL and UNBOUND should have different global indices")))
 
 (deftest test-nil-nullability
-  "NIL check should use ref.is_null or type test"
+  "NIL check should use ref.eq against NIL global (Constitution: NIL is NOT Wasm null)"
   (let ((nil-test-code (clysm/runtime/objects:emit-nil-check)))
     (ok nil-test-code "NIL check code should be generated")
-    (ok (member :ref.is_null nil-test-code :test #'eq)
-        "NIL check should use ref.is_null or equivalent")))
+    ;; Constitution II: NIL must NOT be Wasm null, so we use ref.eq
+    (ok (member :ref.eq nil-test-code :test #'eq)
+        "NIL check should use ref.eq against NIL global")))

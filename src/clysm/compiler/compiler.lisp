@@ -46,18 +46,47 @@
   (main-func-idx nil :type (or null fixnum)))
 
 (defun compile-to-module (expr)
-  "Compile a Lisp expression to a module structure."
+  "Compile a Lisp expression to a module structure.
+   Extracts defuns as separate functions and compiles the main body."
   ;; Parse expression to AST
   (let* ((ast (clysm/compiler/ast:parse-expr expr))
          (env (clysm/compiler/codegen/func-section:make-env))
-         (module (make-compiled-module)))
+         (module (make-compiled-module))
+         (functions '())
+         (defuns '())
+         (main-forms '()))
     ;; Set up runtime globals
     (setf (compiled-module-globals module)
           (list (clysm/runtime/objects:make-nil-global)
                 (clysm/runtime/objects:make-unbound-global)))
-    ;; Compile the expression as the main function
-    (let ((main-func (compile-main-function ast env)))
-      (setf (compiled-module-functions module) (list main-func))
+    ;; Reserve index 0 for main function
+    (clysm/compiler/codegen/func-section:env-set-function-counter env 1)
+    ;; First pass: extract defuns and register them
+    (let ((forms (if (typep ast 'clysm/compiler/ast:ast-progn)
+                     (clysm/compiler/ast:ast-progn-forms ast)
+                     (list ast))))
+      (dolist (form forms)
+        (if (typep form 'clysm/compiler/ast:ast-defun)
+            (progn
+              (push form defuns)
+              ;; Register function - indices start at 1 (0 is $main)
+              (let ((name (clysm/compiler/ast:ast-defun-name form)))
+                (clysm/compiler/codegen/func-section:env-add-function env name)))
+            (push form main-forms)))
+      (setf defuns (nreverse defuns))
+      (setf main-forms (nreverse main-forms)))
+    ;; Second pass: compile defuns as separate functions
+    (dolist (defun-ast defuns)
+      (let ((func-info (clysm/compiler/codegen/func-section:compile-defun defun-ast env)))
+        (push func-info functions)))
+    (setf functions (nreverse functions))
+    ;; Compile main function (entry point)
+    (let* ((main-ast (if (= 1 (length main-forms))
+                         (first main-forms)
+                         (clysm/compiler/ast:make-ast-progn :forms main-forms)))
+           (main-func (compile-main-function main-ast env)))
+      ;; Main function goes first (index 0)
+      (setf (compiled-module-functions module) (cons main-func functions))
       (setf (compiled-module-main-func-idx module) 0)
       (setf (compiled-module-exports module)
             (list (list "_start" :func 0))))
@@ -66,13 +95,28 @@
 (defun compile-main-function (ast env)
   "Compile an AST as the main function."
   (let ((instrs (clysm/compiler/codegen/func-section:compile-to-instructions ast env)))
-    (list :name '$main
-          :params nil
-          :result :i32  ; Return i32 for command-line compatibility
-          :locals nil
-          :body (append instrs
-                        ;; Convert result to i32 for return
-                        '(:i31.get_s)))))
+    ;; We need one extra local for the result value to handle null check
+    (let ((num-locals (clysm/compiler/codegen/func-section:cenv-local-counter env))
+          (result-local-idx (clysm/compiler/codegen/func-section:cenv-local-counter env)))
+      (list :name '$main
+            :params nil
+            :result :i32  ; Return i32 for command-line compatibility
+            ;; Include locals allocated during body compilation + one for result
+            :locals (loop for i from 0 to num-locals
+                          collect (list (gensym "local") :anyref))
+            :body (append instrs
+                          ;; Save result to local, then check for null
+                          ;; If null (NIL), return 0
+                          ;; Otherwise get from local, cast to i31, extract
+                          (list (list :local.tee result-local-idx))
+                          '(:ref.is_null
+                            (:if (:result :i32))
+                            (:i32.const -2147483648))  ; NIL = MIN_INT32 (sentinel)
+                          '(:else)
+                          (list (list :local.get result-local-idx))
+                          '((:ref.cast :i31)
+                            :i31.get_s
+                            :end))))))
 
 ;;; ============================================================
 ;;; Module Binary Emission
@@ -250,6 +294,15 @@
           (vector-push-extend #x04 buffer)
           ;; Block type
           (emit-block-type (cadr instr) buffer))
+         (:ref.null
+          ;; ref.null <heaptype>
+          (vector-push-extend #xD0 buffer)
+          (emit-heaptype (cadr instr) buffer))
+         (:ref.cast
+          ;; ref.cast <reftype> - cast reference to specific type
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x17 buffer)  ; ref.cast opcode
+          (emit-heaptype (cadr instr) buffer))
          (otherwise
           (error "Unknown compound instruction: ~A" op)))))
     ;; Simple keyword instructions
@@ -311,10 +364,27 @@
      (:i64 #x7E)
      (:f32 #x7D)
      (:f64 #x7C)
-     (:anyref #x6F)
+     (:anyref #x6E)     ; any heap type - parent of GC types
+     (:externref #x6F)  ; external references - separate hierarchy
      (:funcref #x70)
      (:i31ref #x6C)
      (:eqref #x6D))
+   buffer))
+
+(defun emit-heaptype (type buffer)
+  "Emit a heap type for ref.null."
+  (vector-push-extend
+   (ecase type
+     (:none #x71)       ; bottom type for null
+     (:nofunc #x73)     ; bottom type for func
+     (:noextern #x72)   ; bottom type for extern
+     (:any #x6E)
+     (:eq #x6D)
+     (:i31 #x6C)
+     (:struct #x6B)
+     (:array #x6A)
+     (:func #x70)
+     (:extern #x6F))
    buffer))
 
 (defun emit-leb128-unsigned (value buffer)

@@ -3,6 +3,75 @@
 (in-package #:clysm/tests/helpers)
 
 ;;; ============================================================
+;;; Temporary File Management (must be defined first - used by other functions)
+;;; ============================================================
+
+(defmacro with-temp-wasm-file ((var bytes) &body body)
+  "Execute body with a temporary Wasm file."
+  (let ((temp-file (gensym "TEMP-FILE-"))
+        (bytes-var (gensym "BYTES-")))
+    `(let* ((,bytes-var ,bytes)
+            (,temp-file (format nil "/tmp/clysm-test-~A.wasm"
+                                (random 1000000)))
+            (,var ,temp-file))
+       (unwind-protect
+            (progn
+              (with-open-file (stream ,temp-file
+                                      :direction :output
+                                      :element-type '(unsigned-byte 8)
+                                      :if-exists :supersede)
+                (write-sequence ,bytes-var stream))
+              ,@body)
+         (when (probe-file ,temp-file)
+           (delete-file ,temp-file))))))
+
+;;; ============================================================
+;;; Wasm Execution Helpers
+;;; ============================================================
+
+;; Sentinel value for NIL (MIN_INT32)
+(defparameter +nil-sentinel+ -2147483648)
+
+(defun parse-wasm-output (output)
+  "Parse wasmtime output to Lisp value.
+   MIN_INT32 (-2147483648) is used as a sentinel for NIL."
+  (let ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab) output)))
+    (cond
+      ((string= trimmed "") nil)
+      ((every #'digit-char-p trimmed)
+       (let ((value (parse-integer trimmed)))
+         (if (= value +nil-sentinel+)
+             nil
+             value)))
+      ((and (> (length trimmed) 0)
+            (char= (char trimmed 0) #\-)
+            (every #'digit-char-p (subseq trimmed 1)))
+       (let ((value (parse-integer trimmed)))
+         (if (= value +nil-sentinel+)
+             nil
+             value)))
+      ((string-equal trimmed "true") t)
+      ((string-equal trimmed "false") nil)
+      (t trimmed))))
+
+(defun run-wasm-bytes (bytes)
+  "Run Wasm bytes with wasmtime and return the result.
+   Uses --wasm gc flag to enable WasmGC support.
+   Uses --invoke to capture the return value."
+  (with-temp-wasm-file (wasm-file bytes)
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program (list "wasmtime" "--wasm" "gc"
+                                "--invoke" "_start" wasm-file)
+                          :output :string
+                          :error-output :string
+                          :ignore-error-status t)
+      (declare (ignore error-output))
+      (if (zerop exit-code)
+          (parse-wasm-output output)
+          ;; Return as exit code for now
+          exit-code))))
+
+;;; ============================================================
 ;;; Compile and Run (Main Test Helper)
 ;;; ============================================================
 
@@ -17,35 +86,6 @@
      (compile-and-run '(+ 1 2))  ; => 3"
   (let ((wasm-bytes (clysm/compiler:compile-to-wasm expr)))
     (run-wasm-bytes wasm-bytes)))
-
-(defun run-wasm-bytes (bytes)
-  "Run Wasm bytes with wasmtime and return the result."
-  (with-temp-wasm-file (wasm-file bytes)
-    (multiple-value-bind (output error-output exit-code)
-        (uiop:run-program (list "wasmtime" wasm-file)
-                          :output :string
-                          :error-output :string
-                          :ignore-error-status t)
-      (declare (ignore error-output))
-      (if (zerop exit-code)
-          (parse-wasm-output output)
-          ;; Return as exit code for now
-          exit-code))))
-
-(defun parse-wasm-output (output)
-  "Parse wasmtime output to Lisp value."
-  (let ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab) output)))
-    (cond
-      ((string= trimmed "") nil)
-      ((every #'digit-char-p trimmed)
-       (parse-integer trimmed))
-      ((and (> (length trimmed) 0)
-            (char= (char trimmed 0) #\-)
-            (every #'digit-char-p (subseq trimmed 1)))
-       (parse-integer trimmed))
-      ((string-equal trimmed "true") t)
-      ((string-equal trimmed "false") nil)
-      (t trimmed))))
 
 ;;; ============================================================
 ;;; Wasm Validation
@@ -70,29 +110,6 @@
   (handler-case
       (validate-wasm bytes)
     (error () nil)))
-
-;;; ============================================================
-;;; Temporary File Management
-;;; ============================================================
-
-(defmacro with-temp-wasm-file ((var bytes) &body body)
-  "Execute body with a temporary Wasm file."
-  (let ((temp-file (gensym "TEMP-FILE-"))
-        (bytes-var (gensym "BYTES-")))
-    `(let* ((,bytes-var ,bytes)
-            (,temp-file (format nil "/tmp/clysm-test-~A.wasm"
-                                (random 1000000)))
-            (,var ,temp-file))
-       (unwind-protect
-            (progn
-              (with-open-file (stream ,temp-file
-                                      :direction :output
-                                      :element-type '(unsigned-byte 8)
-                                      :if-exists :supersede)
-                (write-sequence ,bytes-var stream))
-              ,@body)
-         (when (probe-file ,temp-file)
-           (delete-file ,temp-file))))))
 
 ;;; ============================================================
 ;;; Debugging Helpers

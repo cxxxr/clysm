@@ -9,15 +9,23 @@
 
 (defstruct (compilation-env (:conc-name cenv-))
   "Compilation environment tracking locals and scope."
-  (locals nil :type list)           ; ((name . index) ...)
-  (local-counter 0 :type fixnum)
-  (functions nil :type list)        ; ((name . index) ...)
+  (locals nil :type list)              ; ((name . index) ...)
+  (local-counter-box nil :type list)   ; (counter) - mutable box for shared counter
+  (functions nil :type list)           ; ((name . index) ...)
   (function-counter 0 :type fixnum)
   (in-tail-position nil :type boolean))
 
 (defun make-env ()
   "Create a fresh compilation environment."
-  (make-compilation-env))
+  (make-compilation-env :local-counter-box (list 0)))
+
+(defun cenv-local-counter (env)
+  "Get the local counter value."
+  (car (cenv-local-counter-box env)))
+
+(defun (setf cenv-local-counter) (value env)
+  "Set the local counter value."
+  (setf (car (cenv-local-counter-box env)) value))
 
 (defun env-lookup-local (env name)
   "Look up a local variable index."
@@ -27,7 +35,7 @@
   "Add a local variable and return its index."
   (let ((idx (cenv-local-counter env)))
     (push (cons name idx) (cenv-locals env))
-    (incf (cenv-local-counter env))
+    (incf (car (cenv-local-counter-box env)))
     idx))
 
 (defun env-lookup-function (env name)
@@ -40,6 +48,10 @@
     (push (cons name idx) (cenv-functions env))
     (incf (cenv-function-counter env))
     idx))
+
+(defun env-set-function-counter (env value)
+  "Set the function counter to a specific value."
+  (setf (cenv-function-counter env) value))
 
 ;;; ============================================================
 ;;; Wasm Instruction Opcodes
@@ -147,11 +159,10 @@
        (list (list :i32.const value)
              :ref.i31))
       (:nil
-       ;; NIL is a global singleton (T039)
-       (list (list :global.get 0)))  ; global 0 = NIL
+       ;; NIL is represented as ref.null (null reference)
+       (list '(:ref.null :none)))
       (:t
-       ;; T is represented as non-null (could use a global or just non-NIL i31ref)
-       ;; For simplicity, use i31ref of 1
+       ;; T is represented as non-null (use i31ref of 1)
        (list '(:i32.const 1)
              :ref.i31))
       (otherwise
@@ -205,7 +216,14 @@
     (/= (compile-not-equal args env))))
 
 (defun compile-arithmetic-op (op args env identity)
-  "Compile an arithmetic operation with variadic args."
+  "Compile an arithmetic operation with variadic args.
+   For (+ 1 2):
+     i32.const 1, ref.i31    ; create i31 for 1
+     ref.cast i31, i31.get_s ; cast and extract as i32
+     i32.const 2, ref.i31    ; create i31 for 2
+     ref.cast i31, i31.get_s ; cast and extract as i32
+     i32.add                 ; add
+     ref.i31                 ; wrap result as i31"
   (cond
     ;; Zero args: return identity
     ((null args)
@@ -218,25 +236,23 @@
     ;; Two or more args: fold left
     (t
      (let ((result '()))
-       ;; Compile first arg
+       ;; Compile first arg and unwrap (cast to i31 first)
        (setf result (append result (compile-to-instructions (first args) env)))
-       ;; Unwrap i31ref
-       (push :i31.get_s result)
-       ;; For each remaining arg
+       (setf result (append result (list '(:ref.cast :i31) :i31.get_s)))
+       ;; For each remaining arg: compile, cast, unwrap, apply op
        (dolist (arg (rest args))
          (setf result (append result (compile-to-instructions arg env)))
-         (push :i31.get_s result)
-         (push op result))
+         (setf result (append result (list '(:ref.cast :i31) :i31.get_s op))))
        ;; Wrap result as i31ref
-       (push :ref.i31 result)
-       (nreverse result)))))
+       (setf result (append result (list :ref.i31)))
+       result))))
 
 (defun compile-unary-minus (arg env)
   "Compile unary minus: (- x) => (- 0 x)."
   (append
    '((:i32.const 0))
    (compile-to-instructions arg env)
-   '(:i31.get_s
+   '((:ref.cast :i31) :i31.get_s
      :i32.sub
      :ref.i31)))
 
@@ -246,9 +262,9 @@
     (error "truncate requires two arguments"))
   (append
    (compile-to-instructions (first args) env)
-   '(:i31.get_s)
+   '((:ref.cast :i31) :i31.get_s)
    (compile-to-instructions (second args) env)
-   '(:i31.get_s
+   '((:ref.cast :i31) :i31.get_s
      :i32.div_s
      :ref.i31)))
 
@@ -260,29 +276,29 @@
   ;; TODO: Chain comparisons (< a b c) => (and (< a b) (< b c))
   (append
    (compile-to-instructions (first args) env)
-   '(:i31.get_s)
+   '((:ref.cast :i31) :i31.get_s)
    (compile-to-instructions (second args) env)
-   '(:i31.get_s)
+   '((:ref.cast :i31) :i31.get_s)
    (list op)
    ;; Convert i32 boolean to Lisp boolean (T or NIL)
-   '((:if (:result anyref))
+   `((:if (:result :anyref))
      (:i32.const 1) :ref.i31  ; T
      :else
-     (:global.get 0)          ; NIL
+     (:ref.null :none)        ; NIL
      :end)))
 
 (defun compile-not-equal (args env)
   "Compile not-equal."
   (append
    (compile-to-instructions (first args) env)
-   '(:i31.get_s)
+   '((:ref.cast :i31) :i31.get_s)
    (compile-to-instructions (second args) env)
-   '(:i31.get_s
+   '((:ref.cast :i31) :i31.get_s
      :i32.ne)
-   '((:if (:result anyref))
+   `((:if (:result :anyref))
      (:i32.const 1) :ref.i31
      :else
-     (:global.get 0)
+     (:ref.null :none)
      :end)))
 
 (defun compile-regular-call (function args env)
@@ -312,7 +328,7 @@
      ;; Check if not NIL
      (compile-nil-check)
      ;; If-then-else
-     '((:if (:result anyref)))
+     '((:if (:result :anyref)))
      (compile-to-instructions then-branch env)
      '(:else)
      (compile-to-instructions else-branch env)
@@ -320,10 +336,9 @@
 
 (defun compile-nil-check ()
   "Generate code to check if TOS is not NIL.
-   Returns i32: 1 if not-nil, 0 if nil."
-  ;; Compare with NIL global using ref.eq, then invert
-  '((:global.get 0)  ; Get NIL
-    :ref.eq          ; Compare
+   Returns i32: 1 if not-nil, 0 if nil.
+   NIL is represented as null reference, so we use ref.is_null."
+  '(:ref.is_null     ; Is this null?
     :i32.eqz))       ; Invert (not nil => 1)
 
 ;;; ============================================================
@@ -374,10 +389,11 @@
     result))
 
 (defun extend-compilation-env (env)
-  "Create an extended copy of the compilation environment for a new scope."
+  "Create an extended copy of the compilation environment for a new scope.
+   Shares the local-counter-box so child scopes can allocate locals."
   (make-compilation-env
    :locals (copy-list (cenv-locals env))
-   :local-counter (cenv-local-counter env)
+   :local-counter-box (cenv-local-counter-box env)  ; Shared!
    :functions (cenv-functions env)
    :function-counter (cenv-function-counter env)
    :in-tail-position (cenv-in-tail-position env)))
@@ -387,9 +403,17 @@
 ;;; ============================================================
 
 (defun compile-progn (ast env)
-  "Compile a progn expression."
+  "Compile a progn expression.
+   First scans for defuns and registers them, then compiles all forms."
   (let ((forms (clysm/compiler/ast:ast-progn-forms ast))
         (result '()))
+    ;; First pass: register all defuns so they can be called
+    (dolist (form forms)
+      (when (typep form 'clysm/compiler/ast:ast-defun)
+        (let ((name (clysm/compiler/ast:ast-defun-name form)))
+          (unless (env-lookup-function env name)
+            (env-add-function env name)))))
+    ;; Second pass: compile all forms
     (dolist (form (butlast forms))
       (setf result (append result
                            (compile-to-instructions form env)
