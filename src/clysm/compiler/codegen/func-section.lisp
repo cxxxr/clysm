@@ -581,47 +581,163 @@
 ;;; Binding Compilation (T056-T058)
 ;;; ============================================================
 
+;;; ------------------------------------------------------------
+;;; Special Binding Detection and Helpers (T030)
+;;; ------------------------------------------------------------
+
+(defun binding-is-special-p (name)
+  "Check if a binding name refers to a special variable (T030).
+   A binding is special if the variable has been declared with defvar/defparameter."
+  (clysm/compiler/env:special-variable-p name))
+
+(defun partition-bindings (bindings)
+  "Partition bindings into (special-bindings . lexical-bindings) (T030).
+   Returns two lists: special bindings and lexical bindings."
+  (let ((special '())
+        (lexical '()))
+    (dolist (binding bindings)
+      (let ((name (car binding)))
+        (if (binding-is-special-p name)
+            (push binding special)
+            (push binding lexical))))
+    (cons (nreverse special) (nreverse lexical))))
+
+;;; ------------------------------------------------------------
+;;; Special Binding Save/Restore Code Generation (T031-T032)
+;;; ------------------------------------------------------------
+
+(defun emit-save-special-binding (name env)
+  "Emit code to save the current value of a special variable (T031).
+   Returns (instructions . save-local-idx).
+   The current value is saved to a local for later restoration."
+  (let* ((global-idx (get-special-var-global-index name))
+         (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+)
+         (save-local (env-add-local env (gensym "save"))))
+    (unless global-idx
+      (error "Special variable ~A not initialized with defvar/defparameter" name))
+    ;; Generate: global.get sym, struct.get value, local.set save
+    (cons `((:global.get ,global-idx)
+            (:struct.get ,symbol-type 1)  ; Get value field
+            (:local.set ,save-local))
+          save-local)))
+
+(defun emit-set-special-binding (name value-instrs env)
+  "Emit code to set a special variable's value (T031).
+   VALUE-INSTRS are the instructions that produce the new value."
+  (declare (ignore env))
+  (let ((global-idx (get-special-var-global-index name))
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    (unless global-idx
+      (error "Special variable ~A not initialized" name))
+    ;; Generate: global.get sym, <value-instrs>, struct.set value
+    `((:global.get ,global-idx)
+      ,@value-instrs
+      (:struct.set ,symbol-type 1))))
+
+(defun emit-restore-special-binding (name save-local)
+  "Emit code to restore a special variable from a saved local (T032).
+   SAVE-LOCAL is the local index where the old value was saved."
+  (let ((global-idx (get-special-var-global-index name))
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    ;; Generate: global.get sym, local.get save, struct.set value
+    `((:global.get ,global-idx)
+      (:local.get ,save-local)
+      (:struct.set ,symbol-type 1))))
+
 (defun compile-let (ast env)
-  "Compile a let or let* expression."
+  "Compile a let or let* expression (T033).
+   Handles both lexical and special (dynamic) bindings:
+   - Lexical bindings use Wasm locals
+   - Special bindings modify the global symbol's value with save/restore"
   (let ((bindings (clysm/compiler/ast:ast-let-bindings ast))
         (body (clysm/compiler/ast:ast-let-body ast))
         (sequential-p (clysm/compiler/ast:ast-let-sequential-p ast))
         (new-env (extend-compilation-env env))
         (result '())
-        (local-indices '()))
-    ;; For let*, bindings are sequential; for let, parallel
+        (special-save-locals '()))  ; ((name . save-local-idx) ...)
+    ;; Process bindings based on let vs let*
     (if sequential-p
-        ;; let*: each binding sees previous
+        ;; let*: each binding sees previous bindings
         (dolist (binding bindings)
           (let* ((name (car binding))
-                 (value (cdr binding))
-                 (idx (env-add-local new-env name)))
-            (push idx local-indices)
-            (setf result (append result
-                                 (compile-to-instructions value new-env)
-                                 (list (list :local.set idx))))))
-        ;; let: all values computed before any binding
-        (progn
-          ;; First allocate all locals
+                 (value-form (cdr binding)))
+            (if (binding-is-special-p name)
+                ;; Special binding: save, compute, set global
+                (let* ((save-result (emit-save-special-binding name new-env))
+                       (save-instrs (car save-result))
+                       (save-local (cdr save-result))
+                       (value-instrs (compile-to-instructions value-form new-env))
+                       (set-instrs (emit-set-special-binding name value-instrs new-env)))
+                  (push (cons name save-local) special-save-locals)
+                  (setf result (append result save-instrs set-instrs)))
+                ;; Lexical binding: use local
+                (let ((idx (env-add-local new-env name)))
+                  (setf result (append result
+                                       (compile-to-instructions value-form new-env)
+                                       (list (list :local.set idx))))))))
+        ;; let: all values computed before any binding visible
+        ;; For special bindings, we still need to save first, then set
+        (let ((compiled-values '())
+              (binding-actions '()))
+          ;; First pass: save special vars and compile all values
           (dolist (binding bindings)
-            (let ((name (car binding)))
-              (push (env-add-local new-env name) local-indices)))
-          (setf local-indices (nreverse local-indices))
-          ;; Then compile values and set
-          (loop for binding in bindings
-                for idx in local-indices
-                do (let ((value (cdr binding)))
-                     (setf result (append result
-                                          (compile-to-instructions value env)
-                                          (list (list :local.set idx))))))))
+            (let* ((name (car binding))
+                   (value-form (cdr binding)))
+              (if (binding-is-special-p name)
+                  ;; Special: save current value first
+                  (let* ((save-result (emit-save-special-binding name new-env))
+                         (save-instrs (car save-result))
+                         (save-local (cdr save-result)))
+                    (push (cons name save-local) special-save-locals)
+                    (setf result (append result save-instrs))
+                    ;; Compile value (uses original env for parallel semantics)
+                    (push (cons :special (cons name (compile-to-instructions value-form env)))
+                          compiled-values))
+                  ;; Lexical: just allocate local and compile value
+                  (let ((idx (env-add-local new-env name)))
+                    (push (cons :lexical (cons idx (compile-to-instructions value-form env)))
+                          compiled-values)))))
+          (setf compiled-values (nreverse compiled-values))
+          ;; Second pass: set all bindings
+          (dolist (cv compiled-values)
+            (let ((kind (car cv))
+                  (data (cdr cv)))
+              (if (eq kind :special)
+                  ;; Set special variable's global
+                  (let ((name (car data))
+                        (value-instrs (cdr data)))
+                    (setf result (append result
+                                         (emit-set-special-binding name value-instrs new-env))))
+                  ;; Set lexical local
+                  (let ((idx (car data))
+                        (value-instrs (cdr data)))
+                    (setf result (append result
+                                         value-instrs
+                                         (list (list :local.set idx))))))))))
     ;; Compile body
     (dolist (form (butlast body))
       (setf result (append result
                            (compile-to-instructions form new-env)
                            '(:drop))))
-    (when body
-      (setf result (append result
-                           (compile-to-instructions (car (last body)) new-env))))
+    (let ((body-result-instrs
+            (when body
+              (compile-to-instructions (car (last body)) new-env))))
+      ;; Save result to a local before restore (if we have special bindings)
+      (if special-save-locals
+          (let ((result-local (env-add-local new-env (gensym "let-result"))))
+            (setf result (append result
+                                 body-result-instrs
+                                 (list (list :local.set result-local))))
+            ;; Restore special bindings in reverse order
+            (dolist (save-entry (reverse special-save-locals))
+              (let ((name (car save-entry))
+                    (save-local (cdr save-entry)))
+                (setf result (append result
+                                     (emit-restore-special-binding name save-local)))))
+            ;; Return the saved result
+            (setf result (append result (list (list :local.get result-local)))))
+          ;; No special bindings, just append body result
+          (setf result (append result body-result-instrs))))
     result))
 
 (defun extend-compilation-env (env)

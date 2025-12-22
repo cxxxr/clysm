@@ -54,13 +54,19 @@
   (clysm/compiler/codegen/func-section:reset-special-var-globals)
   ;; Clear special variable registry from previous compilations
   (clysm/compiler/env:clear-special-variables)
-  ;; Parse expression to AST
+  ;; Parse expression to AST (this registers special variables)
   (let* ((ast (clysm/compiler/ast:parse-expr expr))
          (env (clysm/compiler/codegen/func-section:make-env))
          (module (make-compiled-module))
          (functions '())
          (defuns '())
          (main-forms '()))
+    ;; Pre-allocate globals for all special variables registered during parsing
+    ;; This ensures defuns can reference special variables before defvar is compiled
+    (maphash (lambda (name info)
+               (declare (ignore info))
+               (clysm/compiler/codegen/func-section:allocate-special-var-global name))
+             clysm/compiler/env:*special-variables*)
     ;; Set up runtime globals
     (setf (compiled-module-globals module)
           (list (clysm/runtime/objects:make-nil-global)
