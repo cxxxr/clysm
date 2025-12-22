@@ -133,6 +133,56 @@
   (value nil :type t))
 
 ;;; ============================================================
+;;; Tagbody/Go
+;;; ============================================================
+
+(defstruct (ast-tagbody (:include ast-node) (:conc-name ast-tagbody-))
+  "Tagbody node for goto-based control flow."
+  (tags nil :type list)      ; List of tag symbols in order
+  (segments nil :type list)) ; ((tag . (forms...)) ...) where tag is symbol or nil
+
+(defstruct (ast-go (:include ast-node) (:conc-name ast-go-))
+  "Go node for transfer to a tag."
+  (tag nil :type symbol))
+
+;;; ============================================================
+;;; Catch/Throw
+;;; ============================================================
+
+(defstruct (ast-catch (:include ast-node) (:conc-name ast-catch-))
+  "Catch node for dynamic non-local exit."
+  (tag nil :type t)        ; AST node for tag expression
+  (body nil :type list))   ; Body forms (AST nodes)
+
+(defstruct (ast-throw (:include ast-node) (:conc-name ast-throw-))
+  "Throw node for dynamic non-local exit."
+  (tag nil :type t)        ; AST node for tag expression
+  (value nil :type t))     ; AST node for result value
+
+;;; ============================================================
+;;; Unwind-Protect
+;;; ============================================================
+
+(defstruct (ast-unwind-protect (:include ast-node) (:conc-name ast-unwind-protect-))
+  "Unwind-protect node for cleanup on exit."
+  (protected-form nil :type t)   ; AST node for protected form
+  (cleanup-forms nil :type list)) ; List of cleanup AST nodes
+
+;;; ============================================================
+;;; Local Function Definitions
+;;; ============================================================
+
+(defstruct (ast-flet (:include ast-node) (:conc-name ast-flet-))
+  "Flet node for local non-recursive function definitions."
+  (definitions nil :type list)  ; ((name params body...) ...)
+  (body nil :type list))        ; Body forms (AST nodes)
+
+(defstruct (ast-labels (:include ast-node) (:conc-name ast-labels-))
+  "Labels node for local recursive function definitions."
+  (definitions nil :type list)  ; ((name params body...) ...)
+  (body nil :type list))        ; Body forms (AST nodes)
+
+;;; ============================================================
 ;;; Wasm IR Structures (T046)
 ;;; ============================================================
 
@@ -195,6 +245,16 @@
       (quote (make-ast-literal :value (car args) :literal-type :quoted))
       (block (parse-block-form args))
       (return-from (parse-return-from-form args))
+      (flet (parse-flet-form args))
+      (labels (parse-labels-form args))
+      ;; Tagbody/go
+      (tagbody (parse-tagbody-form args))
+      (go (parse-go-form args))
+      ;; Catch/throw
+      (catch (parse-catch-form args))
+      (throw (parse-throw-form args))
+      ;; Unwind-protect
+      (unwind-protect (parse-unwind-protect-form args))
       ;; Macros (expand inline for now)
       (when (parse-when-form args))
       (unless (parse-unless-form args))
@@ -274,6 +334,30 @@
    :block-name (first args)
    :value (if (second args) (parse-expr (second args)) (make-nil-literal))))
 
+(defun parse-flet-form (args)
+  "Parse (flet ((name params body...) ...) forms...)."
+  (let ((definitions (first args))
+        (body (rest args)))
+    (make-ast-flet
+     :definitions (mapcar #'parse-local-function-def definitions)
+     :body (mapcar #'parse-expr body))))
+
+(defun parse-labels-form (args)
+  "Parse (labels ((name params body...) ...) forms...)."
+  (let ((definitions (first args))
+        (body (rest args)))
+    (make-ast-labels
+     :definitions (mapcar #'parse-local-function-def definitions)
+     :body (mapcar #'parse-expr body))))
+
+(defun parse-local-function-def (def)
+  "Parse a local function definition (name params body...).
+   Returns (name params parsed-body...) where body is list of AST nodes."
+  (let ((name (first def))
+        (params (second def))
+        (body (cddr def)))
+    (list name params (mapcar #'parse-expr body))))
+
 ;;; Macro expansions
 
 (defun parse-when-form (args)
@@ -324,3 +408,66 @@
       :test (parse-expr (car args))
       :then (parse-expr (car args))  ; Double eval, fix later
       :else (parse-or-form (cdr args))))))
+
+;;; ============================================================
+;;; Tagbody/Go Parsing
+;;; ============================================================
+
+(defun parse-tagbody-form (args)
+  "Parse (tagbody {tag | form}*).
+   Returns ast-tagbody with tags list and segments alist."
+  (let ((tags '())
+        (segments '())
+        (current-tag nil)
+        (current-forms '()))
+    ;; Process each element
+    (dolist (elem args)
+      (if (and (atom elem) (symbolp elem) (not (null elem)))
+          ;; It's a tag
+          (progn
+            ;; Save previous segment
+            (when (or current-forms current-tag)
+              (push (cons current-tag (nreverse current-forms)) segments))
+            ;; Start new segment
+            (push elem tags)
+            (setf current-tag elem)
+            (setf current-forms nil))
+          ;; It's a form
+          (push (parse-expr elem) current-forms)))
+    ;; Save final segment
+    (push (cons current-tag (nreverse current-forms)) segments)
+    (make-ast-tagbody
+     :tags (nreverse tags)
+     :segments (nreverse segments))))
+
+(defun parse-go-form (args)
+  "Parse (go tag)."
+  (make-ast-go :tag (first args)))
+
+;;; ============================================================
+;;; Catch/Throw Parsing
+;;; ============================================================
+
+(defun parse-catch-form (args)
+  "Parse (catch tag forms...)."
+  (make-ast-catch
+   :tag (parse-expr (first args))
+   :body (mapcar #'parse-expr (rest args))))
+
+(defun parse-throw-form (args)
+  "Parse (throw tag value)."
+  (make-ast-throw
+   :tag (parse-expr (first args))
+   :value (if (second args)
+              (parse-expr (second args))
+              (make-nil-literal))))
+
+;;; ============================================================
+;;; Unwind-Protect Parsing
+;;; ============================================================
+
+(defun parse-unwind-protect-form (args)
+  "Parse (unwind-protect protected-form cleanup-forms...)."
+  (make-ast-unwind-protect
+   :protected-form (parse-expr (first args))
+   :cleanup-forms (mapcar #'parse-expr (rest args))))

@@ -56,11 +56,12 @@
 
 (defun run-wasm-bytes (bytes)
   "Run Wasm bytes with wasmtime and return the result.
-   Uses --wasm gc flag to enable WasmGC support.
+   Uses --wasm gc and --wasm function-references flags for WasmGC support.
    Uses --invoke to capture the return value."
   (with-temp-wasm-file (wasm-file bytes)
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (list "wasmtime" "--wasm" "gc"
+                                "--wasm" "function-references"
                                 "--invoke" "_start" wasm-file)
                           :output :string
                           :error-output :string
@@ -96,7 +97,7 @@
    Returns T if valid, signals error otherwise."
   (with-temp-wasm-file (temp-file bytes)
     (multiple-value-bind (output error-output exit-code)
-        (uiop:run-program (list "wasm-tools" "validate" temp-file)
+        (uiop:run-program (list "wasm-tools" "validate" "--features" "gc" temp-file)
                           :output :string
                           :error-output :string
                           :ignore-error-status t)

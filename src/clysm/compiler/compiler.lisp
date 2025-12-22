@@ -48,6 +48,8 @@
 (defun compile-to-module (expr)
   "Compile a Lisp expression to a module structure.
    Extracts defuns as separate functions and compiles the main body."
+  ;; Reset lambda state for fresh compilation
+  (clysm/compiler/codegen/func-section:reset-lambda-state)
   ;; Parse expression to AST
   (let* ((ast (clysm/compiler/ast:parse-expr expr))
          (env (clysm/compiler/codegen/func-section:make-env))
@@ -87,6 +89,11 @@
            (main-func (compile-main-function main-ast env)))
       ;; Main function goes first (index 0)
       (setf (compiled-module-functions module) (cons main-func functions))
+      ;; Compile any pending lambdas and append them
+      (let ((lambda-funcs (clysm/compiler/codegen/func-section:compile-pending-lambdas)))
+        (when lambda-funcs
+          (setf (compiled-module-functions module)
+                (append (compiled-module-functions module) lambda-funcs))))
       (setf (compiled-module-main-func-idx module) 0)
       (setf (compiled-module-exports module)
             (list (list "_start" :func 0))))
@@ -125,20 +132,23 @@
 (defun emit-module (module)
   "Emit a compiled module as a Wasm binary byte vector."
   (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
-                              :adjustable t :fill-pointer 0)))
+                              :adjustable t :fill-pointer 0))
+        (functions (compiled-module-functions module)))
     ;; Module header (magic + version)
     (emit-header buffer)
     ;; Type section
-    (emit-type-section buffer (compiled-module-functions module))
+    (emit-type-section buffer functions)
     ;; Function section
-    (emit-function-section buffer (compiled-module-functions module))
+    (emit-function-section buffer functions)
     ;; Global section
     (when (compiled-module-globals module)
       (emit-global-section buffer (compiled-module-globals module)))
     ;; Export section
     (emit-export-section buffer (compiled-module-exports module))
+    ;; Element section (for ref.func declarations)
+    (emit-element-section buffer functions)
     ;; Code section
-    (emit-code-section buffer (compiled-module-functions module))
+    (emit-code-section buffer functions)
     ;; Return as simple vector
     (coerce buffer '(simple-array (unsigned-byte 8) (*)))))
 
@@ -155,42 +165,130 @@
   (vector-push-extend #x00 buffer)
   (vector-push-extend #x00 buffer))
 
+(defun is-lambda-function-p (func)
+  "Check if a function is a lambda (has $closure as first param)."
+  (let* ((params (getf func :params))
+         (first-param-name (when (consp (first params))
+                             (first (first params)))))
+    (and first-param-name
+         (string= (symbol-name first-param-name) "$CLOSURE"))))
+
 (defun emit-type-section (buffer functions)
-  "Emit Type section."
+  "Emit Type section with GC types and function types.
+   Layout:
+   - Types 0-5: GC types ($nil, $unbound, $cons, $symbol, $string, $closure)
+   - Type 6-7: Reserved
+   - Types 8-11: Function types ($func_0, $func_1, $func_2, $func_N)
+   - Types 12+: Regular (non-lambda) function types"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
-                               :adjustable t :fill-pointer 0)))
-    ;; Number of types
-    (emit-leb128-unsigned (length functions) content)
-    ;; Each function type
+                               :adjustable t :fill-pointer 0))
+        ;; Count non-lambda functions (lambdas reuse types 8-11)
+        (regular-func-count (count-if-not #'is-lambda-function-p functions)))
+    ;; Number of types = GC types (13: 0-5 struct, 6-7 reserved, 8-12 func) + regular functions
+    (emit-leb128-unsigned (+ 13 regular-func-count) content)
+    ;; Type 0: $nil (empty struct)
+    (emit-gc-struct-type content '())
+    ;; Type 1: $unbound (empty struct)
+    (emit-gc-struct-type content '())
+    ;; Type 2: $cons (car, cdr)
+    (emit-gc-struct-type content '((:anyref t) (:anyref t)))
+    ;; Type 3: $symbol (name, value, function, plist)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref t) (:anyref t) (:anyref t)))
+    ;; Type 4: $string (array of i8) - actually needs to be array type
+    (emit-gc-array-type content :i8 nil)
+    ;; Type 5: $closure (code_0, code_1, code_2, code_N, env)
+    (emit-gc-struct-type content '((:funcref nil) (:funcref nil)
+                                   (:funcref nil) (:funcref nil)
+                                   (:anyref t)))
+    ;; Types 6-7: Reserved (empty placeholders)
+    (emit-gc-struct-type content '())
+    (emit-gc-struct-type content '())
+    ;; Type 8: $func_0 - (ref $closure) -> anyref
+    (emit-func-type-bytes content '(:anyref) '(:anyref))
+    ;; Type 9: $func_1 - (ref $closure, anyref) -> anyref
+    (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
+    ;; Type 10: $func_2 - (ref $closure, anyref, anyref) -> anyref
+    (emit-func-type-bytes content '(:anyref :anyref :anyref) '(:anyref))
+    ;; Type 11: $func_3 - (ref $closure, anyref, anyref, anyref) -> anyref
+    (emit-func-type-bytes content '(:anyref :anyref :anyref :anyref) '(:anyref))
+    ;; Type 12: $func_N - (ref $closure, anyref) -> anyref (list as second param)
+    (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
+    ;; User function types (indices 12+) - skip lambdas (they use types 8-11)
     (dolist (func functions)
-      ;; func type indicator
-      (vector-push-extend #x60 content)
-      ;; params
-      (let ((params (getf func :params)))
-        (emit-leb128-unsigned (length params) content)
-        (dolist (p params)
-          (emit-valtype (second p) content)))
-      ;; results
-      (let ((result (getf func :result)))
-        (if result
-            (progn
-              (emit-leb128-unsigned 1 content)
-              (emit-valtype result content))
-            (emit-leb128-unsigned 0 content))))
+      (unless (is-lambda-function-p func)
+        ;; func type indicator
+        (vector-push-extend #x60 content)
+        ;; params
+        (let ((params (getf func :params)))
+          (emit-leb128-unsigned (length params) content)
+          (dolist (p params)
+            (emit-valtype (second p) content)))
+        ;; results
+        (let ((result (getf func :result)))
+          (if result
+              (progn
+                (emit-leb128-unsigned 1 content)
+                (emit-valtype result content))
+              (emit-leb128-unsigned 0 content)))))
     ;; Write section
     (vector-push-extend 1 buffer)  ; Type section ID
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
 
+(defun emit-gc-struct-type (buffer fields)
+  "Emit a GC struct type. Fields is ((valtype mutable-p) ...)"
+  ;; struct type with subtype: 0x50 0x00 0x5F fields...
+  ;; Simplified: 0x5F field_count fields...
+  (vector-push-extend #x5F buffer)  ; struct
+  (emit-leb128-unsigned (length fields) buffer)
+  (dolist (field fields)
+    (emit-valtype (first field) buffer)
+    (vector-push-extend (if (second field) 1 0) buffer)))  ; mutability
+
+(defun emit-gc-array-type (buffer elem-type mutable-p)
+  "Emit a GC array type."
+  ;; 0x5E elem_type mutability
+  (vector-push-extend #x5E buffer)
+  (emit-valtype elem-type buffer)
+  (vector-push-extend (if mutable-p 1 0) buffer))
+
+(defun emit-func-type-bytes (buffer params results)
+  "Emit a function type."
+  (vector-push-extend #x60 buffer)  ; func
+  (emit-leb128-unsigned (length params) buffer)
+  (dolist (p params)
+    (emit-valtype p buffer))
+  (emit-leb128-unsigned (length results) buffer)
+  (dolist (r results)
+    (emit-valtype r buffer)))
+
 (defun emit-function-section (buffer functions)
-  "Emit Function section."
+  "Emit Function section.
+   Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
+   Regular functions use types 13+."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
-                               :adjustable t :fill-pointer 0)))
+                               :adjustable t :fill-pointer 0))
+        (regular-func-idx 13))  ; Start regular function types at 13
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
-    (dotimes (i (length functions))
-      (emit-leb128-unsigned i content))
+    (dolist (func functions)
+      (if (is-lambda-function-p func)
+          ;; Lambda functions: use predefined func types 8-12 based on arity
+          ;; Arity is (length params) - 1 (excluding $closure param)
+          (let* ((params (getf func :params))
+                 (arity (1- (length params)))
+                 (type-idx (case arity
+                             (0 8)   ; $func_0
+                             (1 9)   ; $func_1
+                             (2 10)  ; $func_2
+                             (3 11)  ; $func_3
+                             (t 12)))) ; $func_N
+            (emit-leb128-unsigned type-idx content))
+          ;; Regular functions: use unique types starting at 12
+          (progn
+            (emit-leb128-unsigned regular-func-idx content)
+            (incf regular-func-idx))))
     ;; Write section
     (vector-push-extend 3 buffer)  ; Function section ID
     (emit-leb128-unsigned (length content) buffer)
@@ -223,6 +321,36 @@
     (vector-push-extend 7 buffer)  ; Export section ID
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
+
+(defun emit-element-section (buffer functions)
+  "Emit Element section with declarative segment for lambda functions.
+   This allows ref.func to reference lambda functions."
+  ;; Collect lambda function indices
+  (let ((lambda-indices '()))
+    (loop for func in functions
+          for i from 0
+          do (when (is-lambda-function-p func)
+               (push i lambda-indices)))
+    ;; Only emit if there are lambda functions
+    (when lambda-indices
+      (setf lambda-indices (nreverse lambda-indices))
+      (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                                   :adjustable t :fill-pointer 0)))
+        ;; Number of element segments
+        (emit-leb128-unsigned 1 content)
+        ;; Declarative element segment (flag 0x03)
+        ;; Format: 0x03 elemkind vec(funcidx)
+        (vector-push-extend #x03 content)  ; declarative, uses indices
+        (vector-push-extend #x00 content)  ; elemkind = funcref
+        ;; Number of function indices
+        (emit-leb128-unsigned (length lambda-indices) content)
+        ;; Function indices
+        (dolist (idx lambda-indices)
+          (emit-leb128-unsigned idx content))
+        ;; Write section
+        (vector-push-extend 9 buffer)  ; Element section ID
+        (emit-leb128-unsigned (length content) buffer)
+        (loop for b across content do (vector-push-extend b buffer))))))
 
 (defun emit-code-section (buffer functions)
   "Emit Code section."
@@ -303,6 +431,56 @@
           (vector-push-extend #xFB buffer)
           (vector-push-extend #x17 buffer)  ; ref.cast opcode
           (emit-heaptype (cadr instr) buffer))
+         (:ref.func
+          ;; ref.func <funcidx> - get function reference
+          (vector-push-extend #xD2 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:struct.new
+          ;; struct.new <typeidx> - create new struct
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x00 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:struct.get
+          ;; struct.get <typeidx> <fieldidx> - get field from struct
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x02 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer)   ; type index
+          (emit-leb128-unsigned (caddr instr) buffer)) ; field index
+         (:struct.set
+          ;; struct.set <typeidx> <fieldidx> - set field in struct
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x05 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer)   ; type index
+          (emit-leb128-unsigned (caddr instr) buffer)) ; field index
+         (:call_ref
+          ;; call_ref <typeidx> - call through function reference
+          (vector-push-extend #x14 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:block
+          ;; block <blocktype> - start block
+          (vector-push-extend #x02 buffer)
+          (emit-block-type (cadr instr) buffer))
+         (:loop
+          ;; loop <blocktype> - start loop
+          (vector-push-extend #x03 buffer)
+          (emit-block-type (cadr instr) buffer))
+         (:br
+          ;; br <labelidx> - branch
+          (vector-push-extend #x0C buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:br_if
+          ;; br_if <labelidx> - conditional branch
+          (vector-push-extend #x0D buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:br_table
+          ;; br_table <vec(labelidx)> <labelidx> - table branch
+          (vector-push-extend #x0E buffer)
+          (let ((labels (cdr instr)))
+            ;; vec length (excluding default)
+            (emit-leb128-unsigned (1- (length labels)) buffer)
+            ;; label indices
+            (dolist (label labels)
+              (emit-leb128-unsigned label buffer))))
          (otherwise
           (error "Unknown compound instruction: ~A" op)))))
     ;; Simple keyword instructions
@@ -364,6 +542,8 @@
      (:i64 #x7E)
      (:f32 #x7D)
      (:f64 #x7C)
+     (:i8 #x78)         ; packed i8 for arrays
+     (:i16 #x77)        ; packed i16 for arrays
      (:anyref #x6E)     ; any heap type - parent of GC types
      (:externref #x6F)  ; external references - separate hierarchy
      (:funcref #x70)
@@ -372,20 +552,29 @@
    buffer))
 
 (defun emit-heaptype (type buffer)
-  "Emit a heap type for ref.null."
-  (vector-push-extend
-   (ecase type
-     (:none #x71)       ; bottom type for null
-     (:nofunc #x73)     ; bottom type for func
-     (:noextern #x72)   ; bottom type for extern
-     (:any #x6E)
-     (:eq #x6D)
-     (:i31 #x6C)
-     (:struct #x6B)
-     (:array #x6A)
-     (:func #x70)
-     (:extern #x6F))
-   buffer))
+  "Emit a heap type for ref.null, ref.cast, etc.
+   Can be a keyword (abstract type) or a number (type index)."
+  (cond
+    ;; Numeric type index - emit as signed LEB128
+    ((integerp type)
+     (emit-leb128-signed type buffer))
+    ;; Keyword type
+    ((keywordp type)
+     (vector-push-extend
+      (ecase type
+        (:none #x71)       ; bottom type for null
+        (:nofunc #x73)     ; bottom type for func
+        (:noextern #x72)   ; bottom type for extern
+        (:any #x6E)
+        (:eq #x6D)
+        (:i31 #x6C)
+        (:struct #x6B)
+        (:array #x6A)
+        (:func #x70)
+        (:extern #x6F))
+      buffer))
+    (t
+     (error "Unknown heap type: ~A" type))))
 
 (defun emit-leb128-unsigned (value buffer)
   "Emit an unsigned LEB128 encoded value."

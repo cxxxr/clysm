@@ -15,6 +15,12 @@
 (defconstant +type-closure+ 5 "Type index for closures")
 (defconstant +type-instance+ 6 "Type index for CLOS instances")
 (defconstant +type-standard-class+ 7 "Type index for standard classes")
+;; Function types for closure arity dispatch
+(defconstant +type-func-0+ 8 "Type index for 0-arg function type")
+(defconstant +type-func-1+ 9 "Type index for 1-arg function type")
+(defconstant +type-func-2+ 10 "Type index for 2-arg function type")
+(defconstant +type-func-3+ 11 "Type index for 3-arg function type")
+(defconstant +type-func-n+ 12 "Type index for N-arg function type")
 
 ;;; ============================================================
 ;;; WasmGC Type Structures
@@ -37,6 +43,13 @@
   (name nil :type symbol)
   (element-type nil :type keyword)
   (mutable t :type boolean))
+
+(defstruct (wasm-func-type (:include gc-type)
+                           (:constructor make-wasm-func-type))
+  "WasmGC function type definition"
+  (name nil :type symbol)
+  (params nil :type list)    ; list of type keywords
+  (results nil :type list))  ; list of type keywords
 
 (defstruct (wasm-field)
   "WasmGC struct field definition"
@@ -136,14 +149,62 @@
    :element-type :i8
    :mutable nil))
 
+;;; ============================================================
+;;; Function Type Constructors (for closure arity dispatch)
+;;; ============================================================
+
+(defun make-func-type-0 ()
+  "Create function type for 0-arg functions (T075)
+   (func (param (ref $closure)) (result anyref))"
+  (make-wasm-func-type
+   :name '$func_0
+   :index +type-func-0+
+   :params '(:closure-ref)      ; (ref $closure)
+   :results '(:anyref)))
+
+(defun make-func-type-1 ()
+  "Create function type for 1-arg functions (T075)
+   (func (param (ref $closure) anyref) (result anyref))"
+  (make-wasm-func-type
+   :name '$func_1
+   :index +type-func-1+
+   :params '(:closure-ref :anyref)
+   :results '(:anyref)))
+
+(defun make-func-type-2 ()
+  "Create function type for 2-arg functions (T075)
+   (func (param (ref $closure) anyref anyref) (result anyref))"
+  (make-wasm-func-type
+   :name '$func_2
+   :index +type-func-2+
+   :params '(:closure-ref :anyref :anyref)
+   :results '(:anyref)))
+
+(defun make-func-type-n ()
+  "Create function type for N-arg functions (T075)
+   (func (param (ref $closure) (ref $list)) (result anyref))"
+  (make-wasm-func-type
+   :name '$func_N
+   :index +type-func-n+
+   :params '(:closure-ref :list-ref)  ; (ref $closure) (ref $list)
+   :results '(:anyref)))
+
 (defun make-closure-type ()
-  "Create closure type
-   Closures have a function reference and environment."
+  "Create closure type (T076)
+   Closures have arity-specific code pointers and environment.
+   $code_0: 0-arg entry point (nullable funcref)
+   $code_1: 1-arg entry point (nullable funcref)
+   $code_2: 2-arg entry point (nullable funcref)
+   $code_N: N-arg entry point (nullable funcref)
+   $env: Captured environment (mutable anyref)"
   (make-wasm-struct-type
    :name '$closure
    :index +type-closure+
-   :fields (list (make-wasm-field :name 'code :type :funcref :mutable nil)
-                 (make-wasm-field :name 'env :type :anyref :mutable nil))))
+   :fields (list (make-wasm-field :name 'code_0 :type :funcref :mutable nil)
+                 (make-wasm-field :name 'code_1 :type :funcref :mutable nil)
+                 (make-wasm-field :name 'code_2 :type :funcref :mutable nil)
+                 (make-wasm-field :name 'code_n :type :funcref :mutable nil)
+                 (make-wasm-field :name 'env :type :anyref :mutable t))))
 
 ;;; ============================================================
 ;;; Struct Fields Accessor
@@ -159,22 +220,70 @@
 
 (defun generate-type-definitions ()
   "Generate all WasmGC type definitions for the Type Section.
-   Returns a list of type definitions in order of their indices."
+   Returns a list of type definitions in order of their indices.
+   Note: Function types must be defined before closure type since
+   closure references them."
   (list (make-nil-type)
         (make-unbound-type)
         (make-cons-type)
         (make-symbol-type)
         (make-string-type)
-        (make-closure-type)))
+        (make-closure-type)
+        ;; Keep existing indices, add function types at end
+        nil  ; placeholder for +type-instance+
+        nil  ; placeholder for +type-standard-class+
+        (make-func-type-0)
+        (make-func-type-1)
+        (make-func-type-2)
+        (make-func-type-n)))
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
-   Uses WasmGC encoding for struct and array types."
+   Uses WasmGC encoding for struct, array, and function types."
   (etypecase type
+    (null
+     ;; Skip nil placeholders
+     nil)
     (wasm-struct-type
      (emit-struct-type type stream))
     (wasm-array-type
-     (emit-array-type type stream))))
+     (emit-array-type type stream))
+    (wasm-func-type
+     (emit-func-type type stream))))
+
+(defun emit-func-type (func-type stream)
+  "Emit a WasmGC function type definition"
+  ;; func type encoding: 0x60, param_count, params..., result_count, results...
+  (write-byte #x60 stream)  ; func type
+  (let ((params (wasm-func-type-params func-type))
+        (results (wasm-func-type-results func-type)))
+    (clysm/backend/leb128:encode-unsigned-leb128-to-stream (length params) stream)
+    (dolist (param params)
+      (emit-value-type-extended param stream))
+    (clysm/backend/leb128:encode-unsigned-leb128-to-stream (length results) stream)
+    (dolist (result results)
+      (emit-value-type-extended result stream))))
+
+(defun emit-value-type-extended (type-keyword stream)
+  "Emit a Wasm value type byte (extended for closure types)"
+  (ecase type-keyword
+    (:i32 (write-byte #x7F stream))
+    (:i64 (write-byte #x7E stream))
+    (:f32 (write-byte #x7D stream))
+    (:f64 (write-byte #x7C stream))
+    (:anyref (write-byte #x6F stream))
+    (:funcref (write-byte #x70 stream))
+    (:i31ref (write-byte #x6C stream))
+    (:eqref (write-byte #x6D stream))
+    ;; Reference types with type index
+    (:closure-ref
+     ;; (ref null $closure) - nullable reference to closure type
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure+ stream))
+    (:list-ref
+     ;; (ref null $cons) - for argument list
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-cons+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"

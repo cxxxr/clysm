@@ -85,8 +85,8 @@
      (:file "slot-access")
      (:file "generic")
      (:file "defmethod")
+     (:file "combination")  ; Must come before dispatch for *next-methods* special declaration
      (:file "dispatch")
-     (:file "combination")
      (:file "method-combination")))
 
    ;; Standard library

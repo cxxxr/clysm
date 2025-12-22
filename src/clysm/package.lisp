@@ -127,6 +127,37 @@
            #:ast-return-from-block-name
            #:ast-return-from-value
            #:make-ast-return-from
+           ;; Flet/labels
+           #:ast-flet
+           #:ast-flet-definitions
+           #:ast-flet-body
+           #:make-ast-flet
+           #:ast-labels
+           #:ast-labels-definitions
+           #:ast-labels-body
+           #:make-ast-labels
+           ;; Tagbody/go
+           #:ast-tagbody
+           #:ast-tagbody-tags
+           #:ast-tagbody-segments
+           #:make-ast-tagbody
+           #:ast-go
+           #:ast-go-tag
+           #:make-ast-go
+           ;; Catch/throw
+           #:ast-catch
+           #:ast-catch-tag
+           #:ast-catch-body
+           #:make-ast-catch
+           #:ast-throw
+           #:ast-throw-tag
+           #:ast-throw-value
+           #:make-ast-throw
+           ;; Unwind-protect
+           #:ast-unwind-protect
+           #:ast-unwind-protect-protected-form
+           #:ast-unwind-protect-cleanup-forms
+           #:make-ast-unwind-protect
            ;; Parsing
            #:parse-expr))
 
@@ -162,9 +193,24 @@
 
 (defpackage #:clysm/compiler/transform/macro
   (:use #:cl)
-  (:export #:macroexpand-all
+  (:export ;; Registry
+           #:make-macro-registry
+           #:registry-p
            #:register-macro
-           #:find-macro))
+           #:macro-function*
+           #:macro-form-p
+           ;; Compile-time environment
+           #:make-compile-env
+           #:compile-env-p
+           ;; Expansion
+           #:macroexpand-1*
+           #:macroexpand*
+           #:macroexpand-all
+           ;; Backquote
+           #:expand-backquote
+           ;; Defmacro parsing
+           #:parse-defmacro
+           #:defmacro-result-p))
 
 (defpackage #:clysm/compiler/codegen/wasm-ir
   (:use #:cl)
@@ -193,14 +239,22 @@
            #:+type-closure+
            #:+type-instance+
            #:+type-standard-class+
+           ;; Function type indices
+           #:+type-func-0+
+           #:+type-func-1+
+           #:+type-func-2+
+           #:+type-func-3+
+           #:+type-func-n+
            ;; Type structures
            #:gc-type
            #:gc-type-index
            #:wasm-struct-type
            #:wasm-array-type
+           #:wasm-func-type
            #:wasm-field
            #:make-wasm-struct-type
            #:make-wasm-array-type
+           #:make-wasm-func-type
            #:make-wasm-field
            #:struct-fields
            #:wasm-struct-type-fields
@@ -211,6 +265,11 @@
            #:make-symbol-type
            #:make-string-type
            #:make-closure-type
+           ;; Function type constructors (T075)
+           #:make-func-type-0
+           #:make-func-type-1
+           #:make-func-type-2
+           #:make-func-type-n
            ;; Type environment
            #:make-type-environment
            #:register-type
@@ -236,7 +295,11 @@
            #:env-lookup-local
            #:env-add-function
            #:env-lookup-function
-           #:env-set-function-counter))
+           #:env-set-function-counter
+           ;; Lambda support (T081-T087)
+           #:reset-lambda-state
+           #:compile-pending-lambdas
+           #:*pending-lambdas*))
 
 (defpackage #:clysm/compiler
   (:use #:cl
@@ -258,6 +321,7 @@
   (:use #:cl #:clysm/reader/tokenizer)
   (:shadow #:parse-error)
   (:export #:parse
+           #:parse-all
            #:parse-error
            #:parse-error-message
            #:parse-error-line
@@ -274,7 +338,8 @@
   (:use #:cl #:clysm/reader/tokenizer #:clysm/reader/parser #:clysm/reader/package)
   (:shadowing-import-from #:clysm/reader/parser #:parse-error)
   (:export #:read-from-string*
-           #:read*))
+           #:read*
+           #:read-all*))
 
 (defpackage #:clysm/runtime/objects
   (:use #:cl #:clysm/backend/sections)
@@ -319,11 +384,21 @@
 
 (defpackage #:clysm/eval/interpreter
   (:use #:cl)
-  (:export #:interpret))
+  (:export #:interpret
+           ;; Environment functions
+           #:make-interpreter-env
+           #:env-bind
+           #:env-lookup
+           #:extend-env))
 
 (defpackage #:clysm/eval/jit
   (:use #:cl #:clysm/compiler #:clysm/backend/wasm-emit)
-  (:export #:jit-compile))
+  (:export #:jit-compile
+           #:generate-wasm
+           #:validate-wasm
+           #:instantiate-wasm
+           #:extract-function
+           #:hotpatch-function))
 
 (defpackage #:clysm/eval
   (:use #:cl #:clysm/eval/interpreter #:clysm/eval/jit)
@@ -338,17 +413,61 @@
   (:shadow #:standard-class
            #:class-name
            #:class-precedence-list)
-  (:export #:standard-class
+  (:export ;; Class structure
+           #:standard-class
+           #:make-standard-class
+           #:standard-class-p
            #:class-name
            #:class-superclasses
            #:class-slots
-           #:class-precedence-list))
+           #:class-precedence-list
+           #:class-slot-index-table
+           ;; Slot definition
+           #:slot-definition
+           #:make-slot-definition
+           #:slot-definition-name
+           #:slot-definition-initarg
+           #:slot-definition-initform
+           #:slot-definition-initform-p
+           #:slot-definition-accessor
+           #:slot-definition-reader
+           #:slot-definition-writer
+           ;; Instance structure
+           #:standard-instance
+           #:standard-instance-p
+           #:instance-p
+           #:instance-class
+           #:instance-slots
+           #:make-instance-struct
+           ;; Class registry
+           #:register-class
+           #:find-class*
+           ;; CPL computation
+           #:compute-class-precedence-list
+           #:finalize-class
+           ;; Slot index
+           #:slot-index
+           #:total-slot-count
+           #:compute-slot-indices
+           ;; Low-level slot access
+           #:%slot-value
+           #:class-of*))
 
 (defpackage #:clysm/clos/defclass
   (:use #:cl #:clysm/clos/mop)
   (:shadowing-import-from #:clysm/clos/mop
                           #:standard-class #:class-name #:class-precedence-list)
-  (:export #:parse-defclass))
+  (:export #:parse-defclass
+           #:defclass-result
+           #:defclass-result-name
+           #:defclass-result-superclasses
+           #:defclass-result-slots
+           #:slot-spec
+           #:slot-spec-name
+           #:slot-spec-initarg
+           #:slot-spec-initform
+           #:slot-spec-accessor
+           #:define-class*))
 
 (defpackage #:clysm/clos/instance
   (:use #:cl #:clysm/clos/mop)
@@ -366,27 +485,53 @@
   (:shadow #:generic-function)
   (:export #:defgeneric*
            #:generic-function
-           #:generic-function-methods))
+           #:generic-function-p
+           #:make-generic-function
+           #:gf-name
+           #:gf-methods
+           #:gf-lambda-list
+           #:gf-add-method
+           #:find-gf
+           #:register-gf
+           #:method*
+           #:make-method*
+           #:method*-specializers
+           #:method*-qualifier
+           #:method*-function
+           #:method*-lambda-list))
 
 (defpackage #:clysm/clos/defmethod
   (:use #:cl #:clysm/clos/generic)
   (:shadowing-import-from #:clysm/clos/generic #:generic-function)
   (:export #:parse-defmethod
-           #:add-method*))
+           #:add-method*
+           #:method-result
+           #:method-result-name
+           #:method-result-qualifier
+           #:method-result-specializers
+           #:method-result-lambda-list
+           #:define-method*)
+  ;; Re-export make-method* from generic
+  (:import-from #:clysm/clos/generic #:make-method*)
+  (:export #:make-method*))
 
 (defpackage #:clysm/clos/dispatch
-  (:use #:cl #:clysm/clos/generic)
+  (:use #:cl #:clysm/clos/generic #:clysm/clos/mop)
   (:shadowing-import-from #:clysm/clos/generic #:generic-function)
+  (:shadowing-import-from #:clysm/clos/mop
+                          #:standard-class #:class-name #:class-precedence-list)
   (:shadow #:compute-applicable-methods)
   (:export #:compute-applicable-methods
            #:dispatch))
 
 (defpackage #:clysm/clos/combination
-  (:use #:cl #:clysm/clos/dispatch)
-  (:shadowing-import-from #:clysm/clos/dispatch #:compute-applicable-methods)
+  (:use #:cl #:clysm/clos/generic)
   (:shadowing-import-from #:clysm/clos/generic #:generic-function)
   (:export #:call-next-method*
-           #:next-method-p*))
+           #:next-method-p*
+           #:*next-methods*
+           #:*current-args*
+           #:standard-method-combination))
 
 (defpackage #:clysm/clos/method-combination
   (:use #:cl #:clysm/clos/combination)
@@ -400,7 +545,10 @@
            #:unless*
            #:cond*
            #:dolist*
-           #:dotimes*))
+           #:dotimes*
+           #:and*
+           #:or*
+           #:install-standard-macros))
 
 (defpackage #:clysm/repl
   (:use #:cl #:clysm/reader #:clysm/eval #:clysm/runtime/printer)
