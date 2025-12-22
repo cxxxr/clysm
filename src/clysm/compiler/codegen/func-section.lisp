@@ -1053,15 +1053,45 @@
 ;;; ============================================================
 
 (defun compile-setq (ast env)
-  "Compile a setq expression."
+  "Compile a setq expression (T042).
+   Handles both lexical (local) and special (dynamic) variables."
   (let* ((name (clysm/compiler/ast:ast-setq-name ast))
          (value (clysm/compiler/ast:ast-setq-value ast))
          (local-idx (env-lookup-local env name)))
-    (if local-idx
-        (append
-         (compile-to-instructions value env)
-         (list (list :local.tee local-idx)))
-        (error "Cannot setq undefined variable: ~A" name))))
+    (cond
+      ;; Local variable - use local.tee for assignment + return value
+      (local-idx
+       (append
+        (compile-to-instructions value env)
+        (list (list :local.tee local-idx))))
+      ;; Special variable - set symbol's value field (T042-T043)
+      ((clysm/compiler/env:special-variable-p name)
+       (compile-special-setq name value env))
+      ;; Unknown variable
+      (t
+       (error "Cannot setq undefined variable: ~A" name)))))
+
+(defun compile-special-setq (name value-form env)
+  "Compile setq for a special variable (T043).
+   Sets the symbol's value field and returns the new value.
+   Pattern: global.get sym, <value>, local.tee temp, struct.set sym 1, local.get temp"
+  (let* ((global-idx (get-special-var-global-index name))
+         (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+)
+         (result-local (env-add-local env (gensym "setq-result"))))
+    (unless global-idx
+      (error "Special variable ~A not initialized with defvar/defparameter" name))
+    ;; Compile value, save to temp, then set symbol's value field
+    (append
+     ;; Get symbol reference
+     `((:global.get ,global-idx))
+     ;; Compile value and save for return
+     (compile-to-instructions value-form env)
+     ;; Save value to local for return
+     `((:local.tee ,result-local)
+       ;; Set symbol's value field
+       (:struct.set ,symbol-type 1)
+       ;; Return the value
+       (:local.get ,result-local)))))
 
 ;;; ============================================================
 ;;; Function Definition (T059)
