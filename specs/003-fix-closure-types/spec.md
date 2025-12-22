@@ -2,7 +2,7 @@
 
 **Feature Branch**: `003-fix-closure-types`
 **Created**: 2025-12-23
-**Status**: Draft
+**Status**: Complete
 **Input**: User description: "closure/lambda/funcall の型インデックス不整合を修正する - gc-types.lisp と compiler.lisp の型配置の不整合によりクロージャテストが全て失敗している問題を解決"
 
 ## User Scenarios & Testing *(mandatory)*

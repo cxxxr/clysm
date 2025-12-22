@@ -24,6 +24,7 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 003-fix-closure-types: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing)
 - 002-special-vars-compiler: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing)
 
 - 001-clysm-compiler: Added Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力
