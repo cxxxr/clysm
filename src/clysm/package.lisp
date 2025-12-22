@@ -158,6 +158,17 @@
            #:ast-unwind-protect-protected-form
            #:ast-unwind-protect-cleanup-forms
            #:make-ast-unwind-protect
+           ;; Special variable definitions (T017-T018)
+           #:ast-defvar
+           #:ast-defvar-name
+           #:ast-defvar-init-form
+           #:ast-defvar-docstring
+           #:make-ast-defvar
+           #:ast-defparameter
+           #:ast-defparameter-name
+           #:ast-defparameter-init-form
+           #:ast-defparameter-docstring
+           #:make-ast-defparameter
            ;; Parsing
            #:parse-expr))
 
@@ -173,7 +184,17 @@
            #:lexical-env-parent
            #:make-lexical-env
            #:lookup-binding
-           #:extend-env))
+           #:extend-env
+           ;; Special variable registry (T005-T008)
+           #:*special-variables*
+           #:special-info
+           #:special-info-declared-p
+           #:special-info-has-init-form
+           #:special-info-source-location
+           #:register-special-variable
+           #:special-variable-p
+           #:get-special-info
+           #:clear-special-variables))
 
 (defpackage #:clysm/compiler/analyzer/free-vars
   (:use #:cl #:clysm/compiler/ast #:clysm/compiler/env)
@@ -239,6 +260,10 @@
            #:+type-closure+
            #:+type-instance+
            #:+type-standard-class+
+           ;; Dynamic binding support (T003-T004)
+           #:+type-binding-frame+
+           #:make-binding-frame-type
+           #:emit-binding-stack-global
            ;; Function type indices
            #:+type-func-0+
            #:+type-func-1+
@@ -299,7 +324,12 @@
            ;; Lambda support (T081-T087)
            #:reset-lambda-state
            #:compile-pending-lambdas
-           #:*pending-lambdas*))
+           #:*pending-lambdas*
+           ;; Special variable global tracking (T025)
+           #:reset-special-var-globals
+           #:allocate-special-var-global
+           #:get-special-var-global-index
+           #:get-all-special-var-globals))
 
 (defpackage #:clysm/compiler
   (:use #:cl

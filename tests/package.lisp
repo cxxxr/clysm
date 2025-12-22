@@ -86,6 +86,14 @@
 (defpackage #:clysm/tests/unit/reader-error
   (:use #:cl #:rove))
 
+;; Special variables AST tests (T010-T011)
+(defpackage #:clysm/tests/unit/special-vars-ast
+  (:use #:cl #:rove #:clysm/compiler/ast #:clysm/compiler/env))
+
+;; Special variables codegen contract tests (T012-T013)
+(defpackage #:clysm/tests/contract/special-vars-codegen
+  (:use #:cl #:rove))
+
 (defpackage #:clysm/tests/integration/nix-env
   (:use #:cl #:rove))
 

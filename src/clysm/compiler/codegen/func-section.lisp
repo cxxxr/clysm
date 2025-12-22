@@ -174,7 +174,12 @@
     (clysm/compiler/ast:ast-throw
      (compile-throw ast env))
     (clysm/compiler/ast:ast-unwind-protect
-     (compile-unwind-protect ast env))))
+     (compile-unwind-protect ast env))
+    ;; Special variable declarations (T022-T024)
+    (clysm/compiler/ast:ast-defvar
+     (compile-defvar ast env))
+    (clysm/compiler/ast:ast-defparameter
+     (compile-defparameter ast env))))
 
 ;;; ============================================================
 ;;; Literal Compilation
@@ -216,7 +221,7 @@
 
 (defun compile-var-ref (ast env)
   "Compile a variable reference.
-   Handles locals, captured variables from closures, and globals."
+   Handles locals, captured variables from closures, special variables, and globals."
   (let* ((name (clysm/compiler/ast:ast-var-ref-name ast))
          (local-idx (env-lookup-local env name)))
     (cond
@@ -226,9 +231,23 @@
       ;; Captured variable from closure environment
       ((env-lookup-captured env name)
        (compile-captured-var-access name env))
+      ;; Special variable (T037)
+      ((clysm/compiler/env:special-variable-p name)
+       (compile-special-var-ref name))
       ;; Unknown variable
       (t
        (error "Unbound variable: ~A" name)))))
+
+(defun compile-special-var-ref (name)
+  "Compile a reference to a special variable (T037).
+   Generates code to read the symbol's current value.
+   Pattern: global.get <index>, struct.get $symbol $value"
+  (let ((global-idx (get-special-var-global-index name))
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    (unless global-idx
+      (error "Special variable ~A not initialized with defvar/defparameter" name))
+    `((:global.get ,global-idx)
+      (:struct.get ,symbol-type 1))))
 
 (defun env-lookup-captured (env name)
   "Look up a captured variable position."
@@ -1290,6 +1309,183 @@
     ;; Return saved result
     (setf result (append result (list (list :local.get result-local))))
     result))
+
+;;; ============================================================
+;;; Special Variable Binding Support (T009, T034)
+;;; ============================================================
+
+(defun generate-restore-binding-instructions ()
+  "Generate instructions for the $restore-binding helper (T009).
+   Restores the top binding frame: pops the frame, restores old value.
+
+   Pattern:
+   (global.get $binding_stack)    ; Get top frame
+   (local.tee $frame)
+   (struct.get $binding_frame $old_value)  ; Get old value
+   (local.get $frame)
+   (struct.get $binding_frame $symbol)     ; Get symbol
+   (struct.set $symbol $value)             ; Restore value to symbol
+   (local.get $frame)
+   (struct.get $binding_frame $prev)       ; Get previous frame
+   (global.set $binding_stack)             ; Pop frame"
+  (let ((frame-local 0)   ; Temporary local for frame reference
+        (binding-frame-type clysm/compiler/codegen/gc-types:+type-binding-frame+)
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    ;; Return instruction list for restore-binding logic
+    `(;; Get and save the current binding frame
+      (:global.get $binding_stack)
+      (:local.tee ,frame-local)
+      ;; Get old value from frame (field 1)
+      (:struct.get ,binding-frame-type 1)
+      ;; Get symbol from frame (field 0)
+      (:local.get ,frame-local)
+      (:struct.get ,binding-frame-type 0)
+      ;; Restore value to symbol's $value field (field 1)
+      (:struct.set ,symbol-type 1)
+      ;; Pop the frame: set binding_stack to frame.prev
+      (:local.get ,frame-local)
+      (:struct.get ,binding-frame-type 2)  ; Get $prev field
+      (:global.set $binding_stack))))
+
+(defun generate-push-binding-frame (symbol-global-name value-instructions)
+  "Generate instructions to push a new binding frame (T031).
+   Saves the current value and sets a new one.
+
+   Parameters:
+   - symbol-global-name: Global variable name for the symbol
+   - value-instructions: Instructions that produce the new value
+
+   Pattern:
+   1. Create binding frame: (symbol, old_value, prev)
+   2. Push to binding stack
+   3. Set new value"
+  (let ((binding-frame-type clysm/compiler/codegen/gc-types:+type-binding-frame+)
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    `(;; Create binding frame with: symbol, old_value, prev
+      ;; Field 0: symbol reference
+      (:global.get ,symbol-global-name)
+      ;; Field 1: old value (current symbol value)
+      (:global.get ,symbol-global-name)
+      (:struct.get ,symbol-type 1)
+      ;; Field 2: prev (current binding stack)
+      (:global.get $binding_stack)
+      ;; Create the frame struct
+      (:struct.new ,binding-frame-type)
+      ;; Push to binding stack
+      (:global.set $binding_stack)
+      ;; Set new value on symbol
+      (:global.get ,symbol-global-name)
+      ,@value-instructions
+      (:struct.set ,symbol-type 1))))
+
+;;; ============================================================
+;;; Special Variable Global Tracking (T025)
+;;; ============================================================
+
+(defvar *special-var-globals* (make-hash-table :test 'eq)
+  "Maps special variable names to their global indices.")
+
+(defvar *next-special-global-index* 2
+  "Next available global index for special variables.
+   Starts at 2 because 0=NIL, 1=UNBOUND.")
+
+(defun reset-special-var-globals ()
+  "Reset special variable global tracking for new compilation."
+  (clrhash *special-var-globals*)
+  (setf *next-special-global-index* 2))
+
+(defun allocate-special-var-global (name)
+  "Allocate a global index for a special variable.
+   Returns the index, creating a new one if needed."
+  (or (gethash name *special-var-globals*)
+      (setf (gethash name *special-var-globals*)
+            (prog1 *next-special-global-index*
+              (incf *next-special-global-index*)))))
+
+(defun get-special-var-global-index (name)
+  "Get the global index for a special variable.
+   Returns NIL if not allocated."
+  (gethash name *special-var-globals*))
+
+(defun get-all-special-var-globals ()
+  "Get all allocated special variable globals as an alist.
+   Returns ((name . index) ...) sorted by index."
+  (let ((result '()))
+    (maphash (lambda (name index)
+               (push (cons name index) result))
+             *special-var-globals*)
+    (sort result #'< :key #'cdr)))
+
+;;; ============================================================
+;;; Special Variable Definition Compilation (T022-T025)
+;;; ============================================================
+
+(defun make-symbol-global-name (name)
+  "Create a global variable name for a symbol.
+   Example: *foo* -> $sym_FOO"
+  (intern (format nil "$sym_~A" (string-upcase (symbol-name name)))))
+
+(defun compile-defvar (ast env)
+  "Compile a defvar form (T022-T023).
+   defvar only initializes if the variable is currently unbound.
+   Symbols are initialized with null value fields (via struct.new_default),
+   so we check for null to determine if uninitialized.
+
+   Generated code pattern:
+   1. Get symbol's current value
+   2. Check if it's null (uninitialized)
+   3. If null, set the initial value
+   4. Return the symbol name"
+  (let* ((name (clysm/compiler/ast:ast-defvar-name ast))
+         (init-form (clysm/compiler/ast:ast-defvar-init-form ast))
+         ;; Allocate/get the global index for this symbol
+         (global-idx (allocate-special-var-global name))
+         (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    (if init-form
+        ;; With init-form: conditionally initialize
+        ;; Check if symbol.value is null (uninitialized), if so set value
+        (append
+         ;; Get symbol's value field
+         `((:global.get ,global-idx)
+           (:struct.get ,symbol-type 1)  ; Get value field
+           ;; Check if it's null (uninitialized)
+           :ref.is_null
+           ;; If null, initialize the value
+           (:if (:result :anyref)))
+         ;; Then branch: set new value
+         `((:global.get ,global-idx))
+         (compile-to-instructions init-form env)
+         `((:struct.set ,symbol-type 1)
+           ;; Return the symbol
+           (:global.get ,global-idx)
+           :else
+           ;; Else branch: already bound, just return symbol
+           (:global.get ,global-idx)
+           :end))
+        ;; Without init-form: just ensure the symbol exists (no-op at runtime)
+        `((:global.get ,global-idx)))))
+
+(defun compile-defparameter (ast env)
+  "Compile a defparameter form (T024).
+   Unlike defvar, defparameter always initializes the variable.
+
+   Generated code pattern:
+   1. Get symbol reference
+   2. Compile init form
+   3. Set symbol's value field
+   4. Return the symbol name"
+  (let* ((name (clysm/compiler/ast:ast-defparameter-name ast))
+         (init-form (clysm/compiler/ast:ast-defparameter-init-form ast))
+         ;; Allocate/get the global index for this symbol
+         (global-idx (allocate-special-var-global name))
+         (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    ;; Always set the value (unlike defvar)
+    `(;; Set new value
+      (:global.get ,global-idx)
+      ,@(compile-to-instructions init-form env)
+      (:struct.set ,symbol-type 1)
+      ;; Return the symbol
+      (:global.get ,global-idx))))
 
 ;;; ============================================================
 ;;; Function Section Generation

@@ -10,7 +10,7 @@
 (defstruct (wasm-global (:constructor make-wasm-global))
   "Wasm global variable definition"
   (name nil :type symbol)
-  (type nil :type keyword)  ; :i32, :anyref, etc.
+  (type nil :type (or keyword list))  ; :i32, :anyref, (:ref-null N), etc.
   (mutability :const :type (member :const :var))
   (init-expr nil :type list))  ; initialization expression
 
@@ -125,17 +125,33 @@
 
 (defun encode-valtype (type buffer)
   "Encode a value type to the buffer."
-  (vector-push-extend
-   (ecase type
-     (:i32 #x7F)
-     (:i64 #x7E)
-     (:f32 #x7D)
-     (:f64 #x7C)
-     (:anyref #x6F)
-     (:funcref #x70)
-     (:i31ref #x6C)
-     (:eqref #x6D))
-   buffer))
+  (cond
+    ;; Compound reference type: (:ref-null typeidx)
+    ((and (listp type) (eq (car type) :ref-null))
+     (vector-push-extend #x63 buffer)  ; refnull
+     (let ((idx-bytes (encode-signed-leb128 (cadr type))))
+       (loop for b across idx-bytes do (vector-push-extend b buffer))))
+    ;; Compound reference type: (:ref typeidx) - non-nullable
+    ((and (listp type) (eq (car type) :ref))
+     (vector-push-extend #x64 buffer)  ; ref
+     (let ((idx-bytes (encode-signed-leb128 (cadr type))))
+       (loop for b across idx-bytes do (vector-push-extend b buffer))))
+    ;; Simple types
+    ((keywordp type)
+     (vector-push-extend
+      (ecase type
+        (:i32 #x7F)
+        (:i64 #x7E)
+        (:f32 #x7D)
+        (:f64 #x7C)
+        (:anyref #x6E)     ; any heap type
+        (:externref #x6F)  ; external references
+        (:funcref #x70)
+        (:i31ref #x6C)
+        (:eqref #x6D))
+      buffer))
+    (t
+     (error "Unknown value type: ~A" type))))
 
 (defun encode-init-expr (expr buffer)
   "Encode an initialization expression to the buffer."
@@ -162,6 +178,12 @@
     ((and (listp instr) (eq (car instr) :struct.new))
      (vector-push-extend #xFB buffer)  ; GC prefix
      (vector-push-extend #x00 buffer)  ; struct.new
+     (let ((idx-bytes (encode-unsigned-leb128 (cadr instr))))
+       (loop for b across idx-bytes do (vector-push-extend b buffer))))
+    ;; struct.new_default
+    ((and (listp instr) (eq (car instr) :struct.new_default))
+     (vector-push-extend #xFB buffer)  ; GC prefix
+     (vector-push-extend #x01 buffer)  ; struct.new_default
      (let ((idx-bytes (encode-unsigned-leb128 (cadr instr))))
        (loop for b across idx-bytes do (vector-push-extend b buffer))))
     ;; global.get

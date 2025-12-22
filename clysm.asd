@@ -115,7 +115,8 @@
     :components
     ((:file "leb128-test")
      (:file "sections-test")
-     (:file "wasm-validate-test")))
+     (:file "wasm-validate-test")
+     (:file "special-vars-codegen-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -136,7 +137,8 @@
      (:file "backquote-test")
      (:file "interpreter-test")
      (:file "clos-test")
-     (:file "reader-error-test")))
+     (:file "reader-error-test")
+     (:file "special-vars-ast-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"

@@ -19,8 +19,8 @@
 
 **Purpose**: Verify environment and establish baseline
 
-- [ ] T001 Verify nix develop environment loads with sbcl --version
-- [ ] T002 Run existing tests to establish baseline in tests/
+- [X] T001 Verify nix develop environment loads with sbcl --version
+- [X] T002 Run existing tests to establish baseline in tests/
 
 ---
 
@@ -30,13 +30,13 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T003 Add $binding_frame WasmGC struct type to src/clysm/compiler/codegen/gc-types.lisp
-- [ ] T004 Add $binding_stack global variable definition to src/clysm/compiler/codegen/gc-types.lisp
-- [ ] T005 [P] Add *special-variables* hash-table to src/clysm/compiler/env.lisp
-- [ ] T006 [P] Add register-special-variable function to src/clysm/compiler/env.lisp
-- [ ] T007 [P] Add special-variable-p predicate function to src/clysm/compiler/env.lisp
-- [ ] T008 [P] Add clear-special-variables function to src/clysm/compiler/env.lisp
-- [ ] T009 Add $restore-binding helper function skeleton to src/clysm/compiler/codegen/func-section.lisp
+- [X] T003 Add $binding_frame WasmGC struct type to src/clysm/compiler/codegen/gc-types.lisp
+- [X] T004 Add $binding_stack global variable definition to src/clysm/compiler/codegen/gc-types.lisp
+- [X] T005 [P] Add *special-variables* hash-table to src/clysm/compiler/env.lisp
+- [X] T006 [P] Add register-special-variable function to src/clysm/compiler/env.lisp
+- [X] T007 [P] Add special-variable-p predicate function to src/clysm/compiler/env.lisp
+- [X] T008 [P] Add clear-special-variables function to src/clysm/compiler/env.lisp
+- [X] T009 Add $restore-binding helper function skeleton to src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: Foundation ready - user story implementation can begin
 
@@ -50,25 +50,25 @@
 
 ### Tests for User Story 1 (TDD - Write First, Verify FAIL)
 
-- [ ] T010 [P] [US1] Unit test for ast-defvar parsing (with and without init-form) in tests/unit/special-vars-ast-test.lisp
-- [ ] T011 [P] [US1] Unit test for ast-defparameter parsing in tests/unit/special-vars-ast-test.lisp
-- [ ] T012 [P] [US1] Contract test for compile-defvar output in tests/contract/special-vars-codegen-test.lisp
-- [ ] T013 [P] [US1] Contract test for compile-defparameter output in tests/contract/special-vars-codegen-test.lisp
-- [ ] T014 [P] [US1] Integration test for defvar basic usage in tests/integration/special-var-test.lisp
-- [ ] T015 [P] [US1] Integration test for defvar no-reinit semantics in tests/integration/special-var-test.lisp
-- [ ] T016 [P] [US1] Integration test for defparameter always-reinit semantics in tests/integration/special-var-test.lisp
+- [X] T010 [P] [US1] Unit test for ast-defvar parsing (with and without init-form) in tests/unit/special-vars-ast-test.lisp
+- [X] T011 [P] [US1] Unit test for ast-defparameter parsing in tests/unit/special-vars-ast-test.lisp
+- [X] T012 [P] [US1] Contract test for compile-defvar output in tests/contract/special-vars-codegen-test.lisp
+- [X] T013 [P] [US1] Contract test for compile-defparameter output in tests/contract/special-vars-codegen-test.lisp
+- [X] T014 [P] [US1] Integration test for defvar basic usage in tests/integration/special-var-test.lisp
+- [X] T015 [P] [US1] Integration test for defvar no-reinit semantics in tests/integration/special-var-test.lisp
+- [X] T016 [P] [US1] Integration test for defparameter always-reinit semantics in tests/integration/special-var-test.lisp
 
 ### Implementation for User Story 1
 
-- [ ] T017 [P] [US1] Add ast-defvar struct definition to src/clysm/compiler/ast.lisp
-- [ ] T018 [P] [US1] Add ast-defparameter struct definition to src/clysm/compiler/ast.lisp
-- [ ] T019 [US1] Add parse-defvar function to src/clysm/compiler/ast.lisp
-- [ ] T020 [US1] Add parse-defparameter function to src/clysm/compiler/ast.lisp
-- [ ] T021 [US1] Integrate defvar/defparameter cases in parse-compound-form in src/clysm/compiler/ast.lisp
-- [ ] T022 [US1] Add compile-defvar function to src/clysm/compiler/codegen/func-section.lisp
-- [ ] T023 [US1] Add compile-defparameter function to src/clysm/compiler/codegen/func-section.lisp
-- [ ] T024 [US1] Integrate defvar/defparameter in compile-form dispatch in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T025 [US1] Verify all US1 tests pass (Green phase)
+- [X] T017 [P] [US1] Add ast-defvar struct definition to src/clysm/compiler/ast.lisp
+- [X] T018 [P] [US1] Add ast-defparameter struct definition to src/clysm/compiler/ast.lisp
+- [X] T019 [US1] Add parse-defvar function to src/clysm/compiler/ast.lisp
+- [X] T020 [US1] Add parse-defparameter function to src/clysm/compiler/ast.lisp
+- [X] T021 [US1] Integrate defvar/defparameter cases in parse-compound-form in src/clysm/compiler/ast.lisp
+- [X] T022 [US1] Add compile-defvar function to src/clysm/compiler/codegen/func-section.lisp
+- [X] T023 [US1] Add compile-defparameter function to src/clysm/compiler/codegen/func-section.lisp
+- [X] T024 [US1] Integrate defvar/defparameter in compile-form dispatch in src/clysm/compiler/codegen/func-section.lisp
+- [X] T025 [US1] Verify all US1 tests pass (Green phase)
 
 **Checkpoint**: defvar and defparameter work independently - MVP deliverable
 

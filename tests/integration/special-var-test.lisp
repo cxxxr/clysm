@@ -1,97 +1,186 @@
-;;;; special-var-test.lisp - Special variable integration tests (Phase 7 - US5)
+;;;; special-var-test.lisp - Special variable integration tests
 (in-package #:clysm/tests/integration/special-var)
 
-;;; Note: These tests verify special variable compilation and behavior
-;;; Many will fail until the compiler and runtime support is implemented
+;;; ============================================================
+;;; Phase 3: User Story 1 - defvar/defparameter (T014-T016)
+;;; ============================================================
 
-;;; defvar Tests
+;;; T014: Integration test for defvar basic usage
 
-(deftest defvar-compilation
-  (testing "defvar creates global"
-    ;; (defvar *test-var* 42) should create a global variable
-    (ok t))  ; Placeholder until implementation
+(deftest test-defvar-basic
+  (testing "defvar creates accessible global variable"
+    ;; (defvar *x* 10) *x* should return 10
+    (ok (= 10 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defvar *test-x* 10)
+                 *test-x*)))
+        "defvar should create a global variable that can be accessed"))
 
-  (testing "defvar without value creates unbound"
-    ;; (defvar *unbound-var*) should create unbound variable
-    (ok t))
+  (testing "defvar with complex init-form"
+    ;; (defvar *y* (+ 1 2 3)) *y* should return 6
+    (ok (= 6 (clysm/tests/helpers:compile-and-run
+              '(progn
+                (defvar *test-y* (+ 1 2 3))
+                *test-y*)))
+        "defvar init-form should be evaluated")))
 
-  (testing "defvar is not re-initialized"
-    ;; Second defvar should not change existing value
-    (ok t)))
+;;; T015: Integration test for defvar no-reinit semantics
 
-;;; defparameter Tests
+(deftest test-defvar-no-reinit
+  (testing "defvar does not reinitialize if already bound"
+    ;; First defvar sets value, second defvar should NOT change it
+    ;; (defvar *z* 1) (defvar *z* 2) *z* should still be 1
+    (ok (= 1 (clysm/tests/helpers:compile-and-run
+              '(progn
+                (defvar *test-z* 1)
+                (defvar *test-z* 2)
+                *test-z*)))
+        "Second defvar should not change existing value")))
 
-(deftest defparameter-compilation
-  (testing "defparameter creates global"
-    (ok t))
+;;; T016: Integration test for defparameter always-reinit semantics
 
-  (testing "defparameter always re-initializes"
+(deftest test-defparameter-reinit
+  (testing "defparameter always initializes"
+    ;; (defparameter *p* 10) *p* should return 10
+    (ok (= 10 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defparameter *test-p* 10)
+                 *test-p*)))
+        "defparameter should initialize variable"))
+
+  (testing "defparameter always reinitializes"
     ;; Unlike defvar, defparameter always sets the value
-    (ok t)))
+    ;; (defparameter *q* 1) (defparameter *q* 2) *q* should be 2
+    (ok (= 2 (clysm/tests/helpers:compile-and-run
+              '(progn
+                (defparameter *test-q* 1)
+                (defparameter *test-q* 2)
+                *test-q*)))
+        "Second defparameter should update value")))
 
-;;; Dynamic Binding Tests
+;;; ============================================================
+;;; Phase 4: User Story 2 - Dynamic Binding (T026-T028)
+;;; ============================================================
 
-(deftest dynamic-binding
+;;; T026: Integration test for let with single special binding
+
+(deftest test-let-special-binding
   (testing "let binds special variable dynamically"
-    ;; (let ((*special* 10)) *special*) should bind dynamically
-    (ok t))
+    ;; (defvar *x* 10) (let ((*x* 20)) *x*) should return 20
+    (ok (= 20 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defvar *let-x* 10)
+                 (let ((*let-x* 20))
+                   *let-x*))))
+        "let should dynamically bind special variable")))
 
-  (testing "nested dynamic bindings"
-    ;; (let ((*x* 1)) (let ((*x* 2)) *x*)) should be 2
-    (ok t))
+;;; T027: Integration test for nested dynamic bindings
 
-  (testing "dynamic binding restoration"
-    ;; After let exits, old value should be restored
-    (ok t)))
+(deftest test-nested-dynamic-bindings
+  (testing "nested let bindings work correctly"
+    ;; (defvar *x* 1)
+    ;; (let ((*x* 2))
+    ;;   (let ((*x* 3))
+    ;;     *x*))  ; should be 3
+    (ok (= 3 (clysm/tests/helpers:compile-and-run
+              '(progn
+                (defvar *nest-x* 1)
+                (let ((*nest-x* 2))
+                  (let ((*nest-x* 3))
+                    *nest-x*)))))
+        "Innermost binding should be visible")))
 
-;;; Symbol-value Tests
+;;; T028: Integration test for binding restoration after let
 
-(deftest symbol-value-tests
-  (testing "symbol-value reads dynamic value"
-    (ok t))
+(deftest test-binding-restoration
+  (testing "binding is restored after let exits"
+    ;; (defvar *x* 10)
+    ;; (progn
+    ;;   (let ((*x* 20)) (setq dummy *x*))
+    ;;   *x*)  ; should be 10 again
+    (ok (= 10 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defvar *restore-x* 10)
+                 (let ((*restore-x* 20))
+                   *restore-x*)  ; This is 20
+                 *restore-x*)))  ; Should be 10 again
+        "Original value should be restored after let")))
 
-  (testing "set changes dynamic value"
-    (ok t)))
+;;; ============================================================
+;;; Phase 5: User Story 3 - Lexical vs Special (T036, T039)
+;;; ============================================================
 
-;;; unwind-protect with Special Variables
+;;; T036: Integration test for mixed lexical/special in same scope
 
-(deftest special-var-unwind
-  (testing "unwind-protect restores special var on normal exit"
-    ;; Dynamic binding should be restored after body
-    (ok t))
+(deftest test-mixed-lexical-special
+  (testing "lexical and special variables coexist"
+    ;; (defvar *s* 1)
+    ;; (let ((l 2) (*s* 3))
+    ;;   (+ l *s*))  ; should be 5
+    (ok (= 5 (clysm/tests/helpers:compile-and-run
+              '(progn
+                (defvar *mix-s* 1)
+                (let ((l 2) (*mix-s* 3))
+                  (+ l *mix-s*)))))
+        "Lexical and special should work in same let")))
 
-  (testing "unwind-protect restores special var on throw"
-    ;; Dynamic binding should be restored even on non-local exit
-    (ok t)))
+;;; T039: Integration test for setq of special variable
 
+(deftest test-setq-special
+  (testing "setq updates special variable value"
+    ;; (defvar *x* 1) (setq *x* 42) *x* should be 42
+    (ok (= 42 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defvar *setq-x* 1)
+                 (setq *setq-x* 42)
+                 *setq-x*)))
+        "setq should update special variable")))
+
+;;; ============================================================
+;;; Phase 6: User Story 4 - Gensym (T045-T047)
+;;; ============================================================
+
+;;; Placeholders for gensym tests (implemented in Phase 6)
+
+(deftest test-gensym-basic
+  (testing "gensym produces symbol"
+    (ok t "Placeholder for gensym basic test")))
+
+(deftest test-gensym-prefix
+  (testing "gensym with custom prefix"
+    (ok t "Placeholder for gensym prefix test")))
+
+(deftest test-gensym-counter
+  (testing "gensym increments counter"
+    (ok t "Placeholder for gensym counter test")))
+
+;;; ============================================================
+;;; Phase 7: User Story 5 - Exception Safety (T052-T053)
+;;; ============================================================
+
+;;; Placeholders for exception safety tests
+
+(deftest test-throw-catch-special
+  (testing "throw/catch preserves special binding restoration"
+    (ok t "Placeholder for throw/catch with special binding")))
+
+(deftest test-return-from-special
+  (testing "return-from preserves special binding restoration"
+    (ok t "Placeholder for return-from with special binding")))
+
+;;; ============================================================
 ;;; Shallow Binding Verification
+;;; ============================================================
 
-(deftest shallow-binding-semantics
-  (testing "special variables use shallow binding"
-    ;; Verify that the implementation uses shallow binding
-    ;; (global slot holds current value, stack saves old values)
-    (ok t))
-
+(deftest test-shallow-binding-semantics
   (testing "function sees dynamic binding from caller"
-    ;; (defun foo () *x*)
-    ;; (let ((*x* 10)) (foo)) should see 10
-    (ok t)))
-
-;;; Standard Special Variables
-
-(deftest standard-special-vars
-  (testing "*standard-output* exists"
-    (ok t))  ; Would test when available
-
-  (testing "*package* exists"
-    (ok t))
-
-  (testing "*features* exists"
-    (ok t)))
-
-;;; Thread Safety (Future)
-
-(deftest thread-safety
-  (testing "each thread has own binding stack"
-    ;; For future multi-threading support
-    (ok t)))
+    ;; (defvar *x* 10)
+    ;; (defun get-x () *x*)
+    ;; (let ((*x* 20)) (get-x)) should return 20 (not 10)
+    (ok (= 20 (clysm/tests/helpers:compile-and-run
+               '(progn
+                 (defvar *shallow-x* 10)
+                 (defun get-shallow-x () *shallow-x*)
+                 (let ((*shallow-x* 20))
+                   (get-shallow-x)))))
+        "Function should see caller's dynamic binding")))

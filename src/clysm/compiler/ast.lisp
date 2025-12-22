@@ -169,6 +169,25 @@
   (cleanup-forms nil :type list)) ; List of cleanup AST nodes
 
 ;;; ============================================================
+;;; Special Variable Definitions (T017-T018)
+;;; ============================================================
+
+(defstruct (ast-defvar (:include ast-node) (:conc-name ast-defvar-))
+  "Defvar node for declaring special variables (T017).
+   defvar declares a variable as special and optionally initializes it
+   only if it is currently unbound."
+  (name nil :type symbol)
+  (init-form nil :type t)   ; AST node or NIL if no init
+  (docstring nil :type (or null string)))
+
+(defstruct (ast-defparameter (:include ast-node) (:conc-name ast-defparameter-))
+  "Defparameter node for declaring special variables (T018).
+   Unlike defvar, defparameter always initializes the variable."
+  (name nil :type symbol)
+  (init-form nil :type t)   ; AST node (required)
+  (docstring nil :type (or null string)))
+
+;;; ============================================================
 ;;; Local Function Definitions
 ;;; ============================================================
 
@@ -255,6 +274,9 @@
       (throw (parse-throw-form args))
       ;; Unwind-protect
       (unwind-protect (parse-unwind-protect-form args))
+      ;; Special variable declarations (T021)
+      (defvar (parse-defvar-form args))
+      (defparameter (parse-defparameter-form args))
       ;; Macros (expand inline for now)
       (when (parse-when-form args))
       (unless (parse-unless-form args))
@@ -471,3 +493,40 @@
   (make-ast-unwind-protect
    :protected-form (parse-expr (first args))
    :cleanup-forms (mapcar #'parse-expr (rest args))))
+
+;;; ============================================================
+;;; Special Variable Definition Parsing (T019-T020)
+;;; ============================================================
+
+(defun parse-defvar-form (args)
+  "Parse (defvar name [init-form [docstring]]) (T019).
+   Registers the symbol as special and creates an AST node."
+  (let* ((name (first args))
+         (init-form (second args))
+         (docstring (third args)))
+    ;; Register as special variable
+    (clysm/compiler/env:register-special-variable
+     name :has-init-form (not (null init-form)))
+    ;; Create AST node
+    (make-ast-defvar
+     :name name
+     :init-form (when init-form (parse-expr init-form))
+     :docstring docstring)))
+
+(defun parse-defparameter-form (args)
+  "Parse (defparameter name init-form [docstring]) (T020).
+   Unlike defvar, defparameter requires an initial value."
+  (let* ((name (first args))
+         (init-form (second args))
+         (docstring (third args)))
+    ;; Error if no init-form (defparameter requires it)
+    (unless init-form
+      (error "DEFPARAMETER requires an initial value: ~S" name))
+    ;; Register as special variable
+    (clysm/compiler/env:register-special-variable
+     name :has-init-form t)
+    ;; Create AST node
+    (make-ast-defparameter
+     :name name
+     :init-form (parse-expr init-form)
+     :docstring docstring)))

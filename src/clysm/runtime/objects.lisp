@@ -39,7 +39,7 @@
    :name '$nil
    :type :anyref  ; Reference to $nil struct
    :mutability :const
-   :init-expr '(:struct.new 0)))  ; struct.new $nil
+   :init-expr '((:struct.new 0))))  ; struct.new $nil
 
 (defun nil-global-index ()
   "Get the global index for NIL"
@@ -60,7 +60,7 @@
    :name '$unbound
    :type :anyref  ; Reference to $unbound struct
    :mutability :const
-   :init-expr '(:struct.new 1)))  ; struct.new $unbound
+   :init-expr '((:struct.new 1))))  ; struct.new $unbound
 
 (defun unbound-global-index ()
   "Get the global index for UNBOUND"

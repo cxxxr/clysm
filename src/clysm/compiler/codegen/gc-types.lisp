@@ -15,12 +15,14 @@
 (defconstant +type-closure+ 5 "Type index for closures")
 (defconstant +type-instance+ 6 "Type index for CLOS instances")
 (defconstant +type-standard-class+ 7 "Type index for standard classes")
+;; Dynamic binding support (T003)
+(defconstant +type-binding-frame+ 8 "Type index for binding frame")
 ;; Function types for closure arity dispatch
-(defconstant +type-func-0+ 8 "Type index for 0-arg function type")
-(defconstant +type-func-1+ 9 "Type index for 1-arg function type")
-(defconstant +type-func-2+ 10 "Type index for 2-arg function type")
-(defconstant +type-func-3+ 11 "Type index for 3-arg function type")
-(defconstant +type-func-n+ 12 "Type index for N-arg function type")
+(defconstant +type-func-0+ 9 "Type index for 0-arg function type")
+(defconstant +type-func-1+ 10 "Type index for 1-arg function type")
+(defconstant +type-func-2+ 11 "Type index for 2-arg function type")
+(defconstant +type-func-3+ 12 "Type index for 3-arg function type")
+(defconstant +type-func-n+ 13 "Type index for N-arg function type")
 
 ;;; ============================================================
 ;;; WasmGC Type Structures
@@ -207,6 +209,30 @@
                  (make-wasm-field :name 'env :type :anyref :mutable t))))
 
 ;;; ============================================================
+;;; Dynamic Binding Support (T003-T004)
+;;; ============================================================
+
+(defun make-binding-frame-type ()
+  "Create binding frame type (T003)
+   Used for tracking dynamic bindings during execution.
+   $symbol: The bound symbol (ref $symbol)
+   $old_value: Previous value before binding (anyref)
+   $prev: Link to previous frame (ref null $binding_frame)"
+  (make-wasm-struct-type
+   :name '$binding_frame
+   :index +type-binding-frame+
+   :fields (list (make-wasm-field :name 'symbol :type :symbol-ref :mutable nil)
+                 (make-wasm-field :name 'old_value :type :anyref :mutable nil)
+                 (make-wasm-field :name 'prev :type :binding-frame-ref :mutable nil))))
+
+(defun emit-binding-stack-global ()
+  "Generate WAT for the global binding stack (T004).
+   Returns a string of WAT code for the $binding_stack global variable.
+   (global $binding_stack (mut (ref null $binding_frame)) (ref.null $binding_frame))"
+  (format nil "(global $binding_stack (mut (ref null ~D)) (ref.null ~D))"
+          +type-binding-frame+ +type-binding-frame+))
+
+;;; ============================================================
 ;;; Struct Fields Accessor
 ;;; ============================================================
 
@@ -232,6 +258,7 @@
         ;; Keep existing indices, add function types at end
         nil  ; placeholder for +type-instance+
         nil  ; placeholder for +type-standard-class+
+        (make-binding-frame-type)  ; T003: binding frame for dynamic bindings
         (make-func-type-0)
         (make-func-type-1)
         (make-func-type-2)
@@ -283,7 +310,16 @@
     (:list-ref
      ;; (ref null $cons) - for argument list
      (write-byte #x63 stream)  ; ref null
-     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-cons+ stream))))
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-cons+ stream))
+    ;; Dynamic binding support (T003)
+    (:symbol-ref
+     ;; (ref $symbol) - non-null reference to symbol
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-symbol+ stream))
+    (:binding-frame-ref
+     ;; (ref null $binding_frame) - nullable reference to binding frame
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-binding-frame+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"
@@ -309,17 +345,30 @@
 
 (defun emit-value-type (type-keyword stream)
   "Emit a Wasm value type byte"
-  (write-byte
-   (ecase type-keyword
-     (:i32 #x7F)
-     (:i64 #x7E)
-     (:f32 #x7D)
-     (:f64 #x7C)
-     (:i8 #x78)      ; i8 for array elements
-     (:i16 #x77)     ; i16 for array elements
-     (:anyref #x6F)  ; externref in core, anyref in GC
-     (:funcref #x70)
-     (:i31ref #x6C)  ; i31ref (WasmGC)
-     (:eqref #x6D)   ; eqref (WasmGC)
-     (:structref #x6B)) ; structref (WasmGC)
-   stream))
+  (case type-keyword
+    ;; Simple types - just emit the byte
+    ((:i32 :i64 :f32 :f64 :i8 :i16 :anyref :funcref :i31ref :eqref :structref)
+     (write-byte
+      (ecase type-keyword
+        (:i32 #x7F)
+        (:i64 #x7E)
+        (:f32 #x7D)
+        (:f64 #x7C)
+        (:i8 #x78)      ; i8 for array elements
+        (:i16 #x77)     ; i16 for array elements
+        (:anyref #x6F)  ; externref in core, anyref in GC
+        (:funcref #x70)
+        (:i31ref #x6C)  ; i31ref (WasmGC)
+        (:eqref #x6D)   ; eqref (WasmGC)
+        (:structref #x6B)) ; structref (WasmGC)
+      stream))
+    ;; Reference types with type index (T003 dynamic binding support)
+    (:symbol-ref
+     ;; (ref $symbol) - non-null reference to symbol
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-symbol+ stream))
+    (:binding-frame-ref
+     ;; (ref null $binding_frame) - nullable reference to binding frame
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-binding-frame+ stream))
+    (t (error "Unknown value type: ~A" type-keyword))))

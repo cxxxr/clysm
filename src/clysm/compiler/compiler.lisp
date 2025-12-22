@@ -50,6 +50,10 @@
    Extracts defuns as separate functions and compiles the main body."
   ;; Reset lambda state for fresh compilation
   (clysm/compiler/codegen/func-section:reset-lambda-state)
+  ;; Reset special variable global tracking
+  (clysm/compiler/codegen/func-section:reset-special-var-globals)
+  ;; Clear special variable registry from previous compilations
+  (clysm/compiler/env:clear-special-variables)
   ;; Parse expression to AST
   (let* ((ast (clysm/compiler/ast:parse-expr expr))
          (env (clysm/compiler/codegen/func-section:make-env))
@@ -96,8 +100,29 @@
                 (append (compiled-module-functions module) lambda-funcs))))
       (setf (compiled-module-main-func-idx module) 0)
       (setf (compiled-module-exports module)
-            (list (list "_start" :func 0))))
+            (list (list "_start" :func 0)))
+      ;; Add special variable symbol globals (T025)
+      ;; get-all-special-var-globals returns ((name . index) ...) sorted by index
+      (let ((special-var-globals (clysm/compiler/codegen/func-section:get-all-special-var-globals)))
+        ;; Append symbol globals in order (indices start at 2)
+        (dolist (entry special-var-globals)
+          (let ((name (car entry)))
+            (setf (compiled-module-globals module)
+                  (append (compiled-module-globals module)
+                          (list (make-symbol-global name))))))))
     module))
+
+(defun make-symbol-global (name)
+  "Create a symbol global for a special variable.
+   The symbol struct is: (name, value, function, plist)
+   Uses struct.new_default to initialize all fields to null.
+   A null value field indicates the variable is unbound.
+   The type is (ref null 3) for struct.get/set compatibility."
+  (clysm/backend/sections:make-wasm-global
+   :name (intern (format nil "$sym_~A" (symbol-name name)))
+   :type '(:ref-null 3)  ; Nullable reference to symbol struct type
+   :mutability :var  ; Symbol's value field is mutable
+   :init-expr '((:struct.new_default 3))))  ; struct.new_default $symbol (type 3)
 
 (defun compile-main-function (ast env)
   "Compile an AST as the main function."
@@ -295,10 +320,29 @@
     (loop for b across content do (vector-push-extend b buffer))))
 
 (defun emit-global-section (buffer globals)
-  "Emit Global section."
-  (declare (ignore globals))
-  ;; Skip for now - globals require GC types which are complex
-  buffer)
+  "Emit Global section (Section ID 6).
+   Globals: list of wasm-global structs with type, mutability, and init-expr."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Number of globals
+    (emit-leb128-unsigned (length globals) content)
+    ;; Each global: type + mutability + init_expr + end
+    (dolist (global globals)
+      (let ((type (clysm/backend/sections:wasm-global-type global))
+            (mutability (clysm/backend/sections:wasm-global-mutability global))
+            (init-expr (clysm/backend/sections:wasm-global-init-expr global)))
+        ;; Global type: valtype
+        (emit-valtype type content)
+        ;; Mutability: 0=const, 1=mutable
+        (vector-push-extend (if (eq mutability :const) 0 1) content)
+        ;; Init expression
+        (emit-instructions init-expr content)
+        ;; End marker
+        (vector-push-extend #x0B content)))
+    ;; Write section: ID 6 + size + content
+    (vector-push-extend 6 buffer)  ; Global section ID
+    (emit-leb128-unsigned (length content) buffer)
+    (loop for b across content do (vector-push-extend b buffer))))
 
 (defun emit-export-section (buffer exports)
   "Emit Export section."
@@ -440,6 +484,11 @@
           (vector-push-extend #xFB buffer)
           (vector-push-extend #x00 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
+         (:struct.new_default
+          ;; struct.new_default <typeidx> - create struct with default values
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x01 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
          (:struct.get
           ;; struct.get <typeidx> <fieldidx> - get field from struct
           (vector-push-extend #xFB buffer)
@@ -536,20 +585,33 @@
 
 (defun emit-valtype (type buffer)
   "Emit a value type."
-  (vector-push-extend
-   (ecase type
-     (:i32 #x7F)
-     (:i64 #x7E)
-     (:f32 #x7D)
-     (:f64 #x7C)
-     (:i8 #x78)         ; packed i8 for arrays
-     (:i16 #x77)        ; packed i16 for arrays
-     (:anyref #x6E)     ; any heap type - parent of GC types
-     (:externref #x6F)  ; external references - separate hierarchy
-     (:funcref #x70)
-     (:i31ref #x6C)
-     (:eqref #x6D))
-   buffer))
+  (cond
+    ;; Compound reference type: (:ref-null typeidx)
+    ((and (listp type) (eq (car type) :ref-null))
+     (vector-push-extend #x63 buffer)  ; refnull
+     (emit-leb128-signed (cadr type) buffer))
+    ;; Compound reference type: (:ref typeidx) - non-nullable
+    ((and (listp type) (eq (car type) :ref))
+     (vector-push-extend #x64 buffer)  ; ref
+     (emit-leb128-signed (cadr type) buffer))
+    ;; Simple types
+    ((keywordp type)
+     (vector-push-extend
+      (ecase type
+        (:i32 #x7F)
+        (:i64 #x7E)
+        (:f32 #x7D)
+        (:f64 #x7C)
+        (:i8 #x78)         ; packed i8 for arrays
+        (:i16 #x77)        ; packed i16 for arrays
+        (:anyref #x6E)     ; any heap type - parent of GC types
+        (:externref #x6F)  ; external references - separate hierarchy
+        (:funcref #x70)
+        (:i31ref #x6C)
+        (:eqref #x6D))
+      buffer))
+    (t
+     (error "Unknown value type: ~A" type))))
 
 (defun emit-heaptype (type buffer)
   "Emit a heap type for ref.null, ref.cast, etc.
