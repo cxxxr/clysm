@@ -26,7 +26,7 @@
 
 **Purpose**: No additional setup required - using existing project structure
 
-- [ ] T001 Verify existing test infrastructure works by running `rove clysm.asd`
+- [x] T001 Verify existing test infrastructure works by running `rove clysm.asd`
 
 ---
 
@@ -38,18 +38,18 @@
 
 ### Data Structures
 
-- [ ] T002 Define `tagbody-context` struct in src/clysm/compiler/codegen/func-section.lisp with fields: strategy, tags, pc-local, dispatch-depth, loop-label, num-segments
-- [ ] T003 Add `tagbody-context` slot to `compilation-env` struct in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T004 Update `copy-compilation-env` function to properly handle tagbody-context for nested tagbody support in src/clysm/compiler/codegen/func-section.lisp
+- [x] T002 Define `tagbody-context` struct in src/clysm/compiler/codegen/func-section.lisp with fields: strategy, tags, pc-local, dispatch-depth, loop-label, num-segments
+- [x] T003 Add `tagbody-context` slot to `compilation-env` struct in src/clysm/compiler/codegen/func-section.lisp
+- [x] T004 Update `copy-compilation-env` function to properly handle tagbody-context for nested tagbody support in src/clysm/compiler/codegen/func-section.lisp
 
 ### Strategy Analysis Functions
 
-- [ ] T005 [P] Write unit test for `collect-go-targets` function in tests/unit/tagbody-test.lisp
-- [ ] T006 [P] Write unit test for `all-goes-are-backward-p` function in tests/unit/tagbody-test.lisp
-- [ ] T007 [P] Write unit test for `analyze-tagbody-strategy` function covering all three strategies in tests/unit/tagbody-test.lisp
-- [ ] T008 Implement `collect-go-targets` function to extract all go target tags from segments in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T009 Implement `all-goes-are-backward-p` function to check if all goes to a tag are backward jumps in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T010 Implement `analyze-tagbody-strategy` function returning :sequential, :simple-loop, or :dispatch in src/clysm/compiler/codegen/func-section.lisp
+- [x] T005 [P] Write unit test for `collect-go-targets` function in tests/unit/tagbody-test.lisp
+- [x] T006 [P] Write unit test for `all-goes-are-backward-p` function in tests/unit/tagbody-test.lisp
+- [x] T007 [P] Write unit test for `analyze-tagbody-strategy` function covering all three strategies in tests/unit/tagbody-test.lisp
+- [x] T008 Implement `collect-go-targets` function to extract all go target tags from segments in src/clysm/compiler/codegen/func-section.lisp
+- [x] T009 Implement `all-goes-are-backward-p` function to check if all goes to a tag are backward jumps in src/clysm/compiler/codegen/func-section.lisp
+- [x] T010 Implement `analyze-tagbody-strategy` function returning :sequential, :simple-loop, or :dispatch in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: Foundation ready - run tests to verify strategy analysis works correctly
 
@@ -65,13 +65,13 @@
 
 ### Tests for User Story 4 (TDD - Write First)
 
-- [ ] T011 [P] [US4] Write integration test `tagbody-no-tags` in tests/integration/control-flow-test.lisp - tagbody with just forms, no tags
-- [ ] T012 [P] [US4] Write integration test `tagbody-sequential` in tests/integration/control-flow-test.lisp - tagbody with tags but no go
+- [x] T011 [P] [US4] Write integration test `tagbody-no-tags` in tests/integration/control-flow-test.lisp - tagbody with just forms, no tags
+- [x] T012 [P] [US4] Write integration test `tagbody-sequential` in tests/integration/control-flow-test.lisp - tagbody with tags but no go
 
 ### Implementation for User Story 4
 
-- [ ] T013 [US4] Implement `compile-tagbody-sequential` function in src/clysm/compiler/codegen/func-section.lisp - compile forms sequentially, return NIL
-- [ ] T014 [US4] Run tests to verify :sequential strategy works
+- [x] T013 [US4] Implement `compile-tagbody-sequential` function in src/clysm/compiler/codegen/func-section.lisp - compile forms sequentially, return NIL
+- [x] T014 [US4] Run tests to verify :sequential strategy works
 
 **Checkpoint**: User Story 4 should be fully functional - sequential tagbody works
 
@@ -85,14 +85,14 @@
 
 ### Tests for User Story 1 (TDD - Write First)
 
-- [ ] T015 [P] [US1] Write integration test `tagbody-simple-loop` in tests/integration/control-flow-test.lisp - count to 5 with single backward go
-- [ ] T016 [P] [US1] Write integration test `tagbody-deep-loop` in tests/integration/control-flow-test.lisp - 10,000 iterations without stack overflow
+- [x] T015 [P] [US1] Write integration test `tagbody-simple-loop` in tests/integration/control-flow-test.lisp - count to 5 with single backward go
+- [x] T016 [P] [US1] Write integration test `tagbody-deep-loop` in tests/integration/control-flow-test.lisp - 10,000 iterations without stack overflow
 
 ### Implementation for User Story 1
 
-- [ ] T017 [US1] Implement `compile-tagbody-simple-loop` function in src/clysm/compiler/codegen/func-section.lisp - generate Wasm loop instruction
-- [ ] T018 [US1] Implement `compile-go-simple` function in src/clysm/compiler/codegen/func-section.lisp - generate br to loop start
-- [ ] T019 [US1] Run tests to verify :simple-loop strategy works with 10,000 iterations
+- [x] T017 [US1] Implement `compile-tagbody-simple-loop` function in src/clysm/compiler/codegen/func-section.lisp - generate Wasm loop instruction
+- [x] T018 [US1] Implement `compile-go-simple` function in src/clysm/compiler/codegen/func-section.lisp - generate br to loop start
+- [x] T019 [US1] Run tests to verify :simple-loop strategy works with 10,000 iterations
 
 **Checkpoint**: User Story 1 (MVP) complete - simple loops work efficiently
 
@@ -108,18 +108,18 @@
 
 ### Tests for User Story 2 (TDD - Write First)
 
-- [ ] T020 [P] [US2] Write integration test `tagbody-forward-jump` in tests/integration/control-flow-test.lisp - skip over assignment with go
-- [ ] T021 [P] [US2] Write integration test `tagbody-multi-forward` in tests/integration/control-flow-test.lisp - multiple consecutive forward jumps
+- [x] T020 [P] [US2] Write integration test `tagbody-forward-jump` in tests/integration/control-flow-test.lisp - skip over assignment with go
+- [x] T021 [P] [US2] Write integration test `tagbody-multi-forward` in tests/integration/control-flow-test.lisp - multiple consecutive forward jumps
 
 ### Implementation for User Story 2
 
-- [ ] T022 [US2] Implement `compile-tagbody-dispatch` function skeleton in src/clysm/compiler/codegen/func-section.lisp - generate block/loop/br_table structure
-- [ ] T023 [US2] Implement nested block generation for dispatch strategy in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T024 [US2] Implement br_table index mapping using formula: depth = num_segments - segment_index in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T025 [US2] Implement `compile-tagbody-segment` function in src/clysm/compiler/codegen/func-section.lisp - compile forms within segment, stop after go
-- [ ] T026 [US2] Implement `compile-go-dispatch` function in src/clysm/compiler/codegen/func-section.lisp - set $pc and br to dispatch loop
-- [ ] T027 [US2] Add $pc local variable allocation for dispatch strategy in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T028 [US2] Run tests to verify forward jumps work correctly
+- [x] T022 [US2] Implement `compile-tagbody-dispatch` function skeleton in src/clysm/compiler/codegen/func-section.lisp - generate block/loop/br_table structure
+- [x] T023 [US2] Implement nested block generation for dispatch strategy in src/clysm/compiler/codegen/func-section.lisp
+- [x] T024 [US2] Implement br_table index mapping using formula: depth = num_segments - segment_index in src/clysm/compiler/codegen/func-section.lisp
+- [x] T025 [US2] Implement `compile-tagbody-segment` function in src/clysm/compiler/codegen/func-section.lisp - compile forms within segment, stop after go
+- [x] T026 [US2] Implement `compile-go-dispatch` function in src/clysm/compiler/codegen/func-section.lisp - set $pc and br to dispatch loop
+- [x] T027 [US2] Add $pc local variable allocation for dispatch strategy in src/clysm/compiler/codegen/func-section.lisp
+- [x] T028 [US2] Run tests to verify forward jumps work correctly
 
 **Checkpoint**: User Story 2 complete - forward jump patterns work
 
@@ -133,15 +133,15 @@
 
 ### Tests for User Story 3 (TDD - Write First)
 
-- [ ] T029 [P] [US3] Write integration test `tagbody-complex-jump` in tests/integration/control-flow-test.lisp - alternating forward/backward jumps
-- [ ] T030 [P] [US3] Write integration test `tagbody-fallthrough` in tests/integration/control-flow-test.lisp - verify fallthrough between tags without go
-- [ ] T031 [P] [US3] Write integration test `tagbody-three-tags` in tests/integration/control-flow-test.lisp - three or more tags with complex jumps
+- [x] T029 [P] [US3] Write integration test `tagbody-complex-jump` in tests/integration/control-flow-test.lisp - alternating forward/backward jumps
+- [x] T030 [P] [US3] Write integration test `tagbody-fallthrough` in tests/integration/control-flow-test.lisp - verify fallthrough between tags without go
+- [x] T031 [P] [US3] Write integration test `tagbody-three-tags` in tests/integration/control-flow-test.lisp - three or more tags with complex jumps
 
 ### Implementation for User Story 3
 
-- [ ] T032 [US3] Extend `compile-tagbody-dispatch` to handle fallthrough between segments in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T033 [US3] Add br $exit at end of final segment for normal completion in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T034 [US3] Run tests to verify complex jump patterns work correctly
+- [x] T032 [US3] Extend `compile-tagbody-dispatch` to handle fallthrough between segments in src/clysm/compiler/codegen/func-section.lisp
+- [x] T033 [US3] Add br $exit at end of final segment for normal completion in src/clysm/compiler/codegen/func-section.lisp
+- [x] T034 [US3] Run tests to verify complex jump patterns work correctly
 
 **Checkpoint**: User Story 3 complete - complex state machine patterns work
 
@@ -153,17 +153,17 @@
 
 ### Tests for Integration
 
-- [ ] T035 [P] Write integration test for compile-time error on undefined tag in tests/integration/control-flow-test.lisp
-- [ ] T036 [P] Write integration test for compile-time error on go outside tagbody in tests/integration/control-flow-test.lisp
-- [ ] T037 [P] Write integration test for nested tagbody with independent scopes in tests/integration/control-flow-test.lisp
+- [x] T035 [P] Write integration test for compile-time error on undefined tag in tests/integration/control-flow-test.lisp
+- [x] T036 [P] Write integration test for compile-time error on go outside tagbody in tests/integration/control-flow-test.lisp
+- [x] T037 [P] Write integration test for nested tagbody with independent scopes in tests/integration/control-flow-test.lisp
 
 ### Implementation
 
-- [ ] T038 Refactor `compile-tagbody` to dispatch based on analyze-tagbody-strategy result in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T039 Refactor `compile-go` to check tagbody-context and dispatch to appropriate strategy in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T040 Add compile-time error for undefined tag in `compile-go` in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T041 Add compile-time error for go outside tagbody in `compile-go` in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T042 Handle nested tagbody by properly managing tagbody-context in compilation-env in src/clysm/compiler/codegen/func-section.lisp
+- [x] T038 Refactor `compile-tagbody` to dispatch based on analyze-tagbody-strategy result in src/clysm/compiler/codegen/func-section.lisp
+- [x] T039 Refactor `compile-go` to check tagbody-context and dispatch to appropriate strategy in src/clysm/compiler/codegen/func-section.lisp
+- [x] T040 Add compile-time error for undefined tag in `compile-go` in src/clysm/compiler/codegen/func-section.lisp
+- [x] T041 Add compile-time error for go outside tagbody in `compile-go` in src/clysm/compiler/codegen/func-section.lisp
+- [x] T042 Handle nested tagbody by properly managing tagbody-context in compilation-env in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: All strategies integrated - full tagbody/go support working
 
@@ -173,10 +173,10 @@
 
 **Purpose**: Verification, optimization, and documentation
 
-- [ ] T043 [P] Verify generated WAT for simple-loop has no br_table (SC-005) by manual inspection
-- [ ] T044 [P] Verify all error messages are clear and actionable (SC-006)
-- [ ] T045 Run full test suite via `nix flake check` to ensure Nix-First compliance
-- [ ] T046 Code cleanup: Remove any debug code, ensure consistent formatting in src/clysm/compiler/codegen/func-section.lisp
+- [x] T043 [P] Verify generated WAT for simple-loop has no br_table (SC-005) by manual inspection
+- [x] T044 [P] Verify all error messages are clear and actionable (SC-006)
+- [x] T045 Run full test suite via `nix flake check` to ensure Nix-First compliance
+- [x] T046 Code cleanup: Remove any debug code, ensure consistent formatting in src/clysm/compiler/codegen/func-section.lisp
 
 ---
 

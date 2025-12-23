@@ -20,9 +20,46 @@
   ;; Phase 6: Exception handling
   (blocks nil :type list)              ; ((name . block-depth) ...) for block/return-from
   (block-depth 0 :type fixnum)         ; Current nesting depth for br targets
-  (tagbody-tags nil :type list)        ; ((tag . label-idx) ...) for tagbody/go
+  (tagbody-tags nil :type list)        ; ((tag . label-idx) ...) for tagbody/go - legacy field
+  (tagbody-context nil :type (or null tagbody-context)) ; Active tagbody compilation context
   (catch-tags nil :type list)          ; ((tag-expr . handler-depth) ...) for catch/throw
   (unwind-stack nil :type list))       ; Stack of unwind-protect handlers
+
+;;; ============================================================
+;;; Tagbody Context (for tagbody/go compilation)
+;;; ============================================================
+
+(defstruct tagbody-context
+  "Context for compiling tagbody/go control flow.
+   Created when entering compile-tagbody, stored in compilation-env,
+   accessed by compile-go to determine jump target."
+  (strategy nil :type keyword)
+  ;; :sequential | :simple-loop | :dispatch
+
+  (tags nil :type list)
+  ;; Association list: ((tag-symbol . segment-index) ...)
+  ;; Maps tag names to their segment indices for go target resolution
+
+  (pc-local nil :type (or null fixnum))
+  ;; Index of $pc local variable (dispatch strategy only)
+  ;; NIL for sequential and simple-loop strategies
+
+  (base-loop-depth 0 :type fixnum)
+  ;; Base br depth from the loop body to the loop target
+  ;; For simple-loop: 0 (br 0 targets the loop)
+  ;; For dispatch: varies per segment (num-segments - seg-idx)
+
+  (base-block-depth 0 :type fixnum)
+  ;; Block depth when entering the tagbody's loop
+  ;; Used to calculate correct br depth when nested in if/block structures
+
+  (loop-label nil :type (or null symbol))
+  ;; Wasm label for loop target (simple-loop and dispatch strategies)
+  ;; e.g., $LOOP for simple-loop, $dispatch for dispatch
+
+  (num-segments nil :type (or null fixnum))
+  ;; Total number of segments (used for depth calculation)
+  )
 
 (defun make-env ()
   "Create a fresh compilation environment."
@@ -554,10 +591,14 @@
 ;;; ============================================================
 
 (defun compile-if (ast env)
-  "Compile an if expression."
+  "Compile an if expression.
+   Note: if creates a Wasm block, so we increment block-depth for nested go/return-from."
   (let ((test (clysm/compiler/ast:ast-if-test ast))
         (then-branch (clysm/compiler/ast:ast-if-then ast))
-        (else-branch (clysm/compiler/ast:ast-if-else ast)))
+        (else-branch (clysm/compiler/ast:ast-if-else ast))
+        ;; Create new env with incremented block depth for if block
+        (if-env (copy-compilation-env env)))
+    (incf (cenv-block-depth if-env))
     (append
      ;; Compile test
      (compile-to-instructions test env)
@@ -565,9 +606,9 @@
      (compile-nil-check)
      ;; If-then-else
      '((:if (:result :anyref)))
-     (compile-to-instructions then-branch env)
+     (compile-to-instructions then-branch if-env)
      '(:else)
-     (compile-to-instructions else-branch env)
+     (compile-to-instructions else-branch if-env)
      '(:end))))
 
 (defun compile-nil-check ()
@@ -755,6 +796,7 @@
    :blocks (cenv-blocks env)
    :block-depth (cenv-block-depth env)
    :tagbody-tags (cenv-tagbody-tags env)
+   :tagbody-context (cenv-tagbody-context env)  ; Inherit tagbody context
    :catch-tags (cenv-catch-tags env)
    :unwind-stack (cenv-unwind-stack env)))
 
@@ -773,6 +815,7 @@
    :blocks (copy-list (cenv-blocks env))
    :block-depth (cenv-block-depth env)
    :tagbody-tags (copy-list (cenv-tagbody-tags env))
+   :tagbody-context (cenv-tagbody-context env)  ; Reference (not copied for nesting)
    :catch-tags (copy-list (cenv-catch-tags env))
    :unwind-stack (copy-list (cenv-unwind-stack env))))
 
@@ -1350,41 +1393,322 @@
       result)))
 
 ;;; ============================================================
+;;; Tagbody/Go Strategy Analysis (T008-T010)
+;;; ============================================================
+
+(defun collect-go-targets-from-form (form)
+  "Collect all go target tags from a single AST form.
+   Recursively walks into nested forms (if, progn, etc.)."
+  (etypecase form
+    (clysm/compiler/ast:ast-go
+     (list (clysm/compiler/ast:ast-go-tag form)))
+    (clysm/compiler/ast:ast-if
+     (append (collect-go-targets-from-form (clysm/compiler/ast:ast-if-test form))
+             (collect-go-targets-from-form (clysm/compiler/ast:ast-if-then form))
+             (when (clysm/compiler/ast:ast-if-else form)
+               (collect-go-targets-from-form (clysm/compiler/ast:ast-if-else form)))))
+    (clysm/compiler/ast:ast-progn
+     (loop for subform in (clysm/compiler/ast:ast-progn-forms form)
+           append (collect-go-targets-from-form subform)))
+    (clysm/compiler/ast:ast-let
+     (loop for subform in (clysm/compiler/ast:ast-let-body form)
+           append (collect-go-targets-from-form subform)))
+    ;; For other forms, no go targets inside
+    (t nil)))
+
+(defun collect-go-targets (segments)
+  "Collect all go target tags from all segments.
+   Returns a list of tag symbols that are targets of go statements."
+  (loop for segment in segments
+        append (loop for form in (cdr segment)
+                     append (collect-go-targets-from-form form))))
+
+(defun find-tag-segment-index (segments tag)
+  "Find the segment index where TAG is defined.
+   Returns nil if tag not found."
+  (loop for segment in segments
+        for idx from 0
+        when (eq (car segment) tag)
+        return idx))
+
+(defun check-go-is-backward (segments go-form segment-idx form-position)
+  "Check if a go from the given position is a backward jump.
+   A backward jump targets a tag at or before the current position."
+  (let* ((target-tag (clysm/compiler/ast:ast-go-tag go-form))
+         (target-idx (find-tag-segment-index segments target-tag)))
+    (when target-idx
+      ;; Backward if target segment index is less than current segment index
+      ;; OR if target is same segment but we're after the tag definition
+      (or (< target-idx segment-idx)
+          (and (= target-idx segment-idx) (> form-position 0))))))
+
+(defun check-form-goes-backward (segments form segment-idx form-position tag)
+  "Check if all goes to TAG in this form are backward jumps."
+  (etypecase form
+    (clysm/compiler/ast:ast-go
+     (if (eq (clysm/compiler/ast:ast-go-tag form) tag)
+         (check-go-is-backward segments form segment-idx form-position)
+         t)) ; Not targeting our tag, doesn't affect result
+    (clysm/compiler/ast:ast-if
+     (and (check-form-goes-backward segments (clysm/compiler/ast:ast-if-test form)
+                                    segment-idx form-position tag)
+          (check-form-goes-backward segments (clysm/compiler/ast:ast-if-then form)
+                                    segment-idx form-position tag)
+          (or (null (clysm/compiler/ast:ast-if-else form))
+              (check-form-goes-backward segments (clysm/compiler/ast:ast-if-else form)
+                                        segment-idx form-position tag))))
+    (clysm/compiler/ast:ast-progn
+     (loop for subform in (clysm/compiler/ast:ast-progn-forms form)
+           always (check-form-goes-backward segments subform segment-idx form-position tag)))
+    (clysm/compiler/ast:ast-let
+     (loop for subform in (clysm/compiler/ast:ast-let-body form)
+           always (check-form-goes-backward segments subform segment-idx form-position tag)))
+    (t t))) ; Other forms don't contain go
+
+(defun all-goes-are-backward-p (segments tag)
+  "Check if all go statements targeting TAG are backward jumps.
+   Returns T if all goes to TAG are backward, NIL otherwise."
+  (loop for segment in segments
+        for seg-idx from 0
+        always (loop for form in (cdr segment)
+                     for form-pos from 0
+                     always (check-form-goes-backward segments form seg-idx form-pos tag))))
+
+(defun analyze-tagbody-strategy (segments)
+  "Analyze tagbody segments and determine the compilation strategy.
+   Returns one of:
+   - :sequential - no go statements, just sequential execution
+   - :simple-loop - single tag with backward jumps only (Wasm loop)
+   - :dispatch - complex patterns requiring br_table dispatch"
+  (let* ((tags (remove nil (mapcar #'car segments)))
+         (go-targets (remove-duplicates (collect-go-targets segments))))
+    (cond
+      ;; No go statements -> sequential
+      ((null go-targets) :sequential)
+      ;; Single tag, single target, all backward -> simple loop
+      ((and (= (length tags) 1)
+            (= (length go-targets) 1)
+            (eq (first tags) (first go-targets))
+            (all-goes-are-backward-p segments (first tags)))
+       :simple-loop)
+      ;; Everything else -> dispatch
+      (t :dispatch))))
+
+;;; ============================================================
 ;;; Tagbody/Go Compilation (T110-T112)
 ;;; ============================================================
 
-(defun compile-tagbody (ast env)
-  "Compile tagbody.
-   MVP implementation: just compile all forms sequentially.
-   Go support requires loop/dispatch mechanism.
+(defun compile-tagbody-sequential (segments env)
+  "Compile tagbody with sequential strategy (no go statements).
+   Simply compiles all forms in order and returns NIL."
+  (let ((result '()))
+    (dolist (segment segments)
+      (let ((forms (cdr segment)))
+        (dolist (form forms)
+          (setf result (append result (compile-to-instructions form env)))
+          (setf result (append result '(:drop))))))
+    ;; Return NIL
+    (append result '((:ref.null :none)))))
 
-   For simple tagbody without go, this just executes all forms
-   and returns NIL."
+(defun compile-tagbody-simple-loop (segments env context)
+  "Compile tagbody with simple-loop strategy.
+   Used when there's a single tag with only backward jumps.
+   Generates: (loop body... (br N for go where N accounts for nesting) ... end) NIL
+
+   Structure:
+   - loop (br 0 continues loop from direct context)
+     - forms...
+     - go -> br (current-depth - base-depth) to reach loop
+   - end
+   - ref.null none"
+  (let* ((result '())
+         (loop-env (copy-compilation-env env)))
+    ;; Increment block depth for the loop
+    (incf (cenv-block-depth loop-env))
+    ;; Set up context for compile-go to find
+    ;; Record the block depth at which the loop starts
+    (setf (tagbody-context-base-block-depth context) (cenv-block-depth loop-env))
+    (setf (tagbody-context-base-loop-depth context) 0)  ; br to loop is relative
+    (setf (cenv-tagbody-context loop-env) context)
+    ;; Start loop with no result type (void loop)
+    (setf result '((:loop nil)))
+    ;; Compile preamble (forms before first tag)
+    (let ((first-segment (first segments)))
+      (when (null (car first-segment))
+        (dolist (form (cdr first-segment))
+          (setf result (append result (compile-to-instructions form loop-env)))
+          (setf result (append result '(:drop))))))
+    ;; Compile the main tagged segment
+    (dolist (segment segments)
+      (when (car segment) ; Skip preamble, compile tagged segment
+        (dolist (form (cdr segment))
+          (setf result (append result (compile-to-instructions form loop-env)))
+          (setf result (append result '(:drop))))))
+    ;; End loop
+    (setf result (append result '(:end)))
+    ;; Return NIL
+    (append result '((:ref.null :none)))))
+
+(defun compile-tagbody-dispatch (segments env context)
+  "Compile tagbody with dispatch strategy.
+   Used for complex jump patterns (forward jumps, multiple tags).
+
+   Structure (for N segments):
+   block (exit block, depth N+1 from innermost)
+     loop (dispatch loop, depth N from innermost)
+       block (segment N-1, depth N-1 from innermost)
+         block (segment N-2, depth N-2)
+           ...
+           block (segment 0, depth 0)
+             br_table [N N-1 ... 1] 0 $pc
+           end
+           ;; segment 0 code here
+           ;; go -> set $pc, br (depth to loop = N - seg_idx)
+         end
+         ;; segment 1 code here
+       end
+       ;; segment N-1 code here
+       br (depth to exit = 1)
+     end
+   end"
+  (let* ((result '())
+         (num-segments (length segments))
+         (pc-local (tagbody-context-pc-local context))
+         (dispatch-env (copy-compilation-env env)))
+    ;; Track block depth: exit block + loop + num-segments blocks
+    ;; After br_table, we're inside all nested blocks
+    ;; block-depth at segment 0 = env depth + 2 (exit, loop) + num-segments
+    ;; But for go, we need depth relative to the loop, not absolute
+    (incf (cenv-block-depth dispatch-env) 2)  ; exit block + loop
+    ;; Set up context for compile-go
+    (setf (cenv-tagbody-context dispatch-env) context)
+    ;; Initialize $pc to 0 (stored as i31ref since all locals are anyref)
+    (setf result (list (list :i32.const 0)
+                       :ref.i31
+                       (list :local.set pc-local)))
+    ;; Start exit block (result anyref for NIL)
+    (setf result (append result '((:block (:result :anyref)))))
+    ;; Start dispatch loop with anyref result type
+    ;; The loop never falls through (always exits via br 1 to exit block),
+    ;; but the result type is needed for Wasm validation.
+    (setf result (append result '((:loop (:result :anyref)))))
+    ;; Generate nested blocks (innermost = segment 0)
+    (dotimes (i num-segments)
+      (setf result (append result '((:block nil)))))
+    ;; Generate br_table
+    ;; br_table[i] = i (segment index equals br depth to reach that segment's code)
+    ;; When inside innermost block (seg 0), br i exits i blocks to segment i's code area
+    (let ((br-targets (loop for i from 0 below num-segments collect i)))
+      ;; Extract $pc from i31ref to i32 for br_table
+      (setf result (append result (list (list :local.get pc-local)
+                                        '(:ref.cast :i31)
+                                        :i31.get_s)))
+      ;; Default target is num-segments (exit all segment blocks, unreachable in normal operation)
+      (setf result (append result (list (cons :br_table (append br-targets (list num-segments)))))))
+    ;; Close blocks and generate segment code
+    (loop for seg-idx from 0 below num-segments
+          for segment in segments
+          do (let ((segment-env (copy-compilation-env dispatch-env)))
+               ;; Close the block for this segment FIRST
+               (setf result (append result '(:end)))
+               ;; Now segment code runs here, after closing (seg-idx + 1) blocks
+               ;; Remaining nesting from segment seg-idx's code area:
+               ;; - (num-segments - seg-idx - 1) more segment blocks to exit
+               ;; - then the loop (which is the target for br)
+               ;; So base-loop-depth = (num-segments - seg-idx - 1)
+               (let ((remaining-blocks (- num-segments seg-idx 1)))
+                 (setf (cenv-block-depth segment-env)
+                       (+ (cenv-block-depth env) 2 remaining-blocks))
+                 (setf (tagbody-context-base-block-depth (cenv-tagbody-context segment-env))
+                       (cenv-block-depth segment-env))
+                 (setf (tagbody-context-base-loop-depth (cenv-tagbody-context segment-env))
+                       remaining-blocks))
+               ;; Compile segment forms
+               (dolist (form (cdr segment))
+                 (setf result (append result (compile-to-instructions form segment-env)))
+                 (setf result (append result '(:drop))))))
+    ;; After all segments, exit the tagbody with NIL
+    ;; We're inside the loop, exit block is at depth 1
+    (setf result (append result '((:ref.null :none))))
+    (setf result (append result '((:br 1))))
+    ;; Close dispatch loop
+    (setf result (append result '(:end)))
+    ;; Close exit block
+    (setf result (append result '(:end)))
+    result))
+
+(defun compile-tagbody (ast env)
+  "Compile tagbody using appropriate strategy based on analysis.
+   Strategies:
+   - :sequential - no go, just sequential execution
+   - :simple-loop - single tag with backward jumps only
+   - :dispatch - complex patterns with br_table"
   (let* ((segments (clysm/compiler/ast:ast-tagbody-segments ast))
-         (tag-env (copy-compilation-env env))
-         (result '()))
-    ;; Register tags (for go lookup - MVP: error if go is used)
+         (strategy (analyze-tagbody-strategy segments))
+         (tag-env (copy-compilation-env env)))
+    ;; Register tags in legacy format for backward compatibility
     (loop for segment in segments
           for seg-idx from 0
           do (let ((tag (car segment)))
                (when tag
                  (push (cons tag seg-idx) (cenv-tagbody-tags tag-env)))))
-    ;; Compile all segment forms sequentially
-    (dolist (segment segments)
-      (let ((forms (cdr segment)))
-        (dolist (form forms)
-          (setf result (append result (compile-to-instructions form tag-env)))
-          (setf result (append result '(:drop))))))
-    ;; Return NIL
-    (setf result (append result '((:ref.null :none))))
-    result))
+    (case strategy
+      (:sequential
+       (compile-tagbody-sequential segments tag-env))
+      (:simple-loop
+       (let* ((context (make-tagbody-context
+                        :strategy :simple-loop
+                        :tags (loop for segment in segments
+                                    for idx from 0
+                                    when (car segment)
+                                    collect (cons (car segment) idx))
+                        :base-loop-depth 0  ; br 0 targets the loop
+                        :num-segments (length segments))))
+         (compile-tagbody-simple-loop segments tag-env context)))
+      (:dispatch
+       (let* ((pc-local (env-add-local tag-env (gensym "pc")))
+              (context (make-tagbody-context
+                        :strategy :dispatch
+                        :tags (loop for segment in segments
+                                    for idx from 0
+                                    when (car segment)
+                                    collect (cons (car segment) idx))
+                        :pc-local pc-local
+                        :num-segments (length segments))))
+         (compile-tagbody-dispatch segments tag-env context))))))
 
 (defun compile-go (ast env)
-  "Compile go.
-   MVP: Not fully implemented - signals error."
-  (declare (ignore env))
-  (let ((tag (clysm/compiler/ast:ast-go-tag ast)))
-    (error "go is not yet implemented (tag: ~A). Tagbody without go works." tag)))
+  "Compile go statement.
+   Uses the tagbody-context from environment to determine how to jump.
+   Calculates correct br depth based on current nesting within the tagbody."
+  (let* ((tag (clysm/compiler/ast:ast-go-tag ast))
+         (context (cenv-tagbody-context env)))
+    (unless context
+      (error "go outside tagbody: ~A" tag))
+    (let ((tag-info (assoc tag (tagbody-context-tags context))))
+      (unless tag-info
+        (error "undefined tag: ~A" tag))
+      (let ((segment-idx (cdr tag-info))
+            (strategy (tagbody-context-strategy context))
+            ;; Calculate how many blocks we're nested inside relative to the loop
+            (nesting-depth (- (cenv-block-depth env)
+                              (tagbody-context-base-block-depth context))))
+        (case strategy
+          (:simple-loop
+           ;; For simple loop, branch back to the loop start
+           ;; br depth = nesting depth (how many blocks to exit to reach loop)
+           (list (list :br nesting-depth)))
+          (:dispatch
+           ;; For dispatch, set $pc (as i31ref) and branch to dispatch loop
+           ;; br depth = nesting depth + base loop depth
+           (let ((pc-local (tagbody-context-pc-local context))
+                 (base-depth (tagbody-context-base-loop-depth context)))
+             (list (list :i32.const segment-idx)
+                   :ref.i31  ; wrap as i31ref to match local type
+                   (list :local.set pc-local)
+                   (list :br (+ nesting-depth base-depth)))))
+          (t
+           (error "go in sequential tagbody should not be compiled: ~A" tag)))))))
 
 ;;; ============================================================
 ;;; Catch/Throw Compilation (T113-T115)

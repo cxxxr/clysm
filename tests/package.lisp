@@ -141,3 +141,7 @@
 
 (defpackage #:clysm/tests/integration/clos-edge
   (:use #:cl #:rove))
+
+;; Tagbody/Go strategy analysis unit tests
+(defpackage #:clysm/tests/unit/tagbody
+  (:use #:cl #:rove))

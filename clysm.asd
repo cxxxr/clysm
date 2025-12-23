@@ -138,7 +138,8 @@
      (:file "interpreter-test")
      (:file "clos-test")
      (:file "reader-error-test")
-     (:file "special-vars-ast-test")))
+     (:file "special-vars-ast-test")
+     (:file "tagbody-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
