@@ -154,3 +154,7 @@
 ;; List operations integration tests (006-cons-list-ops)
 (defpackage #:clysm/tests/integration/list
   (:use #:cl #:rove))
+
+;; Sequence functions integration tests (007-sequence-functions)
+(defpackage #:clysm/tests/integration/sequence
+  (:use #:cl #:rove))

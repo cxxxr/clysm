@@ -474,9 +474,103 @@
     (loop for b across body-content do (vector-push-extend b buffer))))
 
 (defun emit-instructions (instrs buffer)
-  "Emit a list of instructions."
-  (dolist (instr instrs)
-    (emit-instruction instr buffer)))
+  "Emit a list of instructions after resolving symbolic labels."
+  (let ((resolved (resolve-labels instrs)))
+    (dolist (instr resolved)
+      (emit-instruction instr buffer))))
+
+;;; ============================================================
+;;; Label Resolution
+;;; ============================================================
+;;;
+;;; Wasm uses relative branch indices - an index of 0 means the innermost
+;;; enclosing block/loop, 1 means the next outer, etc.
+;;;
+;;; Instructions like (:block $label type) and (:loop $label type) introduce
+;;; labels. (:br $label) and (:br_if $label) reference them.
+;;;
+;;; This pass converts symbolic labels to numeric indices.
+
+(defun resolve-labels (instrs)
+  "Resolve symbolic labels in instructions to numeric branch indices."
+  (let ((label-stack '()))  ; Stack of (label . depth-introduced)
+    (resolve-labels-in-list instrs label-stack 0)))
+
+(defun resolve-labels-in-list (instrs label-stack depth)
+  "Resolve labels in a flat list of instructions."
+  (let ((result '())
+        (current-depth depth)
+        (current-labels label-stack))
+    (dolist (instr instrs)
+      (cond
+        ;; Block with label: (:block $label type)
+        ((and (consp instr) (eq (car instr) :block)
+              (symbolp (cadr instr))
+              (not (null (cadr instr))))
+         (let* ((label (cadr instr))
+                (block-type (caddr instr)))
+           ;; Push label with current depth
+           (push (cons label current-depth) current-labels)
+           (incf current-depth)
+           ;; Emit block with just the type
+           (push (list :block block-type) result)))
+        ;; Loop with label: (:loop $label type)
+        ((and (consp instr) (eq (car instr) :loop)
+              (symbolp (cadr instr))
+              (not (null (cadr instr))))
+         (let* ((label (cadr instr))
+                (loop-type (caddr instr)))
+           ;; Push label with current depth
+           (push (cons label current-depth) current-labels)
+           (incf current-depth)
+           ;; Emit loop with just the type
+           (push (list :loop loop-type) result)))
+        ;; Block/loop without label (just type)
+        ((and (consp instr) (member (car instr) '(:block :loop))
+              (or (null (cadr instr))
+                  (and (listp (cadr instr)) (eq (caar (cdr instr)) :result))
+                  (and (listp (cadr instr)) (eq (caar (cdr instr)) :type))))
+         (incf current-depth)
+         (push instr result))
+        ;; If also introduces a block scope
+        ((and (consp instr) (eq (car instr) :if))
+         (incf current-depth)
+         (push instr result))
+        ;; try_table also introduces a block scope
+        ((and (consp instr) (eq (car instr) :try_table))
+         (incf current-depth)
+         (push instr result))
+        ;; End decreases depth
+        ((eq instr :end)
+         (decf current-depth)
+         ;; Pop labels that were at this depth
+         (loop while (and current-labels
+                          (= (cdar current-labels) current-depth))
+               do (pop current-labels))
+         (push instr result))
+        ;; Branch with symbolic label: (:br $label)
+        ((and (consp instr) (eq (car instr) :br)
+              (symbolp (cadr instr)))
+         (let* ((label (cadr instr))
+                (entry (assoc label current-labels)))
+           (if entry
+               ;; Calculate relative index
+               (let ((target-depth (cdr entry)))
+                 (push (list :br (- current-depth target-depth 1)) result))
+               (error "Unknown branch label: ~A" label))))
+        ;; Branch-if with symbolic label: (:br_if $label)
+        ((and (consp instr) (eq (car instr) :br_if)
+              (symbolp (cadr instr)))
+         (let* ((label (cadr instr))
+                (entry (assoc label current-labels)))
+           (if entry
+               (let ((target-depth (cdr entry)))
+                 (push (list :br_if (- current-depth target-depth 1)) result))
+               (error "Unknown branch label: ~A" label))))
+        ;; Everything else passes through unchanged
+        (t
+         (push instr result))))
+    (nreverse result)))
 
 (defun emit-instruction (instr buffer)
   "Emit a single instruction."

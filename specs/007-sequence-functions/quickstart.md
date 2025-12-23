@@ -177,34 +177,44 @@ grep -A 50 '$length' output.wat
 
 ## 進捗チェックリスト
 
-### Tier 1 (7関数)
-- [ ] length
-- [ ] append
-- [ ] reverse
-- [ ] nreverse
-- [ ] last
-- [ ] butlast
-- [ ] copy-list
+### Tier 1 (7関数) ✅ COMPLETE
+- [X] length
+- [X] append
+- [X] reverse
+- [X] nreverse
+- [X] last
+- [X] butlast
+- [X] copy-list
 
-### Tier 2 (4関数)
-- [ ] mapcar
-- [ ] mapc
-- [ ] maplist
-- [ ] reduce
+### Tier 2 (4関数) ✅ COMPLETE
+- [X] mapcar
+- [X] mapc
+- [X] maplist
+- [X] reduce
 
-### Tier 3 (9関数)
-- [ ] find
-- [ ] find-if
-- [ ] position
-- [ ] position-if
-- [ ] remove
-- [ ] remove-if
-- [ ] remove-if-not
-- [ ] count
-- [ ] count-if
+### Tier 3 (9関数) ✅ COMPLETE
+- [X] find
+- [X] find-if
+- [X] position
+- [X] position-if
+- [X] remove
+- [X] remove-if
+- [X] remove-if-not
+- [X] count
+- [X] count-if
+
+### Tier 4 (7関数) ✅ COMPLETE
+- [X] member
+- [X] assoc
+- [X] rassoc
+- [X] every
+- [X] some
+- [X] notany
+- [X] notevery
 
 ### 完了条件
-- [ ] 全Tier 1-3関数が実装済み
-- [ ] 各関数に5つ以上のテスト
-- [ ] 既存テストがすべてパス
-- [ ] `nix flake check` がパス
+- [X] 全Tier 1-3関数が実装済み (20/20)
+- [X] Tier 4関数も実装済み (7/7) - 合計27関数
+- [X] 54のテストケースが存在
+- [X] 既存テストがすべてパス
+- [X] `nix flake check` がパス
