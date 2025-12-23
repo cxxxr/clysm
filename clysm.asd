@@ -139,7 +139,8 @@
      (:file "clos-test")
      (:file "reader-error-test")
      (:file "special-vars-ast-test")
-     (:file "tagbody-test")))
+     (:file "tagbody-test")
+     (:file "cons-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -160,7 +161,8 @@
      (:file "jit-test")
      (:file "clos-test")
      (:file "variable-scope-test")
-     (:file "clos-edge-test"))))
+     (:file "clos-edge-test")
+     (:file "list-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

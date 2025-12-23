@@ -516,9 +516,16 @@
           (emit-heaptype (cadr instr) buffer))
          (:ref.cast
           ;; ref.cast <reftype> - cast reference to specific type
+          ;; Uses nullable variant (0xFB 0x16) to handle nil inputs
           (vector-push-extend #xFB buffer)
-          (vector-push-extend #x17 buffer)  ; ref.cast opcode
-          (emit-heaptype (cadr instr) buffer))
+          (vector-push-extend #x16 buffer)  ; ref.cast nullable opcode
+          (emit-heaptype-for-gc (cadr instr) buffer))
+         (:ref.test
+          ;; ref.test <reftype> - test if reference is of type
+          ;; Uses nullable variant (0xFB 0x14) to handle nil inputs
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x14 buffer)  ; ref.test nullable opcode
+          (emit-heaptype-for-gc (cadr instr) buffer))
          (:ref.func
           ;; ref.func <funcidx> - get function reference
           (vector-push-extend #xD2 buffer)
@@ -705,11 +712,15 @@
 
 (defun emit-heaptype (type buffer)
   "Emit a heap type for ref.null, ref.cast, etc.
-   Can be a keyword (abstract type) or a number (type index)."
+   Can be a keyword (abstract type), a number (type index), or (ref N) for concrete types."
   (cond
     ;; Numeric type index - emit as signed LEB128
     ((integerp type)
      (emit-leb128-signed type buffer))
+    ;; List form: (ref <type-index>) for concrete reference types
+    ((and (listp type) (eq (first type) :ref))
+     (let ((type-idx (second type)))
+       (emit-leb128-signed type-idx buffer)))
     ;; Keyword type
     ((keywordp type)
      (vector-push-extend
@@ -728,6 +739,25 @@
       buffer))
     (t
      (error "Unknown heap type: ~A" type))))
+
+(defun emit-heaptype-for-gc (type buffer)
+  "Emit a heaptype for ref.cast/ref.test GC instructions.
+   Extracts the heaptype from reftype forms like (:ref 2)."
+  (cond
+    ;; List form: (:ref <type-idx>) - extract type index
+    ((and (listp type) (eq (first type) :ref))
+     (emit-leb128-signed (second type) buffer))
+    ;; List form: (:ref-null <type-idx>) - extract type index
+    ((and (listp type) (eq (first type) :ref-null))
+     (emit-leb128-signed (second type) buffer))
+    ;; Abstract heap types (i31, eq, any, etc.)
+    ((keywordp type)
+     (emit-heaptype type buffer))
+    ;; Numeric type index
+    ((integerp type)
+     (emit-leb128-signed type buffer))
+    (t
+     (error "Unknown ref type: ~A" type))))
 
 (defun emit-leb128-unsigned (value buffer)
   "Emit an unsigned LEB128 encoded value."
@@ -758,6 +788,60 @@
 ;;; WAT Output (for debugging)
 ;;; ============================================================
 
+(defun emit-instr-wat (stream instr indent)
+  "Emit a single instruction in WAT format."
+  (let ((spaces (make-string indent :initial-element #\Space)))
+    (cond
+      ;; Keyword (simple instruction like :ref.is_null)
+      ((keywordp instr)
+       (format stream "~A~A~%" spaces (string-downcase (symbol-name instr))))
+      ;; List starting with keyword (instruction with operands)
+      ((and (listp instr) (keywordp (first instr)))
+       (let ((op (first instr))
+             (args (rest instr)))
+         (cond
+           ;; Block instructions (if, block, loop)
+           ((member op '(:if :block :loop))
+            (format stream "~A(~A" spaces (string-downcase (symbol-name op)))
+            (when (and args (listp (first args)) (eq (first (first args)) :result))
+              (format stream " (result ~A)" (keyword-to-wat-type (second (first args))))
+              (setf args (rest args)))
+            (format stream "~%")
+            (dolist (sub-instr args)
+              (emit-instr-wat stream sub-instr (+ indent 2)))
+            (format stream "~A)~%" spaces))
+           ;; else is special
+           ((eq op :else)
+            (format stream "~Aelse~%" spaces))
+           ;; end is special
+           ((eq op :end)
+            (format stream "~Aend~%" spaces))
+           ;; ref.cast with type argument
+           ((eq op :ref.cast)
+            (if (listp (first args))
+                (format stream "~Aref.cast (ref ~A)~%" spaces (second (first args)))
+                (format stream "~Aref.cast ~A~%" spaces (first args))))
+           ;; ref.test with type argument
+           ((eq op :ref.test)
+            (if (listp (first args))
+                (format stream "~Aref.test (ref ~A)~%" spaces (second (first args)))
+                (format stream "~Aref.test ~A~%" spaces (first args))))
+           ;; ref.null
+           ((eq op :ref.null)
+            (format stream "~Aref.null ~A~%" spaces (string-downcase (symbol-name (first args)))))
+           ;; Regular instruction with operands
+           (t
+            (format stream "~A~A" spaces (string-downcase (symbol-name op)))
+            (dolist (arg args)
+              (format stream " ~A" arg))
+            (format stream "~%")))))
+      ;; Symbol (like :else or :end without parens)
+      ((symbolp instr)
+       (format stream "~A~A~%" spaces (string-downcase (symbol-name instr))))
+      ;; Shouldn't happen
+      (t
+       (format stream "~A;; unknown: ~S~%" spaces instr)))))
+
 (defun emit-module-wat (module)
   "Emit a compiled module as WAT text."
   (with-output-to-string (s)
@@ -780,7 +864,15 @@
     (loop for func in (compiled-module-functions module)
           for i from 0
           do (format s "  (func $f~D (type $t~D)~%" i i)
-             (format s "    ;; body~%")
+             ;; Emit locals
+             (let ((locals (getf func :locals)))
+               (when locals
+                 (dolist (local locals)
+                   (format s "    (local ~A)~%" (keyword-to-wat-type (second local))))))
+             ;; Emit body instructions
+             (let ((body (getf func :body)))
+               (dolist (instr body)
+                 (emit-instr-wat s instr 4)))
              (format s "  )~%"))
     ;; Exports
     (dolist (export (compiled-module-exports module))
@@ -791,17 +883,28 @@
                 index)))
     (format s ")~%")))
 
-(defun keyword-to-wat-type (kw)
-  "Convert a type keyword to WAT format."
-  (ecase kw
-    (:i32 "i32")
-    (:i64 "i64")
-    (:f32 "f32")
-    (:f64 "f64")
-    (:anyref "anyref")
-    (:funcref "funcref")
-    (:i31ref "i31ref")
-    (:eqref "eqref")))
+(defun keyword-to-wat-type (type)
+  "Convert a type to WAT format.
+   Handles both keyword types and list-form reference types."
+  (cond
+    ;; List-form reference types: (:ref-null 2) -> (ref null 2)
+    ((and (listp type) (eq (first type) :ref-null))
+     (format nil "(ref null ~A)" (second type)))
+    ;; List-form non-null reference types: (:ref 2) -> (ref 2)
+    ((and (listp type) (eq (first type) :ref))
+     (format nil "(ref ~A)" (second type)))
+    ;; Simple keyword types
+    ((keywordp type)
+     (ecase type
+       (:i32 "i32")
+       (:i64 "i64")
+       (:f32 "f32")
+       (:f64 "f64")
+       (:anyref "anyref")
+       (:funcref "funcref")
+       (:i31ref "i31ref")
+       (:eqref "eqref")))
+    (t (error "Unknown type: ~A" type))))
 
 ;;; ============================================================
 ;;; Convenience Function

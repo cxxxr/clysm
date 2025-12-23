@@ -146,3 +146,11 @@
 ;; Tagbody/Go strategy analysis unit tests
 (defpackage #:clysm/tests/unit/tagbody
   (:use #:cl #:rove))
+
+;; Cons cell operations unit tests (006-cons-list-ops)
+(defpackage #:clysm/tests/unit/cons
+  (:use #:cl #:rove))
+
+;; List operations integration tests (006-cons-list-ops)
+(defpackage #:clysm/tests/integration/list
+  (:use #:cl #:rove))

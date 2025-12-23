@@ -251,17 +251,48 @@
        (list '(:i32.const 1)
              :ref.i31))
       (:quoted
-       ;; Quoted symbols - for now, represent as i31ref of symbol hash
-       ;; Full implementation would use actual symbol objects
-       (if (null value)
-           (list '(:ref.null :none))
-           ;; Use symbol hash as placeholder for symbol identity
-           ;; Truncate to 32 bits for i32.const, then to 30 bits for i31
-           (let ((hash (logand (sxhash value) #x3FFFFFFF)))  ; 30-bit for i31ref
-             (list (list :i32.const hash)
-                   :ref.i31))))
+       ;; Quoted values - handle lists, symbols, and atoms
+       (cond
+         ;; NIL
+         ((null value)
+          (list '(:ref.null :none)))
+         ;; List - build cons structure
+         ((listp value)
+          (compile-quoted-list value))
+         ;; For symbols, represent as i31ref of symbol hash (placeholder)
+         (t
+          (let ((hash (logand (sxhash value) #x3FFFFFFF)))  ; 30-bit for i31ref
+            (list (list :i32.const hash)
+                  :ref.i31)))))
       (otherwise
        (error "Unsupported literal type: ~A" type)))))
+
+(defun compile-quoted-list (lst)
+  "Compile a quoted list to a cons structure.
+   Builds the list from right to left, creating cons cells."
+  (if (null lst)
+      '((:ref.null :none))
+      (let ((result '()))
+        ;; Compile car element
+        (setf result (append result (compile-quoted-element (car lst))))
+        ;; Compile cdr (rest of list)
+        (setf result (append result (compile-quoted-list (cdr lst))))
+        ;; Create cons cell
+        (setf result (append result
+                             (list (list :struct.new
+                                         clysm/compiler/codegen/gc-types:+type-cons+))))
+        result)))
+
+(defun compile-quoted-element (elem)
+  "Compile a single quoted element to Wasm instructions."
+  (cond
+    ((null elem) '((:ref.null :none)))
+    ((integerp elem) (list (list :i32.const elem) :ref.i31))
+    ((listp elem) (compile-quoted-list elem))
+    ((symbolp elem)
+     (let ((hash (logand (sxhash elem) #x3FFFFFFF)))
+       (list (list :i32.const hash) :ref.i31)))
+    (t (error "Cannot compile quoted element: ~A" elem))))
 
 ;;; ============================================================
 ;;; Variable Reference Compilation (T048)
@@ -355,7 +386,14 @@
        (compile-funcall args env))
       ;; Primitive operators
       ((and (symbolp function)
-            (member function '(+ - * / < > <= >= = /= truncate)))
+            (member function '(+ - * / < > <= >= = /= truncate
+                               ;; Cons/list operations (006-cons-list-ops)
+                               cons car cdr list
+                               consp null atom listp
+                               rplaca rplacd
+                               first second third fourth fifth
+                               sixth seventh eighth ninth tenth
+                               rest nth nthcdr)))
        (compile-primitive-call function args env))
       ;; Local function (from flet/labels)
       ((and (symbolp function) (env-lookup-local-function env function))
@@ -434,7 +472,34 @@
     (<= (compile-comparison-op :i32.le_s args env))
     (>= (compile-comparison-op :i32.ge_s args env))
     (=  (compile-comparison-op :i32.eq args env))
-    (/= (compile-not-equal args env))))
+    (/= (compile-not-equal args env))
+    ;; Cons/list operations (006-cons-list-ops)
+    (cons (compile-cons args env))
+    (car (compile-car args env))
+    (cdr (compile-cdr args env))
+    (list (compile-list args env))
+    ;; Type predicates
+    (consp (compile-consp args env))
+    (null (compile-null args env))
+    (atom (compile-atom args env))
+    (listp (compile-listp args env))
+    ;; Destructive modification
+    (rplaca (compile-rplaca args env))
+    (rplacd (compile-rplacd args env))
+    ;; List accessors
+    (first (compile-car args env))
+    (rest (compile-cdr args env))
+    (second (compile-nth-accessor 1 args env))
+    (third (compile-nth-accessor 2 args env))
+    (fourth (compile-nth-accessor 3 args env))
+    (fifth (compile-nth-accessor 4 args env))
+    (sixth (compile-nth-accessor 5 args env))
+    (seventh (compile-nth-accessor 6 args env))
+    (eighth (compile-nth-accessor 7 args env))
+    (ninth (compile-nth-accessor 8 args env))
+    (tenth (compile-nth-accessor 9 args env))
+    (nth (compile-nth args env))
+    (nthcdr (compile-nthcdr args env))))
 
 (defun compile-arithmetic-op (op args env identity)
   "Compile an arithmetic operation with variadic args.
@@ -521,6 +586,479 @@
      :else
      (:ref.null :none)
      :end)))
+
+;;; ============================================================
+;;; Cons/List Operations (006-cons-list-ops)
+;;; ============================================================
+
+(defun compile-cons (args env)
+  "Compile (cons x y) to struct.new 2.
+   Creates a cons cell with car=x and cdr=y.
+   Stack: [] -> [cons-ref]"
+  (when (/= (length args) 2)
+    (error "cons requires exactly 2 arguments"))
+  (let ((result '()))
+    ;; Compile car value
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Compile cdr value
+    (setf result (append result (compile-to-instructions (second args) env)))
+    ;; Create cons cell (struct.new with type index 2 = $cons)
+    (setf result (append result
+                         (list (list :struct.new
+                                     clysm/compiler/codegen/gc-types:+type-cons+))))
+    result))
+
+(defun compile-car (args env)
+  "Compile (car x) with NIL handling.
+   If x is NIL, returns NIL. Otherwise returns car of cons.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 1)
+    (error "car requires exactly 1 argument"))
+  (let ((result '())
+        (temp-local (env-add-local env (gensym "CAR-TMP"))))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Store in temp for reuse
+    (setf result (append result (list (list :local.tee temp-local))))
+    ;; Check if it's NIL (ref.null check or global comparison)
+    ;; For now, use ref.is_null since NIL is represented as ref.null
+    (setf result (append result '(:ref.is_null)))
+    ;; If null, return NIL; otherwise get car
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:ref.null :none)  ; Return NIL
+                           :else
+                           (:local.get ,temp-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
+                           :end)))
+    result))
+
+(defun compile-cdr (args env)
+  "Compile (cdr x) with NIL handling.
+   If x is NIL, returns NIL. Otherwise returns cdr of cons.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 1)
+    (error "cdr requires exactly 1 argument"))
+  (let ((result '())
+        (temp-local (env-add-local env (gensym "CDR-TMP"))))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Store in temp for reuse
+    (setf result (append result (list (list :local.tee temp-local))))
+    ;; Check if it's NIL
+    (setf result (append result '(:ref.is_null)))
+    ;; If null, return NIL; otherwise get cdr
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:ref.null :none)  ; Return NIL
+                           :else
+                           (:local.get ,temp-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+                           :end)))
+    result))
+
+(defun compile-list (args env)
+  "Compile (list &rest args) to a proper list.
+   Builds cons chain right-to-left: (list 1 2 3) = (cons 1 (cons 2 (cons 3 nil)))
+   Stack: [] -> [list-ref or nil]"
+  (if (null args)
+      ;; Empty list = NIL
+      '((:ref.null :none))
+      ;; Build cons chain from right to left
+      (let ((result '())
+            (acc-local (env-add-local env (gensym "LIST-ACC"))))
+        ;; Start with NIL
+        (setf result '((:ref.null :none)))
+        (setf result (append result (list (list :local.set acc-local))))
+        ;; Build cons chain in reverse order
+        (dolist (arg (reverse args))
+          ;; Compile element
+          (setf result (append result (compile-to-instructions arg env)))
+          ;; Get current accumulator (cdr)
+          (setf result (append result (list (list :local.get acc-local))))
+          ;; Create cons
+          (setf result (append result
+                               (list (list :struct.new
+                                           clysm/compiler/codegen/gc-types:+type-cons+))))
+          ;; Store as new accumulator
+          (setf result (append result (list (list :local.set acc-local)))))
+        ;; Return the final list
+        (setf result (append result (list (list :local.get acc-local))))
+        result)))
+
+;;; ============================================================
+;;; Type Predicates (006-cons-list-ops)
+;;; ============================================================
+
+(defun compile-consp (args env)
+  "Compile (consp x) - returns T if x is a cons cell, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "consp requires exactly 1 argument"))
+  (let ((result '()))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Test if it's a cons (type 2)
+    (setf result (append result
+                         (list (list :ref.test
+                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
+    ;; Convert i32 boolean to Lisp boolean
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:i32.const 1) :ref.i31  ; T
+                           :else
+                           (:ref.null :none)        ; NIL
+                           :end)))
+    result))
+
+(defun compile-null (args env)
+  "Compile (null x) - returns T if x is NIL, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "null requires exactly 1 argument"))
+  (let ((result '()))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Check if null
+    (setf result (append result '(:ref.is_null)))
+    ;; Convert i32 boolean to Lisp boolean
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:i32.const 1) :ref.i31  ; T
+                           :else
+                           (:ref.null :none)        ; NIL
+                           :end)))
+    result))
+
+(defun compile-atom (args env)
+  "Compile (atom x) - returns T if x is not a cons cell, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "atom requires exactly 1 argument"))
+  (let ((result '()))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Test if it's a cons (type 2)
+    (setf result (append result
+                         (list (list :ref.test
+                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
+    ;; atom is NOT consp, so invert the result
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:ref.null :none)        ; cons -> not atom -> NIL
+                           :else
+                           (:i32.const 1) :ref.i31  ; not cons -> atom -> T
+                           :end)))
+    result))
+
+(defun compile-listp (args env)
+  "Compile (listp x) - returns T if x is a cons cell or NIL.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "listp requires exactly 1 argument"))
+  (let ((result '())
+        (temp-local (env-add-local env (gensym "LISTP-TMP"))))
+    ;; Compile the argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    ;; Store for reuse
+    (setf result (append result (list (list :local.tee temp-local))))
+    ;; First check: is it a cons?
+    (setf result (append result
+                         (list (list :ref.test
+                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:i32.const 1) :ref.i31  ; cons -> T
+                           :else
+                           ;; Not a cons, check if NIL
+                           (:local.get ,temp-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:i32.const 1) :ref.i31  ; nil -> T
+                           :else
+                           (:ref.null :none)        ; neither -> NIL
+                           :end
+                           :end)))
+    result))
+
+;;; ============================================================
+;;; Destructive Modification (006-cons-list-ops)
+;;; ============================================================
+
+(defun compile-rplaca (args env)
+  "Compile (rplaca cons new-value) - destructively modify car.
+   Returns the modified cons cell.
+   Stack: [] -> [cons-ref]"
+  (when (/= (length args) 2)
+    (error "rplaca requires exactly 2 arguments"))
+  (let* ((cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+         (result '())
+         ;; Local must be typed to hold the cast result (ref null $cons)
+         (cons-local (env-add-local env (gensym "RPLACA-CONS")
+                                    (list :ref-null cons-type))))
+    ;; Compile the cons argument and save it
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result
+                         (list (list :ref.cast (list :ref cons-type)))))
+    (setf result (append result (list (list :local.tee cons-local))))
+    ;; Compile the new value
+    (setf result (append result (compile-to-instructions (second args) env)))
+    ;; Set the car field (field 0)
+    (setf result (append result
+                         (list (list :struct.set cons-type 0))))
+    ;; Return the cons cell
+    (setf result (append result (list (list :local.get cons-local))))
+    result))
+
+(defun compile-rplacd (args env)
+  "Compile (rplacd cons new-value) - destructively modify cdr.
+   Returns the modified cons cell.
+   Stack: [] -> [cons-ref]"
+  (when (/= (length args) 2)
+    (error "rplacd requires exactly 2 arguments"))
+  (let* ((cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+         (result '())
+         ;; Local must be typed to hold the cast result (ref null $cons)
+         (cons-local (env-add-local env (gensym "RPLACD-CONS")
+                                    (list :ref-null cons-type))))
+    ;; Compile the cons argument and save it
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result
+                         (list (list :ref.cast (list :ref cons-type)))))
+    (setf result (append result (list (list :local.tee cons-local))))
+    ;; Compile the new value
+    (setf result (append result (compile-to-instructions (second args) env)))
+    ;; Set the cdr field (field 1)
+    (setf result (append result
+                         (list (list :struct.set cons-type 1))))
+    ;; Return the cons cell
+    (setf result (append result (list (list :local.get cons-local))))
+    result))
+
+;;; ============================================================
+;;; List Accessors (006-cons-list-ops)
+;;; ============================================================
+
+(defun compile-nth-accessor (n args env)
+  "Compile position accessor (second, third, ..., tenth).
+   Equivalent to (car (nthcdr n list)).
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 1)
+    (error "Position accessor requires exactly 1 argument"))
+  (let ((result '())
+        (list-local (env-add-local env (gensym "NTH-LIST"))))
+    ;; Compile the list argument
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set list-local))))
+    ;; Traverse n times via cdr
+    (dotimes (i n)
+      (setf result (append result (list (list :local.get list-local))))
+      ;; Check for NIL before cdr
+      (setf result (append result '(:ref.is_null)))
+      (setf result (append result
+                           `((:if (:result :anyref))
+                             (:ref.null :none)  ; Return NIL if list ended
+                             :else
+                             (:local.get ,list-local)
+                             (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                             (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+                             :end)))
+      (setf result (append result (list (list :local.set list-local)))))
+    ;; Now get car of result
+    (setf result (append result (list (list :local.get list-local))))
+    (setf result (append result '(:ref.is_null)))
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:ref.null :none)
+                           :else
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
+                           :end)))
+    result))
+
+(defun compile-nth (args env)
+  "Compile (nth n list) - 0-indexed access.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 2)
+    (error "nth requires exactly 2 arguments"))
+  ;; For compile-time constant index, unroll
+  ;; For runtime index, use a loop
+  (let* ((index-form (first args))
+         (list-form (second args)))
+    (if (and (typep index-form 'clysm/compiler/ast:ast-literal)
+             (eq (clysm/compiler/ast:ast-literal-literal-type index-form) :fixnum))
+        ;; Constant index - unroll
+        (let ((n (clysm/compiler/ast:ast-literal-value index-form)))
+          (if (< n 0)
+              ;; Negative index returns NIL
+              '((:ref.null :none))
+              (compile-nth-accessor n (list list-form) env)))
+        ;; Runtime index - generate loop
+        (compile-nth-runtime args env))))
+
+(defun compile-nth-runtime (args env)
+  "Compile (nth n list) with runtime index using a loop.
+   Stack: [] -> [anyref]"
+  (let ((result '())
+        (index-local (env-add-local env (gensym "NTH-IDX") :i32))
+        (list-local (env-add-local env (gensym "NTH-LIST"))))
+    ;; Compile index and convert to i32
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result '((:ref.cast :i31) :i31.get_s)))
+    (setf result (append result (list (list :local.set index-local))))
+    ;; Compile list
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set list-local))))
+    ;; Check for negative index
+    (setf result (append result (list (list :local.get index-local))))
+    (setf result (append result '((:i32.const 0) :i32.lt_s)))
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:ref.null :none)  ; Negative index -> NIL
+                           :else
+                           ;; Loop to traverse
+                           (:block $nth_done (:result :anyref))
+                           (:loop $nth_loop (:result :anyref))
+                           ;; Check if index is 0
+                           (:local.get ,index-local)
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           ;; Index is 0, return car
+                           (:local.get ,list-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           :else
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
+                           :end
+                           (:br $nth_done)
+                           :else
+                           ;; Decrement index
+                           (:local.get ,index-local)
+                           (:i32.const 1)
+                           :i32.sub
+                           (:local.set ,index-local)
+                           ;; Check if list is null
+                           (:local.get ,list-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $nth_done)
+                           :else
+                           ;; Get cdr
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+                           (:local.set ,list-local)
+                           ;; Continue loop (need to push a dummy value for block type)
+                           (:ref.null :none)
+                           (:br $nth_loop)
+                           :end
+                           :end
+                           :end  ; loop
+                           :end  ; block
+                           :end)))  ; if negative
+    result))
+
+(defun compile-nthcdr (args env)
+  "Compile (nthcdr n list) - return list after n cdrs.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 2)
+    (error "nthcdr requires exactly 2 arguments"))
+  (let* ((index-form (first args))
+         (list-form (second args)))
+    (if (and (typep index-form 'clysm/compiler/ast:ast-literal)
+             (eq (clysm/compiler/ast:ast-literal-literal-type index-form) :fixnum))
+        ;; Constant index - unroll
+        (let ((n (clysm/compiler/ast:ast-literal-value index-form))
+              (result '())
+              (list-local (env-add-local env (gensym "NTHCDR-LIST"))))
+          (if (< n 0)
+              ;; Negative index returns the list unchanged
+              (compile-to-instructions list-form env)
+              (progn
+                ;; Compile the list
+                (setf result (append result (compile-to-instructions list-form env)))
+                (setf result (append result (list (list :local.set list-local))))
+                ;; Traverse n times via cdr
+                (dotimes (i n)
+                  (setf result (append result (list (list :local.get list-local))))
+                  (setf result (append result '(:ref.is_null)))
+                  (setf result (append result
+                                       `((:if (:result :anyref))
+                                         (:ref.null :none)
+                                         :else
+                                         (:local.get ,list-local)
+                                         (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                                         (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+                                         :end)))
+                  (setf result (append result (list (list :local.set list-local)))))
+                ;; Return the result
+                (setf result (append result (list (list :local.get list-local))))
+                result)))
+        ;; Runtime index - generate loop (simplified for now)
+        (compile-nthcdr-runtime args env))))
+
+(defun compile-nthcdr-runtime (args env)
+  "Compile (nthcdr n list) with runtime index.
+   Stack: [] -> [anyref]"
+  (let ((result '())
+        (index-local (env-add-local env (gensym "NTHCDR-IDX") :i32))
+        (list-local (env-add-local env (gensym "NTHCDR-LIST"))))
+    ;; Compile index and convert to i32
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result '((:ref.cast :i31) :i31.get_s)))
+    (setf result (append result (list (list :local.set index-local))))
+    ;; Compile list
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set list-local))))
+    ;; Check for negative/zero index
+    (setf result (append result (list (list :local.get index-local))))
+    (setf result (append result '((:i32.const 0) :i32.le_s)))
+    (setf result (append result
+                         `((:if (:result :anyref))
+                           (:local.get ,list-local)  ; <= 0 -> return list
+                           :else
+                           ;; Loop to traverse
+                           (:block $nthcdr_done (:result :anyref))
+                           (:loop $nthcdr_loop (:result :anyref))
+                           ;; Check if list is null
+                           (:local.get ,list-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $nthcdr_done)
+                           :else
+                           ;; Get cdr
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+                           (:local.set ,list-local)
+                           ;; Decrement index
+                           (:local.get ,index-local)
+                           (:i32.const 1)
+                           :i32.sub
+                           (:local.set ,index-local)
+                           ;; Check if index is 0
+                           (:local.get ,index-local)
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           (:local.get ,list-local)
+                           (:br $nthcdr_done)
+                           :else
+                           (:ref.null :none)
+                           (:br $nthcdr_loop)
+                           :end
+                           :end
+                           :end  ; loop
+                           :end  ; block
+                           :end)))  ; if negative
+    result))
 
 (defun compile-regular-call (function args env)
   "Compile a regular function call (T061)."
