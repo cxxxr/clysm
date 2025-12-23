@@ -74,30 +74,30 @@ log() {
 }
 
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
     log "INFO" "$1"
 }
 
 log_success() {
-    echo -e "${GREEN}[OK]${NC} $1"
+    echo -e "${GREEN}[OK]${NC} $1" >&2
     log "OK" "$1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
     log "WARN" "$1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
     log "ERROR" "$1"
 }
 
 log_step() {
-    echo ""
-    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}  $1${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo "" >&2
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}" >&2
+    echo -e "${CYAN}  $1${NC}" >&2
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}" >&2
     log "STEP" "$1"
 }
 
@@ -105,7 +105,7 @@ log_auto_decision() {
     local context="$1"
     local decision="$2"
     local reason="$3"
-    echo -e "${MAGENTA}[AUTO]${NC} $context: $decision"
+    echo -e "${MAGENTA}[AUTO]${NC} $context: $decision" >&2
     log "AUTO_DECISION" "$context | $decision | $reason"
 }
 
@@ -343,23 +343,23 @@ JSONのみを出力してください。"
         json="$result"
     fi
 
-    # 分析結果を表示
-    echo ""
-    echo -e "${CYAN}=== Analysis Result ===${NC}"
-    echo "$json" | jq -r '.analysis.reasoning // "Analysis complete"' 2>/dev/null || echo "$result"
-    echo ""
+    # 分析結果を表示（stderrへ）
+    echo "" >&2
+    echo -e "${CYAN}=== Analysis Result ===${NC}" >&2
+    (echo "$json" | jq -r '.analysis.reasoning // "Analysis complete"' 2>/dev/null || echo "$result") >&2
+    echo "" >&2
 
     # specify_promptを抽出
     local specify_prompt
     specify_prompt=$(echo "$json" | jq -r '.specify_prompt // empty' 2>/dev/null)
 
     if [[ -n "$specify_prompt" ]]; then
-        echo -e "${GREEN}=== Next Feature ===${NC}"
-        echo "$json" | jq -r '.next_feature.name // "Unknown"' 2>/dev/null
-        echo ""
-        echo -e "${BLUE}Description:${NC}"
-        echo "$specify_prompt"
-        echo ""
+        echo -e "${GREEN}=== Next Feature ===${NC}" >&2
+        (echo "$json" | jq -r '.next_feature.name // "Unknown"' 2>/dev/null) >&2
+        echo "" >&2
+        echo -e "${BLUE}Description:${NC}" >&2
+        echo "$specify_prompt" >&2
+        echo "" >&2
 
         # セッションIDを保存
         local session_id
@@ -368,12 +368,13 @@ JSONのみを出力してください。"
             save_session "$session_id"
         fi
 
+        # 戻り値（stdoutへ）
         echo "$specify_prompt"
     else
         log_error "Could not determine next feature"
-        echo ""
-        echo "Raw output:"
-        echo "$result"
+        echo "" >&2
+        echo "Raw output:" >&2
+        echo "$result" >&2
         return 1
     fi
 }
@@ -410,7 +411,7 @@ run_specify() {
             save_session "$new_session_id"
         else
             log_warn "Manual intervention required"
-            echo "$result"
+            echo "$result" >&2
             read -r -p "Your response: " user_response
             output_file=$(run_claude "$user_response" "$new_session_id")
             new_session_id=$(extract_session_id "$output_file")
@@ -461,9 +462,9 @@ run_clarify() {
                 output_file=$(run_claude "$answer" "$new_session_id")
             else
                 log_warn "Manual intervention required for question $question_count"
-                echo ""
-                echo "$result" | tail -50
-                echo ""
+                echo "" >&2
+                echo "$result" | tail -50 >&2
+                echo "" >&2
                 read -r -p "Your response (or 'skip'): " user_response
                 if [[ "$user_response" == "skip" ]]; then
                     user_response="done"
@@ -507,8 +508,8 @@ run_plan() {
     local result
     result=$(extract_result "$output_file")
 
-    # 進捗表示
-    echo "$result" | grep -E "Created|Generated|Updated" | head -10
+    # 進捗表示（stderrへ）
+    (echo "$result" | grep -E "Created|Generated|Updated" | head -10) >&2
 
     log_success "Plan completed"
     echo "$new_session_id"
@@ -531,8 +532,8 @@ run_tasks() {
     local result
     result=$(extract_result "$output_file")
 
-    # タスク数を表示
-    echo "$result" | grep -E "Total|tasks|Tasks" | head -5
+    # タスク数を表示（stderrへ）
+    (echo "$result" | grep -E "Total|tasks|Tasks" | head -5) >&2
 
     log_success "Tasks generated"
     echo "$new_session_id"
@@ -561,9 +562,9 @@ run_analyze() {
 
     if [[ "$critical" -gt 0 ]]; then
         log_error "CRITICAL issues found: $critical"
-        echo ""
-        echo "$result" | grep -i "CRITICAL" | head -10
-        echo ""
+        echo "" >&2
+        (echo "$result" | grep -i "CRITICAL" | head -10) >&2
+        echo "" >&2
         log_warn "Please review and fix before implementation"
         save_state "$STATE_PAUSED"
         return 1
@@ -602,7 +603,7 @@ run_implement_loop() {
 
         # チェックリスト確認
         if needs_interaction "implement" "$result"; then
-            echo "$result" | grep -i "checklist" | head -5
+            (echo "$result" | grep -i "checklist" | head -5) >&2
             read -r -p "Continue anyway? (y/n): " choice
             if [[ "$choice" != "y" ]]; then
                 log_info "Paused by user"
@@ -661,16 +662,16 @@ run_full_workflow() {
     # Step 5: analyze
     if ! session_id=$(run_analyze "$session_id"); then
         log_warn "Workflow paused due to critical issues"
-        echo ""
-        echo "To continue after fixing issues:"
-        echo "  ./speckit-auto --continue"
+        echo "" >&2
+        echo "To continue after fixing issues:" >&2
+        echo "  ./speckit-auto --continue" >&2
         return 1
     fi
 
     log_step "Planning Phase Complete!"
-    echo ""
-    echo "Generated artifacts are ready for review."
-    echo ""
+    echo "" >&2
+    echo "Generated artifacts are ready for review." >&2
+    echo "" >&2
     read -r -p "Start implementation? (y/n): " start_impl
 
     if [[ "$start_impl" == "y" ]]; then
@@ -791,8 +792,8 @@ main() {
             ;;
         "")
             # 自動で次の機能を検出
-            echo -e "${CYAN}Detecting next feature from implementation plan...${NC}"
-            echo ""
+            echo -e "${CYAN}Detecting next feature from implementation plan...${NC}" >&2
+            echo "" >&2
 
             local feature_desc
             feature_desc=$(detect_next_feature)
@@ -802,7 +803,7 @@ main() {
                 exit 1
             fi
 
-            echo ""
+            echo "" >&2
             read -r -p "Proceed with this feature? (y/n/custom): " choice
 
             case "$choice" in
