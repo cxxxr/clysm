@@ -141,7 +141,8 @@
             :result :i32  ; Return i32 for command-line compatibility
             ;; Include locals allocated during body compilation + one for result
             :locals (loop for i from 0 to num-locals
-                          collect (list (gensym "local") :anyref))
+                          collect (list (gensym "local")
+                                        (clysm/compiler/codegen/func-section:env-local-type env i)))
             :body (append instrs
                           ;; Save result to local, then check for null
                           ;; If null (NIL), return 0
@@ -171,6 +172,8 @@
     (emit-type-section buffer functions)
     ;; Function section
     (emit-function-section buffer functions)
+    ;; Tag section (for exception handling)
+    (emit-tag-section buffer)
     ;; Global section
     (when (compiled-module-globals module)
       (emit-global-section buffer (compiled-module-globals module)))
@@ -209,14 +212,16 @@
    Layout:
    - Types 0-5: GC types ($nil, $unbound, $cons, $symbol, $string, $closure)
    - Type 6-7: Reserved
-   - Types 8-11: Function types ($func_0, $func_1, $func_2, $func_N)
-   - Types 12+: Regular (non-lambda) function types"
+   - Types 8-12: Function types ($func_0, $func_1, $func_2, $func_3, $func_N)
+   - Type 13: Exception tag type (anyref, anyref) -> () for $lisp-throw
+   - Types 14+: Regular (non-lambda) function types"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        ;; Count non-lambda functions (lambdas reuse types 8-11)
+        ;; Count non-lambda functions (lambdas reuse types 8-12)
         (regular-func-count (count-if-not #'is-lambda-function-p functions)))
-    ;; Number of types = GC types (13: 0-5 struct, 6-7 reserved, 8-12 func) + regular functions
-    (emit-leb128-unsigned (+ 13 regular-func-count) content)
+    ;; Number of types = 16 (base types) + regular functions
+    ;; Base: 0-5 struct, 6-7 reserved, 8-12 func types, 13 exception tag, 14-15 catch types
+    (emit-leb128-unsigned (+ 16 regular-func-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -244,7 +249,13 @@
     (emit-func-type-bytes content '(:anyref :anyref :anyref :anyref) '(:anyref))
     ;; Type 12: $func_N - (ref $closure, anyref) -> anyref (list as second param)
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
-    ;; User function types (indices 12+) - skip lambdas (they use types 8-11)
+    ;; Type 13: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+    (emit-func-type-bytes content '(:anyref :anyref) '())
+    ;; Type 14: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+    (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
+    ;; Type 15: $catch_result - () -> (anyref, anyref) for catch handler block result
+    (emit-func-type-bytes content '() '(:anyref :anyref))
+    ;; Regular function types (indices 16+) - skip lambdas (they use types 8-12)
     (dolist (func functions)
       (unless (is-lambda-function-p func)
         ;; func type indicator
@@ -296,10 +307,10 @@
 (defun emit-function-section (buffer functions)
   "Emit Function section.
    Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
-   Regular functions use types 13+."
+   Regular functions use types 16+ (13 = exception tag, 14-15 = catch types)."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        (regular-func-idx 13))  ; Start regular function types at 13
+        (regular-func-idx 16))  ; Start regular function types at 16
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
@@ -316,12 +327,39 @@
                              (3 11)  ; $func_3
                              (t 12)))) ; $func_N
             (emit-leb128-unsigned type-idx content))
-          ;; Regular functions: use unique types starting at 12
+          ;; Regular functions: use unique types starting at 14
           (progn
             (emit-leb128-unsigned regular-func-idx content)
             (incf regular-func-idx))))
     ;; Write section
     (vector-push-extend 3 buffer)  ; Function section ID
+    (emit-leb128-unsigned (length content) buffer)
+    (loop for b across content do (vector-push-extend b buffer))))
+
+(defun emit-tag-section (buffer)
+  "Emit Tag section for exception handling.
+   Defines $lisp-throw tag with (param anyref anyref) for (tag-symbol, value).
+   Tag section has ID 13 and must come after function section."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Number of tags: 1
+    (emit-leb128-unsigned 1 content)
+    ;; Tag 0: $lisp-throw
+    ;; Format: attribute (0 = exception) + type index
+    ;; We need a function type for the tag parameters
+    ;; Create inline function type: (anyref anyref) -> ()
+    (vector-push-extend #x00 content)  ; attribute: exception
+    ;; Type index - we need to add a function type for the tag
+    ;; For now, use a type index that matches (anyref anyref) -> ()
+    ;; We'll need to ensure this type exists in the type section
+    ;; Using type index 14 (after the standard func types 8-12 and type 13 for main)
+    ;; Actually, let's emit the function type inline using the block type encoding
+    ;; Tag type uses the same encoding as block type
+    ;; For 2 params (anyref, anyref) with no results, we need a type index
+    ;; Let's use a dedicated type index - we'll add it to the type section
+    (emit-leb128-unsigned 13 content)  ; Use type index 13 (first regular function type slot)
+    ;; Write section
+    (vector-push-extend 13 buffer)  ; Tag section ID
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
 
@@ -536,6 +574,47 @@
             ;; label indices
             (dolist (label labels)
               (emit-leb128-unsigned label buffer))))
+         ;; Exception handling instructions
+         (:try_table
+          ;; try_table <blocktype> <vec(catch)> - structured exception handling
+          ;; Format: 0x1F blocktype vec(catch_clause)
+          ;; catch_clause: 0x00 tagidx labelidx (catch)
+          ;;            or 0x01 tagidx labelidx (catch_ref)
+          ;;            or 0x02 labelidx (catch_all)
+          ;;            or 0x03 labelidx (catch_all_ref)
+          (vector-push-extend #x1F buffer)
+          ;; Block type (result type)
+          (emit-block-type (cadr instr) buffer)
+          ;; Catch clauses - rest of args are catch clauses
+          (let ((clauses (cddr instr)))
+            (emit-leb128-unsigned (length clauses) buffer)
+            (dolist (clause clauses)
+              (ecase (car clause)
+                (:catch
+                 ;; (:catch tagidx labelidx)
+                 (vector-push-extend #x00 buffer)
+                 (emit-leb128-unsigned (cadr clause) buffer)
+                 (emit-leb128-unsigned (caddr clause) buffer))
+                (:catch_ref
+                 ;; (:catch_ref tagidx labelidx)
+                 (vector-push-extend #x01 buffer)
+                 (emit-leb128-unsigned (cadr clause) buffer)
+                 (emit-leb128-unsigned (caddr clause) buffer))
+                (:catch_all
+                 ;; (:catch_all labelidx)
+                 (vector-push-extend #x02 buffer)
+                 (emit-leb128-unsigned (cadr clause) buffer))
+                (:catch_all_ref
+                 ;; (:catch_all_ref labelidx)
+                 (vector-push-extend #x03 buffer)
+                 (emit-leb128-unsigned (cadr clause) buffer))))))
+         (:throw
+          ;; throw <tagidx> - throw exception
+          (vector-push-extend #x08 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:throw_ref
+          ;; throw_ref - rethrow exception from exnref
+          (vector-push-extend #x0A buffer))
          (otherwise
           (error "Unknown compound instruction: ~A" op)))))
     ;; Simple keyword instructions
@@ -560,7 +639,7 @@
        (:i32.mul (vector-push-extend #x6C buffer))
        (:i32.div_s (vector-push-extend #x6D buffer))
        ;; Reference operations
-       (:ref.eq (vector-push-extend #xD5 buffer))
+       (:ref.eq (vector-push-extend #xD3 buffer))
        (:ref.is_null (vector-push-extend #xD1 buffer))
        ;; GC operations (0xFB prefix)
        (:ref.i31
@@ -586,6 +665,10 @@
     ((and (listp block-type) (eq (car block-type) :result))
      ;; Result type
      (emit-valtype (cadr block-type) buffer))
+    ((and (listp block-type) (eq (car block-type) :type))
+     ;; Type index for multi-value blocks
+     ;; (:type N) means use type index N
+     (emit-leb128-signed (cadr block-type) buffer))
     (t
      (error "Unknown block type: ~A" block-type))))
 
@@ -614,7 +697,8 @@
         (:externref #x6F)  ; external references - separate hierarchy
         (:funcref #x70)
         (:i31ref #x6C)
-        (:eqref #x6D))
+        (:eqref #x6D)
+        (:exnref #x69))    ; exception reference (exception handling proposal)
       buffer))
     (t
      (error "Unknown value type: ~A" type))))
@@ -639,7 +723,8 @@
         (:struct #x6B)
         (:array #x6A)
         (:func #x70)
-        (:extern #x6F))
+        (:extern #x6F)
+        (:exn #x69))       ; exception heap type
       buffer))
     (t
      (error "Unknown heap type: ~A" type))))

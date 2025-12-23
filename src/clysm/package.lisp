@@ -318,6 +318,7 @@
            #:cenv-local-counter
            #:env-add-local
            #:env-lookup-local
+           #:env-local-type
            #:env-add-function
            #:env-lookup-function
            #:env-set-function-counter

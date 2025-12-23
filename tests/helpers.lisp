@@ -62,6 +62,7 @@
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (list "wasmtime" "--wasm" "gc"
                                 "--wasm" "function-references"
+                                "--wasm" "exceptions"
                                 "--invoke" "_start" wasm-file)
                           :output :string
                           :error-output :string

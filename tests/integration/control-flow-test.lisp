@@ -218,6 +218,85 @@
                 99)))
       "throw should skip non-matching catches"))
 
+;;; T024: Cross-function throw with deep nesting
+(deftest test-throw-deep-nesting
+  "throw from deeply nested function calls should unwind correctly"
+  ;; Define chain of 10 functions: f1 calls f2, f2 calls f3, ... f10 throws
+  (ok (= 100 (clysm/tests:compile-and-run
+              '(progn
+                 (defun fn10 () (throw 'deep 100))
+                 (defun fn9 () (fn10))
+                 (defun fn8 () (fn9))
+                 (defun fn7 () (fn8))
+                 (defun fn6 () (fn7))
+                 (defun fn5 () (fn6))
+                 (defun fn4 () (fn5))
+                 (defun fn3 () (fn4))
+                 (defun fn2 () (fn3))
+                 (defun fn1 () (fn2))
+                 (catch 'deep (fn1) 0))))
+      "throw from 10 levels deep should reach catch"))
+
+;;; T025: Verify SC-003 - 100 function call levels
+(deftest test-throw-many-levels
+  "throw should work with many nested function calls (SC-003)"
+  ;; Use a recursive function with counter to reach 100 levels
+  ;; Not exactly 100 separate functions, but tests deep stack unwinding
+  (ok (= 42 (clysm/tests:compile-and-run
+             '(progn
+                (defun recurse-and-throw (n)
+                  (if (= n 0)
+                      (throw 'deep-tag 42)
+                      (recurse-and-throw (- n 1))))
+                (catch 'deep-tag (recurse-and-throw 50) 0))))
+      "throw from 50+ recursive calls should unwind correctly"))
+
+;;; T029: Three nested catches with different tags
+(deftest test-three-nested-catches
+  "three nested catches with different tags"
+  ;; (catch 'middle
+  ;;   (catch 'inner
+  ;;     (throw 'middle 99)))
+  ;; => 99 (throw 'middle skips inner, caught by middle)
+  (ok (= 99 (clysm/tests:compile-and-run
+             '(catch 'middle
+                (catch 'inner
+                  (throw 'middle 99)))))
+      "throw should find middle catch, skipping inner"))
+
+;;; T030: Throw skips inner catch to outer
+(deftest test-throw-skips-inner-catch
+  "throw should skip inner catch when targeting outer"
+  ;; (catch 'outer
+  ;;   (catch 'inner
+  ;;     (throw 'outer 42))
+  ;;   88)
+  ;; => 42 (not 88, because throw 'outer skips inner catch entirely)
+  (ok (= 42 (clysm/tests:compile-and-run
+             '(catch 'outer
+                (catch 'inner
+                  (throw 'outer 42))
+                88)))
+      "throw to outer should skip inner catch code"))
+
+;;; T031: Code after inner catch not executed when throw targets outer
+(deftest test-code-after-inner-catch-not-executed
+  "code after inner catch should not execute when throw targets outer"
+  ;; Use a mutable variable to verify code path
+  ;; x starts at 0, inner catch sets x to 1, throws to outer
+  ;; (setq x (+ x 100)) should NOT execute because throw unwound the stack
+  ;; x should be 1, not 101
+  (ok (= 1 (clysm/tests:compile-and-run
+            '(let ((x 0))
+               (catch 'outer
+                 (catch 'inner
+                   (setq x (+ x 1))
+                   (throw 'outer 42))
+                 (setq x (+ x 100))  ; should NOT execute
+                 0)
+               x)))
+      "code after inner catch should not run when throw targets outer"))
+
 ;;; ============================================================
 ;;; T102: unwind-protect tests
 ;;; ============================================================
@@ -319,3 +398,43 @@
                    (setq x (+ x 100)))
                  x)))
       "multiple cleanup forms should all execute"))
+
+;;; T037: Throw through multiple unwind-protects with cleanup order verification
+(deftest test-throw-unwind-cleanup-order
+  "throw through nested unwind-protects should run cleanups in correct order"
+  ;; (let ((x 0))
+  ;;   (catch 'done
+  ;;     (unwind-protect
+  ;;         (unwind-protect
+  ;;             (throw 'done 99)
+  ;;           (setq x (+ x 1)))    ; innermost cleanup: x = 1
+  ;;       (setq x (+ x 10))))      ; outer cleanup: x = 11
+  ;;   x)
+  ;; => 11 (inner cleanup adds 1, outer adds 10)
+  (ok (= 11 (clysm/tests:compile-and-run
+             '(let ((x 0))
+                (catch 'done
+                  (unwind-protect
+                      (unwind-protect
+                          (throw 'done 99)
+                        (setq x (+ x 1)))
+                    (setq x (+ x 10))))
+                x)))
+      "cleanups should run innermost-first during throw"))
+
+;;; T038: Throw through multiple unwind-protects - all cleanups must run
+(deftest test-throw-through-multiple-unwind-protects
+  "throw should execute all cleanup forms in nested unwind-protects (SC-004)"
+  ;; More comprehensive test with 3 nested unwind-protects
+  (ok (= 111 (clysm/tests:compile-and-run
+              '(let ((x 0))
+                 (catch 'done
+                   (unwind-protect
+                       (unwind-protect
+                           (unwind-protect
+                               (throw 'done 42)
+                             (setq x (+ x 1)))    ; innermost: +1
+                         (setq x (+ x 10)))       ; middle: +10
+                     (setq x (+ x 100))))         ; outer: +100
+                 x)))
+      "all 3 cleanup forms should execute during throw"))

@@ -12,6 +12,7 @@
   "Compilation environment tracking locals and scope."
   (locals nil :type list)              ; ((name . index) ...)
   (local-counter-box nil :type list)   ; (counter) - mutable box for shared counter
+  (local-types-box nil :type list)     ; ((index . type) ...) - boxed for sharing
   (functions nil :type list)           ; ((name . index) ...)
   (function-counter 0 :type fixnum)
   (in-tail-position nil :type boolean)
@@ -63,7 +64,8 @@
 
 (defun make-env ()
   "Create a fresh compilation environment."
-  (make-compilation-env :local-counter-box (list 0)))
+  (make-compilation-env :local-counter-box (list 0)
+                        :local-types-box (list nil)))
 
 (defun cenv-local-counter (env)
   "Get the local counter value."
@@ -77,12 +79,21 @@
   "Look up a local variable index."
   (cdr (assoc name (cenv-locals env))))
 
-(defun env-add-local (env name)
-  "Add a local variable and return its index."
+(defun env-add-local (env name &optional (type :anyref))
+  "Add a local variable with optional type and return its index.
+   Type defaults to :anyref. Non-anyref types are tracked in local-types-box."
   (let ((idx (cenv-local-counter env)))
     (push (cons name idx) (cenv-locals env))
+    ;; Track non-anyref types in the boxed list
+    (unless (eq type :anyref)
+      (setf (car (cenv-local-types-box env))
+            (cons (cons idx type) (car (cenv-local-types-box env)))))
     (incf (car (cenv-local-counter-box env)))
     idx))
+
+(defun env-local-type (env idx)
+  "Get the type of a local by index. Returns :anyref if not explicitly tracked."
+  (or (cdr (assoc idx (car (cenv-local-types-box env)))) :anyref))
 
 (defun env-lookup-function (env name)
   "Look up a function index."
@@ -121,7 +132,7 @@
     (:ref.null . #xD0)
     (:ref.is_null . #xD1)
     (:ref.func . #xD2)
-    (:ref.eq . #xD5)
+    (:ref.eq . #xD3)
     ;; Parametric
     (:drop . #x1A)
     (:select . #x1B)
@@ -783,10 +794,11 @@
 
 (defun extend-compilation-env (env)
   "Create an extended copy of the compilation environment for a new scope.
-   Shares the local-counter-box so child scopes can allocate locals."
+   Shares the local-counter-box and local-types-box so child scopes can allocate locals."
   (make-compilation-env
    :locals (copy-list (cenv-locals env))
    :local-counter-box (cenv-local-counter-box env)  ; Shared!
+   :local-types-box (cenv-local-types-box env)      ; Shared for local type tracking
    :functions (cenv-functions env)
    :function-counter (cenv-function-counter env)
    :in-tail-position (cenv-in-tail-position env)
@@ -806,6 +818,7 @@
   (make-compilation-env
    :locals (copy-list (cenv-locals env))
    :local-counter-box (cenv-local-counter-box env)  ; Shared!
+   :local-types-box (cenv-local-types-box env)      ; Shared for local type tracking
    :functions (cenv-functions env)
    :function-counter (cenv-function-counter env)
    :in-tail-position (cenv-in-tail-position env)
@@ -1167,7 +1180,7 @@
             :params (mapcar (lambda (p) (list p :anyref)) params)
             :result :anyref
             :locals (loop for i from (length params) below (cenv-local-counter func-env)
-                          collect (list (gensym "local") :anyref))
+                          collect (list (gensym "local") (env-local-type func-env i)))
             :body body-instrs))))
 
 ;;; ============================================================
@@ -1339,7 +1352,7 @@
                           (mapcar (lambda (p) (list p :anyref)) params))
             :result :anyref
             :locals (loop for i from (1+ (length params)) below (cenv-local-counter func-env)
-                          collect (list (gensym "local") :anyref))
+                          collect (list (gensym "local") (env-local-type func-env i)))
             :body body-instrs))))
 
 ;;; ============================================================
@@ -1715,44 +1728,142 @@
 ;;; ============================================================
 
 (defun compile-catch (ast env)
-  "Compile catch form.
-   For now, uses simple pattern matching. Full exception handling
-   requires Wasm exception handling proposal (try_table/throw)."
+  "Compile catch form using Wasm exception handling.
+   Delegates to compile-catch-simple for the actual implementation.
+   Uses try_table with catch clause to get exception values directly."
+  (compile-catch-simple ast env))
+
+(defun compile-catch-simple (ast env)
+  "Compile catch form using Wasm exception handling.
+
+   The key challenge is that when a catch expression is used as a sub-expression
+   inside another catch's body, and it catches an exception and returns a value,
+   that value should be the result of the catch expression - sibling code should
+   not continue.
+
+   Structure with if/else directly producing the result (no br):
+
+   block $catch (type 15)               ;; () -> (anyref anyref)
+     try_table (result anyref) (catch 0 $catch)
+       ...body...
+     end
+     ;; Normal path
+     local.set $body_result
+     ref.null none                      ;; dummy thrown-tag
+     ref.null none                      ;; dummy thrown-value
+     br $catch
+   end  ; $catch - (anyref anyref) on stack
+
+   ;; Handler code - both paths use if with (result anyref)
+   local.set $thrown_value
+   local.set $thrown_tag
+   local.get $thrown_tag
+   ref.is_null
+   if (result anyref)                   ;; if normal (null tag)
+     local.get $body_result
+   else                                 ;; exception path
+     <tag comparison>
+     if (result anyref)                 ;; if tags match
+       local.get $thrown_value
+     else                               ;; tags don't match - rethrow
+       local.get $thrown_tag
+       local.get $thrown_value
+       throw 0
+     end
+   end
+   ;; Result anyref is now on stack - this IS the catch expression's value"
   (let* ((tag (clysm/compiler/ast:ast-catch-tag ast))
          (body (clysm/compiler/ast:ast-catch-body ast))
          (result '()))
-    ;; For MVP: Implement as block with special handling
-    ;; Full implementation would use try_table
-    ;; Compile tag and save to local for comparison
-    (let ((tag-local (env-add-local env (gensym "catch-tag"))))
+    (let ((tag-local (env-add-local env (gensym "catch-tag")))
+          (thrown-tag-local (env-add-local env (gensym "thrown-tag")))
+          (thrown-value-local (env-add-local env (gensym "thrown-value")))
+          (normal-result-local (env-add-local env (gensym "normal-result"))))
+      ;; Evaluate and store the catch tag
       (setf result (append result (compile-to-instructions tag env)))
       (setf result (append result (list (list :local.set tag-local))))
+
       ;; Create catch environment
       (let ((catch-env (copy-compilation-env env)))
         (push (cons tag-local 0) (cenv-catch-tags catch-env))
-        ;; Compile body as block
-        (setf result (append result '((:block (:result :anyref)))))
+
+        ;; Block $catch - type 15: () -> (anyref anyref)
+        (setf result (append result '((:block (:type 15)))))  ;; $catch
+
+        ;; try_table inside $catch
+        ;; Catch clause: catch tag 0, branch to label 0 ($catch)
+        (setf result (append result '((:try_table (:result :anyref) (:catch 0 0)))))
+
+        ;; Compile body
         (dolist (form (butlast body))
           (setf result (append result (compile-to-instructions form catch-env)))
-          (setf result (append result '(:drop))))
+          (setf result (append result (list :drop))))
         (when body
           (setf result (append result (compile-to-instructions (car (last body)) catch-env))))
         (unless body
           (setf result (append result '((:ref.null :none)))))
-        (setf result (append result '(:end)))))
+
+        (setf result (append result (list :end)))  ;; end try_table
+
+        ;; Normal path: store result, push (nil nil), branch to $catch
+        (setf result (append result (list (list :local.set normal-result-local))))
+        (setf result (append result '((:ref.null :none))))
+        (setf result (append result '((:ref.null :none))))
+        (setf result (append result '((:br 0))))  ;; br to $catch with (nil nil)
+
+        (setf result (append result (list :end)))  ;; end $catch block
+
+        ;; At this point: (anyref anyref) on stack
+        ;; Either (nil nil) from normal path, or (tag value) from exception
+        (setf result (append result (list (list :local.set thrown-value-local))))
+        (setf result (append result (list (list :local.set thrown-tag-local))))
+
+        ;; Check if this was a real exception (thrown-tag is not null)
+        ;; Use if with (result anyref) so the result is directly on stack
+        (setf result (append result (list (list :local.get thrown-tag-local))))
+        (setf result (append result (list :ref.is_null)))
+        (setf result (append result '((:if (:result :anyref)))))
+
+        ;; Normal case (null tag): return normal result
+        (setf result (append result (list (list :local.get normal-result-local))))
+
+        (setf result (append result (list :else)))
+
+        ;; Exception case: compare tags and handle
+        (setf result (append result (list (list :local.get tag-local))))
+        (setf result (append result '((:ref.cast :eq))))
+        (setf result (append result (list (list :local.get thrown-tag-local))))
+        (setf result (append result '((:ref.cast :eq))))
+        (setf result (append result (list :ref.eq)))
+        (setf result (append result '((:if (:result :anyref)))))
+
+        ;; Tags match: return thrown-value
+        (setf result (append result (list (list :local.get thrown-value-local))))
+
+        (setf result (append result (list :else)))
+        ;; Tags don't match: rethrow (throw never returns, so dummy value for type check)
+        (setf result (append result (list (list :local.get thrown-tag-local))))
+        (setf result (append result (list (list :local.get thrown-value-local))))
+        (setf result (append result '((:throw 0))))
+        (setf result (append result (list :end)))  ;; end inner if
+
+        (setf result (append result (list :end)))))  ;; end outer if
+    ;; Result anyref is on stack - this is the catch expression's value
     result))
 
 (defun compile-throw (ast env)
-  "Compile throw.
-   For now, simplified implementation. Full version needs exception handling."
+  "Compile throw using Wasm throw instruction.
+   Throws exception with tag index 0 ($lisp-throw) with (tag-symbol, value) payload."
+  (declare (ignore env))
   (let* ((tag (clysm/compiler/ast:ast-throw-tag ast))
          (value (clysm/compiler/ast:ast-throw-value ast))
          (result '()))
-    ;; For MVP: Just return the value (simplified)
-    ;; Full implementation would use throw instruction
-    (setf result (compile-to-instructions value env))
-    ;; For now, we also need to handle the unwinding
-    ;; This requires more infrastructure
+    ;; Compile tag expression (evaluates to symbol)
+    (setf result (append result (compile-to-instructions tag env)))
+    ;; Compile value expression
+    (setf result (append result (compile-to-instructions value env)))
+    ;; Throw with tag 0 ($lisp-throw)
+    (setf result (append result '((:throw 0))))
     result))
 
 ;;; ============================================================
@@ -1760,24 +1871,73 @@
 ;;; ============================================================
 
 (defun compile-unwind-protect (ast env)
-  "Compile unwind-protect.
-   Pattern: Execute protected form, then cleanup forms, return protected value.
-   On exception: catch, run cleanup, rethrow."
+  "Compile unwind-protect with exception handling.
+   Pattern:
+   - Normal exit: execute protected form, save result, run cleanup, return result
+   - Exception exit: catch any exception, run cleanup, rethrow
+
+   Wasm structure:
+   block (result anyref)                    ;; final result
+     block (result exnref)                  ;; exception if caught
+       try_table (result anyref) (catch_all_ref 0)
+         ... protected form ...
+       end
+       local.set $result
+       ... cleanup forms (drop values) ...
+       local.get $result
+       br 1                                 ;; branch to outer block
+     end
+     local.set $exnref
+     ... cleanup forms (drop values) ...
+     local.get $exnref
+     throw_ref
+   end"
   (let* ((protected-form (clysm/compiler/ast:ast-unwind-protect-protected-form ast))
          (cleanup-forms (clysm/compiler/ast:ast-unwind-protect-cleanup-forms ast))
-         ;; Allocate local to save protected form's result
+         ;; Allocate locals
          (result-local (env-add-local env (gensym "unwind-result")))
-         (result '()))
-    ;; For MVP: Simple implementation without exception handling
-    ;; Compile protected form and save result
-    (setf result (append result (compile-to-instructions protected-form env)))
-    (setf result (append result (list (list :local.set result-local))))
-    ;; Compile cleanup forms (drop their values)
+         (exnref-local (env-add-local env (gensym "exnref") :exnref))
+         (result '())
+         (cleanup-code '()))
+    ;; Pre-compile cleanup forms (we'll use this twice)
     (dolist (form cleanup-forms)
-      (setf result (append result (compile-to-instructions form env)))
-      (setf result (append result '(:drop))))
-    ;; Return saved result
+      (setf cleanup-code (append cleanup-code (compile-to-instructions form env)))
+      (setf cleanup-code (append cleanup-code '(:drop))))
+
+    ;; block (result anyref) - outer block for final result
+    (setf result (append result '((:block (:result :anyref)))))
+
+    ;; block (result exnref) - inner block for exception ref
+    (setf result (append result '((:block (:result :exnref)))))
+
+    ;; try_table (result anyref) (catch_all_ref 0)
+    (setf result (append result (list (list :try_table '(:result :anyref)
+                                            (list :catch_all_ref 0)))))  ; 0 = inner block
+
+    ;; Compile protected form
+    (setf result (append result (compile-to-instructions protected-form env)))
+
+    ;; end try_table
+    (setf result (append result '(:end)))
+
+    ;; Normal path: save result, run cleanup, return result, br 1 (to outer block)
+    (setf result (append result (list (list :local.set result-local))))
+    (setf result (append result cleanup-code))
     (setf result (append result (list (list :local.get result-local))))
+    (setf result (append result '((:br 1))))  ; br to outer block (skip exception path)
+
+    ;; end inner block
+    (setf result (append result '(:end)))
+
+    ;; Exception path: save exnref, run cleanup, throw_ref
+    (setf result (append result (list (list :local.set exnref-local))))
+    (setf result (append result cleanup-code))
+    (setf result (append result (list (list :local.get exnref-local))))
+    (setf result (append result '((:throw_ref))))
+
+    ;; end outer block
+    (setf result (append result '(:end)))
+
     result))
 
 ;;; ============================================================
