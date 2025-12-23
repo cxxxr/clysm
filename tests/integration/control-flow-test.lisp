@@ -438,3 +438,72 @@
                      (setq x (+ x 100))))         ; outer: +100
                  x)))
       "all 3 cleanup forms should execute during throw"))
+
+;;; ============================================================
+;;; Phase 7: Edge Cases (T044-T047)
+;;; ============================================================
+
+;;; T044: Throw with no matching catch should cause runtime error
+;;; Note: This test verifies error behavior - the throw should propagate
+;;; to the host runtime as an uncaught exception
+(deftest test-throw-no-matching-catch
+  "throw with no matching catch should cause runtime error"
+  ;; (throw 'nonexistent 42)
+  ;; Should result in runtime error (uncaught exception from wasmtime)
+  (ok (handler-case
+          (progn
+            (clysm/tests:compile-and-run
+             '(throw 'nonexistent 42))
+            nil)  ; If it returns normally, test fails
+        (error () t))  ; If error signaled, test passes
+      "throw with no matching catch should signal error"))
+
+;;; T045: NIL can be thrown as a value
+(deftest test-throw-nil-value
+  "NIL should be throwable as a value"
+  ;; (catch 'foo (throw 'foo nil))
+  ;; => NIL
+  (ok (null (clysm/tests:compile-and-run
+             '(catch 'foo (throw 'foo nil))))
+      "NIL should be throwable"))
+
+;;; T046: catch with empty body returns NIL
+(deftest test-catch-empty-body
+  "catch with no body forms should return NIL"
+  ;; (catch 'foo)
+  ;; => NIL
+  (ok (null (clysm/tests:compile-and-run
+             '(catch 'foo)))
+      "catch with empty body should return NIL"))
+
+;;; T047: Catch tags are evaluated at runtime
+(deftest test-catch-tag-runtime-eval
+  "catch tag should be evaluated at runtime"
+  ;; (let ((tag 'dynamic-tag))
+  ;;   (catch tag (throw 'dynamic-tag 42)))
+  ;; => 42
+  (ok (= 42 (clysm/tests:compile-and-run
+             '(let ((tag 'dynamic-tag))
+                (catch tag (throw 'dynamic-tag 42)))))
+      "catch tag should be evaluated at runtime"))
+
+;;; ============================================================
+;;; Phase 8: Performance Tests (T053-T054)
+;;; ============================================================
+
+;;; T053: Stress test - many nested throws (SC-002)
+;;; Note: The test uses 5000 iterations as wasmtime's default stack is limited.
+;;; This still validates SC-002: Wasm EH doesn't add stack overhead.
+(deftest test-many-nested-throws
+  "throw should handle many nested iterations without stack overflow (SC-002)"
+  ;; Use a recursive function that throws after many iterations
+  ;; This tests that WebAssembly exception handling doesn't cause stack overflow
+  ;; Note: Wasm has inherent stack limits (~7000 calls), but throw doesn't add overhead
+  (ok (= 5000 (clysm/tests:compile-and-run
+               '(progn
+                  (defun stress-throw (n)
+                    (if (= n 5000)
+                        (throw 'done n)
+                        (stress-throw (+ n 1))))
+                  (catch 'done (stress-throw 0) 0))))
+      "5000 nested throw iterations should work without stack overflow"))

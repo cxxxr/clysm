@@ -8,7 +8,8 @@
            #:with-temp-wasm-file
            #:assert-compiles
            #:assert-validates
-           #:assert-equals))
+           #:assert-equals
+           #:wasm-runtime-error))
 
 (defpackage #:clysm/tests
   (:use #:cl #:rove)

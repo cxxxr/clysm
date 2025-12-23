@@ -54,10 +54,19 @@
       ((string-equal trimmed "false") nil)
       (t trimmed))))
 
+(define-condition wasm-runtime-error (error)
+  ((exit-code :initarg :exit-code :reader wasm-runtime-error-exit-code)
+   (message :initarg :message :reader wasm-runtime-error-message))
+  (:report (lambda (c stream)
+             (format stream "Wasm runtime error (exit ~A): ~A"
+                     (wasm-runtime-error-exit-code c)
+                     (wasm-runtime-error-message c)))))
+
 (defun run-wasm-bytes (bytes)
   "Run Wasm bytes with wasmtime and return the result.
    Uses --wasm gc and --wasm function-references flags for WasmGC support.
-   Uses --invoke to capture the return value."
+   Uses --invoke to capture the return value.
+   Signals WASM-RUNTIME-ERROR on non-zero exit code."
   (with-temp-wasm-file (wasm-file bytes)
     (multiple-value-bind (output error-output exit-code)
         (uiop:run-program (list "wasmtime" "--wasm" "gc"
@@ -67,11 +76,14 @@
                           :output :string
                           :error-output :string
                           :ignore-error-status t)
-      (declare (ignore error-output))
       (if (zerop exit-code)
           (parse-wasm-output output)
-          ;; Return as exit code for now
-          exit-code))))
+          ;; Signal error for non-zero exit code (e.g., uncaught exceptions)
+          (error 'wasm-runtime-error
+                 :exit-code exit-code
+                 :message (or (and (> (length error-output) 0) error-output)
+                              (and (> (length output) 0) output)
+                              "Unknown error"))))))
 
 ;;; ============================================================
 ;;; Compile and Run (Main Test Helper)
