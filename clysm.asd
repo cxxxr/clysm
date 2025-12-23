@@ -163,7 +163,9 @@
      (:file "variable-scope-test")
      (:file "clos-edge-test")
      (:file "list-test")
-     (:file "sequence-test"))))
+     (:file "sequence-test")
+     (:file "character-test")
+     (:file "string-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

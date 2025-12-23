@@ -63,6 +63,7 @@
     (case type
       (:number value)
       (:string value)
+      (:character value)  ; 008-character-string: pass character through
       (:symbol
        ;; Handle special symbols
        (cond
@@ -126,7 +127,7 @@
       (parser-error "Unexpected end of input"))
     (case (token-type token)
       ;; Atoms
-      ((:number :string :symbol :keyword)
+      ((:number :string :symbol :keyword :character)
        (parse-atom token))
       ;; List
       (:lparen

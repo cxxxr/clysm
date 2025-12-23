@@ -26,9 +26,9 @@
 ;;; ============================================================
 
 (defstruct (ast-literal (:include ast-node) (:conc-name ast-literal-))
-  "Literal value node (fixnum, string, T, NIL, etc.)"
+  "Literal value node (fixnum, string, character, T, NIL, etc.)"
   (value nil :type t)
-  (literal-type nil :type keyword))  ; :fixnum, :string, :nil, :t, :keyword
+  (literal-type nil :type keyword))  ; :fixnum, :string, :character, :nil, :t, :keyword
 
 (defun make-fixnum-literal (value)
   "Create a fixnum literal AST node"
@@ -41,6 +41,16 @@
 (defun make-t-literal ()
   "Create a T literal AST node"
   (make-ast-literal :value t :literal-type :t))
+
+;;; Character literal support (008-character-string)
+(defun make-character-literal (value)
+  "Create a character literal AST node"
+  (make-ast-literal :value value :literal-type :character))
+
+;;; String literal support (008-character-string)
+(defun make-string-literal (value)
+  "Create a string literal AST node"
+  (make-ast-literal :value value :literal-type :string))
 
 ;;; ============================================================
 ;;; Variable References (T044)
@@ -238,6 +248,12 @@
     ;; Fixnum literal
     ((integerp form)
      (make-fixnum-literal form))
+    ;; Character literal (008-character-string)
+    ((characterp form)
+     (make-character-literal form))
+    ;; String literal (008-character-string)
+    ((stringp form)
+     (make-string-literal form))
     ;; Symbol (variable reference)
     ((symbolp form)
      (make-var-ref form))

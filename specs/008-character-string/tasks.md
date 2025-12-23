@@ -20,10 +20,10 @@
 
 **Purpose**: 既存構造の確認とテストファイル準備
 
-- [ ] T001 既存の$string型定義を確認 in src/clysm/compiler/codegen/gc-types.lisp
-- [ ] T002 [P] 文字テストファイルを作成 in tests/unit/character-test.lisp
-- [ ] T003 [P] 文字統合テストファイルを作成 in tests/integration/character-test.lisp
-- [ ] T004 [P] 文字列統合テストファイルを作成 in tests/integration/string-test.lisp
+- [X] T001 既存の$string型定義を確認 in src/clysm/compiler/codegen/gc-types.lisp
+- [X] T002 [P] 文字テストファイルを作成 in tests/unit/character-test.lisp
+- [X] T003 [P] 文字統合テストファイルを作成 in tests/integration/character-test.lisp
+- [X] T004 [P] 文字列統合テストファイルを作成 in tests/integration/string-test.lisp
 
 ---
 
@@ -33,9 +33,9 @@
 
 **⚠️ CRITICAL**: 文字列操作はすべてUTF-8処理に依存
 
-- [ ] T005 UTF-8バイト長判定ヘルパーを実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T006 UTF-8デコードヘルパー（1文字）を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T007 UTF-8エンコードヘルパー（1文字）を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T005 UTF-8バイト長判定ヘルパーを実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T006 UTF-8デコードヘルパー（1文字）を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T007 UTF-8エンコードヘルパー（1文字）を実装 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: UTF-8基盤完了 - ユーザーストーリー実装開始可能
 
@@ -49,36 +49,36 @@
 
 ### Tests for User Story 1
 
-- [ ] T008 [P] [US1] 文字リテラル `#\a` のトークナイザーテスト in tests/unit/tokenizer-test.lisp
-- [ ] T009 [P] [US1] 名前付き文字 `#\Space` `#\Newline` のテスト in tests/unit/tokenizer-test.lisp
-- [ ] T010 [P] [US1] char-code/code-char 統合テスト in tests/integration/character-test.lisp
-- [ ] T011 [P] [US1] 文字比較関数(char=, char<等)統合テスト in tests/integration/character-test.lisp
-- [ ] T012 [P] [US1] ケース変換(char-upcase/downcase)統合テスト in tests/integration/character-test.lisp
+- [X] T008 [P] [US1] 文字リテラル `#\a` のトークナイザーテスト in tests/unit/tokenizer-test.lisp
+- [X] T009 [P] [US1] 名前付き文字 `#\Space` `#\Newline` のテスト in tests/unit/tokenizer-test.lisp
+- [X] T010 [P] [US1] char-code/code-char 統合テスト in tests/integration/character-test.lisp
+- [X] T011 [P] [US1] 文字比較関数(char=, char<等)統合テスト in tests/integration/character-test.lisp
+- [X] T012 [P] [US1] ケース変換(char-upcase/downcase)統合テスト in tests/integration/character-test.lisp
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] `#\x` 単一文字リテラルのトークナイズを実装 in src/clysm/reader/tokenizer.lisp
-- [ ] T014 [US1] 名前付き文字テーブル(Space,Newline,Tab,Return)を実装 in src/clysm/reader/tokenizer.lisp
-- [ ] T015 [US1] :character トークンのパース処理を追加 in src/clysm/reader/parser.lisp
-- [ ] T016 [US1] AST :character リテラル型を追加 in src/clysm/compiler/ast.lisp
-- [ ] T017 [US1] 文字リテラルのコード生成(i31ref)を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T018 [US1] compile-char-code を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T019 [US1] compile-code-char を実装（無効値はNIL返却）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T020 [P] [US1] compile-char= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T021 [P] [US1] compile-char/= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T022 [P] [US1] compile-char< を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T023 [P] [US1] compile-char> を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T024 [P] [US1] compile-char<= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T025 [P] [US1] compile-char>= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T026 [P] [US1] compile-char-equal を実装（case-insensitive）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T027 [P] [US1] compile-char-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T028 [P] [US1] compile-char-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T029 [P] [US1] compile-char-not-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T030 [P] [US1] compile-char-not-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T031 [US1] compile-char-upcase を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T032 [US1] compile-char-downcase を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T033 [US1] compile-characterp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T034 [US1] プリミティブリストに文字関数を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T013 [US1] `#\x` 単一文字リテラルのトークナイズを実装 in src/clysm/reader/tokenizer.lisp
+- [X] T014 [US1] 名前付き文字テーブル(Space,Newline,Tab,Return)を実装 in src/clysm/reader/tokenizer.lisp
+- [X] T015 [US1] :character トークンのパース処理を追加 in src/clysm/reader/parser.lisp
+- [X] T016 [US1] AST :character リテラル型を追加 in src/clysm/compiler/ast.lisp
+- [X] T017 [US1] 文字リテラルのコード生成(i31ref)を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T018 [US1] compile-char-code を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T019 [US1] compile-code-char を実装（無効値はNIL返却）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T020 [P] [US1] compile-char= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T021 [P] [US1] compile-char/= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T022 [P] [US1] compile-char< を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T023 [P] [US1] compile-char> を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T024 [P] [US1] compile-char<= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T025 [P] [US1] compile-char>= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T026 [P] [US1] compile-char-equal を実装（case-insensitive）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T027 [P] [US1] compile-char-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T028 [P] [US1] compile-char-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T029 [P] [US1] compile-char-not-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T030 [P] [US1] compile-char-not-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T031 [US1] compile-char-upcase を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T032 [US1] compile-char-downcase を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T033 [US1] compile-characterp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T034 [US1] プリミティブリストに文字関数を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 1完了 - 文字リテラルと基本操作が独立動作可能
 
@@ -92,22 +92,22 @@
 
 ### Tests for User Story 2
 
-- [ ] T035 [P] [US2] 文字列リテラルパーステスト（既存確認）in tests/unit/tokenizer-test.lisp
-- [ ] T036 [P] [US2] エスケープシーケンス(\n,\t,\\,\")テスト in tests/unit/tokenizer-test.lisp
-- [ ] T037 [P] [US2] length文字列テスト（ASCII/Unicode）in tests/integration/string-test.lisp
-- [ ] T038 [P] [US2] char/scharアクセステスト in tests/integration/string-test.lisp
-- [ ] T039 [P] [US2] stringpテスト in tests/integration/string-test.lisp
+- [X] T035 [P] [US2] 文字列リテラルパーステスト（既存確認）in tests/unit/tokenizer-test.lisp
+- [X] T036 [P] [US2] エスケープシーケンス(\n,\t,\\,\")テスト in tests/unit/tokenizer-test.lisp
+- [X] T037 [P] [US2] length文字列テスト（ASCII/Unicode）in tests/integration/string-test.lisp
+- [X] T038 [P] [US2] char/scharアクセステスト in tests/integration/string-test.lisp
+- [X] T039 [P] [US2] stringpテスト in tests/integration/string-test.lisp
 
 ### Implementation for User Story 2
 
-- [ ] T040 [US2] 既存文字列リテラル処理を確認 in src/clysm/reader/tokenizer.lisp
-- [ ] T041 [US2] compile-string-length を実装（UTF-8文字数カウント）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T042 [US2] compile-string-char を実装（UTF-8デコード付きアクセス）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T043 [US2] compile-schar を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T044 [US2] compile-stringp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T045 [US2] length関数を文字列対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T046 [US2] インデックス範囲外エラー処理を追加 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T047 [US2] プリミティブリストに文字列基本関数を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T040 [US2] 既存文字列リテラル処理を確認 in src/clysm/reader/tokenizer.lisp
+- [X] T041 [US2] compile-string-length を実装（UTF-8文字数カウント）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T042 [US2] compile-string-char を実装（UTF-8デコード付きアクセス）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T043 [US2] compile-schar を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T044 [US2] compile-stringp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T045 [US2] length関数を文字列対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T046 [US2] インデックス範囲外エラー処理を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T047 [US2] プリミティブリストに文字列基本関数を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 2完了 - 文字列長と文字アクセスが独立動作可能
 
@@ -121,25 +121,25 @@
 
 ### Tests for User Story 3
 
-- [ ] T048 [P] [US3] string=/string/=テスト in tests/integration/string-test.lisp
-- [ ] T049 [P] [US3] string</string>/string<=/string>=テスト in tests/integration/string-test.lisp
-- [ ] T050 [P] [US3] string-equal/string-lesspテスト（case-insensitive）in tests/integration/string-test.lisp
+- [X] T048 [P] [US3] string=/string/=テスト in tests/integration/string-test.lisp
+- [X] T049 [P] [US3] string</string>/string<=/string>=テスト in tests/integration/string-test.lisp
+- [X] T050 [P] [US3] string-equal/string-lesspテスト（case-insensitive）in tests/integration/string-test.lisp
 
 ### Implementation for User Story 3
 
-- [ ] T051 [P] [US3] compile-string= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T052 [P] [US3] compile-string/= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T053 [P] [US3] compile-string< を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T054 [P] [US3] compile-string> を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T055 [P] [US3] compile-string<= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T056 [P] [US3] compile-string>= を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T057 [P] [US3] compile-string-equal を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T058 [P] [US3] compile-string-not-equal を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T059 [P] [US3] compile-string-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T060 [P] [US3] compile-string-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T061 [P] [US3] compile-string-not-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T062 [P] [US3] compile-string-not-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T063 [US3] プリミティブリストに文字列比較関数を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T051 [P] [US3] compile-string= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T052 [P] [US3] compile-string/= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T053 [P] [US3] compile-string< を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T054 [P] [US3] compile-string> を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T055 [P] [US3] compile-string<= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T056 [P] [US3] compile-string>= を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T057 [P] [US3] compile-string-equal を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T058 [P] [US3] compile-string-not-equal を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T059 [P] [US3] compile-string-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T060 [P] [US3] compile-string-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T061 [P] [US3] compile-string-not-lessp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T062 [P] [US3] compile-string-not-greaterp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T063 [US3] プリミティブリストに文字列比較関数を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 3完了 - 文字列比較が独立動作可能
 
@@ -153,18 +153,18 @@
 
 ### Tests for User Story 4
 
-- [ ] T064 [P] [US4] make-stringテスト in tests/integration/string-test.lisp
-- [ ] T065 [P] [US4] string変換テスト（シンボル/文字から）in tests/integration/string-test.lisp
-- [ ] T066 [P] [US4] string-upcase/downcase/capitalizeテスト in tests/integration/string-test.lisp
+- [X] T064 [P] [US4] make-stringテスト in tests/integration/string-test.lisp
+- [X] T065 [P] [US4] string変換テスト（シンボル/文字から）in tests/integration/string-test.lisp
+- [X] T066 [P] [US4] string-upcase/downcase/capitalizeテスト in tests/integration/string-test.lisp
 
 ### Implementation for User Story 4
 
-- [ ] T067 [US4] compile-make-string を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T068 [US4] compile-string（designator変換）を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T069 [US4] compile-string-upcase を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T070 [US4] compile-string-downcase を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T071 [US4] compile-string-capitalize を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T072 [US4] プリミティブリストに文字列生成/変換関数を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T067 [US4] compile-make-string を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T068 [US4] compile-string（designator変換）を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T069 [US4] compile-string-upcase を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T070 [US4] compile-string-downcase を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T071 [US4] compile-string-capitalize を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T072 [US4] プリミティブリストに文字列生成/変換関数を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 4完了 - 文字列生成・変換が独立動作可能
 
@@ -178,17 +178,17 @@
 
 ### Tests for User Story 5
 
-- [ ] T073 [P] [US5] subseq文字列テスト in tests/integration/string-test.lisp
-- [ ] T074 [P] [US5] concatenate 'stringテスト in tests/integration/string-test.lisp
-- [ ] T075 [P] [US5] エッジケーステスト（空文字列、範囲エラー）in tests/integration/string-test.lisp
+- [X] T073 [P] [US5] subseq文字列テスト in tests/integration/string-test.lisp
+- [X] T074 [P] [US5] concatenate 'stringテスト in tests/integration/string-test.lisp
+- [X] T075 [P] [US5] エッジケーステスト（空文字列、範囲エラー）in tests/integration/string-test.lisp
 
 ### Implementation for User Story 5
 
-- [ ] T076 [US5] compile-string-subseq を実装（UTF-8対応）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T077 [US5] subseq関数を文字列対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T078 [US5] compile-concatenate-string を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T079 [US5] concatenate関数を文字列結果型対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T080 [US5] subseq範囲エラー処理を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T076 [US5] compile-string-subseq を実装（UTF-8対応）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T077 [US5] subseq関数を文字列対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T078 [US5] compile-concatenate-string を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T079 [US5] concatenate関数を文字列結果型対応に拡張 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T080 [US5] subseq範囲エラー処理を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 5完了 - 部分文字列と連結が独立動作可能
 
@@ -202,19 +202,19 @@
 
 ### Tests for User Story 6
 
-- [ ] T081 [P] [US6] alpha-char-pテスト in tests/integration/character-test.lisp
-- [ ] T082 [P] [US6] digit-char-pテスト（基数対応含む）in tests/integration/character-test.lisp
-- [ ] T083 [P] [US6] alphanumericpテスト in tests/integration/character-test.lisp
-- [ ] T084 [P] [US6] upper-case-p/lower-case-pテスト in tests/integration/character-test.lisp
+- [X] T081 [P] [US6] alpha-char-pテスト in tests/integration/character-test.lisp
+- [X] T082 [P] [US6] digit-char-pテスト（基数対応含む）in tests/integration/character-test.lisp
+- [X] T083 [P] [US6] alphanumericpテスト in tests/integration/character-test.lisp
+- [X] T084 [P] [US6] upper-case-p/lower-case-pテスト in tests/integration/character-test.lisp
 
 ### Implementation for User Story 6
 
-- [ ] T085 [US6] compile-alpha-char-p を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T086 [US6] compile-digit-char-p を実装（オプション基数対応）in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T087 [US6] compile-alphanumericp を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T088 [US6] compile-upper-case-p を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T089 [US6] compile-lower-case-p を実装 in src/clysm/compiler/codegen/func-section.lisp
-- [ ] T090 [US6] プリミティブリストに文字述語を追加 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T085 [US6] compile-alpha-char-p を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T086 [US6] compile-digit-char-p を実装（オプション基数対応）in src/clysm/compiler/codegen/func-section.lisp
+- [X] T087 [US6] compile-alphanumericp を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T088 [US6] compile-upper-case-p を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T089 [US6] compile-lower-case-p を実装 in src/clysm/compiler/codegen/func-section.lisp
+- [X] T090 [US6] プリミティブリストに文字述語を追加 in src/clysm/compiler/codegen/func-section.lisp
 
 **Checkpoint**: User Story 6完了 - 文字述語が独立動作可能
 
@@ -224,11 +224,11 @@
 
 **Purpose**: 全ストーリー横断の改善
 
-- [ ] T091 [P] Unicode文字（日本語）の統合テスト in tests/integration/string-test.lisp
-- [ ] T092 [P] エッジケース（空文字列、境界条件）統合テスト in tests/integration/string-test.lisp
-- [ ] T093 全テスト実行と結果確認
-- [ ] T094 wasm-tools validateでWasm出力を検証
-- [ ] T095 quickstart.md の全例をREPLで検証
+- [X] T091 [P] Unicode文字（日本語）の統合テスト in tests/integration/string-test.lisp
+- [X] T092 [P] エッジケース（空文字列、境界条件）統合テスト in tests/integration/string-test.lisp
+- [X] T093 全テスト実行と結果確認
+- [X] T094 wasm-tools validateでWasm出力を検証
+- [X] T095 quickstart.md の全例をREPLで検証
 
 ---
 

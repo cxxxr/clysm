@@ -146,12 +146,13 @@
 
 (defun make-string-type ()
   "Create string type (T037)
-   Strings are arrays of i8 (UTF-8 bytes)."
+   Strings are arrays of i8 (UTF-8 bytes).
+   Mutable to support make-string and string modification operations."
   (make-wasm-array-type
    :name '$string
    :index +type-string+
    :element-type :i8
-   :mutable nil))
+   :mutable t))
 
 ;;; ============================================================
 ;;; Function Type Constructors (for closure arity dispatch)

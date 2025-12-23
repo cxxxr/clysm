@@ -243,6 +243,11 @@
        ;; i32.const value, ref.i31
        (list (list :i32.const value)
              :ref.i31))
+      (:character
+       ;; Characters are represented as i31ref with Unicode codepoint (008-character-string)
+       ;; Same as fixnum, but semantically different type
+       (list (list :i32.const (char-code value))
+             :ref.i31))
       (:nil
        ;; NIL is represented as ref.null (null reference)
        (list '(:ref.null :none)))
@@ -250,6 +255,10 @@
        ;; T is represented as non-null (use i31ref of 1)
        (list '(:i32.const 1)
              :ref.i31))
+      (:string
+       ;; Strings are UTF-8 byte arrays (008-character-string)
+       ;; Use array.new_fixed to create array from bytes on stack
+       (compile-string-literal value))
       (:quoted
        ;; Quoted values - handle lists, symbols, and atoms
        (cond
@@ -266,6 +275,23 @@
                   :ref.i31)))))
       (otherwise
        (error "Unsupported literal type: ~A" type)))))
+
+(defun compile-string-literal (string)
+  "Compile a string literal to Wasm instructions.
+   Creates a UTF-8 byte array using array.new_fixed.
+   Stack: [] -> [ref $string]"
+  (let ((bytes (babel:string-to-octets string :encoding :utf-8))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    (if (zerop (length bytes))
+        ;; Empty string: just create empty array
+        (list (list :array.new_fixed string-type 0))
+        ;; Non-empty: push each byte then create array
+        (let ((result '()))
+          (loop for byte across bytes
+                do (push (list :i32.const byte) result))
+          (setf result (nreverse result))
+          (append result
+                  (list (list :array.new_fixed string-type (length bytes))))))))
 
 (defun compile-quoted-list (lst)
   "Compile a quoted list to a cons structure.
@@ -401,7 +427,21 @@
                                remove remove-if remove-if-not
                                count count-if
                                member assoc rassoc
-                               every some notany notevery)))
+                               every some notany notevery
+                               ;; Character functions (008-character-string)
+                               char-code code-char
+                               char= char/= char< char> char<= char>=
+                               char-equal char-lessp char-greaterp
+                               char-not-lessp char-not-greaterp
+                               char-upcase char-downcase
+                               characterp alpha-char-p digit-char-p
+                               alphanumericp upper-case-p lower-case-p
+                               stringp char schar
+                               string= string/= string< string> string<= string>=
+                               string-equal string-lessp string-greaterp
+                               string-not-lessp string-not-greaterp string-not-equal
+                               make-string string string-upcase string-downcase string-capitalize
+                               subseq concatenate)))
        (compile-primitive-call function args env))
       ;; Local function (from flet/labels)
       ((and (symbolp function) (env-lookup-local-function env function))
@@ -539,7 +579,56 @@
     (every (compile-every args env))
     (some (compile-some args env))
     (notany (compile-notany args env))
-    (notevery (compile-notevery args env))))
+    (notevery (compile-notevery args env))
+    ;; Character functions (008-character-string)
+    (char-code (compile-char-code args env))
+    (code-char (compile-code-char args env))
+    (char= (compile-char= args env))
+    (char/= (compile-char/= args env))
+    (char< (compile-char< args env))
+    (char> (compile-char> args env))
+    (char<= (compile-char<= args env))
+    (char>= (compile-char>= args env))
+    (char-equal (compile-char-equal args env))
+    (char-lessp (compile-char-lessp args env))
+    (char-greaterp (compile-char-greaterp args env))
+    (char-not-lessp (compile-char-not-lessp args env))
+    (char-not-greaterp (compile-char-not-greaterp args env))
+    (char-upcase (compile-char-upcase args env))
+    (char-downcase (compile-char-downcase args env))
+    (characterp (compile-characterp args env))
+    (alpha-char-p (compile-alpha-char-p args env))
+    (digit-char-p (compile-digit-char-p args env))
+    (alphanumericp (compile-alphanumericp args env))
+    (upper-case-p (compile-upper-case-p args env))
+    (lower-case-p (compile-lower-case-p args env))
+    ;; String functions (008-character-string)
+    (stringp (compile-stringp args env))
+    (char (compile-string-char args env))
+    (schar (compile-string-char args env))
+    ;; String comparison functions
+    (string= (compile-string= args env))
+    (string/= (compile-string/= args env))
+    (string< (compile-string< args env))
+    (string> (compile-string> args env))
+    (string<= (compile-string<= args env))
+    (string>= (compile-string>= args env))
+    ;; Case-insensitive string comparison functions
+    (string-equal (compile-string-equal args env))
+    (string-lessp (compile-string-lessp args env))
+    (string-greaterp (compile-string-greaterp args env))
+    (string-not-lessp (compile-string-not-lessp args env))
+    (string-not-greaterp (compile-string-not-greaterp args env))
+    (string-not-equal (compile-string-not-equal args env))
+    ;; String generation/conversion functions
+    (make-string (compile-make-string args env))
+    (string (compile-string args env))
+    (string-upcase (compile-string-upcase args env))
+    (string-downcase (compile-string-downcase args env))
+    (string-capitalize (compile-string-capitalize args env))
+    ;; Substring and concatenation
+    (subseq (compile-subseq args env))
+    (concatenate (compile-concatenate args env))))
 
 (defun compile-arithmetic-op (op args env identity)
   "Compile an arithmetic operation with variadic args.
@@ -2720,44 +2809,120 @@
 ;;; --- Tier 1: Basic Sequence Functions ---
 
 (defun compile-length (args env)
-  "Compile (length list) - return number of elements.
+  "Compile (length sequence) - return number of elements.
+   Supports both lists and strings (008-character-string).
+   For strings, counts UTF-8 characters (not bytes).
    Stack: [] -> [fixnum]"
   (when (/= (length args) 1)
     (error "length requires exactly 1 argument"))
-  (let ((result '())
-        (list-local (env-add-local env (gensym "LEN-LIST")))
-        (count-local (env-add-local env (gensym "LEN-COUNT") :i32)))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Initialize counter to 0
-    (setf result (append result '((:i32.const 0))))
-    (setf result (append result (list (list :local.set count-local))))
+  (let ((seq-local (env-add-local env (gensym "LEN-SEQ")))
+        (count-local (env-add-local env (gensym "LEN-COUNT") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    ;; Compile sequence argument and store
+    `(,@(compile-to-instructions (first args) env)
+      (:local.set ,seq-local)
+      ;; Check if it's a string
+      (:local.get ,seq-local)
+      (:ref.test ,(list :ref string-type))
+      (:if (:result :i32))
+      ;; Then: string - count UTF-8 characters (leaves i32 on stack)
+      ,@(compile-string-length-body seq-local count-local string-type env)
+      :else
+      ;; Else: list - count cons cells (leaves i32 on stack)
+      ,@(compile-list-length-body seq-local count-local cons-type)
+      :end
+      ;; Result is now i32 on stack, convert to fixnum
+      :ref.i31)))
+
+(defun compile-string-length-body (seq-local count-local string-type env)
+  "Generate instructions to count UTF-8 characters in a string.
+   UTF-8 character counting: count bytes that are NOT continuation bytes.
+   Continuation bytes are in range 0x80-0xBF (10xxxxxx pattern).
+   Stack effect within body: [] -> []
+   Sets count-local to the character count."
+  (let ((idx-local (env-add-local env (gensym "STR-IDX") :i32))
+        (len-local (env-add-local env (gensym "STR-LEN") :i32))
+        (byte-local (env-add-local env (gensym "STR-BYTE") :i32)))
+    `(;; Get byte array length
+      (:local.get ,seq-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len-local)
+      ;; Initialize count and index to 0
+      (:i32.const 0)
+      (:local.set ,count-local)
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      ;; Loop through bytes
+      (:block $str_len_done)
+      (:loop $str_len_loop)
+      ;; Check if idx >= len
+      (:local.get ,idx-local)
+      (:local.get ,len-local)
+      :i32.ge_u
+      (:br_if $str_len_done)
+      ;; Get byte at idx
+      (:local.get ,seq-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Check if NOT a continuation byte (byte < 0x80 OR byte >= 0xC0)
+      ;; Continuation bytes are 0x80-0xBF (10xxxxxx)
+      ;; We count if (byte & 0xC0) != 0x80
+      (:local.get ,byte-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)  ; void block type
+      ;; Is a leading byte or ASCII, increment count
+      (:local.get ,count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,count-local)
+      :end
+      ;; Increment idx
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $str_len_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return count (leave on stack for if result)
+      (:local.get ,count-local))))
+
+(defun compile-list-length-body (seq-local count-local cons-type)
+  "Generate instructions to count elements in a list.
+   Stack effect within body: [] -> []
+   Sets count-local to the element count."
+  `(;; Initialize counter to 0
+    (:i32.const 0)
+    (:local.set ,count-local)
     ;; Loop until nil
-    (setf result (append result
-                         `((:block $len_done)
-                           (:loop $len_loop)
-                           ;; Check if list is nil
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:br_if $len_done)
-                           ;; Increment count
-                           (:local.get ,count-local)
-                           (:i32.const 1)
-                           :i32.add
-                           (:local.set ,count-local)
-                           ;; Get cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                           (:local.set ,list-local)
-                           (:br $len_loop)
-                           :end  ; loop
-                           :end))) ; block
-    ;; Return count as fixnum
-    (setf result (append result (list (list :local.get count-local))))
-    (setf result (append result '(:ref.i31)))
-    result))
+    (:block $len_done)
+    (:loop $len_loop)
+    ;; Check if list is nil
+    (:local.get ,seq-local)
+    :ref.is_null
+    (:br_if $len_done)
+    ;; Increment count
+    (:local.get ,count-local)
+    (:i32.const 1)
+    :i32.add
+    (:local.set ,count-local)
+    ;; Get cdr
+    (:local.get ,seq-local)
+    (:ref.cast ,(list :ref cons-type))
+    (:struct.get ,cons-type 1)
+    (:local.set ,seq-local)
+    (:br $len_loop)
+    :end  ; loop
+    :end  ; block
+    ;; Return count (leave on stack for if result)
+    (:local.get ,count-local)))
 
 (defun compile-append (args env)
   "Compile (append list1 list2) - concatenate lists.
@@ -4667,3 +4832,2226 @@
                            :end  ; loop
                            :end))) ; block
     result))
+
+;;; ============================================================
+;;; Character Functions (008-character-string)
+;;; ============================================================
+
+(defun compile-char-code (args env)
+  "Compile (char-code char) - return Unicode codepoint.
+   Characters are stored as i31ref with the codepoint value.
+   Stack: [] -> [fixnum]"
+  (when (/= (length args) 1)
+    (error "char-code requires exactly 1 argument"))
+  ;; Character is already stored as i31ref with codepoint
+  ;; Just return it as-is (it's the same representation as fixnum)
+  (compile-to-instructions (first args) env))
+
+(defun compile-code-char (args env)
+  "Compile (code-char code) - return character for codepoint.
+   Returns NIL for invalid codepoints (negative or > #x10FFFF or surrogates).
+   Stack: [] -> [character or NIL]"
+  (when (/= (length args) 1)
+    (error "code-char requires exactly 1 argument"))
+  (let ((result '())
+        (code-local (env-add-local env (gensym "CODE") :i32)))
+    ;; Compile code argument and save as i32
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result
+                         `((:ref.cast :i31)
+                           :i31.get_s
+                           (:local.set ,code-local)
+                           ;; Check validity: 0 <= code <= #x10FFFF and not surrogate
+                           (:block $code_char_done (:result :anyref))
+                           ;; Check < 0 (invalid)
+                           (:local.get ,code-local)
+                           (:i32.const 0)
+                           :i32.lt_s
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $code_char_done)
+                           :else
+                           ;; Check > #x10FFFF (invalid)
+                           (:local.get ,code-local)
+                           (:i32.const #x10FFFF)
+                           :i32.gt_s
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $code_char_done)
+                           :else
+                           ;; Check surrogate range #xD800-#xDFFF (invalid)
+                           (:local.get ,code-local)
+                           (:i32.const #xD800)
+                           :i32.ge_s
+                           (:local.get ,code-local)
+                           (:i32.const #xDFFF)
+                           :i32.le_s
+                           :i32.mul  ;; AND of both conditions
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $code_char_done)
+                           :else
+                           ;; Valid - return as character (i31ref)
+                           (:local.get ,code-local)
+                           :ref.i31
+                           :end
+                           :end
+                           :end
+                           :end)))
+    result))
+
+(defun compile-char= (args env)
+  "Compile (char= char1 char2) - character equality.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char= requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.eq
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char/= (args env)
+  "Compile (char/= char1 char2) - character inequality.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char/= requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.ne
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char< (args env)
+  "Compile (char< char1 char2) - character less than.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char< requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.lt_s
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char> (args env)
+  "Compile (char> char1 char2) - character greater than.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char> requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.gt_s
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char<= (args env)
+  "Compile (char<= char1 char2) - character less than or equal.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char<= requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.le_s
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char>= (args env)
+  "Compile (char>= char1 char2) - character greater than or equal.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char>= requires exactly 2 arguments"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s
+     :i32.ge_s
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-char-to-lower (args env local)
+  "Helper: compile code to convert character to lowercase.
+   Stores result in local. Returns instruction list.
+   Input: character codepoint in local.
+   Result: lowercase codepoint in local."
+  (declare (ignore args env))
+  `(;; If 'A' <= c <= 'Z', add 32
+    (:local.get ,local)
+    (:i32.const 65)  ;; 'A'
+    :i32.ge_s
+    (:local.get ,local)
+    (:i32.const 90)  ;; 'Z'
+    :i32.le_s
+    :i32.mul  ;; AND
+    (:if (:result :i32))
+    (:local.get ,local)
+    (:i32.const 32)
+    :i32.add
+    :else
+    (:local.get ,local)
+    :end))
+
+(defun compile-char-equal (args env)
+  "Compile (char-equal char1 char2) - case-insensitive character equality.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char-equal requires exactly 2 arguments"))
+  (let ((c1-local (env-add-local env (gensym "C1") :i32))
+        (c2-local (env-add-local env (gensym "C2") :i32)))
+    (append
+     ;; Get first char, convert to lowercase
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c1-local))
+     (compile-char-to-lower nil nil c1-local)
+     `((:local.set ,c1-local))
+     ;; Get second char, convert to lowercase
+     (compile-to-instructions (second args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c2-local))
+     (compile-char-to-lower nil nil c2-local)
+     `((:local.set ,c2-local)
+       ;; Compare
+       (:local.get ,c1-local)
+       (:local.get ,c2-local)
+       :i32.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-char-lessp (args env)
+  "Compile (char-lessp char1 char2) - case-insensitive char<.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char-lessp requires exactly 2 arguments"))
+  (let ((c1-local (env-add-local env (gensym "C1") :i32))
+        (c2-local (env-add-local env (gensym "C2") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c1-local))
+     (compile-char-to-lower nil nil c1-local)
+     `((:local.set ,c1-local))
+     (compile-to-instructions (second args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c2-local))
+     (compile-char-to-lower nil nil c2-local)
+     `((:local.set ,c2-local)
+       (:local.get ,c1-local)
+       (:local.get ,c2-local)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-char-greaterp (args env)
+  "Compile (char-greaterp char1 char2) - case-insensitive char>.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char-greaterp requires exactly 2 arguments"))
+  (let ((c1-local (env-add-local env (gensym "C1") :i32))
+        (c2-local (env-add-local env (gensym "C2") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c1-local))
+     (compile-char-to-lower nil nil c1-local)
+     `((:local.set ,c1-local))
+     (compile-to-instructions (second args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c2-local))
+     (compile-char-to-lower nil nil c2-local)
+     `((:local.set ,c2-local)
+       (:local.get ,c1-local)
+       (:local.get ,c2-local)
+       :i32.gt_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-char-not-lessp (args env)
+  "Compile (char-not-lessp char1 char2) - case-insensitive char>=.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char-not-lessp requires exactly 2 arguments"))
+  (let ((c1-local (env-add-local env (gensym "C1") :i32))
+        (c2-local (env-add-local env (gensym "C2") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c1-local))
+     (compile-char-to-lower nil nil c1-local)
+     `((:local.set ,c1-local))
+     (compile-to-instructions (second args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c2-local))
+     (compile-char-to-lower nil nil c2-local)
+     `((:local.set ,c2-local)
+       (:local.get ,c1-local)
+       (:local.get ,c2-local)
+       :i32.ge_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-char-not-greaterp (args env)
+  "Compile (char-not-greaterp char1 char2) - case-insensitive char<=.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "char-not-greaterp requires exactly 2 arguments"))
+  (let ((c1-local (env-add-local env (gensym "C1") :i32))
+        (c2-local (env-add-local env (gensym "C2") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c1-local))
+     (compile-char-to-lower nil nil c1-local)
+     `((:local.set ,c1-local))
+     (compile-to-instructions (second args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c2-local))
+     (compile-char-to-lower nil nil c2-local)
+     `((:local.set ,c2-local)
+       (:local.get ,c1-local)
+       (:local.get ,c2-local)
+       :i32.le_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-char-upcase (args env)
+  "Compile (char-upcase char) - convert to uppercase.
+   Stack: [] -> [character]"
+  (when (/= (length args) 1)
+    (error "char-upcase requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       ;; If 'a' <= c <= 'z', subtract 32
+       (:local.get ,c-local)
+       (:i32.const 97)  ;; 'a'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)  ;; 'z'
+       :i32.le_s
+       :i32.mul  ;; AND - result is 0 or 1 (i32)
+       (:if (:result :anyref))
+       (:local.get ,c-local)
+       (:i32.const 32)
+       :i32.sub
+       :ref.i31
+       :else
+       (:local.get ,c-local)
+       :ref.i31
+       :end))))
+
+(defun compile-char-downcase (args env)
+  "Compile (char-downcase char) - convert to lowercase.
+   Stack: [] -> [character]"
+  (when (/= (length args) 1)
+    (error "char-downcase requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       ;; If 'A' <= c <= 'Z', add 32
+       (:local.get ,c-local)
+       (:i32.const 65)  ;; 'A'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)  ;; 'Z'
+       :i32.le_s
+       :i32.mul  ;; AND - result is 0 or 1 (i32)
+       (:if (:result :anyref))
+       (:local.get ,c-local)
+       (:i32.const 32)
+       :i32.add
+       :ref.i31
+       :else
+       (:local.get ,c-local)
+       :ref.i31
+       :end))))
+
+(defun compile-characterp (args env)
+  "Compile (characterp obj) - check if object is a character.
+   Since characters and fixnums share i31ref representation,
+   we can't distinguish them at runtime without type tags.
+   For MVP, returns T for any i31ref (which includes both chars and fixnums).
+   TODO: Add proper type tagging to distinguish chars from fixnums.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "characterp requires exactly 1 argument"))
+  ;; Test if value is a valid i31ref (not null and ref.test succeeds)
+  ;; Note: This will also return T for fixnums since they share i31ref representation
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.test :i31)
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31  ;; T (represented as fixnum 1)
+     :else
+     (:ref.null :none)  ;; NIL
+     :end)))
+
+(defun compile-alpha-char-p (args env)
+  "Compile (alpha-char-p char) - test if alphabetic.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "alpha-char-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:block $alpha_done (:result :anyref))
+       ;; Check uppercase A-Z
+       (:local.get ,c-local)
+       (:i32.const 65)  ;; 'A'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)  ;; 'Z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       (:br $alpha_done)
+       :else
+       ;; Check lowercase a-z
+       (:local.get ,c-local)
+       (:i32.const 97)  ;; 'a'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)  ;; 'z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :end
+       :end))))
+
+(defun compile-digit-char-p (args env)
+  "Compile (digit-char-p char [radix]) - test if digit, return weight or NIL.
+   Default radix is 10.
+   Stack: [] -> [fixnum or NIL]"
+  (when (or (< (length args) 1) (> (length args) 2))
+    (error "digit-char-p requires 1 or 2 arguments"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32))
+        (radix-local (env-add-local env (gensym "RADIX") :i32))
+        (digit-local (env-add-local env (gensym "DIGIT") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local))
+     ;; Compile radix (default 10)
+     (if (second args)
+         (append (compile-to-instructions (second args) env)
+                 `((:ref.cast :i31) :i31.get_s (:local.set ,radix-local)))
+         `((:i32.const 10) (:local.set ,radix-local)))
+     `((:block $digit_done (:result :anyref))
+       ;; Check '0'-'9' first
+       (:local.get ,c-local)
+       (:i32.const 48)  ;; '0'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 57)  ;; '9'
+       :i32.le_s
+       :i32.mul
+       (:if (:result :anyref))
+       ;; It's a decimal digit
+       (:local.get ,c-local)
+       (:i32.const 48)
+       :i32.sub
+       (:local.set ,digit-local)
+       ;; Check if digit < radix
+       (:local.get ,digit-local)
+       (:local.get ,radix-local)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:local.get ,digit-local)
+       :ref.i31
+       (:br $digit_done)
+       :else
+       (:ref.null :none)
+       (:br $digit_done)
+       :end
+       :else
+       ;; Check 'A'-'Z' for hex digits
+       (:local.get ,c-local)
+       (:i32.const 65)  ;; 'A'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)  ;; 'Z'
+       :i32.le_s
+       :i32.mul
+       (:if (:result :anyref))
+       ;; Uppercase hex: A=10, B=11, ...
+       (:local.get ,c-local)
+       (:i32.const 55)  ;; 'A' - 10
+       :i32.sub
+       (:local.set ,digit-local)
+       (:local.get ,digit-local)
+       (:local.get ,radix-local)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:local.get ,digit-local)
+       :ref.i31
+       (:br $digit_done)
+       :else
+       (:ref.null :none)
+       (:br $digit_done)
+       :end
+       :else
+       ;; Check 'a'-'z' for hex digits
+       (:local.get ,c-local)
+       (:i32.const 97)  ;; 'a'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)  ;; 'z'
+       :i32.le_s
+       :i32.mul
+       (:if (:result :anyref))
+       ;; Lowercase hex: a=10, b=11, ...
+       (:local.get ,c-local)
+       (:i32.const 87)  ;; 'a' - 10
+       :i32.sub
+       (:local.set ,digit-local)
+       (:local.get ,digit-local)
+       (:local.get ,radix-local)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:local.get ,digit-local)
+       :ref.i31
+       (:br $digit_done)
+       :else
+       (:ref.null :none)
+       (:br $digit_done)
+       :end
+       :else
+       ;; Not a digit
+       (:ref.null :none)
+       :end
+       :end
+       :end
+       :end))))
+
+(defun compile-alphanumericp (args env)
+  "Compile (alphanumericp char) - test if alphanumeric.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "alphanumericp requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:block $alphanum_done (:result :anyref))
+       ;; Check uppercase A-Z
+       (:local.get ,c-local)
+       (:i32.const 65)
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       (:br $alphanum_done)
+       :else
+       ;; Check lowercase a-z
+       (:local.get ,c-local)
+       (:i32.const 97)
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       (:br $alphanum_done)
+       :else
+       ;; Check digits 0-9
+       (:local.get ,c-local)
+       (:i32.const 48)
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 57)
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :end
+       :end
+       :end))))
+
+(defun compile-upper-case-p (args env)
+  "Compile (upper-case-p char) - test if uppercase letter.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "upper-case-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:local.get ,c-local)
+       (:i32.const 65)  ;; 'A'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)  ;; 'Z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-lower-case-p (args env)
+  "Compile (lower-case-p char) - test if lowercase letter.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "lower-case-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:local.get ,c-local)
+       (:i32.const 97)  ;; 'a'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)  ;; 'z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-stringp (args env)
+  "Compile (stringp obj) - test if object is a string.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "stringp requires exactly 1 argument"))
+  (let ((string-type clysm/compiler/codegen/gc-types:+type-string+))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.test ,(list :ref string-type))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-string-char (args env)
+  "Compile (char string index) or (schar string index) - get character at index.
+   For UTF-8 strings, we need to iterate to find the byte offset.
+   Stack: [] -> [character]"
+  (when (/= (length args) 2)
+    (error "char/schar requires exactly 2 arguments"))
+  (let ((str-local (env-add-local env (gensym "STR")))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (byte-idx-local (env-add-local env (gensym "BYTE-IDX") :i32))
+        (char-count-local (env-add-local env (gensym "CHAR-COUNT") :i32))
+        (byte-len-local (env-add-local env (gensym "BYTE-LEN") :i32))
+        (byte-local (env-add-local env (gensym "BYTE") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Compile string and index
+      ,@(compile-to-instructions (first args) env)
+      (:local.set ,str-local)
+      ,@(compile-to-instructions (second args) env)
+      ;; Extract index from i31ref fixnum
+      (:ref.cast :i31)
+      :i31.get_s
+      (:local.set ,idx-local)
+      ;; Get byte length
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,byte-len-local)
+      ;; Initialize: byte-idx=0, char-count=0
+      (:i32.const 0)
+      (:local.set ,byte-idx-local)
+      (:i32.const 0)
+      (:local.set ,char-count-local)
+      ;; Loop to find the byte position of the idx-th character
+      ;; We look for the start of each character and check if it's the one we want
+      (:block $find_done)
+      (:loop $find_loop)
+      ;; Check if byte-idx >= byte-len (out of bounds)
+      (:local.get ,byte-idx-local)
+      (:local.get ,byte-len-local)
+      :i32.ge_u
+      (:br_if $find_done)
+      ;; Get byte at current position
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Check if this byte is a leading byte (not a continuation byte)
+      ;; Continuation bytes: 10xxxxxx (0x80-0xBF)
+      (:local.get ,byte-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)
+      ;; This is a leading byte (start of a character)
+      ;; Check if char-count == idx (this is the character we want)
+      (:local.get ,char-count-local)
+      (:local.get ,idx-local)
+      :i32.eq
+      (:br_if $find_done)
+      ;; Not the one we want, increment char count and continue
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      ;; Increment byte-idx
+      (:local.get ,byte-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,byte-idx-local)
+      (:br $find_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Now byte-idx points to the start of the idx-th character
+      ;; Decode the UTF-8 character at this position
+      ;; Get the first byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Determine character length and decode
+      ;; ASCII: 0xxxxxxx (0x00-0x7F) -> 1 byte
+      (:local.get ,byte-local)
+      (:i32.const #x80)
+      :i32.lt_u
+      (:if (:result :i32))
+      ;; ASCII byte, codepoint = byte
+      (:local.get ,byte-local)
+      :else
+      ;; Multi-byte sequence
+      ;; 2-byte: 110xxxxx (0xC0-0xDF)
+      (:local.get ,byte-local)
+      (:i32.const #xE0)
+      :i32.lt_u
+      (:if (:result :i32))
+      ;; 2-byte sequence: 110xxxxx 10xxxxxx
+      (:local.get ,byte-local)
+      (:i32.const #x1F)  ; mask lower 5 bits
+      :i32.and
+      (:i32.const 6)
+      :i32.shl
+      ;; Get second byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)  ; mask lower 6 bits
+      :i32.and
+      :i32.or
+      :else
+      ;; 3-byte: 1110xxxx (0xE0-0xEF)
+      (:local.get ,byte-local)
+      (:i32.const #xF0)
+      :i32.lt_u
+      (:if (:result :i32))
+      ;; 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
+      (:local.get ,byte-local)
+      (:i32.const #x0F)  ; mask lower 4 bits
+      :i32.and
+      (:i32.const 12)
+      :i32.shl
+      ;; Get second byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)
+      :i32.and
+      (:i32.const 6)
+      :i32.shl
+      :i32.or
+      ;; Get third byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 2)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)
+      :i32.and
+      :i32.or
+      :else
+      ;; 4-byte: 11110xxx (0xF0-0xF7)
+      ;; 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+      (:local.get ,byte-local)
+      (:i32.const #x07)  ; mask lower 3 bits
+      :i32.and
+      (:i32.const 18)
+      :i32.shl
+      ;; Get second byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)
+      :i32.and
+      (:i32.const 12)
+      :i32.shl
+      :i32.or
+      ;; Get third byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 2)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)
+      :i32.and
+      (:i32.const 6)
+      :i32.shl
+      :i32.or
+      ;; Get fourth byte
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,byte-idx-local)
+      (:i32.const 3)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:i32.const #x3F)
+      :i32.and
+      :i32.or
+      :end  ; close 3-byte vs 4-byte if
+      :end  ; close 2-byte vs 3-byte+ if
+      :end  ; close ASCII vs multi-byte if
+      ;; Result is the codepoint as i32, convert to character (i31ref)
+      :ref.i31)))
+
+;;; String Comparison Functions (008-character-string)
+;;; For UTF-8 strings, byte-by-byte comparison is valid for equality
+;;; and lexicographic ordering since UTF-8 preserves codepoint order.
+
+(defun compile-string= (args env)
+  "Compile (string= str1 str2) - test string equality.
+   Returns T if strings are equal, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "string= requires exactly 2 arguments"))
+  (let ((str1-local (env-add-local env (gensym "STR1")))
+        (str2-local (env-add-local env (gensym "STR2")))
+        (len1-local (env-add-local env (gensym "LEN1") :i32))
+        (len2-local (env-add-local env (gensym "LEN2") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (result-local (env-add-local env (gensym "RESULT")))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Compile both strings
+      ,@(compile-to-instructions (first args) env)
+      (:local.set ,str1-local)
+      ,@(compile-to-instructions (second args) env)
+      (:local.set ,str2-local)
+      ;; Get lengths
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len2-local)
+      ;; Assume equal (T), will set to NIL if we find difference
+      (:i32.const 1) :ref.i31
+      (:local.set ,result-local)
+      ;; Initialize idx
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      ;; First check if lengths differ
+      (:local.get ,len1-local)
+      (:local.get ,len2-local)
+      :i32.ne
+      (:if nil)
+      ;; Lengths differ, set result to NIL
+      (:ref.null :none)
+      (:local.set ,result-local)
+      :else
+      ;; Same length, compare byte by byte
+      (:block $cmp_done)
+      (:loop $cmp_loop)
+      ;; Check if idx >= len (all bytes compared equal)
+      (:local.get ,idx-local)
+      (:local.get ,len1-local)
+      :i32.ge_u
+      (:br_if $cmp_done)
+      ;; Compare bytes at idx
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      :i32.ne
+      (:if nil)
+      ;; Bytes differ, set result to NIL and exit
+      (:ref.null :none)
+      (:local.set ,result-local)
+      (:br $cmp_done)
+      :end
+      ;; Bytes equal, continue
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $cmp_loop)
+      :end  ; loop
+      :end  ; block
+      :end  ; length check if
+      ;; Return result
+      (:local.get ,result-local))))
+
+(defun compile-string/= (args env)
+  "Compile (string/= str1 str2) - test string inequality.
+   Returns the index of first differing character, or NIL if equal.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string/= requires exactly 2 arguments"))
+  (let ((str1-local (env-add-local env (gensym "STR1")))
+        (str2-local (env-add-local env (gensym "STR2")))
+        (len1-local (env-add-local env (gensym "LEN1") :i32))
+        (len2-local (env-add-local env (gensym "LEN2") :i32))
+        (min-len-local (env-add-local env (gensym "MINLEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (char-count-local (env-add-local env (gensym "CHARCOUNT") :i32))
+        (byte-local (env-add-local env (gensym "BYTE") :i32))
+        (result-local (env-add-local env (gensym "RESULT")))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Compile both strings
+      ,@(compile-to-instructions (first args) env)
+      (:local.set ,str1-local)
+      ,@(compile-to-instructions (second args) env)
+      (:local.set ,str2-local)
+      ;; Get lengths
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len2-local)
+      ;; min-len = min(len1, len2)
+      (:local.get ,len1-local)
+      (:local.get ,len2-local)
+      :i32.lt_u
+      (:if (:result :i32))
+      (:local.get ,len1-local)
+      :else
+      (:local.get ,len2-local)
+      :end
+      (:local.set ,min-len-local)
+      ;; Initialize: assume equal (NIL result), idx=0, char-count=0
+      (:ref.null :none)
+      (:local.set ,result-local)
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:i32.const 0)
+      (:local.set ,char-count-local)
+      ;; Compare byte by byte
+      (:block $cmp_done)
+      (:loop $cmp_loop)
+      ;; Check if idx >= min-len
+      (:local.get ,idx-local)
+      (:local.get ,min-len-local)
+      :i32.ge_u
+      (:if nil)
+      ;; Reached end of shorter string
+      ;; If lengths differ, set result to char-count
+      (:local.get ,len1-local)
+      (:local.get ,len2-local)
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      :ref.i31
+      (:local.set ,result-local)
+      :end
+      (:br $cmp_done)
+      :end
+      ;; Get byte from str1
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Compare bytes
+      (:local.get ,byte-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      :i32.ne
+      (:if nil)
+      ;; Bytes differ, set result to char-count and exit
+      (:local.get ,char-count-local)
+      :ref.i31
+      (:local.set ,result-local)
+      (:br $cmp_done)
+      :end
+      ;; Bytes equal - if leading byte, increment char-count
+      (:local.get ,byte-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      ;; Continue
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $cmp_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return result
+      (:local.get ,result-local))))
+
+(defun compile-string< (args env)
+  "Compile (string< str1 str2) - test if str1 < str2 lexicographically.
+   Returns index of first difference if str1 < str2, NIL otherwise.
+   Stack: [] -> [index or NIL]"
+  (compile-string-compare args env :lt))
+
+(defun compile-string> (args env)
+  "Compile (string> str1 str2) - test if str1 > str2 lexicographically.
+   Stack: [] -> [index or NIL]"
+  (compile-string-compare args env :gt))
+
+(defun compile-string<= (args env)
+  "Compile (string<= str1 str2) - test if str1 <= str2 lexicographically.
+   Stack: [] -> [index or NIL]"
+  (compile-string-compare args env :le))
+
+(defun compile-string>= (args env)
+  "Compile (string>= str1 str2) - test if str1 >= str2 lexicographically.
+   Stack: [] -> [index or NIL]"
+  (compile-string-compare args env :ge))
+
+;;; ============================================================
+;;; Case-insensitive string comparison functions
+;;; ============================================================
+
+(defun compile-string-equal (args env)
+  "Compile (string-equal str1 str2) - case-insensitive string equality.
+   Returns T if strings are equal ignoring case, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "string-equal requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :equal))
+
+(defun compile-string-lessp (args env)
+  "Compile (string-lessp str1 str2) - case-insensitive string less-than.
+   Returns mismatch index or NIL.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string-lessp requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :lt))
+
+(defun compile-string-greaterp (args env)
+  "Compile (string-greaterp str1 str2) - case-insensitive string greater-than.
+   Returns mismatch index or NIL.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string-greaterp requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :gt))
+
+(defun compile-string-not-lessp (args env)
+  "Compile (string-not-lessp str1 str2) - case-insensitive string >=.
+   Returns mismatch index or NIL.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string-not-lessp requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :ge))
+
+(defun compile-string-not-greaterp (args env)
+  "Compile (string-not-greaterp str1 str2) - case-insensitive string <=.
+   Returns mismatch index or NIL.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string-not-greaterp requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :le))
+
+(defun compile-string-not-equal (args env)
+  "Compile (string-not-equal str1 str2) - case-insensitive string inequality.
+   Returns mismatch index or NIL.
+   Stack: [] -> [index or NIL]"
+  (when (/= (length args) 2)
+    (error "string-not-equal requires exactly 2 arguments"))
+  (compile-string-compare-ci args env :not-equal))
+
+(defun compile-upcase-byte (byte-local temp-local)
+  "Generate instructions to convert a byte in byte-local to uppercase.
+   Modifies byte-local in place. Uses temp-local as scratch.
+   Stack: [] -> []"
+  `(;; Check if byte is lowercase a-z (97-122)
+    (:local.get ,byte-local)
+    (:i32.const 97)  ;; 'a'
+    :i32.ge_u
+    (:local.get ,byte-local)
+    (:i32.const 122) ;; 'z'
+    :i32.le_u
+    :i32.and
+    (:if nil)
+    ;; Convert to uppercase by subtracting 32
+    (:local.get ,byte-local)
+    (:i32.const 32)
+    :i32.sub
+    (:local.set ,byte-local)
+    :end))
+
+(defun compile-string-compare-ci (args env comparison)
+  "Case-insensitive string comparison.
+   COMPARISON is one of :equal, :not-equal, :lt, :gt, :le, :ge"
+  (let ((str1-local (env-add-local env (gensym "STR1")))
+        (str2-local (env-add-local env (gensym "STR2")))
+        (len1-local (env-add-local env (gensym "LEN1") :i32))
+        (len2-local (env-add-local env (gensym "LEN2") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (byte1-local (env-add-local env (gensym "BYTE1") :i32))
+        (byte2-local (env-add-local env (gensym "BYTE2") :i32))
+        (char-count-local (env-add-local env (gensym "CHARCOUNT") :i32))
+        (result-local (env-add-local env (gensym "RESULT")))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Compile both strings
+      ,@(compile-to-instructions (first args) env)
+      (:local.set ,str1-local)
+      ,@(compile-to-instructions (second args) env)
+      (:local.set ,str2-local)
+      ;; Get lengths (byte lengths)
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len2-local)
+      ;; Initialize
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:i32.const 0)
+      (:local.set ,char-count-local)
+      (:ref.null :none)  ;; Default result is NIL
+      (:local.set ,result-local)
+      ;; Compare byte by byte with case folding
+      (:block $cmp_done)
+      (:loop $cmp_loop)
+      ;; Check if we've reached the end of str1
+      (:local.get ,idx-local)
+      (:local.get ,len1-local)
+      :i32.ge_u
+      (:if nil)
+      ;; str1 ended - check str2
+      (:local.get ,idx-local)
+      (:local.get ,len2-local)
+      :i32.ge_u
+      (:if nil)
+      ;; Both ended at same length - strings are equal
+      ,@(compile-string-compare-ci-at-end-equal comparison char-count-local result-local)
+      :else
+      ;; str1 ended but str2 continues - str1 < str2
+      ,@(compile-string-compare-ci-at-end-prefix comparison :str1-shorter char-count-local result-local)
+      :end
+      (:br $cmp_done)
+      :end
+      ;; str1 not ended - check if str2 ended
+      (:local.get ,idx-local)
+      (:local.get ,len2-local)
+      :i32.ge_u
+      (:if nil)
+      ;; str2 ended but str1 continues - str1 > str2
+      ,@(compile-string-compare-ci-at-end-prefix comparison :str2-shorter char-count-local result-local)
+      (:br $cmp_done)
+      :end
+      ;; Both have more bytes - get bytes and convert to uppercase
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte2-local)
+      ;; Convert both to uppercase for comparison
+      ,@(compile-upcase-byte byte1-local byte2-local)  ;; uses byte2-local as temp (we'll restore it)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte2-local)
+      ,@(compile-upcase-byte byte2-local byte1-local)
+      ;; Get byte1 again (may have been modified as temp)
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte1-local)
+      ,@(compile-upcase-byte byte1-local byte2-local)
+      ;; Compare uppercased bytes
+      (:local.get ,byte1-local)
+      (:local.get ,byte2-local)
+      :i32.ne
+      (:if nil)
+      ;; Bytes differ - determine result
+      ,@(compile-string-compare-ci-at-diff comparison byte1-local byte2-local char-count-local result-local)
+      (:br $cmp_done)
+      :end
+      ;; Count leading byte for character count
+      ;; Leading bytes have top 2 bits != 10 (i.e., not continuation byte)
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:i32.const 192)  ;; 0xC0
+      :i32.and
+      (:i32.const 128)  ;; 0x80
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      ;; Next byte
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $cmp_loop)
+      :end  ; loop
+      :end  ; block
+      (:local.get ,result-local))))
+
+(defun compile-string-compare-ci-at-end-equal (comparison char-count-local result-local)
+  "Generate code for when both strings ended at the same point (equal)."
+  (case comparison
+    (:equal
+     ;; Strings are equal - return T
+     `((:i32.const 1) :ref.i31 (:local.set ,result-local)))
+    (:not-equal
+     ;; Strings are equal - return NIL (already set)
+     nil)
+    ((:lt :gt)
+     ;; Strings are equal - return NIL for < and > (already set)
+     nil)
+    ((:le :ge)
+     ;; Strings are equal - return char-count for <= and >=
+     `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)))))
+
+(defun compile-string-compare-ci-at-end-prefix (comparison which-shorter char-count-local result-local)
+  "Generate code when one string is a prefix of the other."
+  (case comparison
+    (:equal
+     ;; Not equal - return NIL (already set)
+     nil)
+    (:not-equal
+     ;; Not equal - return char-count
+     `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)))
+    (:lt
+     ;; str1 < str2 iff str1 is shorter
+     (if (eq which-shorter :str1-shorter)
+         `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local))
+         nil))
+    (:gt
+     ;; str1 > str2 iff str2 is shorter
+     (if (eq which-shorter :str2-shorter)
+         `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local))
+         nil))
+    (:le
+     ;; str1 <= str2 iff str1 is shorter or equal (str1 shorter means true)
+     (if (eq which-shorter :str1-shorter)
+         `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local))
+         nil))
+    (:ge
+     ;; str1 >= str2 iff str2 is shorter or equal (str2 shorter means true)
+     (if (eq which-shorter :str2-shorter)
+         `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local))
+         nil))))
+
+(defun compile-string-compare-ci-at-diff (comparison byte1-local byte2-local char-count-local result-local)
+  "Generate code for when bytes differ at comparison point."
+  (case comparison
+    (:equal
+     ;; Not equal - return NIL (already set)
+     nil)
+    (:not-equal
+     ;; Not equal - return char-count
+     `((:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)))
+    (:lt
+     ;; str1 < str2 iff byte1 < byte2
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.lt_u
+       (:if nil)
+       (:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)
+       :end))
+    (:gt
+     ;; str1 > str2 iff byte1 > byte2
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.gt_u
+       (:if nil)
+       (:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)
+       :end))
+    (:le
+     ;; str1 <= str2 iff byte1 <= byte2 (since they differ, this means byte1 < byte2)
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.lt_u
+       (:if nil)
+       (:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)
+       :end))
+    (:ge
+     ;; str1 >= str2 iff byte1 >= byte2 (since they differ, this means byte1 > byte2)
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.gt_u
+       (:if nil)
+       (:local.get ,char-count-local) :ref.i31 (:local.set ,result-local)
+       :end))))
+
+(defun compile-string-compare (args env comparison)
+  "Generic string comparison for <, >, <=, >=.
+   COMPARISON is one of :lt, :gt, :le, :ge"
+  (when (/= (length args) 2)
+    (error "String comparison requires exactly 2 arguments"))
+  (let ((str1-local (env-add-local env (gensym "STR1")))
+        (str2-local (env-add-local env (gensym "STR2")))
+        (len1-local (env-add-local env (gensym "LEN1") :i32))
+        (len2-local (env-add-local env (gensym "LEN2") :i32))
+        (min-len-local (env-add-local env (gensym "MINLEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (char-count-local (env-add-local env (gensym "CHARCOUNT") :i32))
+        (byte1-local (env-add-local env (gensym "BYTE1") :i32))
+        (byte2-local (env-add-local env (gensym "BYTE2") :i32))
+        (result-local (env-add-local env (gensym "RESULT")))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Compile both strings
+      ,@(compile-to-instructions (first args) env)
+      (:local.set ,str1-local)
+      ,@(compile-to-instructions (second args) env)
+      (:local.set ,str2-local)
+      ;; Get lengths
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len2-local)
+      ;; min-len = min(len1, len2)
+      (:local.get ,len1-local)
+      (:local.get ,len2-local)
+      :i32.lt_u
+      (:if (:result :i32))
+      (:local.get ,len1-local)
+      :else
+      (:local.get ,len2-local)
+      :end
+      (:local.set ,min-len-local)
+      ;; Initialize: assume false (NIL), idx=0, char-count=0
+      (:ref.null :none)
+      (:local.set ,result-local)
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:i32.const 0)
+      (:local.set ,char-count-local)
+      ;; Compare byte by byte
+      (:block $cmp_done)
+      (:loop $cmp_loop)
+      ;; Check if idx >= min-len
+      (:local.get ,idx-local)
+      (:local.get ,min-len-local)
+      :i32.ge_u
+      (:if nil)
+      ;; Reached end of shorter string
+      ;; Result depends on comparison type and relative lengths
+      ,@(compile-string-compare-at-end-v2 comparison len1-local len2-local char-count-local result-local)
+      (:br $cmp_done)
+      :end
+      ;; Get bytes from both strings
+      (:local.get ,str1-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte1-local)
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte2-local)
+      ;; Compare bytes
+      (:local.get ,byte1-local)
+      (:local.get ,byte2-local)
+      :i32.ne
+      (:if nil)
+      ;; Bytes differ - determine result based on comparison
+      ,@(compile-string-compare-at-diff-v2 comparison byte1-local byte2-local char-count-local result-local)
+      (:br $cmp_done)
+      :end
+      ;; Bytes equal - if leading byte, increment char-count
+      (:local.get ,byte1-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      ;; Continue
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $cmp_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return result
+      (:local.get ,result-local))))
+
+(defun compile-string-compare-at-end-v2 (comparison len1-local len2-local char-count-local result-local)
+  "Generate code for string comparison result when one string is a prefix of the other.
+   Sets result-local to char-count (as i31) if condition is true, leaves it as NIL otherwise."
+  (let ((condition-instr (case comparison
+                           (:lt :i32.lt_u)  ; str1 < str2 iff len1 < len2
+                           (:gt :i32.gt_u)  ; str1 > str2 iff len1 > len2
+                           (:le :i32.le_u)  ; str1 <= str2 iff len1 <= len2
+                           (:ge :i32.ge_u)))) ; str1 >= str2 iff len1 >= len2
+    `((:local.get ,len1-local)
+      (:local.get ,len2-local)
+      ,condition-instr
+      (:if nil)
+      (:local.get ,char-count-local)
+      :ref.i31
+      (:local.set ,result-local)
+      :end)))
+
+(defun compile-string-compare-at-end (comparison len1-local len2-local char-count-local)
+  "Generate code for string comparison result when one string is a prefix of the other."
+  (case comparison
+    (:lt
+     ;; str1 < str2 iff len1 < len2 (str1 is proper prefix)
+     `((:local.get ,len1-local)
+       (:local.get ,len2-local)
+       :i32.lt_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31  ; return mismatch position
+       :else
+       (:ref.null :none)
+       :end))
+    (:gt
+     ;; str1 > str2 iff len1 > len2 (str2 is proper prefix)
+     `((:local.get ,len1-local)
+       (:local.get ,len2-local)
+       :i32.gt_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:le
+     ;; str1 <= str2 iff len1 <= len2
+     `((:local.get ,len1-local)
+       (:local.get ,len2-local)
+       :i32.le_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:ge
+     ;; str1 >= str2 iff len1 >= len2
+     `((:local.get ,len1-local)
+       (:local.get ,len2-local)
+       :i32.ge_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-string-compare-at-diff-v2 (comparison byte1-local byte2-local char-count-local result-local)
+  "Generate code for string comparison result when bytes differ.
+   Sets result-local to char-count (as i31) if condition is true, leaves it as NIL otherwise."
+  (let ((condition-instr (case comparison
+                           (:lt :i32.lt_u)  ; str1 < str2 iff byte1 < byte2
+                           (:gt :i32.gt_u)  ; str1 > str2 iff byte1 > byte2
+                           (:le :i32.lt_u)  ; str1 <= str2 iff byte1 < byte2 (NOT <=, since bytes differ!)
+                           (:ge :i32.gt_u)))) ; str1 >= str2 iff byte1 > byte2 (NOT >=, since bytes differ!)
+    `((:local.get ,byte1-local)
+      (:local.get ,byte2-local)
+      ,condition-instr
+      (:if nil)
+      (:local.get ,char-count-local)
+      :ref.i31
+      (:local.set ,result-local)
+      :end)))
+
+(defun compile-string-compare-at-diff (comparison byte1-local byte2-local char-count-local)
+  "Generate code for string comparison result when bytes differ."
+  (case comparison
+    (:lt
+     ;; str1 < str2 iff byte1 < byte2
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.lt_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:gt
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.gt_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:le
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.le_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:ge
+     `((:local.get ,byte1-local)
+       (:local.get ,byte2-local)
+       :i32.ge_u
+       (:if (:result :anyref))
+       (:local.get ,char-count-local) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+;;; ============================================================
+;;; String Generation/Conversion (008-character-string Phase 6)
+;;; ============================================================
+
+(defun extract-keyword-from-ast (ast)
+  "Extract keyword symbol from AST node (AST-VAR-REF with keyword name)."
+  (and (typep ast 'clysm/compiler/ast:ast-var-ref)
+       (let ((name (clysm/compiler/ast:ast-var-ref-name ast)))
+         (and (keywordp name) name))))
+
+(defun compile-make-string (args env)
+  "Compile (make-string size &key initial-element) - create new string.
+   Stack: [] -> [string]
+   Note: Currently only supports ASCII characters. Multi-byte UTF-8 will be added later."
+  (when (< (length args) 1)
+    (error "make-string requires at least 1 argument (size)"))
+  (let* ((size-arg (first args))
+         (rest-args (rest args))
+         ;; Parse keyword arguments
+         (initial-element nil))
+    ;; Look for :initial-element keyword
+    (loop while rest-args do
+      (let* ((key-ast (first rest-args))
+             (key (extract-keyword-from-ast key-ast))
+             (val (second rest-args)))
+        (cond
+          ((eq key :initial-element)
+           (setf initial-element val))
+          (t (error "Unknown keyword argument to make-string: ~A" key-ast)))
+        (setf rest-args (cddr rest-args))))
+    ;; Generate code - simple version that assumes ASCII (1 byte per char)
+    (let ((size-local (env-add-local env (gensym "SIZE") :i32))
+          (char-local (env-add-local env (gensym "CHAR") :i32))
+          (str-local (env-add-local env (gensym "STR")))
+          (idx-local (env-add-local env (gensym "IDX") :i32))
+          (string-type clysm/compiler/codegen/gc-types:+type-string+))
+      `(;; Get size
+        ,@(compile-to-instructions size-arg env)
+        (:ref.cast :i31)
+        :i31.get_s
+        (:local.set ,size-local)
+        ;; Get initial char code (default #\Null = 0)
+        ,@(if initial-element
+              `(,@(compile-to-instructions initial-element env)
+                (:ref.cast :i31)
+                :i31.get_s
+                (:local.set ,char-local))
+              `((:i32.const 0)
+                (:local.set ,char-local)))
+        ;; Create array with size bytes (assuming ASCII)
+        (:local.get ,size-local)
+        (:array.new_default ,string-type)
+        (:local.set ,str-local)
+        ;; Fill array with initial character
+        (:i32.const 0)
+        (:local.set ,idx-local)
+        ;; Loop to fill
+        (:block $ms_done)
+        (:loop $ms_loop)
+        ;; Check if done
+        (:local.get ,idx-local)
+        (:local.get ,size-local)
+        :i32.ge_u
+        (:br_if $ms_done)
+        ;; Store char byte
+        (:local.get ,str-local)
+        (:ref.cast ,(list :ref string-type))
+        (:local.get ,idx-local)
+        (:local.get ,char-local)
+        (:array.set ,string-type)
+        ;; Increment idx
+        (:local.get ,idx-local)
+        (:i32.const 1)
+        :i32.add
+        (:local.set ,idx-local)
+        (:br $ms_loop)
+        :end  ; loop
+        :end  ; block
+        ;; Return string
+        (:local.get ,str-local)))))
+
+(defun compile-string (args env)
+  "Compile (string x) - convert character or symbol to string.
+   Stack: [] -> [string]"
+  (when (/= (length args) 1)
+    (error "string requires exactly 1 argument"))
+  (let ((str-local (env-add-local env (gensym "STR")))
+        (char-local (env-add-local env (gensym "CHAR") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    ;; If arg is a character, create a 1-char string
+    ;; If arg is already a string, return it
+    ;; TODO: Handle symbols (get their print name)
+    `(,@(compile-to-instructions (first args) env)
+      (:local.set ,str-local)
+      ;; Check if already a string
+      (:local.get ,str-local)
+      (:ref.test ,(list :ref string-type))
+      (:if (:result :anyref))
+      ;; Already a string - return as-is
+      (:local.get ,str-local)
+      :else
+      ;; Assume it's a character - convert to 1-char string
+      (:local.get ,str-local)
+      (:ref.cast :i31)
+      :i31.get_s
+      (:local.set ,char-local)
+      ;; Create 1-element array
+      (:i32.const 1)
+      (:array.new_default ,string-type)
+      (:local.set ,str-local)
+      (:local.get ,str-local)
+      (:ref.cast ,(list :ref string-type))
+      (:i32.const 0)
+      (:local.get ,char-local)
+      (:array.set ,string-type)
+      (:local.get ,str-local)
+      :end)))
+
+(defun compile-string-upcase (args env)
+  "Compile (string-upcase string) - convert to uppercase.
+   Stack: [] -> [string]"
+  (when (/= (length args) 1)
+    (error "string-upcase requires exactly 1 argument"))
+  (let ((src-local (env-add-local env (gensym "SRC")))
+        (dst-local (env-add-local env (gensym "DST")))
+        (len-local (env-add-local env (gensym "LEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (byte-local (env-add-local env (gensym "BYTE") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Get source string
+      ,@(compile-to-instructions (first args) env)
+      (:ref.cast ,(list :ref string-type))
+      (:local.set ,src-local)
+      ;; Get length
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len-local)
+      ;; Create destination array
+      (:local.get ,len-local)
+      (:array.new_default ,string-type)
+      (:local.set ,dst-local)
+      ;; Copy and convert
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:block $up_done)
+      (:loop $up_loop)
+      ;; Check if done
+      (:local.get ,idx-local)
+      (:local.get ,len-local)
+      :i32.ge_u
+      (:br_if $up_done)
+      ;; Get byte
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Check if lowercase (a-z = 97-122)
+      (:local.get ,byte-local)
+      (:i32.const 97)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 122)
+      :i32.le_u
+      :i32.and
+      (:if (:result :i32))
+      ;; Convert to uppercase (subtract 32)
+      (:local.get ,byte-local)
+      (:i32.const 32)
+      :i32.sub
+      :else
+      (:local.get ,byte-local)
+      :end
+      (:local.set ,byte-local)
+      ;; Store in destination
+      (:local.get ,dst-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:local.get ,byte-local)
+      (:array.set ,string-type)
+      ;; Increment
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $up_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return destination
+      (:local.get ,dst-local))))
+
+(defun compile-string-downcase (args env)
+  "Compile (string-downcase string) - convert to lowercase.
+   Stack: [] -> [string]"
+  (when (/= (length args) 1)
+    (error "string-downcase requires exactly 1 argument"))
+  (let ((src-local (env-add-local env (gensym "SRC")))
+        (dst-local (env-add-local env (gensym "DST")))
+        (len-local (env-add-local env (gensym "LEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (byte-local (env-add-local env (gensym "BYTE") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Get source string
+      ,@(compile-to-instructions (first args) env)
+      (:ref.cast ,(list :ref string-type))
+      (:local.set ,src-local)
+      ;; Get length
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len-local)
+      ;; Create destination array
+      (:local.get ,len-local)
+      (:array.new_default ,string-type)
+      (:local.set ,dst-local)
+      ;; Copy and convert
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:block $down_done)
+      (:loop $down_loop)
+      ;; Check if done
+      (:local.get ,idx-local)
+      (:local.get ,len-local)
+      :i32.ge_u
+      (:br_if $down_done)
+      ;; Get byte
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Check if uppercase (A-Z = 65-90)
+      (:local.get ,byte-local)
+      (:i32.const 65)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 90)
+      :i32.le_u
+      :i32.and
+      (:if (:result :i32))
+      ;; Convert to lowercase (add 32)
+      (:local.get ,byte-local)
+      (:i32.const 32)
+      :i32.add
+      :else
+      (:local.get ,byte-local)
+      :end
+      (:local.set ,byte-local)
+      ;; Store in destination
+      (:local.get ,dst-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:local.get ,byte-local)
+      (:array.set ,string-type)
+      ;; Increment
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $down_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return destination
+      (:local.get ,dst-local))))
+
+(defun compile-string-capitalize (args env)
+  "Compile (string-capitalize string) - capitalize first letter of each word.
+   Stack: [] -> [string]"
+  (when (/= (length args) 1)
+    (error "string-capitalize requires exactly 1 argument"))
+  (let ((src-local (env-add-local env (gensym "SRC")))
+        (dst-local (env-add-local env (gensym "DST")))
+        (len-local (env-add-local env (gensym "LEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (byte-local (env-add-local env (gensym "BYTE") :i32))
+        (word-start-local (env-add-local env (gensym "WORDSTART") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Get source string
+      ,@(compile-to-instructions (first args) env)
+      (:ref.cast ,(list :ref string-type))
+      (:local.set ,src-local)
+      ;; Get length
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len-local)
+      ;; Create destination array
+      (:local.get ,len-local)
+      (:array.new_default ,string-type)
+      (:local.set ,dst-local)
+      ;; Initialize
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      (:i32.const 1)  ; Start of string is word start
+      (:local.set ,word-start-local)
+      (:block $cap_done)
+      (:loop $cap_loop)
+      ;; Check if done
+      (:local.get ,idx-local)
+      (:local.get ,len-local)
+      :i32.ge_u
+      (:br_if $cap_done)
+      ;; Get byte
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      ;; Check if alphabetic
+      (:local.get ,byte-local)
+      (:i32.const 65)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 90)
+      :i32.le_u
+      :i32.and
+      (:local.get ,byte-local)
+      (:i32.const 97)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 122)
+      :i32.le_u
+      :i32.and
+      :i32.or
+      (:if nil)
+      ;; Is alphabetic
+      ;; Check if word start
+      (:local.get ,word-start-local)
+      (:if nil)
+      ;; Word start - uppercase
+      (:local.get ,byte-local)
+      (:i32.const 97)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 122)
+      :i32.le_u
+      :i32.and
+      (:if nil)
+      ;; Is lowercase, convert to uppercase
+      (:local.get ,byte-local)
+      (:i32.const 32)
+      :i32.sub
+      (:local.set ,byte-local)
+      :end
+      :else
+      ;; Not word start - lowercase
+      (:local.get ,byte-local)
+      (:i32.const 65)
+      :i32.ge_u
+      (:local.get ,byte-local)
+      (:i32.const 90)
+      :i32.le_u
+      :i32.and
+      (:if nil)
+      ;; Is uppercase, convert to lowercase
+      (:local.get ,byte-local)
+      (:i32.const 32)
+      :i32.add
+      (:local.set ,byte-local)
+      :end
+      :end
+      ;; Clear word-start flag
+      (:i32.const 0)
+      (:local.set ,word-start-local)
+      :else
+      ;; Not alphabetic - set word-start flag
+      (:i32.const 1)
+      (:local.set ,word-start-local)
+      :end
+      ;; Store byte
+      (:local.get ,dst-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:local.get ,byte-local)
+      (:array.set ,string-type)
+      ;; Increment
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $cap_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Return destination
+      (:local.get ,dst-local))))
+
+;;; ============================================================
+;;; Substring and Concatenation (008-character-string Phase 7)
+;;; ============================================================
+
+(defun compile-subseq (args env)
+  "Compile (subseq string start &optional end) - get substring.
+   Stack: [] -> [string]"
+  (when (< (length args) 2)
+    (error "subseq requires at least 2 arguments"))
+  (let* ((string-arg (first args))
+         (start-arg (second args))
+         (end-arg (if (>= (length args) 3) (third args) nil))
+         (src-local (env-add-local env (gensym "SRC")))
+         (dst-local (env-add-local env (gensym "DST")))
+         (start-local (env-add-local env (gensym "START") :i32))
+         (end-local (env-add-local env (gensym "END") :i32))
+         (byte-len-local (env-add-local env (gensym "BYTELEN") :i32))
+         (src-byte-len-local (env-add-local env (gensym "SRCBYTELEN") :i32))
+         (char-count-local (env-add-local env (gensym "CHARCOUNT") :i32))
+         (src-idx-local (env-add-local env (gensym "SRCIDX") :i32))
+         (dst-idx-local (env-add-local env (gensym "DSTIDX") :i32))
+         (byte-local (env-add-local env (gensym "BYTE") :i32))
+         (start-byte-local (env-add-local env (gensym "STARTBYTE") :i32))
+         (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Get source string
+      ,@(compile-to-instructions string-arg env)
+      (:ref.cast ,(list :ref string-type))
+      (:local.set ,src-local)
+      ;; Get start index
+      ,@(compile-to-instructions start-arg env)
+      (:ref.cast :i31)
+      :i31.get_s
+      (:local.set ,start-local)
+      ;; Get end index (or string length)
+      ,@(if end-arg
+            `(,@(compile-to-instructions end-arg env)
+              (:ref.cast :i31)
+              :i31.get_s
+              (:local.set ,end-local))
+            `(;; Calculate string char length for default end
+              (:local.get ,src-local)
+              (:ref.cast ,(list :ref string-type))
+              (:array.len)
+              (:local.set ,src-byte-len-local)
+              ;; Count characters (UTF-8 aware)
+              (:i32.const 0)
+              (:local.set ,char-count-local)
+              (:i32.const 0)
+              (:local.set ,src-idx-local)
+              (:block $len_done)
+              (:loop $len_loop)
+              (:local.get ,src-idx-local)
+              (:local.get ,src-byte-len-local)
+              :i32.ge_u
+              (:br_if $len_done)
+              (:local.get ,src-local)
+              (:ref.cast ,(list :ref string-type))
+              (:local.get ,src-idx-local)
+              (:array.get_u ,string-type)
+              (:i32.const #xC0)
+              :i32.and
+              (:i32.const #x80)
+              :i32.ne
+              (:if nil)
+              (:local.get ,char-count-local)
+              (:i32.const 1)
+              :i32.add
+              (:local.set ,char-count-local)
+              :end
+              (:local.get ,src-idx-local)
+              (:i32.const 1)
+              :i32.add
+              (:local.set ,src-idx-local)
+              (:br $len_loop)
+              :end
+              :end
+              (:local.get ,char-count-local)
+              (:local.set ,end-local)))
+      ;; Find byte position of start char
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,src-byte-len-local)
+      (:i32.const 0)
+      (:local.set ,char-count-local)
+      (:i32.const 0)
+      (:local.set ,src-idx-local)
+      (:block $find_start_done)
+      (:loop $find_start_loop)
+      (:local.get ,src-idx-local)
+      (:local.get ,src-byte-len-local)
+      :i32.ge_u
+      (:br_if $find_start_done)
+      (:local.get ,char-count-local)
+      (:local.get ,start-local)
+      :i32.ge_u
+      (:br_if $find_start_done)
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,src-idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      (:local.get ,byte-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      (:local.get ,src-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,src-idx-local)
+      (:br $find_start_loop)
+      :end
+      :end
+      (:local.get ,src-idx-local)
+      (:local.set ,start-byte-local)
+      ;; Find byte position of end char and calculate byte length
+      (:block $find_end_done)
+      (:loop $find_end_loop)
+      (:local.get ,src-idx-local)
+      (:local.get ,src-byte-len-local)
+      :i32.ge_u
+      (:br_if $find_end_done)
+      (:local.get ,char-count-local)
+      (:local.get ,end-local)
+      :i32.ge_u
+      (:br_if $find_end_done)
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,src-idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte-local)
+      (:local.get ,byte-local)
+      (:i32.const #xC0)
+      :i32.and
+      (:i32.const #x80)
+      :i32.ne
+      (:if nil)
+      (:local.get ,char-count-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,char-count-local)
+      :end
+      (:local.get ,src-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,src-idx-local)
+      (:br $find_end_loop)
+      :end
+      :end
+      (:local.get ,src-idx-local)
+      (:local.get ,start-byte-local)
+      :i32.sub
+      (:local.set ,byte-len-local)
+      ;; Create destination array
+      (:local.get ,byte-len-local)
+      (:array.new_default ,string-type)
+      (:local.set ,dst-local)
+      ;; Copy bytes
+      (:i32.const 0)
+      (:local.set ,dst-idx-local)
+      (:block $copy_done)
+      (:loop $copy_loop)
+      (:local.get ,dst-idx-local)
+      (:local.get ,byte-len-local)
+      :i32.ge_u
+      (:br_if $copy_done)
+      (:local.get ,dst-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,dst-idx-local)
+      (:local.get ,src-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,start-byte-local)
+      (:local.get ,dst-idx-local)
+      :i32.add
+      (:array.get_u ,string-type)
+      (:array.set ,string-type)
+      (:local.get ,dst-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,dst-idx-local)
+      (:br $copy_loop)
+      :end
+      :end
+      ;; Return destination
+      (:local.get ,dst-local))))
+
+(defun compile-concatenate (args env)
+  "Compile (concatenate 'string str1 str2 ...) - concatenate strings.
+   Stack: [] -> [string]"
+  (when (< (length args) 1)
+    (error "concatenate requires at least 1 argument (result type)"))
+  ;; Check that first arg is 'string
+  (let ((type-arg (first args))
+        (string-args (rest args)))
+    ;; For now, only support 'string result type
+    ;; Skip type check at compile time - we'll just produce a string
+    (if (null string-args)
+        ;; No strings to concatenate - return empty string
+        `((:i32.const 0)
+          (:array.new_default ,clysm/compiler/codegen/gc-types:+type-string+))
+        ;; Concatenate strings
+        (let ((str-locals (loop for i from 0 below (length string-args)
+                                collect (env-add-local env (gensym "STR"))))
+              (len-local (env-add-local env (gensym "TOTALLEN") :i32))
+              (result-local (env-add-local env (gensym "RESULT")))
+              (dst-idx-local (env-add-local env (gensym "DSTIDX") :i32))
+              (src-idx-local (env-add-local env (gensym "SRCIDX") :i32))
+              (src-len-local (env-add-local env (gensym "SRCLEN") :i32))
+              (string-type clysm/compiler/codegen/gc-types:+type-string+))
+          `(;; Compile each string and store in locals
+            ,@(loop for arg in string-args
+                    for local in str-locals
+                    append `(,@(compile-to-instructions arg env)
+                             (:ref.cast ,(list :ref string-type))
+                             (:local.set ,local)))
+            ;; Calculate total length
+            (:i32.const 0)
+            (:local.set ,len-local)
+            ,@(loop for local in str-locals
+                    append `((:local.get ,local)
+                             (:ref.cast ,(list :ref string-type))
+                             (:array.len)
+                             (:local.get ,len-local)
+                             :i32.add
+                             (:local.set ,len-local)))
+            ;; Create result array
+            (:local.get ,len-local)
+            (:array.new_default ,string-type)
+            (:local.set ,result-local)
+            ;; Copy each string
+            (:i32.const 0)
+            (:local.set ,dst-idx-local)
+            ,@(loop for local in str-locals
+                    append `(;; Get source length
+                             (:local.get ,local)
+                             (:ref.cast ,(list :ref string-type))
+                             (:array.len)
+                             (:local.set ,src-len-local)
+                             ;; Copy bytes from this string
+                             (:i32.const 0)
+                             (:local.set ,src-idx-local)
+                             (:block $concat_copy_done)
+                             (:loop $concat_copy_loop)
+                             (:local.get ,src-idx-local)
+                             (:local.get ,src-len-local)
+                             :i32.ge_u
+                             (:br_if $concat_copy_done)
+                             (:local.get ,result-local)
+                             (:ref.cast ,(list :ref string-type))
+                             (:local.get ,dst-idx-local)
+                             (:local.get ,local)
+                             (:ref.cast ,(list :ref string-type))
+                             (:local.get ,src-idx-local)
+                             (:array.get_u ,string-type)
+                             (:array.set ,string-type)
+                             (:local.get ,src-idx-local)
+                             (:i32.const 1)
+                             :i32.add
+                             (:local.set ,src-idx-local)
+                             (:local.get ,dst-idx-local)
+                             (:i32.const 1)
+                             :i32.add
+                             (:local.set ,dst-idx-local)
+                             (:br $concat_copy_loop)
+                             :end
+                             :end))
+            ;; Return result
+            (:local.get ,result-local))))))

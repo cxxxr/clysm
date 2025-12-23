@@ -147,6 +147,53 @@
             (return))))
     (list :keyword (string-upcase (coerce (nreverse chars) 'string)))))
 
+;;; ============================================================
+;;; Character Literal Reading (008-character-string)
+;;; ============================================================
+
+(defparameter *named-characters*
+  '(("SPACE" . #\Space)
+    ("NEWLINE" . #\Newline)
+    ("LINEFEED" . #\Newline)
+    ("TAB" . #\Tab)
+    ("RETURN" . #\Return)
+    ("PAGE" . #\Page)
+    ("BACKSPACE" . #\Backspace)
+    ("RUBOUT" . #\Rubout))
+  "Named character mappings for #\\Name syntax.")
+
+(defun read-character-token (tokenizer)
+  "Read a character literal token (#\\x or #\\Name).
+   Handles:
+   - Single characters: #\\a, #\\A, #\\0, #\\!, etc.
+   - Named characters: #\\Space, #\\Newline, #\\Tab, #\\Return, etc."
+  ;; At this point, we've consumed '#' and '\\'
+  (let* ((line (tokenizer-line tokenizer))
+         (column (tokenizer-column tokenizer))
+         (first-char (read-char* tokenizer)))
+    (cond
+      ((null first-char)
+       (error "Unexpected end of input after #\\"))
+      ;; Check if it's a single character (followed by terminator)
+      ((terminating-char-p (peek-char* tokenizer))
+       (list :character first-char line column))
+      ;; Could be a named character - collect the full name
+      (t
+       (let ((chars (list first-char)))
+         (loop
+           (let ((char (peek-char* tokenizer)))
+             (if (and char (alphanumericp char))
+                 (push (read-char* tokenizer) chars)
+                 (return))))
+         (let* ((name (string-upcase (coerce (nreverse chars) 'string)))
+                (named-char (cdr (assoc name *named-characters* :test #'string=))))
+           (if named-char
+               (list :character named-char line column)
+               ;; Single character case: name is just one char
+               (if (= 1 (length name))
+                   (list :character (char name 0) line column)
+                   (error "Unknown character name: ~A" name)))))))))
+
 ;;; Main tokenization
 
 (defun next-token (tokenizer)
@@ -197,6 +244,34 @@
       ;; Keyword
       ((char= char #\:)
        (read-keyword-token tokenizer))
+      ;; Dispatch macro (#\, #', etc.) - 008-character-string
+      ((char= char #\#)
+       (read-char* tokenizer)  ; consume #
+       (let ((dispatch-char (peek-char* tokenizer)))
+         (cond
+           ;; Character literal: #\x
+           ((eql dispatch-char #\\)
+            (read-char* tokenizer)  ; consume backslash
+            (read-character-token tokenizer))
+           ;; Function reference: #'fn (placeholder for now)
+           ((eql dispatch-char #\')
+            (read-char* tokenizer)  ; consume quote
+            (list :function nil line column))
+           ;; Hexadecimal: #xNNN
+           ((eql dispatch-char #\x)
+            (read-char* tokenizer)  ; consume x
+            (let ((chars '()))
+              (loop
+                (let ((c (peek-char* tokenizer)))
+                  (if (and c (or (digit-char-p c) (find c "abcdefABCDEF")))
+                      (push (read-char* tokenizer) chars)
+                      (return))))
+              (if (null chars)
+                  (error "Invalid hexadecimal number after #x")
+                  (list :number (parse-integer (coerce (nreverse chars) 'string) :radix 16)
+                        line column))))
+           (t
+            (error "Unknown dispatch macro character: #~A" dispatch-char)))))
       ;; Number or symbol
       (t
        (read-number-or-symbol tokenizer)))))

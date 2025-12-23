@@ -230,8 +230,8 @@
     (emit-gc-struct-type content '((:anyref t) (:anyref t)))
     ;; Type 3: $symbol (name, value, function, plist)
     (emit-gc-struct-type content '((:anyref nil) (:anyref t) (:anyref t) (:anyref t)))
-    ;; Type 4: $string (array of i8) - actually needs to be array type
-    (emit-gc-array-type content :i8 nil)
+    ;; Type 4: $string (array of i8) - mutable to support make-string
+    (emit-gc-array-type content :i8 t)
     ;; Type 5: $closure (code_0, code_1, code_2, code_N, env)
     (emit-gc-struct-type content '((:funcref nil) (:funcref nil)
                                    (:funcref nil) (:funcref nil)
@@ -646,6 +646,41 @@
           (vector-push-extend #x05 buffer)
           (emit-leb128-unsigned (cadr instr) buffer)   ; type index
           (emit-leb128-unsigned (caddr instr) buffer)) ; field index
+         (:array.new_fixed
+          ;; array.new_fixed <typeidx> <n> - create array with n elements from stack
+          ;; 008-character-string: Used for string literals
+          ;; Opcode: 0xFB 0x08
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x08 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer)   ; type index
+          (emit-leb128-unsigned (caddr instr) buffer)) ; n elements
+         (:array.new_default
+          ;; array.new_default <typeidx> - create array with default values
+          ;; 008-character-string: Used for make-string
+          ;; Stack: [size:i32] -> [arrayref]
+          ;; Opcode: 0xFB 0x07
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x07 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))  ; type index
+         (:array.set
+          ;; array.set <typeidx> - set element in array
+          ;; 008-character-string: Used for make-string fill
+          ;; Stack: [arrayref, idx:i32, value] -> []
+          ;; Opcode: 0xFB 0x0E
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x0E buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))  ; type index
+         (:array.len
+          ;; array.len - get length of array
+          ;; 008-character-string: Used for string length
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x0F buffer))
+         (:array.get_u
+          ;; array.get_u <typeidx> - get unsigned element from array
+          ;; 008-character-string: Used for char/schar
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x0D buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
          (:call_ref
           ;; call_ref <typeidx> - call through function reference
           (vector-push-extend #x14 buffer)
@@ -732,13 +767,23 @@
        (:i32.eq (vector-push-extend #x46 buffer))
        (:i32.ne (vector-push-extend #x47 buffer))
        (:i32.lt_s (vector-push-extend #x48 buffer))
+       (:i32.lt_u (vector-push-extend #x49 buffer))
        (:i32.gt_s (vector-push-extend #x4A buffer))
+       (:i32.gt_u (vector-push-extend #x4B buffer))
        (:i32.le_s (vector-push-extend #x4C buffer))
+       (:i32.le_u (vector-push-extend #x4D buffer))
        (:i32.ge_s (vector-push-extend #x4E buffer))
+       (:i32.ge_u (vector-push-extend #x4F buffer))
        (:i32.add (vector-push-extend #x6A buffer))
        (:i32.sub (vector-push-extend #x6B buffer))
        (:i32.mul (vector-push-extend #x6C buffer))
        (:i32.div_s (vector-push-extend #x6D buffer))
+       (:i32.and (vector-push-extend #x71 buffer))
+       (:i32.or (vector-push-extend #x72 buffer))
+       (:i32.xor (vector-push-extend #x73 buffer))
+       (:i32.shl (vector-push-extend #x74 buffer))
+       (:i32.shr_s (vector-push-extend #x75 buffer))
+       (:i32.shr_u (vector-push-extend #x76 buffer))
        ;; Reference operations
        (:ref.eq (vector-push-extend #xD3 buffer))
        (:ref.is_null (vector-push-extend #xD1 buffer))

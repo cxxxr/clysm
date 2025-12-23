@@ -158,3 +158,15 @@
 ;; Sequence functions integration tests (007-sequence-functions)
 (defpackage #:clysm/tests/integration/sequence
   (:use #:cl #:rove))
+
+;; Character unit tests (008-character-string)
+(defpackage #:clysm/tests/unit/character
+  (:use #:cl #:rove))
+
+;; Character integration tests (008-character-string)
+(defpackage #:clysm/tests/integration/character
+  (:use #:cl #:rove))
+
+;; String integration tests (008-character-string)
+(defpackage #:clysm/tests/integration/string
+  (:use #:cl #:rove))
