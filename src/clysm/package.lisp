@@ -322,6 +322,10 @@
            ;; Exception tags (010-numeric-tower)
            #:+tag-division-by-zero+
            #:emit-division-by-zero-tag
+           ;; Stream type (015-ffi-stream-io)
+           #:+type-stream+
+           #:make-stream-type
+           #:emit-value-type-extended
            ;; Type predicates for struct/array
            #:wasm-struct-type-p
            #:wasm-array-type-p

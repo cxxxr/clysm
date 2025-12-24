@@ -112,6 +112,17 @@
      (:file "signaling")
      (:file "standard")))
 
+   ;; Streams: FFI-based stream I/O (015-ffi-stream-io)
+   (:module "streams"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "ffi-io")
+     (:file "write")
+     (:file "read")
+     (:file "format")))
+
    ;; Standard library
    (:module "lib"
     :serial t
@@ -177,7 +188,18 @@
      (:file "tokenizer-package-test")
      (:file "condition-types-test")
      (:file "handler-test")
-     (:file "restart-test")))
+     (:file "restart-test")
+     (:file "stream-types-test")
+     (:file "stream-write-test")
+     (:file "stream-read-test")
+     (:file "stream-format-test")))
+
+   ;; Stream tests (015-ffi-stream-io)
+   (:module "streams"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "stream-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"

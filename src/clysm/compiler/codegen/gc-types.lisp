@@ -37,6 +37,11 @@
 (defconstant +type-limb-array+ 18 "Type index for bignum limb array")
 
 ;;; ============================================================
+;;; Stream Type Index (015-ffi-stream-io)
+;;; ============================================================
+(defconstant +type-stream+ 19 "Type index for stream objects")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -329,6 +334,24 @@
                  (make-wasm-field :name 'imag :type :anyref :mutable nil))))
 
 ;;; ============================================================
+;;; Stream Type Constructor (015-ffi-stream-io, T006)
+;;; ============================================================
+
+(defun make-stream-type ()
+  "Create stream type for I/O operations (015-ffi-stream-io).
+   Structure:
+     $fd: i32 (host file descriptor: 0=stdin, 1=stdout, 2=stderr)
+     $direction: i32 (0=input, 1=output, 2=bidirectional)
+   (type $stream (struct
+     (field $fd i32)
+     (field $direction i32)))"
+  (make-wasm-struct-type
+   :name '$stream
+   :index +type-stream+
+   :fields (list (make-wasm-field :name 'fd :type :i32 :mutable nil)
+                 (make-wasm-field :name 'direction :type :i32 :mutable nil))))
+
+;;; ============================================================
 ;;; Exception Tags (T008)
 ;;; ============================================================
 
@@ -385,7 +408,8 @@
         (make-ratio-type)           ; type 15: exact rational number
         (make-float-type)           ; type 16: IEEE 754 double-precision
         (make-complex-type)         ; type 17: complex number
-        (make-limb-array-type)))    ; type 18: bignum limb array
+        (make-limb-array-type)      ; type 18: bignum limb array
+        (make-stream-type)))        ; type 19: stream object (015-ffi-stream-io)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
@@ -463,7 +487,12 @@
     (:complex-ref
      ;; (ref $complex) - non-null reference to complex
      (write-byte #x64 stream)  ; ref (non-null)
-     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-complex+ stream))))
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-complex+ stream))
+    ;; Stream type reference (015-ffi-stream-io, T008)
+    (:stream-ref
+     ;; (ref $stream) - non-null reference to stream
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-stream+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"
@@ -536,4 +565,9 @@
      ;; (ref $complex) - non-null reference to complex
      (write-byte #x64 stream)  ; ref (non-null)
      (clysm/backend/leb128:encode-signed-leb128-to-stream +type-complex+ stream))
+    ;; Stream type reference (015-ffi-stream-io)
+    (:stream-ref
+     ;; (ref $stream) - non-null reference to stream
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-stream+ stream))
     (t (error "Unknown value type: ~A" type-keyword))))

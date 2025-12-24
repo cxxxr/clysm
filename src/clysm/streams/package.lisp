@@ -1,0 +1,51 @@
+;;;; package.lisp - Package definition for stream I/O module
+;;;; FFI-based stream I/O without linear memory (015-ffi-stream-io)
+
+(in-package #:cl-user)
+
+(defpackage #:clysm/streams
+  (:use #:cl #:alexandria)
+  (:import-from #:clysm/conditions
+                #:error
+                #:type-error
+                #:make-condition)
+  (:import-from #:clysm/ffi
+                #:define-foreign-function)
+  ;; Stream type and predicates (FR-014, US4)
+  (:export #:stream
+           #:streamp
+           #:input-stream-p
+           #:output-stream-p
+           #:stream-fd
+           #:stream-direction
+           #:make-stream
+           ;; Direction constants
+           #:+direction-input+
+           #:+direction-output+
+           #:+direction-io+)
+  ;; Output operations (FR-001, FR-002, FR-003, US1)
+  (:export #:write-char
+           #:write-string)
+  ;; Input operations (FR-004, FR-005, FR-006, FR-007, US2)
+  (:export #:read-char
+           #:read-line)
+  ;; Format function (FR-008 to FR-013, US3)
+  (:export #:format)
+  ;; Standard streams (FR-015, FR-016, FR-017)
+  (:export #:*standard-input*
+           #:*standard-output*
+           #:*error-output*)
+  ;; Stream conditions
+  (:export #:stream-error
+           #:stream-error-stream
+           #:end-of-file)
+  (:documentation "FFI-based stream I/O for clysm compiler.
+   Implements Common Lisp stream operations via FFI calls to host environment.
+   No linear memory is used; all data passes through WasmGC types.
+
+   Features:
+   - write-char, write-string for output (US1)
+   - read-char, read-line for input (US2)
+   - format with ~A, ~S, ~D, ~%, ~~ directives (US3)
+   - Stream predicates and first-class stream values (US4)
+   - Standard streams: *standard-input*, *standard-output*, *error-output*"))

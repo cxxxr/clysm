@@ -12,6 +12,7 @@
            #:simple-condition #:simple-error #:simple-warning
            #:type-error #:cell-error #:unbound-variable #:undefined-function
            #:control-error #:program-error
+           #:stream-error #:end-of-file  ; Stream conditions (015-ffi-stream-io)
            #:signal #:warn #:cerror
            #:restart #:find-restart #:compute-restarts #:invoke-restart
            #:invoke-restart-interactively #:invoke-debugger
@@ -36,6 +37,11 @@
    #:unbound-variable
    #:undefined-function
    #:control-error
+   #:program-error
+   ;; Stream-related conditions (015-ffi-stream-io)
+   #:stream-error
+   #:stream-error-stream
+   #:end-of-file
    ;; Condition accessors
    #:simple-condition-format-control
    #:simple-condition-format-arguments

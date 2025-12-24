@@ -141,6 +141,27 @@
   (:documentation "Condition for invalid program structure."))
 
 ;;; ============================================================
+;;; Stream Error (015-ffi-stream-io, T009)
+;;; ============================================================
+
+(defclass stream-error (error)
+  ((stream
+    :initarg :stream
+    :reader stream-error-stream
+    :documentation "The stream that caused the error"))
+  (:documentation "Condition for stream-related errors.
+   FR-014: Signaled when stream operations encounter errors."))
+
+;;; ============================================================
+;;; End of File (015-ffi-stream-io, T010)
+;;; ============================================================
+
+(defclass end-of-file (stream-error)
+  ()
+  (:documentation "Condition signaled when EOF is reached on input stream.
+   FR-007: Input functions MUST handle end-of-file conditions appropriately."))
+
+;;; ============================================================
 ;;; Make Condition (T032)
 ;;; ============================================================
 
