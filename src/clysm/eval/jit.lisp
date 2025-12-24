@@ -41,19 +41,13 @@
 
 (defun instantiate-wasm (wasm)
   "Instantiate a Wasm module.
-   In host mode, this wraps the binary for later execution."
+   In host mode, this signals an error since we cannot execute Wasm."
   (unless (validate-wasm wasm)
     (error "Invalid Wasm binary"))
-  ;; Create an instance that can be used by the host runtime
-  ;; In actual Wasm environment, this would call WebAssembly.instantiate
-  ;; For now, we create a mock instance that can still be used for testing
-  (make-wasm-instance
-   :binary wasm
-   :main-function (lambda (&rest args)
-                    (declare (ignore args))
-                    ;; In full implementation, this would call into Wasm
-                    ;; For now, return a placeholder
-                    nil)))
+  ;; In host (SBCL) mode, we cannot actually instantiate and run Wasm.
+  ;; Signal an error to trigger graceful degradation in the tiered system.
+  ;; In actual Wasm environment, this would call WebAssembly.instantiate.
+  (error "Cannot instantiate Wasm in host environment (graceful degradation expected)"))
 
 (defun extract-function (instance)
   "Extract the main exported function from a Wasm instance."
@@ -89,16 +83,50 @@
 ;; Initialize standard runtime imports
 (defun init-runtime-imports ()
   "Initialize standard runtime imports."
+  ;; Arithmetic operations
   (register-runtime-import "add" #'+)
   (register-runtime-import "sub" #'-)
   (register-runtime-import "mul" #'*)
   (register-runtime-import "div" #'/)
+  (register-runtime-import "mod" #'mod)
+  (register-runtime-import "rem" #'rem)
+
+  ;; Comparison operations
   (register-runtime-import "lt" #'<)
   (register-runtime-import "gt" #'>)
+  (register-runtime-import "le" #'<=)
+  (register-runtime-import "ge" #'>=)
   (register-runtime-import "eq" #'=)
+  (register-runtime-import "neq" #'/=)
+
+  ;; List operations
   (register-runtime-import "cons" #'cons)
   (register-runtime-import "car" #'car)
-  (register-runtime-import "cdr" #'cdr))
+  (register-runtime-import "cdr" #'cdr)
+  (register-runtime-import "list" #'list)
+  (register-runtime-import "append" #'append)
+  (register-runtime-import "length" #'length)
+  (register-runtime-import "reverse" #'reverse)
+  (register-runtime-import "nth" #'nth)
+  (register-runtime-import "nthcdr" #'nthcdr)
+  (register-runtime-import "first" #'first)
+  (register-runtime-import "rest" #'rest)
+
+  ;; Type predicates
+  (register-runtime-import "null" #'null)
+  (register-runtime-import "listp" #'listp)
+  (register-runtime-import "consp" #'consp)
+  (register-runtime-import "atom" #'atom)
+  (register-runtime-import "numberp" #'numberp)
+  (register-runtime-import "symbolp" #'symbolp)
+  (register-runtime-import "stringp" #'stringp)
+  (register-runtime-import "functionp" #'functionp)
+
+  ;; Utility functions
+  (register-runtime-import "not" #'not)
+  (register-runtime-import "identity" #'identity)
+  (register-runtime-import "funcall" #'funcall)
+  (register-runtime-import "apply" #'apply))
 
 ;; Initialize on load
 (init-runtime-imports)
@@ -141,3 +169,7 @@
 (defun hotpatch-function (symbol new-function)
   "Hot-patch a symbol's function slot with a new function."
   (set-function-slot symbol new-function))
+
+(defun reset-function-slots ()
+  "Reset all function slots. For testing purposes."
+  (clrhash *function-slots*))

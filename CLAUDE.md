@@ -17,6 +17,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory streams to host file descriptors) (015-ffi-stream-io)
 - Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing) (016-macro-system)
 - N/A (compile-time only, in-memory macro registry) (016-macro-system)
+- N/A (in-memory data structures for function slots, invocation counters) (017-eval-jit-compile)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -36,10 +37,31 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 017-eval-jit-compile: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 016-macro-system: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 015-ffi-stream-io: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing FFI foundation (012), condition system (014), special variables (002), character/string types (008)
-- 014-condition-system: Added Common Lisp (SBCL 2.4+) - compiler implementation language + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->
+## Feature 017: Eval/JIT Compile System - COMPLETE
+
+**Status**: All 54 tasks completed (2025-12-24)
+
+### Implemented Components
+- `src/clysm/eval/compile.lisp`: Tiered compilation with graceful degradation
+- `src/clysm/eval/jit.lisp`: JIT infrastructure with runtime imports
+- `src/clysm/eval/interpreter.lisp`: Tier 1 S-expression interpreter
+
+### Key Features
+1. **compile* function**: `(compile nil '(lambda ...))` returns callable function
+2. **Tiered execution**: Tier 1 interpreter + Tier 2 JIT compilation
+3. **Hot spot detection**: Automatic tier promotion after threshold (default: 10)
+4. **Graceful degradation**: Falls back to Tier 1 if JIT fails
+5. **Hot-patching**: Named functions can be recompiled at runtime
+6. **Runtime imports**: 40+ standard functions available for JIT modules
+
+### Test Coverage
+- Unit tests: 15+ tests for compile*, tier management, struct
+- Contract tests: 9 tests for Wasm generation and module linking
+- Integration tests: 13 tests for tier promotion, hot-patching, special forms
 <!-- MANUAL ADDITIONS END -->

@@ -14,42 +14,38 @@
 ;;; Output FFI Imports (T011, T012)
 ;;; ============================================================
 
+;; Write a Unicode codepoint to file descriptor.
+;; T011: FFI import for character output.
+;; FR-022: UTF-8 encoding at FFI boundary.
 (clysm/ffi:define-foreign-function %host-write-char
-    (:module "clysm:io"
-     :name "write-char"
-     :params ((:fd :i32) (:codepoint :i32))
-     :results ())
-  "Write a Unicode codepoint to file descriptor.
-   T011: FFI import for character output.
-   FR-022: UTF-8 encoding at FFI boundary.")
+    "clysm:io.write-char"
+    (:fixnum :fixnum)
+    :void)
 
+;; Write a string to file descriptor.
+;; T012: FFI import for string output.
+;; Uses WasmGC anyref for string - no linear memory.
 (clysm/ffi:define-foreign-function %host-write-string
-    (:module "clysm:io"
-     :name "write-string"
-     :params ((:fd :i32) (:string :externref))
-     :results ())
-  "Write a string to file descriptor.
-   T012: FFI import for string output.
-   Uses WasmGC externref for string - no linear memory.")
+    "clysm:io.write-string"
+    (:fixnum :anyref)
+    :void)
 
 ;;; ============================================================
 ;;; Input FFI Imports (T013, T014)
 ;;; ============================================================
 
+;; Read a Unicode codepoint from file descriptor.
+;; T013: FFI import for character input.
+;; Returns -1 on EOF.
 (clysm/ffi:define-foreign-function %host-read-char
-    (:module "clysm:io"
-     :name "read-char"
-     :params ((:fd :i32))
-     :results ((:codepoint :i32)))
-  "Read a Unicode codepoint from file descriptor.
-   T013: FFI import for character input.
-   Returns -1 on EOF.")
+    "clysm:io.read-char"
+    (:fixnum)
+    :fixnum)
 
+;; Read a line from file descriptor.
+;; T014: FFI import for line input.
+;; Returns null anyref on EOF.
 (clysm/ffi:define-foreign-function %host-read-line
-    (:module "clysm:io"
-     :name "read-line"
-     :params ((:fd :i32))
-     :results ((:line :externref)))
-  "Read a line from file descriptor.
-   T014: FFI import for line input.
-   Returns null externref on EOF.")
+    "clysm:io.read-line"
+    (:fixnum)
+    :anyref)

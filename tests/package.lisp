@@ -237,3 +237,25 @@
 
 (defpackage #:clysm/tests/integration/package
   (:use #:cl #:rove))
+
+;; Compile tests (017-eval-jit-compile)
+(defpackage #:clysm/tests/unit/compile
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/contract/tier-promotion
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/contract/module-linking
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/compile
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/tier-promotion
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/unit/jit
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/jit-module
+  (:use #:cl #:rove))

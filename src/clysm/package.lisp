@@ -181,6 +181,13 @@
            #:ast-defparameter-init-form
            #:ast-defparameter-docstring
            #:make-ast-defparameter
+           ;; Macro introspection AST (016-macro-system)
+           #:ast-macroexpand-1
+           #:ast-macroexpand-1-form
+           #:make-ast-macroexpand-1
+           #:ast-macroexpand
+           #:ast-macroexpand-form
+           #:make-ast-macroexpand
            ;; Parsing
            #:parse-expr))
 
@@ -255,7 +262,8 @@
            #:expand-backquote
            ;; Defmacro parsing
            #:parse-defmacro
-           #:defmacro-result-p))
+           #:defmacro-result-p
+           #:compile-defmacro))
 
 (defpackage #:clysm/compiler/codegen/wasm-ir
   (:use #:cl)
@@ -521,7 +529,20 @@
            #:validate-wasm
            #:instantiate-wasm
            #:extract-function
-           #:hotpatch-function))
+           #:hotpatch-function
+           ;; Function slot management
+           #:*function-slots*
+           #:set-function-slot
+           #:get-function-slot
+           #:reset-function-slots
+           ;; Runtime imports
+           #:*runtime-imports*
+           #:register-runtime-import
+           #:get-runtime-import
+           ;; GC heap
+           #:*gc-heap*
+           #:allocate-gc-object
+           #:read-gc-object))
 
 (defpackage #:clysm/eval
   (:use #:cl #:clysm/eval/interpreter #:clysm/eval/jit)
@@ -529,7 +550,32 @@
 
 (defpackage #:clysm/eval/compile
   (:use #:cl #:clysm/eval/jit)
-  (:export #:compile*))
+  (:export ;; Main compile function
+           #:compile*
+           #:compile-with-tier
+           ;; Tiered function struct
+           #:tiered-function
+           #:make-tiered-function
+           #:tiered-function-p
+           #:tiered-function-name
+           #:tiered-function-definition
+           #:tiered-function-tier
+           #:tiered-function-implementation
+           #:tiered-function-invocation-count
+           #:tiered-function-promotion-failed-p
+           ;; Tier management
+           #:*compilation-threshold*
+           #:should-promote-to-tier-2-p
+           #:record-invocation
+           #:promote-to-tier-2
+           #:get-current-tier
+           ;; Tiered function registry (separate from jit's function slots)
+           #:*tiered-functions*
+           #:get-tiered-function
+           #:lookup-compiled-function
+           ;; Testing utilities
+           #:reset-invocation-counts
+           #:reset-tiered-functions))
 
 (defpackage #:clysm/clos/mop
   (:use #:cl)
