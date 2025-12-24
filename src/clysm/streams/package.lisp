@@ -8,9 +8,12 @@
   (:shadow #:stream #:streamp
            #:input-stream-p #:output-stream-p
            #:*standard-input* #:*standard-output* #:*error-output*
-           #:write-char #:write-string #:read-char #:read-line #:format)
+           #:write-char #:write-string #:read-char #:read-line #:format
+           #:princ-to-string #:prin1-to-string)
   (:import-from #:clysm/ffi
                 #:define-foreign-function)
+  ;; Note: Using CL condition types for host-side testing compatibility
+  ;; clysm/conditions types are for compiled Wasm output modeling
   ;; Stream type and predicates (FR-014, US4)
   (:export #:stream
            #:streamp
@@ -35,10 +38,8 @@
   (:export #:*standard-input*
            #:*standard-output*
            #:*error-output*)
-  ;; Stream conditions
-  (:export #:stream-error
-           #:clysm-stream-error-stream
-           #:end-of-file)
+  ;; Note: Stream conditions use CL types (stream-error, end-of-file)
+  ;; for host-side testing compatibility
   (:documentation "FFI-based stream I/O for clysm compiler.
    Implements Common Lisp stream operations via FFI calls to host environment.
    No linear memory is used; all data passes through WasmGC types.

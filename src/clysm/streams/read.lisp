@@ -12,18 +12,24 @@
   "Read a character from STREAM.
    FR-004: System MUST provide read-char function.
    FR-006: Support optional stream argument (default: *standard-input*).
-   FR-007: Handle end-of-file conditions appropriately."
+   FR-007: Handle end-of-file conditions appropriately.
+   FR-020: Uses condition system for error signaling."
   (declare (ignore recursive-p))
-  (check-type stream stream)
+  ;; Type check stream (signals clysm/conditions:type-error)
+  (unless (streamp stream)
+    (cl:error 'type-error
+              :datum stream
+              :expected-type 'stream))
+  ;; Validate input capability
   (unless (input-stream-p stream)
-    (error 'type-error
-           :datum stream
-           :expected-type '(satisfies input-stream-p)))
+    (cl:error 'type-error
+              :datum stream
+              :expected-type '(satisfies input-stream-p)))
   (let ((codepoint (%host-read-char (stream-fd stream))))
     (if (= codepoint -1)
         ;; EOF reached
         (if eof-error-p
-            (error 'end-of-file :stream stream)
+            (cl:error 'end-of-file :stream stream)
             eof-value)
         (code-char codepoint))))
 
@@ -37,18 +43,24 @@
    Returns two values: the line (without newline) and missing-newline-p.
    FR-005: System MUST provide read-line function.
    FR-006: Support optional stream argument.
-   FR-007: Handle end-of-file conditions."
+   FR-007: Handle end-of-file conditions.
+   FR-020: Uses condition system for error signaling."
   (declare (ignore recursive-p))
-  (check-type stream stream)
+  ;; Type check stream (signals clysm/conditions:type-error)
+  (unless (streamp stream)
+    (cl:error 'type-error
+              :datum stream
+              :expected-type 'stream))
+  ;; Validate input capability
   (unless (input-stream-p stream)
-    (error 'type-error
-           :datum stream
-           :expected-type '(satisfies input-stream-p)))
+    (cl:error 'type-error
+              :datum stream
+              :expected-type '(satisfies input-stream-p)))
   (let ((line (%host-read-line (stream-fd stream))))
     (if (null line)
         ;; EOF reached
         (if eof-error-p
-            (error 'end-of-file :stream stream)
+            (cl:error 'end-of-file :stream stream)
             (values eof-value t))
         ;; Return line and whether it ended without newline
         ;; The host shim strips newlines, so we check if we're at EOF

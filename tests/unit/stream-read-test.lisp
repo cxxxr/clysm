@@ -10,8 +10,7 @@
 (deftest read-char-stream-validation-test
   "Test read-char validates input stream"
   (testing "signals error for output-only stream"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:read-char clysm/streams:*standard-output*)))))
+    (ok (signals (clysm/streams:read-char clysm/streams:*standard-output*) 'type-error))))
 
 (deftest read-char-eof-error-p-test
   "Test read-char eof-error-p parameter (T043, T044)"
@@ -26,8 +25,7 @@
 (deftest read-line-stream-validation-test
   "Test read-line validates input stream"
   (testing "signals error for output-only stream"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:read-line clysm/streams:*standard-output*)))))
+    (ok (signals (clysm/streams:read-line clysm/streams:*standard-output*) 'type-error))))
 
 (deftest read-line-eof-handling-test
   "Test read-line EOF handling (T046)"

@@ -17,17 +17,14 @@
 (deftest write-char-type-error-test
   "Test write-char signals type-error for non-character (T033)"
   (testing "signals type-error for integer"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-char 42))))
+    (ok (signals (clysm/streams:write-char 42) 'type-error)))
   (testing "signals type-error for string"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-char "a")))))
+    (ok (signals (clysm/streams:write-char "a") 'type-error))))
 
 (deftest write-char-stream-validation-test
   "Test write-char validates output stream"
   (testing "signals error for input-only stream"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-char #\A clysm/streams:*standard-input*)))))
+    (ok (signals (clysm/streams:write-char #\A clysm/streams:*standard-input*) 'type-error))))
 
 ;;; ============================================================
 ;;; write-string Tests (US1: T031-T034)
@@ -41,17 +38,14 @@
 (deftest write-string-type-error-test
   "Test write-string signals type-error for non-string (T034)"
   (testing "signals type-error for integer"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-string 42))))
+    (ok (signals (clysm/streams:write-string 42) 'type-error)))
   (testing "signals type-error for character"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-string #\A)))))
+    (ok (signals (clysm/streams:write-string #\A) 'type-error))))
 
 (deftest write-string-stream-validation-test
   "Test write-string validates output stream"
   (testing "signals error for input-only stream"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:write-string "hello" clysm/streams:*standard-input*)))))
+    (ok (signals (clysm/streams:write-string "hello" clysm/streams:*standard-input*) 'type-error))))
 
 (deftest write-string-start-end-test
   "Test write-string :start/:end parameters (T032)"

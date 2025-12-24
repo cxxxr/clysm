@@ -43,12 +43,12 @@
                                       ((#\D #\d) :decimal)
                                       (#\% :newline)
                                       (#\~ :tilde)
-                                      (t (error "Unknown format directive: ~~~C" next-char)))
+                                      (t (cl:error "Unknown format directive: ~~~C" next-char)))
                               :start i
                               :end (+ i 2))
                              directives)
                        (incf i 2))
-                     (error "Format string ends with tilde"))
+                     (cl:error "Format string ends with tilde"))
                  (incf i)))
     (make-format-string-info
      :control-string control-string
@@ -72,7 +72,7 @@
   "Format OBJECT as decimal integer.
    T070: ~D directive handler."
   (unless (integerp object)
-    (error 'type-error :datum object :expected-type 'integer))
+    (cl:error 'type-error :datum object :expected-type 'integer))
   (write-string (princ-to-string object) stream))
 
 (defun format-newline (stream)
@@ -90,18 +90,22 @@
 ;;; ============================================================
 
 (defun princ-to-string (object)
-  "Return aesthetic string representation of OBJECT."
+  "Return aesthetic string representation of OBJECT.
+   Uses host CL's princ-to-string for non-trivial cases to avoid recursion."
   (typecase object
     (string object)
     (character (string object))
-    (t (format nil "~A" object))))
+    ;; For other types, use host CL's princ-to-string
+    (t (cl:princ-to-string object))))
 
 (defun prin1-to-string (object)
-  "Return standard string representation of OBJECT."
+  "Return standard string representation of OBJECT.
+   Uses host CL's prin1-to-string for non-trivial cases to avoid recursion."
   (typecase object
     (string (concatenate 'string "\"" object "\""))
-    (character (format nil "#\\~C" object))
-    (t (format nil "~S" object))))
+    (character (cl:format nil "#\\~C" object))
+    ;; For other types, use host CL's prin1-to-string
+    (t (cl:prin1-to-string object))))
 
 ;;; ============================================================
 ;;; Format Function (FR-008 to FR-013, T073, T074, US3)
@@ -125,9 +129,9 @@
                           ((eq destination t) *standard-output*)
                           ((null destination) nil)
                           ((streamp destination) destination)
-                          (t (error 'type-error
-                                   :datum destination
-                                   :expected-type '(or null (eql t) stream)))))
+                          (t (cl:error 'type-error
+                                      :datum destination
+                                      :expected-type '(or null (eql t) stream)))))
          (result-string (when (null destination)
                           (make-array 0 :element-type 'character
                                        :adjustable t :fill-pointer 0)))
@@ -157,20 +161,20 @@
         (ecase (format-directive-type directive)
           (:aesthetic
            (when (>= arg-index (length args))
-             (error "Not enough arguments for format"))
+             (cl:error "Not enough arguments for format"))
            (output (princ-to-string (nth arg-index args)))
            (incf arg-index))
           (:standard
            (when (>= arg-index (length args))
-             (error "Not enough arguments for format"))
+             (cl:error "Not enough arguments for format"))
            (output (prin1-to-string (nth arg-index args)))
            (incf arg-index))
           (:decimal
            (when (>= arg-index (length args))
-             (error "Not enough arguments for format"))
+             (cl:error "Not enough arguments for format"))
            (let ((arg (nth arg-index args)))
              (unless (integerp arg)
-               (error 'type-error :datum arg :expected-type 'integer))
+               (cl:error 'type-error :datum arg :expected-type 'integer))
              (output (princ-to-string arg)))
            (incf arg-index))
           (:newline

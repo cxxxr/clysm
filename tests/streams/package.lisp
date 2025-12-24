@@ -5,10 +5,12 @@
 
 (defpackage #:clysm/tests/streams
   (:use #:cl #:rove #:clysm/streams)
-  (:import-from #:clysm/conditions
-                #:type-error
-                #:stream-error
-                #:end-of-file)
+  (:shadowing-import-from #:clysm/streams
+                          #:stream #:streamp
+                          #:input-stream-p #:output-stream-p
+                          #:*standard-input* #:*standard-output* #:*error-output*
+                          #:write-char #:write-string #:read-char #:read-line #:format)
+  ;; Use CL condition types for host-side testing
   (:import-from #:clysm/compiler/codegen/gc-types
                 #:+type-stream+
                 #:make-stream-type

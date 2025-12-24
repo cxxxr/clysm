@@ -22,8 +22,8 @@
               'clysm/compiler/codegen/gc-types::$stream))
       (let ((fields (clysm/compiler/codegen/gc-types:wasm-struct-type-fields stream-type)))
         (ok (= (length fields) 2))
-        (ok (eq (clysm/compiler/codegen/gc-types:wasm-field-name (first fields)) 'fd))
-        (ok (eq (clysm/compiler/codegen/gc-types:wasm-field-name (second fields)) 'direction))))))
+        (ok (eq (clysm/compiler/codegen/gc-types:wasm-field-name (first fields)) 'clysm/compiler/codegen/gc-types::fd))
+        (ok (eq (clysm/compiler/codegen/gc-types:wasm-field-name (second fields)) 'clysm/compiler/codegen/gc-types::direction))))))
 
 ;;; ============================================================
 ;;; Stream Condition Tests (T009-T010)
@@ -119,14 +119,12 @@
 (deftest write-char-type-check-test
   "Test write-char type checking"
   (testing "signals type-error for non-character"
-    (ok (signals (clysm/conditions:type-error)
-          (write-char 42)))))
+    (ok (signals (write-char 42) 'type-error))))
 
 (deftest write-string-type-check-test
   "Test write-string type checking"
   (testing "signals type-error for non-string"
-    (ok (signals (clysm/conditions:type-error)
-          (write-string 42)))))
+    (ok (signals (write-string 42) 'type-error))))
 
 ;;; ============================================================
 ;;; Read Function Tests (US2: T042-T047)
@@ -135,14 +133,12 @@
 (deftest read-char-stream-check-test
   "Test read-char validates input stream"
   (testing "signals error for output-only stream"
-    (ok (signals (clysm/conditions:type-error)
-          (read-char *standard-output*)))))
+    (ok (signals (read-char *standard-output*) 'type-error))))
 
 (deftest read-line-stream-check-test
   "Test read-line validates input stream"
   (testing "signals error for output-only stream"
-    (ok (signals (clysm/conditions:type-error)
-          (read-line *standard-output*)))))
+    (ok (signals (read-line *standard-output*) 'type-error))))
 
 ;;; ============================================================
 ;;; Format Tests (US3: T055-T063)
@@ -171,8 +167,7 @@
   (testing "~D formats integer"
     (ok (equal (format nil "~D" 42) "42")))
   (testing "~D signals error for non-integer"
-    (ok (signals (clysm/conditions:type-error)
-          (format nil "~D" "not a number")))))
+    (ok (signals (format nil "~D" "not a number") 'type-error))))
 
 (deftest format-newline-test
   "Test format ~% directive"

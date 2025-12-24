@@ -113,16 +113,15 @@
      (:file "standard")))
 
    ;; Streams: FFI-based stream I/O (015-ffi-stream-io)
-   ;; TEMPORARILY DISABLED: Pre-existing issues need separate fix
-   ;; (:module "streams"
-   ;;  :serial t
-   ;;  :components
-   ;;  ((:file "package")
-   ;;   (:file "types")
-   ;;   (:file "ffi-io")
-   ;;   (:file "write")
-   ;;   (:file "read")
-   ;;   (:file "format")))
+   (:module "streams"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "ffi-io")
+     (:file "write")
+     (:file "read")
+     (:file "format")))
 
    ;; Standard library
    (:module "lib"
@@ -155,7 +154,9 @@
      (:file "wasm-validate-test")
      (:file "special-vars-codegen-test")
      (:file "numeric-types-test")
-     (:file "ffi-section-test")))
+     (:file "ffi-section-test")
+     (:file "module-linking-test")
+     (:file "tier-promotion-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -190,24 +191,24 @@
      (:file "condition-types-test")
      (:file "handler-test")
      (:file "restart-test")
-     ;; Stream tests disabled - streams module has pre-existing issues
-     ;; (:file "stream-types-test")
-     ;; (:file "stream-write-test")
-     ;; (:file "stream-read-test")
-     ;; (:file "stream-format-test")
+     ;; Stream unit tests (015-ffi-stream-io)
+     (:file "stream-types-test")
+     (:file "stream-write-test")
+     (:file "stream-read-test")
+     (:file "stream-format-test")
      ;; Compile tests (017-eval-jit-compile)
      (:file "compile-test")
-     (:file "tier-promotion-test")
-     (:file "module-linking-test")
+     ;; (:file "tier-promotion-test")  ; Moved to contract module
+     ;; (:file "module-linking-test")  ; Moved to contract module
      (:file "jit-test")))
 
-   ;; Stream tests (015-ffi-stream-io)
-   ;; TEMPORARILY DISABLED: streams module has pre-existing issues
-   ;; (:module "streams"
-   ;;  :serial t
-   ;;  :components
-   ;;  ((:file "package")
-   ;;   (:file "stream-test")))
+   ;; Stream integration tests (015-ffi-stream-io)
+   (:module "streams"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "stream-test")
+     (:file "integration-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -245,7 +246,8 @@
      (:file "condition-test")
      ;; Compile tests (017-eval-jit-compile)
      (:file "compile-test")
-     (:file "tier-promotion-test"))))
+     ;; (:file "tier-promotion-test")  ; Moved to contract module
+     )))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

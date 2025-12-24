@@ -40,8 +40,7 @@
   (testing "~D formats integer"
     (ok (equal (clysm/streams:format nil "~D" 42) "42")))
   (testing "~D signals error for non-integer"
-    (ok (signals clysm/conditions:type-error
-          (clysm/streams:format nil "~D" "not a number")))))
+    (ok (signals (clysm/streams:format nil "~D" "not a number") 'type-error))))
 
 (deftest format-newline-directive-test
   "Test format ~% directive (T058)"
@@ -73,14 +72,12 @@
 (deftest format-unknown-directive-test
   "Test format signals error for unknown directive"
   (testing "unknown directive signals error"
-    (ok (signals error
-          (clysm/streams:format nil "~Q" 42)))))
+    (ok (signals (clysm/streams:format nil "~Q" 42)))))
 
 (deftest format-trailing-tilde-test
   "Test format signals error for trailing tilde"
   (testing "trailing tilde signals error"
-    (ok (signals error
-          (clysm/streams:format nil "hello~")))))
+    (ok (signals (clysm/streams:format nil "hello~")))))
 
 ;;; ============================================================
 ;;; Unicode Tests (T090)
