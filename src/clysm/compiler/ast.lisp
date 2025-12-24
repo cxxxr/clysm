@@ -246,6 +246,20 @@
   (body nil :type list))        ; Body forms (AST nodes)
 
 ;;; ============================================================
+;;; Macro Introspection (016-macro-system T044-T045)
+;;; ============================================================
+
+(defstruct (ast-macroexpand-1 (:include ast-node) (:conc-name ast-macroexpand-1-))
+  "Macroexpand-1 node for single macro expansion.
+   (macroexpand-1 form) - Expand form once if it's a macro call."
+  (form nil :type t))   ; AST node for form to expand
+
+(defstruct (ast-macroexpand (:include ast-node) (:conc-name ast-macroexpand-))
+  "Macroexpand node for full macro expansion.
+   (macroexpand form) - Repeatedly expand form until not a macro call."
+  (form nil :type t))   ; AST node for form to expand
+
+;;; ============================================================
 ;;; Wasm IR Structures (T046)
 ;;; ============================================================
 
@@ -342,6 +356,9 @@
       (cond (parse-cond-form args))
       (and (parse-and-form args))
       (or (parse-or-form args))
+      ;; Macro introspection (016-macro-system T046-T047)
+      (macroexpand-1 (parse-macroexpand-1-form args))
+      (macroexpand (parse-macroexpand-form args))
       ;; Arithmetic with constant folding (010-numeric-tower)
       ((+ - * /)
        (parse-arithmetic-form op args))
@@ -916,6 +933,26 @@
       :test (parse-expr (car args))
       :then (parse-expr (car args))  ; Double eval, fix later
       :else (parse-or-form (cdr args))))))
+
+;;; ============================================================
+;;; Macro Introspection Parsing (016-macro-system T046-T047)
+;;; ============================================================
+
+(defun parse-macroexpand-1-form (args)
+  "Parse (macroexpand-1 form &optional env).
+   Creates an ast-macroexpand-1 node for runtime macro expansion."
+  (unless args
+    (error "MACROEXPAND-1 requires a form argument"))
+  ;; Note: env argument is ignored for now (not supported in target runtime)
+  (make-ast-macroexpand-1 :form (parse-expr (car args))))
+
+(defun parse-macroexpand-form (args)
+  "Parse (macroexpand form &optional env).
+   Creates an ast-macroexpand node for runtime macro expansion."
+  (unless args
+    (error "MACROEXPAND requires a form argument"))
+  ;; Note: env argument is ignored for now (not supported in target runtime)
+  (make-ast-macroexpand :form (parse-expr (car args))))
 
 ;;; ============================================================
 ;;; Tagbody/Go Parsing

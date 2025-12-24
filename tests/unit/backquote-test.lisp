@@ -163,3 +163,67 @@
     (let ((x '(1 2)))
       (declare (ignore x))
       (ok t))))  ; Placeholder - full eval test in integration
+
+;;; ============================================================
+;;; T016: Advanced Nested Backquote Tests
+;;; ============================================================
+
+(deftest nested-backquote-advanced
+  (testing "triple nested backquote"
+    ;; ```(a ,,b ,,,c)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (quasiquote (quasiquote (a (unquote (unquote b))
+                                                          (unquote (unquote (unquote c))))))))))
+      (ok result)))
+
+  (testing "nested with mixed quoting"
+    ;; `(a `(b ,c ,,d) e)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a (quasiquote (b (unquote c) (unquote (unquote d)))) e)))))
+      (ok (listp result)))))
+
+;;; ============================================================
+;;; T017: Unquote-Splicing in Nested Backquote Tests
+;;; ============================================================
+
+(deftest nested-splice
+  (testing ",@ inside single backquote"
+    ;; `(a ,@b c)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a (unquote-splicing b) c)))))
+      (ok (listp result))))
+
+  (testing ",@ inside nested backquote inner level"
+    ;; `(a `(b ,@c) d)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a (quasiquote (b (unquote-splicing c))) d)))))
+      (ok result)))
+
+  (testing ",,@ pattern in nested backquote"
+    ;; ``(a ,,@b) - splice at outer level, unquote at inner
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (quasiquote (a (unquote (unquote-splicing b))))))))
+      (ok result))))
+
+;;; ============================================================
+;;; T018: Dotted List Tests
+;;; ============================================================
+
+(deftest dotted-list-backquote
+  (testing "simple dotted pair with unquote"
+    ;; `(a . ,b)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a . (unquote b))))))
+      (ok result)))
+
+  (testing "dotted list with multiple elements"
+    ;; `(a b . ,c)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a b . (unquote c))))))
+      (ok result)))
+
+  (testing "dotted list with quoted cdr"
+    ;; `(a . b)
+    (let ((result (clysm/compiler/transform/macro:expand-backquote
+                   '(quasiquote (a . b)))))
+      (ok result))))

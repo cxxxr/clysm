@@ -227,7 +227,12 @@
     (clysm/compiler/ast:ast-defvar
      (compile-defvar ast env))
     (clysm/compiler/ast:ast-defparameter
-     (compile-defparameter ast env))))
+     (compile-defparameter ast env))
+    ;; Macro introspection (016-macro-system T048)
+    (clysm/compiler/ast:ast-macroexpand-1
+     (compile-macroexpand-1 ast env))
+    (clysm/compiler/ast:ast-macroexpand
+     (compile-macroexpand ast env))))
 
 ;;; ============================================================
 ;;; Literal Compilation
@@ -3117,6 +3122,58 @@
       (:struct.set ,symbol-type 1)
       ;; Return the symbol
       (:global.get ,global-idx))))
+
+;;; ============================================================
+;;; Macro Introspection Compilation (016-macro-system T048)
+;;; ============================================================
+
+(defun compile-macroexpand-1 (ast env)
+  "Compile a macroexpand-1 form.
+   Note: For quoted forms, expansion happens at compile time.
+   For runtime forms, this requires a runtime macro system (future work).
+
+   Current implementation: compile-time expansion only.
+   If the form is a quoted literal, expand it now and compile the result.
+   Otherwise, emit the form unchanged (no runtime expansion available)."
+  (let ((form-ast (clysm/compiler/ast:ast-macroexpand-1-form ast)))
+    ;; Check if form is a quoted literal we can expand at compile time
+    (if (and (typep form-ast 'clysm/compiler/ast:ast-literal)
+             (eq (clysm/compiler/ast:ast-literal-literal-type form-ast) :quoted))
+        ;; Compile-time expansion: expand and return as quoted literal
+        (let* ((quoted-form (clysm/compiler/ast:ast-literal-value form-ast))
+               (expanded (clysm/compiler/transform/macro:macroexpand-1
+                          quoted-form)))
+          ;; Return the expanded form as a quoted literal
+          (compile-to-instructions
+           (clysm/compiler/ast:make-ast-literal :value expanded :literal-type :quoted)
+           env))
+        ;; Runtime form: compile the form and return it
+        ;; (No actual expansion at runtime - would require runtime macro registry)
+        (compile-to-instructions form-ast env))))
+
+(defun compile-macroexpand (ast env)
+  "Compile a macroexpand form.
+   Note: For quoted forms, expansion happens at compile time.
+   For runtime forms, this requires a runtime macro system (future work).
+
+   Current implementation: compile-time expansion only.
+   If the form is a quoted literal, expand it fully and compile the result.
+   Otherwise, emit the form unchanged (no runtime expansion available)."
+  (let ((form-ast (clysm/compiler/ast:ast-macroexpand-form ast)))
+    ;; Check if form is a quoted literal we can expand at compile time
+    (if (and (typep form-ast 'clysm/compiler/ast:ast-literal)
+             (eq (clysm/compiler/ast:ast-literal-literal-type form-ast) :quoted))
+        ;; Compile-time expansion: expand fully and return as quoted literal
+        (let* ((quoted-form (clysm/compiler/ast:ast-literal-value form-ast))
+               (expanded (clysm/compiler/transform/macro:macroexpand
+                          quoted-form)))
+          ;; Return the expanded form as a quoted literal
+          (compile-to-instructions
+           (clysm/compiler/ast:make-ast-literal :value expanded :literal-type :quoted)
+           env))
+        ;; Runtime form: compile the form and return it
+        ;; (No actual expansion at runtime - would require runtime macro registry)
+        (compile-to-instructions form-ast env))))
 
 ;;; ============================================================
 ;;; Function Section Generation

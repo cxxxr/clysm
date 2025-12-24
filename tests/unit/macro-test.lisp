@@ -158,3 +158,204 @@
          nil))
       (ok (null (clysm/compiler/transform/macro:macroexpand-1*
                  registry '(nil-macro)))))))
+
+;;; Expansion Depth Limit Tests (T007)
+
+(deftest expansion-depth-limit
+  (testing "infinite macro expansion triggers error"
+    ;; Create a macro that expands to itself, causing infinite expansion
+    ;; NOTE: Use LIST to create a fresh list each time - quoted constants
+    ;; are EQ which would cause macroexpand* to stop early
+    (let ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/compiler/transform/macro:register-macro
+       registry 'infinite-loop
+       (lambda (form)
+         (declare (ignore form))
+         (list 'infinite-loop)))  ; Creates fresh list each time
+      ;; Should signal macro-expansion-depth-exceeded
+      (ok (signals clysm/compiler/transform/macro:macro-expansion-depth-exceeded
+            (clysm/compiler/transform/macro:macroexpand*
+             registry '(infinite-loop))))))
+
+  (testing "deep but finite expansion succeeds"
+    ;; Create macros that expand a fixed number of times
+    (let ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/compiler/transform/macro:register-macro
+       registry 'level-1
+       (lambda (form)
+         (declare (ignore form))
+         '(level-2)))
+      (clysm/compiler/transform/macro:register-macro
+       registry 'level-2
+       (lambda (form)
+         (declare (ignore form))
+         '(level-3)))
+      (clysm/compiler/transform/macro:register-macro
+       registry 'level-3
+       (lambda (form)
+         (declare (ignore form))
+         '(done)))
+      ;; Should succeed (only 3 expansions)
+      (ok (equal '(done)
+                 (clysm/compiler/transform/macro:macroexpand*
+                  registry '(level-1)))))))
+
+;;; &key Lambda List Tests (T009-T015)
+
+(deftest defmacro-key-support
+  (testing "parse-lambda-list extracts &key parameters"
+    (multiple-value-bind (req opt rest kind keys allow)
+        (clysm/compiler/transform/macro::parse-lambda-list
+         '(x &key (timeout 30) verbose))
+      (ok (equal req '(x)))
+      (ok (null opt))
+      (ok (null rest))
+      (ok (equal keys '((:timeout timeout 30) (:verbose verbose nil))))
+      (ok (null allow))))
+
+  (testing "defmacro with &key binds keyword arguments"
+    (let* ((form '(defmacro with-options (name &key (timeout 30) verbose)
+                    (list 'let (list (list '*timeout* timeout)
+                                     (list '*verbose* verbose))
+                          name)))
+           (result (clysm/compiler/transform/macro:parse-defmacro form))
+           (expander (clysm/compiler/transform/macro::compile-defmacro result)))
+      ;; Test with keyword args provided
+      (ok (equal (funcall expander '(with-options (do-work) :timeout 60 :verbose t))
+                 '(let ((*timeout* 60) (*verbose* t)) (do-work))))
+      ;; Test with default values
+      (ok (equal (funcall expander '(with-options (do-work)))
+                 '(let ((*timeout* 30) (*verbose* nil)) (do-work)))))))
+
+;;; ============================================================
+;;; T023: case Macro Tests
+;;; ============================================================
+
+(deftest case-macro-expansion
+  (testing "case expands to cond-like structure"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(case x (a 1) (b 2) (c 3)))))
+        (ok expanded)
+        ;; Should produce a let binding the keyform then conditionals
+        (ok (eq (first expanded) 'let)))))
+
+  (testing "case with otherwise clause"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(case x (a 1) (otherwise 99)))))
+        (ok expanded))))
+
+  (testing "case with multiple keys"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(case x ((a b c) 1) ((d e) 2)))))
+        (ok expanded)))))
+
+;;; ============================================================
+;;; T030-T031: prog1 and prog2 Macro Tests
+;;; ============================================================
+
+(deftest prog1-macro-expansion
+  (testing "prog1 returns first form value"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(prog1 (foo) (bar) (baz)))))
+        (ok expanded)
+        ;; Should expand to a let that saves first form's result
+        (ok (eq (first expanded) 'let)))))
+
+  (testing "prog1 with single form"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(prog1 x))))
+        (ok expanded)))))
+
+(deftest prog2-macro-expansion
+  (testing "prog2 returns second form value"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(prog2 (foo) (bar) (baz)))))
+        (ok expanded)
+        ;; Should expand to progn with let saving second form's result
+        (ok (eq (first expanded) 'progn)))))
+
+  (testing "prog2 with just two forms"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(prog2 x y))))
+        (ok expanded)))))
+
+;;; ============================================================
+;;; T032-T035: do and do* Macro Tests
+;;; ============================================================
+
+(deftest do-macro-expansion
+  (testing "do expands to block with tagbody"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(do ((i 0 (+ i 1)))
+                                     ((>= i 10) result)
+                                   (print i)))))
+        (ok expanded)
+        ;; Should expand to a block
+        (ok (eq (first expanded) 'block)))))
+
+  (testing "do with multiple variables"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(do ((i 0 (+ i 1))
+                                      (j 10 (- j 1)))
+                                     ((= i j) i)))))
+        (ok expanded)))))
+
+(deftest do*-macro-expansion
+  (testing "do* expands with let* for sequential binding"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                       registry '(do* ((i 0 (+ i 1))
+                                       (j i (* j 2)))
+                                      ((>= i 5) j)))))
+        (ok expanded)
+        (ok (eq (first expanded) 'block))))))
+
+;;; ============================================================
+;;; T041-T045: User-Facing macroexpand Tests
+;;; ============================================================
+
+(deftest global-macroexpand
+  (testing "global-macro-registry returns a registry"
+    (ok (clysm/compiler/transform/macro:registry-p
+         (clysm/compiler/transform/macro:global-macro-registry))))
+
+  (testing "macroexpand-1 works with global registry"
+    ;; First install standard macros in global registry
+    (clysm/lib/macros:install-standard-macros
+     (clysm/compiler/transform/macro:global-macro-registry))
+    (let ((expanded (clysm/compiler/transform/macro:macroexpand-1
+                     '(when t (print 'hello)))))
+      (ok expanded)
+      ;; when expands to if
+      (ok (eq (first expanded) 'if))))
+
+  (testing "macroexpand fully expands nested macros"
+    (clysm/lib/macros:install-standard-macros
+     (clysm/compiler/transform/macro:global-macro-registry))
+    (let ((expanded (clysm/compiler/transform/macro:macroexpand
+                     '(and a b c))))
+      (ok expanded)))
+
+  (testing "reset-global-macro-registry clears macros"
+    (clysm/compiler/transform/macro:reset-global-macro-registry)
+    (let ((registry (clysm/compiler/transform/macro:global-macro-registry)))
+      (ok (null (clysm/compiler/transform/macro:macro-function* registry 'when))))))

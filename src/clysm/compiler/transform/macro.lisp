@@ -30,6 +30,21 @@
        (not (null (macro-function* registry (first form))))))
 
 ;;; ============================================================
+;;; Error Conditions (T006)
+;;; ============================================================
+
+(define-condition macro-expansion-depth-exceeded (error)
+  ((macro-name :initarg :macro-name :reader macro-name)
+   (depth :initarg :depth :reader expansion-depth))
+  (:report (lambda (condition stream)
+             (format stream "Macro expansion depth exceeded (~D iterations) for ~S"
+                     (expansion-depth condition)
+                     (macro-name condition)))))
+
+(defparameter *macro-expansion-limit* 1000
+  "Maximum number of macro expansions before signaling an error.")
+
+;;; ============================================================
 ;;; Compile-time Environment (T165)
 ;;; ============================================================
 
@@ -57,12 +72,19 @@
         form)))
 
 (defun macroexpand* (registry form)
-  "Repeatedly expand FORM until it's not a macro call."
-  (loop
-    (let ((expanded (macroexpand-1* registry form)))
-      (when (eq expanded form)
-        (return form))
-      (setf form expanded))))
+  "Repeatedly expand FORM until it's not a macro call.
+   Signals MACRO-EXPANSION-DEPTH-EXCEEDED if expansion exceeds limit."
+  (loop with count = 0
+        with original-name = (when (consp form) (first form))
+        do (let ((expanded (macroexpand-1* registry form)))
+             (when (eq expanded form)
+               (return form))
+             (incf count)
+             (when (> count *macro-expansion-limit*)
+               (error 'macro-expansion-depth-exceeded
+                      :macro-name original-name
+                      :depth count))
+             (setf form expanded))))
 
 (defun macroexpand-all (registry form)
   "Recursively expand all macros in FORM."
@@ -286,11 +308,13 @@
      :docstring docstring)))
 
 (defun parse-lambda-list (lambda-list)
-  "Parse a macro lambda list, handling &body, &rest, &optional."
+  "Parse a macro lambda list, handling &body, &rest, &optional, &key, &allow-other-keys."
   (let ((required '())
         (optional '())
         (rest-var nil)
         (body-var nil)
+        (keys '())
+        (allow-other-keys nil)
         (mode :required))
     (dolist (item lambda-list)
       (case item
@@ -300,26 +324,60 @@
          (setf mode :rest))
         (&body
          (setf mode :body))
+        (&key
+         (setf mode :key))
+        (&allow-other-keys
+         (setf allow-other-keys t))
         (otherwise
          (case mode
            (:required (push item required))
            (:optional (push (if (consp item) item (list item nil)) optional))
-           (:rest (setf rest-var item mode :done))
-           (:body (setf body-var item mode :done))
-           (:done (error "Unexpected item after &rest/&body: ~S" item))))))
+           (:rest (setf rest-var item mode :after-rest))
+           (:body (setf body-var item mode :after-rest))
+           (:after-rest
+            ;; After &rest, we can have &key
+            (cond
+              ((eq item '&key) (setf mode :key))
+              ((eq item '&allow-other-keys) (setf allow-other-keys t))
+              (t (error "Unexpected item after &rest/&body: ~S" item))))
+           (:key
+            ;; Parse keyword parameter: var, (var default), ((keyword var) default)
+            (push (parse-key-param item) keys))
+           (:done (error "Unexpected item after parsing: ~S" item))))))
     (values (nreverse required)
             (nreverse optional)
             (or rest-var body-var)
-            (if body-var :body :rest))))
+            (if body-var :body :rest)
+            (nreverse keys)
+            allow-other-keys)))
+
+(defun parse-key-param (param)
+  "Parse a keyword parameter specification.
+   Returns (keyword-name var-name default-value)."
+  (cond
+    ;; Simple: var -> (:var var nil)
+    ((symbolp param)
+     (list (intern (symbol-name param) :keyword) param nil))
+    ;; With default: (var default) -> (:var var default)
+    ((and (consp param) (symbolp (first param)))
+     (list (intern (symbol-name (first param)) :keyword)
+           (first param)
+           (second param)))
+    ;; Full form: ((keyword var) default) -> (keyword var default)
+    ((and (consp param) (consp (first param)))
+     (list (first (first param))
+           (second (first param))
+           (second param)))
+    (t (error "Invalid keyword parameter: ~S" param))))
 
 (defun compile-defmacro (result)
   "Compile a parsed defmacro into a macro function."
   (let* ((name (defmacro-result-name result))
          (lambda-list (defmacro-result-lambda-list result))
          (body (defmacro-result-body result)))
-    (multiple-value-bind (required optional rest-var rest-kind)
+    (multiple-value-bind (required optional rest-var rest-kind keys allow-other-keys)
         (parse-lambda-list lambda-list)
-      (declare (ignore rest-kind))
+      (declare (ignore rest-kind allow-other-keys))
       ;; Create a function that destructures the form
       (lambda (form)
         (let ((args (rest form))
@@ -337,10 +395,45 @@
           ;; Bind rest/body
           (when rest-var
             (push (cons rest-var args) bindings))
+          ;; Bind keyword arguments
+          (when keys
+            (dolist (key-spec keys)
+              (destructuring-bind (keyword var default) key-spec
+                (let ((val (getf args keyword '%not-found%)))
+                  (if (eq val '%not-found%)
+                      (push (cons var default) bindings)
+                      (push (cons var val) bindings))))))
           ;; Evaluate the body with bindings
           (let ((env (mapcar (lambda (b) (list (car b) (list 'quote (cdr b)))) bindings)))
             (eval `(let ,env
                      ,@body))))))))
+
+;;; ============================================================
+;;; Global Macro Registry and User-Facing API
+;;; ============================================================
+
+(defvar *global-macro-registry* (make-macro-registry)
+  "Global macro registry for standard macros.")
+
+(defun macroexpand-1 (form &optional env)
+  "Expand FORM once if it's a macro call, using the global macro registry.
+   ENV is currently ignored but provided for CL compatibility."
+  (declare (ignore env))
+  (macroexpand-1* *global-macro-registry* form))
+
+(defun macroexpand (form &optional env)
+  "Repeatedly expand FORM until it's not a macro call, using the global macro registry.
+   ENV is currently ignored but provided for CL compatibility."
+  (declare (ignore env))
+  (macroexpand* *global-macro-registry* form))
+
+(defun global-macro-registry ()
+  "Return the global macro registry."
+  *global-macro-registry*)
+
+(defun reset-global-macro-registry ()
+  "Reset the global macro registry to a fresh state."
+  (setf *global-macro-registry* (make-macro-registry)))
 
 ;;; ============================================================
 ;;; Legacy API compatibility

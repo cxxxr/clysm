@@ -36,7 +36,7 @@
   (testing "stream-error has stream slot"
     (let ((condition (make-instance 'clysm/conditions:stream-error
                                     :stream *standard-output*)))
-      (ok (eq (clysm/conditions:stream-error-stream condition) *standard-output*)))))
+      (ok (eq (clysm/conditions:clysm-stream-error-stream condition) *standard-output*)))))
 
 (deftest end-of-file-condition-test
   "Test end-of-file condition class"

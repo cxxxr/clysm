@@ -20,7 +20,9 @@
 ;;; Stream Structure (T016)
 ;;; ============================================================
 
-(defstruct (stream (:constructor %make-stream))
+(defstruct (stream (:constructor %make-stream)
+                   (:copier nil)
+                   (:predicate streamp))
   "First-class stream object for I/O operations.
    Maps to WasmGC $stream struct at runtime.
    FR-014: System MUST represent streams as WasmGC struct types."

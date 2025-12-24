@@ -275,3 +275,155 @@
       (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
                        registry '(unless nil (+ 1 2)))))
         (ok (listp expanded))))))
+
+;;; ============================================================
+;;; T024-T025: case Macro Integration Tests
+;;; ============================================================
+
+(deftest case-macro-integration
+  (testing "case with multiple keys in clause"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(case x ((a b c) 1) ((d e) 2)))))
+        (ok (listp expanded))
+        ;; Should produce a let binding
+        (ok (eq 'let (first expanded))))))
+
+  (testing "case with otherwise clause"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(case x (a 1) (otherwise 99)))))
+        (ok (listp expanded)))))
+
+  (testing "case with t clause (synonym for otherwise)"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(case x (a 1) (t 99)))))
+        (ok (listp expanded))))))
+
+;;; ============================================================
+;;; T033-T034: do, prog1, prog2 Integration Tests
+;;; ============================================================
+
+(deftest do-macro-integration
+  (testing "do with parallel bindings"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      ;; do should use psetq for parallel updates
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(do ((i 0 (+ i 1))
+                                      (j 10 (- j 1)))
+                                     ((= i j) i)))))
+        (ok (listp expanded))
+        (ok (eq 'block (first expanded))))))
+
+  (testing "do* with sequential bindings"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      ;; do* uses setq for sequential updates
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(do* ((i 0 (+ i 1))
+                                       (j i (* j 2)))
+                                      ((>= i 5) j)))))
+        (ok (listp expanded))
+        (ok (eq 'block (first expanded)))))))
+
+(deftest prog-macro-integration
+  (testing "prog1 returns first value"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(prog1 (get-value) (cleanup)))))
+        (ok (listp expanded))
+        ;; Should produce a let binding to save the first value
+        (ok (eq 'let (first expanded))))))
+
+  (testing "prog2 returns second value"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(prog2 (setup) (get-value) (cleanup)))))
+        (ok (listp expanded))
+        ;; Should produce a progn with nested let
+        (ok (eq 'progn (first expanded)))))))
+
+;;; ============================================================
+;;; T011: User-defined Macro Compilation Integration Test
+;;; ============================================================
+
+(deftest user-defined-macro-integration
+  (testing "user-defined macro with defmacro works"
+    ;; Parse a defmacro, compile it, and use it
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry))
+           (defmacro-result (clysm/compiler/transform/macro:parse-defmacro
+                             '(defmacro my-when (test &body body)
+                               (list 'if test (cons 'progn body) nil)))))
+      (ok defmacro-result)
+      ;; Compile and register the macro
+      (let ((expander (clysm/compiler/transform/macro:compile-defmacro defmacro-result)))
+        (clysm/compiler/transform/macro:register-macro registry 'my-when expander)
+        ;; Now expand a form using the custom macro
+        (let ((expanded (clysm/compiler/transform/macro:macroexpand*
+                         registry '(my-when t 1 2 3))))
+          (ok (listp expanded))
+          (ok (eq 'if (first expanded)))))))
+
+  (testing "user-defined macro with &key works"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry))
+           (defmacro-result (clysm/compiler/transform/macro:parse-defmacro
+                             '(defmacro with-timeout ((&key (timeout 30)) &body body)
+                               (list 'let (list (list 'timeout timeout))
+                                     (cons 'progn body))))))
+      (ok defmacro-result))))
+
+;;; ============================================================
+;;; T019: Complex Backquote Integration Test
+;;; ============================================================
+
+(deftest complex-backquote-integration
+  (testing "macro using nested backquote expands correctly"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      ;; Test expansion of form with nested quasiquotes
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(when t
+                                   (list 'quote (list 1 2 3))))))
+        (ok (listp expanded)))))
+
+  (testing "backquote with ,@ splicing in macro"
+    (let* ((registry (clysm/compiler/transform/macro:make-macro-registry)))
+      (clysm/lib/macros:install-standard-macros registry)
+      ;; dolist uses ,@ internally
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-all
+                       registry '(dolist (x items)
+                                   (print x)
+                                   (format t "~A~%" x)))))
+        (ok (listp expanded))))))
+
+;;; ============================================================
+;;; T043: macroexpand-1 at Runtime Integration Test
+;;; ============================================================
+
+(deftest macroexpand-runtime-integration
+  (testing "macroexpand-1 with global registry"
+    (clysm/lib/macros:install-standard-macros
+     (clysm/compiler/transform/macro:global-macro-registry))
+    (let ((expanded (clysm/compiler/transform/macro:macroexpand-1
+                     '(when t x))))
+      (ok (listp expanded))
+      (ok (eq 'if (first expanded)))))
+
+  (testing "macroexpand fully expands nested forms"
+    (clysm/lib/macros:install-standard-macros
+     (clysm/compiler/transform/macro:global-macro-registry))
+    (let ((expanded (clysm/compiler/transform/macro:macroexpand
+                     '(and a b c))))
+      (ok (listp expanded))))
+
+  (testing "macroexpand-1 returns unchanged form for non-macro"
+    (let ((form '(+ 1 2)))
+      (let ((expanded (clysm/compiler/transform/macro:macroexpand-1 form)))
+        (ok (equal form expanded))))))

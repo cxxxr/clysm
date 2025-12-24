@@ -226,19 +226,31 @@
 
 (defpackage #:clysm/compiler/transform/macro
   (:use #:cl)
+  (:shadow #:macroexpand #:macroexpand-1)
   (:export ;; Registry
            #:make-macro-registry
            #:registry-p
            #:register-macro
            #:macro-function*
            #:macro-form-p
+           ;; Conditions
+           #:macro-expansion-depth-exceeded
+           #:expansion-depth
+           #:macro-name
+           #:*macro-expansion-limit*
            ;; Compile-time environment
            #:make-compile-env
            #:compile-env-p
-           ;; Expansion
+           ;; Expansion (registry-based)
            #:macroexpand-1*
            #:macroexpand*
            #:macroexpand-all
+           ;; Expansion (global registry)
+           #:macroexpand
+           #:macroexpand-1
+           #:*global-macro-registry*
+           #:global-macro-registry
+           #:reset-global-macro-registry
            ;; Backquote
            #:expand-backquote
            ;; Defmacro parsing

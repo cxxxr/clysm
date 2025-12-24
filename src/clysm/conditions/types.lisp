@@ -147,7 +147,7 @@
 (defclass stream-error (error)
   ((stream
     :initarg :stream
-    :reader stream-error-stream
+    :reader clysm-stream-error-stream
     :documentation "The stream that caused the error"))
   (:documentation "Condition for stream-related errors.
    FR-014: Signaled when stream operations encounter errors."))

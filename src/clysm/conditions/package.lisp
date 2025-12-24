@@ -40,7 +40,7 @@
    #:program-error
    ;; Stream-related conditions (015-ffi-stream-io)
    #:stream-error
-   #:stream-error-stream
+   #:clysm-stream-error-stream
    #:end-of-file
    ;; Condition accessors
    #:simple-condition-format-control

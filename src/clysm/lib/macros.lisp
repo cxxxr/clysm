@@ -163,6 +163,141 @@
                         'loop-end)
                   result)))))
 
+(defun make-case-expander ()
+  "Create a macro expander for CASE.
+   (case keyform (key form...) ... [(otherwise|t form...)])
+   Expands to a let binding the keyform, then nested if/eql tests."
+  (lambda (form)
+    (let ((keyform (second form))
+          (clauses (cddr form))
+          (key-var (gensym "KEY-")))
+      (labels ((otherwise-clause-p (clause)
+                 (let ((keys (first clause)))
+                   (or (eq keys 'otherwise)
+                       (eq keys 't))))
+               (make-key-test (key-var key)
+                 (list 'eql key-var (list 'quote key)))
+               (make-clause-test (key-var keys)
+                 (cond
+                   ;; Single key (not a list)
+                   ((not (listp keys))
+                    (make-key-test key-var keys))
+                   ;; Multiple keys in a list
+                   ((null (rest keys))
+                    (make-key-test key-var (first keys)))
+                   (t
+                    (cons 'or (mapcar (lambda (k)
+                                        (make-key-test key-var k))
+                                      keys)))))
+               (expand-clauses (clauses)
+                 (if (null clauses)
+                     nil
+                     (let* ((clause (first clauses))
+                            (keys (first clause))
+                            (body (rest clause)))
+                       (if (otherwise-clause-p clause)
+                           ;; otherwise/t clause - just the body
+                           (cons 'progn body)
+                           ;; Normal clause
+                           (list 'if
+                                 (make-clause-test key-var keys)
+                                 (cons 'progn body)
+                                 (expand-clauses (rest clauses))))))))
+        (list 'let (list (list key-var keyform))
+              (expand-clauses clauses))))))
+
+(defun make-prog1-expander ()
+  "Create a macro expander for PROG1.
+   (prog1 first-form form*) - Evaluates all forms, returns first's value."
+  (lambda (form)
+    (let ((first-form (second form))
+          (rest-forms (cddr form))
+          (result-var (gensym "PROG1-")))
+      (list 'let (list (list result-var first-form))
+            (cons 'progn (append rest-forms (list result-var)))))))
+
+(defun make-prog2-expander ()
+  "Create a macro expander for PROG2.
+   (prog2 first-form second-form form*) - Evaluates all forms, returns second's value."
+  (lambda (form)
+    (let ((first-form (second form))
+          (second-form (third form))
+          (rest-forms (cdddr form))
+          (result-var (gensym "PROG2-")))
+      (list 'progn
+            first-form
+            (list 'let (list (list result-var second-form))
+                  (cons 'progn (append rest-forms (list result-var))))))))
+
+(defun make-do-expander ()
+  "Create a macro expander for DO.
+   (do ((var init [step])...) (end-test result...) body...)
+   Expands to a block with tagbody for iteration."
+  (lambda (form)
+    (let ((var-clauses (second form))
+          (end-clause (third form))
+          (body (cdddr form)))
+      (let ((end-test (first end-clause))
+            (result-forms (rest end-clause))
+            (loop-tag (gensym "DO-LOOP-"))
+            (end-tag (gensym "DO-END-")))
+        ;; Build initial bindings and step forms
+        (let ((bindings (mapcar (lambda (clause)
+                                  (list (first clause) (second clause)))
+                                var-clauses))
+              (step-setqs (loop for clause in var-clauses
+                                when (cddr clause)
+                                  collect (list (first clause) (third clause)))))
+          (list 'block nil
+                (list* 'let bindings
+                       (list 'tagbody
+                             loop-tag
+                             (list 'if end-test
+                                   (list 'go end-tag))
+                             (cons 'progn body)
+                             ;; Parallel assignment of step forms
+                             (if step-setqs
+                                 (list* 'psetq (apply #'append step-setqs))
+                                 nil)
+                             (list 'go loop-tag)
+                             end-tag)
+                       ;; Return result forms
+                       result-forms)))))))
+
+(defun make-do*-expander ()
+  "Create a macro expander for DO*.
+   Like DO but with sequential variable binding."
+  (lambda (form)
+    (let ((var-clauses (second form))
+          (end-clause (third form))
+          (body (cdddr form)))
+      (let ((end-test (first end-clause))
+            (result-forms (rest end-clause))
+            (loop-tag (gensym "DO*-LOOP-"))
+            (end-tag (gensym "DO*-END-")))
+        ;; Build initial bindings and step forms
+        (let ((bindings (mapcar (lambda (clause)
+                                  (list (first clause) (second clause)))
+                                var-clauses))
+              (step-setqs (loop for clause in var-clauses
+                                when (cddr clause)
+                                  collect (list 'setq (first clause) (third clause)))))
+          (list 'block nil
+                (list* 'let* bindings
+                       (list 'tagbody
+                             loop-tag
+                             (list 'if end-test
+                                   (list 'go end-tag))
+                             (cons 'progn body)
+                             ;; Sequential assignment of step forms
+                             (if step-setqs
+                                 (cons 'progn step-setqs)
+                                 nil)
+                             (list 'go loop-tag)
+                             end-tag)
+                       ;; Return result forms
+                       result-forms)))))))
+
 ;;; ============================================================
 ;;; Standard macro installation
 ;;; ============================================================
@@ -176,9 +311,19 @@
   (clysm/compiler/transform/macro:register-macro
    registry 'cond (make-cond-expander))
   (clysm/compiler/transform/macro:register-macro
+   registry 'case (make-case-expander))
+  (clysm/compiler/transform/macro:register-macro
    registry 'and (make-and-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'or (make-or-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'prog1 (make-prog1-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'prog2 (make-prog2-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'do (make-do-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'do* (make-do*-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'dolist (make-dolist-expander))
   (clysm/compiler/transform/macro:register-macro

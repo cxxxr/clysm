@@ -5,10 +5,10 @@
 
 (defpackage #:clysm/streams
   (:use #:cl #:alexandria)
-  (:import-from #:clysm/conditions
-                #:error
-                #:type-error
-                #:make-condition)
+  (:shadow #:stream #:streamp
+           #:input-stream-p #:output-stream-p
+           #:*standard-input* #:*standard-output* #:*error-output*
+           #:write-char #:write-string #:read-char #:read-line #:format)
   (:import-from #:clysm/ffi
                 #:define-foreign-function)
   ;; Stream type and predicates (FR-014, US4)
@@ -37,7 +37,7 @@
            #:*error-output*)
   ;; Stream conditions
   (:export #:stream-error
-           #:stream-error-stream
+           #:clysm-stream-error-stream
            #:end-of-file)
   (:documentation "FFI-based stream I/O for clysm compiler.
    Implements Common Lisp stream operations via FFI calls to host environment.
