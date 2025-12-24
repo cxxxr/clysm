@@ -51,10 +51,7 @@
 ;;; Stream Predicates (US4: T082-T084)
 ;;; ============================================================
 
-(defun streamp (object)
-  "Return T if OBJECT is a stream, NIL otherwise.
-   US4: Streams as first-class values."
-  (typep object 'stream))
+;;; Note: streamp is already defined by defstruct's (:predicate streamp) option above
 
 (defun input-stream-p (stream)
   "Return T if STREAM can be used for input.
