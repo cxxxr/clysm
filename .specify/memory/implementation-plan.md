@@ -331,14 +331,115 @@ $cleanup
 
 **目標**: ANSI Common Lisp準拠に向けた拡充
 
-#### 優先実装
+Phase 8は複数のサブフェーズに分割され、独立して実装・テスト可能。
 
-1. シーケンス関数（map, reduce, remove, find等）
-2. 数値塔（Bignum, Ratio, Float, Complex）
-3. ストリームI/O（WASI統合）
-4. パッケージシステム
-5. フォーマット文字列
-6. 条件システム（condition/restart）
+#### Phase 8A: シーケンス関数 ✅ 完了
+
+**ステータス**: 完了 (007-sequence-functions)
+
+- map, reduce, remove, find, position等
+- 高階関数とシーケンス操作
+
+#### Phase 8B: 数値塔 ✅ 完了
+
+**ステータス**: 完了 (010-numeric-tower)
+
+- Bignum（GMP風の多倍長整数）
+- Ratio（有理数）
+- Float（IEEE754倍精度）
+- Complex（複素数）
+- 数学関数（sqrt, sin, cos等）
+
+#### Phase 8C: FFI基盤 🔜 次フェーズ
+
+**目標**: ホスト環境との相互運用基盤
+
+**重要**: Phase 8D (WASI I/O) の**前提条件**として推奨
+
+```lisp
+;; FFI基本API案
+(ffi:define-foreign-function "console_log"
+  ((:string message)) :void)
+
+(ffi:call-host "fd_write" fd buffer len)
+```
+
+**実装内容**:
+1. Wasm Import/Export宣言生成
+2. 型マーシャリング（Lisp ↔ Wasm値）
+3. 外部関数呼び出しラッパー
+4. コールバック（Wasm → Lisp）サポート
+
+**代替アプローチ**: FFIを先に実装することで、I/O機能をホスト側に委譲し、
+憲法の線形メモリ禁止原則を完全に遵守可能。
+
+#### Phase 8D: WASI Stream I/O ⏸️ 中断
+
+**ステータス**: 中断 (011-wasi-stream-io)
+
+**⚠️ 憲法逸脱**: 本フェーズはLinear Memory使用を必要とする（後述）
+
+**実装内容**:
+- 標準入出力: write-char, write-string, read-char, read-line
+- フォーマット: format（~A, ~S, ~D, ~%, ~~ディレクティブ）
+- ファイルI/O: open, close, with-open-file
+- 標準ストリーム: *standard-input*, *standard-output*, *error-output*
+
+**WASI統合**:
+- WASI Preview1 API使用 (fd_read, fd_write, path_open, fd_close)
+- 64KB線形メモリ（iovec転送用）
+- $stream WasmGC構造体によるストリーム表現
+
+#### Phase 8E: パッケージシステム
+
+**目標**: ANSI準拠のパッケージ管理
+
+- defpackage, in-package, export, import
+- CL, CL-USER, KEYWORDパッケージ
+- シンボルインターン・ルックアップ
+
+#### Phase 8F: 条件システム
+
+**目標**: ANSI準拠のエラー処理
+
+- condition, restart定義
+- handler-bind, handler-case
+- invoke-restart, restart-case
+- 標準条件タイプ（error, warning等）
+
+---
+
+### 憲法逸脱ドキュメント: Phase 8D Linear Memory使用
+
+**逸脱原則**: I. WasmGC-First型システム設計
+> 「線形メモリ（Linear Memory）への依存は禁止され...」
+
+**逸脱原則**: セキュリティ制約
+> 「線形メモリへの直接アクセスは禁止（MUST NOT）」
+
+**正当化**:
+
+WASI Preview1 APIは、データ転送にiovec構造体を必要とし、これは線形メモリ上に
+配置しなければならない。これはWASI仕様の制約であり、回避不可能である。
+
+```wat
+;; WASI fd_write シグネチャ
+(import "wasi_snapshot_preview1" "fd_write"
+  (func $fd_write (param i32 i32 i32 i32) (result i32)))
+;; パラメータはすべて線形メモリオフセット
+```
+
+**緩和策**:
+
+1. **隔離**: 線形メモリ使用は0-64KBの固定領域に限定
+2. **カプセル化**: Lispコードから線形メモリへの直接アクセスは不可
+3. **最小化**: I/Oバッファのみに使用、オブジェクト格納には使用しない
+4. **将来対応**: WASI Preview2 (wit-bindgen) でComponent Model移行予定
+
+**代替オプション**:
+
+FFI経由でホスト側I/O実装を呼び出すことで、線形メモリ依存を完全に排除可能。
+ただし、この場合はスタンドアロンWasm実行（wasmtime単体）が制限される。
 
 ---
 
@@ -452,6 +553,12 @@ Phase 7 [CLOS]                    ◀── オブジェクト指向
     │
     ▼
 Phase 8 [標準ライブラリ]          ◀── ANSI準拠
+    ├── 8A [シーケンス関数] ✅
+    ├── 8B [数値塔] ✅
+    ├── 8C [FFI基盤] 🔜 ◀── ホスト連携
+    ├── 8D [WASI Stream I/O] ⏸️ ◀── 標準入出力・ファイル（中断）
+    ├── 8E [パッケージ]
+    └── 8F [条件システム]
 ```
 
 ---
@@ -533,6 +640,41 @@ Phase 8 [標準ライブラリ]          ◀── ANSI準拠
 
 ### M8: 標準準拠 (Phase 8完了)
 
+**サブマイルストーン**:
+
+#### M8A: シーケンス関数 ✅ 完了
+- [x] map, mapcar, mapc実装
+- [x] reduce, remove, find, position実装
+- [x] 高階シーケンス関数テストパス
+
+#### M8B: 数値塔 ✅ 完了
+- [x] Bignum（多倍長整数）実装
+- [x] Ratio（有理数）実装
+- [x] Float（IEEE754）実装
+- [x] Complex（複素数）実装
+- [x] 数学関数（sqrt, sin, cos等）
+
+#### M8C: FFI基盤
+- [ ] Wasm Import/Export宣言生成
+- [ ] 型マーシャリング実装
+- [ ] 外部関数呼び出しラッパー
+
+#### M8D: WASI Stream I/O ⏸️ 中断
+- [ ] write-char, write-string実装
+- [ ] read-char, read-line実装
+- [ ] format基本ディレクティブ
+- [ ] open, close, with-open-file
+- [ ] wasmtimeでI/O動作確認
+
+#### M8E: パッケージシステム
+- [ ] defpackage, in-package実装
+- [ ] シンボルインターン・エクスポート
+
+#### M8F: 条件システム
+- [ ] condition/restart基盤
+- [ ] handler-bind, handler-case
+
+**最終目標**:
 - [ ] ANSI CL準拠テストスイートの一定割合パス
 - [ ] 実用的なアプリケーション構築可能
 
@@ -599,3 +741,5 @@ Phase 8 [標準ライブラリ]          ◀── ANSI準拠
 | バージョン | 日付 | 変更内容 |
 |------------|------|----------|
 | 0.1.0 | 2025-12-21 | 初版作成 |
+| 0.2.0 | 2025-12-24 | Phase 8をサブフェーズ(8A-8F)に分割、8A/8B完了、憲法逸脱ドキュメント追加 |
+| 0.2.1 | 2025-12-24 | Phase 8D (WASI Stream I/O) を中断 |
