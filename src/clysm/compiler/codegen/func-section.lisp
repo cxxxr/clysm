@@ -456,10 +456,12 @@
 
 (defun compile-local-function-call (function args env)
   "Compile a call to a local function (from flet/labels).
-   The function is stored as a closure in a local variable or captured env."
+   The function is stored as a closure in a local variable or captured env.
+   Uses :return_call_ref for tail calls (TCO), :call_ref otherwise."
   (let* ((local-func-info (env-lookup-local-function env function))
          (arity (length args))
-         (result '()))
+         (result '())
+         (arg-env (env-with-non-tail env)))
     ;; Get the closure - either from local or from captured env
     (if (eq local-func-info :captured)
         ;; Captured in closure env - use captured-var access
@@ -473,9 +475,9 @@
       (setf result (append result (list (list :local.set closure-local))))
       ;; Push closure as first argument (self reference)
       (setf result (append result (list (list :local.get closure-local))))
-      ;; Push all call arguments
+      ;; Push all call arguments (not in tail position)
       (dolist (arg args)
-        (setf result (append result (compile-to-instructions arg env))))
+        (setf result (append result (compile-to-instructions arg arg-env))))
       ;; Get closure and extract code field
       (setf result (append result (list (list :local.get closure-local))))
       ;; Cast to closure type
@@ -493,6 +495,7 @@
                                          clysm/compiler/codegen/gc-types:+type-closure+
                                          code-field)))))
       ;; Cast funcref to specific function type and call
+      ;; Use return_call_ref for tail calls
       (let ((func-type (case arity
                          (0 clysm/compiler/codegen/gc-types:+type-func-0+)
                          (1 clysm/compiler/codegen/gc-types:+type-func-1+)
@@ -500,12 +503,17 @@
                          (3 clysm/compiler/codegen/gc-types:+type-func-3+)
                          (t clysm/compiler/codegen/gc-types:+type-func-n+))))
         (setf result (append result (list (list :ref.cast func-type))))
-        (setf result (append result (list (list :call_ref func-type))))))
+        (if (cenv-in-tail-position env)
+            (setf result (append result (list (list :return_call_ref func-type))))
+            (setf result (append result (list (list :call_ref func-type)))))))
     result))
 
 (defun compile-primitive-call (op args env)
-  "Compile a primitive operation."
-  (case op
+  "Compile a primitive operation.
+   Arguments to primitives are NOT in tail position."
+  ;; Clear tail position for all arguments - primitive ops aren't tail calls
+  (let ((env (env-with-non-tail env)))
+    (case op
     ;; Arithmetic operators (T049-T052)
     (+  (compile-arithmetic-op :i32.add args env 0))
     (-  (if (= 1 (length args))
@@ -628,7 +636,7 @@
     (string-capitalize (compile-string-capitalize args env))
     ;; Substring and concatenation
     (subseq (compile-subseq args env))
-    (concatenate (compile-concatenate args env))))
+    (concatenate (compile-concatenate args env)))))
 
 (defun compile-arithmetic-op (op args env identity)
   "Compile an arithmetic operation with variadic args.
@@ -1190,16 +1198,20 @@
     result))
 
 (defun compile-regular-call (function args env)
-  "Compile a regular function call (T061)."
+  "Compile a regular function call (T061).
+   Uses :return_call for tail calls (TCO), :call otherwise."
   (let ((func-idx (env-lookup-function env function)))
     (unless func-idx
       (error "Undefined function: ~A" function))
-    ;; Compile arguments
-    (let ((result '()))
+    ;; Compile arguments (not in tail position)
+    (let ((result '())
+          (arg-env (env-with-non-tail env)))
       (dolist (arg args)
-        (setf result (append result (compile-to-instructions arg env))))
-      ;; Call
-      (append result (list (list :call func-idx))))))
+        (setf result (append result (compile-to-instructions arg arg-env))))
+      ;; Call - use return_call for tail calls
+      (if (cenv-in-tail-position env)
+          (append result (list (list :return_call func-idx)))
+          (append result (list (list :call func-idx)))))))
 
 ;;; ============================================================
 ;;; Funcall Compilation (T085-T087)
@@ -1207,15 +1219,17 @@
 
 (defun compile-funcall (args env)
   "Compile (funcall fn arg1 arg2 ...).
-   The first arg is a closure, remaining args are passed to it."
+   The first arg is a closure, remaining args are passed to it.
+   Uses :return_call_ref for tail calls (TCO), :call_ref otherwise."
   (when (null args)
     (error "funcall requires at least one argument"))
   (let* ((closure-expr (first args))
          (call-args (rest args))
          (arity (length call-args))
-         (result '()))
-    ;; Compile the closure expression - will be on top of stack
-    (setf result (append result (compile-to-instructions closure-expr env)))
+         (result '())
+         (arg-env (env-with-non-tail env)))
+    ;; Compile the closure expression (not in tail position)
+    (setf result (append result (compile-to-instructions closure-expr arg-env)))
     ;; Duplicate closure ref for call_ref (closure goes as first param too)
     ;; We need: closure arg1 arg2 ... closure-code
     ;; Stack after closure compilation: [..., closure]
@@ -1223,16 +1237,16 @@
     ;; 1. Save closure to a local
     ;; 2. Push closure (for first param)
     ;; 3. Push all args
-    ;; 4. Get closure, extract code field, call_ref
+    ;; 4. Get closure, extract code field, call_ref/return_call_ref
     (let ((closure-local (cenv-local-counter env)))
       (incf (car (cenv-local-counter-box env)))  ; Allocate temp local
       ;; Save closure to local
       (setf result (append result (list (list :local.set closure-local))))
       ;; Push closure as first argument (self reference)
       (setf result (append result (list (list :local.get closure-local))))
-      ;; Push all call arguments
+      ;; Push all call arguments (not in tail position)
       (dolist (arg call-args)
-        (setf result (append result (compile-to-instructions arg env))))
+        (setf result (append result (compile-to-instructions arg arg-env))))
       ;; Get closure and extract code_N field (field 3 = code_N for variadic)
       ;; For specific arities, we could use code_0/1/2 but code_N always works
       (setf result (append result (list (list :local.get closure-local))))
@@ -1261,7 +1275,10 @@
         ;; Cast funcref to the specific function type
         (setf result (append result (list (list :ref.cast func-type))))
         ;; Call through the typed function reference
-        (setf result (append result (list (list :call_ref func-type))))))
+        ;; Use return_call_ref for tail calls
+        (if (cenv-in-tail-position env)
+            (setf result (append result (list (list :return_call_ref func-type))))
+            (setf result (append result (list (list :call_ref func-type)))))))
     result))
 
 ;;; ============================================================
@@ -1270,19 +1287,23 @@
 
 (defun compile-if (ast env)
   "Compile an if expression.
-   Note: if creates a Wasm block, so we increment block-depth for nested go/return-from."
+   Note: if creates a Wasm block, so we increment block-depth for nested go/return-from.
+   Propagates tail position to both then and else branches for TCO."
   (let ((test (clysm/compiler/ast:ast-if-test ast))
         (then-branch (clysm/compiler/ast:ast-if-then ast))
         (else-branch (clysm/compiler/ast:ast-if-else ast))
         ;; Create new env with incremented block depth for if block
+        ;; Test expression is NOT in tail position
+        (test-env (env-with-non-tail env))
+        ;; Both branches inherit tail position from parent
         (if-env (copy-compilation-env env)))
     (incf (cenv-block-depth if-env))
     (append
-     ;; Compile test
-     (compile-to-instructions test env)
+     ;; Compile test (NOT in tail position)
+     (compile-to-instructions test test-env)
      ;; Check if not NIL
      (compile-nil-check)
-     ;; If-then-else
+     ;; If-then-else (branches inherit tail position)
      '((:if (:result :anyref)))
      (compile-to-instructions then-branch if-env)
      '(:else)
@@ -1367,13 +1388,17 @@
   "Compile a let or let* expression (T033).
    Handles both lexical and special (dynamic) bindings:
    - Lexical bindings use Wasm locals
-   - Special bindings modify the global symbol's value with save/restore"
+   - Special bindings modify the global symbol's value with save/restore
+   Tail position is inherited by the last body form ONLY if there are no
+   special bindings (special bindings require save/restore which breaks TCO)."
   (let ((bindings (clysm/compiler/ast:ast-let-bindings ast))
         (body (clysm/compiler/ast:ast-let-body ast))
         (sequential-p (clysm/compiler/ast:ast-let-sequential-p ast))
         (new-env (extend-compilation-env env))
         (result '())
-        (special-save-locals '()))  ; ((name . save-local-idx) ...)
+        (special-save-locals '())  ; ((name . save-local-idx) ...)
+        ;; Binding value expressions are NOT in tail position
+        (binding-env (env-with-non-tail env)))
     ;; Process bindings based on let vs let*
     (if sequential-p
         ;; let*: each binding sees previous bindings
@@ -1385,14 +1410,14 @@
                 (let* ((save-result (emit-save-special-binding name new-env))
                        (save-instrs (car save-result))
                        (save-local (cdr save-result))
-                       (value-instrs (compile-to-instructions value-form new-env))
+                       (value-instrs (compile-to-instructions value-form (env-with-non-tail new-env)))
                        (set-instrs (emit-set-special-binding name value-instrs new-env)))
                   (push (cons name save-local) special-save-locals)
                   (setf result (append result save-instrs set-instrs)))
                 ;; Lexical binding: use local
                 (let ((idx (env-add-local new-env name)))
                   (setf result (append result
-                                       (compile-to-instructions value-form new-env)
+                                       (compile-to-instructions value-form (env-with-non-tail new-env))
                                        (list (list :local.set idx))))))))
         ;; let: all values computed before any binding visible
         ;; For special bindings, we still need to save first, then set
@@ -1409,12 +1434,12 @@
                          (save-local (cdr save-result)))
                     (push (cons name save-local) special-save-locals)
                     (setf result (append result save-instrs))
-                    ;; Compile value (uses original env for parallel semantics)
-                    (push (cons :special (cons name (compile-to-instructions value-form env)))
+                    ;; Compile value (uses original env for parallel semantics, NOT in tail)
+                    (push (cons :special (cons name (compile-to-instructions value-form binding-env)))
                           compiled-values))
                   ;; Lexical: just allocate local and compile value
                   (let ((idx (env-add-local new-env name)))
-                    (push (cons :lexical (cons idx (compile-to-instructions value-form env)))
+                    (push (cons :lexical (cons idx (compile-to-instructions value-form binding-env)))
                           compiled-values)))))
           (setf compiled-values (nreverse compiled-values))
           ;; Second pass: set all bindings
@@ -1433,14 +1458,21 @@
                     (setf result (append result
                                          value-instrs
                                          (list (list :local.set idx))))))))))
-    ;; Compile body
-    (dolist (form (butlast body))
-      (setf result (append result
-                           (compile-to-instructions form new-env)
-                           '(:drop))))
-    (let ((body-result-instrs
-            (when body
-              (compile-to-instructions (car (last body)) new-env))))
+    ;; Compile body - non-final forms are NOT in tail position
+    (let ((non-tail-body-env (env-with-non-tail new-env)))
+      (dolist (form (butlast body))
+        (setf result (append result
+                             (compile-to-instructions form non-tail-body-env)
+                             '(:drop)))))
+    ;; Last body form: tail position ONLY if no special bindings
+    ;; (special bindings require save/restore which breaks TCO)
+    (let* ((has-special-bindings special-save-locals)
+           (last-form-env (if has-special-bindings
+                              (env-with-non-tail new-env)
+                              new-env))  ; inherit tail position only without special bindings
+           (body-result-instrs
+             (when body
+               (compile-to-instructions (car (last body)) last-form-env))))
       ;; Save result to a local before restore (if we have special bindings)
       (if special-save-locals
           (let ((result-local (env-add-local new-env (gensym "let-result"))))
@@ -1500,6 +1532,32 @@
    :unwind-stack (copy-list (cenv-unwind-stack env))))
 
 ;;; ============================================================
+;;; Tail Position Management (TCO)
+;;; ============================================================
+
+(defun env-with-tail-position (env tail-position-p)
+  "Return an environment with the specified tail position flag.
+   If the flag matches the current value, returns the same environment.
+   Otherwise, creates a copy with the new flag value."
+  (if (eq (cenv-in-tail-position env) tail-position-p)
+      env
+      (let ((new-env (copy-compilation-env env)))
+        (setf (cenv-in-tail-position new-env) tail-position-p)
+        new-env)))
+
+(defun env-with-non-tail (env)
+  "Return an environment with tail position cleared.
+   Used when compiling sub-expressions that are not in tail position
+   (e.g., function arguments, test expressions, non-final forms)."
+  (env-with-tail-position env nil))
+
+(defun env-with-tail (env)
+  "Return an environment with tail position set.
+   Used when compiling expressions that are in tail position
+   (e.g., last form in function body, branches of if)."
+  (env-with-tail-position env t))
+
+;;; ============================================================
 ;;; Flet/Labels Compilation (T089-T090)
 ;;; ============================================================
 
@@ -1549,12 +1607,17 @@
    Functions in labels CAN call themselves and each other (recursive).
    Implementation: Two-phase closure creation to handle mutual recursion:
    1. Create closures with null env, store in locals
-   2. Update env fields to point to the closures (now that they exist)"
+   2. Update env fields to point to the closures (now that they exist)
+   Tail position propagation:
+   - Local function bodies are compiled with tail position for their last forms
+   - Labels body's last form inherits tail position from parent for TCO"
   (let* ((definitions (clysm/compiler/ast:ast-labels-definitions ast))
          (body (clysm/compiler/ast:ast-labels-body ast))
          (new-env (extend-compilation-env env))
          (result '())
-         (local-func-bindings '()))
+         (local-func-bindings '())
+         ;; Non-final body forms are NOT in tail position
+         (non-tail-env (env-with-non-tail new-env)))
     ;; First pass: allocate locals for all function closures
     (dolist (def definitions)
       (let* ((name (first def))
@@ -1598,11 +1661,12 @@
                              (list (list :struct.set
                                          clysm/compiler/codegen/gc-types:+type-closure+
                                          4))))))
-    ;; Compile body
+    ;; Compile body - non-final forms are NOT in tail position
     (dolist (form (butlast body))
       (setf result (append result
-                           (compile-to-instructions form new-env)
+                           (compile-to-instructions form non-tail-env)
                            '(:drop))))
+    ;; Last form inherits tail position from parent for TCO
     (when body
       (setf result (append result
                            (compile-to-instructions (car (last body)) new-env))))
@@ -1752,9 +1816,11 @@
 
 (defun compile-progn (ast env)
   "Compile a progn expression.
-   First scans for defuns and registers them, then compiles all forms."
+   First scans for defuns and registers them, then compiles all forms.
+   Only the last form inherits tail position for TCO."
   (let ((forms (clysm/compiler/ast:ast-progn-forms ast))
-        (result '()))
+        (result '())
+        (non-tail-env (env-with-non-tail env)))
     ;; First pass: register all defuns so they can be called
     (dolist (form forms)
       (when (typep form 'clysm/compiler/ast:ast-defun)
@@ -1762,10 +1828,12 @@
           (unless (env-lookup-function env name)
             (env-add-function env name)))))
     ;; Second pass: compile all forms
+    ;; Non-final forms are NOT in tail position
     (dolist (form (butlast forms))
       (setf result (append result
-                           (compile-to-instructions form env)
+                           (compile-to-instructions form non-tail-env)
                            '(:drop))))
+    ;; Last form inherits tail position from parent
     (when forms
       (setf result (append result
                            (compile-to-instructions (car (last forms)) env))))
@@ -1822,7 +1890,8 @@
 
 (defun compile-defun (ast env)
   "Compile a function definition.
-   Returns info about the compiled function."
+   Returns info about the compiled function.
+   Sets tail position for last form in body to enable TCO."
   (let* ((name (clysm/compiler/ast:ast-defun-name ast))
          (params (clysm/compiler/ast:ast-defun-parameters ast))
          (body (clysm/compiler/ast:ast-defun-body ast))
@@ -1833,15 +1902,18 @@
     ;; Inherit function definitions
     (setf (cenv-functions func-env) (cenv-functions env))
     (setf (cenv-function-counter func-env) (cenv-function-counter env))
-    ;; Compile body
-    (let ((body-instrs '()))
+    ;; Compile body (non-final forms are NOT in tail position)
+    (let ((body-instrs '())
+          (non-tail-env (env-with-non-tail func-env))
+          (tail-env (env-with-tail func-env)))
       (dolist (form (butlast body))
         (setf body-instrs (append body-instrs
-                                  (compile-to-instructions form func-env)
+                                  (compile-to-instructions form non-tail-env)
                                   '(:drop))))
+      ;; Last form IS in tail position for TCO
       (when body
         (setf body-instrs (append body-instrs
-                                  (compile-to-instructions (car (last body)) func-env))))
+                                  (compile-to-instructions (car (last body)) tail-env))))
       ;; Return function info
       (list :name name
             :params (mapcar (lambda (p) (list p :anyref)) params)
@@ -2004,15 +2076,18 @@
     ;; Inherit function definitions
     (setf (cenv-functions func-env) (cenv-functions parent-env))
     (setf (cenv-function-counter func-env) (cenv-function-counter parent-env))
-    ;; Compile body
-    (let ((body-instrs '()))
+    ;; Compile body with tail position for last form (TCO)
+    (let ((body-instrs '())
+          (non-tail-env (env-with-non-tail func-env))
+          (tail-env (env-with-tail func-env)))
       (dolist (form (butlast body))
         (setf body-instrs (append body-instrs
-                                  (compile-to-instructions form func-env)
+                                  (compile-to-instructions form non-tail-env)
                                   '(:drop))))
+      ;; Last form IS in tail position for TCO
       (when body
         (setf body-instrs (append body-instrs
-                                  (compile-to-instructions (car (last body)) func-env))))
+                                  (compile-to-instructions (car (last body)) tail-env))))
       ;; Return function info (with closure param first)
       (list :name name
             :params (cons '($closure :anyref)

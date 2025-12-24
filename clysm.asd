@@ -140,7 +140,8 @@
      (:file "reader-error-test")
      (:file "special-vars-ast-test")
      (:file "tagbody-test")
-     (:file "cons-test")))
+     (:file "cons-test")
+     (:file "tail-position-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"

@@ -170,3 +170,7 @@
 ;; String integration tests (008-character-string)
 (defpackage #:clysm/tests/integration/string
   (:use #:cl #:rove))
+
+;; Tail position detection unit tests (009-tail-call-optimization)
+(defpackage #:clysm/tests/unit/tail-position
+  (:use #:cl #:rove))

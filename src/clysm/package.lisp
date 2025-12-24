@@ -330,7 +330,11 @@
            #:reset-special-var-globals
            #:allocate-special-var-global
            #:get-special-var-global-index
-           #:get-all-special-var-globals))
+           #:get-all-special-var-globals
+           ;; Tail position management (TCO)
+           #:env-with-tail-position
+           #:env-with-non-tail
+           #:env-with-tail))
 
 (defpackage #:clysm/compiler
   (:use #:cl

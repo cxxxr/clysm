@@ -685,6 +685,16 @@
           ;; call_ref <typeidx> - call through function reference
           (vector-push-extend #x14 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
+         (:return_call
+          ;; return_call <funcidx> - tail call to known function (TCO)
+          ;; Opcode: 0x12
+          (vector-push-extend #x12 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+         (:return_call_ref
+          ;; return_call_ref <typeidx> - tail call through function reference (TCO)
+          ;; Opcode: 0x15
+          (vector-push-extend #x15 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
          (:block
           ;; block <blocktype> - start block
           (vector-push-extend #x02 buffer)

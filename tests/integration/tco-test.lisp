@@ -139,3 +139,65 @@
                       (make-counter (- n 1) f)))
                 (make-counter 100 (lambda () 42)))))
       "Tail call with closure argument should work"))
+
+;;; WAT Inspection Tests (T017, T022)
+;;; These tests verify that the correct Wasm instructions are generated
+
+(deftest test-return-call-in-generated-wat
+  "Direct tail recursion should generate return_call instruction"
+  ;; Compile a simple tail-recursive function and check the WAT output
+  (let* ((wat (clysm/compiler:compile-to-wat
+               '(progn
+                  (defun count-down (n)
+                    (if (= n 0) 0 (count-down (- n 1))))))))
+    ;; The WAT should contain return_call for the tail-recursive call
+    (ok (search "return_call" wat)
+        "Generated WAT should contain return_call instruction")))
+
+(deftest test-return-call-ref-in-generated-wat
+  "Funcall in tail position should generate return_call_ref instruction"
+  ;; Compile a function that uses funcall in tail position
+  (let* ((wat (clysm/compiler:compile-to-wat
+               '(progn
+                  (defun apply-and-return (f x)
+                    (funcall f x))))))
+    ;; The WAT should contain return_call_ref for the tail funcall
+    (ok (search "return_call_ref" wat)
+        "Generated WAT should contain return_call_ref instruction")))
+
+;;; Edge Case Tests (T028)
+;;; These tests verify that non-tail positions are correctly handled
+
+(deftest test-catch-body-non-tail
+  "Calls inside catch body should work correctly"
+  ;; (catch 'tag (f x)) - the (f x) call may or may not be in tail position
+  ;; depending on whether catch is in tail position
+  (ok (= 42 (clysm/tests:compile-and-run
+             '(progn
+                (defun f (x) x)
+                (catch 'tag (f 42)))))
+      "Catch body should evaluate correctly"))
+
+(deftest test-unwind-protect-body-non-tail
+  "Calls inside unwind-protect cleanup should NOT be in tail position"
+  ;; The cleanup form in unwind-protect is NEVER in tail position
+  ;; because it must run before returning
+  (ok (= 10 (clysm/tests:compile-and-run
+             '(progn
+                (defvar *counter* 0)
+                (defun with-cleanup ()
+                  (unwind-protect
+                      10
+                    (setq *counter* 1)))
+                (with-cleanup))))
+      "Unwind-protect should return protected form value"))
+
+(deftest test-block-return-from-non-tail
+  "Calls used with return-from should work correctly"
+  ;; (block foo (return-from foo (f x))) - the (f x) is the returned value
+  (ok (= 100 (clysm/tests:compile-and-run
+              '(progn
+                 (defun f (x) (* x x))
+                 (block result
+                   (return-from result (f 10))))))
+      "Block with return-from should work"))
