@@ -737,10 +737,13 @@ JSONなどは不要です。単語のみ出力してください。"
     local result
     result=$(extract_result "$output_file")
 
-    if echo "$result" | grep -qi "COMPLETE"; then
+    # INCOMPLETE を先にチェック（COMPLETE が INCOMPLETE に含まれるため）
+    if echo "$result" | grep -qi "INCOMPLETE"; then
+        return 1  # 未完了
+    elif echo "$result" | grep -qi "COMPLETE"; then
         return 0  # 完了
     else
-        return 1  # 未完了
+        return 1  # 不明な場合は未完了として続行
     fi
 }
 
