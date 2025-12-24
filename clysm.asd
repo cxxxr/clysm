@@ -105,7 +105,8 @@
     :serial t
     :components
     ((:file "macros")
-     (:file "ffi-runtime")))
+     (:file "ffi-runtime")
+     (:file "package-macros")))
 
    ;; REPL
    (:file "repl"))
@@ -160,7 +161,8 @@
      (:file "numeric-predicates-test")
      (:file "ffi-types-test")
      (:file "ffi-marshalling-test")
-     (:file "ffi-codegen-test")))
+     (:file "ffi-codegen-test")
+     (:file "tokenizer-package-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -193,7 +195,8 @@
      (:file "mixed-arithmetic-test")
      (:file "ffi-import-test")
      (:file "ffi-export-test")
-     (:file "ffi-multi-host-test"))))
+     (:file "ffi-multi-host-test")
+     (:file "package-integration-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

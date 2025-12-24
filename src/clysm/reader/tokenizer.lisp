@@ -111,7 +111,8 @@
    - Integers: 123, -456
    - Ratios: 1/2, -3/4 (T017)
    - Floats: 1.5, -2.5, 1.5d0, 1.5e10 (T017)
-   - Symbols: foo, *bar*"
+   - Symbols: foo, *bar*
+   - Package-qualified symbols: pkg:symbol, pkg::symbol (013-package-system)"
   (let ((chars '())
         (start-line (tokenizer-line tokenizer))
         (start-column (tokenizer-column tokenizer)))
@@ -129,11 +130,66 @@
         ;; Empty string shouldn't happen
         ((zerop (length str))
          nil)
+        ;; Check for package qualifier (contains colon) - T049-T052
+        ((position #\: str)
+         (read-qualified-symbol str start-line start-column))
         ;; Try parsing as a number (integer, ratio, or float)
         ((parse-numeric-literal str start-line start-column))
         ;; Symbol
         (t
          (list :symbol upcase-str start-line start-column))))))
+
+;;; ============================================================
+;;; Package-Qualified Symbol Parsing (013-package-system T049-T052)
+;;; ============================================================
+
+(defun read-qualified-symbol (str line column)
+  "Parse a package-qualified symbol string (T050-T052).
+   Handles:
+   - pkg:symbol   -> (:qualified-symbol (:package-name PKG :symbol-name SYMBOL :external t))
+   - pkg::symbol  -> (:qualified-symbol (:package-name PKG :symbol-name SYMBOL :external nil))
+   - ::symbol     -> ERROR (no package name before ::)
+   - pkg:         -> ERROR (no symbol name after :)
+   - pkg::        -> ERROR (no symbol name after ::)
+   Returns a token list."
+  (let* ((len (length str))
+         (colon-pos (position #\: str)))
+    (cond
+      ;; No colon - shouldn't happen, but just in case
+      ((null colon-pos)
+       (list :symbol (string-upcase str) line column))
+      ;; Leading colon - shouldn't reach here (handled by read-keyword-token)
+      ;; But if it does, treat as keyword or error
+      ((zerop colon-pos)
+       (error "Unexpected leading colon in symbol: ~A" str))
+      ;; Check for double colon
+      ((and (< (1+ colon-pos) len)
+            (char= (char str (1+ colon-pos)) #\:))
+       ;; Double colon (internal symbol access)
+       (let ((pkg-name (subseq str 0 colon-pos))
+             (sym-name (subseq str (+ colon-pos 2))))
+         (when (zerop (length pkg-name))
+           (error "No package name before :: in ~A" str))
+         (when (zerop (length sym-name))
+           (error "No symbol name after :: in ~A" str))
+         (list :qualified-symbol
+               (list :package-name (string-upcase pkg-name)
+                     :symbol-name (string-upcase sym-name)
+                     :external nil)
+               line column)))
+      ;; Single colon (external symbol access)
+      (t
+       (let ((pkg-name (subseq str 0 colon-pos))
+             (sym-name (subseq str (1+ colon-pos))))
+         (when (zerop (length pkg-name))
+           (error "No package name before : in ~A" str))
+         (when (zerop (length sym-name))
+           (error "No symbol name after : in ~A" str))
+         (list :qualified-symbol
+               (list :package-name (string-upcase pkg-name)
+                     :symbol-name (string-upcase sym-name)
+                     :external t)
+               line column))))))
 
 ;;; ============================================================
 ;;; Numeric Literal Parsing (T017)
@@ -254,8 +310,13 @@
           (list :float result line column))))))
 
 (defun read-keyword-token (tokenizer)
-  "Read a keyword token."
-  (read-char* tokenizer)  ; consume colon
+  "Read a keyword token.
+   Handles :keyword syntax.
+   Signals error for ::symbol (no package name)."
+  (read-char* tokenizer)  ; consume first colon
+  ;; Check for double colon (::symbol is invalid - no package name)
+  (when (eql (peek-char* tokenizer) #\:)
+    (error "Invalid symbol syntax: :: without package name"))
   (let ((chars '()))
     (loop
       (let ((char (peek-char* tokenizer)))

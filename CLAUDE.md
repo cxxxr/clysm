@@ -9,6 +9,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (コンパイラはWasmバイナリを生成) (007-sequence-functions)
 - N/A（コンパイラはWasmバイナリを生成） (008-character-string)
 - Common Lisp (SBCL 2.4+) for compiler, WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing) (010-numeric-tower)
+- Common Lisp (SBCL 2.4+) - コンパイラ実装言語 + alexandria, babel, trivial-gray-streams, rove (testing) (013-package-system)
+- N/A（インメモリハッシュテーブル） (013-package-system)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -28,9 +30,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 013-package-system: Added Common Lisp (SBCL 2.4+) - コンパイラ実装言語 + alexandria, babel, trivial-gray-streams, rove (testing)
 - 012-ffi-foundation: Added Common Lisp (SBCL 2.4+) for compiler, WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 - 010-numeric-tower: Added Common Lisp (SBCL 2.4+) for compiler, WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
-- 008-character-string: Added Common Lisp (SBCL 2.4+) - コンパイラ本体 + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->

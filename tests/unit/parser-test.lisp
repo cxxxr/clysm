@@ -214,3 +214,27 @@
     (let ((result (clysm/reader:read-from-string* "'(1 2 3)")))
       (ok (listp result))
       (ok (eq 'quote (first result))))))
+
+;;; Package-Qualified Symbol Parsing Tests (013-package-system T047)
+
+(deftest parse-qualified-symbols
+  (testing "parse external qualified-symbol token (pkg:sym)"
+    ;; Token structure: (:qualified-symbol (:package-name "CL" :symbol-name "CAR" :external t) line col)
+    (let ((result (clysm/reader/parser:parse
+                   '((:qualified-symbol (:package-name "CL" :symbol-name "CAR" :external t))))))
+      (ok (symbolp result))
+      (ok (string= "CAR" (symbol-name result)))))
+  (testing "parse internal qualified-symbol token (pkg::sym)"
+    (let ((result (clysm/reader/parser:parse
+                   '((:qualified-symbol (:package-name "CL" :symbol-name "INTERNAL" :external nil))))))
+      (ok (symbolp result))
+      (ok (string= "INTERNAL" (symbol-name result)))))
+  (testing "parse qualified-symbol in list"
+    (let ((result (clysm/reader/parser:parse
+                   '((:lparen)
+                     (:qualified-symbol (:package-name "CL" :symbol-name "CAR" :external t))
+                     (:symbol "X")
+                     (:rparen)))))
+      (ok (listp result))
+      (ok (= 2 (length result)))
+      (ok (symbolp (first result))))))

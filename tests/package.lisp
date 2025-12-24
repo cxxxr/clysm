@@ -230,3 +230,10 @@
 
 (defpackage #:clysm/tests/integration/ffi-multi-host
   (:use #:cl #:rove))
+
+;; Package system tests (013-package-system)
+(defpackage #:clysm/tests/unit/tokenizer-package
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/package
+  (:use #:cl #:rove))

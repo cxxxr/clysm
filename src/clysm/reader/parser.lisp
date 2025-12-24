@@ -56,6 +56,33 @@
 
 ;;; Parsing functions
 
+(defun parse-qualified-symbol (value token)
+  "Parse a package-qualified symbol token (013-package-system T053-T055).
+   VALUE is a plist with :package-name, :symbol-name, :external.
+   For :external t (pkg:sym), checks if symbol is exported.
+   For :external nil (pkg::sym), accesses internal symbol.
+   Returns the interned symbol."
+  (let ((pkg-name (getf value :package-name))
+        (sym-name (getf value :symbol-name))
+        (external-p (getf value :external)))
+    ;; Find the package
+    (let ((pkg (clysm/reader/package:find-package* pkg-name)))
+      (unless pkg
+        (parser-error (format nil "Package ~A not found" pkg-name)
+                      (token-line token) (token-column token)))
+      (if external-p
+          ;; External access (pkg:sym) - check if symbol is exported
+          (let ((external-table (clysm/reader/package:package-external-symbols* pkg)))
+            (let ((sym (gethash sym-name external-table)))
+              (if sym
+                  sym
+                  ;; Symbol not exported - signal error for ANSI compliance
+                  (parser-error (format nil "Symbol ~A is not exported from package ~A"
+                                        sym-name pkg-name)
+                                (token-line token) (token-column token)))))
+          ;; Internal access (pkg::sym) - intern in the package
+          (clysm/reader/package:intern-symbol sym-name pkg)))))
+
 (defun parse-atom (token)
   "Parse an atomic token into a Lisp value."
   (let ((type (token-type token))
@@ -74,6 +101,9 @@
          (t (intern value))))
       (:keyword
        (intern value "KEYWORD"))
+      ;; Package-qualified symbol (013-package-system T053-T055)
+      (:qualified-symbol
+       (parse-qualified-symbol value token))
       (otherwise
        (parser-error (format nil "Unexpected token type: ~A" type)
                      (token-line token) (token-column token))))))
@@ -150,8 +180,8 @@
     (unless token
       (parser-error "Unexpected end of input"))
     (case (token-type token)
-      ;; Atoms
-      ((:number :ratio :float :string :symbol :keyword :character)
+      ;; Atoms (including package-qualified symbols - T055)
+      ((:number :ratio :float :string :symbol :keyword :character :qualified-symbol)
        (parse-atom token))
       ;; List
       (:lparen

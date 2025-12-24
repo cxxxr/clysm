@@ -401,10 +401,45 @@
 
 (defpackage #:clysm/reader/package
   (:use #:cl)
-  (:export #:intern-symbol
+  (:export ;; Package error condition
+           #:clysm-package-error
+           #:clysm-package-error-package
+           #:clysm-package-error-message
+           ;; Package predicates
+           #:packagep*
+           #:symbol-package*
+           ;; Package accessors (US3 support)
+           #:package-name*
+           #:package-nicknames*
+           #:package-internal-symbols*
+           #:package-external-symbols*
+           #:package-use-list*
+           #:package-used-by-list*
+           #:package-shadowing-symbols*
+           ;; Core functions
+           #:intern-symbol
            #:find-symbol*
            #:make-package*
-           #:find-package*))
+           #:find-package*
+           #:delete-package*
+           #:rename-package*
+           #:list-all-packages*
+           ;; Export/Import/Shadow functions (US2)
+           #:export*
+           #:unexport*
+           #:import*
+           #:shadow*
+           #:shadowing-import*
+           ;; Multiple-value intern/find-symbol (US5)
+           #:intern*
+           #:find-symbol**
+           #:unintern*
+           ;; Use-package/Unuse-package (US6)
+           #:use-package*
+           #:unuse-package*
+           ;; Special variables
+           #:*current-package*
+           #:*packages*))
 
 (defpackage #:clysm/reader
   (:use #:cl #:clysm/reader/tokenizer #:clysm/reader/parser #:clysm/reader/package)
@@ -621,6 +656,11 @@
            #:and*
            #:or*
            #:install-standard-macros))
+
+(defpackage #:clysm/lib/package-macros
+  (:use #:cl)
+  (:export #:defpackage*
+           #:in-package*))
 
 (defpackage #:clysm/repl
   (:use #:cl #:clysm/reader #:clysm/eval #:clysm/runtime/printer)
