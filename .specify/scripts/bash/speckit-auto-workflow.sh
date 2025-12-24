@@ -756,6 +756,14 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
     # コミット実行
     if git -C "$REPO_ROOT" commit -m "$commit_msg"; then
         log_success "Changes committed successfully"
+
+        # プッシュ実行
+        log_info "Pushing to remote..."
+        if git -C "$REPO_ROOT" push; then
+            log_success "Changes pushed successfully"
+        else
+            log_warn "Failed to push (commit is saved locally)"
+        fi
         return 0
     else
         log_error "Failed to commit changes"
