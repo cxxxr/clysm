@@ -244,8 +244,9 @@ needs_interaction() {
         analyze)
             # CRITICAL問題がある場合 - メトリクス表から実際の件数を確認
             local crit_count=0
-            if echo "$output" | grep -qE 'Critical Issues Count.*\*\*[0-9]+\*\*'; then
-                crit_count=$(echo "$output" | grep -oE 'Critical Issues Count.*\*\*[0-9]+\*\*' | head -1 | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+            if echo "$output" | grep -qE 'Critical Issues Count'; then
+                crit_count=$(echo "$output" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+                crit_count=${crit_count:-0}
             fi
             # フォールバック: テーブル形式でSeverity列にCRITICALがある行
             if [[ "$crit_count" -eq 0 ]]; then
@@ -583,13 +584,16 @@ run_analyze() {
     local high=0
 
     # メトリクス表から Critical Issues Count を抽出
-    if echo "$result" | grep -qE 'Critical Issues Count.*\*\*[0-9]+\*\*'; then
-        critical=$(echo "$result" | grep -oE 'Critical Issues Count.*\*\*[0-9]+\*\*' | head -1 | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+    # sedで数値のみ抽出（より確実）
+    if echo "$result" | grep -qE 'Critical Issues Count'; then
+        critical=$(echo "$result" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+        critical=${critical:-0}
     fi
 
     # メトリクス表から High Issues Count を抽出
-    if echo "$result" | grep -qE 'High Issues Count.*\*\*[0-9]+\*\*'; then
-        high=$(echo "$result" | grep -oE 'High Issues Count.*\*\*[0-9]+\*\*' | head -1 | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+    if echo "$result" | grep -qE 'High Issues Count'; then
+        high=$(echo "$result" | grep -E 'High Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+        high=${high:-0}
     fi
 
     # フォールバック: テーブル形式でSeverity列にCRITICALがある行をカウント
