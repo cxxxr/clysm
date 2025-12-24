@@ -664,8 +664,76 @@ run_implement_loop() {
 # Main Workflow
 #=============================================================================
 
+# 自動コミット: 実装完了後に変更をコミット
+auto_commit() {
+    local feature_name="$1"
+
+    log_step "Auto-committing changes"
+
+    # 変更があるか確認
+    if ! git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null; then
+        log_info "Uncommitted changes detected"
+    elif ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
+        log_info "Staged changes detected"
+    else
+        # Untracked files check
+        local untracked
+        untracked=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null | wc -l)
+        if [[ "$untracked" -eq 0 ]]; then
+            log_info "No changes to commit"
+            return 0
+        fi
+    fi
+
+    # 変更をステージング
+    git -C "$REPO_ROOT" add -A
+
+    # コミットメッセージを生成
+    local commit_msg="feat: implement ${feature_name}
+
+Automated implementation via speckit-auto workflow.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+
+    # コミット実行
+    if git -C "$REPO_ROOT" commit -m "$commit_msg"; then
+        log_success "Changes committed successfully"
+        return 0
+    else
+        log_error "Failed to commit changes"
+        return 1
+    fi
+}
+
+# 実装計画の完了チェック
+check_implementation_complete() {
+    log_info "Checking if implementation plan is complete..."
+
+    local check_prompt="implementation-plan.mdと現在の実装を比較してください。
+
+すべてのPhaseの検証基準が満たされている場合は 'COMPLETE' と出力。
+まだ実装すべき機能がある場合は 'INCOMPLETE' と出力。
+
+JSONなどは不要です。単語のみ出力してください。"
+
+    local output_file
+    output_file=$(run_claude "$check_prompt")
+
+    local result
+    result=$(extract_result "$output_file")
+
+    if echo "$result" | grep -qi "COMPLETE"; then
+        return 0  # 完了
+    else
+        return 1  # 未完了
+    fi
+}
+
 run_full_workflow() {
     local feature_desc="$1"
+    local auto_mode="${2:-false}"  # true の場合は確認なしで進行
 
     log_info "Starting full workflow"
     log "INFO" "Feature: $feature_desc"
@@ -693,16 +761,95 @@ run_full_workflow() {
     fi
 
     log_step "Planning Phase Complete!"
-    echo "" >&2
-    echo "Generated artifacts are ready for review." >&2
-    echo "" >&2
-    read -r -p "Start implementation? (y/n): " start_impl
 
-    if [[ "$start_impl" == "y" ]]; then
+    if [[ "$auto_mode" == "true" ]]; then
+        # 自動モード: 確認なしで実装開始
+        log_info "Auto mode: proceeding to implementation"
         run_implement_loop "$session_id"
     else
-        log_info "You can start implementation later with: ./speckit-auto --implement"
+        echo "" >&2
+        echo "Generated artifacts are ready for review." >&2
+        echo "" >&2
+        read -r -p "Start implementation? (y/n): " start_impl
+
+        if [[ "$start_impl" == "y" ]]; then
+            run_implement_loop "$session_id"
+        else
+            log_info "You can start implementation later with: ./speckit-auto --implement"
+        fi
     fi
+}
+
+# フルオートループ: implementation-plan.md完了まで繰り返す
+run_full_auto_loop() {
+    local max_features=20  # 無限ループ防止
+    local feature_count=0
+
+    log_step "Starting Full Auto Loop"
+    log_info "Will loop until implementation-plan.md is complete"
+    echo "" >&2
+
+    while [[ $feature_count -lt $max_features ]]; do
+        feature_count=$((feature_count + 1))
+
+        log_step "Feature Iteration $feature_count"
+
+        # セッションをクリア（新しい機能ごとに新規セッション）
+        rm -f "$SESSION_FILE" "$STATE_FILE"
+
+        # 次の機能を検出
+        log_info "Detecting next feature..."
+        local feature_desc
+        feature_desc=$(detect_next_feature)
+
+        if [[ -z "$feature_desc" ]]; then
+            log_warn "Could not detect next feature"
+
+            # 完了チェック
+            if check_implementation_complete; then
+                log_success "Implementation plan is COMPLETE!"
+                break
+            else
+                log_error "Failed to detect feature but plan is incomplete"
+                return 1
+            fi
+        fi
+
+        echo "" >&2
+        echo -e "${CYAN}Feature $feature_count: $feature_desc${NC}" >&2
+        echo "" >&2
+
+        # フルワークフローを自動モードで実行
+        if ! run_full_workflow "$feature_desc" "true"; then
+            log_error "Workflow failed for feature: $feature_desc"
+            log_info "Pausing auto loop. Resume with: ./speckit-auto --loop"
+            return 1
+        fi
+
+        # 自動コミット
+        local feature_name
+        feature_name=$(echo "$feature_desc" | head -c 50 | tr -d '\n')
+        if ! auto_commit "$feature_name"; then
+            log_warn "Commit failed, but continuing..."
+        fi
+
+        # 完了チェック
+        if check_implementation_complete; then
+            log_success "Implementation plan is COMPLETE!"
+            break
+        fi
+
+        log_info "Moving to next feature..."
+        echo "" >&2
+        sleep 2  # 小休止
+    done
+
+    if [[ $feature_count -ge $max_features ]]; then
+        log_warn "Reached maximum feature count ($max_features)"
+    fi
+
+    log_step "Full Auto Loop Finished"
+    log_info "Total features processed: $feature_count"
 }
 
 #=============================================================================
@@ -719,11 +866,15 @@ OPTIONS:
     -h, --help          Show this help message
     -c, --continue      Continue from last saved session
     -i, --implement     Run implementation loop only
+    -l, --loop          Full auto loop: detect → implement → commit → repeat
     -s, --status        Show current workflow status
 
 EXAMPLES:
-    # Auto-detect next feature and run full workflow
+    # Auto-detect next feature and run full workflow (with confirmation)
     $(basename "$0")
+
+    # Full auto loop until implementation-plan.md is complete
+    $(basename "$0") --loop
 
     # Manually specify feature
     $(basename "$0") "Phase 2: クロージャとTail Call最適化を実装"
@@ -813,6 +964,9 @@ main() {
             ;;
         -s|--status)
             show_status
+            ;;
+        -l|--loop)
+            run_full_auto_loop
             ;;
         "")
             # 自動で次の機能を検出
