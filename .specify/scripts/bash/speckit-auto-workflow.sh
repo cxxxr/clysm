@@ -229,8 +229,16 @@ needs_interaction() {
             return 1
             ;;
         analyze)
-            # CRITICAL問題がある場合
-            if echo "$output" | grep -qE 'CRITICAL|Severity.*CRITICAL'; then
+            # CRITICAL問題がある場合 - メトリクス表から実際の件数を確認
+            local crit_count=0
+            if echo "$output" | grep -qE 'Critical Issues Count.*\*\*[0-9]+\*\*'; then
+                crit_count=$(echo "$output" | grep -oE 'Critical Issues Count.*\*\*[0-9]+\*\*' | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+            fi
+            # フォールバック: テーブル形式でSeverity列にCRITICALがある行
+            if [[ "$crit_count" -eq 0 ]]; then
+                crit_count=$(echo "$output" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|' || echo 0)
+            fi
+            if [[ "$crit_count" -gt 0 ]]; then
                 return 0
             fi
             return 1
@@ -556,14 +564,30 @@ run_analyze() {
     local result
     result=$(extract_result "$output_file")
 
-    # 問題をカウント
-    local critical=$(echo "$result" | grep -ci "CRITICAL" || echo 0)
-    local high=$(echo "$result" | grep -ci "HIGH" || echo 0)
+    # 問題をカウント - メトリクス表から実際の件数を取得
+    # 形式: "| Critical Issues Count | **N** |" または "Critical Issues Count.*N"
+    local critical=0
+    local high=0
+
+    # メトリクス表から Critical Issues Count を抽出
+    if echo "$result" | grep -qE 'Critical Issues Count.*\*\*[0-9]+\*\*'; then
+        critical=$(echo "$result" | grep -oE 'Critical Issues Count.*\*\*[0-9]+\*\*' | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+    fi
+
+    # メトリクス表から High Issues Count を抽出
+    if echo "$result" | grep -qE 'High Issues Count.*\*\*[0-9]+\*\*'; then
+        high=$(echo "$result" | grep -oE 'High Issues Count.*\*\*[0-9]+\*\*' | grep -oE '\*\*[0-9]+\*\*' | tr -d '*')
+    fi
+
+    # フォールバック: テーブル形式でSeverity列にCRITICALがある行をカウント
+    if [[ "$critical" -eq 0 ]]; then
+        critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|' || echo 0)
+    fi
 
     if [[ "$critical" -gt 0 ]]; then
         log_error "CRITICAL issues found: $critical"
         echo "" >&2
-        (echo "$result" | grep -i "CRITICAL" | head -10) >&2
+        (echo "$result" | grep -E '\|\s*\*\*CRITICAL\*\*\s*\|' | head -10) >&2
         echo "" >&2
         log_warn "Please review and fix before implementation"
         save_state "$STATE_PAUSED"
