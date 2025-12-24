@@ -563,7 +563,9 @@
                                string-equal string-lessp string-greaterp
                                string-not-lessp string-not-greaterp string-not-equal
                                make-string string string-upcase string-downcase string-capitalize
-                               subseq concatenate)))
+                               subseq concatenate
+                               ;; Numeric accessors (019-numeric-accessors)
+                               numerator denominator)))
        (compile-primitive-call function args env))
       ;; Local function (from flet/labels)
       ((and (symbolp function) (env-lookup-local-function env function))
@@ -758,7 +760,10 @@
     (string-capitalize (compile-string-capitalize args env))
     ;; Substring and concatenation
     (subseq (compile-subseq args env))
-    (concatenate (compile-concatenate args env)))))
+    (concatenate (compile-concatenate args env))
+    ;; Numeric accessors (019-numeric-accessors)
+    (numerator (compile-numerator args env))
+    (denominator (compile-denominator args env)))))
 
 ;;; ============================================================
 ;;; Numeric Tower Type Dispatch (T013-T015)
@@ -901,6 +906,60 @@
       (:i32.const 0) :ref.i31  ; zero for imaginary part
       (:struct.new ,clysm/compiler/codegen/gc-types:+type-complex+))))
 
+;;; ============================================================
+;;; Numeric Accessors (019-numeric-accessors)
+;;; ============================================================
+
+(defun compile-numerator (args env)
+  "Compile (numerator x) - ANSI CL numerator accessor.
+   For fixnum/bignum: returns the value itself.
+   For ratio: returns the numerator field (struct.get 0).
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 1)
+    (error "numerator requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "NUM-TMP"))))
+    (append
+     ;; Compile and store the argument
+     (compile-to-instructions (first args) env)
+     (list (list :local.set temp-local))
+     ;; Type dispatch: check if it's a ratio
+     `((:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:if (:result :anyref))
+       ;; Is ratio - extract numerator field
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-ratio+ 0)
+       :else
+       ;; Not ratio (integer) - return itself
+       (:local.get ,temp-local)
+       :end))))
+
+(defun compile-denominator (args env)
+  "Compile (denominator x) - ANSI CL denominator accessor.
+   For fixnum/bignum: returns 1.
+   For ratio: returns the denominator field (struct.get 1).
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 1)
+    (error "denominator requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "DENOM-TMP"))))
+    (append
+     ;; Compile and store the argument
+     (compile-to-instructions (first args) env)
+     (list (list :local.set temp-local))
+     ;; Type dispatch: check if it's a ratio
+     `((:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:if (:result :anyref))
+       ;; Is ratio - extract denominator field
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-ratio+ 1)
+       :else
+       ;; Not ratio (integer) - return 1
+       (:i32.const 1) :ref.i31
+       :end))))
+
 (defun compile-arithmetic-op (op args env identity)
   "Compile an arithmetic operation with variadic args.
    For (+ 1 2):
@@ -955,37 +1014,144 @@
      :ref.i31)))
 
 (defun compile-comparison-op (op args env)
-  "Compile a comparison operation."
+  "Compile a comparison operation.
+   Handles both fixnum (i31) and float ($float) operands.
+   Uses runtime type dispatch to determine comparison method."
   (when (< (length args) 2)
     (error "Comparison requires at least two arguments"))
   ;; For now, only support two args
   ;; TODO: Chain comparisons (< a b c) => (and (< a b) (< b c))
-  (append
-   (compile-to-instructions (first args) env)
-   '((:ref.cast :i31) :i31.get_s)
-   (compile-to-instructions (second args) env)
-   '((:ref.cast :i31) :i31.get_s)
-   (list op)
-   ;; Convert i32 boolean to Lisp boolean (T or NIL)
-   `((:if (:result :anyref))
-     (:i32.const 1) :ref.i31  ; T
-     :else
-     (:ref.null :none)        ; NIL
-     :end)))
+  (let ((float-type clysm/compiler/codegen/gc-types:+type-float+)
+        (arg1-local (env-add-local env (gensym "CMP-A")))
+        (arg2-local (env-add-local env (gensym "CMP-B")))
+        (f64-op (case op
+                  (:i32.lt_s :f64.lt)
+                  (:i32.gt_s :f64.gt)
+                  (:i32.le_s :f64.le)
+                  (:i32.ge_s :f64.ge)
+                  (:i32.eq :f64.eq)
+                  (t :f64.eq))))  ; default for = operator
+    (append
+     ;; Compile and store both arguments
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arg1-local))
+     (compile-to-instructions (second args) env)
+     (list (list :local.set arg2-local))
+     ;; Check if either operand is a float
+     `((:local.get ,arg1-local)
+       (:ref.test (:ref ,float-type))
+       (:local.get ,arg2-local)
+       (:ref.test (:ref ,float-type))
+       :i32.or  ; either is float?
+       (:if (:result :anyref))
+       ;; Float path: extract f64 values and compare
+       (:local.get ,arg1-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :f64))
+       ;; arg1 is float
+       (:local.get ,arg1-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :else
+       ;; arg1 is fixnum - convert to f64
+       (:local.get ,arg1-local)
+       (:ref.cast :i31) :i31.get_s
+       :f64.convert_i32_s
+       :end
+       (:local.get ,arg2-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :f64))
+       ;; arg2 is float
+       (:local.get ,arg2-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :else
+       ;; arg2 is fixnum - convert to f64
+       (:local.get ,arg2-local)
+       (:ref.cast :i31) :i31.get_s
+       :f64.convert_i32_s
+       :end
+       ,f64-op  ; f64 comparison
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31  ; T
+       :else
+       (:ref.null :none)  ; NIL
+       :end
+       :else
+       ;; Integer path: both are fixnums
+       (:local.get ,arg1-local)
+       (:ref.cast :i31) :i31.get_s
+       (:local.get ,arg2-local)
+       (:ref.cast :i31) :i31.get_s
+       ,op  ; i32 comparison
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31  ; T
+       :else
+       (:ref.null :none)  ; NIL
+       :end
+       :end))))
 
 (defun compile-not-equal (args env)
-  "Compile not-equal."
-  (append
-   (compile-to-instructions (first args) env)
-   '((:ref.cast :i31) :i31.get_s)
-   (compile-to-instructions (second args) env)
-   '((:ref.cast :i31) :i31.get_s
-     :i32.ne)
-   `((:if (:result :anyref))
-     (:i32.const 1) :ref.i31
-     :else
-     (:ref.null :none)
-     :end)))
+  "Compile not-equal (/=).
+   Handles both fixnum (i31) and float ($float) operands."
+  (let ((float-type clysm/compiler/codegen/gc-types:+type-float+)
+        (arg1-local (env-add-local env (gensym "NE-A")))
+        (arg2-local (env-add-local env (gensym "NE-B"))))
+    (append
+     ;; Compile and store both arguments
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arg1-local))
+     (compile-to-instructions (second args) env)
+     (list (list :local.set arg2-local))
+     ;; Check if either operand is a float
+     `((:local.get ,arg1-local)
+       (:ref.test (:ref ,float-type))
+       (:local.get ,arg2-local)
+       (:ref.test (:ref ,float-type))
+       :i32.or  ; either is float?
+       (:if (:result :anyref))
+       ;; Float path: extract f64 values and compare
+       (:local.get ,arg1-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :f64))
+       (:local.get ,arg1-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :else
+       (:local.get ,arg1-local)
+       (:ref.cast :i31) :i31.get_s
+       :f64.convert_i32_s
+       :end
+       (:local.get ,arg2-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :f64))
+       (:local.get ,arg2-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :else
+       (:local.get ,arg2-local)
+       (:ref.cast :i31) :i31.get_s
+       :f64.convert_i32_s
+       :end
+       :f64.ne  ; f64 not-equal
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31  ; T
+       :else
+       (:ref.null :none)  ; NIL
+       :end
+       :else
+       ;; Integer path: both are fixnums
+       (:local.get ,arg1-local)
+       (:ref.cast :i31) :i31.get_s
+       (:local.get ,arg2-local)
+       (:ref.cast :i31) :i31.get_s
+       :i32.ne
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31  ; T
+       :else
+       (:ref.null :none)  ; NIL
+       :end
+       :end))))
 
 ;;; ============================================================
 ;;; Cons/List Operations (006-cons-list-ops)

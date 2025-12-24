@@ -112,13 +112,16 @@
    If the result is :non-fixnum and EXPECTED is provided, evaluates EXPR
    in the host Lisp to verify the expected value matches.
    This enables testing of bignum expressions where constant folding occurs.
+   Uses sb-int:with-float-traps-masked to allow IEEE 754 special values.
 
    Example:
      (compile-and-run-numeric '(+ 1073741823 1))  ; => 1073741824 (via host eval)"
   (let ((result (compile-and-run expr)))
     (if (eq result :non-fixnum)
         ;; Non-fixnum result: compute expected value in host Lisp
-        (let ((computed (eval expr)))
+        ;; Allow IEEE 754 special values (infinity, NaN) for float operations
+        (let ((computed (sb-int:with-float-traps-masked (:divide-by-zero :invalid :overflow)
+                          (eval expr))))
           (if expected
               (if (= expected computed)
                   computed
