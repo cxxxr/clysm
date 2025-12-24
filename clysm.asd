@@ -64,7 +64,8 @@
     ((:file "objects")
      (:file "special-vars")
      (:file "multi-value")
-     (:file "printer")))
+     (:file "printer")
+     (:file "condition-runtime")))
 
    ;; Eval: Dynamic evaluation
    (:module "eval"
@@ -99,6 +100,17 @@
      (:file "marshalling")
      (:file "import-gen")
      (:file "export-gen")))
+
+   ;; Conditions: ANSI CL Condition System (014-condition-system)
+   (:module "conditions"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "handlers")
+     (:file "restarts")
+     (:file "signaling")
+     (:file "standard")))
 
    ;; Standard library
    (:module "lib"
@@ -162,7 +174,10 @@
      (:file "ffi-types-test")
      (:file "ffi-marshalling-test")
      (:file "ffi-codegen-test")
-     (:file "tokenizer-package-test")))
+     (:file "tokenizer-package-test")
+     (:file "condition-types-test")
+     (:file "handler-test")
+     (:file "restart-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -196,7 +211,8 @@
      (:file "ffi-import-test")
      (:file "ffi-export-test")
      (:file "ffi-multi-host-test")
-     (:file "package-integration-test"))))
+     (:file "package-integration-test")
+     (:file "condition-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
