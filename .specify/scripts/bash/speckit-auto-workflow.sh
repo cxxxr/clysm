@@ -687,23 +687,19 @@ auto_commit() {
 
     log_step "Auto-committing changes"
 
-    # 変更があるか確認
-    if ! git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null; then
-        log_info "Uncommitted changes detected"
-    elif ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
-        log_info "Staged changes detected"
-    else
-        # Untracked files check
-        local untracked
-        untracked=$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null | wc -l)
-        if [[ "$untracked" -eq 0 ]]; then
-            log_info "No changes to commit"
-            return 0
-        fi
+    # まずすべての変更をステージング
+    log_info "Staging all changes..."
+    git -C "$REPO_ROOT" add -A
+
+    # ステージングされた変更があるか確認
+    if git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
+        log_info "No changes to commit"
+        return 0
     fi
 
-    # 変更をステージング
-    git -C "$REPO_ROOT" add -A
+    # 変更内容を表示
+    log_info "Changes to commit:"
+    git -C "$REPO_ROOT" diff --cached --stat >&2
 
     # コミットメッセージを生成
     local commit_msg="feat: implement ${feature_name}
