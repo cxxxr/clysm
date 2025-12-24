@@ -144,7 +144,7 @@ load_session() {
 run_claude() {
     local prompt="$1"
     local session_id="${2:-}"
-    local output_file="$LOG_DIR/step-$(date +%s).json"
+    local output_file="$LOG_DIR/step-$(date +%s).jsonl"
 
     # プロンプトを表示
     echo "" >&2
@@ -159,25 +159,59 @@ run_claude() {
     fi
     echo "" >&2
 
+    # 思考を有効化（未設定の場合はデフォルト値を使用）
+    export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-10000}"
+
     local cmd
     if [[ -n "$session_id" ]]; then
-        cmd=(claude --resume "$session_id" -p "$prompt" --allowedTools "$ALLOWED_TOOLS" --output-format json)
+        cmd=(claude --resume "$session_id" -p "$prompt" --allowedTools "$ALLOWED_TOOLS" --output-format stream-json --verbose --include-partial-messages)
     else
-        cmd=(claude -p "$prompt" --allowedTools "$ALLOWED_TOOLS" --output-format json)
+        cmd=(claude -p "$prompt" --allowedTools "$ALLOWED_TOOLS" --output-format stream-json --verbose --include-partial-messages)
     fi
 
-    "${cmd[@]}" > "$output_file" 2>&1 || true
+    # ストリーム出力をリアルタイム表示しながらファイルに保存
+    # 思考テキスト(thinking_delta)は灰色、応答テキスト(text_delta)は通常色で表示
+    echo -e "${CYAN}─── Claude Response ───────────────────────────────────────────${NC}" >&2
+    "${cmd[@]}" 2>&1 | tee "$output_file" | \
+        jq --unbuffered -r '
+            if .type == "stream_event" and .event.type == "content_block_delta" then
+                if .event.delta.type == "thinking_delta" then
+                    "\u001b[90m" + (.event.delta.thinking // "") + "\u001b[0m"
+                elif .event.delta.type == "text_delta" then
+                    .event.delta.text // ""
+                else ""
+                end
+            else ""
+            end
+        ' 2>/dev/null >&2
+    echo "" >&2
+    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}" >&2
+
     echo "$output_file"
 }
 
 extract_session_id() {
     local json_file="$1"
-    jq -r '.session_id // empty' "$json_file" 2>/dev/null || echo ""
+    # stream-json形式: result行からsession_idを取得
+    local result_line
+    result_line=$(grep '"type":"result"' "$json_file" 2>/dev/null | head -1)
+    if [[ -n "$result_line" ]]; then
+        echo "$result_line" | jq -r '.session_id // empty' 2>/dev/null
+    else
+        echo ""
+    fi
 }
 
 extract_result() {
     local json_file="$1"
-    jq -r '.result // .messages[-1].content // "No output"' "$json_file" 2>/dev/null || cat "$json_file"
+    # stream-json形式: result行からresultを取得
+    local result_line
+    result_line=$(grep '"type":"result"' "$json_file" 2>/dev/null | head -1)
+    if [[ -n "$result_line" ]]; then
+        echo "$result_line" | jq -r '.result // empty' 2>/dev/null
+    else
+        cat "$json_file"
+    fi
 }
 
 #=============================================================================
