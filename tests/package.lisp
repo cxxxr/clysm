@@ -206,3 +206,27 @@
 ;; Mixed arithmetic integration tests (010-numeric-tower Phase 9)
 (defpackage #:clysm/tests/integration/mixed-arithmetic
   (:use #:cl #:rove))
+
+;; FFI unit tests (012-ffi-foundation)
+(defpackage #:clysm/tests/unit/ffi-types
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/unit/ffi-marshalling
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/unit/ffi-codegen
+  (:use #:cl #:rove))
+
+;; FFI contract tests (012-ffi-foundation)
+(defpackage #:clysm/tests/contract/ffi-section
+  (:use #:cl #:rove))
+
+;; FFI integration tests (012-ffi-foundation)
+(defpackage #:clysm/tests/integration/ffi-import
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/ffi-export
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/ffi-multi-host
+  (:use #:cl #:rove))

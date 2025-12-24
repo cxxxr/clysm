@@ -89,11 +89,23 @@
      (:file "dispatch")
      (:file "method-combination")))
 
+   ;; FFI: Foreign Function Interface
+   (:module "ffi"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "macros")         ; Defines *ffi-environment* - must come before import-gen
+     (:file "marshalling")
+     (:file "import-gen")
+     (:file "export-gen")))
+
    ;; Standard library
    (:module "lib"
     :serial t
     :components
-    ((:file "macros")))
+    ((:file "macros")
+     (:file "ffi-runtime")))
 
    ;; REPL
    (:file "repl"))
@@ -117,7 +129,8 @@
      (:file "sections-test")
      (:file "wasm-validate-test")
      (:file "special-vars-codegen-test")
-     (:file "numeric-types-test")))
+     (:file "numeric-types-test")
+     (:file "ffi-section-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -144,7 +157,10 @@
      (:file "cons-test")
      (:file "tail-position-test")
      (:file "math-functions-test")
-     (:file "numeric-predicates-test")))
+     (:file "numeric-predicates-test")
+     (:file "ffi-types-test")
+     (:file "ffi-marshalling-test")
+     (:file "ffi-codegen-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -174,7 +190,10 @@
      (:file "ratio-test")
      (:file "float-test")
      (:file "complex-test")
-     (:file "mixed-arithmetic-test"))))
+     (:file "mixed-arithmetic-test")
+     (:file "ffi-import-test")
+     (:file "ffi-export-test")
+     (:file "ffi-multi-host-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

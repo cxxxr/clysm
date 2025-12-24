@@ -1,0 +1,32 @@
+[package]
+name = "clysm-ffi-test-harness"
+version = "0.1.0"
+edition = "2021"
+description = "FFI test harness for Clysm WebAssembly GC compiler"
+license = "MIT"
+authors = ["Clysm Project"]
+
+[[bin]]
+name = "ffi-host"
+path = "ffi-host.rs"
+
+[dependencies]
+# Wasmtime runtime with WasmGC support
+wasmtime = { version = "28", features = ["gc"] }
+# Error handling
+anyhow = "1.0"
+# Random number generation for host.random()
+rand = "0.8"
+
+[dev-dependencies]
+# Test utilities
+tempfile = "3"
+
+[features]
+default = []
+# Enable verbose logging for debugging
+verbose = []
+
+[profile.release]
+opt-level = 3
+lto = true

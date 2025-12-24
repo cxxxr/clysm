@@ -39,10 +39,13 @@
            #:wasm-global-init-expr
            ;; Section builders
            #:make-type-section
+           #:make-import-section
            #:make-global-section
            #:make-function-section
            #:make-code-section
            #:make-export-section
+           ;; Import/Export encoding (FFI Foundation)
+           #:encode-import
            ;; Validation
            #:validate-section-order))
 

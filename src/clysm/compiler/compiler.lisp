@@ -181,6 +181,9 @@
     (emit-header buffer)
     ;; Type section
     (emit-type-section buffer functions)
+    ;; Import section (T025: FFI imports come after Type, before Function)
+    ;; Per Wasm spec, section order: Type(1), Import(2), Function(3), ...
+    (emit-import-section-if-needed buffer)
     ;; Function section
     (emit-function-section buffer functions)
     ;; Tag section (for exception handling)
@@ -188,14 +191,61 @@
     ;; Global section
     (when (compiled-module-globals module)
       (emit-global-section buffer (compiled-module-globals module)))
-    ;; Export section
-    (emit-export-section buffer (compiled-module-exports module))
+    ;; Export section (T035: includes both regular exports and FFI exports)
+    (let ((all-exports (append (compiled-module-exports module)
+                               (or (collect-ffi-exports-for-section) '()))))
+      (emit-export-section buffer all-exports))
     ;; Element section (for ref.func declarations)
     (emit-element-section buffer functions)
     ;; Code section
     (emit-code-section buffer functions)
     ;; Return as simple vector
     (coerce buffer '(simple-array (unsigned-byte 8) (*)))))
+
+(defun emit-import-section-if-needed (buffer)
+  "Emit Import section if there are FFI imports registered.
+   T025: Integrate FFI imports into compiler's module generation.
+   Uses runtime symbol lookup to avoid compile-time dependency on FFI package."
+  (let ((ffi-pkg (find-package :clysm/ffi)))
+    (when ffi-pkg
+      (let ((env-sym (find-symbol "*FFI-ENVIRONMENT*" ffi-pkg))
+            (count-fn (find-symbol "GET-FFI-IMPORT-COUNT" ffi-pkg))
+            (assign-fn (find-symbol "ASSIGN-IMPORT-INDICES" ffi-pkg))
+            (emit-fn (find-symbol "EMIT-FFI-IMPORTS" ffi-pkg)))
+        (when (and env-sym (boundp env-sym) count-fn assign-fn emit-fn)
+          (let ((env (symbol-value env-sym)))
+            (when (> (funcall count-fn) 0)
+              ;; Assign type indices to imports before emitting
+              (funcall assign-fn env)
+              ;; Emit the import section
+              (funcall emit-fn env buffer))))))))
+
+(defun collect-ffi-exports-for-section ()
+  "Collect FFI exports and return them in the format expected by emit-export-section.
+   T035: Integrate FFI exports into compiler's module generation.
+   Uses runtime symbol lookup to avoid compile-time dependency on FFI package.
+   Returns a list of (name kind index) entries."
+  (let ((ffi-pkg (find-package :clysm/ffi)))
+    (when ffi-pkg
+      (let ((env-sym (find-symbol "*FFI-ENVIRONMENT*" ffi-pkg))
+            (count-fn (find-symbol "GET-FFI-EXPORT-COUNT" ffi-pkg))
+            (assign-fn (find-symbol "ASSIGN-EXPORT-INDICES" ffi-pkg))
+            (collect-fn (find-symbol "COLLECT-FFI-EXPORTS" ffi-pkg))
+            (ed-export-name (find-symbol "ED-EXPORT-NAME" ffi-pkg))
+            (ed-wrapper-func-index (find-symbol "ED-WRAPPER-FUNC-INDEX" ffi-pkg)))
+        (when (and env-sym (boundp env-sym) count-fn assign-fn collect-fn
+                   ed-export-name ed-wrapper-func-index)
+          (let ((env (symbol-value env-sym)))
+            (when (> (funcall count-fn) 0)
+              ;; Assign wrapper function indices
+              (funcall assign-fn env)
+              ;; Collect exports and convert to section format
+              (let ((exports (funcall collect-fn env)))
+                (mapcar (lambda (decl)
+                          (list (funcall ed-export-name decl)
+                                :func
+                                (or (funcall ed-wrapper-func-index decl) 0)))
+                        exports)))))))))
 
 (defun emit-header (buffer)
   "Emit Wasm module header."
@@ -218,6 +268,63 @@
     (and first-param-name
          (string= (symbol-name first-param-name) "$CLOSURE"))))
 
+(defun collect-ffi-type-count ()
+  "Get the number of FFI types that need to be added to the Type section.
+   T058: Integration with Type section - count unique FFI function types."
+  (let ((ffi-pkg (find-package :clysm/ffi)))
+    (if ffi-pkg
+        (let ((collect-types-fn (find-symbol "COLLECT-FFI-TYPES" ffi-pkg))
+              (env-sym (find-symbol "*FFI-ENVIRONMENT*" ffi-pkg)))
+          (if (and collect-types-fn env-sym (boundp env-sym))
+              (length (funcall collect-types-fn (symbol-value env-sym)))
+              0))
+        0)))
+
+(defun emit-ffi-types-to-section (content)
+  "Emit FFI function types to the Type section content buffer.
+   T058: Adds function types for FFI imports/exports after regular types.
+   Each type is emitted as: 0x60 params results (standard func type format)."
+  (let ((ffi-pkg (find-package :clysm/ffi)))
+    (when ffi-pkg
+      (let ((collect-types-fn (find-symbol "COLLECT-FFI-TYPES" ffi-pkg))
+            (env-sym (find-symbol "*FFI-ENVIRONMENT*" ffi-pkg))
+            (marshal-type-fn (find-symbol "MARSHAL-TYPE-TO-WASM-TYPE" ffi-pkg)))
+        (when (and collect-types-fn env-sym (boundp env-sym) marshal-type-fn)
+          (let ((types (funcall collect-types-fn (symbol-value env-sym))))
+            (dolist (type-def types)
+              ;; type-def is (:func (params...) (results...))
+              (when (and (listp type-def) (eq (first type-def) :func))
+                (let ((params (second type-def))
+                      (results (third type-def)))
+                  ;; Emit function type indicator
+                  (vector-push-extend #x60 content)
+                  ;; Emit params
+                  (emit-leb128-unsigned (length params) content)
+                  (dolist (p params)
+                    (emit-ffi-wasm-valtype p content))
+                  ;; Emit results
+                  (emit-leb128-unsigned (length results) content)
+                  (dolist (r results)
+                    (emit-ffi-wasm-valtype r content)))))))))))
+
+(defun emit-ffi-wasm-valtype (type content)
+  "Emit an FFI Wasm value type to buffer.
+   T058: Converts FFI Wasm type symbols to Wasm binary encoding.
+   Handles symbols from any package by comparing symbol names."
+  (vector-push-extend
+   (let ((name (if (symbolp type) (symbol-name type) (string type))))
+     (cond
+       ((string-equal name "I31REF") #x6C)
+       ((string-equal name "I32") #x7F)
+       ((string-equal name "I64") #x7E)
+       ((string-equal name "F32") #x7D)
+       ((string-equal name "F64") #x7C)
+       ((string-equal name "ANYREF") #x6E)
+       ((string-equal name "EXTERNREF") #x6F)
+       ((string-equal name "FUNCREF") #x70)
+       (t (error "Unknown FFI Wasm type: ~A" type))))
+   content))
+
 (defun emit-type-section (buffer functions)
   "Emit Type section with GC types and function types.
    Layout:
@@ -233,13 +340,15 @@
    - Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
    - Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
    - Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
-   - Types 22+: Regular (non-lambda) function types"
+   - Types 22+: Regular (non-lambda) function types + FFI function types (T058)"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
         ;; Count non-lambda functions (lambdas reuse types 8-12)
-        (regular-func-count (count-if-not #'is-lambda-function-p functions)))
-    ;; Number of types = 22 (base types including numeric tower + exception types) + regular functions
-    (emit-leb128-unsigned (+ 22 regular-func-count) content)
+        (regular-func-count (count-if-not #'is-lambda-function-p functions))
+        ;; T058: Count FFI function types
+        (ffi-type-count (collect-ffi-type-count)))
+    ;; Number of types = 22 (base types) + regular functions + FFI types
+    (emit-leb128-unsigned (+ 22 regular-func-count ffi-type-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -304,6 +413,8 @@
                 (emit-leb128-unsigned 1 content)
                 (emit-valtype result content))
               (emit-leb128-unsigned 0 content)))))
+    ;; T058: FFI function types (after regular function types)
+    (emit-ffi-types-to-section content)
     ;; Write section
     (vector-push-extend 1 buffer)  ; Type section ID
     (emit-leb128-unsigned (length content) buffer)

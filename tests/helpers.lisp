@@ -194,3 +194,19 @@
     (unless (equal expected result)
       (error "Expected ~A but got ~A for ~S" expected result expr))
     t))
+
+;;; ============================================================
+;;; T060: FFI Validation Helpers
+;;; ============================================================
+
+(defun validate-ffi-wasm-bytes (bytes)
+  "Validate Wasm bytes that may contain FFI imports/exports.
+   T060: Uses wasm-tools validate with GC feature enabled."
+  (validate-wasm bytes))
+
+(defun compile-with-ffi-and-validate (expr)
+  "Compile expression (with FFI declarations) and validate the result.
+   Returns T if validation passes, signals error otherwise.
+   T060: End-to-end FFI compilation validation."
+  (let ((bytes (clysm/compiler:compile-to-wasm expr)))
+    (validate-wasm bytes)))

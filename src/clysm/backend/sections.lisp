@@ -76,6 +76,59 @@
     (concatenate '(vector (unsigned-byte 8)) len-bytes bytes)))
 
 ;;; ============================================================
+;;; Import Section (T012-T013 - FFI Foundation)
+;;; ============================================================
+
+(defun make-import-section (imports)
+  "Create an Import Section from a list of wasm-import structures.
+   IMPORTS should be a list of wasm-import (from clysm/ffi package)."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Import count
+    (let ((count-bytes (encode-unsigned-leb128 (length imports))))
+      (loop for b across count-bytes do (vector-push-extend b content)))
+    ;; Each import entry
+    (dolist (import imports)
+      (let ((bytes (encode-import import)))
+        (loop for b across bytes do (vector-push-extend b content))))
+    (make-section :id +section-id-import+
+                  :content (coerce content '(vector (unsigned-byte 8))))))
+
+(defun encode-import (import)
+  "Encode a single import entry to bytes.
+   IMPORT should have accessors: wi-module-name, wi-field-name, wi-kind, wi-type-index."
+  (let ((result (make-array 0 :element-type '(unsigned-byte 8)
+                              :adjustable t :fill-pointer 0)))
+    ;; Module name (length-prefixed UTF-8)
+    (let* ((module-name (funcall (find-symbol "WI-MODULE-NAME" :clysm/ffi) import))
+           (name-bytes (encode-name module-name)))
+      (loop for b across name-bytes do (vector-push-extend b result)))
+    ;; Field name (length-prefixed UTF-8)
+    (let* ((field-name (funcall (find-symbol "WI-FIELD-NAME" :clysm/ffi) import))
+           (name-bytes (encode-name field-name)))
+      (loop for b across name-bytes do (vector-push-extend b result)))
+    ;; Import kind
+    (let ((kind (funcall (find-symbol "WI-KIND" :clysm/ffi) import)))
+      (vector-push-extend
+       (ecase kind
+         (:func 0)
+         (:table 1)
+         (:memory 2)
+         (:global 3))
+       result))
+    ;; Type info (for :func, it's the type index)
+    (let ((kind (funcall (find-symbol "WI-KIND" :clysm/ffi) import)))
+      (ecase kind
+        (:func
+         (let* ((type-index (funcall (find-symbol "WI-TYPE-INDEX" :clysm/ffi) import))
+                (idx-bytes (encode-unsigned-leb128 type-index)))
+           (loop for b across idx-bytes do (vector-push-extend b result))))
+        ;; Other kinds not implemented yet
+        ((:table :memory :global)
+         (error "Import kind ~A not yet implemented" kind))))
+    (coerce result '(vector (unsigned-byte 8)))))
+
+;;; ============================================================
 ;;; Type Section (T038)
 ;;; ============================================================
 
