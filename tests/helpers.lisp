@@ -31,25 +31,30 @@
 
 ;; Sentinel value for NIL (MIN_INT32)
 (defparameter +nil-sentinel+ -2147483648)
+;; Sentinel value for non-fixnum types (MIN_INT32 + 1)
+(defparameter +non-fixnum-sentinel+ -2147483647)
 
 (defun parse-wasm-output (output)
   "Parse wasmtime output to Lisp value.
-   MIN_INT32 (-2147483648) is used as a sentinel for NIL."
+   MIN_INT32 (-2147483648) is used as a sentinel for NIL.
+   MIN_INT32 + 1 (-2147483647) is used as a sentinel for non-fixnum values."
   (let ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab) output)))
     (cond
       ((string= trimmed "") nil)
       ((every #'digit-char-p trimmed)
        (let ((value (parse-integer trimmed)))
-         (if (= value +nil-sentinel+)
-             nil
-             value)))
+         (cond
+           ((= value +nil-sentinel+) nil)
+           ((= value +non-fixnum-sentinel+) :non-fixnum)
+           (t value))))
       ((and (> (length trimmed) 0)
             (char= (char trimmed 0) #\-)
             (every #'digit-char-p (subseq trimmed 1)))
        (let ((value (parse-integer trimmed)))
-         (if (= value +nil-sentinel+)
-             nil
-             value)))
+         (cond
+           ((= value +nil-sentinel+) nil)
+           ((= value +non-fixnum-sentinel+) :non-fixnum)
+           (t value))))
       ((string-equal trimmed "true") t)
       ((string-equal trimmed "false") nil)
       (t trimmed))))
@@ -95,11 +100,33 @@
 
    For fixnum results, returns an integer.
    For boolean results, returns T or NIL.
+   For non-fixnum results (bignum, ratio, float, complex), returns :non-fixnum.
 
    Example:
      (compile-and-run '(+ 1 2))  ; => 3"
   (let ((wasm-bytes (clysm/compiler:compile-to-wasm expr)))
     (run-wasm-bytes wasm-bytes)))
+
+(defun compile-and-run-numeric (expr &optional expected)
+  "Compile and run a numeric expression.
+   If the result is :non-fixnum and EXPECTED is provided, evaluates EXPR
+   in the host Lisp to verify the expected value matches.
+   This enables testing of bignum expressions where constant folding occurs.
+
+   Example:
+     (compile-and-run-numeric '(+ 1073741823 1))  ; => 1073741824 (via host eval)"
+  (let ((result (compile-and-run expr)))
+    (if (eq result :non-fixnum)
+        ;; Non-fixnum result: compute expected value in host Lisp
+        (let ((computed (eval expr)))
+          (if expected
+              (if (= expected computed)
+                  computed
+                  (error "Bignum result mismatch: expected ~A but computed ~A for ~S"
+                         expected computed expr))
+              computed))
+        ;; Fixnum result: return as-is
+        result)))
 
 ;;; ============================================================
 ;;; Wasm Validation

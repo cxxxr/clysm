@@ -27,6 +27,16 @@
 (defconstant +type-binding-frame+ 13 "Type index for binding frame")
 
 ;;; ============================================================
+;;; Numeric Tower Type Indices (T001)
+;;; ============================================================
+;; These types extend the numeric tower beyond fixnum (i31ref)
+(defconstant +type-bignum+ 14 "Type index for arbitrary-precision integers")
+(defconstant +type-ratio+ 15 "Type index for exact rational numbers")
+(defconstant +type-float+ 16 "Type index for IEEE 754 double-precision floats")
+(defconstant +type-complex+ 17 "Type index for complex numbers")
+(defconstant +type-limb-array+ 18 "Type index for bignum limb array")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -245,6 +255,94 @@
           +type-binding-frame+ +type-binding-frame+))
 
 ;;; ============================================================
+;;; Numeric Tower Type Constructors (T002-T006)
+;;; ============================================================
+
+(defun make-limb-array-type ()
+  "Create limb array type for bignum representation (T002).
+   An array of mutable i32 values representing bignum limbs in little-endian order.
+   (type $limb_array (array (mut i32)))"
+  (make-wasm-array-type
+   :name '$limb_array
+   :index +type-limb-array+
+   :element-type :i32
+   :mutable t))
+
+(defun make-bignum-type ()
+  "Create bignum type for arbitrary-precision integers (T003).
+   Structure:
+     $sign: i32 (0 = non-negative, 1 = negative)
+     $limbs: ref $limb_array (array of 32-bit limbs, little-endian)
+   (type $bignum (struct
+     (field $sign i32)
+     (field $limbs (ref $limb_array))))"
+  (make-wasm-struct-type
+   :name '$bignum
+   :index +type-bignum+
+   :fields (list (make-wasm-field :name 'sign :type :i32 :mutable nil)
+                 (make-wasm-field :name 'limbs :type :limb-array-ref :mutable nil))))
+
+(defun make-ratio-type ()
+  "Create ratio type for exact rational numbers (T004).
+   Structure:
+     $numerator: anyref (fixnum or bignum, carries sign)
+     $denominator: anyref (positive fixnum or bignum, never zero)
+   Invariants:
+     - GCD(|numerator|, denominator) = 1 (always reduced)
+     - denominator > 0
+   (type $ratio (struct
+     (field $numerator anyref)
+     (field $denominator anyref)))"
+  (make-wasm-struct-type
+   :name '$ratio
+   :index +type-ratio+
+   :fields (list (make-wasm-field :name 'numerator :type :anyref :mutable nil)
+                 (make-wasm-field :name 'denominator :type :anyref :mutable nil))))
+
+(defun make-float-type ()
+  "Create float type for IEEE 754 double-precision numbers (T005).
+   Structure:
+     $value: f64 (IEEE 754 binary64)
+   Note: Both single-float and double-float use f64 internally.
+   Boxing is required for anyref compatibility.
+   (type $float (struct (field $value f64)))"
+  (make-wasm-struct-type
+   :name '$float
+   :index +type-float+
+   :fields (list (make-wasm-field :name 'value :type :f64 :mutable nil))))
+
+(defun make-complex-type ()
+  "Create complex type for complex numbers (T006).
+   Structure:
+     $real: anyref (fixnum, bignum, ratio, or float)
+     $imag: anyref (fixnum, bignum, ratio, or float)
+   Invariants:
+     - If imag is exact 0 and real is rational, simplify to real
+     - #C(5.0 0.0) stays complex (float zero is not exact zero)
+   (type $complex (struct
+     (field $real anyref)
+     (field $imag anyref)))"
+  (make-wasm-struct-type
+   :name '$complex
+   :index +type-complex+
+   :fields (list (make-wasm-field :name 'real :type :anyref :mutable nil)
+                 (make-wasm-field :name 'imag :type :anyref :mutable nil))))
+
+;;; ============================================================
+;;; Exception Tags (T008)
+;;; ============================================================
+
+(defconstant +tag-division-by-zero+ 0 "Tag index for division-by-zero exception")
+
+(defun emit-division-by-zero-tag ()
+  "Generate WAT for the division-by-zero exception tag (T008).
+   Returns a string of WAT code for the exception tag.
+   (tag $division-by-zero (type $empty))
+   Note: Exception tags in WasmGC use exception handling proposal.
+   The tag has no parameters (empty type) - signaling just indicates the error."
+  "(tag $division-by-zero)")
+
+;;; ============================================================
 ;;; Struct Fields Accessor
 ;;; ============================================================
 
@@ -257,13 +355,18 @@
 ;;; ============================================================
 
 (defun generate-type-definitions ()
-  "Generate all WasmGC type definitions for the Type Section.
+  "Generate all WasmGC type definitions for the Type Section (T007).
    Returns a list of type definitions in order of their indices.
    Type layout:
      0-5: GC struct types (nil, unbound, cons, symbol, string, closure)
      6-7: Reserved (placeholders for instance, standard-class)
      8-12: Function types (func_0, func_1, func_2, func_3, func_n)
-     13: Binding frame (for dynamic bindings)"
+     13: Binding frame (for dynamic bindings)
+     14: Bignum (arbitrary-precision integer)
+     15: Ratio (exact rational number)
+     16: Float (IEEE 754 double-precision)
+     17: Complex (complex number)
+     18: Limb array (for bignum limbs)"
   (list (make-nil-type)          ; type 0
         (make-unbound-type)      ; type 1
         (make-cons-type)         ; type 2
@@ -277,7 +380,12 @@
         (make-func-type-2)       ; type 10
         (make-func-type-3)       ; type 11
         (make-func-type-n)       ; type 12
-        (make-binding-frame-type)))  ; type 13: binding frame for dynamic bindings
+        (make-binding-frame-type)   ; type 13: binding frame for dynamic bindings
+        (make-bignum-type)          ; type 14: arbitrary-precision integer
+        (make-ratio-type)           ; type 15: exact rational number
+        (make-float-type)           ; type 16: IEEE 754 double-precision
+        (make-complex-type)         ; type 17: complex number
+        (make-limb-array-type)))    ; type 18: bignum limb array
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
@@ -334,7 +442,28 @@
     (:binding-frame-ref
      ;; (ref null $binding_frame) - nullable reference to binding frame
      (write-byte #x63 stream)  ; ref null
-     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-binding-frame+ stream))))
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-binding-frame+ stream))
+    ;; Numeric tower type references (T002-T006)
+    (:limb-array-ref
+     ;; (ref $limb_array) - non-null reference to limb array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-limb-array+ stream))
+    (:bignum-ref
+     ;; (ref $bignum) - non-null reference to bignum
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-bignum+ stream))
+    (:ratio-ref
+     ;; (ref $ratio) - non-null reference to ratio
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-ratio+ stream))
+    (:float-ref
+     ;; (ref $float) - non-null reference to float
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-float+ stream))
+    (:complex-ref
+     ;; (ref $complex) - non-null reference to complex
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-complex+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"
@@ -386,4 +515,25 @@
      ;; (ref null $binding_frame) - nullable reference to binding frame
      (write-byte #x63 stream)  ; ref null
      (clysm/backend/leb128:encode-signed-leb128-to-stream +type-binding-frame+ stream))
+    ;; Numeric tower type references (T002-T006)
+    (:limb-array-ref
+     ;; (ref $limb_array) - non-null reference to limb array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-limb-array+ stream))
+    (:bignum-ref
+     ;; (ref $bignum) - non-null reference to bignum
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-bignum+ stream))
+    (:ratio-ref
+     ;; (ref $ratio) - non-null reference to ratio
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-ratio+ stream))
+    (:float-ref
+     ;; (ref $float) - non-null reference to float
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-float+ stream))
+    (:complex-ref
+     ;; (ref $complex) - non-null reference to complex
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-complex+ stream))
     (t (error "Unknown value type: ~A" type-keyword))))

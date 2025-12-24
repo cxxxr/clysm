@@ -3,6 +3,7 @@
 (defpackage #:clysm/tests/helpers
   (:use #:cl)
   (:export #:compile-and-run
+           #:compile-and-run-numeric
            #:validate-wasm
            #:validate-wasm-silent
            #:with-temp-wasm-file
@@ -15,6 +16,7 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests/helpers
                 #:compile-and-run
+                #:compile-and-run-numeric
                 #:validate-wasm
                 #:validate-wasm-silent
                 #:with-temp-wasm-file
@@ -23,6 +25,7 @@
                 #:assert-equals)
   (:export #:run-all-tests
            #:compile-and-run
+           #:compile-and-run-numeric
            #:validate-wasm
            #:validate-wasm-silent
            #:with-temp-wasm-file
@@ -173,4 +176,33 @@
 
 ;; Tail position detection unit tests (009-tail-call-optimization)
 (defpackage #:clysm/tests/unit/tail-position
+  (:use #:cl #:rove))
+
+;; Numeric tower contract tests (010-numeric-tower)
+(defpackage #:clysm/tests/contract/numeric-types
+  (:use #:cl #:rove))
+
+;; Numeric tower integration tests (010-numeric-tower)
+(defpackage #:clysm/tests/integration/bignum
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/ratio
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/float
+  (:use #:cl #:rove))
+
+(defpackage #:clysm/tests/integration/complex
+  (:use #:cl #:rove))
+
+;; Math functions unit tests (010-numeric-tower Phase 7)
+(defpackage #:clysm/tests/unit/math-functions
+  (:use #:cl #:rove))
+
+;; Numeric predicates unit tests (010-numeric-tower Phase 8)
+(defpackage #:clysm/tests/unit/numeric-predicates
+  (:use #:cl #:rove))
+
+;; Mixed arithmetic integration tests (010-numeric-tower Phase 9)
+(defpackage #:clysm/tests/integration/mixed-arithmetic
   (:use #:cl #:rove))

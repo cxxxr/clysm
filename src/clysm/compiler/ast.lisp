@@ -53,6 +53,40 @@
   (make-ast-literal :value value :literal-type :string))
 
 ;;; ============================================================
+;;; Numeric Tower Literal Support (010-numeric-tower)
+;;; ============================================================
+
+(defconstant +i31-min+ -1073741824 "Minimum value for i31ref (fixnum)")
+(defconstant +i31-max+ 1073741823 "Maximum value for i31ref (fixnum)")
+
+(defun i31-range-p (value)
+  "Check if value fits in i31ref range (-2^30 to 2^30-1)"
+  (and (integerp value)
+       (<= +i31-min+ value +i31-max+)))
+
+(defun make-bignum-literal (value)
+  "Create a bignum literal AST node"
+  (make-ast-literal :value value :literal-type :bignum))
+
+(defun make-ratio-literal (value)
+  "Create a ratio literal AST node"
+  (make-ast-literal :value value :literal-type :ratio))
+
+(defun make-float-literal (value)
+  "Create a float literal AST node"
+  (make-ast-literal :value value :literal-type :float))
+
+(defun make-complex-literal (value)
+  "Create a complex literal AST node"
+  (make-ast-literal :value value :literal-type :complex))
+
+(defun make-integer-literal (value)
+  "Create an integer literal, choosing fixnum or bignum based on range"
+  (if (i31-range-p value)
+      (make-fixnum-literal value)
+      (make-bignum-literal value)))
+
+;;; ============================================================
 ;;; Variable References (T044)
 ;;; ============================================================
 
@@ -245,9 +279,18 @@
     ;; T literal
     ((eq form t)
      (make-t-literal))
-    ;; Fixnum literal
+    ;; Integer literal - choose fixnum or bignum based on range (010-numeric-tower)
     ((integerp form)
-     (make-fixnum-literal form))
+     (make-integer-literal form))
+    ;; Ratio literal (010-numeric-tower) - use typep since ratiop is not standard CL
+    ((typep form 'ratio)
+     (make-ratio-literal form))
+    ;; Float literal (010-numeric-tower)
+    ((floatp form)
+     (make-float-literal form))
+    ;; Complex literal (010-numeric-tower)
+    ((complexp form)
+     (make-complex-literal form))
     ;; Character literal (008-character-string)
     ((characterp form)
      (make-character-literal form))
@@ -299,12 +342,439 @@
       (cond (parse-cond-form args))
       (and (parse-and-form args))
       (or (parse-or-form args))
+      ;; Arithmetic with constant folding (010-numeric-tower)
+      ((+ - * /)
+       (parse-arithmetic-form op args))
+      ;; Integer division/rounding with constant folding (010-numeric-tower)
+      ((truncate floor ceiling round mod rem)
+       (parse-rounding-form op args))
+      ;; Exponentiation with constant folding (010-numeric-tower)
+      (expt (parse-expt-form args))
+      ;; Math functions with constant folding (010-numeric-tower T087-T097)
+      (sqrt (parse-sqrt-form args))
+      (abs (parse-abs-form args))
+      (gcd (parse-gcd-form args))
+      (lcm (parse-lcm-form args))
+      ;; Comparison with constant folding (010-numeric-tower)
+      ((= < > <= >= /=)
+       (parse-comparison-form op args))
+      ;; Complex number functions with constant folding (010-numeric-tower T072-T079)
+      (complex (parse-complex-form args))
+      (realpart (parse-realpart-form args))
+      (imagpart (parse-imagpart-form args))
+      (conjugate (parse-conjugate-form args))
+      ;; Numeric type predicates with constant folding (010-numeric-tower T107-T115)
+      (numberp (parse-numberp-form args))
+      (integerp (parse-integerp-form args))
+      (rationalp (parse-rationalp-form args))
+      (realp (parse-realp-form args))
+      (floatp (parse-floatp-form args))
+      (complexp (parse-complexp-form args))
+      (zerop (parse-zerop-form args))
+      (plusp (parse-plusp-form args))
+      (minusp (parse-minusp-form args))
+      (evenp (parse-evenp-form args))
+      (oddp (parse-oddp-form args))
       ;; Function call
       (otherwise
        (make-ast-call
         :function op
         :arguments (mapcar #'parse-expr args)
         :call-type (if (symbolp op) :named :funcall))))))
+
+;;; ============================================================
+;;; Constant Folding for Arithmetic (010-numeric-tower)
+;;; ============================================================
+
+(defun numeric-literal-p (ast)
+  "Check if an AST node is a numeric literal."
+  (and (typep ast 'ast-literal)
+       (member (ast-literal-literal-type ast)
+               '(:fixnum :bignum :ratio :float :complex))))
+
+(defun get-numeric-value (ast)
+  "Extract the numeric value from a numeric literal AST node."
+  (ast-literal-value ast))
+
+(defun all-numeric-literals-p (asts)
+  "Check if all AST nodes in the list are numeric literals."
+  (every #'numeric-literal-p asts))
+
+(defun make-numeric-literal (value)
+  "Create the appropriate literal AST node for a numeric value."
+  (typecase value
+    (integer (make-integer-literal value))
+    (ratio (make-ratio-literal value))
+    (float (make-float-literal value))
+    (complex (make-complex-literal value))
+    (t (make-ast-literal :value value :literal-type :number))))
+
+(defun fold-arithmetic (op values)
+  "Fold arithmetic operation on constant values."
+  (case op
+    (+ (reduce #'+ values :initial-value 0))
+    (* (reduce #'* values :initial-value 1))
+    (- (if (= 1 (length values))
+           (- (first values))
+           (reduce #'- values)))
+    (/ (if (= 1 (length values))
+           (/ 1 (first values))
+           (reduce #'/ values)))))
+
+(defun parse-arithmetic-form (op args)
+  "Parse an arithmetic form with constant folding.
+   If all arguments are numeric literals, compute at parse time.
+   Otherwise, create a function call AST."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (not (null parsed-args))
+             (all-numeric-literals-p parsed-args))
+        ;; All constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (fold-arithmetic op values)))
+          (make-numeric-literal result))
+        ;; Not all constants - create function call
+        (make-ast-call
+         :function op
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun fold-comparison (op values)
+  "Fold comparison operation on constant values."
+  (let ((result
+          (case op
+            (= (apply #'= values))
+            (< (apply #'< values))
+            (> (apply #'> values))
+            (<= (apply #'<= values))
+            (>= (apply #'>= values))
+            (/= (apply #'/= values)))))
+    (if result t nil)))
+
+(defun parse-comparison-form (op args)
+  "Parse a comparison form with constant folding.
+   If all arguments are numeric literals, compute at parse time.
+   Otherwise, create a function call AST."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (>= (length parsed-args) 2)
+             (all-numeric-literals-p parsed-args))
+        ;; All constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (fold-comparison op values)))
+          (if result (make-t-literal) (make-nil-literal)))
+        ;; Not all constants - create function call
+        (make-ast-call
+         :function op
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun fold-rounding (op dividend divisor)
+  "Fold rounding operation on constant values.
+   Returns the quotient (first value of the multiple-value result)."
+  (case op
+    (truncate (truncate dividend divisor))
+    (floor (floor dividend divisor))
+    (ceiling (ceiling dividend divisor))
+    (round (round dividend divisor))
+    (mod (mod dividend divisor))
+    (rem (rem dividend divisor))))
+
+(defun parse-rounding-form (op args)
+  "Parse a rounding form with constant folding.
+   If all arguments are numeric literals, compute at parse time.
+   Otherwise, create a function call AST."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 2 (length parsed-args))
+             (all-numeric-literals-p parsed-args))
+        ;; All constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (fold-rounding op (first values) (second values))))
+          (make-numeric-literal result))
+        ;; Not all constants - create function call
+        (make-ast-call
+         :function op
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-expt-form (args)
+  "Parse expt with constant folding.
+   If both arguments are numeric literals, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 2 (length parsed-args))
+             (all-numeric-literals-p parsed-args))
+        ;; All constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (expt (first values) (second values))))
+          (make-numeric-literal result))
+        ;; Not all constants - create function call
+        (make-ast-call
+         :function 'expt
+         :arguments parsed-args
+         :call-type :named))))
+
+;;; ============================================================
+;;; Constant Folding for Complex Number Functions (010-numeric-tower)
+;;; T072-T079: Complex number operations
+;;; ============================================================
+
+(defun real-literal-p (ast)
+  "Check if an AST node is a real numeric literal (not complex)."
+  (and (typep ast 'ast-literal)
+       (member (ast-literal-literal-type ast)
+               '(:fixnum :bignum :ratio :float))))
+
+(defun parse-complex-form (args)
+  "Parse (complex real [imag]) with constant folding.
+   Creates a complex number from real and optional imaginary parts.
+   If both arguments are numeric literals, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (cond
+      ;; Single argument: (complex real) = real + 0i
+      ((and (= 1 (length parsed-args))
+            (real-literal-p (first parsed-args)))
+       ;; In CL, (complex x) where x is real just returns x
+       ;; (complex 5) => 5 (not #C(5 0))
+       (first parsed-args))
+      ;; Two arguments: (complex real imag)
+      ((and (= 2 (length parsed-args))
+            (real-literal-p (first parsed-args))
+            (real-literal-p (second parsed-args)))
+       (let* ((real-val (get-numeric-value (first parsed-args)))
+              (imag-val (get-numeric-value (second parsed-args)))
+              (result (complex real-val imag-val)))
+         (make-numeric-literal result)))
+      ;; Not all constants - create function call
+      (t
+       (make-ast-call
+        :function 'complex
+        :arguments parsed-args
+        :call-type :named)))))
+
+(defun parse-realpart-form (args)
+  "Parse (realpart x) with constant folding.
+   If argument is a numeric literal, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        ;; Constant - fold at parse time
+        (let* ((value (get-numeric-value (first parsed-args)))
+               (result (realpart value)))
+          (make-numeric-literal result))
+        ;; Not a constant - create function call
+        (make-ast-call
+         :function 'realpart
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-imagpart-form (args)
+  "Parse (imagpart x) with constant folding.
+   If argument is a numeric literal, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        ;; Constant - fold at parse time
+        (let* ((value (get-numeric-value (first parsed-args)))
+               (result (imagpart value)))
+          (make-numeric-literal result))
+        ;; Not a constant - create function call
+        (make-ast-call
+         :function 'imagpart
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-conjugate-form (args)
+  "Parse (conjugate x) with constant folding.
+   If argument is a numeric literal, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        ;; Constant - fold at parse time
+        (let* ((value (get-numeric-value (first parsed-args)))
+               (result (conjugate value)))
+          (make-numeric-literal result))
+        ;; Not a constant - create function call
+        (make-ast-call
+         :function 'conjugate
+         :arguments parsed-args
+         :call-type :named))))
+
+;;; ============================================================
+;;; Constant Folding for Math Functions (010-numeric-tower)
+;;; T087-T097: Mathematical functions
+;;; ============================================================
+
+(defun parse-sqrt-form (args)
+  "Parse (sqrt x) with constant folding.
+   If argument is a numeric literal, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        ;; Constant - fold at parse time
+        (let* ((value (get-numeric-value (first parsed-args)))
+               (result (sqrt value)))
+          (make-numeric-literal result))
+        ;; Not a constant - create function call
+        (make-ast-call
+         :function 'sqrt
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-abs-form (args)
+  "Parse (abs x) with constant folding.
+   If argument is a numeric literal, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        ;; Constant - fold at parse time
+        (let* ((value (get-numeric-value (first parsed-args)))
+               (result (abs value)))
+          (make-numeric-literal result))
+        ;; Not a constant - create function call
+        (make-ast-call
+         :function 'abs
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-gcd-form (args)
+  "Parse (gcd &rest integers) with constant folding.
+   If all arguments are integer literals, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (not (null parsed-args))
+             (every (lambda (arg)
+                      (and (numeric-literal-p arg)
+                           (integerp (get-numeric-value arg))))
+                    parsed-args))
+        ;; All integer constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (apply #'gcd values)))
+          (make-numeric-literal result))
+        ;; Not all integer constants - create function call
+        (make-ast-call
+         :function 'gcd
+         :arguments parsed-args
+         :call-type :named))))
+
+(defun parse-lcm-form (args)
+  "Parse (lcm &rest integers) with constant folding.
+   If all arguments are integer literals, compute at parse time."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (not (null parsed-args))
+             (every (lambda (arg)
+                      (and (numeric-literal-p arg)
+                           (integerp (get-numeric-value arg))))
+                    parsed-args))
+        ;; All integer constants - fold at parse time
+        (let* ((values (mapcar #'get-numeric-value parsed-args))
+               (result (apply #'lcm values)))
+          (make-numeric-literal result))
+        ;; Not all integer constants - create function call
+        (make-ast-call
+         :function 'lcm
+         :arguments parsed-args
+         :call-type :named))))
+
+;;; ============================================================
+;;; Constant Folding for Numeric Predicates (010-numeric-tower)
+;;; T107-T115: Numeric type predicates
+;;; ============================================================
+
+(defun parse-numberp-form (args)
+  "Parse (numberp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (numberp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'numberp :arguments parsed-args :call-type :named))))
+
+(defun parse-integerp-form (args)
+  "Parse (integerp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (integerp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'integerp :arguments parsed-args :call-type :named))))
+
+(defun parse-rationalp-form (args)
+  "Parse (rationalp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (rationalp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'rationalp :arguments parsed-args :call-type :named))))
+
+(defun parse-realp-form (args)
+  "Parse (realp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (realp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'realp :arguments parsed-args :call-type :named))))
+
+(defun parse-floatp-form (args)
+  "Parse (floatp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (floatp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'floatp :arguments parsed-args :call-type :named))))
+
+(defun parse-complexp-form (args)
+  "Parse (complexp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (typep (first parsed-args) 'ast-literal))
+        (let ((value (ast-literal-value (first parsed-args))))
+          (if (complexp value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'complexp :arguments parsed-args :call-type :named))))
+
+(defun parse-zerop-form (args)
+  "Parse (zerop x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        (let ((value (get-numeric-value (first parsed-args))))
+          (if (zerop value) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'zerop :arguments parsed-args :call-type :named))))
+
+(defun parse-plusp-form (args)
+  "Parse (plusp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        (let ((value (get-numeric-value (first parsed-args))))
+          (if (and (realp value) (plusp value)) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'plusp :arguments parsed-args :call-type :named))))
+
+(defun parse-minusp-form (args)
+  "Parse (minusp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        (let ((value (get-numeric-value (first parsed-args))))
+          (if (and (realp value) (minusp value)) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'minusp :arguments parsed-args :call-type :named))))
+
+(defun parse-evenp-form (args)
+  "Parse (evenp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        (let ((value (get-numeric-value (first parsed-args))))
+          (if (and (integerp value) (evenp value)) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'evenp :arguments parsed-args :call-type :named))))
+
+(defun parse-oddp-form (args)
+  "Parse (oddp x) with constant folding."
+  (let ((parsed-args (mapcar #'parse-expr args)))
+    (if (and (= 1 (length parsed-args))
+             (numeric-literal-p (first parsed-args)))
+        (let ((value (get-numeric-value (first parsed-args))))
+          (if (and (integerp value) (oddp value)) (make-t-literal) (make-nil-literal)))
+        (make-ast-call :function 'oddp :arguments parsed-args :call-type :named))))
 
 (defun parse-if-form (args)
   "Parse (if test then [else])."

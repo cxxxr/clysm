@@ -273,6 +273,15 @@
           (let ((hash (logand (sxhash value) #x3FFFFFFF)))  ; 30-bit for i31ref
             (list (list :i32.const hash)
                   :ref.i31)))))
+      ;; Numeric tower types (010-numeric-tower)
+      (:bignum
+       (compile-bignum-literal value))
+      (:ratio
+       (compile-ratio-literal value))
+      (:float
+       (compile-float-literal value))
+      (:complex
+       (compile-complex-literal value))
       (otherwise
        (error "Unsupported literal type: ~A" type)))))
 
@@ -313,12 +322,120 @@
   "Compile a single quoted element to Wasm instructions."
   (cond
     ((null elem) '((:ref.null :none)))
-    ((integerp elem) (list (list :i32.const elem) :ref.i31))
+    ((integerp elem)
+     ;; Handle fixnum vs bignum (010-numeric-tower)
+     (if (clysm/compiler/ast:i31-range-p elem)
+         (list (list :i32.const elem) :ref.i31)
+         (compile-bignum-literal elem)))
+    ((typep elem 'ratio) (compile-ratio-literal elem))
+    ((floatp elem) (compile-float-literal elem))
+    ((complexp elem) (compile-complex-literal elem))
     ((listp elem) (compile-quoted-list elem))
     ((symbolp elem)
      (let ((hash (logand (sxhash elem) #x3FFFFFFF)))
        (list (list :i32.const hash) :ref.i31)))
     (t (error "Cannot compile quoted element: ~A" elem))))
+
+;;; ============================================================
+;;; Numeric Tower Literal Compilation (010-numeric-tower)
+;;; ============================================================
+
+(defun integer-to-limbs (n)
+  "Convert a non-negative integer to a list of 32-bit limbs (little-endian).
+   Returns (values limbs sign) where sign is 0 for non-negative, 1 for negative."
+  (let ((sign (if (minusp n) 1 0))
+        (abs-n (abs n))
+        (limbs '()))
+    (if (zerop abs-n)
+        (values '(0) 0)
+        (progn
+          (loop while (plusp abs-n)
+                do (push (logand abs-n #xFFFFFFFF) limbs)
+                   (setf abs-n (ash abs-n -32)))
+          (values (nreverse limbs) sign)))))
+
+(defun unsigned-to-signed-i32 (n)
+  "Convert an unsigned 32-bit integer to its signed representation.
+   Values >= 2^31 become negative numbers in two's complement."
+  (if (>= n (expt 2 31))
+      (- n (expt 2 32))
+      n))
+
+(defun compile-bignum-literal (value)
+  "Compile a bignum literal to Wasm instructions.
+   Creates a $bignum struct with sign and limb array.
+   Stack: [] -> [ref $bignum]"
+  (multiple-value-bind (limbs sign) (integer-to-limbs value)
+    (let ((limb-array-type clysm/compiler/codegen/gc-types:+type-limb-array+)
+          (bignum-type clysm/compiler/codegen/gc-types:+type-bignum+)
+          (result '()))
+      ;; Push sign
+      (push (list :i32.const sign) result)
+      ;; Push each limb value, then create the array
+      ;; Convert unsigned limb values to signed i32 for proper LEB128 encoding
+      (dolist (limb limbs)
+        (push (list :i32.const (unsigned-to-signed-i32 limb)) result))
+      ;; Create limb array with array.new_fixed
+      (push (list :array.new_fixed limb-array-type (length limbs)) result)
+      ;; Create bignum struct (sign, limbs)
+      (push (list :struct.new bignum-type) result)
+      (nreverse result))))
+
+(defun compile-ratio-literal (value)
+  "Compile a ratio literal to Wasm instructions.
+   Creates a $ratio struct with numerator and denominator.
+   Stack: [] -> [ref $ratio]"
+  (let ((num (numerator value))
+        (den (denominator value))
+        (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
+    ;; Compile numerator (may be fixnum or bignum)
+    (append
+     (if (clysm/compiler/ast:i31-range-p num)
+         (list (list :i32.const num) :ref.i31)
+         (compile-bignum-literal num))
+     ;; Compile denominator (always positive, may be fixnum or bignum)
+     (if (clysm/compiler/ast:i31-range-p den)
+         (list (list :i32.const den) :ref.i31)
+         (compile-bignum-literal den))
+     ;; Create ratio struct
+     (list (list :struct.new ratio-type)))))
+
+(defun compile-float-literal (value)
+  "Compile a float literal to Wasm instructions.
+   Creates a $float struct with f64 value.
+   Stack: [] -> [ref $float]"
+  (let ((float-type clysm/compiler/codegen/gc-types:+type-float+))
+    (list (list :f64.const (coerce value 'double-float))
+          (list :struct.new float-type))))
+
+(defun compile-complex-literal (value)
+  "Compile a complex literal to Wasm instructions.
+   Creates a $complex struct with real and imaginary parts.
+   Stack: [] -> [ref $complex]"
+  (let ((real-part (realpart value))
+        (imag-part (imagpart value))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+))
+    (append
+     ;; Compile real part
+     (compile-numeric-literal-part real-part)
+     ;; Compile imaginary part
+     (compile-numeric-literal-part imag-part)
+     ;; Create complex struct
+     (list (list :struct.new complex-type)))))
+
+(defun compile-numeric-literal-part (value)
+  "Compile a numeric value that can be any real type.
+   Used for complex number parts."
+  (cond
+    ((and (integerp value) (clysm/compiler/ast:i31-range-p value))
+     (list (list :i32.const value) :ref.i31))
+    ((integerp value)
+     (compile-bignum-literal value))
+    ((typep value 'ratio)
+     (compile-ratio-literal value))
+    ((floatp value)
+     (compile-float-literal value))
+    (t (error "Cannot compile numeric part: ~A" value))))
 
 ;;; ============================================================
 ;;; Variable Reference Compilation (T048)
@@ -637,6 +754,147 @@
     ;; Substring and concatenation
     (subseq (compile-subseq args env))
     (concatenate (compile-concatenate args env)))))
+
+;;; ============================================================
+;;; Numeric Tower Type Dispatch (T013-T015)
+;;; ============================================================
+
+(defun emit-numeric-type-p ()
+  "Generate instructions to check if a value on stack is any numeric type (T013).
+   Expects: anyref on stack
+   Returns: i32 (1 if numeric, 0 otherwise)
+   Checks: i31ref (fixnum), $bignum, $ratio, $float, $complex"
+  `(;; Value is on stack as anyref
+    ;; Check if i31ref (fixnum)
+    (:block (:result :i32)
+      (:block
+        ;; Try casting to i31 - if succeeds, it's a fixnum
+        (:br_on_cast 1 :anyref :i31 ,clysm/compiler/codegen/gc-types:+type-bignum+))
+      ;; Check bignum
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-bignum+)))
+      ;; Check ratio
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+)))
+      ;; Check float
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-float+)))
+      ;; Check complex
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-complex+)))
+      ;; Not a number
+      (:i32.const 0)
+      (:br 5))  ; exit with 0
+    ;; Was a number - return 1
+    :drop  ; drop the casted value
+    (:i32.const 1)))
+
+(defun emit-get-numeric-type ()
+  "Generate instructions to get the numeric type of a value (T014).
+   Expects: anyref on stack
+   Returns: i32 type code
+     0 = not-a-number
+     1 = fixnum (i31ref)
+     2 = bignum
+     3 = ratio
+     4 = float
+     5 = complex"
+  `(;; Duplicate value for testing (original stays on stack)
+    ;; We need block-based type dispatch
+    (:block (:result :i32)
+      ;; Check i31 (fixnum) first
+      (:block
+        (:block
+          (:block
+            (:block
+              (:block
+                ;; Try i31
+                (:br_on_cast 0 :anyref :i31))
+              ;; Try bignum
+              (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-bignum+)))
+            ;; Try ratio
+            (:br_on_cast 2 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+)))
+          ;; Try float
+          (:br_on_cast 3 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-float+)))
+        ;; Try complex
+        (:br_on_cast 4 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-complex+)))
+      ;; Not a number
+      :drop
+      (:i32.const 0)
+      (:br 0))
+    ;; i31/fixnum path
+    :drop
+    (:i32.const 1)
+    (:br 0))
+  ;; bignum path
+  ;; ... (needs proper block structure)
+  )
+
+(defconstant +numeric-type-not-number+ 0)
+(defconstant +numeric-type-fixnum+ 1)
+(defconstant +numeric-type-bignum+ 2)
+(defconstant +numeric-type-ratio+ 3)
+(defconstant +numeric-type-float+ 4)
+(defconstant +numeric-type-complex+ 5)
+
+(defun numeric-type-contagion (type1 type2)
+  "Determine result type from two numeric types per CLHS 12.1.4 (T015).
+   Returns the more general type:
+   complex > float > ratio > bignum > fixnum"
+  (cond
+    ;; Complex contagion: if either is complex, result is complex
+    ((or (= type1 +numeric-type-complex+)
+         (= type2 +numeric-type-complex+))
+     +numeric-type-complex+)
+    ;; Float contagion: if either is float, result is float
+    ((or (= type1 +numeric-type-float+)
+         (= type2 +numeric-type-float+))
+     +numeric-type-float+)
+    ;; Ratio contagion: if either is ratio, result is ratio
+    ((or (= type1 +numeric-type-ratio+)
+         (= type2 +numeric-type-ratio+))
+     +numeric-type-ratio+)
+    ;; Bignum contagion: if either is bignum, result is bignum
+    ((or (= type1 +numeric-type-bignum+)
+         (= type2 +numeric-type-bignum+))
+     +numeric-type-bignum+)
+    ;; Both fixnum
+    (t +numeric-type-fixnum+)))
+
+(defun emit-coerce-to-float ()
+  "Generate instructions to coerce a numeric value to float.
+   Expects: anyref on stack
+   Returns: (ref $float) on stack"
+  `(;; Dispatch on type
+    (:block (:result (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+      ;; Check if already float
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-float+)))
+      ;; Check if fixnum
+      (:block
+        (:block
+          (:br_on_cast 0 :anyref :i31))
+        ;; Was fixnum - convert to float
+        :i31.get_s
+        :f64.convert_i32_s
+        (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+        (:br 2))
+      ;; For other types, need runtime conversion
+      ;; For now, error (will be implemented in user stories)
+      :unreachable)))
+
+(defun emit-coerce-to-complex ()
+  "Generate instructions to coerce a numeric value to complex.
+   Expects: anyref on stack
+   Returns: (ref $complex) on stack"
+  `(;; Dispatch on type
+    (:block (:result (:ref ,clysm/compiler/codegen/gc-types:+type-complex+))
+      ;; Check if already complex
+      (:block
+        (:br_on_cast 1 :anyref (:ref ,clysm/compiler/codegen/gc-types:+type-complex+)))
+      ;; Real value - create complex with 0 imaginary
+      (:i32.const 0) :ref.i31  ; zero for imaginary part
+      (:struct.new ,clysm/compiler/codegen/gc-types:+type-complex+))))
 
 (defun compile-arithmetic-op (op args env identity)
   "Compile an arithmetic operation with variadic args.
@@ -2529,8 +2787,9 @@
       (let ((catch-env (copy-compilation-env env)))
         (push (cons tag-local 0) (cenv-catch-tags catch-env))
 
-        ;; Block $catch - type 15: () -> (anyref anyref)
-        (setf result (append result '((:block (:type 15)))))  ;; $catch
+        ;; Block $catch - type 21: () -> (anyref anyref)
+        ;; Type 21 is $catch_result in the type section
+        (setf result (append result '((:block (:type 21)))))  ;; $catch
 
         ;; try_table inside $catch
         ;; Catch clause: catch tag 0, branch to label 0 ($catch)

@@ -71,6 +71,15 @@
            #:make-fixnum-literal
            #:make-nil-literal
            #:make-t-literal
+           ;; Numeric tower literals (010-numeric-tower)
+           #:+i31-min+
+           #:+i31-max+
+           #:i31-range-p
+           #:make-bignum-literal
+           #:make-ratio-literal
+           #:make-float-literal
+           #:make-complex-literal
+           #:make-integer-literal
            ;; Variable references
            #:ast-var-ref
            #:ast-var-ref-name
@@ -295,6 +304,31 @@
            #:make-func-type-1
            #:make-func-type-2
            #:make-func-type-n
+           ;; Numeric tower type indices (010-numeric-tower)
+           #:+type-bignum+
+           #:+type-ratio+
+           #:+type-float+
+           #:+type-complex+
+           #:+type-limb-array+
+           ;; Numeric tower type constructors
+           #:make-bignum-type
+           #:make-ratio-type
+           #:make-float-type
+           #:make-complex-type
+           #:make-limb-array-type
+           ;; Exception tags (010-numeric-tower)
+           #:+tag-division-by-zero+
+           #:emit-division-by-zero-tag
+           ;; Type predicates for struct/array
+           #:wasm-struct-type-p
+           #:wasm-array-type-p
+           #:wasm-struct-type-name
+           #:wasm-array-type-name
+           #:wasm-array-type-element-type
+           #:wasm-array-type-mutable
+           #:wasm-field-name
+           #:wasm-field-type
+           #:wasm-field-mutable
            ;; Type environment
            #:make-type-environment
            #:register-type

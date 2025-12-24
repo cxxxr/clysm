@@ -116,7 +116,8 @@
     ((:file "leb128-test")
      (:file "sections-test")
      (:file "wasm-validate-test")
-     (:file "special-vars-codegen-test")))
+     (:file "special-vars-codegen-test")
+     (:file "numeric-types-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -141,7 +142,9 @@
      (:file "special-vars-ast-test")
      (:file "tagbody-test")
      (:file "cons-test")
-     (:file "tail-position-test")))
+     (:file "tail-position-test")
+     (:file "math-functions-test")
+     (:file "numeric-predicates-test")))
 
    ;; Integration tests: End-to-end compilation and execution
    (:module "integration"
@@ -166,7 +169,12 @@
      (:file "list-test")
      (:file "sequence-test")
      (:file "character-test")
-     (:file "string-test"))))
+     (:file "string-test")
+     (:file "bignum-test")
+     (:file "ratio-test")
+     (:file "float-test")
+     (:file "complex-test")
+     (:file "mixed-arithmetic-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

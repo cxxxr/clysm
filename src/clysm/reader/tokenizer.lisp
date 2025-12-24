@@ -106,7 +106,12 @@
           (t (push char chars)))))))
 
 (defun read-number-or-symbol (tokenizer)
-  "Read a number or symbol token."
+  "Read a number or symbol token.
+   Handles:
+   - Integers: 123, -456
+   - Ratios: 1/2, -3/4 (T017)
+   - Floats: 1.5, -2.5, 1.5d0, 1.5e10 (T017)
+   - Symbols: foo, *bar*"
   (let ((chars '())
         (start-line (tokenizer-line tokenizer))
         (start-column (tokenizer-column tokenizer)))
@@ -124,17 +129,129 @@
         ;; Empty string shouldn't happen
         ((zerop (length str))
          nil)
-        ;; Negative number
-        ((and (char= (char str 0) #\-)
-              (> (length str) 1)
-              (every #'digit-char-p (subseq str 1)))
-         (list :number (parse-integer str) start-line start-column))
-        ;; Positive number
-        ((every #'digit-char-p str)
-         (list :number (parse-integer str) start-line start-column))
+        ;; Try parsing as a number (integer, ratio, or float)
+        ((parse-numeric-literal str start-line start-column))
         ;; Symbol
         (t
          (list :symbol upcase-str start-line start-column))))))
+
+;;; ============================================================
+;;; Numeric Literal Parsing (T017)
+;;; ============================================================
+
+(defun parse-numeric-literal (str line column)
+  "Parse a string as a numeric literal (T017).
+   Returns token list or NIL if not a valid numeric literal.
+   Handles:
+   - Integers: 123, -456
+   - Ratios: 1/2, -3/4
+   - Floats: 1.5, -2.5, 1.5d0, 1.5D0, 1.5e10, 1.5E10
+   Note: Does NOT treat symbols containing 'd' or 'e' as floats."
+  (let* ((len (length str))
+         (has-sign (and (> len 0)
+                        (or (char= (char str 0) #\-)
+                            (char= (char str 0) #\+))))
+         (sign (if (and has-sign (char= (char str 0) #\-)) -1 1))
+         (start (if has-sign 1 0)))
+    (when (>= start len)
+      (return-from parse-numeric-literal nil))
+
+    ;; First character after sign must be a digit for any numeric literal
+    (unless (digit-char-p (char str start))
+      (return-from parse-numeric-literal nil))
+
+    ;; Check for ratio: digits/digits
+    (let ((slash-pos (position #\/ str :start start)))
+      (when slash-pos
+        (return-from parse-numeric-literal
+          (parse-ratio-literal str slash-pos sign start line column))))
+
+    ;; Check for float: must have a dot, OR all digits followed by exponent marker + digits
+    ;; Examples: 1.5, 1.5d0, 1.5e10, 1d0, 1e10
+    (let ((dot-pos (position #\. str :start start)))
+      ;; If there's a dot, it's a float candidate
+      (when dot-pos
+        (return-from parse-numeric-literal
+          (parse-float-literal str dot-pos nil sign start line column)))
+
+      ;; Check for exponent-only format: NNNdNN or NNNeNN
+      ;; The part before the exponent marker must be all digits
+      (let ((exp-pos nil))
+        (loop for i from start below len
+              for ch = (char str i)
+              do (cond
+                   ((digit-char-p ch) nil)  ; OK
+                   ((member ch '(#\e #\E #\d #\D))
+                    (setf exp-pos i)
+                    (return))
+                   (t (return))))  ; non-digit, non-exponent = not a number
+        (when (and exp-pos
+                   (> exp-pos start)  ; Must have digits before exponent
+                   (every #'digit-char-p (subseq str start exp-pos)))
+          (return-from parse-numeric-literal
+            (parse-float-literal str nil exp-pos sign start line column)))))
+
+    ;; Try integer - all digits
+    (let ((digits (subseq str start)))
+      (when (and (> (length digits) 0)
+                 (every #'digit-char-p digits))
+        (return-from parse-numeric-literal
+          (list :number (* sign (parse-integer digits)) line column))))
+
+    ;; Not a number
+    nil))
+
+(defun parse-ratio-literal (str slash-pos sign start line column)
+  "Parse a ratio literal like 1/2 or -3/4 (T017)."
+  (let ((num-str (subseq str start slash-pos))
+        (den-str (subseq str (1+ slash-pos))))
+    (when (and (> (length num-str) 0)
+               (every #'digit-char-p num-str)
+               (> (length den-str) 0)
+               (every #'digit-char-p den-str))
+      (let ((numerator (* sign (parse-integer num-str)))
+            (denominator (parse-integer den-str)))
+        (when (> denominator 0)
+          (list :ratio (/ numerator denominator) line column))))))
+
+(defun parse-float-literal (str dot-pos exp-pos sign start line column)
+  "Parse a float literal like 1.5, 1.5d0, 1.5e10 (T017)."
+  (let* ((len (length str))
+         ;; Extract mantissa and exponent parts
+         (mantissa-end (or exp-pos len))
+         (mantissa-str (subseq str start mantissa-end))
+         (exp-value 0))
+    ;; Parse exponent if present
+    (when exp-pos
+      (let ((exp-str (subseq str (1+ exp-pos))))
+        (when (and (> (length exp-str) 0)
+                   (or (every #'digit-char-p exp-str)
+                       (and (or (char= (char exp-str 0) #\-)
+                                (char= (char exp-str 0) #\+))
+                            (> (length exp-str) 1)
+                            (every #'digit-char-p (subseq exp-str 1)))))
+          (setf exp-value (parse-integer exp-str)))))
+
+    ;; Validate mantissa
+    (when dot-pos
+      ;; Must have digits on at least one side of the dot
+      (let* ((local-dot (- dot-pos start))
+             (before-dot (subseq mantissa-str 0 local-dot))
+             (after-dot (subseq mantissa-str (1+ local-dot))))
+        (unless (and (or (> (length before-dot) 0) (> (length after-dot) 0))
+                     (or (zerop (length before-dot))
+                         (every #'digit-char-p before-dot))
+                     (or (zerop (length after-dot))
+                         (every #'digit-char-p after-dot)))
+          (return-from parse-float-literal nil))))
+
+    ;; Parse and construct the float
+    (let ((mantissa (if dot-pos
+                        (read-from-string mantissa-str)
+                        (parse-integer mantissa-str))))
+      (when mantissa
+        (let ((result (* sign mantissa (expt 10.0d0 exp-value))))
+          (list :float result line column))))))
 
 (defun read-keyword-token (tokenizer)
   "Read a keyword token."
@@ -270,6 +387,10 @@
                   (error "Invalid hexadecimal number after #x")
                   (list :number (parse-integer (coerce (nreverse chars) 'string) :radix 16)
                         line column))))
+           ;; Complex number literal: #C(real imag) - T017
+           ((or (eql dispatch-char #\c) (eql dispatch-char #\C))
+            (read-char* tokenizer)  ; consume c/C
+            (list :complex-start nil line column))
            (t
             (error "Unknown dispatch macro character: #~A" dispatch-char)))))
       ;; Number or symbol

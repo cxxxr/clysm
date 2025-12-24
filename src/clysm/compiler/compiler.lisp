@@ -144,18 +144,29 @@
                           collect (list (gensym "local")
                                         (clysm/compiler/codegen/func-section:env-local-type env i)))
             :body (append instrs
-                          ;; Save result to local, then check for null
-                          ;; If null (NIL), return 0
-                          ;; Otherwise get from local, cast to i31, extract
+                          ;; Save result to local for type checking
                           (list (list :local.tee result-local-idx))
+                          ;; Check for null (NIL)
                           '(:ref.is_null
                             (:if (:result :i32))
                             (:i32.const -2147483648))  ; NIL = MIN_INT32 (sentinel)
                           '(:else)
+                          ;; Check if result is a fixnum (i31ref)
+                          (list (list :local.get result-local-idx))
+                          '((:ref.test :i31)
+                            (:if (:result :i32)))
+                          ;; Is fixnum: extract the value
                           (list (list :local.get result-local-idx))
                           '((:ref.cast :i31)
-                            :i31.get_s
-                            :end))))))
+                            :i31.get_s)
+                          '(:else)
+                          ;; Not a fixnum (bignum, ratio, float, complex)
+                          ;; For now, return a special sentinel to indicate non-fixnum
+                          ;; TODO: Implement proper printing for bignums
+                          ;; We'll use MIN_INT32 + 1 (-2147483647) as "non-fixnum" sentinel
+                          '((:i32.const -2147483647))
+                          '(:end)
+                          '(:end))))))
 
 ;;; ============================================================
 ;;; Module Binary Emission
@@ -213,15 +224,22 @@
    - Types 0-5: GC types ($nil, $unbound, $cons, $symbol, $string, $closure)
    - Type 6-7: Reserved
    - Types 8-12: Function types ($func_0, $func_1, $func_2, $func_3, $func_N)
-   - Type 13: Exception tag type (anyref, anyref) -> () for $lisp-throw
-   - Types 14+: Regular (non-lambda) function types"
+   - Type 13: Binding frame for special variables
+   - Type 14: $bignum - arbitrary precision integer (010-numeric-tower)
+   - Type 15: $ratio - exact rational number (010-numeric-tower)
+   - Type 16: $float - IEEE 754 double-precision (010-numeric-tower)
+   - Type 17: $complex - complex number (010-numeric-tower)
+   - Type 18: $limb_array - array of i32 for bignum limbs (010-numeric-tower)
+   - Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+   - Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+   - Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
+   - Types 22+: Regular (non-lambda) function types"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
         ;; Count non-lambda functions (lambdas reuse types 8-12)
         (regular-func-count (count-if-not #'is-lambda-function-p functions)))
-    ;; Number of types = 16 (base types) + regular functions
-    ;; Base: 0-5 struct, 6-7 reserved, 8-12 func types, 13 exception tag, 14-15 catch types
-    (emit-leb128-unsigned (+ 16 regular-func-count) content)
+    ;; Number of types = 22 (base types including numeric tower + exception types) + regular functions
+    (emit-leb128-unsigned (+ 22 regular-func-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -249,13 +267,27 @@
     (emit-func-type-bytes content '(:anyref :anyref :anyref :anyref) '(:anyref))
     ;; Type 12: $func_N - (ref $closure, anyref) -> anyref (list as second param)
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
-    ;; Type 13: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+    ;; Type 13: $binding_frame - (symbol-ref, old_value, prev) for dynamic bindings
+    ;; Note: Using anyref for symbol-ref since we can't forward-reference types
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil) (:anyref nil)))
+    ;; Type 14: $bignum - (sign:i32, limbs:ref $limb_array) (010-numeric-tower)
+    ;; Note: limbs field references type 18, but since that's forward, use anyref
+    (emit-gc-struct-type content '((:i32 nil) (:anyref nil)))
+    ;; Type 15: $ratio - (numerator:anyref, denominator:anyref) (010-numeric-tower)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil)))
+    ;; Type 16: $float - (value:f64) (010-numeric-tower)
+    (emit-gc-struct-type content '((:f64 nil)))
+    ;; Type 17: $complex - (real:anyref, imag:anyref) (010-numeric-tower)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil)))
+    ;; Type 18: $limb_array - (array (mut i32)) for bignum limbs (010-numeric-tower)
+    (emit-gc-array-type content :i32 t)
+    ;; Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
     (emit-func-type-bytes content '(:anyref :anyref) '())
-    ;; Type 14: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+    ;; Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
-    ;; Type 15: $catch_result - () -> (anyref, anyref) for catch handler block result
+    ;; Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
     (emit-func-type-bytes content '() '(:anyref :anyref))
-    ;; Regular function types (indices 16+) - skip lambdas (they use types 8-12)
+    ;; Regular function types (indices 22+) - skip lambdas (they use types 8-12)
     (dolist (func functions)
       (unless (is-lambda-function-p func)
         ;; func type indicator
@@ -307,10 +339,10 @@
 (defun emit-function-section (buffer functions)
   "Emit Function section.
    Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
-   Regular functions use types 16+ (13 = exception tag, 14-15 = catch types)."
+   Regular functions use types 22+ (13 = binding_frame, 14-18 = numeric tower, 19-21 = exception types)."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        (regular-func-idx 16))  ; Start regular function types at 16
+        (regular-func-idx 22))  ; Start regular function types at 22
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
@@ -327,7 +359,7 @@
                              (3 11)  ; $func_3
                              (t 12)))) ; $func_N
             (emit-leb128-unsigned type-idx content))
-          ;; Regular functions: use unique types starting at 14
+          ;; Regular functions: use unique types starting at 22
           (progn
             (emit-leb128-unsigned regular-func-idx content)
             (incf regular-func-idx))))
@@ -346,18 +378,9 @@
     (emit-leb128-unsigned 1 content)
     ;; Tag 0: $lisp-throw
     ;; Format: attribute (0 = exception) + type index
-    ;; We need a function type for the tag parameters
-    ;; Create inline function type: (anyref anyref) -> ()
+    ;; Type index 19 is $tag_lisp_throw - (anyref, anyref) -> ()
     (vector-push-extend #x00 content)  ; attribute: exception
-    ;; Type index - we need to add a function type for the tag
-    ;; For now, use a type index that matches (anyref anyref) -> ()
-    ;; We'll need to ensure this type exists in the type section
-    ;; Using type index 14 (after the standard func types 8-12 and type 13 for main)
-    ;; Actually, let's emit the function type inline using the block type encoding
-    ;; Tag type uses the same encoding as block type
-    ;; For 2 params (anyref, anyref) with no results, we need a type index
-    ;; Let's use a dedicated type index - we'll add it to the type section
-    (emit-leb128-unsigned 13 content)  ; Use type index 13 (first regular function type slot)
+    (emit-leb128-unsigned 19 content)  ; Use type index 19 ($tag_lisp_throw)
     ;; Write section
     (vector-push-extend 13 buffer)  ; Tag section ID
     (emit-leb128-unsigned (length content) buffer)
@@ -585,6 +608,13 @@
          (:i64.const
           (vector-push-extend #x42 buffer)
           (emit-leb128-signed (cadr instr) buffer))
+         ;; Float constants (010-numeric-tower)
+         (:f32.const
+          (vector-push-extend #x43 buffer)
+          (emit-f32 (cadr instr) buffer))
+         (:f64.const
+          (vector-push-extend #x44 buffer)
+          (emit-f64 (cadr instr) buffer))
          (:local.get
           (vector-push-extend #x20 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
@@ -934,6 +964,32 @@
               (vector-push-extend (logior byte #x80) buffer)))))))
 
 ;;; ============================================================
+;;; Float Encoding (010-numeric-tower)
+;;; ============================================================
+
+(defun emit-f32 (value buffer)
+  "Emit an IEEE 754 single-precision (32-bit) float in little-endian."
+  (let* ((float32 (coerce value 'single-float))
+         (bits (sb-kernel:single-float-bits float32)))
+    (vector-push-extend (logand bits #xFF) buffer)
+    (vector-push-extend (logand (ash bits -8) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -16) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -24) #xFF) buffer)))
+
+(defun emit-f64 (value buffer)
+  "Emit an IEEE 754 double-precision (64-bit) float in little-endian."
+  (let* ((float64 (coerce value 'double-float))
+         (bits (sb-kernel:double-float-bits float64)))
+    (vector-push-extend (logand bits #xFF) buffer)
+    (vector-push-extend (logand (ash bits -8) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -16) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -24) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -32) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -40) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -48) #xFF) buffer)
+    (vector-push-extend (logand (ash bits -56) #xFF) buffer)))
+
+;;; ============================================================
 ;;; WAT Output (for debugging)
 ;;; ============================================================
 
@@ -969,12 +1025,18 @@
            ((eq op :ref.cast)
             (if (listp (first args))
                 (format stream "~Aref.cast (ref ~A)~%" spaces (second (first args)))
-                (format stream "~Aref.cast ~A~%" spaces (first args))))
+                ;; :i31 should be emitted as i31ref for WAT text format
+                (let ((type-arg (first args)))
+                  (format stream "~Aref.cast ~A~%" spaces
+                          (if (eq type-arg :i31) "i31ref" type-arg)))))
            ;; ref.test with type argument
            ((eq op :ref.test)
             (if (listp (first args))
                 (format stream "~Aref.test (ref ~A)~%" spaces (second (first args)))
-                (format stream "~Aref.test ~A~%" spaces (first args))))
+                ;; :i31 should be emitted as i31ref for WAT text format
+                (let ((type-arg (first args)))
+                  (format stream "~Aref.test ~A~%" spaces
+                          (if (eq type-arg :i31) "i31ref" type-arg)))))
            ;; ref.null
            ((eq op :ref.null)
             (format stream "~Aref.null ~A~%" spaces (string-downcase (symbol-name (first args)))))

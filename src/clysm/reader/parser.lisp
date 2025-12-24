@@ -62,6 +62,8 @@
         (value (token-value token)))
     (case type
       (:number value)
+      (:ratio value)    ; T017: ratio literal
+      (:float value)    ; T017: float literal
       (:string value)
       (:character value)  ; 008-character-string: pass character through
       (:symbol
@@ -120,6 +122,28 @@
   "Parse a quoted expression."
   (list quote-symbol (parse-expr state)))
 
+(defun parse-complex-literal (state)
+  "Parse a complex literal #C(real imag) (T017).
+   Called after #C has been consumed."
+  ;; Expect opening paren
+  (let ((lparen (advance-token state)))
+    (unless (and lparen (eq (token-type lparen) :lparen))
+      (parser-error "Expected ( after #C"
+                    (when lparen (token-line lparen))
+                    (when lparen (token-column lparen))))
+    ;; Parse real part
+    (let ((real-part (parse-expr state)))
+      ;; Parse imaginary part
+      (let ((imag-part (parse-expr state)))
+        ;; Expect closing paren
+        (let ((rparen (advance-token state)))
+          (unless (and rparen (eq (token-type rparen) :rparen))
+            (parser-error "Expected ) after complex imaginary part"
+                          (when rparen (token-line rparen))
+                          (when rparen (token-column rparen))))
+          ;; Construct complex number
+          (complex real-part imag-part))))))
+
 (defun parse-expr (state)
   "Parse a single expression from the parser state."
   (let ((token (advance-token state)))
@@ -127,7 +151,7 @@
       (parser-error "Unexpected end of input"))
     (case (token-type token)
       ;; Atoms
-      ((:number :string :symbol :keyword :character)
+      ((:number :ratio :float :string :symbol :keyword :character)
        (parse-atom token))
       ;; List
       (:lparen
@@ -141,6 +165,9 @@
        (parse-quoted state 'unquote))
       (:unquote-splicing
        (parse-quoted state 'unquote-splicing))
+      ;; Complex literal #C(real imag) - T017
+      (:complex-start
+       (parse-complex-literal state))
       ;; Unexpected tokens
       (:rparen
        (parser-error "Unexpected )"
