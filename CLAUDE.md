@@ -18,6 +18,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing) (016-macro-system)
 - N/A (compile-time only, in-memory macro registry) (016-macro-system)
 - N/A (in-memory data structures for function slots, invocation counters) (017-eval-jit-compile)
+- Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), clysm/ffi (012), clysm/conditions (014) (018-fix-ffi-streams)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -37,9 +38,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 018-fix-ffi-streams: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), clysm/ffi (012), clysm/conditions (014)
 - 017-eval-jit-compile: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 016-macro-system: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
-- 015-ffi-stream-io: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing FFI foundation (012), condition system (014), special variables (002), character/string types (008)
 
 
 <!-- MANUAL ADDITIONS START -->
