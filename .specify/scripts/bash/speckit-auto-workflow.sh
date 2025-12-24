@@ -170,20 +170,29 @@ run_claude() {
     fi
 
     # ストリーム出力をリアルタイム表示しながらファイルに保存
-    # 思考テキスト(thinking_delta)は灰色、応答テキスト(text_delta)は通常色で表示
+    # 思考テキスト(thinking_delta)と応答テキスト(text_delta)を区別して表示
+    # stdbuf -oL でラインバッファリングを強制（teeのバッファリング問題を回避）
     echo -e "${CYAN}─── Claude Response ───────────────────────────────────────────${NC}" >&2
-    "${cmd[@]}" 2>&1 | tee "$output_file" | \
+    local gray=$'\033[90m'
+    local reset=$'\033[0m'
+    "${cmd[@]}" 2>&1 | stdbuf -oL tee "$output_file" | \
         jq --unbuffered -r '
             if .type == "stream_event" and .event.type == "content_block_delta" then
                 if .event.delta.type == "thinking_delta" then
-                    "\u001b[90m" + (.event.delta.thinking // "") + "\u001b[0m"
+                    "THINK:" + (.event.delta.thinking // "")
                 elif .event.delta.type == "text_delta" then
-                    .event.delta.text // ""
+                    "TEXT:" + (.event.delta.text // "")
                 else ""
                 end
             else ""
             end
-        ' 2>/dev/null >&2
+        ' 2>/dev/null | while IFS= read -r line; do
+            if [[ "$line" == THINK:* ]]; then
+                echo -ne "${gray}${line#THINK:}${reset}" >&2
+            elif [[ "$line" == TEXT:* ]]; then
+                echo -ne "${line#TEXT:}" >&2
+            fi
+        done
     echo "" >&2
     echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}" >&2
 
