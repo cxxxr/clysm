@@ -146,6 +146,19 @@ run_claude() {
     local session_id="${2:-}"
     local output_file="$LOG_DIR/step-$(date +%s).json"
 
+    # プロンプトを表示
+    echo "" >&2
+    echo -e "${MAGENTA}┌─── Claude Prompt ───────────────────────────────────────────${NC}" >&2
+    echo "$prompt" | head -20 | sed 's/^/│ /' >&2
+    if [[ $(echo "$prompt" | wc -l) -gt 20 ]]; then
+        echo -e "│ ${YELLOW}... (truncated)${NC}" >&2
+    fi
+    echo -e "${MAGENTA}└──────────────────────────────────────────────────────────────${NC}" >&2
+    if [[ -n "$session_id" ]]; then
+        echo -e "${BLUE}Session: ${session_id}${NC}" >&2
+    fi
+    echo "" >&2
+
     local cmd
     if [[ -n "$session_id" ]]; then
         cmd=(claude --resume "$session_id" -p "$prompt" --allowedTools "$ALLOWED_TOOLS" --output-format json)
