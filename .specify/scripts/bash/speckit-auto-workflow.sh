@@ -598,7 +598,7 @@ run_analyze() {
 
     # フォールバック: テーブル形式でSeverity列にCRITICALがある行をカウント
     if [[ "$critical" -eq 0 ]]; then
-        critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|' || echo 0)
+        critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|') || critical=0
     fi
 
     if [[ "$critical" -gt 0 ]]; then
