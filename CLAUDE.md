@@ -21,6 +21,10 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), clysm/ffi (012), clysm/conditions (014) (018-fix-ffi-streams)
 - Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel, trivial-gray-streams, rove (testing); existing numeric tower (010) (019-numeric-accessors)
 - N/A (compile-time code generation) (019-numeric-accessors)
+- Common Lisp (SBCL 2.4+) - test harness implementation + alexandria, rove (test framework), uiop (process execution), wasmtime (Wasm runtime), wasm-tools (validation) (020-ansi-test)
+- N/A (in-memory test execution; optional JSON/Markdown for reports and baselines) (020-ansi-test)
+- Common Lisp (SBCL 2.4+) - test harness modification + Existing 020-ansi-test (loader, runner, classifier), clysm/compiler (021-ansi-test-execution)
+- N/A (in-memory test execution) (021-ansi-test-execution)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -40,9 +44,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 021-ansi-test-execution: Added Common Lisp (SBCL 2.4+) - test harness modification + Existing 020-ansi-test (loader, runner, classifier), clysm/compiler
+- 020-ansi-test: Added Common Lisp (SBCL 2.4+) - test harness implementation + alexandria, rove (test framework), uiop (process execution), wasmtime (Wasm runtime), wasm-tools (validation)
 - 019-numeric-accessors: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel, trivial-gray-streams, rove (testing); existing numeric tower (010)
-- 018-fix-ffi-streams: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), clysm/ffi (012), clysm/conditions (014)
-- 017-eval-jit-compile: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->

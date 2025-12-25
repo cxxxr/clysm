@@ -4,9 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # ANSI Common Lisp test suite (pinned to specific commit)
+    ansi-test = {
+      url = "github:pfdietz/ansi-test/6e3f70002559d56d3e4a6f0b8ddcc083d202f066";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, ansi-test }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -17,6 +22,7 @@
             pkgs.wasmtime
             pkgs.wasm-tools
             pkgs.wabt
+            pkgs.nodejs  # For host-shim ANSI test execution
           ];
 
           shellHook = ''
