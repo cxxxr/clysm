@@ -12,11 +12,16 @@
    If OUTPUT is provided, writes to file and returns pathname.
    Otherwise returns byte vector.
 
+   Feature 022-wasm-import-optimization: Analyzes I/O usage to conditionally
+   emit Import section only when the compiled code uses I/O functions.
+
    Examples:
-     (compile-to-wasm '(+ 1 2))
+     (compile-to-wasm '(+ 1 2))      ; No Import section (no I/O)
+     (compile-to-wasm '(print 42))   ; Has Import section (uses I/O)
      (compile-to-wasm '(+ 1 2) :output \"add.wasm\")"
-  (let* ((module (compile-to-module expr))
-         (bytes (emit-module module)))
+  (let* ((uses-io (clysm/compiler/analyzer/io-usage:analyze-io-usage expr))
+         (module (compile-to-module expr))
+         (bytes (emit-module module :uses-io uses-io)))
     (if output
         (progn
           (with-open-file (stream output
@@ -172,8 +177,9 @@
 ;;; Module Binary Emission
 ;;; ============================================================
 
-(defun emit-module (module)
-  "Emit a compiled module as a Wasm binary byte vector."
+(defun emit-module (module &key uses-io)
+  "Emit a compiled module as a Wasm binary byte vector.
+   USES-IO controls whether Import section is emitted (Feature 022)."
   (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
                               :adjustable t :fill-pointer 0))
         (functions (compiled-module-functions module)))
@@ -183,7 +189,9 @@
     (emit-type-section buffer functions)
     ;; Import section (T025: FFI imports come after Type, before Function)
     ;; Per Wasm spec, section order: Type(1), Import(2), Function(3), ...
-    (emit-import-section-if-needed buffer)
+    ;; Feature 022: Only emit if USES-IO is true (I/O functions detected)
+    (when uses-io
+      (emit-import-section-if-needed buffer))
     ;; Function section
     (emit-function-section buffer functions)
     ;; Tag section (for exception handling)

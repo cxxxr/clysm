@@ -227,6 +227,11 @@
   (:use #:cl #:clysm/compiler/ast)
   (:export #:infer-types))
 
+(defpackage #:clysm/compiler/analyzer/io-usage
+  (:use #:cl)
+  (:export #:analyze-io-usage
+           #:*io-function-names*))
+
 (defpackage #:clysm/compiler/transform/closure
   (:use #:cl #:clysm/compiler/ast #:clysm/compiler/env)
   (:export #:closure-convert))

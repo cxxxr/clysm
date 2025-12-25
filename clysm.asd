@@ -33,7 +33,8 @@
       :components
       ((:file "free-vars")
        (:file "tail-call")
-       (:file "type-infer")))
+       (:file "type-infer")
+       (:file "io-usage")))
      (:module "transform"
       :serial t
       :components
@@ -156,7 +157,9 @@
      (:file "numeric-types-test")
      (:file "ffi-section-test")
      (:file "module-linking-test")
-     (:file "tier-promotion-test")))
+     (:file "tier-promotion-test")
+     ;; Import section optimization (022-wasm-import-optimization)
+     (:file "import-section-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -201,6 +204,8 @@
      ;; (:file "tier-promotion-test")  ; Moved to contract module
      ;; (:file "module-linking-test")  ; Moved to contract module
      (:file "jit-test")
+     ;; I/O usage analyzer (022-wasm-import-optimization)
+     (:file "io-usage-test")
      ;; ANSI test harness (020-ansi-test)
      (:module "ansi-test"
       :serial t
@@ -259,7 +264,8 @@
      ;; Compile tests (017-eval-jit-compile)
      (:file "compile-test")
      ;; (:file "tier-promotion-test")  ; Moved to contract module
-     )))
+     ;; Wasmtime execution tests (022-wasm-import-optimization)
+     (:file "wasmtime-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
