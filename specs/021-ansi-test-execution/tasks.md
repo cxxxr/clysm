@@ -193,9 +193,9 @@ The following phases are deferred pending resolution of the FFI import issue.
 
 ### Tests for User Story 5
 
-- [ ] T044 [P] [US5] Add unit test verifying "unsupported-form: FORMAT" reason format in tests/unit/ansi-test/skip-registry-test.lisp
-- [ ] T045 [P] [US5] Add unit test verifying "compile-error:" reason format in tests/unit/ansi-test/classifier-test.lisp
-- [ ] T046 [P] [US5] Add unit test verifying "unverifiable:" reason format in tests/unit/ansi-test/classifier-test.lisp
+- [x] T044 [P] [US5] Add unit test verifying "unsupported-form: FORMAT" reason format in tests/unit/ansi-test/skip-registry-test.lisp
+- [x] T045 [P] [US5] Add unit test verifying "compile-error:" reason format in tests/unit/ansi-test/classifier-test.lisp
+- [x] T046 [P] [US5] Add unit test verifying "unverifiable:" reason format in tests/unit/ansi-test/classifier-test.lisp
 
 ### Implementation for User Story 5
 
