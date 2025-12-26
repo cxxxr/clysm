@@ -5,23 +5,18 @@
 
 ## Summary
 
-Implement ANSI Common Lisp multiple values support by:
-1. Adding two Wasm globals: `$mv-count` (mutable i32) for value count and `$mv-buffer` (mutable array of anyref) for secondary values
-2. Implementing `values` special form that stores secondary values in buffer and returns primary value
-3. Implementing receiving forms: `multiple-value-bind`, `multiple-value-list`, `nth-value`, `values-list`, `multiple-value-prog1`, `multiple-value-call`
-4. Updating `floor`, `truncate`, `ceiling`, `round` to return quotient and remainder as two values
+Implement ANSI Common Lisp multiple values support in the clysm compiler. The feature enables functions to return multiple values and callers to receive them through forms like `values`, `multiple-value-bind`, `multiple-value-list`, `nth-value`, `values-list`, `multiple-value-prog1`, and `multiple-value-call`. Secondary values are stored in a global buffer (array of anyref) with a count global tracking value quantity.
 
 ## Technical Context
 
 **Language/Version**: Common Lisp (SBCL 2.4+) for compiler; WasmGC for output
-**Primary Dependencies**: alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules
+**Primary Dependencies**: alexandria, babel, trivial-gray-streams, rove (testing)
 **Storage**: N/A (in-memory globals within Wasm module)
-**Testing**: rove + wasmtime + wasm-tools validate
-**Target Platform**: WasmGC (browsers, wasmtime with GC support)
-**Project Type**: Single compiler project
-**Performance Goals**: No performance regression for single-value functions; O(1) value access
-**Constraints**: Max 20 values (ANSI minimum for `multiple-values-limit`); globals must be initialized before first function call
-**Scale/Scope**: 8 new forms + 4 updated arithmetic functions + 2 new globals
+**Testing**: rove (unit, contract, integration tests)
+**Target Platform**: WasmGC (WebAssembly with GC proposal)
+**Project Type**: single (Common Lisp compiler)
+**Performance Goals**: No regression for single-value code paths (SC-008)
+**Constraints**: Wasm sandbox; GC-only memory (no linear memory); tail-call compatible
 
 ## Constitution Check
 
@@ -29,16 +24,16 @@ Implement ANSI Common Lisp multiple values support by:
 
 | Principle | Status | Notes |
 |-----------|--------|-------|
-| I. WasmGC-First Type System | PASS | mv-buffer uses WasmGC array type; mv-count uses i32 |
-| II. Lisp Object Representation | PASS | Values stored as anyref; NIL used for missing values |
-| III. Function/Closure Strategy | PASS | Multi-value buffer follows constitution pattern (III.多値バッファ) |
-| IV. Wasm Control Flow | PASS | No new control flow; values stored before return |
-| V. Shallow Binding | N/A | Multiple values are not dynamic variables |
-| VI. Tiered Eval/JIT | PASS | Forms compile to Wasm; interpreter can use same buffer |
-| VII. TDD (Non-negotiable) | PASS | Tests written first per methodology |
-| VIII. Nix-First Workflow | PASS | Using existing nix develop environment |
+| I. WasmGC-First型システム設計 | ✅ PASS | Value buffer uses `(array anyref)` type; no linear memory |
+| II. Lispオブジェクト表現規約 | ✅ PASS | NIL handling via global index 0; values as anyref |
+| III. 関数・クロージャ実装戦略 | ✅ PASS | Constitution mandates 多値バッファ; this feature implements it |
+| IV. Wasm制御フロー活用 | ✅ PASS | Uses block/loop for iteration; no recursion limits |
+| V. シャローバインディング | N/A | No special variable interaction |
+| VI. 段階的動的コンパイル | ✅ PASS | JIT modules can import mv-count/mv-buffer globals |
+| VII. テスト駆動開発（TDD） | ✅ REQUIRED | Unit→Contract→Integration test progression |
+| VIII. Nix-Firstワークフロー | ✅ REQUIRED | Must pass `nix flake check` |
 
-**Pre-Design Gate**: PASSED - No violations
+**Gate Status**: PASS - All applicable principles satisfied.
 
 ## Project Structure
 
@@ -50,8 +45,8 @@ specs/025-multiple-values/
 ├── research.md          # Phase 0 output
 ├── data-model.md        # Phase 1 output
 ├── quickstart.md        # Phase 1 output
-├── contracts/           # Phase 1 output
-└── tasks.md             # Phase 2 output (via /speckit.tasks)
+├── contracts/           # Phase 1 output (Wasm module contracts)
+└── tasks.md             # Phase 2 output (/speckit.tasks command)
 ```
 
 ### Source Code (repository root)
@@ -59,62 +54,31 @@ specs/025-multiple-values/
 ```text
 src/clysm/
 ├── compiler/
-│   ├── ast.lisp                    # Add values AST node handling
+│   ├── ast.lisp                    # AST structs for mv forms (values, mvb, mvl, etc.)
+│   ├── compiler.lisp               # Wasm opcodes (array.get, etc.)
 │   └── codegen/
-│       └── func-section.lisp       # Add compile-values, update floor/truncate/etc
+│       └── func-section.lisp       # Compilation logic for all mv forms
 ├── runtime/
-│   ├── multi-value.lisp            # Extend with Wasm global generators
-│   └── objects.lisp                # Add mv-count-global-index, mv-buffer-global-index
-└── lib/
-    └── macros.lisp                 # Add multiple-value-bind, multiple-value-list, etc
+│   └── multi-value.lisp            # Global definitions (mv-count, mv-buffer)
+└── package.lisp                    # Exported AST symbols
 
 tests/
 ├── unit/
-│   └── multiple-values-test.lisp   # Unit tests for each form
+│   └── multiple-values/
+│       └── multiple-values-test.lisp    # Unit tests for 8 mv forms
 ├── contract/
-│   └── mv-wasm-test.lisp           # Wasm validation tests
+│   └── multiple-values/
+│       └── multiple-values-wasm-test.lisp  # Wasm validation tests
 └── integration/
-    └── mv-ansi-test.lisp           # ANSI compliance tests
+    └── multiple-values/
+        └── multiple-values-ansi-test.lisp  # ANSI CL conformance tests
 ```
 
-**Structure Decision**: Single project structure. All new code integrates with existing compiler and runtime modules. Tests follow established pattern (unit/contract/integration).
+**Structure Decision**: Single-project layout following existing clysm structure. Compiler source in `src/clysm/`, tests in `tests/` with unit/contract/integration hierarchy.
 
 ## Complexity Tracking
 
-*No violations requiring justification*
-
-## Implementation Architecture
-
-### Global Variables
-
-```
-Index 0: $nil (const anyref) - existing
-Index 1: $unbound (const anyref) - existing
-Index 2: $mv-count (mut i32) - NEW: number of values
-Index 3: $mv-buffer (mut (ref $mv-array)) - NEW: array of 20 anyref slots
-Index 4+: special variables (as before, shifted by 2)
-```
-
-### Type Definitions
-
-```wat
-;; New array type for multiple values buffer
-(type $mv-array (array (mut anyref)))
-```
-
-### Value Protocol
-
-1. **Returning values**: `(values v1 v2 v3)`
-   - Store count 3 in `$mv-count`
-   - Store v2 at `$mv-buffer[0]`, v3 at `$mv-buffer[1]`
-   - Return v1 on stack (primary value)
-
-2. **Receiving values**: `(multiple-value-bind (a b c) form ...)`
-   - Evaluate form (primary value on stack)
-   - Read `$mv-count` to determine how many values available
-   - Read secondary values from `$mv-buffer` by index
-   - Bind NIL for variables beyond available values
-
-3. **Single-value context**:
-   - Primary value used directly from stack
-   - `$mv-count` and `$mv-buffer` are implicitly ignored
+No constitution violations requiring justification. Implementation follows established patterns:
+- Global variables pattern from existing NIL/UNBOUND globals
+- Array type pattern from existing string/vector implementations
+- Compilation pattern from existing special forms
