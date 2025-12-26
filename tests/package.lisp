@@ -259,3 +259,15 @@
 
 (defpackage #:clysm/tests/integration/jit-module
   (:use #:cl #:rove))
+
+;; I/O usage analyzer unit tests (022-wasm-import-optimization)
+(defpackage #:clysm/tests/unit/io-usage
+  (:use #:cl #:rove #:clysm/compiler/analyzer/io-usage))
+
+;; Import section contract tests (022-wasm-import-optimization)
+(defpackage #:clysm/tests/contract/import-section
+  (:use #:cl #:rove))
+
+;; Wasmtime execution integration tests (022-wasm-import-optimization)
+(defpackage #:clysm/tests/integration/wasmtime
+  (:use #:cl #:rove))
