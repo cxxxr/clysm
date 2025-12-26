@@ -112,16 +112,16 @@ ANSIテストスイートの実行者として、numbersカテゴリとconsカ�
 #### 数値述語
 
 - **FR-009**: System MUST provide `zerop` that returns T if number equals zero, NIL otherwise (supports integers and floats)
-- **FR-010**: System MUST provide `plusp` that returns T if number is positive, NIL otherwise
-- **FR-011**: System MUST provide `minusp` that returns T if number is negative, NIL otherwise
+- **FR-010**: System MUST provide `plusp` that returns T if real number is positive, NIL otherwise (domain: fixnum, bignum, ratio, float; NOT complex)
+- **FR-011**: System MUST provide `minusp` that returns T if real number is negative, NIL otherwise (domain: fixnum, bignum, ratio, float; NOT complex)
 - **FR-012**: System MUST provide `oddp` that returns T if integer is odd, NIL otherwise (integer-only)
 - **FR-013**: System MUST provide `evenp` that returns T if integer is even, NIL otherwise (integer-only)
 - **FR-014**: System MUST provide `signum` that returns -1, 0, or 1 for integers, and -1.0, 0.0, or 1.0 for floats
 
 #### 戻り値
 
-- **FR-015**: All predicates MUST return T (represented as i31:1) for true conditions
-- **FR-016**: All predicates MUST return NIL (represented as i31:-2147483648) for false conditions
+- **FR-015**: All predicates MUST return T (represented as `(i32.const 1) ref.i31`) for true conditions
+- **FR-016**: All predicates MUST return NIL (represented as `ref.null :none`) for false conditions
 - **FR-017**: signum MUST return a fixnum (-1, 0, 1) for integer input, float for float input
 
 ### Key Entities
@@ -167,7 +167,7 @@ ANSIテストスイートの実行者として、numbersカテゴリとconsカ�
 
 - WasmGCの `ref.test` 命令で型判別が可能
 - 既存の型構造体（$bignum, $ratio, $float, $complex, $symbol, $char, $closure）が定義済み
-- T/NILのi31表現（1/-2147483648）が既存コードで使用されている
+- T/NILの表現（T = `(i32.const 1) ref.i31`、NIL = `ref.null :none`）が既存コードで使用されている
 - 浮動小数点演算にはf64命令が使用可能
 
 ## Dependencies

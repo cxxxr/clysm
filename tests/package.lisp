@@ -271,3 +271,16 @@
 ;; Wasmtime execution integration tests (022-wasm-import-optimization)
 (defpackage #:clysm/tests/integration/wasmtime
   (:use #:cl #:rove))
+
+;; Type predicates unit tests (023-type-predicates)
+(defpackage #:clysm/tests/unit/type-predicates
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Predicates Wasm contract tests (023-type-predicates)
+(defpackage #:clysm/tests/contract/predicates-wasm
+  (:use #:cl #:rove))
+
+;; ANSI predicates integration tests (023-type-predicates)
+(defpackage #:clysm/tests/integration/ansi-predicates
+  (:use #:cl #:rove))

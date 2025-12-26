@@ -159,7 +159,9 @@
      (:file "module-linking-test")
      (:file "tier-promotion-test")
      ;; Import section optimization (022-wasm-import-optimization)
-     (:file "import-section-test")))
+     (:file "import-section-test")
+     ;; Predicates Wasm validation (023-type-predicates)
+     (:file "predicates-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -206,6 +208,8 @@
      (:file "jit-test")
      ;; I/O usage analyzer (022-wasm-import-optimization)
      (:file "io-usage-test")
+     ;; Type predicates (023-type-predicates)
+     (:file "type-predicates-test")
      ;; ANSI test harness (020-ansi-test)
      (:module "ansi-test"
       :serial t
@@ -265,7 +269,9 @@
      (:file "compile-test")
      ;; (:file "tier-promotion-test")  ; Moved to contract module
      ;; Wasmtime execution tests (022-wasm-import-optimization)
-     (:file "wasmtime-test"))))
+     (:file "wasmtime-test")
+     ;; ANSI predicates integration tests (023-type-predicates)
+     (:file "ansi-predicates-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

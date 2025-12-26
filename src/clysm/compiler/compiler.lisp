@@ -943,6 +943,13 @@
        (:i32.shl (vector-push-extend #x74 buffer))
        (:i32.shr_s (vector-push-extend #x75 buffer))
        (:i32.shr_u (vector-push-extend #x76 buffer))
+       ;; f64 operations (023-type-predicates)
+       (:f64.eq (vector-push-extend #x61 buffer))
+       (:f64.ne (vector-push-extend #x62 buffer))
+       (:f64.lt (vector-push-extend #x63 buffer))
+       (:f64.gt (vector-push-extend #x64 buffer))
+       (:f64.le (vector-push-extend #x65 buffer))
+       (:f64.ge (vector-push-extend #x66 buffer))
        ;; Reference operations
        (:ref.eq (vector-push-extend #xD3 buffer))
        (:ref.is_null (vector-push-extend #xD1 buffer))

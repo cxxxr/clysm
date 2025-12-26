@@ -565,7 +565,14 @@
                                make-string string string-upcase string-downcase string-capitalize
                                subseq concatenate
                                ;; Numeric accessors (019-numeric-accessors)
-                               numerator denominator)))
+                               numerator denominator
+                               ;; ANSI CL Type Predicates (023-type-predicates)
+                               integerp floatp rationalp complexp numberp
+                               symbolp functionp
+                               ;; ANSI CL Numeric Predicates (023-type-predicates)
+                               zerop plusp minusp oddp evenp
+                               ;; ANSI CL Signum (023-type-predicates)
+                               signum)))
        (compile-primitive-call function args env))
       ;; Local function (from flet/labels)
       ((and (symbolp function) (env-lookup-local-function env function))
@@ -663,6 +670,22 @@
     (null (compile-null args env))
     (atom (compile-atom args env))
     (listp (compile-listp args env))
+    ;; ANSI CL Type Predicates (023-type-predicates)
+    (integerp (compile-integerp args env))
+    (floatp (compile-floatp args env))
+    (rationalp (compile-rationalp args env))
+    (complexp (compile-complexp args env))
+    (numberp (compile-numberp args env))
+    (symbolp (compile-symbolp args env))
+    (functionp (compile-functionp args env))
+    ;; ANSI CL Numeric Predicates (023-type-predicates)
+    (zerop (compile-zerop args env))
+    (plusp (compile-plusp args env))
+    (minusp (compile-minusp args env))
+    (oddp (compile-oddp args env))
+    (evenp (compile-evenp args env))
+    ;; ANSI CL Signum (023-type-predicates)
+    (signum (compile-signum args env))
     ;; Destructive modification
     (rplaca (compile-rplaca args env))
     (rplacd (compile-rplacd args env))
@@ -1348,6 +1371,451 @@
                            :end
                            :end)))
     result))
+
+;;; ============================================================
+;;; ANSI CL Type Predicates (023-type-predicates)
+;;; ============================================================
+
+(defun compile-integerp (args env)
+  "Compile (integerp x) - returns T if x is an integer (fixnum or bignum), NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "integerp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "INTEGERP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum (i31ref)
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Is fixnum -> T
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if bignum
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-bignum+))
+       (:if (:result :anyref))
+       ;; Is bignum -> T
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Neither -> NIL
+       (:ref.null :none)
+       :end
+       :end))))
+
+(defun compile-floatp (args env)
+  "Compile (floatp x) - returns T if x is a float, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "floatp requires exactly 1 argument"))
+  (append
+   (compile-to-instructions (first args) env)
+   `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-rationalp (args env)
+  "Compile (rationalp x) - returns T if x is a rational (fixnum, bignum, or ratio), NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "rationalp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "RATIONALP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum (i31ref)
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Is fixnum -> T
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if bignum
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-bignum+))
+       (:if (:result :anyref))
+       ;; Is bignum -> T
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if ratio
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:if (:result :anyref))
+       ;; Is ratio -> T
+       (:i32.const 1) :ref.i31
+       :else
+       ;; None of the above -> NIL
+       (:ref.null :none)
+       :end
+       :end
+       :end))))
+
+(defun compile-complexp (args env)
+  "Compile (complexp x) - returns T if x is a complex number, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "complexp requires exactly 1 argument"))
+  (append
+   (compile-to-instructions (first args) env)
+   `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-complex+))
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+(defun compile-numberp (args env)
+  "Compile (numberp x) - returns T if x is any numeric type, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "numberp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "NUMBERP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum (i31ref)
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if bignum
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-bignum+))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if ratio
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-ratio+))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Test if complex
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-complex+))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end :end :end :end :end))))
+
+(defun compile-symbolp (args env)
+  "Compile (symbolp x) - returns T if x is a symbol (including NIL), NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "symbolp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "SYMBOLP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; First check: is it a symbol struct?
+     `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-symbol+))
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Not a symbol struct, check if NIL (ref.null)
+       (:local.get ,temp-local)
+       :ref.is_null
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31  ; NIL is a symbol
+       :else
+       (:ref.null :none)
+       :end
+       :end))))
+
+(defun compile-functionp (args env)
+  "Compile (functionp x) - returns T if x is a function (closure), NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "functionp requires exactly 1 argument"))
+  (append
+   (compile-to-instructions (first args) env)
+   `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-closure+))
+     (:if (:result :anyref))
+     (:i32.const 1) :ref.i31
+     :else
+     (:ref.null :none)
+     :end)))
+
+;;; ============================================================
+;;; ANSI CL Numeric Predicates (023-type-predicates)
+;;; ============================================================
+
+(defun compile-zerop (args env)
+  "Compile (zerop x) - returns T if x equals zero, NIL otherwise.
+   Supports fixnum and float.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "zerop requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "ZEROP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum: extract and compare to 0
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :i32.eqz
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       ;; Float: extract and compare to 0.0
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:f64.const 0.0)
+       :f64.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Other types: NIL
+       (:ref.null :none)
+       :end :end))))
+
+(defun compile-plusp (args env)
+  "Compile (plusp x) - returns T if x is positive, NIL otherwise.
+   Supports fixnum and float.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "plusp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "PLUSP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum: extract and compare > 0
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.gt_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       ;; Float: extract and compare > 0.0
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:f64.const 0.0)
+       :f64.gt
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Other types: NIL
+       (:ref.null :none)
+       :end :end))))
+
+(defun compile-minusp (args env)
+  "Compile (minusp x) - returns T if x is negative, NIL otherwise.
+   Supports fixnum and float.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "minusp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "MINUSP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum: extract and compare < 0
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       ;; Float: extract and compare < 0.0
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:f64.const 0.0)
+       :f64.lt
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Other types: NIL
+       (:ref.null :none)
+       :end :end))))
+
+(defun compile-oddp (args env)
+  "Compile (oddp x) - returns T if x is an odd integer, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "oddp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "ODDP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum: extract, mod 2, check != 0
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 1)
+       :i32.and  ; n & 1 == 1 for odd numbers
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Not a fixnum: NIL (bignum support would require runtime)
+       (:ref.null :none)
+       :end))))
+
+(defun compile-evenp (args env)
+  "Compile (evenp x) - returns T if x is an even integer, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "evenp requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "EVENP-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum: extract, mod 2, check == 0
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 1)
+       :i32.and  ; n & 1 == 0 for even numbers
+       :i32.eqz
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       ;; Not a fixnum: NIL (bignum support would require runtime)
+       (:ref.null :none)
+       :end))))
+
+;;; ============================================================
+;;; ANSI CL Signum Function (023-type-predicates)
+;;; ============================================================
+
+(defun compile-signum (args env)
+  "Compile (signum x) - returns sign of x with type preserved.
+   For integers: -1, 0, or 1
+   For floats: -1.0, 0.0, or 1.0
+   Stack: [] -> [number]"
+  (when (/= (length args) 1)
+    (error "signum requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "SIGNUM-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum path - extract value and compare directly
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :anyref))
+       ;; Negative
+       (:i32.const -1) :ref.i31
+       :else
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.gt_s
+       (:if (:result :anyref))
+       ;; Positive
+       (:i32.const 1) :ref.i31
+       :else
+       ;; Zero
+       (:i32.const 0) :ref.i31
+       :end
+       :end
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       ;; Float path
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:f64.const 0.0)
+       :f64.lt
+       (:if (:result :anyref))
+       ;; Negative float
+       (:f64.const -1.0)
+       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       :else
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:f64.const 0.0)
+       :f64.gt
+       (:if (:result :anyref))
+       ;; Positive float
+       (:f64.const 1.0)
+       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       :else
+       ;; Zero float
+       (:f64.const 0.0)
+       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       :end
+       :end
+       :else
+       ;; Other types: return 0 (could signal error)
+       (:i32.const 0) :ref.i31
+       :end :end))))
 
 ;;; ============================================================
 ;;; Destructive Modification (006-cons-list-ops)
