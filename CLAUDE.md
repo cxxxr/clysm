@@ -33,6 +33,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory class/instance registry) (026-clos-foundation)
 - Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules (027-complete-ffi)
 - N/A (in-memory compile-time registries) (027-complete-ffi)
+- Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros, clysm/clos (existing modules) (028-setf-generalized-refs)
+- N/A (compile-time registry for setf expanders) (028-setf-generalized-refs)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -52,9 +54,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 028-setf-generalized-refs: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros, clysm/clos (existing modules)
 - 027-complete-ffi: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules
 - 026-clos-foundation: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
-- 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -292,4 +294,63 @@ Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow stan
 - Unit tests: tests/unit/ffi/*.lisp (define-foreign-function, marshal, call-host, callback)
 - Contract tests: tests/contract/ffi-*.lisp (Wasm validation)
 - Integration tests: tests/integration/ffi-*.lisp (end-to-end FFI)
+
+## Feature 028: Setf Macros and Generalized References - COMPLETE
+
+**Status**: All 8 phases completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/lib/setf-expanders.lisp`: Setf expander registry and standard expanders
+- `src/clysm/lib/macros.lisp`: Setf macro expanders (setf, psetf, incf, decf, push, pop, pushnew, rotatef, shiftf)
+- `src/clysm/clos/slot-access.lisp`: CLOS slot accessor setf expander generation
+
+### Key Features
+1. **setf macro**: Modify place values with proper setf expansion protocol
+   - `(setf x 10)` → assigns 10 to x
+   - `(setf (car list) 1)` → modifies car of list
+   - Multiple pairs supported: `(setf a 1 b 2 c 3)`
+2. **psetf macro**: Parallel assignment (values evaluated before any assignment)
+   - `(psetf a b b a)` → swaps a and b atomically
+3. **incf/decf macros**: In-place numeric modification
+   - `(incf x)` → increment x by 1
+   - `(decf x 5)` → decrement x by 5
+4. **push/pop/pushnew macros**: Stack-like list operations
+   - `(push item list)` → prepend item to list
+   - `(pop list)` → remove and return first element
+   - `(pushnew item list :test #'equal)` → push if not member
+5. **rotatef/shiftf macros**: Multi-place value exchange
+   - `(rotatef a b c)` → rotate values: a←b, b←c, c←a
+   - `(shiftf a b c new)` → shift values: return a, a←b, b←c, c←new
+6. **define-setf-expander*/defsetf***: User-defined setf expanders
+   - Full five-value expansion protocol support
+   - Short form: `(defsetf* accessor setter)`
+   - Long form: `(defsetf* accessor (args) (store) body)`
+
+**Note**: Clysm uses `*` suffix (e.g., `get-setf-expansion*`, `define-setf-expander*`, `defsetf*`) to avoid conflicts with CL package symbols.
+
+### Standard Setf Expanders
+- **Cons accessors**: car, cdr, first, rest, second through tenth, nth
+- **Array access**: aref
+- **Hash tables**: gethash
+- **Symbol accessors**: symbol-value, symbol-function, symbol-plist
+- **CLOS slot accessors**: Auto-generated for :accessor slot options
+
+### Five-Value Expansion Protocol
+Each setf expander returns five values:
+1. `temps` - temporary variable symbols
+2. `vals` - forms to evaluate for temps
+3. `stores` - store variable symbols (usually 1)
+4. `store-form` - form that stores the value
+5. `access-form` - form that reads current value
+
+### Error Conditions
+- `undefined-setf-expander`: No expander for accessor
+- `invalid-place`: Invalid place form
+- `constant-modification-error`: Attempting to modify nil, t, or keywords
+- `odd-argument-count`: setf/psetf with odd number of arguments
+
+### Test Coverage
+- Unit tests: tests/unit/setf-test.lisp, tests/unit/setf-expander-test.lisp
+- Contract tests: tests/contract/setf-wasm-test.lisp (Wasm validation)
+- Integration tests: tests/integration/setf-ansi-test.lisp (ANSI compliance)
 <!-- MANUAL ADDITIONS END -->

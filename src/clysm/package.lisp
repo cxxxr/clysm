@@ -1,5 +1,20 @@
 ;;;; package.lisp - Package definitions for Clysm
 
+;;; Forward declaration for FFI package (required by compiler/ast.lisp and codegen)
+;;; Full package definition is in ffi/package.lisp
+(defpackage #:clysm/ffi
+  (:use #:cl)
+  (:export #:call-host
+           #:*ffi-environment*
+           #:lookup-foreign-function
+           ;; Foreign function declaration accessors (used by codegen)
+           #:ffd-param-types
+           #:ffd-return-type
+           #:ffd-type-index
+           ;; Marshalling (used by codegen)
+           #:marshal-to-wasm
+           #:marshal-from-wasm))
+
 (defpackage #:clysm/backend/leb128
   (:use #:cl)
   (:export #:encode-unsigned-leb128
@@ -780,7 +795,10 @@
 (defpackage #:clysm/clos/slot-access
   (:use #:cl #:clysm/clos/instance)
   (:export #:slot-value*
-           #:set-slot-value*))
+           #:set-slot-value*
+           ;; Setf expander generation (028-setf)
+           #:make-slot-accessor-setf-expander
+           #:register-slot-accessor-setf-expander))
 
 (defpackage #:clysm/clos/generic
   (:use #:cl)
@@ -842,6 +860,59 @@
   (:shadowing-import-from #:clysm/clos/generic #:generic-function)
   (:export #:standard-method-combination))
 
+(defpackage #:clysm/lib/setf-expanders
+  (:use #:cl)
+  (:export ;; Registry
+           #:setf-expander-registry
+           #:make-setf-expander-registry
+           #:setf-expander-registry-table
+           #:*global-setf-expander-registry*
+           #:register-setf-expander
+           #:get-setf-expander
+           ;; Expansion protocol
+           #:get-setf-expansion*
+           #:simple-variable-p
+           ;; Standard expander factories
+           #:make-car-setf-expander
+           #:make-cdr-setf-expander
+           #:make-first-setf-expander
+           #:make-rest-setf-expander
+           #:make-nth-setf-expander
+           #:make-second-setf-expander
+           #:make-third-setf-expander
+           #:make-fourth-setf-expander
+           #:make-fifth-setf-expander
+           #:make-sixth-setf-expander
+           #:make-seventh-setf-expander
+           #:make-eighth-setf-expander
+           #:make-ninth-setf-expander
+           #:make-tenth-setf-expander
+           #:make-aref-setf-expander
+           #:make-gethash-setf-expander
+           #:make-symbol-value-setf-expander
+           #:make-symbol-function-setf-expander
+           #:make-symbol-plist-setf-expander
+           ;; Installation
+           #:install-standard-setf-expanders
+           ;; User-defined expanders (define-setf-expander*, defsetf*)
+           #:define-setf-expander*
+           #:defsetf*
+           #:make-short-form-setf-expander
+           #:make-long-form-setf-expander
+           #:parse-define-setf-lambda-list
+           #:parse-setf-lambda-list
+           ;; Error conditions
+           #:setf-error
+           #:undefined-setf-expander
+           #:undefined-setf-expander-accessor
+           #:invalid-place
+           #:invalid-place-place
+           #:invalid-place-reason
+           #:constant-modification-error
+           #:odd-argument-count
+           #:odd-argument-count-macro
+           #:odd-argument-count-count))
+
 (defpackage #:clysm/lib/macros
   (:use #:cl)
   (:export #:when*
@@ -851,7 +922,18 @@
            #:dotimes*
            #:and*
            #:or*
-           #:install-standard-macros))
+           #:install-standard-macros
+           ;; Setf macros (028-setf-generalized-refs)
+           #:make-setf-expander
+           #:make-psetf-expander
+           #:make-incf-expander
+           #:make-decf-expander
+           #:make-push-expander
+           #:make-pop-expander
+           #:make-pushnew-expander
+           #:make-rotatef-expander
+           #:make-shiftf-expander
+           #:install-setf-macros))
 
 (defpackage #:clysm/lib/package-macros
   (:use #:cl)

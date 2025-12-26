@@ -61,3 +61,30 @@
   (values (make-reader-function slot-name)
           (make-writer-function slot-name)))
 
+;;; ============================================================
+;;; Setf Expander Generation for Slot Accessors (028-setf)
+;;; ============================================================
+
+(defun make-slot-accessor-setf-expander (accessor-name slot-name)
+  "Create a setf expander for a CLOS slot accessor.
+   When (setf (accessor-name instance) value) is called, it expands to
+   set the slot-name of the instance to value."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((instance-form (second form))
+           (instance-temp (gensym "INSTANCE-"))
+           (store (gensym "STORE-")))
+      (values (list instance-temp)                    ; temps
+              (list instance-form)                    ; vals
+              (list store)                            ; stores
+              `(set-slot-value* ,instance-temp ',slot-name ,store)  ; store-form
+              `(,accessor-name ,instance-temp)))))    ; access-form
+
+(defun register-slot-accessor-setf-expander (accessor-name slot-name)
+  "Register a setf expander for a CLOS slot accessor.
+   This should be called when a class is defined with an :accessor slot option."
+  (clysm/lib/setf-expanders:register-setf-expander
+   clysm/lib/setf-expanders:*global-setf-expander-registry*
+   accessor-name
+   (make-slot-accessor-setf-expander accessor-name slot-name)))
+

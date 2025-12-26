@@ -13,7 +13,7 @@
     ;; Parse a call to the FFI function
     (let ((ast (clysm/compiler/ast:parse-expr '(console-log "hello"))))
       ;; Should produce ast-ffi-call, not ast-call
-      (ok (clysm/compiler/ast:ast-ffi-call-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-ffi-call)
           "Call to FFI function should produce ast-ffi-call")
       (ok (clysm/compiler/ast:ast-ffi-call-declaration ast)
           "ast-ffi-call should have a declaration")
@@ -28,7 +28,7 @@
     ;; Parse a call to a regular function (not in FFI environment)
     (let ((ast (clysm/compiler/ast:parse-expr '(my-regular-fn 1 2 3))))
       ;; Should produce ast-call, not ast-ffi-call
-      (ok (clysm/compiler/ast:ast-call-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call)
           "Call to non-FFI function should produce ast-call")
       (ok (eq (clysm/compiler/ast:ast-call-function ast) 'my-regular-fn)
           "Function name should be preserved")
@@ -42,14 +42,14 @@
     (eval '(clysm/ffi:define-foreign-function host-add "host.add" (:fixnum :fixnum) :fixnum))
 
     (let ((ast (clysm/compiler/ast:parse-expr '(host-add 40 2))))
-      (ok (clysm/compiler/ast:ast-ffi-call-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-ffi-call)
           "Should be ast-ffi-call")
       (let ((args (clysm/compiler/ast:ast-ffi-call-arguments ast)))
         (ok (= 2 (length args)) "Should have 2 arguments")
         ;; Check that arguments are parsed literals
-        (ok (clysm/compiler/ast:ast-literal-p (first args))
+        (ok (typep (first args) 'clysm/compiler/ast:ast-literal)
             "First arg should be a literal")
-        (ok (clysm/compiler/ast:ast-literal-p (second args))
+        (ok (typep (second args) 'clysm/compiler/ast:ast-literal)
             "Second arg should be a literal")))))
 
 (deftest ffi-call-declaration-reference-test

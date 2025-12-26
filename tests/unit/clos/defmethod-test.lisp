@@ -16,7 +16,7 @@
       (ok (fboundp 'clysm/compiler/ast:parse-defmethod-to-ast)
           "parse-defmethod-to-ast should be defined")
       (let ((ast (clysm/compiler/ast:parse-defmethod-to-ast form)))
-        (ok (clysm/compiler/ast:ast-defmethod-p ast)
+        (ok (typep ast 'clysm/compiler/ast:ast-defmethod)
             "Result should be ast-defmethod")
         (ok (eq 'area (clysm/compiler/ast:ast-defmethod-name ast))
             "Method name should be AREA")

@@ -9,10 +9,10 @@
     ;; Parse a call-host form
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "host.random"))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (let ((func-name (clysm/compiler/ast:ast-call-host-function-name ast)))
-        (ok (clysm/compiler/ast:ast-literal-p func-name)
+        (ok (typep func-name 'clysm/compiler/ast:ast-literal)
             "Function name should be a literal")
         (ok (string= (clysm/compiler/ast:ast-literal-value func-name) "host.random")
             "Function name should be 'host.random'"))))
@@ -20,7 +20,7 @@
   (testing "call-host with arguments"
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "host.add" 1 2))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (ok (= 2 (length (clysm/compiler/ast:ast-call-host-arguments ast)))
           "Should have 2 arguments"))))
@@ -30,9 +30,9 @@
   (testing "variable function name"
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host func-name-var 42))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (let ((func-name (clysm/compiler/ast:ast-call-host-function-name ast)))
         ;; The function name is a variable reference
-        (ok (clysm/compiler/ast:ast-var-ref-p func-name)
+        (ok (typep func-name 'clysm/compiler/ast:ast-var-ref)
             "Function name should be a variable reference")))))

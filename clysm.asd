@@ -128,7 +128,8 @@
    (:module "lib"
     :serial t
     :components
-    ((:file "macros")
+    ((:file "setf-expanders")  ; Must come before macros for setf expander registry
+     (:file "macros")
      (:file "ffi-runtime")
      (:file "package-macros")))
 
@@ -174,7 +175,9 @@
      (:file "ffi-export-wasm-test")
      (:file "ffi-error-wasm-test")
      (:file "ffi-dynamic-wasm-test")
-     (:file "ffi-callback-wasm-test")))
+     (:file "ffi-callback-wasm-test")
+     ;; Setf Wasm validation (028-setf-generalized-refs)
+     (:file "setf-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -261,7 +264,10 @@
        (:file "ffi-condition-test")
        (:file "call-host-parse-test")
        (:file "call-host-args-test")
-       (:file "callback-test")))))
+       (:file "callback-test")))
+     ;; Setf macros unit tests (028-setf-generalized-refs)
+     (:file "setf-test")
+     (:file "setf-expander-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -319,7 +325,9 @@
      (:file "ffi-export-test-027")
      (:file "ffi-error-handling-test")
      (:file "ffi-call-host-test")
-     (:file "ffi-callback-test")))
+     (:file "ffi-callback-test")
+     ;; Setf ANSI integration tests (028-setf-generalized-refs)
+     (:file "setf-ansi-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

@@ -299,8 +299,244 @@
                        result-forms)))))))
 
 ;;; ============================================================
+;;; Setf macro expanders (028-setf-generalized-refs)
+;;; ============================================================
+
+(defun make-setf-expander ()
+  "Create a macro expander for SETF.
+   (setf place value) - Set place to value and return value.
+   (setf place1 value1 place2 value2 ...) - Multiple pairs."
+  (lambda (form)
+    (let ((pairs (rest form)))
+      (cond
+        ;; No arguments - return nil
+        ((null pairs) nil)
+        ;; Odd number of arguments - error
+        ((oddp (length pairs))
+         (error 'clysm/lib/setf-expanders:odd-argument-count
+                :macro-name 'setf
+                :argument-count (length pairs)))
+        ;; Single pair
+        ((= 2 (length pairs))
+         (expand-single-setf (first pairs) (second pairs)))
+        ;; Multiple pairs - expand to progn of single setf forms
+        (t
+         (cons 'progn
+               (loop for (place value) on pairs by #'cddr
+                     collect (list 'setf place value))))))))
+
+(defun expand-single-setf (place value)
+  "Expand a single (setf place value) form."
+  (cond
+    ;; Simple variable case
+    ((and (symbolp place)
+          (not (keywordp place))
+          (not (eq place t))
+          (not (eq place nil)))
+     (list 'setq place value))
+    ;; Compound place - use setf expansion protocol
+    ((consp place)
+     (multiple-value-bind (temps vals stores store-form access-form)
+         (clysm/lib/setf-expanders:get-setf-expansion* place)
+       (declare (ignore access-form))
+       (let ((store (first stores))
+             (bindings (mapcar #'list temps vals)))
+         ;; Build the expansion:
+         ;; (let ((temp1 val1) (temp2 val2) ...)
+         ;;   (let ((store value))
+         ;;     store-form))
+         (if bindings
+             (list 'let bindings
+                   (list 'let (list (list store value))
+                         store-form))
+             ;; No temps needed
+             (list 'let (list (list store value))
+                   store-form)))))
+    ;; Invalid place (constant)
+    ((or (keywordp place) (eq place t) (eq place nil))
+     (error 'clysm/lib/setf-expanders:constant-modification-error
+            :place place))
+    ;; Invalid place (other)
+    (t
+     (error 'clysm/lib/setf-expanders:invalid-place
+            :place place))))
+
+(defun make-psetf-expander ()
+  "Create a macro expander for PSETF.
+   (psetf place1 value1 place2 value2 ...) - Parallel assignment."
+  (lambda (form)
+    (let ((pairs (rest form)))
+      (cond
+        ;; No arguments - return nil
+        ((null pairs) nil)
+        ;; Odd number of arguments - error
+        ((oddp (length pairs))
+         (error 'clysm/lib/setf-expanders:odd-argument-count
+                :macro-name 'psetf
+                :argument-count (length pairs)))
+        ;; Expand to parallel assignment
+        (t
+         (let ((temps nil)
+               (bindings nil)
+               (setfs nil))
+           ;; Collect all the information
+           (loop for (place value) on pairs by #'cddr
+                 do (let ((temp (gensym "PSETF-")))
+                      (push temp temps)
+                      (push (list temp value) bindings)
+                      (push (list 'setf place temp) setfs)))
+           ;; Build: (let ((temp1 val1) (temp2 val2) ...) (setf place1 temp1) ... nil)
+           (list* 'let (nreverse bindings)
+                  (append (nreverse setfs) (list nil)))))))))
+
+(defun make-incf-expander ()
+  "Create a macro expander for INCF.
+   (incf place [delta]) - Increment place by delta (default 1)."
+  (lambda (form)
+    (let ((place (second form))
+          (delta (or (third form) 1)))
+      (list 'setf place (list '+ place delta)))))
+
+(defun make-decf-expander ()
+  "Create a macro expander for DECF.
+   (decf place [delta]) - Decrement place by delta (default 1)."
+  (lambda (form)
+    (let ((place (second form))
+          (delta (or (third form) 1)))
+      (list 'setf place (list '- place delta)))))
+
+(defun make-push-expander ()
+  "Create a macro expander for PUSH.
+   (push item place) - Cons item onto place."
+  (lambda (form)
+    (let ((item (second form))
+          (place (third form)))
+      (list 'setf place (list 'cons item place)))))
+
+(defun make-pop-expander ()
+  "Create a macro expander for POP.
+   (pop place) - Remove and return first element of place."
+  (lambda (form)
+    (let ((place (second form))
+          (result-var (gensym "POP-")))
+      ;; (let ((result (car place)))
+      ;;   (setf place (cdr place))
+      ;;   result)
+      (list 'let (list (list result-var (list 'car place)))
+            (list 'setf place (list 'cdr place))
+            result-var))))
+
+(defun make-pushnew-expander ()
+  "Create a macro expander for PUSHNEW.
+   (pushnew item place &key test test-not key) - Push if not member."
+  (lambda (form)
+    (let* ((item (second form))
+           (place (third form))
+           (keys (cdddr form))
+           (item-var (gensym "ITEM-"))
+           (member-call (if keys
+                            (list* 'member item-var place keys)
+                            (list 'member item-var place))))
+      ;; (let ((item-var item))
+      ;;   (unless (member item-var place ...)
+      ;;     (setf place (cons item-var place)))
+      ;;   place)
+      (list 'let (list (list item-var item))
+            (list 'unless member-call
+                  (list 'setf place (list 'cons item-var place)))
+            place))))
+
+(defun make-rotatef-expander ()
+  "Create a macro expander for ROTATEF.
+   (rotatef place1 place2 ...) - Rotate values cyclically."
+  (lambda (form)
+    (let ((places (rest form)))
+      (cond
+        ;; No places - return nil
+        ((null places) nil)
+        ;; Single place - no-op, return nil
+        ((null (rest places)) nil)
+        ;; Two places - swap
+        ((= 2 (length places))
+         (let ((temp (gensym "ROTATE-")))
+           (list 'let (list (list temp (first places)))
+                 (list 'setf (first places) (second places))
+                 (list 'setf (second places) temp)
+                 nil)))
+        ;; Multiple places - rotate
+        (t
+         ;; Save all values in temps, then assign rotated
+         (let ((temps (loop for p in places collect (gensym "ROTATE-"))))
+           (list* 'let (mapcar #'list temps places)
+                  (append
+                   ;; Assign rotated values
+                   (loop for place in places
+                         for i from 0
+                         for temp = (nth (mod (1+ i) (length temps)) temps)
+                         collect (list 'setf place temp))
+                   (list nil)))))))))
+
+(defun make-shiftf-expander ()
+  "Create a macro expander for SHIFTF.
+   (shiftf place1 place2 ... newvalue) - Shift values left, return first."
+  (lambda (form)
+    (let ((args (rest form)))
+      (cond
+        ;; Need at least 2 arguments (place + newvalue)
+        ((< (length args) 2)
+         (error "SHIFTF requires at least a place and a new value"))
+        ;; Single place + newvalue
+        ((= 2 (length args))
+         (let ((place (first args))
+               (newvalue (second args))
+               (result-var (gensym "SHIFTF-")))
+           ;; (prog1 place (setf place newvalue))
+           (list 'let (list (list result-var place))
+                 (list 'setf place newvalue)
+                 result-var)))
+        ;; Multiple places + newvalue
+        (t
+         (let* ((places (butlast args))
+                (newvalue (car (last args)))
+                (temps (loop for p in places collect (gensym "SHIFTF-")))
+                (result-var (first temps)))
+           ;; Save all values, then shift
+           (list* 'let (mapcar #'list temps places)
+                  (append
+                   ;; Assign shifted values (place[i] = temp[i+1])
+                   (loop for place in (butlast places)
+                         for temp in (rest temps)
+                         collect (list 'setf place temp))
+                   ;; Last place gets newvalue
+                   (list (list 'setf (car (last places)) newvalue))
+                   ;; Return first saved value
+                   (list result-var)))))))))
+
+;;; ============================================================
 ;;; Standard macro installation
 ;;; ============================================================
+
+(defun install-setf-macros (registry)
+  "Install setf-related macros into REGISTRY."
+  (clysm/compiler/transform/macro:register-macro
+   registry 'setf (make-setf-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'psetf (make-psetf-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'incf (make-incf-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'decf (make-decf-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'push (make-push-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'pop (make-pop-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'pushnew (make-pushnew-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'rotatef (make-rotatef-expander))
+  (clysm/compiler/transform/macro:register-macro
+   registry 'shiftf (make-shiftf-expander))
+  registry)
 
 (defun install-standard-macros (registry)
   "Install all standard macros into REGISTRY."
@@ -328,4 +564,6 @@
    registry 'dolist (make-dolist-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'dotimes (make-dotimes-expander))
+  ;; Also install setf-related macros
+  (install-setf-macros registry)
   registry)

@@ -94,6 +94,7 @@
    #:emit-ffi-exports
    #:get-ffi-export-count
    #:assign-export-indices
+   #:generate-export-wrapper
 
    ;; Type marshalling (T043-T052)
    #:marshal-to-wasm

@@ -8,7 +8,7 @@
   (testing "no arguments"
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "host.random"))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (ok (null (clysm/compiler/ast:ast-call-host-arguments ast))
           "Should have no arguments")))
@@ -16,7 +16,7 @@
   (testing "single argument"
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "host.log" "message"))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (ok (= 1 (length (clysm/compiler/ast:ast-call-host-arguments ast)))
           "Should have 1 argument")))
@@ -24,7 +24,7 @@
   (testing "multiple arguments"
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "host.add" 1 2 3))))
-      (ok (clysm/compiler/ast:ast-call-host-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-call-host)
           "Should parse as ast-call-host")
       (ok (= 3 (length (clysm/compiler/ast:ast-call-host-arguments ast)))
           "Should have 3 arguments"))))
@@ -37,13 +37,13 @@
       (let ((args (clysm/compiler/ast:ast-call-host-arguments ast)))
         (ok (= 3 (length args)) "Should have 3 arguments")
         ;; First arg should be a literal (fixnum)
-        (ok (clysm/compiler/ast:ast-literal-p (first args))
+        (ok (typep (first args) 'clysm/compiler/ast:ast-literal)
             "First arg should be a literal")
         ;; Second arg should be a literal (string)
-        (ok (clysm/compiler/ast:ast-literal-p (second args))
+        (ok (typep (second args) 'clysm/compiler/ast:ast-literal)
             "Second arg should be a literal")
         ;; Third arg should be a literal (boolean)
-        (ok (clysm/compiler/ast:ast-literal-p (third args))
+        (ok (typep (third args) 'clysm/compiler/ast:ast-literal)
             "Third arg should be a literal"))))
 
   (testing "variable arguments"
@@ -51,9 +51,9 @@
                 '(clysm/ffi:call-host "fn" x y))))
       (let ((args (clysm/compiler/ast:ast-call-host-arguments ast)))
         (ok (= 2 (length args)) "Should have 2 arguments")
-        (ok (clysm/compiler/ast:ast-var-ref-p (first args))
+        (ok (typep (first args) 'clysm/compiler/ast:ast-var-ref)
             "First arg should be a variable reference")
-        (ok (clysm/compiler/ast:ast-var-ref-p (second args))
+        (ok (typep (second args) 'clysm/compiler/ast:ast-var-ref)
             "Second arg should be a variable reference"))))
 
   (testing "expression arguments"
@@ -61,9 +61,9 @@
                 '(clysm/ffi:call-host "fn" (+ 1 2) (* 3 4)))))
       (let ((args (clysm/compiler/ast:ast-call-host-arguments ast)))
         (ok (= 2 (length args)) "Should have 2 arguments")
-        (ok (clysm/compiler/ast:ast-call-p (first args))
+        (ok (typep (first args) 'clysm/compiler/ast:ast-call)
             "First arg should be a call expression")
-        (ok (clysm/compiler/ast:ast-call-p (second args))
+        (ok (typep (second args) 'clysm/compiler/ast:ast-call)
             "Second arg should be a call expression")))))
 
 (deftest call-host-function-name-types-test
@@ -72,7 +72,7 @@
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host "console.log" 42))))
       (let ((fname (clysm/compiler/ast:ast-call-host-function-name ast)))
-        (ok (clysm/compiler/ast:ast-literal-p fname)
+        (ok (typep fname 'clysm/compiler/ast:ast-literal)
             "Function name should be a literal")
         (ok (string= "console.log" (clysm/compiler/ast:ast-literal-value fname))
             "Function name should be correct"))))
@@ -81,7 +81,7 @@
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(clysm/ffi:call-host fn-name 42))))
       (let ((fname (clysm/compiler/ast:ast-call-host-function-name ast)))
-        (ok (clysm/compiler/ast:ast-var-ref-p fname)
+        (ok (typep fname 'clysm/compiler/ast:ast-var-ref)
             "Function name should be a variable reference")
         (ok (eq 'fn-name (clysm/compiler/ast:ast-var-ref-name fname))
             "Variable name should be correct")))))

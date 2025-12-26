@@ -17,7 +17,7 @@
       (ok (fboundp 'clysm/compiler/ast:parse-defclass-to-ast)
           "parse-defclass-to-ast should be defined")
       (let ((ast (clysm/compiler/ast:parse-defclass-to-ast form)))
-        (ok (clysm/compiler/ast:ast-defclass-p ast)
+        (ok (typep ast 'clysm/compiler/ast:ast-defclass)
             "Result should be ast-defclass")
         (ok (eq 'point (clysm/compiler/ast:ast-defclass-name ast))
             "Class name should be POINT")

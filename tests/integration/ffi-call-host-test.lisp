@@ -58,13 +58,13 @@
 
     ;; Static call - uses declared function
     (let ((static-ast (clysm/compiler/ast:parse-expr '(static-log "test"))))
-      (ok (clysm/compiler/ast:ast-ffi-call-p static-ast)
+      (ok (typep static-ast 'clysm/compiler/ast:ast-ffi-call)
           "Static call should use ast-ffi-call"))
 
     ;; Dynamic call - uses call-host
     (let ((dynamic-ast (clysm/compiler/ast:parse-expr
                         '(clysm/ffi:call-host "host.log" "test"))))
-      (ok (clysm/compiler/ast:ast-call-host-p dynamic-ast)
+      (ok (typep dynamic-ast 'clysm/compiler/ast:ast-call-host)
           "Dynamic call should use ast-call-host"))))
 
 (deftest ffi-call-host-nested-test
@@ -76,9 +76,9 @@
     ;; Note: This tests that call-host returns a value
     (let ((ast (clysm/compiler/ast:parse-expr
                 '(if (clysm/ffi:call-host "host.check") 1 2))))
-      (ok (clysm/compiler/ast:ast-if-p ast)
+      (ok (typep ast 'clysm/compiler/ast:ast-if)
           "Should parse if expression")
       ;; The condition should be a call-host
-      (ok (clysm/compiler/ast:ast-call-host-p
-           (clysm/compiler/ast:ast-if-condition ast))
+      (ok (typep (clysm/compiler/ast:ast-if-condition ast)
+                 'clysm/compiler/ast:ast-call-host)
           "Condition should be call-host"))))
