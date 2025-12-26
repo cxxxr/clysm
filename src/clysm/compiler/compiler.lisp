@@ -72,10 +72,9 @@
                (declare (ignore info))
                (clysm/compiler/codegen/func-section:allocate-special-var-global name))
              clysm/compiler/env:*special-variables*)
-    ;; Set up runtime globals
+    ;; Set up runtime globals (NIL, UNBOUND, mv-count, mv-buffer)
     (setf (compiled-module-globals module)
-          (list (clysm/runtime/objects:make-nil-global)
-                (clysm/runtime/objects:make-unbound-global)))
+          (clysm/runtime/objects:generate-runtime-globals))
     ;; Reserve index 0 for main function
     (clysm/compiler/codegen/func-section:env-set-function-counter env 1)
     ;; First pass: extract defuns and register them
@@ -348,15 +347,16 @@
    - Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
    - Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
    - Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
-   - Types 22+: Regular (non-lambda) function types + FFI function types (T058)"
+   - Type 22: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
+   - Types 23+: Regular (non-lambda) function types + FFI function types (T058)"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
         ;; Count non-lambda functions (lambdas reuse types 8-12)
         (regular-func-count (count-if-not #'is-lambda-function-p functions))
         ;; T058: Count FFI function types
         (ffi-type-count (collect-ffi-type-count)))
-    ;; Number of types = 22 (base types) + regular functions + FFI types
-    (emit-leb128-unsigned (+ 22 regular-func-count ffi-type-count) content)
+    ;; Number of types = 23 (base types) + regular functions + FFI types
+    (emit-leb128-unsigned (+ 23 regular-func-count ffi-type-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -404,7 +404,9 @@
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
     ;; Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
     (emit-func-type-bytes content '() '(:anyref :anyref))
-    ;; Regular function types (indices 22+) - skip lambdas (they use types 8-12)
+    ;; Type 22: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
+    (emit-gc-array-type content :anyref t)
+    ;; Regular function types (indices 23+) - skip lambdas (they use types 8-12)
     (dolist (func functions)
       (unless (is-lambda-function-p func)
         ;; func type indicator
@@ -458,10 +460,10 @@
 (defun emit-function-section (buffer functions)
   "Emit Function section.
    Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
-   Regular functions use types 22+ (13 = binding_frame, 14-18 = numeric tower, 19-21 = exception types)."
+   Regular functions use types 23+ (13 = binding_frame, 14-18 = numeric tower, 19-21 = exception types, 22 = mv_array)."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        (regular-func-idx 22))  ; Start regular function types at 22
+        (regular-func-idx 23))  ; Start regular function types at 23 (after mv_array)
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
@@ -478,7 +480,7 @@
                              (3 11)  ; $func_3
                              (t 12)))) ; $func_N
             (emit-leb128-unsigned type-idx content))
-          ;; Regular functions: use unique types starting at 22
+          ;; Regular functions: use unique types starting at 23
           (progn
             (emit-leb128-unsigned regular-func-idx content)
             (incf regular-func-idx))))
@@ -746,6 +748,9 @@
          (:global.get
           (vector-push-extend #x23 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
+         (:global.set
+          (vector-push-extend #x24 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
          (:call
           (vector-push-extend #x10 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
@@ -824,7 +829,15 @@
           ;; 008-character-string: Used for string length
           (vector-push-extend #xFB buffer)
           (vector-push-extend #x0F buffer))
-         (:array.get_u
+         (:array.get
+          ;; array.get <typeidx> - get element from array (for anyref)
+          ;; 025-multiple-values: Used for accessing mv-buffer
+          ;; Stack: [arrayref, idx:i32] -> [value]
+          ;; Opcode: 0xFB 0x0B
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x0B buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))
+        (:array.get_u
           ;; array.get_u <typeidx> - get unsigned element from array
           ;; 008-character-string: Used for char/schar
           (vector-push-extend #xFB buffer)

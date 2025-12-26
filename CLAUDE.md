@@ -28,6 +28,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) + alexandria, babel, rove (testing), clysm/ffi (existing FFI module) (022-wasm-import-optimization)
 - Common Lisp (SBCL 2.4+) for compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing) (024-equality-predicates)
 - N/A (compile-time only) (024-equality-predicates)
+- Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules (025-multiple-values)
+- N/A (in-memory globals within Wasm module) (025-multiple-values)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -47,9 +49,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules
 - 024-equality-predicates: Added Common Lisp (SBCL 2.4+) for compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 023-type-predicates: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
-- 022-wasm-import-optimization: Added Common Lisp (SBCL 2.4+) + alexandria, babel, rove (testing), clysm/ffi (existing FFI module)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -141,4 +143,46 @@ Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow stan
 - Unit tests: logical-operators-test.lisp (and, or)
 - Contract tests: equality-wasm-test.lisp (Wasm validation)
 - Integration tests: equality-ansi-test.lisp (ANSI CL compliance)
+
+## Feature 025: Multiple Values Support - COMPLETE
+
+**Status**: All 82 tasks completed (2025-12-26)
+
+### Implemented Components
+- `src/clysm/compiler/ast.lisp`: AST structs and parsers for mv forms
+- `src/clysm/compiler/codegen/func-section.lisp`: Compilation for all mv forms
+- `src/clysm/compiler/compiler.lisp`: array.get instruction for mv-buffer access
+- `src/clysm/package.lisp`: Exported AST symbols
+- `src/clysm/runtime/multi-value.lisp`: mv-count and mv-buffer globals
+
+### Key Features
+1. **values form**: Return multiple values from a form
+   - `(values)` → NIL with mv-count=0
+   - `(values 1 2 3)` → 1 (primary), with 2,3 in mv-buffer
+2. **multiple-value-bind**: Bind variables to multiple values
+   - `(multiple-value-bind (a b c) (values 1 2) c)` → NIL (fewer values)
+   - Extra values are ignored
+3. **multiple-value-list**: Collect all values as a list
+   - `(multiple-value-list (values 1 2 3))` → (1 2 3)
+4. **nth-value**: Access specific value by index
+   - `(nth-value 1 (values 10 20 30))` → 20
+   - Out-of-range returns NIL
+5. **values-list**: Spread list as multiple values
+   - `(values-list '(1 2 3))` → (values 1 2 3)
+6. **multiple-value-prog1**: Preserve first form's values
+   - `(multiple-value-prog1 (values 1 2) 999)` → 1
+7. **multiple-value-call**: Pass all values to function
+   - `(multiple-value-call #'+ (values 1 2 3))` → 6
+
+### Technical Details
+- Global indices: 0=NIL, 1=UNBOUND, 2=mv-count, 3=mv-buffer (array of anyref)
+- Type section: 22=$mv_array (array of anyref)
+- Primary value returned on Wasm stack; secondary values in mv-buffer global
+- Void block/loop pattern `(:block)` `(:loop)` for iteration without result type
+- Local variable types: `:i32` for counters/indices, `:anyref` for values
+- Required `(:ref.cast :i31)` before `:i31.get_s` when casting from anyref
+
+### Test Coverage
+- Unit tests: multiple-values-test.lisp (26 tests for all user stories)
+- Tests validated: values, mvb, mvl, nth-value, values-list, mvp1, mvc
 <!-- MANUAL ADDITIONS END -->

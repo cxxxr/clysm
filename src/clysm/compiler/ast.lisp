@@ -260,6 +260,53 @@
   (form nil :type t))   ; AST node for form to expand
 
 ;;; ============================================================
+;;; Multiple Values (025-multiple-values)
+;;; ============================================================
+
+(defstruct (ast-values (:include ast-node) (:conc-name ast-values-))
+  "Values node for returning multiple values.
+   (values) -> NIL with mv-count=0
+   (values x) -> x with mv-count=1
+   (values x y z) -> x on stack, y z in mv-buffer, mv-count=3"
+  (forms nil :type list))   ; List of AST nodes for values
+
+(defstruct (ast-multiple-value-bind (:include ast-node) (:conc-name ast-mvb-))
+  "Multiple-value-bind node for receiving multiple values.
+   (multiple-value-bind (a b c) values-form body...)
+   Binds variables a, b, c to the values from values-form, then executes body."
+  (vars nil :type list)        ; List of variable symbols to bind
+  (values-form nil :type t)    ; AST node producing the values
+  (body nil :type list))       ; Body forms (AST nodes)
+
+(defstruct (ast-multiple-value-list (:include ast-node) (:conc-name ast-mvl-))
+  "Multiple-value-list node for collecting values into a list.
+   (multiple-value-list form) -> (v1 v2 v3 ...)"
+  (form nil :type t))          ; AST node producing values
+
+(defstruct (ast-nth-value (:include ast-node) (:conc-name ast-nth-value-))
+  "Nth-value node for accessing a specific value by index.
+   (nth-value n form) -> nth value or NIL if out of range"
+  (index nil :type t)          ; AST node for index expression
+  (form nil :type t))          ; AST node producing values
+
+(defstruct (ast-values-list (:include ast-node) (:conc-name ast-values-list-))
+  "Values-list node for spreading a list as multiple values.
+   (values-list list) -> (values (car list) (cadr list) ...)"
+  (form nil :type t))          ; AST node for the list expression
+
+(defstruct (ast-multiple-value-prog1 (:include ast-node) (:conc-name ast-mvp1-))
+  "Multiple-value-prog1 node for preserving values through side effects.
+   (multiple-value-prog1 first-form body...) -> values of first-form"
+  (first-form nil :type t)     ; AST node whose values are preserved
+  (body nil :type list))       ; Side-effect forms (AST nodes)
+
+(defstruct (ast-multiple-value-call (:include ast-node) (:conc-name ast-mvc-))
+  "Multiple-value-call node for passing all values to a function.
+   (multiple-value-call fn form1 form2 ...) -> (apply fn (all-values))"
+  (function nil :type t)       ; Function to call (AST node)
+  (forms nil :type list))      ; Forms producing values (AST nodes)
+
+;;; ============================================================
 ;;; Wasm IR Structures (T046)
 ;;; ============================================================
 
@@ -359,6 +406,18 @@
       ;; Macro introspection (016-macro-system T046-T047)
       (macroexpand-1 (parse-macroexpand-1-form args))
       (macroexpand (parse-macroexpand-form args))
+      ;; Multiple values (025-multiple-values)
+      (values (make-ast-values :forms (mapcar #'parse-expr args)))
+      (multiple-value-bind (parse-multiple-value-bind-form args))
+      (multiple-value-list
+       (make-ast-multiple-value-list :form (parse-expr (first args))))
+      (nth-value
+       (make-ast-nth-value :index (parse-expr (first args))
+                           :form (parse-expr (second args))))
+      (values-list
+       (make-ast-values-list :form (parse-expr (first args))))
+      (multiple-value-prog1 (parse-multiple-value-prog1-form args))
+      (multiple-value-call (parse-multiple-value-call-form args))
       ;; Arithmetic with constant folding (010-numeric-tower)
       ((+ - * /)
        (parse-arithmetic-form op args))
@@ -844,6 +903,34 @@
     (make-ast-lambda
      :parameters params
      :body (mapcar #'parse-expr body))))
+
+;;; Multiple-value-bind parsing (025-multiple-values)
+(defun parse-multiple-value-bind-form (args)
+  "Parse (multiple-value-bind (vars...) values-form body...).
+   ARGS is ((vars...) values-form body...)."
+  (let ((vars (first args))
+        (values-form (second args))
+        (body (cddr args)))
+    (make-ast-multiple-value-bind
+     :vars vars
+     :values-form (parse-expr values-form)
+     :body (mapcar #'parse-expr body))))
+
+;;; Multiple-value-prog1 parsing (025-multiple-values)
+(defun parse-multiple-value-prog1-form (args)
+  "Parse (multiple-value-prog1 first-form body...).
+   Returns values of first-form after evaluating body for side effects."
+  (make-ast-multiple-value-prog1
+   :first-form (parse-expr (first args))
+   :body (mapcar #'parse-expr (rest args))))
+
+;;; Multiple-value-call parsing (025-multiple-values)
+(defun parse-multiple-value-call-form (args)
+  "Parse (multiple-value-call function form1 form2 ...).
+   Calls function with all values from all forms as arguments."
+  (make-ast-multiple-value-call
+   :function (parse-expr (first args))
+   :forms (mapcar #'parse-expr (rest args))))
 
 (defun parse-setq-form (args)
   "Parse (setq var value)."

@@ -188,6 +188,33 @@
            #:ast-macroexpand
            #:ast-macroexpand-form
            #:make-ast-macroexpand
+           ;; Multiple values AST (025-multiple-values)
+           #:ast-values
+           #:ast-values-forms
+           #:make-ast-values
+           #:ast-multiple-value-bind
+           #:ast-mvb-vars
+           #:ast-mvb-values-form
+           #:ast-mvb-body
+           #:make-ast-multiple-value-bind
+           #:ast-multiple-value-list
+           #:ast-mvl-form
+           #:make-ast-multiple-value-list
+           #:ast-nth-value
+           #:ast-nth-value-index
+           #:ast-nth-value-form
+           #:make-ast-nth-value
+           #:ast-values-list
+           #:ast-values-list-form
+           #:make-ast-values-list
+           #:ast-multiple-value-prog1
+           #:ast-mvp1-first-form
+           #:ast-mvp1-body
+           #:make-ast-multiple-value-prog1
+           #:ast-multiple-value-call
+           #:ast-mvc-function
+           #:ast-mvc-forms
+           #:make-ast-multiple-value-call
            ;; Parsing
            #:parse-expr))
 
@@ -492,6 +519,14 @@
            #:unbound-global-index
            #:global-mutability
            #:emit-nil-check
+           ;; Multiple values globals (025-multiple-values)
+           #:*mv-count-global-index*
+           #:*mv-buffer-global-index*
+           #:make-mv-count-global
+           #:make-mv-buffer-global
+           #:mv-count-global-index
+           #:mv-buffer-global-index
+           #:*global-counter*
            ;; Symbol/function management
            #:register-function
            #:lookup-function

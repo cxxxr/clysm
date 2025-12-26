@@ -130,10 +130,10 @@
 
 (defun assign-import-indices (env)
   "Assign type indices to all registered foreign functions.
-   Type indices for imports start after the built-in types (currently 22+).
+   Type indices for imports start after the built-in types (currently 23+).
    Function indices for imports start at 0."
   (let ((func-index 0)
-        (type-index 22))  ; Start after built-in types
+        (type-index 23))  ; Start after built-in types (22 = mv_array)
     (maphash (lambda (name decl)
                (declare (ignore name))
                ;; Each import gets a unique function type

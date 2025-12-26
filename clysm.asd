@@ -163,7 +163,9 @@
      ;; Predicates Wasm validation (023-type-predicates)
      (:file "predicates-wasm-test")
      ;; Equality predicates Wasm validation (024-equality-predicates)
-     (:file "equality-wasm-test")))
+     (:file "equality-wasm-test")
+     ;; Multiple values Wasm validation (025-multiple-values)
+     (:file "mv-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -215,6 +217,8 @@
      ;; Equality predicates (024-equality-predicates)
      (:file "equality-predicates-test")
      (:file "logical-operators-test")
+     ;; Multiple values (025-multiple-values)
+     (:file "multiple-values-test")
      ;; ANSI test harness (020-ansi-test)
      (:module "ansi-test"
       :serial t

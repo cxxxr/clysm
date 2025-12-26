@@ -303,3 +303,21 @@
 (defpackage #:clysm/tests/integration/equality-ansi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; Multiple Values Tests (025-multiple-values)
+;;; ============================================================
+
+;; Multiple Values Wasm contract tests (025-multiple-values)
+(defpackage #:clysm/tests/contract/mv-wasm
+  (:use #:cl #:rove))
+
+;; Multiple Values unit tests (025-multiple-values)
+(defpackage #:clysm/tests/unit/multiple-values
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Multiple Values ANSI integration tests (025-multiple-values)
+(defpackage #:clysm/tests/integration/mv-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))

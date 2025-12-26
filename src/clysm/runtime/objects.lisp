@@ -25,7 +25,17 @@
 (defvar *unbound-global-index* 1
   "Global index for UNBOUND sentinel")
 
-(defvar *global-counter* 2
+;;; ============================================================
+;;; Multiple Values Globals (025-multiple-values)
+;;; ============================================================
+
+(defvar *mv-count-global-index* 2
+  "Global index for multiple values count (i32)")
+
+(defvar *mv-buffer-global-index* 3
+  "Global index for multiple values buffer (ref $mv_array)")
+
+(defvar *global-counter* 4
   "Next available global index")
 
 ;;; ============================================================
@@ -65,6 +75,39 @@
 (defun unbound-global-index ()
   "Get the global index for UNBOUND"
   *unbound-global-index*)
+
+;;; ============================================================
+;;; Multiple Values Globals (025-multiple-values, T004-T005)
+;;; ============================================================
+
+(defun make-mv-count-global ()
+  "Create the multiple values count global.
+   Tracks how many values were returned by the most recent function.
+   Default is 1 (single-value context)."
+  (make-wasm-global
+   :name '$mv_count
+   :type :i32
+   :mutability :var
+   :init-expr '((:i32.const 1))))
+
+(defun make-mv-buffer-global ()
+  "Create the multiple values buffer global.
+   Stores secondary values (values beyond the primary).
+   Fixed size of 20 elements (anyref) for multiple-value storage.
+   Type 22 is $mv_array defined in the type section."
+  (make-wasm-global
+   :name '$mv_buffer
+   :type '(:ref 22)  ; (ref $mv_array) - type 22 in type section
+   :mutability :var
+   :init-expr '((:i32.const 20) (:array.new_default 22))))  ; array.new_default $mv_array 20
+
+(defun mv-count-global-index ()
+  "Get the global index for mv-count"
+  *mv-count-global-index*)
+
+(defun mv-buffer-global-index ()
+  "Get the global index for mv-buffer"
+  *mv-buffer-global-index*)
 
 ;;; ============================================================
 ;;; NIL Check Emission
@@ -130,9 +173,16 @@
 ;;; ============================================================
 
 (defun generate-runtime-globals ()
-  "Generate all runtime globals for the module"
+  "Generate all runtime globals for the module.
+   Global indices:
+     0: NIL singleton
+     1: UNBOUND sentinel
+     2: mv-count (i32, mutable)
+     3: mv-buffer (ref $mv_array, mutable)"
   (list (make-nil-global)
-        (make-unbound-global)))
+        (make-unbound-global)
+        (make-mv-count-global)
+        (make-mv-buffer-global)))
 
 (defun allocate-global ()
   "Allocate a new global index"
@@ -141,6 +191,6 @@
 
 (defun reset-global-counter ()
   "Reset the global counter for a new compilation"
-  (setf *global-counter* 2)  ; 0=NIL, 1=UNBOUND
+  (setf *global-counter* 4)  ; 0=NIL, 1=UNBOUND, 2=mv-count, 3=mv-buffer
   (clrhash *symbol-table*)
   (clrhash *function-registry*))

@@ -42,6 +42,11 @@
 (defconstant +type-stream+ 19 "Type index for stream objects")
 
 ;;; ============================================================
+;;; Multiple Values Type Index (025-multiple-values)
+;;; ============================================================
+(defconstant +type-mv-array+ 20 "Type index for multiple values buffer array")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -334,6 +339,20 @@
                  (make-wasm-field :name 'imag :type :anyref :mutable nil))))
 
 ;;; ============================================================
+;;; Multiple Values Type Constructor (025-multiple-values)
+;;; ============================================================
+
+(defun make-mv-array-type ()
+  "Create multiple values buffer array type (025-multiple-values).
+   An array of mutable anyref for storing secondary values.
+   (type $mv_array (array (mut anyref)))"
+  (make-wasm-array-type
+   :name '$mv_array
+   :index +type-mv-array+
+   :element-type :anyref
+   :mutable t))
+
+;;; ============================================================
 ;;; Stream Type Constructor (015-ffi-stream-io, T006)
 ;;; ============================================================
 
@@ -389,7 +408,9 @@
      15: Ratio (exact rational number)
      16: Float (IEEE 754 double-precision)
      17: Complex (complex number)
-     18: Limb array (for bignum limbs)"
+     18: Limb array (for bignum limbs)
+     19: Stream (I/O operations)
+     20: Multiple values buffer array"
   (list (make-nil-type)          ; type 0
         (make-unbound-type)      ; type 1
         (make-cons-type)         ; type 2
@@ -409,7 +430,8 @@
         (make-float-type)           ; type 16: IEEE 754 double-precision
         (make-complex-type)         ; type 17: complex number
         (make-limb-array-type)      ; type 18: bignum limb array
-        (make-stream-type)))        ; type 19: stream object (015-ffi-stream-io)
+        (make-stream-type)          ; type 19: stream object (015-ffi-stream-io)
+        (make-mv-array-type)))      ; type 20: multiple values buffer (025-multiple-values)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
@@ -492,7 +514,12 @@
     (:stream-ref
      ;; (ref $stream) - non-null reference to stream
      (write-byte #x64 stream)  ; ref (non-null)
-     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-stream+ stream))))
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-stream+ stream))
+    ;; Multiple values buffer reference (025-multiple-values)
+    (:mv-array-ref
+     ;; (ref $mv_array) - non-null reference to mv buffer array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mv-array+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"
@@ -570,4 +597,9 @@
      ;; (ref $stream) - non-null reference to stream
      (write-byte #x64 stream)  ; ref (non-null)
      (clysm/backend/leb128:encode-signed-leb128-to-stream +type-stream+ stream))
+    ;; Multiple values buffer reference (025-multiple-values)
+    (:mv-array-ref
+     ;; (ref $mv_array) - non-null reference to mv buffer array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mv-array+ stream))
     (t (error "Unknown value type: ~A" type-keyword))))
