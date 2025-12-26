@@ -321,3 +321,23 @@
 (defpackage #:clysm/tests/integration/mv-ansi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; CLOS Foundation Tests (026-clos-foundation)
+;;; ============================================================
+
+;; CLOS codegen unit tests (026-clos-foundation)
+;; Tests for defclass, make-instance, accessor, defmethod WasmGC codegen
+(defpackage #:clysm/tests/unit/clos-codegen
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run #:validate-wasm-silent))
+
+;; CLOS Wasm contract tests (026-clos-foundation)
+(defpackage #:clysm/tests/contract/clos-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; CLOS ANSI integration tests (026-clos-foundation)
+(defpackage #:clysm/tests/integration/clos-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))

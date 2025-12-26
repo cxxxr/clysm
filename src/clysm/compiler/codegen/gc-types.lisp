@@ -47,6 +47,13 @@
 (defconstant +type-mv-array+ 20 "Type index for multiple values buffer array")
 
 ;;; ============================================================
+;;; CLOS Foundation Type Indices (026-clos-foundation)
+;;; ============================================================
+(defconstant +type-slot-vector+ 21 "Type index for CLOS slot storage array")
+(defconstant +type-keyword-array+ 22 "Type index for CLOS initarg keyword array")
+(defconstant +type-closure-array+ 23 "Type index for CLOS initform closure array")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -371,6 +378,80 @@
                  (make-wasm-field :name 'direction :type :i32 :mutable nil))))
 
 ;;; ============================================================
+;;; CLOS Foundation Type Constructors (026-clos-foundation)
+;;; ============================================================
+
+(defun make-instance-type ()
+  "Create CLOS instance type (026-clos-foundation).
+   Structure:
+     $class: (ref $standard-class) - reference to class metadata
+     $slots: (ref $slot-vector) - slot values array
+   (type $instance (struct
+     (field $class (ref $standard-class))
+     (field $slots (ref $slot-vector))))"
+  (make-wasm-struct-type
+   :name '$instance
+   :index +type-instance+
+   :fields (list (make-wasm-field :name 'class :type :standard-class-ref :mutable nil)
+                 (make-wasm-field :name 'slots :type :slot-vector-ref :mutable nil))))
+
+(defun make-standard-class-type ()
+  "Create CLOS standard-class type (026-clos-foundation).
+   Structure:
+     $name: (ref $symbol) - class name symbol
+     $superclass: (ref null $standard-class) - nullable parent class
+     $slot_count: i32 - total slots including inherited
+     $initargs: (ref $keyword-array) - initarg keywords per slot
+     $initforms: (ref $closure-array) - initform closures per slot
+     $class_id: i32 - unique dispatch index
+   (type $standard-class (struct
+     (field $name (ref $symbol))
+     (field $superclass (ref null $standard-class))
+     (field $slot_count i32)
+     (field $initargs (ref $keyword-array))
+     (field $initforms (ref $closure-array))
+     (field $class_id i32)))"
+  (make-wasm-struct-type
+   :name '$standard-class
+   :index +type-standard-class+
+   :fields (list (make-wasm-field :name 'name :type :symbol-ref :mutable nil)
+                 (make-wasm-field :name 'superclass :type :standard-class-ref-null :mutable nil)
+                 (make-wasm-field :name 'slot_count :type :i32 :mutable nil)
+                 (make-wasm-field :name 'initargs :type :keyword-array-ref :mutable nil)
+                 (make-wasm-field :name 'initforms :type :closure-array-ref :mutable nil)
+                 (make-wasm-field :name 'class_id :type :i32 :mutable nil))))
+
+(defun make-slot-vector-type ()
+  "Create CLOS slot vector type (026-clos-foundation).
+   An array of mutable anyref values for slot storage.
+   (type $slot-vector (array (mut anyref)))"
+  (make-wasm-array-type
+   :name '$slot-vector
+   :index +type-slot-vector+
+   :element-type :anyref
+   :mutable t))
+
+(defun make-keyword-array-type ()
+  "Create CLOS keyword array type (026-clos-foundation).
+   An array of symbol references for initarg keywords.
+   (type $keyword-array (array (ref $symbol)))"
+  (make-wasm-array-type
+   :name '$keyword-array
+   :index +type-keyword-array+
+   :element-type :symbol-ref
+   :mutable nil))
+
+(defun make-closure-array-type ()
+  "Create CLOS closure array type (026-clos-foundation).
+   An array of nullable closure references for initform expressions.
+   (type $closure-array (array (ref null $closure)))"
+  (make-wasm-array-type
+   :name '$closure-array
+   :index +type-closure-array+
+   :element-type :closure-ref-null
+   :mutable nil))
+
+;;; ============================================================
 ;;; Exception Tags (T008)
 ;;; ============================================================
 
@@ -401,7 +482,7 @@
    Returns a list of type definitions in order of their indices.
    Type layout:
      0-5: GC struct types (nil, unbound, cons, symbol, string, closure)
-     6-7: Reserved (placeholders for instance, standard-class)
+     6-7: CLOS types (instance, standard-class)
      8-12: Function types (func_0, func_1, func_2, func_3, func_n)
      13: Binding frame (for dynamic bindings)
      14: Bignum (arbitrary-precision integer)
@@ -410,20 +491,21 @@
      17: Complex (complex number)
      18: Limb array (for bignum limbs)
      19: Stream (I/O operations)
-     20: Multiple values buffer array"
-  (list (make-nil-type)          ; type 0
-        (make-unbound-type)      ; type 1
-        (make-cons-type)         ; type 2
-        (make-symbol-type)       ; type 3
-        (make-string-type)       ; type 4
-        (make-closure-type)      ; type 5
-        nil                      ; type 6: placeholder for +type-instance+
-        nil                      ; type 7: placeholder for +type-standard-class+
-        (make-func-type-0)       ; type 8
-        (make-func-type-1)       ; type 9
-        (make-func-type-2)       ; type 10
-        (make-func-type-3)       ; type 11
-        (make-func-type-n)       ; type 12
+     20: Multiple values buffer array
+     21-23: CLOS array types (slot-vector, keyword-array, closure-array)"
+  (list (make-nil-type)             ; type 0
+        (make-unbound-type)         ; type 1
+        (make-cons-type)            ; type 2
+        (make-symbol-type)          ; type 3
+        (make-string-type)          ; type 4
+        (make-closure-type)         ; type 5
+        (make-instance-type)        ; type 6: CLOS instance (026-clos-foundation)
+        (make-standard-class-type)  ; type 7: CLOS class metadata (026-clos-foundation)
+        (make-func-type-0)          ; type 8
+        (make-func-type-1)          ; type 9
+        (make-func-type-2)          ; type 10
+        (make-func-type-3)          ; type 11
+        (make-func-type-n)          ; type 12
         (make-binding-frame-type)   ; type 13: binding frame for dynamic bindings
         (make-bignum-type)          ; type 14: arbitrary-precision integer
         (make-ratio-type)           ; type 15: exact rational number
@@ -431,7 +513,10 @@
         (make-complex-type)         ; type 17: complex number
         (make-limb-array-type)      ; type 18: bignum limb array
         (make-stream-type)          ; type 19: stream object (015-ffi-stream-io)
-        (make-mv-array-type)))      ; type 20: multiple values buffer (025-multiple-values)
+        (make-mv-array-type)        ; type 20: multiple values buffer (025-multiple-values)
+        (make-slot-vector-type)     ; type 21: CLOS slot storage (026-clos-foundation)
+        (make-keyword-array-type)   ; type 22: CLOS initarg keywords (026-clos-foundation)
+        (make-closure-array-type))) ; type 23: CLOS initform closures (026-clos-foundation)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
@@ -519,7 +604,36 @@
     (:mv-array-ref
      ;; (ref $mv_array) - non-null reference to mv buffer array
      (write-byte #x64 stream)  ; ref (non-null)
-     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mv-array+ stream))))
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mv-array+ stream))
+    ;; CLOS Foundation type references (026-clos-foundation)
+    (:instance-ref
+     ;; (ref $instance) - non-null reference to CLOS instance
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-instance+ stream))
+    (:standard-class-ref
+     ;; (ref $standard-class) - non-null reference to class
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-standard-class+ stream))
+    (:standard-class-ref-null
+     ;; (ref null $standard-class) - nullable reference to class (for superclass)
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-standard-class+ stream))
+    (:slot-vector-ref
+     ;; (ref $slot-vector) - non-null reference to slot array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-slot-vector+ stream))
+    (:keyword-array-ref
+     ;; (ref $keyword-array) - non-null reference to keyword array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-keyword-array+ stream))
+    (:closure-array-ref
+     ;; (ref $closure-array) - non-null reference to closure array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure-array+ stream))
+    (:closure-ref-null
+     ;; (ref null $closure) - nullable reference to closure (for initforms)
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure+ stream))))
 
 (defun emit-struct-type (struct-type stream)
   "Emit a WasmGC struct type definition"
@@ -602,4 +716,33 @@
      ;; (ref $mv_array) - non-null reference to mv buffer array
      (write-byte #x64 stream)  ; ref (non-null)
      (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mv-array+ stream))
+    ;; CLOS Foundation type references (026-clos-foundation)
+    (:instance-ref
+     ;; (ref $instance) - non-null reference to CLOS instance
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-instance+ stream))
+    (:standard-class-ref
+     ;; (ref $standard-class) - non-null reference to class
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-standard-class+ stream))
+    (:standard-class-ref-null
+     ;; (ref null $standard-class) - nullable reference to class (for superclass)
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-standard-class+ stream))
+    (:slot-vector-ref
+     ;; (ref $slot-vector) - non-null reference to slot array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-slot-vector+ stream))
+    (:keyword-array-ref
+     ;; (ref $keyword-array) - non-null reference to keyword array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-keyword-array+ stream))
+    (:closure-array-ref
+     ;; (ref $closure-array) - non-null reference to closure array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure-array+ stream))
+    (:closure-ref-null
+     ;; (ref null $closure) - nullable reference to closure (for initforms)
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure+ stream))
     (t (error "Unknown value type: ~A" type-keyword))))

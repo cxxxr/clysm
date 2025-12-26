@@ -307,6 +307,150 @@
   (forms nil :type list))      ; Forms producing values (AST nodes)
 
 ;;; ============================================================
+;;; CLOS Support (026-clos-foundation)
+;;; ============================================================
+
+(defstruct (ast-slot-definition (:conc-name ast-slot-definition-))
+  "Slot definition for CLOS defclass.
+   Captures :initarg, :accessor, :initform slot options."
+  (name nil :type symbol)                     ; Slot name
+  (initarg nil :type (or null keyword))       ; :initarg keyword
+  (accessor nil :type (or null symbol))       ; :accessor function name
+  (initform nil :type t)                      ; :initform value (AST node or raw value)
+  (initform-p nil :type boolean))             ; T if :initform was specified
+
+(defstruct (ast-defclass (:include ast-node) (:conc-name ast-defclass-))
+  "Defclass node for CLOS class definition.
+   (defclass name (superclass) ((slot-spec)...))"
+  (name nil :type symbol)                     ; Class name
+  (superclass nil :type (or null symbol))     ; Single superclass (or nil)
+  (slots nil :type list))                     ; List of ast-slot-definition
+
+(defun parse-slot-option (slot-spec key)
+  "Extract a slot option value from slot-spec.
+   Returns (values value found-p)."
+  (let ((tail (member key slot-spec)))
+    (if tail
+        (values (second tail) t)
+        (values nil nil))))
+
+(defun parse-slot-definition (slot-spec)
+  "Parse a slot specifier into an ast-slot-definition.
+   SLOT-SPEC is either a symbol or (name :initarg :x :accessor foo :initform val)."
+  (if (symbolp slot-spec)
+      ;; Simple slot: just a name
+      (make-ast-slot-definition :name slot-spec)
+      ;; Complex slot: (name options...)
+      (let ((name (first slot-spec)))
+        (multiple-value-bind (initarg initarg-p) (parse-slot-option slot-spec :initarg)
+          (declare (ignore initarg-p))
+          (multiple-value-bind (accessor accessor-p) (parse-slot-option slot-spec :accessor)
+            (declare (ignore accessor-p))
+            (multiple-value-bind (initform initform-p) (parse-slot-option slot-spec :initform)
+              (make-ast-slot-definition
+               :name name
+               :initarg initarg
+               :accessor accessor
+               :initform initform
+               :initform-p initform-p)))))))
+
+(defun parse-defclass-to-ast (form)
+  "Parse a defclass form into an ast-defclass node.
+   FORM is (defclass name (supers...) (slots...) options...).
+   Only single inheritance is supported."
+  (destructuring-bind (defclass-sym name supers slots &rest options) form
+    (declare (ignore defclass-sym options))  ; class options ignored for now
+    ;; Validate single inheritance
+    (when (> (length supers) 1)
+      (error "Multiple inheritance not supported: ~S" supers))
+    (make-ast-defclass
+     :name name
+     :superclass (first supers)
+     :slots (mapcar #'parse-slot-definition slots))))
+
+;;; ============================================================
+;;; CLOS make-instance Support (026-clos-foundation)
+;;; ============================================================
+
+(defstruct (ast-make-instance (:include ast-node) (:conc-name ast-make-instance-))
+  "Make-instance node for CLOS instance creation.
+   (make-instance 'class-name :initarg1 val1 :initarg2 val2 ...)"
+  (class-name nil :type symbol)              ; Class name (unquoted)
+  (initargs nil :type list))                 ; List of (keyword . value-ast) pairs
+
+(defun parse-make-instance-to-ast (form)
+  "Parse a make-instance form into an ast-make-instance node.
+   FORM is (make-instance 'class-name :key1 val1 :key2 val2 ...)."
+  (let ((class-form (second form))
+        (initarg-plist (cddr form)))
+    ;; Extract the class name from the quoted form
+    (let ((class-name (if (and (consp class-form)
+                               (eq (car class-form) 'quote))
+                          (second class-form)
+                          (error "make-instance class must be quoted: ~S" class-form))))
+      ;; Parse initarg pairs
+      (let ((initargs (loop for (key val) on initarg-plist by #'cddr
+                            collect (cons key (parse-expr val)))))
+        (make-ast-make-instance
+         :class-name class-name
+         :initargs initargs)))))
+
+;;; ============================================================
+;;; CLOS defmethod Support (026-clos-foundation)
+;;; ============================================================
+
+(defstruct (ast-defmethod (:include ast-node) (:conc-name ast-defmethod-))
+  "Defmethod node for CLOS method definition.
+   (defmethod name [qualifier] ((param class) ...) body...)"
+  (name nil :type symbol)                    ; Generic function name
+  (qualifier nil :type (or null keyword))    ; :before, :after, :around, or nil for primary
+  (specializers nil :type list)              ; List of class names for specialization
+  (lambda-list nil :type list)               ; Original parameter names
+  (body nil :type list))                     ; Method body (list of AST nodes)
+
+(defun parse-specialized-lambda-list (lambda-list)
+  "Parse a specialized lambda-list and extract parameter names and specializers.
+   Returns (values param-names specializers).
+   Example: ((a animal) (b number)) -> ((A B) (ANIMAL NUMBER))"
+  (let ((params nil)
+        (specializers nil))
+    (dolist (param lambda-list)
+      (if (consp param)
+          (progn
+            (push (first param) params)
+            (push (second param) specializers))
+          (progn
+            (push param params)
+            (push t specializers))))  ; T means no specialization
+    (values (nreverse params) (nreverse specializers))))
+
+(defun parse-defmethod-to-ast (form)
+  "Parse a defmethod form into an ast-defmethod node.
+   FORM is (defmethod name [qualifier] lambda-list body...)."
+  (let ((name (second form))
+        (rest (cddr form)))
+    ;; Check for optional qualifier
+    (let ((qualifier nil)
+          (lambda-list nil)
+          (body nil))
+      (if (keywordp (first rest))
+          (progn
+            (setf qualifier (first rest))
+            (setf lambda-list (second rest))
+            (setf body (cddr rest)))
+          (progn
+            (setf lambda-list (first rest))
+            (setf body (cdr rest))))
+      (multiple-value-bind (params specializers)
+          (parse-specialized-lambda-list lambda-list)
+        (make-ast-defmethod
+         :name name
+         :qualifier qualifier
+         :specializers specializers
+         :lambda-list params
+         :body (mapcar #'parse-expr body))))))
+
+;;; ============================================================
 ;;; Wasm IR Structures (T046)
 ;;; ============================================================
 
@@ -397,6 +541,12 @@
       ;; Special variable declarations (T021)
       (defvar (parse-defvar-form args))
       (defparameter (parse-defparameter-form args))
+      ;; CLOS class definition (026-clos-foundation)
+      (defclass (parse-defclass-to-ast form))  ; Pass full form, not just args
+      ;; CLOS instance creation (026-clos-foundation)
+      (make-instance (parse-make-instance-to-ast form))  ; Pass full form
+      ;; CLOS method definition (026-clos-foundation)
+      (defmethod (parse-defmethod-to-ast form))  ; Pass full form
       ;; Macros (expand inline for now)
       (when (parse-when-form args))
       (unless (parse-unless-form args))

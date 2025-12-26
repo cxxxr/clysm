@@ -247,7 +247,14 @@
     (clysm/compiler/ast:ast-multiple-value-prog1
      (compile-multiple-value-prog1 ast env))
     (clysm/compiler/ast:ast-multiple-value-call
-     (compile-multiple-value-call ast env))))
+     (compile-multiple-value-call ast env))
+    ;; CLOS (026-clos-foundation)
+    (clysm/compiler/ast:ast-defclass
+     (compile-defclass ast env))
+    (clysm/compiler/ast:ast-make-instance
+     (compile-make-instance ast env))
+    (clysm/compiler/ast:ast-defmethod
+     (compile-defmethod ast env))))
 
 ;;; ============================================================
 ;;; Literal Compilation
@@ -9462,3 +9469,261 @@
         ;; Return sum as i31ref
         (:local.get ,sum-local)
         :ref.i31))))
+
+;;; ============================================================
+;;; CLOS: defclass Compilation (026-clos-foundation)
+;;; ============================================================
+
+;;; Class ID allocation counter for dispatch
+(defvar *class-id-counter* 0
+  "Counter for allocating unique class IDs.")
+
+(defun reset-class-id-counter ()
+  "Reset the class ID counter. Called when starting a new compilation."
+  (setf *class-id-counter* 0))
+
+(defun allocate-class-id ()
+  "Allocate a new unique class ID."
+  (prog1 *class-id-counter*
+    (incf *class-id-counter*)))
+
+;;; Class registry for compile-time class tracking
+(defvar *class-registry* (make-hash-table :test 'eq)
+  "Compile-time registry mapping class names to class info.")
+
+(defstruct class-info
+  "Compile-time information about a CLOS class."
+  (name nil :type symbol)
+  (superclass nil :type (or null symbol))
+  (slots nil :type list)       ; List of slot-info structs
+  (class-id nil :type (or null fixnum))
+  (finalized-p nil :type boolean))
+
+(defstruct slot-info
+  "Compile-time information about a slot."
+  (name nil :type symbol)
+  (initarg nil :type (or null keyword))
+  (accessor nil :type (or null symbol))
+  (initform nil :type t)
+  (initform-p nil :type boolean)
+  (index nil :type (or null fixnum)))  ; Slot index in instance
+
+(defun reset-class-registry ()
+  "Reset the class registry. Called when starting a new compilation."
+  (clrhash *class-registry*)
+  (reset-class-id-counter))
+
+(defun register-compile-time-class (name superclass slots)
+  "Register a class at compile time.
+   NAME is the class symbol.
+   SUPERCLASS is the superclass name or NIL.
+   SLOTS is a list of ast-slot-definition structs.
+
+   Handles single inheritance:
+   - Inherits slots from superclass (prepended to own slots)
+   - Child slots with same name shadow parent slots
+   - Recomputes slot indices"
+  (let* ((class-id (allocate-class-id))
+         ;; Get parent slots if superclass exists
+         (parent-slots
+           (when superclass
+             (let ((parent-info (find-compile-time-class superclass)))
+               (if parent-info
+                   (class-info-slots parent-info)
+                   (error "Superclass ~S not defined" superclass)))))
+         ;; Get own slot names for shadowing check
+         (own-slot-names
+           (mapcar #'clysm/compiler/ast:ast-slot-definition-name slots))
+         ;; Filter out shadowed parent slots
+         (inherited-slots
+           (remove-if (lambda (pslot)
+                        (member (slot-info-name pslot) own-slot-names))
+                      parent-slots))
+         ;; Convert own slots to slot-info (index will be set later)
+         (own-slot-infos
+           (mapcar (lambda (slot)
+                     (make-slot-info
+                      :name (clysm/compiler/ast:ast-slot-definition-name slot)
+                      :initarg (clysm/compiler/ast:ast-slot-definition-initarg slot)
+                      :accessor (clysm/compiler/ast:ast-slot-definition-accessor slot)
+                      :initform (clysm/compiler/ast:ast-slot-definition-initform slot)
+                      :initform-p (clysm/compiler/ast:ast-slot-definition-initform-p slot)
+                      :index 0))  ; Temporary, will be recomputed
+                   slots))
+         ;; Combine: inherited first, then own slots
+         (all-slots (append inherited-slots own-slot-infos))
+         ;; Recompute indices
+         (slot-infos
+           (loop for slot in all-slots
+                 for index from 0
+                 collect (make-slot-info
+                          :name (slot-info-name slot)
+                          :initarg (slot-info-initarg slot)
+                          :accessor (slot-info-accessor slot)
+                          :initform (slot-info-initform slot)
+                          :initform-p (slot-info-initform-p slot)
+                          :index index)))
+         (info (make-class-info
+                :name name
+                :superclass superclass
+                :slots slot-infos
+                :class-id class-id
+                :finalized-p t)))
+    (setf (gethash name *class-registry*) info)
+    info))
+
+(defun find-compile-time-class (name)
+  "Find a class in the compile-time registry."
+  (gethash name *class-registry*))
+
+(defun compile-defclass (ast env)
+  "Compile a defclass form.
+   Registers the class at compile time and returns NIL.
+   The actual class global will be emitted in the global section.
+
+   For now, this is a compile-time only operation - the class metadata
+   is registered for use by make-instance and accessor codegen, but
+   no runtime code is emitted in the expression position."
+  (declare (ignore env))
+  (let* ((name (clysm/compiler/ast:ast-defclass-name ast))
+         (superclass (clysm/compiler/ast:ast-defclass-superclass ast))
+         (slots (clysm/compiler/ast:ast-defclass-slots ast)))
+    ;; Register the class at compile time
+    (register-compile-time-class name superclass slots)
+    ;; Also register with the existing CLOS infrastructure for interpreter compatibility
+    ;; This uses the existing compile-time CLOS in clysm/clos/
+    (let ((form `(defclass ,name ,(if superclass (list superclass) nil)
+                   ,(mapcar (lambda (slot)
+                              (let ((slot-name (clysm/compiler/ast:ast-slot-definition-name slot))
+                                    (initarg (clysm/compiler/ast:ast-slot-definition-initarg slot))
+                                    (accessor (clysm/compiler/ast:ast-slot-definition-accessor slot))
+                                    (initform (clysm/compiler/ast:ast-slot-definition-initform slot))
+                                    (initform-p (clysm/compiler/ast:ast-slot-definition-initform-p slot)))
+                                (append (list slot-name)
+                                        (when initarg (list :initarg initarg))
+                                        (when accessor (list :accessor accessor))
+                                        (when initform-p (list :initform initform)))))
+                            slots))))
+      (clysm/clos/defclass:define-class* form))
+    ;; Return NIL (defclass returns class name, but as a quoted symbol we return NIL for now)
+    ;; In a full implementation, this would return a reference to the class object
+    (list '(:ref.null :none))))
+
+;;; ============================================================
+;;; CLOS: make-instance Compilation (026-clos-foundation)
+;;; ============================================================
+
+(defun compile-make-instance (ast env)
+  "Compile a make-instance form.
+   Creates an instance of the specified class with the given initargs.
+
+   The compilation emits code that:
+   1. Looks up the class (error if not found)
+   2. Creates a slot vector with the correct size
+   3. Fills slots based on initargs, initforms, or UNBOUND
+   4. Creates the $instance struct
+
+   For now, this is a placeholder that returns NIL.
+   Full WasmGC codegen will be added in the next iteration."
+  (declare (ignore env))
+  (let* ((class-name (clysm/compiler/ast:ast-make-instance-class-name ast))
+         (initargs (clysm/compiler/ast:ast-make-instance-initargs ast))
+         (class-info (find-compile-time-class class-name)))
+    ;; Validate class exists
+    (unless class-info
+      (error "Cannot make instance of undefined class: ~S" class-name))
+    ;; For now, use the interpreter CLOS to create the instance
+    ;; This is a compile-time evaluation - not ideal but works for MVP
+    ;; In a full implementation, we would emit WasmGC instructions
+    (let ((initarg-plist (loop for (key . val-ast) in initargs
+                               collect key
+                               collect (if (typep val-ast 'clysm/compiler/ast:ast-literal)
+                                           (clysm/compiler/ast:ast-literal-value val-ast)
+                                           0))))  ; Default to 0 for non-literals
+      (declare (ignore initarg-plist))
+      ;; For MVP, just return a null reference
+      ;; TODO: Emit actual struct.new $instance instructions
+      (list '(:ref.null :none)))))
+
+;;; ============================================================
+;;; CLOS: Generic Function Registry (026-clos-foundation)
+;;; ============================================================
+
+(defvar *generic-function-registry* (make-hash-table :test 'eq)
+  "Compile-time registry mapping generic function names to GF info.")
+
+(defstruct gf-info
+  "Compile-time information about a generic function."
+  (name nil :type symbol)
+  (methods nil :type list)        ; List of method-info structs
+  (lambda-list nil :type list))   ; Expected lambda-list
+
+(defstruct method-info
+  "Compile-time information about a method."
+  (specializers nil :type list)   ; List of class names
+  (qualifier nil :type (or null keyword))
+  (lambda-list nil :type list)
+  (body nil :type list))          ; Body as list of AST nodes
+
+(defun reset-generic-function-registry ()
+  "Reset the generic function registry."
+  (clrhash *generic-function-registry*))
+
+(defun find-generic-function (name)
+  "Find a generic function in the compile-time registry."
+  (gethash name *generic-function-registry*))
+
+(defun register-generic-function (name)
+  "Register a new generic function."
+  (let ((gf (make-gf-info :name name)))
+    (setf (gethash name *generic-function-registry*) gf)
+    gf))
+
+(defun ensure-compile-time-gf (name)
+  "Ensure a compile-time generic function exists, creating if necessary."
+  (or (find-generic-function name)
+      (register-generic-function name)))
+
+(defun add-method-to-gf (gf method-info)
+  "Add a method to a generic function."
+  (push method-info (gf-info-methods gf)))
+
+;;; ============================================================
+;;; CLOS: defmethod Compilation (026-clos-foundation)
+;;; ============================================================
+
+(defun compile-defmethod (ast env)
+  "Compile a defmethod form.
+   Registers the method with the generic function.
+   Returns NIL for now (method registration is compile-time only)."
+  (declare (ignore env))
+  (let* ((name (clysm/compiler/ast:ast-defmethod-name ast))
+         (qualifier (clysm/compiler/ast:ast-defmethod-qualifier ast))
+         (specializers (clysm/compiler/ast:ast-defmethod-specializers ast))
+         (lambda-list (clysm/compiler/ast:ast-defmethod-lambda-list ast))
+         (body (clysm/compiler/ast:ast-defmethod-body ast)))
+    ;; Ensure generic function exists
+    (let ((gf (ensure-compile-time-gf name)))
+      ;; Create method info
+      (let ((method (make-method-info
+                     :specializers specializers
+                     :qualifier qualifier
+                     :lambda-list lambda-list
+                     :body body)))
+        ;; Add method to GF
+        (add-method-to-gf gf method)))
+    ;; Also register with existing CLOS infrastructure
+    (let ((form `(defmethod ,name ,@(when qualifier (list qualifier))
+                   ,(mapcar (lambda (param spec)
+                              (if (eq spec t)
+                                  param
+                                  (list param spec)))
+                            lambda-list specializers)
+                   ,@(mapcar (lambda (body-ast)
+                               (if (typep body-ast 'clysm/compiler/ast:ast-literal)
+                                   (clysm/compiler/ast:ast-literal-value body-ast)
+                                   nil))  ; Simplified for now
+                             body))))
+      (clysm/clos/defmethod:define-method* form))
+    ;; Return NIL
+    (list '(:ref.null :none))))

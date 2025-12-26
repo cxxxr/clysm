@@ -30,6 +30,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (compile-time only) (024-equality-predicates)
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules (025-multiple-values)
 - N/A (in-memory globals within Wasm module) (025-multiple-values)
+- N/A (in-memory class/instance registry) (026-clos-foundation)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -49,9 +50,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 026-clos-foundation: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 - 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 - 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules
-- 024-equality-predicates: Added Common Lisp (SBCL 2.4+) for compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -185,4 +186,56 @@ Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow stan
 ### Test Coverage
 - Unit tests: multiple-values-test.lisp (26 tests for all user stories)
 - Tests validated: values, mvb, mvl, nth-value, values-list, mvp1, mvc
+
+## Feature 026: CLOS Foundation - COMPLETE
+
+**Status**: All 8 phases completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/compiler/ast.lisp`: AST structs for defclass, make-instance, defmethod
+- `src/clysm/compiler/codegen/func-section.lisp`: Compile-time class and GF registries
+- `src/clysm/compiler/codegen/gc-types.lisp`: WasmGC CLOS type definitions
+- `src/clysm/package.lisp`: Exported CLOS symbols
+
+### Key Features
+1. **defclass**: Define CLOS classes with slot options
+   - `:initarg` - keyword argument for initialization
+   - `:accessor` - reader/writer function name
+   - `:initform` - default value expression
+   - Single inheritance supported (multiple inheritance rejected)
+2. **make-instance**: Create class instances
+   - `(make-instance 'point :x 3 :y 4)` creates point instance
+   - Initargs matched to slot indices at compile time
+3. **Slot accessors**: Reader/writer generation
+   - Accessors recorded in compile-time slot-info
+   - Slot indices computed for array access
+4. **defmethod**: Define methods with type specialization
+   - `(defmethod speak ((a animal)) "sound")` specializes on class
+   - Qualifiers: :before, :after, :around for method combination
+5. **Generic function dispatch**: Method selection by argument class
+   - compute-applicable-methods finds matching methods
+   - sort-methods orders by specificity
+6. **Single inheritance**: Child classes inherit parent slots
+   - Slots prepended from parent, indices recomputed
+   - Child slots shadow parent slots with same name
+
+### WasmGC Types
+- Type index 6: `$instance` struct (class ref, slot-vector ref)
+- Type index 7: `$standard-class` struct (name, superclass, slot_count, etc.)
+- Type index 21: `$slot-vector` array (mutable anyref elements)
+- Type index 22: `$keyword-array` array (symbol refs for initargs)
+- Type index 23: `$closure-array` array (nullable closure refs for initforms)
+
+### Compile-Time Registries
+- `*class-registry*`: Maps class names to class-info structs
+- `*generic-function-registry*`: Maps GF names to gf-info structs
+- `class-info`: name, superclass, slots, class-id, finalized-p
+- `slot-info`: name, initarg, accessor, initform, initform-p, index
+- `gf-info`: name, methods (list of method-info), lambda-list
+- `method-info`: specializers, qualifier, lambda-list, body
+
+### Test Coverage
+- Unit tests: tests/unit/clos/*.lisp (defclass-test, make-instance-test, accessor-test, defmethod-test)
+- Contract tests: tests/contract/clos-wasm-test.lisp (WasmGC type validation)
+- Integration tests: tests/integration/clos-test.lisp (end-to-end CLOS usage)
 <!-- MANUAL ADDITIONS END -->

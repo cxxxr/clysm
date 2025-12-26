@@ -215,6 +215,39 @@
            #:ast-mvc-function
            #:ast-mvc-forms
            #:make-ast-multiple-value-call
+           ;; CLOS defclass AST (026-clos-foundation)
+           #:ast-slot-definition
+           #:ast-slot-definition-p
+           #:ast-slot-definition-name
+           #:ast-slot-definition-initarg
+           #:ast-slot-definition-accessor
+           #:ast-slot-definition-initform
+           #:ast-slot-definition-initform-p
+           #:make-ast-slot-definition
+           #:ast-defclass
+           #:ast-defclass-p
+           #:ast-defclass-name
+           #:ast-defclass-superclass
+           #:ast-defclass-slots
+           #:make-ast-defclass
+           #:parse-defclass-to-ast
+           ;; CLOS make-instance AST (026-clos-foundation)
+           #:ast-make-instance
+           #:ast-make-instance-p
+           #:ast-make-instance-class-name
+           #:ast-make-instance-initargs
+           #:make-ast-make-instance
+           #:parse-make-instance-to-ast
+           ;; CLOS defmethod AST (026-clos-foundation)
+           #:ast-defmethod
+           #:ast-defmethod-p
+           #:ast-defmethod-name
+           #:ast-defmethod-qualifier
+           #:ast-defmethod-specializers
+           #:ast-defmethod-lambda-list
+           #:ast-defmethod-body
+           #:make-ast-defmethod
+           #:parse-defmethod-to-ast
            ;; Parsing
            #:parse-expr))
 
@@ -378,6 +411,16 @@
            #:+type-stream+
            #:make-stream-type
            #:emit-value-type-extended
+           ;; CLOS Foundation type indices (026-clos-foundation)
+           #:+type-slot-vector+
+           #:+type-keyword-array+
+           #:+type-closure-array+
+           ;; CLOS Foundation type constructors (026-clos-foundation)
+           #:make-instance-type
+           #:make-standard-class-type
+           #:make-slot-vector-type
+           #:make-keyword-array-type
+           #:make-closure-array-type
            ;; Type predicates for struct/array
            #:wasm-struct-type-p
            #:wasm-array-type-p
@@ -427,7 +470,44 @@
            ;; Tail position management (TCO)
            #:env-with-tail-position
            #:env-with-non-tail
-           #:env-with-tail))
+           #:env-with-tail
+           ;; CLOS compile-time class registry (026-clos-foundation)
+           #:*class-id-counter*
+           #:*class-registry*
+           #:reset-class-id-counter
+           #:reset-class-registry
+           #:allocate-class-id
+           #:register-compile-time-class
+           #:find-compile-time-class
+           #:class-info
+           #:class-info-name
+           #:class-info-superclass
+           #:class-info-slots
+           #:class-info-class-id
+           #:class-info-finalized-p
+           #:slot-info
+           #:slot-info-name
+           #:slot-info-initarg
+           #:slot-info-accessor
+           #:slot-info-initform
+           #:slot-info-initform-p
+           #:slot-info-index
+           #:compile-defclass
+           ;; CLOS compile-time generic function registry (026-clos-foundation)
+           #:*generic-function-registry*
+           #:reset-generic-function-registry
+           #:find-generic-function
+           #:register-generic-function
+           #:gf-info
+           #:gf-info-name
+           #:gf-info-methods
+           #:gf-info-lambda-list
+           #:method-info
+           #:method-info-specializers
+           #:method-info-qualifier
+           #:method-info-lambda-list
+           #:method-info-body
+           #:compile-defmethod))
 
 (defpackage #:clysm/compiler
   (:use #:cl
@@ -731,6 +811,7 @@
                           #:standard-class #:class-name #:class-precedence-list)
   (:shadow #:compute-applicable-methods)
   (:export #:compute-applicable-methods
+           #:sort-methods
            #:dispatch))
 
 (defpackage #:clysm/clos/combination

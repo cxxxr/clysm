@@ -165,7 +165,9 @@
      ;; Equality predicates Wasm validation (024-equality-predicates)
      (:file "equality-wasm-test")
      ;; Multiple values Wasm validation (025-multiple-values)
-     (:file "mv-wasm-test")))
+     (:file "mv-wasm-test")
+     ;; CLOS Foundation Wasm validation (026-clos-foundation)
+     (:file "clos-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -230,7 +232,15 @@
        (:file "skip-registry-test")
        (:file "runner-test")
        (:file "reporter-test")
-       (:file "baseline-test")))))
+       (:file "baseline-test")))
+     ;; CLOS Foundation unit tests (026-clos-foundation)
+     (:module "clos"
+      :serial t
+      :components
+      ((:file "defclass-test")
+       (:file "make-instance-test")
+       (:file "accessor-test")
+       (:file "defmethod-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
