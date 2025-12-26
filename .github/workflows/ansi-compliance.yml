@@ -43,6 +43,26 @@ jobs:
       - name: Build development environment
         run: nix develop --command echo "Environment ready"
 
+      - name: Setup Quicklisp
+        run: |
+          nix develop --command bash -c '
+            curl -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+            sbcl --non-interactive \
+              --load /tmp/quicklisp.lisp \
+              --eval "(quicklisp-quickstart:install)" \
+              --eval "(ql:add-to-init-file)"
+          '
+
+      - name: Install dependencies
+        run: |
+          nix develop --command sbcl --non-interactive \
+            --eval "(require :asdf)" \
+            --eval "(push (truename \".\") asdf:*central-registry*)" \
+            --eval "(ql:quickload :alexandria)" \
+            --eval "(ql:quickload :babel)" \
+            --eval "(ql:quickload :trivial-gray-streams)" \
+            --eval "(ql:quickload :uiop)"
+
       - name: Run ANSI compliance tests
         id: run-tests
         run: |
@@ -112,6 +132,26 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      - name: Setup Quicklisp
+        run: |
+          nix develop --command bash -c '
+            curl -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+            sbcl --non-interactive \
+              --load /tmp/quicklisp.lisp \
+              --eval "(quicklisp-quickstart:install)" \
+              --eval "(ql:add-to-init-file)"
+          '
+
+      - name: Install dependencies
+        run: |
+          nix develop --command sbcl --non-interactive \
+            --eval "(require :asdf)" \
+            --eval "(push (truename \".\") asdf:*central-registry*)" \
+            --eval "(ql:quickload :alexandria)" \
+            --eval "(ql:quickload :babel)" \
+            --eval "(ql:quickload :trivial-gray-streams)" \
+            --eval "(ql:quickload :uiop)"
 
       - name: Quick category check
         run: |
