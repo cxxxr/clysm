@@ -1,0 +1,3 @@
+[submodule "ansi-test"]
+	path = ansi-test
+	url = https://github.com/pfdietz/ansi-test.git

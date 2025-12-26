@@ -1,0 +1,119 @@
+name: ANSI CL Compliance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 'Category to test (empty for all)'
+        required: false
+        default: ''
+      update_baseline:
+        description: 'Update baseline after run'
+        required: false
+        default: 'false'
+
+jobs:
+  ansi-compliance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v14
+        with:
+          name: clysm
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        continue-on-error: true
+
+      - name: Build development environment
+        run: nix develop --command echo "Environment ready"
+
+      - name: Run ANSI compliance tests
+        id: run-tests
+        run: |
+          if [ -n "${{ github.event.inputs.category }}" ]; then
+            nix develop --command ./scripts/ansi-test.sh -c "${{ github.event.inputs.category }}" -r compliance-report.md
+          else
+            nix develop --command ./scripts/ansi-test.sh -r compliance-report.md
+          fi
+
+      - name: Compare with baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          nix develop --command ./scripts/ansi-test.sh --compare
+        continue-on-error: true
+
+      - name: Update baseline
+        if: github.event.inputs.update_baseline == 'true' && github.ref == 'refs/heads/main'
+        run: |
+          nix develop --command ./scripts/ansi-test.sh --update-baseline
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add baselines/
+          git commit -m "chore: update ANSI compliance baseline" || echo "No baseline changes"
+          git push
+
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report
+          path: compliance-report.md
+          retention-days: 30
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('compliance-report.md', 'utf8');
+
+            // Extract summary from report
+            const summaryMatch = report.match(/## Summary[\s\S]*?\|[\s\S]*?\|/);
+            const summary = summaryMatch ? summaryMatch[0] : 'See full report';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ANSI CL Compliance Report\n\n${summary}\n\n[Download full report](../actions/runs/${context.runId})`
+            });
+        continue-on-error: true
+
+  quick-check:
+    # Run a quick subset for fast feedback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Quick category check
+        run: |
+          # Run just the cons category as a quick smoke test
+          nix develop --command ./scripts/ansi-test.sh -c cons -t 10

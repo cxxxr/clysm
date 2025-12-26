@@ -138,7 +138,7 @@
 
 (defsystem "clysm/tests"
   :description "Tests for Clysm compiler"
-  :depends-on ("clysm" "rove")
+  :depends-on ("clysm" "clysm/ansi-test" "rove")
   :pathname "tests/"
   :serial t
   :components
@@ -200,7 +200,19 @@
      (:file "compile-test")
      ;; (:file "tier-promotion-test")  ; Moved to contract module
      ;; (:file "module-linking-test")  ; Moved to contract module
-     (:file "jit-test")))
+     (:file "jit-test")
+     ;; ANSI test harness (020-ansi-test)
+     (:module "ansi-test"
+      :serial t
+      :components
+      ((:file "package")
+       (:file "data-model-test")
+       (:file "loader-test")
+       (:file "classifier-test")
+       (:file "skip-registry-test")
+       (:file "runner-test")
+       (:file "reporter-test")
+       (:file "baseline-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -249,5 +261,52 @@
      ;; (:file "tier-promotion-test")  ; Moved to contract module
      )))
 
+  :perform (test-op (o c)
+             (symbol-call :rove :run c)))
+
+;; ANSI Common Lisp Test Harness (020-ansi-test)
+(defsystem "clysm/ansi-test"
+  :description "ANSI Common Lisp compliance test harness for Clysm"
+  :depends-on ("clysm" "alexandria" "uiop")
+  :pathname "src/clysm/ansi-test/"
+  :serial t
+  :components
+  ((:file "package")
+   (:file "data-model")
+   (:file "conditions")
+   (:file "skip-registry")
+   (:file "loader")
+   (:file "classifier")
+   (:file "runner")
+   (:file "reporter")
+   (:file "baseline")))
+
+;; ANSI Test Harness Tests
+(defsystem "clysm/ansi-test/tests"
+  :description "Tests for ANSI test harness"
+  :depends-on ("clysm/ansi-test" "rove")
+  :pathname "tests/"
+  :serial t
+  :components
+  ((:module "unit/ansi-test"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "data-model-test")
+     (:file "loader-test")
+     (:file "classifier-test")
+     (:file "skip-registry-test")
+     (:file "runner-test")
+     (:file "reporter-test")
+     (:file "baseline-test")))
+   (:module "integration/ansi-test"
+    :serial t
+    :components
+    ((:file "runner-test")
+     (:file "baseline-test")))
+   (:module "contract/ansi-test"
+    :serial t
+    :components
+    ((:file "report-format-test"))))
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
