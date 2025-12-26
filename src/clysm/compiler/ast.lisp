@@ -427,16 +427,20 @@
     (t (make-ast-literal :value value :literal-type :number))))
 
 (defun fold-arithmetic (op values)
-  "Fold arithmetic operation on constant values."
-  (case op
-    (+ (reduce #'+ values :initial-value 0))
-    (* (reduce #'* values :initial-value 1))
-    (- (if (= 1 (length values))
-           (- (first values))
-           (reduce #'- values)))
-    (/ (if (= 1 (length values))
-           (/ 1 (first values))
-           (reduce #'/ values)))))
+  "Fold arithmetic operation on constant values.
+   Uses sb-int:with-float-traps-masked to allow IEEE 754 special values
+   (infinity, NaN) to be produced by float division by zero."
+  ;; Mask float traps to allow IEEE 754 special values
+  (sb-int:with-float-traps-masked (:divide-by-zero :invalid :overflow)
+    (case op
+      (+ (reduce #'+ values :initial-value 0))
+      (* (reduce #'* values :initial-value 1))
+      (- (if (= 1 (length values))
+             (- (first values))
+             (reduce #'- values)))
+      (/ (if (= 1 (length values))
+             (/ 1 (first values))
+             (reduce #'/ values))))))
 
 (defun parse-arithmetic-form (op args)
   "Parse an arithmetic form with constant folding.

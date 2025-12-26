@@ -259,8 +259,13 @@ needs_interaction() {
 
     case "$command" in
         specify)
-            # [NEEDS CLARIFICATION] がある場合
-            if echo "$output" | grep -qi "NEEDS CLARIFICATION"; then
+            # "Ready for Next Phase" + clarify/plan 選択肢がある場合は対話不要
+            # （ワークフローは自動的に clarify に進む）
+            if echo "$output" | grep -qi "Ready for Next Phase"; then
+                return 1
+            fi
+            # [NEEDS CLARIFICATION] がある場合（"No [NEEDS CLARIFICATION]" は除外）
+            if echo "$output" | grep -v -i "No \[NEEDS CLARIFICATION\]" | grep -qi "\[NEEDS CLARIFICATION\]"; then
                 # ただし推奨がある場合は自動回答可能
                 if auto_answer "$output" > /dev/null; then
                     return 1
