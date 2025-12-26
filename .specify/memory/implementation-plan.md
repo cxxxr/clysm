@@ -558,7 +558,12 @@ Phase 8 [標準ライブラリ]          ◀── ANSI準拠
     ├── 8C [FFI基盤] 🔜 ◀── ホスト連携
     ├── 8D [WASI Stream I/O] ⏸️ ◀── 標準入出力・ファイル（中断）
     ├── 8E [パッケージ]
-    └── 8F [条件システム]
+    ├── 8F [条件システム]
+    └── 8G [数値アクセサ] ✅
+
+Cross-cutting:
+    ├── 020 [ANSIテストハーネス] ✅
+    └── 022 [Wasm Import最適化] ✅ ◀── wasmtime直接実行可能
 ```
 
 ---
@@ -674,6 +679,26 @@ Phase 8 [標準ライブラリ]          ◀── ANSI準拠
 - [ ] condition/restart基盤
 - [ ] handler-bind, handler-case
 
+#### M8G: 数値アクセサ ✅ 完了 (019-numeric-accessors)
+- [x] numerator/denominator アクセサ関数
+- [x] IEEE 754 特殊値 (Infinity, NaN)
+- [x] Float対応比較演算子
+
+### クロスカッティング: インフラ改善
+
+#### 020-ansi-test ✅ 基盤完了
+- [x] ANSI Common Lispテストスイート統合ハーネス
+- [x] pfdietz/ansi-testからのDEFTESTパース
+- [x] カテゴリ別テスト実行・レポート生成
+- [x] ベースライン管理・リグレッション検出
+- [x] CLI/CI ワークフロー統合
+
+#### 022-wasm-import-optimization ✅ 完了
+- [x] I/O使用分析器 (`analyze-io-usage`)
+- [x] FFI Import section 条件付き出力
+- [x] 非I/Oコードのwasmtime直接実行可能化
+- [x] ANSIテスト実行ブロック解除 (0% → 1.3%)
+
 **最終目標**:
 - [ ] ANSI CL準拠テストスイートの一定割合パス
 - [ ] 実用的なアプリケーション構築可能
@@ -743,3 +768,5 @@ Phase 8 [標準ライブラリ]          ◀── ANSI準拠
 | 0.1.0 | 2025-12-21 | 初版作成 |
 | 0.2.0 | 2025-12-24 | Phase 8をサブフェーズ(8A-8F)に分割、8A/8B完了、憲法逸脱ドキュメント追加 |
 | 0.2.1 | 2025-12-24 | Phase 8D (WASI Stream I/O) を中断 |
+| 0.3.0 | 2025-12-25 | 020-ansi-test: ANSIテストハーネス基盤完成 |
+| 0.3.1 | 2025-12-26 | 022-wasm-import-optimization: FFI Import条件付き出力完了、wasmtime直接実行可能に |

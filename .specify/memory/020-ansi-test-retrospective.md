@@ -1,85 +1,56 @@
 # 020-ansi-test Retrospective
 
 **Feature**: ANSI Common Lisp Test Suite Integration
-**Status**: Infrastructure complete, 0% pass rate
-**Date**: 2025-12-25
+**Status**: Infrastructure complete, execution enabled (via 022)
+**Date**: 2025-12-25 (Updated: 2025-12-26)
 
 ## Executive Summary
 
-テストハーネス基盤は完成し正常に動作しているが、実際のテスト成功率は0%。
-これはハーネスの問題ではなく、2つの構造的課題が原因。
+テストハーネス基盤は完成し正常に動作している。
+**2025-12-26更新**: 022-wasm-import-optimizationにより、FFIインポート問題が解決され、
+テスト実行が可能になった。
 
-## Problem Analysis
+## Problem Resolution
 
-### Issue 1: Missing FFI Host Shim (PRIMARY BLOCKER)
+### Issue 1: Missing FFI Host Shim (PRIMARY BLOCKER) → **RESOLVED**
 
-コンパイルは成功するが、wasmtime実行時にFFIインポートエラーが発生：
-
+**以前の問題**:
 ```
-unknown import: `clysm:io::write-char` has not been defined
+wasmtime --invoke _start module.wasm
+→ unknown import: `clysm:io::write-char` has not been defined
 ```
 
-**Root Cause**: コンパイルされたWasmモジュールは `clysm:io` 名前空間のFFI関数をインポートするが、
-生の wasmtime 実行ではこれらが提供されない。
+**解決策** (022-wasm-import-optimization):
+- I/O使用分析器を追加
+- `analyze-io-usage`がソースコードをスキャンしてI/O関数呼び出しを検出
+- I/O未使用コード → Import sectionなし → wasmtime直接実行可能
 
-**Solution**: `host-shim/` を使用するか、FFIインポートなしでコンパイルするオプションが必要。
-
+**現在の状態**:
 ```bash
-# 現在の実行方法（失敗）
-wasmtime --wasm gc --invoke _start module.wasm
+# 動作確認
+wasmtime --wasm gc --wasm exceptions --invoke _start add.wasm
+→ 3  # 成功
 
-# 必要な実行方法
-wasmtime --wasm gc --invoke _start module.wasm --preload clysm:io=host-shim.wasm
+# ANSIテスト実行
+(run-ansi-tests :category "numbers")
+→ 18/1396 (1.3%) # 以前は0%でブロック
 ```
 
-### Issue 2: Undefined CL Functions
+### Issue 2: Undefined CL Functions → **ONGOING**
 
-多くのテストが未実装の標準CL関数を使用：
+多くのテストが未実装の標準CL関数を使用。これは021-ansi-test-executionの
+残りのタスク（T021-T055）で対処予定。
 
-```
-ACONS.1: compile-error: Undefined function: COPY-TREE
-ACONS.2: compile-error: Undefined function: ACONS
-ACONS.7: compile-error: Undefined function: MACROLET
-ACONS.ORDER.1: compile-error: Undefined function: VALUES
-```
-
-未実装関数リスト（consカテゴリのみ）:
+未実装関数リスト（優先度順）:
 - `ACONS` - Association list cons
 - `COPY-TREE` - Deep copy
 - `MACROLET` - Local macro definitions
 - `VALUES` - Multiple value return
 
-### Issue 3: Compilation Failures (Original)
+### Issue 3: Output Verification Limitation → **UNCHANGED**
 
-典型的なcons テスト:
-```lisp
-(deftest cons.1
-  (cons 'a 'b)
-  (a . b))
-```
+**アーキテクチャ上の制約**（変更なし）:
 
-このテストが失敗する理由:
-- `'a` → `(quote a)` に展開される
-- シンボル `a` を実行時に生成する必要がある
-- Clysm はまだシンボル生成をランタイムで完全サポートしていない可能性
-
-**診断方法**:
-```lisp
-;; 手動でコンパイルエラーを確認
-(handler-case
-    (clysm/compiler:compile-to-wasm '(cons 'a 'b))
-  (error (e) (format t "Error: ~A~%" e)))
-```
-
-### Issue 2: Output Verification Limitation
-
-**アーキテクチャ上の制約**:
-
-```
-Lisp form → Compile → Wasm module → wasmtime (_start returns i32) → parse
-```
-
-`parse-wasm-output` が処理できる値:
 | 型 | Wasm戻り値 | パース可能 |
 |---|---|---|
 | Fixnum | 整数値 | ✓ |
@@ -89,19 +60,18 @@ Lisp form → Compile → Wasm module → wasmtime (_start returns i32) → pars
 | Symbol | -2147483647 (sentinel) | ✗ |
 | String | -2147483647 (sentinel) | ✗ |
 
-**影響**: cons/symbol/string を返すテストは、たとえコンパイル・実行が成功しても検証不可能
+## Current Test Results
 
-```lisp
-;; 検証可能
-(+ 1 2) → 3
-(null nil) → T
+### After 022-wasm-import-optimization
 
-;; 検証不可能
-(cons 1 2) → (1 . 2)  ; sentinel値として-2147483647が返る
-(car '(a b)) → A      ; 同上
-```
+| Category | Pass | Total | Rate | Status |
+|----------|------|-------|------|--------|
+| numbers | 18 | 1396 | 1.3% | Executing |
+| cons | 17 | 1641 | 1.0% | Executing |
 
-## Current Test Harness Capabilities
+**改善点**: 以前は0%（FFIエラーでブロック）→ 現在は実行可能
+
+## Test Harness Capabilities
 
 ### What Works
 - [x] pfdietz/ansi-test からの DEFTEST パース
@@ -112,100 +82,27 @@ Lisp form → Compile → Wasm module → wasmtime (_start returns i32) → pars
 - [x] ベースライン管理・リグレッション検出
 - [x] CLI スクリプト
 - [x] GitHub Actions ワークフロー
+- [x] **NEW**: I/O未使用テストのwasmtime直接実行
 
 ### What Cannot Work (Architectural Limitation)
 - [ ] 複合値（cons, symbol, string）を返すテストの検証
 - [ ] multiple-values を返すテストの検証
 - [ ] 副作用を確認するテスト（I/O等）
 
-## Proposed Next Steps
+## Next Steps
 
-### Phase 0: Fix Host Shim Integration (CRITICAL)
+### 021-ansi-test-execution を再開
 
-**目標**: ANSIテストハーネスがhost-shimを使用してWasmを実行できるようにする
+022-wasm-import-optimizationによりブロックが解除されたため、
+021のPhase 3-7（T021-T055）を実装可能。
 
-現在の問題:
-```
-wasmtime --invoke _start module.wasm
-# → unknown import: `clysm:io::write-char` has not been defined
-```
-
-解決策:
-1. `run-wasm-bytes` 関数を修正してhost-shimを使用
-2. または、FFIインポートなしでコンパイルするモードを追加
-
-```lisp
-;; runner.lisp の修正案
-(defun run-wasm-bytes (bytes &key (timeout 30))
-  (uiop:with-temporary-file (:pathname path :type "wasm" :keep nil)
-    (write-wasm-to-file bytes path)
-    (uiop:run-program
-      (list "wasmtime" "--wasm" "gc"
-            "--preload" "clysm:io=host-shim/target/wasm32-unknown-unknown/release/host_shim.wasm"
-            "--invoke" "_start"
-            (namestring path))
-      ...)))
-```
-
-**ブロッカー**: これが解決しないと1つのテストもPASSしない
-
-### Phase 1: Get First Tests Passing
-
-**目標**: 少なくとも1つのテストを PASS させる
-
-Phase 0 完了後、以下のテストが動作するはず:
-- Fixnum演算: `(+ 1 2)`, `(- 5 3)`
-- 比較: `(< 1 2)`, `(= 3 3)`
-- NIL/T: `(null nil)`, `(not t)`, `(atom 1)`
-
-これらは検証可能（i32/boolean を返す）。
-
-### Phase 2: Implement Missing CL Functions
-
-**目標**: consカテゴリの基本テストを通す
-
-未実装関数（優先度順）:
-1. `ACONS` - 単純な実装で多くのテストが通る
-2. `COPY-TREE` - 再帰的なツリーコピー
-3. `VALUES` / `MULTIPLE-VALUE-BIND` - 多値対応
-4. `MACROLET` - ローカルマクロ
-
-### Phase 3: Expand Verifiable Subset
-
-**目標**: 検証可能テストのパスレート向上
-
-1. **Verifiable Test Catalog 作成**
-   - ANSI テストから fixnum/nil/t を返すものを抽出
-   - 独立したカテゴリとして追跡
-
-2. **パスレート目標設定**
-   - Verifiable tests: 50%+ 目標
-   - これはコンパイラ機能の進捗を反映
-
-### Phase 4: Value Serialization (Long-term)
-
-**目標**: 任意のLisp値を検証可能にする
-
-アプローチ:
-```
-Lisp form → Compile → Wasm + PRINT → wasmtime → stdout → parse S-expr
-```
-
-必要な実装:
-1. Wasm内でのPRINT実装（FFI経由でホストへ出力）
-2. コンパイル時に結果を PRINT するラッパー追加
-3. S式パーサーで stdout を読み取り
-
-これにより `(cons 1 2)` → stdout: "(1 . 2)" → パース → 比較可能
-
-## Metrics to Track
-
-| Metric | Current | Target |
-|--------|---------|--------|
-| Total ANSI tests | ~20,000 | - |
-| Verifiable tests (fixnum/nil/t) | TBD | - |
-| Verifiable pass rate | 0% | 50%+ |
-| Overall pass rate | 0% | N/A (blocked by Issue 2) |
+**残りのタスク**:
+- T021-T028: 算術テスト実行・検証
+- T029-T034: 述語テスト (null, atom, consp)
+- T035-T039: consカテゴリ ≥5%達成
+- T040-T043: サマリー表示フォーマット
+- T047-T049: スキップ理由の分類
+- T050-T055: ポリッシュ・最終検証
 
 ## Decision Log
 
@@ -215,6 +112,7 @@ Lisp form → Compile → Wasm + PRINT → wasmtime → stdout → parse S-expr
 | 2025-12-25 | 0%を許容 | Issue 1,2,3の構造的課題が原因、ハーネス自体は正常 |
 | 2025-12-25 | host-shim統合が必要 | FFIインポート（clysm:io）なしではWasm実行不可 |
 | 2025-12-25 | 次フィーチャーでPhase 0解決 | テスト1つもPASSしない状態を解消する必要あり |
+| **2025-12-26** | **022完了によりブロック解除** | **I/O分析器により非I/Oコードはインポート不要に** |
 
 ## Files Reference
 
@@ -226,38 +124,7 @@ Lisp form → Compile → Wasm + PRINT → wasmtime → stdout → parse S-expr
 
 ## Related Features
 
-- **010-numeric-tower**: 数値型実装（fixnum演算に影響）
-- **019-numeric-accessors**: numerator/denominator
-- **018-fix-ffi-streams**: FFI ストリーム実装（host-shim必要の原因）
-- **Future**: Symbol runtime, PRINT implementation
-
-## Proposed Next Feature: 021-ansi-test-execution
-
-**目的**: ANSIテストを実際に実行可能にする
-
-### Scope
-
-1. **Host Shim Integration**
-   - `run-wasm-bytes` を修正して `host-shim/` を使用
-   - または、テスト用にFFIインポートを無効化するオプション
-
-2. **Missing Function Stubs**
-   - `ACONS` 実装
-   - `COPY-TREE` 実装
-   - 未実装関数をスキップではなくエラーとして報告するオプション
-
-3. **Verifiable Test Subset**
-   - fixnum/nil/t を返すテストのカタログ作成
-   - このサブセットのパスレート追跡
-
-### Success Criteria
-
-- [ ] 少なくとも1つのANSIテストがPASS
-- [ ] consカテゴリで5%以上のパスレート
-- [ ] numbersカテゴリで10%以上のパスレート
-
-### Estimated Effort
-
-- Phase 0 (Host Shim): 1-2 tasks
-- Phase 1 (First Pass): 2-3 tasks
-- Phase 2 (Missing Functions): 5-10 tasks per function
+- **010-numeric-tower**: 数値型実装（fixnum演算に影響）✅
+- **019-numeric-accessors**: numerator/denominator ✅
+- **022-wasm-import-optimization**: FFIインポート問題解決 ✅ **NEW**
+- **021-ansi-test-execution**: テスト実行（Phase 3-7 unblocked）
