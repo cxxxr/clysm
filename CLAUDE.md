@@ -26,6 +26,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) - test harness modification + Existing 020-ansi-test (loader, runner, classifier), clysm/compiler (021-ansi-test-execution)
 - N/A (in-memory test execution) (021-ansi-test-execution)
 - Common Lisp (SBCL 2.4+) + alexandria, babel, rove (testing), clysm/ffi (existing FFI module) (022-wasm-import-optimization)
+- Common Lisp (SBCL 2.4+) for compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing) (024-equality-predicates)
+- N/A (compile-time only) (024-equality-predicates)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -45,9 +47,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 024-equality-predicates: Added Common Lisp (SBCL 2.4+) for compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 023-type-predicates: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 022-wasm-import-optimization: Added Common Lisp (SBCL 2.4+) + alexandria, babel, rove (testing), clysm/ffi (existing FFI module)
-- 021-ansi-test-execution: Added Common Lisp (SBCL 2.4+) - test harness modification + Existing 020-ansi-test (loader, runner, classifier), clysm/compiler
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -98,4 +100,45 @@ Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow stan
 ### Known Limitation
 - Test harness requires FFI shim (host-shim/) for wasmtime execution
 - All Wasm modules validate correctly with `wasm-tools validate`
+
+## Feature 024: Equality Predicates and Logical Operators - COMPLETE
+
+**Status**: All 103 tasks completed (2025-12-26)
+
+### Implemented Components
+- `src/clysm/compiler/codegen/func-section.lisp`: eq, eql, equal, equalp, not predicates
+- `src/clysm/compiler/compiler.lisp`: i64.eq, i64.ne, f64.convert_i32_s instructions
+
+### Key Features
+1. **eq predicate**: Pointer identity using Wasm `ref.eq`
+   - Handles null (NIL) specially with `ref.is_null`
+   - `(eq 'a 'a)` → T, `(eq (cons 1 2) (cons 1 2))` → NIL
+2. **eql predicate**: Type-aware value equality
+   - i31ref comparison for fixnums/characters
+   - f64.eq for floats, ref.eq for ratio numerator/denominator
+   - `(eql 3.14 3.14)` → T, `(eql 1 1.0)` → NIL
+3. **equal predicate**: Structural equality with worklist-based recursion
+   - Byte-by-byte string comparison
+   - Recursive cons cell comparison without Wasm-level recursion
+   - `(equal '(1 2 3) '(1 2 3))` → T
+4. **equalp predicate**: Case-insensitive structural equality
+   - Case-insensitive string/character comparison
+   - Numeric type coercion (fixnum ↔ float)
+   - `(equalp "Hello" "HELLO")` → T, `(equalp 3 3.0)` → T
+5. **not predicate**: Logical negation
+   - `(not nil)` → T, `(not t)` → NIL
+6. **and/or special forms**: Already implemented in ast.lisp as nested if expansion
+
+### Technical Details
+- Worklist-based algorithm for recursive cons comparison (avoids Wasm recursion limits)
+- `ref.test` and `ref.cast` for runtime type dispatch
+- Boolean result wrapping: `(:i32.const 1) :ref.i31` for T, `(:ref.null :none)` for NIL
+- Added i64.eq/i64.ne opcodes for ratio comparison
+- Added f64.convert_i32_s for numeric coercion in equalp
+
+### Test Coverage
+- Unit tests: equality-predicates-test.lisp (eq, eql, equal, equalp, not)
+- Unit tests: logical-operators-test.lisp (and, or)
+- Contract tests: equality-wasm-test.lisp (Wasm validation)
+- Integration tests: equality-ansi-test.lisp (ANSI CL compliance)
 <!-- MANUAL ADDITIONS END -->

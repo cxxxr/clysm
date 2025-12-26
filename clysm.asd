@@ -161,7 +161,9 @@
      ;; Import section optimization (022-wasm-import-optimization)
      (:file "import-section-test")
      ;; Predicates Wasm validation (023-type-predicates)
-     (:file "predicates-wasm-test")))
+     (:file "predicates-wasm-test")
+     ;; Equality predicates Wasm validation (024-equality-predicates)
+     (:file "equality-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -210,6 +212,9 @@
      (:file "io-usage-test")
      ;; Type predicates (023-type-predicates)
      (:file "type-predicates-test")
+     ;; Equality predicates (024-equality-predicates)
+     (:file "equality-predicates-test")
+     (:file "logical-operators-test")
      ;; ANSI test harness (020-ansi-test)
      (:module "ansi-test"
       :serial t
@@ -271,7 +276,9 @@
      ;; Wasmtime execution tests (022-wasm-import-optimization)
      (:file "wasmtime-test")
      ;; ANSI predicates integration tests (023-type-predicates)
-     (:file "ansi-predicates-test"))))
+     (:file "ansi-predicates-test")
+     ;; ANSI equality predicates integration tests (024-equality-predicates)
+     (:file "equality-ansi-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

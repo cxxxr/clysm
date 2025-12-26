@@ -284,3 +284,22 @@
 ;; ANSI predicates integration tests (023-type-predicates)
 (defpackage #:clysm/tests/integration/ansi-predicates
   (:use #:cl #:rove))
+
+;; Equality predicates unit tests (024-equality-predicates)
+(defpackage #:clysm/tests/unit/equality-predicates
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Logical operators unit tests (024-equality-predicates)
+(defpackage #:clysm/tests/unit/logical-operators
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Equality Wasm contract tests (024-equality-predicates)
+(defpackage #:clysm/tests/contract/equality-wasm
+  (:use #:cl #:rove))
+
+;; Equality ANSI integration tests (024-equality-predicates)
+(defpackage #:clysm/tests/integration/equality-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))

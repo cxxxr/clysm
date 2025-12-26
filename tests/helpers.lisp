@@ -37,7 +37,9 @@
 (defun parse-wasm-output (output)
   "Parse wasmtime output to Lisp value.
    MIN_INT32 (-2147483648) is used as a sentinel for NIL.
-   MIN_INT32 + 1 (-2147483647) is used as a sentinel for non-fixnum values."
+   MIN_INT32 + 1 (-2147483647) is used as a sentinel for non-fixnum values.
+   Note: T is represented as i31ref(1), same as the integer 1. Tests should
+   use (eql 1 ...) for boolean true checks, or compare with `null` for false."
   (let ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab) output)))
     (cond
       ((string= trimmed "") nil)
