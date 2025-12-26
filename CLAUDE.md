@@ -45,9 +45,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 023-type-predicates: Added Common Lisp (SBCL 2.4+) - compiler implementation + alexandria, babel, trivial-gray-streams, rove (testing)
 - 022-wasm-import-optimization: Added Common Lisp (SBCL 2.4+) + alexandria, babel, rove (testing), clysm/ffi (existing FFI module)
 - 021-ansi-test-execution: Added Common Lisp (SBCL 2.4+) - test harness modification + Existing 020-ansi-test (loader, runner, classifier), clysm/compiler
-- 020-ansi-test: Added Common Lisp (SBCL 2.4+) - test harness implementation + alexandria, rove (test framework), uiop (process execution), wasmtime (Wasm runtime), wasm-tools (validation)
 
 
 <!-- MANUAL ADDITIONS START -->
