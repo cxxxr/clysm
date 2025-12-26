@@ -116,4 +116,11 @@
    #:generate-import-call-with-error-handling
    #:generate-ffi-try-catch-wrapper
    #:generate-host-error-signal
-   #:ffi-error-handler-type))
+   #:ffi-error-handler-type
+
+   ;; Dynamic call-host support (T047 - 027-complete-ffi)
+   #:*call-host-dynamic-import-index*
+   #:make-call-host-dynamic-import-decl
+   #:register-call-host-dynamic-import
+   #:get-call-host-dynamic-index
+   #:ensure-call-host-dynamic-import))

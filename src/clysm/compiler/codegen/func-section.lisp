@@ -254,7 +254,106 @@
     (clysm/compiler/ast:ast-make-instance
      (compile-make-instance ast env))
     (clysm/compiler/ast:ast-defmethod
-     (compile-defmethod ast env))))
+     (compile-defmethod ast env))
+    ;; FFI (027-complete-ffi)
+    (clysm/compiler/ast:ast-ffi-call
+     (compile-ffi-call ast env))
+    (clysm/compiler/ast:ast-call-host
+     (compile-call-host ast env))))
+
+;;; ============================================================
+;;; FFI Call Compilation (027-complete-ffi)
+;;; ============================================================
+
+(defun compile-ffi-call (ast env)
+  "Compile an FFI function call to Wasm instructions.
+   This generates:
+   1. Compile and marshal each argument from Lisp to Wasm type
+   2. Call the imported function by its assigned function index
+   3. Unmarshal the result from Wasm to Lisp type (or produce NIL for :void)
+
+   Constitution I compliance: Uses WasmGC types only, no linear memory."
+  (let* ((decl (clysm/compiler/ast:ast-ffi-call-declaration ast))
+         (args (clysm/compiler/ast:ast-ffi-call-arguments ast))
+         (param-types (clysm/ffi:ffd-param-types decl))
+         (return-type (clysm/ffi:ffd-return-type decl))
+         (func-index (or (clysm/ffi:ffd-type-index decl) 0))
+         (result '()))
+    ;; Step 1: Compile and marshal each argument
+    (loop for arg in args
+          for param-type in param-types
+          do
+             ;; Compile the argument expression
+             (let ((arg-instrs (compile-to-instructions arg env)))
+               (dolist (instr arg-instrs)
+                 (push instr result)))
+             ;; Add marshalling instructions (Lisp -> Wasm)
+             (let ((marshal-instrs (clysm/ffi:marshal-to-wasm param-type)))
+               (when marshal-instrs
+                 (if (atom marshal-instrs)
+                     ;; Single instruction like 'i31.get_s
+                     (push (list marshal-instrs) result)
+                     ;; List of instructions
+                     (dolist (instr marshal-instrs)
+                       (push (if (listp instr) instr (list instr)) result))))))
+    ;; Step 2: Call the imported function
+    (push (list :call func-index) result)
+    ;; Step 3: Unmarshal return value
+    (if (eq return-type :void)
+        ;; Void functions return NIL
+        (push '(:ref.null :none) result)
+        ;; Non-void: unmarshal the result
+        (let ((unmarshal-instrs (clysm/ffi:marshal-from-wasm return-type)))
+          (when unmarshal-instrs
+            (if (atom unmarshal-instrs)
+                (push (list unmarshal-instrs) result)
+                (dolist (instr unmarshal-instrs)
+                  (push (if (listp instr) instr (list instr)) result))))))
+    (nreverse result)))
+
+(defun compile-call-host (ast env)
+  "Compile a dynamic host function call (ffi:call-host) to Wasm instructions.
+   This generates:
+   1. Evaluate the function name expression (string) → externref
+   2. Compile each argument to anyref
+   3. Create an anyref array with the arguments → externref
+   4. Call the $ffi_call_host_dynamic import
+   5. Convert result from externref to anyref
+
+   The dynamic dispatch is handled by the host environment."
+  (let* ((func-name (clysm/compiler/ast:ast-call-host-function-name ast))
+         (args (clysm/compiler/ast:ast-call-host-arguments ast))
+         (num-args (length args))
+         (result '()))
+    ;; Step 1: Compile function name and convert to externref
+    (dolist (instr (compile-to-instructions func-name env))
+      (push instr result))
+    ;; Convert the string (anyref) to externref for host
+    (push '(:extern.convert_any) result)
+
+    ;; Step 2: Compile arguments and create array
+    (if (zerop num-args)
+        ;; No arguments - push null externref
+        (push '(:ref.null :extern) result)
+        (progn
+          ;; Compile each argument (result is anyref)
+          (dolist (arg args)
+            (dolist (instr (compile-to-instructions arg env))
+              (push instr result)))
+          ;; Create anyref array from stack values
+          (push `(:array.new_fixed ,clysm/compiler/codegen/gc-types:+type-anyref-array+ ,num-args) result)
+          ;; Convert array to externref
+          (push '(:extern.convert_any) result)))
+
+    ;; Step 3: Call the dynamic dispatch import
+    ;; The import index is assigned during module compilation
+    ;; Use a placeholder that will be resolved during linking
+    (push '(:call $ffi_call_host_dynamic) result)
+
+    ;; Step 4: Convert result from externref to anyref
+    (push '(:any.convert_extern) result)
+
+    (nreverse result)))
 
 ;;; ============================================================
 ;;; Literal Compilation

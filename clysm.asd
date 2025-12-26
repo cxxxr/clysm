@@ -167,7 +167,14 @@
      ;; Multiple values Wasm validation (025-multiple-values)
      (:file "mv-wasm-test")
      ;; CLOS Foundation Wasm validation (026-clos-foundation)
-     (:file "clos-wasm-test")))
+     (:file "clos-wasm-test")
+     ;; FFI Complete Wasm validation (027-complete-ffi)
+     (:file "ffi-import-wasm-test")
+     (:file "ffi-call-wasm-test")
+     (:file "ffi-export-wasm-test")
+     (:file "ffi-error-wasm-test")
+     (:file "ffi-dynamic-wasm-test")
+     (:file "ffi-callback-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -240,7 +247,21 @@
       ((:file "defclass-test")
        (:file "make-instance-test")
        (:file "accessor-test")
-       (:file "defmethod-test")))))
+       (:file "defmethod-test")))
+     ;; FFI Complete unit tests (027-complete-ffi)
+     (:module "ffi"
+      :serial t
+      :components
+      ((:file "define-foreign-function-test")
+       (:file "ffi-call-parse-test")
+       (:file "marshal-test")
+       (:file "export-function-test")
+       (:file "export-wrapper-test")
+       (:file "error-handling-test")
+       (:file "ffi-condition-test")
+       (:file "call-host-parse-test")
+       (:file "call-host-args-test")
+       (:file "callback-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -292,7 +313,13 @@
      ;; ANSI predicates integration tests (023-type-predicates)
      (:file "ansi-predicates-test")
      ;; ANSI equality predicates integration tests (024-equality-predicates)
-     (:file "equality-ansi-test"))))
+     (:file "equality-ansi-test")
+     ;; FFI Complete integration tests (027-complete-ffi)
+     (:file "ffi-import-call-test")
+     (:file "ffi-export-test-027")
+     (:file "ffi-error-handling-test")
+     (:file "ffi-call-host-test")
+     (:file "ffi-callback-test")))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

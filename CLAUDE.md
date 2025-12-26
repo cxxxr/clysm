@@ -31,6 +31,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules (025-multiple-values)
 - N/A (in-memory globals within Wasm module) (025-multiple-values)
 - N/A (in-memory class/instance registry) (026-clos-foundation)
+- Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules (027-complete-ffi)
+- N/A (in-memory compile-time registries) (027-complete-ffi)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -50,9 +52,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 027-complete-ffi: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules
 - 026-clos-foundation: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 - 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
-- 025-multiple-values: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/runtime modules
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -238,4 +240,56 @@ Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow stan
 - Unit tests: tests/unit/clos/*.lisp (defclass-test, make-instance-test, accessor-test, defmethod-test)
 - Contract tests: tests/contract/clos-wasm-test.lisp (WasmGC type validation)
 - Integration tests: tests/integration/clos-test.lisp (end-to-end CLOS usage)
+
+## Feature 027: Complete FFI Foundation - COMPLETE
+
+**Status**: All 66 tasks completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/compiler/ast.lisp`: ast-ffi-call, ast-call-host AST nodes
+- `src/clysm/compiler/codegen/func-section.lisp`: compile-ffi-call, compile-call-host
+- `src/clysm/ffi/marshalling.lisp`: Lisp↔Wasm type marshalling
+- `src/clysm/ffi/import-gen.lisp`: Wasm import section generation
+- `src/clysm/ffi/export-gen.lisp`: Wasm export section generation
+- `src/clysm/runtime/ffi-dispatch.lisp`: Dynamic call-host infrastructure
+- `host-shim/ffi-test-host.js`: JavaScript test host with mock functions
+
+### Key Features
+1. **define-foreign-function**: Declare host function imports
+   - `(ffi:define-foreign-function console-log "host.log" (:string) :void)`
+   - Marshal types: :fixnum, :float, :string, :boolean, :anyref, :void
+2. **export-function**: Export Lisp functions to host
+   - `(ffi:export-function my-add "add" (:fixnum :fixnum) :fixnum)`
+   - Auto-generated wrapper with marshalling
+3. **ffi:call-host**: Dynamic host function invocation
+   - `(ffi:call-host "host.random")` calls by string name
+   - Arguments packed into externref array
+4. **Error handling**: ffi-host-error and ffi-type-error conditions
+   - try_table/catch_all for host exceptions
+   - Proper condition hierarchy (subtypes of ERROR)
+5. **Callback support**: Re-entrant host→Lisp calls
+   - Export wrappers are re-entrant safe
+   - Special variable bindings preserved
+   - Condition handlers work across boundaries
+
+### Type Marshalling
+| Lisp Type | Wasm Type | Host Type |
+|-----------|-----------|-----------|
+| :fixnum | i31ref | i32 |
+| :float | (ref $float) | f64 |
+| :string | (ref $string) | externref |
+| :boolean | anyref | i32 (0/1) |
+| :anyref | anyref | externref |
+| :void | - | - |
+
+### Technical Details
+- WasmGC-First: No linear memory, all types as GC references
+- Type indices: FFI imports start at 23+ (after built-in types)
+- i31ref range: -2^30 to 2^30-1 (31-bit signed)
+- Nil handling: null externref for strings, i32 0 for booleans
+
+### Test Coverage
+- Unit tests: tests/unit/ffi/*.lisp (define-foreign-function, marshal, call-host, callback)
+- Contract tests: tests/contract/ffi-*.lisp (Wasm validation)
+- Integration tests: tests/integration/ffi-*.lisp (end-to-end FFI)
 <!-- MANUAL ADDITIONS END -->

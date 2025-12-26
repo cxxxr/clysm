@@ -54,6 +54,13 @@
 (defconstant +type-closure-array+ 23 "Type index for CLOS initform closure array")
 
 ;;; ============================================================
+;;; FFI Type Indices (027-complete-ffi)
+;;; ============================================================
+;; Note: Reuse +type-slot-vector+ (21) for anyref arrays in FFI calls
+;; since it has the same structure: (array (mut anyref))
+(defconstant +type-anyref-array+ 21 "Type index for anyref array (aliased from slot-vector)")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 

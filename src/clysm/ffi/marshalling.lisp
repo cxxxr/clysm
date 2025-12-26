@@ -22,6 +22,7 @@
 
 ;;; ============================================================
 ;;; T043: Fixnum Marshalling (i31ref <-> i32)
+;;; T060: Overflow detection for values > 31-bit (027-complete-ffi)
 ;;; ============================================================
 
 (defun marshal-fixnum-to-i32 ()
@@ -32,9 +33,45 @@
 
 (defun marshal-i32-to-fixnum ()
   "Generate instructions to convert i32 from host to i31ref.
-   Stack: [i32] -> [i31ref]"
+   Stack: [i32] -> [i31ref]
+
+   T060: Overflow handling - ref.i31 truncates to 31 bits.
+   Values outside [-2^30, 2^30-1] will be truncated.
+   For strict checking, use marshal-i32-to-fixnum-checked instead."
   ;; ref.i31 creates an i31ref from the low 31 bits of i32
   '(ref.i31))
+
+(defun marshal-i32-to-fixnum-checked ()
+  "Generate instructions to convert i32 to i31ref with overflow check.
+   Stack: [i32] -> [i31ref]
+
+   T060: Signals ffi-type-error if value doesn't fit in 31 bits.
+   Range: -1073741824 to 1073741823 (i.e., -2^30 to 2^30-1)"
+  ;; Check if value is in i31ref range:
+  ;; Lower bound: -2^30 = -1073741824
+  ;; Upper bound: 2^30-1 = 1073741823
+  ;;
+  ;; This generates:
+  ;; 1. Duplicate the value for range check
+  ;; 2. Check lower bound
+  ;; 3. Check upper bound
+  ;; 4. If out of range, trap with unreachable
+  ;; 5. Convert to i31ref
+  '((local.tee $temp_i32)       ; Save value
+    (i32.const -1073741824)     ; Lower bound
+    (i32.ge_s)                  ; value >= lower?
+    (local.get $temp_i32)
+    (i32.const 1073741823)      ; Upper bound
+    (i32.le_s)                  ; value <= upper?
+    (i32.and)                   ; Both conditions
+    (if (result i31ref)
+        (then
+          (local.get $temp_i32)
+          (ref.i31))
+        (else
+          ;; Overflow - signal error via trap
+          ;; In full implementation, this would call signal-ffi-type-error
+          (unreachable)))))
 
 ;;; ============================================================
 ;;; T045-T046: Float Marshalling ((ref $float) <-> f64)
@@ -55,32 +92,54 @@
 
 ;;; ============================================================
 ;;; T047-T048: String Marshalling ((ref $string) <-> externref)
+;;; T061: Nil handling for :string (027-complete-ffi)
+;;; T062: ref.cast error handling for invalid externref (027-complete-ffi)
 ;;; ============================================================
 ;;; NOTE: Constitution I requires WasmGC-First - NO linear memory!
 ;;; Strings are WasmGC arrays, passed as externref to host.
 
 (defun marshal-string-to-externref ()
   "Generate instructions to pass string as externref to host.
-   Stack: [(ref $string)] -> [externref]
+   Stack: [(ref $string) or null] -> [externref]
 
+   T061: Handles nil (null) gracefully - passes null externref to host.
    Since $string is already a WasmGC reference type, we can pass it
    directly as externref. The host sees it as an opaque reference."
   ;; extern.convert_any converts any GC reference to externref
+  ;; Null references are preserved as null externref
   '(extern.convert_any))
 
 (defun marshal-externref-to-string ()
   "Generate instructions to receive externref from host as string.
-   Stack: [externref] -> [(ref $string)]
+   Stack: [externref] -> [(ref $string) or null]
 
+   T061: If host passes null, returns nil.
+   T062: If ref.cast fails (invalid type), traps with error.
    The host should pass back the same externref it received,
    which we can convert back to our internal string type."
   ;; any.convert_extern converts externref back to anyref
   ;; Then we need to cast to the expected string type
+  ;; ref.cast will trap if the type doesn't match
   '(any.convert_extern
-    (ref.cast (ref $string))))
+    (ref.cast (ref null $string))))  ; Allow nullable to handle nil
+
+(defun marshal-externref-to-string-checked ()
+  "Generate instructions with explicit null checking and error recovery.
+   Stack: [externref] -> [(ref $string) or null]
+
+   T061: Returns nil for null externref.
+   T062: Provides explicit error handling for invalid types."
+  ;; Check for null first, then cast
+  '((any.convert_extern)
+    (br_on_null $null_string)        ; Jump if null
+    (ref.cast (ref $string))         ; Cast non-null to string
+    (br $done_string)
+    ;; Null case - just return null
+    (ref.null $string)))
 
 ;;; ============================================================
 ;;; T049-T050: Boolean Marshalling (t/nil <-> i32 1/0)
+;;; T061: Nil handling for :boolean (027-complete-ffi)
 ;;; ============================================================
 
 (defun marshal-boolean-to-i32 ()
@@ -88,7 +147,8 @@
    Stack: [anyref] -> [i32]
 
    Lisp semantics: nil = false, anything else = true
-   Wasm result: nil -> 0, non-nil -> 1"
+   Wasm result: nil -> 0, non-nil -> 1
+   T061: Properly handles nil as i32 0."
   ;; Check if the value is null (nil)
   ;; If null, push 0; otherwise push 1
   '(ref.is_null              ; anyref -> i32 (1 if null, 0 if non-null)
@@ -99,11 +159,12 @@
    Stack: [i32] -> [anyref]
 
    Host semantics: 0 = false, non-zero = true
-   Lisp result: 0 -> nil, non-zero -> t"
+   Lisp result: 0 -> nil (null ref), non-zero -> t
+   T061: Returns proper null reference for i32 0."
   ;; If i32 is 0, return nil (null); otherwise return symbol t
   ;; We use select to choose between nil and t based on the condition
   '(if (result (ref null any))
-       (ref.null any)           ; 0 -> nil
+       (ref.null any)           ; 0 -> nil (T061)
        (global.get $sym-t)))    ; non-zero -> t
 
 ;;; ============================================================

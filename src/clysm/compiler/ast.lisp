@@ -451,6 +451,24 @@
          :body (mapcar #'parse-expr body))))))
 
 ;;; ============================================================
+;;; FFI Call Support (027-complete-ffi)
+;;; ============================================================
+
+(defstruct (ast-ffi-call (:include ast-node) (:conc-name ast-ffi-call-))
+  "AST node for FFI function calls (statically declared via define-foreign-function).
+   The declaration field references the foreign-function-decl from the FFI environment.
+   Arguments are parsed AST nodes that will be marshalled at codegen time."
+  (declaration nil :type t)           ; Reference to ForeignFunctionDecl
+  (arguments nil :type list))         ; List of argument AST nodes
+
+(defstruct (ast-call-host (:include ast-node) (:conc-name ast-call-host-))
+  "AST node for dynamic host function calls (ffi:call-host).
+   The function-name is an AST node (string expression) evaluated at runtime.
+   Arguments are marshalled based on their runtime types."
+  (function-name nil :type t)         ; AST node for function name expression (string)
+  (arguments nil :type list))         ; List of argument AST nodes
+
+;;; ============================================================
 ;;; Wasm IR Structures (T046)
 ;;; ============================================================
 
@@ -601,12 +619,50 @@
       (minusp (parse-minusp-form args))
       (evenp (parse-evenp-form args))
       (oddp (parse-oddp-form args))
+      ;; FFI call-host (027-complete-ffi)
+      (clysm/ffi:call-host (parse-call-host-form args))
       ;; Function call
       (otherwise
-       (make-ast-call
-        :function op
-        :arguments (mapcar #'parse-expr args)
-        :call-type (if (symbolp op) :named :funcall))))))
+       (parse-function-call-or-ffi op args)))))
+
+;;; ============================================================
+;;; FFI Function Call Parsing (027-complete-ffi)
+;;; ============================================================
+
+(defun ffi-declared-function-p (name)
+  "Check if NAME is a declared FFI function in the global environment."
+  (and (boundp 'clysm/ffi:*ffi-environment*)
+       (clysm/ffi:lookup-foreign-function
+        clysm/ffi:*ffi-environment* name)))
+
+(defun parse-call-host-form (args)
+  "Parse (ffi:call-host function-name &rest args) into ast-call-host.
+   ARGS is (function-name arg1 arg2 ...) where function-name is a string expression."
+  (make-ast-call-host
+   :function-name (parse-expr (first args))
+   :arguments (mapcar #'parse-expr (rest args))))
+
+(defun parse-function-call-or-ffi (op args)
+  "Parse a function call, checking if it's an FFI-declared function.
+   If the function is registered in *ffi-environment*, create ast-ffi-call.
+   Otherwise, create a normal ast-call."
+  (if (symbolp op)
+      (let ((ffi-decl (ffi-declared-function-p op)))
+        (if ffi-decl
+            ;; FFI function - create ast-ffi-call
+            (make-ast-ffi-call
+             :declaration ffi-decl
+             :arguments (mapcar #'parse-expr args))
+            ;; Regular function call
+            (make-ast-call
+             :function op
+             :arguments (mapcar #'parse-expr args)
+             :call-type :named)))
+      ;; Non-symbol operator (funcall)
+      (make-ast-call
+       :function op
+       :arguments (mapcar #'parse-expr args)
+       :call-type :funcall)))
 
 ;;; ============================================================
 ;;; Constant Folding for Arithmetic (010-numeric-tower)

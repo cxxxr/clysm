@@ -288,3 +288,47 @@
   "Return the Wasm function type for the FFI error handler.
    Type: () -> () (no params, no return - just signals error)"
   '(:func () ()))
+
+;;; ============================================================
+;;; T047: Dynamic Call Host Import (027-complete-ffi)
+;;; ============================================================
+
+(defparameter *call-host-dynamic-import-index* nil
+  "Function index for $ffi_call_host_dynamic import.
+   Set during module compilation when dynamic calls are used.")
+
+(defun make-call-host-dynamic-import-decl ()
+  "Create a ForeignFunctionDecl for the $ffi_call_host_dynamic import.
+   This is a system import that enables dynamic host function calls.
+
+   Signature: (externref name, externref args) -> externref result
+   - name: Function name string (e.g., \"host.random\")
+   - args: Array of arguments (nullable externref)
+   - result: Return value from host function"
+  (make-foreign-function-decl
+   :lisp-name '$ffi_call_host_dynamic
+   :module-name "ffi"
+   :field-name "call_host_dynamic"
+   :param-types '(:anyref :anyref)  ; Will be converted to externref
+   :return-type :anyref))
+
+(defun register-call-host-dynamic-import (env)
+  "Register the $ffi_call_host_dynamic import in the FFI environment.
+   Returns the function index assigned to the import."
+  (let ((decl (make-call-host-dynamic-import-decl)))
+    (setf (gethash '$ffi_call_host_dynamic (ffi-env-imports env)) decl)
+    ;; Return the decl for index assignment
+    decl))
+
+(defun get-call-host-dynamic-index (env)
+  "Get the function index for $ffi_call_host_dynamic.
+   Returns NIL if not registered."
+  (let ((decl (gethash '$ffi_call_host_dynamic (ffi-env-imports env))))
+    (when decl
+      (ffd-type-index decl))))
+
+(defun ensure-call-host-dynamic-import (env)
+  "Ensure $ffi_call_host_dynamic is registered. Idempotent.
+   Call this when compiling code that uses ffi:call-host."
+  (unless (gethash '$ffi_call_host_dynamic (ffi-env-imports env))
+    (register-call-host-dynamic-import env)))

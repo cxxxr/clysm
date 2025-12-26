@@ -111,6 +111,13 @@
    3. Marshalling the return value back to Wasm type
 
    T052: Marshalling is now integrated.
+   T056: Re-entrancy safety for callbacks (027-complete-ffi):
+   - Wrappers use only local variables and function parameters
+   - No global mutable state accessed during execution
+   - Marshal/unmarshal operations are pure functions
+   - Special variable bindings preserved via binding frame stack
+   - Condition handlers preserved via handler stack globals
+   - Safe for recursive callbacks (Lisp→Host→Lisp→Host→...)
 
    Returns Wasm instructions for the wrapper function."
   (let ((lisp-name (ed-lisp-name decl))

@@ -248,6 +248,17 @@
            #:ast-defmethod-body
            #:make-ast-defmethod
            #:parse-defmethod-to-ast
+           ;; FFI Call AST (027-complete-ffi)
+           #:ast-ffi-call
+           #:ast-ffi-call-p
+           #:ast-ffi-call-declaration
+           #:ast-ffi-call-arguments
+           #:make-ast-ffi-call
+           #:ast-call-host
+           #:ast-call-host-p
+           #:ast-call-host-function-name
+           #:ast-call-host-arguments
+           #:make-ast-call-host
            ;; Parsing
            #:parse-expr))
 
@@ -415,6 +426,8 @@
            #:+type-slot-vector+
            #:+type-keyword-array+
            #:+type-closure-array+
+           ;; FFI type indices (027-complete-ffi)
+           #:+type-anyref-array+
            ;; CLOS Foundation type constructors (026-clos-foundation)
            #:make-instance-type
            #:make-standard-class-type
