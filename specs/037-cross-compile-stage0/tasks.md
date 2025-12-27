@@ -161,7 +161,7 @@ requiring either: (1) extending Clysm's CL support, or (2) rewriting source in b
 - [x] T041 [P] Add error messages for missing wasmtime/wasm-tools with graceful fallback
 - [x] T042 Update `CLAUDE.md` with Feature 037 completion notes
 - [x] T043 Run quickstart.md validation (full build + verify cycle)
-- [ ] T044 Create PR with all changes
+- [x] T044 Create PR with all changes
 
 ---
 
