@@ -84,6 +84,108 @@ Returns a binary-info struct."
             :ignore-error-status t))))
 
 ;;; ==========================================================================
+;;; Byte-Level Binary Comparison (Feature 040)
+;;; ==========================================================================
+
+(defun binaries-identical-p (path1 path2)
+  "Compare two binary files byte-by-byte.
+Returns (values identical-p first-diff-offset).
+If identical, returns (values T nil).
+If different, returns (values NIL offset-of-first-difference)."
+  (unless (probe-file path1)
+    (error 'fixpoint-comparison-error
+           :stage1-path path1
+           :stage2-path path2
+           :context "First file not found"))
+  (unless (probe-file path2)
+    (error 'fixpoint-comparison-error
+           :stage1-path path1
+           :stage2-path path2
+           :context "Second file not found"))
+  (with-open-file (s1 path1 :element-type '(unsigned-byte 8))
+    (with-open-file (s2 path2 :element-type '(unsigned-byte 8))
+      (let ((len1 (file-length s1))
+            (len2 (file-length s2)))
+        ;; Different sizes means not identical
+        (when (/= len1 len2)
+          (return-from binaries-identical-p
+            (values nil (min len1 len2))))
+        ;; Compare byte-by-byte
+        (let ((buffer1 (make-array 4096 :element-type '(unsigned-byte 8)))
+              (buffer2 (make-array 4096 :element-type '(unsigned-byte 8)))
+              (offset 0))
+          (loop
+            (let ((n1 (read-sequence buffer1 s1))
+                  (n2 (read-sequence buffer2 s2)))
+              (when (zerop n1)
+                (return-from binaries-identical-p (values t nil)))
+              (dotimes (i (min n1 n2))
+                (when (/= (aref buffer1 i) (aref buffer2 i))
+                  (return-from binaries-identical-p
+                    (values nil (+ offset i)))))
+              (incf offset n1))))))))
+
+(defun compute-byte-diff (path1 path2)
+  "Compute detailed byte-level diff between two binaries.
+Returns a byte-diff-info struct."
+  (unless (and (probe-file path1) (probe-file path2))
+    (return-from compute-byte-diff
+      (make-byte-diff-info
+       :first-offset nil
+       :total-diff-bytes 0
+       :size-mismatch-p t
+       :size1 (if (probe-file path1)
+                  (with-open-file (s path1) (file-length s))
+                  0)
+       :size2 (if (probe-file path2)
+                  (with-open-file (s path2) (file-length s))
+                  0))))
+  (with-open-file (s1 path1 :element-type '(unsigned-byte 8))
+    (with-open-file (s2 path2 :element-type '(unsigned-byte 8))
+      (let* ((len1 (file-length s1))
+             (len2 (file-length s2))
+             (size-mismatch (/= len1 len2))
+             (first-offset nil)
+             (diff-count 0)
+             (diff-regions nil)
+             (in-diff-region nil)
+             (region-start 0))
+        ;; Compare up to shorter length
+        (let ((buffer1 (make-array 4096 :element-type '(unsigned-byte 8)))
+              (buffer2 (make-array 4096 :element-type '(unsigned-byte 8)))
+              (offset 0))
+          (loop
+            (let ((n1 (read-sequence buffer1 s1))
+                  (n2 (read-sequence buffer2 s2)))
+              (when (and (zerop n1) (zerop n2))
+                (return))
+              (dotimes (i (min n1 n2))
+                (let ((pos (+ offset i)))
+                  (if (/= (aref buffer1 i) (aref buffer2 i))
+                      (progn
+                        (incf diff-count)
+                        (unless first-offset
+                          (setf first-offset pos))
+                        (unless in-diff-region
+                          (setf in-diff-region t
+                                region-start pos)))
+                      (when in-diff-region
+                        (push (cons region-start (- pos region-start))
+                              diff-regions)
+                        (setf in-diff-region nil)))))
+              (incf offset (max n1 n2)))))
+        ;; Close any open diff region
+        (when in-diff-region
+          (push (cons region-start 1) diff-regions))
+        (make-byte-diff-info
+         :first-offset first-offset
+         :total-diff-bytes diff-count
+         :size-mismatch-p size-mismatch
+         :size1 len1
+         :size2 len2
+         :diff-regions (nreverse diff-regions))))))
+
+;;; ==========================================================================
 ;;; Binary Comparison
 ;;; ==========================================================================
 

@@ -166,3 +166,80 @@
     (stage1-file-error :file-error)
     (stage1-error :unknown)
     (t :external)))
+
+;;; ==========================================================================
+;;; Fixed-Point Verification Errors (Feature 040)
+;;; ==========================================================================
+
+(define-condition fixpoint-error (stage1-error)
+  ()
+  (:documentation "Base condition for fixed-point verification errors.")
+  (:report (lambda (condition stream)
+             (format stream "Fixed-point verification error~@[: ~A~]"
+                     (stage1-error-context condition)))))
+
+(define-condition fixpoint-stage1-missing (fixpoint-error)
+  ((stage1-path :initarg :stage1-path
+                :initform "dist/clysm-stage1.wasm"
+                :reader fixpoint-stage1-missing-path))
+  (:documentation "Stage 1 binary not found.")
+  (:report (lambda (condition stream)
+             (format stream "Stage 1 binary not found: ~A~%Generate with: sbcl --load build/stage1-gen.lisp"
+                     (fixpoint-stage1-missing-path condition)))))
+
+(define-condition fixpoint-stage2-generation-error (fixpoint-error)
+  ((module-path :initarg :module-path
+                :initform ""
+                :reader fixpoint-stage2-generation-error-module)
+   (modules-compiled :initarg :modules-compiled
+                     :initform 0
+                     :reader fixpoint-stage2-generation-error-compiled)
+   (modules-total :initarg :modules-total
+                  :initform 0
+                  :reader fixpoint-stage2-generation-error-total))
+  (:documentation "Stage 2 generation failed.")
+  (:report (lambda (condition stream)
+             (format stream "Stage 2 generation failed at module ~A (~D/~D compiled)"
+                     (fixpoint-stage2-generation-error-module condition)
+                     (fixpoint-stage2-generation-error-compiled condition)
+                     (fixpoint-stage2-generation-error-total condition)))))
+
+(define-condition fixpoint-binary-invalid (fixpoint-error)
+  ((binary-path :initarg :binary-path
+                :initform ""
+                :reader fixpoint-binary-invalid-path)
+   (validation-error :initarg :validation-error
+                     :initform ""
+                     :reader fixpoint-binary-invalid-error))
+  (:documentation "Binary failed wasm-tools validation.")
+  (:report (lambda (condition stream)
+             (format stream "Invalid Wasm binary: ~A~%~A"
+                     (fixpoint-binary-invalid-path condition)
+                     (fixpoint-binary-invalid-error condition)))))
+
+(define-condition fixpoint-comparison-error (fixpoint-error)
+  ((stage1-path :initarg :stage1-path
+                :initform ""
+                :reader fixpoint-comparison-error-stage1)
+   (stage2-path :initarg :stage2-path
+                :initform ""
+                :reader fixpoint-comparison-error-stage2))
+  (:documentation "Error during binary comparison.")
+  (:report (lambda (condition stream)
+             (format stream "Error comparing binaries:~%  Stage 1: ~A~%  Stage 2: ~A~@[~%  ~A~]"
+                     (fixpoint-comparison-error-stage1 condition)
+                     (fixpoint-comparison-error-stage2 condition)
+                     (stage1-error-context condition)))))
+
+(define-condition fixpoint-dependency-missing (fixpoint-error)
+  ((dependency :initarg :dependency
+               :initform ""
+               :reader fixpoint-dependency-missing-name)
+   (install-hint :initarg :install-hint
+                 :initform ""
+                 :reader fixpoint-dependency-missing-hint))
+  (:documentation "Required dependency not available.")
+  (:report (lambda (condition stream)
+             (format stream "Missing dependency: ~A~@[~%Install with: ~A~]"
+                     (fixpoint-dependency-missing-name condition)
+                     (fixpoint-dependency-missing-hint condition)))))

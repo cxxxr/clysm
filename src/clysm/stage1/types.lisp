@@ -115,6 +115,45 @@
   (differences nil :type (or null diff-details))) ; What changed
 
 ;;; ==========================================================================
+;;; Fixed-Point Verification Types (Feature 040)
+;;; ==========================================================================
+
+(defstruct verification-result
+  "Result of fixed-point verification comparing Stage 1 and Stage 2."
+  (status nil :type (member nil :achieved :not-achieved :compilation-error :missing-dependency))
+  (timestamp "" :type string)              ; ISO 8601 timestamp
+  (stage1-info nil :type (or null binary-info)) ; Stage 1 binary metadata
+  (stage2-info nil :type (or null binary-info)) ; Stage 2 binary metadata
+  (identical-p nil :type boolean)          ; True if Stage 1 == Stage 2
+  (first-diff-offset nil :type (or null integer)) ; Byte offset of first difference
+  (diff-byte-count 0 :type integer)        ; Total number of differing bytes
+  (compilation-rate 0.0 :type float)       ; Percentage of modules compiled (0.0-1.0)
+  (modules-compiled 0 :type integer)       ; Count of successfully compiled modules
+  (modules-total 0 :type integer)          ; Total number of source modules
+  (stage2-gen-time-ms 0 :type integer)     ; Time to generate Stage 2 (ms)
+  (comparison-time-ms 0 :type integer)     ; Time to compare binaries (ms)
+  (error-message nil :type (or null string))) ; Error details (if status not :achieved)
+
+(defstruct byte-diff-info
+  "Detailed byte-level difference information between two binaries."
+  (first-offset nil :type (or null integer)) ; Byte offset of first difference
+  (total-diff-bytes 0 :type integer)       ; Count of differing bytes
+  (size-mismatch-p nil :type boolean)      ; True if files have different sizes
+  (size1 0 :type integer)                  ; Size of first file in bytes
+  (size2 0 :type integer)                  ; Size of second file in bytes
+  (diff-regions nil :type list))           ; List of (start-offset . length) pairs
+
+(defstruct verification-history-entry
+  "Single entry in verification history log."
+  (timestamp "" :type string)              ; ISO 8601 timestamp
+  (status nil :type (member nil :achieved :not-achieved :compilation-error :missing-dependency))
+  (diff-bytes 0 :type integer)             ; Number of differing bytes (0 if achieved)
+  (compilation-rate 0.0 :type float)       ; Percentage of modules compiled
+  (stage1-size 0 :type integer)            ; Stage 1 binary size
+  (stage2-size 0 :type integer)            ; Stage 2 binary size
+  (git-commit "" :type string))            ; Git commit hash for traceability
+
+;;; ==========================================================================
 ;;; Helper Functions
 ;;; ==========================================================================
 

@@ -54,6 +54,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules (038-stage0-extend)
 - Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim) (039-stage1-compiler-gen)
 - File-based (source files, Wasm binaries, JSON progress reports) (039-stage1-compiler-gen)
+- Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 1/2 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim), alexandria, uiop (040-fixed-point-verification)
+- File-based (source files → Wasm binaries, JSON reports) (040-fixed-point-verification)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -73,9 +75,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 040-fixed-point-verification: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 1/2 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim), alexandria, uiop
 - 039-stage1-compiler-gen: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim)
 - 038-stage0-extend: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules
-- 037-cross-compile-stage0: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation modules
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -704,4 +706,97 @@ sbcl --load build/stage1-gen.lisp
 - 25% coverage target is aspirational - current CL subset is limited
 - Individual form compilation works; combined module compilation may fail
 - True self-hosting requires extending Clysm's CL feature support
+
+## Feature 040: Fixed-Point Verification (Phase 13B) - COMPLETE
+
+**Status**: All 71 tasks completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/stage1/types.lisp`: verification-result, byte-diff-info, verification-history-entry structs
+- `src/clysm/stage1/conditions.lisp`: fixpoint-error condition hierarchy
+- `src/clysm/stage1/diff.lisp`: binaries-identical-p, compute-byte-diff functions
+- `src/clysm/stage1/fixpoint.lisp`: fixpoint-status type, exit code mapping
+- `src/clysm/stage1/runner.lisp`: wasmtime invocation for Stage 1/2
+- `src/clysm/stage2/package.lisp`: Package definition for Stage 2
+- `src/clysm/stage2/generator.lisp`: generate-stage2 function
+- `src/clysm/stage2/verifier.lisp`: verify-fixpoint function
+- `host-shim/stage1-host.js`: Extended with --mode compile for Stage 2 generation
+- `scripts/verify-fixpoint.sh`: Main verification script with CLI
+- `scripts/run-stage2-gen.sh`: Stage 2 generation script
+- `build/stage2-gen.lisp`: SBCL CLI entry point
+
+### Key Features
+1. **Stage 2 Generation**: Run Stage 1 on wasmtime to compile Clysm source
+   - `./scripts/run-stage2-gen.sh` generates Stage 2 binary
+   - Partial compilation failure handled gracefully (FR-010)
+   - Progress tracking per module
+2. **Fixed-Point Verification**: Compare Stage 1 == Stage 2 byte-by-byte
+   - `./scripts/verify-fixpoint.sh` runs full verification
+   - `--skip-generate` for quick existing binary comparison
+   - Reports first difference offset and total diff bytes
+3. **Exit Codes (FR-007)**:
+   - 0: ACHIEVED - Stage 1 == Stage 2 (byte-identical)
+   - 1: NOT_ACHIEVED - Binaries differ
+   - 2: COMPILATION_ERROR - Stage 2 generation failed
+   - 3: MISSING_DEPENDENCY - wasmtime/wasm-tools/Stage 1 missing
+4. **JSON Output**: Machine-readable output for CI integration
+   - `--json` flag for structured output
+   - Includes timing, binary info, comparison details
+5. **History Tracking**: Progress over time (US5)
+   - `--history` appends to dist/verification-history.jsonl
+   - Tracks status, diff bytes, sizes, git commit
+
+### CLI Commands
+```bash
+# Full verification (generate Stage 2 + compare)
+./scripts/verify-fixpoint.sh
+
+# Quick check (compare existing binaries)
+./scripts/verify-fixpoint.sh --skip-generate
+
+# CI mode with JSON output
+./scripts/verify-fixpoint.sh --json
+
+# Track progress over time
+./scripts/verify-fixpoint.sh --history
+
+# Generate Stage 2 only
+./scripts/run-stage2-gen.sh
+```
+
+### Verification Result Structure
+```lisp
+(defstruct verification-result
+  (status :achieved :not-achieved :compilation-error :missing-dependency)
+  (timestamp "ISO-8601")
+  (stage1-info binary-info)
+  (stage2-info binary-info)
+  (identical-p boolean)
+  (first-diff-offset integer-or-nil)
+  (diff-byte-count integer)
+  (compilation-rate 0.0-1.0)
+  (modules-compiled integer)
+  (modules-total integer)
+  (stage2-gen-time-ms integer)
+  (comparison-time-ms integer)
+  (error-message string-or-nil))
+```
+
+### Fixed-Point Achievement
+Fixed-point (Stage 1 == Stage 2) proves self-hosting:
+1. SBCL compiles Clysm source → Stage 0
+2. Stage 0 (on wasmtime) compiles Clysm → Stage 1
+3. Stage 1 (on wasmtime) compiles Clysm → Stage 2
+4. Stage 1 == Stage 2 ⟹ Compiler can reproduce itself
+
+### Known Limitation
+Current Stage 1 binary is minimal (placeholder) and does not export compile_all or compile_form. True fixed-point verification requires:
+1. Stage 1 having full compilation capability
+2. FFI host shim providing complete filesystem access
+3. Clysm supporting enough CL features to compile itself
+
+### Test Coverage
+- Unit tests: tests/unit/fixpoint/*.lisp (runner-test, stage2-gen-test, byte-compare-test, verifier-test)
+- Contract tests: tests/contract/fixpoint-stage2-test.lisp (binary validity)
+- Integration tests: tests/integration/fixpoint-verify-test.lisp (end-to-end)
 <!-- MANUAL ADDITIONS END -->
