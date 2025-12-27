@@ -341,3 +341,23 @@
 (defpackage #:clysm/tests/integration/clos-ansi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; LOOP Macro Tests (029-loop-macro)
+;;; ============================================================
+
+;; LOOP macro unit tests (029-loop-macro)
+;; Tests for clause parsing, struct construction, expansion
+(defpackage #:clysm/tests/unit/loop
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; LOOP Wasm contract tests (029-loop-macro)
+(defpackage #:clysm/tests/contract/loop-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; LOOP ANSI integration tests (029-loop-macro)
+(defpackage #:clysm/tests/integration/loop-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))

@@ -35,6 +35,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory compile-time registries) (027-complete-ffi)
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros, clysm/clos (existing modules) (028-setf-generalized-refs)
 - N/A (compile-time registry for setf expanders) (028-setf-generalized-refs)
+- Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros (existing tagbody/go infrastructure) (029-loop-macro)
+- N/A (compile-time macro expansion only) (029-loop-macro)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -54,9 +56,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 029-loop-macro: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros (existing tagbody/go infrastructure)
 - 028-setf-generalized-refs: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros, clysm/clos (existing modules)
 - 027-complete-ffi: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules
-- 026-clos-foundation: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->

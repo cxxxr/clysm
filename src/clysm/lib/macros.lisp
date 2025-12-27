@@ -513,6 +513,970 @@
                    (list result-var)))))))))
 
 ;;; ============================================================
+;;; LOOP Macro Infrastructure (029-loop-macro)
+;;; ============================================================
+
+;;; -----------------------------------------------------------
+;;; LOOP context and clause structures
+;;; -----------------------------------------------------------
+
+(defstruct loop-context
+  "Complete LOOP parsing and expansion context"
+  (name nil :type (or null symbol))           ; NAMED loop name
+  (iteration-clauses nil :type list)          ; List of loop-iteration-clause
+  (accumulation-clauses nil :type list)       ; List of loop-accumulation-clause
+  (termination-clauses nil :type list)        ; List of loop-termination-clause
+  (body-clauses nil :type list)               ; DO/conditional clauses
+  (initially-forms nil :type list)            ; INITIALLY forms
+  (finally-forms nil :type list)              ; FINALLY forms
+  (with-bindings nil :type list)              ; ((var init) ...) from WITH
+  (result-form nil :type t)                   ; Final return expression
+  (gensym-counter 0 :type fixnum))            ; For unique variable generation
+
+;;; -----------------------------------------------------------
+;;; Iteration clause structures (FOR/AS)
+;;; -----------------------------------------------------------
+
+(defstruct loop-iteration-clause
+  "Base structure for iteration clauses"
+  (var nil :type symbol)                      ; Loop variable
+  (clause-type nil :type keyword))            ; :arithmetic, :in, :on, :across, :hash-keys, :hash-values, :equals
+
+(defstruct (loop-iter-arithmetic (:include loop-iteration-clause))
+  "FOR var FROM x TO y BY z"
+  (from nil :type t)                          ; Start expression
+  (to nil :type t)                            ; End expression (inclusive)
+  (below nil :type t)                         ; End expression (exclusive)
+  (above nil :type t)                         ; End expression (exclusive descending)
+  (downto nil :type t)                        ; End expression (inclusive descending)
+  (downfrom nil :type t)                      ; Start value for descending
+  (upfrom nil :type t)                        ; Start value for ascending
+  (by nil :type t))                           ; Step expression (default 1)
+
+(defstruct (loop-iter-in (:include loop-iteration-clause))
+  "FOR var IN list [BY step-fn]"
+  (list-form nil :type t)                     ; List expression
+  (step-fn nil :type t)                       ; Step function (default #'cdr)
+  (list-var nil :type symbol))                ; Generated list variable for iteration
+
+(defstruct (loop-iter-on (:include loop-iteration-clause))
+  "FOR var ON list [BY step-fn]"
+  (list-form nil :type t)
+  (step-fn nil :type t)
+  (list-var nil :type symbol))                ; Generated list variable for iteration
+
+(defstruct (loop-iter-across (:include loop-iteration-clause))
+  "FOR var ACROSS vector"
+  (vector-form nil :type t)                   ; Vector expression
+  (index-var nil :type symbol)                ; Generated index variable
+  (vec-var nil :type symbol))                 ; Generated vector variable
+
+(defstruct (loop-iter-hash (:include loop-iteration-clause))
+  "FOR var BEING THE HASH-KEYS/VALUES OF hash-table"
+  (hash-form nil :type t)                     ; Hash table expression
+  (value-var nil :type symbol)                ; Optional USING (HASH-VALUE v)
+  (key-var nil :type symbol)                  ; Optional USING (HASH-KEY k)
+  (mode :keys :type keyword))                 ; :keys or :values
+
+(defstruct (loop-iter-equals (:include loop-iteration-clause))
+  "FOR var = init-form [THEN step-form]"
+  (init-form nil :type t)                     ; Initial value
+  (then-form nil :type t))                    ; Step expression (nil = no stepping)
+
+;;; -----------------------------------------------------------
+;;; Accumulation clause structures (COLLECT/SUM/COUNT/etc.)
+;;; -----------------------------------------------------------
+
+(defstruct loop-accumulation-clause
+  "Accumulation clause"
+  (type nil :type keyword)                    ; :collect, :sum, :count, :maximize, :minimize, :append, :nconc
+  (expr nil :type t)                          ; Expression to accumulate
+  (into-var nil :type symbol)                 ; Optional INTO variable
+  (acc-var nil :type symbol))                 ; Generated accumulator variable
+
+;;; -----------------------------------------------------------
+;;; Termination clause structures (WHILE/UNTIL/ALWAYS/etc.)
+;;; -----------------------------------------------------------
+
+(defstruct loop-termination-clause
+  "Termination or boolean aggregation clause"
+  (type nil :type keyword)                    ; :while, :until, :always, :never, :thereis, :return
+  (expr nil :type t))                         ; Condition or return expression
+
+;;; -----------------------------------------------------------
+;;; Conditional clause structures (IF/WHEN/UNLESS)
+;;; -----------------------------------------------------------
+
+(defstruct loop-conditional-clause
+  "Conditional execution"
+  (type nil :type keyword)                    ; :if, :when, :unless
+  (condition nil :type t)                     ; Test expression
+  (then-clauses nil :type list)               ; Clauses when true (or false for :unless)
+  (else-clauses nil :type list))              ; Optional ELSE clauses
+
+;;; -----------------------------------------------------------
+;;; LOOP Keyword Recognition (T009)
+;;; -----------------------------------------------------------
+
+(defparameter *loop-keywords*
+  '(for as with initially finally do doing return
+    collect collecting sum summing count counting
+    maximize maximizing minimize minimizing
+    append appending nconc nconcing
+    while until always never thereis
+    if when unless else end and
+    from to below above downto downfrom upfrom by
+    in on across being the hash-keys hash-values of using
+    into named repeat loop-finish)
+  "All recognized LOOP keywords.")
+
+(defun loop-keyword-p (symbol)
+  "Return T if SYMBOL is a LOOP keyword."
+  (and (symbolp symbol)
+       (member (if (keywordp symbol)
+                   (intern (symbol-name symbol) :cl)
+                   symbol)
+               *loop-keywords*
+               :test #'string-equal)))
+
+;;; -----------------------------------------------------------
+;;; LOOP Gensym Generation (T010)
+;;; -----------------------------------------------------------
+
+(defun make-loop-gensym (ctx prefix)
+  "Generate a unique symbol for LOOP expansion using CTX's counter."
+  (let ((counter (loop-context-gensym-counter ctx)))
+    (setf (loop-context-gensym-counter ctx) (1+ counter))
+    (gensym (format nil "~A-~D-" prefix counter))))
+
+;;; -----------------------------------------------------------
+;;; LOOP Clause Parser Dispatcher (T008)
+;;; -----------------------------------------------------------
+
+(defun parse-loop-clauses (clauses ctx)
+  "Parse LOOP clauses into structured clause objects in CTX.
+   CLAUSES is a list of forms from (loop ...).
+   Returns the remaining unparsed clauses (should be nil on success)."
+  (loop while clauses do
+    (let ((keyword (first clauses)))
+      (cond
+        ;; Named clause
+        ((loop-keyword-eq keyword 'named)
+         (setf (loop-context-name ctx) (second clauses))
+         (setf clauses (cddr clauses)))
+
+        ;; FOR/AS iteration clauses
+        ((or (loop-keyword-eq keyword 'for)
+             (loop-keyword-eq keyword 'as))
+         (multiple-value-bind (clause rest)
+             (parse-for-clause (rest clauses) ctx)
+           (push clause (loop-context-iteration-clauses ctx))
+           (setf clauses rest)))
+
+        ;; WITH variable binding
+        ((loop-keyword-eq keyword 'with)
+         (multiple-value-bind (bindings rest)
+             (parse-with-clause (rest clauses) ctx)
+           (setf (loop-context-with-bindings ctx)
+                 (append (loop-context-with-bindings ctx) bindings))
+           (setf clauses rest)))
+
+        ;; Accumulation clauses
+        ((member keyword '(collect collecting sum summing count counting
+                           maximize maximizing minimize minimizing
+                           append appending nconc nconcing)
+                 :test #'loop-keyword-eq)
+         (multiple-value-bind (clause rest)
+             (parse-accumulation-clause keyword (rest clauses) ctx)
+           (push clause (loop-context-accumulation-clauses ctx))
+           (setf clauses rest)))
+
+        ;; Termination clauses
+        ((member keyword '(while until) :test #'loop-keyword-eq)
+         (multiple-value-bind (clause rest)
+             (parse-termination-clause keyword (rest clauses) ctx)
+           (push clause (loop-context-termination-clauses ctx))
+           (setf clauses rest)))
+
+        ;; Boolean aggregation clauses
+        ((member keyword '(always never thereis) :test #'loop-keyword-eq)
+         (multiple-value-bind (clause rest)
+             (parse-boolean-clause keyword (rest clauses) ctx)
+           (push clause (loop-context-termination-clauses ctx))
+           (setf clauses rest)))
+
+        ;; RETURN clause
+        ((loop-keyword-eq keyword 'return)
+         (let ((clause (make-loop-termination-clause
+                        :type :return
+                        :expr (second clauses))))
+           (push clause (loop-context-termination-clauses ctx))
+           (setf clauses (cddr clauses))))
+
+        ;; Conditional clauses
+        ((member keyword '(if when unless) :test #'loop-keyword-eq)
+         (multiple-value-bind (clause rest)
+             (parse-conditional-clause keyword (rest clauses) ctx)
+           (push clause (loop-context-body-clauses ctx))
+           (setf clauses rest)))
+
+        ;; DO/DOING clause
+        ((or (loop-keyword-eq keyword 'do)
+             (loop-keyword-eq keyword 'doing))
+         (multiple-value-bind (forms rest)
+             (parse-do-forms (rest clauses))
+           (dolist (form forms)
+             (push form (loop-context-body-clauses ctx)))
+           (setf clauses rest)))
+
+        ;; INITIALLY clause
+        ((loop-keyword-eq keyword 'initially)
+         (multiple-value-bind (forms rest)
+             (parse-compound-forms (rest clauses))
+           (setf (loop-context-initially-forms ctx)
+                 (append (loop-context-initially-forms ctx) forms))
+           (setf clauses rest)))
+
+        ;; FINALLY clause
+        ((loop-keyword-eq keyword 'finally)
+         (multiple-value-bind (forms rest)
+             (parse-compound-forms (rest clauses))
+           (setf (loop-context-finally-forms ctx)
+                 (append (loop-context-finally-forms ctx) forms))
+           (setf clauses rest)))
+
+        ;; Unknown - might be a form for simple loop
+        (t
+         ;; For simple loop, treat remaining as body
+         (push keyword (loop-context-body-clauses ctx))
+         (setf clauses (rest clauses))))))
+  ;; Reverse collected lists to maintain order
+  (setf (loop-context-iteration-clauses ctx)
+        (nreverse (loop-context-iteration-clauses ctx)))
+  (setf (loop-context-accumulation-clauses ctx)
+        (nreverse (loop-context-accumulation-clauses ctx)))
+  (setf (loop-context-termination-clauses ctx)
+        (nreverse (loop-context-termination-clauses ctx)))
+  (setf (loop-context-body-clauses ctx)
+        (nreverse (loop-context-body-clauses ctx)))
+  ctx)
+
+(defun loop-keyword-eq (form keyword)
+  "Check if FORM is equivalent to LOOP keyword."
+  (and (symbolp form)
+       (string-equal (symbol-name form) (symbol-name keyword))))
+
+;;; -----------------------------------------------------------
+;;; LOOP Clause Parsers (Stubs - to be implemented in Phase 3+)
+;;; -----------------------------------------------------------
+
+(defun parse-for-clause (clauses ctx)
+  "Parse a FOR/AS clause. Returns (values clause remaining-clauses)."
+  (declare (ignore ctx))
+  (let ((var (first clauses))
+        (rest (rest clauses)))
+    ;; Determine the type of FOR clause
+    (cond
+      ;; FOR var FROM ... (arithmetic)
+      ((member (first rest) '(from upfrom downfrom to below above downto by)
+               :test #'loop-keyword-eq)
+       (parse-for-arithmetic var rest))
+      ;; FOR var IN list
+      ((loop-keyword-eq (first rest) 'in)
+       (parse-for-in var rest))
+      ;; FOR var ON list
+      ((loop-keyword-eq (first rest) 'on)
+       (parse-for-on var rest))
+      ;; FOR var ACROSS vector
+      ((loop-keyword-eq (first rest) 'across)
+       (parse-for-across var rest))
+      ;; FOR var = expr [THEN step-expr]
+      ((loop-keyword-eq (first rest) '=)
+       (parse-for-equals var rest))
+      ;; FOR var BEING THE HASH-KEYS/HASH-VALUES OF hash-table
+      ((loop-keyword-eq (first rest) 'being)
+       (parse-for-hash var rest))
+      ;; Default: treat as = with no THEN
+      (t
+       (values (make-loop-iter-equals
+                :var var
+                :clause-type :equals
+                :init-form nil
+                :then-form nil)
+               rest)))))
+
+(defun parse-for-arithmetic (var clauses)
+  "Parse FOR var FROM/TO/BY arithmetic iteration."
+  (let ((clause (make-loop-iter-arithmetic
+                 :var var
+                 :clause-type :arithmetic))
+        (rest clauses))
+    ;; Parse modifiers
+    (loop while (and rest (loop-keyword-p (first rest))) do
+      (let ((kw (first rest))
+            (val (second rest)))
+        (cond
+          ((loop-keyword-eq kw 'from)
+           (setf (loop-iter-arithmetic-from clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'upfrom)
+           (setf (loop-iter-arithmetic-upfrom clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'downfrom)
+           (setf (loop-iter-arithmetic-downfrom clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'to)
+           (setf (loop-iter-arithmetic-to clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'below)
+           (setf (loop-iter-arithmetic-below clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'above)
+           (setf (loop-iter-arithmetic-above clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'downto)
+           (setf (loop-iter-arithmetic-downto clause) val)
+           (setf rest (cddr rest)))
+          ((loop-keyword-eq kw 'by)
+           (setf (loop-iter-arithmetic-by clause) val)
+           (setf rest (cddr rest)))
+          (t (return)))))
+    (values clause rest)))
+
+(defun parse-for-in (var clauses)
+  "Parse FOR var IN list iteration."
+  (let ((list-form (second clauses))
+        (rest (cddr clauses))
+        (step-fn nil)
+        (list-var (gensym "LOOP-LIST-")))
+    ;; Check for BY modifier
+    (when (loop-keyword-eq (first rest) 'by)
+      (setf step-fn (second rest))
+      (setf rest (cddr rest)))
+    (values (make-loop-iter-in
+             :var var
+             :clause-type :in
+             :list-form list-form
+             :step-fn step-fn
+             :list-var list-var)
+            rest)))
+
+(defun parse-for-on (var clauses)
+  "Parse FOR var ON list iteration."
+  (let ((list-form (second clauses))
+        (rest (cddr clauses))
+        (step-fn nil)
+        (list-var (gensym "LOOP-LIST-")))
+    ;; Check for BY modifier
+    (when (loop-keyword-eq (first rest) 'by)
+      (setf step-fn (second rest))
+      (setf rest (cddr rest)))
+    (values (make-loop-iter-on
+             :var var
+             :clause-type :on
+             :list-form list-form
+             :step-fn step-fn
+             :list-var list-var)
+            rest)))
+
+(defun parse-for-across (var clauses)
+  "Parse FOR var ACROSS vector iteration."
+  (let ((vector-form (second clauses))
+        (rest (cddr clauses)))
+    (values (make-loop-iter-across
+             :var var
+             :clause-type :across
+             :vector-form vector-form
+             :index-var (gensym "LOOP-IDX-")
+             :vec-var (gensym "LOOP-VEC-"))
+            rest)))
+
+(defun parse-for-equals (var clauses)
+  "Parse FOR var = expr [THEN step-expr] iteration."
+  (let ((init-form (second clauses))
+        (rest (cddr clauses))
+        (then-form nil))
+    ;; Check for THEN modifier
+    (when (loop-keyword-eq (first rest) 'then)
+      (setf then-form (second rest))
+      (setf rest (cddr rest)))
+    (values (make-loop-iter-equals
+             :var var
+             :clause-type :equals
+             :init-form init-form
+             :then-form then-form)
+            rest)))
+
+(defun parse-for-hash (var clauses)
+  "Parse FOR var BEING THE HASH-KEYS/HASH-VALUES OF hash-table."
+  ;; BEING THE HASH-KEYS OF table
+  (let* ((rest (rest clauses))  ; skip BEING
+         (_ (when (loop-keyword-eq (first rest) 'the)
+              (setf rest (rest rest))))  ; skip THE
+         (mode (cond
+                 ((loop-keyword-eq (first rest) 'hash-keys) :keys)
+                 ((loop-keyword-eq (first rest) 'hash-values) :values)
+                 (t :keys)))
+         (rest2 (rest rest)))  ; skip HASH-KEYS/HASH-VALUES
+    (declare (ignore _))
+    ;; Skip OF or IN
+    (when (or (loop-keyword-eq (first rest2) 'of)
+              (loop-keyword-eq (first rest2) 'in))
+      (setf rest2 (rest rest2)))
+    (let ((hash-form (first rest2))
+          (final-rest (rest rest2)))
+      (values (make-loop-iter-hash
+               :var var
+               :clause-type (if (eq mode :keys) :hash-keys :hash-values)
+               :hash-form hash-form
+               :mode mode)
+              final-rest))))
+
+(defun parse-with-clause (clauses ctx)
+  "Parse WITH var [= expr] [AND var2 [= expr2] ...]. Returns (values bindings rest)."
+  (declare (ignore ctx))
+  (let ((bindings nil)
+        (rest clauses))
+    (loop
+      (let ((var (first rest)))
+        (setf rest (rest rest))
+        (if (loop-keyword-eq (first rest) '=)
+            (progn
+              (push (list var (second rest)) bindings)
+              (setf rest (cddr rest)))
+            (push (list var nil) bindings))
+        ;; Check for AND - if present, skip it and continue parsing
+        (if (loop-keyword-eq (first rest) 'and)
+            (setf rest (rest rest))  ; consume AND keyword
+            (return))))  ; no AND, done with WITH clause
+    (values (nreverse bindings) rest)))
+
+(defun parse-accumulation-clause (keyword clauses ctx)
+  "Parse COLLECT/SUM/COUNT/etc accumulation clause."
+  (declare (ignore ctx))
+  (let* ((type (intern (string-upcase
+                        (string-right-trim "ING"
+                                           (symbol-name keyword)))
+                       :keyword))
+         (expr (first clauses))
+         (rest (rest clauses))
+         (into-var nil))
+    ;; Check for INTO
+    (when (loop-keyword-eq (first rest) 'into)
+      (setf into-var (second rest))
+      (setf rest (cddr rest)))
+    (values (make-loop-accumulation-clause
+             :type type
+             :expr expr
+             :into-var into-var
+             :acc-var (or into-var (gensym "LOOP-ACC-")))
+            rest)))
+
+(defun parse-termination-clause (keyword clauses ctx)
+  "Parse WHILE/UNTIL termination clause."
+  (declare (ignore ctx))
+  (let ((type (if (loop-keyword-eq keyword 'while) :while :until))
+        (expr (first clauses)))
+    (values (make-loop-termination-clause
+             :type type
+             :expr expr)
+            (rest clauses))))
+
+(defun parse-boolean-clause (keyword clauses ctx)
+  "Parse ALWAYS/NEVER/THEREIS boolean aggregation clause."
+  (declare (ignore ctx))
+  (let ((type (cond
+                ((loop-keyword-eq keyword 'always) :always)
+                ((loop-keyword-eq keyword 'never) :never)
+                (t :thereis)))
+        (expr (first clauses)))
+    (values (make-loop-termination-clause
+             :type type
+             :expr expr)
+            (rest clauses))))
+
+(defun parse-conditional-clause (keyword clauses ctx)
+  "Parse IF/WHEN/UNLESS conditional clause."
+  (declare (ignore ctx))
+  (let* ((type (cond
+                 ((loop-keyword-eq keyword 'if) :if)
+                 ((loop-keyword-eq keyword 'when) :when)
+                 (t :unless)))
+         (condition (first clauses))
+         (rest (rest clauses))
+         (then-clauses nil)
+         (else-clauses nil))
+    ;; Parse then-clauses until ELSE/END or another major keyword
+    (multiple-value-bind (forms remaining)
+        (parse-conditional-body rest)
+      (setf then-clauses forms)
+      (setf rest remaining))
+    ;; Check for ELSE
+    (when (loop-keyword-eq (first rest) 'else)
+      (multiple-value-bind (forms remaining)
+          (parse-conditional-body (rest rest))
+        (setf else-clauses forms)
+        (setf rest remaining)))
+    ;; Check for END
+    (when (loop-keyword-eq (first rest) 'end)
+      (setf rest (rest rest)))
+    (values (make-loop-conditional-clause
+             :type type
+             :condition condition
+             :then-clauses then-clauses
+             :else-clauses else-clauses)
+            rest)))
+
+(defun parse-conditional-body (clauses)
+  "Parse forms in a conditional body until ELSE/END/major keyword.
+   Handles DO/DOING prefix and accumulation keywords as ANSI CL requires."
+  (let ((forms nil)
+        (rest clauses))
+    ;; Check for optional DO/DOING prefix (valid inside conditionals)
+    (when (and rest
+               (symbolp (first rest))
+               (or (loop-keyword-eq (first rest) 'do)
+                   (loop-keyword-eq (first rest) 'doing)))
+      (setf rest (rest rest)))  ; skip DO/DOING
+    (loop while rest do
+      (let ((form (first rest)))
+        ;; Stop at ELSE, END, or major clause keywords
+        (when (and (symbolp form)
+                   (or (loop-keyword-eq form 'else)
+                       (loop-keyword-eq form 'end)
+                       (member form '(for as with while until
+                                      always never thereis return
+                                      initially finally
+                                      if when unless named)
+                               :test #'loop-keyword-eq)))
+          (return))
+        ;; Handle AND chaining - may have optional DO/DOING after AND
+        (when (loop-keyword-eq form 'and)
+          (setf rest (rest rest))
+          ;; Skip optional DO/DOING after AND
+          (when (and rest
+                     (symbolp (first rest))
+                     (or (loop-keyword-eq (first rest) 'do)
+                         (loop-keyword-eq (first rest) 'doing)))
+            (setf rest (rest rest)))
+          (setf form (first rest)))
+        ;; Handle accumulation keywords specially - they consume an expression
+        (cond
+          ((member form '(collect collecting sum summing count counting
+                          maximize maximizing minimize minimizing
+                          append appending nconc nconcing)
+                   :test #'loop-keyword-eq)
+           ;; Accumulation: form + expr = two tokens
+           (let ((acc-keyword form)
+                 (acc-expr (second rest)))
+             ;; Check for INTO
+             (setf rest (cddr rest))
+             (when (loop-keyword-eq (first rest) 'into)
+               (setf rest (cddr rest)))  ; skip INTO and var
+             (push (list acc-keyword acc-expr) forms)))
+          (t
+           (push form forms)
+           (setf rest (rest rest))))))
+    (values (nreverse forms) rest)))
+
+(defun parse-do-forms (clauses)
+  "Parse forms after DO/DOING until next keyword."
+  (let ((forms nil)
+        (rest clauses))
+    (loop while rest do
+      (let ((form (first rest)))
+        (when (and (symbolp form) (loop-keyword-p form))
+          (return))
+        (push form forms)
+        (setf rest (rest rest))))
+    (values (nreverse forms) rest)))
+
+(defun parse-compound-forms (clauses)
+  "Parse compound forms (for INITIALLY/FINALLY)."
+  (parse-do-forms clauses))
+
+;;; -----------------------------------------------------------
+;;; LOOP Expander (T011)
+;;; -----------------------------------------------------------
+
+(defun expand-loop (ctx)
+  "Expand parsed LOOP context to tagbody-based code."
+  (let* ((block-name (or (loop-context-name ctx) nil))
+         (loop-start (gensym "LOOP-START-"))
+         (loop-end (gensym "LOOP-END-"))
+         ;; Generate variable bindings
+         (iter-bindings (generate-iteration-bindings ctx))
+         (acc-bindings (generate-accumulator-bindings ctx))
+         (with-bindings (loop-context-with-bindings ctx))
+         (all-bindings (append iter-bindings acc-bindings with-bindings))
+         ;; Generate code sections
+         (termination-tests (generate-termination-tests ctx loop-end))
+         (body-code (generate-body-code ctx))
+         (acc-updates (generate-accumulator-updates ctx))
+         (step-code (generate-iteration-steps ctx))
+         (result-form (generate-result-form ctx)))
+    ;; Build the expansion
+    `(let ,all-bindings
+       (block ,block-name
+         (tagbody
+            ,@(loop-context-initially-forms ctx)
+            ,loop-start
+            ,@termination-tests
+            ,@body-code
+            ,@acc-updates
+            ,@step-code
+            (go ,loop-start)
+            ,loop-end)
+         ,@(loop-context-finally-forms ctx)
+         ,result-form))))
+
+;;; -----------------------------------------------------------
+;;; LOOP Code Generation Helpers
+;;; -----------------------------------------------------------
+
+(defun generate-iteration-bindings (ctx)
+  "Generate bindings for iteration variables."
+  (let ((bindings nil))
+    (dolist (clause (loop-context-iteration-clauses ctx))
+      (let ((var (loop-iteration-clause-var clause)))
+        (cond
+          ;; Arithmetic iteration
+          ((loop-iter-arithmetic-p clause)
+           (let ((init (or (loop-iter-arithmetic-from clause)
+                           (loop-iter-arithmetic-upfrom clause)
+                           (loop-iter-arithmetic-downfrom clause)
+                           0)))
+             (push (list var init) bindings)))
+          ;; IN list iteration
+          ((loop-iter-in-p clause)
+           (let ((list-form (loop-iter-in-list-form clause))
+                 (list-var (loop-iter-in-list-var clause)))
+             (push (list list-var list-form) bindings)
+             (push (list var `(car ,list-var)) bindings)))
+          ;; ON list iteration
+          ((loop-iter-on-p clause)
+           (let ((list-form (loop-iter-on-list-form clause))
+                 (list-var (loop-iter-on-list-var clause)))
+             (push (list list-var list-form) bindings)
+             (push (list var list-var) bindings)))
+          ;; ACROSS vector iteration
+          ((loop-iter-across-p clause)
+           (let ((vec-var (loop-iter-across-vec-var clause))
+                 (idx-var (loop-iter-across-index-var clause)))
+             (push (list vec-var (loop-iter-across-vector-form clause)) bindings)
+             (push (list idx-var 0) bindings)
+             (push (list var `(aref ,vec-var ,idx-var)) bindings)))
+          ;; = THEN iteration
+          ((loop-iter-equals-p clause)
+           (push (list var (loop-iter-equals-init-form clause)) bindings)))))
+    (nreverse bindings)))
+
+(defun extract-conditional-accum-types (clause)
+  "Extract accumulation types from a conditional clause's body."
+  (let ((types nil))
+    (labels ((check-form (form)
+               (when (and (listp form) (= 2 (length form))
+                          (member (first form)
+                                  '(collect collecting sum summing count counting
+                                    maximize maximizing minimize minimizing
+                                    append appending nconc nconcing)
+                                  :test #'loop-keyword-eq))
+                 (push (intern (string-upcase
+                                (string-right-trim "ING" (symbol-name (first form))))
+                               :keyword)
+                       types))))
+      (mapc #'check-form (loop-conditional-clause-then-clauses clause))
+      (mapc #'check-form (loop-conditional-clause-else-clauses clause)))
+    types))
+
+(defun generate-accumulator-bindings (ctx)
+  "Generate bindings for accumulator variables.
+   Handles both top-level and conditional accumulations."
+  (let ((bindings nil)
+        (seen-types (make-hash-table :test 'eq))
+        (type-to-var (make-hash-table :test 'eq)))
+    ;; First collect all accumulation types including from conditionals
+    (dolist (clause (loop-context-accumulation-clauses ctx))
+      (let ((type (loop-accumulation-clause-type clause))
+            (acc-var (loop-accumulation-clause-acc-var clause)))
+        (unless (gethash type seen-types)
+          (setf (gethash type seen-types) t)
+          (setf (gethash type type-to-var) acc-var))))
+    ;; Also scan body clauses for conditional accumulations
+    (dolist (clause (loop-context-body-clauses ctx))
+      (when (loop-conditional-clause-p clause)
+        (dolist (type (extract-conditional-accum-types clause))
+          (unless (gethash type seen-types)
+            (setf (gethash type seen-types) t)
+            (setf (gethash type type-to-var) (gensym "LOOP-ACC-"))))))
+    ;; Store the type-to-var map in context for later use
+    (setf (loop-context-result-form ctx) type-to-var)
+    ;; Generate bindings for all seen accumulation types
+    (maphash (lambda (type acc-var)
+               (let ((init (case type
+                             ((:collect :append :nconc) 'nil)
+                             ((:sum :count) 0)
+                             ((:maximize :minimize) 'nil))))
+                 (push (list acc-var init) bindings)
+                 ;; For COLLECT, add tail pointer for efficiency
+                 (when (eq type :collect)
+                   (let ((tail-var (gensym "LOOP-TAIL-")))
+                     (push (list tail-var 'nil) bindings)))))
+             type-to-var)
+    (nreverse bindings)))
+
+(defun generate-termination-tests (ctx loop-end)
+  "Generate termination test code."
+  (let ((tests nil))
+    ;; Add iteration exhaustion tests
+    (dolist (clause (loop-context-iteration-clauses ctx))
+      (cond
+        ;; Arithmetic with TO
+        ((and (loop-iter-arithmetic-p clause)
+              (loop-iter-arithmetic-to clause))
+         (let ((var (loop-iteration-clause-var clause))
+               (to (loop-iter-arithmetic-to clause)))
+           (push `(if (> ,var ,to) (go ,loop-end)) tests)))
+        ;; Arithmetic with BELOW
+        ((and (loop-iter-arithmetic-p clause)
+              (loop-iter-arithmetic-below clause))
+         (let ((var (loop-iteration-clause-var clause))
+               (below (loop-iter-arithmetic-below clause)))
+           (push `(if (>= ,var ,below) (go ,loop-end)) tests)))
+        ;; Arithmetic with DOWNTO
+        ((and (loop-iter-arithmetic-p clause)
+              (loop-iter-arithmetic-downto clause))
+         (let ((var (loop-iteration-clause-var clause))
+               (downto (loop-iter-arithmetic-downto clause)))
+           (push `(if (< ,var ,downto) (go ,loop-end)) tests)))
+        ;; Arithmetic with ABOVE
+        ((and (loop-iter-arithmetic-p clause)
+              (loop-iter-arithmetic-above clause))
+         (let ((var (loop-iteration-clause-var clause))
+               (above (loop-iter-arithmetic-above clause)))
+           (push `(if (<= ,var ,above) (go ,loop-end)) tests)))
+        ;; IN list - terminate when list is exhausted
+        ((loop-iter-in-p clause)
+         (let ((list-var (loop-iter-in-list-var clause)))
+           (push `(if (null ,list-var) (go ,loop-end)) tests)))
+        ;; ON list - terminate when list is exhausted
+        ((loop-iter-on-p clause)
+         (let ((list-var (loop-iter-on-list-var clause)))
+           (push `(if (null ,list-var) (go ,loop-end)) tests)))
+        ;; ACROSS vector - terminate when index reaches length
+        ((loop-iter-across-p clause)
+         (let ((idx-var (loop-iter-across-index-var clause))
+               (vec-var (loop-iter-across-vec-var clause)))
+           (push `(if (>= ,idx-var (length ,vec-var))
+                      (go ,loop-end))
+                 tests)))))
+    ;; Add WHILE/UNTIL termination tests
+    (dolist (clause (loop-context-termination-clauses ctx))
+      (case (loop-termination-clause-type clause)
+        (:while
+         (push `(if (not ,(loop-termination-clause-expr clause))
+                    (go ,loop-end))
+               tests))
+        (:until
+         (push `(if ,(loop-termination-clause-expr clause)
+                    (go ,loop-end))
+               tests))))
+    (nreverse tests)))
+
+(defun generate-body-code (ctx)
+  "Generate body code from DO and conditional clauses."
+  (let ((code nil)
+        ;; Get the type-to-var map stored during accumulator binding generation
+        (acc-var-map (loop-context-result-form ctx)))
+    ;; If acc-var-map is a hash table, use it; otherwise create new
+    (unless (hash-table-p acc-var-map)
+      (setf acc-var-map (make-hash-table :test 'eq)))
+    (dolist (clause (loop-context-body-clauses ctx))
+      (if (loop-conditional-clause-p clause)
+          (push (expand-conditional-clause clause acc-var-map) code)
+          (push clause code)))
+    (nreverse code)))
+
+(defun expand-conditional-form (form acc-var-map)
+  "Expand a single form that may be an accumulation inside a conditional.
+   ACC-VAR-MAP maps accumulation types to their accumulator variables."
+  (if (and (listp form) (= 2 (length form))
+           (member (first form) '(collect collecting sum summing count counting
+                                  maximize maximizing minimize minimizing
+                                  append appending nconc nconcing)
+                   :test #'loop-keyword-eq))
+      ;; This is an accumulation form - expand it
+      (let* ((keyword (first form))
+             (expr (second form))
+             (type (intern (string-upcase
+                            (string-right-trim "ING" (symbol-name keyword)))
+                           :keyword))
+             (acc-var (or (gethash type acc-var-map)
+                          (gensym "LOOP-ACC-"))))
+        ;; Store for later use
+        (setf (gethash type acc-var-map) acc-var)
+        ;; Return the update form
+        (case type
+          (:collect `(setq ,acc-var (nconc ,acc-var (list ,expr))))
+          (:sum `(setq ,acc-var (+ ,acc-var ,expr)))
+          (:count `(when ,expr (setq ,acc-var (+ ,acc-var 1))))
+          (:maximize `(setq ,acc-var (if ,acc-var (max ,acc-var ,expr) ,expr)))
+          (:minimize `(setq ,acc-var (if ,acc-var (min ,acc-var ,expr) ,expr)))
+          (:append `(setq ,acc-var (append ,acc-var ,expr)))
+          (:nconc `(setq ,acc-var (nconc ,acc-var ,expr)))))
+      ;; Not an accumulation - return as-is
+      form))
+
+(defun expand-conditional-clause (clause &optional (acc-var-map nil))
+  "Expand a conditional clause to IF/WHEN/UNLESS form.
+   ACC-VAR-MAP is used to share accumulator variables across clauses."
+  (let ((acc-var-map (or acc-var-map (make-hash-table :test 'eq)))
+        (type (loop-conditional-clause-type clause))
+        (cond-form (loop-conditional-clause-condition clause))
+        (then-forms (loop-conditional-clause-then-clauses clause))
+        (else-forms (loop-conditional-clause-else-clauses clause)))
+    ;; Expand any accumulation forms in then/else clauses
+    (let ((expanded-then (mapcar (lambda (f) (expand-conditional-form f acc-var-map))
+                                 then-forms))
+          (expanded-else (mapcar (lambda (f) (expand-conditional-form f acc-var-map))
+                                 else-forms)))
+      (case type
+        ((:if :when)
+         (if expanded-else
+             `(if ,cond-form
+                  (progn ,@expanded-then)
+                  (progn ,@expanded-else))
+             `(when ,cond-form ,@expanded-then)))
+        (:unless
+         (if expanded-else
+             `(if (not ,cond-form)
+                  (progn ,@expanded-then)
+                  (progn ,@expanded-else))
+             `(unless ,cond-form ,@expanded-then)))))))
+
+(defun generate-accumulator-updates (ctx)
+  "Generate accumulator update code."
+  (let ((updates nil))
+    (dolist (clause (loop-context-accumulation-clauses ctx))
+      (let* ((type (loop-accumulation-clause-type clause))
+             (expr (loop-accumulation-clause-expr clause))
+             (acc-var (loop-accumulation-clause-acc-var clause)))
+        (push
+         (case type
+           (:collect `(setq ,acc-var (nconc ,acc-var (list ,expr))))
+           (:sum `(setq ,acc-var (+ ,acc-var ,expr)))
+           (:count `(when ,expr (setq ,acc-var (+ ,acc-var 1))))
+           (:maximize `(setq ,acc-var (if ,acc-var (max ,acc-var ,expr) ,expr)))
+           (:minimize `(setq ,acc-var (if ,acc-var (min ,acc-var ,expr) ,expr)))
+           (:append `(setq ,acc-var (append ,acc-var ,expr)))
+           (:nconc `(setq ,acc-var (nconc ,acc-var ,expr))))
+         updates)))
+    (nreverse updates)))
+
+(defun generate-iteration-steps (ctx)
+  "Generate iteration stepping code using psetq for parallel stepping."
+  (let ((step-pairs nil))
+    (dolist (clause (loop-context-iteration-clauses ctx))
+      (cond
+        ;; Arithmetic stepping
+        ((loop-iter-arithmetic-p clause)
+         (let ((var (loop-iteration-clause-var clause))
+               (by (or (loop-iter-arithmetic-by clause) 1))
+               (descending (or (loop-iter-arithmetic-downto clause)
+                               (loop-iter-arithmetic-downfrom clause)
+                               (loop-iter-arithmetic-above clause))))
+           (push var step-pairs)
+           (push (if descending
+                     `(- ,var ,by)
+                     `(+ ,var ,by))
+                 step-pairs)))
+        ;; IN list stepping - step the list-var, then update var
+        ((loop-iter-in-p clause)
+         (let ((var (loop-iteration-clause-var clause))
+               (list-var (loop-iter-in-list-var clause))
+               (step-fn (or (loop-iter-in-step-fn clause) 'cdr)))
+           ;; Step the list variable
+           (push list-var step-pairs)
+           (push `(,step-fn ,list-var) step-pairs)
+           ;; Update the loop variable to the new car
+           (push var step-pairs)
+           (push `(car ,list-var) step-pairs)))
+        ;; ON list stepping - step the list-var, var is the same
+        ((loop-iter-on-p clause)
+         (let ((var (loop-iteration-clause-var clause))
+               (list-var (loop-iter-on-list-var clause))
+               (step-fn (or (loop-iter-on-step-fn clause) 'cdr)))
+           ;; Step the list variable
+           (push list-var step-pairs)
+           (push `(,step-fn ,list-var) step-pairs)
+           ;; Update the loop variable (which is the same as list-var content)
+           (push var step-pairs)
+           (push list-var step-pairs)))
+        ;; ACROSS vector stepping
+        ((loop-iter-across-p clause)
+         (let ((var (loop-iteration-clause-var clause))
+               (idx-var (loop-iter-across-index-var clause))
+               (vec-var (loop-iter-across-vec-var clause)))
+           ;; Increment the index
+           (push idx-var step-pairs)
+           (push `(+ ,idx-var 1) step-pairs)
+           ;; Update the loop variable
+           (push var step-pairs)
+           (push `(aref ,vec-var ,idx-var) step-pairs)))
+        ;; = THEN stepping
+        ((and (loop-iter-equals-p clause)
+              (loop-iter-equals-then-form clause))
+         (let ((var (loop-iteration-clause-var clause)))
+           (push var step-pairs)
+           (push (loop-iter-equals-then-form clause) step-pairs)))))
+    (when step-pairs
+      (list (cons 'psetq (nreverse step-pairs))))))
+
+(defun generate-result-form (ctx)
+  "Generate the result form for the LOOP.
+   Handles both top-level and conditional accumulations."
+  (let ((accumulators (loop-context-accumulation-clauses ctx))
+        (type-to-var (loop-context-result-form ctx)))
+    (cond
+      ;; Has top-level accumulators - use first one
+      (accumulators
+       (loop-accumulation-clause-acc-var (first accumulators)))
+      ;; Check for conditional accumulations in type-to-var map
+      ((and (hash-table-p type-to-var) (> (hash-table-count type-to-var) 0))
+       ;; Return the first accumulator found
+       (block find-acc
+         (maphash (lambda (type acc-var)
+                    (declare (ignore type))
+                    (return-from find-acc acc-var))
+                  type-to-var)
+         'nil))
+      ;; No accumulation -> return NIL
+      (t 'nil))))
+
+;;; -----------------------------------------------------------
+;;; LOOP Macro Expander Factory (T012)
+;;; -----------------------------------------------------------
+
+(defun make-loop-expander ()
+  "Create a macro expander for LOOP."
+  (lambda (form)
+    (let* ((clauses (rest form))
+           (ctx (make-loop-context)))
+      ;; Handle simple infinite loop: (loop body...)
+      (if (and clauses
+               (not (symbolp (first clauses))))
+          ;; Simple loop - just wrap in infinite loop
+          `(block nil
+             (tagbody
+                loop-start
+                ,@clauses
+                (go loop-start)))
+          ;; Extended loop - parse and expand
+          (progn
+            (parse-loop-clauses clauses ctx)
+            (expand-loop ctx))))))
+
+;;; ============================================================
 ;;; Standard macro installation
 ;;; ============================================================
 
@@ -564,6 +1528,9 @@
    registry 'dolist (make-dolist-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'dotimes (make-dotimes-expander))
+  ;; LOOP macro (029-loop-macro)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'loop (make-loop-expander))
   ;; Also install setf-related macros
   (install-setf-macros registry)
   registry)

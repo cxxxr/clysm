@@ -79,6 +79,6 @@
       (ok (typep ast 'clysm/compiler/ast:ast-if)
           "Should parse if expression")
       ;; The condition should be a call-host
-      (ok (typep (clysm/compiler/ast:ast-if-condition ast)
+      (ok (typep (clysm/compiler/ast:ast-if-test ast)
                  'clysm/compiler/ast:ast-call-host)
           "Condition should be call-host"))))

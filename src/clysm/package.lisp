@@ -933,7 +933,97 @@
            #:make-pushnew-expander
            #:make-rotatef-expander
            #:make-shiftf-expander
-           #:install-setf-macros))
+           #:install-setf-macros
+           ;; LOOP macro infrastructure (029-loop-macro)
+           #:loop-context
+           #:make-loop-context
+           #:loop-context-p
+           #:loop-context-name
+           #:loop-context-iteration-clauses
+           #:loop-context-accumulation-clauses
+           #:loop-context-termination-clauses
+           #:loop-context-body-clauses
+           #:loop-context-initially-forms
+           #:loop-context-finally-forms
+           #:loop-context-with-bindings
+           #:loop-context-result-form
+           #:loop-context-gensym-counter
+           ;; Iteration clause structs
+           #:loop-iteration-clause
+           #:loop-iteration-clause-p
+           #:loop-iteration-clause-var
+           #:loop-iteration-clause-clause-type
+           #:loop-iter-arithmetic
+           #:make-loop-iter-arithmetic
+           #:loop-iter-arithmetic-p
+           #:loop-iter-arithmetic-from
+           #:loop-iter-arithmetic-to
+           #:loop-iter-arithmetic-below
+           #:loop-iter-arithmetic-above
+           #:loop-iter-arithmetic-downto
+           #:loop-iter-arithmetic-downfrom
+           #:loop-iter-arithmetic-upfrom
+           #:loop-iter-arithmetic-by
+           #:loop-iter-in
+           #:make-loop-iter-in
+           #:loop-iter-in-p
+           #:loop-iter-in-list-form
+           #:loop-iter-in-step-fn
+           #:loop-iter-in-list-var
+           #:loop-iter-on
+           #:make-loop-iter-on
+           #:loop-iter-on-p
+           #:loop-iter-on-list-form
+           #:loop-iter-on-step-fn
+           #:loop-iter-on-list-var
+           #:loop-iter-across
+           #:make-loop-iter-across
+           #:loop-iter-across-p
+           #:loop-iter-across-vector-form
+           #:loop-iter-across-index-var
+           #:loop-iter-across-vec-var
+           #:loop-iter-hash
+           #:make-loop-iter-hash
+           #:loop-iter-hash-p
+           #:loop-iter-hash-hash-form
+           #:loop-iter-hash-value-var
+           #:loop-iter-hash-key-var
+           #:loop-iter-hash-mode
+           #:loop-iter-equals
+           #:make-loop-iter-equals
+           #:loop-iter-equals-p
+           #:loop-iter-equals-init-form
+           #:loop-iter-equals-then-form
+           ;; Accumulation clause struct
+           #:loop-accumulation-clause
+           #:make-loop-accumulation-clause
+           #:loop-accumulation-clause-p
+           #:loop-accumulation-clause-type
+           #:loop-accumulation-clause-expr
+           #:loop-accumulation-clause-into-var
+           #:loop-accumulation-clause-acc-var
+           ;; Termination clause struct
+           #:loop-termination-clause
+           #:make-loop-termination-clause
+           #:loop-termination-clause-p
+           #:loop-termination-clause-type
+           #:loop-termination-clause-expr
+           ;; Conditional clause struct
+           #:loop-conditional-clause
+           #:make-loop-conditional-clause
+           #:loop-conditional-clause-p
+           #:loop-conditional-clause-type
+           #:loop-conditional-clause-condition
+           #:loop-conditional-clause-then-clauses
+           #:loop-conditional-clause-else-clauses
+           ;; LOOP parser functions
+           #:*loop-keywords*
+           #:loop-keyword-p
+           #:loop-keyword-eq
+           #:make-loop-gensym
+           #:parse-loop-clauses
+           #:expand-loop
+           #:make-loop-expander))
 
 (defpackage #:clysm/lib/package-macros
   (:use #:cl)

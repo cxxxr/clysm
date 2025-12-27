@@ -177,7 +177,9 @@
      (:file "ffi-dynamic-wasm-test")
      (:file "ffi-callback-wasm-test")
      ;; Setf Wasm validation (028-setf-generalized-refs)
-     (:file "setf-wasm-test")))
+     (:file "setf-wasm-test")
+     ;; LOOP macro Wasm validation (029-loop-macro)
+     (:file "loop-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -267,7 +269,9 @@
        (:file "callback-test")))
      ;; Setf macros unit tests (028-setf-generalized-refs)
      (:file "setf-test")
-     (:file "setf-expander-test")))
+     (:file "setf-expander-test")
+     ;; LOOP macro unit tests (029-loop-macro)
+     (:file "loop-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -327,7 +331,9 @@
      (:file "ffi-call-host-test")
      (:file "ffi-callback-test")
      ;; Setf ANSI integration tests (028-setf-generalized-refs)
-     (:file "setf-ansi-test"))))
+     (:file "setf-ansi-test")
+     ;; LOOP macro ANSI integration tests (029-loop-macro)
+     (:file "loop-ansi-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
