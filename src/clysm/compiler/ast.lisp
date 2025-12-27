@@ -126,6 +126,16 @@
   (env-type nil :type t))      ; Environment type for closure
 
 ;;; ============================================================
+;;; Function Reference (043-self-hosting-blockers)
+;;; ============================================================
+
+(defstruct (ast-function (:include ast-node) (:conc-name ast-function-))
+  "Function reference node for (function name) or #'name.
+   Can reference either a named function or a lambda."
+  (name nil :type (or symbol ast-lambda))  ; Function name or lambda AST
+  (local-p nil :type boolean))              ; T if from flet/labels
+
+;;; ============================================================
 ;;; Function Definition
 ;;; ============================================================
 
@@ -135,6 +145,173 @@
   (parameters nil :type list)
   (body nil :type list)
   (docstring nil :type (or null string)))
+
+;;; ============================================================
+;;; Parameter Info (043-self-hosting-blockers)
+;;; ============================================================
+
+(defstruct (ast-param-info (:conc-name ast-param-info-))
+  "Structured parameter information for &optional and &key with defaults.
+   Feature: 043-self-hosting-blockers
+
+   Slots:
+   - name: The parameter variable name (symbol)
+   - kind: One of :required, :optional, :key, :rest, :aux
+   - default-form: The default value expression (AST node or raw form), or NIL
+   - supplied-p: The supplied-p variable name (symbol), or NIL
+   - keyword: For &key, the keyword symbol (defaults to name upcased), or NIL"
+  (name nil :type symbol)
+  (kind :required :type (member :required :optional :key :rest :aux))
+  (default-form nil :type t)
+  (supplied-p nil :type (or null symbol))
+  (keyword nil :type (or null symbol)))
+
+(defstruct (keyword-arg-info (:conc-name keyword-arg-info-))
+  "Information about a keyword argument in a function call.
+   Feature: 043-self-hosting-blockers
+
+   Used to track :test, :key, :start, :end, :from-end in function calls."
+  (keyword nil :type symbol)
+  (value nil :type t))
+
+(defstruct (ast-parsed-lambda-list (:conc-name ast-parsed-lambda-list-))
+  "Parsed lambda list with structured parameter information.
+   Feature: 043-self-hosting-blockers"
+  (required nil :type list)    ; List of ast-param-info
+  (optional nil :type list)    ; List of ast-param-info
+  (rest nil :type (or null ast-param-info))
+  (keys nil :type list)        ; List of ast-param-info
+  (allow-other-keys nil :type boolean)
+  (aux nil :type list))        ; List of ast-param-info
+
+(defun parse-lambda-list (lambda-list)
+  "Parse a lambda list into an ast-parsed-lambda-list structure.
+   Feature: 043-self-hosting-blockers
+
+   Handles:
+   - Required parameters: (a b c)
+   - &optional with defaults: (&optional (x 10) (y 20 y-p))
+   - &rest: (&rest args)
+   - &key with defaults: (&key ((:keyword var) default supplied-p))
+   - &allow-other-keys
+   - &aux: (&aux (x 1))
+
+   Returns an ast-parsed-lambda-list structure."
+  (let ((required nil)
+        (optional nil)
+        (rest nil)
+        (keys nil)
+        (allow-other-keys nil)
+        (aux nil)
+        (state :required))
+    (dolist (item lambda-list)
+      (cond
+        ;; Lambda list keywords
+        ((eq item '&optional) (setf state :optional))
+        ((eq item '&rest) (setf state :rest))
+        ((eq item '&body) (setf state :rest))  ; &body is like &rest
+        ((eq item '&key) (setf state :key))
+        ((eq item '&allow-other-keys) (setf allow-other-keys t))
+        ((eq item '&aux) (setf state :aux))
+        ;; Skip &environment and &whole (handled by macro system)
+        ((member item '(&environment &whole)) nil)
+        ;; Process parameters based on current state
+        (t
+         (case state
+           (:required
+            (push (make-ast-param-info :name item :kind :required) required))
+           (:optional
+            (push (parse-optional-param item) optional))
+           (:rest
+            (setf rest (make-ast-param-info :name item :kind :rest)))
+           (:key
+            (push (parse-key-param item) keys))
+           (:aux
+            (push (parse-aux-param item) aux))))))
+    (make-ast-parsed-lambda-list
+     :required (nreverse required)
+     :optional (nreverse optional)
+     :rest rest
+     :keys (nreverse keys)
+     :allow-other-keys allow-other-keys
+     :aux (nreverse aux))))
+
+(defun parse-optional-param (param)
+  "Parse an &optional parameter specification.
+   PARAM can be:
+   - symbol: just the name
+   - (name): same as symbol
+   - (name default): with default value
+   - (name default supplied-p): with default and supplied-p"
+  (cond
+    ((symbolp param)
+     (make-ast-param-info :name param :kind :optional))
+    ((consp param)
+     (let ((name (first param))
+           (default (second param))
+           (supplied-p (third param)))
+       (make-ast-param-info
+        :name name
+        :kind :optional
+        :default-form default
+        :supplied-p supplied-p)))
+    (t (error "Invalid &optional parameter: ~S" param))))
+
+(defun parse-key-param (param)
+  "Parse a &key parameter specification.
+   PARAM can be:
+   - symbol: name and keyword are the same
+   - (name): same as symbol
+   - (name default): with default value
+   - (name default supplied-p): with default and supplied-p
+   - ((:keyword name)): explicit keyword
+   - ((:keyword name) default): with default
+   - ((:keyword name) default supplied-p): full form"
+  (cond
+    ((symbolp param)
+     (make-ast-param-info :name param :kind :key
+                          :keyword (intern (symbol-name param) :keyword)))
+    ((consp param)
+     (let* ((first (first param))
+            (has-explicit-keyword (and (consp first) (keywordp (car first)))))
+       (if has-explicit-keyword
+           ;; ((:keyword name) default supplied-p)
+           (let ((keyword (first first))
+                 (name (second first))
+                 (default (second param))
+                 (supplied-p (third param)))
+             (make-ast-param-info
+              :name name
+              :kind :key
+              :keyword keyword
+              :default-form default
+              :supplied-p supplied-p))
+           ;; (name default supplied-p)
+           (let ((name first)
+                 (default (second param))
+                 (supplied-p (third param)))
+             (make-ast-param-info
+              :name name
+              :kind :key
+              :keyword (intern (symbol-name name) :keyword)
+              :default-form default
+              :supplied-p supplied-p)))))
+    (t (error "Invalid &key parameter: ~S" param))))
+
+(defun parse-aux-param (param)
+  "Parse an &aux parameter specification.
+   PARAM can be:
+   - symbol: just the name (initialized to NIL)
+   - (name value): with initial value"
+  (cond
+    ((symbolp param)
+     (make-ast-param-info :name param :kind :aux))
+    ((consp param)
+     (make-ast-param-info
+      :name (first param)
+      :kind :aux
+      :default-form (second param)))
+    (t (error "Invalid &aux parameter: ~S" param))))
 
 ;;; ============================================================
 ;;; Binding Forms
@@ -561,6 +738,8 @@
       (progn (parse-progn-form args))
       (defun (parse-defun-form args))
       (lambda (parse-lambda-form args))
+      ;; Feature 043: FUNCTION special form (#'fn syntax)
+      (function (parse-function-form args))
       (setq (parse-setq-form args))
       (quote (make-ast-literal :value (car args) :literal-type :quoted))
       (block (parse-block-form args))
@@ -643,6 +822,12 @@
       (oddp (parse-oddp-form args))
       ;; FFI call-host (027-complete-ffi)
       (clysm/ffi:call-host (parse-call-host-form args))
+      ;; THE special form - type declaration, just evaluate the form
+      ;; (the type form) -> parse-expr(form)
+      ;; Feature: 043-self-hosting-blockers
+      (the (if (>= (length args) 2)
+               (parse-expr (second args))
+               (error "THE requires type and form")))
       ;; Function call
       (otherwise
        (parse-function-call-or-ffi op args)))))
@@ -1092,24 +1277,28 @@
    :else (if (third args) (parse-expr (third args)) (make-nil-literal))))
 
 (defun parse-let-form (args sequential-p)
-  "Parse (let/let* bindings body...)."
+  "Parse (let/let* bindings body...).
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((bindings (first args))
         (body (rest args)))
-    (make-ast-let
-     :bindings (mapcar (lambda (b)
-                         (if (consp b)
-                             (cons (first b) (parse-expr (second b)))
-                             (cons b (make-nil-literal))))
-                       bindings)
-     :body (mapcar #'parse-expr body)
-     :sequential-p sequential-p)))
+    ;; Feature 043: Filter out declare forms before parsing
+    (let ((filtered-body (filter-declare-forms body)))
+      (make-ast-let
+       :bindings (mapcar (lambda (b)
+                           (if (consp b)
+                               (cons (first b) (parse-expr (second b)))
+                               (cons b (make-nil-literal))))
+                         bindings)
+       :body (mapcar #'parse-expr filtered-body)
+       :sequential-p sequential-p))))
 
 (defun parse-progn-form (args)
   "Parse (progn forms...)."
   (make-ast-progn :forms (mapcar #'parse-expr args)))
 
 (defun parse-defun-form (args)
-  "Parse (defun name params body...)."
+  "Parse (defun name params body...).
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((name (first args))
         (params (second args))
         (body (cddr args)))
@@ -1118,19 +1307,40 @@
         (if (and (stringp (car body)) (cdr body))
             (values (car body) (cdr body))
             (values nil body))
-      (make-ast-defun
-       :name name
-       :parameters params
-       :body (mapcar #'parse-expr actual-body)
-       :docstring docstring))))
+      ;; Feature 043: Filter out declare forms before parsing
+      (let ((filtered-body (filter-declare-forms actual-body)))
+        (make-ast-defun
+         :name name
+         :parameters params
+         :body (mapcar #'parse-expr filtered-body)
+         :docstring docstring)))))
 
 (defun parse-lambda-form (args)
-  "Parse (lambda params body...)."
+  "Parse (lambda params body...).
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((params (first args))
         (body (rest args)))
-    (make-ast-lambda
-     :parameters params
-     :body (mapcar #'parse-expr body))))
+    ;; Feature 043: Filter out declare forms before parsing
+    (let ((filtered-body (filter-declare-forms body)))
+      (make-ast-lambda
+       :parameters params
+       :body (mapcar #'parse-expr filtered-body)))))
+
+;;; Feature 043: FUNCTION special form parsing
+(defun parse-function-form (args)
+  "Parse (function name) or (function (lambda ...)).
+   ARGS is (name) or ((lambda ...)).
+   Returns ast-function node."
+  (let ((arg (first args)))
+    (cond
+      ;; (function (lambda ...)) - anonymous function
+      ((and (consp arg) (eq (car arg) 'lambda))
+       (make-ast-function :name (parse-lambda-form (cdr arg))))
+      ;; (function name) - named function reference
+      ((symbolp arg)
+       (make-ast-function :name arg))
+      (t
+       (error "FUNCTION: Invalid argument ~S" arg)))))
 
 ;;; Multiple-value-bind parsing (025-multiple-values)
 (defun parse-multiple-value-bind-form (args)
@@ -1179,28 +1389,37 @@
    :value (if (second args) (parse-expr (second args)) (make-nil-literal))))
 
 (defun parse-flet-form (args)
-  "Parse (flet ((name params body...) ...) forms...)."
+  "Parse (flet ((name params body...) ...) forms...).
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((definitions (first args))
         (body (rest args)))
-    (make-ast-flet
-     :definitions (mapcar #'parse-local-function-def definitions)
-     :body (mapcar #'parse-expr body))))
+    ;; Feature 043: Filter out declare forms before parsing
+    (let ((filtered-body (filter-declare-forms body)))
+      (make-ast-flet
+       :definitions (mapcar #'parse-local-function-def definitions)
+       :body (mapcar #'parse-expr filtered-body)))))
 
 (defun parse-labels-form (args)
-  "Parse (labels ((name params body...) ...) forms...)."
+  "Parse (labels ((name params body...) ...) forms...).
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((definitions (first args))
         (body (rest args)))
-    (make-ast-labels
-     :definitions (mapcar #'parse-local-function-def definitions)
-     :body (mapcar #'parse-expr body))))
+    ;; Feature 043: Filter out declare forms before parsing
+    (let ((filtered-body (filter-declare-forms body)))
+      (make-ast-labels
+       :definitions (mapcar #'parse-local-function-def definitions)
+       :body (mapcar #'parse-expr filtered-body)))))
 
 (defun parse-local-function-def (def)
   "Parse a local function definition (name params body...).
-   Returns (name params parsed-body...) where body is list of AST nodes."
+   Returns (name params parsed-body...) where body is list of AST nodes.
+   Feature 043: Filters out DECLARE forms from body before parsing."
   (let ((name (first def))
         (params (second def))
         (body (cddr def)))
-    (list name params (mapcar #'parse-expr body))))
+    ;; Feature 043: Filter out declare forms before parsing
+    (let ((filtered-body (filter-declare-forms body)))
+      (list name params (mapcar #'parse-expr filtered-body)))))
 
 ;;; Macro expansions
 

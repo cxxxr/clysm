@@ -15,12 +15,19 @@
    Feature 022-wasm-import-optimization: Analyzes I/O usage to conditionally
    emit Import section only when the compiled code uses I/O functions.
 
+   Feature 043: Macro expansion is performed before compilation using the
+   global macro registry. This handles LOOP, DO, DOLIST, etc.
+
    Examples:
      (compile-to-wasm '(+ 1 2))      ; No Import section (no I/O)
      (compile-to-wasm '(print 42))   ; Has Import section (uses I/O)
      (compile-to-wasm '(+ 1 2) :output \"add.wasm\")"
-  (let* ((uses-io (clysm/compiler/analyzer/io-usage:analyze-io-usage expr))
-         (module (compile-to-module expr))
+  ;; Feature 043: Expand all macros before compilation
+  (let* ((expanded-expr (clysm/compiler/transform/macro:macroexpand-all
+                          (clysm/compiler/transform/macro:global-macro-registry)
+                          expr))
+         (uses-io (clysm/compiler/analyzer/io-usage:analyze-io-usage expanded-expr))
+         (module (compile-to-module expanded-expr))
          (bytes (emit-module module :uses-io uses-io)))
     (if output
         (progn
@@ -34,8 +41,13 @@
 
 (defun compile-to-wat (expr)
   "Compile a Lisp expression to WAT text format.
-   Useful for debugging."
-  (let ((module (compile-to-module expr)))
+   Useful for debugging.
+   Feature 043: Macro expansion is performed before compilation."
+  ;; Feature 043: Expand all macros before compilation
+  (let* ((expanded-expr (clysm/compiler/transform/macro:macroexpand-all
+                          (clysm/compiler/transform/macro:global-macro-registry)
+                          expr))
+         (module (compile-to-module expanded-expr)))
     (emit-module-wat module)))
 
 ;;; ============================================================
@@ -950,6 +962,9 @@
        (:i32.sub (vector-push-extend #x6B buffer))
        (:i32.mul (vector-push-extend #x6C buffer))
        (:i32.div_s (vector-push-extend #x6D buffer))
+       (:i32.div_u (vector-push-extend #x6E buffer))
+       (:i32.rem_s (vector-push-extend #x6F buffer))
+       (:i32.rem_u (vector-push-extend #x70 buffer))
        (:i32.and (vector-push-extend #x71 buffer))
        (:i32.or (vector-push-extend #x72 buffer))
        (:i32.xor (vector-push-extend #x73 buffer))

@@ -200,7 +200,7 @@
 
 (defsystem "clysm/tests"
   :description "Tests for Clysm compiler"
-  :depends-on ("clysm" "clysm/ansi-test" "rove")
+  :depends-on ("clysm" "clysm/ansi-test" "clysm/bootstrap" "rove")
   :pathname "tests/"
   :serial t
   :components
@@ -423,7 +423,36 @@
       ((:file "types-test")
        (:file "platform-test")
        (:file "deps-test")
-       (:file "cache-test")))))
+       (:file "cache-test")))
+     ;; Default values unit tests (043-self-hosting-blockers)
+     (:module "default-values"
+      :serial t
+      :components
+      ((:file "optional-test")
+       (:file "key-test")))
+     ;; Hash table unit tests (043-self-hosting-blockers)
+     (:module "hash-table"
+      :serial t
+      :components
+      ((:file "make-hash-table-test")
+       (:file "gethash-test")
+       (:file "remhash-test")
+       (:file "maphash-test")))
+     ;; List operations unit tests (043-self-hosting-blockers)
+     (:module "list-ops"
+      :serial t
+      :components
+      ((:file "assoc-test")
+       (:file "member-test")
+       (:file "set-ops-test")))
+     ;; Sequence extension unit tests (043-self-hosting-blockers)
+     (:module "sequence-ext"
+      :serial t
+      :components
+      ((:file "position-test")
+       (:file "find-test")
+       (:file "remove-test")
+       (:file "substitute-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

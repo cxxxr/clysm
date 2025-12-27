@@ -135,7 +135,13 @@
                       (env-macro-function env (first form))
                       (macro-function* registry (first form)))))
     (if expander
-        (values (funcall expander form env) t)
+        ;; Feature 043: Try calling with (form env) first for &environment support.
+        ;; Fall back to (form) only for legacy one-argument expanders.
+        (handler-case
+            (values (funcall expander form env) t)
+          (error ()
+            ;; Retry with only form argument for legacy expanders
+            (values (funcall expander form) t)))
         (values form nil))))
 
 (defun macroexpand* (registry form &optional env)

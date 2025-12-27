@@ -117,6 +117,11 @@
            #:ast-lambda-body
            #:ast-lambda-free-vars
            #:make-ast-lambda
+           ;; Function reference (043-self-hosting-blockers)
+           #:ast-function
+           #:ast-function-name
+           #:ast-function-local-p
+           #:make-ast-function
            ;; Defun
            #:ast-defun
            #:ast-defun-name
@@ -124,6 +129,33 @@
            #:ast-defun-body
            #:ast-defun-docstring
            #:make-ast-defun
+           ;; Parameter Info (043-self-hosting-blockers)
+           #:ast-param-info
+           #:ast-param-info-name
+           #:ast-param-info-kind
+           #:ast-param-info-default-form
+           #:ast-param-info-supplied-p
+           #:ast-param-info-keyword
+           #:make-ast-param-info
+           #:ast-param-info-p
+           ;; Keyword Arg Info (043-self-hosting-blockers)
+           #:keyword-arg-info
+           #:keyword-arg-info-keyword
+           #:keyword-arg-info-value
+           #:make-keyword-arg-info
+           ;; Parsed Lambda List (043-self-hosting-blockers)
+           #:ast-parsed-lambda-list
+           #:ast-parsed-lambda-list-required
+           #:ast-parsed-lambda-list-optional
+           #:ast-parsed-lambda-list-rest
+           #:ast-parsed-lambda-list-keys
+           #:ast-parsed-lambda-list-allow-other-keys
+           #:ast-parsed-lambda-list-aux
+           #:make-ast-parsed-lambda-list
+           #:parse-lambda-list
+           #:parse-optional-param
+           #:parse-key-param
+           #:parse-aux-param
            ;; Let binding
            #:ast-let
            #:ast-let-bindings
@@ -491,6 +523,14 @@
            ;; Macro environment type (042-advanced-defmacro)
            #:+type-macro-environment+
            #:make-macro-environment-type
+           ;; Hash table types (043-self-hosting-blockers)
+           #:+type-hash-entry+
+           #:+type-hash-table+
+           #:+type-bucket-array+
+           ;; Hash table type constructors (043-self-hosting-blockers)
+           #:make-hash-entry-type
+           #:make-hash-table-type
+           #:make-bucket-array-type
            ;; CLOS Foundation type constructors (026-clos-foundation)
            #:make-instance-type
            #:make-standard-class-type
@@ -1164,3 +1204,24 @@
            #:encode-unsigned-leb128
            #:encode-signed-leb128
            #:repl))
+
+;;; Forward declarations for special variables used across compilation units.
+;;; These are defined here (after packages exist) to avoid "undefined variable"
+;;; warnings during ASDF loading. The actual values are set in their respective
+;;; source files.
+
+;; Multiple values globals (runtime/objects.lisp) - used by compiler/codegen/func-section.lisp
+(defvar clysm/runtime/objects::*mv-count-global-index*)
+(defvar clysm/runtime/objects::*mv-buffer-global-index*)
+
+;; Global macro registry (transform/macro.lisp) - used by compiler/codegen/func-section.lisp
+(defvar clysm/compiler/transform/macro::*global-macro-registry*)
+
+;; Setf expander registry (lib/setf-expanders.lisp) - used by compiler/codegen/func-section.lisp
+(defvar clysm/lib/setf-expanders::*global-setf-expander-registry*)
+
+;; FFI environment (ffi/macros.lisp) - used by compiler/codegen/func-section.lisp
+(defvar clysm/ffi::*ffi-environment*)
+
+;; Pending lambdas (compiler/codegen/func-section.lisp) - forward declared for within-file references
+(defvar clysm/compiler/codegen/func-section::*pending-lambdas*)

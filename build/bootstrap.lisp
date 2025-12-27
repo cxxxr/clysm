@@ -233,10 +233,13 @@
     case when unless
     and or
     ;; Simple control flow
-    prog1 prog2)
+    prog1 prog2
+    ;; Feature 043: Binding macros - SBCL expands to let/mvb
+    multiple-value-bind)
   "Operators that MUST be expanded before Clysm compilation.
-   Complex macros (loop, do, destructuring-bind, etc.) are left for
-   Clysm's own macro system to handle.")
+   Note: LOOP/DO macros are NOT expanded here because SBCL expands
+   them to SBCL-internal functions. Instead, Clysm's macro system
+   (registered in clysm/lib/macros.lisp) handles them.")
 
 (defun expand-form-recursive (form)
   "Recursively expand select macros in FORM.
@@ -713,7 +716,19 @@
 ;; Load Clysm system first
 (unless (find-package :clysm/compiler)
   (format t "Loading Clysm compiler...~%")
-  (asdf:load-system :clysm))
+  ;; Use load-source-op to avoid compilation issues with ASDF treating warnings as errors
+  ;; This is slower but more robust for bootstrap
+  (handler-case
+      (asdf:load-system :clysm)
+    (error (e)
+      (format t "Warning: ASDF compile failed (~A), trying source load...~%" e)
+      (asdf:oos 'asdf:load-source-op :clysm))))
+
+;; Feature 043: Initialize the global macro registry with standard macros
+;; This is critical - without this, LOOP and other macros are not expanded!
+(clysm/lib/macros:install-standard-macros
+ (clysm/compiler/transform/macro:global-macro-registry))
+(format t "Initialized standard macros (LOOP, DO, WHEN, UNLESS, etc.)~%")
 
 ;; Run bootstrap if this file is loaded directly
 (when (and (boundp '*load-pathname*)

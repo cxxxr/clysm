@@ -66,6 +66,31 @@
 (defconstant +type-macro-environment+ 24 "Type index for macro expansion environment")
 
 ;;; ============================================================
+;;; Hash Table Type Indices (043-self-hosting-blockers)
+;;; ============================================================
+
+(defconstant +type-hash-entry+ 25
+  "Type index for hash table entry.
+   struct $hash-entry {
+     key: anyref,
+     value: (mut anyref),
+     next: (mut (ref null $hash-entry))
+   }")
+
+(defconstant +type-hash-table+ 26
+  "Type index for hash table.
+   struct $hash-table {
+     size: i32,           // number of buckets
+     count: (mut i32),    // number of entries
+     test: anyref,        // test function (eq, eql, equal, equalp)
+     buckets: (ref $bucket-array)
+   }")
+
+(defconstant +type-bucket-array+ 27
+  "Type index for hash table bucket array.
+   array (mut (ref null $hash-entry))")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -482,6 +507,57 @@
                  (make-wasm-field :name 'parent :type :anyref :mutable nil))))
 
 ;;; ============================================================
+;;; Hash Table Type Constructors (043-self-hosting-blockers)
+;;; ============================================================
+
+(defun make-hash-entry-type ()
+  "Create hash table entry type (043-self-hosting-blockers).
+   Structure for linked list entries in hash buckets:
+     $key: anyref - the hash table key (immutable)
+     $value: (mut anyref) - the hash table value
+     $next: (mut (ref null $hash-entry)) - next entry in bucket chain
+   (type $hash-entry (struct
+     (field $key anyref)
+     (field $value (mut anyref))
+     (field $next (mut (ref null 25)))))"
+  (make-wasm-struct-type
+   :name '$hash-entry
+   :index +type-hash-entry+
+   :fields (list (make-wasm-field :name 'key :type :anyref :mutable nil)
+                 (make-wasm-field :name 'value :type :anyref :mutable t)
+                 (make-wasm-field :name 'next :type '(:ref-null 25) :mutable t))))
+
+(defun make-hash-table-type ()
+  "Create hash table type (043-self-hosting-blockers).
+   Structure for the hash table itself:
+     $size: i32 - number of buckets
+     $count: (mut i32) - number of entries
+     $test: anyref - test function symbol (eq, eql, equal, equalp)
+     $buckets: (ref $bucket-array) - array of bucket heads
+   (type $hash-table (struct
+     (field $size i32)
+     (field $count (mut i32))
+     (field $test anyref)
+     (field $buckets (ref 27))))"
+  (make-wasm-struct-type
+   :name '$hash-table
+   :index +type-hash-table+
+   :fields (list (make-wasm-field :name 'size :type :i32 :mutable nil)
+                 (make-wasm-field :name 'count :type :i32 :mutable t)
+                 (make-wasm-field :name 'test :type :anyref :mutable nil)
+                 (make-wasm-field :name 'buckets :type '(:ref 27) :mutable nil))))
+
+(defun make-bucket-array-type ()
+  "Create hash table bucket array type (043-self-hosting-blockers).
+   Mutable array of hash entry references (bucket heads).
+   (type $bucket-array (array (mut (ref null 25))))"
+  (make-wasm-array-type
+   :name '$bucket-array
+   :index +type-bucket-array+
+   :element-type '(:ref-null 25)
+   :mutable t))
+
+;;; ============================================================
 ;;; Exception Tags (T008)
 ;;; ============================================================
 
@@ -548,7 +624,10 @@
         (make-slot-vector-type)     ; type 21: CLOS slot storage (026-clos-foundation)
         (make-keyword-array-type)   ; type 22: CLOS initarg keywords (026-clos-foundation)
         (make-closure-array-type)   ; type 23: CLOS initform closures (026-clos-foundation)
-        (make-macro-environment-type))) ; type 24: macro environment (042-advanced-defmacro)
+        (make-macro-environment-type) ; type 24: macro environment (042-advanced-defmacro)
+        (make-hash-entry-type)      ; type 25: hash table entry (043-self-hosting-blockers)
+        (make-hash-table-type)      ; type 26: hash table (043-self-hosting-blockers)
+        (make-bucket-array-type)))  ; type 27: hash bucket array (043-self-hosting-blockers)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.

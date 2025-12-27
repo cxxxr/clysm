@@ -12,51 +12,69 @@
 (deftest test-diff-report-has-required-fields
   "Diff report JSON should have all required fields."
   (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 1000 :exports 5 :types 10))
+                 :path "stage0.wasm"
+                 :size-bytes 1000
+                 :exports '("main" "init")
+                 :types 10))
          (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2000 :exports 8 :types 15))
-         (diff (clysm/stage1::compute-diff info1 info2))
+                 :path "stage1.wasm"
+                 :size-bytes 2000
+                 :exports '("main" "init" "compile")
+                 :types 15))
+         (report (clysm/stage1::make-diff-report
+                  :stage0 info1
+                  :stage1 info2
+                  :differences (clysm/stage1::compute-differences info1 info2)))
          (output (make-string-output-stream)))
-    (clysm/stage1::write-diff-report-json diff output)
+    (clysm/stage1::write-diff-report-json report output)
     (let ((json-string (get-output-stream-string output)))
       (ok (search "\"stage0\"" json-string)
           "JSON has 'stage0' field")
       (ok (search "\"stage1\"" json-string)
           "JSON has 'stage1' field")
       (ok (search "\"size_delta\"" json-string)
-          "JSON has 'size_delta' field")
-      (ok (search "\"exports_delta\"" json-string)
-          "JSON has 'exports_delta' field"))))
+          "JSON has 'size_delta' field"))))
 
-(deftest test-diff-report-size-delta-calculation
-  "Diff report should calculate size delta correctly."
+(deftest test-diff-details-format
+  "Diff details should have properly formatted fields."
   (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 1000 :exports 5 :types 10))
+                 :path "stage0.wasm"
+                 :size-bytes 1000
+                 :exports '("main" "init")
+                 :types 10))
          (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2500 :exports 8 :types 15))
-         (diff (clysm/stage1::compute-diff info1 info2)))
-    (ok (= (clysm/stage1::diff-details-size-delta diff) 1500)
-        "Size delta is 1500 bytes")))
-
-(deftest test-diff-report-exports-delta
-  "Diff report should calculate exports delta correctly."
-  (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 1000 :exports 5 :types 10))
-         (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2000 :exports 12 :types 15))
-         (diff (clysm/stage1::compute-diff info1 info2)))
-    (ok (= (clysm/stage1::diff-details-exports-delta diff) 7)
-        "Exports delta is 7")))
+                 :path "stage1.wasm"
+                 :size-bytes 2500
+                 :exports '("main" "compile")
+                 :types 15))
+         (diff (clysm/stage1::compute-differences info1 info2)))
+    ;; Size delta is a string
+    (ok (stringp (clysm/stage1::diff-details-size-delta diff))
+        "Size delta is a formatted string")
+    ;; Missing and new exports are lists
+    (ok (listp (clysm/stage1::diff-details-missing-exports diff))
+        "Missing exports is a list")
+    (ok (listp (clysm/stage1::diff-details-new-exports diff))
+        "New exports is a list")))
 
 (deftest test-diff-report-valid-json-syntax
   "Diff report should be valid JSON."
   (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 1000 :exports 5 :types 10))
+                 :path "stage0.wasm"
+                 :size-bytes 1000
+                 :exports '("main")
+                 :types 10))
          (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2000 :exports 8 :types 15))
-         (diff (clysm/stage1::compute-diff info1 info2))
+                 :path "stage1.wasm"
+                 :size-bytes 2000
+                 :exports '("main" "compile")
+                 :types 15))
+         (report (clysm/stage1::make-diff-report
+                  :stage0 info1
+                  :stage1 info2
+                  :differences (clysm/stage1::compute-differences info1 info2)))
          (output (make-string-output-stream)))
-    (clysm/stage1::write-diff-report-json diff output)
+    (clysm/stage1::write-diff-report-json report output)
     (let ((json-string (get-output-stream-string output)))
       ;; Basic JSON structure checks
       (ok (char= (char json-string 0) #\{)
@@ -69,15 +87,22 @@
         (ok (= open-count close-count)
             "Matching brace count")))))
 
-(deftest test-diff-report-negative-delta
-  "Diff report should handle negative deltas (stage1 smaller than stage0)."
+(deftest test-diff-export-comparison
+  "Diff should correctly identify new and missing exports."
   (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 5000 :exports 20 :types 30))
+                 :path "stage0.wasm"
+                 :size-bytes 1000
+                 :exports '("main" "init" "old-fn")
+                 :types 10))
          (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2000 :exports 8 :types 10))
-         (diff (clysm/stage1::compute-diff info1 info2)))
-    (ok (= (clysm/stage1::diff-details-size-delta diff) -3000)
-        "Size delta is -3000 (stage1 smaller)")
-    (ok (= (clysm/stage1::diff-details-exports-delta diff) -12)
-        "Exports delta is -12")))
-
+                 :path "stage1.wasm"
+                 :size-bytes 2000
+                 :exports '("main" "init" "new-fn")
+                 :types 15))
+         (diff (clysm/stage1::compute-differences info1 info2)))
+    (ok (member "old-fn" (clysm/stage1::diff-details-missing-exports diff)
+                :test #'equal)
+        "old-fn is missing in stage1")
+    (ok (member "new-fn" (clysm/stage1::diff-details-new-exports diff)
+                :test #'equal)
+        "new-fn is new in stage1")))

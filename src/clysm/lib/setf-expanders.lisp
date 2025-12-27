@@ -292,7 +292,8 @@
 ;;; AREF expander
 
 (defun make-aref-setf-expander ()
-  "Create setf expander for AREF."
+  "Create setf expander for AREF.
+   Feature 043: Uses %setf-aref primitive to avoid infinite recursion."
   (lambda (form env)
     (declare (ignore env))
     (let* ((array-form (second form))
@@ -304,13 +305,15 @@
       (values (cons array-temp index-temps)          ; temps
               (cons array-form index-forms)          ; vals
               (list store)                           ; stores
-              `(progn (setf (aref ,array-temp ,@index-temps) ,store) ,store)  ; store-form
+              ;; Use %setf-aref primitive instead of (setf (aref ...)) to avoid recursion
+              `(%setf-aref ,array-temp ,store ,@index-temps)  ; store-form
               `(aref ,array-temp ,@index-temps)))))  ; access-form
 
 ;;; GETHASH expander
 
 (defun make-gethash-setf-expander ()
-  "Create setf expander for GETHASH."
+  "Create setf expander for GETHASH.
+   Feature 043: Uses puthash for storing values in hash tables."
   (lambda (form env)
     (declare (ignore env))
     (let* ((key-form (second form))
@@ -324,13 +327,39 @@
             (values (list key-temp ht-temp default-temp)     ; temps
                     (list key-form hash-table-form default-form)  ; vals
                     (list store)                             ; stores
-                    `(progn (setf (gethash ,key-temp ,ht-temp) ,store) ,store)  ; store-form
+                    `(puthash ,key-temp ,store ,ht-temp)     ; store-form (043)
                     `(gethash ,key-temp ,ht-temp ,default-temp)))  ; access-form
           (values (list key-temp ht-temp)                    ; temps
                   (list key-form hash-table-form)            ; vals
                   (list store)                               ; stores
-                  `(progn (setf (gethash ,key-temp ,ht-temp) ,store) ,store)  ; store-form
+                  `(puthash ,key-temp ,store ,ht-temp)       ; store-form (043)
                   `(gethash ,key-temp ,ht-temp))))))         ; access-form
+
+;;; GETF expander (043-self-hosting-blockers)
+
+(defun make-getf-setf-expander ()
+  "Create setf expander for GETF - property list access.
+   (setf (getf plist indicator) value) uses %setf-getf primitive."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((plist-form (second form))
+           (indicator-form (third form))
+           (default-form (fourth form))
+           (plist-temp (gensym "PLIST-"))
+           (indicator-temp (gensym "IND-"))
+           (store (gensym "STORE-")))
+      (if default-form
+          (let ((default-temp (gensym "DEFAULT-")))
+            (values (list plist-temp indicator-temp default-temp)
+                    (list plist-form indicator-form default-form)
+                    (list store)
+                    `(%setf-getf ,plist-temp ,indicator-temp ,store)
+                    `(getf ,plist-temp ,indicator-temp ,default-temp)))
+          (values (list plist-temp indicator-temp)
+                  (list plist-form indicator-form)
+                  (list store)
+                  `(%setf-getf ,plist-temp ,indicator-temp ,store)
+                  `(getf ,plist-temp ,indicator-temp))))))
 
 ;;; SYMBOL-VALUE/FUNCTION/PLIST expanders
 
@@ -404,6 +433,9 @@
 
   ;; GETHASH
   (register-setf-expander registry 'gethash (make-gethash-setf-expander))
+
+  ;; GETF (043-self-hosting-blockers)
+  (register-setf-expander registry 'getf (make-getf-setf-expander))
 
   ;; Symbol accessors
   (register-setf-expander registry 'symbol-value (make-symbol-value-setf-expander))

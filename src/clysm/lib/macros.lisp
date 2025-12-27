@@ -229,6 +229,15 @@
             (list 'let (list (list result-var second-form))
                   (cons 'progn (append rest-forms (list result-var))))))))
 
+;; Feature 043: RETURN macro for LOOP's finally clause
+(defun make-return-expander ()
+  "Create a macro expander for RETURN.
+   (return [value]) expands to (return-from nil value).
+   Used by LOOP's finally clause."
+  (lambda (form)
+    (let ((value (if (cdr form) (second form) nil)))
+      (list 'return-from nil value))))
+
 (defun make-do-expander ()
   "Create a macro expander for DO.
    (do ((var init [step])...) (end-test result...) body...)
@@ -360,6 +369,38 @@
     (t
      (error 'clysm/lib/setf-expanders:invalid-place
             :place place))))
+
+(defun make-psetq-expander ()
+  "Create a macro expander for PSETQ.
+   (psetq var1 value1 var2 value2 ...) - Parallel assignment to simple variables.
+   Feature 043: Required for LOOP macro expansion."
+  (lambda (form)
+    (let ((pairs (rest form)))
+      (cond
+        ;; No arguments - return nil
+        ((null pairs) nil)
+        ;; Odd number of arguments - error
+        ((oddp (length pairs))
+         (error "PSETQ requires an even number of arguments"))
+        ;; Single pair - expand to setq
+        ((= (length pairs) 2)
+         (list 'setq (first pairs) (second pairs)))
+        ;; Multiple pairs - expand to parallel assignment
+        (t
+         (let ((temps nil)
+               (bindings nil)
+               (setqs nil))
+           ;; Collect all the information
+           (loop for (var value) on pairs by #'cddr
+                 do (let ((temp (gensym "PSETQ-")))
+                      (push temp temps)
+                      (push (list temp value) bindings)
+                      (push var setqs)
+                      (push temp setqs)))
+           ;; Build: (let ((temp1 val1) ...) (setq var1 temp1 ...) nil)
+           (list 'let (nreverse bindings)
+                 (list* 'setq (nreverse setqs))
+                 nil)))))))
 
 (defun make-psetf-expander ()
   "Create a macro expander for PSETF.
@@ -1116,7 +1157,8 @@
          (step-code (generate-iteration-steps ctx))
          (result-form (generate-result-form ctx)))
     ;; Build the expansion
-    `(let ,all-bindings
+    ;; Feature 043: Use LET* for sequential bindings (FOR vars may depend on earlier WITH vars)
+    `(let* ,all-bindings
        (block ,block-name
          (tagbody
             ,@(loop-context-initially-forms ctx)
@@ -1862,6 +1904,9 @@
    registry 'setf (make-setf-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'psetf (make-psetf-expander))
+  ;; Feature 043: PSETQ for LOOP macro support
+  (clysm/compiler/transform/macro:register-macro
+   registry 'psetq (make-psetq-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'incf (make-incf-expander))
   (clysm/compiler/transform/macro:register-macro
@@ -1896,6 +1941,9 @@
    registry 'prog1 (make-prog1-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'prog2 (make-prog2-expander))
+  ;; Feature 043: RETURN macro for LOOP's finally clause
+  (clysm/compiler/transform/macro:register-macro
+   registry 'return (make-return-expander))
   (clysm/compiler/transform/macro:register-macro
    registry 'do (make-do-expander))
   (clysm/compiler/transform/macro:register-macro
@@ -1915,3 +1963,12 @@
   (clysm/compiler/transform/macro:register-macro
    registry 'destructuring-bind (make-destructuring-bind-expander))
   registry)
+
+;;; ============================================================
+;;; Initialize Global Macro Registry at Load Time
+;;; ============================================================
+;;; Feature 043: Install all standard macros into the global registry
+;;; so that compile-to-wasm can expand LOOP, DO, DOLIST, etc.
+
+(eval-when (:load-toplevel :execute)
+  (install-standard-macros (clysm/compiler/transform/macro:global-macro-registry)))
