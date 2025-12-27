@@ -324,7 +324,13 @@
        (:file "read-contents-test")
        (:file "write-contents-test")
        (:file "open-close-test")
-       (:file "with-open-file-test")))))
+       (:file "with-open-file-test")))
+     ;; Validation unit tests (036-compiler-subset-validation)
+     (:module "validation"
+      :serial t
+      :components
+      ((:file "feature-registry-test")
+       (:file "analyzer-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -415,6 +421,19 @@
    (:file "runner")
    (:file "reporter")
    (:file "baseline")))
+
+;; Compiler Subset Validation (036-compiler-subset-validation)
+(defsystem "clysm/validation"
+  :description "Compiler self-hosting validation tools"
+  :depends-on ("clysm" "alexandria" "uiop" "rove")
+  :pathname "src/clysm/validation/"
+  :serial t
+  :components
+  ((:file "package")
+   (:file "feature-registry")
+   (:file "analyzer")
+   (:file "reporter")
+   (:file "compiler-order")))
 
 ;; ANSI Test Harness Tests
 (defsystem "clysm/ansi-test/tests"

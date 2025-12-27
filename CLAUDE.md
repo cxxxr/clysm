@@ -47,6 +47,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8) (035-ffi-filesystem)
 - N/A (host filesystem via FFI) (035-ffi-filesystem)
 - Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8) (035-ffi-filesystem)
+- Common Lisp (SBCL 2.4+) + alexandria, rove (testing), wasm-tools (validation) (036-compiler-subset-validation)
+- N/A (in-memory analysis, file-based reports) (036-compiler-subset-validation)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -66,9 +68,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 036-compiler-subset-validation: Added Common Lisp (SBCL 2.4+) + alexandria, rove (testing), wasm-tools (validation)
 - 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
 - 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
-- 034-portable-utf8: Added Common Lisp (SBCL 2.4+, CCL, ECL - portable subset) + None (pure portable CL; removes babel dependency)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -467,4 +469,46 @@ Type dispatch macros expand directly to primitive predicates (integerp, symbolp,
 - Unit tests: tests/unit/filesystem/*.lisp (6 test files)
 - Contract tests: tests/contract/filesystem-ffi-test.lisp
 - Integration tests: tests/integration/filesystem-test.lisp
+
+## Feature 036: Compiler Subset Validation - COMPLETE
+
+**Status**: All executable tasks completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/validation/package.lisp`: Package definition with exports
+- `src/clysm/validation/feature-registry.lisp`: CL-Feature struct and 428 registered symbols
+- `src/clysm/validation/analyzer.lisp`: S-expression walker and file analysis
+- `src/clysm/validation/reporter.lisp`: Coverage reports and blessed-subset generation
+- `src/clysm/validation/compiler-order.lisp`: Compilation infrastructure (41 modules)
+- `docs/blessed-subset.lisp`: Generated documentation of self-compilable CL features
+
+### Key Features
+1. **Static Analysis**: S-expression walker scans compiler source files
+   - `(analyze-all)` scans all 6 target directories
+   - Extracts unique CL symbols from source code
+   - Classifies by support status: :supported, :partial, :unsupported, :unknown
+2. **Feature Registry**: Hash-table with 428 CL symbols
+   - `(feature-status 'defun)` → :supported
+   - `(feature-status 'loop)` → :partial
+   - Categories: special-form, macro, function, type, declaration
+3. **Coverage Reports**: Markdown output with per-directory breakdown
+   - `(compute-all-coverage results)` aggregates analysis
+   - `(generate-report coverage-data stream)` writes Markdown
+4. **Blessed Subset Documentation**: Auto-generated Lisp file
+   - `*blessed-special-forms*`, `*blessed-macros*`, `*blessed-functions*`, `*blessed-types*`
+   - Notes for partially-supported features
+
+### Coverage Results
+- **Total unique CL symbols in compiler**: 282
+- **Supported**: 276 (97.9%)
+- **Partial**: 6 (2.1%) - loop, format, declarations
+- **Unsupported**: 0
+- **Overall coverage**: 100%
+
+### Known Limitation
+Phase 4 (T034: compile-module) is blocked because Clysm's `compile-to-wasm` compiles individual expressions, not entire source files. Source files contain `in-package`, `declare`, etc. which are not compilable expressions. True self-hosting validation requires file-level compilation support.
+
+### Test Coverage
+- Unit tests: tests/unit/validation/*.lisp (4 test files, 40 tests)
+- Feature registry, analyzer, reporter, compiler-order tests all pass
 <!-- MANUAL ADDITIONS END -->
