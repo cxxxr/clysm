@@ -162,6 +162,25 @@
    FR-007: Input functions MUST handle end-of-file conditions appropriately."))
 
 ;;; ============================================================
+;;; Format Error (032-format-function, T009)
+;;; ============================================================
+
+(defclass format-error (simple-error)
+  ((control-string
+    :initarg :control-string
+    :initform ""
+    :reader format-error-control-string
+    :documentation "The format control string that caused the error")
+   (position
+    :initarg :position
+    :initform 0
+    :reader format-error-position
+    :documentation "Position in control-string where error occurred"))
+  (:documentation "Condition for format string errors.
+   FR-015: format-error is signaled for malformed format strings.
+   Subtype of simple-error with control-string and position slots."))
+
+;;; ============================================================
 ;;; Make Condition (T032)
 ;;; ============================================================
 

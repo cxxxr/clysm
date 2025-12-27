@@ -42,6 +42,10 @@
    #:stream-error
    #:clysm-stream-error-stream
    #:end-of-file
+   ;; Format error (032-format-function, T010)
+   #:format-error
+   #:format-error-control-string
+   #:format-error-position
    ;; Condition accessors
    #:simple-condition-format-control
    #:simple-condition-format-arguments

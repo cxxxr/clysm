@@ -47,6 +47,11 @@
    Features:
    - write-char, write-string for output (US1)
    - read-char, read-line for input (US2)
-   - format with ~A, ~S, ~D, ~%, ~~ directives (US3)
+   - format with ANSI CL directives (US3, 032-format-function):
+     * ~A, ~S, ~D (basic output)
+     * ~%, ~~, ~& (newline, tilde, fresh-line)
+     * ~{body~}, ~^ (iteration with escape)
+     * ~[clause~;...~], ~:[ (conditional, boolean)
+     * ~? (recursive processing)
    - Stream predicates and first-class stream values (US4)
    - Standard streams: *standard-input*, *standard-output*, *error-output*"))

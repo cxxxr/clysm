@@ -39,6 +39,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (compile-time macro expansion only) (029-loop-macro)
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/lib/macros, clysm/conditions, clysm/lib/setf-expanders (030-typecase-macros)
 - Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/compiler, clysm/lib/macros, clysm/conditions (031-destructuring-bind-macro)
+- Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/streams, clysm/conditions, alexandria, babel, trivial-gray-streams, rove (testing) (032-format-function)
+- N/A (in-memory format string parsing and execution) (032-format-function)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -58,9 +60,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 032-format-function: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/streams, clysm/conditions, alexandria, babel, trivial-gray-streams, rove (testing)
 - 031-destructuring-bind-macro: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/compiler, clysm/lib/macros, clysm/conditions
 - 030-typecase-macros: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/lib/macros, clysm/conditions, clysm/lib/setf-expanders
-- 029-loop-macro: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros (existing tagbody/go infrastructure)
 
 
 <!-- MANUAL ADDITIONS START -->

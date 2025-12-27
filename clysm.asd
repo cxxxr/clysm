@@ -182,7 +182,9 @@
      ;; LOOP macro Wasm validation (029-loop-macro)
      (:file "loop-wasm-test")
      ;; Typecase macro Wasm validation (030-typecase-macros)
-     (:file "typecase-wasm-test")))
+     (:file "typecase-wasm-test")
+     ;; FORMAT function Wasm validation (032-format-function)
+     (:file "format-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -285,7 +287,15 @@
        (:file "ctypecase-test")
        (:file "compound-types-test")))
      ;; Destructuring-bind unit tests (031-destructuring-bind-macro)
-     (:file "destructuring-bind-test")))
+     (:file "destructuring-bind-test")
+     ;; FORMAT function unit tests (032-format-function)
+     (:module "format"
+      :serial t
+      :components
+      ((:file "basic-test")
+       (:file "iteration-test")
+       (:file "conditional-test")
+       (:file "recursive-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -349,7 +359,11 @@
      ;; LOOP macro ANSI integration tests (029-loop-macro)
      (:file "loop-ansi-test")
      ;; Typecase macro ANSI integration tests (030-typecase-macros)
-     (:file "typecase-ansi-test"))))
+     (:file "typecase-ansi-test")
+     ;; FORMAT function ANSI integration tests (032-format-function)
+     (:file "format-ansi-test")
+     ;; FORMAT function self-hosting tests (032-format-function)
+     (:file "format-self-host-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
