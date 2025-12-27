@@ -1023,7 +1023,16 @@
            #:make-loop-gensym
            #:parse-loop-clauses
            #:expand-loop
-           #:make-loop-expander))
+           #:make-loop-expander
+           ;; Typecase macro infrastructure (030-typecase-macros)
+           #:type-specifier-to-predicate
+           #:construct-expected-type
+           #:validate-exhaustive-clauses
+           #:make-typecase-expander
+           #:make-etypecase-expander
+           #:make-check-type-expander
+           #:make-ctypecase-expander
+           #:install-typecase-macros))
 
 (defpackage #:clysm/lib/package-macros
   (:use #:cl)

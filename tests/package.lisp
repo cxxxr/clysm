@@ -361,3 +361,24 @@
 (defpackage #:clysm/tests/integration/loop-ansi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; Typecase Macro Tests (030-typecase-macros)
+;;; ============================================================
+
+;; Typecase macro unit tests (030-typecase-macros)
+;; Tests for typecase, etypecase, ctypecase, check-type expansion
+(defpackage #:clysm/tests/unit/typecase
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Typecase Wasm contract tests (030-typecase-macros)
+(defpackage #:clysm/tests/contract/typecase-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Typecase ANSI integration tests (030-typecase-macros)
+(defpackage #:clysm/tests/integration/typecase-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run)
+  (:import-from #:alexandria #:flatten))

@@ -1477,6 +1477,346 @@
             (expand-loop ctx))))))
 
 ;;; ============================================================
+;;; Typecase Macro Infrastructure (030-typecase-macros)
+;;; ============================================================
+
+;;; -----------------------------------------------------------
+;;; Type Specifier to Predicate Conversion (T004)
+;;; -----------------------------------------------------------
+
+(defun type-specifier-to-predicate (typespec value-sym)
+  "Convert a type specifier to a predicate form.
+   TYPESPEC: Type specifier (symbol or list)
+   VALUE-SYM: Symbol to test
+   Returns: Form that evaluates to T or NIL
+
+   Examples:
+     (type-specifier-to-predicate 'integer 'x) => (integerp x)
+     (type-specifier-to-predicate '(or integer symbol) 'x)
+       => (or (integerp x) (symbolp x))"
+  (cond
+    ;; Atomic type specifiers
+    ((eq typespec 'integer) (list 'integerp value-sym))
+    ((eq typespec 'fixnum) (list 'integerp value-sym))  ; fixnum = integer in Clysm
+    ((eq typespec 'symbol) (list 'symbolp value-sym))
+    ((eq typespec 'cons) (list 'consp value-sym))
+    ((eq typespec 'null) (list 'null value-sym))
+    ((eq typespec 'list) (list 'listp value-sym))
+    ((eq typespec 'number) (list 'numberp value-sym))
+    ((eq typespec 'float) (list 'floatp value-sym))
+    ((eq typespec 'single-float) (list 'floatp value-sym))
+    ((eq typespec 'double-float) (list 'floatp value-sym))
+    ((eq typespec 'ratio) (list 'ratiop value-sym))
+    ((eq typespec 'rational) (list 'rationalp value-sym))
+    ((eq typespec 'real) (list 'realp value-sym))
+    ((eq typespec 'character) (list 'characterp value-sym))
+    ((eq typespec 'function) (list 'functionp value-sym))
+    ((eq typespec 'string) (list 'stringp value-sym))
+    ((eq typespec 'vector) (list 'vectorp value-sym))
+    ((eq typespec 'array) (list 'arrayp value-sym))
+    ((eq typespec 'hash-table) (list 'hash-table-p value-sym))
+    ((eq typespec 'package) (list 'packagep value-sym))
+    ((eq typespec 'stream) (list 'streamp value-sym))
+    ((eq typespec 'keyword) (list 'keywordp value-sym))
+    ((eq typespec 'atom) (list 'atom value-sym))
+    ((eq typespec 't) t)
+    ;; Compound type specifiers
+    ((and (listp typespec) (eq (car typespec) 'or))
+     (cons 'or (mapcar (lambda (ts) (type-specifier-to-predicate ts value-sym))
+                       (cdr typespec))))
+    ((and (listp typespec) (eq (car typespec) 'and))
+     (cons 'and (mapcar (lambda (ts) (type-specifier-to-predicate ts value-sym))
+                        (cdr typespec))))
+    ((and (listp typespec) (eq (car typespec) 'not))
+     (list 'not (type-specifier-to-predicate (cadr typespec) value-sym)))
+    ((and (listp typespec) (eq (car typespec) 'member))
+     (cons 'or (mapcar (lambda (item) (list 'eql value-sym (list 'quote item)))
+                       (cdr typespec))))
+    ((and (listp typespec) (eq (car typespec) 'satisfies))
+     (list 'funcall (list 'function (cadr typespec)) value-sym))
+    ((and (listp typespec) (eq (car typespec) 'eql))
+     (list 'eql value-sym (list 'quote (cadr typespec))))
+    ;; Unknown type - fall back to typep
+    (t (list 'typep value-sym (list 'quote typespec)))))
+
+;;; -----------------------------------------------------------
+;;; Expected Type Construction (T005)
+;;; -----------------------------------------------------------
+
+(defun construct-expected-type (clauses)
+  "Construct expected-type from typecase clauses for type-error.
+   CLAUSES: List of (type-specifier . body-forms)
+   Returns: Type specifier (or type1 type2 ...)
+
+   Example:
+     (construct-expected-type '((integer ...) (symbol ...) (cons ...)))
+       => (or integer symbol cons)"
+  (let ((types nil))
+    (dolist (clause clauses)
+      (let ((type-spec (first clause)))
+        (cond
+          ;; Multiple types in a list: ((type1 type2) body...)
+          ((and (listp type-spec) (not (member (car type-spec) '(or and not member satisfies eql))))
+           (dolist (ts type-spec)
+             (push ts types)))
+          ;; Single type
+          (t
+           (push type-spec types)))))
+    (setf types (nreverse types))
+    (if (= 1 (length types))
+        (first types)
+        (cons 'or types))))
+
+;;; -----------------------------------------------------------
+;;; Exhaustive Clause Validation (T006)
+;;; -----------------------------------------------------------
+
+(defun validate-exhaustive-clauses (clauses macro-name)
+  "Validate that clauses do not contain otherwise/t (for etypecase/ctypecase).
+   CLAUSES: List of clause forms
+   MACRO-NAME: Symbol for error message (etypecase or ctypecase)
+   Signals: error if otherwise or t clause found"
+  (dolist (clause clauses)
+    (let ((type-spec (first clause)))
+      (when (or (eq type-spec 'otherwise)
+                (eq type-spec 't))
+        (error "~A: ~A clause not allowed in ~A"
+               macro-name type-spec macro-name)))))
+
+;;; -----------------------------------------------------------
+;;; Typecase Macro Registration (T007, T008)
+;;; -----------------------------------------------------------
+
+;;; -----------------------------------------------------------
+;;; Typecase Macro Expander (T015-T018)
+;;; -----------------------------------------------------------
+
+(defun make-typecase-expander ()
+  "Create a macro expander for TYPECASE.
+   (typecase keyform (type form...) ... [(otherwise|t form...)])
+   Expands to a let binding the keyform, then nested if/type-predicate tests.
+
+   FR-001: Evaluates keyform once and dispatches based on type
+   FR-002: Expands to nested if forms with predicate tests
+   FR-003: Supports multiple type specifiers per clause ((type1 type2) body)
+   FR-004: Supports otherwise and t as catch-all clause keys
+   FR-005: Returns NIL when no clause matches and no otherwise exists
+   FR-006: Evaluates the keyform exactly once, binding to a gensym"
+  (lambda (form)
+    (let ((keyform (second form))
+          (clauses (cddr form))
+          (key-var (gensym "KEY-")))
+      (labels ((otherwise-clause-p (clause)
+                 (let ((type-spec (first clause)))
+                   (or (eq type-spec 'otherwise)
+                       (eq type-spec 't))))
+               (make-type-test (key-var type-spec)
+                 ;; Handle multiple type specifiers: ((type1 type2) body)
+                 (cond
+                   ;; List of multiple types
+                   ((and (listp type-spec)
+                         (not (member (car type-spec) '(or and not member satisfies eql))))
+                    (if (= 1 (length type-spec))
+                        (type-specifier-to-predicate (first type-spec) key-var)
+                        (cons 'or (mapcar (lambda (ts)
+                                            (type-specifier-to-predicate ts key-var))
+                                          type-spec))))
+                   ;; Single type specifier
+                   (t
+                    (type-specifier-to-predicate type-spec key-var))))
+               (expand-clauses (clauses)
+                 (if (null clauses)
+                     nil  ; FR-005: Return NIL when no match
+                     (let* ((clause (first clauses))
+                            (type-spec (first clause))
+                            (body (rest clause)))
+                       (if (otherwise-clause-p clause)
+                           ;; FR-004: Otherwise/t clause - just execute body
+                           (cons 'progn body)
+                           ;; Normal clause - test and branch
+                           (list 'if
+                                 (make-type-test key-var type-spec)
+                                 (cons 'progn body)
+                                 (expand-clauses (rest clauses))))))))
+        ;; FR-006: Bind keyform to gensym for single evaluation
+        (list 'let (list (list key-var keyform))
+              (expand-clauses clauses))))))
+
+;;; -----------------------------------------------------------
+;;; Etypecase Macro Expander (T027-T031)
+;;; -----------------------------------------------------------
+
+(defun make-etypecase-expander ()
+  "Create a macro expander for ETYPECASE.
+   (etypecase keyform (type form...) ...)
+   Like typecase but signals type-error when no clause matches.
+   Does NOT allow otherwise/t clauses.
+
+   FR-007: Evaluates keyform once and dispatches based on type
+   FR-008: Signals type-error with :datum and :expected-type when no match
+   FR-009: otherwise/t clauses are NOT allowed
+   FR-010: :expected-type is (or type1 type2 ...) of all clause types"
+  (lambda (form)
+    (let ((keyform (second form))
+          (clauses (cddr form))
+          (key-var (gensym "KEY-")))
+      ;; FR-009: Validate no otherwise/t clauses
+      (validate-exhaustive-clauses clauses 'etypecase)
+      (let ((expected-type (construct-expected-type clauses)))
+        (labels ((make-type-test (key-var type-spec)
+                   ;; Handle multiple type specifiers: ((type1 type2) body)
+                   (cond
+                     ;; List of multiple types
+                     ((and (listp type-spec)
+                           (not (member (car type-spec) '(or and not member satisfies eql))))
+                      (if (= 1 (length type-spec))
+                          (type-specifier-to-predicate (first type-spec) key-var)
+                          (cons 'or (mapcar (lambda (ts)
+                                              (type-specifier-to-predicate ts key-var))
+                                            type-spec))))
+                     ;; Single type specifier
+                     (t
+                      (type-specifier-to-predicate type-spec key-var))))
+                 (expand-clauses (clauses)
+                   (if (null clauses)
+                       ;; FR-008: No match - signal type-error
+                       (list 'error 'type-error
+                             :datum key-var
+                             :expected-type (list 'quote expected-type))
+                       (let* ((clause (first clauses))
+                              (type-spec (first clause))
+                              (body (rest clause)))
+                         ;; Normal clause - test and branch
+                         (list 'if
+                               (make-type-test key-var type-spec)
+                               (cons 'progn body)
+                               (expand-clauses (rest clauses)))))))
+          ;; Bind keyform to gensym for single evaluation
+          (list 'let (list (list key-var keyform))
+                (expand-clauses clauses)))))))
+
+;;; -----------------------------------------------------------
+;;; Check-Type Macro Expander (T040-T044)
+;;; -----------------------------------------------------------
+
+(defun make-check-type-expander ()
+  "Create a macro expander for CHECK-TYPE.
+   (check-type place typespec [type-string])
+   Signals type-error with store-value restart if type doesn't match.
+   Loops until type matches (after store-value restart).
+
+   FR-015: Signals type-error with :datum and :expected-type if place is not of typespec
+   FR-016: Returns NIL if type already matches
+   FR-017: Provides store-value restart to set a new value
+   FR-018: Re-validates after store-value restart (loop until correct)
+   FR-019: Optional type-string included in error message"
+  (lambda (form)
+    (let* ((place (second form))
+           (typespec (third form))
+           (type-string (fourth form))
+           (value-var (gensym "VALUE-")))
+      ;; Build the type test predicate using place directly
+      (let ((type-test (type-specifier-to-predicate typespec place)))
+        ;; FR-018: Loop until type matches
+        `(loop
+           ;; Check if type matches
+           (when ,(if (eq type-test t)
+                      t
+                      type-test)
+             (return nil))  ; FR-016: Return NIL if correct
+           ;; FR-015, FR-017: Signal error with store-value restart
+           (restart-case
+               (error 'type-error
+                      :datum ,place
+                      :expected-type ',typespec
+                      ,@(when type-string
+                          (list :format-control type-string)))
+             (store-value (,value-var)
+               :report "Supply a new value."
+               :interactive (lambda () (list (read)))
+               ;; Update the place
+               (setf ,place ,value-var))))))))
+
+;;; -----------------------------------------------------------
+;;; Ctypecase Macro Expander (T053-T057)
+;;; -----------------------------------------------------------
+
+(defun make-ctypecase-expander ()
+  "Create a macro expander for CTYPECASE.
+   (ctypecase keyplace (type form...) ...)
+   Like etypecase but provides store-value restart for correction.
+   Loops until a type matches after store-value.
+   Does NOT allow otherwise/t clauses.
+
+   FR-011: Evaluates place value once per iteration and dispatches based on type
+   FR-012: Signals type-error with :datum and :expected-type when no match
+   FR-013: Provides store-value restart to set a new value and re-dispatch
+   FR-014: otherwise/t clauses are NOT allowed"
+  (lambda (form)
+    (let ((keyplace (second form))
+          (clauses (cddr form))
+          (value-var (gensym "VALUE-")))
+      ;; FR-014: Validate no otherwise/t clauses
+      (validate-exhaustive-clauses clauses 'ctypecase)
+      (let ((expected-type (construct-expected-type clauses)))
+        (labels ((make-type-test (key-var type-spec)
+                   ;; Handle multiple type specifiers: ((type1 type2) body)
+                   (cond
+                     ;; List of multiple types
+                     ((and (listp type-spec)
+                           (not (member (car type-spec) '(or and not member satisfies eql))))
+                      (if (= 1 (length type-spec))
+                          (type-specifier-to-predicate (first type-spec) key-var)
+                          (cons 'or (mapcar (lambda (ts)
+                                              (type-specifier-to-predicate ts key-var))
+                                            type-spec))))
+                     ;; Single type specifier
+                     (t
+                      (type-specifier-to-predicate type-spec key-var))))
+                 (expand-clauses-with-return (clauses)
+                   ;; Build nested if with returns on match
+                   (if (null clauses)
+                       nil
+                       (let* ((clause (first clauses))
+                              (type-spec (first clause))
+                              (body (rest clause)))
+                         (list 'if
+                               (make-type-test keyplace type-spec)
+                               (list 'return (cons 'progn body))
+                               (expand-clauses-with-return (rest clauses)))))))
+          ;; Loop until type matches
+          `(loop
+             ;; Try to match a clause - return if matched
+             ,(expand-clauses-with-return clauses)
+             ;; FR-012, FR-013: No match - signal error with store-value restart
+             (restart-case
+                 (error 'type-error
+                        :datum ,keyplace
+                        :expected-type ',expected-type)
+               (store-value (,value-var)
+                 :report "Supply a new value."
+                 :interactive (lambda () (list (read)))
+                 ;; Update the place and loop to re-dispatch
+                 (setf ,keyplace ,value-var)))))))))
+
+(defun install-typecase-macros (registry)
+  "Install typecase-related macros into REGISTRY.
+   Registers: typecase, etypecase, ctypecase, check-type"
+  ;; Register typecase macro (US1)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'typecase (make-typecase-expander))
+  ;; Register etypecase macro (US2)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'etypecase (make-etypecase-expander))
+  ;; Register check-type macro (US4)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'check-type (make-check-type-expander))
+  ;; Register ctypecase macro (US3)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'ctypecase (make-ctypecase-expander))
+  registry)
+
+;;; ============================================================
 ;;; Standard macro installation
 ;;; ============================================================
 
@@ -1533,4 +1873,6 @@
    registry 'loop (make-loop-expander))
   ;; Also install setf-related macros
   (install-setf-macros registry)
+  ;; Install typecase macros (030-typecase-macros)
+  (install-typecase-macros registry)
   registry)

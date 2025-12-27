@@ -179,7 +179,9 @@
      ;; Setf Wasm validation (028-setf-generalized-refs)
      (:file "setf-wasm-test")
      ;; LOOP macro Wasm validation (029-loop-macro)
-     (:file "loop-wasm-test")))
+     (:file "loop-wasm-test")
+     ;; Typecase macro Wasm validation (030-typecase-macros)
+     (:file "typecase-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -271,7 +273,16 @@
      (:file "setf-test")
      (:file "setf-expander-test")
      ;; LOOP macro unit tests (029-loop-macro)
-     (:file "loop-test")))
+     (:file "loop-test")
+     ;; Typecase macro unit tests (030-typecase-macros)
+     (:module "typecase"
+      :serial t
+      :components
+      ((:file "typecase-test")
+       (:file "etypecase-test")
+       (:file "check-type-test")
+       (:file "ctypecase-test")
+       (:file "compound-types-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -333,7 +344,9 @@
      ;; Setf ANSI integration tests (028-setf-generalized-refs)
      (:file "setf-ansi-test")
      ;; LOOP macro ANSI integration tests (029-loop-macro)
-     (:file "loop-ansi-test"))))
+     (:file "loop-ansi-test")
+     ;; Typecase macro ANSI integration tests (030-typecase-macros)
+     (:file "typecase-ansi-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

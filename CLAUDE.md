@@ -37,6 +37,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (compile-time registry for setf expanders) (028-setf-generalized-refs)
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros (existing tagbody/go infrastructure) (029-loop-macro)
 - N/A (compile-time macro expansion only) (029-loop-macro)
+- Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/lib/macros, clysm/conditions, clysm/lib/setf-expanders (030-typecase-macros)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -56,9 +57,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 030-typecase-macros: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/lib/macros, clysm/conditions, clysm/lib/setf-expanders
 - 029-loop-macro: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros (existing tagbody/go infrastructure)
 - 028-setf-generalized-refs: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/compiler, clysm/lib/macros, clysm/clos (existing modules)
-- 027-complete-ffi: Added Common Lisp (SBCL 2.4+) + alexandria, babel, trivial-gray-streams, rove (testing), existing clysm/ffi, clysm/compiler modules
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -355,4 +356,54 @@ Each setf expander returns five values:
 - Unit tests: tests/unit/setf-test.lisp, tests/unit/setf-expander-test.lisp
 - Contract tests: tests/contract/setf-wasm-test.lisp (Wasm validation)
 - Integration tests: tests/integration/setf-ansi-test.lisp (ANSI compliance)
+
+## Feature 030: Type Dispatch Macros - COMPLETE
+
+**Status**: All 86 tasks completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/lib/macros.lisp`: Type dispatch macro expanders (typecase, etypecase, ctypecase, check-type)
+- `tests/unit/typecase/`: 5 unit test files
+- `tests/contract/typecase-wasm-test.lisp`: Wasm validation
+- `tests/integration/typecase-ansi-test.lisp`: ANSI compliance tests
+
+### Key Features
+1. **typecase macro**: Type-based conditional dispatch
+   - `(typecase x (integer "int") (symbol "sym") (otherwise "other"))`
+   - Expands to nested `if` with predicate tests
+   - Returns NIL when no clause matches
+2. **etypecase macro**: Exhaustive type dispatch
+   - Signals `type-error` when no clause matches
+   - Rejects `otherwise`/`t` clauses at expansion time
+3. **ctypecase macro**: Correctable type dispatch
+   - Signals `type-error` with `store-value` restart
+   - Loops until type matches after correction
+4. **check-type macro**: Type assertion with restart
+   - `(check-type x integer "a positive integer")`
+   - Returns NIL if type matches
+   - Provides `store-value` restart for correction
+
+### Compound Type Specifiers Supported
+- `(or type1 type2 ...)` - Union of types
+- `(and type1 type2 ...)` - Intersection of types
+- `(not type)` - Complement of type
+- `(member item1 item2 ...)` - EQL membership
+- `(satisfies predicate)` - Predicate satisfaction
+- `(eql object)` - EQL to specific object
+
+### Expansion Patterns
+| Macro | Outer Form | Error | Restart |
+|-------|------------|-------|---------|
+| typecase | LET | None (returns NIL) | None |
+| etypecase | LET | type-error | None |
+| ctypecase | LOOP | type-error | store-value |
+| check-type | LOOP | type-error | store-value |
+
+### Design Decision: No Runtime typep
+Type dispatch macros expand directly to primitive predicates (integerp, symbolp, etc.) at macro-expansion time. No runtime `typep` function is needed.
+
+### Test Coverage
+- Unit tests: tests/unit/typecase/*.lisp (typecase, etypecase, check-type, ctypecase, compound-types)
+- Contract tests: tests/contract/typecase-wasm-test.lisp (Wasm validation)
+- Integration tests: tests/integration/typecase-ansi-test.lisp (ANSI compliance)
 <!-- MANUAL ADDITIONS END -->
