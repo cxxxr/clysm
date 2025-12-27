@@ -5,13 +5,15 @@
   :description "WebAssembly GC Common Lisp Compiler"
   :long-description "Clysm compiles Common Lisp to WebAssembly using WasmGC for memory management."
   :depends-on ("alexandria"
-               "babel"
                "trivial-gray-streams")
   :pathname "src/clysm/"
   :serial t
   :components
   (;; Package definitions
    (:file "package")
+
+   ;; UTF-8 encoding (034-portable-utf8) - must load before backend
+   (:file "lib/utf8")
 
    ;; Backend: Wasm binary emission
    (:module "backend"
@@ -131,6 +133,7 @@
     ((:file "setf-expanders")  ; Must come before macros for setf expander registry
      (:file "destructuring")   ; Must come before macros for destructuring-bind
      (:file "macros")
+     ;; Note: utf8 is loaded earlier as top-level component (before backend)
      (:file "ffi-runtime")
      (:file "package-macros")))
 
@@ -288,6 +291,8 @@
        (:file "compound-types-test")))
      ;; Destructuring-bind unit tests (031-destructuring-bind-macro)
      (:file "destructuring-bind-test")
+     ;; Portable UTF-8 unit tests (034-portable-utf8)
+     (:file "utf8-test")
      ;; FORMAT function unit tests (032-format-function)
      (:module "format"
       :serial t

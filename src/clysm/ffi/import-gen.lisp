@@ -86,11 +86,11 @@
 (defun emit-import-entry (import buffer)
   "Emit a single import entry to the buffer."
   ;; Module name (length-prefixed UTF-8)
-  (let ((module-bytes (babel:string-to-octets (wi-module-name import) :encoding :utf-8)))
+  (let ((module-bytes (clysm/lib/utf8:string-to-utf8-octets (wi-module-name import))))
     (emit-leb128-unsigned (length module-bytes) buffer)
     (loop for b across module-bytes do (vector-push-extend b buffer)))
   ;; Field name (length-prefixed UTF-8)
-  (let ((field-bytes (babel:string-to-octets (wi-field-name import) :encoding :utf-8)))
+  (let ((field-bytes (clysm/lib/utf8:string-to-utf8-octets (wi-field-name import))))
     (emit-leb128-unsigned (length field-bytes) buffer)
     (loop for b across field-bytes do (vector-push-extend b buffer)))
   ;; Import kind (0 = func)

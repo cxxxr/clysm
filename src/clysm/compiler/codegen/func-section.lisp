@@ -415,7 +415,7 @@
   "Compile a string literal to Wasm instructions.
    Creates a UTF-8 byte array using array.new_fixed.
    Stack: [] -> [ref $string]"
-  (let ((bytes (babel:string-to-octets string :encoding :utf-8))
+  (let ((bytes (clysm/lib/utf8:string-to-utf8-octets string))
         (string-type clysm/compiler/codegen/gc-types:+type-string+))
     (if (zerop (length bytes))
         ;; Empty string: just create empty array

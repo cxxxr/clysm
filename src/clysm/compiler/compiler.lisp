@@ -542,7 +542,7 @@
     (dolist (export exports)
       (destructuring-bind (name kind index) export
         ;; Name (length-prefixed UTF-8)
-        (let ((name-bytes (babel:string-to-octets name :encoding :utf-8)))
+        (let ((name-bytes (clysm/lib/utf8:string-to-utf8-octets name)))
           (emit-leb128-unsigned (length name-bytes) content)
           (loop for b across name-bytes do (vector-push-extend b content)))
         ;; Export kind
