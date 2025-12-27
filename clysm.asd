@@ -150,7 +150,22 @@
      (:file "package-macros")))
 
    ;; REPL
-   (:file "repl"))
+   (:file "repl")
+
+   ;; Stage 1: Self-compilation infrastructure (039-stage1-compiler-gen)
+   (:module "stage1"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "conditions")
+     (:file "logging")
+     (:file "reader")
+     (:file "runner")
+     (:file "progress")
+     (:file "blocker")
+     (:file "diff")
+     (:file "generator"))))
 
   :in-order-to ((test-op (test-op "clysm/tests"))))
 
@@ -206,7 +221,14 @@
      (:file "bootstrap-compile-test")
      (:file "bootstrap-validate-test")
      ;; Stage 0 extend contract tests (038-stage0-extend)
-     (:file "stage0-extend-test")))
+     (:file "stage0-extend-test")
+     ;; Stage 1 compiler generation contract tests (039-stage1-compiler-gen)
+     (:file "stage1-load-test")
+     (:file "stage1-fs-test")
+     (:file "stage1-report-test")
+     (:file "stage1-validate-test")
+     (:file "stage1-blocker-test")
+     (:file "stage1-diff-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -348,7 +370,17 @@
      (:file "declare-skip-test")
      (:file "defstruct-expand-test")
      (:file "condition-expand-test")
-     (:file "error-report-test")))
+     (:file "error-report-test")
+     ;; Stage 1 compiler generation unit tests (039-stage1-compiler-gen)
+     (:module "stage1"
+      :serial t
+      :components
+      ((:file "runner-test")
+       (:file "file-reader-test")
+       (:file "progress-test")
+       (:file "generator-test")
+       (:file "blocker-test")
+       (:file "diff-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -420,7 +452,15 @@
      ;; Filesystem integration tests (035-ffi-filesystem)
      (:file "filesystem-test")
      ;; Bootstrap integration tests (037-cross-compile-stage0)
-     (:file "bootstrap-full-test"))))
+     (:file "bootstrap-full-test")
+     ;; Stage 1 compiler generation integration tests (039-stage1-compiler-gen)
+     (:file "stage1-arith-test")
+     (:file "stage1-defun-test")
+     (:file "stage1-error-test")
+     (:file "stage1-modules-test")
+     (:file "stage1-timing-test")
+     (:file "stage1-gen-test")
+     (:file "stage1-full-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

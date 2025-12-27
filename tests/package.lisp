@@ -454,3 +454,161 @@
 (defpackage #:clysm/tests/integration/stage0-compile-rate
   (:use #:cl #:rove)
   (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;;; ============================================================
+;;; Stage 1 Compiler Generation Tests (039-stage1-compiler-gen)
+;;; ============================================================
+
+;; Stage 1 runner unit tests (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-runner
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:wasmtime-available-p
+                #:load-stage0
+                #:run-form
+                #:error-from-wasm
+                #:make-source-form
+                #:source-form-operator
+                #:compilation-result-form-id
+                #:stage1-runtime-error
+                #:stage1-stage0-invalid
+                #:stage1-file-not-found
+                #:stage1-unsupported-feature))
+
+;; Stage 1 load contract tests (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-load
+  (:use #:cl #:rove))
+
+;; Stage 1 arithmetic integration tests (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-arith
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:wasmtime-available-p
+                #:run-form))
+
+;; Stage 1 defun integration tests (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-defun
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:wasmtime-available-p
+                #:run-form
+                #:make-source-form
+                #:source-form-operator))
+
+;; Stage 1 error integration tests (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-error
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:wasmtime-available-p
+                #:run-form
+                #:stage1-file-not-found
+                #:stage1-unsupported-feature
+                #:stage1-runtime-error))
+
+;; Stage 1 reader unit tests - User Story 2 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-reader
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:get-module-paths
+                #:read-source-forms
+                #:stage1-file-not-found))
+
+;; Stage 1 filesystem contract tests - User Story 2 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-fs
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:get-module-paths))
+
+;; Stage 1 modules integration tests - User Story 2 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-modules
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:get-module-paths))
+
+;; Stage 1 progress unit tests - User Story 3 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-progress
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:make-source-form
+                #:make-compilation-result
+                #:start-module-tracking
+                #:record-form-result
+                #:complete-module-tracking
+                #:generate-summary
+                #:write-progress-report))
+
+;; Stage 1 report contract tests - User Story 3 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-report
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:write-progress-report))
+
+;; Stage 1 generator unit tests - User Story 4 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-generator
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:make-source-form
+                #:make-compilation-result
+                #:compile-form-to-wasm
+                #:compile-all-forms
+                #:accumulate-wasm-bytes
+                #:write-stage1-binary))
+
+;; Stage 1 blocker unit tests - User Story 5 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-blocker
+  (:use #:cl #:rove))
+
+;; Stage 1 diff unit tests - User Story 6 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/unit/stage1-diff
+  (:use #:cl #:rove))
+
+;; Stage 1 timing integration tests - User Story 3 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-timing
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:read-all-modules
+                #:source-module-forms
+                #:source-form-compilable-p
+                #:source-form-id
+                #:make-compilation-result
+                #:compile-form-to-wasm
+                #:make-source-form))
+
+;; Stage 1 validate contract tests - User Story 4 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-validate
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:validate-stage1
+                #:write-stage1-binary))
+
+;; Stage 1 generation integration tests - User Story 4 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-gen
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:make-source-form
+                #:compile-all-forms
+                #:compilation-result-success-p
+                #:accumulate-wasm-bytes
+                #:write-stage1-binary))
+
+;; Stage 1 blocker contract tests - User Story 5 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-blocker
+  (:use #:cl #:rove))
+
+;; Stage 1 diff contract tests - User Story 6 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/contract/stage1-diff
+  (:use #:cl #:rove))
+
+;; Stage 1 full integration tests - Phase 9 (039-stage1-compiler-gen)
+(defpackage #:clysm/tests/integration/stage1-full
+  (:use #:cl #:rove)
+  (:import-from #:clysm/stage1
+                #:read-all-modules
+                #:source-module-forms
+                #:source-form-compilable-p
+                #:make-source-form
+                #:compile-all-forms
+                #:compilation-result-success-p
+                #:accumulate-wasm-bytes
+                #:write-stage1-binary
+                #:validate-stage1))

@@ -1,0 +1,219 @@
+;;;; diff.lisp - Binary diff analysis for Stage comparison
+;;;;
+;;;; Part of Feature 039: Stage 1 Compiler Generation
+;;;; Compares Stage 0 and Stage 1 Wasm binaries
+
+(in-package #:clysm/stage1)
+
+;;; ==========================================================================
+;;; Binary Information Extraction
+;;; ==========================================================================
+
+(defun extract-binary-info (path)
+  "Extract metadata from a Wasm binary.
+Returns a binary-info struct."
+  (unless (probe-file path)
+    (return-from extract-binary-info
+      (make-binary-info
+       :path (namestring path)
+       :size-bytes 0
+       :valid-p nil)))
+  (let ((size (with-open-file (s path :element-type '(unsigned-byte 8))
+                (file-length s)))
+        (exports nil)
+        (types 0)
+        (functions 0)
+        (valid nil))
+    ;; Use wasm-tools to extract information
+    (handler-case
+        (let ((output (uiop:run-program
+                       (list "wasm-tools" "print" (namestring path))
+                       :output :string
+                       :error-output nil
+                       :ignore-error-status t)))
+          (when output
+            ;; Count exports
+            (setf exports (extract-exports output))
+            ;; Count types
+            (setf types (count-pattern "(type" output))
+            ;; Count functions
+            (setf functions (count-pattern "(func" output)))
+          ;; Validate
+          (setf valid (validate-binary path)))
+      (error () nil))
+    (make-binary-info
+     :path (namestring path)
+     :size-bytes size
+     :exports exports
+     :types types
+     :functions functions
+     :valid-p valid)))
+
+(defun extract-exports (wat-output)
+  "Extract export names from WAT output."
+  (let ((exports nil)
+        (pos 0))
+    (loop
+      (let ((start (search "(export" wat-output :start2 pos)))
+        (unless start (return))
+        (let* ((quote-start (position #\" wat-output :start (+ start 7)))
+               (quote-end (when quote-start
+                            (position #\" wat-output :start (1+ quote-start)))))
+          (when (and quote-start quote-end)
+            (push (subseq wat-output (1+ quote-start) quote-end) exports))
+          (setf pos (1+ (or quote-end start))))))
+    (nreverse exports)))
+
+(defun count-pattern (pattern text)
+  "Count occurrences of pattern in text."
+  (let ((count 0)
+        (pos 0))
+    (loop
+      (let ((found (search pattern text :start2 pos)))
+        (unless found (return count))
+        (incf count)
+        (setf pos (1+ found))))))
+
+(defun validate-binary (path)
+  "Check if binary passes wasm-tools validation."
+  (zerop (nth-value 2
+           (uiop:run-program
+            (list "wasm-tools" "validate" (namestring path))
+            :output nil
+            :error-output nil
+            :ignore-error-status t))))
+
+;;; ==========================================================================
+;;; Binary Comparison
+;;; ==========================================================================
+
+(defun compare-binaries (stage0-path stage1-path)
+  "Compare two Wasm binaries and return a diff-report."
+  (let ((stage0-info (extract-binary-info stage0-path))
+        (stage1-info (extract-binary-info stage1-path)))
+    (make-diff-report
+     :stage0 stage0-info
+     :stage1 stage1-info
+     :differences (compute-differences stage0-info stage1-info))))
+
+(defun compute-differences (stage0-info stage1-info)
+  "Compute differences between two binary-info structs."
+  (let ((size0 (binary-info-size-bytes stage0-info))
+        (size1 (binary-info-size-bytes stage1-info))
+        (exports0 (binary-info-exports stage0-info))
+        (exports1 (binary-info-exports stage1-info)))
+    (make-diff-details
+     :size-delta (format-size-delta size0 size1)
+     :missing-exports (set-difference exports0 exports1 :test #'equal)
+     :new-exports (set-difference exports1 exports0 :test #'equal)
+     :type-changes nil))) ; TODO: Implement type comparison
+
+(defun format-size-delta (size0 size1)
+  "Format size difference as a string."
+  (let ((delta (- size1 size0)))
+    (cond
+      ((zerop delta) "0 bytes (identical)")
+      ((plusp delta) (format nil "+~D bytes (+~,1F%)"
+                             delta (* 100.0 (/ delta size0))))
+      (t (format nil "~D bytes (~,1F%)"
+                 delta (* 100.0 (/ delta size0)))))))
+
+;;; ==========================================================================
+;;; Export Comparison
+;;; ==========================================================================
+
+(defun compare-exports (stage0-path stage1-path)
+  "Compare exports between two binaries.
+Returns three values: common, missing-from-stage1, new-in-stage1."
+  (let* ((stage0-info (extract-binary-info stage0-path))
+         (stage1-info (extract-binary-info stage1-path))
+         (exports0 (binary-info-exports stage0-info))
+         (exports1 (binary-info-exports stage1-info)))
+    (values
+     (intersection exports0 exports1 :test #'equal)
+     (set-difference exports0 exports1 :test #'equal)
+     (set-difference exports1 exports0 :test #'equal))))
+
+(defun compare-types (stage0-path stage1-path)
+  "Compare type counts between binaries.
+Returns (stage0-types stage1-types difference)."
+  (let* ((stage0-info (extract-binary-info stage0-path))
+         (stage1-info (extract-binary-info stage1-path)))
+    (values
+     (binary-info-types stage0-info)
+     (binary-info-types stage1-info)
+     (- (binary-info-types stage1-info)
+        (binary-info-types stage0-info)))))
+
+;;; ==========================================================================
+;;; Diff Report Generation
+;;; ==========================================================================
+
+(defun generate-diff-report (stage0-path stage1-path
+                             &key (stream *standard-output*)
+                                  (format :json))
+  "Generate a diff report comparing two binaries."
+  (let ((report (compare-binaries stage0-path stage1-path)))
+    (ecase format
+      (:json (write-diff-json report stream))
+      (:text (write-diff-text report stream)))))
+
+(defun write-diff-json (report stream)
+  "Write diff report as JSON."
+  (let ((s0 (diff-report-stage0 report))
+        (s1 (diff-report-stage1 report))
+        (diff (diff-report-differences report)))
+    (format stream "{~%")
+    (format stream "  \"stage0\": {~%")
+    (format stream "    \"path\": ~S,~%" (binary-info-path s0))
+    (format stream "    \"size_bytes\": ~D,~%" (binary-info-size-bytes s0))
+    (format stream "    \"exports\": ~D,~%" (length (binary-info-exports s0)))
+    (format stream "    \"types\": ~D,~%" (binary-info-types s0))
+    (format stream "    \"functions\": ~D,~%" (binary-info-functions s0))
+    (format stream "    \"valid\": ~A~%" (if (binary-info-valid-p s0) "true" "false"))
+    (format stream "  },~%")
+    (format stream "  \"stage1\": {~%")
+    (format stream "    \"path\": ~S,~%" (binary-info-path s1))
+    (format stream "    \"size_bytes\": ~D,~%" (binary-info-size-bytes s1))
+    (format stream "    \"exports\": ~D,~%" (length (binary-info-exports s1)))
+    (format stream "    \"types\": ~D,~%" (binary-info-types s1))
+    (format stream "    \"functions\": ~D,~%" (binary-info-functions s1))
+    (format stream "    \"valid\": ~A~%" (if (binary-info-valid-p s1) "true" "false"))
+    (format stream "  },~%")
+    (format stream "  \"differences\": {~%")
+    (format stream "    \"size_delta\": ~S,~%" (diff-details-size-delta diff))
+    (format stream "    \"missing_exports\": ~D,~%"
+            (length (diff-details-missing-exports diff)))
+    (format stream "    \"new_exports\": ~D~%"
+            (length (diff-details-new-exports diff)))
+    (format stream "  }~%")
+    (format stream "}~%")))
+
+(defun write-diff-text (report stream)
+  "Write diff report as human-readable text."
+  (let ((s0 (diff-report-stage0 report))
+        (s1 (diff-report-stage1 report))
+        (diff (diff-report-differences report)))
+    (format stream "=== Stage Comparison Report ===~%~%")
+    (format stream "Stage 0: ~A~%" (binary-info-path s0))
+    (format stream "  Size:      ~D bytes~%" (binary-info-size-bytes s0))
+    (format stream "  Exports:   ~D~%" (length (binary-info-exports s0)))
+    (format stream "  Types:     ~D~%" (binary-info-types s0))
+    (format stream "  Functions: ~D~%" (binary-info-functions s0))
+    (format stream "  Valid:     ~A~%~%" (if (binary-info-valid-p s0) "Yes" "No"))
+    (format stream "Stage 1: ~A~%" (binary-info-path s1))
+    (format stream "  Size:      ~D bytes~%" (binary-info-size-bytes s1))
+    (format stream "  Exports:   ~D~%" (length (binary-info-exports s1)))
+    (format stream "  Types:     ~D~%" (binary-info-types s1))
+    (format stream "  Functions: ~D~%" (binary-info-functions s1))
+    (format stream "  Valid:     ~A~%~%" (if (binary-info-valid-p s1) "Yes" "No"))
+    (format stream "Differences:~%")
+    (format stream "  Size: ~A~%" (diff-details-size-delta diff))
+    (when (diff-details-missing-exports diff)
+      (format stream "  Missing from Stage 1:~%")
+      (dolist (e (diff-details-missing-exports diff))
+        (format stream "    - ~A~%" e)))
+    (when (diff-details-new-exports diff)
+      (format stream "  New in Stage 1:~%")
+      (dolist (e (diff-details-new-exports diff))
+        (format stream "    - ~A~%" e)))))

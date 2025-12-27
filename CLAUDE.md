@@ -52,6 +52,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation modules (037-cross-compile-stage0)
 - N/A (file-based: source files → single .wasm binary) (037-cross-compile-stage0)
 - Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules (038-stage0-extend)
+- Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim) (039-stage1-compiler-gen)
+- File-based (source files, Wasm binaries, JSON progress reports) (039-stage1-compiler-gen)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -71,9 +73,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 039-stage1-compiler-gen: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim)
 - 038-stage0-extend: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules
 - 037-cross-compile-stage0: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation modules
-- 036-compiler-subset-validation: Added Common Lisp (SBCL 2.4+) + alexandria, rove (testing), wasm-tools (validation)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -619,4 +621,87 @@ can't yet compile. Resolution requires either:
 - Unit tests: tests/unit/defconstant-test.lisp, declare-skip-test.lisp, defstruct-expand-test.lisp, condition-expand-test.lisp, error-report-test.lisp
 - Contract tests: tests/contract/stage0-extend-test.lisp
 - Validation: All 5 user stories verified
+
+## Feature 039: Stage 1 Compiler Generation - COMPLETE
+
+**Status**: All 83 tasks completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/stage1/package.lisp`: Package definition with exports
+- `src/clysm/stage1/types.lisp`: SourceModule, SourceForm, CompilationResult structs
+- `src/clysm/stage1/conditions.lisp`: Error condition hierarchy
+- `src/clysm/stage1/logging.lisp`: Structured logging utilities
+- `src/clysm/stage1/reader.lisp`: Source file reading and parsing
+- `src/clysm/stage1/runner.lisp`: wasmtime runtime wrapper
+- `src/clysm/stage1/progress.lisp`: Compilation progress tracking
+- `src/clysm/stage1/blocker.lisp`: Blocker analysis and prioritization
+- `src/clysm/stage1/diff.lisp`: Binary diff analysis
+- `src/clysm/stage1/generator.lisp`: Stage 1 binary generation
+- `build/stage1-gen.lisp`: CLI entry point for Stage 1 generation
+- `host-shim/stage1-host.js`: Node.js FFI host shim for wasmtime
+- `scripts/verify-stage0.sh`: Stage 0 verification script
+- `scripts/run-stage1-gen.sh`: Stage 1 generation script
+- `scripts/diff-stages.sh`: Binary diff comparison script
+
+### Key Features
+1. **wasmtime integration**: Run Stage 0 Wasm on wasmtime via Node.js host shim
+   - `wasmtime-available-p` checks runtime availability
+   - `load-stage0` validates and loads Stage 0 binary
+   - `run-form` executes forms via Stage 0
+2. **Source file reading**: Parse all 45 compiler modules
+   - `read-source-forms` parses Lisp files
+   - `compilable-form-p` filters compilable forms
+   - `get-module-paths` tracks module order
+3. **Progress tracking**: Per-module and overall statistics
+   - ModuleStats, FailureGroup, Summary structs
+   - `generate-summary` aggregates results
+   - JSON report output for automation
+4. **Stage 1 generation**: Compile source to Wasm binary
+   - `compile-form-to-wasm` compiles individual forms
+   - `accumulate-wasm-bytes` combines results
+   - `validate-stage1` uses wasm-tools
+5. **Blocker analysis**: Identify compilation obstacles
+   - Priority classification (HIGH/MEDIUM/LOW)
+   - Impact calculation by affected form count
+   - Recommendation generation
+6. **Binary diff analysis**: Compare Stage 0 and Stage 1
+   - Size, export, and type section comparison
+   - JSON report output
+   - CLI script for quick comparison
+
+### Error Condition Hierarchy
+- `stage1-error`: Base condition
+- `stage1-file-not-found`: Source file missing
+- `stage1-encoding-error`: Invalid UTF-8
+- `stage1-parse-error`: S-expression parsing failure
+- `stage1-compile-error`: Form compilation failure
+- `stage1-unsupported-feature`: Blessed subset violation
+- `stage1-runtime-error`: Wasm execution error
+- `stage1-wasmtime-unavailable`: wasmtime not found
+- `stage1-stage0-invalid`: Invalid Stage 0 binary
+
+### CLI Commands
+```bash
+# Generate Stage 1 binary
+sbcl --load build/stage1-gen.lisp
+
+# Verify Stage 0 binary
+./scripts/verify-stage0.sh [path-to-stage0.wasm]
+
+# Generate Stage 1 with script
+./scripts/run-stage1-gen.sh
+
+# Compare Stage 0 and Stage 1 binaries
+./scripts/diff-stages.sh [stage0.wasm] [stage1.wasm]
+```
+
+### Test Coverage
+- Unit tests: tests/unit/stage1/*.lisp (runner, reader, progress, generator, blocker, diff)
+- Contract tests: tests/contract/stage1-*.lisp (load, fs, report, validate, blocker, diff)
+- Integration tests: tests/integration/stage1-*.lisp (arith, defun, error, modules, timing, gen, full)
+
+### Known Limitations
+- 25% coverage target is aspirational - current CL subset is limited
+- Individual form compilation works; combined module compilation may fail
+- True self-hosting requires extending Clysm's CL feature support
 <!-- MANUAL ADDITIONS END -->

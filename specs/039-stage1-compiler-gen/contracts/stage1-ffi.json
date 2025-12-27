@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Stage 1 FFI Interface Contract",
+  "description": "FFI functions required for Stage 1 compilation host",
+  "version": "1.0.0",
+  "imports": {
+    "clysm.fs": {
+      "read-source": {
+        "description": "Read a source file and return contents as string",
+        "params": [
+          { "name": "path", "type": "externref", "description": "File path as externref string" }
+        ],
+        "returns": { "type": "externref", "description": "File contents as externref string" },
+        "errors": ["FILE_NOT_FOUND", "READ_ERROR"]
+      },
+      "list-modules": {
+        "description": "Return list of module paths in compilation order",
+        "params": [],
+        "returns": { "type": "externref", "description": "Array of path strings" }
+      }
+    },
+    "clysm.compile": {
+      "report-start": {
+        "description": "Signal start of compilation for a module",
+        "params": [
+          { "name": "module_path", "type": "externref", "description": "Module path" },
+          { "name": "form_count", "type": "i32", "description": "Number of forms to compile" }
+        ],
+        "returns": { "type": "void" }
+      },
+      "report-form-result": {
+        "description": "Report result of compiling a single form",
+        "params": [
+          { "name": "form_id", "type": "externref", "description": "Form identifier" },
+          { "name": "success", "type": "i32", "description": "1 for success, 0 for failure" },
+          { "name": "error_type", "type": "externref", "description": "Error category if failed (nullable)" },
+          { "name": "error_msg", "type": "externref", "description": "Error message if failed (nullable)" }
+        ],
+        "returns": { "type": "void" }
+      },
+      "report-module-complete": {
+        "description": "Signal completion of module compilation",
+        "params": [
+          { "name": "module_path", "type": "externref", "description": "Module path" },
+          { "name": "compiled", "type": "i32", "description": "Forms successfully compiled" },
+          { "name": "failed", "type": "i32", "description": "Forms that failed" }
+        ],
+        "returns": { "type": "void" }
+      }
+    },
+    "clysm.output": {
+      "write-bytes": {
+        "description": "Write compiled Wasm bytes to output",
+        "params": [
+          { "name": "bytes", "type": "externref", "description": "Byte array to write" },
+          { "name": "path", "type": "externref", "description": "Output file path" }
+        ],
+        "returns": { "type": "i32", "description": "Bytes written" }
+      }
+    }
+  },
+  "exports": {
+    "compile_all": {
+      "description": "Entry point: compile all modules and generate Stage 1",
+      "params": [],
+      "returns": { "type": "i32", "description": "Exit code: 0=success, 1=partial, 2=failure" }
+    },
+    "compile_module": {
+      "description": "Compile a single module by path",
+      "params": [
+        { "name": "path", "type": "externref", "description": "Module path" }
+      ],
+      "returns": { "type": "externref", "description": "Compilation result as JSON" }
+    },
+    "get_coverage": {
+      "description": "Return current compilation coverage percentage",
+      "params": [],
+      "returns": { "type": "f64", "description": "Coverage 0.0-100.0" }
+    }
+  },
+  "error_codes": {
+    "FILE_NOT_FOUND": {
+      "code": 1,
+      "description": "Source file does not exist"
+    },
+    "READ_ERROR": {
+      "code": 2,
+      "description": "Error reading file contents"
+    },
+    "PARSE_ERROR": {
+      "code": 3,
+      "description": "Malformed Lisp syntax"
+    },
+    "UNSUPPORTED_FEATURE": {
+      "code": 4,
+      "description": "CL feature not in blessed subset"
+    },
+    "UNKNOWN_INSTRUCTION": {
+      "code": 5,
+      "description": "Internal compiler error"
+    },
+    "VALIDATION_FAILED": {
+      "code": 6,
+      "description": "Generated Wasm failed validation"
+    }
+  }
+}
