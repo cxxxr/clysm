@@ -176,7 +176,7 @@
       (ok (= 7 (aref buffer 0)) "Section ID should be 7 (Export)"))
     (testing "export section contains function name"
       ;; Look for "calculate" in the buffer
-      (let ((calc-bytes (babel:string-to-octets "calculate" :encoding :utf-8)))
+      (let ((calc-bytes (clysm/lib/utf8:string-to-utf8-octets "calculate")))
         (ok (search (coerce calc-bytes 'list)
                     (coerce buffer 'list))
             "Buffer should contain 'calculate' string"))))

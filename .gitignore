@@ -28,6 +28,9 @@
 *.wat
 output/
 
+# Bootstrap output
+dist/
+
 # Nix
 result
 result-*

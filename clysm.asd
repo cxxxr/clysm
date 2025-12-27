@@ -5,13 +5,15 @@
   :description "WebAssembly GC Common Lisp Compiler"
   :long-description "Clysm compiles Common Lisp to WebAssembly using WasmGC for memory management."
   :depends-on ("alexandria"
-               "babel"
                "trivial-gray-streams")
   :pathname "src/clysm/"
   :serial t
   :components
   (;; Package definitions
    (:file "package")
+
+   ;; UTF-8 encoding (034-portable-utf8) - must load before backend
+   (:file "lib/utf8")
 
    ;; Backend: Wasm binary emission
    (:module "backend"
@@ -124,12 +126,26 @@
      (:file "read")
      (:file "format")))
 
+   ;; Filesystem: FFI-based file I/O (035-ffi-filesystem)
+   (:module "filesystem"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "ffi")
+     (:file "open")     ; open-file, close-file - must come before read/write
+     (:file "read")
+     (:file "write")
+     (:file "macros"))) ; with-open-file* macro
+
    ;; Standard library
    (:module "lib"
     :serial t
     :components
     ((:file "setf-expanders")  ; Must come before macros for setf expander registry
+     (:file "destructuring")   ; Must come before macros for destructuring-bind
      (:file "macros")
+     ;; Note: utf8 is loaded earlier as top-level component (before backend)
      (:file "ffi-runtime")
      (:file "package-macros")))
 
@@ -179,7 +195,16 @@
      ;; Setf Wasm validation (028-setf-generalized-refs)
      (:file "setf-wasm-test")
      ;; LOOP macro Wasm validation (029-loop-macro)
-     (:file "loop-wasm-test")))
+     (:file "loop-wasm-test")
+     ;; Typecase macro Wasm validation (030-typecase-macros)
+     (:file "typecase-wasm-test")
+     ;; FORMAT function Wasm validation (032-format-function)
+     (:file "format-wasm-test")
+     ;; Filesystem FFI validation (035-ffi-filesystem)
+     (:file "filesystem-ffi-test")
+     ;; Bootstrap compilation validation (037-cross-compile-stage0)
+     (:file "bootstrap-compile-test")
+     (:file "bootstrap-validate-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -271,7 +296,51 @@
      (:file "setf-test")
      (:file "setf-expander-test")
      ;; LOOP macro unit tests (029-loop-macro)
-     (:file "loop-test")))
+     (:file "loop-test")
+     ;; Typecase macro unit tests (030-typecase-macros)
+     (:module "typecase"
+      :serial t
+      :components
+      ((:file "typecase-test")
+       (:file "etypecase-test")
+       (:file "check-type-test")
+       (:file "ctypecase-test")
+       (:file "compound-types-test")))
+     ;; Destructuring-bind unit tests (031-destructuring-bind-macro)
+     (:file "destructuring-bind-test")
+     ;; Portable UTF-8 unit tests (034-portable-utf8)
+     (:file "utf8-test")
+     ;; FORMAT function unit tests (032-format-function)
+     (:module "format"
+      :serial t
+      :components
+      ((:file "basic-test")
+       (:file "iteration-test")
+       (:file "conditional-test")
+       (:file "recursive-test")))
+     ;; Filesystem unit tests (035-ffi-filesystem)
+     (:module "filesystem"
+      :serial t
+      :components
+      ((:file "file-error-test")
+       (:file "file-stream-test")
+       (:file "read-contents-test")
+       (:file "write-contents-test")
+       (:file "open-close-test")
+       (:file "with-open-file-test")))
+     ;; Validation unit tests (036-compiler-subset-validation)
+     (:module "validation"
+      :serial t
+      :components
+      ((:file "feature-registry-test")
+       (:file "analyzer-test")))
+     ;; Bootstrap unit tests (037-cross-compile-stage0)
+     (:module "bootstrap"
+      :serial t
+      :components
+      ((:file "read-forms-test")
+       (:file "filter-forms-test")
+       (:file "context-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -333,7 +402,17 @@
      ;; Setf ANSI integration tests (028-setf-generalized-refs)
      (:file "setf-ansi-test")
      ;; LOOP macro ANSI integration tests (029-loop-macro)
-     (:file "loop-ansi-test"))))
+     (:file "loop-ansi-test")
+     ;; Typecase macro ANSI integration tests (030-typecase-macros)
+     (:file "typecase-ansi-test")
+     ;; FORMAT function ANSI integration tests (032-format-function)
+     (:file "format-ansi-test")
+     ;; FORMAT function self-hosting tests (032-format-function)
+     (:file "format-self-host-test")
+     ;; Filesystem integration tests (035-ffi-filesystem)
+     (:file "filesystem-test")
+     ;; Bootstrap integration tests (037-cross-compile-stage0)
+     (:file "bootstrap-full-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
@@ -354,6 +433,19 @@
    (:file "runner")
    (:file "reporter")
    (:file "baseline")))
+
+;; Compiler Subset Validation (036-compiler-subset-validation)
+(defsystem "clysm/validation"
+  :description "Compiler self-hosting validation tools"
+  :depends-on ("clysm" "alexandria" "uiop" "rove")
+  :pathname "src/clysm/validation/"
+  :serial t
+  :components
+  ((:file "package")
+   (:file "feature-registry")
+   (:file "analyzer")
+   (:file "reporter")
+   (:file "compiler-order")))
 
 ;; ANSI Test Harness Tests
 (defsystem "clysm/ansi-test/tests"
@@ -384,3 +476,12 @@
     ((:file "report-format-test"))))
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
+
+;; Stage 0 Bootstrap Script (037-cross-compile-stage0)
+(defsystem "clysm/bootstrap"
+  :description "Stage 0 cross-compilation bootstrap script"
+  :depends-on ("clysm" "clysm/validation" "uiop")
+  :pathname "build/"
+  :serial t
+  :components
+  ((:file "bootstrap")))

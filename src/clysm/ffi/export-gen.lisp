@@ -48,7 +48,7 @@
 
 (defun emit-export-string (string buffer)
   "Emit a UTF-8 string with length prefix to BUFFER."
-  (let ((bytes (babel:string-to-octets string :encoding :utf-8)))
+  (let ((bytes (clysm/lib/utf8:string-to-utf8-octets string)))
     (emit-export-leb128-unsigned (length bytes) buffer)
     (loop for b across bytes do (vector-push-extend b buffer))))
 

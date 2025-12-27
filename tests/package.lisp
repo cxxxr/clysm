@@ -361,3 +361,60 @@
 (defpackage #:clysm/tests/integration/loop-ansi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; Typecase Macro Tests (030-typecase-macros)
+;;; ============================================================
+
+;; Typecase macro unit tests (030-typecase-macros)
+;; Tests for typecase, etypecase, ctypecase, check-type expansion
+(defpackage #:clysm/tests/unit/typecase
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Typecase Wasm contract tests (030-typecase-macros)
+(defpackage #:clysm/tests/contract/typecase-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Typecase ANSI integration tests (030-typecase-macros)
+(defpackage #:clysm/tests/integration/typecase-ansi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run)
+  (:import-from #:alexandria #:flatten))
+
+;;; ============================================================
+;;; Filesystem Tests (035-ffi-filesystem)
+;;; ============================================================
+
+;; Filesystem file-error condition unit tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/unit/filesystem/file-error
+  (:use #:cl #:rove))
+
+;; Filesystem file-stream struct unit tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/unit/filesystem/file-stream
+  (:use #:cl #:rove))
+
+;; Filesystem FFI contract tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/contract/filesystem-ffi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; Bootstrap Tests (037-cross-compile-stage0)
+;;; ============================================================
+
+;; Bootstrap compile contract tests (T014)
+(defpackage #:clysm/tests/contract/bootstrap-compile
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Bootstrap validate contract tests (T015)
+(defpackage #:clysm/tests/contract/bootstrap-validate
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;; Bootstrap full integration tests (T016)
+(defpackage #:clysm/tests/integration/bootstrap-full
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))

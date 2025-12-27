@@ -71,7 +71,7 @@
 
 (defun encode-name (name)
   "Encode a UTF-8 name as length-prefixed byte sequence."
-  (let* ((bytes (babel:string-to-octets name :encoding :utf-8))
+  (let* ((bytes (clysm/lib/utf8:string-to-utf8-octets name))
          (len-bytes (encode-unsigned-leb128 (length bytes))))
     (concatenate '(vector (unsigned-byte 8)) len-bytes bytes)))
 
