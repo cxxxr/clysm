@@ -179,6 +179,27 @@
      (:file "generator")
      (:file "verifier")))
 
+   ;; Stage 0: Complete compiler for self-hosting (045-stage0-complete-compiler)
+   (:module "stage0"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "globals")
+     (:file "ffi")
+     (:file "runtime")
+     (:file "reader")
+     (:file "ast")
+     (:file "ir")
+     (:file "codegen")
+     (:file "modules")
+     (:file "loader")
+     (:file "compiler")
+     (:file "progress")
+     (:file "output")
+     (:file "exports")
+     (:file "entry")))
+
    ;; Bootstrap: Interpreter-based bootstrap (044-interpreter-bootstrap)
    (:module "interpreter-bootstrap"
     :pathname "bootstrap/"
@@ -278,7 +299,14 @@
        (:file "workflow-compile-test")))
      ;; Interpreter bootstrap contract tests (044-interpreter-bootstrap)
      (:file "interpreter-compile-test")
-     (:file "interpreter-stage0-test")))
+     (:file "interpreter-stage0-test")
+     ;; Stage 0 complete compiler contract tests (045-stage0-complete-compiler)
+     (:module "stage0"
+      :serial t
+      :components
+      ((:file "runtime-valid-test")
+       (:file "ffi-valid-test")
+       (:file "exports-test")))))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -480,7 +508,18 @@
        (:file "builtins-test")
        (:file "special-forms-test")
        (:file "multiple-values-test")
-       (:file "file-loading-test")))))
+       (:file "file-loading-test")))
+     ;; Stage 0 complete compiler unit tests (045-stage0-complete-compiler)
+     (:module "stage0"
+      :serial t
+      :components
+      ((:file "types-test")
+       (:file "globals-test")
+       (:file "reader-test")
+       (:file "ast-test")
+       (:file "ir-test")
+       (:file "ffi-test")
+       (:file "fs-read-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -565,6 +604,13 @@
      (:file "stage0-wasm-valid-test")
      (:file "bootstrap-fixpoint-test")
      (:file "sbcl-free-test")
+     ;; Stage 0 complete compiler integration tests (045-stage0-complete-compiler)
+     (:module "stage0"
+      :serial t
+      :components
+      ((:file "simple-expr-test")
+       (:file "defun-test")
+       (:file "error-test")))
      ;; Workflow integration tests (041-dev-workflow)
      (:module "workflow"
       :serial t

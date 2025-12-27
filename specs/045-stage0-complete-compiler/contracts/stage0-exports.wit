@@ -1,0 +1,101 @@
+// Stage 0 Compiler WebAssembly Interface Types (WIT)
+//
+// This defines the exported functions from the Stage 0 compiler binary
+// that are invoked by the host (wasmtime via Node.js host shim).
+//
+// Note: This is a conceptual WIT file. Actual implementation uses
+// Wasm function exports directly, not Component Model.
+
+package clysm:stage0@0.1.0;
+
+/// Stage 0 compiler exports
+interface compiler {
+    /// Compile a single S-expression to Wasm bytes
+    ///
+    /// @param expr - S-expression as UTF-8 string (externref)
+    /// @returns Compiled Wasm bytes as byte array (externref), or null on error
+    compile-form: func(expr: string) -> option<list<u8>>;
+
+    /// Compile all source modules to produce complete Stage 1 binary
+    ///
+    /// Reads source files via FFI, compiles in dependency order,
+    /// writes output via FFI, reports progress.
+    ///
+    /// @returns Exit code: 0=success, 1=partial, 2=failure
+    compile-all: func() -> s32;
+
+    /// Initialize runtime (called automatically on instantiation)
+    ///
+    /// Sets up:
+    /// - WasmGC types (24+ type definitions)
+    /// - Global variables (NIL, UNBOUND, mv-count, mv-buffer)
+    /// - Symbol table
+    /// - FFI import resolution
+    initialize: func();
+}
+
+/// Filesystem imports required by Stage 0
+interface filesystem {
+    /// Open a file and return handle
+    /// @param path - File path as string
+    /// @param direction - "input" or "output"
+    /// @param if-exists - "supersede" or "error"
+    /// @param if-does-not-exist - "create" or "error"
+    /// @returns File handle (externref)
+    open: func(path: string, direction: string, if-exists: string, if-does-not-exist: string) -> option<u64>;
+
+    /// Read entire file contents as string
+    /// @param handle - File handle from open()
+    /// @returns File contents as UTF-8 string
+    read-all: func(handle: u64) -> option<string>;
+
+    /// Write string to file
+    /// @param handle - File handle from open()
+    /// @param contents - String to write
+    write-all: func(handle: u64, contents: string);
+
+    /// Close file handle
+    /// @param handle - File handle to close
+    close: func(handle: u64);
+}
+
+/// Compilation progress reporting imports
+interface progress {
+    /// Report start of module compilation
+    /// @param module-path - Path to source file
+    /// @param form-count - Number of forms to compile
+    report-start: func(module-path: string, form-count: u32);
+
+    /// Report result of single form compilation
+    /// @param form-id - Form identifier
+    /// @param success - 1 for success, 0 for failure
+    /// @param error-type - Error category if failed
+    /// @param error-msg - Error message if failed
+    report-form-result: func(form-id: string, success: u32, error-type: string, error-msg: string);
+
+    /// Report completion of module compilation
+    /// @param module-path - Path to source file
+    /// @param compiled - Forms successfully compiled
+    /// @param failed - Forms that failed
+    report-module-complete: func(module-path: string, compiled: u32, failed: u32);
+}
+
+/// Output writing imports
+interface output {
+    /// Write compiled bytes to output file
+    /// @param bytes - Wasm bytes to write
+    /// @param path - Output file path
+    /// @returns Bytes written
+    write-bytes: func(bytes: list<u8>, path: string) -> u64;
+}
+
+/// World defining Stage 0 compiler
+world stage0 {
+    // Imports from host
+    import filesystem;
+    import progress;
+    import output;
+
+    // Exports to host
+    export compiler;
+}

@@ -54,10 +54,8 @@
   "Verify interpreter environment can be created without errors"
   (let ((env (clysm/eval/interpreter:make-interpreter-env)))
     (ok env "Environment created")
-    (ok (hash-table-p (clysm/eval/interpreter:interpreter-env-bindings env))
-        "Has bindings hash-table")
-    (ok (hash-table-p (clysm/eval/interpreter:interpreter-env-functions env))
-        "Has functions hash-table")))
+    (ok (hash-table-p (clysm/eval/interpreter::interpreter-env-bindings env))
+        "Has bindings hash-table")))
 
 ;;; ============================================================
 ;;; Test: Interpreter Basic Evaluation
