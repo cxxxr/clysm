@@ -382,3 +382,20 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run)
   (:import-from #:alexandria #:flatten))
+
+;;; ============================================================
+;;; Filesystem Tests (035-ffi-filesystem)
+;;; ============================================================
+
+;; Filesystem file-error condition unit tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/unit/filesystem/file-error
+  (:use #:cl #:rove))
+
+;; Filesystem file-stream struct unit tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/unit/filesystem/file-stream
+  (:use #:cl #:rove))
+
+;; Filesystem FFI contract tests (035-ffi-filesystem)
+(defpackage #:clysm/tests/contract/filesystem-ffi
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))

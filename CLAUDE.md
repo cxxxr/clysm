@@ -44,6 +44,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - Common Lisp (SBCL 2.4+, CCL, ECL target support) + None (portable CL only - no SBCL internals) (033-ieee754-bit-extraction)
 - Common Lisp (SBCL 2.4+, CCL, ECL - portable subset) + None (pure portable CL; removes babel dependency) (034-portable-utf8)
 - N/A (in-memory byte vectors) (034-portable-utf8)
+- Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8) (035-ffi-filesystem)
+- N/A (host filesystem via FFI) (035-ffi-filesystem)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -63,9 +65,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
 - 034-portable-utf8: Added Common Lisp (SBCL 2.4+, CCL, ECL - portable subset) + None (pure portable CL; removes babel dependency)
 - 033-ieee754-bit-extraction: Added Common Lisp (SBCL 2.4+, CCL, ECL target support) + None (portable CL only - no SBCL internals)
-- 032-format-function: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/streams, clysm/conditions, alexandria, babel, trivial-gray-streams, rove (testing)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -412,4 +414,56 @@ Type dispatch macros expand directly to primitive predicates (integerp, symbolp,
 - Unit tests: tests/unit/typecase/*.lisp (typecase, etypecase, check-type, ctypecase, compound-types)
 - Contract tests: tests/contract/typecase-wasm-test.lisp (Wasm validation)
 - Integration tests: tests/integration/typecase-ansi-test.lisp (ANSI compliance)
+
+## Feature 035: FFI Filesystem Access - COMPLETE
+
+**Status**: All phases completed (2025-12-27)
+
+### Implemented Components
+- `src/clysm/filesystem/package.lisp`: Package definition with exports
+- `src/clysm/filesystem/types.lisp`: file-stream struct definition
+- `src/clysm/filesystem/ffi.lisp`: FFI declarations for clysm:fs namespace
+- `src/clysm/filesystem/open.lisp`: open-file and close-file functions
+- `src/clysm/filesystem/read.lisp`: read-file-contents function
+- `src/clysm/filesystem/write.lisp`: write-file-contents function
+- `src/clysm/filesystem/macros.lisp`: with-open-file* macro
+- `src/clysm/conditions/types.lisp`: file-error condition class
+- `host-shim/fs-shim.js`: Host filesystem shim for FFI
+
+### Key Features
+1. **read-file-contents**: Read entire file as UTF-8 string
+   - `(read-file-contents "data.txt")` → file contents as string
+   - Works with pathname strings or file-stream objects
+2. **write-file-contents**: Write string to file
+   - `(write-file-contents "output.txt" "Hello")` → writes to file
+   - Creates file if doesn't exist, overwrites if exists
+3. **open-file / close-file**: Explicit handle management
+   - `(open-file path :direction :input/:output)`
+   - `:if-exists :supersede/:error`
+   - `:if-does-not-exist :create/:error`
+4. **with-open-file***: Safe resource management macro
+   - Uses unwind-protect for cleanup
+   - Automatically closes file even on error
+5. **file-error condition**: Signals filesystem errors
+   - `clysm-file-error-pathname` accessor
+
+### FFI Interface (clysm:fs namespace)
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| fs.open | (string string string string) → anyref | Open file, return handle |
+| fs.close | (anyref) → void | Close file handle |
+| fs.read-all | (anyref) → string | Read entire file |
+| fs.write-all | (anyref string) → void | Write to file |
+
+### Technical Details
+- Uses `:anyref` for opaque file handles (Wasm anyref type)
+- Shadows `cl:file-stream` and `cl:file-error` to avoid conflicts
+- UTF-8 encoding for all file contents
+- Host shim provides Node.js fs implementation for wasmtime
+- Virtual FS backend deferred (requires browser testing)
+
+### Test Coverage
+- Unit tests: tests/unit/filesystem/*.lisp (6 test files)
+- Contract tests: tests/contract/filesystem-ffi-test.lisp
+- Integration tests: tests/integration/filesystem-test.lisp
 <!-- MANUAL ADDITIONS END -->

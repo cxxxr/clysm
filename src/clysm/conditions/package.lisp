@@ -13,6 +13,7 @@
            #:type-error #:cell-error #:unbound-variable #:undefined-function
            #:control-error #:program-error
            #:stream-error #:end-of-file  ; Stream conditions (015-ffi-stream-io)
+           #:file-error                   ; File conditions (035-ffi-filesystem)
            #:signal #:warn #:cerror
            #:restart #:find-restart #:compute-restarts #:invoke-restart
            #:invoke-restart-interactively #:invoke-debugger
@@ -46,6 +47,9 @@
    #:format-error
    #:format-error-control-string
    #:format-error-position
+   ;; File error (035-ffi-filesystem, T007)
+   #:file-error
+   #:clysm-file-error-pathname
    ;; Condition accessors
    #:simple-condition-format-control
    #:simple-condition-format-arguments

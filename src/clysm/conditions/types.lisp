@@ -181,6 +181,21 @@
    Subtype of simple-error with control-string and position slots."))
 
 ;;; ============================================================
+;;; File Error (035-ffi-filesystem, T007)
+;;; ============================================================
+
+(defclass file-error (error)
+  ((pathname
+    :initarg :pathname
+    :initform ""
+    :reader clysm-file-error-pathname
+    :type string
+    :documentation "The pathname that caused the error"))
+  (:documentation "Condition signaled for filesystem-related errors.
+   FR-006: System MUST signal file-error condition when file operations fail.
+   Contains pathname slot identifying the file that caused the error."))
+
+;;; ============================================================
 ;;; Make Condition (T032)
 ;;; ============================================================
 

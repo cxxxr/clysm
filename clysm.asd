@@ -126,6 +126,18 @@
      (:file "read")
      (:file "format")))
 
+   ;; Filesystem: FFI-based file I/O (035-ffi-filesystem)
+   (:module "filesystem"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "ffi")
+     (:file "open")     ; open-file, close-file - must come before read/write
+     (:file "read")
+     (:file "write")
+     (:file "macros"))) ; with-open-file* macro
+
    ;; Standard library
    (:module "lib"
     :serial t
@@ -187,7 +199,9 @@
      ;; Typecase macro Wasm validation (030-typecase-macros)
      (:file "typecase-wasm-test")
      ;; FORMAT function Wasm validation (032-format-function)
-     (:file "format-wasm-test")))
+     (:file "format-wasm-test")
+     ;; Filesystem FFI validation (035-ffi-filesystem)
+     (:file "filesystem-ffi-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -300,7 +314,17 @@
       ((:file "basic-test")
        (:file "iteration-test")
        (:file "conditional-test")
-       (:file "recursive-test")))))
+       (:file "recursive-test")))
+     ;; Filesystem unit tests (035-ffi-filesystem)
+     (:module "filesystem"
+      :serial t
+      :components
+      ((:file "file-error-test")
+       (:file "file-stream-test")
+       (:file "read-contents-test")
+       (:file "write-contents-test")
+       (:file "open-close-test")
+       (:file "with-open-file-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -368,7 +392,9 @@
      ;; FORMAT function ANSI integration tests (032-format-function)
      (:file "format-ansi-test")
      ;; FORMAT function self-hosting tests (032-format-function)
-     (:file "format-self-host-test"))))
+     (:file "format-self-host-test")
+     ;; Filesystem integration tests (035-ffi-filesystem)
+     (:file "filesystem-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
