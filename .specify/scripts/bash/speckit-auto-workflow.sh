@@ -45,6 +45,10 @@ IMPL_PLAN="$REPO_ROOT/.specify/memory/implementation-plan.md"
 SPECS_DIR="$REPO_ROOT/specs"
 ALLOWED_TOOLS="Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch"
 
+# Disable git pager to prevent blocking on less
+export GIT_PAGER=cat
+export GIT_TERMINAL_PROMPT=0
+
 # States
 STATE_START="start"
 STATE_ANALYZE="analyze"
