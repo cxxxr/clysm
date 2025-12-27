@@ -46,6 +46,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory byte vectors) (034-portable-utf8)
 - Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8) (035-ffi-filesystem)
 - N/A (host filesystem via FFI) (035-ffi-filesystem)
+- Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8) (035-ffi-filesystem)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -65,9 +66,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
 - 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) for compiler; WasmGC for output + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
 - 034-portable-utf8: Added Common Lisp (SBCL 2.4+, CCL, ECL - portable subset) + None (pure portable CL; removes babel dependency)
-- 033-ieee754-bit-extraction: Added Common Lisp (SBCL 2.4+, CCL, ECL target support) + None (portable CL only - no SBCL internals)
 
 
 <!-- MANUAL ADDITIONS START -->
