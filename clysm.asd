@@ -165,7 +165,36 @@
      (:file "progress")
      (:file "blocker")
      (:file "diff")
-     (:file "generator"))))
+     (:file "fixpoint")
+     (:file "generator")))
+
+   ;; Stage 2: Fixed-point verification (040-fixed-point-verification)
+   (:module "stage2"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "generator")
+     (:file "verifier")))
+
+   ;; Workflow: Development workflow infrastructure (041-dev-workflow)
+   (:module "workflow"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "platform")
+     (:file "deps")
+     (:file "cache")
+     (:file "compiler")
+     (:file "repl")))
+
+   ;; CLI: Command-line interface (041-dev-workflow)
+   (:module "cli"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "args")
+     (:file "main"))))
 
   :in-order-to ((test-op (test-op "clysm/tests"))))
 
@@ -228,7 +257,13 @@
      (:file "stage1-report-test")
      (:file "stage1-validate-test")
      (:file "stage1-blocker-test")
-     (:file "stage1-diff-test")))
+     (:file "stage1-diff-test")
+     ;; Workflow contract tests (041-dev-workflow)
+     (:module "workflow"
+      :serial t
+      :components
+      ((:file "workflow-args-test")
+       (:file "workflow-compile-test")))))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -380,7 +415,15 @@
        (:file "progress-test")
        (:file "generator-test")
        (:file "blocker-test")
-       (:file "diff-test")))))
+       (:file "diff-test")))
+     ;; Workflow unit tests (041-dev-workflow)
+     (:module "workflow"
+      :serial t
+      :components
+      ((:file "types-test")
+       (:file "platform-test")
+       (:file "deps-test")
+       (:file "cache-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -460,7 +503,16 @@
      (:file "stage1-modules-test")
      (:file "stage1-timing-test")
      (:file "stage1-gen-test")
-     (:file "stage1-full-test"))))
+     (:file "stage1-full-test")
+     ;; Workflow integration tests (041-dev-workflow)
+     (:module "workflow"
+      :serial t
+      :components
+      ((:file "workflow-cli-test")
+       (:file "workflow-incremental-test")
+       (:file "workflow-error-recovery-test")
+       (:file "workflow-repl-test")
+       (:file "workflow-selfhost-test"))))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

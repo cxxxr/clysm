@@ -101,7 +101,9 @@ Provides tools for:
            #:load-stage0
            #:run-form
            #:capture-result
-           #:error-from-wasm)
+           #:error-from-wasm
+           #:invoke-wasmtime-compile
+           #:compute-host-shim-path)
   ;; Progress (from progress.lisp)
   (:export #:progress-report
            #:make-progress-report
@@ -123,7 +125,18 @@ Provides tools for:
            #:compare-types
            ;; Byte-level comparison (Feature 040)
            #:binaries-identical-p
-           #:compute-byte-diff)
+           #:compute-byte-diff
+           ;; Binary info (from diff.lisp)
+           #:extract-binary-info
+           #:validate-binary
+           #:binary-info
+           #:make-binary-info
+           #:binary-info-path
+           #:binary-info-size-bytes
+           #:binary-info-exports
+           #:binary-info-types
+           #:binary-info-functions
+           #:binary-info-valid-p)
   ;; Fixpoint (from fixpoint.lisp - Feature 040)
   (:export #:fixpoint-status
            #:status-to-exit-code

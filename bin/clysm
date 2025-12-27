@@ -1,0 +1,37 @@
+#!/bin/bash
+# clysm - WebAssembly GC Common Lisp Compiler
+#
+# Part of Feature 041: Development Workflow Establishment
+# T031: Shell wrapper script
+#
+# This script provides a convenient entry point for the Clysm CLI.
+# It attempts to use SBCL first, falling back to Stage 1 if available.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Check for SBCL
+if command -v sbcl &> /dev/null; then
+    # Use SBCL-based CLI
+    exec sbcl --noinform --non-interactive \
+         --load "$PROJECT_ROOT/build/workflow.lisp" \
+         -- "$@"
+fi
+
+# Check for Stage 1 binary
+STAGE1_WASM="$PROJECT_ROOT/dist/clysm-stage1.wasm"
+if [[ -f "$STAGE1_WASM" ]] && command -v wasmtime &> /dev/null; then
+    # Use Stage 1 via wasmtime
+    echo "Using Stage 1 binary (SBCL not found)"
+    exec wasmtime run \
+         --dir "$PROJECT_ROOT" \
+         "$STAGE1_WASM" \
+         -- "$@"
+fi
+
+# Neither available
+echo "Error: Neither SBCL nor Stage 1 binary is available." >&2
+echo "Install SBCL or ensure dist/clysm-stage1.wasm exists with wasmtime." >&2
+exit 1

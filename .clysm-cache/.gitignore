@@ -1,0 +1,8 @@
+# Clysm compilation cache directory
+# This directory contains cached compilation results for incremental builds
+
+# Ignore all cache files
+*
+
+# But not this .gitignore
+!.gitignore

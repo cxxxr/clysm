@@ -56,6 +56,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - File-based (source files, Wasm binaries, JSON progress reports) (039-stage1-compiler-gen)
 - Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 1/2 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim), alexandria, uiop (040-fixed-point-verification)
 - File-based (source files → Wasm binaries, JSON reports) (040-fixed-point-verification)
+- Common Lisp (SBCL 2.4+) for host; WasmGC for Stage 1+ binaries (041-dev-workflow)
+- Compilation cache in `.clysm-cache/` directory (JSON-serializable) (041-dev-workflow)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -75,9 +77,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 041-dev-workflow: Added Common Lisp (SBCL 2.4+) for host; WasmGC for Stage 1+ binaries
 - 040-fixed-point-verification: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 1/2 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim), alexandria, uiop
 - 039-stage1-compiler-gen: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim)
-- 038-stage0-extend: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules
 
 
 <!-- MANUAL ADDITIONS START -->
