@@ -62,6 +62,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory macro registry, WasmGC globals for runtime) (042-advanced-defmacro)
 - Common Lisp (SBCL 2.4+) for host compiler; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/lib/macros (043-self-hosting-blockers)
 - N/A (in-memory compile-time; WasmGC struct/array for runtime hash tables) (043-self-hosting-blockers)
+- Common Lisp (SBCL 2.4+) for host interpreter; WasmGC for compiler output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); wasmtime (Wasm runtime), wasm-tools (validation) (044-interpreter-bootstrap)
+- N/A (in-memory evaluation; file-based source reading) (044-interpreter-bootstrap)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -81,9 +83,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 044-interpreter-bootstrap: Added Common Lisp (SBCL 2.4+) for host interpreter; WasmGC for compiler output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); wasmtime (Wasm runtime), wasm-tools (validation)
 - 043-self-hosting-blockers: Added Common Lisp (SBCL 2.4+) for host compiler; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/lib/macros
 - 042-advanced-defmacro: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler (Feature 016 macro system), clysm/lib/destructuring (Feature 031)
-- 041-dev-workflow: Added Common Lisp (SBCL 2.4+) for host; WasmGC for Stage 1+ binaries
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -940,4 +942,129 @@ These are internal to the compiler implementation and have no meaning as primiti
 - `func-section.lisp`: +300 lines (set ops, sequence functions)
 - `compiler.lisp`: +3 lines (i32 div/rem opcodes)
 - `dist/final-rate.json`: Final rate report
+
+## Feature 044: Interpreter Bootstrap Strategy - COMPLETE
+
+**Status**: All 120 tasks completed (2025-12-28)
+
+### Implemented Components
+- `src/clysm/eval/interpreter.lisp`: Extended with defstruct, loop, handler-case support
+- `src/clysm/eval/interpreter-macros.lisp`: Macro expansion with &whole/&environment
+- `src/clysm/eval/interpreter-builtins.lisp`: 100+ built-in functions
+- `src/clysm/eval/interpreter-file.lisp`: File loading and package switching
+- `src/clysm/bootstrap/package.lisp`: Bootstrap package definition
+- `src/clysm/bootstrap/interpreter-stage0.lisp`: Stage 0 generation via interpreter
+- `src/clysm/bootstrap/fixpoint.lisp`: Fixed-point verification infrastructure
+- `host-shim/stage1-host.js`: Extended for interpreter mode
+- `scripts/verify-fixpoint-interp.sh`: Interpreter-based fixpoint verification
+- `scripts/bootstrap-without-sbcl.sh`: SBCL-free workflow script
+- `scripts/run-tests-via-interpreter.sh`: Run tests via interpreter
+- `docs/interpreter-bootstrap.md`: Comprehensive documentation
+
+### Key Features
+1. **Tier 1 Interpreter Extensions**: Full CL support for compiler source
+   - defstruct with slot options and inheritance
+   - loop macro with for/collect/do/when/while
+   - handler-case/handler-bind for condition system
+   - multiple-value-bind, values, nth-value
+   - All 100+ blessed subset functions
+2. **Stage 0 Generation via Interpreter**: Generate Stage 0 without SBCL compilation
+   - `(generate-stage0-via-interpreter :module-limit 5)` → valid Wasm
+   - Progress tracking per module/form
+   - wasm-tools validation integration
+3. **Fixed-Point Verification**: Prove self-hosting
+   - Interpreter → Stage 0 → Stage 1 → Stage 2 chain
+   - `verify-fixpoint-interpreter` function
+   - JSON/text report generation
+   - Exit codes: 0=ACHIEVED, 1=NOT_ACHIEVED, 2=COMPILATION_ERROR, 3=MISSING_DEPENDENCY
+4. **SBCL-Free Development**: Complete workflow without SBCL
+   - `./scripts/bootstrap-without-sbcl.sh` script
+   - Uses wasmtime + interpreter-generated Stage 0
+   - Test execution via interpreter
+
+### Architecture
+```
+   ┌─────────────────────────────────────────────────┐
+   │ SBCL (Host Common Lisp)                         │
+   │   ┌─────────────────────────────────────────┐   │
+   │   │ Tier 1 Interpreter (interpreter.lisp)   │   │
+   │   │   • Runs Clysm compiler source          │   │
+   │   │   • Full CL special forms/macros        │   │
+   │   │   • compile-to-wasm via interpreted env │   │
+   │   └─────────────────────────────────────────┘   │
+   │                    ↓                            │
+   │   ┌─────────────────────────────────────────┐   │
+   │   │ Stage 0 Generation                      │   │
+   │   │   • generate-stage0-via-interpreter     │   │
+   │   │   • Valid WasmGC binary output          │   │
+   │   └─────────────────────────────────────────┘   │
+   └─────────────────────────────────────────────────┘
+                    ↓
+   ┌─────────────────────────────────────────────────┐
+   │ wasmtime (Stage 0)                              │
+   │   • Runs interpreter-generated Stage 0          │
+   │   • Compiles Clysm source → Stage 1            │
+   └─────────────────────────────────────────────────┘
+                    ↓
+   ┌─────────────────────────────────────────────────┐
+   │ wasmtime (Stage 1)                              │
+   │   • Compiles Clysm source → Stage 2            │
+   │   • Stage 1 == Stage 2 → Fixed-point!          │
+   └─────────────────────────────────────────────────┘
+```
+
+### CLI Commands
+```bash
+# Generate Stage 0 via interpreter
+sbcl --load build/bootstrap-interp.lisp
+
+# Shell wrapper for Stage 0 generation
+./scripts/gen-stage0-interp.sh
+
+# Interpreter-based fixpoint verification
+./scripts/verify-fixpoint.sh --interpreter
+./scripts/verify-fixpoint-interp.sh --json
+
+# SBCL-free bootstrap workflow
+./scripts/bootstrap-without-sbcl.sh
+
+# Run tests via interpreter
+./scripts/run-tests-via-interpreter.sh
+```
+
+### Data Structures
+```lisp
+;; Bootstrap result from Stage 0 generation
+(defstruct bootstrap-result
+  (success nil :type boolean)
+  (wasm-bytes nil :type (or null vector))
+  (modules-loaded 0 :type integer)
+  (forms-compiled 0 :type integer)
+  (errors nil :type list)
+  (elapsed-time 0.0 :type single-float))
+
+;; Fixed-point verification result
+(defstruct fixpoint-result
+  (status :unknown :type symbol)       ; :achieved, :not-achieved, etc.
+  (timestamp "" :type string)
+  (stage0-path nil :type (or null string pathname))
+  (stage1-path nil :type (or null string pathname))
+  (stage2-path nil :type (or null string pathname))
+  (identical-p nil :type boolean)
+  (first-diff-offset nil :type (or null integer))
+  (elapsed-ms 0 :type integer)
+  (error-message nil :type (or null string)))
+```
+
+### Test Coverage
+- Unit tests: tests/unit/interpreter/*.lisp (100+ tests)
+  - defun-test, defmacro-test, defstruct-test, loop-test
+  - handler-case-test, builtins-test, special-forms-test
+  - multiple-values-test, file-loading-test
+- Contract tests: tests/contract/interpreter-*.lisp (19 tests)
+  - interpreter-compile-test, interpreter-stage0-test
+- Integration tests: tests/integration/*.lisp (43 tests)
+  - interpreter-backend-test, interpreter-compiler-test
+  - interpreter-full-load-test, stage0-wasm-valid-test
+  - bootstrap-fixpoint-test, sbcl-free-test
 <!-- MANUAL ADDITIONS END -->

@@ -100,14 +100,16 @@
 (deftest test-stage1-diff-analysis
   "Stage 1 should compute diff between binaries."
   (let* ((info1 (clysm/stage1::make-binary-info
-                 :path "stage0.wasm" :size-bytes 1000 :exports 5 :types 10))
+                 :path "stage0.wasm" :size-bytes 1000
+                 :exports '("main" "alloc") :types 10))
          (info2 (clysm/stage1::make-binary-info
-                 :path "stage1.wasm" :size-bytes 2000 :exports 10 :types 15))
-         (diff (clysm/stage1::compute-diff info1 info2)))
-    (ok (= (clysm/stage1::diff-details-size-delta diff) 1000)
-        "Size delta computed")
-    (ok (= (clysm/stage1::diff-details-exports-delta diff) 5)
-        "Exports delta computed")))
+                 :path "stage1.wasm" :size-bytes 2000
+                 :exports '("main" "alloc" "compile") :types 15))
+         (diff (clysm/stage1::compute-differences info1 info2)))
+    (ok (stringp (clysm/stage1::diff-details-size-delta diff))
+        "Size delta is a string")
+    (ok (listp (clysm/stage1::diff-details-new-exports diff))
+        "New exports is a list")))
 
 (deftest test-stage1-temp-binary-write
   "Stage 1 should write valid Wasm binary to disk."

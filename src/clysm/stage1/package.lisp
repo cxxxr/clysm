@@ -21,18 +21,24 @@ Provides tools for:
 
            #:source-form
            #:make-source-form
+           #:source-form-id
            #:source-form-sexp
+           #:source-form-operator
+           #:source-form-name
+           #:source-form-source-text
            #:source-form-module
            #:source-form-index
-           #:source-form-operator
+           #:source-form-compilable-p
 
            #:compilation-result
            #:make-compilation-result
            #:compilation-result-form
+           #:compilation-result-form-id
            #:compilation-result-success-p
            #:compilation-result-error-type
            #:compilation-result-error-message
-           #:compilation-result-wasm-bytes)
+           #:compilation-result-wasm-bytes
+           #:compilation-result-unsupported-feature)
   ;; Verification types (from types.lisp - Feature 040)
   (:export #:verification-result
            #:make-verification-result
@@ -71,9 +77,26 @@ Provides tools for:
   ;; Conditions (from conditions.lisp)
   (:export #:stage1-error
            #:stage1-file-error
+           #:stage1-file-not-found
+           #:stage1-file-not-found-path
+           #:stage1-encoding-error
+           #:stage1-encoding-error-path
+           #:stage1-encoding-error-byte-position
            #:stage1-parse-error
+           #:stage1-parse-error-form-text
+           #:stage1-parse-error-position
            #:stage1-compile-error
+           #:stage1-compile-error-form
+           #:stage1-compile-error-condition-type
+           #:stage1-unsupported-feature
+           #:stage1-unsupported-feature-name
+           #:stage1-unsupported-feature-form
+           #:stage1-internal-error
+           #:stage1-internal-error-phase
            #:stage1-runtime-error
+           #:stage1-wasmtime-unavailable
+           #:stage1-stage0-invalid
+           #:stage1-stage0-invalid-path
            ;; Fixed-point conditions (Feature 040)
            #:fixpoint-error
            #:fixpoint-stage1-missing

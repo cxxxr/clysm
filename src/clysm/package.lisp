@@ -769,7 +769,33 @@
            #:make-interpreter-env
            #:env-bind
            #:env-lookup
-           #:extend-env))
+           #:env-bound-p
+           #:extend-env
+           #:get-default-env
+           ;; Registries (Feature 044)
+           #:*struct-registry*
+           #:*special-variables*
+           #:*constants*
+           #:clear-registries
+           ;; Struct types (Feature 044)
+           #:lambda-list-info
+           #:parse-lambda-list
+           #:bind-lambda-list-args
+           #:interpreter-struct-type
+           #:interpreter-struct-instance
+           #:interpreted-closure
+           ;; Error conditions (Feature 044)
+           #:interpreter-error
+           #:unbound-variable-error
+           #:undefined-function-error
+           #:unsupported-feature-error
+           #:macro-expansion-depth-error
+           ;; File loading (Feature 044)
+           #:interpret-file
+           #:read-file-forms
+           #:filter-body-declarations
+           #:load-compiler-modules
+           #:interpret-progn))
 
 (defpackage #:clysm/eval/jit
   (:use #:cl #:clysm/compiler #:clysm/backend/wasm-emit)

@@ -15,6 +15,7 @@
   (:use :cl)
   (:export #:bootstrap-context
            #:make-bootstrap-context
+           #:bootstrap-context-p
            #:bootstrap-context-source-files
            #:bootstrap-context-all-forms
            #:bootstrap-context-current-module

@@ -33,6 +33,7 @@ SOURCE_DIR="${SOURCE_DIR:-src/clysm/}"
 JSON_MODE=false
 SKIP_GENERATE=false
 APPEND_HISTORY=false
+USE_INTERPRETER=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -61,6 +62,11 @@ while [[ $# -gt 0 ]]; do
             APPEND_HISTORY=true
             shift
             ;;
+        --interpreter)
+            # Delegate to interpreter-based verification (Feature 044)
+            USE_INTERPRETER=true
+            shift
+            ;;
         --help)
             cat <<EOF
 Usage: $0 [OPTIONS]
@@ -75,6 +81,7 @@ Options:
   --json              Output result as JSON
   --skip-generate     Skip Stage 2 generation, compare existing binaries
   --history           Append result to history log
+  --interpreter       Use interpreter-based Stage 0 (Feature 044)
   --help              Show this help
 
 Exit codes (FR-007):
@@ -228,6 +235,14 @@ compare_binaries() {
 
 # Main verification
 main() {
+    # Delegate to interpreter-based verification if requested (Feature 044)
+    if $USE_INTERPRETER; then
+        local interp_args=""
+        if $JSON_MODE; then interp_args="$interp_args --json"; fi
+        if $SKIP_GENERATE; then interp_args="$interp_args --skip-generate"; fi
+        exec "$(dirname "$0")/verify-fixpoint-interp.sh" $interp_args
+    fi
+
     check_dependencies
     validate_stage1
 

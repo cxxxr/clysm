@@ -75,6 +75,9 @@
     :serial t
     :components
     ((:file "interpreter")
+     (:file "interpreter-macros")    ; Feature 044: Macro system for interpreter
+     (:file "interpreter-builtins")  ; Feature 044: Extended built-in functions
+     (:file "interpreter-file")      ; Feature 044: File loading support
      (:file "jit")
      (:file "eval")
      (:file "compile")))
@@ -176,6 +179,15 @@
      (:file "generator")
      (:file "verifier")))
 
+   ;; Bootstrap: Interpreter-based bootstrap (044-interpreter-bootstrap)
+   (:module "interpreter-bootstrap"
+    :pathname "bootstrap/"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "interpreter-stage0")
+     (:file "fixpoint")))
+
    ;; Workflow: Development workflow infrastructure (041-dev-workflow)
    (:module "workflow"
     :serial t
@@ -263,7 +275,10 @@
       :serial t
       :components
       ((:file "workflow-args-test")
-       (:file "workflow-compile-test")))))
+       (:file "workflow-compile-test")))
+     ;; Interpreter bootstrap contract tests (044-interpreter-bootstrap)
+     (:file "interpreter-compile-test")
+     (:file "interpreter-stage0-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -452,7 +467,20 @@
       ((:file "position-test")
        (:file "find-test")
        (:file "remove-test")
-       (:file "substitute-test")))))
+       (:file "substitute-test")))
+     ;; Interpreter bootstrap unit tests (044-interpreter-bootstrap)
+     (:module "interpreter"
+      :serial t
+      :components
+      ((:file "defun-test")
+       (:file "defmacro-test")
+       (:file "defstruct-test")
+       (:file "loop-test")
+       (:file "handler-case-test")
+       (:file "builtins-test")
+       (:file "special-forms-test")
+       (:file "multiple-values-test")
+       (:file "file-loading-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -533,6 +561,10 @@
      (:file "stage1-timing-test")
      (:file "stage1-gen-test")
      (:file "stage1-full-test")
+     ;; Interpreter bootstrap integration tests (044-interpreter-bootstrap)
+     (:file "stage0-wasm-valid-test")
+     (:file "bootstrap-fixpoint-test")
+     (:file "sbcl-free-test")
      ;; Workflow integration tests (041-dev-workflow)
      (:module "workflow"
       :serial t

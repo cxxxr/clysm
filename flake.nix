@@ -47,7 +47,7 @@
         };
 
         checks.default = pkgs.runCommand "clysm-check" {
-          buildInputs = [ pkgs.sbcl pkgs.wasm-tools pkgs.wasmtime pkgs.wabt ];
+          buildInputs = [ pkgs.sbcl pkgs.wasm-tools pkgs.wasmtime pkgs.wabt pkgs.nodejs ];
         } ''
           cd ${self}
 
@@ -60,19 +60,50 @@
           test -f src/clysm/backend/sections.lisp
           echo "    Source files OK"
 
-          # Phase 2: Verify tools are available
+          # Phase 2: Verify interpreter bootstrap files exist (Feature 044)
+          echo "==> Checking interpreter bootstrap files..."
+          test -f src/clysm/eval/interpreter.lisp
+          test -f src/clysm/eval/interpreter-macros.lisp
+          test -f src/clysm/eval/interpreter-builtins.lisp
+          test -f src/clysm/eval/interpreter-file.lisp
+          test -f src/clysm/bootstrap/package.lisp
+          test -f src/clysm/bootstrap/interpreter-stage0.lisp
+          test -f src/clysm/bootstrap/fixpoint.lisp
+          echo "    Interpreter bootstrap files OK"
+
+          # Phase 3: Verify tools are available
           echo "==> Checking tool availability..."
           sbcl --version
           wasm-tools --version
           wasmtime --version
           wat2wasm --version
+          node --version
           echo "    Tools OK"
 
-          # Phase 3: Validate empty Wasm module format
+          # Phase 4: Validate empty Wasm module format
           echo "==> Validating Wasm module format..."
           printf '\x00\x61\x73\x6d\x01\x00\x00\x00' > /tmp/empty.wasm
           wasm-tools validate /tmp/empty.wasm
           echo "    Wasm validation OK"
+
+          # Phase 5: Verify interpreter test files exist
+          echo "==> Checking interpreter test files..."
+          test -f tests/unit/interpreter/defun-test.lisp
+          test -f tests/unit/interpreter/defmacro-test.lisp
+          test -f tests/unit/interpreter/defstruct-test.lisp
+          test -f tests/unit/interpreter/builtins-test.lisp
+          test -f tests/contract/interpreter-compile-test.lisp
+          test -f tests/integration/bootstrap-fixpoint-test.lisp
+          test -f tests/integration/sbcl-free-test.lisp
+          echo "    Interpreter test files OK"
+
+          # Phase 6: Verify scripts exist
+          echo "==> Checking interpreter scripts..."
+          test -f scripts/verify-fixpoint-interp.sh
+          test -f scripts/bootstrap-without-sbcl.sh
+          test -f scripts/run-tests-via-interpreter.sh
+          test -f scripts/gen-stage0-interp.sh
+          echo "    Interpreter scripts OK"
 
           touch $out
         '';

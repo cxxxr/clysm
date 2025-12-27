@@ -28,7 +28,7 @@
 (deftest test-module-stats-tracking
   "Module tracking should count compiled and failed forms."
   (let ((module (clysm/stage1::make-source-module
-                 :path #P"/tmp/test.lisp"
+                 :path "/tmp/test.lisp"
                  :relative-path "src/test.lisp"
                  :forms (list (clysm/stage1:make-source-form
                                :id "1:0" :sexp '(+ 1 2)
@@ -48,7 +48,7 @@
 (deftest test-module-stats-failure-tracking
   "Module tracking should group failures by operator."
   (let ((module (clysm/stage1::make-source-module
-                 :path #P"/tmp/test.lisp"
+                 :path "/tmp/test.lisp"
                  :relative-path "src/test.lisp"
                  :forms (list (clysm/stage1:make-source-form
                                :id "1:0" :sexp '(loop for i from 1 to 10 do i)
