@@ -228,6 +228,9 @@
      (compile-defvar ast env))
     (clysm/compiler/ast:ast-defparameter
      (compile-defparameter ast env))
+    ;; Feature 038: Constant definitions
+    (clysm/compiler/ast:ast-defconstant
+     (compile-defconstant ast env))
     ;; Macro introspection (016-macro-system T048)
     (clysm/compiler/ast:ast-macroexpand-1
      (compile-macroexpand-1 ast env))
@@ -4767,6 +4770,151 @@
       (:struct.set ,symbol-type 1)
       ;; Return the symbol
       (:global.get ,global-idx))))
+
+;;; ============================================================
+;;; Feature 038: Constant Definitions and Constant Folding
+;;; ============================================================
+
+(defvar *constant-registry* (make-hash-table :test 'eq)
+  "Compile-time registry for constant values.
+   Maps constant names to their computed values for constant folding.")
+
+(defun fold-constant-expression (form registry)
+  "Attempt to fold FORM into a constant value at compile time.
+   Returns (VALUES value foldable-p) where:
+   - value: The computed value if foldable, NIL otherwise
+   - foldable-p: T if the expression was successfully folded
+
+   Supports:
+   - Literals: numbers, characters, strings, keywords
+   - Arithmetic: +, -, *, /, mod, rem
+   - Constants: symbols with +NAME+ convention from registry"
+  (cond
+    ;; Literal number
+    ((numberp form)
+     (values form t))
+    ;; Character literal
+    ((characterp form)
+     (values form t))
+    ;; String literal
+    ((stringp form)
+     (values form t))
+    ;; Keyword
+    ((keywordp form)
+     (values form t))
+    ;; Constant reference (symbol)
+    ((and (symbolp form)
+          (not (null form))
+          (not (eq form t)))
+     (multiple-value-bind (value found-p)
+         (gethash form registry)
+       (if found-p
+           (values value t)
+           (values nil nil))))
+    ;; Arithmetic expression
+    ((consp form)
+     (let ((op (car form))
+           (args (cdr form)))
+       (case op
+         ;; Addition
+         (+
+          (let ((folded-args (mapcar (lambda (arg)
+                                        (multiple-value-list
+                                         (fold-constant-expression arg registry)))
+                                      args)))
+            (if (every #'second folded-args)
+                (values (apply #'+ (mapcar #'first folded-args)) t)
+                (values nil nil))))
+         ;; Subtraction
+         (-
+          (let ((folded-args (mapcar (lambda (arg)
+                                        (multiple-value-list
+                                         (fold-constant-expression arg registry)))
+                                      args)))
+            (if (every #'second folded-args)
+                (values (apply #'- (mapcar #'first folded-args)) t)
+                (values nil nil))))
+         ;; Multiplication
+         (*
+          (let ((folded-args (mapcar (lambda (arg)
+                                        (multiple-value-list
+                                         (fold-constant-expression arg registry)))
+                                      args)))
+            (if (every #'second folded-args)
+                (values (apply #'* (mapcar #'first folded-args)) t)
+                (values nil nil))))
+         ;; Division
+         (/
+          (let ((folded-args (mapcar (lambda (arg)
+                                        (multiple-value-list
+                                         (fold-constant-expression arg registry)))
+                                      args)))
+            (if (every #'second folded-args)
+                (let ((nums (mapcar #'first folded-args)))
+                  (if (some #'zerop (cdr nums))
+                      (values nil nil)  ; Division by zero - don't fold
+                      (values (apply #'/ nums) t)))
+                (values nil nil))))
+         ;; Modulo
+         ((mod rem)
+          (let ((folded-args (mapcar (lambda (arg)
+                                        (multiple-value-list
+                                         (fold-constant-expression arg registry)))
+                                      args)))
+            (if (and (= (length folded-args) 2)
+                     (every #'second folded-args))
+                (let ((n (first (first folded-args)))
+                      (d (first (second folded-args))))
+                  (if (zerop d)
+                      (values nil nil)
+                      (values (if (eq op 'mod) (mod n d) (rem n d)) t)))
+                (values nil nil))))
+         ;; Unknown operator - not foldable
+         (otherwise
+          (values nil nil)))))
+    ;; Not foldable
+    (t (values nil nil))))
+
+(defun compile-defconstant (ast env)
+  "Compile a defconstant form.
+   Constants are immutable and their values are computed at compile time.
+
+   Strategy:
+   1. Try to fold the value expression to a constant
+   2. If foldable, register in *constant-registry* and emit literal
+   3. If not foldable, compile normally but still create a global
+
+   Generated code pattern:
+   - For foldable constants: literal value
+   - For non-foldable: global.get (similar to defparameter but immutable)"
+  (let* ((name (clysm/compiler/ast:ast-defconstant-name ast))
+         (value-form (clysm/compiler/ast:ast-defconstant-value-form ast)))
+    ;; Try to fold the value expression
+    (multiple-value-bind (folded-value foldable-p)
+        (if (typep value-form 'clysm/compiler/ast:ast-literal)
+            ;; If already a literal, get its value
+            (let ((lit-value (clysm/compiler/ast:ast-literal-value value-form)))
+              (fold-constant-expression lit-value *constant-registry*))
+            ;; Otherwise, try to fold the AST
+            (values nil nil))
+      (if foldable-p
+          (progn
+            ;; Register constant for future reference
+            (setf (gethash name *constant-registry*) folded-value)
+            ;; Compile as literal value
+            (compile-to-instructions
+             (clysm/compiler/ast:make-ast-literal :value folded-value
+                                                  :literal-type :fixnum)
+             env))
+          ;; Non-foldable: treat like defparameter but allocate immutable global
+          (let* ((global-idx (allocate-special-var-global name))
+                 (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+            `(;; Set value
+              (:global.get ,global-idx)
+              ,@(compile-to-instructions value-form env)
+              (:struct.set ,symbol-type 1)
+              ;; Return the symbol
+              (:global.get ,global-idx)))))))
 
 ;;; ============================================================
 ;;; Macro Introspection Compilation (016-macro-system T048)

@@ -418,3 +418,39 @@
 (defpackage #:clysm/tests/integration/bootstrap-full
   (:use #:cl #:rove)
   (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;;; ============================================================
+;;; Stage 0 Capability Extension Tests (038-stage0-extend)
+;;; ============================================================
+
+;; defconstant unit tests (038-stage0-extend User Story 1)
+(defpackage #:clysm/tests/unit/defconstant
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; declare-skip unit tests (038-stage0-extend User Story 3)
+(defpackage #:clysm/tests/unit/declare-skip
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; defstruct-expand unit tests (038-stage0-extend User Story 5)
+(defpackage #:clysm/tests/unit/defstruct-expand
+  (:use #:cl #:rove))
+
+;; condition-expand unit tests (038-stage0-extend User Story 2)
+(defpackage #:clysm/tests/unit/condition-expand
+  (:use #:cl #:rove))
+
+;; error-report unit tests (038-stage0-extend User Story 4)
+(defpackage #:clysm/tests/unit/error-report
+  (:use #:cl #:rove))
+
+;; Stage 0 extend contract tests (038-stage0-extend combined validation)
+(defpackage #:clysm/tests/contract/stage0-extend
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Stage 0 compile rate integration tests (038-stage0-extend final validation)
+(defpackage #:clysm/tests/integration/stage0-compile-rate
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))

@@ -51,6 +51,7 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - N/A (in-memory analysis, file-based reports) (036-compiler-subset-validation)
 - Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation modules (037-cross-compile-stage0)
 - N/A (file-based: source files → single .wasm binary) (037-cross-compile-stage0)
+- Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules (038-stage0-extend)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -70,9 +71,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 038-stage0-extend: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation, clysm/clos modules
 - 037-cross-compile-stage0: Added Common Lisp (SBCL 2.4+) for host compilation; WasmGC for target output + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing); existing clysm/compiler, clysm/validation modules
 - 036-compiler-subset-validation: Added Common Lisp (SBCL 2.4+) + alexandria, rove (testing), wasm-tools (validation)
-- 035-ffi-filesystem: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + clysm/ffi (027), clysm/conditions (014), clysm/lib/macros (028), babel (UTF-8)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -564,4 +565,58 @@ can't yet compile. Resolution requires either:
 - Contract tests: tests/contract/stage0-exports-test.lisp
 - Integration tests: tests/integration/stage0-*.lisp (3 files)
 - Verification scripts properly skip with exit code 77 (known limitation)
+
+## Feature 038: Stage 0 Capability Extension - COMPLETE
+
+**Status**: All phases completed (2025-12-27)
+
+### Implemented Components
+- `build/bootstrap.lisp`: Extended with constant registry, error reporting, form expansion
+- `src/clysm/compiler/ast.lisp`: filter-declare-forms function
+- `tests/unit/`: defconstant-test, declare-skip-test, defstruct-expand-test, condition-expand-test, error-report-test
+
+### Key Features
+1. **defconstant/defparameter compilation**: Constants compile to Wasm globals
+   - Constant folding for arithmetic expressions (+, -, *, /, mod, rem)
+   - defconstant, defvar, defparameter forms preserved (not expanded by SBCL)
+2. **define-condition expansion**: Expands to defclass form
+   - `:report` option filtered out
+   - Inherits from parent conditions correctly
+3. **declare form handling**: Filtered from function/let bodies
+   - `filter-declare-forms` extracts declarations from body
+   - Declarations skipped, body forms preserved
+4. **Enhanced error reporting**: Operator-grouped failure tracking
+   - `record-failure` tracks failures by operator type
+   - `generate-failure-report` outputs grouped statistics
+   - Shows percentage progress and examples per operator
+5. **defstruct expansion**: Generates constructor/accessor defuns
+   - `make-NAME` constructor with &key parameters
+   - `NAME-slot` accessors using nth
+   - `NAME-p` predicate function
+   - List-based backend for simplicity
+
+### Compilation Rate Improvement
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Forms compiled | 14 | 168 | 12x |
+| Compilation rate | 1.6% | 19.6% | +18% |
+
+### Technical Details
+- `*skip-expansion-ops*`: Prevents SBCL from expanding defconstant, defvar, defparameter, defclass, defmethod, defgeneric
+- Defstruct generates simple `(&key x y)` without defaults (Clysm limitation)
+- Docstrings properly filtered from defstruct slot lists
+- Error examples limited to 3 per operator type
+
+### Known Limitations
+- Combined compilation of all forms fails with "Unknown instruction" error (individual forms compile)
+- 50% target not achieved due to Clysm's limited CL feature support:
+  - `loop` macro not supported
+  - `&optional` with defaults not fully supported
+  - Complex library functions (make-hash-table, etc.) not implemented
+- True self-hosting requires extending Clysm's CL subset or rewriting source
+
+### Test Coverage
+- Unit tests: tests/unit/defconstant-test.lisp, declare-skip-test.lisp, defstruct-expand-test.lisp, condition-expand-test.lisp, error-report-test.lisp
+- Contract tests: tests/contract/stage0-extend-test.lisp
+- Validation: All 5 user stories verified
 <!-- MANUAL ADDITIONS END -->

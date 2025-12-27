@@ -231,6 +231,15 @@
   (init-form nil :type t)   ; AST node (required)
   (docstring nil :type (or null string)))
 
+;;; Feature 038: Constant definitions
+(defstruct (ast-defconstant (:include ast-node) (:conc-name ast-defconstant-))
+  "Defconstant node for defining compile-time constants.
+   Constants are immutable and their values are computed at compile time.
+   Used for configuration values, type indices, and opcodes in compiler source."
+  (name nil :type symbol)
+  (value-form nil :type t)  ; AST node representing the value expression
+  (docstring nil :type (or null string)))
+
 ;;; ============================================================
 ;;; Local Function Definitions
 ;;; ============================================================
@@ -559,6 +568,8 @@
       ;; Special variable declarations (T021)
       (defvar (parse-defvar-form args))
       (defparameter (parse-defparameter-form args))
+      ;; Feature 038: Constant definitions
+      (defconstant (parse-defconstant-form args))
       ;; CLOS class definition (026-clos-foundation)
       (defclass (parse-defclass-to-ast form))  ; Pass full form, not just args
       ;; CLOS instance creation (026-clos-foundation)
@@ -1350,3 +1361,53 @@
      :name name
      :init-form (parse-expr init-form)
      :docstring docstring)))
+
+;;; ============================================================
+;;; Feature 038: Constant Definitions
+;;; ============================================================
+
+(defun parse-defconstant-form (args)
+  "Parse (defconstant name value-form [docstring]).
+   Constants are immutable and their values are computed at compile time.
+   Used for configuration values, type indices, and opcodes."
+  (let* ((name (first args))
+         (value-form (second args))
+         (docstring (third args)))
+    ;; Error if no value-form (defconstant requires it)
+    (unless value-form
+      (error "DEFCONSTANT requires a value: ~S" name))
+    (unless (symbolp name)
+      (error "DEFCONSTANT name must be a symbol: ~S" name))
+    ;; Create AST node
+    (make-ast-defconstant
+     :name name
+     :value-form (parse-expr value-form)
+     :docstring docstring)))
+
+;;; ============================================================
+;;; Feature 038: Declaration Filtering (US3)
+;;; ============================================================
+
+(defun filter-declare-forms (body-forms)
+  "Filter out DECLARE forms from body, returning filtered body and declarations.
+   Returns (VALUES filtered-body declarations) where:
+   - filtered-body: Body forms without declare forms
+   - declarations: List of extracted declare specifiers
+
+   DECLARE forms are only valid at the beginning of the body."
+  (let ((declarations '())
+        (filtered '())
+        (in-declarations t))
+    (dolist (form body-forms)
+      (if (and in-declarations
+               (consp form)
+               (eq (car form) 'declare))
+          ;; Collect declaration specifiers
+          (dolist (spec (cdr form))
+            (push spec declarations))
+          ;; Not a declare or past declarations section
+          (progn
+            (setf in-declarations nil)
+            (push form filtered))))
+    (values (nreverse filtered)
+            (nreverse declarations))))

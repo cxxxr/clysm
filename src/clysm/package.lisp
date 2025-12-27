@@ -196,6 +196,16 @@
            #:ast-defparameter-init-form
            #:ast-defparameter-docstring
            #:make-ast-defparameter
+           #:ast-defparameter-p
+           ;; Feature 038: defconstant AST
+           #:ast-defconstant
+           #:ast-defconstant-name
+           #:ast-defconstant-value-form
+           #:ast-defconstant-docstring
+           #:make-ast-defconstant
+           #:ast-defconstant-p
+           ;; Feature 038: Declaration filtering
+           #:filter-declare-forms
            ;; Macro introspection AST (016-macro-system)
            #:ast-macroexpand-1
            #:ast-macroexpand-1-form

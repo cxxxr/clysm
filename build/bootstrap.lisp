@@ -21,6 +21,7 @@
            #:bootstrap-context-error-info
            #:bootstrap-context-output-path
            #:bootstrap-context-compilation-start
+           #:bootstrap-context-constant-registry
            #:read-source-file
            #:read-all-source-forms
            #:filter-compilable-forms
@@ -28,7 +29,25 @@
            #:compile-all-forms
            #:write-wasm-output
            #:validate-output
-           #:run-bootstrap))
+           #:run-bootstrap
+           ;; Feature 038: Constant Registry API
+           #:register-constant
+           #:lookup-constant
+           #:constant-defined-p
+           ;; Feature 038: Compile Result Extensions
+           #:compile-result
+           #:make-compile-result
+           #:compile-result-successful
+           #:compile-result-failed
+           #:compile-result-failed-forms
+           #:compile-result-bytes
+           #:compile-result-operator-failures
+           #:compile-result-operator-examples
+           #:record-failure
+           #:generate-failure-report
+           ;; Feature 038: Expansion Functions
+           #:expand-defstruct
+           #:expand-define-condition))
 
 (in-package :clysm/bootstrap)
 
@@ -43,7 +62,29 @@
   (compilation-start nil)                 ; Timestamp for timing
   (current-module nil)                    ; Progress tracking
   (error-info nil)                        ; (module message feature) if failed
-  (output-path "dist/clysm-stage0.wasm")) ; Output file path
+  (output-path "dist/clysm-stage0.wasm")  ; Output file path
+  ;; Feature 038: Constant registry for compile-time constant folding
+  (constant-registry (make-hash-table :test 'eq) :type hash-table))
+
+;;; ============================================================
+;;; Feature 038 T007-T010: Constant Registry API
+;;; ============================================================
+
+(defun register-constant (name value registry)
+  "Register a constant NAME with VALUE in REGISTRY.
+   Used for compile-time constant folding during bootstrap.
+   Returns VALUE for convenience."
+  (setf (gethash name registry) value)
+  value)
+
+(defun lookup-constant (name registry)
+  "Look up constant NAME in REGISTRY.
+   Returns (VALUES value found-p)."
+  (gethash name registry))
+
+(defun constant-defined-p (name registry)
+  "Return T if constant NAME is defined in REGISTRY."
+  (nth-value 1 (gethash name registry)))
 
 ;;; ============================================================
 ;;; Module Order (from validation/compiler-order.lisp)
@@ -178,8 +219,11 @@
     ;; Condition handling - complex expansions
     handler-case handler-bind restart-case restart-bind
     with-simple-restart ignore-errors
-    ;; Structure definition - needs type registry
-    defstruct
+    ;; Note: defstruct is now handled by expand-form-recursive (Feature 038)
+    ;; Class definitions - don't expand to SBCL internals
+    defclass defmethod defgeneric
+    ;; Variable/constant definitions - don't expand to SBCL internals (Feature 038)
+    defconstant defvar defparameter
     ;; Quote and function - don't expand contents
     quote function)
   "Operators whose macro expansion should be skipped.")
@@ -225,6 +269,14 @@
     ;; defmacro - keep body unexpanded
     ((and (consp form) (eq (car form) 'defmacro))
      form)
+    ;; Feature 038: define-condition - expand to defclass
+    ((and (consp form) (eq (car form) 'define-condition))
+     (expand-form-recursive (expand-define-condition form)))
+    ;; Feature 038: defstruct - expand to constructor/accessor defuns
+    ((and (consp form) (eq (car form) 'defstruct))
+     (let ((defuns (expand-defstruct form)))
+       ;; Return a progn of all generated defuns
+       (cons 'progn (mapcar #'expand-form-recursive defuns))))
     ;; defun - expand body forms
     ((and (consp form) (eq (car form) 'defun))
      (list* 'defun
@@ -334,7 +386,152 @@
   (successful 0 :type fixnum)      ; Count of successfully compiled forms
   (failed 0 :type fixnum)          ; Count of failed forms
   (failed-forms nil :type list)    ; List of (form . error) for failures
-  (bytes nil))                     ; Final Wasm bytes
+  (bytes nil)                      ; Final Wasm bytes
+  ;; Feature 038: Enhanced Error Reporting
+  (operator-failures (make-hash-table :test 'eq) :type hash-table)  ; Operator → count
+  (operator-examples (make-hash-table :test 'eq) :type hash-table)) ; Operator → list of form strings
+
+;;; ============================================================
+;;; Feature 038 T053-T063: Enhanced Error Reporting
+;;; ============================================================
+
+(defun record-failure (form error result)
+  "Record a compilation failure in RESULT, tracking by operator type.
+   FORM is the failed form, ERROR is the condition, RESULT is compile-result."
+  (let* ((op (if (consp form) (car form) 'atom))
+         (failures (compile-result-operator-failures result))
+         (examples (compile-result-operator-examples result)))
+    ;; Increment failure count for this operator
+    (incf (gethash op failures 0))
+    (incf (compile-result-failed result))
+    ;; Store up to 3 examples per operator
+    (let ((existing (gethash op examples)))
+      (when (< (length existing) 3)
+        (let ((form-preview (format nil "~A" form)))
+          (when (> (length form-preview) 100)
+            (setf form-preview (concatenate 'string
+                                            (subseq form-preview 0 97)
+                                            "...")))
+          (setf (gethash op examples)
+                (append existing (list form-preview))))))))
+
+(defun generate-failure-report (result stream)
+  "Generate an operator-grouped failure report to STREAM.
+   Shows compilation rate, failures by operator, and examples."
+  (let* ((successful (compile-result-successful result))
+         (failed (compile-result-failed result))
+         (total (+ successful failed))
+         (rate (if (zerop total) 0.0 (* 100.0 (/ successful total)))))
+    ;; Summary line
+    (format stream "~%Compilation Summary: ~D/~D forms compiled (~,1F%)~%~%"
+            successful total rate)
+
+    ;; Failures by operator (sorted by count descending)
+    (let ((failures (compile-result-operator-failures result))
+          (examples (compile-result-operator-examples result))
+          (sorted-ops '()))
+      ;; Collect and sort operators by failure count
+      (maphash (lambda (op count)
+                 (push (cons op count) sorted-ops))
+               failures)
+      (setf sorted-ops (sort sorted-ops #'> :key #'cdr))
+
+      (when sorted-ops
+        (format stream "Failures by operator:~%")
+        (dolist (pair sorted-ops)
+          (let ((op (car pair))
+                (count (cdr pair)))
+            (format stream "  ~A: ~D failures~%" op count)
+            ;; Show examples for this operator
+            (let ((op-examples (gethash op examples)))
+              (dolist (ex op-examples)
+                (format stream "    - ~A~%" ex)))))
+        (format stream "~%")))))
+
+;;; ============================================================
+;;; Feature 038 T034-T039, T070-T079: Form Expansion Stubs
+;;; (Full implementation in Phase 4/US2 and Phase 7/US5)
+;;; ============================================================
+
+(defun expand-define-condition (form)
+  "Expand define-condition to defclass form.
+   FORM: (define-condition name parents slots . options)
+   Returns: (defclass name parents slots . filtered-options)
+   Note: :report option is skipped (not passed to defclass)."
+  (destructuring-bind (op name parents slots &rest options) form
+    (declare (ignore op))
+    ;; Filter out :report option as it's not a defclass option
+    (let ((filtered-options (remove-if (lambda (opt)
+                                          (and (consp opt)
+                                               (eq (car opt) :report)))
+                                        options)))
+      (list* 'defclass name parents slots filtered-options))))
+
+(defun expand-defstruct (form)
+  "Expand defstruct to constructor and accessor defuns.
+   FORM: (defstruct name-and-options [docstring] slot1 slot2 ...)
+   Returns: list of defun forms (make-NAME, NAME-slot, NAME-p)."
+  (let* ((name-and-options (cadr form))
+         (name (if (consp name-and-options)
+                   (car name-and-options)
+                   name-and-options))
+         (options (when (consp name-and-options)
+                    (cdr name-and-options)))
+         (body (cddr form))
+         ;; Skip docstring if present (first element is a string)
+         (slots (if (and (consp body) (stringp (car body)))
+                    (cdr body)
+                    body))
+         ;; Extract :constructor option if present
+         (constructor-opt (find :constructor options :key (lambda (x)
+                                                             (when (consp x)
+                                                               (car x)))))
+         (constructor-name (if constructor-opt
+                               (cadr constructor-opt)
+                               (intern (format nil "MAKE-~A" name))))
+         (predicate-name (intern (format nil "~A-P" name)))
+         (result '()))
+
+    ;; Parse slots: each slot can be SYMBOL or (SYMBOL DEFAULT)
+    ;; Note: We extract slot names only - defaults are handled by nil-or-default
+    ;; pattern in constructor body because Clysm doesn't support &key with defaults.
+    (let ((slot-specs (mapcar (lambda (slot)
+                                (if (consp slot)
+                                    (list (car slot) (cadr slot))
+                                    (list slot nil)))
+                              slots)))
+
+      ;; Generate constructor - use simple &key without defaults (Clysm limitation)
+      ;; Defaults are applied in the body using (if x x default) pattern
+      (let* ((slot-names (mapcar #'car slot-specs))
+             (lambda-list `(&key ,@slot-names)))
+        (push `(defun ,constructor-name ,lambda-list
+                 (list ',name
+                       ,@(mapcar (lambda (spec)
+                                   (let ((name (car spec))
+                                         (default (cadr spec)))
+                                     (if default
+                                         `(if ,name ,name ,default)
+                                         name)))
+                                 slot-specs)))
+              result))
+
+      ;; Generate accessors
+      (loop for spec in slot-specs
+            for index from 1
+            for slot-name = (car spec)
+            for accessor-name = (intern (format nil "~A-~A" name slot-name))
+            do (push `(defun ,accessor-name (struct)
+                        (nth ,index struct))
+                     result))
+
+      ;; Generate predicate
+      (push `(defun ,predicate-name (obj)
+               (and (consp obj)
+                    (eq (car obj) ',name)))
+            result))
+
+    (nreverse result)))
 
 (defun try-compile-form (form compile-fn)
   "Try to compile a single form. Returns (values bytes error)."
@@ -358,8 +555,9 @@
                  (try-compile-form form compile-fn)
                (declare (ignore bytes))
                (if err
+                   ;; Use record-failure for operator-grouped tracking
                    (progn
-                     (incf (compile-result-failed result))
+                     (record-failure form err result)
                      (push (cons form err) (compile-result-failed-forms result)))
                    (progn
                      (incf (compile-result-successful result))
@@ -372,6 +570,9 @@
     (format t "~%Results: ~D compiled, ~D failed~%"
             (compile-result-successful result)
             (compile-result-failed result))
+
+    ;; Feature 038: Generate operator-grouped failure report
+    (generate-failure-report result *standard-output*)
 
     ;; Second pass: compile all successful forms together
     (if (null compilable-forms)

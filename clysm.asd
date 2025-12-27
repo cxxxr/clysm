@@ -204,7 +204,9 @@
      (:file "filesystem-ffi-test")
      ;; Bootstrap compilation validation (037-cross-compile-stage0)
      (:file "bootstrap-compile-test")
-     (:file "bootstrap-validate-test")))
+     (:file "bootstrap-validate-test")
+     ;; Stage 0 extend contract tests (038-stage0-extend)
+     (:file "stage0-extend-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -340,7 +342,13 @@
       :components
       ((:file "read-forms-test")
        (:file "filter-forms-test")
-       (:file "context-test")))))
+       (:file "context-test")))
+     ;; Stage 0 extension unit tests (038-stage0-extend)
+     (:file "defconstant-test")
+     (:file "declare-skip-test")
+     (:file "defstruct-expand-test")
+     (:file "condition-expand-test")
+     (:file "error-report-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
