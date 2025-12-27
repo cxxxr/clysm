@@ -1817,6 +1817,42 @@
   registry)
 
 ;;; ============================================================
+;;; Destructuring-Bind Macro Infrastructure (031-destructuring-bind-macro)
+;;; ============================================================
+
+(defun make-destructuring-bind-expander ()
+  "Create a macro expander for DESTRUCTURING-BIND.
+   (destructuring-bind lambda-list expression declaration* form*)
+   Binds the variables specified in lambda-list to the corresponding values
+   in the list resulting from the evaluation of expression.
+
+   FR-001: Expands to code that binds variables according to lambda-list pattern
+   FR-002: Supports required parameters in flat and nested patterns
+   FR-003: Supports &optional parameters with default values and supplied-p
+   FR-004: Supports &rest to capture remaining list elements
+   FR-005: Supports &key parameters with defaults, supplied-p, and alternate names
+   FR-006: Supports &body as a synonym for &rest
+   FR-007: Supports &whole to bind entire list before destructuring
+   FR-008: Supports &allow-other-keys to permit unrecognized keywords
+   FR-009: Signals program-error when required parameters cannot be satisfied
+   FR-010: Signals error when excess elements exist and no &rest/&body
+   FR-011: Signals error when unrecognized keywords present without &allow-other-keys
+   FR-012: Supports nested destructuring patterns at any depth
+   FR-013: Handles dotted-list patterns
+   FR-014: Evaluates default value forms only when parameter not supplied"
+  (lambda (form)
+    (let ((lambda-list (second form))
+          (expression (third form))
+          (body (cdddr form))
+          (list-var (gensym "LIST-")))
+      ;; Parse the lambda-list
+      (let ((parsed-ll (clysm/lib/destructuring:parse-destructuring-lambda-list lambda-list)))
+        ;; Generate the binding code
+        (list 'let (list (list list-var expression))
+              (clysm/lib/destructuring:generate-destructuring-code
+               parsed-ll list-var body))))))
+
+;;; ============================================================
 ;;; Standard macro installation
 ;;; ============================================================
 
@@ -1875,4 +1911,7 @@
   (install-setf-macros registry)
   ;; Install typecase macros (030-typecase-macros)
   (install-typecase-macros registry)
+  ;; Destructuring-bind macro (031-destructuring-bind-macro)
+  (clysm/compiler/transform/macro:register-macro
+   registry 'destructuring-bind (make-destructuring-bind-expander))
   registry)

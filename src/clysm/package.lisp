@@ -913,6 +913,45 @@
            #:odd-argument-count-macro
            #:odd-argument-count-count))
 
+(defpackage #:clysm/lib/destructuring
+  (:use #:cl)
+  (:export ;; Parsed lambda-list struct (031-destructuring-bind-macro)
+           #:parsed-lambda-list
+           #:make-parsed-lambda-list
+           #:parsed-lambda-list-p
+           #:parsed-lambda-list-whole-var
+           #:parsed-lambda-list-required-params
+           #:parsed-lambda-list-optional-params
+           #:parsed-lambda-list-rest-var
+           #:parsed-lambda-list-key-params
+           #:parsed-lambda-list-allow-other-keys-p
+           ;; Param-spec struct
+           #:param-spec
+           #:make-param-spec
+           #:param-spec-p
+           #:param-spec-type
+           #:param-spec-var
+           #:param-spec-nested-list
+           ;; Optional-param-spec struct
+           #:optional-param-spec
+           #:make-optional-param-spec
+           #:optional-param-spec-p
+           #:optional-param-spec-param
+           #:optional-param-spec-default-form
+           #:optional-param-spec-supplied-p
+           ;; Key-param-spec struct
+           #:key-param-spec
+           #:make-key-param-spec
+           #:key-param-spec-p
+           #:key-param-spec-keyword
+           #:key-param-spec-param
+           #:key-param-spec-default-form
+           #:key-param-spec-supplied-p
+           ;; Parser functions
+           #:parse-destructuring-lambda-list
+           ;; Code generation
+           #:generate-destructuring-code))
+
 (defpackage #:clysm/lib/macros
   (:use #:cl)
   (:export #:when*
@@ -934,6 +973,8 @@
            #:make-rotatef-expander
            #:make-shiftf-expander
            #:install-setf-macros
+           ;; Destructuring-bind (031-destructuring-bind-macro)
+           #:make-destructuring-bind-expander
            ;; LOOP macro infrastructure (029-loop-macro)
            #:loop-context
            #:make-loop-context

@@ -129,6 +129,7 @@
     :serial t
     :components
     ((:file "setf-expanders")  ; Must come before macros for setf expander registry
+     (:file "destructuring")   ; Must come before macros for destructuring-bind
      (:file "macros")
      (:file "ffi-runtime")
      (:file "package-macros")))
@@ -282,7 +283,9 @@
        (:file "etypecase-test")
        (:file "check-type-test")
        (:file "ctypecase-test")
-       (:file "compound-types-test")))))
+       (:file "compound-types-test")))
+     ;; Destructuring-bind unit tests (031-destructuring-bind-macro)
+     (:file "destructuring-bind-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
