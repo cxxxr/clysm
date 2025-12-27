@@ -201,7 +201,10 @@
      ;; FORMAT function Wasm validation (032-format-function)
      (:file "format-wasm-test")
      ;; Filesystem FFI validation (035-ffi-filesystem)
-     (:file "filesystem-ffi-test")))
+     (:file "filesystem-ffi-test")
+     ;; Bootstrap compilation validation (037-cross-compile-stage0)
+     (:file "bootstrap-compile-test")
+     (:file "bootstrap-validate-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -330,7 +333,14 @@
       :serial t
       :components
       ((:file "feature-registry-test")
-       (:file "analyzer-test")))))
+       (:file "analyzer-test")))
+     ;; Bootstrap unit tests (037-cross-compile-stage0)
+     (:module "bootstrap"
+      :serial t
+      :components
+      ((:file "read-forms-test")
+       (:file "filter-forms-test")
+       (:file "context-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -400,7 +410,9 @@
      ;; FORMAT function self-hosting tests (032-format-function)
      (:file "format-self-host-test")
      ;; Filesystem integration tests (035-ffi-filesystem)
-     (:file "filesystem-test"))))
+     (:file "filesystem-test")
+     ;; Bootstrap integration tests (037-cross-compile-stage0)
+     (:file "bootstrap-full-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
@@ -464,3 +476,12 @@
     ((:file "report-format-test"))))
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
+
+;; Stage 0 Bootstrap Script (037-cross-compile-stage0)
+(defsystem "clysm/bootstrap"
+  :description "Stage 0 cross-compilation bootstrap script"
+  :depends-on ("clysm" "clysm/validation" "uiop")
+  :pathname "build/"
+  :serial t
+  :components
+  ((:file "bootstrap")))

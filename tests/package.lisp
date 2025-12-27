@@ -399,3 +399,22 @@
 (defpackage #:clysm/tests/contract/filesystem-ffi
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; Bootstrap Tests (037-cross-compile-stage0)
+;;; ============================================================
+
+;; Bootstrap compile contract tests (T014)
+(defpackage #:clysm/tests/contract/bootstrap-compile
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Bootstrap validate contract tests (T015)
+(defpackage #:clysm/tests/contract/bootstrap-validate
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;; Bootstrap full integration tests (T016)
+(defpackage #:clysm/tests/integration/bootstrap-full
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
