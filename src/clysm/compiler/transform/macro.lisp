@@ -29,20 +29,83 @@
        (symbolp (first form))
        (not (null (macro-function* registry (first form))))))
 
+(defun unregister-macro (registry name)
+  "Remove a macro from the registry. Returns T if removed, NIL if not found."
+  (remhash name (macro-registry-table registry)))
+
 ;;; ============================================================
-;;; Error Conditions (T006)
+;;; Error Conditions (T006, T010-T011)
 ;;; ============================================================
 
 (define-condition macro-expansion-depth-exceeded (error)
   ((macro-name :initarg :macro-name :reader macro-name)
-   (depth :initarg :depth :reader expansion-depth))
+   (depth :initarg :depth :reader expansion-depth)
+   (original-form :initarg :original-form :reader original-form :initform nil))
   (:report (lambda (condition stream)
              (format stream "Macro expansion depth exceeded (~D iterations) for ~S"
                      (expansion-depth condition)
-                     (macro-name condition)))))
+                     (macro-name condition))
+             (when (original-form condition)
+               (format stream "~%Original form: ~S" (original-form condition))))))
+
+(define-condition macro-lambda-list-malformed (program-error)
+  ((lambda-list :initarg :lambda-list :reader mlf-lambda-list)
+   (reason :initarg :reason :reader mlf-reason))
+  (:report (lambda (c s)
+             (format s "Malformed macro lambda-list ~S: ~A"
+                     (mlf-lambda-list c) (mlf-reason c))))
+  (:documentation
+   "Signaled when a macro lambda-list violates ANSI CL syntax rules."))
 
 (defparameter *macro-expansion-limit* 1000
   "Maximum number of macro expansions before signaling an error.")
+
+;;; ============================================================
+;;; Macro Lambda-List Info (T007 - 042-advanced-defmacro)
+;;; ============================================================
+
+(defstruct macro-lambda-list-info
+  "Parsed macro lambda-list information with &whole and &environment support."
+  (whole-var nil :type (or null symbol))           ;; &whole binding
+  (env-var nil :type (or null symbol))             ;; &environment binding
+  (required nil :type list)                         ;; Required parameters
+  (optional nil :type list)                         ;; &optional parameters
+  (rest-var nil :type (or null symbol))            ;; &rest variable
+  (rest-kind nil :type (or null (member :rest :body))) ;; :rest or :body
+  (keys nil :type list)                             ;; &key parameters
+  (allow-other-keys nil :type boolean))            ;; &allow-other-keys flag
+
+;;; ============================================================
+;;; Macro Environment (T008 - 042-advanced-defmacro)
+;;; ============================================================
+
+(defstruct macro-environment
+  "Compile-time environment for macro expansion with &environment support.
+   Supports lexical nesting via parent chain."
+  (local-macros nil :type (or null macro-registry))  ;; Locally defined macros (macrolet)
+  (parent nil :type (or null macro-environment)))    ;; Parent environment
+
+(defun env-macro-function (env name)
+  "Look up a macro function in the environment chain.
+   Searches local-macros first, then parent chain, then global registry."
+  (cond
+    ;; No environment - use global registry only
+    ((null env)
+     (macro-function* *global-macro-registry* name))
+    ;; Check local macros
+    ((and (macro-environment-local-macros env)
+          (macro-function* (macro-environment-local-macros env) name)))
+    ;; Check parent chain
+    ((macro-environment-parent env)
+     (env-macro-function (macro-environment-parent env) name))
+    ;; Fall back to global registry
+    (t
+     (macro-function* *global-macro-registry* name))))
+
+(defun extend-environment (env &optional local-macros)
+  "Create a child environment with new local macro bindings.
+   LOCAL-MACROS is a macro-registry for macrolet-defined macros."
+  (make-macro-environment :local-macros local-macros :parent env))
 
 ;;; ============================================================
 ;;; Compile-time Environment (T165)
@@ -54,36 +117,46 @@
   (symbols (make-hash-table :test 'eq) :type hash-table))
 
 ;;; ============================================================
-;;; Macro Expansion (T166-T168)
+;;; Macro Expansion (T166-T168, Updated for 042-advanced-defmacro)
 ;;; ============================================================
 
-(defun macroexpand-1* (registry form)
-  "Expand FORM once if it's a macro call."
+(defun macroexpand-1* (registry form &optional env)
+  "Expand FORM once if it's a macro call.
+   Returns two values: (expanded-form expanded-p) for ANSI CL compliance.
+   ENV is an optional macro-environment for local macro lookups."
   ;; Handle nil and atoms
   (when (or (null form) (atom form))
-    (return-from macroexpand-1* form))
+    (return-from macroexpand-1* (values form nil)))
   ;; Handle empty list
   (when (null (first form))
-    (return-from macroexpand-1* form))
-  ;; Check for macro
-  (let ((expander (macro-function* registry (first form))))
+    (return-from macroexpand-1* (values form nil)))
+  ;; Check for macro - use env if provided, else registry
+  (let ((expander (if env
+                      (env-macro-function env (first form))
+                      (macro-function* registry (first form)))))
     (if expander
-        (funcall expander form)
-        form)))
+        (values (funcall expander form env) t)
+        (values form nil))))
 
-(defun macroexpand* (registry form)
+(defun macroexpand* (registry form &optional env)
   "Repeatedly expand FORM until it's not a macro call.
+   Returns two values: (expanded-form expanded-p) for ANSI CL compliance.
    Signals MACRO-EXPANSION-DEPTH-EXCEEDED if expansion exceeds limit."
   (loop with count = 0
+        with original-form = form
         with original-name = (when (consp form) (first form))
-        do (let ((expanded (macroexpand-1* registry form)))
-             (when (eq expanded form)
-               (return form))
+        with ever-expanded = nil
+        do (multiple-value-bind (expanded was-expanded)
+               (macroexpand-1* registry form env)
+             (unless was-expanded
+               (return (values form ever-expanded)))
+             (setf ever-expanded t)
              (incf count)
              (when (> count *macro-expansion-limit*)
                (error 'macro-expansion-depth-exceeded
                       :macro-name original-name
-                      :depth count))
+                      :depth count
+                      :original-form original-form))
              (setf form expanded))))
 
 (defun macroexpand-all (registry form)
@@ -286,11 +359,13 @@
   "Result of parsing a defmacro form."
   (name nil :type symbol)
   (lambda-list nil :type list)
+  (lambda-info nil :type (or null macro-lambda-list-info))  ;; T012: Parsed lambda-list info
   (body nil :type list)
   (docstring nil :type (or null string)))
 
 (defun parse-defmacro (form)
-  "Parse a defmacro form into its components."
+  "Parse a defmacro form into its components.
+   Populates lambda-info with parsed &whole/&environment parameters."
   (unless (and (consp form) (eq (first form) 'defmacro))
     (error "Not a defmacro form: ~S" form))
   (let ((name (second form))
@@ -301,11 +376,14 @@
     (when (and (stringp (first body)) (rest body))
       (setf docstring (first body))
       (setf body (rest body)))
-    (make-defmacro-result
-     :name name
-     :lambda-list lambda-list
-     :body body
-     :docstring docstring)))
+    ;; Parse the lambda-list with &whole/&environment support (T021)
+    (let ((lambda-info (parse-macro-lambda-list lambda-list)))
+      (make-defmacro-result
+       :name name
+       :lambda-list lambda-list
+       :lambda-info lambda-info
+       :body body
+       :docstring docstring))))
 
 (defun parse-lambda-list (lambda-list)
   "Parse a macro lambda list, handling &body, &rest, &optional, &key, &allow-other-keys."
@@ -370,43 +448,140 @@
            (second param)))
     (t (error "Invalid keyword parameter: ~S" param))))
 
+;;; ============================================================
+;;; Macro Lambda-List Parsing with &whole/&environment (T019-T021)
+;;; Feature 042: Advanced Defmacro
+;;; ============================================================
+
+(defun extract-whole-param (lambda-list)
+  "Extract &whole parameter from the beginning of a macro lambda-list.
+   Returns two values: (whole-var remaining-lambda-list).
+   Signals MACRO-LAMBDA-LIST-MALFORMED if &whole appears elsewhere."
+  (cond
+    ;; Empty lambda-list
+    ((null lambda-list)
+     (values nil nil))
+    ;; &whole as first element
+    ((eq (first lambda-list) '&whole)
+     (unless (and (rest lambda-list)
+                  (symbolp (second lambda-list))
+                  (not (member (second lambda-list)
+                               '(&optional &rest &body &key &allow-other-keys &aux &environment))))
+       (error 'macro-lambda-list-malformed
+              :lambda-list lambda-list
+              :reason "&whole must be followed by a variable name (not a lambda-list keyword)"))
+     (values (second lambda-list) (cddr lambda-list)))
+    ;; Check that &whole doesn't appear later
+    (t
+     (when (member '&whole lambda-list)
+       (error 'macro-lambda-list-malformed
+              :lambda-list lambda-list
+              :reason "&whole must appear as the first element"))
+     (values nil lambda-list))))
+
+(defun extract-environment-param (lambda-list)
+  "Extract &environment parameter from anywhere in the lambda-list.
+   Returns two values: (env-var filtered-lambda-list).
+   &environment may appear anywhere in the lambda-list per ANSI CL."
+  (let ((env-var nil)
+        (result '())
+        (remaining lambda-list))
+    (loop while remaining do
+      (let ((item (pop remaining)))
+        (cond
+          ((eq item '&environment)
+           (unless (and remaining (symbolp (first remaining)))
+             (error 'macro-lambda-list-malformed
+                    :lambda-list lambda-list
+                    :reason "&environment must be followed by a variable name"))
+           (when env-var
+             (error 'macro-lambda-list-malformed
+                    :lambda-list lambda-list
+                    :reason "Only one &environment parameter allowed"))
+           (setf env-var (pop remaining)))
+          (t
+           (push item result)))))
+    (values env-var (nreverse result))))
+
+(defun parse-macro-lambda-list (lambda-list)
+  "Parse a macro lambda-list with &whole and &environment support.
+   Returns a MACRO-LAMBDA-LIST-INFO struct.
+   ANSI CL Reference: Section 3.4.4 (Macro Lambda Lists)"
+  ;; Extract &whole (must be first if present)
+  (multiple-value-bind (whole-var remaining)
+      (extract-whole-param lambda-list)
+    ;; Extract &environment (can be anywhere)
+    (multiple-value-bind (env-var filtered)
+        (extract-environment-param remaining)
+      ;; Parse the rest using existing parse-lambda-list
+      (multiple-value-bind (required optional rest-var rest-kind keys allow-other-keys)
+          (parse-lambda-list filtered)
+        (make-macro-lambda-list-info
+         :whole-var whole-var
+         :env-var env-var
+         :required required
+         :optional optional
+         :rest-var rest-var
+         :rest-kind rest-kind
+         :keys keys
+         :allow-other-keys allow-other-keys)))))
+
 (defun compile-defmacro (result)
-  "Compile a parsed defmacro into a macro function."
+  "Compile a parsed defmacro into a macro function.
+   Supports &whole and &environment parameters (T022)."
   (let* ((name (defmacro-result-name result))
-         (lambda-list (defmacro-result-lambda-list result))
-         (body (defmacro-result-body result)))
-    (multiple-value-bind (required optional rest-var rest-kind keys allow-other-keys)
-        (parse-lambda-list lambda-list)
-      (declare (ignore rest-kind allow-other-keys))
-      ;; Create a function that destructures the form
-      (lambda (form)
-        (let ((args (rest form))
-              (bindings '()))
-          ;; Bind required arguments
-          (dolist (var required)
-            (unless args
-              (error "Not enough arguments for macro ~S" name))
-            (push (cons var (pop args)) bindings))
-          ;; Bind optional arguments
-          (dolist (opt optional)
-            (let ((var (if (consp opt) (first opt) opt))
-                  (default (if (consp opt) (second opt) nil)))
-              (push (cons var (if args (pop args) default)) bindings)))
-          ;; Bind rest/body
-          (when rest-var
-            (push (cons rest-var args) bindings))
-          ;; Bind keyword arguments
-          (when keys
-            (dolist (key-spec keys)
-              (destructuring-bind (keyword var default) key-spec
-                (let ((val (getf args keyword '%not-found%)))
-                  (if (eq val '%not-found%)
-                      (push (cons var default) bindings)
-                      (push (cons var val) bindings))))))
-          ;; Evaluate the body with bindings
-          (let ((env (mapcar (lambda (b) (list (car b) (list 'quote (cdr b)))) bindings)))
-            (eval `(let ,env
-                     ,@body))))))))
+         (lambda-info (defmacro-result-lambda-info result))
+         (body (defmacro-result-body result))
+         ;; Extract lambda-list info
+         (whole-var (when lambda-info (macro-lambda-list-info-whole-var lambda-info)))
+         (env-var (when lambda-info (macro-lambda-list-info-env-var lambda-info)))
+         (required (if lambda-info (macro-lambda-list-info-required lambda-info)
+                       (parse-lambda-list (defmacro-result-lambda-list result))))
+         (optional (when lambda-info (macro-lambda-list-info-optional lambda-info)))
+         (rest-var (when lambda-info (macro-lambda-list-info-rest-var lambda-info)))
+         (keys (when lambda-info (macro-lambda-list-info-keys lambda-info))))
+    ;; For backward compatibility when lambda-info is not populated
+    (when (null lambda-info)
+      (multiple-value-bind (req opt rest rest-kind key-list allow)
+          (parse-lambda-list (defmacro-result-lambda-list result))
+        (declare (ignore rest-kind allow))
+        (setf required req optional opt rest-var rest keys key-list)))
+    ;; Create a function that destructures the form and binds &whole/&environment
+    (lambda (form &optional macro-env)
+      (let ((args (rest form))
+            (bindings '()))
+        ;; Bind &whole to the entire form (T022)
+        (when whole-var
+          (push (cons whole-var form) bindings))
+        ;; Bind &environment to the macro expansion environment
+        (when env-var
+          (push (cons env-var macro-env) bindings))
+        ;; Bind required arguments
+        (dolist (var required)
+          (unless args
+            (error "Not enough arguments for macro ~S~%Expected ~D, got ~D~%Form: ~S"
+                   name (length required) (- (length required) (length args) -1) form))
+          (push (cons var (pop args)) bindings))
+        ;; Bind optional arguments
+        (dolist (opt optional)
+          (let ((var (if (consp opt) (first opt) opt))
+                (default (if (consp opt) (second opt) nil)))
+            (push (cons var (if args (pop args) default)) bindings)))
+        ;; Bind rest/body
+        (when rest-var
+          (push (cons rest-var args) bindings))
+        ;; Bind keyword arguments
+        (when keys
+          (dolist (key-spec keys)
+            (destructuring-bind (keyword var default) key-spec
+              (let ((val (getf args keyword '%not-found%)))
+                (if (eq val '%not-found%)
+                    (push (cons var default) bindings)
+                    (push (cons var val) bindings))))))
+        ;; Evaluate the body with bindings
+        (let ((env-form (mapcar (lambda (b) (list (car b) (list 'quote (cdr b)))) bindings)))
+          (eval `(let ,env-form
+                   ,@body)))))))
 
 ;;; ============================================================
 ;;; Global Macro Registry and User-Facing API
@@ -416,16 +591,16 @@
   "Global macro registry for standard macros.")
 
 (defun macroexpand-1 (form &optional env)
-  "Expand FORM once if it's a macro call, using the global macro registry.
-   ENV is currently ignored but provided for CL compatibility."
-  (declare (ignore env))
-  (macroexpand-1* *global-macro-registry* form))
+  "Expand FORM once if it's a macro call.
+   Returns two values: (expanded-form expanded-p) per ANSI CL.
+   ENV is a macro-environment for local macro lookups."
+  (macroexpand-1* *global-macro-registry* form env))
 
 (defun macroexpand (form &optional env)
-  "Repeatedly expand FORM until it's not a macro call, using the global macro registry.
-   ENV is currently ignored but provided for CL compatibility."
-  (declare (ignore env))
-  (macroexpand* *global-macro-registry* form))
+  "Repeatedly expand FORM until it's not a macro call.
+   Returns two values: (expanded-form expanded-p) per ANSI CL.
+   ENV is a macro-environment for local macro lookups."
+  (macroexpand* *global-macro-registry* form env))
 
 (defun global-macro-registry ()
   "Return the global macro registry."
@@ -434,6 +609,24 @@
 (defun reset-global-macro-registry ()
   "Reset the global macro registry to a fresh state."
   (setf *global-macro-registry* (make-macro-registry)))
+
+(defun macro-function (symbol &optional env)
+  "Return the macro function associated with SYMBOL.
+   ANSI CL Reference: Function MACRO-FUNCTION.
+   When ENV is nil, searches global registry only.
+   When ENV is a macro-environment, searches env chain then global."
+  (if env
+      (env-macro-function env symbol)
+      (macro-function* *global-macro-registry* symbol)))
+
+(defun (setf macro-function) (new-function symbol &optional env)
+  "Set the macro function for SYMBOL.
+   ANSI CL Reference: (SETF MACRO-FUNCTION).
+   ENV must be nil (global registry only per ANSI CL)."
+  (when env
+    (error "Cannot set macro-function with non-nil environment"))
+  (register-macro *global-macro-registry* symbol new-function)
+  new-function)
 
 ;;; ============================================================
 ;;; Legacy API compatibility

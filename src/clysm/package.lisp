@@ -206,13 +206,17 @@
            #:ast-defconstant-p
            ;; Feature 038: Declaration filtering
            #:filter-declare-forms
-           ;; Macro introspection AST (016-macro-system)
+           ;; Macro introspection AST (016-macro-system, 042-advanced-defmacro)
            #:ast-macroexpand-1
            #:ast-macroexpand-1-form
            #:make-ast-macroexpand-1
            #:ast-macroexpand
            #:ast-macroexpand-form
            #:make-ast-macroexpand
+           #:ast-macro-function
+           #:ast-macro-function-name
+           #:ast-macro-function-env
+           #:make-ast-macro-function
            ;; Multiple values AST (025-multiple-values)
            #:ast-values
            #:ast-values-forms
@@ -334,7 +338,7 @@
 
 (defpackage #:clysm/compiler/transform/macro
   (:use #:cl)
-  (:shadow #:macroexpand #:macroexpand-1)
+  (:shadow #:macroexpand #:macroexpand-1 #:macro-function)
   (:export ;; Registry
            #:make-macro-registry
            #:registry-p
@@ -359,12 +363,43 @@
            #:*global-macro-registry*
            #:global-macro-registry
            #:reset-global-macro-registry
+           ;; ANSI CL macro-function (042-advanced-defmacro)
+           #:macro-function
            ;; Backquote
            #:expand-backquote
            ;; Defmacro parsing
            #:parse-defmacro
            #:defmacro-result-p
-           #:compile-defmacro))
+           #:defmacro-result-lambda-info
+           #:compile-defmacro
+           ;; Macro lambda-list parsing (042-advanced-defmacro)
+           #:parse-macro-lambda-list
+           #:extract-whole-param
+           #:extract-environment-param
+           #:macro-lambda-list-info
+           #:macro-lambda-list-info-p
+           #:macro-lambda-list-info-whole-var
+           #:macro-lambda-list-info-env-var
+           #:macro-lambda-list-info-required
+           #:macro-lambda-list-info-optional
+           #:macro-lambda-list-info-rest-var
+           #:macro-lambda-list-info-rest-kind
+           #:macro-lambda-list-info-keys
+           #:macro-lambda-list-info-allow-other-keys
+           ;; Macro environment (042-advanced-defmacro)
+           #:make-macro-environment
+           #:macro-environment-p
+           #:macro-environment-local-macros
+           #:macro-environment-parent
+           #:env-macro-function
+           #:extend-environment
+           ;; Conditions (042-advanced-defmacro)
+           #:macro-lambda-list-malformed
+           #:mlf-lambda-list
+           #:mlf-reason
+           #:original-form
+           ;; Registry extension
+           #:unregister-macro))
 
 (defpackage #:clysm/compiler/codegen/wasm-ir
   (:use #:cl)
@@ -453,6 +488,9 @@
            #:+type-closure-array+
            ;; FFI type indices (027-complete-ffi)
            #:+type-anyref-array+
+           ;; Macro environment type (042-advanced-defmacro)
+           #:+type-macro-environment+
+           #:make-macro-environment-type
            ;; CLOS Foundation type constructors (026-clos-foundation)
            #:make-instance-type
            #:make-standard-class-type
@@ -670,6 +708,19 @@
   (:export #:print*
            #:prin1*
            #:princ*))
+
+(defpackage #:clysm/runtime/macro
+  (:use #:cl)
+  (:documentation "Runtime macro expansion support for compiled Wasm code.
+   Feature 042: Advanced Defmacro.")
+  (:export ;; Runtime macro functions
+           #:*runtime-macro-registry*
+           #:runtime-macro-function
+           #:runtime-macroexpand-1
+           #:runtime-macroexpand
+           ;; Registry management
+           #:register-runtime-macro
+           #:clear-runtime-macros))
 
 (defpackage #:clysm/eval/interpreter
   (:use #:cl)

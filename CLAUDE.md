@@ -58,6 +58,8 @@ Auto-generated from all feature plans. Last updated: 2025-12-21
 - File-based (source files → Wasm binaries, JSON reports) (040-fixed-point-verification)
 - Common Lisp (SBCL 2.4+) for host; WasmGC for Stage 1+ binaries (041-dev-workflow)
 - Compilation cache in `.clysm-cache/` directory (JSON-serializable) (041-dev-workflow)
+- Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler (Feature 016 macro system), clysm/lib/destructuring (Feature 031) (042-advanced-defmacro)
+- N/A (in-memory macro registry, WasmGC globals for runtime) (042-advanced-defmacro)
 
 - Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力 (001-clysm-compiler)
 
@@ -77,9 +79,9 @@ tests/
 Common Lisp (SBCL 2.4+) - コンパイラ本体、WAT/Wasm - 出力: Follow standard conventions
 
 ## Recent Changes
+- 042-advanced-defmacro: Added Common Lisp (SBCL 2.4+) - compiler implementation; WasmGC - output target + alexandria, babel, trivial-gray-streams, rove (testing); existing clysm/compiler (Feature 016 macro system), clysm/lib/destructuring (Feature 031)
 - 041-dev-workflow: Added Common Lisp (SBCL 2.4+) for host; WasmGC for Stage 1+ binaries
 - 040-fixed-point-verification: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 1/2 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim), alexandria, uiop
-- 039-stage1-compiler-gen: Added Common Lisp (SBCL 2.4+) for host tooling; WasmGC for Stage 0 output + wasmtime (Wasm runtime), wasm-tools (validation), Node.js (FFI host shim)
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -801,4 +803,62 @@ Current Stage 1 binary is minimal (placeholder) and does not export compile_all 
 - Unit tests: tests/unit/fixpoint/*.lisp (runner-test, stage2-gen-test, byte-compare-test, verifier-test)
 - Contract tests: tests/contract/fixpoint-stage2-test.lisp (binary validity)
 - Integration tests: tests/integration/fixpoint-verify-test.lisp (end-to-end)
+
+## Feature 042: Advanced Defmacro - COMPLETE
+
+**Status**: All phases completed (2025-12-28)
+
+### Implemented Components
+- `src/clysm/compiler/transform/macro.lisp`: &whole, &environment, macro-function, macroexpand/macroexpand-1
+- `src/clysm/compiler/ast.lisp`: ast-macro-function AST node
+- `src/clysm/compiler/codegen/gc-types.lisp`: $macro-environment WasmGC type (index 24)
+- `src/clysm/compiler/codegen/func-section.lisp`: compile-macro-function
+- `src/clysm/runtime/macro-runtime.lisp`: Runtime macro registry
+
+### Key Features
+1. **&whole parameter support**: Bind complete macro call form
+   - `(defmacro my-macro (&whole form x) ...)` binds entire form
+   - Must appear as first element in lambda-list
+   - Rejects lambda-list keywords (e.g., `(&whole &optional)` signals error)
+2. **&environment parameter support**: Access lexical macro environment
+   - `(defmacro my-macro (&environment env x) ...)` binds environment
+   - Can appear anywhere in lambda-list per ANSI CL
+   - Supports parent chain lookup via `env-macro-function`
+3. **macro-function and (setf macro-function)**: ANSI CL API
+   - `(macro-function 'my-macro)` returns expander or NIL
+   - `(setf (macro-function 'my-macro) expander-fn)` registers macro
+4. **macroexpand-1 and macroexpand**: Two-value return per ANSI CL
+   - `(macroexpand-1 form env)` returns `(values expanded-form expanded-p)`
+   - `(macroexpand form env)` loops until non-macro
+   - Signals `macro-expansion-depth-exceeded` after 1000 iterations
+5. **Error reporting improvements**: Form included in error messages
+   - Argument count mismatch includes macro name and form
+   - &whole form accessible for custom error messages
+
+### Data Structures
+```lisp
+(defstruct macro-lambda-list-info
+  (whole-var nil)         ;; &whole binding
+  (env-var nil)           ;; &environment binding
+  (required nil)          ;; Required parameters
+  (optional nil)          ;; &optional parameters
+  (rest-var nil)          ;; &rest variable
+  (rest-kind nil)         ;; :rest or :body
+  (keys nil)              ;; &key parameters
+  (allow-other-keys nil)) ;; &allow-other-keys flag
+
+(defstruct macro-environment
+  (local-macros nil)      ;; Local macro registry (macrolet)
+  (parent nil))           ;; Parent environment
+```
+
+### Error Conditions
+- `macro-lambda-list-malformed`: Invalid macro lambda-list syntax
+- `macro-expansion-depth-exceeded`: Infinite expansion detected
+
+### Test Coverage
+- Unit tests: tests/unit/macro/whole-test.lisp (8 tests)
+- Unit tests: tests/unit/macro/environment-test.lisp (7 tests)
+- Unit tests: tests/unit/macro/macro-function-test.lisp (6 tests)
+- Contract tests: tests/contract/macro-wasm-test.lisp (5 tests)
 <!-- MANUAL ADDITIONS END -->

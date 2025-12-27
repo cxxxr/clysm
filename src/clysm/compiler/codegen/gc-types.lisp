@@ -61,6 +61,11 @@
 (defconstant +type-anyref-array+ 21 "Type index for anyref array (aliased from slot-vector)")
 
 ;;; ============================================================
+;;; Macro Environment Type Index (042-advanced-defmacro)
+;;; ============================================================
+(defconstant +type-macro-environment+ 24 "Type index for macro expansion environment")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 
@@ -459,6 +464,24 @@
    :mutable nil))
 
 ;;; ============================================================
+;;; Macro Environment Type Constructor (042-advanced-defmacro)
+;;; ============================================================
+
+(defun make-macro-environment-type ()
+  "Create macro environment type (042-advanced-defmacro).
+   Structure for &environment parameter support:
+     $local_macros: anyref - reference to local macro registry or null
+     $parent: anyref - reference to parent macro-environment or null
+   (type $macro-environment (struct
+     (field $local_macros anyref)
+     (field $parent anyref)))"
+  (make-wasm-struct-type
+   :name '$macro-environment
+   :index +type-macro-environment+
+   :fields (list (make-wasm-field :name 'local_macros :type :anyref :mutable nil)
+                 (make-wasm-field :name 'parent :type :anyref :mutable nil))))
+
+;;; ============================================================
 ;;; Exception Tags (T008)
 ;;; ============================================================
 
@@ -499,7 +522,8 @@
      18: Limb array (for bignum limbs)
      19: Stream (I/O operations)
      20: Multiple values buffer array
-     21-23: CLOS array types (slot-vector, keyword-array, closure-array)"
+     21-23: CLOS array types (slot-vector, keyword-array, closure-array)
+     24: Macro environment (042-advanced-defmacro)"
   (list (make-nil-type)             ; type 0
         (make-unbound-type)         ; type 1
         (make-cons-type)            ; type 2
@@ -523,7 +547,8 @@
         (make-mv-array-type)        ; type 20: multiple values buffer (025-multiple-values)
         (make-slot-vector-type)     ; type 21: CLOS slot storage (026-clos-foundation)
         (make-keyword-array-type)   ; type 22: CLOS initarg keywords (026-clos-foundation)
-        (make-closure-array-type))) ; type 23: CLOS initform closures (026-clos-foundation)
+        (make-closure-array-type)   ; type 23: CLOS initform closures (026-clos-foundation)
+        (make-macro-environment-type))) ; type 24: macro environment (042-advanced-defmacro)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.

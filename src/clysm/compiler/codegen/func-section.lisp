@@ -231,11 +231,13 @@
     ;; Feature 038: Constant definitions
     (clysm/compiler/ast:ast-defconstant
      (compile-defconstant ast env))
-    ;; Macro introspection (016-macro-system T048)
+    ;; Macro introspection (016-macro-system T048, 042-advanced-defmacro)
     (clysm/compiler/ast:ast-macroexpand-1
      (compile-macroexpand-1 ast env))
     (clysm/compiler/ast:ast-macroexpand
      (compile-macroexpand ast env))
+    (clysm/compiler/ast:ast-macro-function
+     (compile-macro-function ast env))
     ;; Multiple values (025-multiple-values)
     (clysm/compiler/ast:ast-values
      (compile-values ast env))
@@ -4967,6 +4969,36 @@
         ;; Runtime form: compile the form and return it
         ;; (No actual expansion at runtime - would require runtime macro registry)
         (compile-to-instructions form-ast env))))
+
+(defun compile-macro-function (ast env)
+  "Compile a macro-function lookup form.
+   Feature 042: Advanced Defmacro.
+
+   Current implementation: compile-time lookup only.
+   If the name is a quoted symbol, looks up the macro at compile time
+   and returns T if defined, NIL otherwise (closures can't be serialized).
+
+   Note: Full runtime macro-function returning the actual expander
+   would require storing closures in a runtime-accessible registry.
+   For most compile-time use cases, checking if a macro is defined
+   is sufficient."
+  (let ((name-ast (clysm/compiler/ast:ast-macro-function-name ast)))
+    ;; Check if name is a quoted symbol we can look up at compile time
+    (if (and (typep name-ast 'clysm/compiler/ast:ast-literal)
+             (eq (clysm/compiler/ast:ast-literal-literal-type name-ast) :quoted)
+             (symbolp (clysm/compiler/ast:ast-literal-value name-ast)))
+        ;; Compile-time lookup: check if macro is defined
+        (let* ((macro-name (clysm/compiler/ast:ast-literal-value name-ast))
+               (macro-fn (clysm/compiler/transform/macro:macro-function macro-name)))
+          ;; Return T if macro is defined, NIL otherwise
+          ;; (We can't serialize the actual closure to Wasm)
+          (if macro-fn
+              ;; Macro is defined - return T
+              (list '(:global.get 3))  ; Global 3 is typically T in Clysm
+              ;; Macro is not defined - return NIL
+              (list '(:ref.null :none))))
+        ;; Runtime lookup: not supported, return NIL
+        (list '(:ref.null :none)))))
 
 ;;; ============================================================
 ;;; Function Section Generation

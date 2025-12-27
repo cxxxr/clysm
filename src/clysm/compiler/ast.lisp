@@ -268,6 +268,16 @@
    (macroexpand form) - Repeatedly expand form until not a macro call."
   (form nil :type t))   ; AST node for form to expand
 
+(defstruct (ast-macro-function (:include ast-node) (:conc-name ast-macro-function-))
+  "Macro-function node for compile-time macro function lookup.
+   (macro-function 'name) - Returns the macro expander function or NIL.
+   Feature 042: Advanced Defmacro.
+   Note: At compile time, if the name is a quoted symbol, the lookup
+   happens immediately and returns a quoted result (closure or NIL).
+   For runtime lookup, the form compiles to code that queries the registry."
+  (name nil :type t)    ; AST node for the macro name (usually quoted symbol)
+  (env nil :type t))    ; AST node for optional environment (usually NIL)
+
 ;;; ============================================================
 ;;; Multiple Values (025-multiple-values)
 ;;; ============================================================
@@ -582,9 +592,10 @@
       (cond (parse-cond-form args))
       (and (parse-and-form args))
       (or (parse-or-form args))
-      ;; Macro introspection (016-macro-system T046-T047)
+      ;; Macro introspection (016-macro-system T046-T047, 042-advanced-defmacro)
       (macroexpand-1 (parse-macroexpand-1-form args))
       (macroexpand (parse-macroexpand-form args))
+      (macro-function (parse-macro-function-form args))
       ;; Multiple values (025-multiple-values)
       (values (make-ast-values :forms (mapcar #'parse-expr args)))
       (multiple-value-bind (parse-multiple-value-bind-form args))
@@ -1261,6 +1272,16 @@
     (error "MACROEXPAND requires a form argument"))
   ;; Note: env argument is ignored for now (not supported in target runtime)
   (make-ast-macroexpand :form (parse-expr (car args))))
+
+(defun parse-macro-function-form (args)
+  "Parse (macro-function name &optional env).
+   Creates an ast-macro-function node for macro function lookup.
+   Feature 042: Advanced Defmacro."
+  (unless args
+    (error "MACRO-FUNCTION requires a name argument"))
+  (make-ast-macro-function
+   :name (parse-expr (car args))
+   :env (when (cdr args) (parse-expr (cadr args)))))
 
 ;;; ============================================================
 ;;; Tagbody/Go Parsing
