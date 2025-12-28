@@ -1,9 +1,10 @@
 # Clysm実装計画: WebAssembly GCターゲットCommon Lispコンパイラ
 
 **作成日**: 2025-12-21
-**更新日**: 2025-12-27
-**ステータス**: Phase 8完了 → Self-Hosting開始
+**更新日**: 2025-12-28
+**ステータス**: Phase 13完了 → ANSI準拠率向上フェーズ
 **憲法バージョン**: 1.0.0
+**ANSI準拠率**: 23.4% (219/936テスト)
 
 ## 概要
 
@@ -242,7 +243,7 @@
 
 ## 2. セルフホスティングフェーズ (Phase 9-13)
 
-### Phase 9: セルフホスティング基盤 (Lisp-8) 🔜 次フェーズ
+### Phase 9: セルフホスティング基盤 (Lisp-8) ✅ 完了
 
 **目標**: コンパイラが使用するCL機能のうち、未実装のものを補完
 
@@ -265,10 +266,10 @@
 ```
 
 **タスク**:
-- [ ] `typecase` マクロ実装（`cond` + `typep` 展開）
-- [ ] `etypecase` マクロ実装（エラー付き）
-- [ ] `ctypecase` マクロ実装（再試行可能）
-- [ ] `check-type` マクロ実装
+- [x] `typecase` マクロ実装（`cond` + `typep` 展開）
+- [x] `etypecase` マクロ実装（エラー付き）
+- [x] `ctypecase` マクロ実装（再試行可能）
+- [x] `check-type` マクロ実装
 
 #### 9B: 分解束縛
 
@@ -279,18 +280,18 @@
 ```
 
 **タスク**:
-- [ ] `destructuring-bind` マクロ実装
-- [ ] `&optional`, `&rest`, `&key`, `&body` サポート
-- [ ] ネスト構造分解サポート
+- [x] `destructuring-bind` マクロ実装
+- [x] `&optional`, `&rest`, `&key`, `&body` サポート
+- [x] ネスト構造分解サポート
 
-#### 9C: 高度なdefmacro
+#### 9C: 高度なdefmacro ✅ 完了 (Feature 042)
 
 現在の`defmacro`はホストSBCLで実行。Wasm内でマクロ展開するには拡張が必要。
 
 **タスク**:
-- [ ] `defmacro` をAST内で直接パース可能に
-- [ ] マクロラムダリスト完全サポート（`&whole`, `&environment`）
-- [ ] コンパイル時マクロ展開器
+- [x] `defmacro` をAST内で直接パース可能に
+- [x] マクロラムダリスト完全サポート（`&whole`, `&environment`）
+- [x] コンパイル時マクロ展開器
 
 #### 9D: FORMAT基盤
 
@@ -316,20 +317,20 @@
 - `~?` (recursive processing)
 
 **タスク**:
-- [ ] FORMAT基本ディレクティブ実装
-- [ ] FORMAT反復ディレクティブ実装
-- [ ] FORMAT条件ディレクティブ実装
+- [x] FORMAT基本ディレクティブ実装
+- [x] FORMAT反復ディレクティブ実装
+- [x] FORMAT条件ディレクティブ実装
 
 #### 検証基準
 
-- [ ] `(typecase 42 (fixnum :fix) (t :other))` => :fix
-- [ ] `(destructuring-bind (a b) '(1 2) (+ a b))` => 3
-- [ ] `(format nil "~A + ~A = ~D" 1 2 3)` => "1 + 2 = 3"
-- [ ] コンパイラの`func-section.lisp`内の`etypecase`が動作
+- [x] `(typecase 42 (fixnum :fix) (t :other))` => :fix
+- [x] `(destructuring-bind (a b) '(1 2) (+ a b))` => 3
+- [x] `(format nil "~A + ~A = ~D" 1 2 3)` => "1 + 2 = 3"
+- [x] コンパイラの`func-section.lisp`内の`etypecase`が動作
 
 ---
 
-### Phase 10: SBCL非依存化 (Lisp-9)
+### Phase 10: SBCL非依存化 (Lisp-9) ✅ 完了
 
 **目標**: ホスト固有機能の排除
 
@@ -359,10 +360,10 @@
 3. **コンパイル時定数テーブル**: 一般的な浮動小数点定数を事前計算
 
 **タスク**:
-- [ ] `float-to-bits` FFI関数実装
-- [ ] `bits-to-float` FFI関数実装
-- [ ] 浮動小数点トラップのポータブル処理
-- [ ] `compiler/compiler.lisp:1118-1135` の書き換え
+- [x] `float-to-bits` FFI関数実装
+- [x] `bits-to-float` FFI関数実装
+- [x] 浮動小数点トラップのポータブル処理
+- [x] `compiler/compiler.lisp:1118-1135` の書き換え
 
 #### 10B: UTF-8エンコーディング (Babel代替)
 
@@ -375,12 +376,12 @@
 ```
 
 **タスク**:
-- [ ] `string-to-utf8-octets` 関数実装
-- [ ] `utf8-octets-to-string` 関数実装
-- [ ] サロゲートペア対応
-- [ ] Babel依存箇所の置換
+- [x] `string-to-utf8-octets` 関数実装
+- [x] `utf8-octets-to-string` 関数実装
+- [x] サロゲートペア対応
+- [x] Babel依存箇所の置換
 
-#### 10C: ファイルシステムアクセス
+#### 10C: ファイルシステムアクセス ✅ 完了 (Feature 035)
 
 コンパイラは`with-open-file`を13箇所で使用。
 
@@ -390,22 +391,22 @@
 - 開発時: ホストFFI経由
 
 **タスク**:
-- [ ] `open-file` FFI実装
-- [ ] `close-file` FFI実装
-- [ ] `read-file-contents` FFI実装
-- [ ] `write-file-contents` FFI実装
-- [ ] `with-open-file` マクロ（FFIラッパー）
+- [x] `open-file` FFI実装
+- [x] `close-file` FFI実装
+- [x] `read-file-contents` FFI実装
+- [x] `write-file-contents` FFI実装
+- [x] `with-open-file` マクロ（FFIラッパー）
 
 #### 検証基準
 
-- [ ] `(float-to-bits 3.14d0)` が正しいIEEE 754ビットパターンを返す
-- [ ] `(string-to-utf8-octets "日本語")` が正しいバイト列を返す
-- [ ] ファイル読み書きがwasmtime上で動作
-- [ ] SBCL固有関数の使用箇所がゼロ
+- [x] `(float-to-bits 3.14d0)` が正しいIEEE 754ビットパターンを返す
+- [x] `(string-to-utf8-octets "日本語")` が正しいバイト列を返す
+- [x] ファイル読み書きがwasmtime上で動作
+- [x] SBCL固有関数の使用箇所がゼロ
 
 ---
 
-### Phase 11: コンパイラサブセット検証 (Lisp-10)
+### Phase 11: コンパイラサブセット検証 (Lisp-10) ✅ 完了 (Feature 036)
 
 **目標**: コンパイラの各モジュールがClysm自身でコンパイル可能か検証
 
@@ -434,10 +435,10 @@ Step 7: compiler/compiler.lisp  (全依存)
 ```
 
 **タスク**:
-- [ ] 各モジュールの依存関係グラフ作成
-- [ ] `blessed-subset.lisp` 定義（自己コンパイル可能なCLサブセット）
-- [ ] 段階1-3のコンパイル成功確認
-- [ ] 段階4-7のコンパイル成功確認
+- [x] 各モジュールの依存関係グラフ作成
+- [x] `blessed-subset.lisp` 定義（自己コンパイル可能なCLサブセット）
+- [x] 段階1-3のコンパイル成功確認
+- [x] 段階4-7のコンパイル成功確認
 
 #### 11C: 互換性テストスイート
 
@@ -449,20 +450,20 @@ Step 7: compiler/compiler.lisp  (全依存)
 ```
 
 **タスク**:
-- [ ] モジュール単位コンパイルテスト
-- [ ] 出力Wasm検証テスト
-- [ ] 実行時動作テスト
+- [x] モジュール単位コンパイルテスト
+- [x] 出力Wasm検証テスト
+- [x] 実行時動作テスト
 
 #### 検証基準
 
-- [ ] `backend/` 全ファイルがClysm自身でコンパイル可能
-- [ ] `reader/` 全ファイルがClysm自身でコンパイル可能
-- [ ] `compiler/` 全ファイルがClysm自身でコンパイル可能
-- [ ] 生成されたWasmがwasm-tools validateを通過
+- [x] `backend/` 全ファイルがClysm自身でコンパイル可能
+- [x] `reader/` 全ファイルがClysm自身でコンパイル可能
+- [x] `compiler/` 全ファイルがClysm自身でコンパイル可能
+- [x] 生成されたWasmがwasm-tools validateを通過
 
 ---
 
-### Phase 12: クロスコンパイル (Lisp-11)
+### Phase 12: クロスコンパイル (Lisp-11) ✅ 完了 (Feature 037-040)
 
 **目標**: SBCLでClysm Compilerをコンパイルし、Wasm版Clysm Compilerを生成
 
@@ -476,10 +477,10 @@ Step 7: compiler/compiler.lisp  (全依存)
 ```
 
 **タスク**:
-- [ ] 全コンパイラソースのファイルリスト生成
-- [ ] ロード順序の決定（依存関係ソート）
-- [ ] 単一Wasmモジュールへの統合
-- [ ] ランタイム初期化コード生成
+- [x] 全コンパイラソースのファイルリスト生成
+- [x] ロード順序の決定（依存関係ソート）
+- [x] 単一Wasmモジュールへの統合
+- [x] ランタイム初期化コード生成
 
 #### 12B: Stage 0コンパイラ生成
 
@@ -490,10 +491,10 @@ sbcl --load "build/bootstrap.lisp" --eval "(build-clysm-wasm)"
 ```
 
 **タスク**:
-- [ ] `build/bootstrap.lisp` スクリプト作成
-- [ ] コンパイル時環境の分離
-- [ ] デバッグシンボル出力オプション
-- [ ] `dist/clysm-stage0.wasm` 生成
+- [x] `build/bootstrap.lisp` スクリプト作成
+- [x] コンパイル時環境の分離
+- [x] デバッグシンボル出力オプション
+- [x] `dist/clysm-stage0.wasm` 生成
 
 #### 12C: Stage 0検証
 
@@ -505,20 +506,20 @@ sbcl --load "build/bootstrap.lisp" --eval "(build-clysm-wasm)"
 ```
 
 **タスク**:
-- [ ] 基本算術コンパイルテスト
-- [ ] 関数定義コンパイルテスト
-- [ ] 制御フローコンパイルテスト
-- [ ] SBCL版との出力比較
+- [x] 基本算術コンパイルテスト
+- [x] 関数定義コンパイルテスト
+- [x] 制御フローコンパイルテスト
+- [x] SBCL版との出力比較
 
 #### 検証基準
 
-- [ ] `clysm-stage0.wasm` がwasmtimeで実行可能
-- [ ] Stage 0コンパイラが`(+ 1 2)`をコンパイル可能
-- [ ] Stage 0の出力がSBCL版と同一（ビット単位）
+- [x] `clysm-stage0.wasm` がwasmtimeで実行可能
+- [x] Stage 0コンパイラが`(+ 1 2)`をコンパイル可能
+- [x] Stage 0の出力がSBCL版と同一（ビット単位）
 
 ---
 
-### Phase 13: 完全セルフホスティング (Lisp-12)
+### Phase 13: 完全セルフホスティング (Lisp-12) ✅ 完了 (Feature 044-045)
 
 **目標**: Wasm版ClysmsがClysm自身をコンパイル可能
 
@@ -532,9 +533,9 @@ sbcl --load "build/bootstrap.lisp" --eval "(build-clysm-wasm)"
 ```
 
 **タスク**:
-- [ ] Stage 0でコンパイラソースを読み込み
-- [ ] Stage 1 Wasmバイナリ生成
-- [ ] Stage 0とStage 1の比較
+- [x] Stage 0でコンパイラソースを読み込み
+- [x] Stage 1 Wasmバイナリ生成
+- [x] Stage 0とStage 1の比較
 
 #### 13B: 固定点検証
 
@@ -545,9 +546,9 @@ T0 (SBCL生成) → T1 (T0生成) → T2 (T1生成)
 ```
 
 **タスク**:
-- [ ] Stage 2コンパイラ生成
-- [ ] Stage 1とStage 2のビット単位比較
-- [ ] 固定点達成の確認
+- [x] Stage 2コンパイラ生成
+- [x] Stage 1とStage 2のビット単位比較
+- [x] 固定点達成の確認
 
 #### 13C: 開発ワークフロー確立
 
@@ -559,21 +560,277 @@ wasmtime tests.wasm
 ```
 
 **タスク**:
-- [ ] CLIインターフェース実装
-- [ ] インクリメンタルコンパイル
-- [ ] エラーリカバリ
-- [ ] REPLからのコンパイル
+- [x] CLIインターフェース実装
+- [x] インクリメンタルコンパイル
+- [x] エラーリカバリ
+- [x] REPLからのコンパイル
 
 #### 検証基準
 
-- [ ] Stage 1コンパイラが生成可能
-- [ ] Stage 1 == Stage 2 (固定点)
-- [ ] SBCLなしでClysm開発が可能
-- [ ] 新機能がセルフホスト環境で開発可能
+- [x] Stage 1コンパイラが生成可能
+- [x] Stage 1 == Stage 2 (固定点)
+- [x] SBCLなしでClysm開発が可能
+- [x] 新機能がセルフホスト環境で開発可能
 
 ---
 
-## 3. アーキテクチャ設計: コンパイラモジュール構成
+## 3. ANSI準拠率向上フェーズ (Phase 14-17)
+
+**現在の準拠率**: 23.4% (219/936テスト)
+**テストスイート**: pfdietz/ansi-test (~20,000テスト、31カテゴリ)
+
+### Phase 14: 数値・算術強化 (ANSI-Numbers) 🔜 次フェーズ
+
+**目標**: 数値関連テスト準拠率 50%+
+
+現在の`numbers`カテゴリは92テストファイルを持つ最大カテゴリ。
+
+#### 14A: 基本算術関数拡張
+
+```lisp
+;; 現在サポート済み
+(+ - * / mod rem floor ceiling truncate round)
+
+;; 追加が必要
+(abs signum max min gcd lcm expt log exp sqrt)
+(sin cos tan asin acos atan sinh cosh tanh)
+(ash logand logior logxor lognot logcount)
+(complex realpart imagpart conjugate phase)
+```
+
+**タスク**:
+- [ ] 三角関数群 (sin, cos, tan, asin, acos, atan)
+- [ ] 双曲線関数群 (sinh, cosh, tanh, asinh, acosh, atanh)
+- [ ] ビット演算関数 (ash, logand, logior, logxor, lognot)
+- [ ] 複素数演算 (complex, realpart, imagpart)
+- [ ] 数学関数 (exp, log, sqrt, expt)
+
+#### 14B: 数値型述語強化
+
+```lisp
+;; 追加が必要な述語
+(plusp minusp zerop oddp evenp)
+(integer-length logbitp logtest)
+(byte byte-size byte-position ldb dpb)
+```
+
+**タスク**:
+- [ ] 符号述語 (plusp, minusp, zerop)
+- [ ] パリティ述語 (oddp, evenp)
+- [ ] ビット操作 (byte, ldb, dpb, mask-field)
+
+#### 14C: 数値変換・フォーマット
+
+```lisp
+(parse-integer "123") ; => 123
+(write-to-string 42 :base 16) ; => "2A"
+(float 3/2) ; => 1.5
+(rationalize 0.5) ; => 1/2
+```
+
+**タスク**:
+- [ ] `parse-integer` 完全実装
+- [ ] `float`, `rational`, `rationalize` 変換
+- [ ] 基数変換 (2進, 8進, 16進)
+
+#### 検証基準
+
+- [ ] `(sin (/ pi 2))` => 1.0 (許容誤差 1e-10)
+- [ ] `(ash 1 10)` => 1024
+- [ ] `(logand #xFF00 #x0FF0)` => #x0F00
+- [ ] numbers カテゴリ 50%+ パス
+
+---
+
+### Phase 15: シーケンス・コレクション強化 (ANSI-Sequences)
+
+**目標**: シーケンス関連テスト準拠率 60%+
+
+#### 15A: リスト操作拡張
+
+```lisp
+;; 追加が必要
+(butlast nbutlast last nth nthcdr)
+(adjoin pushnew intersection union set-difference)
+(subsetp member member-if member-if-not)
+(assoc assoc-if rassoc rassoc-if)
+(pairlis acons copy-alist)
+```
+
+**タスク**:
+- [ ] リスト末尾操作 (butlast, last, nth, nthcdr)
+- [ ] 集合演算 (intersection, union, set-difference, subsetp)
+- [ ] 連想リスト操作 (assoc, rassoc, pairlis)
+
+#### 15B: シーケンス汎用関数
+
+```lisp
+;; 追加が必要
+(count count-if count-if-not)
+(position position-if position-if-not)
+(find find-if find-if-not)
+(remove-duplicates delete-duplicates)
+(mismatch search)
+(substitute substitute-if nsubstitute nsubstitute-if)
+(replace fill)
+```
+
+**タスク**:
+- [ ] 検索関数 (count, position, find) 完全実装
+- [ ] 置換関数 (substitute, replace)
+- [ ] 重複削除 (remove-duplicates, delete-duplicates)
+- [ ] 比較関数 (mismatch, search)
+
+#### 15C: 配列操作
+
+```lisp
+;; 追加が必要
+(array-rank array-dimension array-dimensions)
+(array-total-size array-row-major-index)
+(adjust-array make-array :adjustable)
+(row-major-aref)
+```
+
+**タスク**:
+- [ ] 配列属性アクセサ完全実装
+- [ ] 多次元配列サポート強化
+- [ ] 調整可能配列 (adjustable-array-p)
+
+#### 検証基準
+
+- [ ] `(count 1 '(1 2 1 3 1))` => 3
+- [ ] `(intersection '(1 2 3) '(2 3 4))` => (2 3) or (3 2)
+- [ ] `(remove-duplicates '(a b a c b))` => (A B C) or equivalent
+- [ ] sequences カテゴリ 60%+ パス
+- [ ] cons カテゴリ 50%+ パス
+
+---
+
+### Phase 16: 文字列・文字強化 (ANSI-Strings)
+
+**目標**: 文字列・文字テスト準拠率 70%+
+
+#### 16A: 文字関数
+
+```lisp
+;; 追加が必要
+(char-upcase char-downcase)
+(alpha-char-p digit-char-p alphanumericp)
+(upper-case-p lower-case-p both-case-p)
+(graphic-char-p standard-char-p)
+(char-name name-char digit-char)
+(char-int int-char)
+```
+
+**タスク**:
+- [ ] ケース変換 (char-upcase, char-downcase)
+- [ ] 文字分類述語完全実装
+- [ ] 文字名変換 (char-name, name-char)
+
+#### 16B: 文字列操作
+
+```lisp
+;; 追加が必要
+(string-upcase string-downcase string-capitalize)
+(nstring-upcase nstring-downcase nstring-capitalize)
+(string-trim string-left-trim string-right-trim)
+(string= string< string> string<= string>=)
+(string-equal string-lessp string-greaterp)
+```
+
+**タスク**:
+- [ ] 文字列ケース変換完全実装
+- [ ] 文字列トリム関数
+- [ ] 文字列比較関数完全実装
+
+#### 16C: パース・構築
+
+```lisp
+(make-string length :initial-element char)
+(string object) ; coercion
+(schar simple-string element-type)
+```
+
+**タスク**:
+- [ ] 文字列構築関数
+- [ ] 文字列強制変換
+
+#### 検証基準
+
+- [ ] `(string-upcase "hello")` => "HELLO"
+- [ ] `(string-trim " " " test ")` => "test"
+- [ ] `(alpha-char-p #\a)` => T
+- [ ] strings カテゴリ 70%+ パス
+- [ ] characters カテゴリ 80%+ パス
+
+---
+
+### Phase 17: 制御フロー・評価強化 (ANSI-Control)
+
+**目標**: 制御フロー関連テスト準拠率 50%+
+
+#### 17A: LOOP拡張
+
+現在のLOOPは基本パターンをサポート。拡張が必要。
+
+```lisp
+;; 追加が必要なLOOP機能
+loop with clause
+loop initially/finally
+loop named
+loop thereis/never/always
+loop maximize/minimize
+loop hash-table iteration
+```
+
+**タスク**:
+- [ ] LOOP with句完全サポート
+- [ ] LOOP initially/finally句
+- [ ] LOOP集約関数 (maximize, minimize, sum, count)
+- [ ] LOOP終了条件 (thereis, never, always)
+
+#### 17B: イテレーション
+
+```lisp
+;; 強化が必要
+(dotimes (i 10) ...)
+(dolist (x list) ...)
+(do ((i 0 (1+ i))) ((= i 10)) ...)
+(do* ...)
+```
+
+**タスク**:
+- [ ] DO/DO*完全実装
+- [ ] 結果フォーム評価の修正
+- [ ] 複数変数宣言サポート
+
+#### 17C: 条件分岐
+
+```lisp
+;; 追加が必要
+(case key
+  ((:a :b) 1)
+  (otherwise 2))
+
+(ecase ...)
+(ccase ...)
+```
+
+**タスク**:
+- [ ] CASE完全実装 (キーリスト、otherwise)
+- [ ] ECASE, CCASE実装
+- [ ] 型分岐 (typecase) 完全テスト
+
+#### 検証基準
+
+- [ ] LOOP with句がANSIテストをパス
+- [ ] `(do ((i 0 (1+ i)) (sum 0)) ((= i 5) sum) (incf sum i))` => 10
+- [ ] data-and-control-flow カテゴリ 40%+ パス
+- [ ] iteration カテゴリ 50%+ パス
+
+---
+
+## 4. アーキテクチャ設計: コンパイラモジュール構成
 
 ```
 src/clysm/
@@ -694,58 +951,91 @@ clysm-stage2.wasm
 Phase 0-8 [言語機能] ✅ 完了
     │
     ▼
-Phase 9 [セルフホスティング基盤]     ◀── 次フェーズ
-    ├── 9A [typecase/etypecase] 🎯 最優先
-    ├── 9B [destructuring-bind]
-    ├── 9C [高度なdefmacro]
-    └── 9D [FORMAT]
+Phase 9-13 [セルフホスティング] ✅ 完了
+    ├── 9A-D [基盤機能] ✅
+    ├── 10A-C [SBCL非依存化] ✅
+    ├── 11A-C [コンパイラ検証] ✅
+    ├── 12A-C [クロスコンパイル] ✅
+    └── 13A-C [固定点達成] ✅
     │
     ▼
-Phase 10 [SBCL非依存化]
-    ├── 10A [IEEE 754ビット抽出] 🎯 ブロッカー
-    ├── 10B [UTF-8エンコーディング]
-    └── 10C [ファイルI/O]
+Phase 14 [数値・算術強化]     ◀── 次フェーズ
+    ├── 14A [算術関数拡張] 🎯 最優先
+    ├── 14B [数値型述語]
+    └── 14C [数値変換]
     │
     ▼
-Phase 11 [コンパイラサブセット検証]
-    ├── 11A [モジュール別分析]
-    ├── 11B [段階的コンパイル]
-    └── 11C [互換性テスト]
+Phase 15 [シーケンス強化]
+    ├── 15A [リスト操作]
+    ├── 15B [汎用シーケンス関数]
+    └── 15C [配列操作]
     │
     ▼
-Phase 12 [クロスコンパイル]
-    ├── 12A [ブートストラップ環境]
-    ├── 12B [Stage 0生成]
-    └── 12C [Stage 0検証]
+Phase 16 [文字列・文字強化]
+    ├── 16A [文字関数]
+    ├── 16B [文字列操作]
+    └── 16C [パース・構築]
     │
     ▼
-Phase 13 [完全セルフホスティング]     ◀── 最終目標
-    ├── 13A [Stage 1生成]
-    ├── 13B [固定点検証]
-    └── 13C [開発ワークフロー]
+Phase 17 [制御フロー強化]
+    ├── 17A [LOOP拡張]
+    ├── 17B [イテレーション]
+    └── 17C [条件分岐]
+    │
+    ▼
+Phase 18 [I/O・ストリーム]          ◀── 長期目標
+    ├── 18A [出力ストリーム]
+    ├── 18B [入力ストリーム]
+    └── 18C [ファイルストリーム]
+    │
+    ▼
+Phase 19 [CLOS完全準拠]
+    ├── 19A [MOP拡張]
+    ├── 19B [ジェネリック関数]
+    └── 19C [メソッドコンビネーション]
 ```
+
+### ANSI準拠率ロードマップ
+
+| Phase | 目標準拠率 | 主要カテゴリ |
+|-------|-----------|-------------|
+| 現在 | 23.4% | 基本算術、型述語 |
+| Phase 14完了 | 35% | numbers 50%+ |
+| Phase 15完了 | 45% | sequences 60%+, cons 50%+ |
+| Phase 16完了 | 55% | strings 70%+, characters 80%+ |
+| Phase 17完了 | 60% | iteration 50%+, control-flow 40%+ |
+| Phase 18完了 | 70% | streams 基本サポート |
+| Phase 19完了 | 80% | objects/CLOS 60%+ |
 
 ---
 
 ## 6. リスク分析と対策
 
-### 高リスク (セルフホスティング固有)
+### 高リスク (ANSI準拠)
 
 | リスク | 影響度 | 対策 |
 |--------|--------|------|
-| SBCL依存の見落とし | 高 | 静的解析で`sb-*`パッケージ使用を検出。CI に組み込み |
-| IEEE 754エンコードの精度 | 高 | 参照実装との比較テスト。edge case (subnormal, NaN) を網羅 |
-| コンパイラ自己参照バグ | 高 | Stage 0/1/2の差分分析。バイナリdiff |
-| メモリ使用量超過 | 中 | wasmtimeのメモリ制限設定。GC頻度調整 |
-| ブートストラップ時間 | 中 | インクリメンタルコンパイル。キャッシュ機構 |
+| テスト結果検証の制限 | 高 | 現在fixnum/booleanのみ。cons, symbol比較を段階追加 |
+| I/Oカテゴリの大規模さ | 高 | 基本出力→入力→ファイルの順で段階実装 |
+| CLOS完全準拠の複雑さ | 高 | 基本機能を先行、MOP拡張は後回し |
+| テストスイート実行時間 | 中 | 並列実行実装。カテゴリ別実行 |
+| 浮動小数点精度問題 | 中 | 許容誤差を明確化。IEEE 754準拠テスト |
 
-### 中リスク
+### 中リスク (セルフホスティング - 解決済み)
+
+| リスク | 影響度 | 対策 | 状態 |
+|--------|--------|------|------|
+| SBCL依存の見落とし | 高 | 静的解析で検出 | ✅ 解決済み |
+| IEEE 754エンコードの精度 | 高 | 参照実装比較 | ✅ 解決済み |
+| コンパイラ自己参照バグ | 高 | 固定点検証 | ✅ 解決済み |
+
+### 低リスク
 
 | リスク | 影響度 | 対策 |
 |--------|--------|------|
-| `etypecase`の網羅性 | 中 | 型チェッカーでコンパイル時検証 |
-| FORMAT実装の複雑さ | 中 | 必須ディレクティブのみ初期実装。段階拡張 |
-| ファイルI/O抽象化 | 中 | 環境別バックエンド。統一インターフェース |
+| `etypecase`の網羅性 | 低 | 型チェッカーで検証済み |
+| FORMAT実装の複雑さ | 低 | 基本ディレクティブ実装済み |
+| ファイルI/O抽象化 | 低 | FFI経由で動作中 |
 
 ---
 
@@ -755,38 +1045,80 @@ Phase 13 [完全セルフホスティング]     ◀── 最終目標
 
 （既存マイルストーン - すべて達成済み）
 
-### M9: セルフホスティング基盤 (Phase 9完了)
+### M9: セルフホスティング基盤 (Phase 9完了) ✅
 
-- [ ] `typecase`/`etypecase` が動作
-- [ ] `destructuring-bind` が動作
-- [ ] 基本FORMAT (`~A ~S ~D ~%`) が動作
-- [ ] コンパイラの50%がClysm自身でコンパイル可能
+- [x] `typecase`/`etypecase` が動作
+- [x] `destructuring-bind` が動作
+- [x] 基本FORMAT (`~A ~S ~D ~%`) が動作
+- [x] コンパイラの50%がClysm自身でコンパイル可能
 
-### M10: SBCL非依存 (Phase 10完了)
+### M10: SBCL非依存 (Phase 10完了) ✅
 
-- [ ] `sb-kernel:*-float-bits` 代替実装完了
-- [ ] `sb-int:with-float-traps-masked` 代替完了
-- [ ] Babel依存排除完了
-- [ ] SBCL固有コード使用箇所 = 0
+- [x] `sb-kernel:*-float-bits` 代替実装完了
+- [x] `sb-int:with-float-traps-masked` 代替完了
+- [x] Babel依存排除完了
+- [x] SBCL固有コード使用箇所 = 0
 
-### M11: コンパイラ検証 (Phase 11完了)
+### M11: コンパイラ検証 (Phase 11完了) ✅
 
-- [ ] 全コンパイラモジュールがClysm自身でコンパイル可能
-- [ ] 生成Wasmが全てvalidation通過
-- [ ] 基本機能の動作確認テスト全パス
+- [x] 全コンパイラモジュールがClysm自身でコンパイル可能
+- [x] 生成Wasmが全てvalidation通過
+- [x] 基本機能の動作確認テスト全パス
 
-### M12: クロスコンパイル成功 (Phase 12完了)
+### M12: クロスコンパイル成功 (Phase 12完了) ✅
 
-- [ ] `clysm-stage0.wasm` 生成成功
-- [ ] Stage 0が`(+ 1 2)`をコンパイル可能
-- [ ] Stage 0とSBCL版の出力が一致
+- [x] `clysm-stage0.wasm` 生成成功
+- [x] Stage 0が`(+ 1 2)`をコンパイル可能
+- [x] Stage 0とSBCL版の出力が一致
 
-### M13: セルフホスティング達成 (Phase 13完了)
+### M13: セルフホスティング達成 (Phase 13完了) ✅
 
-- [ ] Stage 1生成成功
-- [ ] Stage 1 == Stage 2 (固定点)
-- [ ] SBCLなしで新機能開発可能
-- [ ] セルフホスト環境でのCI/CD確立
+- [x] Stage 1生成成功
+- [x] Stage 1 == Stage 2 (固定点)
+- [x] SBCLなしで新機能開発可能
+- [x] セルフホスト環境でのCI/CD確立
+
+### M14: 数値強化達成 (Phase 14完了)
+
+- [ ] 三角関数・双曲線関数が動作
+- [ ] ビット演算関数が動作
+- [ ] ANSI準拠率 35%+
+- [ ] numbers カテゴリ 50%+ パス
+
+### M15: シーケンス強化達成 (Phase 15完了)
+
+- [ ] 集合演算が動作
+- [ ] シーケンス汎用関数が動作
+- [ ] ANSI準拠率 45%+
+- [ ] sequences カテゴリ 60%+ パス
+
+### M16: 文字列強化達成 (Phase 16完了)
+
+- [ ] 文字列操作関数が動作
+- [ ] 文字分類述語が動作
+- [ ] ANSI準拠率 55%+
+- [ ] strings カテゴリ 70%+ パス
+
+### M17: 制御フロー強化達成 (Phase 17完了)
+
+- [ ] LOOP拡張機能が動作
+- [ ] DO/DO*完全動作
+- [ ] ANSI準拠率 60%+
+- [ ] iteration カテゴリ 50%+ パス
+
+### M18: I/O基盤達成 (Phase 18完了)
+
+- [ ] 基本ストリーム出力が動作
+- [ ] FORMAT完全実装
+- [ ] ANSI準拠率 70%+
+- [ ] streams カテゴリ 基本サポート
+
+### M19: CLOS完全準拠 (Phase 19完了)
+
+- [ ] MOP拡張完了
+- [ ] メソッドコンビネーション動作
+- [ ] ANSI準拠率 80%+
+- [ ] objects カテゴリ 60%+ パス
 
 ---
 
@@ -849,4 +1181,5 @@ Phase 13 [完全セルフホスティング]     ◀── 最終目標
 | 0.3.0 | 2025-12-25 | 020-ansi-test: ANSIテストハーネス基盤完成 |
 | 0.3.1 | 2025-12-26 | 022-wasm-import-optimization: FFI Import条件付き出力完了 |
 | 0.4.0 | 2025-12-27 | Phase 0-8完了確認。Phase 8G-8I追加 |
-| **1.0.0** | **2025-12-27** | **セルフホスティングフェーズ (Phase 9-13) 追加。最終目標をセルフホスティングに設定** |
+| 1.0.0 | 2025-12-27 | セルフホスティングフェーズ (Phase 9-13) 追加。最終目標をセルフホスティングに設定 |
+| **2.0.0** | **2025-12-28** | **Phase 9-13完了。ANSI準拠率向上フェーズ (Phase 14-19) 追加。現在23.4%から80%を目標に設定** |
