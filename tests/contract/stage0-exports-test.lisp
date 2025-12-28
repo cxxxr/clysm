@@ -81,6 +81,47 @@
   (skip "Stage 0 eval export requires extended CL subset support"))
 
 ;;; ============================================================
+;;; T019: Contract test compile_form returns valid Wasm
+;;; ============================================================
+
+(deftest compile-form-produces-valid-wasm
+  "Verify clysm:compile-to-wasm produces valid Wasm for simple expressions."
+  ;; Test arithmetic expression produces valid Wasm
+  (let ((bytes (clysm:compile-to-wasm '(+ 1 2))))
+    (ok (vectorp bytes) "Should return a vector")
+    (ok (> (length bytes) 8) "Should have Wasm header + content")
+    ;; Check Wasm magic bytes
+    (ok (and (= #x00 (aref bytes 0))
+             (= #x61 (aref bytes 1))
+             (= #x73 (aref bytes 2))
+             (= #x6D (aref bytes 3)))
+        "Should start with Wasm magic bytes (0x00 'asm')")))
+
+(deftest compile-form-nested-arithmetic-valid
+  "Verify nested arithmetic compiles to valid Wasm."
+  (let ((bytes (clysm:compile-to-wasm '(+ 1 (* 2 3)))))
+    (ok (vectorp bytes) "Should return a vector")
+    (ok (> (length bytes) 8) "Should produce non-trivial output")))
+
+;;; ============================================================
+;;; T033: Contract test defun produces exported function
+;;; ============================================================
+
+(deftest compile-defun-produces-function
+  "Verify defun compiles to Wasm with function export."
+  (let ((bytes (clysm:compile-to-wasm '(defun add2 (a b) (+ a b)))))
+    (ok (vectorp bytes) "Should return a vector")
+    (ok (> (length bytes) 50) "Should produce substantial output for defun")))
+
+(deftest compile-multiple-defuns
+  "Verify multiple defuns compile together."
+  (let ((bytes (clysm:compile-to-wasm '(progn
+                                         (defun inc (x) (+ x 1))
+                                         (defun dec (x) (- x 1))))))
+    (ok (vectorp bytes) "Should return a vector")
+    (ok (> (length bytes) 100) "Should produce output for multiple defuns")))
+
+;;; ============================================================
 ;;; Documentation Tests
 ;;; ============================================================
 

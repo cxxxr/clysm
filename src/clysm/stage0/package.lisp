@@ -74,7 +74,19 @@ Fixed-point is achieved when Stage 1 == Stage 2 (byte-identical).")
            #:*unbound-index*
            #:*mv-count-index*
            #:*mv-buffer-index*
-           #:generate-global-init)
+           #:generate-global-init
+           ;; Symbol interning (T011)
+           #:*symbol-table*
+           #:stage0-symbol
+           #:make-stage0-symbol
+           #:sym-name
+           #:sym-value
+           #:sym-function
+           #:sym-plist
+           #:intern-symbol
+           #:find-symbol*
+           #:clear-symbol-table
+           #:symbol-count)
 
   ;; Modules (from modules.lisp)
   (:export #:*compiler-modules*
@@ -101,4 +113,51 @@ Fixed-point is achieved when Stage 1 == Stage 2 (byte-identical).")
 
   ;; Exports (from exports.lisp)
   (:export #:generate-exports
-           #:*exported-functions*))
+           #:*exported-functions*)
+
+  ;; Environment (from env.lisp) - Phase 13D True Self-Hosting
+  (:export #:make-env
+           #:empty-env-p
+           #:extend-env
+           #:extend-env*
+           #:lookup
+           #:env-bindings
+           #:env-symbols)
+
+  ;; Primitives (from primitives.lisp) - Phase 13D True Self-Hosting
+  (:export #:*primitives*
+           #:register-primitive
+           #:get-primitive
+           #:primitive-p
+           #:initialize-primitives
+           #:prim-add
+           #:prim-sub
+           #:prim-mul
+           #:prim-div
+           #:prim-lt
+           #:prim-gt
+           #:prim-num-eq
+           #:prim-cons
+           #:prim-car
+           #:prim-cdr
+           #:prim-eq)
+
+  ;; Evaluator (from eval.lisp) - Phase 13D True Self-Hosting
+  (:export #:eval-form
+           #:*global-functions*
+           #:get-global-function
+           #:set-global-function
+           #:clear-global-functions
+           #:closure
+           #:make-closure
+           #:closure-p
+           #:closure-params
+           #:closure-body
+           #:closure-env)
+
+  ;; Bootstrap source (from bootstrap-source.lisp) - Phase 13D True Self-Hosting
+  (:export #:*bootstrap-source-forms*
+           #:get-bootstrap-forms
+           #:bootstrap-form-count
+           #:compile-bootstrap-forms
+           #:estimate-bootstrap-size))

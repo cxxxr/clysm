@@ -163,3 +163,45 @@
   ;; Currently, all globals can be initialized in their definition
   ;; This function is here for future extensibility
   '())
+
+;;; ============================================================
+;;; Symbol Interning (T011: intern-symbol for host-side evaluation)
+;;; ============================================================
+
+(defvar *symbol-table* (make-hash-table :test 'equal)
+  "Symbol table for interned symbols. Uses string-based equality
+   to allow symbols to be looked up by name string.")
+
+(defstruct (stage0-symbol (:conc-name sym-))
+  "Representation of an interned symbol for Stage 0.
+   Holds the symbol name and optional value/function bindings."
+  (name "" :type string)
+  (value nil)
+  (function nil)
+  (plist nil))
+
+(defun intern-symbol (name)
+  "Intern a symbol by name string. Returns existing symbol if already
+   interned, otherwise creates and stores a new symbol.
+   Uses string-based equality (case-sensitive)."
+  (let ((name-string (if (stringp name)
+                         name
+                         (symbol-name name))))
+    (or (gethash name-string *symbol-table*)
+        (setf (gethash name-string *symbol-table*)
+              (make-stage0-symbol :name name-string)))))
+
+(defun find-symbol* (name)
+  "Find an already-interned symbol by name. Returns NIL if not found."
+  (let ((name-string (if (stringp name)
+                         name
+                         (symbol-name name))))
+    (gethash name-string *symbol-table*)))
+
+(defun clear-symbol-table ()
+  "Clear all interned symbols. Useful for testing."
+  (clrhash *symbol-table*))
+
+(defun symbol-count ()
+  "Return count of interned symbols."
+  (hash-table-count *symbol-table*))

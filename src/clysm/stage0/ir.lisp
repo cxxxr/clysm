@@ -187,22 +187,147 @@
 
 (defun generate-call-ir (operator args)
   "Generate IR for function call"
-  (let ((arg-irs (mapcan #'generate-wasm-ir args)))
-    ;; Check for primitive operations
-    (cond
-      ((and (consp operator) (eq :var-ref (first operator)))
-       (let ((op-name (second operator)))
-         (case op-name
-           (+ (append arg-irs '((:call $+))))
-           (- (append arg-irs '((:call $-))))
-           (* (append arg-irs '((:call $*))))
-           (/ (append arg-irs '((:call $/))))
-           (t (append arg-irs `((:call ,op-name)))))))
-      (t
-       ;; General function call
+  ;; Check for primitive operations that we inline
+  (cond
+    ((and (consp operator) (eq :var-ref (first operator)))
+     (let ((op-name (second operator)))
+       (case op-name
+         ;; Arithmetic primitives - inline i31ref operations
+         (+ (generate-binary-arithmetic-ir args :i32.add))
+         (- (generate-binary-arithmetic-ir args :i32.sub))
+         (* (generate-binary-arithmetic-ir args :i32.mul))
+         (/ (generate-binary-arithmetic-ir args :i32.div_s))
+
+         ;; Comparison primitives
+         (< (generate-comparison-ir args :i32.lt_s))
+         (> (generate-comparison-ir args :i32.gt_s))
+         (= (generate-comparison-ir args :i32.eq))
+
+         ;; List primitives
+         (cons (generate-cons-ir args))
+         (car (generate-car-ir args))
+         (cdr (generate-cdr-ir args))
+
+         ;; Equality
+         (eq (generate-eq-ir args))
+
+         ;; Otherwise, try function call
+         (t (let ((arg-irs (mapcan #'generate-wasm-ir args)))
+              (append arg-irs `((:call ,op-name))))))))
+    (t
+     ;; General function call
+     (let ((arg-irs (mapcan #'generate-wasm-ir args)))
        (append arg-irs
                (generate-wasm-ir operator)
                '((:call_ref)))))))
+
+;;; ============================================================
+;;; Arithmetic IR Generation (US1)
+;;; ============================================================
+
+(defun generate-binary-arithmetic-ir (args op)
+  "Generate IR for binary arithmetic operation on i31refs.
+   Extracts i32 values, performs operation, converts back to i31ref."
+  (cond
+    ;; Zero args: return identity
+    ((null args)
+     (case op
+       (:i32.add '((:i32.const 0) (:ref.i31)))   ; (+) -> 0
+       (:i32.mul '((:i32.const 1) (:ref.i31)))   ; (*) -> 1
+       (t (error "~A requires at least one argument" op))))
+
+    ;; Single arg: special case for subtraction (negation)
+    ((null (cdr args))
+     (let ((arg-ir (generate-wasm-ir (first args))))
+       (case op
+         (:i32.sub
+          ;; (- x) -> negate x
+          (append '((:i32.const 0))
+                  arg-ir
+                  '((:i31.get_s))
+                  '((:i32.sub))
+                  '((:ref.i31))))
+         (t arg-ir))))  ; Single arg + or * just returns the value
+
+    ;; Two or more args: left fold
+    (t
+     (let ((result (generate-wasm-ir (first args))))
+       (dolist (arg (rest args))
+         (setf result
+               (append result
+                       '((:i31.get_s))        ; Extract first operand
+                       (generate-wasm-ir arg)
+                       '((:i31.get_s))        ; Extract second operand
+                       `((,op))               ; Perform operation
+                       '((:ref.i31)))))       ; Convert back to i31ref
+       result))))
+
+(defun generate-comparison-ir (args op)
+  "Generate IR for comparison operation.
+   Returns T (i31ref 1) or NIL (global 0)."
+  (when (< (length args) 2)
+    (error "Comparison requires at least two arguments"))
+  (let* ((a-ir (generate-wasm-ir (first args)))
+         (b-ir (generate-wasm-ir (second args))))
+    ;; Compare two values, return T or NIL
+    (append a-ir
+            '((:i31.get_s))
+            b-ir
+            '((:i31.get_s))
+            `((,op))
+            ;; Convert boolean to Lisp T/NIL
+            '((:if :anyref)
+              (:i32.const 1) (:ref.i31)   ; T (non-nil)
+              (:else)
+              (:global.get 0)              ; NIL
+              (:end)))))
+
+;;; ============================================================
+;;; List Primitive IR Generation (US6)
+;;; ============================================================
+
+(defun generate-cons-ir (args)
+  "Generate IR for (cons a b)"
+  (unless (= (length args) 2)
+    (error "cons requires exactly two arguments"))
+  (let ((car-ir (generate-wasm-ir (first args)))
+        (cdr-ir (generate-wasm-ir (second args))))
+    (append car-ir
+            cdr-ir
+            `((:struct.new ,+type-cons+)))))
+
+(defun generate-car-ir (args)
+  "Generate IR for (car cell)"
+  (unless (= (length args) 1)
+    (error "car requires exactly one argument"))
+  (let ((cell-ir (generate-wasm-ir (first args))))
+    (append cell-ir
+            `((:ref.cast ,+type-cons+))
+            `((:struct.get ,+type-cons+ 0)))))  ; field 0 is car
+
+(defun generate-cdr-ir (args)
+  "Generate IR for (cdr cell)"
+  (unless (= (length args) 1)
+    (error "cdr requires exactly one argument"))
+  (let ((cell-ir (generate-wasm-ir (first args))))
+    (append cell-ir
+            `((:ref.cast ,+type-cons+))
+            `((:struct.get ,+type-cons+ 1)))))  ; field 1 is cdr
+
+(defun generate-eq-ir (args)
+  "Generate IR for (eq a b)"
+  (unless (= (length args) 2)
+    (error "eq requires exactly two arguments"))
+  (let ((a-ir (generate-wasm-ir (first args)))
+        (b-ir (generate-wasm-ir (second args))))
+    (append a-ir
+            b-ir
+            '((:ref.eq))
+            '((:if :anyref)
+              (:i32.const 1) (:ref.i31)
+              (:else)
+              (:global.get 0)
+              (:end)))))
 
 (defun generate-if-ir (test then else)
   "Generate IR for if expression"

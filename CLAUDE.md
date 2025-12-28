@@ -46,11 +46,22 @@ sbcl --eval "(asdf:test-system :clysm)"
 
 ## Current Status
 
-**Phase 13 Complete**: Self-hosting bootstrap infrastructure implemented.
+**Phase 13D Complete**: True self-hosting achieved.
 
-- Stage 0: 275-byte WasmGC module with compile_form/compile_all exports
-- Fixpoint: Stage 1 == Stage 2 (ACHIEVED)
-- Compilation rate: ~23% (theoretical maximum for primitive-based approach)
+- Stage 0: 275-byte static stub module
+- Stage 1: 2945-byte bootstrap compiler (from bootstrap-source.lisp)
+- Stage 2: 2945-byte (byte-identical to Stage 1)
+- **Fixpoint: ACHIEVED** - verified via `./scripts/verify-fixpoint.sh --json`
+
+### Bootstrap Pipeline
+
+```
+bootstrap-source.lisp (38 forms) → clysm:compile-to-wasm → Stage 1 (2945 bytes)
+                                                             ↓
+                                  host-shim + Stage 1     → Stage 2 (2945 bytes)
+                                                             ↓
+                                  cmp Stage 1 Stage 2     → IDENTICAL ✓
+```
 
 ### Completed Features (017-045)
 
@@ -110,6 +121,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 ## Active Technologies
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (001-numeric-functions)
 - N/A (compiler feature, no persistence) (001-numeric-functions)
+- Common Lisp (SBCL 2.4+) for host, WasmGC for target + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-true-self-hosting)
+- N/A (in-memory compilation only) (001-true-self-hosting)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

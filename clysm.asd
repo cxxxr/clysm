@@ -180,12 +180,16 @@
      (:file "verifier")))
 
    ;; Stage 0: Complete compiler for self-hosting (045-stage0-complete-compiler)
+   ;; Extended for Phase 13D: True Self-Hosting (001-true-self-hosting)
    (:module "stage0"
     :serial t
     :components
     ((:file "package")
      (:file "types")
      (:file "globals")
+     (:file "env")           ; T004: Environment management
+     (:file "primitives")    ; T008: Primitive operations
+     (:file "eval")          ; T006: Core evaluator
      (:file "ffi")
      (:file "runtime")
      (:file "reader")
@@ -198,7 +202,8 @@
      (:file "progress")
      (:file "output")
      (:file "exports")
-     (:file "entry")))
+     (:file "entry")
+     (:file "bootstrap-source")))  ; T044: Bootstrap source forms
 
    ;; Bootstrap: Interpreter-based bootstrap (044-interpreter-bootstrap)
    (:module "interpreter-bootstrap"
@@ -516,11 +521,15 @@
        (:file "multiple-values-test")
        (:file "file-loading-test")))
      ;; Stage 0 complete compiler unit tests (045-stage0-complete-compiler)
+     ;; Extended for Phase 13D: True Self-Hosting (001-true-self-hosting)
      (:module "stage0"
       :serial t
       :components
       ((:file "types-test")
        (:file "globals-test")
+       (:file "env-test")         ; T005: Environment tests
+       (:file "eval-test")        ; T007: Evaluator tests
+       (:file "primitives-test")  ; T009: Primitives tests
        (:file "reader-test")
        (:file "ast-test")
        (:file "ir-test")
