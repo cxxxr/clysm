@@ -31,4 +31,5 @@ Provides:
            #:show-version)
   ;; Main entry point (from main.lisp)
   (:export #:main
+           #:entry-point
            #:run-compile-command))

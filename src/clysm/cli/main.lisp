@@ -13,7 +13,8 @@
   "Main entry point for Clysm CLI.
    ARGS is the list of command-line arguments.
 
-   Returns the exit code that should be used."
+   Returns the exit code that should be used.
+   For use as ASDF program-op entry-point, use ENTRY-POINT instead."
   (let ((parsed (parse-args args)))
 
     ;; Handle help
@@ -204,3 +205,15 @@
         (#\Return (write-string "\\r" out))
         (#\Tab (write-string "\\t" out))
         (otherwise (write-char char out))))))
+
+;;; ============================================================
+;;; Entry point for ASDF program-op
+;;; ============================================================
+
+(defun entry-point ()
+  "Entry point for standalone executable built with ASDF program-op.
+   Calls MAIN and exits with the appropriate exit code.
+
+   Build with: (asdf:make :clysm/executable)"
+  (let ((exit-code (main)))
+    (uiop:quit exit-code)))

@@ -698,3 +698,12 @@
   :serial t
   :components
   ((:file "bootstrap")))
+
+;; Executable CLI (041-dev-workflow)
+;; Build with: (asdf:make :clysm/executable)
+(defsystem "clysm/executable"
+  :description "Clysm CLI executable"
+  :depends-on ("clysm")
+  :build-operation "program-op"
+  :build-pathname "clysm"
+  :entry-point "clysm/cli:entry-point")
