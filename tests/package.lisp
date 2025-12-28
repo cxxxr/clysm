@@ -10,7 +10,11 @@
            #:assert-compiles
            #:assert-validates
            #:assert-equals
-           #:wasm-runtime-error))
+           #:wasm-runtime-error
+           ;; Floating-point comparison helpers (001-numeric-functions)
+           #:*float-epsilon*
+           #:approx=
+           #:assert-approx=))
 
 (defpackage #:clysm/tests
   (:use #:cl #:rove)
@@ -612,3 +616,47 @@
                 #:accumulate-wasm-bytes
                 #:write-stage1-binary
                 #:validate-stage1))
+
+;;; ============================================================
+;;; ANSI Numeric Functions Tests (001-numeric-functions)
+;;; ============================================================
+
+;; Basic functions unit tests (001-numeric-functions US1)
+;; Tests for signum, max, min (abs, gcd, lcm already in math-functions)
+(defpackage #:clysm/tests/unit/basic-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run #:compile-and-run-numeric))
+
+;; Trigonometric functions unit tests (001-numeric-functions US2)
+;; Tests for sin, cos, tan, asin, acos, atan
+(defpackage #:clysm/tests/unit/trig-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run-numeric)
+  (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))
+
+;; Bitwise operations unit tests (001-numeric-functions US3)
+;; Tests for logcount, integer-length (ash, logand etc. already exist)
+(defpackage #:clysm/tests/unit/bitwise-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run #:compile-and-run-numeric))
+
+;; Hyperbolic functions unit tests (001-numeric-functions US5)
+;; Tests for sinh, cosh, tanh, asinh, acosh, atanh
+(defpackage #:clysm/tests/unit/hyperbolic-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run-numeric)
+  (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))
+
+;; Complex number operations unit tests (001-numeric-functions US6)
+;; Tests for complex, realpart, imagpart, conjugate, phase
+(defpackage #:clysm/tests/unit/complex-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run-numeric)
+  (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))
+
+;; Numeric compliance suite integration tests (001-numeric-functions)
+;; Type contagion tests and ANSI numbers category compliance
+(defpackage #:clysm/tests/integration/numeric-suite
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run-numeric)
+  (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))

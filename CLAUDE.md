@@ -106,3 +106,10 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Use `*` suffix for Clysm-specific variants (e.g., `get-setf-expansion*`)
 - Worklist-based iteration to avoid Wasm recursion limits
 - `ref.test`/`ref.cast` for runtime type dispatch
+
+## Active Technologies
+- Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (001-numeric-functions)
+- N/A (compiler feature, no persistence) (001-numeric-functions)
+
+## Recent Changes
+- 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

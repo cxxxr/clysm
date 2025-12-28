@@ -20,7 +20,10 @@
    2. Call the imported function
    3. Marshal return value from Wasm type back to Lisp type"
   (declare (ignore env))
-  (let ((import-idx (ffd-type-index decl))
+  ;; 001-numeric-functions: Use ffd-func-index for :call-import (not ffd-type-index)
+  ;; ffd-type-index is for import section type references
+  ;; ffd-func-index is for :call instruction (0, 1, 2... for imports)
+  (let ((import-idx (ffd-func-index decl))
         (param-types (ffd-param-types decl))
         (return-type (ffd-return-type decl))
         (instrs '()))
@@ -37,7 +40,8 @@
                  (dolist (instr marshal-instrs)
                    (push instr instrs)))))
     ;; Call the imported function
-    (push (list :call import-idx) instrs)
+    ;; 001-numeric-functions: Use :call-import to distinguish from local :call
+    (push (list :call-import import-idx) instrs)
     ;; Marshal return value back to Lisp type
     (unless (eq return-type :void)
       (let ((return-marshal (marshal-from-wasm return-type)))
@@ -128,18 +132,37 @@
    This affects function indexing - imported functions come first."
   (hash-table-count (ffi-env-imports *ffi-environment*)))
 
-(defun assign-import-indices (env)
-  "Assign type indices to all registered foreign functions.
-   Type indices for imports start after the built-in types (currently 23+).
-   Function indices for imports start at 0."
+(defun assign-import-indices (env &optional (regular-func-count 0))
+  "Assign type and function indices to all registered foreign functions.
+   Type indices for imports are shared based on function signature.
+   Type indices start at 23 + REGULAR-FUNC-COUNT + unique_index.
+   Function indices for imports start at 0 (imports come before local functions).
+   001-numeric-functions: ffd-type-index is for import section, ffd-func-index is for :call."
   (let ((func-index 0)
-        (type-index 23))  ; Start after built-in types (22 = mv_array)
+        ;; FFI types come after regular function types in the type section
+        (type-base (+ 23 regular-func-count))
+        ;; Track unique signatures -> type index
+        (signature-to-type-index (make-hash-table :test 'equal))
+        (next-unique-type-index 0))
     (maphash (lambda (name decl)
                (declare (ignore name))
-               ;; Each import gets a unique function type
-               (setf (ffd-type-index decl) type-index)
-               (incf type-index)
-               (incf func-index))
+               ;; Compute signature key
+               (let* ((sig (generate-type-for-ffi-signature
+                            (ffd-param-types decl)
+                            (ffd-return-type decl)))
+                      (sig-key (format nil "~S" sig)))
+                 ;; Get or assign type index for this signature
+                 (let ((type-idx (gethash sig-key signature-to-type-index)))
+                   (unless type-idx
+                     ;; New signature - assign next available type index
+                     (setf type-idx (+ type-base next-unique-type-index))
+                     (setf (gethash sig-key signature-to-type-index) type-idx)
+                     (incf next-unique-type-index))
+                   ;; Set the type index for this import
+                   (setf (ffd-type-index decl) type-idx))
+                 ;; Each import gets a sequential function index (for :call)
+                 (setf (ffd-func-index decl) func-index)
+                 (incf func-index)))
              (ffi-env-imports env))
     func-index))
 
@@ -322,13 +345,76 @@
 
 (defun get-call-host-dynamic-index (env)
   "Get the function index for $ffi_call_host_dynamic.
-   Returns NIL if not registered."
+   Returns NIL if not registered.
+   001-numeric-functions: Returns ffd-func-index (for :call), not ffd-type-index."
   (let ((decl (gethash '$ffi_call_host_dynamic (ffi-env-imports env))))
     (when decl
-      (ffd-type-index decl))))
+      (ffd-func-index decl))))
 
 (defun ensure-call-host-dynamic-import (env)
   "Ensure $ffi_call_host_dynamic is registered. Idempotent.
    Call this when compiling code that uses ffi:call-host."
   (unless (gethash '$ffi_call_host_dynamic (ffi-env-imports env))
     (register-call-host-dynamic-import env)))
+
+;;; ============================================================
+;;; Math Module FFI Imports (001-numeric-functions)
+;;; ============================================================
+;;;
+;;; Research decision: Import transcendental functions from host via FFI.
+;;; This is ~10x faster than implementing Taylor series in Wasm.
+;;; The host shim (host-shim/math-shim.js) provides Math.* functions.
+
+(defparameter *math-function-specs*
+  '(;; Trigonometric functions (radians)
+    (:sin     "sin"   (:float) :float)
+    (:cos     "cos"   (:float) :float)
+    (:tan     "tan"   (:float) :float)
+    ;; Inverse trigonometric functions
+    (:asin    "asin"  (:float) :float)
+    (:acos    "acos"  (:float) :float)
+    (:atan    "atan"  (:float) :float)
+    (:atan2   "atan2" (:float :float) :float)
+    ;; Hyperbolic functions
+    (:sinh    "sinh"  (:float) :float)
+    (:cosh    "cosh"  (:float) :float)
+    (:tanh    "tanh"  (:float) :float)
+    ;; Inverse hyperbolic functions
+    (:asinh   "asinh" (:float) :float)
+    (:acosh   "acosh" (:float) :float)
+    (:atanh   "atanh" (:float) :float)
+    ;; Exponential and logarithmic functions
+    (:exp     "exp"   (:float) :float)
+    (:log     "log"   (:float) :float)
+    (:log10   "log10" (:float) :float)
+    ;; Power functions
+    (:pow     "pow"   (:float :float) :float))
+  "Specification of math functions to import from host.
+   Format: (lisp-name field-name param-types return-type)")
+
+(defun make-math-import-decl (spec)
+  "Create a ForeignFunctionDecl from a math function spec.
+   SPEC: (lisp-name field-name param-types return-type)"
+  (destructuring-bind (lisp-name field-name param-types return-type) spec
+    (make-foreign-function-decl
+     :lisp-name lisp-name
+     :module-name "clysm:math"
+     :field-name field-name
+     :param-types param-types
+     :return-type return-type)))
+
+(defun register-math-imports (env)
+  "Register all math module FFI imports in the FFI environment.
+   Call this when compiling code that uses transcendental functions."
+  (dolist (spec *math-function-specs*)
+    (let* ((lisp-name (first spec))
+           (existing (gethash lisp-name (ffi-env-imports env))))
+      (unless existing
+        (register-foreign-function env (make-math-import-decl spec)))))
+  env)
+
+(defun ensure-math-imports (env)
+  "Ensure math module imports are registered. Idempotent.
+   Call this when compiling code that uses transcendental functions."
+  (unless (gethash :sin (ffi-env-imports env))
+    (register-math-imports env)))

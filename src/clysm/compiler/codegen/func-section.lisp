@@ -335,7 +335,7 @@
          (args (clysm/compiler/ast:ast-ffi-call-arguments ast))
          (param-types (clysm/ffi:ffd-param-types decl))
          (return-type (clysm/ffi:ffd-return-type decl))
-         (func-index (or (clysm/ffi:ffd-type-index decl) 0))
+         (func-index (or (clysm/ffi:ffd-func-index decl) 0))
          (result '()))
     ;; Step 1: Compile and marshal each argument
     (loop for arg in args
@@ -355,7 +355,8 @@
                      (dolist (instr marshal-instrs)
                        (push (if (listp instr) instr (list instr)) result))))))
     ;; Step 2: Call the imported function
-    (push (list :call func-index) result)
+    ;; 001-numeric-functions: Use :call-import to distinguish from local :call
+    (push (list :call-import func-index) result)
     ;; Step 3: Unmarshal return value
     (if (eq return-type :void)
         ;; Void functions return NIL
@@ -770,6 +771,19 @@
                                nconc
                                ;; Bitwise operations for LEB128 (043-self-hosting-blockers)
                                logand logior logxor lognot ash mod rem
+                               ;; ANSI Numeric Functions (001-numeric-functions)
+                               ;; Basic arithmetic
+                               abs max min gcd lcm
+                               ;; Bitwise extensions
+                               logcount integer-length
+                               ;; Complex number operations
+                               complex realpart imagpart conjugate phase
+                               ;; Trigonometric functions
+                               sin cos tan asin acos atan
+                               ;; Mathematical functions
+                               exp log sqrt expt
+                               ;; Hyperbolic functions
+                               sinh cosh tanh asinh acosh atanh
                                ;; Array setf primitive (043-self-hosting-blockers)
                                %setf-aref
                                ;; Property list operations (043-self-hosting-blockers)
@@ -868,12 +882,21 @@
     (truncate (compile-truncate args env))
     (mod (compile-arithmetic-op :i32.rem_s args env nil))
     (rem (compile-arithmetic-op :i32.rem_s args env nil))
+    ;; ANSI Numeric Functions (001-numeric-functions)
+    (abs (compile-abs args env))
+    (max (compile-max args env))
+    (min (compile-min args env))
+    (gcd (compile-gcd args env))
+    (lcm (compile-lcm args env))
     ;; Feature 043: Bitwise operators for LEB128 encoding
     (logand (compile-arithmetic-op :i32.and args env -1))
     (logior (compile-arithmetic-op :i32.or args env 0))
     (logxor (compile-arithmetic-op :i32.xor args env 0))
     (lognot (compile-lognot args env))
     (ash (compile-ash args env))
+    ;; ANSI Numeric Functions: Bitwise (001-numeric-functions)
+    (logcount (compile-logcount args env))
+    (integer-length (compile-integer-length args env))
     ;; Comparison operators (T053)
     (<  (compile-comparison-op :i32.lt_s args env))
     (>  (compile-comparison-op :i32.gt_s args env))
@@ -1037,6 +1060,31 @@
     ;; Numeric accessors (019-numeric-accessors)
     (numerator (compile-numerator args env))
     (denominator (compile-denominator args env))
+    ;; ANSI Complex Number Functions (001-numeric-functions)
+    (complex (compile-complex args env))
+    (realpart (compile-realpart args env))
+    (imagpart (compile-imagpart args env))
+    (conjugate (compile-conjugate args env))
+    (phase (compile-phase args env))
+    ;; Trigonometric functions (001-numeric-functions)
+    (sin (compile-sin args env))
+    (cos (compile-cos args env))
+    (tan (compile-tan args env))
+    (asin (compile-asin args env))
+    (acos (compile-acos args env))
+    (atan (compile-atan args env))
+    ;; Mathematical functions (001-numeric-functions)
+    (exp (compile-exp args env))
+    (log (compile-log args env))
+    (sqrt (compile-sqrt args env))
+    (expt (compile-expt args env))
+    ;; Hyperbolic functions (001-numeric-functions)
+    (sinh (compile-sinh args env))
+    (cosh (compile-cosh args env))
+    (tanh (compile-tanh args env))
+    (asinh (compile-asinh args env))
+    (acosh (compile-acosh args env))
+    (atanh (compile-atanh args env))
     ;; Hash table operations (043-self-hosting-blockers)
     (make-hash-table (compile-make-hash-table args env))
     (gethash (compile-gethash args env))
@@ -4121,6 +4169,974 @@
        ;; Other types: return 0 (could signal error)
        (:i32.const 0) :ref.i31
        :end :end))))
+
+;;; ============================================================
+;;; ANSI Numeric Functions (001-numeric-functions)
+;;; ============================================================
+
+(defun compile-abs (args env)
+  "Compile (abs x) - returns the absolute value of x.
+   For integers: uses comparison and negation
+   For floats: uses f64.abs
+   Stack: [] -> [number]"
+  (when (/= (length args) 1)
+    (error "abs requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "ABS-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Test if fixnum
+     '((:ref.test :i31))
+     `((:if (:result :anyref))
+       ;; Fixnum path
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :anyref))
+       ;; Negative: negate
+       (:i32.const 0)
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :i32.sub
+       :ref.i31
+       :else
+       ;; Non-negative: return as-is
+       (:local.get ,temp-local)
+       :end
+       :else
+       ;; Test if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       ;; Float path - use f64.abs
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       :f64.abs
+       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       :else
+       ;; Other types: return as-is (TODO: ratio, complex, bignum)
+       (:local.get ,temp-local)
+       :end :end))))
+
+(defun compile-max (args env)
+  "Compile (max x y ...) - returns the maximum of arguments.
+   Supports any number of arguments >= 1.
+   Stack: [] -> [number]"
+  (when (< (length args) 1)
+    (error "max requires at least 1 argument"))
+  (if (= (length args) 1)
+      ;; Single arg: just return it
+      (compile-to-instructions (first args) env)
+      ;; Multiple args: pairwise comparison
+      (let ((result-local (env-add-local env (gensym "MAX-RESULT")))
+            (temp-local (env-add-local env (gensym "MAX-TMP"))))
+        (append
+         ;; Start with first arg
+         (compile-to-instructions (first args) env)
+         (list (list :local.set result-local))
+         ;; Compare with remaining args
+         (loop for arg in (rest args)
+               append
+               (append
+                (compile-to-instructions arg env)
+                (list (list :local.set temp-local))
+                ;; Compare and update result
+                ;; For fixnums: use i32 comparison
+                `((:local.get ,temp-local)
+                  (:ref.test :i31)
+                  (:if (:result :anyref))
+                  ;; Both operands assumed fixnum for now (TODO: type dispatch)
+                  (:local.get ,temp-local)
+                  (:ref.cast :i31)
+                  :i31.get_s
+                  (:local.get ,result-local)
+                  (:ref.cast :i31)
+                  :i31.get_s
+                  :i32.gt_s
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end
+                  (:local.set ,result-local)
+                  (:local.get ,result-local)
+                  :else
+                  ;; Float comparison
+                  (:local.get ,temp-local)
+                  (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+                  (:local.get ,result-local)
+                  (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+                  :f64.gt
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end
+                  (:local.set ,result-local)
+                  (:local.get ,result-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end :end)))
+         ;; Return final result
+         `(:drop
+           (:local.get ,result-local))))))
+
+(defun compile-min (args env)
+  "Compile (min x y ...) - returns the minimum of arguments.
+   Supports any number of arguments >= 1.
+   Stack: [] -> [number]"
+  (when (< (length args) 1)
+    (error "min requires at least 1 argument"))
+  (if (= (length args) 1)
+      ;; Single arg: just return it
+      (compile-to-instructions (first args) env)
+      ;; Multiple args: pairwise comparison
+      (let ((result-local (env-add-local env (gensym "MIN-RESULT")))
+            (temp-local (env-add-local env (gensym "MIN-TMP"))))
+        (append
+         ;; Start with first arg
+         (compile-to-instructions (first args) env)
+         (list (list :local.set result-local))
+         ;; Compare with remaining args
+         (loop for arg in (rest args)
+               append
+               (append
+                (compile-to-instructions arg env)
+                (list (list :local.set temp-local))
+                ;; Compare and update result (using lt_s instead of gt_s)
+                `((:local.get ,temp-local)
+                  (:ref.test :i31)
+                  (:if (:result :anyref))
+                  ;; Fixnum comparison
+                  (:local.get ,temp-local)
+                  (:ref.cast :i31)
+                  :i31.get_s
+                  (:local.get ,result-local)
+                  (:ref.cast :i31)
+                  :i31.get_s
+                  :i32.lt_s
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end
+                  (:local.set ,result-local)
+                  (:local.get ,result-local)
+                  :else
+                  ;; Float comparison
+                  (:local.get ,temp-local)
+                  (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+                  (:local.get ,result-local)
+                  (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+                  (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+                  :f64.lt
+                  (:if (:result :anyref))
+                  (:local.get ,temp-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end
+                  (:local.set ,result-local)
+                  (:local.get ,result-local)
+                  :else
+                  (:local.get ,result-local)
+                  :end :end)))
+         ;; Return final result
+         `(:drop
+           (:local.get ,result-local))))))
+
+(defun compile-gcd (args env)
+  "Compile (gcd &rest integers) - returns greatest common divisor.
+   Uses Euclidean algorithm for two args.
+   (gcd) => 0, (gcd n) => |n|, (gcd a b) => gcd(a,b)
+   Stack: [] -> [integer]"
+  (case (length args)
+    (0 ;; (gcd) => 0
+     '((:i32.const 0) :ref.i31))
+    (1 ;; (gcd n) => |n|
+     (compile-abs args env))
+    (2 ;; Two-arg case: Euclidean algorithm
+     (let ((a-local (env-add-local env (gensym "GCD-A")))
+           (b-local (env-add-local env (gensym "GCD-B")))
+           (temp-local (env-add-local env (gensym "GCD-TMP"))))
+       (append
+        (compile-to-instructions (first args) env)
+        '((:ref.cast :i31) :i31.get_s)
+        ;; Take absolute value of first arg
+        `((:local.tee ,a-local)
+          (:i32.const 0)
+          :i32.lt_s
+          (:if (:result :i32))
+          (:i32.const 0)
+          (:local.get ,a-local)
+          :i32.sub
+          :else
+          (:local.get ,a-local)
+          :end
+          (:local.set ,a-local))
+        (compile-to-instructions (second args) env)
+        '((:ref.cast :i31) :i31.get_s)
+        ;; Take absolute value of second arg
+        `((:local.tee ,b-local)
+          (:i32.const 0)
+          :i32.lt_s
+          (:if (:result :i32))
+          (:i32.const 0)
+          (:local.get ,b-local)
+          :i32.sub
+          :else
+          (:local.get ,b-local)
+          :end
+          (:local.set ,b-local)
+          ;; Euclidean loop: while b != 0: a, b = b, a % b
+          (:block
+           (:loop
+            (:local.get ,b-local)
+            (:i32.const 0)
+            :i32.eq
+            :br_if 1  ;; exit if b == 0
+            (:local.get ,a-local)
+            (:local.get ,b-local)
+            :i32.rem_s
+            (:local.set ,temp-local)
+            (:local.get ,b-local)
+            (:local.set ,a-local)
+            (:local.get ,temp-local)
+            (:local.set ,b-local)
+            :br 0  ;; continue loop
+            :end) :end)
+          (:local.get ,a-local)
+          :ref.i31))))
+    (otherwise
+     ;; More than 2 args: reduce
+     (compile-gcd (list (first args)
+                        `(gcd ,@(rest args)))
+                  env))))
+
+(defun compile-lcm (args env)
+  "Compile (lcm &rest integers) - returns least common multiple.
+   Uses |a * b| / gcd(a, b) formula.
+   (lcm) => 1, (lcm n) => |n|, (lcm a b) => |a*b|/gcd(a,b)
+   Stack: [] -> [integer]"
+  (case (length args)
+    (0 ;; (lcm) => 1
+     '((:i32.const 1) :ref.i31))
+    (1 ;; (lcm n) => |n|
+     (compile-abs args env))
+    (2 ;; Two-arg case
+     (let ((a-local (env-add-local env (gensym "LCM-A")))
+           (b-local (env-add-local env (gensym "LCM-B")))
+           (gcd-local (env-add-local env (gensym "LCM-GCD"))))
+       (append
+        (compile-to-instructions (first args) env)
+        '((:ref.cast :i31) :i31.get_s)
+        `((:local.set ,a-local))
+        (compile-to-instructions (second args) env)
+        '((:ref.cast :i31) :i31.get_s)
+        `((:local.set ,b-local)
+          ;; Check for zero: lcm(n, 0) = 0
+          (:local.get ,a-local)
+          (:i32.const 0)
+          :i32.eq
+          (:local.get ,b-local)
+          (:i32.const 0)
+          :i32.eq
+          :i32.or
+          (:if (:result :anyref))
+          (:i32.const 0) :ref.i31
+          :else)
+        ;; Compute gcd
+        (compile-gcd (list (first args) (second args)) env)
+        '((:ref.cast :i31) :i31.get_s)
+        `((:local.set ,gcd-local)
+          ;; |a * b| / gcd - using (a / gcd) * b to avoid overflow
+          (:local.get ,a-local)
+          (:local.get ,gcd-local)
+          :i32.div_s
+          (:local.get ,b-local)
+          :i32.mul
+          ;; Take absolute value
+          (:local.tee ,a-local)
+          (:i32.const 0)
+          :i32.lt_s
+          (:if (:result :i32))
+          (:i32.const 0)
+          (:local.get ,a-local)
+          :i32.sub
+          :else
+          (:local.get ,a-local)
+          :end
+          :ref.i31
+          :end))))
+    (otherwise
+     ;; More than 2 args: reduce
+     (compile-lcm (list (first args)
+                        `(lcm ,@(rest args)))
+                  env))))
+
+(defun compile-logcount (args env)
+  "Compile (logcount integer) - count set bits.
+   For positive integers: count 1-bits (uses i32.popcnt)
+   For negative integers: count 0-bits (ANSI CL requirement)
+   Stack: [] -> [integer]"
+  (when (/= (length args) 1)
+    (error "logcount requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "LOGCOUNT-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     `((:local.tee ,temp-local)
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :i32))
+       ;; Negative: count 0-bits = popcnt(~n)
+       (:local.get ,temp-local)
+       (:i32.const -1)
+       :i32.xor  ;; bitwise NOT
+       :i32.popcnt
+       :else
+       ;; Non-negative: count 1-bits
+       (:local.get ,temp-local)
+       :i32.popcnt
+       :end
+       :ref.i31))))
+
+(defun compile-integer-length (args env)
+  "Compile (integer-length integer) - minimum bits to represent.
+   Uses: 32 - clz(n) for positive, 32 - clz(~n) for negative
+   (integer-length 0) => 0
+   (integer-length n) => floor(log2(|n|)) + 1 for n != 0
+   Stack: [] -> [integer]"
+  (when (/= (length args) 1)
+    (error "integer-length requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "INTLEN-TMP"))))
+    (append
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     `((:local.tee ,temp-local)
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :i32))
+       ;; Negative: use ~n (bitwise complement)
+       (:local.get ,temp-local)
+       (:i32.const -1)
+       :i32.xor
+       :else
+       (:local.get ,temp-local)
+       :end
+       ;; Compute 32 - clz(value)
+       ;; Stack: value
+       :i32.clz        ;; Stack: clz(value)
+       (:i32.const 32) ;; Stack: clz(value), 32
+       :i32.sub        ;; Stack: clz(value) - 32
+       (:i32.const 0)  ;; Stack: (clz - 32), 0
+       :i32.sub        ;; Stack: 0 - (clz - 32) = 32 - clz
+       :ref.i31))))
+
+;;; ============================================================
+;;; Complex Number Functions (001-numeric-functions)
+;;; ============================================================
+
+(defun compile-complex (args env)
+  "Compile (complex realpart &optional imagpart) - create a complex number.
+   If imagpart is zero, may return just the realpart (ANSI behavior).
+   Stack: [] -> [complex or real]"
+  (when (< (length args) 1)
+    (error "complex requires at least 1 argument"))
+  (when (> (length args) 2)
+    (error "complex requires at most 2 arguments"))
+  (let ((complex-type clysm/compiler/codegen/gc-types:+type-complex+))
+    (if (= (length args) 1)
+        ;; One arg: (complex x) => #C(x 0)
+        (append
+         (compile-to-instructions (first args) env)
+         `((:i32.const 0) :ref.i31  ;; imagpart = 0
+           (:struct.new ,complex-type)))
+        ;; Two args: (complex real imag)
+        (let ((imag-local (env-add-local env (gensym "COMPLEX-IMAG"))))
+          (append
+           (compile-to-instructions (second args) env)
+           (list (list :local.tee imag-local))
+           ;; Check if imagpart is zero (fixnum 0)
+           '((:ref.test :i31))
+           `((:if (:result :anyref))
+             (:local.get ,imag-local)
+             (:ref.cast :i31)
+             :i31.get_s
+             (:i32.const 0)
+             :i32.eq
+             (:if (:result :anyref))
+             ;; Imagpart is 0: return just realpart
+             ,@(compile-to-instructions (first args) env)
+             :else
+             ;; Create complex
+             ,@(compile-to-instructions (first args) env)
+             (:local.get ,imag-local)
+             (:struct.new ,complex-type)
+             :end
+             :else
+             ;; Imagpart is not i31: create complex anyway
+             ,@(compile-to-instructions (first args) env)
+             (:local.get ,imag-local)
+             (:struct.new ,complex-type)
+             :end))))))
+
+(defun compile-realpart (args env)
+  "Compile (realpart number) - extract real component.
+   For real numbers, returns the number itself.
+   For complex, returns the real part.
+   Stack: [] -> [number]"
+  (when (/= (length args) 1)
+    (error "realpart requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "REALPART-TMP")))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     `((:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex: extract real field
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 0)
+       :else
+       ;; Real number: return as-is
+       (:local.get ,temp-local)
+       :end))))
+
+(defun compile-imagpart (args env)
+  "Compile (imagpart number) - extract imaginary component.
+   For real numbers, returns 0.
+   For complex, returns the imaginary part.
+   Stack: [] -> [number]"
+  (when (/= (length args) 1)
+    (error "imagpart requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "IMAGPART-TMP")))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     `((:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex: extract imag field
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 1)
+       :else
+       ;; Real number: return 0
+       (:i32.const 0) :ref.i31
+       :end))))
+
+(defun compile-conjugate (args env)
+  "Compile (conjugate number) - compute complex conjugate.
+   For real numbers, returns the number itself.
+   For complex a+bi, returns a-bi.
+   Stack: [] -> [number]"
+  (when (/= (length args) 1)
+    (error "conjugate requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "CONJ-TMP")))
+        (imag-local (env-add-local env (gensym "CONJ-IMAG")))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     `((:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex: create conjugate (real, -imag)
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 0)  ;; real part
+       ;; Negate imaginary part
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 1)  ;; imag part
+       (:local.tee ,imag-local)
+       ;; Check if imag is i31
+       (:ref.test :i31)
+       (:if (:result :anyref))
+       ;; i31: negate
+       (:i32.const 0)
+       (:local.get ,imag-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :i32.sub
+       :ref.i31
+       :else
+       ;; Float: negate using f64
+       (:local.get ,imag-local)
+       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:if (:result :anyref))
+       (:f64.const 0.0)
+       (:local.get ,imag-local)
+       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       :f64.sub
+       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       :else
+       ;; Unknown type: return 0 (shouldn't happen)
+       (:i32.const 0) :ref.i31
+       :end :end
+       (:struct.new ,complex-type)
+       :else
+       ;; Real number: return as-is
+       (:local.get ,temp-local)
+       :end))))
+
+(defun compile-phase (args env)
+  "Compile (phase number) - compute the angle in radians.
+   For positive reals: 0
+   For negative reals: pi
+   For complex a+bi: atan2(b, a)
+   Stack: [] -> [float]"
+  (when (/= (length args) 1)
+    (error "phase requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "PHASE-TMP")))
+        (real-local (env-add-local env (gensym "PHASE-REAL")))
+        (imag-local (env-add-local env (gensym "PHASE-IMAG")))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+)
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     `((:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex: compute atan2(imag, real)
+       ;; Get real part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 0)
+       (:local.tee ,real-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,real-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,real-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       ;; Get imag part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 1)
+       (:local.tee ,imag-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,imag-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,imag-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       ;; TODO: Call atan2 from FFI
+       ;; For now, approximate: atan2(y, x) = atan(y/x) with quadrant adjustment
+       ;; This is a placeholder - full implementation needs FFI atan2
+       ;; Stack: real-f64, imag-f64
+       ;; Simple approximation for now:
+       ;; Result = atan(imag / real) - needs proper quadrant handling
+       (:local.set ,imag-local)  ;; Save imag-f64
+       (:local.set ,real-local)  ;; Save real-f64 (as i32 but we used as f64)
+       ;; For now just return 0 as placeholder
+       (:f64.const 0.0)
+       (:struct.new ,float-type)
+       :else
+       ;; Real number: check sign
+       (:local.get ,temp-local)
+       (:ref.test :i31)
+       (:if (:result :anyref))
+       ;; i31
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :anyref))
+       ;; Negative: return pi
+       (:f64.const 3.141592653589793)
+       (:struct.new ,float-type)
+       :else
+       ;; Non-negative: return 0
+       (:f64.const 0.0)
+       (:struct.new ,float-type)
+       :end
+       :else
+       ;; Float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :anyref))
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       (:f64.const 0.0)
+       :f64.lt
+       (:if (:result :anyref))
+       ;; Negative: return pi
+       (:f64.const 3.141592653589793)
+       (:struct.new ,float-type)
+       :else
+       ;; Non-negative: return 0
+       (:f64.const 0.0)
+       (:struct.new ,float-type)
+       :end
+       :else
+       ;; Unknown: return 0
+       (:f64.const 0.0)
+       (:struct.new ,float-type)
+       :end :end :end))))
+
+;;; ============================================================
+;;; Trigonometric Functions (001-numeric-functions Phase 6)
+;;; ============================================================
+
+(defun compile-unary-math-ffi (args env ffi-name)
+  "Helper for unary math functions that call FFI imports.
+   FFI-NAME: keyword like :sin, :cos, :exp, etc.
+   Compiles argument, converts to f64, calls FFI, wraps as $float.
+   Stack: [] -> [$float]"
+  (when (/= (length args) 1)
+    (error "~A requires exactly 1 argument" ffi-name))
+  (let ((temp-local (env-add-local env (gensym "MATH-TMP")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
+    ;; Ensure math imports are registered and indices are assigned
+    (clysm/ffi:ensure-math-imports clysm/ffi:*ffi-environment*)
+    (clysm/ffi:assign-import-indices clysm/ffi:*ffi-environment*)
+    (let ((decl (clysm/ffi:lookup-foreign-function
+                 clysm/ffi:*ffi-environment* ffi-name)))
+      (unless decl
+        (error "FFI function ~A not found" ffi-name))
+      (let ((func-index (clysm/ffi:ffd-func-index decl)))
+        (append
+         (compile-to-instructions (first args) env)
+         (list (list :local.tee temp-local))
+         ;; Check type and convert to f64
+         `((:ref.test :i31)
+           (:if (:result :f64))
+           ;; Fixnum: convert to f64
+           (:local.get ,temp-local)
+           (:ref.cast :i31)
+           :i31.get_s
+           :f64.convert_i32_s
+           :else
+           ;; Float: extract f64
+           (:local.get ,temp-local)
+           (:ref.test (:ref ,float-type))
+           (:if (:result :f64))
+           (:local.get ,temp-local)
+           (:ref.cast (:ref ,float-type))
+           (:struct.get ,float-type 0)
+           :else
+           ;; Other: use 0.0 as fallback
+           (:f64.const 0.0)
+           :end :end)
+         ;; Call FFI function
+         ;; 001-numeric-functions: Use :call-import for FFI calls
+         (list (list :call-import func-index))
+         ;; Wrap result as $float
+         `((:struct.new ,float-type)))))))
+
+(defun compile-sin (args env)
+  "Compile (sin x) - sine of x in radians.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :sin))
+
+(defun compile-cos (args env)
+  "Compile (cos x) - cosine of x in radians.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :cos))
+
+(defun compile-tan (args env)
+  "Compile (tan x) - tangent of x in radians.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :tan))
+
+(defun compile-asin (args env)
+  "Compile (asin x) - arc sine of x, result in radians.
+   For |x| > 1, returns complex (TODO).
+   Stack: [] -> [$float or $complex]"
+  ;; For now, assume real domain. Complex promotion would need additional code.
+  (compile-unary-math-ffi args env :asin))
+
+(defun compile-acos (args env)
+  "Compile (acos x) - arc cosine of x, result in radians.
+   For |x| > 1, returns complex (TODO).
+   Stack: [] -> [$float or $complex]"
+  (compile-unary-math-ffi args env :acos))
+
+(defun compile-atan (args env)
+  "Compile (atan y &optional x) - arc tangent.
+   With one arg: atan(y) in radians.
+   With two args: atan2(y, x) in radians.
+   Stack: [] -> [$float]"
+  (when (< (length args) 1)
+    (error "atan requires at least 1 argument"))
+  (when (> (length args) 2)
+    (error "atan requires at most 2 arguments"))
+  (if (= (length args) 1)
+      ;; Single arg: atan(y)
+      (compile-unary-math-ffi args env :atan)
+      ;; Two args: atan2(y, x)
+      (let ((y-local (env-add-local env (gensym "ATAN-Y") :f64))
+            (x-local (env-add-local env (gensym "ATAN-X") :f64))
+            (temp-local (env-add-local env (gensym "ATAN-TMP")))
+            (float-type clysm/compiler/codegen/gc-types:+type-float+))
+        (clysm/ffi:ensure-math-imports clysm/ffi:*ffi-environment*)
+        (clysm/ffi:assign-import-indices clysm/ffi:*ffi-environment*)
+        (let ((decl (clysm/ffi:lookup-foreign-function
+                     clysm/ffi:*ffi-environment* :atan2)))
+          (unless decl
+            (error "FFI function atan2 not found"))
+          (let ((func-index (clysm/ffi:ffd-func-index decl)))
+            (append
+             ;; Convert first arg (y) to f64
+             (compile-to-instructions (first args) env)
+             (list (list :local.tee temp-local))
+             `((:ref.test :i31)
+               (:if (:result :f64))
+               (:local.get ,temp-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               :f64.convert_i32_s
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast (:ref ,float-type))
+               (:struct.get ,float-type 0)
+               :end)
+             (list (list :local.set y-local))
+             ;; Convert second arg (x) to f64
+             (compile-to-instructions (second args) env)
+             (list (list :local.tee temp-local))
+             `((:ref.test :i31)
+               (:if (:result :f64))
+               (:local.get ,temp-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               :f64.convert_i32_s
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast (:ref ,float-type))
+               (:struct.get ,float-type 0)
+               :end)
+             (list (list :local.set x-local))
+             ;; Call atan2(y, x) - note: y first, then x
+             `((:local.get ,y-local)
+               (:local.get ,x-local)
+               (:call-import ,func-index)
+               (:struct.new ,float-type))))))))
+
+;;; ============================================================
+;;; Mathematical Functions (001-numeric-functions Phase 7)
+;;; ============================================================
+
+(defun compile-exp (args env)
+  "Compile (exp x) - e raised to the power x.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :exp))
+
+(defun compile-log (args env)
+  "Compile (log x &optional base) - natural or arbitrary base logarithm.
+   With one arg: natural log (ln x).
+   With two args: log base b of x = ln(x)/ln(b).
+   Stack: [] -> [$float]"
+  (when (< (length args) 1)
+    (error "log requires at least 1 argument"))
+  (when (> (length args) 2)
+    (error "log requires at most 2 arguments"))
+  (if (= (length args) 1)
+      ;; Natural log
+      (compile-unary-math-ffi args env :log)
+      ;; Log with base: log(x, base) = ln(x) / ln(base)
+      (let ((x-local (env-add-local env (gensym "LOG-X")))
+            (temp-local (env-add-local env (gensym "LOG-TMP")))
+            (float-type clysm/compiler/codegen/gc-types:+type-float+))
+        (clysm/ffi:ensure-math-imports clysm/ffi:*ffi-environment*)
+        (clysm/ffi:assign-import-indices clysm/ffi:*ffi-environment*)
+        (let ((log-decl (clysm/ffi:lookup-foreign-function
+                         clysm/ffi:*ffi-environment* :log)))
+          (unless log-decl
+            (error "FFI function log not found"))
+          (let ((log-idx (clysm/ffi:ffd-func-index log-decl)))
+            (append
+             ;; Compute ln(x)
+             (compile-to-instructions (first args) env)
+             (list (list :local.tee temp-local))
+             `((:ref.test :i31)
+               (:if (:result :f64))
+               (:local.get ,temp-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               :f64.convert_i32_s
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast (:ref ,float-type))
+               (:struct.get ,float-type 0)
+               :end)
+             ;; 001-numeric-functions: Use :call-import for FFI calls
+             (list (list :call-import log-idx))
+             (list (list :local.set x-local))
+             ;; Compute ln(base)
+             (compile-to-instructions (second args) env)
+             (list (list :local.tee temp-local))
+             `((:ref.test :i31)
+               (:if (:result :f64))
+               (:local.get ,temp-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               :f64.convert_i32_s
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast (:ref ,float-type))
+               (:struct.get ,float-type 0)
+               :end)
+             ;; 001-numeric-functions: Use :call-import for FFI calls
+             (list (list :call-import log-idx))
+             ;; Divide ln(x) / ln(base)
+             `((:local.get ,x-local)
+               :f64.div
+               (:struct.new ,float-type))))))))
+
+(defun compile-sqrt (args env)
+  "Compile (sqrt x) - square root.
+   Uses native f64.sqrt for non-negative, returns complex for negative (TODO).
+   Stack: [] -> [$float or $complex]"
+  (when (/= (length args) 1)
+    (error "sqrt requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "SQRT-TMP")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Check type and convert to f64
+     `((:ref.test :i31)
+       (:if (:result :f64))
+       ;; Fixnum: convert to f64
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       ;; Float: extract f64
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :f64))
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :else
+       ;; Other: use 0.0 as fallback
+       (:f64.const 0.0)
+       :end :end)
+     ;; Use native f64.sqrt
+     '(:f64.sqrt)
+     ;; Wrap result as $float
+     `((:struct.new ,float-type)))))
+
+(defun compile-expt (args env)
+  "Compile (expt base power) - base raised to power.
+   Uses FFI pow function.
+   Stack: [] -> [$float]"
+  (when (/= (length args) 2)
+    (error "expt requires exactly 2 arguments"))
+  (let ((base-local (env-add-local env (gensym "EXPT-BASE")))
+        (power-local (env-add-local env (gensym "EXPT-PWR")))
+        (temp-local (env-add-local env (gensym "EXPT-TMP")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
+    (clysm/ffi:ensure-math-imports clysm/ffi:*ffi-environment*)
+    (clysm/ffi:assign-import-indices clysm/ffi:*ffi-environment*)
+    (let ((pow-decl (clysm/ffi:lookup-foreign-function
+                     clysm/ffi:*ffi-environment* :pow)))
+      (unless pow-decl
+        (error "FFI function pow not found"))
+      (let ((pow-idx (clysm/ffi:ffd-func-index pow-decl)))
+        (append
+         ;; Convert base to f64 and save
+         (compile-to-instructions (first args) env)
+         (list (list :local.tee temp-local))
+         `((:ref.test :i31)
+           (:if (:result :f64))
+           (:local.get ,temp-local)
+           (:ref.cast :i31)
+           :i31.get_s
+           :f64.convert_i32_s
+           :else
+           (:local.get ,temp-local)
+           (:ref.cast (:ref ,float-type))
+           (:struct.get ,float-type 0)
+           :end)
+         (list (list :local.set base-local))
+         ;; Convert power to f64 and save
+         (compile-to-instructions (second args) env)
+         (list (list :local.tee temp-local))
+         `((:ref.test :i31)
+           (:if (:result :f64))
+           (:local.get ,temp-local)
+           (:ref.cast :i31)
+           :i31.get_s
+           :f64.convert_i32_s
+           :else
+           (:local.get ,temp-local)
+           (:ref.cast (:ref ,float-type))
+           (:struct.get ,float-type 0)
+           :end)
+         (list (list :local.set power-local))
+         ;; Call pow(base, power) with correct order
+         ;; 001-numeric-functions: Use :call-import for FFI calls
+         `((:local.get ,base-local)
+           (:local.get ,power-local)
+           (:call-import ,pow-idx)
+           (:struct.new ,float-type)))))))
+
+;;; ============================================================
+;;; Hyperbolic Functions (001-numeric-functions Phase 8)
+;;; ============================================================
+
+(defun compile-sinh (args env)
+  "Compile (sinh x) - hyperbolic sine.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :sinh))
+
+(defun compile-cosh (args env)
+  "Compile (cosh x) - hyperbolic cosine.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :cosh))
+
+(defun compile-tanh (args env)
+  "Compile (tanh x) - hyperbolic tangent.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :tanh))
+
+(defun compile-asinh (args env)
+  "Compile (asinh x) - inverse hyperbolic sine.
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :asinh))
+
+(defun compile-acosh (args env)
+  "Compile (acosh x) - inverse hyperbolic cosine.
+   Domain: x >= 1. Returns complex for x < 1 (TODO).
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :acosh))
+
+(defun compile-atanh (args env)
+  "Compile (atanh x) - inverse hyperbolic tangent.
+   Domain: -1 < x < 1. Returns complex for |x| >= 1 (TODO).
+   Stack: [] -> [$float]"
+  (compile-unary-math-ffi args env :atanh))
 
 ;;; ============================================================
 ;;; Destructive Modification (006-cons-list-ops)

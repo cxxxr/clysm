@@ -2,15 +2,30 @@
 /**
  * run-wasm.js - Module loader and runner script (T023)
  * FFI-based stream I/O (015-ffi-stream-io)
+ * ANSI Numeric Functions Extension (001-numeric-functions)
  *
- * Runs Clysm-compiled WebAssembly modules with host I/O shim.
+ * Runs Clysm-compiled WebAssembly modules with all host shims.
  *
  * Usage:
  *   node run-wasm.js <path-to-wasm> [--stdin <file>]
  */
 
 import { readFile } from 'node:fs/promises';
-import { getImports, setStdinContent } from './io-shim.js';
+import { getImports as getIoImports, setStdinContent } from './io-shim.js';
+import { getImports as getFsImports } from './fs-shim.js';
+import { getImports as getMathImports } from './math-shim.js';
+
+/**
+ * Merge all FFI imports into a single imports object
+ * @returns {Object} Combined import object for WebAssembly instantiation
+ */
+function getAllImports() {
+    return {
+        ...getIoImports(),
+        ...getFsImports(),
+        ...getMathImports()
+    };
+}
 
 async function main() {
     const args = process.argv.slice(2);
@@ -40,7 +55,7 @@ async function main() {
 
         // Load and compile WebAssembly module
         const wasmBuffer = await readFile(wasmPath);
-        const imports = getImports();
+        const imports = getAllImports();
 
         // Instantiate with WasmGC support
         const { instance } = await WebAssembly.instantiate(wasmBuffer, imports);

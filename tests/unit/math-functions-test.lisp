@@ -164,3 +164,25 @@
   "rem negative dividend: (rem -7 3) => -1"
   (ok (= -1 (clysm/tests:compile-and-run-numeric '(rem -7 3)))
       "(rem -7 3) should equal -1"))
+
+;;; ============================================================
+;;; Edge Case Tests (001-numeric-functions T134, T136)
+;;; ============================================================
+
+(deftest test-log-zero-edge-case
+  "log of zero: (log 0) => -infinity (IEEE 754)"
+  ;; T134: log(0) should return negative infinity per IEEE 754
+  (let ((result (clysm/tests:compile-and-run-numeric '(log 0))))
+    (ok (and (floatp result)
+             (sb-ext:float-infinity-p result)
+             (minusp result))
+        "(log 0) should return negative infinity")))
+
+(deftest test-expt-zero-negative-edge-case
+  "expt zero to negative power: (expt 0 -1) => signals or infinity"
+  ;; T136: 0^(-1) = 1/0 should signal division-by-zero or return infinity
+  (let ((result (clysm/tests:compile-and-run-numeric '(expt 0 -1))))
+    (ok (or (and (floatp result) (sb-ext:float-infinity-p result))
+            ;; Some implementations may return a very large number
+            (> (abs result) 1d300))
+        "(expt 0 -1) should return infinity or signal error")))

@@ -4,6 +4,16 @@
 (in-package #:clysm/lib/macros)
 
 ;;; ============================================================
+;;; Mathematical Constants (001-numeric-functions)
+;;; ============================================================
+
+(defconstant +pi+ 3.141592653589793d0
+  "The mathematical constant pi (double-float precision).")
+
+(defconstant +e+ 2.718281828459045d0
+  "The mathematical constant e (Euler's number, double-float precision).")
+
+;;; ============================================================
 ;;; Host-side macro definitions (for use in host SBCL)
 ;;; ============================================================
 

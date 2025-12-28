@@ -34,7 +34,10 @@
   (field-name nil :type (or null string))  ; Wasm field name (e.g., "console.log")
   (param-types nil :type list)           ; List of marshal types
   (return-type nil :type (or null keyword)) ; Marshal type or :void
-  (type-index nil :type (or null fixnum))) ; Generated type index
+  (type-index nil :type (or null fixnum)) ; Generated type index (for import section)
+  ;; 001-numeric-functions: Separate field for function index
+  ;; In Wasm, imports get indices 0 to N-1, local functions get N onwards
+  (func-index nil :type (or null fixnum))) ; Function index (for :call instructions)
 
 (defun validate-foreign-function-decl (decl)
   "Validate a ForeignFunctionDecl, signaling error if invalid."

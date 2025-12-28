@@ -176,6 +176,39 @@
                       :output :string)))
 
 ;;; ============================================================
+;;; Floating-Point Comparison Helpers (001-numeric-functions)
+;;; ============================================================
+
+(defparameter *float-epsilon* 1d-10
+  "Default epsilon for floating-point comparisons.
+   Research decision: 1e-10 allows for accumulated rounding while catching significant errors.")
+
+(defun approx= (a b &optional (epsilon *float-epsilon*))
+  "Test approximate equality of two floating-point numbers.
+   Returns T if |a - b| <= epsilon.
+   Handles special cases: NaN (always false), infinities (exact match required).
+
+   Example:
+     (approx= 1.0d0 1.0000000001d0)  ; => T (within epsilon)
+     (approx= 1.0d0 1.1d0)            ; => NIL (difference too large)"
+  (cond
+    ;; NaN: never equal
+    ((or (sb-ext:float-nan-p a) (sb-ext:float-nan-p b))
+     nil)
+    ;; Infinities: must match exactly
+    ((or (sb-ext:float-infinity-p a) (sb-ext:float-infinity-p b))
+     (= a b))
+    ;; Normal comparison
+    (t (<= (abs (- a b)) epsilon))))
+
+(defun assert-approx= (expected actual &optional (epsilon *float-epsilon*) message)
+  "Assert that ACTUAL is approximately equal to EXPECTED.
+   Signals an error if |expected - actual| > epsilon."
+  (unless (approx= expected actual epsilon)
+    (error "~@[~A: ~]Expected ~A but got ~A (difference: ~A, epsilon: ~A)"
+           message expected actual (abs (- expected actual)) epsilon)))
+
+;;; ============================================================
 ;;; Assertion Helpers
 ;;; ============================================================
 

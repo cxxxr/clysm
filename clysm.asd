@@ -24,6 +24,17 @@
      (:file "wasm-emit")
      (:file "wat-print")))
 
+   ;; FFI: Foreign Function Interface (moved before compiler for math imports)
+   (:module "ffi"
+    :serial t
+    :components
+    ((:file "package")
+     (:file "types")
+     (:file "macros")         ; Defines *ffi-environment* - must come before import-gen
+     (:file "marshalling")
+     (:file "import-gen")
+     (:file "export-gen")))
+
    ;; Compiler: Core compilation pipeline
    (:module "compiler"
     :serial t
@@ -95,17 +106,6 @@
      (:file "combination")  ; Must come before dispatch for *next-methods* special declaration
      (:file "dispatch")
      (:file "method-combination")))
-
-   ;; FFI: Foreign Function Interface
-   (:module "ffi"
-    :serial t
-    :components
-    ((:file "package")
-     (:file "types")
-     (:file "macros")         ; Defines *ffi-environment* - must come before import-gen
-     (:file "marshalling")
-     (:file "import-gen")
-     (:file "export-gen")))
 
    ;; Conditions: ANSI CL Condition System (014-condition-system)
    (:module "conditions"
@@ -334,6 +334,12 @@
      (:file "tail-position-test")
      (:file "math-functions-test")
      (:file "numeric-predicates-test")
+     ;; ANSI Numeric Functions (001-numeric-functions)
+     (:file "basic-functions-test")     ; US1: signum, max, min
+     (:file "trig-functions-test")      ; US2: sin, cos, tan, asin, acos, atan
+     (:file "bitwise-functions-test")   ; US3: logcount, integer-length
+     (:file "hyperbolic-functions-test") ; US5: sinh, cosh, tanh, asinh, acosh, atanh
+     (:file "complex-functions-test")   ; US6: complex, realpart, imagpart, conjugate, phase
      (:file "ffi-types-test")
      (:file "ffi-marshalling-test")
      (:file "ffi-codegen-test")

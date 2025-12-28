@@ -188,21 +188,34 @@
 ;;; Module Binary Emission
 ;;; ============================================================
 
+(defun get-ffi-import-count ()
+  "Get the count of FFI imports registered.
+   001-numeric-functions: Helper for function index offsetting."
+  (let ((ffi-pkg (find-package :clysm/ffi)))
+    (if ffi-pkg
+        (let ((count-fn (find-symbol "GET-FFI-IMPORT-COUNT" ffi-pkg)))
+          (if count-fn (funcall count-fn) 0))
+        0)))
+
 (defun emit-module (module &key uses-io)
   "Emit a compiled module as a Wasm binary byte vector.
    USES-IO controls whether Import section is emitted (Feature 022)."
   (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
                               :adjustable t :fill-pointer 0))
-        (functions (compiled-module-functions module)))
+        (functions (compiled-module-functions module))
+        ;; 001-numeric-functions: Get import count for function index offsetting
+        ;; In Wasm, imports get indices 0 to N-1, local functions get N onwards
+        (import-offset (get-ffi-import-count)))
     ;; Module header (magic + version)
     (emit-header buffer)
     ;; Type section
     (emit-type-section buffer functions)
     ;; Import section (T025: FFI imports come after Type, before Function)
     ;; Per Wasm spec, section order: Type(1), Import(2), Function(3), ...
-    ;; Feature 022: Only emit if USES-IO is true (I/O functions detected)
-    (when uses-io
-      (emit-import-section-if-needed buffer))
+    ;; 001-numeric-functions: Always check for FFI imports (not just I/O)
+    ;; Math functions (sin, cos, exp, etc.) are FFI imports but not I/O
+    ;; Pass function count for correct type index calculation
+    (emit-import-section-if-needed buffer functions)
     ;; Function section
     (emit-function-section buffer functions)
     ;; Tag section (for exception handling)
@@ -211,19 +224,23 @@
     (when (compiled-module-globals module)
       (emit-global-section buffer (compiled-module-globals module)))
     ;; Export section (T035: includes both regular exports and FFI exports)
+    ;; 001-numeric-functions: Offset function indices by import count
     (let ((all-exports (append (compiled-module-exports module)
                                (or (collect-ffi-exports-for-section) '()))))
-      (emit-export-section buffer all-exports))
+      (emit-export-section buffer all-exports import-offset))
     ;; Element section (for ref.func declarations)
-    (emit-element-section buffer functions)
+    ;; 001-numeric-functions: Offset function indices by import count
+    (emit-element-section buffer functions import-offset)
     ;; Code section
-    (emit-code-section buffer functions)
+    ;; 001-numeric-functions: Pass import-offset for :call instruction handling
+    (emit-code-section buffer functions import-offset)
     ;; Return as simple vector
     (coerce buffer '(simple-array (unsigned-byte 8) (*)))))
 
-(defun emit-import-section-if-needed (buffer)
+(defun emit-import-section-if-needed (buffer functions)
   "Emit Import section if there are FFI imports registered.
    T025: Integrate FFI imports into compiler's module generation.
+   001-numeric-functions: Pass regular function count for correct type indexing.
    Uses runtime symbol lookup to avoid compile-time dependency on FFI package."
   (let ((ffi-pkg (find-package :clysm/ffi)))
     (when ffi-pkg
@@ -232,10 +249,13 @@
             (assign-fn (find-symbol "ASSIGN-IMPORT-INDICES" ffi-pkg))
             (emit-fn (find-symbol "EMIT-FFI-IMPORTS" ffi-pkg)))
         (when (and env-sym (boundp env-sym) count-fn assign-fn emit-fn)
-          (let ((env (symbol-value env-sym)))
+          (let ((env (symbol-value env-sym))
+                ;; 001-numeric-functions: Count non-lambda functions for type index base
+                (regular-func-count (count-if-not #'is-lambda-function-p functions)))
             (when (> (funcall count-fn) 0)
               ;; Assign type indices to imports before emitting
-              (funcall assign-fn env)
+              ;; 001-numeric-functions: FFI types come after regular function types
+              (funcall assign-fn env regular-func-count)
               ;; Emit the import section
               (funcall emit-fn env buffer))))))))
 
@@ -544,8 +564,10 @@
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
 
-(defun emit-export-section (buffer exports)
-  "Emit Export section."
+(defun emit-export-section (buffer exports &optional (import-offset 0))
+  "Emit Export section.
+   IMPORT-OFFSET is added to function indices to account for FFI imports.
+   001-numeric-functions: FFI imports get indices 0 to N-1, local functions get N onwards."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0)))
     ;; Number of exports
@@ -559,16 +581,21 @@
           (loop for b across name-bytes do (vector-push-extend b content)))
         ;; Export kind
         (vector-push-extend (ecase kind (:func 0) (:table 1) (:memory 2) (:global 3)) content)
-        ;; Index
-        (emit-leb128-unsigned index content)))
+        ;; Index - offset function indices by import count
+        (let ((final-index (if (eq kind :func)
+                               (+ index import-offset)
+                               index)))
+          (emit-leb128-unsigned final-index content))))
     ;; Write section
     (vector-push-extend 7 buffer)  ; Export section ID
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
 
-(defun emit-element-section (buffer functions)
+(defun emit-element-section (buffer functions &optional (import-offset 0))
   "Emit Element section with declarative segment for lambda functions.
-   This allows ref.func to reference lambda functions."
+   This allows ref.func to reference lambda functions.
+   IMPORT-OFFSET is added to function indices to account for FFI imports.
+   001-numeric-functions: FFI imports get indices 0 to N-1, local functions get N onwards."
   ;; Collect lambda function indices
   (let ((lambda-indices '()))
     (loop for func in functions
@@ -588,30 +615,33 @@
         (vector-push-extend #x00 content)  ; elemkind = funcref
         ;; Number of function indices
         (emit-leb128-unsigned (length lambda-indices) content)
-        ;; Function indices
+        ;; Function indices - offset by import count
         (dolist (idx lambda-indices)
-          (emit-leb128-unsigned idx content))
+          (emit-leb128-unsigned (+ idx import-offset) content))
         ;; Write section
         (vector-push-extend 9 buffer)  ; Element section ID
         (emit-leb128-unsigned (length content) buffer)
         (loop for b across content do (vector-push-extend b buffer))))))
 
-(defun emit-code-section (buffer functions)
-  "Emit Code section."
+(defun emit-code-section (buffer functions &optional (import-offset 0))
+  "Emit Code section.
+   IMPORT-OFFSET is added to local function :call indices.
+   001-numeric-functions: Distinguishes FFI :call-import from local :call."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0)))
     ;; Number of function bodies
     (emit-leb128-unsigned (length functions) content)
     ;; Each function body
     (dolist (func functions)
-      (emit-function-body func content))
+      (emit-function-body func content import-offset))
     ;; Write section
     (vector-push-extend 10 buffer)  ; Code section ID
     (emit-leb128-unsigned (length content) buffer)
     (loop for b across content do (vector-push-extend b buffer))))
 
-(defun emit-function-body (func buffer)
-  "Emit a function body."
+(defun emit-function-body (func buffer &optional (import-offset 0))
+  "Emit a function body.
+   IMPORT-OFFSET is added to local function :call indices."
   (let ((body-content (make-array 0 :element-type '(unsigned-byte 8)
                                     :adjustable t :fill-pointer 0)))
     ;; Locals (grouped by type)
@@ -622,18 +652,19 @@
         (emit-valtype (second local) body-content)))
     ;; Instructions
     (let ((instrs (getf func :body)))
-      (emit-instructions instrs body-content))
+      (emit-instructions instrs body-content import-offset))
     ;; End
     (vector-push-extend #x0B body-content)
     ;; Write size + content
     (emit-leb128-unsigned (length body-content) buffer)
     (loop for b across body-content do (vector-push-extend b buffer))))
 
-(defun emit-instructions (instrs buffer)
-  "Emit a list of instructions after resolving symbolic labels."
+(defun emit-instructions (instrs buffer &optional (import-offset 0))
+  "Emit a list of instructions after resolving symbolic labels.
+   IMPORT-OFFSET is added to local function :call indices."
   (let ((resolved (resolve-labels instrs)))
     (dolist (instr resolved)
-      (emit-instruction instr buffer))))
+      (emit-instruction instr buffer import-offset))))
 
 ;;; ============================================================
 ;;; Label Resolution
@@ -728,8 +759,10 @@
          (push instr result))))
     (nreverse result)))
 
-(defun emit-instruction (instr buffer)
-  "Emit a single instruction."
+(defun emit-instruction (instr buffer &optional (import-offset 0))
+  "Emit a single instruction.
+   IMPORT-OFFSET is added to local function indices for :call, :return_call, :ref.func.
+   001-numeric-functions: :call-import is used for FFI calls (no offset)."
   (cond
     ;; List instructions (with operands)
     ((consp instr)
@@ -764,6 +797,13 @@
           (vector-push-extend #x24 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
          (:call
+          ;; Call to local function - add import-offset
+          ;; 001-numeric-functions: Local functions start at index import-offset
+          (vector-push-extend #x10 buffer)
+          (emit-leb128-unsigned (+ (cadr instr) import-offset) buffer))
+         (:call-import
+          ;; Call to FFI import - no offset needed
+          ;; 001-numeric-functions: Imports use indices 0 to N-1 directly
           (vector-push-extend #x10 buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
          (:if
@@ -788,8 +828,9 @@
           (emit-heaptype-for-gc (cadr instr) buffer))
          (:ref.func
           ;; ref.func <funcidx> - get function reference
+          ;; 001-numeric-functions: Add import-offset for local functions
           (vector-push-extend #xD2 buffer)
-          (emit-leb128-unsigned (cadr instr) buffer))
+          (emit-leb128-unsigned (+ (cadr instr) import-offset) buffer))
          (:struct.new
           ;; struct.new <typeidx> - create new struct
           (vector-push-extend #xFB buffer)
@@ -861,9 +902,10 @@
           (emit-leb128-unsigned (cadr instr) buffer))
          (:return_call
           ;; return_call <funcidx> - tail call to known function (TCO)
+          ;; 001-numeric-functions: Add import-offset for local functions
           ;; Opcode: 0x12
           (vector-push-extend #x12 buffer)
-          (emit-leb128-unsigned (cadr instr) buffer))
+          (emit-leb128-unsigned (+ (cadr instr) import-offset) buffer))
          (:return_call_ref
           ;; return_call_ref <typeidx> - tail call through function reference (TCO)
           ;; Opcode: 0x15
@@ -971,6 +1013,10 @@
        (:i32.shl (vector-push-extend #x74 buffer))
        (:i32.shr_s (vector-push-extend #x75 buffer))
        (:i32.shr_u (vector-push-extend #x76 buffer))
+       ;; i32 unary operations (001-numeric-functions)
+       (:i32.clz (vector-push-extend #x67 buffer))
+       (:i32.ctz (vector-push-extend #x68 buffer))
+       (:i32.popcnt (vector-push-extend #x69 buffer))
        ;; i64 operations (024-equality-predicates)
        (:i64.eq (vector-push-extend #x51 buffer))
        (:i64.ne (vector-push-extend #x52 buffer))

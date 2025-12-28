@@ -37,6 +37,7 @@
    #:ffd-param-types
    #:ffd-return-type
    #:ffd-type-index
+   #:ffd-func-index      ; 001-numeric-functions: function index for :call
    #:make-foreign-function-decl
 
    ;; Export declaration structure accessors
@@ -78,6 +79,9 @@
    ;; Global FFI environment
    #:*ffi-environment*
    #:reset-ffi-environment
+
+   ;; Math imports (001-numeric-functions)
+   #:ensure-math-imports
 
    ;; Host name parsing
    #:parse-host-name
