@@ -1,8 +1,8 @@
 # Clysm実装計画: WebAssembly GCターゲットCommon Lispコンパイラ
 
 **作成日**: 2025-12-21
-**更新日**: 2025-12-29
-**ステータス**: Phase 13 インフラ完了 → ANSI CL関数プリミティブ実装が必要
+**更新日**: 2025-12-29 (v2.3.0)
+**ステータス**: Phase 13 インフラ完了 → ANSI Tests成功率向上戦略追加
 **憲法バージョン**: 1.0.0
 **ANSI準拠率**: 23.4% (219/936テスト)
 
@@ -879,7 +879,270 @@ node host-shim/stage1-host.js --mode compile \
 
 ---
 
-## 3. ANSI準拠率向上フェーズ (Phase 14-17)
+## 3. ANSI Tests成功率向上戦略
+
+**目標**: ANSI準拠率を23.4% → 60%+へ向上（自己ホスティング達成と並行）
+
+**原則**: **Clysmコンパイラで使われている機能ほど実装優先度が高い**
+
+これにより、ANSIテスト成功率向上とセルフホスティング達成の両方を同時に進める。
+
+### 3.1 優先度判定基準
+
+| 優先度 | 基準 | Clysmコンパイラでの使用数 |
+|--------|------|------------------------|
+| P1 (最優先) | コンパイラコア機能で頻出 | 500回以上 |
+| P2 (高) | コンパイラで多用 | 100-499回 |
+| P3 (中) | コンパイラで使用 | 10-99回 |
+| P4 (低) | ANSI準拠のみ、コンパイラ非使用 | 0-9回 |
+
+### 3.2 P1: 最優先実装 (コンパイラコア機能)
+
+これらの機能はClysmコンパイラの全モジュールで使用され、セルフホスティングの**必須条件**。
+
+| 機能カテゴリ | 関数/マクロ | コンパイラ使用数 | ANSIテストカテゴリ | 実装状態 |
+|-------------|------------|----------------|------------------|---------|
+| **リスト操作** | cons, car, cdr, list, append | 1,200+ | cons | ✅ 基本済 |
+| **シーケンス** | length, elt, subseq, concatenate | 600+ | sequences | ⚠️ 一部 |
+| **変数束縛** | let, let*, setq, setf | 1,300+ | data-and-control-flow | ✅ 基本済 |
+| **条件分岐** | if, cond, when, unless, case | 700+ | data-and-control-flow | ✅ 基本済 |
+| **反復** | loop, dolist, dotimes, do | 600+ | iteration | ⚠️ loop一部 |
+| **ハッシュテーブル** | make-hash-table, gethash, (setf gethash) | 310+ | hash-tables | ⚠️ 一部 |
+| **配列アクセス** | aref, svref, (setf aref), make-array | 200+ | arrays | ❌ 未実装 |
+| **等価性** | eq, eql, equal, equalp | 326+ | data-and-control-flow | ✅ 実装済 |
+
+#### P1タスク詳細
+
+**P1-1: 配列プリミティブ** (最重要 - defstruct展開後コードに必須)
+
+```lisp
+;; コンパイラで200+箇所使用
+(aref array index)           ;; → Wasm array.get
+(svref simple-vector index)  ;; → Wasm array.get
+(setf (aref array index) val);; → Wasm array.set
+(make-array dimensions ...)  ;; → Wasm array.new
+```
+
+- [ ] `aref` / `(setf aref)` プリミティブ実装
+- [ ] `svref` / `(setf svref)` プリミティブ実装
+- [ ] `make-array` 完全実装 (:initial-element, :initial-contents)
+- [ ] ANSIテスト: arrays カテゴリ 50%+
+
+**P1-2: シーケンス基盤** (コンパイラ文字列処理に必須)
+
+```lisp
+;; コンパイラで600+箇所使用
+(length sequence)            ;; ✅ 実装済
+(elt sequence index)         ;; → typecase分岐
+(subseq sequence start end)  ;; → 新配列にコピー
+(concatenate 'string ...)    ;; → 文字列結合
+(coerce list 'vector)        ;; → 型変換
+```
+
+- [ ] `elt` / `(setf elt)` プリミティブ実装
+- [ ] `subseq` プリミティブ実装
+- [ ] `concatenate` プリミティブ実装
+- [ ] `coerce` プリミティブ実装
+- [ ] ANSIテスト: sequences カテゴリ 40%+
+
+**P1-3: ハッシュテーブル完全実装** (コンパイラレジストリに必須)
+
+```lisp
+;; コンパイラで310+箇所使用
+(make-hash-table :test 'eq)  ;; ⚠️ :test対応要
+(gethash key table default)  ;; ⚠️ default対応要
+(remhash key table)          ;; ❌ 未実装
+(maphash fn table)           ;; ❌ 未実装
+(clrhash table)              ;; ❌ 未実装
+(hash-table-count table)     ;; ❌ 未実装
+```
+
+- [ ] `gethash` default引数対応
+- [ ] `remhash` 実装
+- [ ] `maphash` 実装
+- [ ] `clrhash` 実装
+- [ ] `hash-table-count` 実装
+- [ ] LOOP `being the hash-keys` 対応
+- [ ] ANSIテスト: hash-tables カテゴリ 60%+
+
+**P1-4: LOOP完全実装** (コンパイラで168箇所使用)
+
+```lisp
+;; コンパイラで頻出するLOOPパターン
+(loop for x in list ...)           ;; ✅ 基本済
+(loop for i from 0 below n ...)    ;; ✅ 基本済
+(loop for k being the hash-keys of ht ...) ;; ❌ 未実装
+(loop with var = init ...)         ;; ⚠️ 一部
+(loop collect x into result ...)   ;; ⚠️ 一部
+(loop finally (return result))     ;; ⚠️ 一部
+```
+
+- [ ] `being the hash-keys/hash-values` 実装
+- [ ] `with` 句完全サポート
+- [ ] `finally` 句完全サポート
+- [ ] `into` アキュムレータ
+- [ ] ANSIテスト: iteration (loop) カテゴリ 50%+
+
+### 3.3 P2: 高優先度実装 (コンパイラで多用)
+
+| 機能カテゴリ | 関数/マクロ | コンパイラ使用数 | ANSIテストカテゴリ | 実装状態 |
+|-------------|------------|----------------|------------------|---------|
+| **リスト検索** | member, assoc, find, position | 200+ | cons, sequences | ⚠️ 一部 |
+| **マッピング** | mapcar, mapc, mapcan | 200+ | cons | ⚠️ mapcarのみ |
+| **型検査** | typep, type-of, typecase | 100+ | types | ⚠️ 一部 |
+| **文字列** | string=, string<, char-code | 100+ | strings, characters | ⚠️ 一部 |
+| **プロパティ** | getf, get, (setf getf) | 118+ | symbols | ⚠️ 一部 |
+| **述語** | listp, consp, symbolp, stringp | 150+ | data-and-control-flow | ✅ 基本済 |
+
+#### P2タスク詳細
+
+**P2-1: リスト検索関数** (コンパイラ解析で使用)
+
+```lisp
+;; コンパイラで200+箇所使用
+(member item list :test #'eq)    ;; ⚠️ :test対応要
+(assoc key alist :test #'eq)     ;; ⚠️ :test対応要
+(find item sequence :key #'fn)   ;; ❌ 未実装
+(position item sequence ...)     ;; ❌ 未実装
+```
+
+- [ ] `member` :test, :key キーワード対応
+- [ ] `assoc` / `rassoc` :test, :key キーワード対応
+- [ ] `find` / `find-if` / `find-if-not` 実装
+- [ ] `position` / `position-if` / `position-if-not` 実装
+- [ ] ANSIテスト: cons (assoc/member) 60%+
+
+**P2-2: マッピング関数** (コンパイラAST処理で使用)
+
+```lisp
+;; コンパイラで200+箇所使用
+(mapcar #'fn list)      ;; ✅ 基本済
+(mapc #'fn list)        ;; ❌ 未実装
+(mapcan #'fn list)      ;; ❌ 未実装
+(maplist #'fn list)     ;; ❌ 未実装
+```
+
+- [ ] `mapc` 実装 (副作用用mapcar)
+- [ ] `mapcan` 実装 (結果をnconc)
+- [ ] `maplist` / `mapl` 実装
+- [ ] ANSIテスト: cons (map系) 70%+
+
+**P2-3: 文字列操作** (エラーメッセージ、I/O処理)
+
+```lisp
+;; コンパイラで100+箇所使用
+(string= str1 str2)           ;; ⚠️ 一部
+(char str index)              ;; → schar
+(string-upcase str)           ;; ❌ 未実装
+(parse-integer str)           ;; ❌ 未実装
+```
+
+- [ ] `string=`, `string<`, `string>` 完全実装
+- [ ] `char` / `schar` 実装
+- [ ] `string-upcase` / `string-downcase` 実装
+- [ ] `parse-integer` 実装
+- [ ] ANSIテスト: strings カテゴリ 50%+
+
+**P2-4: プロパティリスト** (CLOS、条件システム)
+
+```lisp
+;; コンパイラで118+箇所使用
+(getf plist key)              ;; ⚠️ 一部
+(get symbol key)              ;; ⚠️ 一部
+(setf (getf plist key) val)   ;; ❌ 未実装
+```
+
+- [ ] `getf` 完全実装 (default引数)
+- [ ] `(setf getf)` 実装
+- [ ] `get` / `(setf get)` 実装
+- [ ] `remprop` 実装
+- [ ] ANSIテスト: symbols (plist) 60%+
+
+### 3.4 P3: 中優先度実装 (コンパイラで使用)
+
+| 機能カテゴリ | 関数/マクロ | コンパイラ使用数 | ANSIテストカテゴリ |
+|-------------|------------|----------------|------------------|
+| **数値関数** | abs, max, min, mod, rem | 50+ | numbers |
+| **リスト構築** | push, pop, nconc, nreverse | 80+ | cons |
+| **フォーマット** | format ~A ~S ~D | 93+ | printer |
+| **制御フロー** | return-from, block, tagbody | 50+ | data-and-control-flow |
+| **条件** | handler-case, restart-case | 20+ | conditions |
+| **関数** | apply, funcall, function | 90+ | data-and-control-flow |
+
+### 3.5 P4: 低優先度 (ANSI準拠のみ)
+
+コンパイラでは使用されないが、ANSIテスト成功率のために実装。
+
+| 機能カテゴリ | ANSIテストカテゴリ | 備考 |
+|-------------|------------------|------|
+| 三角関数 (sin, cos, tan) | numbers | 数学ライブラリ |
+| 双曲線関数 (sinh, cosh) | numbers | 数学ライブラリ |
+| 複素数 (complex, realpart) | numbers | 数値塔 |
+| ファイル関数 (probe-file等) | files | FFI依存 |
+| 環境関数 (get-decoded-time等) | environment | FFI依存 |
+
+### 3.6 ANSIテスト成功率目標
+
+| マイルストーン | 目標準拠率 | 主要タスク |
+|--------------|-----------|-----------|
+| M-ANSI-1 | 30% | P1-1 (配列), P1-2 (シーケンス) |
+| M-ANSI-2 | 40% | P1-3 (ハッシュテーブル), P1-4 (LOOP) |
+| M-ANSI-3 | 50% | P2-1〜P2-4 |
+| M-ANSI-4 | 60% | P3全体 |
+
+### 3.7 実装順序（依存関係考慮）
+
+```
+Week 1-2: P1-1 配列プリミティブ
+    │
+    ├──→ defstruct展開後コードがコンパイル可能に
+    │
+    ▼
+Week 3-4: P1-2 シーケンス基盤
+    │
+    ├──→ 文字列処理、リスト→配列変換が動作
+    │
+    ▼
+Week 5-6: P1-3 ハッシュテーブル完全実装
+    │
+    ├──→ コンパイラレジストリが完全動作
+    │
+    ▼
+Week 7-8: P1-4 LOOP完全実装
+    │
+    ├──→ ハッシュテーブルイテレーション
+    │
+    ▼
+Week 9-12: P2-1〜P2-4 高優先度
+    │
+    ├──→ ANSI準拠率 50%達成
+    │
+    ▼
+Week 13+: P3, P4 中〜低優先度
+    │
+    └──→ ANSI準拠率 60%+達成
+```
+
+### 3.8 ANSIテストカテゴリ別目標
+
+| カテゴリ | 現在 | 目標 | 優先度 | 根拠 |
+|---------|------|------|--------|------|
+| cons | 45% | 80% | P1 | car/cdr/append=1,200+使用 |
+| sequences | 20% | 60% | P1 | length/elt=600+使用 |
+| arrays | 5% | 50% | P1 | aref=200+使用 |
+| hash-tables | 10% | 70% | P1 | gethash=310+使用 |
+| iteration | 30% | 60% | P1 | loop=168+使用 |
+| strings | 15% | 50% | P2 | string処理=100+使用 |
+| characters | 20% | 60% | P2 | char-code=11+使用 |
+| symbols | 30% | 60% | P2 | getf=118+使用 |
+| numbers | 40% | 60% | P3 | 数値演算=50+使用 |
+| data-and-control-flow | 35% | 55% | P1 | if/cond=700+使用 |
+| conditions | 25% | 45% | P3 | handler-case=20+使用 |
+| types | 20% | 50% | P2 | typep=71+使用 |
+
+---
+
+## 4. ANSI準拠率向上フェーズ (Phase 14-17)
 
 **現在の準拠率**: 23.4% (219/936テスト)
 **テストスイート**: pfdietz/ansi-test (~20,000テスト、31カテゴリ)
@@ -1509,4 +1772,5 @@ Phase 19 [CLOS完全準拠]
 | 1.0.0 | 2025-12-27 | セルフホスティングフェーズ (Phase 9-13) 追加。最終目標をセルフホスティングに設定 |
 | 2.0.0 | 2025-12-28 | Phase 9-13完了。ANSI準拠率向上フェーズ (Phase 14-19) 追加。現在23.4%から80%を目標に設定 |
 | 2.1.0 | 2025-12-28 | セルフホスティング検証結果を反映。Phase 13は「インフラ完了」に修正（Stage 0がスタブのみで実際のコンパイルロジックなし）。Phase 13Dとして真のセルフホスティング達成タスクを追加 |
-| **2.2.0** | **2025-12-29** | **Phase 13Dブロッカー分析を大幅修正。「内部関数をプリミティブ登録」は誤りであり、「ANSI CL標準関数（coerce, aref, svref等）をプリミティブ実装」が正しいアプローチと判明。make-ast-literal等はdefstructが生成する関数、encode-unsigned-leb128等は通常のdefunであり、これらが使用するANSI CL関数が未実装であることが根本原因。依存関係グラフを追加** |
+| 2.2.0 | 2025-12-29 | Phase 13Dブロッカー分析を大幅修正。「内部関数をプリミティブ登録」は誤りであり、「ANSI CL標準関数（coerce, aref, svref等）をプリミティブ実装」が正しいアプローチと判明。make-ast-literal等はdefstructが生成する関数、encode-unsigned-leb128等は通常のdefunであり、これらが使用するANSI CL関数が未実装であることが根本原因。依存関係グラフを追加 |
+| **2.3.0** | **2025-12-29** | **「ANSI Tests成功率向上戦略」セクション(§3)を追加。Clysmコンパイラでの機能使用頻度に基づく優先度判定基準(P1〜P4)を導入。P1最優先: 配列(aref/svref)、シーケンス(elt/subseq/coerce)、ハッシュテーブル(maphash/remhash)、LOOP完全実装。P2高優先: リスト検索(find/position)、マッピング(mapc/mapcan)、文字列操作(string-upcase)、プロパティ(setf getf)。ANSIテストカテゴリ別目標を設定(cons 80%、sequences 60%、arrays 50%等)** |
