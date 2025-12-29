@@ -123,6 +123,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - N/A (compiler feature, no persistence) (001-numeric-functions)
 - Common Lisp (SBCL 2.4+) for host, WasmGC for target + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-true-self-hosting)
 - N/A (in-memory compilation only) (001-true-self-hosting)
+- Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-ansi-numeric-functions)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

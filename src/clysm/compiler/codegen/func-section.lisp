@@ -4101,10 +4101,17 @@
   "Compile (signum x) - returns sign of x with type preserved.
    For integers: -1, 0, or 1
    For floats: -1.0, 0.0, or 1.0
+   For complex: z/|z| (normalized to magnitude 1)
    Stack: [] -> [number]"
   (when (/= (length args) 1)
     (error "signum requires exactly 1 argument"))
-  (let ((temp-local (env-add-local env (gensym "SIGNUM-TMP"))))
+  (let ((temp-local (env-add-local env (gensym "SIGNUM-TMP")))
+        (part-local (env-add-local env (gensym "SIGNUM-PART")))
+        (real-local (env-add-local env (gensym "SIGNUM-REAL") :f64))
+        (imag-local (env-add-local env (gensym "SIGNUM-IMAG") :f64))
+        (mag-local (env-add-local env (gensym "SIGNUM-MAG") :f64))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+)
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
     (append
      (compile-to-instructions (first args) env)
      (list (list :local.tee temp-local))
@@ -4137,38 +4144,106 @@
        :else
        ;; Test if float
        (:local.get ,temp-local)
-       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:ref.test (:ref ,float-type))
        (:if (:result :anyref))
        ;; Float path
        (:local.get ,temp-local)
-       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
-       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
        (:f64.const 0.0)
        :f64.lt
        (:if (:result :anyref))
        ;; Negative float
        (:f64.const -1.0)
-       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       (:struct.new ,float-type)
        :else
        (:local.get ,temp-local)
-       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
-       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
        (:f64.const 0.0)
        :f64.gt
        (:if (:result :anyref))
        ;; Positive float
        (:f64.const 1.0)
-       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       (:struct.new ,float-type)
        :else
        ;; Zero float
        (:f64.const 0.0)
-       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       (:struct.new ,float-type)
        :end
        :end
        :else
-       ;; Other types: return 0 (could signal error)
+       ;; Test if complex
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex path - return z/|z| (normalized complex)
+       ;; Get real part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 0)
+       (:local.tee ,part-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,part-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,part-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       (:local.set ,real-local)
+       ;; Get imag part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 1)
+       (:local.tee ,part-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,part-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,part-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       (:local.set ,imag-local)
+       ;; Compute magnitude = sqrt(real^2 + imag^2)
+       (:local.get ,real-local)
+       (:local.get ,real-local)
+       :f64.mul
+       (:local.get ,imag-local)
+       (:local.get ,imag-local)
+       :f64.mul
+       :f64.add
+       :f64.sqrt
+       (:local.tee ,mag-local)
+       ;; Check if magnitude is zero
+       (:f64.const 0.0)
+       :f64.eq
+       (:if (:result :anyref))
+       ;; Zero complex: return 0
        (:i32.const 0) :ref.i31
-       :end :end))))
+       :else
+       ;; Non-zero: return z/|z| = (real/mag, imag/mag)
+       (:local.get ,real-local)
+       (:local.get ,mag-local)
+       :f64.div
+       (:struct.new ,float-type)
+       (:local.get ,imag-local)
+       (:local.get ,mag-local)
+       :f64.div
+       (:struct.new ,float-type)
+       (:struct.new ,complex-type)
+       :end
+       :else
+       ;; Other types: return 0
+       (:i32.const 0) :ref.i31
+       :end :end :end))))
 
 ;;; ============================================================
 ;;; ANSI Numeric Functions (001-numeric-functions)
@@ -4178,10 +4253,16 @@
   "Compile (abs x) - returns the absolute value of x.
    For integers: uses comparison and negation
    For floats: uses f64.abs
+   For complex: returns magnitude sqrt(real^2 + imag^2)
    Stack: [] -> [number]"
   (when (/= (length args) 1)
     (error "abs requires exactly 1 argument"))
-  (let ((temp-local (env-add-local env (gensym "ABS-TMP"))))
+  (let ((temp-local (env-add-local env (gensym "ABS-TMP")))
+        (part-local (env-add-local env (gensym "ABS-PART")))
+        (real-local (env-add-local env (gensym "ABS-REAL") :f64))
+        (imag-local (env-add-local env (gensym "ABS-IMAG") :f64))
+        (complex-type clysm/compiler/codegen/gc-types:+type-complex+)
+        (float-type clysm/compiler/codegen/gc-types:+type-float+))
     (append
      (compile-to-instructions (first args) env)
      (list (list :local.tee temp-local))
@@ -4209,18 +4290,68 @@
        :else
        ;; Test if float
        (:local.get ,temp-local)
-       (:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
+       (:ref.test (:ref ,float-type))
        (:if (:result :anyref))
        ;; Float path - use f64.abs
        (:local.get ,temp-local)
-       (:ref.cast (:ref ,clysm/compiler/codegen/gc-types:+type-float+))
-       (:struct.get ,clysm/compiler/codegen/gc-types:+type-float+ 0)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
        :f64.abs
-       (:struct.new ,clysm/compiler/codegen/gc-types:+type-float+)
+       (:struct.new ,float-type)
        :else
-       ;; Other types: return as-is (TODO: ratio, complex, bignum)
+       ;; Test if complex
        (:local.get ,temp-local)
-       :end :end))))
+       (:ref.test (:ref ,complex-type))
+       (:if (:result :anyref))
+       ;; Complex path - compute magnitude sqrt(real^2 + imag^2)
+       ;; Get real part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 0)
+       (:local.tee ,part-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,part-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,part-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       (:local.set ,real-local)
+       ;; Get imag part as f64
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,complex-type))
+       (:struct.get ,complex-type 1)
+       (:local.tee ,part-local)
+       (:ref.test :i31)
+       (:if (:result :f64))
+       (:local.get ,part-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       :else
+       (:local.get ,part-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :end
+       (:local.set ,imag-local)
+       ;; Compute sqrt(real^2 + imag^2)
+       (:local.get ,real-local)
+       (:local.get ,real-local)
+       :f64.mul
+       (:local.get ,imag-local)
+       (:local.get ,imag-local)
+       :f64.mul
+       :f64.add
+       :f64.sqrt
+       (:struct.new ,float-type)
+       :else
+       ;; Other types: return as-is (ratio, bignum)
+       (:local.get ,temp-local)
+       :end :end :end))))
 
 (defun compile-max (args env)
   "Compile (max x y ...) - returns the maximum of arguments.
@@ -4702,104 +4833,109 @@
    Stack: [] -> [float]"
   (when (/= (length args) 1)
     (error "phase requires exactly 1 argument"))
-  (let ((temp-local (env-add-local env (gensym "PHASE-TMP")))
-        (real-local (env-add-local env (gensym "PHASE-REAL")))
-        (imag-local (env-add-local env (gensym "PHASE-IMAG")))
-        (complex-type clysm/compiler/codegen/gc-types:+type-complex+)
-        (float-type clysm/compiler/codegen/gc-types:+type-float+))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.tee temp-local))
-     `((:ref.test (:ref ,complex-type))
-       (:if (:result :anyref))
-       ;; Complex: compute atan2(imag, real)
-       ;; Get real part as f64
-       (:local.get ,temp-local)
-       (:ref.cast (:ref ,complex-type))
-       (:struct.get ,complex-type 0)
-       (:local.tee ,real-local)
-       (:ref.test :i31)
-       (:if (:result :f64))
-       (:local.get ,real-local)
-       (:ref.cast :i31)
-       :i31.get_s
-       :f64.convert_i32_s
-       :else
-       (:local.get ,real-local)
-       (:ref.cast (:ref ,float-type))
-       (:struct.get ,float-type 0)
-       :end
-       ;; Get imag part as f64
-       (:local.get ,temp-local)
-       (:ref.cast (:ref ,complex-type))
-       (:struct.get ,complex-type 1)
-       (:local.tee ,imag-local)
-       (:ref.test :i31)
-       (:if (:result :f64))
-       (:local.get ,imag-local)
-       (:ref.cast :i31)
-       :i31.get_s
-       :f64.convert_i32_s
-       :else
-       (:local.get ,imag-local)
-       (:ref.cast (:ref ,float-type))
-       (:struct.get ,float-type 0)
-       :end
-       ;; TODO: Call atan2 from FFI
-       ;; For now, approximate: atan2(y, x) = atan(y/x) with quadrant adjustment
-       ;; This is a placeholder - full implementation needs FFI atan2
-       ;; Stack: real-f64, imag-f64
-       ;; Simple approximation for now:
-       ;; Result = atan(imag / real) - needs proper quadrant handling
-       (:local.set ,imag-local)  ;; Save imag-f64
-       (:local.set ,real-local)  ;; Save real-f64 (as i32 but we used as f64)
-       ;; For now just return 0 as placeholder
-       (:f64.const 0.0)
-       (:struct.new ,float-type)
-       :else
-       ;; Real number: check sign
-       (:local.get ,temp-local)
-       (:ref.test :i31)
-       (:if (:result :anyref))
-       ;; i31
-       (:local.get ,temp-local)
-       (:ref.cast :i31)
-       :i31.get_s
-       (:i32.const 0)
-       :i32.lt_s
-       (:if (:result :anyref))
-       ;; Negative: return pi
-       (:f64.const 3.141592653589793)
-       (:struct.new ,float-type)
-       :else
-       ;; Non-negative: return 0
-       (:f64.const 0.0)
-       (:struct.new ,float-type)
-       :end
-       :else
-       ;; Float
-       (:local.get ,temp-local)
-       (:ref.test (:ref ,float-type))
-       (:if (:result :anyref))
-       (:local.get ,temp-local)
-       (:ref.cast (:ref ,float-type))
-       (:struct.get ,float-type 0)
-       (:f64.const 0.0)
-       :f64.lt
-       (:if (:result :anyref))
-       ;; Negative: return pi
-       (:f64.const 3.141592653589793)
-       (:struct.new ,float-type)
-       :else
-       ;; Non-negative: return 0
-       (:f64.const 0.0)
-       (:struct.new ,float-type)
-       :end
-       :else
-       ;; Unknown: return 0
-       (:f64.const 0.0)
-       (:struct.new ,float-type)
-       :end :end :end))))
+  ;; Ensure atan2 FFI is available
+  (clysm/ffi:ensure-math-imports clysm/ffi:*ffi-environment*)
+  (clysm/ffi:assign-import-indices clysm/ffi:*ffi-environment*)
+  (let ((atan2-decl (clysm/ffi:lookup-foreign-function
+                     clysm/ffi:*ffi-environment* :atan2)))
+    (unless atan2-decl
+      (error "FFI function atan2 not found"))
+    (let ((atan2-idx (clysm/ffi:ffd-func-index atan2-decl))
+          (input-local (env-add-local env (gensym "PHASE-INPUT")))
+          (part-local (env-add-local env (gensym "PHASE-PART")))
+          (real-local (env-add-local env (gensym "PHASE-REAL") :f64))
+          (imag-local (env-add-local env (gensym "PHASE-IMAG") :f64))
+          (complex-type clysm/compiler/codegen/gc-types:+type-complex+)
+          (float-type clysm/compiler/codegen/gc-types:+type-float+))
+      (append
+       (compile-to-instructions (first args) env)
+       (list (list :local.tee input-local))
+       `((:ref.test (:ref ,complex-type))
+         (:if (:result :anyref))
+         ;; Complex: compute atan2(imag, real)
+         ;; Get real part as f64 and save
+         (:local.get ,input-local)
+         (:ref.cast (:ref ,complex-type))
+         (:struct.get ,complex-type 0)
+         (:local.tee ,part-local)
+         (:ref.test :i31)
+         (:if (:result :f64))
+         (:local.get ,part-local)
+         (:ref.cast :i31)
+         :i31.get_s
+         :f64.convert_i32_s
+         :else
+         (:local.get ,part-local)
+         (:ref.cast (:ref ,float-type))
+         (:struct.get ,float-type 0)
+         :end
+         (:local.set ,real-local)
+         ;; Get imag part as f64 and save
+         (:local.get ,input-local)
+         (:ref.cast (:ref ,complex-type))
+         (:struct.get ,complex-type 1)
+         (:local.tee ,part-local)
+         (:ref.test :i31)
+         (:if (:result :f64))
+         (:local.get ,part-local)
+         (:ref.cast :i31)
+         :i31.get_s
+         :f64.convert_i32_s
+         :else
+         (:local.get ,part-local)
+         (:ref.cast (:ref ,float-type))
+         (:struct.get ,float-type 0)
+         :end
+         (:local.set ,imag-local)
+         ;; Call atan2(imag, real) - note: y first, then x
+         (:local.get ,imag-local)
+         (:local.get ,real-local)
+         (:call-import ,atan2-idx)
+         (:struct.new ,float-type)
+         :else
+         ;; Real number: check sign
+         (:local.get ,input-local)
+         (:ref.test :i31)
+         (:if (:result :anyref))
+         ;; i31
+         (:local.get ,input-local)
+         (:ref.cast :i31)
+         :i31.get_s
+         (:i32.const 0)
+         :i32.lt_s
+         (:if (:result :anyref))
+         ;; Negative: return pi
+         (:f64.const 3.141592653589793)
+         (:struct.new ,float-type)
+         :else
+         ;; Non-negative: return 0
+         (:f64.const 0.0)
+         (:struct.new ,float-type)
+         :end
+         :else
+         ;; Float
+         (:local.get ,input-local)
+         (:ref.test (:ref ,float-type))
+         (:if (:result :anyref))
+         (:local.get ,input-local)
+         (:ref.cast (:ref ,float-type))
+         (:struct.get ,float-type 0)
+         (:f64.const 0.0)
+         :f64.lt
+         (:if (:result :anyref))
+         ;; Negative: return pi
+         (:f64.const 3.141592653589793)
+         (:struct.new ,float-type)
+         :else
+         ;; Non-negative: return 0
+         (:f64.const 0.0)
+         (:struct.new ,float-type)
+         :end
+         :else
+         ;; Unknown: return 0
+         (:f64.const 0.0)
+         (:struct.new ,float-type)
+         :end :end :end)))))
 
 ;;; ============================================================
 ;;; Trigonometric Functions (001-numeric-functions Phase 6)
