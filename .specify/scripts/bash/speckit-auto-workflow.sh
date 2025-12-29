@@ -613,61 +613,158 @@ run_tasks() {
     echo "$new_session_id"
 }
 
-# Step: analyze
-run_analyze() {
+# Auto-fix: CRITICAL/HIGH issues detected by analyze
+auto_fix_issues() {
     local session_id="$1"
+    local analyze_result="$2"
+    local severity="$3"  # "CRITICAL" or "HIGH"
 
-    log_step "Step 5/5: /speckit.analyze"
+    log_step "Auto-fixing $severity issues"
+
+    # Extract issue details from analyze result
+    local issues
+    issues=$(echo "$analyze_result" | grep -E "\|\s*\*\*${severity}\*\*\s*\|" | head -10)
+
+    # Also extract Next Actions section if present
+    local next_actions
+    next_actions=$(echo "$analyze_result" | sed -n '/Next Actions/,/---/p' | head -30)
+
+    local fix_prompt="以下の分析レポートで検出された${severity}問題を自動修正してください。
+
+## 検出された問題
+\`\`\`
+${issues}
+\`\`\`
+
+## 推奨アクション
+\`\`\`
+${next_actions}
+\`\`\`
+
+## 修正手順
+1. 問題の原因を特定
+2. spec.md, plan.md, tasks.md のいずれかを編集して問題を解決
+3. 修正完了後、変更内容を簡潔に報告
+
+重要: 問題を確実に解決し、再度analyzeを実行しても同じ問題が検出されないようにしてください。"
 
     local output_file
-    output_file=$(run_claude "/speckit.analyze" "$session_id")
+    output_file=$(run_claude "$fix_prompt" "$session_id")
 
     local new_session_id
     new_session_id=$(extract_session_id "$output_file")
     save_session "$new_session_id"
-    save_state "$STATE_REVIEW"
 
     local result
     result=$(extract_result "$output_file")
 
-    # 問題をカウント - メトリクス表から実際の件数を取得
-    # 形式: "| Critical Issues Count | **N** |" または "Critical Issues Count.*N"
-    local critical=0
-    local high=0
-
-    # メトリクス表から Critical Issues Count を抽出
-    # sedで数値のみ抽出（より確実）
-    if echo "$result" | grep -qE 'Critical Issues Count'; then
-        critical=$(echo "$result" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
-        critical=${critical:-0}
-    fi
-
-    # メトリクス表から High Issues Count を抽出
-    if echo "$result" | grep -qE 'High Issues Count'; then
-        high=$(echo "$result" | grep -E 'High Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
-        high=${high:-0}
-    fi
-
-    # フォールバック: テーブル形式でSeverity列にCRITICALがある行をカウント
-    if [[ "$critical" -eq 0 ]]; then
-        critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|') || critical=0
-    fi
-
-    if [[ "$critical" -gt 0 ]]; then
-        log_error "CRITICAL issues found: $critical"
-        echo "" >&2
-        (echo "$result" | grep -E '\|\s*\*\*CRITICAL\*\*\s*\|' | head -10) >&2
-        echo "" >&2
-        log_warn "Please review and fix before implementation"
-        save_state "$STATE_PAUSED"
-        return 1
-    elif [[ "$high" -gt 0 ]]; then
-        log_warn "HIGH issues found: $high (continuing with caution)"
-    else
-        log_success "No critical issues found"
-    fi
+    # Log what was fixed
+    log_info "Auto-fix attempt completed"
+    (echo "$result" | grep -iE "修正|fixed|updated|added|changed" | head -5) >&2
 
     echo "$new_session_id"
+}
+
+# Step: analyze (with auto-fix loop)
+run_analyze() {
+    local session_id="$1"
+    local max_fix_attempts="${2:-3}"  # Default: 3 attempts
+    local attempt=0
+
+    while [[ $attempt -lt $max_fix_attempts ]]; do
+        attempt=$((attempt + 1))
+
+        if [[ $attempt -eq 1 ]]; then
+            log_step "Step 5/5: /speckit.analyze"
+        else
+            log_step "Re-analyzing after auto-fix (attempt $attempt/$max_fix_attempts)"
+        fi
+
+        local output_file
+        output_file=$(run_claude "/speckit.analyze" "$session_id")
+
+        local new_session_id
+        new_session_id=$(extract_session_id "$output_file")
+        save_session "$new_session_id"
+        save_state "$STATE_REVIEW"
+
+        local result
+        result=$(extract_result "$output_file")
+
+        # 問題をカウント - メトリクス表から実際の件数を取得
+        local critical=0
+        local high=0
+
+        # メトリクス表から Critical Issues Count を抽出
+        if echo "$result" | grep -qE 'Critical Issues Count'; then
+            critical=$(echo "$result" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+            critical=${critical:-0}
+        fi
+
+        # メトリクス表から High Issues Count を抽出
+        if echo "$result" | grep -qE 'High Issues Count'; then
+            high=$(echo "$result" | grep -E 'High Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+            high=${high:-0}
+        fi
+
+        # フォールバック: テーブル形式でSeverity列にCRITICAL/HIGHがある行をカウント
+        if [[ "$critical" -eq 0 ]]; then
+            critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|') || critical=0
+        fi
+        if [[ "$high" -eq 0 ]]; then
+            high=$(echo "$result" | grep -cE '\|\s*\*\*HIGH\*\*\s*\|') || high=0
+        fi
+
+        # CRITICAL問題がある場合: 自動修正を試みる
+        if [[ "$critical" -gt 0 ]]; then
+            log_error "CRITICAL issues found: $critical"
+            echo "" >&2
+            (echo "$result" | grep -E '\|\s*\*\*CRITICAL\*\*\s*\|' | head -10) >&2
+            echo "" >&2
+
+            if [[ $attempt -lt $max_fix_attempts ]]; then
+                log_auto_decision "analyze" "auto-fix CRITICAL" "attempt $attempt"
+                new_session_id=$(auto_fix_issues "$new_session_id" "$result" "CRITICAL")
+                session_id="$new_session_id"
+                continue  # Re-analyze after fix
+            else
+                log_error "Auto-fix failed after $max_fix_attempts attempts"
+                log_warn "Manual intervention required"
+                save_state "$STATE_PAUSED"
+                return 1
+            fi
+        fi
+
+        # HIGH問題がある場合: 警告のみ（オプションで自動修正も可能）
+        if [[ "$high" -gt 0 ]]; then
+            log_warn "HIGH issues found: $high"
+
+            # AUTO_FIX_HIGH環境変数が設定されている場合はHIGHも修正
+            if [[ "${AUTO_FIX_HIGH:-false}" == "true" && $attempt -lt $max_fix_attempts ]]; then
+                log_auto_decision "analyze" "auto-fix HIGH" "attempt $attempt"
+                new_session_id=$(auto_fix_issues "$new_session_id" "$result" "HIGH")
+                session_id="$new_session_id"
+                continue
+            else
+                log_warn "Continuing with HIGH issues (set AUTO_FIX_HIGH=true to auto-fix)"
+            fi
+        fi
+
+        # 問題なし、または許容範囲
+        if [[ "$critical" -eq 0 ]]; then
+            if [[ $attempt -gt 1 ]]; then
+                log_success "All CRITICAL issues resolved after $attempt attempts"
+            else
+                log_success "No critical issues found"
+            fi
+            echo "$new_session_id"
+            return 0
+        fi
+    done
+
+    # Should not reach here, but just in case
+    log_error "Unexpected exit from analyze loop"
+    return 1
 }
 
 # Step: implement loop
