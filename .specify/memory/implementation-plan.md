@@ -624,66 +624,189 @@ wasmtime tests.wasm
 
 #### 13D: 真のセルフホスティング達成 🎯 次の最優先タスク
 
-Stage 0に実際のコンパイラロジックを実装し、非自明な固定点を達成する。
+**アプローチ**: SBCL上のClysmコンパイラでClysm自身をWasmにコンパイル
 
-**アプローチ選択肢**:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Step 1: SBCL + Clysmコンパイラ                               │
+│   └── Clysmコンパイラ全体をWasmにコンパイル                   │
+│         └── dist/clysm-stage1.wasm (完全なコンパイラ)         │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Step 2: Node.js + host-shim + Stage 1                        │
+│   └── Stage 1でClysm自身をコンパイル                          │
+│         └── dist/clysm-stage2.wasm                           │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Step 3: 固定点検証                                           │
+│   └── Stage 1 == Stage 2 (バイト単位一致)                     │
+│         └── セルフホスティング達成！                          │
+└─────────────────────────────────────────────────────────────┘
+```
 
-1. **インタプリタ方式** (推奨)
-   - Wasm上でLispインタプリタを実装
-   - インタプリタがコンパイラソースを評価
-   - 利点: 段階的に機能追加可能
-   - 欠点: 実行速度が遅い
+**現在のブロッカー**: コンパイル率12.9% (主要モジュール46ファイル分析)
 
-2. **直接コンパイル方式**
-   - コンパイラ全体を直接Wasmにコンパイル
-   - SBCLでコンパイラをWasm化
-   - 利点: 高速
-   - 欠点: 全機能が必要、デバッグ困難
+**分析結果** (2025-12-29):
+- 分析ファイル: 46 (compiler/, backend/, reader/, runtime/, clos/, conditions/, eval/, lib/)
+- コンパイル成功: 112フォーム
+- コンパイル失敗: 756フォーム
+- **コンパイル率: 12.9%**
 
-3. **ハイブリッド方式**
-   - 最小コンパイラをWasmで実装
-   - 残りはセルフコンパイルで段階的に追加
-   - 利点: 実現可能性と速度のバランス
+#### ブロッカー分類
 
-**最小実装に必要な機能**:
+**カテゴリ1: 未定義マクロ/特殊形式 (約200件)**
+
+| マクロ/特殊形式 | 失敗数 | 対応方針 |
+|---------------|-------|---------|
+| `defstruct` | 90件 | マクロ展開→CLOS変換 |
+| `in-package` | 49件 | コンパイル時評価（無視可） |
+| `define-condition` | 17件 | マクロ展開→defclass変換 |
+| `defmacro` | 14件 | コンパイル時評価 |
+| `defpackage` | 9件 | コンパイル時評価（無視可） |
+| `handler-case` | 3件 | try-table変換実装 |
+| `declaim` | 3件 | コンパイル時評価（無視可） |
+
+**カテゴリ2: 未定義の内部関数 (約150件)**
+
+| 関数 | 失敗数 | 対応方針 |
+|-----|-------|---------|
+| `interpret-form` | 16件 | プリミティブ登録 |
+| `numeric-literal-p` | 10件 | プリミティブ登録 |
+| `loop-keyword-eq` | 9件 | プリミティブ登録 |
+| `make-ast-literal` | 9件 | プリミティブ登録 |
+| `encode-unsigned-leb128` | 8件 | プリミティブ登録 |
+| `find-restart` | 7件 | プリミティブ登録 |
+| `emit-leb128-unsigned` | 7件 | プリミティブ登録 |
+| `ast-literal-value` | 7件 | プリミティブ登録 |
+| `1+` | 6件 | プリミティブ登録 |
+| `find-package` | 6件 | プリミティブ登録 |
+| その他 | 約60件 | 順次プリミティブ登録 |
+
+**カテゴリ3: 未束縛グローバル変数 (58種類)**
+
+| 変数 | 失敗数 | 対応方針 |
+|-----|-------|---------|
+| `*current-package*` | 7件 | グローバル定義追加 |
+| `*macro-registry*` | 4件 | グローバル定義追加 |
+| `*restart-clusters*` | 4件 | グローバル定義追加 |
+| `*packages*` | 4件 | グローバル定義追加 |
+| `*standard-output*` | 4件 | グローバル定義追加 |
+| `*special-variables*` | 4件 | グローバル定義追加 |
+| その他52種類 | 各1-3件 | グローバル定義追加 |
+
+**カテゴリ4: LOOPマクロの複雑なパターン (40件)**
+
+- `loop for (key val) being the hash-keys` パターン
+- 複合変数の分解束縛
+
+**カテゴリ5: その他 (約100件)**
+
+| 問題 | 失敗数 | 対応方針 |
+|-----|-------|---------|
+| unsupported-form | 22件 | 個別対応 |
+| unknown-form (VALUES等) | 18件 | AST処理追加 |
+| THE特殊形式 | 18件 | 型宣言無視または実装 |
+| DECLARE | 8件 | 無視可 |
+| LABELS | 6件 | 相互再帰実装 |
+| その他 | 約30件 | 個別対応 |
+
+#### 優先順位付きタスク
+
+**Phase 13D-1: プリミティブ登録 (P1 - 最優先)**
+
+約200種類の内部関数をプリミティブとして登録する。
 
 ```lisp
-;; Stage 0が最低限サポートすべき機能
-- 数値リテラル (fixnum)
-- シンボル
-- コンスセル (car, cdr, cons)
-- 基本算術 (+, -, *, /)
-- 比較 (<, >, =, eq)
-- 条件分岐 (if)
-- 変数束縛 (let, let*)
-- 関数定義 (defun, lambda)
-- 関数呼び出し
-- quote
+;; 登録が必要な関数の例
+(register-primitive 'interpret-form ...)
+(register-primitive 'numeric-literal-p ...)
+(register-primitive 'make-ast-literal ...)
+(register-primitive 'encode-unsigned-leb128 ...)
 ```
 
-**タスク**:
-- [ ] 最小Lispインタプリタ (Wasm) 設計
-- [ ] 基本型のWasm表現実装
-- [ ] 基本プリミティブ実装 (car, cdr, cons, +, -, *, /)
-- [ ] 評価器実装 (eval)
-- [ ] Stage 0での `(+ 1 2)` コンパイル成功
-- [ ] Stage 0での `(defun f (x) x)` コンパイル成功
-- [ ] Stage 1 > 17 bytes (非空モジュール) 達成
-- [ ] Stage 1 == Stage 2 (非自明な固定点) 達成
+- [ ] AST関連関数 (make-ast-*, ast-*-value 等) - 約30種類
+- [ ] LEB128関連関数 (encode-*, emit-* 等) - 約10種類
+- [ ] パッケージ関連関数 (find-package 等) - 約10種類
+- [ ] インタプリタ関連関数 (interpret-* 等) - 約20種類
+- [ ] 条件システム関連 (find-restart 等) - 約10種類
+- [ ] その他内部関数 - 約120種類
 
-**検証基準**:
+**Phase 13D-2: グローバル変数定義 (P1)**
+
+58種類のグローバル変数を定義。
+
+- [ ] ランタイムレジストリ (*macro-registry*, *function-registry* 等)
+- [ ] パッケージシステム (*current-package*, *packages* 等)
+- [ ] I/Oストリーム (*standard-output*, *standard-input*)
+- [ ] 条件システム (*restart-clusters*, *handler-clusters*)
+- [ ] Wasm定数 (+NIL+, +I31-MIN+ 等)
+
+**Phase 13D-3: マクロ展開対応 (P1)**
+
+- [ ] `defstruct` → CLOS defclass展開 (90件解決)
+- [ ] `define-condition` → defclass展開 (17件解決)
+- [ ] `in-package`, `defpackage`, `declaim` → コンパイル時評価/無視
+
+**Phase 13D-4: LOOP完全サポート (P2)**
+
+- [ ] hash-tableイテレーション
+- [ ] 複合変数分解 `for (key val) being...`
+
+**Phase 13D-5: 条件システム (P2)**
+
+- [ ] `handler-case` Wasm try-table変換
+- [ ] `restart-case` 実装
+
+**Phase 13D-6: その他 (P3)**
+
+- [ ] `labels`/`flet` 相互再帰
+- [ ] VALUES AST処理
+- [ ] THE特殊形式（型宣言）
+
+#### Stage 1生成・検証タスク
+
+**Phase 13D-7: Stage 1生成**
+- [ ] SBCL上でClysmコンパイラ全体をロード
+- [ ] 全モジュール（約45,000行）をWasmにコンパイル
+- [ ] 単一Wasmモジュールとして出力
+- [ ] `wasm-tools validate` パス
+
+**Phase 13D-8: Stage 1実行環境**
+- [ ] Node.js host-shim でStage 1を実行
+- [ ] FFI経由でファイルI/O提供
+- [ ] Stage 1の `compile_form` が動作確認
+
+**Phase 13D-9: 固定点達成**
+- [ ] Stage 1でClysm自身をコンパイル → Stage 2
+- [ ] Stage 1 == Stage 2 (バイト単位一致)
+- [ ] `./scripts/verify-fixpoint.sh` でACHIEVED
+
+#### 検証基準
 ```bash
-# Stage 0が実際にコンパイル可能
-wasmtime dist/clysm-stage0.wasm --invoke compile_form "(+ 1 2)"
-# => 有効なWasmバイナリ (非空)
+# Step 1: SBCL上でStage 1生成
+sbcl --load build/stage1-gen.lisp
+wasm-tools validate dist/clysm-stage1.wasm
+ls -la dist/clysm-stage1.wasm  # 数百KB以上
 
-# Stage 1のサイズが意味のある大きさ
-ls -la dist/clysm-stage1.wasm
-# => 1KB以上
+# Step 2: Node.js上でStage 1実行
+node host-shim/stage1-host.js --mode compile \
+  --stage1 dist/clysm-stage1.wasm \
+  --output dist/clysm-stage2.wasm
 
-# 非自明な固定点
-cmp dist/clysm-stage1.wasm dist/clysm-stage2.wasm && echo "FIXPOINT"
+# Step 3: 固定点検証
+./scripts/verify-fixpoint.sh --json
+# => {"status": "ACHIEVED", ...}
 ```
+
+#### 成功指標
+
+| 指標 | 現在 | 目標 |
+|-----|------|------|
+| コンパイル率 | 12.9% (112/868) | 80%+ |
+| Stage 1サイズ | 17バイト (スタブ) | 100KB+ |
+| 固定点 | 未達成 | Stage 1 == Stage 2 |
 
 ---
 

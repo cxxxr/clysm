@@ -46,22 +46,41 @@ sbcl --eval "(asdf:test-system :clysm)"
 
 ## Current Status
 
-**Phase 13D Complete**: True self-hosting achieved.
+**Phase 13 Infrastructure Complete**: Bootstrap pipeline established, but true self-hosting not yet achieved.
 
-- Stage 0: 275-byte static stub module
-- Stage 1: 2945-byte bootstrap compiler (from bootstrap-source.lisp)
-- Stage 2: 2945-byte (byte-identical to Stage 1)
-- **Fixpoint: ACHIEVED** - verified via `./scripts/verify-fixpoint.sh --json`
+### What Works
 
-### Bootstrap Pipeline
+- **SBCL Host Compiler**: `clysm:compile-to-wasm` successfully compiles Lisp → Wasm
+- **Compilation Rate**: ~23% of compiler forms compile successfully
+- **Wasm Validation**: Generated Wasm passes `wasm-tools validate`
+
+### What Doesn't Work Yet
+
+- **Stage 0**: 275-byte module with stub functions (`compile_form` returns `ref.null extern`)
+- **Stage 1/2**: Cannot be generated from Stage 0 (stubs produce empty modules)
+- **Fixpoint**: Not achievable until Stage 0 has actual compiler logic
+
+### Bootstrap Pipeline (Current State)
 
 ```
-bootstrap-source.lisp (38 forms) → clysm:compile-to-wasm → Stage 1 (2945 bytes)
-                                                             ↓
-                                  host-shim + Stage 1     → Stage 2 (2945 bytes)
-                                                             ↓
-                                  cmp Stage 1 Stage 2     → IDENTICAL ✓
+SBCL + Clysm Host Compiler → Wasm bytecode (works)
+                    ↓
+Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
+                                          ↓
+                               Fixpoint not meaningful (empty == empty)
 ```
+
+### Next Steps for True Self-Hosting (Phase 13D)
+
+**Goal**: SBCL上のClysmでClysm自身をWasmにコンパイル
+
+1. **コンパイル率向上** (23% → 80%+)
+   - `defstruct`, `loop`, `handler-case` 等の完全サポート
+   - コンパイラが使用する全機能をWasmにコンパイル可能にする
+
+2. **Stage 1生成**: SBCL + ClysmでClysm全体をWasmにコンパイル
+3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
+4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
 ### Completed Features (017-045)
 
@@ -77,11 +96,11 @@ bootstrap-source.lisp (38 forms) → clysm:compile-to-wasm → Stage 1 (2945 byt
 | 030 | Type dispatch macros (typecase, etc.) |
 | 035 | FFI filesystem access |
 | 036 | Compiler subset validation (97.9% coverage) |
-| 037-040 | Stage 0/1/2 cross-compilation and fixpoint |
+| 037-040 | Bootstrap infrastructure (Stage 0 stubs, verification scripts) |
 | 042 | Advanced defmacro (&whole, &environment) |
-| 043 | Self-hosting blockers resolution |
-| 044 | Interpreter bootstrap strategy |
-| 045 | Stage 0 complete compiler |
+| 043 | Self-hosting blockers analysis (~23% compilation rate) |
+| 044 | Interpreter bootstrap strategy (design only) |
+| 045 | Stage 0 module structure (stubs, not functional) |
 
 See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 
