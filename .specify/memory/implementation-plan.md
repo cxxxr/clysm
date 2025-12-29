@@ -1,8 +1,8 @@
 # Clysm実装計画: WebAssembly GCターゲットCommon Lispコンパイラ
 
 **作成日**: 2025-12-21
-**更新日**: 2025-12-28
-**ステータス**: Phase 13 インフラ完了 → 真のセルフホスティング実装が必要
+**更新日**: 2025-12-29
+**ステータス**: Phase 13 インフラ完了 → ANSI CL関数プリミティブ実装が必要
 **憲法バージョン**: 1.0.0
 **ANSI準拠率**: 23.4% (219/936テスト)
 
@@ -654,116 +654,185 @@ wasmtime tests.wasm
 - コンパイル失敗: 756フォーム
 - **コンパイル率: 12.9%**
 
-#### ブロッカー分類
+#### ブロッカー分析（2025-12-29 修正）
 
-**カテゴリ1: 未定義マクロ/特殊形式 (約200件)**
+> **重要な訂正**: 以前の分析では「内部関数をプリミティブ登録すべき」としていたが、
+> これは誤りである。`make-ast-literal`等はdefstructが生成する関数、
+> `encode-unsigned-leb128`等は通常のdefunであり、プリミティブ登録すべきではない。
+> 真の問題は、これらの関数が使用する**ANSI CL標準関数**がプリミティブとして未実装であること。
 
-| マクロ/特殊形式 | 失敗数 | 対応方針 |
-|---------------|-------|---------|
-| `defstruct` | 90件 | マクロ展開→CLOS変換 |
-| `in-package` | 49件 | コンパイル時評価（無視可） |
-| `define-condition` | 17件 | マクロ展開→defclass変換 |
-| `defmacro` | 14件 | コンパイル時評価 |
-| `defpackage` | 9件 | コンパイル時評価（無視可） |
-| `handler-case` | 3件 | try-table変換実装 |
-| `declaim` | 3件 | コンパイル時評価（無視可） |
+#### 根本原因: ANSI CL関数の未実装
 
-**カテゴリ2: 未定義の内部関数 (約150件)**
-
-| 関数 | 失敗数 | 対応方針 |
-|-----|-------|---------|
-| `interpret-form` | 16件 | プリミティブ登録 |
-| `numeric-literal-p` | 10件 | プリミティブ登録 |
-| `loop-keyword-eq` | 9件 | プリミティブ登録 |
-| `make-ast-literal` | 9件 | プリミティブ登録 |
-| `encode-unsigned-leb128` | 8件 | プリミティブ登録 |
-| `find-restart` | 7件 | プリミティブ登録 |
-| `emit-leb128-unsigned` | 7件 | プリミティブ登録 |
-| `ast-literal-value` | 7件 | プリミティブ登録 |
-| `1+` | 6件 | プリミティブ登録 |
-| `find-package` | 6件 | プリミティブ登録 |
-| その他 | 約60件 | 順次プリミティブ登録 |
-
-**カテゴリ3: 未束縛グローバル変数 (58種類)**
-
-| 変数 | 失敗数 | 対応方針 |
-|-----|-------|---------|
-| `*current-package*` | 7件 | グローバル定義追加 |
-| `*macro-registry*` | 4件 | グローバル定義追加 |
-| `*restart-clusters*` | 4件 | グローバル定義追加 |
-| `*packages*` | 4件 | グローバル定義追加 |
-| `*standard-output*` | 4件 | グローバル定義追加 |
-| `*special-variables*` | 4件 | グローバル定義追加 |
-| その他52種類 | 各1-3件 | グローバル定義追加 |
-
-**カテゴリ4: LOOPマクロの複雑なパターン (40件)**
-
-- `loop for (key val) being the hash-keys` パターン
-- 複合変数の分解束縛
-
-**カテゴリ5: その他 (約100件)**
-
-| 問題 | 失敗数 | 対応方針 |
-|-----|-------|---------|
-| unsupported-form | 22件 | 個別対応 |
-| unknown-form (VALUES等) | 18件 | AST処理追加 |
-| THE特殊形式 | 18件 | 型宣言無視または実装 |
-| DECLARE | 8件 | 無視可 |
-| LABELS | 6件 | 相互再帰実装 |
-| その他 | 約30件 | 個別対応 |
-
-#### 優先順位付きタスク
-
-**Phase 13D-1: プリミティブ登録 (P1 - 最優先)**
-
-約200種類の内部関数をプリミティブとして登録する。
+**具体例: `encode-unsigned-leb128`** (backend/leb128.lisp):
 
 ```lisp
-;; 登録が必要な関数の例
-(register-primitive 'interpret-form ...)
-(register-primitive 'numeric-literal-p ...)
-(register-primitive 'make-ast-literal ...)
-(register-primitive 'encode-unsigned-leb128 ...)
+(defun encode-unsigned-leb128 (value)
+  (let ((bytes '()))
+    (loop
+      (let ((byte (logand value #x7f)))      ;; ✅ logand: 実装済み
+        (setf value (ash value -7))          ;; ✅ ash: 実装済み
+        (if (zerop value)                    ;; ✅ zerop: 実装済み
+            (progn (push byte bytes) (return))
+            (push (logior byte #x80) bytes))))
+    (coerce (nreverse bytes) '(vector ...))))  ;; ❌ coerce: 未実装！
 ```
 
-- [ ] AST関連関数 (make-ast-*, ast-*-value 等) - 約30種類
-- [ ] LEB128関連関数 (encode-*, emit-* 等) - 約10種類
-- [ ] パッケージ関連関数 (find-package 等) - 約10種類
-- [ ] インタプリタ関連関数 (interpret-* 等) - 約20種類
-- [ ] 条件システム関連 (find-restart 等) - 約10種類
-- [ ] その他内部関数 - 約120種類
+この関数は普通のdefunだが、最終行で`coerce`を使用している。
+`coerce`がプリミティブとして未実装のため、コンパイルに失敗する。
 
-**Phase 13D-2: グローバル変数定義 (P1)**
+**具体例: `make-ast-literal`** (compiler/ast.lisp):
+
+```lisp
+(defstruct (ast-literal (:include ast-node) ...)
+  (value nil :type t)
+  (literal-type nil :type keyword))
+;; → defstructマクロがmake-ast-literal, ast-literal-value等を生成
+;; → 生成されたコードは配列アクセス(aref/svref)を使用
+;; → aref/svrefがプリミティブとして未実装のため失敗
+```
+
+#### ブロッカー分類（修正版）
+
+**カテゴリ1: ANSI CL関数の未実装（根本原因）**
+
+| 関数 | ANSI CL仕様 | 使用箇所 | 影響範囲 |
+|-----|------------|---------|---------|
+| `coerce` | §17.3 | leb128.lisp, 多数 | 型変換全般 |
+| `aref` | §15.2 | 配列アクセス全般 | defstruct展開後のコード |
+| `svref` | §15.2 | simple-vector用 | defstruct展開後のコード |
+| `schar` | §16.3 | 文字列アクセス | 文字列処理 |
+| `elt` | §17.3 | 汎用シーケンス | シーケンス処理 |
+| `make-string` | §16.3 | 文字列生成 | 文字列処理 |
+| `concatenate` | §17.3 | シーケンス結合 | 文字列・リスト処理 |
+| `subseq` | §17.3 | 部分シーケンス | 多数 |
+
+**カテゴリ2: マクロ展開（カテゴリ1に依存）**
+
+| マクロ | 失敗数 | 状態 | 備考 |
+|-------|-------|------|------|
+| `defstruct` | 90件 | 展開される | 展開後コードがaref/svref使用で失敗 |
+| `define-condition` | 17件 | 展開される | defstruct同様 |
+| `in-package` | 49件 | 無視可 | コンパイル時ディレクティブ |
+| `defpackage` | 9件 | 無視可 | コンパイル時ディレクティブ |
+| `declaim` | 3件 | 無視可 | コンパイル時ディレクティブ |
+
+**カテゴリ3: 制御構造の拡張**
+
+| 機能 | 失敗数 | 対応方針 |
+|-----|-------|---------|
+| `handler-case` | 3件 | Wasm try-table変換 |
+| LOOP hash-table | 40件 | `being the hash-keys`パターン |
+| `labels` 相互再帰 | 6件 | 関数インデックス前方参照 |
+| `values` 特殊形式 | 18件 | AST処理追加 |
+| `the` 型宣言 | 18件 | 無視または型情報活用 |
+
+**カテゴリ4: グローバル変数（ランタイム初期化）**
+
+| 変数 | 用途 | 対応方針 |
+|-----|------|---------|
+| `*current-package*` | パッケージシステム | defvar + 初期化 |
+| `*standard-output*` | I/O | FFI経由初期化 |
+| `*macro-registry*` | マクロ展開 | ハッシュテーブル初期化 |
+| その他55種類 | 各種 | 順次定義 |
+
+#### 優先順位付きタスク（2025-12-29 修正）
+
+> **方針変更**: 以前は「内部関数をプリミティブ登録」としていたが、
+> 正しいアプローチは「ANSI CL標準関数をプリミティブ実装」である。
+> 内部関数（make-ast-literal, encode-unsigned-leb128等）は
+> 通常のdefunとしてコンパイルされるべきであり、
+> そのためにはこれらが使用するANSI CL関数を先に実装する必要がある。
+
+**Phase 13D-1: ANSI CL配列・シーケンス関数 (P1 - 最優先)**
+
+defstruct展開後のコード、leb128.lisp等がコンパイルできない根本原因を解決。
+
+```lisp
+;; 実装が必要なプリミティブ（ANSI CL仕様準拠）
+aref     ;; 配列要素アクセス → Wasm array.get
+svref    ;; simple-vector要素アクセス → Wasm array.get
+schar    ;; 文字列文字アクセス → Wasm array.get (i8)
+elt      ;; 汎用シーケンスアクセス → typecaseで分岐
+coerce   ;; 型変換 → リスト→配列等の変換
+```
+
+- [ ] `aref` / `svref` 実装 (array.get命令)
+- [ ] `(setf aref)` / `(setf svref)` 実装 (array.set命令)
+- [ ] `schar` / `(setf schar)` 実装
+- [ ] `elt` / `(setf elt)` 実装 (typecase分岐)
+- [ ] `coerce` 実装 (list→vector, vector→list等)
+
+**Phase 13D-2: ANSI CL シーケンス操作関数 (P1)**
+
+```lisp
+;; 実装が必要なプリミティブ
+subseq       ;; 部分シーケンス抽出
+concatenate  ;; シーケンス結合
+make-string  ;; 文字列生成
+make-array   ;; 配列生成（拡張）
+copy-seq     ;; シーケンスコピー
+```
+
+- [ ] `subseq` 実装
+- [ ] `concatenate` 実装
+- [ ] `make-string` 実装
+- [ ] `make-array` 拡張（:initial-element, :initial-contents）
+- [ ] `copy-seq` 実装
+
+**Phase 13D-3: コンパイル時ディレクティブ処理 (P1)**
+
+コンパイル時に評価・無視すべきフォームの処理。
+
+- [ ] `in-package` → コンパイル時評価、AST生成なし
+- [ ] `defpackage` → コンパイル時評価、AST生成なし
+- [ ] `declaim` → コンパイル時評価（最適化ヒント）、AST生成なし
+- [ ] `proclaim` → 同上
+
+**Phase 13D-4: グローバル変数定義 (P2)**
 
 58種類のグローバル変数を定義。
 
-- [ ] ランタイムレジストリ (*macro-registry*, *function-registry* 等)
-- [ ] パッケージシステム (*current-package*, *packages* 等)
-- [ ] I/Oストリーム (*standard-output*, *standard-input*)
-- [ ] 条件システム (*restart-clusters*, *handler-clusters*)
-- [ ] Wasm定数 (+NIL+, +I31-MIN+ 等)
+- [ ] ランタイムレジストリ (`*macro-registry*`, `*function-registry*` 等)
+- [ ] パッケージシステム (`*current-package*`, `*packages*` 等)
+- [ ] I/Oストリーム (`*standard-output*`, `*standard-input*`)
+- [ ] 条件システム (`*restart-clusters*`, `*handler-clusters*`)
 
-**Phase 13D-3: マクロ展開対応 (P1)**
+**Phase 13D-5: LOOP拡張 (P2)**
 
-- [ ] `defstruct` → CLOS defclass展開 (90件解決)
-- [ ] `define-condition` → defclass展開 (17件解決)
-- [ ] `in-package`, `defpackage`, `declaim` → コンパイル時評価/無視
+- [ ] hash-tableイテレーション (`being the hash-keys`)
+- [ ] 複合変数分解 (`for (key val) being...`)
+- [ ] `with` 句完全サポート
 
-**Phase 13D-4: LOOP完全サポート (P2)**
+**Phase 13D-6: 制御構造拡張 (P2)**
 
-- [ ] hash-tableイテレーション
-- [ ] 複合変数分解 `for (key val) being...`
-
-**Phase 13D-5: 条件システム (P2)**
-
-- [ ] `handler-case` Wasm try-table変換
-- [ ] `restart-case` 実装
-
-**Phase 13D-6: その他 (P3)**
-
+- [ ] `handler-case` → Wasm try-table変換
 - [ ] `labels`/`flet` 相互再帰
-- [ ] VALUES AST処理
-- [ ] THE特殊形式（型宣言）
+- [ ] `values` 特殊形式のAST処理
+- [ ] `the` 型宣言（無視または型情報活用）
+
+#### 依存関係グラフ
+
+```
+Phase 13D-1: aref/svref/coerce実装
+    │
+    ├──→ defstruct展開後のコードがコンパイル可能に
+    │         │
+    │         └──→ make-ast-literal, ast-literal-value等が動作
+    │
+    └──→ encode-unsigned-leb128等がコンパイル可能に
+              │
+              └──→ backend/leb128.lisp 全体が動作
+
+Phase 13D-2: subseq/concatenate実装
+    │
+    └──→ reader, compiler の文字列処理が動作
+
+Phase 13D-3: コンパイル時ディレクティブ
+    │
+    └──→ in-package等による失敗61件が解決
+
+Phase 13D-4-6: 並行して実装可能
+```
 
 #### Stage 1生成・検証タスク
 
@@ -1439,4 +1508,5 @@ Phase 19 [CLOS完全準拠]
 | 0.4.0 | 2025-12-27 | Phase 0-8完了確認。Phase 8G-8I追加 |
 | 1.0.0 | 2025-12-27 | セルフホスティングフェーズ (Phase 9-13) 追加。最終目標をセルフホスティングに設定 |
 | 2.0.0 | 2025-12-28 | Phase 9-13完了。ANSI準拠率向上フェーズ (Phase 14-19) 追加。現在23.4%から80%を目標に設定 |
-| **2.1.0** | **2025-12-28** | **セルフホスティング検証結果を反映。Phase 13は「インフラ完了」に修正（Stage 0がスタブのみで実際のコンパイルロジックなし）。Phase 13Dとして真のセルフホスティング達成タスクを追加** |
+| 2.1.0 | 2025-12-28 | セルフホスティング検証結果を反映。Phase 13は「インフラ完了」に修正（Stage 0がスタブのみで実際のコンパイルロジックなし）。Phase 13Dとして真のセルフホスティング達成タスクを追加 |
+| **2.2.0** | **2025-12-29** | **Phase 13Dブロッカー分析を大幅修正。「内部関数をプリミティブ登録」は誤りであり、「ANSI CL標準関数（coerce, aref, svref等）をプリミティブ実装」が正しいアプローチと判明。make-ast-literal等はdefstructが生成する関数、encode-unsigned-leb128等は通常のdefunであり、これらが使用するANSI CL関数が未実装であることが根本原因。依存関係グラフを追加** |
