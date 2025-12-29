@@ -311,7 +311,9 @@
       :components
       ((:file "runtime-valid-test")
        (:file "ffi-valid-test")
-       (:file "exports-test")))))
+       (:file "exports-test")))
+     ;; Array primitives Wasm validation (001-ansi-array-primitives)
+     (:file "array-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -534,7 +536,9 @@
        (:file "ast-test")
        (:file "ir-test")
        (:file "ffi-test")
-       (:file "fs-read-test")))))
+       (:file "fs-read-test")))
+     ;; Array primitives unit tests (001-ansi-array-primitives)
+     (:file "array-primitives-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -634,7 +638,9 @@
        (:file "workflow-incremental-test")
        (:file "workflow-error-recovery-test")
        (:file "workflow-repl-test")
-       (:file "workflow-selfhost-test"))))))
+       (:file "workflow-selfhost-test")))
+     ;; Array primitives integration tests (001-ansi-array-primitives)
+     (:file "array-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

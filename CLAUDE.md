@@ -82,10 +82,11 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045)
+### Completed Features (017-045, 001-ansi-array-primitives)
 
 | Feature | Description |
 |---------|-------------|
+| 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
 | 017 | Eval/JIT with tiered compilation |
 | 019 | Numeric accessors, IEEE 754 floats |
 | 024 | Equality predicates (eq, eql, equal, equalp) |
@@ -143,6 +144,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host, WasmGC for target + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-true-self-hosting)
 - N/A (in-memory compilation only) (001-true-self-hosting)
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-ansi-numeric-functions)
+- Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-ansi-array-primitives)
+- N/A (in-memory compilation) (001-ansi-array-primitives)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

@@ -514,6 +514,9 @@
            #:+type-stream+
            #:make-stream-type
            #:emit-value-type-extended
+           ;; Multiple values array type (025-multiple-values)
+           #:+type-mv-array+
+           #:make-mv-array-type
            ;; CLOS Foundation type indices (026-clos-foundation)
            #:+type-slot-vector+
            #:+type-keyword-array+
@@ -1038,7 +1041,12 @@
            #:constant-modification-error
            #:odd-argument-count
            #:odd-argument-count-macro
-           #:odd-argument-count-count))
+           #:odd-argument-count-count
+           ;; Setf primitives for compiler (001-ansi-array-primitives)
+           #:%setf-aref
+           #:%setf-svref
+           #:%setf-schar
+           #:%setf-elt))
 
 (defpackage #:clysm/lib/destructuring
   (:use #:cl)

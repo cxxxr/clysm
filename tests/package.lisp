@@ -660,3 +660,24 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run-numeric)
   (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))
+
+;;; ============================================================
+;;; Array Primitives Tests (001-ansi-array-primitives)
+;;; Phase 13D-1: ANSI CL Array/Sequence Primitives
+;;; ============================================================
+
+;; Array primitives unit tests (001-ansi-array-primitives)
+;; Tests for aref, svref, schar, elt codegen
+(defpackage #:clysm/tests/unit/array-primitives
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Array primitives Wasm contract tests (001-ansi-array-primitives)
+(defpackage #:clysm/tests/contract/array-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Array primitives integration tests (001-ansi-array-primitives)
+(defpackage #:clysm/tests/integration/array
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))

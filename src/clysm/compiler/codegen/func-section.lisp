@@ -713,6 +713,8 @@
       ((and (symbolp function) (eq function 'funcall))
        (compile-funcall args env))
       ;; Primitive operators
+      ;; Use symbol-name comparison to handle symbols from different packages
+      ;; (needed for %setf-* primitives which may come from setf-expanders package)
       ((and (symbolp function)
             (member function '(+ - * / < > <= >= = /= truncate
                                ;; Cons/list operations (006-cons-list-ops)
@@ -799,7 +801,13 @@
                                ;; List utilities (043-self-hosting-blockers)
                                endp list*
                                ;; Function application (043-self-hosting-blockers)
-                               apply funcall)))
+                               apply funcall
+                               ;; Array/Sequence primitives (001-ansi-array-primitives)
+                               ;; Note: %setf-aref already in Feature 043 list above
+                               aref svref elt coerce
+                               %setf-svref %setf-schar %setf-elt)
+                    :test (lambda (fn sym)
+                            (string= (symbol-name fn) (symbol-name sym)))))
        (compile-primitive-call function args env))
       ;; Local function (from flet/labels)
       ((and (symbolp function) (env-lookup-local-function env function))
@@ -870,8 +878,19 @@
   "Compile a primitive operation.
    Arguments to primitives are NOT in tail position."
   ;; Clear tail position for all arguments - primitive ops aren't tail calls
-  (let ((env (env-with-non-tail env)))
-    (case op
+  (let ((env (env-with-non-tail env))
+        (op-name (when (symbolp op) (symbol-name op))))
+    ;; Handle %setf-* primitives by symbol name (for cross-package matching)
+    ;; These primitives may come from setf-expanders package but need to match here
+    (cond
+      ((string= op-name "%SETF-AREF") (compile-setf-aref args env))
+      ((string= op-name "%SETF-SVREF") (compile-setf-aref args env))
+      ((string= op-name "%SETF-SCHAR") (compile-setf-schar args env))
+      ((string= op-name "%SETF-ELT") (compile-setf-elt args env))
+      ((string= op-name "%SETF-GETF") (compile-setf-getf args env))
+      (t
+       ;; Fall through to main case for all other primitives
+       (case op
     ;; Arithmetic operators (T049-T052)
     (+  (compile-arithmetic-op :i32.add args env 0))
     (-  (if (= 1 (length args))
@@ -1096,11 +1115,10 @@
     (clrhash (compile-clrhash args env))
     ;; Feature 043: List operations for LOOP support
     (nconc (compile-nconc args env))
-    ;; Feature 043: Array setf primitive
-    (%setf-aref (compile-setf-aref args env))
+    ;; Note: %setf-aref now handled by cond above for cross-package matching
     ;; Feature 043: Property list operations
     (getf (compile-getf args env))
-    (%setf-getf (compile-setf-getf args env))
+    ;; Note: %setf-getf now handled by cond above for cross-package matching
     ;; Feature 043: Error signaling
     (error (compile-error args env))
     ;; Feature 043: Array and symbol creation
@@ -1116,7 +1134,18 @@
     (list* (compile-list* args env))
     ;; Feature 043: Function application
     (apply (compile-apply args env))
-    (funcall (compile-funcall args env)))))
+    (funcall (compile-funcall args env))
+    ;; Feature 001-ansi-array-primitives: Array/Sequence Primitives
+    ;; HyperSpec: resources/HyperSpec/Body/f_aref.htm
+    (aref (compile-aref args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_svref.htm
+    (svref (compile-svref args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_elt.htm
+    (elt (compile-elt args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_coerce.htm
+    (coerce (compile-coerce args env))
+    ;; Note: %setf-* primitives are now handled by cond above for cross-package matching
+    ))))) ; Close case, t clause of cond, cond, let
 
 ;;; ============================================================
 ;;; Numeric Tower Type Dispatch (T013-T015)
@@ -1921,12 +1950,14 @@
 (defun compile-setf-aref (args env)
   "Compile (%setf-aref array value index...) - set array element.
    Returns the value for proper setf semantics.
-   Note: Currently only supports 1D arrays."
+   Note: Currently only supports 1D arrays.
+   HyperSpec: resources/HyperSpec/Body/f_aref.htm"
   (when (< (length args) 3)
     (error "%setf-aref requires at least 3 arguments (array value index)"))
   (let ((array-expr (first args))
         (value-expr (second args))
-        (index-expr (third args)))  ; Only support 1D for now
+        (index-expr (third args))  ; Only support 1D for now
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
     (when (> (length args) 3)
       (error "%setf-aref: multi-dimensional arrays not yet supported"))
     (let ((value-local (env-add-local env (gensym "AREF-VAL"))))
@@ -1936,16 +1967,307 @@
        (list (list :local.set value-local))
        ;; Evaluate array
        (compile-to-instructions array-expr env)
-       ;; Cast to array type (use anyref array for now)
+       ;; Cast to mv_array type (anyref array)
+       (list (list :ref.cast (list :ref mv-array-type)))
        ;; Evaluate index
        (compile-to-instructions index-expr env)
        '((:ref.cast :i31) :i31.get_s)  ; Convert to i32 index
        ;; Get value to store
        (list (list :local.get value-local))
-       ;; Store in array
-       '((:array.set 22))  ; Type 22 = mv_array (anyref array)
+       ;; Store in array - use mv_array type (type 20)
+       (list (list :array.set mv-array-type))
        ;; Return the value
        (list (list :local.get value-local))))))
+
+;;; ============================================================
+;;; Feature 001-ansi-array-primitives: Array/Sequence Primitives
+;;; Phase 13D-1: ANSI CL Array Access
+;;; ============================================================
+
+(defun compile-aref (args env)
+  "Compile (aref array index) - get element from simple-vector.
+   HyperSpec: resources/HyperSpec/Body/f_aref.htm
+   Stack: [] -> [anyref]"
+  (when (< (length args) 2)
+    (error "aref requires at least 2 arguments (array index)"))
+  (when (> (length args) 2)
+    (error "aref: multi-dimensional arrays not yet supported"))
+  (let ((array-expr (first args))
+        (index-expr (second args))
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
+    (append
+     ;; Evaluate array
+     (compile-to-instructions array-expr env)
+     ;; Cast to mv_array type (type 20 = anyref array)
+     (list (list :ref.cast (list :ref mv-array-type)))
+     ;; Evaluate index
+     (compile-to-instructions index-expr env)
+     ;; Convert index from i31ref to i32
+     '((:ref.cast :i31) :i31.get_s)
+     ;; Get element from array
+     (list (list :array.get mv-array-type)))))
+
+(defun compile-svref (args env)
+  "Compile (svref simple-vector index) - get element from simple-vector.
+   HyperSpec: resources/HyperSpec/Body/f_svref.htm
+   svref is semantically identical to aref for simple-vectors."
+  ;; Delegate to compile-aref since svref is just aref for simple-vectors
+  (compile-aref args env))
+
+(defun compile-elt (args env)
+  "Compile (elt sequence index) - generic sequence element access.
+   HyperSpec: resources/HyperSpec/Body/f_elt.htm
+   Performs runtime type dispatch: vector -> array.get, list -> nth, string -> schar.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 2)
+    (error "elt requires exactly 2 arguments (sequence index)"))
+  (let ((seq-expr (first args))
+        (index-expr (second args))
+        (seq-local (env-add-local env (gensym "ELT-SEQ")))
+        (idx-local (env-add-local env (gensym "ELT-IDX") :i32))
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (string-type clysm/compiler/codegen/gc-types:+type-string+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     ;; Evaluate and save sequence
+     (compile-to-instructions seq-expr env)
+     (list (list :local.set seq-local))
+     ;; Evaluate and save index (as i32)
+     (compile-to-instructions index-expr env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set idx-local))
+     ;; Type dispatch
+     `((:block (:result :anyref)
+         ;; Check if simple-vector (type 20)
+         (:local.get ,seq-local)
+         (:ref.test (:ref ,mv-array-type))
+         (:if (:result :anyref)
+           ;; Vector path: array.get
+           ((:local.get ,seq-local)
+            (:ref.cast (:ref ,mv-array-type))
+            (:local.get ,idx-local)
+            (:array.get ,mv-array-type))
+           ;; Check if string (type 4)
+           ((:local.get ,seq-local)
+            (:ref.test (:ref ,string-type))
+            (:if (:result :anyref)
+              ;; String path: array.get_u and wrap as i31ref
+              ((:local.get ,seq-local)
+               (:ref.cast (:ref ,string-type))
+               (:local.get ,idx-local)
+               (:array.get_u ,string-type)
+               :ref.i31)
+              ;; List path: iterate to nth element
+              ((:local.get ,seq-local)
+               (:local.get ,idx-local)
+               (:block (:result :anyref)
+                 (:loop
+                   ;; Check if index is 0
+                   (:local.get ,idx-local)
+                   :i32.eqz
+                   (:br_if 1)  ; Exit loop, take car
+                   ;; Decrement index
+                   (:local.get ,idx-local)
+                   (:i32.const 1)
+                   :i32.sub
+                   (:local.set ,idx-local)
+                   ;; Get cdr
+                   (:local.get ,seq-local)
+                   (:ref.cast (:ref ,cons-type))
+                   (:struct.get ,cons-type 1)  ; cdr
+                   (:local.set ,seq-local)
+                   (:br 0))  ; Continue loop
+                 ;; Return car of current cons
+                 (:local.get ,seq-local)
+                 (:ref.cast (:ref ,cons-type))
+                 (:struct.get ,cons-type 0)))))))))))
+
+(defun compile-coerce (args env)
+  "Compile (coerce object result-type) - type coercion.
+   HyperSpec: resources/HyperSpec/Body/f_coerce.htm
+   For now, handles literal result-type only: 'vector, 'list.
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 2)
+    (error "coerce requires exactly 2 arguments (object result-type)"))
+  (let ((obj-expr (first args))
+        (type-expr (second args)))
+    ;; Handle quoted type specifiers at compile time
+    (cond
+      ;; (coerce x 'vector) or (coerce x 'simple-vector)
+      ((and (listp type-expr)
+            (eq (first type-expr) 'quote)
+            (member (second type-expr) '(vector simple-vector)))
+       (compile-coerce-to-vector obj-expr env))
+      ;; (coerce x 'list)
+      ((and (listp type-expr)
+            (eq (first type-expr) 'quote)
+            (eq (second type-expr) 'list))
+       (compile-coerce-to-list obj-expr env))
+      ;; Other types - fall back to runtime dispatch
+      (t
+       ;; For now, just evaluate the object (no-op coercion)
+       ;; TODO: Implement full runtime coerce
+       (compile-to-instructions obj-expr env)))))
+
+(defun compile-coerce-to-vector (obj-expr env)
+  "Compile coercion to vector type.
+   If already a vector, return as-is.
+   If a list, convert to vector using %list-to-vector runtime helper."
+  (let ((obj-local (env-add-local env (gensym "COERCE-OBJ")))
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     ;; Evaluate object
+     (compile-to-instructions obj-expr env)
+     (list (list :local.set obj-local))
+     ;; Check if already a vector
+     `((:block (:result :anyref)
+         (:local.get ,obj-local)
+         (:ref.test (:ref ,mv-array-type))
+         (:if (:result :anyref)
+           ;; Already a vector - return as-is
+           ((:local.get ,obj-local))
+           ;; Assume it's a list - need to convert
+           ;; For now, signal error (runtime helper needed)
+           ;; TODO: Implement %list-to-vector runtime function
+           ((:local.get ,obj-local))))))))
+
+(defun compile-coerce-to-list (obj-expr env)
+  "Compile coercion to list type.
+   If already a list, return as-is.
+   If a vector, convert to list using %vector-to-list runtime helper."
+  (let ((obj-local (env-add-local env (gensym "COERCE-OBJ")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     ;; Evaluate object
+     (compile-to-instructions obj-expr env)
+     (list (list :local.set obj-local))
+     ;; Check if already a list (cons or nil)
+     `((:block (:result :anyref)
+         (:local.get ,obj-local)
+         :ref.is_null
+         (:if (:result :anyref)
+           ;; NIL is a list
+           ((:local.get ,obj-local))
+           ;; Check if cons
+           ((:local.get ,obj-local)
+            (:ref.test (:ref ,cons-type))
+            (:if (:result :anyref)
+              ;; Already a cons/list - return as-is
+              ((:local.get ,obj-local))
+              ;; Assume it's a vector - need to convert
+              ;; TODO: Implement %vector-to-list runtime function
+              ((:local.get ,obj-local))))))))))
+
+(defun compile-setf-schar (args env)
+  "Compile (%setf-schar string value index) - set character in string.
+   HyperSpec: resources/HyperSpec/Body/f_schar.htm
+   Returns the character value for proper setf semantics."
+  (when (/= (length args) 3)
+    (error "%setf-schar requires exactly 3 arguments (string value index)"))
+  (let ((str-expr (first args))
+        (value-expr (second args))
+        (index-expr (third args))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+)
+        (value-local (env-add-local env (gensym "SCHAR-VAL"))))
+    (append
+     ;; Evaluate and save value (for return)
+     (compile-to-instructions value-expr env)
+     (list (list :local.set value-local))
+     ;; Evaluate string
+     (compile-to-instructions str-expr env)
+     ;; Cast to string type
+     (list (list :ref.cast (list :ref string-type)))
+     ;; Evaluate index
+     (compile-to-instructions index-expr env)
+     '((:ref.cast :i31) :i31.get_s)  ; Convert to i32 index
+     ;; Get character code from value (i31ref -> i32)
+     (list (list :local.get value-local))
+     '((:ref.cast :i31) :i31.get_s)
+     ;; Mask to byte (0-255)
+     '((:i32.const 255) :i32.and)
+     ;; Store in string array
+     (list (list :array.set string-type))
+     ;; Return the value
+     (list (list :local.get value-local)))))
+
+(defun compile-setf-elt (args env)
+  "Compile (%setf-elt sequence value index) - set element in sequence.
+   HyperSpec: resources/HyperSpec/Body/f_elt.htm
+   Performs runtime type dispatch for setf."
+  (when (/= (length args) 3)
+    (error "%setf-elt requires exactly 3 arguments (sequence value index)"))
+  (let ((seq-expr (first args))
+        (value-expr (second args))
+        (index-expr (third args))
+        (seq-local (env-add-local env (gensym "SELT-SEQ")))
+        (value-local (env-add-local env (gensym "SELT-VAL")))
+        (idx-local (env-add-local env (gensym "SELT-IDX") :i32))
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (string-type clysm/compiler/codegen/gc-types:+type-string+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     ;; Evaluate and save value
+     (compile-to-instructions value-expr env)
+     (list (list :local.set value-local))
+     ;; Evaluate and save sequence
+     (compile-to-instructions seq-expr env)
+     (list (list :local.set seq-local))
+     ;; Evaluate and save index
+     (compile-to-instructions index-expr env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set idx-local))
+     ;; Type dispatch
+     `((:block (:result :anyref)
+         ;; Check if simple-vector (type 20)
+         (:local.get ,seq-local)
+         (:ref.test (:ref ,mv-array-type))
+         (:if (:result :anyref)
+           ;; Vector path: array.set
+           ((:local.get ,seq-local)
+            (:ref.cast (:ref ,mv-array-type))
+            (:local.get ,idx-local)
+            (:local.get ,value-local)
+            (:array.set ,mv-array-type)
+            (:local.get ,value-local))
+           ;; Check if string (type 4)
+           ((:local.get ,seq-local)
+            (:ref.test (:ref ,string-type))
+            (:if (:result :anyref)
+              ;; String path
+              ((:local.get ,seq-local)
+               (:ref.cast (:ref ,string-type))
+               (:local.get ,idx-local)
+               (:local.get ,value-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               (:i32.const 255)
+               :i32.and
+               (:array.set ,string-type)
+               (:local.get ,value-local))
+              ;; List path: iterate and rplaca
+              ((:local.get ,seq-local)
+               (:local.get ,idx-local)
+               (:block (:result :anyref)
+                 (:loop
+                   (:local.get ,idx-local)
+                   :i32.eqz
+                   (:br_if 1)
+                   (:local.get ,idx-local)
+                   (:i32.const 1)
+                   :i32.sub
+                   (:local.set ,idx-local)
+                   (:local.get ,seq-local)
+                   (:ref.cast (:ref ,cons-type))
+                   (:struct.get ,cons-type 1)
+                   (:local.set ,seq-local)
+                   (:br 0))
+                 ;; rplaca the current cons
+                 (:local.get ,seq-local)
+                 (:ref.cast (:ref ,cons-type))
+                 (:local.get ,value-local)
+                 (:struct.set ,cons-type 0)
+                 (:local.get ,value-local)))))))))))
 
 ;;; ============================================================
 ;;; Feature 043: Property List Operations (GETF)

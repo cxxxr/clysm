@@ -309,6 +309,78 @@
               `(%setf-aref ,array-temp ,store ,@index-temps)  ; store-form
               `(aref ,array-temp ,@index-temps)))))  ; access-form
 
+;;; SVREF expander (001-ansi-array-primitives)
+
+(defun make-svref-setf-expander ()
+  "Create setf expander for SVREF.
+   Feature 001-ansi-array-primitives: Uses %setf-svref (same as %setf-aref)."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((vector-form (second form))
+           (index-form (third form))
+           (vector-temp (gensym "SVEC-"))
+           (index-temp (gensym "INDEX-"))
+           (store (gensym "STORE-")))
+      (values (list vector-temp index-temp)           ; temps
+              (list vector-form index-form)           ; vals
+              (list store)                            ; stores
+              `(%setf-svref ,vector-temp ,store ,index-temp)  ; store-form
+              `(svref ,vector-temp ,index-temp)))))   ; access-form
+
+;;; SCHAR expander (001-ansi-array-primitives)
+
+(defun make-schar-setf-expander ()
+  "Create setf expander for SCHAR.
+   Feature 001-ansi-array-primitives: Uses %setf-schar primitive."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((string-form (second form))
+           (index-form (third form))
+           (string-temp (gensym "STR-"))
+           (index-temp (gensym "INDEX-"))
+           (store (gensym "STORE-")))
+      (values (list string-temp index-temp)           ; temps
+              (list string-form index-form)           ; vals
+              (list store)                            ; stores
+              `(%setf-schar ,string-temp ,store ,index-temp)  ; store-form
+              `(schar ,string-temp ,index-temp)))))   ; access-form
+
+;;; CHAR expander (001-ansi-array-primitives)
+
+(defun make-char-setf-expander ()
+  "Create setf expander for CHAR.
+   Feature 001-ansi-array-primitives: Same as SCHAR for simple strings."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((string-form (second form))
+           (index-form (third form))
+           (string-temp (gensym "STR-"))
+           (index-temp (gensym "INDEX-"))
+           (store (gensym "STORE-")))
+      (values (list string-temp index-temp)           ; temps
+              (list string-form index-form)           ; vals
+              (list store)                            ; stores
+              `(%setf-schar ,string-temp ,store ,index-temp)  ; store-form
+              `(char ,string-temp ,index-temp)))))    ; access-form
+
+;;; ELT expander (001-ansi-array-primitives)
+
+(defun make-elt-setf-expander ()
+  "Create setf expander for ELT.
+   Feature 001-ansi-array-primitives: Uses %setf-elt primitive for generic sequences."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((sequence-form (second form))
+           (index-form (third form))
+           (seq-temp (gensym "SEQ-"))
+           (index-temp (gensym "INDEX-"))
+           (store (gensym "STORE-")))
+      (values (list seq-temp index-temp)              ; temps
+              (list sequence-form index-form)         ; vals
+              (list store)                            ; stores
+              `(%setf-elt ,seq-temp ,store ,index-temp)  ; store-form
+              `(elt ,seq-temp ,index-temp)))))        ; access-form
+
 ;;; GETHASH expander
 
 (defun make-gethash-setf-expander ()
@@ -430,6 +502,16 @@
 
   ;; AREF
   (register-setf-expander registry 'aref (make-aref-setf-expander))
+
+  ;; SVREF (001-ansi-array-primitives)
+  (register-setf-expander registry 'svref (make-svref-setf-expander))
+
+  ;; SCHAR/CHAR (001-ansi-array-primitives)
+  (register-setf-expander registry 'schar (make-schar-setf-expander))
+  (register-setf-expander registry 'char (make-char-setf-expander))
+
+  ;; ELT (001-ansi-array-primitives)
+  (register-setf-expander registry 'elt (make-elt-setf-expander))
 
   ;; GETHASH
   (register-setf-expander registry 'gethash (make-gethash-setf-expander))
