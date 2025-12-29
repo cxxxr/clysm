@@ -1,14 +1,11 @@
 <!--
 Sync Impact Report
 ==================
-Version change: N/A → 1.0.0 (MAJOR: Initial constitution)
-Modified principles: N/A (Initial creation)
+Version change: 1.0.0 → 1.1.0 (MINOR: New principle added)
+Modified principles: None
 Added sections:
-  - Core Principles (8 principles)
-  - パフォーマンス・セキュリティ・相互運用制約
-  - 開発ワークフローと検証プロセス
-  - Governance
-Removed sections: N/A
+  - IX. ANSI Common Lisp仕様参照規約 (new Core Principle)
+Removed sections: None
 Templates requiring updates:
   - .specify/templates/plan-template.md: ⚠ pending (Constitution Check要更新)
   - .specify/templates/spec-template.md: ⚠ pending (要件セクション要確認)
@@ -170,6 +167,50 @@ TDDにより仕様の明文化と品質保証を同時達成する。
 **根拠**: WebAssemblyツールチェーンはバージョン依存が強く、再現可能なビルドが必須。
 Nixにより「私の環境では動く」問題を根絶する。
 
+### IX. ANSI Common Lisp仕様参照規約
+
+ANSI Common Lispの仕様（関数、マクロ、特殊形式、型など）について記述する際は、
+ローカルのHyperSpec（`resources/HyperSpec/`）への相対リンクを必ず含めなければ
+ならない（MUST）。
+
+**適用範囲**:
+- 実装計画書（`.specify/memory/implementation-plan.md`）
+- 機能仕様書（`specs/*/spec.md`）
+- 技術設計書（`specs/*/plan.md`）
+- コード内コメント（ANSI CL関数の実装時）
+- CLAUDE.md
+
+**リンクフォーマット**:
+
+HyperSpecのファイル命名規則に従い、相対パスで参照する：
+
+| 種別 | プレフィックス | 例 |
+|------|---------------|-----|
+| 関数 | `f_` | `resources/HyperSpec/Body/f_coerce.htm`, `f_aref.htm` |
+| マクロ | `m_` | `resources/HyperSpec/Body/m_defun.htm`, `m_loop.htm` |
+| 特殊オペレータ | `s_` | `resources/HyperSpec/Body/s_if.htm`, `s_let_l.htm` |
+| 型 | `t_` | `resources/HyperSpec/Body/t_seq.htm`, `t_vector.htm` |
+| 変数 | `v_` | `resources/HyperSpec/Body/v_pr_bas.htm` |
+| 用語集 | `26_glo_` | `resources/HyperSpec/Body/26_glo_c.htm` |
+
+**記述例**:
+
+```markdown
+<!-- 良い例 -->
+[coerce](resources/HyperSpec/Body/f_coerce.htm)を実装する
+[aref](resources/HyperSpec/Body/f_aref.htm)は配列要素アクセス関数
+
+<!-- 悪い例 -->
+coerceを実装する（リンクなし）
+ANSI CLのcoerce関数（リンクなし）
+```
+
+**根拠**:
+1. 仕様の正確な参照により、実装の正当性を検証可能にする
+2. オフライン環境でも仕様を確認可能（ローカルHyperSpec）
+3. AIエージェントが仕様を直接参照し、正確な実装を生成できる
+4. レビュー時に仕様との整合性チェックを効率化する
+
 ## パフォーマンス・セキュリティ・相互運用制約
 
 ### パフォーマンス要件
@@ -221,7 +262,7 @@ wasm-tools print output.wasm  # WAT変換による可読性確認
 ### コードレビュー基準
 
 - シニアCommon Lispエンジニアの視点で設計妥当性を検証
-- ANSI Common Lisp仕様との整合性確認
+- ANSI Common Lisp仕様との整合性確認（原則IXに従いHyperSpecリンク必須）
 - Wasm GC仕様との整合性確認
 - パフォーマンス影響の定量評価
 
@@ -251,4 +292,4 @@ wasm-tools print output.wasm  # WAT変換による可読性確認
 - 複雑性の追加は明示的な正当化が必要
 - ランタイムガイダンスは`.specify/`配下のドキュメントを参照
 
-**Version**: 1.0.0 | **Ratified**: 2025-12-21 | **Last Amended**: 2025-12-21
+**Version**: 1.1.0 | **Ratified**: 2025-12-21 | **Last Amended**: 2025-12-29
