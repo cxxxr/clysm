@@ -902,3 +902,21 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; String Trim Functions Tests (001-ansi-string-trim)
+;;; Phase 16B: ANSI CL String Trim and nstring Functions
+;;; ============================================================
+
+;; String trim functions unit tests (001-ansi-string-trim)
+;; Tests for string-trim, string-left-trim, string-right-trim,
+;; nstring-upcase, nstring-downcase, nstring-capitalize
+(defpackage #:clysm/tests/unit/string-trim
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; String trim functions Wasm contract tests (001-ansi-string-trim)
+;; Validates Wasm output for trim and destructive case functions
+(defpackage #:clysm/tests/contract/string-trim-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+

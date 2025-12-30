@@ -763,6 +763,9 @@
                                string-equal string-lessp string-greaterp
                                string-not-lessp string-not-greaterp string-not-equal
                                make-string string string-upcase string-downcase string-capitalize
+                               ;; String trimming functions (Phase 16B)
+                               string-trim string-left-trim string-right-trim
+                               nstring-upcase nstring-downcase nstring-capitalize
                                subseq concatenate
                                ;; String output (001-numeric-format)
                                write-to-string
@@ -1134,6 +1137,14 @@
     (string-upcase (compile-string-upcase args env))
     (string-downcase (compile-string-downcase args env))
     (string-capitalize (compile-string-capitalize args env))
+    ;; String trimming functions (Phase 16B)
+    (string-trim (compile-string-trim args env))
+    (string-left-trim (compile-string-left-trim args env))
+    (string-right-trim (compile-string-right-trim args env))
+    ;; Destructive case conversion (Phase 16B)
+    (nstring-upcase (compile-nstring-upcase args env))
+    (nstring-downcase (compile-nstring-downcase args env))
+    (nstring-capitalize (compile-nstring-capitalize args env))
     ;; Substring and concatenation
     (subseq (compile-subseq args env))
     (concatenate (compile-concatenate args env))
@@ -15442,6 +15453,735 @@
       :end  ; block
       ;; Return destination
       (:local.get ,dst-local))))
+
+;;; ============================================================
+;;; String Trim Functions (001-ansi-string-trim Phase 16B)
+;;; HyperSpec: resources/HyperSpec/Body/f_stg_tr.htm
+;;; ============================================================
+
+(defun %parse-start-end-args (args)
+  "Parse :start and :end keyword arguments from an argument list.
+   Returns (values start-ast end-ast remaining-args).
+   start-ast defaults to 0, end-ast defaults to nil (meaning string length)."
+  (let ((start-ast nil)
+        (end-ast nil)
+        (remaining args))
+    (loop while remaining do
+      (let* ((key-ast (first remaining))
+             (key (extract-keyword-from-ast key-ast))
+             (val (second remaining)))
+        (cond
+          ((eq key :start)
+           (setf start-ast val))
+          ((eq key :end)
+           (setf end-ast val))
+          (t (return)))  ; Not a keyword we recognize
+        (setf remaining (cddr remaining))))
+    (values start-ast end-ast)))
+
+(defun %generate-in-char-bag-check (byte-local bag-local bag-len-local env)
+  "Generate Wasm instructions to check if a byte is in a character bag (string).
+   Leaves 1 on stack if byte is in bag, 0 otherwise.
+   Assumes bag is already a $string type."
+  (let ((bag-idx-local (env-add-local env (gensym "BAGIDX") :i32))
+        (bag-byte-local (env-add-local env (gensym "BAGBYTE") :i32))
+        (found-local (env-add-local env (gensym "FOUND") :i32))
+        (string-type clysm/compiler/codegen/gc-types:+type-string+))
+    `(;; Initialize found = 0
+      (:i32.const 0)
+      (:local.set ,found-local)
+      ;; Loop through character bag
+      (:i32.const 0)
+      (:local.set ,bag-idx-local)
+      (:block $bag_done)
+      (:loop $bag_loop)
+      ;; Check if done with bag
+      (:local.get ,bag-idx-local)
+      (:local.get ,bag-len-local)
+      :i32.ge_u
+      (:br_if $bag_done)
+      ;; Get bag byte
+      (:local.get ,bag-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,bag-idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,bag-byte-local)
+      ;; Compare with target byte
+      (:local.get ,byte-local)
+      (:local.get ,bag-byte-local)
+      :i32.eq
+      (:if nil)
+      ;; Found match
+      (:i32.const 1)
+      (:local.set ,found-local)
+      (:br $bag_done)
+      :end
+      ;; Increment bag index
+      (:local.get ,bag-idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,bag-idx-local)
+      (:br $bag_loop)
+      :end  ; loop
+      :end  ; block
+      ;; Leave result on stack
+      (:local.get ,found-local))))
+
+(defun %generate-bounds-init (start-ast end-ast start-local end-local len-local env)
+  "Generate Wasm instructions to initialize start and end bounds.
+   start-ast: AST for start (or nil for 0)
+   end-ast: AST for end (or nil for string length)
+   Assumes len-local already contains the string length."
+  (let ((instrs '()))
+    ;; Initialize start
+    (if start-ast
+        (setf instrs
+              `(,@(compile-to-instructions start-ast env)
+                (:ref.cast :i31)
+                :i31.get_s
+                (:local.set ,start-local)))
+        (setf instrs
+              `((:i32.const 0)
+                (:local.set ,start-local))))
+    ;; Initialize end
+    (if end-ast
+        (setf instrs
+              `(,@instrs
+                ,@(compile-to-instructions end-ast env)
+                (:ref.cast :i31)
+                :i31.get_s
+                (:local.set ,end-local)))
+        (setf instrs
+              `(,@instrs
+                (:local.get ,len-local)
+                (:local.set ,end-local))))
+    instrs))
+
+;;; ------------------------------------------------------------
+;;; string-left-trim, string-right-trim, string-trim
+;;; ------------------------------------------------------------
+
+(defun compile-string-left-trim (args env)
+  "Compile (string-left-trim character-bag string &key start end).
+   Removes characters in bag from the left of string.
+   HyperSpec: resources/HyperSpec/Body/f_stg_tr.htm"
+  (when (< (length args) 2)
+    (error "string-left-trim requires at least 2 arguments"))
+  (let* ((bag-arg (first args))
+         (string-arg (second args))
+         (rest-args (cddr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((bag-local (env-add-local env (gensym "BAG")))
+            (bag-len-local (env-add-local env (gensym "BAGLEN") :i32))
+            (src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (left-local (env-add-local env (gensym "LEFT") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (dst-local (env-add-local env (gensym "DST")))
+            (dst-len-local (env-add-local env (gensym "DSTLEN") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get character bag
+          ,@(compile-to-instructions bag-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,bag-local)
+          (:local.get ,bag-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,bag-len-local)
+          ;; Get source string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get string length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize start/end bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Find left boundary (first char not in bag)
+          (:local.get ,start-local)
+          (:local.set ,left-local)
+          (:block $left_done)
+          (:loop $left_loop)
+          ;; Check if done (left >= end)
+          (:local.get ,left-local)
+          (:local.get ,end-local)
+          :i32.ge_u
+          (:br_if $left_done)
+          ;; Get current byte
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,left-local)
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ;; Check if byte is in bag
+          ,@(%generate-in-char-bag-check byte-local bag-local bag-len-local env)
+          ;; If not in bag, done
+          :i32.eqz
+          (:br_if $left_done)
+          ;; Move left boundary
+          (:local.get ,left-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,left-local)
+          (:br $left_loop)
+          :end  ; loop
+          :end  ; block
+          ;; Create result string (from left to end)
+          (:local.get ,end-local)
+          (:local.get ,left-local)
+          :i32.sub
+          (:local.set ,dst-len-local)
+          (:local.get ,dst-len-local)
+          (:array.new_default ,string-type)
+          (:local.set ,dst-local)
+          ;; Copy bytes
+          (:i32.const 0)
+          (:local.set ,idx-local)
+          (:block $copy_done)
+          (:loop $copy_loop)
+          (:local.get ,idx-local)
+          (:local.get ,dst-len-local)
+          :i32.ge_u
+          (:br_if $copy_done)
+          ;; Copy byte
+          (:local.get ,dst-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,left-local)
+          (:local.get ,idx-local)
+          :i32.add
+          (:array.get_u ,string-type)
+          (:array.set ,string-type)
+          ;; Increment
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $copy_loop)
+          :end  ; loop
+          :end  ; block
+          ;; Return result
+          (:local.get ,dst-local))))))
+
+(defun compile-string-right-trim (args env)
+  "Compile (string-right-trim character-bag string &key start end).
+   Removes characters in bag from the right of string.
+   HyperSpec: resources/HyperSpec/Body/f_stg_tr.htm"
+  (when (< (length args) 2)
+    (error "string-right-trim requires at least 2 arguments"))
+  (let* ((bag-arg (first args))
+         (string-arg (second args))
+         (rest-args (cddr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((bag-local (env-add-local env (gensym "BAG")))
+            (bag-len-local (env-add-local env (gensym "BAGLEN") :i32))
+            (src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (right-local (env-add-local env (gensym "RIGHT") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (dst-local (env-add-local env (gensym "DST")))
+            (dst-len-local (env-add-local env (gensym "DSTLEN") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get character bag
+          ,@(compile-to-instructions bag-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,bag-local)
+          (:local.get ,bag-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,bag-len-local)
+          ;; Get source string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get string length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize start/end bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Find right boundary (last char not in bag, starting from end-1)
+          (:local.get ,end-local)
+          (:local.set ,right-local)
+          (:block $right_done)
+          (:loop $right_loop)
+          ;; Check if done (right <= start)
+          (:local.get ,right-local)
+          (:local.get ,start-local)
+          :i32.le_u
+          (:br_if $right_done)
+          ;; Get current byte (right-1)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,right-local)
+          (:i32.const 1)
+          :i32.sub
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ;; Check if byte is in bag
+          ,@(%generate-in-char-bag-check byte-local bag-local bag-len-local env)
+          ;; If not in bag, done
+          :i32.eqz
+          (:br_if $right_done)
+          ;; Move right boundary
+          (:local.get ,right-local)
+          (:i32.const 1)
+          :i32.sub
+          (:local.set ,right-local)
+          (:br $right_loop)
+          :end  ; loop
+          :end  ; block
+          ;; Create result string (from start to right)
+          (:local.get ,right-local)
+          (:local.get ,start-local)
+          :i32.sub
+          (:local.set ,dst-len-local)
+          (:local.get ,dst-len-local)
+          (:array.new_default ,string-type)
+          (:local.set ,dst-local)
+          ;; Copy bytes
+          (:i32.const 0)
+          (:local.set ,idx-local)
+          (:block $copy_done)
+          (:loop $copy_loop)
+          (:local.get ,idx-local)
+          (:local.get ,dst-len-local)
+          :i32.ge_u
+          (:br_if $copy_done)
+          ;; Copy byte
+          (:local.get ,dst-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,start-local)
+          (:local.get ,idx-local)
+          :i32.add
+          (:array.get_u ,string-type)
+          (:array.set ,string-type)
+          ;; Increment
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $copy_loop)
+          :end  ; loop
+          :end  ; block
+          ;; Return result
+          (:local.get ,dst-local))))))
+
+(defun compile-string-trim (args env)
+  "Compile (string-trim character-bag string &key start end).
+   Removes characters in bag from both ends of string.
+   HyperSpec: resources/HyperSpec/Body/f_stg_tr.htm"
+  (when (< (length args) 2)
+    (error "string-trim requires at least 2 arguments"))
+  (let* ((bag-arg (first args))
+         (string-arg (second args))
+         (rest-args (cddr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((bag-local (env-add-local env (gensym "BAG")))
+            (bag-len-local (env-add-local env (gensym "BAGLEN") :i32))
+            (src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (left-local (env-add-local env (gensym "LEFT") :i32))
+            (right-local (env-add-local env (gensym "RIGHT") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (dst-local (env-add-local env (gensym "DST")))
+            (dst-len-local (env-add-local env (gensym "DSTLEN") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get character bag
+          ,@(compile-to-instructions bag-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,bag-local)
+          (:local.get ,bag-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,bag-len-local)
+          ;; Get source string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get string length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize start/end bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Find left boundary (first char not in bag)
+          (:local.get ,start-local)
+          (:local.set ,left-local)
+          (:block $left_done)
+          (:loop $left_loop)
+          (:local.get ,left-local)
+          (:local.get ,end-local)
+          :i32.ge_u
+          (:br_if $left_done)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,left-local)
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ,@(%generate-in-char-bag-check byte-local bag-local bag-len-local env)
+          :i32.eqz
+          (:br_if $left_done)
+          (:local.get ,left-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,left-local)
+          (:br $left_loop)
+          :end
+          :end
+          ;; Find right boundary (last char not in bag)
+          (:local.get ,end-local)
+          (:local.set ,right-local)
+          (:block $right_done)
+          (:loop $right_loop)
+          (:local.get ,right-local)
+          (:local.get ,left-local)
+          :i32.le_u
+          (:br_if $right_done)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,right-local)
+          (:i32.const 1)
+          :i32.sub
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ,@(%generate-in-char-bag-check byte-local bag-local bag-len-local env)
+          :i32.eqz
+          (:br_if $right_done)
+          (:local.get ,right-local)
+          (:i32.const 1)
+          :i32.sub
+          (:local.set ,right-local)
+          (:br $right_loop)
+          :end
+          :end
+          ;; Create result string (from left to right)
+          (:local.get ,right-local)
+          (:local.get ,left-local)
+          :i32.sub
+          (:local.set ,dst-len-local)
+          (:local.get ,dst-len-local)
+          (:array.new_default ,string-type)
+          (:local.set ,dst-local)
+          ;; Copy bytes
+          (:i32.const 0)
+          (:local.set ,idx-local)
+          (:block $copy_done)
+          (:loop $copy_loop)
+          (:local.get ,idx-local)
+          (:local.get ,dst-len-local)
+          :i32.ge_u
+          (:br_if $copy_done)
+          (:local.get ,dst-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,left-local)
+          (:local.get ,idx-local)
+          :i32.add
+          (:array.get_u ,string-type)
+          (:array.set ,string-type)
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $copy_loop)
+          :end
+          :end
+          ;; Return result
+          (:local.get ,dst-local))))))
+
+;;; ------------------------------------------------------------
+;;; nstring-upcase, nstring-downcase, nstring-capitalize (destructive)
+;;; HyperSpec: resources/HyperSpec/Body/f_stg_up.htm
+;;; ------------------------------------------------------------
+
+(defun compile-nstring-upcase (args env)
+  "Compile (nstring-upcase string &key start end).
+   Destructively converts string to uppercase.
+   Returns the same string object."
+  (when (< (length args) 1)
+    (error "nstring-upcase requires at least 1 argument"))
+  (let* ((string-arg (first args))
+         (rest-args (cdr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Convert in place
+          (:local.get ,start-local)
+          (:local.set ,idx-local)
+          (:block $nup_done)
+          (:loop $nup_loop)
+          (:local.get ,idx-local)
+          (:local.get ,end-local)
+          :i32.ge_u
+          (:br_if $nup_done)
+          ;; Get byte
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ;; Check if lowercase (a-z = 97-122)
+          (:local.get ,byte-local)
+          (:i32.const 97)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 122)
+          :i32.le_u
+          :i32.and
+          (:if nil)
+          ;; Convert to uppercase and store
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,byte-local)
+          (:i32.const 32)
+          :i32.sub
+          (:array.set ,string-type)
+          :end
+          ;; Increment
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $nup_loop)
+          :end
+          :end
+          ;; Return same string
+          (:local.get ,src-local))))))
+
+(defun compile-nstring-downcase (args env)
+  "Compile (nstring-downcase string &key start end).
+   Destructively converts string to lowercase.
+   Returns the same string object."
+  (when (< (length args) 1)
+    (error "nstring-downcase requires at least 1 argument"))
+  (let* ((string-arg (first args))
+         (rest-args (cdr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Convert in place
+          (:local.get ,start-local)
+          (:local.set ,idx-local)
+          (:block $ndown_done)
+          (:loop $ndown_loop)
+          (:local.get ,idx-local)
+          (:local.get ,end-local)
+          :i32.ge_u
+          (:br_if $ndown_done)
+          ;; Get byte
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ;; Check if uppercase (A-Z = 65-90)
+          (:local.get ,byte-local)
+          (:i32.const 65)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 90)
+          :i32.le_u
+          :i32.and
+          (:if nil)
+          ;; Convert to lowercase and store
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,byte-local)
+          (:i32.const 32)
+          :i32.add
+          (:array.set ,string-type)
+          :end
+          ;; Increment
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $ndown_loop)
+          :end
+          :end
+          ;; Return same string
+          (:local.get ,src-local))))))
+
+(defun compile-nstring-capitalize (args env)
+  "Compile (nstring-capitalize string &key start end).
+   Destructively capitalizes each word (first char uppercase, rest lowercase).
+   Returns the same string object."
+  (when (< (length args) 1)
+    (error "nstring-capitalize requires at least 1 argument"))
+  (let* ((string-arg (first args))
+         (rest-args (cdr args)))
+    (multiple-value-bind (start-ast end-ast)
+        (%parse-start-end-args rest-args)
+      (let ((src-local (env-add-local env (gensym "SRC")))
+            (len-local (env-add-local env (gensym "LEN") :i32))
+            (start-local (env-add-local env (gensym "START") :i32))
+            (end-local (env-add-local env (gensym "END") :i32))
+            (idx-local (env-add-local env (gensym "IDX") :i32))
+            (byte-local (env-add-local env (gensym "BYTE") :i32))
+            (word-start-local (env-add-local env (gensym "WORDSTART") :i32))
+            (string-type clysm/compiler/codegen/gc-types:+type-string+))
+        `(;; Get string
+          ,@(compile-to-instructions string-arg env)
+          (:ref.cast ,(list :ref string-type))
+          (:local.set ,src-local)
+          ;; Get length
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:array.len)
+          (:local.set ,len-local)
+          ;; Initialize bounds
+          ,@(%generate-bounds-init start-ast end-ast start-local end-local len-local env)
+          ;; Initialize
+          (:local.get ,start-local)
+          (:local.set ,idx-local)
+          (:i32.const 1)  ; Start of range is word start
+          (:local.set ,word-start-local)
+          (:block $ncap_done)
+          (:loop $ncap_loop)
+          (:local.get ,idx-local)
+          (:local.get ,end-local)
+          :i32.ge_u
+          (:br_if $ncap_done)
+          ;; Get byte
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:array.get_u ,string-type)
+          (:local.set ,byte-local)
+          ;; Check if alphabetic
+          (:local.get ,byte-local)
+          (:i32.const 65)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 90)
+          :i32.le_u
+          :i32.and
+          (:local.get ,byte-local)
+          (:i32.const 97)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 122)
+          :i32.le_u
+          :i32.and
+          :i32.or
+          (:if nil)
+          ;; Is alphabetic
+          (:local.get ,word-start-local)
+          (:if nil)
+          ;; Word start - uppercase
+          (:local.get ,byte-local)
+          (:i32.const 97)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 122)
+          :i32.le_u
+          :i32.and
+          (:if nil)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,byte-local)
+          (:i32.const 32)
+          :i32.sub
+          (:array.set ,string-type)
+          :end
+          :else
+          ;; Not word start - lowercase
+          (:local.get ,byte-local)
+          (:i32.const 65)
+          :i32.ge_u
+          (:local.get ,byte-local)
+          (:i32.const 90)
+          :i32.le_u
+          :i32.and
+          (:if nil)
+          (:local.get ,src-local)
+          (:ref.cast ,(list :ref string-type))
+          (:local.get ,idx-local)
+          (:local.get ,byte-local)
+          (:i32.const 32)
+          :i32.add
+          (:array.set ,string-type)
+          :end
+          :end
+          ;; Clear word-start
+          (:i32.const 0)
+          (:local.set ,word-start-local)
+          :else
+          ;; Not alphabetic - set word-start
+          (:i32.const 1)
+          (:local.set ,word-start-local)
+          :end
+          ;; Increment
+          (:local.get ,idx-local)
+          (:i32.const 1)
+          :i32.add
+          (:local.set ,idx-local)
+          (:br $ncap_loop)
+          :end
+          :end
+          ;; Return same string
+          (:local.get ,src-local))))))
 
 ;;; ============================================================
 ;;; Substring and Concatenation (008-character-string Phase 7)
