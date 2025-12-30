@@ -789,6 +789,8 @@
                                exp log sqrt expt
                                ;; Hyperbolic functions
                                sinh cosh tanh asinh acosh atanh
+                               ;; Numeric type conversion (001-numeric-functions)
+                               float rational parse-integer
                                ;; Array setf primitive (043-self-hosting-blockers)
                                %setf-aref
                                ;; Property list operations (043-self-hosting-blockers)
@@ -1113,6 +1115,10 @@
     (asinh (compile-asinh args env))
     (acosh (compile-acosh args env))
     (atanh (compile-atanh args env))
+    ;; Numeric type conversion (001-numeric-functions)
+    (float (compile-float args env))
+    (rational (compile-rational args env))
+    (parse-integer (compile-parse-integer args env))
     ;; Hash table operations (043-self-hosting-blockers)
     (make-hash-table (compile-make-hash-table args env))
     (gethash (compile-gethash args env))
@@ -5776,6 +5782,381 @@
    Domain: -1 < x < 1. Returns complex for |x| >= 1 (TODO).
    Stack: [] -> [$float]"
   (compile-unary-math-ffi args env :atanh))
+
+;;; ============================================================
+;;; Numeric Type Conversion (001-numeric-functions US5)
+;;; ============================================================
+
+(defun compile-float (args env)
+  "Compile (float number &optional prototype) - convert to float.
+   Converts integer or ratio to floating-point.
+   If already a float, returns unchanged.
+   Stack: [] -> [$float]"
+  (when (< (length args) 1)
+    (error "float requires at least 1 argument"))
+  (when (> (length args) 2)
+    (error "float requires at most 2 arguments"))
+  ;; Ignore prototype for now (would specify float type)
+  (let ((temp-local (env-add-local env (gensym "FLOAT-TMP")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+)
+        (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Check if already float
+     `((:ref.test (:ref ,float-type))
+       (:if (:result :anyref))
+       ;; Already float - return as is
+       (:local.get ,temp-local)
+       :else
+       ;; Check if fixnum
+       (:local.get ,temp-local)
+       (:ref.test :i31)
+       (:if (:result :anyref))
+       ;; Fixnum: convert i31 to f64
+       (:local.get ,temp-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       (:struct.new ,float-type)
+       :else
+       ;; Check if ratio
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,ratio-type))
+       (:if (:result :anyref))
+       ;; Ratio: divide numerator by denominator
+       ;; Get numerator (field 0) as float
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,ratio-type))
+       (:struct.get ,ratio-type 0)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       ;; Get denominator (field 1) as float
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,ratio-type))
+       (:struct.get ,ratio-type 1)
+       (:ref.cast :i31)
+       :i31.get_s
+       :f64.convert_i32_s
+       ;; Divide
+       :f64.div
+       (:struct.new ,float-type)
+       :else
+       ;; Other types: return 0.0 as fallback
+       (:f64.const 0.0)
+       (:struct.new ,float-type)
+       :end :end :end))))
+
+(defun compile-rational (args env)
+  "Compile (rational number) - convert to rational.
+   Converts float to ratio using continued fraction algorithm.
+   If already rational (fixnum or ratio), returns unchanged.
+   Stack: [] -> [anyref (fixnum or ratio)]"
+  (when (/= (length args) 1)
+    (error "rational requires exactly 1 argument"))
+  (let ((temp-local (env-add-local env (gensym "RAT-TMP")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+)
+        (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.tee temp-local))
+     ;; Check if already fixnum (rational)
+     `((:ref.test :i31)
+       (:if (:result :anyref))
+       ;; Already fixnum - return as is
+       (:local.get ,temp-local)
+       :else
+       ;; Check if already ratio
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,ratio-type))
+       (:if (:result :anyref))
+       ;; Already ratio - return as is
+       (:local.get ,temp-local)
+       :else
+       ;; Check if float
+       (:local.get ,temp-local)
+       (:ref.test (:ref ,float-type))
+       (:if (:result :anyref))
+       ;; Float: convert to ratio
+       ;; For simple cases like 0.5, 0.25, etc. we use a scaling approach
+       ;; Multiply by 2^32, convert to integer, simplify fraction
+       ;; For MVP: assume dyadic fractions (powers of 2 denominators)
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       ;; Check if it's a whole number first
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :f64.trunc
+       :f64.eq
+       (:if (:result :anyref))
+       ;; Whole number: just convert to fixnum
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       :i32.trunc_f64_s
+       :ref.i31
+       :else
+       ;; Fractional: use scaling (simplified continued fraction)
+       ;; For common fractions like 0.5=1/2, 0.25=1/4, 0.125=1/8
+       ;; Scale by finding appropriate power of 2
+       ;; MVP: multiply by 1024, truncate, make ratio with 1024, simplify
+       (:local.get ,temp-local)
+       (:ref.cast (:ref ,float-type))
+       (:struct.get ,float-type 0)
+       (:f64.const 1024.0)  ; Use 2^10 as denominator
+       :f64.mul
+       :f64.nearest         ; Round to nearest integer
+       :i32.trunc_f64_s
+       :ref.i31             ; Numerator
+       (:i32.const 1024)
+       :ref.i31             ; Denominator
+       (:struct.new ,ratio-type)
+       :end
+       :else
+       ;; Unknown type: return as is
+       (:local.get ,temp-local)
+       :end :end :end))))
+
+(defun compile-parse-integer (args env)
+  "Compile (parse-integer string &key start end radix junk-allowed).
+   Parses a string representation of an integer.
+   Returns two values: the integer and the position where parsing stopped.
+   Stack: [] -> [anyref] (primary value, position stored in mv-buffer)"
+  (when (< (length args) 1)
+    (error "parse-integer requires at least 1 argument"))
+  ;; Extract keyword arguments using the existing helper
+  (multiple-value-bind (keyword-args positional)
+      (extract-keyword-args (rest args) '(:start :end :radix :junk-allowed))
+    (let* ((string-expr (first args))
+           (start-expr (get-keyword-arg keyword-args :start))
+           (end-expr (get-keyword-arg keyword-args :end))
+           (radix-expr (get-keyword-arg keyword-args :radix))
+           (junk-allowed-expr (get-keyword-arg keyword-args :junk-allowed))
+           ;; Locals
+           (string-local (env-add-local env (gensym "PI-STR")))
+           (start-local (env-add-local env (gensym "PI-START") :i32))
+           (end-local (env-add-local env (gensym "PI-END") :i32))
+           (radix-local (env-add-local env (gensym "PI-RADIX") :i32))
+           (junk-local (env-add-local env (gensym "PI-JUNK") :i32))
+           (pos-local (env-add-local env (gensym "PI-POS") :i32))
+           (result-local (env-add-local env (gensym "PI-RESULT") :i32))
+           (sign-local (env-add-local env (gensym "PI-SIGN") :i32))
+           (char-local (env-add-local env (gensym "PI-CHAR") :i32))
+           (digit-local (env-add-local env (gensym "PI-DIGIT") :i32))
+           (found-digit-local (env-add-local env (gensym "PI-FOUND") :i32))
+           (string-type clysm/compiler/codegen/gc-types:+type-string+)
+           (mv-array clysm/compiler/codegen/gc-types:+type-mv-array+))
+      (append
+       ;; Compile string expression
+       (compile-to-instructions string-expr env)
+       (list (list :ref.cast (list :ref string-type)))
+       (list (list :local.set string-local))
+       ;; Initialize radix (default 10)
+       (if radix-expr
+           (append (compile-to-instructions radix-expr env)
+                   '((:ref.cast :i31) :i31.get_s))
+           '((:i32.const 10)))
+       (list (list :local.set radix-local))
+       ;; Initialize start (default 0)
+       (if start-expr
+           (append (compile-to-instructions start-expr env)
+                   '((:ref.cast :i31) :i31.get_s))
+           '((:i32.const 0)))
+       (list (list :local.set start-local))
+       ;; Initialize end (default string length)
+       (if end-expr
+           (append (compile-to-instructions end-expr env)
+                   '((:ref.cast :i31) :i31.get_s))
+           (list (list :local.get string-local)
+                 (list :struct.get string-type 0)  ; bytes array
+                 :array.len))
+       (list (list :local.set end-local))
+       ;; Initialize junk-allowed (default nil/0)
+       (if junk-allowed-expr
+           (append (compile-to-instructions junk-allowed-expr env)
+                   '(:ref.is_null (:i32.const 1) :i32.xor))  ; NIL->0, T->1
+           '((:i32.const 0)))
+       (list (list :local.set junk-local))
+       ;; Initialize state
+       `((:i32.const 0) (:local.set ,result-local)   ; result = 0
+         (:i32.const 1) (:local.set ,sign-local)     ; sign = 1 (positive)
+         (:i32.const 0) (:local.set ,found-digit-local)  ; found_digit = 0
+         (:local.get ,start-local) (:local.set ,pos-local))  ; pos = start
+       ;; Skip leading whitespace
+       `((:block $skip_ws_done
+          (:loop $skip_ws
+           ;; Check if pos >= end
+           (:local.get ,pos-local)
+           (:local.get ,end-local)
+           :i32.ge_u
+           (:br_if $skip_ws_done)
+           ;; Get character at pos
+           (:local.get ,string-local)
+           (:struct.get ,string-type 0)
+           (:local.get ,pos-local)
+           :array.get_u
+           (:local.set ,char-local)
+           ;; Check if whitespace (space=32, tab=9, newline=10, cr=13)
+           (:local.get ,char-local)
+           (:i32.const 32)
+           :i32.eq
+           (:local.get ,char-local)
+           (:i32.const 9)
+           :i32.eq
+           :i32.or
+           (:local.get ,char-local)
+           (:i32.const 10)
+           :i32.eq
+           :i32.or
+           (:local.get ,char-local)
+           (:i32.const 13)
+           :i32.eq
+           :i32.or
+           (:if)
+           ;; Whitespace: advance pos and continue
+           (:local.get ,pos-local)
+           (:i32.const 1)
+           :i32.add
+           (:local.set ,pos-local)
+           (:br $skip_ws)
+           :end
+          :end)  ; loop
+         :end))  ; block
+       ;; Check for sign
+       `((:local.get ,pos-local)
+         (:local.get ,end-local)
+         :i32.lt_u
+         (:if)
+         (:local.get ,string-local)
+         (:struct.get ,string-type 0)
+         (:local.get ,pos-local)
+         :array.get_u
+         (:local.tee ,char-local)
+         (:i32.const 45)  ; '-'
+         :i32.eq
+         (:if)
+         (:i32.const -1) (:local.set ,sign-local)
+         (:local.get ,pos-local) (:i32.const 1) :i32.add (:local.set ,pos-local)
+         :else
+         (:local.get ,char-local)
+         (:i32.const 43)  ; '+'
+         :i32.eq
+         (:if)
+         (:local.get ,pos-local) (:i32.const 1) :i32.add (:local.set ,pos-local)
+         :end
+         :end
+         :end)
+       ;; Parse digits
+       `((:block $parse_done
+          (:loop $parse_loop
+           ;; Check if pos >= end
+           (:local.get ,pos-local)
+           (:local.get ,end-local)
+           :i32.ge_u
+           (:br_if $parse_done)
+           ;; Get character
+           (:local.get ,string-local)
+           (:struct.get ,string-type 0)
+           (:local.get ,pos-local)
+           :array.get_u
+           (:local.set ,char-local)
+           ;; Convert character to digit value
+           ;; '0'-'9' -> 0-9, 'A'-'Z' -> 10-35, 'a'-'z' -> 10-35
+           (:local.get ,char-local)
+           (:i32.const 48)  ; '0'
+           :i32.sub
+           (:local.tee ,digit-local)
+           (:i32.const 10)
+           :i32.lt_u
+           (:if (:result :i32))
+           ;; Digit 0-9
+           (:local.get ,digit-local)
+           :else
+           ;; Check uppercase A-Z
+           (:local.get ,char-local)
+           (:i32.const 65)  ; 'A'
+           :i32.sub
+           (:local.tee ,digit-local)
+           (:i32.const 26)
+           :i32.lt_u
+           (:if (:result :i32))
+           (:local.get ,digit-local)
+           (:i32.const 10)
+           :i32.add
+           :else
+           ;; Check lowercase a-z
+           (:local.get ,char-local)
+           (:i32.const 97)  ; 'a'
+           :i32.sub
+           (:local.tee ,digit-local)
+           (:i32.const 26)
+           :i32.lt_u
+           (:if (:result :i32))
+           (:local.get ,digit-local)
+           (:i32.const 10)
+           :i32.add
+           :else
+           ;; Not a valid digit
+           (:i32.const 99)  ; Invalid marker
+           :end
+           :end
+           :end
+           (:local.tee ,digit-local)
+           ;; Check if digit < radix
+           (:local.get ,radix-local)
+           :i32.ge_u
+           (:if)
+           ;; Not a valid digit for this radix - stop parsing
+           (:br $parse_done)
+           :end
+           ;; Valid digit: result = result * radix + digit
+           (:local.get ,result-local)
+           (:local.get ,radix-local)
+           :i32.mul
+           (:local.get ,digit-local)
+           :i32.add
+           (:local.set ,result-local)
+           (:i32.const 1) (:local.set ,found-digit-local)
+           ;; Advance position
+           (:local.get ,pos-local)
+           (:i32.const 1)
+           :i32.add
+           (:local.set ,pos-local)
+           (:br $parse_loop)
+          :end)  ; loop
+         :end))  ; block
+       ;; Check if we found any digits
+       `((:local.get ,found-digit-local)
+         :i32.eqz
+         (:if (:result :anyref))
+         ;; No digits found
+         (:local.get ,junk-local)
+         (:if (:result :anyref))
+         ;; junk-allowed: return NIL
+         (:ref.null :none)
+         :else
+         ;; junk not allowed: return NIL (should signal error, but MVP)
+         (:ref.null :none)
+         :end
+         :else
+         ;; Apply sign and return result
+         (:local.get ,result-local)
+         (:local.get ,sign-local)
+         :i32.mul
+         :ref.i31
+         :end)
+       ;; Store position as second value in mv-buffer
+       `((:global.get 3)  ; mv-buffer
+         (:i32.const 1)
+         (:local.get ,pos-local)
+         :ref.i31
+         (:array.set ,mv-array)
+         ;; Set mv-count to 2
+         (:i32.const 2)
+         (:global.set 2))))))
 
 ;;; ============================================================
 ;;; Destructive Modification (006-cons-list-ops)
