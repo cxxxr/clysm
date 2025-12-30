@@ -821,6 +821,11 @@
                                ;; Array/Sequence primitives (001-ansi-array-primitives)
                                ;; Note: %setf-aref already in Feature 043 list above
                                aref svref elt coerce
+                               ;; Array operations (001-ansi-array-ops)
+                               array-rank array-dimension array-dimensions
+                               array-total-size array-row-major-index
+                               row-major-aref %setf-row-major-aref
+                               adjustable-array-p adjust-array
                                ;; Sequence operations (001-ansi-sequence-operations)
                                copy-seq
                                %setf-svref %setf-schar %setf-elt
@@ -908,6 +913,8 @@
       ((string= op-name "%SETF-SCHAR") (compile-setf-schar args env))
       ((string= op-name "%SETF-ELT") (compile-setf-elt args env))
       ((string= op-name "%SETF-GETF") (compile-setf-getf args env))
+      ;; Feature 001-ansi-array-ops: Row-major setf
+      ((string= op-name "%SETF-ROW-MAJOR-AREF") (compile-setf-row-major-aref args env))
       ;; Feature 001-ansi-sequence-operations: Match cross-package symbols
       ((string= op-name "COPY-SEQ") (compile-copy-seq args env))
       (t
@@ -1194,6 +1201,23 @@
     (elt (compile-elt args env))
     ;; HyperSpec: resources/HyperSpec/Body/f_coerce.htm
     (coerce (compile-coerce args env))
+    ;; Feature 001-ansi-array-ops: ANSI Array Operations (Phase 15C)
+    ;; HyperSpec: resources/HyperSpec/Body/f_ar_ran.htm
+    (array-rank (compile-array-rank args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_ar_dim.htm
+    (array-dimension (compile-array-dimension args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_ar_d_1.htm
+    (array-dimensions (compile-array-dimensions args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_ar_tot.htm
+    (array-total-size (compile-array-total-size args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_ar_row.htm
+    (array-row-major-index (compile-array-row-major-index args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_row_ma.htm
+    (row-major-aref (compile-row-major-aref args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_adju_1.htm
+    (adjustable-array-p (compile-adjustable-array-p args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_adjust.htm
+    (adjust-array (compile-adjust-array args env))
     ;; Feature 001-ansi-sequence-operations: Sequence Operations
     ;; HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
     (copy-seq (compile-copy-seq args env))
@@ -2230,6 +2254,543 @@
               ;; Assume it's a vector - need to convert
               ;; TODO: Implement %vector-to-list runtime function
               ((:local.get ,obj-local))))))))))
+
+;;; ============================================================
+;;; Feature 001-ansi-array-ops: ANSI Array Operations
+;;; Phase 15C: Array Operations Enhancement
+;;;
+;;; HyperSpec References:
+;;; - array-rank: resources/HyperSpec/Body/f_ar_ran.htm
+;;; - array-dimension: resources/HyperSpec/Body/f_ar_dim.htm
+;;; - array-dimensions: resources/HyperSpec/Body/f_ar_d_1.htm
+;;; - array-total-size: resources/HyperSpec/Body/f_ar_tot.htm
+;;; - array-row-major-index: resources/HyperSpec/Body/f_ar_row.htm
+;;; - row-major-aref: resources/HyperSpec/Body/f_row_ma.htm
+;;; - adjustable-array-p: resources/HyperSpec/Body/f_adju_1.htm
+;;; - adjust-array: resources/HyperSpec/Body/f_adjust.htm
+;;; ============================================================
+
+;;; Type Dispatch Helper (T007)
+;;; Shared helper for $mdarray vs $mv_array dispatch
+
+(defun emit-array-type-dispatch (env arr-local mdarray-code simple-code)
+  "Generate code to dispatch between $mdarray and simple $mv_array.
+   ARR-LOCAL: local variable holding the array
+   MDARRAY-CODE: code to execute if array is $mdarray
+   SIMPLE-CODE: code to execute if array is simple $mv_array
+   Returns: Wasm instruction list with if/else dispatch
+
+   Pattern:
+     local.get arr-local
+     ref.test (ref $mdarray)
+     if (result anyref)
+       <mdarray-code>
+     else
+       <simple-code>
+     end"
+  (declare (ignore env))
+  (let ((mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+))
+    `((:local.get ,arr-local)
+      (:ref.test (:ref ,mdarray-type))
+      (:if (:result :anyref))
+      ,@mdarray-code
+      :else
+      ,@simple-code
+      :end)))
+
+;;; User Story 1: Query Array Dimensions and Structure (P1)
+
+(defun compile-array-rank (args env)
+  "Compile (array-rank array) - return number of dimensions.
+   HyperSpec: resources/HyperSpec/Body/f_ar_ran.htm
+   For simple-vectors: returns 1
+   For $mdarray: returns length of dimensions list
+   Stack: [] -> [fixnum]"
+  (when (/= (length args) 1)
+    (error "array-rank requires exactly 1 argument"))
+  (let ((arr-local (env-add-local env (gensym "ARR-RANK")))
+        (count-local (env-add-local env (gensym "RANK-COUNT") :i32))
+        (dims-local (env-add-local env (gensym "DIMS")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: count elements in dimensions list
+      `(;; Get dimensions list
+        (:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 0)  ; dimensions field (cons list)
+        (:local.set ,dims-local)
+        ;; Initialize counter to 0
+        (:i32.const 0)
+        (:local.set ,count-local)
+        ;; Loop through list
+        (:block $rank_done)
+        (:loop $rank_loop)
+        ;; Check if nil (end of list)
+        (:local.get ,dims-local)
+        :ref.is_null
+        (:br_if $rank_done)
+        ;; Check if cons
+        (:local.get ,dims-local)
+        (:ref.test (:ref ,cons-type))
+        :i32.eqz
+        (:br_if $rank_done)
+        ;; Increment counter
+        (:local.get ,count-local)
+        (:i32.const 1)
+        :i32.add
+        (:local.set ,count-local)
+        ;; Get cdr
+        (:local.get ,dims-local)
+        (:ref.cast (:ref ,cons-type))
+        (:struct.get ,cons-type 1)
+        (:local.set ,dims-local)
+        (:br $rank_loop)
+        :end  ; loop
+        :end  ; block
+        ;; Return count as fixnum
+        (:local.get ,count-local)
+        :ref.i31)
+      ;; Simple array path: rank is always 1
+      `((:i32.const 1)
+        :ref.i31)))))
+
+(defun compile-array-dimension (args env)
+  "Compile (array-dimension array axis-number) - return dimension size.
+   HyperSpec: resources/HyperSpec/Body/f_ar_dim.htm
+   For simple-vectors: axis 0 returns array length
+   For $mdarray: returns nth element of dimensions list
+   Stack: [] -> [fixnum]"
+  (when (/= (length args) 2)
+    (error "array-dimension requires exactly 2 arguments"))
+  (let ((arr-local (env-add-local env (gensym "ARR-DIM")))
+        (axis-local (env-add-local env (gensym "AXIS") :i32))
+        (dims-local (env-add-local env (gensym "DIMS")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     ;; Compile array and store
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Compile axis and convert to i32
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set axis-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: get nth element from dimensions list
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 0)  ; dimensions list
+        (:local.set ,dims-local)
+        ;; Walk to nth element
+        (:block $dim_done)
+        (:loop $dim_loop)
+        ;; Check if axis is 0
+        (:local.get ,axis-local)
+        :i32.eqz
+        (:br_if $dim_done)  ; found it, exit loop
+        ;; Decrement axis and move to cdr
+        (:local.get ,axis-local)
+        (:i32.const 1)
+        :i32.sub
+        (:local.set ,axis-local)
+        (:local.get ,dims-local)
+        (:ref.cast (:ref ,cons-type))
+        (:struct.get ,cons-type 1)
+        (:local.set ,dims-local)
+        (:br $dim_loop)
+        :end  ; loop
+        :end  ; block
+        ;; dims-local now points to the nth cons cell, return its car
+        (:local.get ,dims-local)
+        (:ref.cast (:ref ,cons-type))
+        (:struct.get ,cons-type 0))
+      ;; Simple array path: axis must be 0, return array length
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mv-array-type))
+        (:array.len)
+        :ref.i31)))))
+
+(defun compile-array-dimensions (args env)
+  "Compile (array-dimensions array) - return list of dimension sizes.
+   HyperSpec: resources/HyperSpec/Body/f_ar_d_1.htm
+   For simple-vectors: returns (length)
+   For $mdarray: returns the stored dimensions list
+   Stack: [] -> [list]"
+  (when (/= (length args) 1)
+    (error "array-dimensions requires exactly 1 argument"))
+  (let ((arr-local (env-add-local env (gensym "ARR-DIMS")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: return dimensions list directly
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 0))
+      ;; Simple array path: create (length) list
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mv-array-type))
+        (:array.len)
+        :ref.i31  ; length as car
+        (:global.get 0)  ; NIL as cdr
+        (:struct.new ,cons-type))))))
+
+(defun compile-array-total-size (args env)
+  "Compile (array-total-size array) - return total number of elements.
+   HyperSpec: resources/HyperSpec/Body/f_ar_tot.htm
+   For simple-vectors: returns array length
+   For $mdarray: returns length of underlying storage
+   Stack: [] -> [fixnum]"
+  (when (/= (length args) 1)
+    (error "array-total-size requires exactly 1 argument"))
+  (let ((arr-local (env-add-local env (gensym "ARR-SIZE")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: get length of storage array
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 1)  ; storage field (anyref)
+        (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+        (:array.len)
+        :ref.i31)
+      ;; Simple array path: get array length directly
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mv-array-type))
+        (:array.len)
+        :ref.i31)))))
+
+;;; User Story 2: Access Elements by Row-Major Index (P2)
+
+(defun compile-array-row-major-index (args env)
+  "Compile (array-row-major-index array &rest subscripts) - compute linear index.
+   HyperSpec: resources/HyperSpec/Body/f_ar_row.htm
+   Formula: index = sum(subscript[i] * product(dimension[j] for j > i))
+   For simple-vectors: returns the single subscript
+   Stack: [] -> [fixnum]"
+  (when (< (length args) 1)
+    (error "array-row-major-index requires at least 1 argument"))
+  (let ((arr-local (env-add-local env (gensym "ARR-RMI")))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (mult-local (env-add-local env (gensym "MULT") :i32))
+        (dims-local (env-add-local env (gensym "DIMS")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (subscripts (rest args)))
+    (if (= (length subscripts) 1)
+        ;; Single subscript: just return it as fixnum
+        (append
+         (compile-to-instructions (first args) env)  ; array (ignored for simple case)
+         '(:drop)
+         (compile-to-instructions (first subscripts) env))
+        ;; Multiple subscripts: compute row-major index
+        (append
+         ;; Compile array and store
+         (compile-to-instructions (first args) env)
+         (list (list :local.set arr-local))
+         ;; Initialize index=0, multiplier=1
+         '((:i32.const 0))
+         (list (list :local.set idx-local))
+         '((:i32.const 1))
+         (list (list :local.set mult-local))
+         ;; Get dimensions list
+         `((:local.get ,arr-local)
+           (:ref.cast (:ref ,mdarray-type))
+           (:struct.get ,mdarray-type 0)
+           (:local.set ,dims-local))
+         ;; Process subscripts from last to first
+         (loop for sub in (reverse subscripts)
+               for i from (1- (length subscripts)) downto 0
+               append
+               (append
+                ;; Get subscript value as i32
+                (compile-to-instructions sub env)
+                '((:ref.cast :i31) :i31.get_s)
+                ;; index += subscript * multiplier
+                `((:local.get ,mult-local)
+                  :i32.mul
+                  (:local.get ,idx-local)
+                  :i32.add
+                  (:local.set ,idx-local))
+                ;; Get dimension for this axis (nth from dims list)
+                `((:local.get ,dims-local)
+                  ,@(loop repeat i
+                          append `((:ref.cast (:ref ,cons-type))
+                                   (:struct.get ,cons-type 1)))
+                  (:ref.cast (:ref ,cons-type))
+                  (:struct.get ,cons-type 0)
+                  (:ref.cast :i31)
+                  :i31.get_s
+                  ;; multiplier *= dimension
+                  (:local.get ,mult-local)
+                  :i32.mul
+                  (:local.set ,mult-local))))
+         ;; Return index as fixnum
+         `((:local.get ,idx-local)
+           :ref.i31)))))
+
+(defun compile-row-major-aref (args env)
+  "Compile (row-major-aref array index) - access element by linear index.
+   HyperSpec: resources/HyperSpec/Body/f_row_ma.htm
+   For both $mdarray and simple arrays: direct array access
+   Stack: [] -> [anyref]"
+  (when (/= (length args) 2)
+    (error "row-major-aref requires exactly 2 arguments"))
+  (let ((arr-local (env-add-local env (gensym "ARR-RMA")))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
+    (append
+     ;; Compile array and store
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Compile index and convert to i32
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set idx-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: access storage array
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 1)  ; storage (anyref)
+        (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+        (:local.get ,idx-local)
+        (:array.get ,mv-array-type))
+      ;; Simple array path: direct access
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mv-array-type))
+        (:local.get ,idx-local)
+        (:array.get ,mv-array-type))))))
+
+(defun compile-setf-row-major-aref (args env)
+  "Compile (%setf-row-major-aref array value index) - set element by linear index.
+   Stack: [] -> [anyref (value)]"
+  (when (/= (length args) 3)
+    (error "%setf-row-major-aref requires exactly 3 arguments"))
+  (let ((arr-local (env-add-local env (gensym "ARR-SRMA")))
+        (val-local (env-add-local env (gensym "VAL")))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
+    (append
+     ;; Compile array and store
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Compile value and store
+     (compile-to-instructions (second args) env)
+     (list (list :local.set val-local))
+     ;; Compile index and convert to i32
+     (compile-to-instructions (third args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set idx-local))
+     ;; Type dispatch for set
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: set in storage array
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 1)  ; storage (anyref)
+        (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+        (:local.get ,idx-local)
+        (:local.get ,val-local)
+        (:array.set ,mv-array-type)
+        (:local.get ,val-local))  ; return value
+      ;; Simple array path: direct set
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mv-array-type))
+        (:local.get ,idx-local)
+        (:local.get ,val-local)
+        (:array.set ,mv-array-type)
+        (:local.get ,val-local))))))  ; return value
+
+;;; User Story 3: Check and Modify Array Adjustability (P3)
+
+(defun compile-adjustable-array-p (args env)
+  "Compile (adjustable-array-p array) - check if array is adjustable.
+   HyperSpec: resources/HyperSpec/Body/f_adju_1.htm
+   For simple-vectors: returns NIL
+   For $mdarray: returns adjustable flag
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "adjustable-array-p requires exactly 1 argument"))
+  (let ((arr-local (env-add-local env (gensym "ARR-ADJP")))
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+))
+    (append
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Type dispatch
+     (emit-array-type-dispatch
+      env arr-local
+      ;; $mdarray path: check adjustable field
+      `((:local.get ,arr-local)
+        (:ref.cast (:ref ,mdarray-type))
+        (:struct.get ,mdarray-type 2)  ; adjustable field (i32)
+        (:if (:result :anyref))
+        (:i32.const 1) :ref.i31  ; T
+        :else
+        (:ref.null :none)  ; NIL
+        :end)
+      ;; Simple array path: always NIL
+      `((:ref.null :none))))))
+
+(defun compile-adjust-array (args env)
+  "Compile (adjust-array array new-dimensions &key initial-element) - resize array.
+   HyperSpec: resources/HyperSpec/Body/f_adjust.htm
+   Creates new array with new dimensions, copies existing elements.
+   Stack: [] -> [anyref (new array)]"
+  (when (< (length args) 2)
+    (error "adjust-array requires at least 2 arguments"))
+  ;; MVP implementation: only handles 1D arrays
+  (let ((arr-local (env-add-local env (gensym "ARR-ADJ")))
+        (newsize-local (env-add-local env (gensym "NEWSIZE") :i32))
+        (oldsize-local (env-add-local env (gensym "OLDSIZE") :i32))
+        (newarr-local (env-add-local env (gensym "NEWARR")))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (init-local (env-add-local env (gensym "INIT")))
+        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
+        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (init-expr (getf (cddr args) :initial-element)))
+    (append
+     ;; Compile old array and store
+     (compile-to-instructions (first args) env)
+     (list (list :local.set arr-local))
+     ;; Compile new dimensions (for 1D, just get the number)
+     (compile-to-instructions (second args) env)
+     ;; If dimensions is a list, get car; otherwise use directly
+     `((:local.tee ,newarr-local)  ; temp use
+       (:ref.test (:ref ,cons-type))
+       (:if (:result :i32))
+       (:local.get ,newarr-local)
+       (:ref.cast (:ref ,cons-type))
+       (:struct.get ,cons-type 0)
+       (:ref.cast :i31)
+       :i31.get_s
+       :else
+       (:local.get ,newarr-local)
+       (:ref.cast :i31)
+       :i31.get_s
+       :end)
+     (list (list :local.set newsize-local))
+     ;; Compile initial-element or use NIL
+     (if init-expr
+         (compile-to-instructions init-expr env)
+         '((:global.get 0)))  ; NIL
+     (list (list :local.set init-local))
+     ;; Get old array size
+     `((:local.get ,arr-local)
+       (:ref.test (:ref ,mdarray-type))
+       (:if (:result :i32))
+       (:local.get ,arr-local)
+       (:ref.cast (:ref ,mdarray-type))
+       (:struct.get ,mdarray-type 1)  ; storage (anyref)
+       (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+       (:array.len)
+       :else
+       (:local.get ,arr-local)
+       (:ref.cast (:ref ,mv-array-type))
+       (:array.len)
+       :end)
+     (list (list :local.set oldsize-local))
+     ;; Create new array with new size
+     `((:local.get ,newsize-local)
+       (:array.new_default ,mv-array-type)
+       (:local.set ,newarr-local))
+     ;; Copy existing elements (up to min of old/new size)
+     `((:i32.const 0)
+       (:local.set ,idx-local)
+       (:block $copy_done)
+       (:loop $copy_loop)
+       ;; Check if done
+       (:local.get ,idx-local)
+       (:local.get ,oldsize-local)
+       :i32.ge_u
+       (:br_if $copy_done)
+       (:local.get ,idx-local)
+       (:local.get ,newsize-local)
+       :i32.ge_u
+       (:br_if $copy_done)
+       ;; Copy element
+       (:local.get ,newarr-local)
+       (:ref.cast (:ref ,mv-array-type))
+       (:local.get ,idx-local)
+       ;; Get from old array (handle both types)
+       (:local.get ,arr-local)
+       (:ref.test (:ref ,mdarray-type))
+       (:if (:result :anyref))
+       (:local.get ,arr-local)
+       (:ref.cast (:ref ,mdarray-type))
+       (:struct.get ,mdarray-type 1)  ; storage (anyref)
+       (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+       (:local.get ,idx-local)
+       (:array.get ,mv-array-type)
+       :else
+       (:local.get ,arr-local)
+       (:ref.cast (:ref ,mv-array-type))
+       (:local.get ,idx-local)
+       (:array.get ,mv-array-type)
+       :end
+       (:array.set ,mv-array-type)
+       ;; Increment
+       (:local.get ,idx-local)
+       (:i32.const 1)
+       :i32.add
+       (:local.set ,idx-local)
+       (:br $copy_loop)
+       :end  ; loop
+       :end)  ; block
+     ;; Fill new positions with initial-element
+     `((:block $fill_done)
+       (:loop $fill_loop)
+       ;; Check if done
+       (:local.get ,idx-local)
+       (:local.get ,newsize-local)
+       :i32.ge_u
+       (:br_if $fill_done)
+       ;; Set element to initial-element
+       (:local.get ,newarr-local)
+       (:ref.cast (:ref ,mv-array-type))
+       (:local.get ,idx-local)
+       (:local.get ,init-local)
+       (:array.set ,mv-array-type)
+       ;; Increment
+       (:local.get ,idx-local)
+       (:i32.const 1)
+       :i32.add
+       (:local.set ,idx-local)
+       (:br $fill_loop)
+       :end  ; loop
+       :end)  ; block
+     ;; Create new $mdarray with new dimensions
+     `((:local.get ,newsize-local)
+       :ref.i31
+       (:global.get 0)  ; NIL for cdr
+       (:struct.new ,cons-type)  ; dimensions list
+       (:local.get ,newarr-local)
+       (:ref.cast (:ref ,mv-array-type))
+       (:i32.const 1)  ; adjustable = true
+       (:struct.new ,mdarray-type)))))
 
 ;;; ============================================================
 ;;; Feature 001-ansi-sequence-operations: Sequence Operations

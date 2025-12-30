@@ -324,6 +324,8 @@
      (:file "array-wasm-test")
      ;; Sequence operations Wasm validation (001-ansi-sequence-operations)
      (:file "sequence-wasm-test")
+     ;; Array operations Wasm validation (001-ansi-array-ops)
+     (:file "array-ops-wasm-test")
      ;; Compile-time directives contract tests (001-compile-time-directives)
      (:file "directive-output-test")
      ;; Global variable Wasm validation (001-global-variable-defs)
@@ -578,7 +580,9 @@
        (:file "substitute-test")
        (:file "remove-duplicates-test")
        (:file "fill-test")
-       (:file "replace-test")))))
+       (:file "replace-test")))
+     ;; Array operations unit tests (001-ansi-array-ops)
+     (:file "array-ops-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -682,7 +686,9 @@
      ;; Array primitives integration tests (001-ansi-array-primitives)
      (:file "array-test")
      ;; DEFSTRUCT integration tests (Phase 13D-10)
-     (:file "defstruct-usage-test"))))
+     (:file "defstruct-usage-test")
+     ;; Array operations integration tests (001-ansi-array-ops)
+     (:file "array-ops-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

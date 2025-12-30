@@ -381,6 +381,24 @@
               `(%setf-elt ,seq-temp ,store ,index-temp)  ; store-form
               `(elt ,seq-temp ,index-temp)))))        ; access-form
 
+;;; ROW-MAJOR-AREF expander (001-ansi-array-ops)
+
+(defun make-row-major-aref-setf-expander ()
+  "Create setf expander for ROW-MAJOR-AREF.
+   Feature 001-ansi-array-ops: Uses %setf-row-major-aref primitive."
+  (lambda (form env)
+    (declare (ignore env))
+    (let* ((array-form (second form))
+           (index-form (third form))
+           (array-temp (gensym "ARR-"))
+           (index-temp (gensym "INDEX-"))
+           (store (gensym "STORE-")))
+      (values (list array-temp index-temp)             ; temps
+              (list array-form index-form)             ; vals
+              (list store)                             ; stores
+              `(%setf-row-major-aref ,array-temp ,store ,index-temp)  ; store-form
+              `(row-major-aref ,array-temp ,index-temp)))))  ; access-form
+
 ;;; GETHASH expander
 
 (defun make-gethash-setf-expander ()
@@ -512,6 +530,9 @@
 
   ;; ELT (001-ansi-array-primitives)
   (register-setf-expander registry 'elt (make-elt-setf-expander))
+
+  ;; ROW-MAJOR-AREF (001-ansi-array-ops)
+  (register-setf-expander registry 'row-major-aref (make-row-major-aref-setf-expander))
 
   ;; GETHASH
   (register-setf-expander registry 'gethash (make-gethash-setf-expander))

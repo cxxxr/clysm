@@ -98,11 +98,12 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format)
 
 | Feature | Description |
 |---------|-------------|
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
+| 001-ansi-array-ops | ANSI CL array operations: array-rank, array-dimension, array-dimensions, array-total-size, array-row-major-index, row-major-aref, (setf row-major-aref), adjustable-array-p, adjust-array |
 | 001-defstruct-wasm-compile | DEFSTRUCT macro → DEFCLASS expansion (:conc-name, :include, :predicate, :copier, :constructor, :read-only) |
 | 001-numeric-format | ANSI CL numeric conversion/formatting: rationalize (float→ratio with continued fraction), write-to-string (:base 2-36 for integers, ratio/float support) |
 | 002-numeric-functions | ANSI CL numeric functions: trig (sin, cos, tan, asin, acos, atan), hyperbolic (sinh, cosh, tanh, asinh, acosh, atanh), bit ops (ash, logand, logior, logxor, lognot, logcount, integer-length), math (sqrt, exp, log, expt, abs, signum), conversion (float, rational), parse-integer |
@@ -142,6 +143,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 | 21 | $slot-vector | CLOS slot storage |
 | 22 | $mv_array | Multiple values buffer |
 | 24 | $macro-environment | Macro expansion environment |
+| 28 | $mdarray | Multidimensional array wrapper (dimensions, storage, adjustable) |
 
 ## Global Indices
 
@@ -181,6 +183,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, existing clysm compiler infrastructure (001-ansi-list-ops)
 - Common Lisp (SBCL 2.4+) host compiler, WasmGC target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing), existing clysm compiler infrastructure (001-ansi-sequence-functions)
 - N/A (in-memory compilation, no persistence) (001-ansi-sequence-functions)
+- Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams; existing array infrastructure from `001-ansi-array-primitives` (001-ansi-array-ops)
 
 ## Recent Changes
+- 001-ansi-array-ops (Phase 15C): Implemented 9 ANSI CL array operations: array-rank, array-dimension, array-dimensions, array-total-size, array-row-major-index, row-major-aref, (setf row-major-aref), adjustable-array-p, adjust-array. Added $mdarray type (index 28) for multidimensional array support.
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

@@ -407,18 +407,19 @@
    - Type 25: $hash_entry - hash table entry (043-self-hosting-blockers)
    - Type 26: $hash_table - hash table struct (043-self-hosting-blockers)
    - Type 27: $bucket_array - hash table bucket array (043-self-hosting-blockers)
-   - Type 28: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
-   - Type 29: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
-   - Type 30: $catch_result - () -> (anyref, anyref) for catch handler block result
-   - Types 31+: Regular (non-lambda) function types + FFI function types (T058)"
+   - Type 28: $mdarray - multidimensional array wrapper (001-ansi-array-ops)
+   - Type 29: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+   - Type 30: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+   - Type 31: $catch_result - () -> (anyref, anyref) for catch handler block result
+   - Types 32+: Regular (non-lambda) function types + FFI function types (T058)"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
         ;; Count non-lambda functions (lambdas reuse types 8-12)
         (regular-func-count (count-if-not #'is-lambda-function-p functions))
         ;; T058: Count FFI function types
         (ffi-type-count (collect-ffi-type-count)))
-    ;; Number of types = 31 (base types) + regular functions + FFI types
-    (emit-leb128-unsigned (+ 31 regular-func-count ffi-type-count) content)
+    ;; Number of types = 32 (base types including mdarray) + regular functions + FFI types
+    (emit-leb128-unsigned (+ 32 regular-func-count ffi-type-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -478,13 +479,16 @@
     (emit-gc-struct-type content '((:i32 nil) (:i32 t) (:anyref nil) (:anyref nil)))
     ;; Type 27: $bucket_array - hash table bucket array (array (mut anyref)) (043-self-hosting-blockers)
     (emit-gc-array-type content :anyref t)
-    ;; Type 28: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+    ;; Type 28: $mdarray - multidimensional array wrapper (001-ansi-array-ops)
+    ;; Structure: (dimensions: ref $cons, storage: ref $mv_array, adjustable: i32)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil) (:i32 nil)))
+    ;; Type 29: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
     (emit-func-type-bytes content '(:anyref :anyref) '())
-    ;; Type 29: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+    ;; Type 30: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
-    ;; Type 30: $catch_result - () -> (anyref, anyref) for catch handler block result
+    ;; Type 31: $catch_result - () -> (anyref, anyref) for catch handler block result
     (emit-func-type-bytes content '() '(:anyref :anyref))
-    ;; Regular function types (indices 31+) - skip lambdas (they use types 8-12)
+    ;; Regular function types (indices 32+) - skip lambdas (they use types 8-12)
     (dolist (func functions)
       (unless (is-lambda-function-p func)
         ;; func type indicator
@@ -538,10 +542,10 @@
 (defun emit-function-section (buffer functions)
   "Emit Function section.
    Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
-   Regular functions use types 31+ (after all GC types and exception types)."
+   Regular functions use types 32+ (after all GC types, mdarray, and exception types)."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        (regular-func-idx 31))  ; Start regular function types at 31 (after exception types)
+        (regular-func-idx 32))  ; Start regular function types at 32 (after exception types + mdarray)
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
@@ -558,7 +562,7 @@
                              (3 11)  ; $func_3
                              (t 12)))) ; $func_N
             (emit-leb128-unsigned type-idx content))
-          ;; Regular functions: use unique types starting at 23
+          ;; Regular functions: use unique types starting at 32
           (progn
             (emit-leb128-unsigned regular-func-idx content)
             (incf regular-func-idx))))
@@ -577,9 +581,9 @@
     (emit-leb128-unsigned 1 content)
     ;; Tag 0: $lisp-throw
     ;; Format: attribute (0 = exception) + type index
-    ;; Type index 28 is $tag_lisp_throw - (anyref, anyref) -> ()
+    ;; Type index 29 is $tag_lisp_throw - (anyref, anyref) -> ()
     (vector-push-extend #x00 content)  ; attribute: exception
-    (emit-leb128-unsigned 28 content)  ; Use type index 28 ($tag_lisp_throw)
+    (emit-leb128-unsigned 29 content)  ; Use type index 29 ($tag_lisp_throw)
     ;; Write section
     (vector-push-extend 13 buffer)  ; Tag section ID
     (emit-leb128-unsigned (length content) buffer)

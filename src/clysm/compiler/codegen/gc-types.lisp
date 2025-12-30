@@ -91,6 +91,19 @@
    array (mut (ref null $hash-entry))")
 
 ;;; ============================================================
+;;; Multidimensional Array Type Index (001-ansi-array-ops)
+;;; ============================================================
+
+;; HyperSpec: resources/HyperSpec/Body/t_array.htm
+(defconstant +type-mdarray+ 28
+  "Type index for multidimensional array wrapper.
+   struct $mdarray {
+     dimensions: (ref $cons),    ;; list of dimension sizes as fixnums
+     storage: (ref $mv_array),   ;; underlying 1D storage
+     adjustable: i32             ;; 0=fixed, 1=adjustable
+   }")
+
+;;; ============================================================
 ;;; Exception Handling (001-control-structure-extension US4)
 ;;; ============================================================
 
@@ -569,6 +582,28 @@
    :mutable t))
 
 ;;; ============================================================
+;;; Multidimensional Array Type Constructor (001-ansi-array-ops)
+;;; ============================================================
+
+(defun make-mdarray-type ()
+  "Create multidimensional array wrapper type (001-ansi-array-ops).
+   HyperSpec: resources/HyperSpec/Body/t_array.htm
+   Structure:
+     $dimensions: (ref $cons) - list of dimension sizes as fixnums
+     $storage: (ref $mv_array) - underlying 1D element storage
+     $adjustable: i32 - 0=fixed, 1=adjustable
+   (type $mdarray (struct
+     (field $dimensions (ref $cons))
+     (field $storage (ref $mv_array))
+     (field $adjustable i32)))"
+  (make-wasm-struct-type
+   :name '$mdarray
+   :index +type-mdarray+
+   :fields (list (make-wasm-field :name 'dimensions :type :cons-ref :mutable nil)
+                 (make-wasm-field :name 'storage :type :mv-array-ref :mutable nil)
+                 (make-wasm-field :name 'adjustable :type :i32 :mutable nil))))
+
+;;; ============================================================
 ;;; Exception Tags (T008)
 ;;; ============================================================
 
@@ -638,7 +673,8 @@
         (make-macro-environment-type) ; type 24: macro environment (042-advanced-defmacro)
         (make-hash-entry-type)      ; type 25: hash table entry (043-self-hosting-blockers)
         (make-hash-table-type)      ; type 26: hash table (043-self-hosting-blockers)
-        (make-bucket-array-type)))  ; type 27: hash bucket array (043-self-hosting-blockers)
+        (make-bucket-array-type)    ; type 27: hash bucket array (043-self-hosting-blockers)
+        (make-mdarray-type)))       ; type 28: multidimensional array (001-ansi-array-ops)
 
 (defun emit-type-to-binary (type stream)
   "Emit a type definition to the binary stream.
@@ -867,4 +903,17 @@
      ;; (ref null $closure) - nullable reference to closure (for initforms)
      (write-byte #x63 stream)  ; ref null
      (clysm/backend/leb128:encode-signed-leb128-to-stream +type-closure+ stream))
+    ;; Multidimensional array type references (001-ansi-array-ops)
+    (:cons-ref
+     ;; (ref $cons) - non-null reference to cons (for dimension list)
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-cons+ stream))
+    (:mdarray-ref
+     ;; (ref $mdarray) - non-null reference to multidimensional array
+     (write-byte #x64 stream)  ; ref (non-null)
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mdarray+ stream))
+    (:mdarray-ref-null
+     ;; (ref null $mdarray) - nullable reference to multidimensional array
+     (write-byte #x63 stream)  ; ref null
+     (clysm/backend/leb128:encode-signed-leb128-to-stream +type-mdarray+ stream))
     (t (error "Unknown value type: ~A" type-keyword))))

@@ -721,6 +721,28 @@
   (:import-from #:clysm/tests #:compile-and-run))
 
 ;;; ============================================================
+;;; Array Operations Tests (001-ansi-array-ops)
+;;; Phase 15C: ANSI CL Array Operations Enhancement
+;;; ============================================================
+
+;; Array operations unit tests (001-ansi-array-ops)
+;; Tests for array-rank, array-dimension, array-dimensions, array-total-size,
+;; array-row-major-index, row-major-aref, adjustable-array-p, adjust-array codegen
+(defpackage #:clysm/tests/unit/array-ops
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Array operations Wasm contract tests (001-ansi-array-ops)
+(defpackage #:clysm/tests/contract/array-ops-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Array operations integration tests (001-ansi-array-ops)
+(defpackage #:clysm/tests/integration/array-ops
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
 ;;; Sequence Operations Tests (001-ansi-sequence-operations)
 ;;; Phase 13D-2: ANSI CL Sequence Operations
 ;;; ============================================================

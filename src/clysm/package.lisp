@@ -545,6 +545,9 @@
            #:+type-hash-entry+
            #:+type-hash-table+
            #:+type-bucket-array+
+           ;; Multidimensional array type (001-ansi-array-ops)
+           #:+type-mdarray+
+           #:make-mdarray-type
            ;; Hash table type constructors (043-self-hosting-blockers)
            #:make-hash-entry-type
            #:make-hash-table-type
