@@ -1,0 +1,7 @@
+(asdf:load-system :clysm :silent t)
+(ql:quickload :rove :silent t)
+(load "tests/package.lisp")
+(load "tests/helpers.lisp")
+(load "tests/unit/character-functions.lisp")
+(in-package :cl-user)
+(funcall (find-symbol "RUN" "ROVE") (find-package :clysm/tests/unit/character-functions))

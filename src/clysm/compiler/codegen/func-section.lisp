@@ -755,6 +755,9 @@
                                char-upcase char-downcase
                                characterp alpha-char-p digit-char-p
                                alphanumericp upper-case-p lower-case-p
+                               ;; Extended character functions (001-ansi-char-functions)
+                               graphic-char-p standard-char-p both-case-p
+                               char-name name-char digit-char char-int
                                stringp char schar
                                string= string/= string< string> string<= string>=
                                string-equal string-lessp string-greaterp
@@ -1099,6 +1102,14 @@
     (alphanumericp (compile-alphanumericp args env))
     (upper-case-p (compile-upper-case-p args env))
     (lower-case-p (compile-lower-case-p args env))
+    ;; Extended character functions (001-ansi-char-functions)
+    (graphic-char-p (compile-graphic-char-p args env))
+    (standard-char-p (compile-standard-char-p args env))
+    (both-case-p (compile-both-case-p args env))
+    (char-name (compile-char-name args env))
+    (name-char (compile-name-char args env))
+    (digit-char (compile-digit-char args env))
+    (char-int (compile-char-int args env))
     ;; String functions (008-character-string)
     (stringp (compile-stringp args env))
     (char (compile-string-char args env))
@@ -13701,6 +13712,423 @@
        :else
        (:ref.null :none)
        :end))))
+
+;;; ============================================================
+;;; Extended Character Functions (001-ansi-char-functions)
+;;; Phase 16A: ANSI CL Character Functions
+;;;
+;;; HyperSpec References:
+;;; - graphic-char-p: resources/HyperSpec/Body/f_graphi.htm
+;;; - standard-char-p: resources/HyperSpec/Body/f_std_ch.htm
+;;; - both-case-p: resources/HyperSpec/Body/f_upper_.htm
+;;; - char-name: resources/HyperSpec/Body/f_char_n.htm
+;;; - name-char: resources/HyperSpec/Body/f_name_c.htm
+;;; - digit-char: resources/HyperSpec/Body/f_digit_.htm
+;;; - char-int: resources/HyperSpec/Body/f_char_i.htm
+;;; ============================================================
+
+(defun compile-graphic-char-p (args env)
+  "Compile (graphic-char-p char) - test if printable character.
+   Returns T for characters with code 32-126, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "graphic-char-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       ;; Check if char >= 32 (Space) AND char <= 126 (~)
+       (:local.get ,c-local)
+       (:i32.const 32)  ;; Space
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 126)  ;; ~
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun compile-standard-char-p (args env)
+  "Compile (standard-char-p char) - test if standard character.
+   Standard characters are: A-Z, a-z, 0-9, space, newline, and punctuation.
+   The 96 standard characters per ANSI CL.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "standard-char-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:block $std_done (:result :anyref))
+       ;; Check if newline (code 10) - standard char
+       (:local.get ,c-local)
+       (:i32.const 10)
+       :i32.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       (:br $std_done)
+       :else
+       ;; Check if in range 32-126 (graphic chars minus DEL)
+       (:local.get ,c-local)
+       (:i32.const 32)
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 126)
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :end
+       :end))))
+
+(defun compile-both-case-p (args env)
+  "Compile (both-case-p char) - test if character has both cases.
+   Returns T for A-Z and a-z, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 1)
+    (error "both-case-p requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:block $both_done (:result :anyref))
+       ;; Check uppercase A-Z
+       (:local.get ,c-local)
+       (:i32.const 65)  ;; 'A'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 90)  ;; 'Z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       (:br $both_done)
+       :else
+       ;; Check lowercase a-z
+       (:local.get ,c-local)
+       (:i32.const 97)  ;; 'a'
+       :i32.ge_s
+       (:local.get ,c-local)
+       (:i32.const 122)  ;; 'z'
+       :i32.le_s
+       :i32.and
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :end
+       :end))))
+
+(defun compile-char-name (args env)
+  "Compile (char-name char) - return name string for named characters.
+   Returns string for Space, Newline, Tab, Return, Page, Backspace,
+   Rubout, Linefeed, Null. Returns NIL for unnamed characters.
+   Stack: [] -> [string or NIL]"
+  (when (/= (length args) 1)
+    (error "char-name requires exactly 1 argument"))
+  (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+       (:block $name_done (:result :anyref))
+       ;; Check each named character and return its name
+       ;; Null (0)
+       (:local.get ,c-local)
+       (:i32.const 0)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Null")
+       (:br $name_done)
+       :else
+       ;; Backspace (8)
+       (:local.get ,c-local)
+       (:i32.const 8)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Backspace")
+       (:br $name_done)
+       :else
+       ;; Tab (9)
+       (:local.get ,c-local)
+       (:i32.const 9)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Tab")
+       (:br $name_done)
+       :else
+       ;; Newline/Linefeed (10)
+       (:local.get ,c-local)
+       (:i32.const 10)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Newline")
+       (:br $name_done)
+       :else
+       ;; Page (12)
+       (:local.get ,c-local)
+       (:i32.const 12)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Page")
+       (:br $name_done)
+       :else
+       ;; Return (13)
+       (:local.get ,c-local)
+       (:i32.const 13)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Return")
+       (:br $name_done)
+       :else
+       ;; Space (32)
+       (:local.get ,c-local)
+       (:i32.const 32)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Space")
+       (:br $name_done)
+       :else
+       ;; Rubout/DEL (127)
+       (:local.get ,c-local)
+       (:i32.const 127)
+       :i32.eq
+       (:if (:result :anyref))
+       ,@(compile-string-literal "Rubout")
+       :else
+       ;; Not a named character
+       (:ref.null :none)
+       :end
+       :end
+       :end
+       :end
+       :end
+       :end
+       :end
+       :end
+       :end))))
+
+(defun compile-name-char (args env)
+  "Compile (name-char name) - return character for given name.
+   Case-insensitive. Returns NIL for invalid names.
+   Supports: Space, Newline, Tab, Return, Page, Backspace, Rubout, Linefeed, Null.
+   Stack: [] -> [character or NIL]"
+  (when (/= (length args) 1)
+    (error "name-char requires exactly 1 argument"))
+  ;; For name-char, we compile to a series of string-equal calls.
+  ;; This uses the existing compile-string-equal infrastructure.
+  ;; We compile each comparison as a full expression.
+  (let ((name-local (env-add-local env (gensym "NAME"))))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:local.set ,name-local)
+       (:block $namechar_done (:result :anyref))
+       ;; Check "Space" (case-insensitive)
+       ,@(compile-name-char-check env name-local "Space" 32)
+       ;; Check "Newline"
+       ,@(compile-name-char-check env name-local "Newline" 10)
+       ;; Check "Tab"
+       ,@(compile-name-char-check env name-local "Tab" 9)
+       ;; Check "Return"
+       ,@(compile-name-char-check env name-local "Return" 13)
+       ;; Check "Page"
+       ,@(compile-name-char-check env name-local "Page" 12)
+       ;; Check "Backspace"
+       ,@(compile-name-char-check env name-local "Backspace" 8)
+       ;; Check "Rubout"
+       ,@(compile-name-char-check env name-local "Rubout" 127)
+       ;; Check "Linefeed" (same as Newline)
+       ,@(compile-name-char-check env name-local "Linefeed" 10)
+       ;; Check "Null"
+       ,@(compile-name-char-check env name-local "Null" 0)
+       ;; Unknown name - return NIL
+       (:ref.null :none)
+       :end))))
+
+(defun compile-name-char-check (env name-local expected-name char-code)
+  "Generate code to check if name-local equals expected-name (case-insensitive).
+   If match, returns char-code as character and branches to $namechar_done.
+   Uses a simple flag-based comparison without nested result types."
+  (let ((string-type clysm/compiler/codegen/gc-types:+type-string+)
+        (len-local (env-add-local env (gensym "LEN") :i32))
+        (idx-local (env-add-local env (gensym "IDX") :i32))
+        (match-local (env-add-local env (gensym "MATCH") :i32))
+        (byte1-local (env-add-local env (gensym "BYTE1") :i32))
+        (byte2-local (env-add-local env (gensym "BYTE2") :i32))
+        (str2-local (env-add-local env (gensym "STR2")))
+        (expected-len (length expected-name)))
+    `(;; Get input string length and check against expected
+      (:local.get ,name-local)
+      (:ref.cast ,(list :ref string-type))
+      (:array.len)
+      (:local.set ,len-local)
+      ;; Initialize match flag to 1 (true), will be set to 0 on mismatch
+      (:i32.const 1)
+      (:local.set ,match-local)
+      ;; Check length first
+      (:local.get ,len-local)
+      (:i32.const ,expected-len)
+      :i32.ne
+      (:if nil)
+      ;; Length mismatch
+      (:i32.const 0)
+      (:local.set ,match-local)
+      :end
+      ;; Only compare bytes if lengths matched
+      (:local.get ,match-local)
+      (:if nil)
+      ;; Build expected string
+      ,@(compile-string-literal expected-name)
+      (:local.set ,str2-local)
+      (:i32.const 0)
+      (:local.set ,idx-local)
+      ;; Loop comparing bytes
+      (:block $check_exit)
+      (:loop $check_loop)
+      ;; Check if done comparing
+      (:local.get ,idx-local)
+      (:local.get ,len-local)
+      :i32.ge_u
+      (:br_if $check_exit)
+      ;; Get byte from input string
+      (:local.get ,name-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte1-local)
+      ;; Get byte from expected string
+      (:local.get ,str2-local)
+      (:ref.cast ,(list :ref string-type))
+      (:local.get ,idx-local)
+      (:array.get_u ,string-type)
+      (:local.set ,byte2-local)
+      ;; Upcase byte1 if lowercase (a-z -> A-Z)
+      (:local.get ,byte1-local)
+      (:i32.const 97)
+      :i32.ge_u
+      (:local.get ,byte1-local)
+      (:i32.const 122)
+      :i32.le_u
+      :i32.and
+      (:if nil)
+      (:local.get ,byte1-local)
+      (:i32.const 32)
+      :i32.sub
+      (:local.set ,byte1-local)
+      :end
+      ;; Upcase byte2 if lowercase (a-z -> A-Z)
+      (:local.get ,byte2-local)
+      (:i32.const 97)
+      :i32.ge_u
+      (:local.get ,byte2-local)
+      (:i32.const 122)
+      :i32.le_u
+      :i32.and
+      (:if nil)
+      (:local.get ,byte2-local)
+      (:i32.const 32)
+      :i32.sub
+      (:local.set ,byte2-local)
+      :end
+      ;; Compare uppercased bytes
+      (:local.get ,byte1-local)
+      (:local.get ,byte2-local)
+      :i32.ne
+      (:if nil)
+      ;; Mismatch - set flag to 0 and exit loop
+      (:i32.const 0)
+      (:local.set ,match-local)
+      (:br $check_exit)
+      :end
+      ;; Increment index and continue
+      (:local.get ,idx-local)
+      (:i32.const 1)
+      :i32.add
+      (:local.set ,idx-local)
+      (:br $check_loop)
+      :end  ; end loop
+      :end  ; end block $check_exit
+      :end  ; end outer if (match flag check)
+      ;; Check if we matched - if so, return the character
+      (:local.get ,match-local)
+      (:if nil)
+      (:i32.const ,char-code)
+      :ref.i31
+      (:br $namechar_done)
+      :end)))
+
+(defun compile-digit-char (args env)
+  "Compile (digit-char weight &optional radix) - convert weight to digit character.
+   Returns character for weight 0-35 if weight < radix, NIL otherwise.
+   Default radix is 10. For radix > 10, uses uppercase A-Z.
+   Stack: [] -> [character or NIL]"
+  (when (or (< (length args) 1) (> (length args) 2))
+    (error "digit-char requires 1 or 2 arguments"))
+  (let ((weight-local (env-add-local env (gensym "WEIGHT") :i32))
+        (radix-local (env-add-local env (gensym "RADIX") :i32)))
+    (append
+     (compile-to-instructions (first args) env)
+     `((:ref.cast :i31) :i31.get_s (:local.set ,weight-local))
+     ;; Compile radix (default 10)
+     (if (second args)
+         (append (compile-to-instructions (second args) env)
+                 `((:ref.cast :i31) :i31.get_s (:local.set ,radix-local)))
+         `((:i32.const 10) (:local.set ,radix-local)))
+     `((:block $digit_done (:result :anyref))
+       ;; Check weight >= 0
+       (:local.get ,weight-local)
+       (:i32.const 0)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:ref.null :none)
+       (:br $digit_done)
+       :else
+       ;; Check weight < radix
+       (:local.get ,weight-local)
+       (:local.get ,radix-local)
+       :i32.ge_s
+       (:if (:result :anyref))
+       (:ref.null :none)
+       (:br $digit_done)
+       :else
+       ;; Check if weight < 10 (return '0' + weight)
+       (:local.get ,weight-local)
+       (:i32.const 10)
+       :i32.lt_s
+       (:if (:result :anyref))
+       (:local.get ,weight-local)
+       (:i32.const 48)  ;; '0'
+       :i32.add
+       :ref.i31
+       :else
+       ;; weight >= 10, return 'A' + (weight - 10)
+       (:local.get ,weight-local)
+       (:i32.const 10)
+       :i32.sub
+       (:i32.const 65)  ;; 'A'
+       :i32.add
+       :ref.i31
+       :end
+       :end
+       :end
+       :end))))
+
+(defun compile-char-int (args env)
+  "Compile (char-int char) - return integer encoding of character.
+   In this implementation, equivalent to char-code (returns Unicode code point).
+   Stack: [] -> [integer]"
+  (when (/= (length args) 1)
+    (error "char-int requires exactly 1 argument"))
+  ;; Simply extract the i32 code point and return as i31ref
+  (append
+   (compile-to-instructions (first args) env)
+   `((:ref.cast :i31) :i31.get_s :ref.i31)))
 
 (defun compile-stringp (args env)
   "Compile (stringp obj) - test if object is a string.

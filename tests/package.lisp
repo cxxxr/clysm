@@ -884,3 +884,21 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; Character Functions Tests (001-ansi-char-functions)
+;;; Phase 16A: ANSI CL Character Functions
+;;; ============================================================
+
+;; Character functions unit tests (001-ansi-char-functions)
+;; Tests for graphic-char-p, standard-char-p, both-case-p,
+;; char-name, name-char, digit-char, char-int
+(defpackage #:clysm/tests/unit/character-functions
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Character functions Wasm contract tests (001-ansi-char-functions)
+;; Validates Wasm output for character predicate and conversion functions
+(defpackage #:clysm/tests/contract/character-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
