@@ -88,6 +88,28 @@
   (recommendation "" :type string)      ; Suggested action
   (examples nil :type list))            ; Up to 3 example forms
 
+;;; Phase 13D-9: Enhanced blocker types for structured reports
+
+(defstruct blocker-category
+  "A category of compilation blockers (T022)."
+  (name "" :type string)                ; Category name (e.g., "unsupported-macro")
+  (count 0 :type fixnum)                ; Number of failures in this category
+  (examples nil :type list)             ; Example form names (up to 5)
+  (remediation "" :type string))        ; Suggested fix
+
+(defstruct blocker-report
+  "Complete blocker report for bootstrap fixpoint tracking (T023)."
+  (stage 1 :type fixnum)                ; Stage number (1, 2, etc.)
+  (timestamp "" :type string)           ; ISO 8601 timestamp
+  (compilation-rate 0.0 :type float)    ; Percentage of forms compiled
+  (forms-total 0 :type fixnum)          ; Total forms processed
+  (forms-success 0 :type fixnum)        ; Forms compiled successfully
+  (forms-failed 0 :type fixnum)         ; Forms that failed
+  (blockers nil :type list)             ; List of blocker-category
+  (top-5-blockers nil :type list)       ; Top 5 blocking issues by frequency
+  (fixpoint-status "pending" :type string) ; "achieved", "not_achieved", "pending"
+  (fixpoint-details nil :type list))    ; Details when not achieved
+
 ;;; ==========================================================================
 ;;; Diff Analysis Types
 ;;; ==========================================================================

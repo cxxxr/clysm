@@ -96,11 +96,60 @@ Returns T if valid, NIL otherwise."
         (delete-file temp-path)))))
 
 (defun compile-defuns-bundle (defuns)
-  "Compile a list of defuns into a bundled module.
-Returns Wasm bytes or NIL on failure."
+  "Compile a list of defuns into a bundled module for validation.
+Returns Wasm bytes or NIL on failure.
+Note: This is used during binary search, so does not add extra exports."
   (handler-case
       (clysm:compile-to-wasm `(progn ,@defuns))
     (error () nil)))
+
+(defun actual-defun-p (form)
+  "Check if a form is an actual defun that creates a Wasm function.
+Only (defun ...) forms create separate functions in the Wasm module.
+Other bundleable forms (defconstant, defvar, defparameter, defclass)
+go into the _start function and don't create separate functions."
+  (and (consp form) (eq (car form) 'defun)))
+
+(defun compile-defuns-bundle-with-exports (defuns)
+  "Compile a list of defuns into a bundled module with Stage 1 exports.
+Returns Wasm bytes or NIL on failure.
+Phase 13D-9: Includes stub functions for compile_form, compile_all, _initialize
+and exports them."
+  ;; Count only actual defuns that create separate Wasm functions
+  (let ((actual-defun-count (count-if #'actual-defun-p defuns)))
+    (handler-case
+        (let* (;; Add stub functions after the regular defuns
+               ;; These are the compiler export functions for Stage 1
+               (stub-defuns (list
+                             ;; compile_form: takes an S-expression, returns Wasm bytes or nil
+                             '(defun clysm-stage1-compile-form (form)
+                               ;; Stub: return nil (not yet implemented)
+                               (if form nil nil))
+                             ;; compile_all: compile all forms from source
+                             '(defun clysm-stage1-compile-all (source-list)
+                               ;; Stub: return nil (not yet implemented)
+                               (if source-list nil nil))
+                             ;; _initialize: runtime initialization
+                             '(defun clysm-stage1-initialize ()
+                               ;; Stub: return 0 (success)
+                               0)))
+               ;; Combine all defuns
+               (all-defuns (append defuns stub-defuns))
+               ;; Calculate export indices based on ACTUAL defuns, not all forms
+               ;; Index 0 is _start (main)
+               ;; Indices 1 to N are the actual defuns (not defvar/defconstant/etc)
+               ;; Indices N+1, N+2, N+3 are the stub functions
+               (compile-form-idx (1+ actual-defun-count))
+               (compile-all-idx (+ 2 actual-defun-count))
+               (initialize-idx (+ 3 actual-defun-count))
+               ;; Define extra exports
+               (extra-exports (list
+                               (list "compile_form" :func compile-form-idx)
+                               (list "compile_all" :func compile-all-idx)
+                               (list "_initialize" :func initialize-idx))))
+          (clysm:compile-to-wasm `(progn ,@all-defuns)
+                                  :extra-exports extra-exports))
+      (error () nil))))
 
 (defun find-valid-bundle (defuns)
   "Find the largest prefix of defuns that produces valid Wasm.
@@ -138,7 +187,8 @@ Returns T for forms that produce meaningful Wasm output."
 
 (defun bundle-and-compile (successful-sexps)
   "Bundle successful forms and compile to a valid module.
-Returns Wasm bytes or NIL on failure."
+Returns Wasm bytes or NIL on failure.
+Phase 13D-9: After finding valid bundle, recompile with Stage 1 exports."
   (when successful-sexps
     ;; Include all bundleable forms, not just defuns
     (let* ((bundleable (remove-if-not #'bundleable-form-p successful-sexps))
@@ -150,18 +200,41 @@ Returns Wasm bytes or NIL on failure."
         (format t "~&Finding largest valid bundle from ~D forms...~%" (length limited))
         (multiple-value-bind (bytes count)
             (find-valid-bundle limited)
+          (declare (ignore bytes))  ; We'll recompile with exports
           (format t "~&Valid bundle contains ~D forms~%" count)
-          bytes)))))
+          ;; Phase 13D-9: Recompile the valid subset with Stage 1 exports
+          (when (> count 0)
+            (let* ((valid-forms (subseq limited 0 count))
+                   (final-bytes (compile-defuns-bundle-with-exports valid-forms)))
+              (if (and final-bytes (validate-wasm-bytes final-bytes))
+                  final-bytes
+                  ;; Fallback: try without exports if export compilation fails
+                  (progn
+                    (format t "~&Warning: compilation with exports failed, using base bundle~%")
+                    (compile-defuns-bundle valid-forms))))))))))
 
 (defun create-stage1-stub-module ()
-  "Create a minimal valid Stage 1 Wasm module stub."
+  "Create a minimal valid Stage 1 Wasm module stub.
+Phase 13D-9: Now exports compile_form, compile_all, _initialize in addition to _start."
+  ;; Module header: \0asm + version 1
   (let ((header #(#x00 #x61 #x73 #x6D #x01 #x00 #x00 #x00))
-        (type-section #(#x01 #x05 #x01 #x60 #x00 #x01 #x7F))
-        (func-section #(#x03 #x02 #x01 #x00))
-        (export-section #(#x07 #x0A #x01 #x06
-                          #x5F #x73 #x74 #x61 #x72 #x74
-                          #x00 #x00))
-        (code-section #(#x0A #x06 #x01 #x04 #x00 #x41 #x00 #x0B)))
+        ;; Type section: 2 function types
+        ;; Type 0: () -> i32 (for _start)
+        ;; Type 1: (anyref) -> anyref (for compile_form, compile_all)
+        (type-section #(#x01 #x0B #x02
+                        #x60 #x00 #x01 #x7F           ; Type 0: () -> i32
+                        #x60 #x01 #x6E #x01 #x6E))    ; Type 1: (anyref) -> anyref
+        ;; Function section: 4 functions
+        ;; Func 0: type 0 (_start)
+        ;; Func 1: type 1 (compile_form)
+        ;; Func 2: type 1 (compile_all)
+        ;; Func 3: type 0 (_initialize)
+        (func-section #(#x03 #x05 #x04 #x00 #x01 #x01 #x00))
+        ;; Export section: 4 exports
+        ;; _start (func 0), compile_form (func 1), compile_all (func 2), _initialize (func 3)
+        (export-section (create-stage1-export-section))
+        ;; Code section: 4 function bodies
+        (code-section (create-stage1-code-section)))
     (let* ((total-size (+ (length header)
                           (length type-section)
                           (length func-section)
@@ -173,6 +246,90 @@ Returns Wasm bytes or NIL on failure."
         (replace module section :start1 offset)
         (incf offset (length section)))
       module)))
+
+(defun create-stage1-export-section ()
+  "Create export section with _start, compile_form, compile_all, _initialize.
+Phase 13D-9: Exports all required compiler functions."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Section ID = 7 (export)
+    (vector-push-extend #x07 content)
+    ;; Section size placeholder - will be filled after building content
+    (let ((exports-content (make-array 0 :element-type '(unsigned-byte 8)
+                                         :adjustable t :fill-pointer 0)))
+      ;; Number of exports: 4
+      (vector-push-extend #x04 exports-content)
+      ;; Export 0: _start (func 0)
+      (emit-export-entry exports-content "_start" #x00 0)
+      ;; Export 1: compile_form (func 1)
+      (emit-export-entry exports-content "compile_form" #x00 1)
+      ;; Export 2: compile_all (func 2)
+      (emit-export-entry exports-content "compile_all" #x00 2)
+      ;; Export 3: _initialize (func 3)
+      (emit-export-entry exports-content "_initialize" #x00 3)
+      ;; Now build the final section with proper size
+      (emit-leb128-to-vector (length exports-content) content)
+      (loop for b across exports-content do (vector-push-extend b content)))
+    (coerce content '(simple-array (unsigned-byte 8) (*)))))
+
+(defun emit-export-entry (buffer name kind index)
+  "Emit a single export entry to buffer.
+NAME is the export name string, KIND is export kind (0=func), INDEX is the index."
+  ;; Name length
+  (emit-leb128-to-vector (length name) buffer)
+  ;; Name bytes (ASCII)
+  (loop for c across name do (vector-push-extend (char-code c) buffer))
+  ;; Export kind
+  (vector-push-extend kind buffer)
+  ;; Export index
+  (emit-leb128-to-vector index buffer))
+
+(defun emit-leb128-to-vector (value vector)
+  "Emit unsigned LEB128 to adjustable vector."
+  (loop
+    (let ((byte (logand value #x7F)))
+      (setf value (ash value -7))
+      (if (zerop value)
+          (progn
+            (vector-push-extend byte vector)
+            (return))
+          (vector-push-extend (logior byte #x80) vector)))))
+
+(defun create-stage1-code-section ()
+  "Create code section with 4 function bodies.
+Phase 13D-9: Stub implementations for all exports."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Section ID = 10 (code)
+    (vector-push-extend #x0A content)
+    ;; Build function bodies
+    (let ((bodies-content (make-array 0 :element-type '(unsigned-byte 8)
+                                        :adjustable t :fill-pointer 0)))
+      ;; Number of function bodies: 4
+      (vector-push-extend #x04 bodies-content)
+      ;; Function 0: _start - returns 0 (success)
+      ;; Body: 0 locals, i32.const 0, end
+      (emit-func-body bodies-content '(#x00 #x41 #x00 #x0B))
+      ;; Function 1: compile_form - stub returning ref.null
+      ;; Body: 0 locals, ref.null any, end
+      (emit-func-body bodies-content '(#x00 #xD0 #x6E #x0B))
+      ;; Function 2: compile_all - stub returning ref.null
+      ;; Body: 0 locals, ref.null any, end
+      (emit-func-body bodies-content '(#x00 #xD0 #x6E #x0B))
+      ;; Function 3: _initialize - returns 0
+      ;; Body: 0 locals, i32.const 0, end
+      (emit-func-body bodies-content '(#x00 #x41 #x00 #x0B))
+      ;; Now build the final section with proper size
+      (emit-leb128-to-vector (length bodies-content) content)
+      (loop for b across bodies-content do (vector-push-extend b content)))
+    (coerce content '(simple-array (unsigned-byte 8) (*)))))
+
+(defun emit-func-body (buffer instructions)
+  "Emit a function body with given instruction bytes."
+  ;; Body size
+  (emit-leb128-to-vector (length instructions) buffer)
+  ;; Instructions
+  (loop for b in instructions do (vector-push-extend b buffer)))
 
 ;;; ==========================================================================
 ;;; Binary Output

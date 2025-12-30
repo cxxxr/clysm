@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BlockerReport",
+  "description": "Compilation blocker report for bootstrap fixpoint tracking",
+  "type": "object",
+  "required": [
+    "stage",
+    "timestamp",
+    "compilation_rate",
+    "forms_total",
+    "forms_success",
+    "forms_failed",
+    "blockers",
+    "fixpoint_status"
+  ],
+  "properties": {
+    "stage": {
+      "type": "integer",
+      "description": "Stage number being compiled (1, 2, etc.)",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of report generation"
+    },
+    "compilation_rate": {
+      "type": "number",
+      "description": "Percentage of forms compiled successfully",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "forms_total": {
+      "type": "integer",
+      "description": "Total number of forms processed",
+      "minimum": 0
+    },
+    "forms_success": {
+      "type": "integer",
+      "description": "Number of forms compiled successfully",
+      "minimum": 0
+    },
+    "forms_failed": {
+      "type": "integer",
+      "description": "Number of forms that failed to compile",
+      "minimum": 0
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Categorized compilation blockers",
+      "items": {
+        "type": "object",
+        "required": ["category", "count", "examples"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "Blocker category name",
+            "examples": [
+              "unsupported-macro",
+              "type-error",
+              "missing-function",
+              "wasm-validation-error"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of failures in this category",
+            "minimum": 1
+          },
+          "examples": {
+            "type": "array",
+            "description": "Example form names that failed",
+            "items": { "type": "string" },
+            "maxItems": 5
+          },
+          "remediation": {
+            "type": "string",
+            "description": "Suggested fix for this blocker category"
+          }
+        }
+      }
+    },
+    "top_5_blockers": {
+      "type": "array",
+      "description": "Top 5 blocking issues by frequency",
+      "items": { "type": "string" },
+      "maxItems": 5
+    },
+    "fixpoint_status": {
+      "type": "string",
+      "enum": ["achieved", "not_achieved", "pending"],
+      "description": "Fixpoint achievement status"
+    },
+    "fixpoint_details": {
+      "type": "object",
+      "description": "Details when fixpoint not achieved",
+      "properties": {
+        "stage1_size": { "type": "integer" },
+        "stage2_size": { "type": "integer" },
+        "first_diff_offset": { "type": "integer" },
+        "section_diffs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "section_id": { "type": "integer" },
+              "section_name": { "type": "string" },
+              "stage1_size": { "type": "integer" },
+              "stage2_size": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -593,9 +593,6 @@
   (:import-from #:clysm/stage1
                 #:make-source-form
                 #:make-compilation-result
-                #:compile-form-to-wasm
-                #:compile-all-forms
-                #:accumulate-wasm-bytes
                 #:write-stage1-binary))
 
 ;; Stage 1 blocker unit tests - User Story 5 (039-stage1-compiler-gen)
@@ -615,7 +612,6 @@
                 #:source-form-compilable-p
                 #:source-form-id
                 #:make-compilation-result
-                #:compile-form-to-wasm
                 #:make-source-form))
 
 ;; Stage 1 validate contract tests - User Story 4 (039-stage1-compiler-gen)
@@ -630,9 +626,7 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/stage1
                 #:make-source-form
-                #:compile-all-forms
                 #:compilation-result-success-p
-                #:accumulate-wasm-bytes
                 #:write-stage1-binary))
 
 ;; Stage 1 blocker contract tests - User Story 5 (039-stage1-compiler-gen)
@@ -651,9 +645,7 @@
                 #:source-module-forms
                 #:source-form-compilable-p
                 #:make-source-form
-                #:compile-all-forms
                 #:compilation-result-success-p
-                #:accumulate-wasm-bytes
                 #:write-stage1-binary
                 #:validate-stage1))
 
@@ -738,3 +730,25 @@
 (defpackage #:clysm/tests/contract/sequence-wasm
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; Bootstrap Fixpoint Tests (001-bootstrap-fixpoint)
+;;; Phase 13D-9: Fixed-point achievement
+;;; ============================================================
+
+;; Fixpoint exports contract tests - T010 (001-bootstrap-fixpoint US1)
+;; Verifies Stage 1 exports compile_form function
+(defpackage #:clysm/tests/contract/fixpoint-exports
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;; Fixpoint signature contract tests - T011 (001-bootstrap-fixpoint US1)
+;; Verifies compile_form has correct signature (anyref -> anyref)
+(defpackage #:clysm/tests/contract/fixpoint-signature
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests/helpers #:with-temp-wasm-file))
+
+;; Blocker report contract tests - T012 (001-bootstrap-fixpoint US4)
+;; Verifies blocker report JSON schema
+(defpackage #:clysm/tests/contract/fixpoint-blocker
+  (:use #:cl #:rove))

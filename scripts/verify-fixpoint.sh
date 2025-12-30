@@ -119,6 +119,42 @@ cd "$(dirname "$0")/.."
 # Timestamp for this verification run
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+# Get section-level diff using wasm-tools objdump (T047)
+get_section_diff() {
+    local file1="$1"
+    local file2="$2"
+
+    # Get sections from both files
+    local sections1 sections2
+    sections1=$(wasm-tools objdump "$file1" 2>/dev/null | grep -E '^Section' | head -20) || true
+    sections2=$(wasm-tools objdump "$file2" 2>/dev/null | grep -E '^Section' | head -20) || true
+
+    # Compare and output differences as JSON array
+    local diff_sections=""
+    if [ "$sections1" != "$sections2" ]; then
+        # Find differing sections
+        local only_in_1 only_in_2
+        only_in_1=$(comm -23 <(echo "$sections1" | sort) <(echo "$sections2" | sort) 2>/dev/null) || true
+        only_in_2=$(comm -13 <(echo "$sections1" | sort) <(echo "$sections2" | sort) 2>/dev/null) || true
+
+        if [ -n "$only_in_1" ] || [ -n "$only_in_2" ]; then
+            diff_sections="\"section_diffs\": {"
+            if [ -n "$only_in_1" ]; then
+                diff_sections="${diff_sections}\"only_in_stage1\": \"$(echo "$only_in_1" | head -1 | tr '\n' ' ')\""
+            fi
+            if [ -n "$only_in_1" ] && [ -n "$only_in_2" ]; then
+                diff_sections="${diff_sections}, "
+            fi
+            if [ -n "$only_in_2" ]; then
+                diff_sections="${diff_sections}\"only_in_stage2\": \"$(echo "$only_in_2" | head -1 | tr '\n' ' ')\""
+            fi
+            diff_sections="${diff_sections}}"
+        fi
+    fi
+
+    echo "$diff_sections"
+}
+
 # JSON error output helper
 json_error() {
     local status="$1"
@@ -291,6 +327,12 @@ EOF
     local stage2_size
     stage2_size=$(stat -f%z "$STAGE2_PATH" 2>/dev/null || stat -c%s "$STAGE2_PATH" 2>/dev/null)
 
+    # Validate Stage 2 (T050)
+    local stage2_valid=true
+    if ! wasm-tools validate "$STAGE2_PATH" 2>/dev/null; then
+        stage2_valid=false
+    fi
+
     # Compare binaries
     local cmp_start=$(date +%s%3N)
     local identical=false
@@ -300,11 +342,38 @@ EOF
     if cmp -s "$STAGE1_PATH" "$STAGE2_PATH"; then
         identical=true
     else
-        # Get first difference offset
+        # Get first difference offset using cmp (T045-T046)
         local cmp_output
-        cmp_output=$(cmp -l "$STAGE1_PATH" "$STAGE2_PATH" 2>&1 | head -1) || true
-        first_diff_offset=$(echo "$cmp_output" | awk '{print $1}')
-        diff_bytes=$(cmp -l "$STAGE1_PATH" "$STAGE2_PATH" 2>&1 | wc -l | tr -d ' ') || diff_bytes=0
+        cmp_output=$(cmp "$STAGE1_PATH" "$STAGE2_PATH" 2>&1) || true
+
+        # Extract byte offset from "file1 file2 differ: byte N, line M" format
+        first_diff_offset=$(echo "$cmp_output" | grep -oE 'byte [0-9]+' | grep -oE '[0-9]+' | head -1) || true
+
+        # Count differing bytes (T045)
+        # Note: cmp -l stops at shorter file, so also account for size difference
+        # Use subshell without pipefail since cmp -l returns non-zero when files differ
+        local cmp_diff_count
+        cmp_diff_count=$(set +o pipefail; cmp -l "$STAGE1_PATH" "$STAGE2_PATH" 2>/dev/null | wc -l | tr -d '[:space:]')
+        cmp_diff_count=${cmp_diff_count:-0}
+
+        # Account for size mismatch (T044)
+        local size_diff=0
+        if [ "$stage1_size" -gt "$stage2_size" ]; then
+            size_diff=$((stage1_size - stage2_size))
+        elif [ "$stage2_size" -gt "$stage1_size" ]; then
+            size_diff=$((stage2_size - stage1_size))
+        fi
+        diff_bytes=$((cmp_diff_count + size_diff))
+
+        # Ensure we have at least 1 diff byte if files differ
+        if [ "$diff_bytes" -eq 0 ]; then
+            diff_bytes=1
+        fi
+
+        # Ensure first_diff_offset has a valid value (T050)
+        if [ -z "$first_diff_offset" ]; then
+            first_diff_offset=1
+        fi
     fi
 
     local cmp_end=$(date +%s%3N)
@@ -325,7 +394,7 @@ EOF
   "stage2": {
     "path": "$STAGE2_PATH",
     "size_bytes": $stage2_size,
-    "valid": true
+    "valid": $stage2_valid
   },
   "comparison": {
     "identical": true,
@@ -356,6 +425,12 @@ EOF
 
         exit 0
     else
+        # Get section-level diff (T047)
+        local section_diffs
+        section_diffs=$(get_section_diff "$STAGE1_PATH" "$STAGE2_PATH")
+
+        local size_delta=$((stage2_size - stage1_size))
+
         if $JSON_MODE; then
             cat <<EOF
 {
@@ -369,12 +444,13 @@ EOF
   "stage2": {
     "path": "$STAGE2_PATH",
     "size_bytes": $stage2_size,
-    "valid": true
+    "valid": $stage2_valid
   },
   "comparison": {
     "identical": false,
     "first_diff_offset": $first_diff_offset,
-    "diff_bytes": $diff_bytes
+    "diff_bytes": $diff_bytes,
+    "size_delta": $size_delta
   },
   "timing": {
     "stage2_generation_ms": $gen_time_ms,
@@ -384,7 +460,11 @@ EOF
 }
 EOF
         else
-            echo "Stage 2: $STAGE2_PATH ($stage2_size bytes, valid)"
+            local validity_text="valid"
+            if [ "$stage2_valid" = "false" ]; then
+                validity_text="INVALID"
+            fi
+            echo "Stage 2: $STAGE2_PATH ($stage2_size bytes, $validity_text)"
             echo ""
             echo "Time: Stage 2 generation ${gen_time_ms}ms, comparison ${cmp_time_ms}ms"
             echo ""
@@ -392,8 +472,7 @@ EOF
             echo ""
             echo "First difference at byte offset: $first_diff_offset"
             echo "Total differing bytes: $diff_bytes"
-            local size_diff=$((stage2_size - stage1_size))
-            echo "Size difference: ${size_diff} bytes"
+            echo "Size difference: ${size_delta} bytes"
             echo ""
             echo "Run with --json for detailed diff report."
         fi

@@ -7,10 +7,13 @@
 ;;; Main Compilation Entry Point
 ;;; ============================================================
 
-(defun compile-to-wasm (expr &key output)
+(defun compile-to-wasm (expr &key output extra-exports)
   "Compile a Lisp expression to Wasm binary.
    If OUTPUT is provided, writes to file and returns pathname.
    Otherwise returns byte vector.
+
+   Phase 13D-9: EXTRA-EXPORTS is a list of (name kind index) for additional
+   exports to include in the module (used by Stage 1 generation).
 
    Feature 022-wasm-import-optimization: Analyzes I/O usage to conditionally
    emit Import section only when the compiled code uses I/O functions.
@@ -37,7 +40,7 @@
                           (clysm/compiler/transform/macro:global-macro-registry)
                           expr))
          (uses-io (clysm/compiler/analyzer/io-usage:analyze-io-usage expanded-expr))
-         (module (compile-to-module expanded-expr))
+         (module (compile-to-module expanded-expr :extra-exports extra-exports))
          (bytes (emit-module module :uses-io uses-io)))
     (if output
         (progn
@@ -78,9 +81,10 @@
   (exports nil :type list)
   (main-func-idx nil :type (or null fixnum)))
 
-(defun compile-to-module (expr)
+(defun compile-to-module (expr &key extra-exports)
   "Compile a Lisp expression to a module structure.
-   Extracts defuns as separate functions and compiles the main body."
+   Extracts defuns as separate functions and compiles the main body.
+   Phase 13D-9: EXTRA-EXPORTS is a list of (name kind index) for additional exports."
   ;; Reset lambda state for fresh compilation
   (clysm/compiler/codegen/func-section:reset-lambda-state)
   ;; Reset special variable global tracking
@@ -137,8 +141,10 @@
           (setf (compiled-module-functions module)
                 (append (compiled-module-functions module) lambda-funcs))))
       (setf (compiled-module-main-func-idx module) 0)
+      ;; Phase 13D-9: Set exports including any extra exports
       (setf (compiled-module-exports module)
-            (list (list "_start" :func 0)))
+            (append (list (list "_start" :func 0))
+                    extra-exports))
       ;; Add special variable symbol globals (T025)
       ;; get-all-special-var-globals returns ((name . index) ...) sorted by index
       (let ((special-var-globals (clysm/compiler/codegen/func-section:get-all-special-var-globals)))

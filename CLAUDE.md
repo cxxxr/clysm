@@ -37,16 +37,23 @@ sbcl --load build/stage1-complete.lisp           # Generate dist/clysm-stage1.wa
 sbcl --load build/stage1-complete.lisp --verbose # With detailed progress
 wasm-tools validate dist/clysm-stage1.wasm       # Validate output
 
+# Stage 2 Generation (Phase 13D-9)
+./scripts/run-stage2-gen.sh                      # Generate dist/clysm-stage2.wasm
+./scripts/run-stage2-gen.sh --json               # JSON output for CI
+
 # Bootstrap Stage 0
 sbcl --load build/bootstrap.lisp
 sbcl --load build/stage0-complete.lisp
 
 # Fixpoint verification
-./scripts/verify-fixpoint.sh
-./scripts/verify-fixpoint.sh --json
+./scripts/verify-fixpoint.sh                     # Compare Stage 1 and Stage 2
+./scripts/verify-fixpoint.sh --json              # JSON output with diff details
+./scripts/verify-fixpoint.sh --skip-generate     # Compare existing binaries only
 
 # Run tests
 sbcl --eval "(asdf:test-system :clysm)"
+node tests/contract/fixpoint/test-exports.js    # Test Stage 1 exports
+tests/integration/bootstrap/test-fixpoint.sh    # Integration test
 ```
 
 ## Current Status
@@ -112,6 +119,7 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 | 043 | Self-hosting blockers analysis (~23% compilation rate) |
 | 044 | Interpreter bootstrap strategy (design only) |
 | 045 | Stage 0 module structure (stubs, not functional) |
+| 13D-9 | Bootstrap fixpoint: Stage 1 exports, Stage 2 generation, fixpoint verification |
 
 See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 
@@ -163,6 +171,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - N/A (in-memory compilation, Wasm binary output to `dist/`) (040-stage1-compiler-gen)
 - JavaScript (Node.js 20+ with WasmGC support) + Node.js fs module, existing host-shim (io-shim.js, fs-shim.js), wasm-tools (validation) (001-stage1-runtime)
 - N/A (file I/O via FFI functions to host filesystem) (001-stage1-runtime)
+- Common Lisp (SBCL 2.4+) for host compiler, JavaScript (Node.js 20+) for runtime + alexandria, babel (UTF-8), wasm-tools, wasmtime (001-bootstrap-fixpoint)
+- N/A (in-memory compilation, Wasm binary output to dist/) (001-bootstrap-fixpoint)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

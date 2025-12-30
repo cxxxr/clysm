@@ -1,12 +1,211 @@
 ;;;; blocker.lisp - Blocker analysis and impact estimation
 ;;;;
 ;;;; Part of Feature 039: Stage 1 Compiler Generation
+;;;; Phase 13D-9: Enhanced with structured blocker reports for fixpoint tracking
 ;;;; Analyzes compilation blockers and estimates fix priorities
 
 (in-package #:clysm/stage1)
 
 ;;; ==========================================================================
-;;; Blocker Analysis
+;;; Phase 13D-9: Remediation Suggestions Map (T027)
+;;; ==========================================================================
+
+(defparameter *remediation-suggestions*
+  '(;; Unsupported macros
+    (loop . "Implement LOOP macro expansion to blessed subset")
+    (format . "Extend FORMAT directive support")
+    (defstruct . "Add DEFSTRUCT compilation or expand to DEFCLASS")
+    (define-condition . "Expand DEFINE-CONDITION to DEFCLASS")
+    (declare . "Handle DECLARE forms (skip or process declarations)")
+    (handler-case . "Implement HANDLER-CASE for condition handling")
+    (handler-bind . "Implement HANDLER-BIND for dynamic handlers")
+    (restart-case . "Implement RESTART-CASE for restart handlers")
+    (with-slots . "Expand WITH-SLOTS to SLOT-VALUE calls")
+    (with-accessors . "Expand WITH-ACCESSORS to accessor calls")
+    ;; Type errors
+    (type-error . "Fix type mismatch in form compilation")
+    (undefined-function . "Define missing function or add import")
+    (undefined-variable . "Define missing variable or add special declaration")
+    ;; Wasm validation errors
+    (wasm-validation . "Check generated Wasm bytecode for spec compliance")
+    (wasm-type-mismatch . "Fix Wasm type stack mismatch")
+    ;; General
+    (unknown . "Investigate error and add specific handling"))
+  "Remediation suggestions keyed by error category symbol (T027).")
+
+(defun get-remediation (category-symbol)
+  "Get remediation suggestion for a category symbol."
+  (or (cdr (assoc category-symbol *remediation-suggestions*))
+      (format nil "Implement ~A support" category-symbol)))
+
+;;; ==========================================================================
+;;; Phase 13D-9: Error Categorization (T024)
+;;; ==========================================================================
+
+(defun categorize-error (error-message operator)
+  "Categorize a compilation error into a category name (T024).
+Returns a string category name like 'unsupported-macro' or 'type-error'."
+  (cond
+    ;; Unsupported macro forms
+    ((member operator '(loop format defstruct define-condition
+                         handler-case handler-bind restart-case
+                         with-slots with-accessors))
+     "unsupported-macro")
+    ;; Declaration forms
+    ((member operator '(declare proclamation declaim))
+     "unsupported-declaration")
+    ;; Missing definitions
+    ((and error-message
+          (or (search "undefined function" error-message)
+              (search "undefined-function" error-message)))
+     "missing-function")
+    ((and error-message
+          (or (search "undefined variable" error-message)
+              (search "unbound variable" error-message)))
+     "missing-variable")
+    ;; Type errors
+    ((and error-message
+          (or (search "type error" error-message)
+              (search "type-error" error-message)
+              (search "type mismatch" error-message)))
+     "type-error")
+    ;; Wasm validation errors
+    ((and error-message
+          (or (search "wasm" error-message)
+              (search "validation" error-message)))
+     "wasm-validation-error")
+    ;; Fallback to operator-based category
+    (operator
+     (format nil "unsupported-~(~A~)" operator))
+    ;; Unknown
+    (t "unknown-error")))
+
+;;; ==========================================================================
+;;; Phase 13D-9: Blocker Aggregation (T025)
+;;; ==========================================================================
+
+(defun aggregate-blockers (compilation-results)
+  "Aggregate compilation failures by category (T025).
+COMPILATION-RESULTS is a list of compilation-result structs.
+Returns a list of blocker-category structs."
+  (let ((categories (make-hash-table :test 'equal)))
+    ;; Group failures by category
+    (dolist (result compilation-results)
+      (unless (compilation-result-success-p result)
+        (let* ((form (compilation-result-form result))
+               (operator (if (source-form-p form)
+                             (source-form-operator form)
+                             nil))
+               (error-msg (compilation-result-error-message result))
+               (category-name (categorize-error error-msg operator))
+               (form-name (if (source-form-p form)
+                              (or (source-form-name form)
+                                  (format nil "~A" (source-form-operator form)))
+                              "unknown")))
+          (let ((existing (gethash category-name categories)))
+            (if existing
+                (progn
+                  (incf (blocker-category-count existing))
+                  (when (< (length (blocker-category-examples existing)) 5)
+                    (push form-name (blocker-category-examples existing))))
+                (setf (gethash category-name categories)
+                      (make-blocker-category
+                       :name category-name
+                       :count 1
+                       :examples (list form-name)
+                       :remediation (get-remediation
+                                      (or operator
+                                          (intern (string-upcase category-name)
+                                                  :keyword))))))))))
+    ;; Convert to sorted list
+    (let ((result nil))
+      (maphash (lambda (name cat)
+                 (declare (ignore name))
+                 (push cat result))
+               categories)
+      (sort result #'> :key #'blocker-category-count))))
+
+;;; ==========================================================================
+;;; Phase 13D-9: Blocker Report Creation (T026, T028)
+;;; ==========================================================================
+
+(defun create-blocker-report (compilation-results &key (stage 1) fixpoint-status fixpoint-details)
+  "Create a complete blocker report from compilation results (T026).
+Returns a blocker-report struct matching the contract schema."
+  (let* ((total (length compilation-results))
+         (success (count-if #'compilation-result-success-p compilation-results))
+         (failed (- total success))
+         (rate (if (zerop total) 0.0 (* 100.0 (/ success total))))
+         (categories (aggregate-blockers compilation-results))
+         (top-5 (mapcar #'blocker-category-name
+                        (subseq categories 0 (min 5 (length categories))))))
+    (make-blocker-report
+     :stage stage
+     :timestamp (current-iso-timestamp)
+     :compilation-rate rate
+     :forms-total total
+     :forms-success success
+     :forms-failed failed
+     :blockers categories
+     :top-5-blockers top-5
+     :fixpoint-status (or fixpoint-status "pending")
+     :fixpoint-details fixpoint-details)))
+
+(defun write-blocker-report-json (report stream)
+  "Write a blocker-report as JSON to stream (T026).
+Matches the schema in contracts/blocker-report.json."
+  (format stream "{~%")
+  (format stream "  \"stage\": ~D,~%" (blocker-report-stage report))
+  (format stream "  \"timestamp\": ~S,~%" (blocker-report-timestamp report))
+  (format stream "  \"compilation_rate\": ~,2F,~%" (blocker-report-compilation-rate report))
+  (format stream "  \"forms_total\": ~D,~%" (blocker-report-forms-total report))
+  (format stream "  \"forms_success\": ~D,~%" (blocker-report-forms-success report))
+  (format stream "  \"forms_failed\": ~D,~%" (blocker-report-forms-failed report))
+  ;; Blockers array
+  (format stream "  \"blockers\": [")
+  (loop for cat in (blocker-report-blockers report)
+        for first = t then nil
+        do (unless first (format stream ","))
+           (format stream "~%    {")
+           (format stream "\"category\": ~S, " (blocker-category-name cat))
+           (format stream "\"count\": ~D, " (blocker-category-count cat))
+           (format stream "\"examples\": [")
+           (loop for ex in (blocker-category-examples cat)
+                 for efirst = t then nil
+                 do (unless efirst (format stream ", "))
+                    (format stream "~S" ex))
+           (format stream "], ")
+           (format stream "\"remediation\": ~S" (blocker-category-remediation cat))
+           (format stream "}"))
+  (format stream "~%  ],~%")
+  ;; Top 5 blockers
+  (format stream "  \"top_5_blockers\": [")
+  (loop for name in (blocker-report-top-5-blockers report)
+        for first = t then nil
+        do (unless first (format stream ", "))
+           (format stream "~S" name))
+  (format stream "],~%")
+  ;; Fixpoint status
+  (format stream "  \"fixpoint_status\": ~S" (blocker-report-fixpoint-status report))
+  ;; Fixpoint details (if present)
+  (when (blocker-report-fixpoint-details report)
+    (format stream ",~%  \"fixpoint_details\": ")
+    (write-fixpoint-details-json (blocker-report-fixpoint-details report) stream))
+  (format stream "~%}~%"))
+
+(defun write-fixpoint-details-json (details stream)
+  "Write fixpoint details as JSON."
+  (format stream "{~%")
+  (format stream "    \"stage1_size\": ~D,~%"
+          (or (getf details :stage1-size) 0))
+  (format stream "    \"stage2_size\": ~D,~%"
+          (or (getf details :stage2-size) 0))
+  (format stream "    \"first_diff_offset\": ~D~%"
+          (or (getf details :first-diff-offset) 0))
+  (format stream "  }"))
+
+;;; ==========================================================================
+;;; Blocker Analysis (Legacy)
 ;;; ==========================================================================
 
 (defun analyze-blockers (progress-report)

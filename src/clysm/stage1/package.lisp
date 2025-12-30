@@ -139,7 +139,30 @@ Provides tools for:
   (:export #:blocker-info
            #:analyze-blockers
            #:generate-blocker-report
-           #:estimate-blocker-impact)
+           #:estimate-blocker-impact
+           ;; Phase 13D-9: Enhanced blocker types (T022-T023)
+           #:blocker-category
+           #:make-blocker-category
+           #:blocker-category-name
+           #:blocker-category-count
+           #:blocker-category-examples
+           #:blocker-category-remediation
+           #:blocker-report
+           #:make-blocker-report
+           #:blocker-report-stage
+           #:blocker-report-timestamp
+           #:blocker-report-compilation-rate
+           #:blocker-report-forms-total
+           #:blocker-report-forms-success
+           #:blocker-report-forms-failed
+           #:blocker-report-blockers
+           #:blocker-report-top-5-blockers
+           #:blocker-report-fixpoint-status
+           #:blocker-report-fixpoint-details
+           ;; Phase 13D-9: New blocker functions (T024-T028)
+           #:categorize-error
+           #:aggregate-blockers
+           #:create-blocker-report)
   ;; Diff (from diff.lisp)
   (:export #:diff-report
            #:compare-binaries
