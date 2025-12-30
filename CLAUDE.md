@@ -161,6 +161,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) host compiler + alexandria, babel (UTF-8), trivial-gray-streams (001-control-structure-extension)
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (040-stage1-compiler-gen)
 - N/A (in-memory compilation, Wasm binary output to `dist/`) (040-stage1-compiler-gen)
+- JavaScript (Node.js 20+ with WasmGC support) + Node.js fs module, existing host-shim (io-shim.js, fs-shim.js), wasm-tools (validation) (001-stage1-runtime)
+- N/A (file I/O via FFI functions to host filesystem) (001-stage1-runtime)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

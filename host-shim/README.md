@@ -11,8 +11,10 @@ avoiding WebAssembly linear memory entirely.
 
 ## Files
 
-- `io-shim.js` - Host I/O function implementations
-- `run-wasm.js` - Module loader and runner script
+- `io-shim.js` - Host I/O function implementations (clysm:io namespace)
+- `fs-shim.js` - Host filesystem function implementations (clysm:fs namespace)
+- `run-wasm.js` - General module loader and runner script
+- `stage1-runner.js` - Stage 1 compiler execution environment
 
 ## Host Functions
 
@@ -102,3 +104,54 @@ This implementation follows the clysm constitution principle of avoiding linear 
 - Characters pass as Unicode codepoints (`i32`)
 - No shared memory buffers are used
 - All data marshalling happens via WasmGC types
+
+## Stage 1 Runner
+
+The `stage1-runner.js` script provides the execution environment for the Stage 1
+Clysm compiler (dist/clysm-stage1.wasm). It merges all required FFI imports and
+handles the bootstrap pipeline.
+
+### Usage
+
+```bash
+# Run Stage 1 with defaults
+node stage1-runner.js
+
+# Run with verbose output
+node stage1-runner.js --verbose
+
+# Run with custom Wasm path
+node stage1-runner.js ./custom-stage1.wasm
+
+# Compile a Lisp expression (if compile_form is exported)
+node stage1-runner.js --expr "(+ 1 2)"
+```
+
+### Exit Codes
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| 0 | EXIT_SUCCESS | Operation completed successfully |
+| 1 | EXIT_PARTIAL | Partial success (some operations failed) |
+| 2 | EXIT_FAILURE | Operation failed |
+| 3 | EXIT_MISSING_DEP | Required dependency not found |
+| 77 | EXIT_SKIP | Known limitation (export not available) |
+
+### Convenience Scripts
+
+Shell script wrappers are provided in `scripts/`:
+
+```bash
+# Run Stage 1
+./scripts/run-stage1.sh
+
+# Generate Stage 2 (may exit 77 if compile_all not exported)
+./scripts/generate-stage2.sh
+```
+
+### FFI Requirements
+
+Stage 1 requires these FFI namespaces:
+
+- `clysm:io`: write-char, write-string, read-char, read-line
+- `clysm:fs`: open, close, read-all, write-all
