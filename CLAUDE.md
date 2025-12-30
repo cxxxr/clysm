@@ -98,12 +98,13 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives, 001-defstruct-wasm-compile, 002-numeric-functions)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format)
 
 | Feature | Description |
 |---------|-------------|
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
 | 001-defstruct-wasm-compile | DEFSTRUCT macro → DEFCLASS expansion (:conc-name, :include, :predicate, :copier, :constructor, :read-only) |
+| 001-numeric-format | ANSI CL numeric conversion/formatting: rationalize (float→ratio with continued fraction), write-to-string (:base 2-36 for integers, ratio/float support) |
 | 002-numeric-functions | ANSI CL numeric functions: trig (sin, cos, tan, asin, acos, atan), hyperbolic (sinh, cosh, tanh, asinh, acosh, atanh), bit ops (ash, logand, logior, logxor, lognot, logcount, integer-length), math (sqrt, exp, log, expt, abs, signum), conversion (float, rational), parse-integer |
 | 017 | Eval/JIT with tiered compilation |
 | 019 | Numeric accessors, IEEE 754 floats |

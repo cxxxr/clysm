@@ -769,3 +769,36 @@
 (defpackage #:clysm/tests/contract/byte-ops-wasm
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; Numeric Format Tests (001-numeric-format)
+;;; Phase 14C: Numeric Conversion and Formatting
+;;; ============================================================
+
+;; Rationalize unit tests (001-numeric-format US1)
+(defpackage #:clysm/tests/unit/numeric/rationalize
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Write-to-string unit tests (001-numeric-format US2/US3)
+(defpackage #:clysm/tests/unit/numeric/write-to-string
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Rationalize Wasm contract tests (001-numeric-format)
+(defpackage #:clysm/tests/contract/rationalize-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Write-to-string Wasm contract tests (001-numeric-format)
+(defpackage #:clysm/tests/contract/write-to-string-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Numeric format integration tests (001-numeric-format)
+;; End-to-end tests for rationalize and write-to-string
+(defpackage #:clysm/tests/integration/numeric-format
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run #:validate-wasm-silent)
+  (:import-from #:clysm/tests/helpers #:approx=))
+

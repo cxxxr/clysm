@@ -9,7 +9,7 @@
            #:input-stream-p #:output-stream-p
            #:*standard-input* #:*standard-output* #:*error-output*
            #:write-char #:write-string #:read-char #:read-line #:format
-           #:princ-to-string #:prin1-to-string)
+           #:princ-to-string #:prin1-to-string #:write-to-string)
   (:import-from #:clysm/ffi
                 #:define-foreign-function)
   ;; Note: Using CL condition types for host-side testing compatibility
@@ -34,6 +34,8 @@
            #:read-line)
   ;; Format function (FR-008 to FR-013, US3)
   (:export #:format)
+  ;; Write-to-string (001-numeric-format T031)
+  (:export #:write-to-string)
   ;; Standard streams (FR-015, FR-016, FR-017)
   (:export #:*standard-input*
            #:*standard-output*

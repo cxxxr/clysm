@@ -347,6 +347,38 @@
     (t (cl:prin1-to-string object))))
 
 ;;; ============================================================
+;;; Write-to-String (001-numeric-format T031)
+;;; ============================================================
+
+(defun write-to-string (object &key (base 10))
+  "Return string representation of OBJECT.
+   T031: Host-side write-to-string for interpreter support.
+   Feature: 001-numeric-format (Phase 14C)
+
+   Supports :BASE keyword for integer output (2-36).
+   For ratios, outputs numerator/denominator in specified base.
+   For floats, uses standard decimal notation."
+  ;; Validate base
+  (unless (<= 2 base 36)
+    (error 'type-error :datum base :expected-type '(integer 2 36)))
+  (typecase object
+    ;; Integer: convert with base
+    (integer
+     (let ((*print-base* base)
+           (*print-radix* nil))
+       (cl:write-to-string object)))
+    ;; Ratio: convert numerator/denominator with base
+    (ratio
+     (let ((*print-base* base)
+           (*print-radix* nil))
+       (cl:format nil "~A/~A" (numerator object) (denominator object))))
+    ;; Float: standard decimal notation
+    (float
+     (cl:write-to-string object))
+    ;; Other types: use host CL's write-to-string
+    (t (cl:write-to-string object))))
+
+;;; ============================================================
 ;;; Format Function (FR-008 to FR-013, T073, T074, US3)
 ;;; ============================================================
 

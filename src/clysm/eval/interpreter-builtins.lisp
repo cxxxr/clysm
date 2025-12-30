@@ -248,6 +248,7 @@
   (env-bind env 'write-char #'write-char)
   (env-bind env 'write-string #'write-string)
   (env-bind env 'write-line #'write-line)
+  (env-bind env 'write-to-string #'write-to-string)
   (env-bind env 'read #'read)
   (env-bind env 'read-char #'read-char)
   (env-bind env 'read-line #'read-line)
