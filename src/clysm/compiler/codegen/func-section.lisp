@@ -740,9 +740,12 @@
                                remove remove-if remove-if-not
                                substitute substitute-if
                                count count-if
-                               member assoc rassoc
-                               ;; Set operations (043-self-hosting-blockers)
-                               adjoin union intersection set-difference
+                               member member-if member-if-not
+                               assoc assoc-if rassoc rassoc-if
+                               ;; Alist construction (001-ansi-list-ops)
+                               acons pairlis copy-alist
+                               ;; Set operations (043-self-hosting-blockers, 001-ansi-list-ops)
+                               adjoin union intersection set-difference subsetp
                                every some notany notevery
                                ;; Character functions (008-character-string)
                                char-code code-char
@@ -1046,13 +1049,22 @@
     (count-if (compile-count-if args env))
     ;; Membership and association
     (member (compile-member args env))
+    (member-if (compile-member-if args env))
+    (member-if-not (compile-member-if-not args env))
     (assoc (compile-assoc args env))
+    (assoc-if (compile-assoc-if args env))
     (rassoc (compile-rassoc args env))
-    ;; Set operations (043-self-hosting-blockers)
+    (rassoc-if (compile-rassoc-if args env))
+    ;; Alist construction (001-ansi-list-ops)
+    (acons (compile-acons args env))
+    (pairlis (compile-pairlis args env))
+    (copy-alist (compile-copy-alist args env))
+    ;; Set operations (043-self-hosting-blockers, 001-ansi-list-ops)
     (adjoin (compile-adjoin args env))
     (union (compile-union args env))
     (intersection (compile-intersection args env))
     (set-difference (compile-set-difference args env))
+    (subsetp (compile-subsetp args env))
     ;; Quantifier predicates
     (every (compile-every args env))
     (some (compile-some args env))
@@ -11720,6 +11732,544 @@
                            :end  ; diff_loop
                            :end))) ; diff_done
     (setf result (append result (list (list :local.get result-local))))
+    result))
+
+(defun compile-subsetp (args env)
+  "Compile (subsetp list1 list2) - test if list1 is subset of list2.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [boolean]"
+  (when (< (length args) 2)
+    (error "subsetp requires at least 2 arguments"))
+  (let ((result '())
+        (list1-local (env-add-local env (gensym "SUBS-L1")))
+        (list2-local (env-add-local env (gensym "SUBS-L2")))
+        (elem-local (env-add-local env (gensym "SUBS-ELEM")))
+        (check-local (env-add-local env (gensym "SUBS-CHK")))
+        (found-local (env-add-local env (gensym "SUBS-FND") :i32))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    ;; Compile lists
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set list1-local))))
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set list2-local))))
+    ;; Loop: for each element of list1, check if in list2
+    (setf result (append result
+                         `((:block $subs_done (:result :anyref))
+                           (:loop $subs_loop (:result :anyref))
+                           ;; Check if list1 is null
+                           (:local.get ,list1-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           ;; All elements checked, return T
+                           ,@(compile-to-instructions
+                              (clysm/compiler/ast:make-ast-literal :value t :literal-type :t)
+                              env)
+                           (:br $subs_done)
+                           :else
+                           ;; Get current element
+                           (:local.get ,list1-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,elem-local)
+                           ;; Search for it in list2
+                           (:i32.const 0)
+                           (:local.set ,found-local)
+                           (:local.get ,list2-local)
+                           (:local.set ,check-local)
+                           (:block $found)
+                           (:loop $check_loop)
+                           (:local.get ,check-local)
+                           :ref.is_null
+                           (:br_if $found)
+                           ;; Compare current check element with elem
+                           (:local.get ,check-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:ref.cast :eq)
+                           (:local.get ,elem-local)
+                           (:ref.cast :eq)
+                           :ref.eq
+                           (:if)
+                           (:i32.const 1)
+                           (:local.set ,found-local)
+                           (:br $found)
+                           :end
+                           (:local.get ,check-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,check-local)
+                           (:br $check_loop)
+                           :end  ; check_loop
+                           :end  ; found block
+                           ;; If not found, return NIL
+                           (:local.get ,found-local)
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $subs_done)
+                           :else
+                           ;; Advance list1 and continue
+                           (:local.get ,list1-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,list1-local)
+                           (:ref.null :none)  ; placeholder for loop continuation
+                           :drop
+                           (:br $subs_loop)
+                           :end
+                           :end
+                           :end  ; subs_loop
+                           :end))) ; subs_done
+    result))
+
+(defun compile-acons (args env)
+  "Compile (acons key value alist) - prepend (key . value) to alist.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [alist]"
+  (when (/= (length args) 3)
+    (error "acons requires exactly 3 arguments"))
+  (let ((result '())
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    ;; (cons (cons key value) alist)
+    ;; First create inner cons (key . value)
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :struct.new cons-type))))
+    ;; Then cons that with alist
+    (setf result (append result (compile-to-instructions (third args) env)))
+    (setf result (append result (list (list :struct.new cons-type))))
+    result))
+
+(defun compile-pairlis (args env)
+  "Compile (pairlis keys values &optional alist) - build alist from keys and values.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [alist]"
+  (when (< (length args) 2)
+    (error "pairlis requires at least 2 arguments"))
+  (let ((result '())
+        (keys-local (env-add-local env (gensym "PAIR-K")))
+        (vals-local (env-add-local env (gensym "PAIR-V")))
+        (result-local (env-add-local env (gensym "PAIR-RES")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    ;; Compile keys and values
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set keys-local))))
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set vals-local))))
+    ;; Initialize result with optional alist or NIL
+    (if (>= (length args) 3)
+        (progn
+          (setf result (append result (compile-to-instructions (third args) env)))
+          (setf result (append result (list (list :local.set result-local)))))
+        (progn
+          (setf result (append result '((:ref.null :none))))
+          (setf result (append result (list (list :local.set result-local))))))
+    ;; Loop through keys and values, building pairs
+    (setf result (append result
+                         `((:block $pair_done)
+                           (:loop $pair_loop)
+                           ;; Check if keys is null
+                           (:local.get ,keys-local)
+                           :ref.is_null
+                           (:br_if $pair_done)
+                           ;; Check if values is null
+                           (:local.get ,vals-local)
+                           :ref.is_null
+                           (:br_if $pair_done)
+                           ;; Create (car keys . car values)
+                           (:local.get ,keys-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.get ,vals-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:struct.new ,cons-type)
+                           ;; Cons to result
+                           (:local.get ,result-local)
+                           (:struct.new ,cons-type)
+                           (:local.set ,result-local)
+                           ;; Advance keys and values
+                           (:local.get ,keys-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,keys-local)
+                           (:local.get ,vals-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,vals-local)
+                           (:br $pair_loop)
+                           :end  ; pair_loop
+                           :end))) ; pair_done
+    (setf result (append result (list (list :local.get result-local))))
+    result))
+
+(defun compile-copy-alist (args env)
+  "Compile (copy-alist alist) - copy spine and entry cons cells.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [alist]"
+  (when (/= (length args) 1)
+    (error "copy-alist requires exactly 1 argument"))
+  (let ((result '())
+        (alist-local (env-add-local env (gensym "CA-ALIST")))
+        (result-local (env-add-local env (gensym "CA-RES")))
+        (last-local (env-add-local env (gensym "CA-LAST")))
+        (entry-local (env-add-local env (gensym "CA-ENTRY")))
+        (new-entry-local (env-add-local env (gensym "CA-NEW")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    ;; Compile alist
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set alist-local))))
+    ;; Start with empty result
+    (setf result (append result '((:ref.null :none))))
+    (setf result (append result (list (list :local.set result-local))))
+    (setf result (append result '((:ref.null :none))))
+    (setf result (append result (list (list :local.set last-local))))
+    ;; Loop through alist
+    (setf result (append result
+                         `((:block $ca_done)
+                           (:loop $ca_loop)
+                           ;; Check if alist is null
+                           (:local.get ,alist-local)
+                           :ref.is_null
+                           (:br_if $ca_done)
+                           ;; Get entry (could be cons or non-cons)
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,entry-local)
+                           ;; Check if entry is cons
+                           (:local.get ,entry-local)
+                           (:ref.test ,(list :ref cons-type))
+                           (:if)
+                           ;; Entry is cons - copy it
+                           (:local.get ,entry-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.get ,entry-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:struct.new ,cons-type)
+                           (:local.set ,new-entry-local)
+                           :else
+                           ;; Non-cons entry - just use as is
+                           (:local.get ,entry-local)
+                           (:local.set ,new-entry-local)
+                           :end
+                           ;; Create new spine cons
+                           (:local.get ,new-entry-local)
+                           (:ref.null :none)
+                           (:struct.new ,cons-type)
+                           ;; Link to result list
+                           (:local.get ,result-local)
+                           :ref.is_null
+                           (:if)
+                           ;; First element
+                           (:local.get ,new-entry-local)
+                           (:ref.null :none)
+                           (:struct.new ,cons-type)
+                           (:local.tee ,last-local)
+                           (:local.set ,result-local)
+                           :else
+                           ;; Link to previous
+                           (:local.get ,last-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:local.get ,new-entry-local)
+                           (:ref.null :none)
+                           (:struct.new ,cons-type)
+                           (:local.tee ,last-local)
+                           (:struct.set ,cons-type 1)
+                           :end
+                           ;; Advance alist
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,alist-local)
+                           (:br $ca_loop)
+                           :end  ; ca_loop
+                           :end))) ; ca_done
+    (setf result (append result (list (list :local.get result-local))))
+    result))
+
+(defun compile-member-if (args env)
+  "Compile (member-if predicate list) - find element satisfying predicate.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [list or nil]"
+  (when (< (length args) 2)
+    (error "member-if requires at least 2 arguments"))
+  (let ((result '())
+        (pred-local (env-add-local env (gensym "MEMIF-PRED")))
+        (list-local (env-add-local env (gensym "MEMIF-LIST")))
+        (elem-local (env-add-local env (gensym "MEMIF-ELEM")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
+        (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
+    ;; Compile predicate
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set pred-local))))
+    ;; Compile list
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set list-local))))
+    ;; Search loop
+    (setf result (append result
+                         `((:block $memif_done (:result :anyref))
+                           (:loop $memif_loop (:result :anyref))
+                           ;; Check if list is null
+                           (:local.get ,list-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $memif_done)
+                           :else
+                           ;; Get element
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,elem-local)
+                           ;; Call predicate: (funcall pred elem)
+                           (:local.get ,pred-local)       ; closure for context
+                           (:local.get ,elem-local)        ; argument
+                           (:local.get ,pred-local)
+                           (:ref.cast ,closure-type)
+                           (:struct.get ,closure-type 1)   ; code_1 field
+                           (:ref.cast ,func-type)
+                           (:call_ref ,func-type)
+                           ;; Check if result is not nil
+                           :ref.is_null
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           (:local.get ,list-local)
+                           (:br $memif_done)
+                           :else
+                           ;; Advance
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,list-local)
+                           (:ref.null :none)
+                           :drop
+                           (:br $memif_loop)
+                           :end
+                           :end
+                           :end  ; loop
+                           :end))) ; block
+    result))
+
+(defun compile-member-if-not (args env)
+  "Compile (member-if-not predicate list) - find element NOT satisfying predicate.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [list or nil]"
+  (when (< (length args) 2)
+    (error "member-if-not requires at least 2 arguments"))
+  (let ((result '())
+        (pred-local (env-add-local env (gensym "MEMIFN-PRED")))
+        (list-local (env-add-local env (gensym "MEMIFN-LIST")))
+        (elem-local (env-add-local env (gensym "MEMIFN-ELEM")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
+        (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
+    ;; Compile predicate
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set pred-local))))
+    ;; Compile list
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set list-local))))
+    ;; Search loop
+    (setf result (append result
+                         `((:block $memifn_done (:result :anyref))
+                           (:loop $memifn_loop (:result :anyref))
+                           ;; Check if list is null
+                           (:local.get ,list-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $memifn_done)
+                           :else
+                           ;; Get element
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,elem-local)
+                           ;; Call predicate: (funcall pred elem)
+                           (:local.get ,pred-local)       ; closure for context
+                           (:local.get ,elem-local)        ; argument
+                           (:local.get ,pred-local)
+                           (:ref.cast ,closure-type)
+                           (:struct.get ,closure-type 1)   ; code_1 field
+                           (:ref.cast ,func-type)
+                           (:call_ref ,func-type)
+                           ;; Check if result IS nil (NOT satisfying)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:local.get ,list-local)
+                           (:br $memifn_done)
+                           :else
+                           ;; Advance
+                           (:local.get ,list-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,list-local)
+                           (:ref.null :none)
+                           :drop
+                           (:br $memifn_loop)
+                           :end
+                           :end
+                           :end  ; loop
+                           :end))) ; block
+    result))
+
+(defun compile-assoc-if (args env)
+  "Compile (assoc-if predicate alist) - find entry where key satisfies predicate.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [cons or nil]"
+  (when (< (length args) 2)
+    (error "assoc-if requires at least 2 arguments"))
+  (let ((result '())
+        (pred-local (env-add-local env (gensym "ASCIF-PRED")))
+        (alist-local (env-add-local env (gensym "ASCIF-ALIST")))
+        (entry-local (env-add-local env (gensym "ASCIF-ENTRY")))
+        (key-local (env-add-local env (gensym "ASCIF-KEY")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
+        (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
+    ;; Compile predicate
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set pred-local))))
+    ;; Compile alist
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set alist-local))))
+    ;; Search loop
+    (setf result (append result
+                         `((:block $ascif_done (:result :anyref))
+                           (:loop $ascif_loop (:result :anyref))
+                           ;; Check if alist is null
+                           (:local.get ,alist-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $ascif_done)
+                           :else
+                           ;; Get entry
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,entry-local)
+                           ;; Check if entry is cons (skip non-cons)
+                           (:local.get ,entry-local)
+                           (:ref.test ,(list :ref cons-type))
+                           (:if (:result :anyref))
+                           ;; Get key (car of entry)
+                           (:local.get ,entry-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,key-local)
+                           ;; Call predicate: (funcall pred key)
+                           (:local.get ,pred-local)       ; closure for context
+                           (:local.get ,key-local)         ; argument
+                           (:local.get ,pred-local)
+                           (:ref.cast ,closure-type)
+                           (:struct.get ,closure-type 1)   ; code_1 field
+                           (:ref.cast ,func-type)
+                           (:call_ref ,func-type)
+                           ;; Check if result is not nil
+                           :ref.is_null
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           (:local.get ,entry-local)
+                           (:br $ascif_done)
+                           :else
+                           (:ref.null :none)
+                           :end
+                           :else
+                           (:ref.null :none)
+                           :end
+                           :drop
+                           ;; Advance
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,alist-local)
+                           (:br $ascif_loop)
+                           :end
+                           :end  ; loop
+                           :end))) ; block
+    result))
+
+(defun compile-rassoc-if (args env)
+  "Compile (rassoc-if predicate alist) - find entry where value satisfies predicate.
+   Feature: 001-ansi-list-ops
+   Stack: [] -> [cons or nil]"
+  (when (< (length args) 2)
+    (error "rassoc-if requires at least 2 arguments"))
+  (let ((result '())
+        (pred-local (env-add-local env (gensym "RSCIF-PRED")))
+        (alist-local (env-add-local env (gensym "RSCIF-ALIST")))
+        (entry-local (env-add-local env (gensym "RSCIF-ENTRY")))
+        (val-local (env-add-local env (gensym "RSCIF-VAL")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+        (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
+        (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
+    ;; Compile predicate
+    (setf result (append result (compile-to-instructions (first args) env)))
+    (setf result (append result (list (list :local.set pred-local))))
+    ;; Compile alist
+    (setf result (append result (compile-to-instructions (second args) env)))
+    (setf result (append result (list (list :local.set alist-local))))
+    ;; Search loop
+    (setf result (append result
+                         `((:block $rscif_done (:result :anyref))
+                           (:loop $rscif_loop (:result :anyref))
+                           ;; Check if alist is null
+                           (:local.get ,alist-local)
+                           :ref.is_null
+                           (:if (:result :anyref))
+                           (:ref.null :none)
+                           (:br $rscif_done)
+                           :else
+                           ;; Get entry
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 0)
+                           (:local.set ,entry-local)
+                           ;; Check if entry is cons (skip non-cons)
+                           (:local.get ,entry-local)
+                           (:ref.test ,(list :ref cons-type))
+                           (:if (:result :anyref))
+                           ;; Get value (cdr of entry)
+                           (:local.get ,entry-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,val-local)
+                           ;; Call predicate: (funcall pred value)
+                           (:local.get ,pred-local)       ; closure for context
+                           (:local.get ,val-local)         ; argument
+                           (:local.get ,pred-local)
+                           (:ref.cast ,closure-type)
+                           (:struct.get ,closure-type 1)   ; code_1 field
+                           (:ref.cast ,func-type)
+                           (:call_ref ,func-type)
+                           ;; Check if result is not nil
+                           :ref.is_null
+                           :i32.eqz
+                           (:if (:result :anyref))
+                           (:local.get ,entry-local)
+                           (:br $rscif_done)
+                           :else
+                           (:ref.null :none)
+                           :end
+                           :else
+                           (:ref.null :none)
+                           :end
+                           :drop
+                           ;; Advance
+                           (:local.get ,alist-local)
+                           (:ref.cast ,(list :ref cons-type))
+                           (:struct.get ,cons-type 1)
+                           (:local.set ,alist-local)
+                           (:br $rscif_loop)
+                           :end
+                           :end  ; loop
+                           :end))) ; block
     result))
 
 ;;; --- Tier 4: Quantifier Predicates ---

@@ -155,7 +155,8 @@
      ;; Note: utf8 is loaded earlier as top-level component (before backend)
      (:file "ffi-runtime")
      (:file "package-macros")
-     (:file "defstruct")))      ; Phase 13D-10: DEFSTRUCT macro implementation
+     (:file "defstruct")        ; Phase 13D-10: DEFSTRUCT macro implementation
+     (:file "list-ops")))       ; Phase 15A: ANSI list operations
 
    ;; REPL
    (:file "repl")
@@ -507,13 +508,15 @@
        (:file "gethash-test")
        (:file "remhash-test")
        (:file "maphash-test")))
-     ;; List operations unit tests (043-self-hosting-blockers)
+     ;; List operations unit tests (043-self-hosting-blockers, 001-ansi-list-ops)
      (:module "list-ops"
       :serial t
       :components
-      ((:file "assoc-test")
+      ((:file "list-tail-test")      ; Phase 15A: last, butlast, nth, nthcdr
+       (:file "assoc-test")
        (:file "member-test")
-       (:file "set-ops-test")))
+       (:file "set-ops-test")
+       (:file "alist-construct-test"))) ; Phase 15A: pairlis, acons, copy-alist
      ;; Sequence extension unit tests (043-self-hosting-blockers)
      (:module "sequence-ext"
       :serial t
