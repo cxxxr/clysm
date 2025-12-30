@@ -172,9 +172,13 @@ Provides tools for:
            #:+exit-code-compilation-error+
            #:+exit-code-missing-dependency+)
   ;; Generator (from generator.lisp)
-  (:export #:compile-form-to-wasm
-           #:compile-all-forms
-           #:accumulate-wasm-bytes
+  (:export #:test-form-compilation
+           #:classify-forms
+           #:validate-wasm-bytes
+           #:compile-defuns-bundle
+           #:find-valid-bundle
+           #:bundle-and-compile
+           #:create-stage1-stub-module
            #:write-stage1-binary
            #:validate-stage1
            #:generate-stage1))

@@ -132,22 +132,31 @@ Returns a summary struct."
 (defun generate-progress-report (modules results)
   "Generate a complete progress report from modules and results.
 MODULES is list of source-module structs.
-RESULTS is list of compilation-result structs (matched by form-id)."
-  (declare (ignore results)) ; TODO: Use for matching
-  (let ((module-stats nil))
+RESULTS is list of compilation-result structs (matched by form-id).
+
+Phase 13D-7: Updated to properly use the flat results list from
+unified module compilation."
+  ;; Build index from form-id to result for fast lookup
+  (let ((result-index (make-hash-table :test 'equal))
+        (module-stats nil))
+    (dolist (result results)
+      (setf (gethash (compilation-result-form-id result) result-index) result))
     ;; Generate stats per module
     (dolist (module modules)
       (start-module-tracking module)
       (dolist (form (source-module-forms module))
         (if (source-form-compilable-p form)
-            ;; TODO: Find matching result and record it
-            (record-form-result
-             (make-compilation-result
-              :form form
-              :form-id (source-form-id form)
-              :success-p nil
-              :error-type :not-implemented
-              :error-message "Not yet implemented"))
+            (let ((result (gethash (source-form-id form) result-index)))
+              (if result
+                  (record-form-result result)
+                  ;; No result found - mark as not compiled
+                  (record-form-result
+                   (make-compilation-result
+                    :form form
+                    :form-id (source-form-id form)
+                    :success-p nil
+                    :error-type :not-processed
+                    :error-message "Form not processed"))))
             (record-skipped-form form)))
       (push (complete-module-tracking) module-stats))
     (setf module-stats (nreverse module-stats))

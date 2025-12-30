@@ -32,6 +32,11 @@ docs/features/       # Detailed feature documentation
 ## Key Commands
 
 ```bash
+# Stage 1 Generation (Phase 13D-7)
+sbcl --load build/stage1-complete.lisp           # Generate dist/clysm-stage1.wasm
+sbcl --load build/stage1-complete.lisp --verbose # With detailed progress
+wasm-tools validate dist/clysm-stage1.wasm       # Validate output
+
 # Bootstrap Stage 0
 sbcl --load build/bootstrap.lisp
 sbcl --load build/stage0-complete.lisp
@@ -51,9 +56,11 @@ sbcl --eval "(asdf:test-system :clysm)"
 ### What Works
 
 - **SBCL Host Compiler**: `clysm:compile-to-wasm` successfully compiles Lisp → Wasm
-- **Compilation Rate**: ~24.6% of compiler forms compile successfully
-- **Wasm Validation**: Generated Wasm passes `wasm-tools validate`
+- **Stage 1 Generation**: `sbcl --load build/stage1-complete.lisp` produces valid 24.5KB Wasm
+- **Compilation Rate**: 14.2% of compiler forms compile AND validate successfully (164/1157)
+- **Wasm Validation**: Generated Wasm passes `wasm-tools validate` with exit code 0
 - **Control Structures**: `values`, `the`, `labels`, `handler-case` fully supported
+- **Progress Reporting**: `dist/stage1-report.json` with per-module statistics and blocker analysis
 
 ### What Doesn't Work Yet
 
@@ -100,6 +107,7 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 | 035 | FFI filesystem access |
 | 036 | Compiler subset validation (97.9% coverage) |
 | 037-040 | Bootstrap infrastructure (Stage 0 stubs, verification scripts) |
+| 040-stage1 | Stage 1 compiler generation (24.5KB valid Wasm, 14.2% compilation rate) |
 | 042 | Advanced defmacro (&whole, &environment) |
 | 043 | Self-hosting blockers analysis (~23% compilation rate) |
 | 044 | Interpreter bootstrap strategy (design only) |
@@ -151,6 +159,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8) (001-compile-time-directives)
 - N/A (in-memory compilation, Wasm binary output) (001-global-variable-defs)
 - Common Lisp (SBCL 2.4+) host compiler + alexandria, babel (UTF-8), trivial-gray-streams (001-control-structure-extension)
+- Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (040-stage1-compiler-gen)
+- N/A (in-memory compilation, Wasm binary output to `dist/`) (040-stage1-compiler-gen)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

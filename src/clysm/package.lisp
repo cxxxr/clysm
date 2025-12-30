@@ -702,7 +702,15 @@
            ;; Phase 13D-3: Compile-time directive processing
            #:directive-form-p
            #:compile-toplevel-form
-           #:eval-directive))
+           #:eval-directive
+           ;; Phase 13D-7: Module compilation for Stage 1
+           #:compiled-module
+           #:make-compiled-module
+           #:compiled-module-functions
+           #:compiled-module-globals
+           #:compiled-module-exports
+           #:compiled-module-main-func-idx
+           #:emit-module))
 
 (defpackage #:clysm/reader/tokenizer
   (:use #:cl)
