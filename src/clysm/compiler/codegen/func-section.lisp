@@ -781,6 +781,12 @@
                                abs max min gcd lcm
                                ;; Bitwise extensions
                                logcount integer-length
+                               ;; Phase 14B: Bit Testing Functions (001-numeric-predicates)
+                               logbitp logtest
+                               ;; Phase 14B: Byte Specifier Functions (001-numeric-predicates)
+                               byte byte-size byte-position
+                               ;; Phase 14B: Byte Operations (001-numeric-predicates)
+                               ldb dpb mask-field deposit-field
                                ;; Complex number operations
                                complex realpart imagpart conjugate phase
                                ;; Trigonometric functions
@@ -927,6 +933,18 @@
     ;; ANSI Numeric Functions: Bitwise (001-numeric-functions)
     (logcount (compile-logcount args env))
     (integer-length (compile-integer-length args env))
+    ;; Phase 14B: Bit Testing Functions (001-numeric-predicates)
+    (logbitp (compile-logbitp args env))
+    (logtest (compile-logtest args env))
+    ;; Phase 14B: Byte Specifier Functions (001-numeric-predicates)
+    (byte (compile-byte args env))
+    (byte-size (compile-byte-size args env))
+    (byte-position (compile-byte-position args env))
+    ;; Phase 14B: Byte Operations (001-numeric-predicates)
+    (ldb (compile-ldb args env))
+    (dpb (compile-dpb args env))
+    (mask-field (compile-mask-field args env))
+    (deposit-field (compile-deposit-field args env))
     ;; Comparison operators (T053)
     (<  (compile-comparison-op :i32.lt_s args env))
     (>  (compile-comparison-op :i32.gt_s args env))
@@ -5183,6 +5201,336 @@
        :i32.sub        ;; Stack: clz(value) - 32
        (:i32.const 0)  ;; Stack: (clz - 32), 0
        :i32.sub        ;; Stack: 0 - (clz - 32) = 32 - clz
+       :ref.i31))))
+
+;;; ============================================================
+;;; Phase 14B: Bit Testing Functions (001-numeric-predicates)
+;;; logbitp - test if bit at index is set
+;;; logtest - test if two integers share any set bits
+;;; See: resources/HyperSpec/Body/f_logbtp.htm, f_logtes.htm
+;;; ============================================================
+
+(defun compile-logbitp (args env)
+  "Compile (logbitp index integer) - test if bit at index is set.
+   Returns T if bit at index is 1, NIL otherwise.
+   index must be non-negative integer.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "logbitp requires exactly 2 arguments"))
+  (let ((idx-local (env-add-local env (gensym "LOGBITP-IDX") :i32))
+        (int-local (env-add-local env (gensym "LOGBITP-INT") :i32)))
+    (append
+     ;; Compile and store index (as i32)
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set idx-local))
+     ;; Compile and store integer (as i32)
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set int-local))
+     ;; Compute: (integer >> index) & 1, then convert to boolean
+     `((:local.get ,int-local)
+       (:local.get ,idx-local)
+       :i32.shr_s  ;; arithmetic shift right preserves sign for negative numbers
+       (:i32.const 1)
+       :i32.and
+       ;; Test if bit is set (non-zero): eqz gives 1 if bit was 0, 0 if bit was 1
+       :i32.eqz
+       (:if (:result :anyref))
+       (:ref.null :none)  ;; bit is 0 -> NIL
+       :else
+       (:i32.const 1) :ref.i31  ;; bit is 1 -> T
+       :end))))
+
+(defun compile-logtest (args env)
+  "Compile (logtest integer1 integer2) - test if any bits are common.
+   Returns T if (logand integer1 integer2) is non-zero, NIL otherwise.
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "logtest requires exactly 2 arguments"))
+  (append
+   ;; Compile first integer (as i32)
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   ;; Compile second integer (as i32)
+   (compile-to-instructions (second args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   ;; Compute logand and test if non-zero
+   '(:i32.and
+     :i32.eqz
+     (:if (:result :anyref))
+     (:ref.null :none)  ;; no common bits -> NIL
+     :else
+     (:i32.const 1) :ref.i31  ;; has common bits -> T
+     :end)))
+
+;;; ============================================================
+;;; Byte Specifier Functions (001-numeric-predicates)
+;;; HyperSpec: http://www.lispworks.com/documentation/HyperSpec/Body/f_by_by.htm
+;;; ============================================================
+
+(defun compile-byte (args env)
+  "Compile (byte size position) - create a byte specifier.
+   Encodes byte specifier as fixnum: (size << 6) | position
+   This encoding allows size and position values 0-63.
+   Stack: [] -> [byte-specifier (i31ref)]"
+  (when (/= (length args) 2)
+    (error "byte requires exactly 2 arguments"))
+  (let ((size-local (env-add-local env (gensym "BYTE-SIZE") :i32))
+        (pos-local (env-add-local env (gensym "BYTE-POS") :i32)))
+    (append
+     ;; Compile size argument (as i32)
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set size-local))
+     ;; Compile position argument (as i32)
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set pos-local))
+     ;; Encode as (size << 6) | position
+     `((:local.get ,size-local)
+       (:i32.const 6)
+       :i32.shl
+       (:local.get ,pos-local)
+       :i32.or
+       :ref.i31))))
+
+(defun compile-byte-size (args env)
+  "Compile (byte-size bytespec) - extract size from byte specifier.
+   Decodes size as: bytespec >> 6
+   Stack: [] -> [size (i31ref)]"
+  (when (/= (length args) 1)
+    (error "byte-size requires exactly 1 argument"))
+  (append
+   ;; Compile byte specifier (as i32)
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   ;; Decode size: spec >> 6
+   '((:i32.const 6)
+     :i32.shr_u
+     :ref.i31)))
+
+(defun compile-byte-position (args env)
+  "Compile (byte-position bytespec) - extract position from byte specifier.
+   Decodes position as: bytespec & 63
+   Stack: [] -> [position (i31ref)]"
+  (when (/= (length args) 1)
+    (error "byte-position requires exactly 1 argument"))
+  (append
+   ;; Compile byte specifier (as i32)
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s)
+   ;; Decode position: spec & 63
+   '((:i32.const 63)
+     :i32.and
+     :ref.i31)))
+
+;;; ============================================================
+;;; Byte Operations (001-numeric-predicates)
+;;; HyperSpec: http://www.lispworks.com/documentation/HyperSpec/Body/f_ldb.htm
+;;; ============================================================
+
+(defun compile-ldb (args env)
+  "Compile (ldb bytespec integer) - load byte.
+   Extracts a byte field from integer and right-shifts it to position 0.
+   Formula: (integer >> position) & ((1 << size) - 1)
+   Stack: [] -> [extracted-value (i31ref)]"
+  (when (/= (length args) 2)
+    (error "ldb requires exactly 2 arguments"))
+  (let ((spec-local (env-add-local env (gensym "LDB-SPEC") :i32))
+        (int-local (env-add-local env (gensym "LDB-INT") :i32))
+        (size-local (env-add-local env (gensym "LDB-SIZE") :i32))
+        (pos-local (env-add-local env (gensym "LDB-POS") :i32)))
+    (append
+     ;; Compile byte specifier
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set spec-local))
+     ;; Compile integer
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set int-local))
+     ;; Extract size: spec >> 6
+     `((:local.get ,spec-local)
+       (:i32.const 6)
+       :i32.shr_u
+       (:local.set ,size-local))
+     ;; Extract position: spec & 63
+     `((:local.get ,spec-local)
+       (:i32.const 63)
+       :i32.and
+       (:local.set ,pos-local))
+     ;; Compute: (integer >> position) & ((1 << size) - 1)
+     `((:local.get ,int-local)
+       (:local.get ,pos-local)
+       :i32.shr_u                    ;; integer >> position
+       (:i32.const 1)
+       (:local.get ,size-local)
+       :i32.shl                      ;; 1 << size
+       (:i32.const 1)
+       :i32.sub                      ;; (1 << size) - 1 = mask
+       :i32.and                      ;; result & mask
+       :ref.i31))))
+
+(defun compile-mask-field (args env)
+  "Compile (mask-field bytespec integer) - extract byte field in place.
+   Extracts a byte field keeping bits in their original position.
+   Formula: integer & (((1 << size) - 1) << position)
+   Stack: [] -> [masked-value (i31ref)]"
+  (when (/= (length args) 2)
+    (error "mask-field requires exactly 2 arguments"))
+  (let ((spec-local (env-add-local env (gensym "MASK-SPEC") :i32))
+        (int-local (env-add-local env (gensym "MASK-INT") :i32))
+        (size-local (env-add-local env (gensym "MASK-SIZE") :i32))
+        (pos-local (env-add-local env (gensym "MASK-POS") :i32)))
+    (append
+     ;; Compile byte specifier
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set spec-local))
+     ;; Compile integer
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set int-local))
+     ;; Extract size: spec >> 6
+     `((:local.get ,spec-local)
+       (:i32.const 6)
+       :i32.shr_u
+       (:local.set ,size-local))
+     ;; Extract position: spec & 63
+     `((:local.get ,spec-local)
+       (:i32.const 63)
+       :i32.and
+       (:local.set ,pos-local))
+     ;; Compute: integer & (((1 << size) - 1) << position)
+     `((:local.get ,int-local)
+       (:i32.const 1)
+       (:local.get ,size-local)
+       :i32.shl                      ;; 1 << size
+       (:i32.const 1)
+       :i32.sub                      ;; (1 << size) - 1
+       (:local.get ,pos-local)
+       :i32.shl                      ;; mask << position = field-mask
+       :i32.and                      ;; integer & field-mask
+       :ref.i31))))
+
+(defun compile-dpb (args env)
+  "Compile (dpb newbyte bytespec integer) - deposit byte.
+   Replaces a byte field in integer with newbyte (shifted to position).
+   Formula: (integer & ~field-mask) | ((newbyte << position) & field-mask)
+   where field-mask = ((1 << size) - 1) << position
+   Stack: [] -> [result (i31ref)]"
+  (when (/= (length args) 3)
+    (error "dpb requires exactly 3 arguments"))
+  (let ((new-local (env-add-local env (gensym "DPB-NEW") :i32))
+        (spec-local (env-add-local env (gensym "DPB-SPEC") :i32))
+        (int-local (env-add-local env (gensym "DPB-INT") :i32))
+        (size-local (env-add-local env (gensym "DPB-SIZE") :i32))
+        (pos-local (env-add-local env (gensym "DPB-POS") :i32))
+        (mask-local (env-add-local env (gensym "DPB-MASK") :i32)))
+    (append
+     ;; Compile newbyte
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set new-local))
+     ;; Compile byte specifier
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set spec-local))
+     ;; Compile integer
+     (compile-to-instructions (third args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set int-local))
+     ;; Extract size: spec >> 6
+     `((:local.get ,spec-local)
+       (:i32.const 6)
+       :i32.shr_u
+       (:local.set ,size-local))
+     ;; Extract position: spec & 63
+     `((:local.get ,spec-local)
+       (:i32.const 63)
+       :i32.and
+       (:local.set ,pos-local))
+     ;; Compute field-mask: ((1 << size) - 1) << position
+     `((:i32.const 1)
+       (:local.get ,size-local)
+       :i32.shl                      ;; 1 << size
+       (:i32.const 1)
+       :i32.sub                      ;; (1 << size) - 1
+       (:local.get ,pos-local)
+       :i32.shl                      ;; field-mask
+       (:local.set ,mask-local))
+     ;; Compute: (integer & ~mask) | ((newbyte << position) & mask)
+     `((:local.get ,int-local)
+       (:local.get ,mask-local)
+       (:i32.const -1)
+       :i32.xor                      ;; ~mask
+       :i32.and                      ;; integer & ~mask
+       (:local.get ,new-local)
+       (:local.get ,pos-local)
+       :i32.shl                      ;; newbyte << position
+       (:local.get ,mask-local)
+       :i32.and                      ;; (newbyte << position) & mask
+       :i32.or                       ;; final result
+       :ref.i31))))
+
+(defun compile-deposit-field (args env)
+  "Compile (deposit-field newbyte bytespec integer) - deposit field.
+   Replaces a byte field in integer with corresponding bits from newbyte.
+   Unlike dpb, newbyte is already in the correct position.
+   Formula: (integer & ~field-mask) | (newbyte & field-mask)
+   where field-mask = ((1 << size) - 1) << position
+   Stack: [] -> [result (i31ref)]"
+  (when (/= (length args) 3)
+    (error "deposit-field requires exactly 3 arguments"))
+  (let ((new-local (env-add-local env (gensym "DEP-NEW") :i32))
+        (spec-local (env-add-local env (gensym "DEP-SPEC") :i32))
+        (int-local (env-add-local env (gensym "DEP-INT") :i32))
+        (size-local (env-add-local env (gensym "DEP-SIZE") :i32))
+        (pos-local (env-add-local env (gensym "DEP-POS") :i32))
+        (mask-local (env-add-local env (gensym "DEP-MASK") :i32)))
+    (append
+     ;; Compile newbyte
+     (compile-to-instructions (first args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set new-local))
+     ;; Compile byte specifier
+     (compile-to-instructions (second args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set spec-local))
+     ;; Compile integer
+     (compile-to-instructions (third args) env)
+     '((:ref.cast :i31) :i31.get_s)
+     (list (list :local.set int-local))
+     ;; Extract size: spec >> 6
+     `((:local.get ,spec-local)
+       (:i32.const 6)
+       :i32.shr_u
+       (:local.set ,size-local))
+     ;; Extract position: spec & 63
+     `((:local.get ,spec-local)
+       (:i32.const 63)
+       :i32.and
+       (:local.set ,pos-local))
+     ;; Compute field-mask: ((1 << size) - 1) << position
+     `((:i32.const 1)
+       (:local.get ,size-local)
+       :i32.shl                      ;; 1 << size
+       (:i32.const 1)
+       :i32.sub                      ;; (1 << size) - 1
+       (:local.get ,pos-local)
+       :i32.shl                      ;; field-mask
+       (:local.set ,mask-local))
+     ;; Compute: (integer & ~mask) | (newbyte & mask)
+     `((:local.get ,int-local)
+       (:local.get ,mask-local)
+       (:i32.const -1)
+       :i32.xor                      ;; ~mask
+       :i32.and                      ;; integer & ~mask
+       (:local.get ,new-local)
+       (:local.get ,mask-local)
+       :i32.and                      ;; newbyte & mask
+       :i32.or                       ;; final result
        :ref.i31))))
 
 ;;; ============================================================

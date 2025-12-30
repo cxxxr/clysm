@@ -87,7 +87,15 @@
                    expt sqrt log exp
                    sin cos tan asin acos atan
                    gcd lcm
-                   ash logand logior logxor lognot))
+                   ash logand logior logxor lognot
+                   ;; 001-numeric-functions: bitwise extensions
+                   logcount integer-length
+                   ;; 001-numeric-predicates: bit testing
+                   logbitp logtest
+                   ;; 001-numeric-predicates: byte specifiers
+                   byte byte-size byte-position
+                   ;; 001-numeric-predicates: byte operations
+                   ldb dpb mask-field deposit-field))
       (setf (gethash sym ht)
             (make-cl-feature :symbol sym
                              :category :function

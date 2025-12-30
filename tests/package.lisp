@@ -693,6 +693,12 @@
   (:import-from #:clysm/tests #:compile-and-run-numeric)
   (:import-from #:clysm/tests/helpers #:approx= #:*float-epsilon*))
 
+;; Byte operations integration tests (001-numeric-predicates)
+;; Tests for logbitp, logtest, byte, byte-size, byte-position, ldb, dpb, mask-field, deposit-field
+(defpackage #:clysm/tests/integration/byte-ops
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
 ;;; ============================================================
 ;;; Array Primitives Tests (001-ansi-array-primitives)
 ;;; Phase 13D-1: ANSI CL Array/Sequence Primitives
@@ -752,3 +758,14 @@
 ;; Verifies blocker report JSON schema
 (defpackage #:clysm/tests/contract/fixpoint-blocker
   (:use #:cl #:rove))
+
+;;; ============================================================
+;;; Numeric Predicates Tests (001-numeric-predicates)
+;;; Phase 14B: Numeric Type Predicates Enhancement
+;;; ============================================================
+
+;; Byte operations Wasm contract tests (001-numeric-predicates)
+;; Validates Wasm output for logbitp, logtest, byte, ldb, dpb, etc.
+(defpackage #:clysm/tests/contract/byte-ops-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
