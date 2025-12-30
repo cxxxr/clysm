@@ -156,7 +156,9 @@
      (:file "ffi-runtime")
      (:file "package-macros")
      (:file "defstruct")        ; Phase 13D-10: DEFSTRUCT macro implementation
-     (:file "list-ops")))       ; Phase 15A: ANSI list operations
+     (:file "list-ops")         ; Phase 15A: ANSI list operations
+     (:file "sequences-util")   ; Phase 15B: Sequence utility functions
+     (:file "sequences")))      ; Phase 15B: ANSI sequence generic functions
 
    ;; REPL
    (:file "repl")
@@ -562,7 +564,21 @@
      ;; Global variable compilation unit tests (001-global-variable-defs)
      (:file "globals-test")
      ;; DEFSTRUCT unit tests (Phase 13D-10)
-     (:file "defstruct-test")))
+     (:file "defstruct-test")
+     ;; Sequence generic functions unit tests (Phase 15B)
+     (:module "sequences"
+      :serial t
+      :components
+      ((:file "util-test")
+       (:file "count-test")
+       (:file "find-test")
+       (:file "position-test")
+       (:file "mismatch-test")
+       (:file "search-test")
+       (:file "substitute-test")
+       (:file "remove-duplicates-test")
+       (:file "fill-test")
+       (:file "replace-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

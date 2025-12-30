@@ -802,3 +802,63 @@
   (:import-from #:clysm/tests #:compile-and-run #:validate-wasm-silent)
   (:import-from #:clysm/tests/helpers #:approx=))
 
+;;; ============================================================
+;;; Sequence Generic Functions Tests (001-ansi-sequence-functions)
+;;; Phase 15B: ANSI CL Sequence Generic Functions
+;;; ============================================================
+
+;; Sequence utility unit tests (001-ansi-sequence-functions)
+;; Tests for validate-bounding-indices, %sequence-length, %sequence-ref, etc.
+(defpackage #:clysm/tests/unit/sequences/util
+  (:use #:cl #:rove))
+
+;; Count functions unit tests (001-ansi-sequence-functions US1)
+(defpackage #:clysm/tests/unit/sequences/count
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Find functions unit tests (001-ansi-sequence-functions US2)
+(defpackage #:clysm/tests/unit/sequences/find
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Position functions unit tests (001-ansi-sequence-functions US2)
+(defpackage #:clysm/tests/unit/sequences/position
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Mismatch functions unit tests (001-ansi-sequence-functions US3)
+(defpackage #:clysm/tests/unit/sequences/mismatch
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Search functions unit tests (001-ansi-sequence-functions US3)
+(defpackage #:clysm/tests/unit/sequences/search
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Substitute functions unit tests (001-ansi-sequence-functions US4)
+(defpackage #:clysm/tests/unit/sequences/substitute
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Remove-duplicates functions unit tests (001-ansi-sequence-functions US5)
+(defpackage #:clysm/tests/unit/sequences/remove-duplicates
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Fill functions unit tests (001-ansi-sequence-functions US6)
+(defpackage #:clysm/tests/unit/sequences/fill
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Replace functions unit tests (001-ansi-sequence-functions US6)
+(defpackage #:clysm/tests/unit/sequences/replace
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Sequence functions Wasm contract tests (001-ansi-sequence-functions)
+(defpackage #:clysm/tests/contract/sequences
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
