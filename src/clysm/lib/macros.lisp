@@ -2057,6 +2057,7 @@
   ;; Destructuring-bind macro (031-destructuring-bind-macro)
   (clysm/compiler/transform/macro:register-macro
    registry 'destructuring-bind (make-destructuring-bind-expander))
+  ;; Note: DEFSTRUCT macro is installed by defstruct.lisp at load time (Phase 13D-10)
   registry)
 
 ;;; ============================================================

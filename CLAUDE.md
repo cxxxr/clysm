@@ -98,11 +98,12 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-defstruct-wasm-compile)
 
 | Feature | Description |
 |---------|-------------|
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
+| 001-defstruct-wasm-compile | DEFSTRUCT macro → DEFCLASS expansion (:conc-name, :include, :predicate, :copier, :constructor, :read-only) |
 | 017 | Eval/JIT with tiered compilation |
 | 019 | Numeric accessors, IEEE 754 floats |
 | 024 | Equality predicates (eq, eql, equal, equalp) |
@@ -173,6 +174,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - N/A (file I/O via FFI functions to host filesystem) (001-stage1-runtime)
 - Common Lisp (SBCL 2.4+) for host compiler, JavaScript (Node.js 20+) for runtime + alexandria, babel (UTF-8), wasm-tools, wasmtime (001-bootstrap-fixpoint)
 - N/A (in-memory compilation, Wasm binary output to dist/) (001-bootstrap-fixpoint)
+- Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (001-defstruct-wasm-compile)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

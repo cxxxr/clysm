@@ -933,7 +933,8 @@
   (:use #:cl)
   (:shadow #:standard-class
            #:class-name
-           #:class-precedence-list)
+           #:class-precedence-list
+           #:structure-class)
   (:export ;; Class structure
            #:standard-class
            #:make-standard-class
@@ -972,12 +973,24 @@
            #:compute-slot-indices
            ;; Low-level slot access
            #:%slot-value
-           #:class-of*))
+           #:class-of*
+           ;; Phase 13D-10: Structure class metaclass
+           #:structure-class
+           #:make-structure-class
+           #:structure-class-p
+           #:structure-class-copier
+           #:structure-class-predicate
+           #:structure-class-constructor
+           #:structure-type-p
+           #:register-structure-class
+           #:get-structure-slots
+           #:get-structure-parent))
 
 (defpackage #:clysm/clos/defclass
   (:use #:cl #:clysm/clos/mop)
   (:shadowing-import-from #:clysm/clos/mop
-                          #:standard-class #:class-name #:class-precedence-list)
+                          #:standard-class #:class-name #:class-precedence-list
+                          #:structure-class)
   (:export #:parse-defclass
            #:defclass-result
            #:defclass-result-name
@@ -993,7 +1006,8 @@
 (defpackage #:clysm/clos/instance
   (:use #:cl #:clysm/clos/mop)
   (:shadowing-import-from #:clysm/clos/mop
-                          #:standard-class #:class-name #:class-precedence-list)
+                          #:standard-class #:class-name #:class-precedence-list
+                          #:structure-class)
   (:export #:make-instance*))
 
 (defpackage #:clysm/clos/slot-access
@@ -1043,7 +1057,8 @@
   (:use #:cl #:clysm/clos/generic #:clysm/clos/mop)
   (:shadowing-import-from #:clysm/clos/generic #:generic-function)
   (:shadowing-import-from #:clysm/clos/mop
-                          #:standard-class #:class-name #:class-precedence-list)
+                          #:standard-class #:class-name #:class-precedence-list
+                          #:structure-class)
   (:shadow #:compute-applicable-methods)
   (:export #:compute-applicable-methods
            #:sort-methods
@@ -1288,6 +1303,47 @@
   (:use #:cl)
   (:export #:defpackage*
            #:in-package*))
+
+;; Phase 13D-10: DEFSTRUCT Wasm Compilation
+(defpackage #:clysm/lib
+  (:use #:cl)
+  (:export ;; slot-definition struct
+           #:slot-definition
+           #:make-slot-definition
+           #:slot-definition-p
+           #:slot-definition-name
+           #:slot-definition-initform
+           #:slot-definition-initform-p
+           #:slot-definition-type
+           #:slot-definition-read-only
+           ;; defstruct-definition struct
+           #:defstruct-definition
+           #:make-defstruct-definition
+           #:defstruct-definition-p
+           #:defstruct-definition-name
+           #:defstruct-definition-conc-name
+           #:defstruct-definition-constructor
+           #:defstruct-definition-copier
+           #:defstruct-definition-predicate
+           #:defstruct-definition-include
+           #:defstruct-definition-include-slot-overrides
+           #:defstruct-definition-slots
+           #:defstruct-definition-docstring
+           ;; Parsing functions
+           #:parse-slot-description
+           #:parse-defstruct-options
+           #:parse-defstruct
+           ;; Code generation functions
+           #:generate-defclass-form
+           #:generate-constructor
+           #:generate-accessors
+           #:generate-predicate
+           #:generate-copier
+           #:generate-setf-expanders
+           #:expand-defstruct
+           ;; Macro registration
+           #:defstruct-expander
+           #:install-defstruct-macro))
 
 (defpackage #:clysm/repl
   (:use #:cl #:clysm/reader #:clysm/eval #:clysm/runtime/printer)

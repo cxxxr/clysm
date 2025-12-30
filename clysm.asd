@@ -108,7 +108,8 @@
      (:file "defmethod")
      (:file "combination")  ; Must come before dispatch for *next-methods* special declaration
      (:file "dispatch")
-     (:file "method-combination")))
+     (:file "method-combination")
+     (:file "structure-class")))  ; Phase 13D-10: Structure metaclass for defstruct
 
    ;; Conditions: ANSI CL Condition System (014-condition-system)
    (:module "conditions"
@@ -153,7 +154,8 @@
      (:file "macros")
      ;; Note: utf8 is loaded earlier as top-level component (before backend)
      (:file "ffi-runtime")
-     (:file "package-macros")))
+     (:file "package-macros")
+     (:file "defstruct")))      ; Phase 13D-10: DEFSTRUCT macro implementation
 
    ;; REPL
    (:file "repl")
@@ -322,7 +324,9 @@
      ;; Compile-time directives contract tests (001-compile-time-directives)
      (:file "directive-output-test")
      ;; Global variable Wasm validation (001-global-variable-defs)
-     (:file "wasm-globals-test")))
+     (:file "wasm-globals-test")
+     ;; DEFSTRUCT Wasm validation (Phase 13D-10)
+     (:file "defstruct-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -553,7 +557,9 @@
      ;; Compile-time directives unit tests (001-compile-time-directives)
      (:file "directive-test")
      ;; Global variable compilation unit tests (001-global-variable-defs)
-     (:file "globals-test")))
+     (:file "globals-test")
+     ;; DEFSTRUCT unit tests (Phase 13D-10)
+     (:file "defstruct-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -655,7 +661,9 @@
        (:file "workflow-repl-test")
        (:file "workflow-selfhost-test")))
      ;; Array primitives integration tests (001-ansi-array-primitives)
-     (:file "array-test"))))
+     (:file "array-test")
+     ;; DEFSTRUCT integration tests (Phase 13D-10)
+     (:file "defstruct-usage-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
