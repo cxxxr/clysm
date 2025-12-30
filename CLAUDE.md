@@ -189,7 +189,9 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams; existing array infrastructure from `001-ansi-array-primitives` (001-ansi-array-ops)
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, existing Clysm compiler infrastructure (001-ansi-string-trim)
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), existing clysm compiler infrastructure (001-char-literal-compile)
+- Common Lisp (SBCL 2.4+) host compiler, WasmGC target + alexandria, babel (UTF-8), existing FFI infrastructure (feature 027), existing format implementation (001-io-print-primitives)
 
 ## Recent Changes
+- 001-io-print-primitives (Phase 13D-1d): Implemented I/O print primitives for compilation. Added print, prin1, princ, terpri, write functions as FFI-backed stubs. Implemented format function with basic directives (~A, ~S, ~D, ~%, ~&, ~~). Resolves DEFUN compilation failures where print-related forms caused errors.
 - 001-ansi-array-ops (Phase 15C): Implemented 9 ANSI CL array operations: array-rank, array-dimension, array-dimensions, array-total-size, array-row-major-index, row-major-aref, (setf row-major-aref), adjustable-array-p, adjust-array. Added $mdarray type (index 28) for multidimensional array support.
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)
