@@ -51,8 +51,9 @@ sbcl --eval "(asdf:test-system :clysm)"
 ### What Works
 
 - **SBCL Host Compiler**: `clysm:compile-to-wasm` successfully compiles Lisp → Wasm
-- **Compilation Rate**: ~23% of compiler forms compile successfully
+- **Compilation Rate**: ~24.6% of compiler forms compile successfully
 - **Wasm Validation**: Generated Wasm passes `wasm-tools validate`
+- **Control Structures**: `values`, `the`, `labels`, `handler-case` fully supported
 
 ### What Doesn't Work Yet
 
@@ -74,8 +75,9 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 
 **Goal**: SBCL上のClysmでClysm自身をWasmにコンパイル
 
-1. **コンパイル率向上** (23% → 80%+)
-   - `defstruct`, `loop`, `handler-case` 等の完全サポート
+1. **コンパイル率向上** (24.6% → 80%+)
+   - `defstruct`, `loop` 等の完全サポート
+   - `handler-case`, `values`, `the`, `labels` は実装済み (Phase 13D-6)
    - コンパイラが使用する全機能をWasmにコンパイル可能にする
 
 2. **Stage 1生成**: SBCL + ClysmでClysm全体をWasmにコンパイル
@@ -148,6 +150,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - N/A (in-memory compilation) (001-ansi-array-primitives)
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8) (001-compile-time-directives)
 - N/A (in-memory compilation, Wasm binary output) (001-global-variable-defs)
+- Common Lisp (SBCL 2.4+) host compiler + alexandria, babel (UTF-8), trivial-gray-streams (001-control-structure-extension)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

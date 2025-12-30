@@ -276,6 +276,9 @@
      (compile-throw ast env))
     (clysm/compiler/ast:ast-unwind-protect
      (compile-unwind-protect ast env))
+    ;; Exception handling (001-control-structure-extension US4)
+    (clysm/compiler/ast:ast-handler-case
+     (compile-handler-case ast env))
     ;; Special variable declarations (T022-T024)
     (clysm/compiler/ast:ast-defvar
      (compile-defvar ast env))
@@ -7754,6 +7757,120 @@
 
     ;; end outer block
     (setf result (append result '(:end)))
+
+    result))
+
+;;; ============================================================
+;;; Handler-Case Compilation (001-control-structure-extension US4)
+;;; ============================================================
+
+;; HyperSpec: resources/HyperSpec/Body/m_hand_1.htm
+(defun compile-handler-case (ast env)
+  "Compile handler-case with exception handling.
+   Pattern:
+   - Execute protected expression in try_table
+   - Catch exceptions with tag 0 ($lisp-throw)
+   - The caught value is (tag-symbol . condition-object)
+   - Dispatch to appropriate handler based on condition type
+   - If no handler matches, rethrow
+
+   Wasm structure:
+   block (result anyref)                    ;; final result
+     block (param anyref anyref) (result anyref)  ;; handler block
+       try_table (result anyref) (catch 0 0)
+         ... protected expression ...
+       end
+       br 1                                 ;; normal exit - skip handler
+     end
+     ;; Stack: (tag, value) from catch
+     ;; Ignore tag (second value), work with value (first on stack after swap)
+     local.set $condition
+     drop                                   ;; drop the tag
+     ;; Type dispatch to handlers
+     ... handler dispatch code ...
+   end"
+  (let* ((expression (clysm/compiler/ast:ast-handler-case-expression ast))
+         (handlers (clysm/compiler/ast:ast-handler-case-handlers ast))
+         (result '()))
+    ;; Handle case with no handlers - just evaluate expression
+    (when (null handlers)
+      (return-from compile-handler-case
+        (compile-to-instructions expression env)))
+
+    ;; Allocate locals
+    (let ((condition-local (env-add-local env (gensym "hc-condition")))
+          (tag-local (env-add-local env (gensym "hc-tag"))))
+
+      ;; block (result anyref) - outer block for final result
+      (setf result (append result '((:block (:result :anyref)))))
+
+      ;; block (type 30) - inner block catches (anyref anyref) result from try_table
+      ;; Type 30 is $catch_result: () -> (anyref anyref)
+      (setf result (append result '((:block (:type 30)))))
+
+      ;; try_table (result anyref) (catch 0 0)
+      ;; catch tag 0 ($lisp-throw), branch to label 0 (inner block)
+      (setf result (append result '((:try_table (:result :anyref) (:catch 0 0)))))
+
+      ;; Compile protected expression
+      (setf result (append result (compile-to-instructions expression env)))
+
+      ;; end try_table
+      (setf result (append result '(:end)))
+
+      ;; Normal path: result on stack, branch past handlers
+      (setf result (append result '((:br 1))))  ; branch to outer block
+
+      ;; end inner block - stack has (anyref anyref) = (tag, value)
+      (setf result (append result '(:end)))
+
+      ;; Exception path: save caught values
+      ;; Stack order after catch: tag, value (tag on top, value below)
+      (setf result (append result (list (list :local.set condition-local))))  ; save condition (value)
+      (setf result (append result (list (list :local.set tag-local))))        ; save tag
+
+      ;; Generate handler dispatch code
+      ;; For now, we match any handler (simplified - no type checking yet)
+      ;; TODO: Add proper type dispatch based on handler type specifier
+      (let ((first-handler t))
+        (dolist (handler handlers)
+          (let ((var (clysm/compiler/ast:handler-clause-var handler))
+                (body (clysm/compiler/ast:handler-clause-body handler)))
+            (when first-handler
+              (setf first-handler nil))
+            ;; For simplified implementation: execute first handler that exists
+            ;; TODO: Add type check: (typep condition handler-type)
+            (if var
+                ;; Bind the condition variable
+                (let* ((handler-env (extend-compilation-env env))
+                       (var-local (env-add-local handler-env var)))
+                  (setf result (append result (list (list :local.get condition-local))))
+                  (setf result (append result (list (list :local.set var-local))))
+                  ;; Compile handler body
+                  (dolist (form (butlast body))
+                    (setf result (append result (compile-to-instructions form handler-env)))
+                    (setf result (append result '(:drop))))
+                  (when body
+                    (setf result (append result
+                                         (compile-to-instructions (car (last body)) handler-env))))
+                  (unless body
+                    (setf result (append result '((:ref.null :none))))))
+                ;; No variable binding - just execute body
+                (progn
+                  (dolist (form (butlast body))
+                    (setf result (append result (compile-to-instructions form env)))
+                    (setf result (append result '(:drop))))
+                  (when body
+                    (setf result (append result
+                                         (compile-to-instructions (car (last body)) env))))
+                  (unless body
+                    (setf result (append result '((:ref.null :none)))))))
+            ;; For now, only use first handler and return
+            ;; TODO: Add proper type dispatch with if/else chain
+            (return))))
+
+      ;; end outer block
+      (setf result (append result '(:end))))
 
     result))
 

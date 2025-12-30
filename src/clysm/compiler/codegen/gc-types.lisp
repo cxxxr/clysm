@@ -91,6 +91,17 @@
    array (mut (ref null $hash-entry))")
 
 ;;; ============================================================
+;;; Exception Handling (001-control-structure-extension US4)
+;;; ============================================================
+
+;; HyperSpec: resources/HyperSpec/Body/m_hand_1.htm
+(defconstant +tag-lisp-error+ 0
+  "Exception tag index for Lisp conditions.
+   Used by handler-case/handler-bind for exception handling.
+   Wasm exception tag: (tag $lisp-error (param anyref))
+   The param is the condition object (anyref for any condition type).")
+
+;;; ============================================================
 ;;; WasmGC Type Structures
 ;;; ============================================================
 

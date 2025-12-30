@@ -390,6 +390,28 @@
   (cleanup-forms nil :type list)) ; List of cleanup AST nodes
 
 ;;; ============================================================
+;;; Exception Handling (001-control-structure-extension US4)
+;;; ============================================================
+
+;; HyperSpec: resources/HyperSpec/Body/m_hand_1.htm
+(defstruct handler-clause
+  "A single handler clause in handler-case.
+   Represents (type ([var]) . body) where:
+   - type: condition type specifier (symbol or compound type)
+   - var: binding variable for the condition (or nil if unused)
+   - body: handler body forms (list of AST nodes)"
+  (type nil :type t)                  ; Condition type specifier
+  (var nil :type (or null symbol))    ; Binding variable (or nil if unused)
+  (body nil :type list))              ; Handler body forms (AST nodes)
+
+(defstruct (ast-handler-case (:include ast-node) (:conc-name ast-handler-case-))
+  "Handler-case node for exception handling with typed handlers.
+   (handler-case expression {(type ([var]) . body)}*)
+   Compiled to Wasm try_table/catch for direct exception handling."
+  (expression nil :type t)            ; Protected expression (AST node)
+  (handlers nil :type list))          ; List of handler-clause structures
+
+;;; ============================================================
 ;;; Special Variable Definitions (T017-T018)
 ;;; ============================================================
 
@@ -754,6 +776,8 @@
       (throw (parse-throw-form args))
       ;; Unwind-protect
       (unwind-protect (parse-unwind-protect-form args))
+      ;; Exception handling (001-control-structure-extension US4)
+      (handler-case (parse-handler-case-form args))
       ;; Special variable declarations (T021)
       (defvar (parse-defvar-form args))
       (defparameter (parse-defparameter-form args))
@@ -1564,6 +1588,34 @@
   (make-ast-unwind-protect
    :protected-form (parse-expr (first args))
    :cleanup-forms (mapcar #'parse-expr (rest args))))
+
+;;; ============================================================
+;;; Exception Handling Parsing (001-control-structure-extension US4)
+;;; ============================================================
+
+;; HyperSpec: resources/HyperSpec/Body/m_hand_1.htm
+(defun parse-handler-clause (clause)
+  "Parse a single handler clause (type ([var]) . body).
+   TYPE is the condition type specifier.
+   ([var]) is the optional lambda list with variable to bind the condition.
+   BODY is the handler body forms."
+  (let ((type (first clause))
+        (lambda-list (second clause))
+        (body (cddr clause)))
+    (make-handler-clause
+     :type type
+     :var (and lambda-list (first lambda-list))
+     :body (mapcar #'parse-expr body))))
+
+(defun parse-handler-case-form (args)
+  "Parse (handler-case expression {(type ([var]) . body)}*).
+   EXPRESSION is the protected form to evaluate.
+   Each handler clause specifies a condition type and handler body."
+  (when (null args)
+    (error "HANDLER-CASE requires at least an expression"))
+  (make-ast-handler-case
+   :expression (parse-expr (first args))
+   :handlers (mapcar #'parse-handler-clause (rest args))))
 
 ;;; ============================================================
 ;;; Special Variable Definition Parsing (T019-T020)

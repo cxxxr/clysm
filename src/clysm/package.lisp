@@ -221,6 +221,16 @@
            #:ast-unwind-protect-protected-form
            #:ast-unwind-protect-cleanup-forms
            #:make-ast-unwind-protect
+           ;; Handler-case (001-control-structure-extension US4)
+           #:handler-clause
+           #:handler-clause-type
+           #:handler-clause-var
+           #:handler-clause-body
+           #:make-handler-clause
+           #:ast-handler-case
+           #:ast-handler-case-expression
+           #:ast-handler-case-handlers
+           #:make-ast-handler-case
            ;; Special variable definitions (T017-T018)
            #:ast-defvar
            #:ast-defvar-p
