@@ -896,6 +896,23 @@
           (vector-push-extend #xFB buffer)
           (vector-push-extend #x0D buffer)
           (emit-leb128-unsigned (cadr instr) buffer))
+         (:array.copy
+          ;; array.copy <dst_typeidx> <src_typeidx> - copy elements between arrays
+          ;; 001-ansi-sequence-operations: Used for subseq, copy-seq, concatenate
+          ;; Stack: [dstarray, dstoff:i32, srcarray, srcoff:i32, len:i32] -> []
+          ;; Opcode: 0xFB 0x11
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x11 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer)   ; destination type index
+          (emit-leb128-unsigned (caddr instr) buffer)) ; source type index
+         (:array.new
+          ;; array.new <typeidx> - create array with initial value
+          ;; 001-ansi-sequence-operations: Used for make-string, make-array :initial-element
+          ;; Stack: [value, size:i32] -> [arrayref]
+          ;; Opcode: 0xFB 0x06
+          (vector-push-extend #xFB buffer)
+          (vector-push-extend #x06 buffer)
+          (emit-leb128-unsigned (cadr instr) buffer))  ; type index
          (:call_ref
           ;; call_ref <typeidx> - call through function reference
           (vector-push-extend #x14 buffer)

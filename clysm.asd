@@ -313,7 +313,9 @@
        (:file "ffi-valid-test")
        (:file "exports-test")))
      ;; Array primitives Wasm validation (001-ansi-array-primitives)
-     (:file "array-wasm-test")))
+     (:file "array-wasm-test")
+     ;; Sequence operations Wasm validation (001-ansi-sequence-operations)
+     (:file "sequence-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -538,7 +540,9 @@
        (:file "ffi-test")
        (:file "fs-read-test")))
      ;; Array primitives unit tests (001-ansi-array-primitives)
-     (:file "array-primitives-test")))
+     (:file "array-primitives-test")
+     ;; Sequence operations codegen unit tests (001-ansi-sequence-operations)
+     (:file "sequence-codegen-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

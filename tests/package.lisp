@@ -681,3 +681,20 @@
 (defpackage #:clysm/tests/integration/array
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
+;;; Sequence Operations Tests (001-ansi-sequence-operations)
+;;; Phase 13D-2: ANSI CL Sequence Operations
+;;; ============================================================
+
+;; Sequence operations codegen unit tests (001-ansi-sequence-operations)
+;; Tests for compile-subseq, compile-concatenate, compile-make-string,
+;; compile-copy-seq codegen
+(defpackage #:clysm/tests/unit/sequence-codegen
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; Sequence operations Wasm contract tests (001-ansi-sequence-operations)
+(defpackage #:clysm/tests/contract/sequence-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))

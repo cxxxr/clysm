@@ -221,7 +221,8 @@ extract_result() {
     local result_line
     result_line=$(grep '"type":"result"' "$json_file" 2>/dev/null | head -1)
     if [[ -n "$result_line" ]]; then
-        echo "$result_line" | jq -r '.result // empty' 2>/dev/null
+        # Use printf to safely handle unbalanced quotes in output
+        printf '%s' "$result_line" | jq -r '.result // empty' 2>/dev/null
     else
         cat "$json_file"
     fi
@@ -232,23 +233,24 @@ extract_result() {
 #=============================================================================
 
 # 推奨オプションを自動選択
+# Note: Use printf to avoid issues with unbalanced quotes in Claude output
 auto_answer() {
     local output="$1"
 
     # Recommended パターン
-    if echo "$output" | grep -qE '\*\*Recommended:\*\*'; then
+    if printf '%s' "$output" | grep -qE '\*\*Recommended:\*\*'; then
         echo "yes"
         return 0
     fi
 
     # Suggested パターン
-    if echo "$output" | grep -qE '\*\*Suggested:\*\*'; then
+    if printf '%s' "$output" | grep -qE '\*\*Suggested:\*\*'; then
         echo "yes"
         return 0
     fi
 
     # Option A/B/C の推奨
-    if echo "$output" | grep -qE 'Recommended.*Option [A-E]'; then
+    if printf '%s' "$output" | grep -qE 'Recommended.*Option [A-E]'; then
         echo "yes"
         return 0
     fi
@@ -257,6 +259,7 @@ auto_answer() {
 }
 
 # 対話が必要かどうかを判定（コマンド別）
+# Note: Use printf to avoid issues with unbalanced quotes in Claude output
 needs_interaction() {
     local command="$1"
     local output="$2"
@@ -265,11 +268,11 @@ needs_interaction() {
         specify)
             # "Ready for Next Phase" + clarify/plan 選択肢がある場合は対話不要
             # （ワークフローは自動的に clarify に進む）
-            if echo "$output" | grep -qi "Ready for Next Phase"; then
+            if printf '%s' "$output" | grep -qi "Ready for Next Phase"; then
                 return 1
             fi
             # [NEEDS CLARIFICATION] がある場合（"No [NEEDS CLARIFICATION]" は除外）
-            if echo "$output" | grep -v -i "No \[NEEDS CLARIFICATION\]" | grep -qi "\[NEEDS CLARIFICATION\]"; then
+            if printf '%s' "$output" | grep -v -i "No \[NEEDS CLARIFICATION\]" | grep -qi "\[NEEDS CLARIFICATION\]"; then
                 # ただし推奨がある場合は自動回答可能
                 if auto_answer "$output" > /dev/null; then
                     return 1
@@ -280,7 +283,7 @@ needs_interaction() {
             ;;
         clarify)
             # 質問がある場合
-            if echo "$output" | grep -qE '\?$|Option [A-E]|選んでください|どうしますか'; then
+            if printf '%s' "$output" | grep -qE '\?$|Option [A-E]|選んでください|どうしますか'; then
                 # 推奨がある場合は自動回答可能
                 if auto_answer "$output" > /dev/null; then
                     return 1
@@ -288,7 +291,7 @@ needs_interaction() {
                 return 0
             fi
             # 曖昧さなしの場合
-            if echo "$output" | grep -qi "No critical ambiguities"; then
+            if printf '%s' "$output" | grep -qi "No critical ambiguities"; then
                 return 1
             fi
             return 1
@@ -296,13 +299,13 @@ needs_interaction() {
         analyze)
             # CRITICAL問題がある場合 - メトリクス表から実際の件数を確認
             local crit_count=0
-            if echo "$output" | grep -qE 'Critical Issues Count'; then
-                crit_count=$(echo "$output" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+            if printf '%s' "$output" | grep -qE 'Critical Issues Count'; then
+                crit_count=$(printf '%s' "$output" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
                 crit_count=${crit_count:-0}
             fi
             # フォールバック: テーブル形式でSeverity列にCRITICALがある行
             if [[ "$crit_count" -eq 0 ]]; then
-                crit_count=$(echo "$output" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|' || echo 0)
+                crit_count=$(printf '%s' "$output" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|' || echo 0)
             fi
             if [[ "$crit_count" -gt 0 ]]; then
                 return 0
@@ -311,7 +314,7 @@ needs_interaction() {
             ;;
         implement)
             # チェックリスト未完了の確認
-            if echo "$output" | grep -qi "checklists are incomplete"; then
+            if printf '%s' "$output" | grep -qi "checklists are incomplete"; then
                 return 0
             fi
             return 1
@@ -408,9 +411,9 @@ JSONのみを出力してください。"
     local result
     result=$(extract_result "$output_file")
 
-    # JSONを抽出
+    # JSONを抽出 (use printf to safely handle unbalanced quotes)
     local json
-    json=$(echo "$result" | sed -n '/```json/,/```/p' | sed '1d;$d')
+    json=$(printf '%s' "$result" | sed -n '/```json/,/```/p' | sed '1d;$d')
 
     if [[ -z "$json" ]]; then
         # JSONブロックがない場合、全体をJSONとして扱う
@@ -420,7 +423,7 @@ JSONのみを出力してください。"
     # 分析結果を表示（stderrへ）
     echo "" >&2
     echo -e "${CYAN}=== Analysis Result ===${NC}" >&2
-    (echo "$json" | jq -r '.analysis.reasoning // "Analysis complete"' 2>/dev/null || echo "$result") >&2
+    (printf '%s' "$json" | jq -r '.analysis.reasoning // "Analysis complete"' 2>/dev/null || printf '%s\n' "$result") >&2
     echo "" >&2
 
     # specify_promptを抽出
@@ -448,7 +451,7 @@ JSONのみを出力してください。"
         log_error "Could not determine next feature"
         echo "" >&2
         echo "Raw output:" >&2
-        echo "$result" >&2
+        printf '%s\n' "$result" >&2
         return 1
     fi
 }
@@ -485,7 +488,7 @@ run_specify() {
             save_session "$new_session_id"
         else
             log_warn "Manual intervention required"
-            echo "$result" >&2
+            printf '%s\n' "$result" >&2
             read -r -p "Your response: " user_response
             output_file=$(run_claude "$user_response" "$new_session_id")
             new_session_id=$(extract_session_id "$output_file")
@@ -519,7 +522,7 @@ run_clarify() {
     result=$(extract_result "$output_file")
 
     # 曖昧さなしの場合
-    if echo "$result" | grep -qi "No critical ambiguities"; then
+    if printf '%s' "$result" | grep -qi "No critical ambiguities"; then
         log_success "No clarification needed"
         echo "$new_session_id"
         return 0
@@ -537,7 +540,7 @@ run_clarify() {
             else
                 log_warn "Manual intervention required for question $question_count"
                 echo "" >&2
-                echo "$result" | tail -50 >&2
+                printf '%s\n' "$result" | tail -50 >&2
                 echo "" >&2
                 read -r -p "Your response (or 'skip'): " user_response
                 if [[ "$user_response" == "skip" ]]; then
@@ -556,7 +559,7 @@ run_clarify() {
         fi
 
         # 完了チェック
-        if echo "$result" | grep -qiE "clarification complete|no more questions|proceeding"; then
+        if printf '%s' "$result" | grep -qiE "clarification complete|no more questions|proceeding"; then
             break
         fi
     done
@@ -583,7 +586,7 @@ run_plan() {
     result=$(extract_result "$output_file")
 
     # 進捗表示（stderrへ）
-    (echo "$result" | grep -E "Created|Generated|Updated" | head -10) >&2
+    (printf '%s\n' "$result" | grep -E "Created|Generated|Updated" | head -10) >&2
 
     log_success "Plan completed"
     echo "$new_session_id"
@@ -607,7 +610,7 @@ run_tasks() {
     result=$(extract_result "$output_file")
 
     # タスク数を表示（stderrへ）
-    (echo "$result" | grep -E "Total|tasks|Tasks" | head -5) >&2
+    (printf '%s\n' "$result" | grep -E "Total|tasks|Tasks" | head -5) >&2
 
     log_success "Tasks generated"
     echo "$new_session_id"
@@ -660,7 +663,7 @@ ${next_actions}
 
     # Log what was fixed
     log_info "Auto-fix attempt completed"
-    (echo "$result" | grep -iE "修正|fixed|updated|added|changed" | head -5) >&2
+    (printf '%s\n' "$result" | grep -iE "修正|fixed|updated|added|changed" | head -5) >&2
 
     echo "$new_session_id"
 }
@@ -696,30 +699,30 @@ run_analyze() {
         local high=0
 
         # メトリクス表から Critical Issues Count を抽出
-        if echo "$result" | grep -qE 'Critical Issues Count'; then
-            critical=$(echo "$result" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+        if printf '%s' "$result" | grep -qE 'Critical Issues Count'; then
+            critical=$(printf '%s' "$result" | grep -E 'Critical Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
             critical=${critical:-0}
         fi
 
         # メトリクス表から High Issues Count を抽出
-        if echo "$result" | grep -qE 'High Issues Count'; then
-            high=$(echo "$result" | grep -E 'High Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
+        if printf '%s' "$result" | grep -qE 'High Issues Count'; then
+            high=$(printf '%s' "$result" | grep -E 'High Issues Count' | head -1 | sed -n 's/.*\*\*\([0-9]*\)\*\*.*/\1/p' | head -1)
             high=${high:-0}
         fi
 
         # フォールバック: テーブル形式でSeverity列にCRITICAL/HIGHがある行をカウント
         if [[ "$critical" -eq 0 ]]; then
-            critical=$(echo "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|') || critical=0
+            critical=$(printf '%s' "$result" | grep -cE '\|\s*\*\*CRITICAL\*\*\s*\|') || critical=0
         fi
         if [[ "$high" -eq 0 ]]; then
-            high=$(echo "$result" | grep -cE '\|\s*\*\*HIGH\*\*\s*\|') || high=0
+            high=$(printf '%s' "$result" | grep -cE '\|\s*\*\*HIGH\*\*\s*\|') || high=0
         fi
 
         # CRITICAL問題がある場合: 自動修正を試みる
         if [[ "$critical" -gt 0 ]]; then
             log_error "CRITICAL issues found: $critical"
             echo "" >&2
-            (echo "$result" | grep -E '\|\s*\*\*CRITICAL\*\*\s*\|' | head -10) >&2
+            (printf '%s\n' "$result" | grep -E '\|\s*\*\*CRITICAL\*\*\s*\|' | head -10) >&2
             echo "" >&2
 
             if [[ $attempt -lt $max_fix_attempts ]]; then
@@ -793,7 +796,7 @@ run_implement_loop() {
 
         # チェックリスト確認
         if needs_interaction "implement" "$result"; then
-            (echo "$result" | grep -i "checklist" | head -5) >&2
+            (printf '%s\n' "$result" | grep -i "checklist" | head -5) >&2
             read -r -p "Continue anyway? (y/n): " choice
             if [[ "$choice" != "y" ]]; then
                 log_info "Paused by user"
@@ -805,18 +808,42 @@ run_implement_loop() {
         # 完了チェック
         log_info "Checking task completion..."
         local check_output
-        check_output=$(run_claude "tasks.mdを確認し、未完了タスク数を報告してください。全完了なら'ALL_COMPLETE'、未完了があれば'REMAINING: N'と出力。" "$session_id")
+        check_output=$(run_claude "tasks.mdを確認し、タスク状態を報告してください。
+
+分析手順:
+1. 未完了タスク（[ ]マーク）を全てリストアップ
+2. 各タスクが「deferred」「延期」「requires runtime」「pending」等の理由で意図的に延期されているか確認
+3. 以下のいずれかを出力:
+
+- 全タスク完了 → 'ALL_COMPLETE'
+- 未完了タスクが全て延期(deferred)の場合 → 'MVP_COMPLETE: N deferred' (Nは延期タスク数)
+- 実装が必要なタスクが残っている場合 → 'REMAINING: N' (Nは非延期の未完了タスク数)
+
+出力例:
+- ALL_COMPLETE
+- MVP_COMPLETE: 28 deferred
+- REMAINING: 5" "$session_id")
         local check_result
         check_result=$(extract_result "$check_output")
 
-        if echo "$check_result" | grep -q "ALL_COMPLETE"; then
+        if printf '%s' "$check_result" | grep -q "ALL_COMPLETE"; then
             log_success "All tasks completed!"
             save_state "$STATE_COMPLETE"
             return 0
         fi
 
+        # MVP完了（延期タスクのみ残っている）の場合
+        if printf '%s' "$check_result" | grep -q "MVP_COMPLETE"; then
+            local deferred_count
+            deferred_count=$(printf '%s' "$check_result" | grep -oE 'MVP_COMPLETE: [0-9]+' | grep -oE '[0-9]+' || echo "0")
+            log_success "MVP complete! ($deferred_count tasks intentionally deferred)"
+            log_info "Deferred tasks are for future phases (vector/list support, integration tests, etc.)"
+            save_state "$STATE_COMPLETE"
+            return 0
+        fi
+
         local remaining
-        remaining=$(echo "$check_result" | grep -oE 'REMAINING: [0-9]+' | grep -oE '[0-9]+' || echo "?")
+        remaining=$(printf '%s' "$check_result" | grep -oE 'REMAINING: [0-9]+' | grep -oE '[0-9]+' || echo "?")
         log_info "Tasks remaining: $remaining"
 
         # 自動続行（確認なし）
@@ -895,9 +922,9 @@ JSONなどは不要です。単語のみ出力してください。"
     result=$(extract_result "$output_file")
 
     # INCOMPLETE を先にチェック（COMPLETE が INCOMPLETE に含まれるため）
-    if echo "$result" | grep -qi "INCOMPLETE"; then
+    if printf '%s' "$result" | grep -qi "INCOMPLETE"; then
         return 1  # 未完了
-    elif echo "$result" | grep -qi "COMPLETE"; then
+    elif printf '%s' "$result" | grep -qi "COMPLETE"; then
         return 0  # 完了
     else
         return 1  # 不明な場合は未完了として続行

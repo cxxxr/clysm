@@ -805,6 +805,8 @@
                                ;; Array/Sequence primitives (001-ansi-array-primitives)
                                ;; Note: %setf-aref already in Feature 043 list above
                                aref svref elt coerce
+                               ;; Sequence operations (001-ansi-sequence-operations)
+                               copy-seq
                                %setf-svref %setf-schar %setf-elt)
                     :test (lambda (fn sym)
                             (string= (symbol-name fn) (symbol-name sym)))))
@@ -888,6 +890,8 @@
       ((string= op-name "%SETF-SCHAR") (compile-setf-schar args env))
       ((string= op-name "%SETF-ELT") (compile-setf-elt args env))
       ((string= op-name "%SETF-GETF") (compile-setf-getf args env))
+      ;; Feature 001-ansi-sequence-operations: Match cross-package symbols
+      ((string= op-name "COPY-SEQ") (compile-copy-seq args env))
       (t
        ;; Fall through to main case for all other primitives
        (case op
@@ -1144,6 +1148,9 @@
     (elt (compile-elt args env))
     ;; HyperSpec: resources/HyperSpec/Body/f_coerce.htm
     (coerce (compile-coerce args env))
+    ;; Feature 001-ansi-sequence-operations: Sequence Operations
+    ;; HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
+    (copy-seq (compile-copy-seq args env))
     ;; Note: %setf-* primitives are now handled by cond above for cross-package matching
     ))))) ; Close case, t clause of cond, cond, let
 
@@ -2159,6 +2166,23 @@
               ;; TODO: Implement %vector-to-list runtime function
               ((:local.get ,obj-local))))))))))
 
+;;; ============================================================
+;;; Feature 001-ansi-sequence-operations: Sequence Operations
+;;; Phase 13D-2: ANSI CL Sequence Operations
+;;; ============================================================
+
+(defun compile-copy-seq (args env)
+  "Compile (copy-seq sequence) - copy a sequence.
+   HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
+   Equivalent to (subseq sequence 0).
+   Stack: [] -> [anyref (new sequence)]"
+  (when (/= (length args) 1)
+    (error "copy-seq requires exactly 1 argument (sequence)"))
+  ;; Implement as (subseq sequence 0)
+  ;; Create AST-LITERAL for the 0 argument (use :fixnum, not :integer)
+  (let ((zero-ast (clysm/compiler/ast:make-ast-literal :value 0 :literal-type :fixnum)))
+    (compile-subseq (list (first args) zero-ast) env)))
+
 (defun compile-setf-schar (args env)
   "Compile (%setf-schar string value index) - set character in string.
    HyperSpec: resources/HyperSpec/Body/f_schar.htm
@@ -2357,24 +2381,110 @@
 ;;; ============================================================
 
 (defun compile-make-array (args env)
-  "Compile (make-array dimensions &key initial-element) - create an array.
-   Feature: 043-self-hosting-blockers
-   For bootstrap, creates a simple 1D array of anyref.
+  "Compile (make-array dimensions &key initial-element initial-contents element-type) - create an array.
+   Feature: 043-self-hosting-blockers, 001-ansi-sequence-operations (Phase 6/US4)
+   HyperSpec: resources/HyperSpec/Body/f_mk_ar.htm
+
+   Supports:
+   - (make-array size) - default initialized array
+   - (make-array size :initial-element value) - array filled with value (uses array.new)
+   - (make-array size :initial-contents list) - array from contents (uses array.new_fixed)
+
    Stack: [] -> [array-ref]"
-  ;; For bootstrap, we just need a simple array creation
-  ;; We'll use WasmGC anyref array type (index 21)
   (when (null args)
     (error "make-array requires at least one argument"))
   (let ((dim-form (first args))
-        (array-type clysm/compiler/codegen/gc-types:+type-anyref-array+))
-    ;; Compile dimension (should be a fixnum)
-    (append
-     (compile-to-instructions dim-form env)
-     ;; Extract i32 from i31ref
-     `((:ref.cast :i31)
-       :i31.get_s
-       ;; Create array with that size, default initialized to nil
-       (:array.new_default ,array-type)))))
+        (keyword-args (rest args))
+        (array-type clysm/compiler/codegen/gc-types:+type-anyref-array+)
+        (initial-element nil)
+        (initial-element-p nil)
+        (initial-contents nil)
+        (initial-contents-p nil))
+    ;; Parse keyword arguments
+    (loop for (key val) on keyword-args by #'cddr
+          do (let ((key-name (if (typep key 'clysm/compiler/ast:ast-literal)
+                                 (clysm/compiler/ast:ast-literal-value key)
+                                 key)))
+               (cond
+                 ((and (symbolp key-name) (string= (symbol-name key-name) "INITIAL-ELEMENT"))
+                  (setf initial-element val
+                        initial-element-p t))
+                 ((and (symbolp key-name) (string= (symbol-name key-name) "INITIAL-CONTENTS"))
+                  (setf initial-contents val
+                        initial-contents-p t)))))
+    ;; Error if both specified
+    (when (and initial-element-p initial-contents-p)
+      (error "make-array: Cannot specify both :initial-element and :initial-contents"))
+    ;; Generate code based on which keyword was specified
+    (cond
+      ;; Case 1: :initial-contents - use array.new_fixed
+      (initial-contents-p
+       (compile-make-array-initial-contents dim-form initial-contents array-type env))
+      ;; Case 2: :initial-element - use array.new
+      (initial-element-p
+       (compile-make-array-initial-element dim-form initial-element array-type env))
+      ;; Case 3: No keyword - use array.new_default
+      (t
+       (append
+        (compile-to-instructions dim-form env)
+        ;; Extract i32 from i31ref
+        `((:ref.cast :i31)
+          :i31.get_s
+          ;; Create array with that size, default initialized to nil
+          (:array.new_default ,array-type)))))))
+
+(defun compile-make-array-initial-element (dim-form initial-element array-type env)
+  "Compile (make-array size :initial-element value) using array.new.
+   Feature: 001-ansi-sequence-operations (T046, T047)
+   array.new fills all elements with the given value.
+   Stack: [] -> [array-ref]"
+  ;; array.new stack: [value, size:i32] -> [arrayref]
+  ;; Need to compile element first, then size
+  (append
+   (compile-to-instructions initial-element env)  ; value on stack
+   (compile-to-instructions dim-form env)         ; size on stack
+   `((:ref.cast :i31)
+     :i31.get_s
+     (:array.new ,array-type))))
+
+(defun compile-make-array-initial-contents (dim-form initial-contents array-type env)
+  "Compile (make-array size :initial-contents list) using array.new_fixed.
+   Feature: 001-ansi-sequence-operations (T048, T049)
+   array.new_fixed creates array from N values on stack.
+   Stack: [] -> [array-ref]"
+  ;; For compile-time known contents (quoted list), we can use array.new_fixed
+  ;; array.new_fixed stack: [elem0, elem1, ..., elemN-1] -> [arrayref]
+  (let* ((contents-value (if (typep initial-contents 'clysm/compiler/ast:ast-literal)
+                             (clysm/compiler/ast:ast-literal-value initial-contents)
+                             nil))
+         ;; Handle quoted list: 'quoted value is the list itself
+         (actual-contents (if (and (typep initial-contents 'clysm/compiler/ast:ast-literal)
+                                   (eq (clysm/compiler/ast:ast-literal-literal-type initial-contents) :quoted))
+                              contents-value
+                              contents-value)))
+    (if (and actual-contents (listp actual-contents))
+        ;; Compile-time known contents - use array.new_fixed
+        (let ((n (length actual-contents)))
+          (append
+           ;; Push each element onto stack
+           (loop for elem in actual-contents
+                 append (compile-to-instructions
+                         (clysm/compiler/ast:make-ast-literal
+                          :value elem
+                          :literal-type (cond
+                                          ((null elem) :nil)
+                                          ((eq elem t) :t)
+                                          ((integerp elem) :fixnum)
+                                          ((characterp elem) :character)
+                                          ((stringp elem) :string)
+                                          ((symbolp elem) :quoted)
+                                          (t :quoted)))
+                         env))
+           ;; Create array with N elements
+           `((:array.new_fixed ,array-type ,n))))
+        ;; Runtime contents - fall back to default + loop fill (simplified)
+        ;; For now, just error - full runtime support would need a loop
+        (error "make-array :initial-contents requires compile-time known list"))))
 
 (defun compile-gensym (args env)
   "Compile (gensym &optional prefix) - generate unique symbol.

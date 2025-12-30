@@ -1,8 +1,8 @@
 # Clysm実装計画: WebAssembly GCターゲットCommon Lispコンパイラ
 
 **作成日**: 2025-12-21
-**更新日**: 2025-12-29 (v2.3.0)
-**ステータス**: Phase 13 インフラ完了 → ANSI Tests成功率向上戦略追加
+**更新日**: 2025-12-30 (v2.4.0)
+**ステータス**: Phase 13D-2 ANSI CL Sequence Operations (string-only MVP) 完了
 **憲法バージョン**: 1.0.0
 **ANSI準拠率**: 23.4% (219/936テスト)
 
@@ -762,22 +762,30 @@ coerce   ;; 型変換 → リスト→配列等の変換
 - [ ] `elt` / `(setf elt)` 実装 (typecase分岐)
 - [ ] `coerce` 実装 (list→vector, vector→list等)
 
-**Phase 13D-2: ANSI CL シーケンス操作関数 (P1)**
+**Phase 13D-2: ANSI CL シーケンス操作関数 (P1)** ✅ MVP完了 (001-ansi-sequence-operations)
 
 ```lisp
-;; 実装が必要なプリミティブ
-subseq       ;; 部分シーケンス抽出
-concatenate  ;; シーケンス結合
-make-string  ;; 文字列生成
-make-array   ;; 配列生成（拡張）
-copy-seq     ;; シーケンスコピー
+;; 実装済みプリミティブ (string-only MVP)
+subseq       ;; ✅ 部分シーケンス抽出 (string用)
+concatenate  ;; ✅ シーケンス結合 (string用)
+make-string  ;; ✅ 文字列生成
+make-array   ;; ✅ 配列生成拡張 (:initial-element, :initial-contents)
+copy-seq     ;; ✅ シーケンスコピー (string用、subseq経由)
+array.copy   ;; ✅ Wasm instruction emission
+
+;; 延期 (vector/list対応はMVP範囲外)
+subseq       ;; 🔜 vector/list対応
+concatenate  ;; 🔜 vector/list対応
+copy-seq     ;; 🔜 vector/list対応
 ```
 
-- [ ] `subseq` 実装
-- [ ] `concatenate` 実装
-- [ ] `make-string` 実装
-- [ ] `make-array` 拡張（:initial-element, :initial-contents）
-- [ ] `copy-seq` 実装
+- [x] `subseq` 実装 (string-only)
+- [x] `concatenate` 実装 (string-only)
+- [x] `make-string` 実装
+- [x] `make-array` 拡張（:initial-element, :initial-contents）
+- [x] `copy-seq` 実装 (string-only)
+- [x] `array.copy` Wasm instruction emission
+- [ ] vector/list対応 (延期 - Phase 13D-2b)
 
 **Phase 13D-3: コンパイル時ディレクティブ処理 (P1)**
 
@@ -1774,3 +1782,4 @@ Phase 19 [CLOS完全準拠]
 | 2.1.0 | 2025-12-28 | セルフホスティング検証結果を反映。Phase 13は「インフラ完了」に修正（Stage 0がスタブのみで実際のコンパイルロジックなし）。Phase 13Dとして真のセルフホスティング達成タスクを追加 |
 | 2.2.0 | 2025-12-29 | Phase 13Dブロッカー分析を大幅修正。「内部関数をプリミティブ登録」は誤りであり、「ANSI CL標準関数（coerce, aref, svref等）をプリミティブ実装」が正しいアプローチと判明。make-ast-literal等はdefstructが生成する関数、encode-unsigned-leb128等は通常のdefunであり、これらが使用するANSI CL関数が未実装であることが根本原因。依存関係グラフを追加 |
 | **2.3.0** | **2025-12-29** | **「ANSI Tests成功率向上戦略」セクション(§3)を追加。Clysmコンパイラでの機能使用頻度に基づく優先度判定基準(P1〜P4)を導入。P1最優先: 配列(aref/svref)、シーケンス(elt/subseq/coerce)、ハッシュテーブル(maphash/remhash)、LOOP完全実装。P2高優先: リスト検索(find/position)、マッピング(mapc/mapcan)、文字列操作(string-upcase)、プロパティ(setf getf)。ANSIテストカテゴリ別目標を設定(cons 80%、sequences 60%、arrays 50%等)** |
+| **2.4.0** | **2025-12-30** | **Phase 13D-2 ANSI CL Sequence Operations MVP完了 (001-ansi-sequence-operations)。subseq, concatenate, make-string, make-array拡張, copy-seq, array.copy instruction (全てstring-only)。vector/list対応はPhase 13D-2bとして延期。** |
