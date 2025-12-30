@@ -179,6 +179,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing) (001-defstruct-wasm-compile)
 - Common Lisp (SBCL 2.4+) host compiler, WasmGC target + alexandria, babel (UTF-8), existing bit operations (ash, logand, logior, logxor) (001-numeric-predicates)
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, existing clysm compiler infrastructure (001-ansi-list-ops)
+- Common Lisp (SBCL 2.4+) host compiler, WasmGC target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing), existing clysm compiler infrastructure (001-ansi-sequence-functions)
+- N/A (in-memory compilation, no persistence) (001-ansi-sequence-functions)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)
