@@ -60,7 +60,8 @@
        (:file "gc-types")
        (:file "type-section")
        (:file "func-section")))
-     (:file "compiler")))
+     (:file "compiler")
+     (:file "directive")))
 
    ;; Reader: S-expression reader
    (:module "reader"
@@ -315,7 +316,9 @@
      ;; Array primitives Wasm validation (001-ansi-array-primitives)
      (:file "array-wasm-test")
      ;; Sequence operations Wasm validation (001-ansi-sequence-operations)
-     (:file "sequence-wasm-test")))
+     (:file "sequence-wasm-test")
+     ;; Compile-time directives contract tests (001-compile-time-directives)
+     (:file "directive-output-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -542,7 +545,9 @@
      ;; Array primitives unit tests (001-ansi-array-primitives)
      (:file "array-primitives-test")
      ;; Sequence operations codegen unit tests (001-ansi-sequence-operations)
-     (:file "sequence-codegen-test")))
+     (:file "sequence-codegen-test")
+     ;; Compile-time directives unit tests (001-compile-time-directives)
+     (:file "directive-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

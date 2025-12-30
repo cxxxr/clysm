@@ -18,10 +18,20 @@
    Feature 043: Macro expansion is performed before compilation using the
    global macro registry. This handles LOOP, DO, DOLIST, etc.
 
+   Phase 13D-3: Compile-time directives (in-package, defpackage, declaim,
+   proclaim) are evaluated at compile-time and return nil (no Wasm output).
+
    Examples:
      (compile-to-wasm '(+ 1 2))      ; No Import section (no I/O)
      (compile-to-wasm '(print 42))   ; Has Import section (uses I/O)
-     (compile-to-wasm '(+ 1 2) :output \"add.wasm\")"
+     (compile-to-wasm '(+ 1 2) :output \"add.wasm\")
+     (compile-to-wasm '(in-package :cl))  ; Returns nil (directive)"
+  ;; Phase 13D-3: Check for compile-time directives BEFORE macro expansion
+  ;; Directives are evaluated in the host environment and return nil
+  (let ((processed-expr (compile-toplevel-form expr)))
+    (when (null processed-expr)
+      ;; Directive was processed, no Wasm output needed
+      (return-from compile-to-wasm nil)))
   ;; Feature 043: Expand all macros before compilation
   (let* ((expanded-expr (clysm/compiler/transform/macro:macroexpand-all
                           (clysm/compiler/transform/macro:global-macro-registry)
@@ -42,7 +52,13 @@
 (defun compile-to-wat (expr)
   "Compile a Lisp expression to WAT text format.
    Useful for debugging.
-   Feature 043: Macro expansion is performed before compilation."
+   Feature 043: Macro expansion is performed before compilation.
+   Phase 13D-3: Compile-time directives return nil (no WAT output)."
+  ;; Phase 13D-3: Check for compile-time directives BEFORE macro expansion
+  (let ((processed-expr (compile-toplevel-form expr)))
+    (when (null processed-expr)
+      ;; Directive was processed, no WAT output needed
+      (return-from compile-to-wat nil)))
   ;; Feature 043: Expand all macros before compilation
   (let* ((expanded-expr (clysm/compiler/transform/macro:macroexpand-all
                           (clysm/compiler/transform/macro:global-macro-registry)

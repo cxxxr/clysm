@@ -636,7 +636,11 @@
         #:clysm/backend/wasm-emit)
   (:export #:compile-to-wasm
            #:compile-to-wat
-           #:compile-expression))
+           #:compile-expression
+           ;; Phase 13D-3: Compile-time directive processing
+           #:directive-form-p
+           #:compile-toplevel-form
+           #:eval-directive))
 
 (defpackage #:clysm/reader/tokenizer
   (:use #:cl)
