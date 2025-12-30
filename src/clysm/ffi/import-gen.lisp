@@ -135,12 +135,14 @@
 (defun assign-import-indices (env &optional (regular-func-count 0))
   "Assign type and function indices to all registered foreign functions.
    Type indices for imports are shared based on function signature.
-   Type indices start at 23 + REGULAR-FUNC-COUNT + unique_index.
+   Type indices start at 31 + REGULAR-FUNC-COUNT + unique_index.
+   (31 = number of base GC types before regular function types)
    Function indices for imports start at 0 (imports come before local functions).
    001-numeric-functions: ffd-type-index is for import section, ffd-func-index is for :call."
   (let ((func-index 0)
         ;; FFI types come after regular function types in the type section
-        (type-base (+ 23 regular-func-count))
+        ;; 31 base GC types (0-30) before regular function types
+        (type-base (+ 31 regular-func-count))
         ;; Track unique signatures -> type index
         (signature-to-type-index (make-hash-table :test 'equal))
         (next-unique-type-index 0))

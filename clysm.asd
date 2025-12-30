@@ -59,7 +59,9 @@
       ((:file "wasm-ir")
        (:file "gc-types")
        (:file "type-section")
-       (:file "func-section")))
+       (:file "func-section")
+       (:file "globals")       ; Phase 13D-4: Global variable compilation
+       (:file "wasm-global"))) ; Phase 13D-4: Wasm global section helpers
      (:file "compiler")
      (:file "directive")))
 
@@ -318,7 +320,9 @@
      ;; Sequence operations Wasm validation (001-ansi-sequence-operations)
      (:file "sequence-wasm-test")
      ;; Compile-time directives contract tests (001-compile-time-directives)
-     (:file "directive-output-test")))
+     (:file "directive-output-test")
+     ;; Global variable Wasm validation (001-global-variable-defs)
+     (:file "wasm-globals-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -547,7 +551,9 @@
      ;; Sequence operations codegen unit tests (001-ansi-sequence-operations)
      (:file "sequence-codegen-test")
      ;; Compile-time directives unit tests (001-compile-time-directives)
-     (:file "directive-test")))
+     (:file "directive-test")
+     ;; Global variable compilation unit tests (001-global-variable-defs)
+     (:file "globals-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

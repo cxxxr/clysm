@@ -807,7 +807,9 @@
                                aref svref elt coerce
                                ;; Sequence operations (001-ansi-sequence-operations)
                                copy-seq
-                               %setf-svref %setf-schar %setf-elt)
+                               %setf-svref %setf-schar %setf-elt
+                               ;; Package operations (001-global-variable-defs)
+                               find-package intern)
                     :test (lambda (fn sym)
                             (string= (symbol-name fn) (symbol-name sym)))))
        (compile-primitive-call function args env))
@@ -1151,6 +1153,11 @@
     ;; Feature 001-ansi-sequence-operations: Sequence Operations
     ;; HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
     (copy-seq (compile-copy-seq args env))
+    ;; Feature 001-global-variable-defs: Package Operations (stub implementations)
+    ;; HyperSpec: resources/HyperSpec/Body/f_find_p.htm
+    (find-package (compile-find-package args env))
+    ;; HyperSpec: resources/HyperSpec/Body/f_intern.htm
+    (intern (compile-intern args env))
     ;; Note: %setf-* primitives are now handled by cond above for cross-package matching
     ))))) ; Close case, t clause of cond, cond, let
 
@@ -1358,6 +1365,19 @@
 ;;; - $hash-table (type 26): struct { size: i32, count: i32 (mut), test: anyref, buckets: (ref 27) }
 ;;; - $bucket-array (type 27): array (mut anyref)
 
+(defun extract-keyword-from-ast (ast)
+  "Extract keyword symbol from AST node.
+   Returns keyword symbol or NIL if not a keyword."
+  (cond
+    ;; Direct keyword symbol (raw argument)
+    ((keywordp ast) ast)
+    ;; AST-VAR-REF wrapping a keyword symbol
+    ((and (ast-var-ref-p ast)
+          (keywordp (ast-var-ref-name ast)))
+     (ast-var-ref-name ast))
+    ;; Not a keyword
+    (t nil)))
+
 (defun compile-make-hash-table (args env)
   "Compile (make-hash-table &key test size) to create a new hash table.
    Default size is 17, default test is EQL (stored as symbol).
@@ -1368,9 +1388,10 @@
   (let ((size-expr nil)
         (test-expr nil)
         (remaining args))
-    ;; Parse &key arguments
+    ;; Parse &key arguments - handle both raw keywords and AST nodes
     (loop while remaining
-          do (let ((key (first remaining)))
+          do (let* ((key-ast (first remaining))
+                    (key (extract-keyword-from-ast key-ast)))
                (cond
                  ((eq key :test)
                   (setf test-expr (second remaining))
@@ -1385,9 +1406,9 @@
                   ;; Ignore rehash-threshold for now
                   (setf remaining (cddr remaining)))
                  (t
-                  (error "Unsupported make-hash-table keyword: ~A" key)))))
+                  (error "Unsupported make-hash-table keyword: ~A" key-ast)))))
     ;; Generate Wasm instructions
-    (let ((size-local (env-add-local env (gensym "HT-SIZE")))
+    (let ((size-local (env-add-local env (gensym "HT-SIZE") :i32))
           (buckets-local (env-add-local env (gensym "HT-BUCKETS")))
           (hash-type clysm/compiler/codegen/gc-types:+type-hash-table+)
           (bucket-type clysm/compiler/codegen/gc-types:+type-bucket-array+))
@@ -2182,6 +2203,53 @@
   ;; Create AST-LITERAL for the 0 argument (use :fixnum, not :integer)
   (let ((zero-ast (clysm/compiler/ast:make-ast-literal :value 0 :literal-type :fixnum)))
     (compile-subseq (list (first args) zero-ast) env)))
+
+;;; ============================================================
+;;; Package Operations (001-global-variable-defs)
+;;; ============================================================
+
+(defun compile-find-package (args env)
+  "Compile (find-package name) - find a package by name.
+   HyperSpec: resources/HyperSpec/Body/f_find_p.htm
+
+   STUB IMPLEMENTATION: Returns NIL.
+   Rationale: The Wasm runtime doesn't have a package system yet.
+   This allows globals like (defvar *keyword-package* (find-package :keyword))
+   to compile. The actual package lookup would require runtime support.
+
+   Stack: [] -> [anyref (NIL)]"
+  (declare (ignore env))
+  (when (< (length args) 1)
+    (error "find-package requires 1 argument (package-designator)"))
+  ;; Return NIL - package system not implemented in Wasm runtime
+  '((:global.get 0)))  ; global 0 is NIL
+
+(defun compile-intern (args env)
+  "Compile (intern string &optional package) - intern a string as a symbol.
+   HyperSpec: resources/HyperSpec/Body/f_intern.htm
+
+   STUB IMPLEMENTATION: Creates an uninterned symbol.
+   Rationale: The Wasm runtime doesn't have a package system yet.
+   This creates a symbol with the given name but doesn't actually intern it.
+
+   Stack: [] -> [anyref (symbol)]"
+  (when (< (length args) 1)
+    (error "intern requires at least 1 argument (string)"))
+  (let ((name-expr (first args))
+        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
+    ;; Create an uninterned symbol with the given name
+    ;; Symbol struct: (name value function plist)
+    (append
+     ;; Name field - compile the string argument
+     (compile-to-instructions name-expr env)
+     ;; Value field - unbound (global 1)
+     '((:global.get 1))
+     ;; Function field - NIL
+     '((:global.get 0))
+     ;; Plist field - NIL
+     '((:global.get 0))
+     ;; Create symbol struct
+     (list (list :struct.new symbol-type)))))
 
 (defun compile-setf-schar (args env)
   "Compile (%setf-schar string value index) - set character in string.
@@ -7535,9 +7603,9 @@
       (let ((catch-env (copy-compilation-env env)))
         (push (cons tag-local 0) (cenv-catch-tags catch-env))
 
-        ;; Block $catch - type 21: () -> (anyref anyref)
-        ;; Type 21 is $catch_result in the type section
-        (setf result (append result '((:block (:type 21)))))  ;; $catch
+        ;; Block $catch - type 30: () -> (anyref anyref)
+        ;; Type 30 is $catch_result in the type section
+        (setf result (append result '((:block (:type 30)))))  ;; $catch
 
         ;; try_table inside $catch
         ;; Catch clause: catch tag 0, branch to label 0 ($catch)
@@ -7764,14 +7832,14 @@
 (defvar *special-var-globals* (make-hash-table :test 'eq)
   "Maps special variable names to their global indices.")
 
-(defvar *next-special-global-index* 2
+(defvar *next-special-global-index* 4
   "Next available global index for special variables.
-   Starts at 2 because 0=NIL, 1=UNBOUND.")
+   Starts at 4 because 0=NIL, 1=UNBOUND, 2=mv-count, 3=mv-buffer.")
 
 (defun reset-special-var-globals ()
   "Reset special variable global tracking for new compilation."
   (clrhash *special-var-globals*)
-  (setf *next-special-global-index* 2))
+  (setf *next-special-global-index* 4))
 
 (defun allocate-special-var-global (name)
   "Allocate a global index for a special variable.
@@ -12200,11 +12268,7 @@
 ;;; String Generation/Conversion (008-character-string Phase 6)
 ;;; ============================================================
 
-(defun extract-keyword-from-ast (ast)
-  "Extract keyword symbol from AST node (AST-VAR-REF with keyword name)."
-  (and (typep ast 'clysm/compiler/ast:ast-var-ref)
-       (let ((name (clysm/compiler/ast:ast-var-ref-name ast)))
-         (and (keywordp name) name))))
+;; Note: extract-keyword-from-ast is defined in Hash Table Operations section above
 
 (defun compile-make-string (args env)
   "Compile (make-string size &key initial-element) - create new string.
@@ -12879,7 +12943,7 @@
          (count (length forms))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22))  ; Type index for $mv_array
+         (mv-array-type 20))  ; Type index for $mv_array
     (cond
       ;; T015: Zero values - return NIL, set count to 0
       ((zerop count)
@@ -12939,7 +13003,7 @@
          (body (clysm/compiler/ast:ast-mvb-body ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (var-count (length vars)))
     (cond
       ;; No variables - just execute values-form (discarding values) and body
@@ -13023,7 +13087,7 @@
   (let* ((form (clysm/compiler/ast:ast-mvl-form ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
          (primary-local (env-add-local env (gensym "MVL-PRIMARY")))
          (count-local (env-add-local env (gensym "MVL-COUNT") :i32))
@@ -13099,7 +13163,7 @@
          (form (clysm/compiler/ast:ast-nth-value-form ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (index-local (env-add-local env (gensym "NTH-IDX") :i32))
          (primary-local (env-add-local env (gensym "NTH-PRIMARY"))))
     `(;; Evaluate and save index
@@ -13150,7 +13214,7 @@
   (let* ((form (clysm/compiler/ast:ast-values-list-form ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
          (list-local (env-add-local env (gensym "VL-LIST")))
          (count-local (env-add-local env (gensym "VL-COUNT") :i32))
@@ -13244,7 +13308,7 @@
          (body (clysm/compiler/ast:ast-mvp1-body ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (primary-local (env-add-local env (gensym "MVP1-PRIMARY")))
          (count-local (env-add-local env (gensym "MVP1-COUNT") :i32)))
     `(;; Execute first form
@@ -13282,7 +13346,7 @@
          (forms (clysm/compiler/ast:ast-mvc-forms ast))
          (mv-count-global clysm/runtime/objects:*mv-count-global-index*)
          (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
-         (mv-array-type 22)
+         (mv-array-type 20)
          (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
          (sum-local (env-add-local env (gensym "MVC-SUM") :i32))
          (idx-local (env-add-local env (gensym "MVC-IDX") :i32))

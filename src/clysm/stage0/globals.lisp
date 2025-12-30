@@ -165,6 +165,151 @@
   '())
 
 ;;; ============================================================
+;;; Special Variable Global Encoding (T009 - Phase 13D-4)
+;;; ============================================================
+
+;; Type encoding for (ref null any)
+;; Note: +ref-null-type+ is the type prefix (0x63), different from
+;; +ref-null+ which is the instruction opcode (0xD0) defined earlier
+(defconstant +ref-null-type+ #x63 "ref null type prefix")
+(defconstant +any-type+ #x6E "any type")
+
+(defun global-special-var-type ()
+  "Return type bytes for special variable global: (ref null any)"
+  (list +ref-null-type+ +any-type+))
+
+(defun init-ref-null-any ()
+  "Generate initialization expression for ref.null any.
+   Used for deferred initialization globals."
+  (list #xD0 +any-type+ +end+))  ; ref.null any, end
+
+(defun init-global-get (global-idx)
+  "Generate initialization expression for global.get.
+   Used for referencing other globals like NIL or UNBOUND."
+  (append (list #x23)  ; global.get
+          (encode-unsigned-leb128 global-idx)
+          (list +end+)))
+
+(defun init-i31-const (value)
+  "Generate initialization expression for i32.const + ref.i31.
+   Used for fixnum constants."
+  (append (list +i32-const+)
+          (encode-signed-leb128 value)
+          (list +gc-prefix+ #x1C)  ; ref.i31
+          (list +end+)))
+
+(defun encode-special-var-global (init-type &optional init-value)
+  "Encode a special variable global entry (T009).
+   INIT-TYPE: :constant, :deferred, or :none
+   INIT-VALUE: Value for constant init, or NIL
+
+   Returns list of bytes for the global entry."
+  (let* ((type-bytes (global-special-var-type))
+         (init-bytes (case init-type
+                       (:constant
+                        (cond
+                          ((null init-value)
+                           (init-global-get *nil-index*))
+                          ((integerp init-value)
+                           (init-i31-const init-value))
+                          (t (init-ref-null-any))))
+                       (:deferred
+                        (init-ref-null-any))
+                       (:none
+                        (init-global-get *unbound-index*))
+                       (t (init-ref-null-any)))))
+    (encode-global type-bytes +mutable+ init-bytes)))
+
+;;; ============================================================
+;;; $init Function Generation (T010 - Phase 13D-4)
+;;; ============================================================
+
+(defvar *deferred-global-inits* '()
+  "List of (global-index . init-form) for deferred initialization.
+   Populated during global section generation, used by $init function.")
+
+(defun reset-deferred-global-inits ()
+  "Clear deferred initialization list for new compilation."
+  (setf *deferred-global-inits* '()))
+
+(defun register-deferred-init (global-idx init-form)
+  "Register a deferred initialization for a global.
+   Will be compiled into the $init function."
+  (push (cons global-idx init-form) *deferred-global-inits*))
+
+(defun has-deferred-inits-p ()
+  "Check if there are any pending deferred initializations."
+  (not (null *deferred-global-inits*)))
+
+(defun generate-init-function-instructions ()
+  "Generate Wasm instructions for the $init function body.
+   Sets all deferred globals to their initial values."
+  (let ((instrs '()))
+    ;; Process in reverse order to match declaration order
+    (dolist (pair (nreverse *deferred-global-inits*))
+      (destructuring-bind (global-idx . init-form) pair
+        ;; For now, just emit a placeholder
+        ;; Full compilation requires the compiler environment
+        (declare (ignore init-form))
+        ;; Pattern: compile init-form, then global.set
+        (push `(:ref.null :any) instrs)
+        (push `(:global.set ,global-idx) instrs)))
+    (nreverse instrs)))
+
+;;; ============================================================
+;;; Extended Global Section Generation (T011 - Phase 13D-4)
+;;; ============================================================
+
+(defun generate-all-globals-with-specials (special-vars)
+  "Generate list of all global definitions including special variables (T011).
+   SPECIAL-VARS: alist of (name . init-spec) where init-spec is
+                 (:constant value) or (:deferred form) or (:none)
+
+   Returns list of global entries (4 reserved + N special vars)."
+  (let ((base-globals (generate-all-globals))
+        (special-globals '()))
+    ;; Generate special variable globals (starting at index 4)
+    (dolist (spec special-vars)
+      (destructuring-bind (name . init-spec) spec
+        (declare (ignore name))
+        (let* ((init-type (first init-spec))
+               (init-value (second init-spec))
+               (global-entry (encode-special-var-global init-type init-value)))
+          (push global-entry special-globals))))
+    ;; Return base globals + special globals
+    (append base-globals (nreverse special-globals))))
+
+(defun generate-global-section-with-specials (special-vars)
+  "Generate complete global section including special variables.
+   SPECIAL-VARS: alist of (name . init-spec) for special variables.
+
+   Returns vector of bytes for Wasm global section (section ID 6)."
+  (let* ((globals (generate-all-globals-with-specials special-vars))
+         (global-bytes '())
+         (global-count (length globals)))
+    ;; Encode each global definition
+    (dolist (global-def globals)
+      (dolist (byte global-def)
+        (push byte global-bytes)))
+    ;; Reverse to get correct order
+    (setf global-bytes (nreverse global-bytes))
+    ;; Build section: ID + size + count + global definitions
+    (let* ((count-bytes (encode-unsigned-leb128 global-count))
+           (content-size (+ (length count-bytes) (length global-bytes)))
+           (size-bytes (encode-unsigned-leb128 content-size))
+           (section '()))
+      ;; Section ID 6 (global)
+      (push 6 section)
+      ;; Section size
+      (dolist (b size-bytes) (push b section))
+      ;; Global count
+      (dolist (b count-bytes) (push b section))
+      ;; Global definitions
+      (dolist (b global-bytes) (push b section))
+      ;; Return as byte vector
+      (coerce (nreverse section) '(vector (unsigned-byte 8))))))
+
+;;; ============================================================
 ;;; Symbol Interning (T011: intern-symbol for host-side evaluation)
 ;;; ============================================================
 

@@ -11,6 +11,7 @@
            #:ffd-param-types
            #:ffd-return-type
            #:ffd-type-index
+           #:ffd-func-index  ; 001-numeric-functions: function index for :call
            ;; Marshalling (used by codegen)
            #:marshal-to-wasm
            #:marshal-from-wasm))
@@ -83,6 +84,7 @@
            #:ast-node-source-location
            ;; Literals
            #:ast-literal
+           #:ast-literal-p
            #:ast-literal-value
            #:ast-literal-literal-type
            #:make-ast-literal
@@ -100,12 +102,14 @@
            #:make-integer-literal
            ;; Variable references
            #:ast-var-ref
+           #:ast-var-ref-p
            #:ast-var-ref-name
            #:ast-var-ref-binding
            #:make-ast-var-ref
            #:make-var-ref
            ;; Function calls
            #:ast-call
+           #:ast-call-p
            #:ast-call-function
            #:ast-call-arguments
            #:ast-call-call-type
@@ -219,16 +223,17 @@
            #:make-ast-unwind-protect
            ;; Special variable definitions (T017-T018)
            #:ast-defvar
+           #:ast-defvar-p
            #:ast-defvar-name
            #:ast-defvar-init-form
            #:ast-defvar-docstring
            #:make-ast-defvar
            #:ast-defparameter
+           #:ast-defparameter-p
            #:ast-defparameter-name
            #:ast-defparameter-init-form
            #:ast-defparameter-docstring
            #:make-ast-defparameter
-           #:ast-defparameter-p
            ;; Feature 038: defconstant AST
            #:ast-defconstant
            #:ast-defconstant-name
@@ -627,6 +632,53 @@
            #:method-info-lambda-list
            #:method-info-body
            #:compile-defmethod))
+
+;; Phase 13D-4: Global variable compilation
+(defpackage #:clysm/compiler/codegen/globals
+  (:use #:cl
+        #:clysm/compiler/ast
+        #:clysm/compiler/codegen/func-section)
+  (:export ;; Global declaration structure
+           #:global-declaration
+           #:make-global-declaration
+           #:global-decl-name
+           #:global-decl-kind
+           #:global-decl-init-form
+           #:global-decl-init-type
+           #:global-decl-global-index
+           #:global-decl-docstring
+           ;; Registry management
+           #:*global-declarations*
+           #:*deferred-inits*
+           #:reset-global-declarations
+           #:register-global-declaration
+           #:get-global-declaration
+           ;; Init type classification
+           #:classify-init-type
+           ;; Compilation
+           #:compile-defvar
+           #:compile-defparameter
+           #:compile-global-definition
+           ;; Code generation
+           #:generate-special-var-globals
+           #:generate-init-function-body
+           #:has-deferred-inits-p))
+
+;; Phase 13D-4: Wasm global section helpers
+(defpackage #:clysm/compiler/codegen/wasm-global
+  (:use #:cl)
+  (:export ;; Type encoding
+           #:encode-ref-null-any-type
+           #:encode-global-type
+           ;; Init expression encoding
+           #:encode-ref-null-any-init
+           #:encode-global-get-init
+           #:encode-i31-const-init
+           ;; Global entry encoding
+           #:encode-global-entry
+           #:encode-special-var-global
+           ;; Section assembly
+           #:assemble-global-section))
 
 (defpackage #:clysm/compiler
   (:use #:cl

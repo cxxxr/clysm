@@ -147,6 +147,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), wasmtime, wasm-tools (001-ansi-array-primitives)
 - N/A (in-memory compilation) (001-ansi-array-primitives)
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8) (001-compile-time-directives)
+- N/A (in-memory compilation, Wasm binary output) (001-global-variable-defs)
 
 ## Recent Changes
 - 001-numeric-functions: Added Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)

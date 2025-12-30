@@ -382,9 +382,9 @@
 
 (defun emit-type-section (buffer functions)
   "Emit Type section with GC types and function types.
-   Layout:
+   Layout (must match gc-types.lisp constants):
    - Types 0-5: GC types ($nil, $unbound, $cons, $symbol, $string, $closure)
-   - Type 6-7: Reserved
+   - Type 6-7: CLOS types ($instance, $standard-class)
    - Types 8-12: Function types ($func_0, $func_1, $func_2, $func_3, $func_N)
    - Type 13: Binding frame for special variables
    - Type 14: $bignum - arbitrary precision integer (010-numeric-tower)
@@ -392,19 +392,27 @@
    - Type 16: $float - IEEE 754 double-precision (010-numeric-tower)
    - Type 17: $complex - complex number (010-numeric-tower)
    - Type 18: $limb_array - array of i32 for bignum limbs (010-numeric-tower)
-   - Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
-   - Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
-   - Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
-   - Type 22: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
-   - Types 23+: Regular (non-lambda) function types + FFI function types (T058)"
+   - Type 19: $stream - I/O stream object (015-ffi-stream-io)
+   - Type 20: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
+   - Type 21: $slot_vector - CLOS slot storage array (026-clos-foundation)
+   - Type 22: $keyword_array - CLOS initarg keyword array (026-clos-foundation)
+   - Type 23: $closure_array - CLOS initform closure array (026-clos-foundation)
+   - Type 24: $macro_environment - macro expansion environment (042-advanced-defmacro)
+   - Type 25: $hash_entry - hash table entry (043-self-hosting-blockers)
+   - Type 26: $hash_table - hash table struct (043-self-hosting-blockers)
+   - Type 27: $bucket_array - hash table bucket array (043-self-hosting-blockers)
+   - Type 28: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+   - Type 29: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+   - Type 30: $catch_result - () -> (anyref, anyref) for catch handler block result
+   - Types 31+: Regular (non-lambda) function types + FFI function types (T058)"
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
         ;; Count non-lambda functions (lambdas reuse types 8-12)
         (regular-func-count (count-if-not #'is-lambda-function-p functions))
         ;; T058: Count FFI function types
         (ffi-type-count (collect-ffi-type-count)))
-    ;; Number of types = 23 (base types) + regular functions + FFI types
-    (emit-leb128-unsigned (+ 23 regular-func-count ffi-type-count) content)
+    ;; Number of types = 31 (base types) + regular functions + FFI types
+    (emit-leb128-unsigned (+ 31 regular-func-count ffi-type-count) content)
     ;; Type 0: $nil (empty struct)
     (emit-gc-struct-type content '())
     ;; Type 1: $unbound (empty struct)
@@ -419,9 +427,11 @@
     (emit-gc-struct-type content '((:funcref nil) (:funcref nil)
                                    (:funcref nil) (:funcref nil)
                                    (:anyref t)))
-    ;; Types 6-7: Reserved (empty placeholders)
-    (emit-gc-struct-type content '())
-    (emit-gc-struct-type content '())
+    ;; Type 6: $instance - CLOS instance (class, slots)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil)))
+    ;; Type 7: $standard-class - CLOS class metadata
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil) (:anyref nil)
+                                   (:anyref nil) (:anyref nil) (:anyref nil)))
     ;; Type 8: $func_0 - (ref $closure) -> anyref
     (emit-func-type-bytes content '(:anyref) '(:anyref))
     ;; Type 9: $func_1 - (ref $closure, anyref) -> anyref
@@ -433,10 +443,8 @@
     ;; Type 12: $func_N - (ref $closure, anyref) -> anyref (list as second param)
     (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
     ;; Type 13: $binding_frame - (symbol-ref, old_value, prev) for dynamic bindings
-    ;; Note: Using anyref for symbol-ref since we can't forward-reference types
     (emit-gc-struct-type content '((:anyref nil) (:anyref nil) (:anyref nil)))
     ;; Type 14: $bignum - (sign:i32, limbs:ref $limb_array) (010-numeric-tower)
-    ;; Note: limbs field references type 18, but since that's forward, use anyref
     (emit-gc-struct-type content '((:i32 nil) (:anyref nil)))
     ;; Type 15: $ratio - (numerator:anyref, denominator:anyref) (010-numeric-tower)
     (emit-gc-struct-type content '((:anyref nil) (:anyref nil)))
@@ -446,15 +454,31 @@
     (emit-gc-struct-type content '((:anyref nil) (:anyref nil)))
     ;; Type 18: $limb_array - (array (mut i32)) for bignum limbs (010-numeric-tower)
     (emit-gc-array-type content :i32 t)
-    ;; Type 19: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
-    (emit-func-type-bytes content '(:anyref :anyref) '())
-    ;; Type 20: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
-    (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
-    ;; Type 21: $catch_result - () -> (anyref, anyref) for catch handler block result
-    (emit-func-type-bytes content '() '(:anyref :anyref))
-    ;; Type 22: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
+    ;; Type 19: $stream - I/O stream object (015-ffi-stream-io)
+    (emit-gc-struct-type content '((:i32 nil) (:anyref nil) (:anyref nil)))
+    ;; Type 20: $mv_array - (array (mut anyref)) for multiple values buffer (025-multiple-values)
     (emit-gc-array-type content :anyref t)
-    ;; Regular function types (indices 23+) - skip lambdas (they use types 8-12)
+    ;; Type 21: $slot_vector - CLOS slot storage (array (mut anyref)) (026-clos-foundation)
+    (emit-gc-array-type content :anyref t)
+    ;; Type 22: $keyword_array - CLOS initarg keywords (array anyref) (026-clos-foundation)
+    (emit-gc-array-type content :anyref nil)
+    ;; Type 23: $closure_array - CLOS initform closures (array anyref) (026-clos-foundation)
+    (emit-gc-array-type content :anyref nil)
+    ;; Type 24: $macro_environment - macro expansion environment (042-advanced-defmacro)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref nil) (:anyref nil)))
+    ;; Type 25: $hash_entry - hash table entry (key, value, next) (043-self-hosting-blockers)
+    (emit-gc-struct-type content '((:anyref nil) (:anyref t) (:anyref t)))
+    ;; Type 26: $hash_table - hash table (size, count, test, buckets) (043-self-hosting-blockers)
+    (emit-gc-struct-type content '((:i32 nil) (:i32 t) (:anyref nil) (:anyref nil)))
+    ;; Type 27: $bucket_array - hash table bucket array (array (mut anyref)) (043-self-hosting-blockers)
+    (emit-gc-array-type content :anyref t)
+    ;; Type 28: $tag_lisp_throw - (anyref, anyref) -> () for exception tag
+    (emit-func-type-bytes content '(:anyref :anyref) '())
+    ;; Type 29: $catch_handler - (anyref, anyref) -> anyref (unused, kept for compatibility)
+    (emit-func-type-bytes content '(:anyref :anyref) '(:anyref))
+    ;; Type 30: $catch_result - () -> (anyref, anyref) for catch handler block result
+    (emit-func-type-bytes content '() '(:anyref :anyref))
+    ;; Regular function types (indices 31+) - skip lambdas (they use types 8-12)
     (dolist (func functions)
       (unless (is-lambda-function-p func)
         ;; func type indicator
@@ -508,10 +532,10 @@
 (defun emit-function-section (buffer functions)
   "Emit Function section.
    Lambda functions use predefined types 8-12 ($func_0/1/2/3/N).
-   Regular functions use types 23+ (13 = binding_frame, 14-18 = numeric tower, 19-21 = exception types, 22 = mv_array)."
+   Regular functions use types 31+ (after all GC types and exception types)."
   (let ((content (make-array 0 :element-type '(unsigned-byte 8)
                                :adjustable t :fill-pointer 0))
-        (regular-func-idx 23))  ; Start regular function types at 23 (after mv_array)
+        (regular-func-idx 31))  ; Start regular function types at 31 (after exception types)
     ;; Number of functions
     (emit-leb128-unsigned (length functions) content)
     ;; Type index for each function
@@ -547,9 +571,9 @@
     (emit-leb128-unsigned 1 content)
     ;; Tag 0: $lisp-throw
     ;; Format: attribute (0 = exception) + type index
-    ;; Type index 19 is $tag_lisp_throw - (anyref, anyref) -> ()
+    ;; Type index 28 is $tag_lisp_throw - (anyref, anyref) -> ()
     (vector-push-extend #x00 content)  ; attribute: exception
-    (emit-leb128-unsigned 19 content)  ; Use type index 19 ($tag_lisp_throw)
+    (emit-leb128-unsigned 28 content)  ; Use type index 28 ($tag_lisp_throw)
     ;; Write section
     (vector-push-extend 13 buffer)  ; Tag section ID
     (emit-leb128-unsigned (length content) buffer)

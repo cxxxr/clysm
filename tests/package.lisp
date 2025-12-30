@@ -14,7 +14,12 @@
            ;; Floating-point comparison helpers (001-numeric-functions)
            #:*float-epsilon*
            #:approx=
-           #:assert-approx=))
+           #:assert-approx=
+           ;; Global variable helpers (001-global-variable-defs)
+           #:wasm-valid-p
+           #:wasm-has-init-function-p
+           #:wasm-has-global-section-p
+           #:wasm-global-count))
 
 (defpackage #:clysm/tests
   (:use #:cl #:rove)
@@ -26,7 +31,12 @@
                 #:with-temp-wasm-file
                 #:assert-compiles
                 #:assert-validates
-                #:assert-equals)
+                #:assert-equals
+                ;; Global variable helpers (001-global-variable-defs)
+                #:wasm-valid-p
+                #:wasm-has-init-function-p
+                #:wasm-has-global-section-p
+                #:wasm-global-count)
   (:export #:run-all-tests
            #:compile-and-run
            #:compile-and-run-numeric
@@ -35,7 +45,12 @@
            #:with-temp-wasm-file
            #:assert-compiles
            #:assert-validates
-           #:assert-equals))
+           #:assert-equals
+           ;; Global variable helpers (001-global-variable-defs)
+           #:wasm-valid-p
+           #:wasm-has-init-function-p
+           #:wasm-has-global-section-p
+           #:wasm-global-count))
 
 (defpackage #:clysm/tests/contract/leb128
   (:use #:cl #:rove #:clysm/backend/leb128))

@@ -94,12 +94,12 @@
   "Create the multiple values buffer global.
    Stores secondary values (values beyond the primary).
    Fixed size of 20 elements (anyref) for multiple-value storage.
-   Type 22 is $mv_array defined in the type section."
+   Type 20 is $mv_array defined in the type section."
   (make-wasm-global
    :name '$mv_buffer
-   :type '(:ref 22)  ; (ref $mv_array) - type 22 in type section
+   :type '(:ref 20)  ; (ref $mv_array) - type 20 in type section
    :mutability :var
-   :init-expr '((:i32.const 20) (:array.new_default 22))))  ; array.new_default $mv_array 20
+   :init-expr '((:i32.const 20) (:array.new_default 20))))  ; array.new_default $mv_array 20
 
 (defun mv-count-global-index ()
   "Get the global index for mv-count"
