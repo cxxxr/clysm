@@ -164,3 +164,41 @@
                        (eq 'make-point (second form))))
                 (rest expansion))
           "Expansion includes make-point constructor"))))
+
+;;;; ============================================================
+;;;; T022-T023: Accessor Wasm Compilation (Phase 5, US3)
+;;;; Feature: 001-make-instance-primitive
+;;;; ============================================================
+
+(deftest defstruct-accessor-wasm-test
+  (testing "T022: accessor (point-x p) generates valid expansion structure"
+    ;; Verify accessor function is generated in expansion
+    (let* ((def (clysm/lib::parse-defstruct '(defstruct point x y)))
+           (expansion (clysm/lib::expand-defstruct def)))
+      ;; Find point-x accessor
+      (let ((accessor (find-if (lambda (form)
+                                  (and (listp form)
+                                       (eq 'defun (first form))
+                                       (eq 'point-x (second form))))
+                                (rest expansion))))
+        (ok accessor "point-x accessor should be in expansion")
+        ;; Verify accessor has correct structure
+        (when accessor
+          (ok (= 1 (length (third accessor)))
+              "accessor should take exactly 1 argument")))))
+
+  (testing "T023: setf accessor generates valid expansion structure"
+    ;; Verify setf expander registration is in expansion
+    (let* ((def (clysm/lib::parse-defstruct '(defstruct point x y)))
+           (expansion (clysm/lib::expand-defstruct def)))
+      ;; Look for setf expander registration for point-x
+      (ok (some (lambda (form)
+                  (and (listp form)
+                       (eq 'clysm/lib/setf-expanders:register-setf-expander
+                           (first form))
+                       (or (eq 'point-x (second form))
+                           (and (listp (second form))
+                                (eq 'quote (first (second form)))
+                                (eq 'point-x (second (second form)))))))
+                (rest expansion))
+          "expansion includes setf expander for point-x"))))
