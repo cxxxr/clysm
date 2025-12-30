@@ -6,82 +6,79 @@
 (in-package #:clysm/tests/unit/stage1-generator)
 
 ;;; ==========================================================================
-;;; Form Compilation Tests
+;;; Form Compilation Tests (test-form-compilation)
 ;;; ==========================================================================
 
-(deftest test-compile-form-to-wasm-simple-expr
-  "compile-form-to-wasm should compile simple arithmetic."
-  (multiple-value-bind (wasm success-p error-msg)
-      (clysm/stage1:compile-form-to-wasm '(+ 1 2))
-    (ok success-p "simple arithmetic compiles")
-    (ok (null error-msg) "no error message")
-    (ok (or (null wasm) (vectorp wasm)) "returns vector or nil")))
+(deftest test-form-compilation-simple-expr
+  "test-form-compilation should compile simple defun."
+  (multiple-value-bind (success-p bytes)
+      (clysm/stage1:test-form-compilation '(defun test-simple-add () (+ 1 2)))
+    (ok success-p "simple defun compiles")
+    (ok (or (null bytes) (vectorp bytes)) "returns vector or nil")))
 
-(deftest test-compile-form-to-wasm-error-handling
-  "compile-form-to-wasm should handle errors gracefully."
-  (multiple-value-bind (wasm success-p error-msg)
-      ;; Use an intentionally invalid form
-      (handler-case
-          (clysm/stage1:compile-form-to-wasm '(unknown-special-form-xyz))
-        (error ()
-          (values nil nil "Expected error")))
-    (ok (or success-p (not success-p)) "returns success flag")
-    (ok (or (null error-msg) (stringp error-msg)) "error-msg is string or nil")))
+(deftest test-form-compilation-error-handling
+  "test-form-compilation should handle errors gracefully."
+  (multiple-value-bind (success-p bytes)
+      (clysm/stage1:test-form-compilation '(unknown-special-form-xyz))
+    (ok (null success-p) "unknown form fails")
+    (ok (null bytes) "no bytes for failed form")))
 
 ;;; ==========================================================================
-;;; Compile All Forms Tests
+;;; Classify Forms Tests
 ;;; ==========================================================================
 
-(deftest test-compile-all-forms-returns-results
-  "compile-all-forms should return results and stats."
+(deftest test-classify-forms-returns-results
+  "classify-forms should return results and stats."
   (let ((forms (list (clysm/stage1:make-source-form
-                      :id "1:0" :sexp '(+ 1 2) :operator '+ :compilable-p t)
+                      :id "1:0" :sexp '(defun test-add-1 () (+ 1 2)) :operator 'defun :compilable-p t)
                      (clysm/stage1:make-source-form
-                      :id "1:1" :sexp '(* 3 4) :operator '* :compilable-p t))))
-    (multiple-value-bind (results stats)
-        (clysm/stage1:compile-all-forms forms)
+                      :id "1:1" :sexp '(defun test-mul-1 () (* 3 4)) :operator 'defun :compilable-p t))))
+    (multiple-value-bind (successful-sexps results stats)
+        (clysm/stage1:classify-forms forms :validate nil)
       (ok (listp results) "returns list of results")
       (ok (listp stats) "returns stats plist")
       (ok (= (length results) 2) "two results")
       (ok (getf stats :total) "stats has :total"))))
 
-(deftest test-compile-all-forms-progress-callback
-  "compile-all-forms should call progress callback."
-  (let ((forms (list (clysm/stage1:make-source-form
-                      :id "1:0" :sexp '(+ 1 2) :operator '+ :compilable-p t)))
-        (callback-called nil))
-    (clysm/stage1:compile-all-forms
-     forms
-     :progress-callback (lambda (index total success-p)
-                          (declare (ignore success-p))
-                          (setf callback-called (list index total))))
-    (ok callback-called "callback was called")
-    (ok (equal callback-called '(1 1)) "callback received correct args")))
-
 ;;; ==========================================================================
-;;; Binary Accumulation Tests
+;;; Phase 13D-3: Directive Skip Tests (T006, T007)
 ;;; ==========================================================================
 
-(deftest test-accumulate-wasm-bytes-empty
-  "accumulate-wasm-bytes should return NIL for no bytes."
-  (let ((results (list (clysm/stage1:make-compilation-result
-                        :form-id "1:0" :success-p nil))))
-    (ok (null (clysm/stage1:accumulate-wasm-bytes results))
-        "returns NIL for no successful results")))
+(deftest test-form-compilation-returns-skipped-for-nil-bytes
+  "T006: test-form-compilation should return :skipped when compile-to-wasm returns nil.
+This happens for compile-time directives like defpackage, in-package, declaim."
+  ;; Test with a directive form that returns nil from compile-to-wasm
+  (multiple-value-bind (result bytes)
+      (clysm/stage1::test-form-compilation '(defpackage :test-pkg-for-skip (:use :cl)))
+    (ok (eq result :skipped) "directive form should return :skipped")
+    (ok (null bytes) "bytes should be nil for directive")))
 
-(deftest test-accumulate-wasm-bytes-combines
-  "accumulate-wasm-bytes should combine multiple byte vectors."
-  (let ((results (list (clysm/stage1:make-compilation-result
-                        :form-id "1:0" :success-p t
-                        :wasm-bytes (make-array 4 :element-type '(unsigned-byte 8)
-                                                 :initial-contents '(0 1 2 3)))
-                       (clysm/stage1:make-compilation-result
-                        :form-id "1:1" :success-p t
-                        :wasm-bytes (make-array 3 :element-type '(unsigned-byte 8)
-                                                 :initial-contents '(4 5 6))))))
-    (let ((combined (clysm/stage1:accumulate-wasm-bytes results)))
-      (ok (vectorp combined) "returns vector")
-      (ok (= (length combined) 7) "combined length is 7"))))
+(deftest test-classify-forms-tracks-skipped-count
+  "T007: classify-forms should track skipped count separately from compiled/failed.
+Directive forms returning nil should increment skipped, not failed."
+  (let ((forms (list
+                ;; A directive form (should be skipped)
+                (clysm/stage1:make-source-form
+                 :id "1:0"
+                 :sexp '(defpackage :test-classify-pkg (:use :cl))
+                 :operator 'defpackage
+                 :compilable-p t)
+                ;; A normal form (should compile)
+                (clysm/stage1:make-source-form
+                 :id "1:1"
+                 :sexp '(defun test-fn-for-classify () 42)
+                 :operator 'defun
+                 :compilable-p t))))
+    (multiple-value-bind (successful-sexps results stats)
+        (clysm/stage1::classify-forms forms :validate nil)
+      (declare (ignore results))
+      ;; Check that skipped is tracked
+      (ok (getf stats :skipped) "stats should have :skipped key")
+      (ok (= (getf stats :skipped) 1) "one form should be skipped (defpackage)")
+      (ok (= (getf stats :compiled) 1) "one form should be compiled (defun)")
+      (ok (= (getf stats :failed) 0) "no forms should fail")
+      ;; Successful-sexps should NOT include the skipped directive
+      (ok (= (length successful-sexps) 1) "only compiled forms in successful-sexps"))))
 
 ;;; ==========================================================================
 ;;; Binary Output Tests

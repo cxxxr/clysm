@@ -38,27 +38,35 @@ MODULE is a source-module struct."
 
 (defun record-form-result (result)
   "Record the result of compiling a single form.
-RESULT is a compilation-result struct."
+RESULT is a compilation-result struct.
+Phase 13D-3: Handle :skipped as separate category from compiled/failed."
   (when *current-module-stats*
-    (if (compilation-result-success-p result)
-        (incf (module-stats-compiled *current-module-stats*))
-        (progn
-          (incf (module-stats-failed *current-module-stats*))
-          ;; Track failure by operator
-          (let* ((form (compilation-result-form result))
-                 (operator (if form
-                               (source-form-operator form)
-                               (compilation-result-error-type result)))
-                 (existing (gethash operator *failure-index*)))
-            (if existing
-                (incf (failure-group-count existing))
-                (setf (gethash operator *failure-index*)
-                      (make-failure-group
-                       :operator operator
-                       :count 1
-                       :example (if form
-                                    (source-form-source-text form)
-                                    (compilation-result-error-message result))))))))))
+    (let ((success-p (compilation-result-success-p result)))
+      (cond
+        ;; Skipped (directive form) - don't count as compiled or failed
+        ((eq success-p :skipped)
+         (incf (module-stats-skipped *current-module-stats*)))
+        ;; Compiled successfully
+        (success-p
+         (incf (module-stats-compiled *current-module-stats*)))
+        ;; Failed
+        (t
+         (incf (module-stats-failed *current-module-stats*))
+         ;; Track failure by operator for blocker analysis
+         (let* ((form (compilation-result-form result))
+                (operator (if form
+                              (source-form-operator form)
+                              (compilation-result-error-type result)))
+                (existing (gethash operator *failure-index*)))
+           (if existing
+               (incf (failure-group-count existing))
+               (setf (gethash operator *failure-index*)
+                     (make-failure-group
+                      :operator operator
+                      :count 1
+                      :example (if form
+                                   (source-form-source-text form)
+                                   (compilation-result-error-message result)))))))))))
 
 (defun record-skipped-form (form)
   "Record that a form was skipped (non-compilable)."
@@ -105,9 +113,11 @@ Returns a summary struct."
                     (failure-group-count failure))
               (push (copy-failure-group failure) all-failures)))))
     ;; Sort failures by count and get top 5
-    (let ((sorted-failures (sort all-failures #'> :key #'failure-group-count))
-          (coverage (if (zerop total) 0.0
-                        (* 100.0 (/ compiled total)))))
+    ;; Phase 13D-3 (T024): Coverage = compiled / (total - skipped) * 100
+    (let* ((sorted-failures (sort all-failures #'> :key #'failure-group-count))
+           (compilable-forms (- total skipped))
+           (coverage (if (zerop compilable-forms) 0.0
+                         (* 100.0 (/ compiled compilable-forms)))))
       (make-summary
        :total-forms total
        :compiled compiled

@@ -30,10 +30,11 @@
   (compilable-p nil :type boolean))     ; Whether form is in blessed subset
 
 (defstruct compilation-result
-  "Result of attempting to compile a single form."
+  "Result of attempting to compile a single form.
+Phase 13D-3: success-p now accepts :skipped for directive forms."
   (form nil :type (or null source-form)) ; Reference to source form
   (form-id "" :type string)              ; Form identifier
-  (success-p nil :type boolean)          ; Whether compilation succeeded
+  (success-p nil)                        ; T (compiled), NIL (failed), :SKIPPED (directive)
   (wasm-bytes nil :type (or null vector)) ; Compiled output (if success)
   (error-type nil :type symbol)          ; Category of error (if failed)
   (error-message "" :type string)        ; Detailed error description

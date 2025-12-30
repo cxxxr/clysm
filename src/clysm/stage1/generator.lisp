@@ -19,23 +19,33 @@
 
 (defun test-form-compilation (sexp &key (validate t))
   "Test if a form compiles successfully AND produces valid Wasm.
-Returns (values success-p bytes) where success-p is T if compilation
-succeeds AND (if validate is true) the Wasm passes validation."
+Returns (values result bytes) where:
+  - result is T if compilation succeeds and validation passes
+  - result is :SKIPPED if compile-to-wasm returns nil (directive form)
+  - result is NIL if compilation fails or validation fails
+Phase 13D-3: Added :skipped handling for compile-time directives."
   (handler-case
       (let ((bytes (clysm:compile-to-wasm sexp)))
-        (if (and validate (not (validate-wasm-bytes bytes)))
-            (values nil nil)
-            (values t bytes)))
+        (cond
+          ;; T009: Directive forms return nil bytes - mark as skipped
+          ((null bytes) (values :skipped nil))
+          ;; Validation failed
+          ((and validate (not (validate-wasm-bytes bytes)))
+           (values nil nil))
+          ;; Success
+          (t (values t bytes))))
     (error () (values nil nil))))
 
 (defun classify-forms (forms &key (progress-callback nil) (validate t))
-  "Classify forms into successful and failed compilations.
+  "Classify forms into successful, failed, and skipped compilations.
 FORMS is a list of source-form structs.
 When VALIDATE is true (default), only forms that produce valid Wasm are counted as successful.
+Phase 13D-3: Added :skipped tracking for compile-time directives.
 Returns (values successful-sexps results stats)."
   (let ((total (length forms))
         (compiled 0)
         (failed 0)
+        (skipped 0)  ; T010: Add skipped counter
         (results nil)
         (successful-sexps nil))
     (loop for form in forms
@@ -46,31 +56,43 @@ Returns (values successful-sexps results stats)."
                    (form-id (if (source-form-p form)
                                 (source-form-id form)
                                 "0:0")))
-               (multiple-value-bind (success-p bytes)
+               (multiple-value-bind (result bytes)
                    (test-form-compilation sexp :validate validate)
                  (declare (ignore bytes))
-                 (if success-p
-                     (progn
-                       (incf compiled)
-                       (push sexp successful-sexps)
-                       (push (make-compilation-result
-                              :form form
-                              :form-id form-id
-                              :success-p t)
-                             results))
-                     (progn
-                       (incf failed)
-                       (push (make-compilation-result
-                              :form form
-                              :form-id form-id
-                              :success-p nil
-                              :error-message "Compilation or validation failed")
-                             results))))
+                 ;; T011: Add case branch for :skipped
+                 (cond
+                   ;; Skipped (directive form)
+                   ((eq result :skipped)
+                    (incf skipped)
+                    (push (make-compilation-result
+                           :form form
+                           :form-id form-id
+                           :success-p :skipped)
+                          results))
+                   ;; Compiled successfully
+                   (result
+                    (incf compiled)
+                    (push sexp successful-sexps)
+                    (push (make-compilation-result
+                           :form form
+                           :form-id form-id
+                           :success-p t)
+                          results))
+                   ;; Failed
+                   (t
+                    (incf failed)
+                    (push (make-compilation-result
+                           :form form
+                           :form-id form-id
+                           :success-p nil
+                           :error-message "Compilation or validation failed")
+                          results))))
                (when progress-callback
                  (funcall progress-callback index total t))))
     (values (nreverse successful-sexps)
             (nreverse results)
-            (list :compiled compiled :failed failed :total total))))
+            ;; T012: Include :skipped in stats
+            (list :compiled compiled :failed failed :skipped skipped :total total))))
 
 (defun validate-wasm-bytes (bytes)
   "Validate Wasm bytes by writing to temp file and running wasm-tools.
