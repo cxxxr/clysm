@@ -623,11 +623,14 @@
   (vec-var nil :type symbol))                 ; Generated vector variable
 
 (defstruct (loop-iter-hash (:include loop-iteration-clause))
-  "FOR var BEING THE HASH-KEYS/VALUES OF hash-table"
+  "FOR var BEING THE HASH-KEYS/VALUES OF hash-table [USING (HASH-VALUE v)]
+   See: resources/HyperSpec/Body/m_loop.htm section 6.1.2.1.7"
   (hash-form nil :type t)                     ; Hash table expression
   (value-var nil :type symbol)                ; Optional USING (HASH-VALUE v)
   (key-var nil :type symbol)                  ; Optional USING (HASH-KEY k)
-  (mode :keys :type keyword))                 ; :keys or :values
+  (mode :keys :type keyword)                  ; :keys or :values
+  (entries-var nil :type symbol)              ; Generated var for collected entries list
+  (iter-var nil :type symbol))                ; Generated var for iteration position
 
 (defstruct (loop-iter-equals (:include loop-iteration-clause))
   "FOR var = init-form [THEN step-form]"
@@ -959,8 +962,9 @@
             rest)))
 
 (defun parse-for-hash (var clauses)
-  "Parse FOR var BEING THE HASH-KEYS/HASH-VALUES OF hash-table."
-  ;; BEING THE HASH-KEYS OF table
+  "Parse FOR var BEING THE HASH-KEYS/HASH-VALUES OF hash-table [USING (HASH-KEY/VALUE v)].
+   See: resources/HyperSpec/Body/m_loop.htm section 6.1.2.1.7"
+  ;; BEING THE HASH-KEYS OF table [USING (hash-value v)]
   (let* ((rest (rest clauses))  ; skip BEING
          (_ (when (loop-keyword-eq (first rest) 'the)
               (setf rest (rest rest))))  ; skip THE
@@ -975,12 +979,30 @@
               (loop-keyword-eq (first rest2) 'in))
       (setf rest2 (rest rest2)))
     (let ((hash-form (first rest2))
-          (final-rest (rest rest2)))
+          (final-rest (rest rest2))
+          (value-var nil)
+          (key-var nil))
+      ;; Parse optional USING clause (T014-T016)
+      (when (loop-keyword-eq (first final-rest) 'using)
+        (let ((using-spec (second final-rest)))
+          (when (and (listp using-spec) (>= (length using-spec) 2))
+            (cond
+              ;; USING (HASH-VALUE v) when iterating by keys
+              ((loop-keyword-eq (first using-spec) 'hash-value)
+               (setf value-var (second using-spec)))
+              ;; USING (HASH-KEY k) when iterating by values
+              ((loop-keyword-eq (first using-spec) 'hash-key)
+               (setf key-var (second using-spec)))))
+          (setf final-rest (cddr final-rest))))
       (values (make-loop-iter-hash
                :var var
                :clause-type (if (eq mode :keys) :hash-keys :hash-values)
                :hash-form hash-form
-               :mode mode)
+               :mode mode
+               :value-var value-var
+               :key-var key-var
+               :entries-var (gensym "HT-ENTRIES-")
+               :iter-var (gensym "HT-ITER-"))
               final-rest))))
 
 (defun parse-with-clause (clauses ctx)
@@ -1220,7 +1242,40 @@
              (push (list var `(aref ,vec-var ,idx-var)) bindings)))
           ;; = THEN iteration
           ((loop-iter-equals-p clause)
-           (push (list var (loop-iter-equals-init-form clause)) bindings)))))
+           (push (list var (loop-iter-equals-init-form clause)) bindings))
+          ;; HASH-KEYS/HASH-VALUES iteration (T017-T019)
+          ;; See: resources/HyperSpec/Body/m_loop.htm section 6.1.2.1.7
+          ((loop-iter-hash-p clause)
+           (let* ((hash-form (loop-iter-hash-hash-form clause))
+                  (entries-var (loop-iter-hash-entries-var clause))
+                  (iter-var (loop-iter-hash-iter-var clause))
+                  (mode (loop-iter-hash-mode clause))
+                  (value-var (loop-iter-hash-value-var clause))
+                  (key-var (loop-iter-hash-key-var clause)))
+             ;; Collect all entries upfront using maphash
+             (push (list entries-var
+                         `(let ((acc nil))
+                            (maphash (lambda (k v)
+                                       (push (cons k v) acc))
+                                     ,hash-form)
+                            (nreverse acc)))
+                   bindings)
+             ;; Iterator position (points to current entry)
+             (push (list iter-var entries-var) bindings)
+             ;; Primary variable (key or value depending on mode)
+             (push (list var `(if ,iter-var
+                                  (,(if (eq mode :keys) 'caar 'cdar) ,iter-var)
+                                  nil))
+                   bindings)
+             ;; Secondary variable if USING clause specified
+             (when (eq mode :keys)
+               (when value-var
+                 (push (list value-var `(if ,iter-var (cdar ,iter-var) nil))
+                       bindings)))
+             (when (eq mode :values)
+               (when key-var
+                 (push (list key-var `(if ,iter-var (caar ,iter-var) nil))
+                       bindings))))))))
     (nreverse bindings)))
 
 (defun extract-conditional-accum-types (clause)
@@ -1321,7 +1376,11 @@
                (vec-var (loop-iter-across-vec-var clause)))
            (push `(if (>= ,idx-var (length ,vec-var))
                       (go ,loop-end))
-                 tests)))))
+                 tests)))
+        ;; HASH-KEYS/HASH-VALUES - terminate when entries exhausted (T020)
+        ((loop-iter-hash-p clause)
+         (let ((iter-var (loop-iter-hash-iter-var clause)))
+           (push `(when (null ,iter-var) (go ,loop-end)) tests)))))
     ;; Add WHILE/UNTIL termination tests
     (dolist (clause (loop-context-termination-clauses ctx))
       (case (loop-termination-clause-type clause)
@@ -1480,7 +1539,33 @@
               (loop-iter-equals-then-form clause))
          (let ((var (loop-iteration-clause-var clause)))
            (push var step-pairs)
-           (push (loop-iter-equals-then-form clause) step-pairs)))))
+           (push (loop-iter-equals-then-form clause) step-pairs)))
+        ;; HASH-KEYS/HASH-VALUES stepping (T021-T023)
+        ;; Note: psetq evaluates ALL values using OLD bindings, then assigns.
+        ;; So we compute new-var from (cdr iter-var) since that's the new position.
+        ((loop-iter-hash-p clause)
+         (let* ((var (loop-iteration-clause-var clause))
+                (iter-var (loop-iter-hash-iter-var clause))
+                (mode (loop-iter-hash-mode clause))
+                (value-var (loop-iter-hash-value-var clause))
+                (key-var (loop-iter-hash-key-var clause))
+                (next-iter `(cdr ,iter-var)))
+           ;; Step the iterator
+           (push iter-var step-pairs)
+           (push next-iter step-pairs)
+           ;; Update primary variable - read from NEXT position
+           (push var step-pairs)
+           (push `(if ,next-iter
+                      (,(if (eq mode :keys) 'caar 'cdar) ,next-iter)
+                      nil)
+                 step-pairs)
+           ;; Update secondary variable if USING clause specified
+           (when (and (eq mode :keys) value-var)
+             (push value-var step-pairs)
+             (push `(if ,next-iter (cdar ,next-iter) nil) step-pairs))
+           (when (and (eq mode :values) key-var)
+             (push key-var step-pairs)
+             (push `(if ,next-iter (caar ,next-iter) nil) step-pairs))))))
     (when step-pairs
       (list (cons 'psetq (nreverse step-pairs))))))
 

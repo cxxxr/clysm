@@ -382,6 +382,31 @@
   (:import-from #:clysm/tests #:compile-and-run))
 
 ;;; ============================================================
+;;; LOOP Extension Tests (001-loop-extension)
+;;; ============================================================
+
+;; Hash-table iteration tests (001-loop-extension)
+;; Tests for BEING THE HASH-KEYS/VALUES, USING clause
+(defpackage #:clysm/tests/unit/loop-extension/hash-iteration
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; WITH clause tests (001-loop-extension)
+(defpackage #:clysm/tests/unit/loop-extension/with-clause
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; FINALLY clause tests (001-loop-extension)
+(defpackage #:clysm/tests/unit/loop-extension/finally-clause
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;; INTO clause tests (001-loop-extension)
+(defpackage #:clysm/tests/unit/loop-extension/into-clause
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:compile-and-run))
+
+;;; ============================================================
 ;;; Typecase Macro Tests (030-typecase-macros)
 ;;; ============================================================
 
