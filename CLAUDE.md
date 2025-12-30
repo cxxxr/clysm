@@ -98,10 +98,11 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format, 001-arithmetic-primitives)
 
 | Feature | Description |
 |---------|-------------|
+| 001-arithmetic-primitives | Arithmetic primitives [1-](resources/HyperSpec/Body/f_1pl_1_.htm) and [1+](resources/HyperSpec/Body/f_1pl_1_.htm) for recursive/iterative algorithms |
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
 | 001-ansi-char-functions | ANSI CL character functions: graphic-char-p, standard-char-p, both-case-p, char-name, name-char, digit-char, char-int |
 | 001-ansi-string-trim | ANSI CL string trim functions: string-trim, string-left-trim, string-right-trim, nstring-upcase, nstring-downcase, nstring-capitalize with :start/:end support |

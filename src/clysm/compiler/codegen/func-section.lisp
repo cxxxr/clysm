@@ -723,6 +723,8 @@
       ;; (needed for %setf-* primitives which may come from setf-expanders package)
       ((and (symbolp function)
             (member function '(+ - * / < > <= >= = /= truncate
+                               ;; Increment/decrement primitives (001-arithmetic-primitives)
+                               1- 1+
                                ;; Cons/list operations (006-cons-list-ops)
                                cons car cdr list
                                consp null not atom listp
@@ -939,6 +941,9 @@
     (truncate (compile-truncate args env))
     (mod (compile-arithmetic-op :i32.rem_s args env nil))
     (rem (compile-arithmetic-op :i32.rem_s args env nil))
+    ;; Increment/decrement primitives (001-arithmetic-primitives)
+    (1- (compile-1- args env))
+    (1+ (compile-1+ args env))
     ;; ANSI Numeric Functions (001-numeric-functions)
     (abs (compile-abs args env))
     (max (compile-max args env))
@@ -3424,6 +3429,36 @@
    (compile-to-instructions arg env)
    '((:ref.cast :i31) :i31.get_s
      :i32.sub
+     :ref.i31)))
+
+;;; ============================================================
+;;; Feature 001-arithmetic-primitives: Increment/Decrement
+;;; [1-](resources/HyperSpec/Body/f_1pl_1_.htm)
+;;; [1+](resources/HyperSpec/Body/f_1pl_1_.htm)
+;;; ============================================================
+
+(defun compile-1- (args env)
+  "Compile (1- x) => (- x 1).
+   Stack: [] -> [anyref (i31ref)]"
+  (when (/= (length args) 1)
+    (error "1- requires exactly 1 argument"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s
+     (:i32.const 1)
+     :i32.sub
+     :ref.i31)))
+
+(defun compile-1+ (args env)
+  "Compile (1+ x) => (+ x 1).
+   Stack: [] -> [anyref (i31ref)]"
+  (when (/= (length args) 1)
+    (error "1+ requires exactly 1 argument"))
+  (append
+   (compile-to-instructions (first args) env)
+   '((:ref.cast :i31) :i31.get_s
+     (:i32.const 1)
+     :i32.add
      :ref.i31)))
 
 (defun compile-truncate (args env)

@@ -936,3 +936,19 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; Arithmetic Primitives Tests (001-arithmetic-primitives)
+;;; Phase 13D-1b: 1- and 1+ Arithmetic Primitives
+;;; ============================================================
+
+;; Arithmetic primitives unit tests (001-arithmetic-primitives)
+;; Tests for compile-1- and compile-1+ codegen
+(defpackage #:clysm/tests/unit/arithmetic-primitives
+  (:use #:cl #:rove))
+
+;; Arithmetic primitives Wasm contract tests (001-arithmetic-primitives)
+;; Validates Wasm output for 1- and 1+ expressions
+(defpackage #:clysm/tests/contract/arithmetic-primitives
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
