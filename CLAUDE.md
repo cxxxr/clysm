@@ -187,6 +187,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - N/A (in-memory compilation, no persistence) (001-ansi-sequence-functions)
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), trivial-gray-streams; existing array infrastructure from `001-ansi-array-primitives` (001-ansi-array-ops)
 - Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), trivial-gray-streams, existing Clysm compiler infrastructure (001-ansi-string-trim)
+- Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), existing clysm compiler infrastructure (001-char-literal-compile)
 
 ## Recent Changes
 - 001-ansi-array-ops (Phase 15C): Implemented 9 ANSI CL array operations: array-rank, array-dimension, array-dimensions, array-total-size, array-row-major-index, row-major-aref, (setf row-major-aref), adjustable-array-p, adjust-array. Added $mdarray type (index 28) for multidimensional array support.

@@ -920,3 +920,19 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; Character Literal Compilation Tests (001-char-literal-compile)
+;;; Phase 13D-1a: Character Literal Compilation Support
+;;; ============================================================
+
+;; Character literal compilation unit tests (001-char-literal-compile)
+;; Tests for compile-quoted-element with character literals
+(defpackage #:clysm/tests/unit/char-literal
+  (:use #:cl #:rove))
+
+;; Character literal Wasm contract tests (001-char-literal-compile)
+;; Validates Wasm output for quoted character expressions
+(defpackage #:clysm/tests/contract/char-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
