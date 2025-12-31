@@ -971,3 +971,15 @@
 (defpackage #:clysm/tests/integration/dynamic-call
   (:use #:cl #:rove))
 
+;;; ============================================================
+;;; CLOS Primitives Tests (001-m3-clos-primitives)
+;;; Phase 13D M3: CLOS Primitives Wasm Codegen
+;;; ============================================================
+
+;; CLOS primitives Wasm contract tests (001-m3-clos-primitives)
+;; Validates Wasm output for slot-value*, (setf slot-value*),
+;; make-instance*, standard-instance-p codegen
+(defpackage #:clysm/tests/contract/clos-primitives-wasm
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+

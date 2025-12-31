@@ -22,12 +22,14 @@
    - defpackage: Creates a new package at compile-time
    - declaim: File-scope declarations (optimize, type, special, etc.)
    - proclaim: Global declarations
-   - defmacro: Macro definitions (expanded by host, see HyperSpec m_defmac.htm)"
+   - defmacro: Macro definitions (expanded by host, see HyperSpec m_defmac.htm)
+   - define-condition: Condition type definitions (Feature 001-m3-clos-primitives)"
   (and (consp form)
        (symbolp (car form))
        (member (car form) '(cl:in-package cl:defpackage cl:declaim cl:proclaim
-                            cl:defmacro
-                            in-package defpackage declaim proclaim defmacro)
+                            cl:defmacro cl:define-condition
+                            in-package defpackage declaim proclaim defmacro
+                            define-condition)
                :test #'eq)))
 
 ;;; ============================================================

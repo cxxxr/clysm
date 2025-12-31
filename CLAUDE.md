@@ -192,6 +192,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) host compiler, WasmGC target + alexandria, babel (UTF-8), existing FFI infrastructure (feature 027), existing format implementation (001-io-print-primitives)
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, babel (UTF-8), existing clysm compiler infrastructure (001-division-rounding-primitives)
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8), trivial-gray-streams, rove (testing), wasm-tools (validation) (001-m2-blocker-analysis)
+- Common Lisp (SBCL 2.4+) for host compiler + alexandria, babel (UTF-8), existing Clysm compiler infrastructure (001-m3-clos-primitives)
 
 ## Recent Changes
 - 001-m2-blocker-analysis (Phase 13D M2): Blocker analysis and DEFMACRO skip. Analyzed compilation blockers (DEFSTRUCT 1953, DEFMACRO 646, DEFINE-CONDITION 302, DEFVAR 133). Implemented [DEFMACRO](resources/HyperSpec/Body/m_defmac.htm) skip in directive.lisp. Coverage: 13.90% → 14.26%. Remaining blockers require CLOS primitives (slot-value*, make-instance*) - deferred to M3.

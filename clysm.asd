@@ -276,6 +276,8 @@
      (:file "mv-wasm-test")
      ;; CLOS Foundation Wasm validation (026-clos-foundation)
      (:file "clos-wasm-test")
+     ;; CLOS Primitives Wasm validation (001-m3-clos-primitives)
+     (:file "clos-primitives-wasm-test")
      ;; FFI Complete Wasm validation (027-complete-ffi)
      (:file "ffi-import-wasm-test")
      (:file "ffi-call-wasm-test")
