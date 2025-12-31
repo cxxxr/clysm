@@ -128,4 +128,13 @@
    #:make-call-host-dynamic-import-decl
    #:register-call-host-dynamic-import
    #:get-call-host-dynamic-index
-   #:ensure-call-host-dynamic-import))
+   #:ensure-call-host-dynamic-import
+
+   ;; Dynamic call import (T035 - 001-ffi-import-architecture)
+   #:*dynamic-call-type-index*
+   #:make-dynamic-call-wasm-import
+   #:emit-dynamic-call-import
+   #:emit-selected-ffi-imports-with-dynamic-call
+
+   ;; Selective FFI import (T014 - 001-ffi-import-architecture)
+   #:emit-selected-ffi-imports))

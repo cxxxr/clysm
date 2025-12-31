@@ -109,6 +109,53 @@
     (emit-leb128-unsigned (wi-type-index import) buffer)))
 
 ;;; ============================================================
+;;; T014: Selective Import Emission (Feature 001-ffi-import-architecture)
+;;; ============================================================
+
+(defun collect-selected-ffi-imports (env used-ffis)
+  "Collect only the FFI declarations that are in USED-FFIS list.
+   USED-FFIS is a list of symbols naming the FFI functions to include.
+   If USED-FFIS is NIL, returns all FFI imports (T048: :full mode support).
+   Returns a list of WasmImport structures for only the used functions."
+  (let ((imports '()))
+    (maphash (lambda (name decl)
+               ;; Check if this FFI function is in the used-ffis list
+               ;; Name is a string, used-ffis contains symbols
+               ;; T048: NIL means all FFIs (for :full mode)
+               (when (or (null used-ffis)
+                         (member name used-ffis
+                                 :test (lambda (n sym)
+                                         (string-equal n (symbol-name sym)))))
+                 (push (make-wasm-import
+                        :module-name (ffd-module-name decl)
+                        :field-name (ffd-field-name decl)
+                        :kind :func
+                        :type-index (ffd-type-index decl))
+                       imports)))
+             (ffi-env-imports env))
+    (nreverse imports)))
+
+(defun emit-selected-ffi-imports (env buffer used-ffis)
+  "Emit the Import section to BUFFER with only the used FFI functions.
+   USED-FFIS is a list of symbols naming the FFI functions to include.
+   Feature 001-ffi-import-architecture: T014 implementation.
+   Returns the number of imports emitted."
+  (let ((imports (collect-selected-ffi-imports env used-ffis)))
+    (when imports
+      (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                                   :adjustable t :fill-pointer 0)))
+        ;; Import count
+        (emit-leb128-unsigned (length imports) content)
+        ;; Each import entry
+        (dolist (import imports)
+          (emit-import-entry import content))
+        ;; Write section: ID 2 + size + content
+        (vector-push-extend 2 buffer)  ; Import section ID
+        (emit-leb128-unsigned (length content) buffer)
+        (loop for b across content do (vector-push-extend b buffer))))
+    (length imports)))
+
+;;; ============================================================
 ;;; Helper: LEB128 Encoding
 ;;; ============================================================
 
@@ -313,6 +360,98 @@
   "Return the Wasm function type for the FFI error handler.
    Type: () -> () (no params, no return - just signals error)"
   '(:func () ()))
+
+;;; ============================================================
+;;; T035: Dynamic Call Import for Runtime Resolution
+;;; Feature: 001-ffi-import-architecture (User Story 3)
+;;; ============================================================
+;;;
+;;; When code contains dynamic funcall/apply patterns like:
+;;;   (funcall (intern "FOO") x)
+;;;   (apply fn args)  ; where fn is a variable
+;;;
+;;; The compiler cannot statically determine which function will be called.
+;;; We emit a $dynamic-call import from "clysm:runtime" module that:
+;;; 1. Takes a function name (symbol) and arguments
+;;; 2. Resolves the function at runtime
+;;; 3. Calls the function with provided arguments
+;;; 4. Returns the result
+
+(defparameter *dynamic-call-type-index* nil
+  "Type index for $dynamic-call function type in the Type section.
+   Set during module compilation when dynamic calls are needed.")
+
+(defun make-dynamic-call-wasm-import ()
+  "Create a WasmImport for the $dynamic-call runtime function.
+   Signature: (anyref symbol, anyref args) -> anyref result
+   - symbol: The function name as a Clysm symbol object
+   - args: Arguments as a list or array
+   - result: Return value from the called function"
+  (make-wasm-import
+   :module-name "clysm:runtime"
+   :field-name "$dynamic-call"
+   :kind :func
+   :type-index *dynamic-call-type-index*))
+
+(defun emit-dynamic-call-import (buffer type-index)
+  "Emit the $dynamic-call import to BUFFER.
+   TYPE-INDEX is the type index for the (anyref, anyref) -> anyref signature.
+   Returns 1 (number of imports emitted)."
+  (let ((content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Import count: 1
+    (emit-leb128-unsigned 1 content)
+    ;; Module name: "clysm:runtime"
+    (let ((mod-bytes (clysm/lib/utf8:string-to-utf8-octets "clysm:runtime")))
+      (emit-leb128-unsigned (length mod-bytes) content)
+      (loop for b across mod-bytes do (vector-push-extend b content)))
+    ;; Field name: "$dynamic-call"
+    (let ((field-bytes (clysm/lib/utf8:string-to-utf8-octets "$dynamic-call")))
+      (emit-leb128-unsigned (length field-bytes) content)
+      (loop for b across field-bytes do (vector-push-extend b content)))
+    ;; Import kind: 0 = func
+    (vector-push-extend 0 content)
+    ;; Type index
+    (emit-leb128-unsigned type-index content)
+    ;; Write section: ID 2 + size + content
+    (vector-push-extend 2 buffer)  ; Import section ID
+    (emit-leb128-unsigned (length content) buffer)
+    (loop for b across content do (vector-push-extend b buffer))
+    1))
+
+(defun emit-selected-ffi-imports-with-dynamic-call (env buffer used-ffis has-dynamic-call-p
+                                                    &optional (dynamic-call-type-index 31))
+  "Emit the Import section with selected FFI imports and optionally $dynamic-call.
+   ENV: FFI environment
+   BUFFER: Output buffer
+   USED-FFIS: List of symbols naming the FFI functions to include.
+              If NIL, all FFI imports are included (T048: :full mode support).
+   HAS-DYNAMIC-CALL-P: If T, also include $dynamic-call import
+   DYNAMIC-CALL-TYPE-INDEX: Type index for $dynamic-call function (default 31)
+   Returns the number of imports emitted."
+  (let ((imports (collect-selected-ffi-imports env used-ffis))
+        (content (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0)))
+    ;; Add $dynamic-call import if needed
+    (when has-dynamic-call-p
+      ;; Create $dynamic-call import with explicit type index
+      (push (make-wasm-import
+             :module-name "clysm:runtime"
+             :field-name "$dynamic-call"
+             :kind :func
+             :type-index dynamic-call-type-index)
+            imports))
+    (when imports
+      ;; Import count
+      (emit-leb128-unsigned (length imports) content)
+      ;; Each import entry
+      (dolist (import imports)
+        (emit-import-entry import content))
+      ;; Write section: ID 2 + size + content
+      (vector-push-extend 2 buffer)  ; Import section ID
+      (emit-leb128-unsigned (length content) buffer)
+      (loop for b across content do (vector-push-extend b buffer)))
+    (length imports)))
 
 ;;; ============================================================
 ;;; T047: Dynamic Call Host Import (027-complete-ffi)

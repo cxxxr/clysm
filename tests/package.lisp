@@ -614,6 +614,10 @@
                 #:make-compilation-result
                 #:make-source-form))
 
+;; Backward compatibility integration tests (001-ffi-import-architecture T060)
+(defpackage #:clysm/tests/integration/backward-compat
+  (:use #:cl #:rove))
+
 ;; Stage 1 validate contract tests - User Story 4 (039-stage1-compiler-gen)
 (defpackage #:clysm/tests/contract/stage1-validate
   (:use #:cl #:rove)
@@ -951,4 +955,19 @@
 (defpackage #:clysm/tests/contract/arithmetic-primitives
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; FFI Import Architecture Tests (001-ffi-import-architecture)
+;;; Phase: Selective FFI import emission
+;;; ============================================================
+
+;; FFI usage analyzer unit tests (001-ffi-import-architecture)
+;; Tests for analyze-ffi-usage, ffi-function-p, static/dynamic detection
+(defpackage #:clysm/tests/unit/ffi-usage
+  (:use #:cl #:rove #:clysm/compiler/analyzer/ffi-usage))
+
+;; Dynamic call integration tests (001-ffi-import-architecture)
+;; Tests for $dynamic-call runtime resolution
+(defpackage #:clysm/tests/integration/dynamic-call
+  (:use #:cl #:rove))
 

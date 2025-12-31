@@ -128,3 +128,81 @@
         "Symbol atom should return NIL")
     (ok (null (analyze-io-usage "hello"))
         "String atom should return NIL")))
+
+;;; ==========================================================================
+;;; T053: Regression tests for io-usage.lisp compatibility
+;;; Feature: 001-ffi-import-architecture
+;;; Purpose: Ensure io-usage analyzer works correctly alongside ffi-usage analyzer
+;;; ==========================================================================
+
+(deftest io-usage-regression-progn-forms
+  "T053: Regression test for progn with I/O (compatibility check)."
+  (testing "progn with I/O is detected"
+    (ok (analyze-io-usage '(progn (+ 1 2) (print "result")))
+        "progn containing print should detect I/O"))
+  (testing "progn without I/O returns nil"
+    (ok (null (analyze-io-usage '(progn (+ 1 2) (* 3 4))))
+        "progn with only arithmetic should return NIL")))
+
+(deftest io-usage-regression-let-bindings
+  "T053: Regression test for let forms with I/O (compatibility check)."
+  (testing "let with I/O in body is detected"
+    (ok (analyze-io-usage '(let ((x 1) (y 2)) (format t "~A ~A" x y)))
+        "let with format in body should detect I/O"))
+  (testing "let with I/O in init-forms is detected"
+    (ok (analyze-io-usage '(let ((x (print 1))) x))
+        "let with print in init-form should detect I/O"))
+  (testing "let* with nested I/O is detected"
+    (ok (analyze-io-usage '(let* ((x 1) (y (write-char #\a))) y))
+        "let* with write-char should detect I/O")))
+
+(deftest io-usage-regression-lambda-forms
+  "T053: Regression test for lambda forms with I/O (compatibility check)."
+  (testing "lambda with I/O in body is detected"
+    (ok (analyze-io-usage '(lambda (x) (print x)))
+        "lambda with print should detect I/O"))
+  (testing "funcall of lambda with I/O is detected"
+    (ok (analyze-io-usage '(funcall (lambda (x) (format t "~A" x)) 42))
+        "funcall of lambda with format should detect I/O")))
+
+(deftest io-usage-regression-flet-labels
+  "T053: Regression test for flet/labels with I/O (compatibility check)."
+  (testing "flet with I/O in local function is detected"
+    (ok (analyze-io-usage '(flet ((f (x) (print x))) (f 42)))
+        "flet with print should detect I/O"))
+  (testing "labels with I/O in local function is detected"
+    (ok (analyze-io-usage '(labels ((f (x) (format t "~A" x))) (f 42)))
+        "labels with format should detect I/O")))
+
+(deftest io-usage-regression-conditional-io
+  "T053: Regression test for conditional I/O (compatibility check)."
+  (testing "if with I/O in then branch"
+    (ok (analyze-io-usage '(if condition (print "yes") nil))
+        "if with print in then should detect I/O"))
+  (testing "if with I/O in else branch"
+    (ok (analyze-io-usage '(if condition nil (print "no")))
+        "if with print in else should detect I/O"))
+  (testing "cond with I/O"
+    (ok (analyze-io-usage '(cond (t (format t "result"))))
+        "cond with format should detect I/O"))
+  (testing "when with I/O"
+    (ok (analyze-io-usage '(when condition (print "executed")))
+        "when with print should detect I/O")))
+
+(deftest io-usage-ffi-usage-independence
+  "T053: Verify io-usage analyzer is independent of ffi-usage analyzer."
+  (testing "I/O functions detected regardless of FFI analysis"
+    ;; These are I/O functions that should be detected by io-usage
+    ;; even though they may also be in the FFI environment
+    (ok (analyze-io-usage '(write-char #\a))
+        "write-char should be detected by io-usage")
+    (ok (analyze-io-usage '(read-char))
+        "read-char should be detected by io-usage")
+    (ok (analyze-io-usage '(terpri))
+        "terpri should be detected by io-usage"))
+  (testing "Non-I/O FFI functions are not detected"
+    ;; Math functions may be FFI but are not I/O
+    (ok (null (analyze-io-usage '(sin 1.0)))
+        "sin is FFI but not I/O - should return NIL")
+    (ok (null (analyze-io-usage '(cos 0.0)))
+        "cos is FFI but not I/O - should return NIL")))

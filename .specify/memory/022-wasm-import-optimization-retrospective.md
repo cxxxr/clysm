@@ -1,9 +1,10 @@
 # 022-wasm-import-optimization Retrospective
 
 **Feature**: Conditional FFI Import Emission for Direct Wasmtime Execution
-**Status**: ✅ COMPLETE
+**Status**: ⚠️ PARTIAL (see 023-ffi-import-architecture)
 **Date**: 2025-12-26
 **Commit**: bb468ea
+**Updated**: 2025-12-31
 
 ## Executive Summary
 
@@ -152,3 +153,51 @@ $ rove :clysm/tests/integration/wasmtime
 - Validation: `specs/022-wasm-import-optimization/validation.md`
 - Tasks: `specs/022-wasm-import-optimization/tasks.md`
 - Implementation: `src/clysm/compiler/analyzer/io-usage.lisp`
+
+---
+
+## Post-Implementation Issues (2025-12-31)
+
+### 発見された問題
+
+実装後のテストで、`uses-io` パラメータが実際には使用されていないことが判明：
+
+```lisp
+;; compiler.lisp:44 - uses-io を渡している
+(bytes (emit-module module :uses-io uses-io))
+
+;; compiler.lisp:222 - しかし uses-io は参照されていない
+(defun emit-module (module &key uses-io)  ; 未使用
+  ...
+  (emit-import-section-if-needed buffer functions))  ; *ffi-environment* 全体を見る
+```
+
+### 再現手順
+
+```lisp
+(clysm/tests:compile-and-run '(+ 1 2))
+;; → Wasm runtime error: unknown import: `clysm:io::write-char`
+```
+
+### 根本原因
+
+1. `define-foreign-function` がシステムロード時に `*ffi-environment*` にFFIを登録
+2. `emit-import-section-if-needed` が `*ffi-environment*` 全体を参照
+3. `uses-io` フラグは渡されるが、実装で無視されている
+
+### 追加の課題
+
+静的解析だけでは Common Lisp の動的呼び出しに対応できない：
+
+```lisp
+(funcall (intern "WRITE-CHAR") #\A)  ; 実行時にシンボル決定
+```
+
+### 後続対応
+
+**Feature 023-ffi-import-architecture** で根本的な解決策を設計：
+- 2層アーキテクチャ（静的呼び出し + 動的呼び出し）
+- 使用FFIのみをインポートする仕組み
+- `$dynamic-call` による動的呼び出しサポート
+
+See: `.specify/memory/023-ffi-import-architecture.md`

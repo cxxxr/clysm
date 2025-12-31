@@ -1,19 +1,45 @@
 ;;;; compiler.lisp - Main compiler interface (T064)
 ;;;; Top-level entry points for compiling Lisp to Wasm
+;;;;
+;;;; Feature: 001-ffi-import-architecture
+;;;; References:
+;;;;   - [funcall](resources/HyperSpec/Body/f_funcal.htm)
+;;;;   - [apply](resources/HyperSpec/Body/f_apply.htm)
 
 (in-package #:clysm/compiler)
+
+;;; ============================================================
+;;; FFI Compilation Mode (T004, 001-ffi-import-architecture)
+;;; ============================================================
+
+(deftype ffi-mode ()
+  "Compilation mode controlling FFI import behavior.
+   :MINIMAL - Only import statically-referenced FFI functions.
+              Signals error if dynamic calls detected.
+   :FULL    - Import all FFI functions plus $dynamic-call support.
+              Always works but produces larger modules.
+   :AUTO    - (Default) Analyze code and include $dynamic-call only
+              when dynamic funcall/apply patterns are detected.
+              Best balance of size and compatibility."
+  '(member :minimal :full :auto))
 
 ;;; ============================================================
 ;;; Main Compilation Entry Point
 ;;; ============================================================
 
-(defun compile-to-wasm (expr &key output extra-exports)
+(defun compile-to-wasm (expr &key output extra-exports (ffi-mode :auto))
   "Compile a Lisp expression to Wasm binary.
    If OUTPUT is provided, writes to file and returns pathname.
    Otherwise returns byte vector.
 
    Phase 13D-9: EXTRA-EXPORTS is a list of (name kind index) for additional
    exports to include in the module (used by Stage 1 generation).
+
+   Feature 001-ffi-import-architecture: FFI-MODE controls import emission:
+     :MINIMAL - Only import statically-referenced FFI functions.
+                Signals error if dynamic calls detected.
+     :FULL    - Import all FFI functions plus $dynamic-call support.
+     :AUTO    - (Default) Analyze code and include only needed imports.
 
    Feature 022-wasm-import-optimization: Analyzes I/O usage to conditionally
    emit Import section only when the compiled code uses I/O functions.
@@ -25,10 +51,12 @@
    proclaim) are evaluated at compile-time and return nil (no Wasm output).
 
    Examples:
-     (compile-to-wasm '(+ 1 2))      ; No Import section (no I/O)
-     (compile-to-wasm '(print 42))   ; Has Import section (uses I/O)
+     (compile-to-wasm '(+ 1 2))                    ; No Import section (no FFI)
+     (compile-to-wasm '(sin 1.0))                  ; Imports only clysm:math/sin
      (compile-to-wasm '(+ 1 2) :output \"add.wasm\")
-     (compile-to-wasm '(in-package :cl))  ; Returns nil (directive)"
+     (compile-to-wasm '(in-package :cl))           ; Returns nil (directive)"
+  ;; Validate ffi-mode
+  (check-type ffi-mode (member :minimal :full :auto))
   ;; Phase 13D-3: Check for compile-time directives BEFORE macro expansion
   ;; Directives are evaluated in the host environment and return nil
   (let ((processed-expr (compile-toplevel-form expr)))
@@ -39,18 +67,39 @@
   (let* ((expanded-expr (clysm/compiler/transform/macro:macroexpand-all
                           (clysm/compiler/transform/macro:global-macro-registry)
                           expr))
+         ;; Feature 022: Analyze I/O usage (legacy, kept for compatibility)
          (uses-io (clysm/compiler/analyzer/io-usage:analyze-io-usage expanded-expr))
-         (module (compile-to-module expanded-expr :extra-exports extra-exports))
-         (bytes (emit-module module :uses-io uses-io)))
-    (if output
-        (progn
-          (with-open-file (stream output
-                                  :direction :output
-                                  :element-type '(unsigned-byte 8)
-                                  :if-exists :supersede)
-            (write-sequence bytes stream))
-          (pathname output))
-        bytes)))
+         ;; Feature 001: Analyze FFI usage for selective import emission
+         (ffi-analysis (clysm/compiler/analyzer/ffi-usage:analyze-ffi-usage expanded-expr)))
+    ;; T047: :minimal mode signals error when dynamic calls detected
+    (when (and (eq ffi-mode :minimal)
+               ffi-analysis
+               (clysm/compiler/analyzer/ffi-usage:ffi-analysis-has-dynamic-call-p ffi-analysis))
+      ;; Use runtime package lookup to avoid compile-time dependency on conditions package
+      (let ((conditions-pkg (find-package :clysm/conditions))
+            (sites (clysm/compiler/analyzer/ffi-usage:ffi-analysis-dynamic-sites ffi-analysis)))
+        (if (and conditions-pkg
+                 (find-symbol "DYNAMIC-CALL-IN-MINIMAL-MODE" conditions-pkg))
+            (error (make-instance (find-symbol "DYNAMIC-CALL-IN-MINIMAL-MODE" conditions-pkg)
+                                  :form expr
+                                  :sites sites))
+            ;; Fallback for when conditions package isn't loaded
+            (error "Dynamic calls detected in :minimal mode at sites: ~S" sites))))
+    ;; Compile module and emit Wasm bytes
+    (let* ((module (compile-to-module expanded-expr :extra-exports extra-exports))
+           (bytes (emit-module module
+                               :uses-io uses-io
+                               :ffi-analysis ffi-analysis
+                               :ffi-mode ffi-mode)))
+      (if output
+          (progn
+            (with-open-file (stream output
+                                    :direction :output
+                                    :element-type '(unsigned-byte 8)
+                                    :if-exists :supersede)
+              (write-sequence bytes stream))
+            (pathname output))
+          bytes))))
 
 (defun compile-to-wat (expr)
   "Compile a Lisp expression to WAT text format.
@@ -219,25 +268,62 @@
           (if count-fn (funcall count-fn) 0))
         0)))
 
-(defun emit-module (module &key uses-io)
+(defun emit-module (module &key uses-io ffi-analysis ffi-mode)
   "Emit a compiled module as a Wasm binary byte vector.
-   USES-IO controls whether Import section is emitted (Feature 022)."
-  (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
-                              :adjustable t :fill-pointer 0))
-        (functions (compiled-module-functions module))
-        ;; 001-numeric-functions: Get import count for function index offsetting
-        ;; In Wasm, imports get indices 0 to N-1, local functions get N onwards
-        (import-offset (get-ffi-import-count)))
+   USES-IO controls whether Import section is emitted (Feature 022, legacy).
+   FFI-ANALYSIS contains the result of analyze-ffi-usage (Feature 001).
+   FFI-MODE controls import behavior: :minimal, :full, or :auto (default)."
+  (declare (ignorable uses-io)) ; Legacy parameter, superseded by ffi-analysis
+  (let* ((buffer (make-array 0 :element-type '(unsigned-byte 8)
+                               :adjustable t :fill-pointer 0))
+         (functions (compiled-module-functions module))
+         ;; Feature 001: Calculate import count based on used FFIs
+         (used-ffis (when ffi-analysis
+                      (clysm/compiler/analyzer/ffi-usage:ffi-analysis-used-ffis ffi-analysis)))
+         ;; Feature 001: Check if dynamic calls are present
+         (has-dynamic-call-p (when ffi-analysis
+                               (clysm/compiler/analyzer/ffi-usage:ffi-analysis-has-dynamic-call-p ffi-analysis)))
+         ;; T048: :full mode always includes $dynamic-call, so treat it as if dynamic calls present
+         (include-dynamic-call-p (or has-dynamic-call-p (eq ffi-mode :full)))
+         ;; If no FFI analysis provided (legacy), fall back to all imports
+         ;; Otherwise, only count the used FFIs
+         ;; Add 1 to import-offset if include-dynamic-call-p (for $dynamic-call import)
+         (import-offset (cond
+                          ;; :minimal mode: no dynamic-call import (error would have been signaled earlier)
+                          ((eq ffi-mode :minimal)
+                           (if (and ffi-analysis (null used-ffis))
+                               0  ; No FFI used = no imports
+                               (if used-ffis (length used-ffis) (get-ffi-import-count))))
+                          ;; :full mode: always include all FFI imports + $dynamic-call
+                          ((eq ffi-mode :full)
+                           (1+ (get-ffi-import-count)))
+                          ;; :auto mode: no FFI used and no dynamic calls = no imports
+                          ((and ffi-analysis (null used-ffis) (not has-dynamic-call-p))
+                           0)
+                          ;; :auto mode: dynamic calls but no specific FFIs = only $dynamic-call import
+                          ;; This matches emit-import-section-if-needed behavior (lines 368-378)
+                          ((and include-dynamic-call-p (null used-ffis))
+                           1)  ; Only $dynamic-call import
+                          ;; :auto mode: dynamic calls with specific FFIs
+                          (include-dynamic-call-p
+                           (1+ (length used-ffis)))  ; Used FFIs + $dynamic-call
+                          ;; :auto mode: specific FFIs but no dynamic calls
+                          (used-ffis
+                           (length used-ffis))
+                          ;; Fallback (shouldn't happen with proper analysis)
+                          (t (get-ffi-import-count)))))
     ;; Module header (magic + version)
     (emit-header buffer)
     ;; Type section
     (emit-type-section buffer functions)
     ;; Import section (T025: FFI imports come after Type, before Function)
     ;; Per Wasm spec, section order: Type(1), Import(2), Function(3), ...
-    ;; 001-numeric-functions: Always check for FFI imports (not just I/O)
-    ;; Math functions (sin, cos, exp, etc.) are FFI imports but not I/O
-    ;; Pass function count for correct type index calculation
-    (emit-import-section-if-needed buffer functions)
+    ;; Feature 001: Only emit imports for used FFI functions
+    ;; T036/T048: Include $dynamic-call import based on mode and analysis
+    (emit-import-section-if-needed buffer functions
+                                   :used-ffis used-ffis
+                                   :has-dynamic-call-p include-dynamic-call-p
+                                   :ffi-mode (or ffi-mode :auto))
     ;; Function section
     (emit-function-section buffer functions)
     ;; Tag section (for exception handling)
@@ -259,27 +345,76 @@
     ;; Return as simple vector
     (coerce buffer '(simple-array (unsigned-byte 8) (*)))))
 
-(defun emit-import-section-if-needed (buffer functions)
-  "Emit Import section if there are FFI imports registered.
+(defun emit-import-section-if-needed (buffer functions &key used-ffis has-dynamic-call-p ffi-mode)
+  "Emit Import section if there are FFI imports registered and used.
    T025: Integrate FFI imports into compiler's module generation.
+   Feature 001: USED-FFIS limits imports to only the listed function names.
+                In :auto/:minimal mode with no used FFIs and no dynamic calls, skip imports.
+                In :full mode, all FFI imports plus $dynamic-call are always emitted.
+   T036/T048: HAS-DYNAMIC-CALL-P adds $dynamic-call import when T (or always in :full mode).
    001-numeric-functions: Pass regular function count for correct type indexing.
    Uses runtime symbol lookup to avoid compile-time dependency on FFI package."
+  ;; Feature 001: Check if we should skip imports entirely
+  ;; In :auto or :minimal mode with no used FFIs and no dynamic calls, skip the import section
+  (when (and (member ffi-mode '(:auto :minimal))
+             (null used-ffis)
+             (not has-dynamic-call-p))
+    (return-from emit-import-section-if-needed nil))
   (let ((ffi-pkg (find-package :clysm/ffi)))
     (when ffi-pkg
       (let ((env-sym (find-symbol "*FFI-ENVIRONMENT*" ffi-pkg))
             (count-fn (find-symbol "GET-FFI-IMPORT-COUNT" ffi-pkg))
             (assign-fn (find-symbol "ASSIGN-IMPORT-INDICES" ffi-pkg))
-            (emit-fn (find-symbol "EMIT-FFI-IMPORTS" ffi-pkg)))
+            (emit-fn (find-symbol "EMIT-FFI-IMPORTS" ffi-pkg))
+            (emit-selected-fn (find-symbol "EMIT-SELECTED-FFI-IMPORTS" ffi-pkg))
+            (emit-with-dynamic-fn (find-symbol "EMIT-SELECTED-FFI-IMPORTS-WITH-DYNAMIC-CALL" ffi-pkg))
+            (emit-dynamic-fn (find-symbol "EMIT-DYNAMIC-CALL-IMPORT" ffi-pkg)))
+        ;; T036/T048: Handle case where $dynamic-call is needed but no specific FFIs
+        ;; This applies to :auto mode with dynamic calls and no specific FFIs
+        ;; (but NOT :full mode, which needs all FFI imports plus $dynamic-call)
+        (when (and has-dynamic-call-p
+                   (null used-ffis)
+                   emit-dynamic-fn
+                   (not (eq ffi-mode :full)))
+          ;; :auto mode with dynamic calls and no specific FFIs
+          ;; Only emit $dynamic-call import, no other FFI imports
+          ;; Type index for (anyref, anyref) -> anyref signature
+          ;; Using type index 31 as a baseline for anyref function type
+          (let ((regular-func-count (count-if-not #'is-lambda-function-p functions)))
+            (funcall emit-dynamic-fn buffer (+ 31 regular-func-count)))
+          (return-from emit-import-section-if-needed nil))
+        ;; Standard FFI import handling
         (when (and env-sym (boundp env-sym) count-fn assign-fn emit-fn)
           (let ((env (symbol-value env-sym))
                 ;; 001-numeric-functions: Count non-lambda functions for type index base
                 (regular-func-count (count-if-not #'is-lambda-function-p functions)))
-            (when (> (funcall count-fn) 0)
+            (when (or (> (funcall count-fn) 0) has-dynamic-call-p)
               ;; Assign type indices to imports before emitting
               ;; 001-numeric-functions: FFI types come after regular function types
               (funcall assign-fn env regular-func-count)
-              ;; Emit the import section
-              (funcall emit-fn env buffer))))))))
+              ;; Feature 001/T048: Emit selected or all imports based on mode
+              ;; Calculate type index for $dynamic-call (comes after FFI types)
+              (let ((dynamic-call-type-index (+ 31 regular-func-count (funcall count-fn))))
+                (cond
+                  ;; T048: :full mode - emit all FFI imports plus $dynamic-call
+                  ((eq ffi-mode :full)
+                   (if (and emit-with-dynamic-fn has-dynamic-call-p)
+                       ;; Emit all FFIs with $dynamic-call (nil means all FFIs)
+                       (funcall emit-with-dynamic-fn env buffer nil t dynamic-call-type-index)
+                       ;; Emit all FFI imports (legacy behavior)
+                       (funcall emit-fn env buffer)))
+                  ;; T036: :auto with dynamic calls and specific used-ffis
+                  ((and has-dynamic-call-p emit-with-dynamic-fn used-ffis)
+                   (funcall emit-with-dynamic-fn env buffer used-ffis t dynamic-call-type-index))
+                  ;; :minimal with used-ffis: emit only used imports (no $dynamic-call)
+                  ((and (eq ffi-mode :minimal) emit-selected-fn used-ffis)
+                   (funcall emit-selected-fn env buffer used-ffis))
+                  ;; :auto with used-ffis (no dynamic calls): emit only used imports
+                  ((and emit-selected-fn used-ffis)
+                   (funcall emit-selected-fn env buffer used-ffis))
+                  ;; Fallback: emit all imports
+                  (t
+                   (funcall emit-fn env buffer)))))))))))
 
 (defun collect-ffi-exports-for-section ()
   "Collect FFI exports and return them in the format expected by emit-export-section.

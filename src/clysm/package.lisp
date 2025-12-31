@@ -379,6 +379,28 @@
   (:export #:analyze-io-usage
            #:*io-function-names*))
 
+;; Feature 001-ffi-import-architecture: FFI usage analyzer
+(defpackage #:clysm/compiler/analyzer/ffi-usage
+  (:use #:cl)
+  (:export ;; FFI Analysis Result Structure (T003)
+           #:ffi-analysis
+           #:make-ffi-analysis
+           #:ffi-analysis-p
+           #:ffi-analysis-used-ffis
+           #:ffi-analysis-has-dynamic-call-p
+           #:ffi-analysis-static-funcalls
+           #:ffi-analysis-dynamic-sites
+           ;; FFI Function Registry Access (T006)
+           #:get-ffi-function-names
+           #:ffi-function-p
+           ;; Static/Dynamic Call Detection (T022-T024, T031)
+           #:quoted-symbol-p
+           #:function-ref-p
+           #:detect-static-funcall-p
+           #:detect-dynamic-call-p
+           ;; Main Analysis Function (T010-T011, T021, T025, T031-T033)
+           #:analyze-ffi-usage))
+
 (defpackage #:clysm/compiler/transform/closure
   (:use #:cl #:clysm/compiler/ast #:clysm/compiler/env)
   (:export #:closure-convert))

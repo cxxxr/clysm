@@ -47,7 +47,8 @@
       ((:file "free-vars")
        (:file "tail-call")
        (:file "type-infer")
-       (:file "io-usage")))
+       (:file "io-usage")
+       (:file "ffi-usage")))
      (:module "transform"
       :serial t
       :components
@@ -384,6 +385,8 @@
      (:file "jit-test")
      ;; I/O usage analyzer (022-wasm-import-optimization)
      (:file "io-usage-test")
+     ;; FFI usage analyzer (001-ffi-import-architecture)
+     (:file "ffi-usage-test")
      ;; Type predicates (023-type-predicates)
      (:file "type-predicates-test")
      ;; Equality predicates (024-equality-predicates)
@@ -641,6 +644,10 @@
      (:file "ffi-error-handling-test")
      (:file "ffi-call-host-test")
      (:file "ffi-callback-test")
+     ;; Dynamic call integration tests (001-ffi-import-architecture)
+     (:file "dynamic-call-test")
+     ;; Backward compatibility tests (001-ffi-import-architecture)
+     (:file "backward-compat-test")
      ;; Setf ANSI integration tests (028-setf-generalized-refs)
      (:file "setf-ansi-test")
      ;; LOOP macro ANSI integration tests (029-loop-macro)

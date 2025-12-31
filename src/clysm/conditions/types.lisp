@@ -196,6 +196,28 @@
    Contains pathname slot identifying the file that caused the error."))
 
 ;;; ============================================================
+;;; Dynamic Call in Minimal Mode (T005, 001-ffi-import-architecture)
+;;; ============================================================
+
+(defclass dynamic-call-in-minimal-mode (program-error)
+  ((form
+    :initarg :form
+    :initform nil
+    :reader dynamic-call-form
+    :documentation "The dynamic call form that caused the error")
+   (sites
+    :initarg :sites
+    :initform nil
+    :reader dynamic-call-sites
+    :documentation "List of all dynamic call sites detected"))
+  (:documentation "Condition signaled when dynamic calls are detected in minimal FFI mode.
+   Feature: 001-ffi-import-architecture
+   FR-008: System MUST emit a clear error in minimal mode when dynamic calls are present.
+   References:
+     - [funcall](resources/HyperSpec/Body/f_funcal.htm)
+     - [apply](resources/HyperSpec/Body/f_apply.htm)"))
+
+;;; ============================================================
 ;;; Make Condition (T032)
 ;;; ============================================================
 

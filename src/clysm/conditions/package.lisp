@@ -50,6 +50,10 @@
    ;; File error (035-ffi-filesystem, T007)
    #:file-error
    #:clysm-file-error-pathname
+   ;; FFI mode error (001-ffi-import-architecture, T005)
+   #:dynamic-call-in-minimal-mode
+   #:dynamic-call-form
+   #:dynamic-call-sites
    ;; Condition accessors
    #:simple-condition-format-control
    #:simple-condition-format-arguments
