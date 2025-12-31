@@ -9,6 +9,8 @@
 
 (defparameter *primitive-operators*
   '(+ - * / truncate rem mod
+    ;; Rounding functions (001-division-rounding-primitives)
+    floor ceiling round ffloor fceiling fround
     = /= < <= > >=
     eq eql equal
     null not

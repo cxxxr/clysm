@@ -723,6 +723,8 @@
       ;; (needed for %setf-* primitives which may come from setf-expanders package)
       ((and (symbolp function)
             (member function '(+ - * / < > <= >= = /= truncate
+                               ;; Rounding functions (001-division-rounding-primitives)
+                               floor ceiling round ffloor fceiling fround
                                ;; Increment/decrement primitives (001-arithmetic-primitives)
                                1- 1+
                                ;; Cons/list operations (006-cons-list-ops)
@@ -952,6 +954,13 @@
     (truncate (compile-truncate args env))
     (mod (compile-arithmetic-op :i32.rem_s args env nil))
     (rem (compile-arithmetic-op :i32.rem_s args env nil))
+    ;; Rounding functions (001-division-rounding-primitives)
+    (floor (compile-floor args env))
+    (ceiling (compile-ceiling args env))
+    (round (compile-round args env))
+    (ffloor (compile-ffloor args env))
+    (fceiling (compile-fceiling args env))
+    (fround (compile-fround args env))
     ;; Increment/decrement primitives (001-arithmetic-primitives)
     (1- (compile-1- args env))
     (1+ (compile-1+ args env))
@@ -3493,6 +3502,149 @@
    '((:ref.cast :i31) :i31.get_s
      :i32.div_s
      :ref.i31)))
+
+;;; ============================================================
+;;; Division/Rounding Function Primitives (001-division-rounding-primitives)
+;;; Implements floor, ceiling, round, ffloor, fceiling, fround
+;;; All return 2 values: quotient (primary) and remainder (secondary)
+;;; ============================================================
+
+(defun compile-unbox-to-f64 (val-local float-type)
+  "Generate instructions to unbox value from VAL-LOCAL to f64.
+   Handles both i31ref (fixnum) and $float.
+   Returns instructions that put f64 on stack."
+  `((:local.get ,val-local)
+    (:ref.test :i31)
+    (:if (:result :f64))
+    ;; i31ref path - convert to f64
+    (:local.get ,val-local)
+    (:ref.cast :i31)
+    :i31.get_s
+    :f64.convert_i32_s
+    :else
+    ;; $float path - extract f64
+    (:local.get ,val-local)
+    (:ref.cast (:ref ,float-type))
+    (:struct.get ,float-type 0)
+    :end))
+
+(defun compile-rounding-with-mv (args env rounding-op return-float-p)
+  "Helper for rounding functions that return multiple values.
+   ROUNDING-OP is :f64.floor, :f64.ceil, or :f64.nearest
+   RETURN-FLOAT-P: t for ffloor/fceiling/fround (quotient as $float),
+                   nil for floor/ceiling/round (quotient as i31ref)
+
+   Contract:
+   - Sets mv-count to 2
+   - Stores remainder in mv-buffer[0]
+   - Returns quotient on stack (i31ref or $float)
+
+   Algorithm:
+   1. Store anyref args in locals
+   2. Extract f64, compute quotient = rounding(dividend/divisor)
+   3. Compute remainder = dividend - quotient * divisor
+   4. Store remainder in mv-buffer, return boxed quotient"
+  (let* ((mv-count-global clysm/runtime/objects:*mv-count-global-index*)
+         (mv-buffer-global clysm/runtime/objects:*mv-buffer-global-index*)
+         (mv-array-type 20)
+         (float-type clysm/compiler/codegen/gc-types:+type-float+)
+         ;; Locals store anyref values
+         (dividend-local (env-add-local env (gensym "DIV-DIVIDEND")))
+         (divisor-local (env-add-local env (gensym "DIV-DIVISOR")))
+         ;; Store quotient as anyref (boxed)
+         (quotient-local (env-add-local env (gensym "DIV-QUOTIENT")))
+         (arg-count (length args)))
+    (when (or (< arg-count 1) (> arg-count 2))
+      (error "Rounding function requires 1 or 2 arguments"))
+    (let* ((single-arg-p (= arg-count 1))
+           (unbox-dividend (compile-unbox-to-f64 dividend-local float-type))
+           (unbox-divisor (compile-unbox-to-f64 divisor-local float-type))
+           (unbox-quotient (compile-unbox-to-f64 quotient-local float-type)))
+      `(;; 1. Set mv-count to 2
+        (:i32.const 2)
+        (:global.set ,mv-count-global)
+        ;; 2. Evaluate and store dividend (as anyref)
+        ,@(compile-to-instructions (first args) env)
+        (:local.set ,dividend-local)
+        ;; 3. Evaluate and store divisor (as anyref, or synthesize 1)
+        ,@(if single-arg-p
+              ;; Single arg: divisor = 1 as i31ref
+              '((:i32.const 1) :ref.i31)
+              (compile-to-instructions (second args) env))
+        (:local.set ,divisor-local)
+        ;; 4. Compute quotient = rounding-op(dividend / divisor)
+        ;;    Get dividend as f64
+        ,@unbox-dividend
+        ;;    Get divisor as f64
+        ,@unbox-divisor
+        ;;    Compute and round
+        :f64.div
+        ,rounding-op
+        ;; Box quotient and store
+        ,@(if return-float-p
+              `((:struct.new ,float-type))
+              '(:i32.trunc_f64_s :ref.i31))
+        (:local.set ,quotient-local)
+        ;; 5. Compute remainder = dividend - quotient * divisor
+        ;;    Store in mv-buffer[0]
+        (:global.get ,mv-buffer-global)
+        (:i32.const 0)
+        ;; Get dividend as f64
+        ,@unbox-dividend
+        ;; Get quotient as f64 (unbox from stored anyref)
+        ,@unbox-quotient
+        ;; Get divisor as f64
+        ,@unbox-divisor
+        ;; remainder = dividend - quotient * divisor
+        :f64.mul
+        :f64.sub
+        ;; Box remainder as $float and store in mv-buffer
+        (:struct.new ,float-type)
+        (:array.set ,mv-array-type)
+        ;; 6. Return quotient (already boxed)
+        (:local.get ,quotient-local)))))
+
+(defun compile-floor (args env)
+  "Compile (floor dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient (rounded toward -∞) and remainder.
+   Per ANSI CL: remainder = dividend - quotient * divisor
+   Stack: [] -> [anyref (i31ref quotient)]"
+  (compile-rounding-with-mv args env :f64.floor nil))
+
+(defun compile-ceiling (args env)
+  "Compile (ceiling dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient (rounded toward +∞) and remainder.
+   Per ANSI CL: remainder = dividend - quotient * divisor
+   Stack: [] -> [anyref (i31ref quotient)]"
+  (compile-rounding-with-mv args env :f64.ceil nil))
+
+(defun compile-round (args env)
+  "Compile (round dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient (rounded to nearest, ties to even) and remainder.
+   Per ANSI CL: remainder = dividend - quotient * divisor
+   Stack: [] -> [anyref (i31ref quotient)]"
+  (compile-rounding-with-mv args env :f64.nearest nil))
+
+(defun compile-ffloor (args env)
+  "Compile (ffloor dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient as float (rounded toward -∞) and remainder.
+   Per ANSI CL: same as floor but quotient is a float.
+   Stack: [] -> [anyref ($float quotient)]"
+  (compile-rounding-with-mv args env :f64.floor t))
+
+(defun compile-fceiling (args env)
+  "Compile (fceiling dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient as float (rounded toward +∞) and remainder.
+   Per ANSI CL: same as ceiling but quotient is a float.
+   Stack: [] -> [anyref ($float quotient)]"
+  (compile-rounding-with-mv args env :f64.ceil t))
+
+(defun compile-fround (args env)
+  "Compile (fround dividend &optional divisor) to Wasm.
+   Returns 2 values: quotient as float (rounded to nearest) and remainder.
+   Per ANSI CL: same as round but quotient is a float.
+   Stack: [] -> [anyref ($float quotient)]"
+  (compile-rounding-with-mv args env :f64.nearest t))
 
 ;;; ============================================================
 ;;; Feature 043: Bitwise Operations for LEB128 Encoding
