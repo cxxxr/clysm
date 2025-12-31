@@ -19,19 +19,21 @@
          ;; Sample first 100 forms for timing test
          (sample-forms (subseq compilable 0 (min 100 (length compilable))))
          (results nil))
-    ;; Compile sample forms
+    ;; Compile sample forms using test-form-compilation
     (dolist (form sample-forms)
-      (multiple-value-bind (wasm success-p error-msg)
+      (multiple-value-bind (success-p wasm)
           (handler-case
-              (clysm/stage1:compile-form-to-wasm form)
+              (clysm/stage1:test-form-compilation
+               (clysm/stage1:source-form-sexp form))
             (error (e)
-              (values nil nil (format nil "~A" e))))
+              (declare (ignore e))
+              (values nil nil)))
         (push (clysm/stage1:make-compilation-result
                :form form
                :form-id (clysm/stage1:source-form-id form)
-               :success-p success-p
+               :success-p (eq success-p t)
                :wasm-bytes wasm
-               :error-message error-msg)
+               :error-message (unless success-p "Compilation failed"))
               results)))
     ;; Generate report
     (let* ((report (clysm/stage1::generate-progress-report modules (nreverse results)))
@@ -55,19 +57,15 @@
 
 (deftest test-single-form-compilation-timing
   "Single form compilation should complete within 100ms."
-  (let ((form (clysm/stage1:make-source-form
-               :id "timing:0"
-               :sexp '(+ 1 2)
-               :operator '+
-               :compilable-p t))
+  (let ((sexp '(+ 1 2))
         (start-time (get-internal-real-time)))
-    (multiple-value-bind (wasm success-p error-msg)
-        (clysm/stage1:compile-form-to-wasm form)
-      (declare (ignore wasm error-msg))
+    (multiple-value-bind (success-p wasm)
+        (clysm/stage1:test-form-compilation sexp)
+      (declare (ignore wasm))
       (let* ((end-time (get-internal-real-time))
              (elapsed-ms (* 1000.0 (/ (- end-time start-time)
                                        internal-time-units-per-second))))
         (ok (< elapsed-ms 100.0)
             (format nil "Single form compilation took ~,2F ms (limit: 100ms)" elapsed-ms))
-        (ok success-p "Simple form compiled successfully")))))
+        (ok (eq success-p t) "Simple form compiled successfully")))))
 

@@ -9,7 +9,8 @@
                           #:stream #:streamp
                           #:input-stream-p #:output-stream-p
                           #:*standard-input* #:*standard-output* #:*error-output*
-                          #:write-char #:write-string #:read-char #:read-line #:format)
+                          #:write-char #:write-string #:read-char #:read-line #:format
+                          #:write-to-string #:prin1-to-string #:princ-to-string)
   ;; Use CL condition types for host-side testing
   (:import-from #:clysm/compiler/codegen/gc-types
                 #:+type-stream+
