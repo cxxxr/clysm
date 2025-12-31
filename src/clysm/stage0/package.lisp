@@ -160,4 +160,54 @@ Fixed-point is achieved when Stage 1 == Stage 2 (byte-identical).")
            #:get-bootstrap-forms
            #:bootstrap-form-count
            #:compile-bootstrap-forms
-           #:estimate-bootstrap-size))
+           #:estimate-bootstrap-size)
+
+  ;; Error Analysis (from error-analysis.lisp) - Phase 13D M4
+  (:export ;; Structs
+           #:error-log-entry
+           #:make-error-log-entry
+           #:error-log-entry-function-name
+           #:error-log-entry-module-path
+           #:error-log-entry-error-type
+           #:error-log-entry-error-message
+           #:error-log-entry-pattern-id
+           #:error-log-entry-lambda-list
+           #:error-log-entry-failing-subform
+           #:error-log-entry-timestamp
+
+           #:error-pattern-category
+           #:make-error-pattern-category
+           #:error-pattern-category-pattern-id
+           #:error-pattern-category-pattern
+           #:error-pattern-category-count
+           #:error-pattern-category-percentage
+           #:error-pattern-category-priority
+           #:error-pattern-category-examples
+           #:error-pattern-category-affected-modules
+           #:error-pattern-category-suggested-fix
+
+           ;; Functions
+           #:compute-pattern-priority
+           #:get-iso-timestamp
+           #:extract-failing-subform
+           #:normalize-error-pattern
+           #:classify-error-pattern
+
+           ;; Collection state
+           #:*defun-errors*
+           #:*error-patterns*
+           #:clear-error-analysis
+           #:add-defun-error
+           #:collect-defun-error
+
+           ;; Aggregation
+           #:aggregate-patterns
+           #:get-top-patterns
+           #:compute-top-patterns-coverage
+
+           ;; JSON output
+           #:error-log-entry-to-json
+           #:error-pattern-to-json
+           #:write-defun-errors-json
+           #:generate-error-patterns-section
+           #:get-defun-failure-stats))

@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stage1-report-schema.json",
+  "title": "Stage 1 Compilation Report",
+  "description": "Enhanced Stage 1 report with error pattern analysis",
+  "type": "object",
+  "required": ["timestamp", "stage0_version", "summary", "modules", "error_patterns"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of report generation"
+    },
+    "stage0_version": {
+      "type": "string",
+      "description": "Stage 0 compiler version identifier"
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total_forms", "compiled", "failed", "skipped", "coverage_pct"],
+      "properties": {
+        "total_forms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "compiled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "defun_failures": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "NEW: Count of DEFUN-specific failures"
+        },
+        "defun_failure_reduction": {
+          "type": "integer",
+          "description": "NEW: Reduction from baseline (18997)"
+        },
+        "top_blockers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["operator", "count", "priority"],
+            "properties": {
+              "operator": { "type": "string" },
+              "count": { "type": "integer" },
+              "priority": { "enum": ["HIGH", "MEDIUM", "LOW"] }
+            }
+          }
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "compiled", "failed", "total"],
+        "properties": {
+          "path": { "type": "string" },
+          "compiled": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "total": { "type": "integer" }
+        }
+      }
+    },
+    "error_patterns": {
+      "type": "array",
+      "description": "NEW: Error patterns sorted by count descending",
+      "items": {
+        "$ref": "#/definitions/error_pattern"
+      }
+    }
+  },
+  "definitions": {
+    "error_pattern": {
+      "type": "object",
+      "required": ["pattern_id", "pattern", "count", "percentage", "priority", "examples"],
+      "properties": {
+        "pattern_id": {
+          "type": "string",
+          "pattern": "^P[0-9]{3}$"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Normalized error pattern template"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "priority": {
+          "enum": ["HIGH", "MEDIUM", "LOW"]
+        },
+        "examples": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "required": ["function", "module"],
+            "properties": {
+              "function": { "type": "string" },
+              "module": { "type": "string" }
+            }
+          }
+        },
+        "affected_modules": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "suggested_fix": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

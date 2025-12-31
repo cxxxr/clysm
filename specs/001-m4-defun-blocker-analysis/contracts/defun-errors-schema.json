@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "defun-errors-schema.json",
+  "title": "DEFUN Error Log",
+  "description": "Detailed log of DEFUN compilation failures",
+  "type": "object",
+  "required": ["version", "generated_at", "total_entries", "entries"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Schema version for compatibility"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "total_entries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/error_entry"
+      }
+    }
+  },
+  "definitions": {
+    "error_entry": {
+      "type": "object",
+      "required": ["function_name", "module_path", "error_type", "error_message", "pattern_id", "timestamp"],
+      "properties": {
+        "function_name": {
+          "type": "string",
+          "description": "Name of the failing DEFUN"
+        },
+        "module_path": {
+          "type": "string",
+          "description": "Source file path relative to repo root"
+        },
+        "error_type": {
+          "enum": ["compile_error", "validation_error"],
+          "description": "Phase where error occurred"
+        },
+        "error_message": {
+          "type": "string",
+          "description": "Full error message"
+        },
+        "pattern_id": {
+          "type": "string",
+          "pattern": "^P[0-9]{3}$",
+          "description": "Reference to error pattern classification"
+        },
+        "lambda_list": {
+          "type": "string",
+          "description": "Original lambda-list for debugging"
+        },
+        "failing_subform": {
+          "type": "string",
+          "description": "First subform that caused the error"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

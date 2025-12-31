@@ -19,29 +19,36 @@
 
 (defun test-form-compilation (sexp &key (validate t))
   "Test if a form compiles successfully AND produces valid Wasm.
-Returns (values result bytes) where:
+Returns (values result bytes error-condition) where:
   - result is T if compilation succeeds and validation passes
   - result is :SKIPPED if compile-to-wasm returns nil (directive form)
   - result is NIL if compilation fails or validation fails
-Phase 13D-3: Added :skipped handling for compile-time directives."
+  - error-condition is the captured error (or NIL)
+Phase 13D-3: Added :skipped handling for compile-time directives.
+Phase 13D M4: Returns error condition for detailed error logging."
   (handler-case
       (let ((bytes (clysm:compile-to-wasm sexp)))
         (cond
           ;; T009: Directive forms return nil bytes - mark as skipped
-          ((null bytes) (values :skipped nil))
+          ((null bytes) (values :skipped nil nil))
           ;; Validation failed
           ((and validate (not (validate-wasm-bytes bytes)))
-           (values nil nil))
+           (values nil nil nil))
           ;; Success
-          (t (values t bytes))))
-    (error () (values nil nil))))
+          (t (values t bytes nil))))
+    (error (e) (values nil nil e))))
 
 (defun classify-forms (forms &key (progress-callback nil) (validate t))
   "Classify forms into successful, failed, and skipped compilations.
 FORMS is a list of source-form structs.
 When VALIDATE is true (default), only forms that produce valid Wasm are counted as successful.
 Phase 13D-3: Added :skipped tracking for compile-time directives.
+Phase 13D M4: Captures detailed error info for DEFUN failures.
 Returns (values successful-sexps results stats)."
+  ;; Phase 13D M4: Clear error analysis state at start
+  ;; Use runtime symbol lookup since stage0 loads after stage1
+  (let ((clear-fn (find-symbol "CLEAR-ERROR-ANALYSIS" :clysm/stage0)))
+    (when clear-fn (funcall clear-fn)))
   (let ((total (length forms))
         (compiled 0)
         (failed 0)
@@ -50,13 +57,18 @@ Returns (values successful-sexps results stats)."
         (successful-sexps nil))
     (loop for form in forms
           for index from 1
-          do (let ((sexp (if (source-form-p form)
-                             (source-form-sexp form)
-                             form))
-                   (form-id (if (source-form-p form)
-                                (source-form-id form)
-                                "0:0")))
-               (multiple-value-bind (result bytes)
+          do (let* ((sexp (if (source-form-p form)
+                              (source-form-sexp form)
+                              form))
+                    (form-id (if (source-form-p form)
+                                 (source-form-id form)
+                                 "0:0"))
+                    ;; Phase 13D M4: Extract module path from form's module
+                    (module-path (if (and (source-form-p form)
+                                          (source-form-module form))
+                                     (source-module-relative-path (source-form-module form))
+                                     "unknown")))
+               (multiple-value-bind (result bytes err-condition)
                    (test-form-compilation sexp :validate validate)
                  (declare (ignore bytes))
                  ;; T011: Add case branch for :skipped
@@ -81,11 +93,26 @@ Returns (values successful-sexps results stats)."
                    ;; Failed
                    (t
                     (incf failed)
+                    ;; Phase 13D M4: Capture detailed error for DEFUN forms
+                    (when (and (consp sexp) (eq (car sexp) 'defun) err-condition)
+                      (let ((collect-fn (find-symbol "COLLECT-DEFUN-ERROR" :clysm/stage0)))
+                        (when collect-fn
+                          (let ((fn-name (if (and (cdr sexp) (symbolp (cadr sexp)))
+                                             (symbol-name (cadr sexp))
+                                             "UNKNOWN"))
+                                (lambda-list (when (and (cddr sexp) (listp (caddr sexp)))
+                                               (format nil "~S" (caddr sexp)))))
+                            (funcall collect-fn
+                                     fn-name module-path err-condition
+                                     :lambda-list lambda-list
+                                     :form sexp)))))
                     (push (make-compilation-result
                            :form form
                            :form-id form-id
                            :success-p nil
-                           :error-message "Compilation or validation failed")
+                           :error-message (if err-condition
+                                              (format nil "~A" err-condition)
+                                              "Compilation or validation failed"))
                           results))))
                (when progress-callback
                  (funcall progress-callback index total t))))
@@ -424,4 +451,14 @@ and produces a valid Wasm module."
                              :if-exists :supersede
                              :if-does-not-exist :create)
             (write-progress-report report :stream s :format :json))
+          ;; Phase 13D M4: Write detailed DEFUN error log
+          ;; Use runtime symbol lookup since stage0 loads after stage1
+          (let ((write-fn (find-symbol "WRITE-DEFUN-ERRORS-JSON" :clysm/stage0))
+                (errors-var (find-symbol "*DEFUN-ERRORS*" :clysm/stage0))
+                (defun-errors-path (merge-pathnames "dist/defun-errors.json" root)))
+            (when write-fn
+              (format t "~&Writing DEFUN error log to ~A~%" defun-errors-path)
+              (funcall write-fn (namestring defun-errors-path))
+              (format t "~&DEFUN errors logged: ~D entries~%"
+                      (if errors-var (length (symbol-value errors-var)) 0))))
           report)))))

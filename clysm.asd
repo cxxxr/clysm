@@ -212,7 +212,8 @@
      (:file "output")
      (:file "exports")
      (:file "entry")
-     (:file "bootstrap-source")))  ; T044: Bootstrap source forms
+     (:file "bootstrap-source")    ; T044: Bootstrap source forms
+     (:file "error-analysis")))    ; M4: DEFUN error analysis infrastructure
 
    ;; Bootstrap: Interpreter-based bootstrap (044-interpreter-bootstrap)
    (:module "interpreter-bootstrap"
@@ -334,7 +335,15 @@
      ;; Global variable Wasm validation (001-global-variable-defs)
      (:file "wasm-globals-test")
      ;; DEFSTRUCT Wasm validation (Phase 13D-10)
-     (:file "defstruct-wasm-test")))
+     (:file "defstruct-wasm-test")
+     ;; Error analysis contract tests (Phase 13D M4)
+     (:module "error-analysis"
+      :serial t
+      :components
+      ((:file "test-error-log-entry")
+       (:file "test-defun-errors-json")
+       (:file "test-error-pattern")
+       (:file "test-stage1-report")))))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -587,7 +596,16 @@
        (:file "fill-test")
        (:file "replace-test")))
      ;; Array operations unit tests (001-ansi-array-ops)
-     (:file "array-ops-test")))
+     (:file "array-ops-test")
+     ;; Lambda-list unit tests (Phase 13D M4)
+     (:module "lambda-list"
+      :serial t
+      :components
+      ((:file "test-error-logging")
+       (:file "test-pattern-classification")
+       (:file "test-aux-params")
+       (:file "test-aux-init-forms")
+       (:file "test-allow-other-keys")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -698,7 +716,10 @@
      ;; DEFSTRUCT integration tests (Phase 13D-10)
      (:file "defstruct-usage-test")
      ;; Array operations integration tests (001-ansi-array-ops)
-     (:file "array-ops-test"))))
+     (:file "array-ops-test")
+     ;; Module compilation integration tests (Phase 13D M4)
+     (:file "test-backend-compile")
+     (:file "test-reader-compile"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

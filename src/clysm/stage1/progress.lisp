@@ -223,6 +223,18 @@ FORMAT can be :json or :text."
                      (blocker-info-priority blocker)))
     (format stream "~%    ]~%")
     (format stream "  },~%"))
+  ;; Phase 13D M4: Error patterns section
+  ;; Use runtime symbol lookup since stage0 loads after stage1
+  (let ((gen-patterns-fn (find-symbol "GENERATE-ERROR-PATTERNS-SECTION" :clysm/stage0))
+        (get-stats-fn (find-symbol "GET-DEFUN-FAILURE-STATS" :clysm/stage0)))
+    (when gen-patterns-fn
+      (format stream "  ~A,~%" (funcall gen-patterns-fn)))
+    ;; Phase 13D M4: DEFUN failure stats
+    (when get-stats-fn
+      (multiple-value-bind (defun-failures defun-reduction)
+          (funcall get-stats-fn)
+        (format stream "  \"defun_failures\": ~D,~%" defun-failures)
+        (format stream "  \"defun_failure_reduction\": ~D,~%" defun-reduction))))
   ;; Modules
   (format stream "  \"modules\": [")
   (loop for stats in (progress-report-modules report)
