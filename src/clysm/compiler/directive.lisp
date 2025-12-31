@@ -21,11 +21,13 @@
    - in-package: Changes the current package for subsequent forms
    - defpackage: Creates a new package at compile-time
    - declaim: File-scope declarations (optimize, type, special, etc.)
-   - proclaim: Global declarations"
+   - proclaim: Global declarations
+   - defmacro: Macro definitions (expanded by host, see HyperSpec m_defmac.htm)"
   (and (consp form)
        (symbolp (car form))
        (member (car form) '(cl:in-package cl:defpackage cl:declaim cl:proclaim
-                            in-package defpackage declaim proclaim)
+                            cl:defmacro
+                            in-package defpackage declaim proclaim defmacro)
                :test #'eq)))
 
 ;;; ============================================================

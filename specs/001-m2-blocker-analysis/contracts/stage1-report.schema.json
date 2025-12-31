@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stage1-report.schema.json",
+  "title": "Stage1Report",
+  "description": "Compilation report from Stage 1 generation",
+  "type": "object",
+  "required": ["timestamp", "stage0_version", "summary", "modules"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 timestamp of report generation"
+    },
+    "stage0_version": {
+      "type": "string",
+      "description": "Version identifier for Stage 0 compiler"
+    },
+    "summary": {
+      "$ref": "#/definitions/Summary"
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Module"
+      },
+      "description": "Per-file compilation results"
+    }
+  },
+  "definitions": {
+    "Summary": {
+      "type": "object",
+      "required": ["total_forms", "compiled", "failed", "skipped", "coverage_pct", "top_blockers"],
+      "properties": {
+        "total_forms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total forms processed"
+        },
+        "compiled": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Successfully compiled forms"
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Forms that failed compilation"
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Forms skipped (directives)"
+        },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Compilation rate percentage"
+        },
+        "top_blockers": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "$ref": "#/definitions/Blocker"
+          },
+          "description": "Top blockers by failure count"
+        }
+      }
+    },
+    "Blocker": {
+      "type": "object",
+      "required": ["operator", "count", "priority"],
+      "properties": {
+        "operator": {
+          "type": "string",
+          "description": "Operator name causing failures"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of failed forms"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["HIGH", "MEDIUM", "LOW"],
+          "description": "Priority based on impact"
+        }
+      }
+    },
+    "Module": {
+      "type": "object",
+      "required": ["path", "compiled", "failed", "total"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Relative path to source file"
+        },
+        "compiled": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Successfully compiled forms"
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Failed forms"
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total forms in file"
+        }
+      }
+    }
+  }
+}
