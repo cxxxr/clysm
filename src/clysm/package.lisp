@@ -764,7 +764,14 @@
            #:parse-error
            #:parse-error-message
            #:parse-error-line
-           #:parse-error-column))
+           #:parse-error-column
+           ;; Parser state functions (001-wasm-local-binding US2)
+           ;; HyperSpec: Not directly applicable - internal parser state
+           #:advance-token
+           #:current-token
+           #:make-parser-state
+           #:parser-state-tokens
+           #:parser-state-position))
 
 (defpackage #:clysm/reader/package
   (:use #:cl)
@@ -1394,7 +1401,8 @@
                 #:compile-to-wasm
                 #:compile-to-wat)
   (:import-from #:clysm/backend/wasm-emit
-                #:emit-empty-module)
+                #:emit-empty-module
+                #:emit-module-header)       ; 001-wasm-local-binding US3
   (:import-from #:clysm/backend/leb128
                 #:encode-unsigned-leb128
                 #:encode-signed-leb128)
@@ -1424,9 +1432,15 @@
   ;; Internal compiler functions (001-lexenv-function-export)
   (:import-from #:clysm/lib/macros
                 #:loop-keyword-eq)
+  ;; Parser functions (001-wasm-local-binding US2)
+  (:import-from #:clysm/reader/parser
+                #:advance-token
+                #:current-token
+                #:make-parser-state)
   (:export #:compile-to-wasm
            #:compile-to-wat
            #:emit-empty-module
+           #:emit-module-header           ; 001-wasm-local-binding US3
            #:encode-unsigned-leb128
            #:encode-signed-leb128
            #:repl
@@ -1449,7 +1463,11 @@
            ;; Internal compiler functions (001-lexenv-function-export)
            #:env-add-local
            #:loop-keyword-eq
-           #:numeric-literal-p))
+           #:numeric-literal-p
+           ;; Parser functions (001-wasm-local-binding US2)
+           #:advance-token
+           #:current-token
+           #:make-parser-state))
 
 ;;; Forward declarations for special variables used across compilation units.
 ;;; These are defined here (after packages exist) to avoid "undefined variable"

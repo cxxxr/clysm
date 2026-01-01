@@ -218,6 +218,23 @@
   ;; Numeric AST processing
   (register-runtime-function 'clysm:get-numeric-value :$get-numeric-value-rt 1))
 
+(defun register-parser-runtime-functions ()
+  "Register parser functions to use runtime library dispatch.
+   Feature: 001-wasm-local-binding US2"
+  ;; Parser state manipulation
+  ;; advance-token: consumes current token and returns it (arity 1)
+  (register-runtime-function 'clysm:advance-token :$advance-token-rt 1)
+  ;; current-token: gets current token without consuming (arity 1)
+  (register-runtime-function 'clysm:current-token :$current-token-rt 1)
+  ;; make-parser-state: creates parser state from token list (variadic)
+  (register-runtime-function 'clysm:make-parser-state :$make-parser-state-rt nil))
+
+(defun register-backend-runtime-functions ()
+  "Register backend Wasm emission functions to use runtime library dispatch.
+   Feature: 001-wasm-local-binding US3"
+  ;; Wasm module header emission (arity 0)
+  (register-runtime-function 'clysm:emit-module-header :$emit-module-header-rt 0))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
@@ -234,6 +251,8 @@
 (register-package-runtime-functions)
 (register-lexenv-runtime-functions)
 (register-ast-runtime-functions)
+(register-parser-runtime-functions)
+(register-backend-runtime-functions)
 
 (defun make-env ()
   "Create a fresh compilation environment."
@@ -643,6 +662,15 @@
        (compile-float-literal value))
       (:complex
        (compile-complex-literal value))
+      ;; Keyword literals (001-wasm-local-binding)
+      ;; Keywords like :local.set, :local.tee are preserved as symbol values.
+      ;; They're represented as i31ref of symbol hash (same as quoted symbols).
+      ;; This enables backquote expressions with Wasm instruction keywords to
+      ;; compile correctly during self-hosting.
+      (:keyword
+       (let ((hash (logand (sxhash value) #x3FFFFFFF)))  ; 30-bit for i31ref
+         (list (list :i32.const hash)
+               :ref.i31)))
       (otherwise
        (error "Unsupported literal type: ~A" type)))))
 

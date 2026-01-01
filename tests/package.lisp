@@ -1027,3 +1027,44 @@
 (defpackage #:clysm/tests/unit/ast-export
   (:use #:cl #:rove))
 
+;;; ============================================================
+;;; Local Instruction Binding Tests (001-wasm-local-binding)
+;;; Phase 13D: Verify LOCAL.SET/LOCAL.TEE keyword handling in backquote
+;;; ============================================================
+
+;; Local instruction opcode emission tests (001-wasm-local-binding US1)
+;; Validates that keywords in backquote expressions are handled correctly
+(defpackage #:clysm/tests/unit/local-instruction
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;;; ============================================================
+;;; ADVANCE-TOKEN Export Tests (001-wasm-local-binding US2)
+;;; Phase 13D: Verify ADVANCE-TOKEN export for parser integration
+;;; ============================================================
+
+;; ADVANCE-TOKEN export accessibility tests (001-wasm-local-binding US2)
+;; Validates that ADVANCE-TOKEN is exported and registered in runtime table
+(defpackage #:clysm/tests/unit/advance-token-export
+  (:use #:cl #:rove))
+
+;;; ============================================================
+;;; EMIT-MODULE-HEADER Export Tests (001-wasm-local-binding US3)
+;;; Phase 13D: Verify EMIT-MODULE-HEADER export for Wasm generation
+;;; ============================================================
+
+;; EMIT-MODULE-HEADER export accessibility tests (001-wasm-local-binding US3)
+;; Validates that EMIT-MODULE-HEADER is re-exported and registered in runtime table
+(defpackage #:clysm/tests/unit/emit-header-export
+  (:use #:cl #:rove))
+
+;;; ============================================================
+;;; AST-TAGBODY Handling Tests (001-wasm-local-binding US4)
+;;; Phase 13D: Verify AST-TAGBODY structure serialization
+;;; ============================================================
+
+;; AST-TAGBODY structure handling tests (001-wasm-local-binding US4)
+;; Validates that TAGBODY forms compile without #S(...) structure errors
+(defpackage #:clysm/tests/unit/ast-tagbody
+  (:use #:cl #:rove))
+

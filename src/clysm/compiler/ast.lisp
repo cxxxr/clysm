@@ -738,6 +738,13 @@
     ;; String literal (008-character-string)
     ((stringp form)
      (make-string-literal form))
+    ;; Keyword literal (001-wasm-local-binding)
+    ;; Keywords like :local.set, :local.tee must be treated as literals,
+    ;; not variable references, to prevent "unbound variable" errors
+    ;; during self-compilation of backquote expressions.
+    ;; HyperSpec: resources/HyperSpec/Body/t_kwd.htm
+    ((keywordp form)
+     (make-ast-literal :value form :literal-type :keyword))
     ;; Symbol (variable reference)
     ((symbolp form)
      (make-var-ref form))

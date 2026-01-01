@@ -638,7 +638,15 @@
      ;; Lexenv function export unit tests (001-lexenv-function-export)
      (:file "lexenv-export-test")
      ;; AST function export unit tests (001-ast-function-export)
-     (:file "ast-export-test")))
+     (:file "ast-export-test")
+     ;; Local instruction binding unit tests (001-wasm-local-binding)
+     (:file "local-instruction-test")
+     ;; ADVANCE-TOKEN export unit tests (001-wasm-local-binding US2)
+     (:file "advance-token-export-test")
+     ;; EMIT-MODULE-HEADER export unit tests (001-wasm-local-binding US3)
+     (:file "emit-header-export-test")
+     ;; AST-TAGBODY handling unit tests (001-wasm-local-binding US4)
+     (:file "ast-tagbody-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
