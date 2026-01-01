@@ -166,6 +166,7 @@
      (:file "sequences")        ; Phase 15B: ANSI sequence generic functions
      (:file "io-runtime")       ; Phase 13D-1f: I/O runtime functions (001-io-list-runtime)
      (:file "list-runtime")     ; Phase 13D-1f: List runtime functions (001-io-list-runtime)
+     (:file "sequence-runtime") ; Phase 13D: Sequence runtime functions (001-sequence-runtime-migration)
      (:file "package-stubs")    ; Phase 4 US3: Package system FFI stubs (001-compiler-internal-consolidation)
      (:file "type-construction"))) ; Phase 5 US4: Type construction placeholders (001-compiler-internal-consolidation)
 

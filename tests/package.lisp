@@ -1000,6 +1000,12 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;; Sequence runtime unit tests (001-sequence-runtime-migration)
+;; Validates runtime dispatch for remove, count, substitute, delete
+(defpackage #:clysm/tests/unit/sequence-runtime
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
 ;; Runtime migration contract tests (001-io-list-runtime)
 ;; Validates behavior matches original codegen implementations
 (defpackage #:clysm/tests/contract/runtime-migration

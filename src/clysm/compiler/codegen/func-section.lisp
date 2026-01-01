@@ -147,6 +147,30 @@
   (register-runtime-function 'position-if :$position-if-rt nil)
   (register-runtime-function 'position-if-not :$position-if-not-rt nil))
 
+(defun register-sequence-runtime-functions ()
+  "Register sequence functions to use runtime library dispatch.
+   Feature: 001-sequence-runtime-migration"
+  ;; Remove family (FR-010 to FR-013)
+  ;; HyperSpec: resources/HyperSpec/Body/f_rm_rm.htm
+  (register-runtime-function 'remove :$remove-rt nil)
+  (register-runtime-function 'remove-if :$remove-if-rt nil)
+  (register-runtime-function 'remove-if-not :$remove-if-not-rt nil)
+  ;; Count family (FR-020 to FR-023)
+  ;; HyperSpec: resources/HyperSpec/Body/f_countc.htm
+  (register-runtime-function 'count :$count-rt nil)
+  (register-runtime-function 'count-if :$count-if-rt nil)
+  (register-runtime-function 'count-if-not :$count-if-not-rt nil)
+  ;; Substitute family (FR-030 to FR-033)
+  ;; HyperSpec: resources/HyperSpec/Body/f_sbs_s.htm
+  (register-runtime-function 'substitute :$substitute-rt nil)
+  (register-runtime-function 'substitute-if :$substitute-if-rt nil)
+  (register-runtime-function 'substitute-if-not :$substitute-if-not-rt nil)
+  ;; Delete family (FR-040 to FR-044)
+  ;; HyperSpec: resources/HyperSpec/Body/f_rm_rm.htm
+  (register-runtime-function 'delete :$delete-rt nil)
+  (register-runtime-function 'delete-if :$delete-if-rt nil)
+  (register-runtime-function 'delete-if-not :$delete-if-not-rt nil))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
