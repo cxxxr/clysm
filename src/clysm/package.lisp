@@ -100,6 +100,7 @@
            #:make-float-literal
            #:make-complex-literal
            #:make-integer-literal
+           #:get-numeric-value       ; 001-ast-function-export
            ;; Variable references
            #:ast-var-ref
            #:ast-var-ref-p
@@ -1417,6 +1418,8 @@
   (:import-from #:clysm/compiler/ast
                 #:ast-literal-value
                 #:ast-literal-p
+                #:make-ast-literal          ; 001-ast-function-export
+                #:get-numeric-value         ; 001-ast-function-export
                 #:numeric-literal-p)        ; 001-lexenv-function-export
   ;; Internal compiler functions (001-lexenv-function-export)
   (:import-from #:clysm/lib/macros
@@ -1440,6 +1443,9 @@
            #:wasm-struct-type-fields
            #:ast-literal-value
            #:ast-literal-p
+           ;; Internal compiler functions (001-ast-function-export)
+           #:make-ast-literal
+           #:get-numeric-value
            ;; Internal compiler functions (001-lexenv-function-export)
            #:env-add-local
            #:loop-keyword-eq

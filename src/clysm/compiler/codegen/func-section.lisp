@@ -202,6 +202,22 @@
   ;; numeric-literal-p: checks if AST node is numeric literal
   (register-runtime-function 'clysm:numeric-literal-p :$numeric-literal-p-rt 1))
 
+(defun register-ast-runtime-functions ()
+  "Register AST manipulation functions for runtime dispatch.
+   Feature: 001-ast-function-export"
+  ;; Core compilation function - compiles AST form to Wasm instructions
+  (register-runtime-function 'clysm:compile-to-instructions :$compile-to-instructions-rt 2)
+  ;; GC type definition functions
+  (register-runtime-function 'clysm:make-wasm-struct-type :$make-wasm-struct-type-rt nil)
+  (register-runtime-function 'clysm:wasm-struct-type-p :$wasm-struct-type-p-rt 1)
+  (register-runtime-function 'clysm:wasm-struct-type-fields :$wasm-struct-type-fields-rt 1)
+  ;; AST literal functions
+  (register-runtime-function 'clysm:make-ast-literal :$make-ast-literal-rt nil)
+  (register-runtime-function 'clysm:ast-literal-value :$ast-literal-value-rt 1)
+  (register-runtime-function 'clysm:ast-literal-p :$ast-literal-p-rt 1)
+  ;; Numeric AST processing
+  (register-runtime-function 'clysm:get-numeric-value :$get-numeric-value-rt 1))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
@@ -217,6 +233,7 @@
 (register-sequence-runtime-functions)
 (register-package-runtime-functions)
 (register-lexenv-runtime-functions)
+(register-ast-runtime-functions)
 
 (defun make-env ()
   "Create a fresh compilation environment."

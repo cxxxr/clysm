@@ -1022,3 +1022,8 @@
 (defpackage #:clysm/tests/unit/internal-export
   (:use #:cl #:rove))
 
+;;; AST Function Export Tests (001-ast-function-export)
+;;; Phase 13D: Verify AST manipulation functions accessible via clysm package
+(defpackage #:clysm/tests/unit/ast-export
+  (:use #:cl #:rove))
+

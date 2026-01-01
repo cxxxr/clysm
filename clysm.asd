@@ -636,7 +636,9 @@
      ;; Internal function export unit tests (001-internal-function-export)
      (:file "internal-export-test")
      ;; Lexenv function export unit tests (001-lexenv-function-export)
-     (:file "lexenv-export-test")))
+     (:file "lexenv-export-test")
+     ;; AST function export unit tests (001-ast-function-export)
+     (:file "ast-export-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
