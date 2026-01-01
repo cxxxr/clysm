@@ -62,7 +62,8 @@
        (:file "type-section")
        (:file "func-section")
        (:file "globals")       ; Phase 13D-4: Global variable compilation
-       (:file "wasm-global"))) ; Phase 13D-4: Wasm global section helpers
+       (:file "wasm-global")   ; Phase 13D-4: Wasm global section helpers
+       (:file "primitives")))  ; 001-runtime-library-system: Layer 1 primitives registry
      (:file "compiler")
      (:file "directive")))
 
@@ -79,7 +80,10 @@
    (:module "runtime"
     :serial t
     :components
-    ((:file "objects")
+    ((:file "rt-package")       ; 001-runtime-library-system: Runtime library package
+     (:file "loader")           ; 001-runtime-library-system: Source loader & dependency analysis
+     (:file "compiler")         ; 001-runtime-library-system: Runtime function compilation
+     (:file "objects")
      (:file "special-vars")
      (:file "multi-value")
      (:file "printer")
@@ -343,7 +347,16 @@
       ((:file "test-error-log-entry")
        (:file "test-defun-errors-json")
        (:file "test-error-pattern")
-       (:file "test-stage1-report")))))
+       (:file "test-stage1-report")))
+     ;; Runtime library contract tests (001-runtime-library-system)
+     (:module "runtime"
+      :serial t
+      :components
+      ((:file "primitives-struct-test")
+       (:file "registry-test")
+       (:file "module-load-test")
+       (:file "dependency-test")
+       (:file "wasm-valid-test")))))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -605,7 +618,16 @@
        (:file "test-pattern-classification")
        (:file "test-aux-params")
        (:file "test-aux-init-forms")
-       (:file "test-allow-other-keys")))))
+       (:file "test-allow-other-keys")))
+     ;; Runtime library unit tests (001-runtime-library-system)
+     (:module "runtime"
+      :serial t
+      :components
+      ((:file "register-test")
+       (:file "lookup-test")
+       (:file "function-struct-test")
+       (:file "compile-fn-test")
+       (:file "undefined-prim-test")))))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -719,7 +741,12 @@
      (:file "array-ops-test")
      ;; Module compilation integration tests (Phase 13D M4)
      (:file "test-backend-compile")
-     (:file "test-reader-compile"))))
+     (:file "test-reader-compile")
+     ;; Runtime library integration tests (001-runtime-library-system)
+     (:module "runtime"
+      :serial t
+      :components
+      ((:file "assoc-test"))))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))

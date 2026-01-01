@@ -718,7 +718,11 @@
       ;; funcall special form
       ((and (symbolp function) (eq function 'funcall))
        (compile-funcall args env))
-      ;; Primitive operators
+      ;; Layer 1 Primitives: Check registry first (001-runtime-library-system)
+      ;; Registered primitives are compiled using their Wasm emitters directly
+      ((and (symbolp function) (clysm::registered-primitive-p function))
+       (compile-primitive-call function args env))
+      ;; Legacy primitive operators (to be migrated to primitives registry)
       ;; Use symbol-name comparison to handle symbols from different packages
       ;; (needed for %setf-* primitives which may come from setf-expanders package)
       ((and (symbolp function)
