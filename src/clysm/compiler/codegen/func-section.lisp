@@ -185,6 +185,20 @@
   ;; HyperSpec: resources/HyperSpec/Body/f_intern.htm
   (register-runtime-function (intern "INTERN*" :clysm) :$intern*-rt nil))
 
+(defun register-lexenv-runtime-functions ()
+  "Register lexical environment functions to use runtime library dispatch.
+   Feature: 001-lexenv-function-export"
+  ;; Lexical environment local variable management
+  ;; env-add-local: adds local variable to compilation environment, returns index
+  ;; Has optional type parameter (env name &optional type) so use nil for variadic
+  (register-runtime-function 'clysm:env-add-local :$env-add-local-rt nil)
+  ;; LOOP macro keyword comparison
+  ;; loop-keyword-eq: compares form against LOOP keyword
+  (register-runtime-function 'clysm:loop-keyword-eq :$loop-keyword-eq-rt 2)
+  ;; Numeric literal predicate
+  ;; numeric-literal-p: checks if AST node is numeric literal
+  (register-runtime-function 'clysm:numeric-literal-p :$numeric-literal-p-rt 1))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
@@ -199,6 +213,7 @@
 (register-list-runtime-functions)
 (register-sequence-runtime-functions)
 (register-package-runtime-functions)
+(register-lexenv-runtime-functions)
 
 (defun make-env ()
   "Create a fresh compilation environment."

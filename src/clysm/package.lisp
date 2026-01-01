@@ -336,7 +336,9 @@
            #:ast-call-host-arguments
            #:make-ast-call-host
            ;; Parsing
-           #:parse-expr))
+           #:parse-expr
+           ;; Numeric literal predicate (001-lexenv-function-export)
+           #:numeric-literal-p))
 
 (defpackage #:clysm/compiler/env
   (:use #:cl)
@@ -1394,7 +1396,8 @@
   (:import-from #:clysm/compiler/codegen/func-section
                 #:compile-unary-math-ffi
                 #:compile-cxr-chain
-                #:compile-to-instructions)  ; 001-internal-function-export
+                #:compile-to-instructions   ; 001-internal-function-export
+                #:env-add-local)            ; 001-lexenv-function-export
   ;; Internal compiler functions (001-internal-function-export)
   (:import-from #:clysm/compiler/env
                 #:lexical-env-parent
@@ -1406,7 +1409,11 @@
                 #:wasm-struct-type-fields)
   (:import-from #:clysm/compiler/ast
                 #:ast-literal-value
-                #:ast-literal-p)
+                #:ast-literal-p
+                #:numeric-literal-p)        ; 001-lexenv-function-export
+  ;; Internal compiler functions (001-lexenv-function-export)
+  (:import-from #:clysm/lib/macros
+                #:loop-keyword-eq)
   (:export #:compile-to-wasm
            #:compile-to-wat
            #:emit-empty-module
@@ -1425,7 +1432,11 @@
            #:wasm-struct-type-p
            #:wasm-struct-type-fields
            #:ast-literal-value
-           #:ast-literal-p))
+           #:ast-literal-p
+           ;; Internal compiler functions (001-lexenv-function-export)
+           #:env-add-local
+           #:loop-keyword-eq
+           #:numeric-literal-p))
 
 ;;; Forward declarations for special variables used across compilation units.
 ;;; These are defined here (after packages exist) to avoid "undefined variable"

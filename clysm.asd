@@ -634,7 +634,9 @@
        (:file "compile-fn-test")
        (:file "undefined-prim-test")))
      ;; Internal function export unit tests (001-internal-function-export)
-     (:file "internal-export-test")))
+     (:file "internal-export-test")
+     ;; Lexenv function export unit tests (001-lexenv-function-export)
+     (:file "lexenv-export-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
