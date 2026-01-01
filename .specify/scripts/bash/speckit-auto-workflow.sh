@@ -399,9 +399,11 @@ $(cd "$REPO_ROOT" && git log --oneline -10 2>/dev/null | sed 's/^/- /')
     ],
     \"dependencies\": [\"Phase 1の関数定義が完了していること\"]
   },
-  \"specify_prompt\": \"Phase 2: クロージャと再帰 (Lisp-1) を実装する。目標はファーストクラス関数とTail Call最適化。lambda, funcall, apply, labels/fletをサポートし、末尾再帰でスタックオーバーフローが発生しないこと。\"
+  \"specify_prompt\": \"Build an application that can help me organize my photos in separate photo albums. Albums are grouped by date and can be re-organized by dragging and dropping on the main page. Albums are never in other nested albums. Within each album, photos are previewed in a tile-like interface.\"
 }
 \`\`\`
+
+specify_promptに入る適切なプロンプトは https://github.com/github/spec-kit のREADME.mdを参考にしてください。
 
 JSONのみを出力してください。"
 
