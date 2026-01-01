@@ -983,3 +983,26 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; I/O and List Runtime Migration Tests (001-io-list-runtime)
+;;; Phase: Runtime library function dispatch
+;;; ============================================================
+
+;; I/O runtime unit tests (001-io-list-runtime)
+;; Validates runtime dispatch for princ, print, write, format
+(defpackage #:clysm/tests/unit/io-runtime
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; List runtime unit tests (001-io-list-runtime)
+;; Validates runtime dispatch for member, assoc, find, position
+(defpackage #:clysm/tests/unit/list-runtime
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+
+;; Runtime migration contract tests (001-io-list-runtime)
+;; Validates behavior matches original codegen implementations
+(defpackage #:clysm/tests/contract/runtime-migration
+  (:use #:cl #:rove)
+  (:import-from #:clysm/tests #:validate-wasm-silent))
+

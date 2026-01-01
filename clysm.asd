@@ -163,7 +163,9 @@
      (:file "defstruct")        ; Phase 13D-10: DEFSTRUCT macro implementation
      (:file "list-ops")         ; Phase 15A: ANSI list operations
      (:file "sequences-util")   ; Phase 15B: Sequence utility functions
-     (:file "sequences")))      ; Phase 15B: ANSI sequence generic functions
+     (:file "sequences")        ; Phase 15B: ANSI sequence generic functions
+     (:file "io-runtime")       ; Phase 13D-1f: I/O runtime functions (001-io-list-runtime)
+     (:file "list-runtime")))   ; Phase 13D-1f: List runtime functions (001-io-list-runtime)
 
    ;; REPL
    (:file "repl")

@@ -62,6 +62,96 @@
   ;; Total number of segments (used for depth calculation)
   )
 
+;;; ============================================================
+;;; Runtime Function Table (001-io-list-runtime)
+;;; ============================================================
+
+(defparameter *runtime-function-table* (make-hash-table :test 'eq)
+  "Maps Lisp function symbols to runtime function names.
+   Functions in this table are compiled as calls to the runtime library
+   instead of generating inline Wasm code.
+
+   Structure: symbol -> (runtime-name . arity-or-nil)
+   where runtime-name is a keyword like :$princ-rt
+   and arity is the expected argument count (nil for variadic).")
+
+(defun register-runtime-function (symbol runtime-name &optional arity)
+  "Register a function to be dispatched to the runtime library.
+   SYMBOL: The Lisp function symbol (e.g., 'princ)
+   RUNTIME-NAME: The Wasm function name (e.g., :$princ-rt)
+   ARITY: Expected argument count (nil for variadic functions)"
+  (setf (gethash symbol *runtime-function-table*)
+        (cons runtime-name arity)))
+
+(defun runtime-function-p (symbol)
+  "Check if SYMBOL should be dispatched to the runtime library."
+  (gethash symbol *runtime-function-table*))
+
+(defun compile-runtime-call (function args env)
+  "Compile a call to a runtime library function.
+   Compiles arguments, then emits a :call instruction to the runtime function."
+  (let* ((entry (gethash function *runtime-function-table*))
+         (runtime-name (car entry))
+         (expected-arity (cdr entry)))
+    ;; Validate arity if specified
+    (when (and expected-arity (/= (length args) expected-arity))
+      (error "Runtime function ~A expects ~D arguments, got ~D"
+             function expected-arity (length args)))
+    ;; Compile arguments (not in tail position)
+    (let ((env-non-tail (env-with-non-tail env))
+          (result nil))
+      (dolist (arg args)
+        (setf result (append result (compile-to-instructions arg env-non-tail))))
+      ;; Emit call to runtime function
+      (setf result (append result (list (list :call runtime-name))))
+      result)))
+
+;;; ============================================================
+;;; Runtime Function Registration (001-io-list-runtime)
+;;; ============================================================
+
+(defun register-io-runtime-functions ()
+  "Register I/O functions to use runtime library dispatch.
+   Called when the runtime library is ready for use."
+  ;; I/O functions (FR-001 to FR-004)
+  ;; HyperSpec: resources/HyperSpec/Body/f_wr_pr.htm
+  (register-runtime-function 'princ :$princ-rt 1)
+  (register-runtime-function 'prin1 :$prin1-rt 1)
+  (register-runtime-function 'print :$print-rt 1)
+  (register-runtime-function 'write :$write-rt nil)  ; variadic
+  ;; HyperSpec: resources/HyperSpec/Body/f_terpri.htm
+  (register-runtime-function 'terpri :$terpri-rt nil) ; 0-1 args
+  ;; HyperSpec: resources/HyperSpec/Body/f_format.htm
+  (register-runtime-function 'format :$format-rt nil)) ; variadic
+
+(defun register-list-runtime-functions ()
+  "Register list search functions to use runtime library dispatch.
+   Called when the runtime library is ready for use."
+  ;; List search functions (FR-005 to FR-012)
+  ;; HyperSpec: resources/HyperSpec/Body/f_mem_m.htm
+  (register-runtime-function 'member :$member-rt nil)
+  (register-runtime-function 'member-if :$member-if-rt nil)
+  (register-runtime-function 'member-if-not :$member-if-not-rt nil)
+  ;; HyperSpec: resources/HyperSpec/Body/f_assocc.htm
+  (register-runtime-function 'assoc :$assoc-rt nil)
+  (register-runtime-function 'assoc-if :$assoc-if-rt nil)
+  ;; HyperSpec: resources/HyperSpec/Body/f_rassoc.htm
+  (register-runtime-function 'rassoc :$rassoc-rt nil)
+  (register-runtime-function 'rassoc-if :$rassoc-if-rt nil)
+  ;; HyperSpec: resources/HyperSpec/Body/f_find_.htm
+  (register-runtime-function 'find :$find-rt nil)
+  (register-runtime-function 'find-if :$find-if-rt nil)
+  (register-runtime-function 'find-if-not :$find-if-not-rt nil)
+  ;; HyperSpec: resources/HyperSpec/Body/f_pos_p.htm
+  (register-runtime-function 'position :$position-rt nil)
+  (register-runtime-function 'position-if :$position-if-rt nil)
+  (register-runtime-function 'position-if-not :$position-if-not-rt nil))
+
+(defun clear-runtime-functions ()
+  "Clear all runtime function registrations.
+   Used for testing and when falling back to inline codegen."
+  (clrhash *runtime-function-table*))
+
 (defun make-env ()
   "Create a fresh compilation environment."
   (make-compilation-env :local-counter-box (list 0)
@@ -718,6 +808,10 @@
       ;; funcall special form
       ((and (symbolp function) (eq function 'funcall))
        (compile-funcall args env))
+      ;; Feature 001-io-list-runtime: Runtime library functions
+      ;; Check runtime function table before inline codegen
+      ((and (symbolp function) (runtime-function-p function))
+       (compile-runtime-call function args env))
       ;; Layer 1 Primitives: Check registry first (001-runtime-library-system)
       ;; Registered primitives are compiled using their Wasm emitters directly
       ((and (symbolp function) (clysm::registered-primitive-p function))
