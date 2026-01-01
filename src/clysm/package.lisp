@@ -733,6 +733,13 @@
            #:directive-form-p
            #:compile-toplevel-form
            #:eval-directive
+           ;; Feature 001-type-package-export: DEFCONSTANT handling
+           #:*constant-bindings*
+           #:register-constant
+           #:lookup-constant
+           #:compile-directive
+           #:handle-defconstant
+           #:defconstant-form-p
            ;; Phase 13D-7: Module compilation for Stage 1
            #:compiled-module
            #:make-compiled-module

@@ -173,7 +173,7 @@
 
 (defun register-package-runtime-functions ()
   "Register package functions to use runtime library dispatch.
-   Feature: 001-internal-function-export"
+   Feature: 001-internal-function-export, 001-type-package-export"
   ;; Package predicate (US2, P951 blocker)
   ;; HyperSpec: resources/HyperSpec/Body/f_pkgp.htm
   ;; Use intern for runtime lookup - symbols may not exist at load time
@@ -183,7 +183,10 @@
   (register-runtime-function (intern "FIND-PACKAGE*" :clysm) :$find-package*-rt 1)
   ;; Symbol interning
   ;; HyperSpec: resources/HyperSpec/Body/f_intern.htm
-  (register-runtime-function (intern "INTERN*" :clysm) :$intern*-rt nil))
+  (register-runtime-function (intern "INTERN*" :clysm) :$intern*-rt nil)
+  ;; Symbol package accessor (US3, T034)
+  ;; HyperSpec: resources/HyperSpec/Body/f_symb_2.htm
+  (register-runtime-function (intern "SYMBOL-PACKAGE*" :clysm) :$symbol-package*-rt 1))
 
 (defun register-lexenv-runtime-functions ()
   "Register lexical environment functions to use runtime library dispatch.
@@ -787,9 +790,16 @@
 
 (defun compile-var-ref (ast env)
   "Compile a variable reference.
-   Handles locals, captured variables from closures, special variables, and globals."
+   Handles constants (T019), locals, captured variables from closures, special variables, and globals.
+   Per FR-004: Constants are substituted at compile-time with i32.const."
   (let* ((name (clysm/compiler/ast:ast-var-ref-name ast))
          (local-idx (env-lookup-local env name)))
+    ;; Check for compile-time constant first (T019-T020)
+    (multiple-value-bind (const-value found-p)
+        (clysm/compiler:lookup-constant name)
+      (when found-p
+        (return-from compile-var-ref
+          (list (list :i32.const const-value)))))
     (cond
       ;; Local variable
       (local-idx
