@@ -666,7 +666,10 @@
            #:method-info-qualifier
            #:method-info-lambda-list
            #:method-info-body
-           #:compile-defmethod))
+           #:compile-defmethod
+           ;; Internal compiler functions (001-internal-function-consolidation)
+           #:compile-unary-math-ffi
+           #:compile-cxr-chain))
 
 ;; Phase 13D-4: Global variable compilation
 (defpackage #:clysm/compiler/codegen/globals
@@ -1387,12 +1390,19 @@
                 #:encode-signed-leb128)
   (:import-from #:clysm/repl
                 #:repl)
+  ;; Internal compiler functions (001-internal-function-consolidation)
+  (:import-from #:clysm/compiler/codegen/func-section
+                #:compile-unary-math-ffi
+                #:compile-cxr-chain)
   (:export #:compile-to-wasm
            #:compile-to-wat
            #:emit-empty-module
            #:encode-unsigned-leb128
            #:encode-signed-leb128
-           #:repl))
+           #:repl
+           ;; Internal compiler functions (001-internal-function-consolidation)
+           #:compile-unary-math-ffi
+           #:compile-cxr-chain))
 
 ;;; Forward declarations for special variables used across compilation units.
 ;;; These are defined here (after packages exist) to avoid "undefined variable"

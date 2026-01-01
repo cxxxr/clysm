@@ -250,3 +250,39 @@ tests/integration/bootstrap/test-fixpoint.sh
 - Stage 2: 39-byte minimal module (compile_form is stub)
 - Compilation Rate: 0% (expected until compile_form implementation)
 - Fixpoint: NOT_ACHIEVED (expected with current stubs)
+
+## Feature 001-internal-function-consolidation: Compiler Internal Function Consolidation - COMPLETE
+
+**Status**: Completed (2026-01-01)
+**Branch**: `001-internal-function-consolidation`
+
+### Summary
+
+Consolidated compiler internal functions by exporting 2 missing internal functions and removing dead code from func-section.lisp for functions now dispatched via the runtime function table.
+
+### Implemented Changes
+
+1. **Package Exports (User Story 1)**:
+   - Added `compile-unary-math-ffi` export to clysm/compiler/codegen/func-section package
+   - Added `compile-cxr-chain` export to clysm/compiler/codegen/func-section package
+   - Added re-exports from clysm package
+
+2. **Dead Code Removal (User Story 2)**:
+   - Removed I/O dead code: compile-terpri, compile-princ, compile-prin1, compile-print, compile-write, compile-format (and helpers)
+   - Removed list dead code: compile-find, compile-find-if, compile-position, compile-position-if, compile-member, compile-assoc, compile-rassoc, compile-member-if, compile-member-if-not, compile-assoc-if, compile-rassoc-if
+   - Removed sequence dead code: compile-remove, compile-remove-if, compile-remove-if-not, compile-substitute, compile-substitute-if, compile-count, compile-count-if
+   - Updated dispatch table with comments explaining runtime dispatch
+
+### Metrics
+
+| Metric | Before | After | Target |
+|--------|--------|-------|--------|
+| func-section.lisp lines | 18,351 | 16,366 | <12,000 |
+| Stage 1 compilation rate | 22.15% | 21.57% | 25%+ |
+| Wasm validation | PASS | PASS | PASS |
+
+### Notes
+
+- Line reduction target (12,000) was not fully met because research estimates were higher than actual dead code
+- Compilation rate slightly decreased because removed functions had previously been counted as compiled forms
+- All runtime-dispatched functions (I/O, list, sequence) now go through `*runtime-function-table*` instead of inline codegen
