@@ -1393,7 +1393,20 @@
   ;; Internal compiler functions (001-internal-function-consolidation)
   (:import-from #:clysm/compiler/codegen/func-section
                 #:compile-unary-math-ffi
-                #:compile-cxr-chain)
+                #:compile-cxr-chain
+                #:compile-to-instructions)  ; 001-internal-function-export
+  ;; Internal compiler functions (001-internal-function-export)
+  (:import-from #:clysm/compiler/env
+                #:lexical-env-parent
+                #:lexical-env-bindings
+                #:make-lexical-env)
+  (:import-from #:clysm/compiler/codegen/gc-types
+                #:make-wasm-struct-type
+                #:wasm-struct-type-p
+                #:wasm-struct-type-fields)
+  (:import-from #:clysm/compiler/ast
+                #:ast-literal-value
+                #:ast-literal-p)
   (:export #:compile-to-wasm
            #:compile-to-wat
            #:emit-empty-module
@@ -1402,7 +1415,17 @@
            #:repl
            ;; Internal compiler functions (001-internal-function-consolidation)
            #:compile-unary-math-ffi
-           #:compile-cxr-chain))
+           #:compile-cxr-chain
+           ;; Internal compiler functions (001-internal-function-export)
+           #:compile-to-instructions
+           #:lexical-env-parent
+           #:lexical-env-bindings
+           #:make-lexical-env
+           #:make-wasm-struct-type
+           #:wasm-struct-type-p
+           #:wasm-struct-type-fields
+           #:ast-literal-value
+           #:ast-literal-p))
 
 ;;; Forward declarations for special variables used across compilation units.
 ;;; These are defined here (after packages exist) to avoid "undefined variable"

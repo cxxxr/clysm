@@ -1012,3 +1012,13 @@
   (:use #:cl #:rove)
   (:import-from #:clysm/tests #:validate-wasm-silent))
 
+;;; ============================================================
+;;; Internal Function Export Tests (001-internal-function-export)
+;;; Phase 13D: Verify internal compiler functions accessible via clysm package
+;;; ============================================================
+
+;; Internal export accessibility tests (001-internal-function-export)
+;; Validates that internal functions are re-exported to main clysm package
+(defpackage #:clysm/tests/unit/internal-export
+  (:use #:cl #:rove))
+

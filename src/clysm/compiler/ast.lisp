@@ -752,6 +752,14 @@
   "Parse a compound (list) form."
   (let ((op (car form))
         (args (cdr form)))
+    ;; Feature 001-internal-function-export US3: Quasiquote expansion
+    ;; SBCL reader produces (SB-INT:QUASIQUOTE ...) for backquote expressions
+    ;; Must check before case since eql won't match cross-package symbols
+    ;; HyperSpec: resources/HyperSpec/Body/02_df.htm (backquote)
+    (when (and (symbolp op)
+               (string= (symbol-name op) "QUASIQUOTE"))
+      (let ((expanded (clysm/compiler/transform/macro:expand-backquote form)))
+        (return-from parse-compound-form (parse-expr expanded))))
     (case op
       ;; Special forms
       (if (parse-if-form args))

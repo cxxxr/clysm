@@ -171,10 +171,34 @@
   (register-runtime-function 'delete-if :$delete-if-rt nil)
   (register-runtime-function 'delete-if-not :$delete-if-not-rt nil))
 
+(defun register-package-runtime-functions ()
+  "Register package functions to use runtime library dispatch.
+   Feature: 001-internal-function-export"
+  ;; Package predicate (US2, P951 blocker)
+  ;; HyperSpec: resources/HyperSpec/Body/f_pkgp.htm
+  ;; Use intern for runtime lookup - symbols may not exist at load time
+  (register-runtime-function (intern "PACKAGEP*" :clysm) :$packagep*-rt 1)
+  ;; Package lookup (for completeness)
+  ;; HyperSpec: resources/HyperSpec/Body/f_find_p.htm
+  (register-runtime-function (intern "FIND-PACKAGE*" :clysm) :$find-package*-rt 1)
+  ;; Symbol interning
+  ;; HyperSpec: resources/HyperSpec/Body/f_intern.htm
+  (register-runtime-function (intern "INTERN*" :clysm) :$intern*-rt nil))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
   (clrhash *runtime-function-table*))
+
+;;; ============================================================
+;;; Module Load Initialization
+;;; Register all runtime functions when module is loaded
+;;; ============================================================
+
+(register-io-runtime-functions)
+(register-list-runtime-functions)
+(register-sequence-runtime-functions)
+(register-package-runtime-functions)
 
 (defun make-env ()
   "Create a fresh compilation environment."

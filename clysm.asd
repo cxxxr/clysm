@@ -632,7 +632,9 @@
        (:file "lookup-test")
        (:file "function-struct-test")
        (:file "compile-fn-test")
-       (:file "undefined-prim-test")))))
+       (:file "undefined-prim-test")))
+     ;; Internal function export unit tests (001-internal-function-export)
+     (:file "internal-export-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
