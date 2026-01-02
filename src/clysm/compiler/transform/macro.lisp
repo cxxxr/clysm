@@ -183,8 +183,9 @@
         ;; quote - don't expand contents
         ((eq head 'quote)
          expanded)
-        ;; quasiquote - expand the backquote
-        ((eq head 'quasiquote)
+        ;; quasiquote - expand the backquote (001-quasiquote-local-vars)
+        ;; Handle both QUASIQUOTE and SB-INT:QUASIQUOTE (SBCL reader output)
+        ((quasiquote-p head)
          (expand-backquote expanded))
         ;; if form
         ((eq head 'if)
@@ -261,6 +262,32 @@
   (and (symbolp sym)
        (string= (symbol-name sym) "UNQUOTE-SPLICING")))
 
+;;; SBCL-specific comma structure handling (001-quasiquote-local-vars)
+;;; SBCL represents unquote as #S(SB-IMPL::COMMA :EXPR expr :KIND kind)
+;;; Kind 0 = regular unquote (,x), Kind 2 = unquote-splicing (,@x)
+
+(defun sbcl-comma-p (form)
+  "Check if FORM is an SBCL comma structure."
+  (and form
+       (not (symbolp form))
+       (not (consp form))
+       ;; Check if it's a structure with type name containing "COMMA"
+       (let ((type-name (type-of form)))
+         (and (symbolp type-name)
+              (search "COMMA" (symbol-name type-name))))))
+
+(defun sbcl-comma-expr (comma)
+  "Extract the expression from an SBCL comma structure."
+  ;; Access slot by position - EXPR is first slot
+  #+sbcl (slot-value comma 'sb-impl::expr)
+  #-sbcl (second comma))
+
+(defun sbcl-comma-splicing-p (comma)
+  "Check if an SBCL comma structure is splicing (,@)."
+  ;; Kind 0 = unquote, Kind 2 = unquote-splicing
+  #+sbcl (eql 2 (slot-value comma 'sb-impl::kind))
+  #-sbcl nil)
+
 (defun expand-backquote (form)
   "Expand a quasiquote form."
   (unless (and (consp form) (quasiquote-p (first form)))
@@ -270,6 +297,11 @@
 (defun expand-bq (form)
   "Inner backquote expansion."
   (cond
+    ;; SBCL comma structure (001-quasiquote-local-vars)
+    ((sbcl-comma-p form)
+     (if (sbcl-comma-splicing-p form)
+         (error "unquote-splicing not in list context")
+         (sbcl-comma-expr form)))
     ;; Atoms pass through
     ((atom form)
      (if (or (numberp form) (stringp form) (keywordp form) (null form))
@@ -307,6 +339,11 @@
 (defun expand-bq-element (elem)
   "Expand a single element in a backquote list."
   (cond
+    ;; SBCL comma structure (001-quasiquote-local-vars)
+    ((sbcl-comma-p elem)
+     (if (sbcl-comma-splicing-p elem)
+         (list '%splice (sbcl-comma-expr elem))
+         (sbcl-comma-expr elem)))
     ((atom elem)
      (if (or (numberp elem) (stringp elem) (keywordp elem) (null elem))
          elem

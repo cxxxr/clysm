@@ -81,6 +81,7 @@
 (defpackage #:clysm/compiler/ast
   (:use #:cl)
   (:export #:ast-node
+           #:ast-node-p
            #:ast-node-source-location
            ;; Literals
            #:ast-literal
@@ -672,7 +673,12 @@
            #:compile-defmethod
            ;; Internal compiler functions (001-internal-function-consolidation)
            #:compile-unary-math-ffi
-           #:compile-cxr-chain))
+           #:compile-cxr-chain
+           ;; Quasiquote local variable compilation (001-quasiquote-local-vars)
+           #:compile-quoted-element
+           #:compile-form
+           #:compile-var-ref
+           #:compile-funcall))
 
 ;; Phase 13D-4: Global variable compilation
 (defpackage #:clysm/compiler/codegen/globals

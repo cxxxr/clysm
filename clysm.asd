@@ -361,7 +361,9 @@
        (:file "registry-test")
        (:file "module-load-test")
        (:file "dependency-test")
-       (:file "wasm-valid-test")))))
+       (:file "wasm-valid-test")))
+     ;; Quasiquote local variable contract tests (001-quasiquote-local-vars)
+     (:file "quasiquote-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -646,7 +648,9 @@
      ;; EMIT-MODULE-HEADER export unit tests (001-wasm-local-binding US3)
      (:file "emit-header-export-test")
      ;; AST-TAGBODY handling unit tests (001-wasm-local-binding US4)
-     (:file "ast-tagbody-test")))
+     (:file "ast-tagbody-test")
+     ;; Quasiquote local variable unit tests (001-quasiquote-local-vars)
+     (:file "quasiquote-local-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
@@ -765,7 +769,9 @@
      (:module "runtime"
       :serial t
       :components
-      ((:file "assoc-test"))))))
+      ((:file "assoc-test")))
+     ;; Quasiquote local variable integration tests (001-quasiquote-local-vars)
+     (:file "quasiquote-runtime-test"))))
 
   :perform (test-op (o c)
              (symbol-call :rove :run c)))
