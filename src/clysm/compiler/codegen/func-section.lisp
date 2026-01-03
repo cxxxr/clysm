@@ -260,6 +260,26 @@
   (register-runtime-function 'string-not-lessp :$string-not-lessp-rt nil)
   (register-runtime-function 'string-not-greaterp :$string-not-greaterp-rt nil))
 
+(defun register-numeric-runtime-functions ()
+  "Register numeric manipulation functions to use runtime library dispatch.
+   Feature: 001-numeric-runtime-migration
+   HyperSpec references:
+     [parse-integer](resources/HyperSpec/Body/f_parse_.htm)
+     [write-to-string](resources/HyperSpec/Body/f_wr_to_.htm)
+     [rationalize](resources/HyperSpec/Body/f_ration.htm)
+     [signum](resources/HyperSpec/Body/f_signum.htm)
+     [phase](resources/HyperSpec/Body/f_phase.htm)"
+  ;; T004: parse-integer (variadic for keyword args: :start :end :radix :junk-allowed)
+  (register-runtime-function 'parse-integer :$parse-integer-rt nil)
+  ;; T005: write-to-string (variadic for keyword args: :base)
+  (register-runtime-function 'write-to-string :$write-to-string-rt nil)
+  ;; T006: rationalize (arity 1: single number argument)
+  (register-runtime-function 'rationalize :$rationalize-rt 1)
+  ;; T007: signum (arity 1: single number argument)
+  (register-runtime-function 'signum :$signum-rt 1)
+  ;; T008: phase (arity 1: single number argument)
+  (register-runtime-function 'phase :$phase-rt 1))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
@@ -274,6 +294,7 @@
 (register-list-runtime-functions)
 (register-sequence-runtime-functions)
 (register-string-runtime-functions)  ; 001-string-runtime-migration
+(register-numeric-runtime-functions) ; 001-numeric-runtime-migration
 (register-package-runtime-functions)
 (register-lexenv-runtime-functions)
 (register-ast-runtime-functions)
