@@ -1147,13 +1147,18 @@
 
 (defun compile-primitive-call (op args env)
   "Compile a primitive operation.
-   Arguments to primitives are NOT in tail position."
+   Arguments to primitives are NOT in tail position.
+   First tries hash-table dispatch via dispatch-primitive,
+   then falls back to string-match cond and case statement."
   ;; Clear tail position for all arguments - primitive ops aren't tail calls
   (let ((env (env-with-non-tail env))
         (op-name (when (symbolp op) (symbol-name op))))
-    ;; Handle %setf-* primitives by symbol name (for cross-package matching)
-    ;; These primitives may come from setf-expanders package but need to match here
-    (cond
+    ;; Try dispatch table first for registered primitives (002-primitive-dispatch-table)
+    (or (clysm/compiler/codegen/primitive-dispatch:dispatch-primitive op args env)
+        ;; Fall back to existing implementations
+        ;; Handle %setf-* primitives by symbol name (for cross-package matching)
+        ;; These primitives may come from setf-expanders package but need to match here
+        (cond
       ((string= op-name "%SETF-AREF") (compile-setf-aref args env))
       ((string= op-name "%SETF-SVREF") (compile-setf-aref args env))
       ((string= op-name "%SETF-SCHAR") (compile-setf-schar args env))
@@ -1502,7 +1507,7 @@
     ;; Note: %setf-* primitives are now handled by cond above for cross-package matching
     ;; I/O functions (print, prin1, princ, write, terpri, format) are dispatched
     ;; via *runtime-function-table* to runtime library - no inline codegen entries
-    ))))) ; Close case, t clause of cond, cond, let
+    )))))) ; Close case, t clause of cond, cond, or, let
 
 ;;; ============================================================
 ;;; Numeric Tower Type Dispatch (T013-T015)

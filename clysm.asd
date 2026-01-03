@@ -61,7 +61,9 @@
        (:file "gc-types")
        (:file "type-section")
        (:file "instruction-collector") ; 001-instruction-collector-refactor: O(n) instruction collection (before func-section)
+       (:file "primitive-dispatch")    ; 001-primitive-dispatch-table: Hash-table dispatch for primitives
        (:file "func-section")
+       (:file "primitive-registry")    ; 001-primitive-dispatch-table: Primitive compiler registrations
        (:file "globals")       ; Phase 13D-4: Global variable compilation
        (:file "wasm-global")   ; Phase 13D-4: Wasm global section helpers
        (:file "primitives")))  ; 001-runtime-library-system: Layer 1 primitives registry
@@ -364,7 +366,9 @@
        (:file "dependency-test")
        (:file "wasm-valid-test")))
      ;; Quasiquote local variable contract tests (001-quasiquote-local-vars)
-     (:file "quasiquote-wasm-test")))
+     (:file "quasiquote-wasm-test")
+     ;; Primitive dispatch contract tests (001-primitive-dispatch-table)
+     (:file "primitive-dispatch-wasm-test")))
 
    ;; Unit tests: Individual components
    (:module "unit"
@@ -653,7 +657,9 @@
      ;; Quasiquote local variable unit tests (001-quasiquote-local-vars)
      (:file "quasiquote-local-test")
      ;; Instruction collector unit tests (001-instruction-collector-refactor)
-     (:file "instruction-collector-test")))
+     (:file "instruction-collector-test")
+     ;; Primitive dispatch unit tests (001-primitive-dispatch-table)
+     (:file "primitive-dispatch-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

@@ -605,6 +605,39 @@
   (:use #:cl #:clysm/compiler/codegen/wasm-ir #:clysm/compiler/codegen/gc-types)
   (:export #:generate-type-section))
 
+;; Primitive dispatch table (001-primitive-dispatch-table)
+(defpackage #:clysm/compiler/codegen/primitive-dispatch
+  (:use #:cl)
+  (:export ;; Constants
+           #:+primitive-symbol-table-size+
+           #:+primitive-string-table-size+
+           ;; Primitive entry struct
+           #:primitive-entry
+           #:make-primitive-entry
+           #:primitive-entry-p
+           #:primitive-entry-compiler-fn
+           #:primitive-entry-arity
+           #:primitive-entry-flags
+           ;; Dispatch tables
+           #:*primitive-symbol-table*
+           #:*primitive-string-table*
+           ;; Registration API
+           #:register-primitive-compiler
+           #:unregister-primitive-compiler
+           ;; Query API
+           #:primitive-compiler-entry
+           #:primitive-registered-p
+           #:list-registered-primitives
+           ;; Dispatch function
+           #:dispatch-primitive
+           ;; Internal/Debug API
+           #:clear-primitive-tables
+           #:describe-primitive
+           ;; Error conditions
+           #:primitive-registration-error
+           #:registration-error-symbol
+           #:registration-error-reason))
+
 (defpackage #:clysm/compiler/codegen/func-section
   (:use #:cl #:clysm/compiler/ast #:clysm/compiler/codegen/wasm-ir)
   (:export #:generate-func-section

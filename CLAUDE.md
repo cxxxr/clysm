@@ -98,10 +98,11 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format, 001-arithmetic-primitives)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format, 001-arithmetic-primitives, 002-primitive-dispatch-table)
 
 | Feature | Description |
 |---------|-------------|
+| 002-primitive-dispatch-table | Hash-table driven primitive dispatch replacing 538-line case statement. 239 primitives registered with O(1) lookup. Extensible via register-primitive-compiler API. |
 | 001-arithmetic-primitives | Arithmetic primitives [1-](resources/HyperSpec/Body/f_1pl_1_.htm) and [1+](resources/HyperSpec/Body/f_1pl_1_.htm) for recursive/iterative algorithms |
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
 | 001-ansi-char-functions | ANSI CL character functions: graphic-char-p, standard-char-p, both-case-p, char-name, name-char, digit-char, char-int |
@@ -197,6 +198,8 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target runtime + alexandria, babel (UTF-8), trivial-gray-streams; existing FFI infrastructure (feature 027) (001-io-list-runtime)
 - Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, trivial-gray-streams, wasm-tools (validation) (001-type-package-export)
 - Common Lisp (SBCL 2.4+) + alexandria, babel (UTF-8), existing clysm compiler infrastructure (001-ast-function-export)
+- Common Lisp (SBCL 2.4+) + alexandria (hash-table utilities) (001-primitive-dispatch-table)
+- N/A (in-memory dispatch tables) (002-primitive-dispatch-table)
 
 ## Recent Changes
 - 001-wasm-local-binding: Fixed Wasm local variable instruction binding issues. Added keyword literal handling to AST parser (keywordp check in parse-expr) and compile-literal (:keyword case). Exported ADVANCE-TOKEN, CURRENT-TOKEN, MAKE-PARSER-STATE from clysm/reader/parser and re-exported from clysm package. Exported EMIT-MODULE-HEADER from clysm/backend/wasm-emit and re-exported from clysm package. Registered parser functions (advance-token, current-token, make-parser-state) and backend function (emit-module-header) in *runtime-function-table*. Target error patterns (P221/LOCAL.SET, P987/LOCAL.TEE, P027/ADVANCE-TOKEN, P143/EMIT-MODULE-HEADER, P943/AST-TAGBODY) eliminated. Unit tests in tests/unit/local-instruction-test.lisp, advance-token-export-test.lisp, emit-header-export-test.lisp, ast-tagbody-test.lisp. Wasm validation passes.
