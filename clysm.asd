@@ -659,7 +659,9 @@
      ;; Instruction collector unit tests (001-instruction-collector-refactor)
      (:file "instruction-collector-test")
      ;; Primitive dispatch unit tests (001-primitive-dispatch-table)
-     (:file "primitive-dispatch-test")))
+     (:file "primitive-dispatch-test")
+     ;; CXR compiler macro unit tests (001-cxr-compiler-macro)
+     (:file "cxr-macro-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

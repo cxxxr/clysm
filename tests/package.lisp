@@ -109,6 +109,10 @@
 (defpackage #:clysm/tests/unit/reader-error
   (:use #:cl #:rove))
 
+;; CXR compiler macro tests (001-cxr-compiler-macro)
+(defpackage #:clysm/tests/unit/cxr-macro
+  (:use #:cl #:rove))
+
 ;; Special variables AST tests (T010-T011)
 (defpackage #:clysm/tests/unit/special-vars-ast
   (:use #:cl #:rove #:clysm/compiler/ast #:clysm/compiler/env))

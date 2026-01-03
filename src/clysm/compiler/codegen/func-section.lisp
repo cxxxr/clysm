@@ -4127,7 +4127,7 @@
                :end)))))
 
 ;;; ============================================================
-;;; cXXr Accessors (043-self-hosting-blockers)
+;;; cXXr Accessors (001-cxr-compiler-macro)
 ;;; ============================================================
 
 (defun compile-cxr-chain (ops args env)
@@ -4160,65 +4160,56 @@
       ;; Return the final value
       (emit :local.get temp-local))))
 
-(defun compile-caar (args env)
-  "Compile (caar x) = (car (car x)).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "aa" args env))
+;;; ============================================================
+;;; cXXr Compiler Macro (001-cxr-compiler-macro)
+;;; ============================================================
 
-(defun compile-cadr (args env)
-  "Compile (cadr x) = (car (cdr x)).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "da" args env))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun ops-to-expansion (name ops)
+    "Convert operation string to human-readable expansion.
+   Example: 'dda' for CADDR → '(car (cdr (cdr x)))'
+   Feature: 001-cxr-compiler-macro"
+    (declare (ignore name))
+    (let ((result "x"))
+      (loop for c across (reverse ops)
+            do (setf result (format nil "(~A ~A)"
+                                    (if (char= c #\a) "car" "cdr")
+                                    result)))
+      result)))
 
-(defun compile-cdar (args env)
-  "Compile (cdar x) = (cdr (car x)).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "ad" args env))
+(defmacro define-cxr-compiler (name ops)
+  "Generate a compile-cXXr function for the given operation sequence.
+   NAME: Symbol like CAAR, CADR, CADDR (without compile- prefix)
+   OPS: String like \"aa\", \"da\", \"dda\" (a=car, d=cdr)
+   Feature: 001-cxr-compiler-macro"
+  (check-type ops string)
+  (unless (plusp (length ops))
+    (error "Operation string must be non-empty"))
+  (unless (every (lambda (c) (member c '(#\a #\d))) ops)
+    (error "Operation string must contain only 'a' and 'd'"))
+  (let ((func-name (intern (format nil "COMPILE-~A" name)
+                           (find-package :clysm/compiler/codegen/func-section)))
+        (docstring (format nil "Compile (~(~A~) x) = ~A.~%   Feature: 001-cxr-compiler-macro"
+                           name (ops-to-expansion name ops))))
+    `(defun ,func-name (args env)
+       ,docstring
+       (compile-cxr-chain ,ops args env))))
 
-(defun compile-cddr (args env)
-  "Compile (cddr x) = (cdr (cdr x)).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "dd" args env))
+;;; Two-level cXr functions (Feature: 001-cxr-compiler-macro)
+(define-cxr-compiler caar "aa")
+(define-cxr-compiler cadr "da")
+(define-cxr-compiler cdar "ad")
+(define-cxr-compiler cddr "dd")
 
-(defun compile-caaar (args env)
-  "Compile (caaar x) = (car (car (car x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "aaa" args env))
-
-(defun compile-caadr (args env)
-  "Compile (caadr x) = (car (car (cdr x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "daa" args env))
-
-(defun compile-cadar (args env)
-  "Compile (cadar x) = (car (cdr (car x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "ada" args env))
-
-(defun compile-caddr (args env)
-  "Compile (caddr x) = (car (cdr (cdr x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "dda" args env))
-
-(defun compile-cdaar (args env)
-  "Compile (cdaar x) = (cdr (car (car x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "aad" args env))
-
-(defun compile-cdadr (args env)
-  "Compile (cdadr x) = (cdr (car (cdr x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "dad" args env))
-
-(defun compile-cddar (args env)
-  "Compile (cddar x) = (cdr (cdr (car x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "add" args env))
-
-(defun compile-cdddr (args env)
-  "Compile (cdddr x) = (cdr (cdr (cdr x))).
-   Feature: 043-self-hosting-blockers"
-  (compile-cxr-chain "ddd" args env))
+;;; Three-level cXr functions (Feature: 001-cxr-compiler-macro)
+(define-cxr-compiler caaar "aaa")
+(define-cxr-compiler caadr "daa")
+(define-cxr-compiler cadar "ada")
+(define-cxr-compiler caddr "dda")
+(define-cxr-compiler cdaar "aad")
+(define-cxr-compiler cdadr "dad")
+(define-cxr-compiler cddar "add")
+(define-cxr-compiler cdddr "ddd")
 
 ;;; ============================================================
 ;;; Symbol Accessors (043-self-hosting-blockers)
