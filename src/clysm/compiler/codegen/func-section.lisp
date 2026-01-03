@@ -168,7 +168,16 @@
   ;; HyperSpec: resources/HyperSpec/Body/f_rm_rm.htm
   (register-runtime-function 'delete :$delete-rt nil)
   (register-runtime-function 'delete-if :$delete-if-rt nil)
-  (register-runtime-function 'delete-if-not :$delete-if-not-rt nil))
+  (register-runtime-function 'delete-if-not :$delete-if-not-rt nil)
+  ;; Subseq (001-sequence-array-runtime, FR-001 to FR-005)
+  ;; HyperSpec: resources/HyperSpec/Body/f_subseq.htm
+  (register-runtime-function 'subseq :$subseq-rt nil)
+  ;; Copy-seq (001-sequence-array-runtime) - uses subseq-rt
+  ;; HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
+  (register-runtime-function 'copy-seq :$copy-seq-rt 1)
+  ;; Adjust-array (001-sequence-array-runtime, FR-006 to FR-009)
+  ;; HyperSpec: resources/HyperSpec/Body/f_adjust.htm
+  (register-runtime-function 'adjust-array :$adjust-array-rt nil))
 
 (defun register-package-runtime-functions ()
   "Register package functions to use runtime library dispatch.
@@ -1450,7 +1459,7 @@
     (nstring-downcase (compile-nstring-downcase args env))
     (nstring-capitalize (compile-nstring-capitalize args env))
     ;; Substring and concatenation
-    (subseq (compile-subseq args env))
+    ;; subseq: now via *runtime-function-table* (001-sequence-array-runtime)
     (concatenate (compile-concatenate args env))
     ;; String output (001-numeric-format)
     (write-to-string (compile-write-to-string args env))
@@ -1542,11 +1551,7 @@
     (row-major-aref (compile-row-major-aref args env))
     ;; HyperSpec: resources/HyperSpec/Body/f_adju_1.htm
     (adjustable-array-p (compile-adjustable-array-p args env))
-    ;; HyperSpec: resources/HyperSpec/Body/f_adjust.htm
-    (adjust-array (compile-adjust-array args env))
-    ;; Feature 001-ansi-sequence-operations: Sequence Operations
-    ;; HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
-    (copy-seq (compile-copy-seq args env))
+    ;; adjust-array, copy-seq: now via *runtime-function-table* (001-sequence-array-runtime)
     ;; Feature 001-global-variable-defs: Package Operations (stub implementations)
     ;; HyperSpec: resources/HyperSpec/Body/f_find_p.htm
     (find-package (compile-find-package args env))
@@ -2983,160 +2988,11 @@
               ;; Simple array path: always NIL
               `((:ref.null :none)))))))
 
-(defun compile-adjust-array (args env)
-  "Compile (adjust-array array new-dimensions &key initial-element) - resize array.
-   HyperSpec: resources/HyperSpec/Body/f_adjust.htm
-   Creates new array with new dimensions, copies existing elements.
-   Stack: [] -> [anyref (new array)]"
-  (when (< (length args) 2)
-    (error "adjust-array requires at least 2 arguments"))
-  ;; MVP implementation: only handles 1D arrays
-  (let ((arr-local (env-add-local env (gensym "ARR-ADJ")))
-        (newsize-local (env-add-local env (gensym "NEWSIZE") :i32))
-        (oldsize-local (env-add-local env (gensym "OLDSIZE") :i32))
-        (newarr-local (env-add-local env (gensym "NEWARR")))
-        (idx-local (env-add-local env (gensym "IDX") :i32))
-        (init-local (env-add-local env (gensym "INIT")))
-        (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
-        (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
-        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-        (init-expr (getf (cddr args) :initial-element)))
-    (with-instruction-collector
-      ;; Compile old array and store
-      (emit* (compile-to-instructions (first args) env))
-      (emit :local.set arr-local)
-      ;; Compile new dimensions (for 1D, just get the number)
-      (emit* (compile-to-instructions (second args) env))
-      ;; If dimensions is a list, get car; otherwise use directly
-      (emit* `((:local.tee ,newarr-local)  ; temp use
-               (:ref.test (:ref ,cons-type))
-               (:if (:result :i32))
-               (:local.get ,newarr-local)
-               (:ref.cast (:ref ,cons-type))
-               (:struct.get ,cons-type 0)
-               (:ref.cast :i31)
-               :i31.get_s
-               :else
-               (:local.get ,newarr-local)
-               (:ref.cast :i31)
-               :i31.get_s
-               :end))
-      (emit :local.set newsize-local)
-      ;; Compile initial-element or use NIL
-      (if init-expr
-          (emit* (compile-to-instructions init-expr env))
-          (emit '(:global.get 0)))  ; NIL
-      (emit :local.set init-local)
-      ;; Get old array size
-      (emit* `((:local.get ,arr-local)
-               (:ref.test (:ref ,mdarray-type))
-               (:if (:result :i32))
-               (:local.get ,arr-local)
-               (:ref.cast (:ref ,mdarray-type))
-               (:struct.get ,mdarray-type 1)  ; storage (anyref)
-               (:ref.cast (:ref ,mv-array-type))  ; cast to array type
-               (:array.len)
-               :else
-               (:local.get ,arr-local)
-               (:ref.cast (:ref ,mv-array-type))
-               (:array.len)
-               :end))
-      (emit :local.set oldsize-local)
-      ;; Create new array with new size
-      (emit* `((:local.get ,newsize-local)
-               (:array.new_default ,mv-array-type)
-               (:local.set ,newarr-local)))
-      ;; Copy existing elements (up to min of old/new size)
-      (emit* `((:i32.const 0)
-               (:local.set ,idx-local)
-               (:block $copy_done)
-               (:loop $copy_loop)
-               ;; Check if done
-               (:local.get ,idx-local)
-               (:local.get ,oldsize-local)
-               :i32.ge_u
-               (:br_if $copy_done)
-               (:local.get ,idx-local)
-               (:local.get ,newsize-local)
-               :i32.ge_u
-               (:br_if $copy_done)
-               ;; Copy element
-               (:local.get ,newarr-local)
-               (:ref.cast (:ref ,mv-array-type))
-               (:local.get ,idx-local)
-               ;; Get from old array (handle both types)
-               (:local.get ,arr-local)
-               (:ref.test (:ref ,mdarray-type))
-               (:if (:result :anyref))
-               (:local.get ,arr-local)
-               (:ref.cast (:ref ,mdarray-type))
-               (:struct.get ,mdarray-type 1)  ; storage (anyref)
-               (:ref.cast (:ref ,mv-array-type))  ; cast to array type
-               (:local.get ,idx-local)
-               (:array.get ,mv-array-type)
-               :else
-               (:local.get ,arr-local)
-               (:ref.cast (:ref ,mv-array-type))
-               (:local.get ,idx-local)
-               (:array.get ,mv-array-type)
-               :end
-               (:array.set ,mv-array-type)
-               ;; Increment
-               (:local.get ,idx-local)
-               (:i32.const 1)
-               :i32.add
-               (:local.set ,idx-local)
-               (:br $copy_loop)
-               :end  ; loop
-               :end))  ; block
-      ;; Fill new positions with initial-element
-      (emit* `((:block $fill_done)
-               (:loop $fill_loop)
-               ;; Check if done
-               (:local.get ,idx-local)
-               (:local.get ,newsize-local)
-               :i32.ge_u
-               (:br_if $fill_done)
-               ;; Set element to initial-element
-               (:local.get ,newarr-local)
-               (:ref.cast (:ref ,mv-array-type))
-               (:local.get ,idx-local)
-               (:local.get ,init-local)
-               (:array.set ,mv-array-type)
-               ;; Increment
-               (:local.get ,idx-local)
-               (:i32.const 1)
-               :i32.add
-               (:local.set ,idx-local)
-               (:br $fill_loop)
-               :end  ; loop
-               :end))  ; block
-      ;; Create new $mdarray with new dimensions
-      (emit* `((:local.get ,newsize-local)
-               :ref.i31
-               (:global.get 0)  ; NIL for cdr
-               (:struct.new ,cons-type)  ; dimensions list
-               (:local.get ,newarr-local)
-               (:ref.cast (:ref ,mv-array-type))
-               (:i32.const 1)  ; adjustable = true
-               (:struct.new ,mdarray-type))))))
-
 ;;; ============================================================
-;;; Feature 001-ansi-sequence-operations: Sequence Operations
-;;; Phase 13D-2: ANSI CL Sequence Operations
+;;; 001-sequence-array-runtime: subseq, copy-seq, adjust-array now use
+;;; runtime library dispatch via *runtime-function-table*
+;;; See: src/clysm/lib/sequence-runtime.lisp
 ;;; ============================================================
-
-(defun compile-copy-seq (args env)
-  "Compile (copy-seq sequence) - copy a sequence.
-   HyperSpec: resources/HyperSpec/Body/f_cp_seq.htm
-   Equivalent to (subseq sequence 0).
-   Stack: [] -> [anyref (new sequence)]"
-  (when (/= (length args) 1)
-    (error "copy-seq requires exactly 1 argument (sequence)"))
-  ;; Implement as (subseq sequence 0)
-  ;; Create AST-LITERAL for the 0 argument (use :fixnum, not :integer)
-  (let ((zero-ast (clysm/compiler/ast:make-ast-literal :value 0 :literal-type :fixnum)))
-    (compile-subseq (list (first args) zero-ast) env)))
 
 ;;; ============================================================
 ;;; Package Operations (001-global-variable-defs)
@@ -15028,196 +14884,8 @@
 
 ;;; ============================================================
 ;;; Substring and Concatenation (008-character-string Phase 7)
+;;; subseq now uses runtime library dispatch (001-sequence-array-runtime)
 ;;; ============================================================
-
-(defun compile-subseq (args env)
-  "Compile (subseq string start &optional end) - get substring.
-   Stack: [] -> [string]"
-  (when (< (length args) 2)
-    (error "subseq requires at least 2 arguments"))
-  (let* ((string-arg (first args))
-         (start-arg (second args))
-         (end-arg (if (>= (length args) 3) (third args) nil))
-         (src-local (env-add-local env (gensym "SRC")))
-         (dst-local (env-add-local env (gensym "DST")))
-         (start-local (env-add-local env (gensym "START") :i32))
-         (end-local (env-add-local env (gensym "END") :i32))
-         (byte-len-local (env-add-local env (gensym "BYTELEN") :i32))
-         (src-byte-len-local (env-add-local env (gensym "SRCBYTELEN") :i32))
-         (char-count-local (env-add-local env (gensym "CHARCOUNT") :i32))
-         (src-idx-local (env-add-local env (gensym "SRCIDX") :i32))
-         (dst-idx-local (env-add-local env (gensym "DSTIDX") :i32))
-         (byte-local (env-add-local env (gensym "BYTE") :i32))
-         (start-byte-local (env-add-local env (gensym "STARTBYTE") :i32))
-         (string-type clysm/compiler/codegen/gc-types:+type-string+))
-    `(;; Get source string
-      ,@(compile-to-instructions string-arg env)
-      (:ref.cast ,(list :ref string-type))
-      (:local.set ,src-local)
-      ;; Get start index
-      ,@(compile-to-instructions start-arg env)
-      (:ref.cast :i31)
-      :i31.get_s
-      (:local.set ,start-local)
-      ;; Get end index (or string length)
-      ,@(if end-arg
-            `(,@(compile-to-instructions end-arg env)
-              (:ref.cast :i31)
-              :i31.get_s
-              (:local.set ,end-local))
-            `(;; Calculate string char length for default end
-              (:local.get ,src-local)
-              (:ref.cast ,(list :ref string-type))
-              (:array.len)
-              (:local.set ,src-byte-len-local)
-              ;; Count characters (UTF-8 aware)
-              (:i32.const 0)
-              (:local.set ,char-count-local)
-              (:i32.const 0)
-              (:local.set ,src-idx-local)
-              (:block $len_done)
-              (:loop $len_loop)
-              (:local.get ,src-idx-local)
-              (:local.get ,src-byte-len-local)
-              :i32.ge_u
-              (:br_if $len_done)
-              (:local.get ,src-local)
-              (:ref.cast ,(list :ref string-type))
-              (:local.get ,src-idx-local)
-              (:array.get_u ,string-type)
-              (:i32.const #xC0)
-              :i32.and
-              (:i32.const #x80)
-              :i32.ne
-              (:if nil)
-              (:local.get ,char-count-local)
-              (:i32.const 1)
-              :i32.add
-              (:local.set ,char-count-local)
-              :end
-              (:local.get ,src-idx-local)
-              (:i32.const 1)
-              :i32.add
-              (:local.set ,src-idx-local)
-              (:br $len_loop)
-              :end
-              :end
-              (:local.get ,char-count-local)
-              (:local.set ,end-local)))
-      ;; Find byte position of start char
-      (:local.get ,src-local)
-      (:ref.cast ,(list :ref string-type))
-      (:array.len)
-      (:local.set ,src-byte-len-local)
-      (:i32.const 0)
-      (:local.set ,char-count-local)
-      (:i32.const 0)
-      (:local.set ,src-idx-local)
-      (:block $find_start_done)
-      (:loop $find_start_loop)
-      (:local.get ,src-idx-local)
-      (:local.get ,src-byte-len-local)
-      :i32.ge_u
-      (:br_if $find_start_done)
-      (:local.get ,char-count-local)
-      (:local.get ,start-local)
-      :i32.ge_u
-      (:br_if $find_start_done)
-      (:local.get ,src-local)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,src-idx-local)
-      (:array.get_u ,string-type)
-      (:local.set ,byte-local)
-      (:local.get ,byte-local)
-      (:i32.const #xC0)
-      :i32.and
-      (:i32.const #x80)
-      :i32.ne
-      (:if nil)
-      (:local.get ,char-count-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,char-count-local)
-      :end
-      (:local.get ,src-idx-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,src-idx-local)
-      (:br $find_start_loop)
-      :end
-      :end
-      (:local.get ,src-idx-local)
-      (:local.set ,start-byte-local)
-      ;; Find byte position of end char and calculate byte length
-      (:block $find_end_done)
-      (:loop $find_end_loop)
-      (:local.get ,src-idx-local)
-      (:local.get ,src-byte-len-local)
-      :i32.ge_u
-      (:br_if $find_end_done)
-      (:local.get ,char-count-local)
-      (:local.get ,end-local)
-      :i32.ge_u
-      (:br_if $find_end_done)
-      (:local.get ,src-local)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,src-idx-local)
-      (:array.get_u ,string-type)
-      (:local.set ,byte-local)
-      (:local.get ,byte-local)
-      (:i32.const #xC0)
-      :i32.and
-      (:i32.const #x80)
-      :i32.ne
-      (:if nil)
-      (:local.get ,char-count-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,char-count-local)
-      :end
-      (:local.get ,src-idx-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,src-idx-local)
-      (:br $find_end_loop)
-      :end
-      :end
-      (:local.get ,src-idx-local)
-      (:local.get ,start-byte-local)
-      :i32.sub
-      (:local.set ,byte-len-local)
-      ;; Create destination array
-      (:local.get ,byte-len-local)
-      (:array.new_default ,string-type)
-      (:local.set ,dst-local)
-      ;; Copy bytes
-      (:i32.const 0)
-      (:local.set ,dst-idx-local)
-      (:block $copy_done)
-      (:loop $copy_loop)
-      (:local.get ,dst-idx-local)
-      (:local.get ,byte-len-local)
-      :i32.ge_u
-      (:br_if $copy_done)
-      (:local.get ,dst-local)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,dst-idx-local)
-      (:local.get ,src-local)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,start-byte-local)
-      (:local.get ,dst-idx-local)
-      :i32.add
-      (:array.get_u ,string-type)
-      (:array.set ,string-type)
-      (:local.get ,dst-idx-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,dst-idx-local)
-      (:br $copy_loop)
-      :end
-      :end
-      ;; Return destination
-      (:local.get ,dst-local))))
 
 (defun compile-concatenate (args env)
   "Compile (concatenate 'string str1 str2 ...) - concatenate strings.

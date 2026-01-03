@@ -451,4 +451,175 @@
                   (incf index)))
        result))))
 
+;;; ============================================================
+;;; Subseq Family ([subseq](resources/HyperSpec/Body/f_subseq.htm))
+;;;
+;;; Returns subsequences from strings, lists, and vectors.
+;;; UTF-8 character-position indices for strings.
+;;; ============================================================
+
+(defun char-position-to-byte-position (string char-index)
+  "Convert character index to byte position in UTF-8 string.
+   Uses only Layer 1 primitives: char, char-code, length.
+   Returns NIL if char-index is beyond string length."
+  (let ((byte-len (length string))
+        (char-count 0)
+        (byte-pos 0))
+    (loop while (and (< byte-pos byte-len)
+                     (< char-count char-index))
+          do (let* ((byte (char-code (char string byte-pos))))
+               ;; Count only non-continuation bytes as character starts
+               (unless (utf8-continuation-byte-p byte)
+                 (incf char-count))
+               (incf byte-pos)))
+    ;; Return byte position if we reached the target, NIL otherwise
+    (if (= char-count char-index)
+        byte-pos
+        nil)))
+
+(defun string-subseq-rt (string start end)
+  "Return a substring of STRING from START to END (character indices).
+   See [subseq](resources/HyperSpec/Body/f_subseq.htm).
+   Uses only Layer 1 primitives. UTF-8 aware."
+  (let* ((len (length string)))
+    ;; Validate bounds
+    (when (< start 0)
+      (error "Start index ~A is negative" start))
+    (when (< end start)
+      (error "End ~A is less than start ~A" end start))
+    ;; Calculate character count for end validation
+    (let ((char-count 0)
+          (byte-pos 0))
+      (loop while (< byte-pos len)
+            do (let ((byte (char-code (char string byte-pos))))
+                 (unless (utf8-continuation-byte-p byte)
+                   (incf char-count))
+                 (incf byte-pos)))
+      (when (> end char-count)
+        (error "End ~A is beyond string length ~A" end char-count)))
+    ;; Handle empty result
+    (when (= start end)
+      (return-from string-subseq-rt ""))
+    ;; Find byte positions for start and end
+    (let ((start-byte (char-position-to-byte-position string start))
+          (end-byte (char-position-to-byte-position string end)))
+      ;; Build result string
+      (let* ((result-len (- end-byte start-byte))
+             (result (make-string result-len)))
+        (loop for i from 0 below result-len
+              do (setf (char result i) (char string (+ start-byte i))))
+        result))))
+
+(defun list-subseq-rt (list start end)
+  "Return a subsequence of LIST from START to END.
+   See [subseq](resources/HyperSpec/Body/f_subseq.htm).
+   Uses only Layer 1 primitives: car, cdr, cons, consp."
+  ;; Validate bounds
+  (when (< start 0)
+    (error "Start index ~A is negative" start))
+  (when (< end start)
+    (error "End ~A is less than start ~A" end start))
+  ;; Handle empty result
+  (when (= start end)
+    (return-from list-subseq-rt nil))
+  ;; Skip to start position
+  (let ((current list)
+        (index 0))
+    (loop while (and (consp current) (< index start))
+          do (setf current (cdr current))
+             (incf index))
+    ;; Validate we found start position
+    (when (and (< index start) (null current))
+      (error "Start ~A is beyond list length ~A" start index))
+    ;; Collect elements from start to end
+    (let ((result nil))
+      (loop while (and (consp current) (< index end))
+            do (push (car current) result)
+               (setf current (cdr current))
+               (incf index))
+      ;; Validate we reached end position
+      (when (< index end)
+        (error "End ~A is beyond list length ~A" end index))
+      (nreverse result))))
+
+(defun vector-subseq-rt (vector start end)
+  "Return a subsequence of VECTOR from START to END.
+   See [subseq](resources/HyperSpec/Body/f_subseq.htm).
+   Uses only Layer 1 primitives: aref, length, make-array."
+  (let ((len (length vector)))
+    ;; Validate bounds
+    (when (< start 0)
+      (error "Start index ~A is negative" start))
+    (when (< end start)
+      (error "End ~A is less than start ~A" end start))
+    (when (> end len)
+      (error "End ~A is beyond vector length ~A" end len))
+    ;; Create result vector
+    (let* ((result-len (- end start))
+           (result (make-array result-len)))
+      (loop for i from 0 below result-len
+            do (setf (aref result i) (aref vector (+ start i))))
+      result)))
+
+(defun subseq-rt (sequence start end)
+  "Return a subsequence of SEQUENCE from START to END.
+   See [subseq](resources/HyperSpec/Body/f_subseq.htm).
+   Dispatches to string-subseq-rt, list-subseq-rt, or vector-subseq-rt.
+   Uses only Layer 1 primitives."
+  (cond
+    ((stringp sequence)
+     (string-subseq-rt sequence start (or end (length sequence))))
+    ((listp sequence)
+     (list-subseq-rt sequence start (or end (length sequence))))
+    ((vectorp sequence)
+     (vector-subseq-rt sequence start (or end (length sequence))))
+    (t
+     (error "subseq: ~A is not a sequence" (type-of sequence)))))
+
+(defun copy-seq-rt (sequence)
+  "Return a copy of SEQUENCE.
+   See [copy-seq](resources/HyperSpec/Body/f_cp_seq.htm).
+   Equivalent to (subseq sequence 0)."
+  (subseq-rt sequence 0 nil))
+
+;;; ============================================================
+;;; Adjust-Array ([adjust-array](resources/HyperSpec/Body/f_adjust.htm))
+;;;
+;;; Returns array with new dimensions, preserving elements.
+;;; MVP: 1D arrays only.
+;;; ============================================================
+
+(defun adjust-array-rt (array new-dimensions initial-element initial-element-p)
+  "Return ARRAY adjusted to NEW-DIMENSIONS.
+   See [adjust-array](resources/HyperSpec/Body/f_adjust.htm).
+   NEW-DIMENSIONS can be an integer or a list (for 1D, first element used).
+   Uses only Layer 1 primitives: aref, length, make-array.
+   MVP: 1D arrays only - signals error for multidimensional."
+  ;; Extract new size from dimensions
+  (let ((new-size (if (consp new-dimensions)
+                      (car new-dimensions)
+                      new-dimensions)))
+    ;; Validate dimensions
+    (when (< new-size 0)
+      (error "New dimension ~A is negative" new-size))
+    ;; Check for multidimensional arrays (MVP limitation)
+    (when (> (array-rank array) 1)
+      (error "adjust-array MVP: multidimensional arrays not supported"))
+    ;; Get old size
+    (let* ((old-size (length array))
+           ;; Create new array
+           (result (if initial-element-p
+                       (make-array new-size :initial-element initial-element)
+                       (make-array new-size)))
+           ;; Determine how many elements to copy
+           (copy-count (min old-size new-size)))
+      ;; Copy existing elements
+      (loop for i from 0 below copy-count
+            do (setf (aref result i) (aref array i)))
+      ;; Fill remaining with initial-element if provided and growing
+      (when (and initial-element-p (> new-size old-size))
+        (loop for i from old-size below new-size
+              do (setf (aref result i) initial-element)))
+      result)))
+
 ;;; EOF
