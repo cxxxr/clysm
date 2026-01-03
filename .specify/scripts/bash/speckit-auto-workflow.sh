@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# speckit-auto-workflow.sh v2
+# speckit-auto-workflow.sh v2.1
 #
 # 完全自動化されたspec-kitワークフロー
-# - implementation-plan.mdと現在の実装を比較して次の機能を自動決定
+# - planファイルと現在の実装を比較して次の機能を自動決定
 # - 推奨オプションを自動選択
 # - 品質ゲートで問題があれば自動停止
 #
 # Usage:
 #   ./speckit-auto-workflow.sh              # 自動で次の機能を決定して実行
+#   ./speckit-auto-workflow.sh --plan FILE  # カスタムplanファイルを使用
 #   ./speckit-auto-workflow.sh --continue   # 前回のセッションを続行
 #   ./speckit-auto-workflow.sh --implement  # 実装ループのみ
 #   ./speckit-auto-workflow.sh "機能説明"   # 手動で機能を指定
@@ -41,7 +42,7 @@ REPO_ROOT=$(get_repo_root)
 SESSION_FILE="${TMPDIR:-/tmp}/speckit-session-id"
 STATE_FILE="${TMPDIR:-/tmp}/speckit-state"
 LOG_DIR="$REPO_ROOT/.specify/logs"
-IMPL_PLAN="$REPO_ROOT/.specify/memory/implementation-plan.md"
+IMPL_PLAN="${IMPL_PLAN:-$REPO_ROOT/.specify/memory/implementation-plan.md}"
 SPECS_DIR="$REPO_ROOT/specs"
 ALLOWED_TOOLS="Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch"
 
@@ -341,7 +342,7 @@ detect_next_feature() {
 ## 入力情報
 
 ### 1. 実装計画
-@.specify/memory/implementation-plan.md
+@${IMPL_PLAN}
 
 ### 2. 既存のスペック
 $(ls -1 "$SPECS_DIR" 2>/dev/null | sed 's/^/- /')
@@ -910,7 +911,7 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
 check_implementation_complete() {
     log_info "Checking if implementation plan is complete..."
 
-    local check_prompt="implementation-plan.mdと現在の実装を比較してください。
+    local check_prompt="${IMPL_PLAN}と現在の実装を比較してください。
 
 すべてのPhaseの検証基準が満たされている場合は 'COMPLETE' と出力。
 まだ実装すべき機能がある場合は 'INCOMPLETE' と出力。
@@ -982,13 +983,13 @@ run_full_workflow() {
     fi
 }
 
-# フルオートループ: implementation-plan.md完了まで繰り返す
+# フルオートループ: plan完了まで繰り返す
 run_full_auto_loop() {
     local max_features=20  # 無限ループ防止
     local feature_count=0
 
     log_step "Starting Full Auto Loop"
-    log_info "Will loop until implementation-plan.md is complete"
+    log_info "Will loop until plan is complete: $IMPL_PLAN"
     echo "" >&2
 
     while [[ $feature_count -lt $max_features ]]; do
@@ -1066,6 +1067,7 @@ Fully automated spec-kit workflow with intelligent decision making.
 
 OPTIONS:
     -h, --help          Show this help message
+    -p, --plan FILE     Use custom implementation plan file (default: .specify/memory/implementation-plan.md)
     -c, --continue      Continue from last saved session
     -i, --implement     Run implementation loop only
     -l, --loop          Full auto loop: detect → implement → commit → repeat
@@ -1074,6 +1076,12 @@ OPTIONS:
 EXAMPLES:
     # Auto-detect next feature and run full workflow (with confirmation)
     $(basename "$0")
+
+    # Use custom plan file
+    $(basename "$0") --plan ./my-project-plan.md
+
+    # Full auto loop with custom plan
+    $(basename "$0") --plan ./feature-roadmap.md --loop
 
     # Full auto loop until implementation-plan.md is complete
     $(basename "$0") --loop
@@ -1087,6 +1095,7 @@ EXAMPLES:
     # Run implementation only
     $(basename "$0") --implement
 
+PLAN FILE: $IMPL_PLAN
 LOG FILE: $LOG_FILE
 
 EOF
@@ -1098,6 +1107,7 @@ show_status() {
 
     echo "Current State: $state"
     echo "Session ID: ${session:-none}"
+    echo "Plan File: $IMPL_PLAN"
     echo "Log File: $LOG_FILE"
 
     if [[ -f "$LOG_FILE" ]]; then
@@ -1148,6 +1158,31 @@ continue_workflow() {
 }
 
 main() {
+    # Parse --plan option first (can appear anywhere)
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -p|--plan)
+                if [[ -z "${2:-}" ]]; then
+                    log_error "--plan requires a file path argument"
+                    exit 1
+                fi
+                IMPL_PLAN="$2"
+                if [[ ! -f "$IMPL_PLAN" ]]; then
+                    log_error "Plan file not found: $IMPL_PLAN"
+                    exit 1
+                fi
+                log_info "Using plan file: $IMPL_PLAN"
+                shift 2
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${args[@]}"
+
     case "${1:-}" in
         -h|--help)
             show_usage
@@ -1173,6 +1208,7 @@ main() {
         "")
             # 自動で次の機能を検出
             echo -e "${CYAN}Detecting next feature from implementation plan...${NC}" >&2
+            echo -e "${BLUE}Plan file: ${IMPL_PLAN}${NC}" >&2
             echo "" >&2
 
             local feature_desc
