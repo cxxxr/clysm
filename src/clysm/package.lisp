@@ -611,6 +611,8 @@
            #:compile-expression
            #:compile-to-instructions
            #:compile-defun
+           ;; Instruction collector macro (001-instruction-collector-refactor)
+           #:with-instruction-collector
            #:make-env
            #:compilation-env
            #:make-compilation-env
@@ -1419,7 +1421,8 @@
                 #:compile-unary-math-ffi
                 #:compile-cxr-chain
                 #:compile-to-instructions   ; 001-internal-function-export
-                #:env-add-local)            ; 001-lexenv-function-export
+                #:env-add-local             ; 001-lexenv-function-export
+                #:with-instruction-collector) ; 001-instruction-collector-refactor
   ;; Internal compiler functions (001-internal-function-export)
   (:import-from #:clysm/compiler/env
                 #:lexical-env-parent
@@ -1473,7 +1476,9 @@
            ;; Parser functions (001-wasm-local-binding US2)
            #:advance-token
            #:current-token
-           #:make-parser-state))
+           #:make-parser-state
+           ;; Instruction collector macro (001-instruction-collector-refactor)
+           #:with-instruction-collector))
 
 ;;; Forward declarations for special variables used across compilation units.
 ;;; These are defined here (after packages exist) to avoid "undefined variable"

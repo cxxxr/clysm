@@ -98,13 +98,12 @@
       (error "Runtime function ~A expects ~D arguments, got ~D"
              function expected-arity (length args)))
     ;; Compile arguments (not in tail position)
-    (let ((env-non-tail (env-with-non-tail env))
-          (result nil))
-      (dolist (arg args)
-        (setf result (append result (compile-to-instructions arg env-non-tail))))
-      ;; Emit call to runtime function
-      (setf result (append result (list (list :call runtime-name))))
-      result)))
+    (let ((env-non-tail (env-with-non-tail env)))
+      (with-instruction-collector
+        (dolist (arg args)
+          (emit* (compile-to-instructions arg env-non-tail)))
+        ;; Emit call to runtime function
+        (emit :call runtime-name)))))
 
 ;;; ============================================================
 ;;; Runtime Function Registration (001-io-list-runtime)
@@ -684,12 +683,10 @@
         ;; Empty string: just create empty array
         (list (list :array.new_fixed string-type 0))
         ;; Non-empty: push each byte then create array
-        (let ((result '()))
+        (with-instruction-collector
           (loop for byte across bytes
-                do (push (list :i32.const byte) result))
-          (setf result (nreverse result))
-          (append result
-                  (list (list :array.new_fixed string-type (length bytes))))))))
+                do (emit :i32.const byte))
+          (emit :array.new_fixed string-type (length bytes))))))
 
 (defun compile-quoted-list (lst &optional env)
   "Compile a quoted list to a cons structure.
@@ -697,16 +694,13 @@
    ENV is passed through for AST node compilation (001-quasiquote-local-vars)."
   (if (null lst)
       '((:ref.null :none))
-      (let ((result '()))
+      (with-instruction-collector
         ;; Compile car element
-        (setf result (append result (compile-quoted-element (car lst) env)))
+        (emit* (compile-quoted-element (car lst) env))
         ;; Compile cdr (rest of list)
-        (setf result (append result (compile-quoted-list (cdr lst) env)))
+        (emit* (compile-quoted-list (cdr lst) env))
         ;; Create cons cell
-        (setf result (append result
-                             (list (list :struct.new
-                                         clysm/compiler/codegen/gc-types:+type-cons+))))
-        result)))
+        (emit :struct.new clysm/compiler/codegen/gc-types:+type-cons+))))
 
 (defun compile-quoted-element (elem &optional env)
   "Compile a single quoted element to Wasm instructions.
@@ -803,17 +797,17 @@
   (let ((num (numerator value))
         (den (denominator value))
         (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
-    ;; Compile numerator (may be fixnum or bignum)
-    (append
-     (if (clysm/compiler/ast:i31-range-p num)
-         (list (list :i32.const num) :ref.i31)
-         (compile-bignum-literal num))
-     ;; Compile denominator (always positive, may be fixnum or bignum)
-     (if (clysm/compiler/ast:i31-range-p den)
-         (list (list :i32.const den) :ref.i31)
-         (compile-bignum-literal den))
-     ;; Create ratio struct
-     (list (list :struct.new ratio-type)))))
+    (with-instruction-collector
+      ;; Compile numerator (may be fixnum or bignum)
+      (emit* (if (clysm/compiler/ast:i31-range-p num)
+                 (list (list :i32.const num) :ref.i31)
+                 (compile-bignum-literal num)))
+      ;; Compile denominator (always positive, may be fixnum or bignum)
+      (emit* (if (clysm/compiler/ast:i31-range-p den)
+                 (list (list :i32.const den) :ref.i31)
+                 (compile-bignum-literal den)))
+      ;; Create ratio struct
+      (emit :struct.new ratio-type))))
 
 (defun compile-float-literal (value)
   "Compile a float literal to Wasm instructions.
@@ -830,13 +824,13 @@
   (let ((real-part (realpart value))
         (imag-part (imagpart value))
         (complex-type clysm/compiler/codegen/gc-types:+type-complex+))
-    (append
-     ;; Compile real part
-     (compile-numeric-literal-part real-part)
-     ;; Compile imaginary part
-     (compile-numeric-literal-part imag-part)
-     ;; Create complex struct
-     (list (list :struct.new complex-type)))))
+    (with-instruction-collector
+      ;; Compile real part
+      (emit* (compile-numeric-literal-part real-part))
+      ;; Compile imaginary part
+      (emit* (compile-numeric-literal-part imag-part))
+      ;; Create complex struct
+      (emit :struct.new complex-type))))
 
 (defun compile-numeric-literal-part (value)
   "Compile a numeric value that can be any real type.
@@ -903,38 +897,24 @@
    The env is a cons-list: (cons var0 (cons var1 (cons var2 nil)))
    To get var at position N, we need N cdrs followed by a car."
   (let* ((position (env-lookup-captured env name))
-         (result '()))
-    ;; Get the closure (local 0)
-    (setf result (append result '((:local.get 0))))
-    ;; Cast to closure type
-    (setf result (append result
-                         (list (list :ref.cast
-                                     clysm/compiler/codegen/gc-types:+type-closure+))))
-    ;; Get the env field (field index 4)
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-closure+
-                                     4))))
-    ;; Navigate the cons-list: N times cdr, then car
-    (dotimes (i position)
-      ;; Cast to cons type
-      (setf result (append result
-                           (list (list :ref.cast
-                                       clysm/compiler/codegen/gc-types:+type-cons+))))
-      ;; Get cdr (field index 1)
-      (setf result (append result
-                           (list (list :struct.get
-                                       clysm/compiler/codegen/gc-types:+type-cons+
-                                       1)))))
-    ;; Cast final position to cons and get car (field index 0)
-    (setf result (append result
-                         (list (list :ref.cast
-                                     clysm/compiler/codegen/gc-types:+type-cons+))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-cons+
-                                     0))))
-    result))
+         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
+         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; Get the closure (local 0)
+      (emit '(:local.get 0))
+      ;; Cast to closure type
+      (emit :ref.cast closure-type)
+      ;; Get the env field (field index 4)
+      (emit :struct.get closure-type 4)
+      ;; Navigate the cons-list: N times cdr, then car
+      (dotimes (i position)
+        ;; Cast to cons type
+        (emit :ref.cast cons-type)
+        ;; Get cdr (field index 1)
+        (emit :struct.get cons-type 1))
+      ;; Cast final position to cons and get car (field index 0)
+      (emit :ref.cast cons-type)
+      (emit :struct.get cons-type 0))))
 
 ;;; ============================================================
 ;;; Function Call Compilation (T049-T052)
@@ -1122,53 +1102,48 @@
    Uses :return_call_ref for tail calls (TCO), :call_ref otherwise."
   (let* ((local-func-info (env-lookup-local-function env function))
          (arity (length args))
-         (result '())
-         (arg-env (env-with-non-tail env)))
-    ;; Get the closure - either from local or from captured env
-    (if (eq local-func-info :captured)
-        ;; Captured in closure env - use captured-var access
-        (setf result (append result (compile-captured-var-access function env)))
-        ;; In a local variable
-        (setf result (append result (list (list :local.get local-func-info)))))
-    ;; Duplicate for the first parameter (closure as self-reference)
-    (let ((closure-local (cenv-local-counter env)))
-      (incf (car (cenv-local-counter-box env)))  ; Allocate temp local
-      ;; Save closure to temp local
-      (setf result (append result (list (list :local.set closure-local))))
-      ;; Push closure as first argument (self reference)
-      (setf result (append result (list (list :local.get closure-local))))
-      ;; Push all call arguments (not in tail position)
-      (dolist (arg args)
-        (setf result (append result (compile-to-instructions arg arg-env))))
-      ;; Get closure and extract code field
-      (setf result (append result (list (list :local.get closure-local))))
-      ;; Cast to closure type
-      (setf result (append result
-                           (list (list :ref.cast
-                                       clysm/compiler/codegen/gc-types:+type-closure+))))
-      ;; Get the appropriate code field based on arity
-      (let ((code-field (case arity
-                          (0 0)   ; code_0
-                          (1 1)   ; code_1
-                          (2 2)   ; code_2
-                          (t 3)))) ; code_N
-        (setf result (append result
-                             (list (list :struct.get
-                                         clysm/compiler/codegen/gc-types:+type-closure+
-                                         code-field)))))
-      ;; Cast funcref to specific function type and call
-      ;; Use return_call_ref for tail calls
-      (let ((func-type (case arity
-                         (0 clysm/compiler/codegen/gc-types:+type-func-0+)
-                         (1 clysm/compiler/codegen/gc-types:+type-func-1+)
-                         (2 clysm/compiler/codegen/gc-types:+type-func-2+)
-                         (3 clysm/compiler/codegen/gc-types:+type-func-3+)
-                         (t clysm/compiler/codegen/gc-types:+type-func-n+))))
-        (setf result (append result (list (list :ref.cast func-type))))
-        (if (cenv-in-tail-position env)
-            (setf result (append result (list (list :return_call_ref func-type))))
-            (setf result (append result (list (list :call_ref func-type)))))))
-    result))
+         (arg-env (env-with-non-tail env))
+         (closure-type clysm/compiler/codegen/gc-types:+type-closure+))
+    (with-instruction-collector
+      ;; Get the closure - either from local or from captured env
+      (if (eq local-func-info :captured)
+          ;; Captured in closure env - use captured-var access
+          (emit* (compile-captured-var-access function env))
+          ;; In a local variable
+          (emit :local.get local-func-info))
+      ;; Duplicate for the first parameter (closure as self-reference)
+      (let ((closure-local (cenv-local-counter env)))
+        (incf (car (cenv-local-counter-box env)))  ; Allocate temp local
+        ;; Save closure to temp local
+        (emit :local.set closure-local)
+        ;; Push closure as first argument (self reference)
+        (emit :local.get closure-local)
+        ;; Push all call arguments (not in tail position)
+        (dolist (arg args)
+          (emit* (compile-to-instructions arg arg-env)))
+        ;; Get closure and extract code field
+        (emit :local.get closure-local)
+        ;; Cast to closure type
+        (emit :ref.cast closure-type)
+        ;; Get the appropriate code field based on arity
+        (let ((code-field (case arity
+                            (0 0)   ; code_0
+                            (1 1)   ; code_1
+                            (2 2)   ; code_2
+                            (t 3)))) ; code_N
+          (emit :struct.get closure-type code-field))
+        ;; Cast funcref to specific function type and call
+        ;; Use return_call_ref for tail calls
+        (let ((func-type (case arity
+                           (0 clysm/compiler/codegen/gc-types:+type-func-0+)
+                           (1 clysm/compiler/codegen/gc-types:+type-func-1+)
+                           (2 clysm/compiler/codegen/gc-types:+type-func-2+)
+                           (3 clysm/compiler/codegen/gc-types:+type-func-3+)
+                           (t clysm/compiler/codegen/gc-types:+type-func-n+))))
+          (emit :ref.cast func-type)
+          (if (cenv-in-tail-position env)
+              (emit :return_call_ref func-type)
+              (emit :call_ref func-type)))))))
 
 (defun compile-primitive-call (op args env)
   "Compile a primitive operation.
@@ -2613,52 +2588,52 @@
         (dims-local (env-add-local env (gensym "DIMS")))
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Type dispatch
-     (emit-array-type-dispatch
-      env arr-local
-      ;; $mdarray path: count elements in dimensions list
-      `(;; Get dimensions list
-        (:local.get ,arr-local)
-        (:ref.cast (:ref ,mdarray-type))
-        (:struct.get ,mdarray-type 0)  ; dimensions field (cons list)
-        (:local.set ,dims-local)
-        ;; Initialize counter to 0
-        (:i32.const 0)
-        (:local.set ,count-local)
-        ;; Loop through list
-        (:block $rank_done)
-        (:loop $rank_loop)
-        ;; Check if nil (end of list)
-        (:local.get ,dims-local)
-        :ref.is_null
-        (:br_if $rank_done)
-        ;; Check if cons
-        (:local.get ,dims-local)
-        (:ref.test (:ref ,cons-type))
-        :i32.eqz
-        (:br_if $rank_done)
-        ;; Increment counter
-        (:local.get ,count-local)
-        (:i32.const 1)
-        :i32.add
-        (:local.set ,count-local)
-        ;; Get cdr
-        (:local.get ,dims-local)
-        (:ref.cast (:ref ,cons-type))
-        (:struct.get ,cons-type 1)
-        (:local.set ,dims-local)
-        (:br $rank_loop)
-        :end  ; loop
-        :end  ; block
-        ;; Return count as fixnum
-        (:local.get ,count-local)
-        :ref.i31)
-      ;; Simple array path: rank is always 1
-      `((:i32.const 1)
-        :ref.i31)))))
+    (with-instruction-collector
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Type dispatch
+      (emit* (emit-array-type-dispatch
+              env arr-local
+              ;; $mdarray path: count elements in dimensions list
+              `(;; Get dimensions list
+                (:local.get ,arr-local)
+                (:ref.cast (:ref ,mdarray-type))
+                (:struct.get ,mdarray-type 0)  ; dimensions field (cons list)
+                (:local.set ,dims-local)
+                ;; Initialize counter to 0
+                (:i32.const 0)
+                (:local.set ,count-local)
+                ;; Loop through list
+                (:block $rank_done)
+                (:loop $rank_loop)
+                ;; Check if nil (end of list)
+                (:local.get ,dims-local)
+                :ref.is_null
+                (:br_if $rank_done)
+                ;; Check if cons
+                (:local.get ,dims-local)
+                (:ref.test (:ref ,cons-type))
+                :i32.eqz
+                (:br_if $rank_done)
+                ;; Increment counter
+                (:local.get ,count-local)
+                (:i32.const 1)
+                :i32.add
+                (:local.set ,count-local)
+                ;; Get cdr
+                (:local.get ,dims-local)
+                (:ref.cast (:ref ,cons-type))
+                (:struct.get ,cons-type 1)
+                (:local.set ,dims-local)
+                (:br $rank_loop)
+                :end  ; loop
+                :end  ; block
+                ;; Return count as fixnum
+                (:local.get ,count-local)
+                :ref.i31)
+              ;; Simple array path: rank is always 1
+              `((:i32.const 1)
+                :ref.i31))))))
 
 (defun compile-array-dimension (args env)
   "Compile (array-dimension array axis-number) - return dimension size.
@@ -2674,50 +2649,51 @@
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
         (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    (append
-     ;; Compile array and store
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Compile axis and convert to i32
-     (compile-to-instructions (second args) env)
-     '((:ref.cast :i31) :i31.get_s)
-     (list (list :local.set axis-local))
-     ;; Type dispatch
-     (emit-array-type-dispatch
-      env arr-local
-      ;; $mdarray path: get nth element from dimensions list
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mdarray-type))
-        (:struct.get ,mdarray-type 0)  ; dimensions list
-        (:local.set ,dims-local)
-        ;; Walk to nth element
-        (:block $dim_done)
-        (:loop $dim_loop)
-        ;; Check if axis is 0
-        (:local.get ,axis-local)
-        :i32.eqz
-        (:br_if $dim_done)  ; found it, exit loop
-        ;; Decrement axis and move to cdr
-        (:local.get ,axis-local)
-        (:i32.const 1)
-        :i32.sub
-        (:local.set ,axis-local)
-        (:local.get ,dims-local)
-        (:ref.cast (:ref ,cons-type))
-        (:struct.get ,cons-type 1)
-        (:local.set ,dims-local)
-        (:br $dim_loop)
-        :end  ; loop
-        :end  ; block
-        ;; dims-local now points to the nth cons cell, return its car
-        (:local.get ,dims-local)
-        (:ref.cast (:ref ,cons-type))
-        (:struct.get ,cons-type 0))
-      ;; Simple array path: axis must be 0, return array length
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mv-array-type))
-        (:array.len)
-        :ref.i31)))))
+    (with-instruction-collector
+      ;; Compile array and store
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Compile axis and convert to i32
+      (emit* (compile-to-instructions (second args) env))
+      (emit '(:ref.cast :i31))
+      (emit :i31.get_s)
+      (emit :local.set axis-local)
+      ;; Type dispatch
+      (emit* (emit-array-type-dispatch
+              env arr-local
+              ;; $mdarray path: get nth element from dimensions list
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mdarray-type))
+                (:struct.get ,mdarray-type 0)  ; dimensions list
+                (:local.set ,dims-local)
+                ;; Walk to nth element
+                (:block $dim_done)
+                (:loop $dim_loop)
+                ;; Check if axis is 0
+                (:local.get ,axis-local)
+                :i32.eqz
+                (:br_if $dim_done)  ; found it, exit loop
+                ;; Decrement axis and move to cdr
+                (:local.get ,axis-local)
+                (:i32.const 1)
+                :i32.sub
+                (:local.set ,axis-local)
+                (:local.get ,dims-local)
+                (:ref.cast (:ref ,cons-type))
+                (:struct.get ,cons-type 1)
+                (:local.set ,dims-local)
+                (:br $dim_loop)
+                :end  ; loop
+                :end  ; block
+                ;; dims-local now points to the nth cons cell, return its car
+                (:local.get ,dims-local)
+                (:ref.cast (:ref ,cons-type))
+                (:struct.get ,cons-type 0))
+              ;; Simple array path: axis must be 0, return array length
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mv-array-type))
+                (:array.len)
+                :ref.i31))))))
 
 (defun compile-array-dimensions (args env)
   "Compile (array-dimensions array) - return list of dimension sizes.
@@ -2731,23 +2707,23 @@
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
         (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+)
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Type dispatch
-     (emit-array-type-dispatch
-      env arr-local
-      ;; $mdarray path: return dimensions list directly
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mdarray-type))
-        (:struct.get ,mdarray-type 0))
-      ;; Simple array path: create (length) list
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mv-array-type))
-        (:array.len)
-        :ref.i31  ; length as car
-        (:global.get 0)  ; NIL as cdr
-        (:struct.new ,cons-type))))))
+    (with-instruction-collector
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Type dispatch
+      (emit* (emit-array-type-dispatch
+              env arr-local
+              ;; $mdarray path: return dimensions list directly
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mdarray-type))
+                (:struct.get ,mdarray-type 0))
+              ;; Simple array path: create (length) list
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mv-array-type))
+                (:array.len)
+                :ref.i31  ; length as car
+                (:global.get 0)  ; NIL as cdr
+                (:struct.new ,cons-type)))))))
 
 (defun compile-array-total-size (args env)
   "Compile (array-total-size array) - return total number of elements.
@@ -2760,24 +2736,24 @@
   (let ((arr-local (env-add-local env (gensym "ARR-SIZE")))
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
         (mv-array-type clysm/compiler/codegen/gc-types:+type-mv-array+))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Type dispatch
-     (emit-array-type-dispatch
-      env arr-local
-      ;; $mdarray path: get length of storage array
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mdarray-type))
-        (:struct.get ,mdarray-type 1)  ; storage field (anyref)
-        (:ref.cast (:ref ,mv-array-type))  ; cast to array type
-        (:array.len)
-        :ref.i31)
-      ;; Simple array path: get array length directly
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mv-array-type))
-        (:array.len)
-        :ref.i31)))))
+    (with-instruction-collector
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Type dispatch
+      (emit* (emit-array-type-dispatch
+              env arr-local
+              ;; $mdarray path: get length of storage array
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mdarray-type))
+                (:struct.get ,mdarray-type 1)  ; storage field (anyref)
+                (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+                (:array.len)
+                :ref.i31)
+              ;; Simple array path: get array length directly
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mv-array-type))
+                (:array.len)
+                :ref.i31))))))
 
 ;;; User Story 2: Access Elements by Row-Major Index (P2)
 
@@ -2936,23 +2912,23 @@
     (error "adjustable-array-p requires exactly 1 argument"))
   (let ((arr-local (env-add-local env (gensym "ARR-ADJP")))
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Type dispatch
-     (emit-array-type-dispatch
-      env arr-local
-      ;; $mdarray path: check adjustable field
-      `((:local.get ,arr-local)
-        (:ref.cast (:ref ,mdarray-type))
-        (:struct.get ,mdarray-type 2)  ; adjustable field (i32)
-        (:if (:result :anyref))
-        (:i32.const 1) :ref.i31  ; T
-        :else
-        (:ref.null :none)  ; NIL
-        :end)
-      ;; Simple array path: always NIL
-      `((:ref.null :none))))))
+    (with-instruction-collector
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Type dispatch
+      (emit* (emit-array-type-dispatch
+              env arr-local
+              ;; $mdarray path: check adjustable field
+              `((:local.get ,arr-local)
+                (:ref.cast (:ref ,mdarray-type))
+                (:struct.get ,mdarray-type 2)  ; adjustable field (i32)
+                (:if (:result :anyref))
+                (:i32.const 1) :ref.i31  ; T
+                :else
+                (:ref.null :none)  ; NIL
+                :end)
+              ;; Simple array path: always NIL
+              `((:ref.null :none)))))))
 
 (defun compile-adjust-array (args env)
   "Compile (adjust-array array new-dimensions &key initial-element) - resize array.
@@ -2972,125 +2948,125 @@
         (mdarray-type clysm/compiler/codegen/gc-types:+type-mdarray+)
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (init-expr (getf (cddr args) :initial-element)))
-    (append
-     ;; Compile old array and store
-     (compile-to-instructions (first args) env)
-     (list (list :local.set arr-local))
-     ;; Compile new dimensions (for 1D, just get the number)
-     (compile-to-instructions (second args) env)
-     ;; If dimensions is a list, get car; otherwise use directly
-     `((:local.tee ,newarr-local)  ; temp use
-       (:ref.test (:ref ,cons-type))
-       (:if (:result :i32))
-       (:local.get ,newarr-local)
-       (:ref.cast (:ref ,cons-type))
-       (:struct.get ,cons-type 0)
-       (:ref.cast :i31)
-       :i31.get_s
-       :else
-       (:local.get ,newarr-local)
-       (:ref.cast :i31)
-       :i31.get_s
-       :end)
-     (list (list :local.set newsize-local))
-     ;; Compile initial-element or use NIL
-     (if init-expr
-         (compile-to-instructions init-expr env)
-         '((:global.get 0)))  ; NIL
-     (list (list :local.set init-local))
-     ;; Get old array size
-     `((:local.get ,arr-local)
-       (:ref.test (:ref ,mdarray-type))
-       (:if (:result :i32))
-       (:local.get ,arr-local)
-       (:ref.cast (:ref ,mdarray-type))
-       (:struct.get ,mdarray-type 1)  ; storage (anyref)
-       (:ref.cast (:ref ,mv-array-type))  ; cast to array type
-       (:array.len)
-       :else
-       (:local.get ,arr-local)
-       (:ref.cast (:ref ,mv-array-type))
-       (:array.len)
-       :end)
-     (list (list :local.set oldsize-local))
-     ;; Create new array with new size
-     `((:local.get ,newsize-local)
-       (:array.new_default ,mv-array-type)
-       (:local.set ,newarr-local))
-     ;; Copy existing elements (up to min of old/new size)
-     `((:i32.const 0)
-       (:local.set ,idx-local)
-       (:block $copy_done)
-       (:loop $copy_loop)
-       ;; Check if done
-       (:local.get ,idx-local)
-       (:local.get ,oldsize-local)
-       :i32.ge_u
-       (:br_if $copy_done)
-       (:local.get ,idx-local)
-       (:local.get ,newsize-local)
-       :i32.ge_u
-       (:br_if $copy_done)
-       ;; Copy element
-       (:local.get ,newarr-local)
-       (:ref.cast (:ref ,mv-array-type))
-       (:local.get ,idx-local)
-       ;; Get from old array (handle both types)
-       (:local.get ,arr-local)
-       (:ref.test (:ref ,mdarray-type))
-       (:if (:result :anyref))
-       (:local.get ,arr-local)
-       (:ref.cast (:ref ,mdarray-type))
-       (:struct.get ,mdarray-type 1)  ; storage (anyref)
-       (:ref.cast (:ref ,mv-array-type))  ; cast to array type
-       (:local.get ,idx-local)
-       (:array.get ,mv-array-type)
-       :else
-       (:local.get ,arr-local)
-       (:ref.cast (:ref ,mv-array-type))
-       (:local.get ,idx-local)
-       (:array.get ,mv-array-type)
-       :end
-       (:array.set ,mv-array-type)
-       ;; Increment
-       (:local.get ,idx-local)
-       (:i32.const 1)
-       :i32.add
-       (:local.set ,idx-local)
-       (:br $copy_loop)
-       :end  ; loop
-       :end)  ; block
-     ;; Fill new positions with initial-element
-     `((:block $fill_done)
-       (:loop $fill_loop)
-       ;; Check if done
-       (:local.get ,idx-local)
-       (:local.get ,newsize-local)
-       :i32.ge_u
-       (:br_if $fill_done)
-       ;; Set element to initial-element
-       (:local.get ,newarr-local)
-       (:ref.cast (:ref ,mv-array-type))
-       (:local.get ,idx-local)
-       (:local.get ,init-local)
-       (:array.set ,mv-array-type)
-       ;; Increment
-       (:local.get ,idx-local)
-       (:i32.const 1)
-       :i32.add
-       (:local.set ,idx-local)
-       (:br $fill_loop)
-       :end  ; loop
-       :end)  ; block
-     ;; Create new $mdarray with new dimensions
-     `((:local.get ,newsize-local)
-       :ref.i31
-       (:global.get 0)  ; NIL for cdr
-       (:struct.new ,cons-type)  ; dimensions list
-       (:local.get ,newarr-local)
-       (:ref.cast (:ref ,mv-array-type))
-       (:i32.const 1)  ; adjustable = true
-       (:struct.new ,mdarray-type)))))
+    (with-instruction-collector
+      ;; Compile old array and store
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set arr-local)
+      ;; Compile new dimensions (for 1D, just get the number)
+      (emit* (compile-to-instructions (second args) env))
+      ;; If dimensions is a list, get car; otherwise use directly
+      (emit* `((:local.tee ,newarr-local)  ; temp use
+               (:ref.test (:ref ,cons-type))
+               (:if (:result :i32))
+               (:local.get ,newarr-local)
+               (:ref.cast (:ref ,cons-type))
+               (:struct.get ,cons-type 0)
+               (:ref.cast :i31)
+               :i31.get_s
+               :else
+               (:local.get ,newarr-local)
+               (:ref.cast :i31)
+               :i31.get_s
+               :end))
+      (emit :local.set newsize-local)
+      ;; Compile initial-element or use NIL
+      (if init-expr
+          (emit* (compile-to-instructions init-expr env))
+          (emit '(:global.get 0)))  ; NIL
+      (emit :local.set init-local)
+      ;; Get old array size
+      (emit* `((:local.get ,arr-local)
+               (:ref.test (:ref ,mdarray-type))
+               (:if (:result :i32))
+               (:local.get ,arr-local)
+               (:ref.cast (:ref ,mdarray-type))
+               (:struct.get ,mdarray-type 1)  ; storage (anyref)
+               (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+               (:array.len)
+               :else
+               (:local.get ,arr-local)
+               (:ref.cast (:ref ,mv-array-type))
+               (:array.len)
+               :end))
+      (emit :local.set oldsize-local)
+      ;; Create new array with new size
+      (emit* `((:local.get ,newsize-local)
+               (:array.new_default ,mv-array-type)
+               (:local.set ,newarr-local)))
+      ;; Copy existing elements (up to min of old/new size)
+      (emit* `((:i32.const 0)
+               (:local.set ,idx-local)
+               (:block $copy_done)
+               (:loop $copy_loop)
+               ;; Check if done
+               (:local.get ,idx-local)
+               (:local.get ,oldsize-local)
+               :i32.ge_u
+               (:br_if $copy_done)
+               (:local.get ,idx-local)
+               (:local.get ,newsize-local)
+               :i32.ge_u
+               (:br_if $copy_done)
+               ;; Copy element
+               (:local.get ,newarr-local)
+               (:ref.cast (:ref ,mv-array-type))
+               (:local.get ,idx-local)
+               ;; Get from old array (handle both types)
+               (:local.get ,arr-local)
+               (:ref.test (:ref ,mdarray-type))
+               (:if (:result :anyref))
+               (:local.get ,arr-local)
+               (:ref.cast (:ref ,mdarray-type))
+               (:struct.get ,mdarray-type 1)  ; storage (anyref)
+               (:ref.cast (:ref ,mv-array-type))  ; cast to array type
+               (:local.get ,idx-local)
+               (:array.get ,mv-array-type)
+               :else
+               (:local.get ,arr-local)
+               (:ref.cast (:ref ,mv-array-type))
+               (:local.get ,idx-local)
+               (:array.get ,mv-array-type)
+               :end
+               (:array.set ,mv-array-type)
+               ;; Increment
+               (:local.get ,idx-local)
+               (:i32.const 1)
+               :i32.add
+               (:local.set ,idx-local)
+               (:br $copy_loop)
+               :end  ; loop
+               :end))  ; block
+      ;; Fill new positions with initial-element
+      (emit* `((:block $fill_done)
+               (:loop $fill_loop)
+               ;; Check if done
+               (:local.get ,idx-local)
+               (:local.get ,newsize-local)
+               :i32.ge_u
+               (:br_if $fill_done)
+               ;; Set element to initial-element
+               (:local.get ,newarr-local)
+               (:ref.cast (:ref ,mv-array-type))
+               (:local.get ,idx-local)
+               (:local.get ,init-local)
+               (:array.set ,mv-array-type)
+               ;; Increment
+               (:local.get ,idx-local)
+               (:i32.const 1)
+               :i32.add
+               (:local.set ,idx-local)
+               (:br $fill_loop)
+               :end  ; loop
+               :end))  ; block
+      ;; Create new $mdarray with new dimensions
+      (emit* `((:local.get ,newsize-local)
+               :ref.i31
+               (:global.get 0)  ; NIL for cdr
+               (:struct.new ,cons-type)  ; dimensions list
+               (:local.get ,newarr-local)
+               (:ref.cast (:ref ,mv-array-type))
+               (:i32.const 1)  ; adjustable = true
+               (:struct.new ,mdarray-type))))))
 
 ;;; ============================================================
 ;;; Feature 001-ansi-sequence-operations: Sequence Operations
@@ -3282,45 +3258,45 @@
         (plist-local (env-add-local env (gensym "GETF-PLIST")))
         (indicator-local (env-add-local env (gensym "GETF-IND")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    (append
-     ;; Evaluate and store indicator
-     (compile-to-instructions indicator-expr env)
-     (list (list :local.set indicator-local))
-     ;; Evaluate plist
-     (compile-to-instructions plist-expr env)
-     (list (list :local.set plist-local))
-     ;; Loop through plist looking for matching key
-     `((:block (:result :anyref)
-         (:loop
-           ;; Check if plist is null
-           (:local.get ,plist-local)
-           :ref.is_null
-           (:br_if 1)  ;; Exit with default if null
-           ;; Get key (car of plist)
-           (:local.get ,plist-local)
-           (:ref.cast (ref ,cons-type))
-           (:struct.get ,cons-type 0)
-           ;; Compare with indicator using eq
-           (:local.get ,indicator-local)
-           :ref.eq
-           (:if (:result :anyref)
-             ;; Found - return (car (cdr plist))
-             ((:local.get ,plist-local)
-              (:ref.cast (ref ,cons-type))
-              (:struct.get ,cons-type 1)  ;; Get cdr
-              (:ref.cast (ref ,cons-type))
-              (:struct.get ,cons-type 0)  ;; Get car of cdr (the value)
-              (:br 2))  ;; Exit with value
-             ;; Not found - skip to next key-value pair (cddr)
-             ((:local.get ,plist-local)
-              (:ref.cast (ref ,cons-type))
-              (:struct.get ,cons-type 1)  ;; cdr
-              (:ref.cast (ref ,cons-type))
-              (:struct.get ,cons-type 1)  ;; cdr again (cddr)
-              (:local.set ,plist-local)
-              (:br 0)))))  ;; Continue loop
-       ;; Default value (reached when plist is null)
-       ,@(compile-to-instructions default-expr env)))))
+    (with-instruction-collector
+      ;; Evaluate and store indicator
+      (emit* (compile-to-instructions indicator-expr env))
+      (emit :local.set indicator-local)
+      ;; Evaluate plist
+      (emit* (compile-to-instructions plist-expr env))
+      (emit :local.set plist-local)
+      ;; Loop through plist looking for matching key
+      (emit* `((:block (:result :anyref)
+                 (:loop
+                   ;; Check if plist is null
+                   (:local.get ,plist-local)
+                   :ref.is_null
+                   (:br_if 1)  ;; Exit with default if null
+                   ;; Get key (car of plist)
+                   (:local.get ,plist-local)
+                   (:ref.cast (ref ,cons-type))
+                   (:struct.get ,cons-type 0)
+                   ;; Compare with indicator using eq
+                   (:local.get ,indicator-local)
+                   :ref.eq
+                   (:if (:result :anyref)
+                     ;; Found - return (car (cdr plist))
+                     ((:local.get ,plist-local)
+                      (:ref.cast (ref ,cons-type))
+                      (:struct.get ,cons-type 1)  ;; Get cdr
+                      (:ref.cast (ref ,cons-type))
+                      (:struct.get ,cons-type 0)  ;; Get car of cdr (the value)
+                      (:br 2))  ;; Exit with value
+                     ;; Not found - skip to next key-value pair (cddr)
+                     ((:local.get ,plist-local)
+                      (:ref.cast (ref ,cons-type))
+                      (:struct.get ,cons-type 1)  ;; cdr
+                      (:ref.cast (ref ,cons-type))
+                      (:struct.get ,cons-type 1)  ;; cdr again (cddr)
+                      (:local.set ,plist-local)
+                      (:br 0)))))))  ;; Continue loop
+      ;; Default value (reached when plist is null)
+      (emit* (compile-to-instructions default-expr env)))))
 
 (defun compile-setf-getf (args env)
   "Compile (%setf-getf plist indicator value) - set property in plist.
@@ -3341,13 +3317,12 @@
    For bootstrap, this is a stub that just raises a trap."
   ;; For bootstrap purposes, just trap unconditionally
   ;; Full implementation would signal a condition
-  (append
-   (if args
-       ;; Evaluate first arg (for side effects) then drop
-       (append (compile-to-instructions (first args) env)
-               '(:drop))
-       nil)
-   '(:unreachable)))
+  (with-instruction-collector
+    (when args
+      ;; Evaluate first arg (for side effects) then drop
+      (emit* (compile-to-instructions (first args) env))
+      (emit :drop))
+    (emit :unreachable)))
 
 ;;; ============================================================
 ;;; Array, Symbol, and Type Operations (043-self-hosting-blockers)
@@ -3438,23 +3413,23 @@
     (if (and actual-contents (listp actual-contents))
         ;; Compile-time known contents - use array.new_fixed
         (let ((n (length actual-contents)))
-          (append
-           ;; Push each element onto stack
-           (loop for elem in actual-contents
-                 append (compile-to-instructions
-                         (clysm/compiler/ast:make-ast-literal
-                          :value elem
-                          :literal-type (cond
-                                          ((null elem) :nil)
-                                          ((eq elem t) :t)
-                                          ((integerp elem) :fixnum)
-                                          ((characterp elem) :character)
-                                          ((stringp elem) :string)
-                                          ((symbolp elem) :quoted)
-                                          (t :quoted)))
-                         env))
-           ;; Create array with N elements
-           `((:array.new_fixed ,array-type ,n))))
+          (with-instruction-collector
+            ;; Push each element onto stack
+            (dolist (elem actual-contents)
+              (emit* (compile-to-instructions
+                      (clysm/compiler/ast:make-ast-literal
+                       :value elem
+                       :literal-type (cond
+                                       ((null elem) :nil)
+                                       ((eq elem t) :t)
+                                       ((integerp elem) :fixnum)
+                                       ((characterp elem) :character)
+                                       ((stringp elem) :string)
+                                       ((symbolp elem) :quoted)
+                                       (t :quoted)))
+                      env)))
+            ;; Create array with N elements
+            (emit :array.new_fixed array-type n)))
         ;; Runtime contents - fall back to default + loop fill (simplified)
         ;; For now, just error - full runtime support would need a loop
         (error "make-array :initial-contents requires compile-time known list"))))
@@ -3680,26 +3655,29 @@
      (compile-to-instructions (first args) env))
     ;; Two or more args: fold left
     (t
-     (let ((result '()))
+     (with-instruction-collector
        ;; Compile first arg and unwrap (cast to i31 first)
-       (setf result (append result (compile-to-instructions (first args) env)))
-       (setf result (append result (list '(:ref.cast :i31) :i31.get_s)))
+       (emit* (compile-to-instructions (first args) env))
+       (emit '(:ref.cast :i31))
+       (emit :i31.get_s)
        ;; For each remaining arg: compile, cast, unwrap, apply op
        (dolist (arg (rest args))
-         (setf result (append result (compile-to-instructions arg env)))
-         (setf result (append result (list '(:ref.cast :i31) :i31.get_s op))))
+         (emit* (compile-to-instructions arg env))
+         (emit '(:ref.cast :i31))
+         (emit :i31.get_s)
+         (emit op))
        ;; Wrap result as i31ref
-       (setf result (append result (list :ref.i31)))
-       result))))
+       (emit :ref.i31)))))
 
 (defun compile-unary-minus (arg env)
   "Compile unary minus: (- x) => (- 0 x)."
-  (append
-   '((:i32.const 0))
-   (compile-to-instructions arg env)
-   '((:ref.cast :i31) :i31.get_s
-     :i32.sub
-     :ref.i31)))
+  (with-instruction-collector
+    (emit '(:i32.const 0))
+    (emit* (compile-to-instructions arg env))
+    (emit '(:ref.cast :i31))
+    (emit :i31.get_s)
+    (emit :i32.sub)
+    (emit :ref.i31)))
 
 ;;; ============================================================
 ;;; Feature 001-arithmetic-primitives: Increment/Decrement
@@ -3712,36 +3690,40 @@
    Stack: [] -> [anyref (i31ref)]"
   (when (/= (length args) 1)
     (error "1- requires exactly 1 argument"))
-  (append
-   (compile-to-instructions (first args) env)
-   '((:ref.cast :i31) :i31.get_s
-     (:i32.const 1)
-     :i32.sub
-     :ref.i31)))
+  (with-instruction-collector
+    (emit* (compile-to-instructions (first args) env))
+    (emit '(:ref.cast :i31))
+    (emit :i31.get_s)
+    (emit '(:i32.const 1))
+    (emit :i32.sub)
+    (emit :ref.i31)))
 
 (defun compile-1+ (args env)
   "Compile (1+ x) => (+ x 1).
    Stack: [] -> [anyref (i31ref)]"
   (when (/= (length args) 1)
     (error "1+ requires exactly 1 argument"))
-  (append
-   (compile-to-instructions (first args) env)
-   '((:ref.cast :i31) :i31.get_s
-     (:i32.const 1)
-     :i32.add
-     :ref.i31)))
+  (with-instruction-collector
+    (emit* (compile-to-instructions (first args) env))
+    (emit '(:ref.cast :i31))
+    (emit :i31.get_s)
+    (emit '(:i32.const 1))
+    (emit :i32.add)
+    (emit :ref.i31)))
 
 (defun compile-truncate (args env)
   "Compile truncate division."
   (when (< (length args) 2)
     (error "truncate requires two arguments"))
-  (append
-   (compile-to-instructions (first args) env)
-   '((:ref.cast :i31) :i31.get_s)
-   (compile-to-instructions (second args) env)
-   '((:ref.cast :i31) :i31.get_s
-     :i32.div_s
-     :ref.i31)))
+  (with-instruction-collector
+    (emit* (compile-to-instructions (first args) env))
+    (emit '(:ref.cast :i31))
+    (emit :i31.get_s)
+    (emit* (compile-to-instructions (second args) env))
+    (emit '(:ref.cast :i31))
+    (emit :i31.get_s)
+    (emit :i32.div_s)
+    (emit :ref.i31)))
 
 ;;; ============================================================
 ;;; Division/Rounding Function Primitives (001-division-rounding-primitives)
@@ -4084,16 +4066,13 @@
    Stack: [] -> [cons-ref]"
   (when (/= (length args) 2)
     (error "cons requires exactly 2 arguments"))
-  (let ((result '()))
+  (with-instruction-collector
     ;; Compile car value
-    (setf result (append result (compile-to-instructions (first args) env)))
+    (emit* (compile-to-instructions (first args) env))
     ;; Compile cdr value
-    (setf result (append result (compile-to-instructions (second args) env)))
+    (emit* (compile-to-instructions (second args) env))
     ;; Create cons cell (struct.new with type index 2 = $cons)
-    (setf result (append result
-                         (list (list :struct.new
-                                     clysm/compiler/codegen/gc-types:+type-cons+))))
-    result))
+    (emit :struct.new clysm/compiler/codegen/gc-types:+type-cons+)))
 
 (defun compile-car (args env)
   "Compile (car x) with NIL handling.
@@ -4101,25 +4080,23 @@
    Stack: [] -> [anyref]"
   (when (/= (length args) 1)
     (error "car requires exactly 1 argument"))
-  (let ((result '())
-        (temp-local (env-add-local env (gensym "CAR-TMP"))))
-    ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    ;; Store in temp for reuse
-    (setf result (append result (list (list :local.tee temp-local))))
-    ;; Check if it's NIL (ref.null check or global comparison)
-    ;; For now, use ref.is_null since NIL is represented as ref.null
-    (setf result (append result '(:ref.is_null)))
-    ;; If null, return NIL; otherwise get car
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)  ; Return NIL
-                           :else
-                           (:local.get ,temp-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
-                           :end)))
-    result))
+  (let ((temp-local (env-add-local env (gensym "CAR-TMP"))))
+    (with-instruction-collector
+      ;; Compile the argument
+      (emit* (compile-to-instructions (first args) env))
+      ;; Store in temp for reuse
+      (emit :local.tee temp-local)
+      ;; Check if it's NIL (ref.null check or global comparison)
+      ;; For now, use ref.is_null since NIL is represented as ref.null
+      (emit :ref.is_null)
+      ;; If null, return NIL; otherwise get car
+      (emit* `((:if (:result :anyref))
+               (:ref.null :none)  ; Return NIL
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+               (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
+               :end)))))
 
 (defun compile-cdr (args env)
   "Compile (cdr x) with NIL handling.
@@ -4127,24 +4104,22 @@
    Stack: [] -> [anyref]"
   (when (/= (length args) 1)
     (error "cdr requires exactly 1 argument"))
-  (let ((result '())
-        (temp-local (env-add-local env (gensym "CDR-TMP"))))
-    ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    ;; Store in temp for reuse
-    (setf result (append result (list (list :local.tee temp-local))))
-    ;; Check if it's NIL
-    (setf result (append result '(:ref.is_null)))
-    ;; If null, return NIL; otherwise get cdr
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)  ; Return NIL
-                           :else
-                           (:local.get ,temp-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                           :end)))
-    result))
+  (let ((temp-local (env-add-local env (gensym "CDR-TMP"))))
+    (with-instruction-collector
+      ;; Compile the argument
+      (emit* (compile-to-instructions (first args) env))
+      ;; Store in temp for reuse
+      (emit :local.tee temp-local)
+      ;; Check if it's NIL
+      (emit :ref.is_null)
+      ;; If null, return NIL; otherwise get cdr
+      (emit* `((:if (:result :anyref))
+               (:ref.null :none)  ; Return NIL
+               :else
+               (:local.get ,temp-local)
+               (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+               (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
+               :end)))))
 
 ;;; ============================================================
 ;;; cXXr Accessors (043-self-hosting-blockers)
@@ -4157,31 +4132,28 @@
    Feature: 043-self-hosting-blockers"
   (when (/= (length args) 1)
     (error "c~Ar requires exactly 1 argument" ops))
-  (let ((result '())
-        (temp-local (env-add-local env (gensym "CXR-TMP")))
+  (let ((temp-local (env-add-local env (gensym "CXR-TMP")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set temp-local))))
-    ;; Apply operations in order (first char = innermost operation applied first)
-    (loop for i from 0 below (length ops)
-          for op = (char ops i)
-          for field = (if (char= op #\a) 0 1)  ; 0=car, 1=cdr
-          do (setf result
-                   (append result
-                           `((:local.get ,temp-local)
-                             :ref.is_null
-                             (:if (:result :anyref))
-                             (:ref.null :none)
-                             :else
-                             (:local.get ,temp-local)
-                             (:ref.cast (:ref ,cons-type))
-                             (:struct.get ,cons-type ,field)
-                             :end
-                             (:local.set ,temp-local)))))
-    ;; Return the final value
-    (setf result (append result (list (list :local.get temp-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile the argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set temp-local)
+      ;; Apply operations in order (first char = innermost operation applied first)
+      (loop for i from 0 below (length ops)
+            for op = (char ops i)
+            for field = (if (char= op #\a) 0 1)  ; 0=car, 1=cdr
+            do (emit* `((:local.get ,temp-local)
+                        :ref.is_null
+                        (:if (:result :anyref))
+                        (:ref.null :none)
+                        :else
+                        (:local.get ,temp-local)
+                        (:ref.cast (:ref ,cons-type))
+                        (:struct.get ,cons-type ,field)
+                        :end
+                        (:local.set ,temp-local))))
+      ;; Return the final value
+      (emit :local.get temp-local))))
 
 (defun compile-caar (args env)
   "Compile (caar x) = (car (car x)).
@@ -4283,19 +4255,19 @@
   ;; and the name string starts with colon (this is a bootstrap hack)
   ;; Real implementation would check the symbol's package
   (let ((temp-local (env-add-local env (gensym "KEYWORDP-TMP"))))
-    (append
-     (compile-to-instructions (first args) env)
-     (list (list :local.tee temp-local))
-     ;; Check if it's a symbol struct (not NIL - NIL is not a keyword)
-     `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-symbol+))
-       (:if (:result :anyref))
-       ;; Is a symbol - for bootstrap, assume interned keywords were created correctly
-       ;; This is a stub that returns NIL - will be improved later
-       (:ref.null :none)
-       :else
-       ;; Not a symbol
-       (:ref.null :none)
-       :end))))
+    (with-instruction-collector
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.tee temp-local)
+      ;; Check if it's a symbol struct (not NIL - NIL is not a keyword)
+      (emit* `((:ref.test (:ref ,clysm/compiler/codegen/gc-types:+type-symbol+))
+               (:if (:result :anyref))
+               ;; Is a symbol - for bootstrap, assume interned keywords were created correctly
+               ;; This is a stub that returns NIL - will be improved later
+               (:ref.null :none)
+               :else
+               ;; Not a symbol
+               (:ref.null :none)
+               :end)))))
 
 (defun compile-list (args env)
   "Compile (list &rest args) to a proper list.
@@ -4305,26 +4277,23 @@
       ;; Empty list = NIL
       '((:ref.null :none))
       ;; Build cons chain from right to left
-      (let ((result '())
-            (acc-local (env-add-local env (gensym "LIST-ACC"))))
-        ;; Start with NIL
-        (setf result '((:ref.null :none)))
-        (setf result (append result (list (list :local.set acc-local))))
-        ;; Build cons chain in reverse order
-        (dolist (arg (reverse args))
-          ;; Compile element
-          (setf result (append result (compile-to-instructions arg env)))
-          ;; Get current accumulator (cdr)
-          (setf result (append result (list (list :local.get acc-local))))
-          ;; Create cons
-          (setf result (append result
-                               (list (list :struct.new
-                                           clysm/compiler/codegen/gc-types:+type-cons+))))
-          ;; Store as new accumulator
-          (setf result (append result (list (list :local.set acc-local)))))
-        ;; Return the final list
-        (setf result (append result (list (list :local.get acc-local))))
-        result)))
+      (let ((acc-local (env-add-local env (gensym "LIST-ACC"))))
+        (with-instruction-collector
+          ;; Start with NIL
+          (emit '(:ref.null :none))
+          (emit :local.set acc-local)
+          ;; Build cons chain in reverse order
+          (dolist (arg (reverse args))
+            ;; Compile element
+            (emit* (compile-to-instructions arg env))
+            ;; Get current accumulator (cdr)
+            (emit :local.get acc-local)
+            ;; Create cons
+            (emit :struct.new clysm/compiler/codegen/gc-types:+type-cons+)
+            ;; Store as new accumulator
+            (emit :local.set acc-local))
+          ;; Return the final list
+          (emit :local.get acc-local)))))
 
 ;;; ============================================================
 ;;; Type Predicates (006-cons-list-ops)
@@ -4335,40 +4304,34 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 1)
     (error "consp requires exactly 1 argument"))
-  (let ((result '()))
+  (with-instruction-collector
     ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
+    (emit* (compile-to-instructions (first args) env))
     ;; Test if it's a cons (type 2)
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
+    (emit :ref.test (list :ref clysm/compiler/codegen/gc-types:+type-cons+))
     ;; Convert i32 boolean to Lisp boolean
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:i32.const 1) :ref.i31  ; T
-                           :else
-                           (:ref.null :none)        ; NIL
-                           :end)))
-    result))
+    (emit* `((:if (:result :anyref))
+             (:i32.const 1) :ref.i31  ; T
+             :else
+             (:ref.null :none)        ; NIL
+             :end))))
 
 (defun compile-null (args env)
   "Compile (null x) - returns T if x is NIL, NIL otherwise.
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 1)
     (error "null requires exactly 1 argument"))
-  (let ((result '()))
+  (with-instruction-collector
     ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
+    (emit* (compile-to-instructions (first args) env))
     ;; Check if null
-    (setf result (append result '(:ref.is_null)))
+    (emit :ref.is_null)
     ;; Convert i32 boolean to Lisp boolean
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:i32.const 1) :ref.i31  ; T
-                           :else
-                           (:ref.null :none)        ; NIL
-                           :end)))
-    result))
+    (emit* `((:if (:result :anyref))
+             (:i32.const 1) :ref.i31  ; T
+             :else
+             (:ref.null :none)        ; NIL
+             :end))))
 
 (defun compile-not (args env)
   "Compile (not x) - returns T if x is NIL, NIL otherwise.
@@ -4384,47 +4347,46 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 2)
     (error "eq requires exactly 2 arguments"))
-  (let ((result '())
-        (local-x (env-add-local env (gensym "EQ-X")))
+  (let ((local-x (env-add-local env (gensym "EQ-X")))
         (local-y (env-add-local env (gensym "EQ-Y"))))
-    ;; Compile and store both arguments
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set local-x))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set local-y))))
-    ;; Check if both are null (nil eq nil => T)
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; x is null, check if y is also null
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31  ; both null => T
-                                  :else
-                                  (:ref.null :none)        ; x null, y not => NIL
-                                  :end)))
-    (setf result (append result (list :else)))
-    ;; x is not null, check if y is null
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:ref.null :none)        ; x not null, y null => NIL
-                                  :else)))
-    ;; Neither is null, use ref.eq
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '((:ref.cast :eq))))
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '((:ref.cast :eq))))
-    (setf result (append result '(:ref.eq)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31  ; eq => T
-                                  :else
-                                  (:ref.null :none)        ; not eq => NIL
-                                  :end
-                                  :end
-                                  :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile and store both arguments
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set local-x)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set local-y)
+      ;; Check if both are null (nil eq nil => T)
+      (emit :local.get local-x)
+      (emit :ref.is_null)
+      (emit '(:if (:result :anyref)))
+      ;; x is null, check if y is also null
+      (emit :local.get local-y)
+      (emit :ref.is_null)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31  ; both null => T
+               :else
+               (:ref.null :none)        ; x null, y not => NIL
+               :end))
+      (emit :else)
+      ;; x is not null, check if y is null
+      (emit :local.get local-y)
+      (emit :ref.is_null)
+      (emit* `((:if (:result :anyref))
+               (:ref.null :none)        ; x not null, y null => NIL
+               :else))
+      ;; Neither is null, use ref.eq
+      (emit :local.get local-x)
+      (emit '(:ref.cast :eq))
+      (emit :local.get local-y)
+      (emit '(:ref.cast :eq))
+      (emit :ref.eq)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31  ; eq => T
+               :else
+               (:ref.null :none)        ; not eq => NIL
+               :end
+               :end
+               :end)))))
 
 (defun compile-eql (args env)
   "Compile (eql x y) - returns T if x and y are identical objects,
@@ -4433,176 +4395,142 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 2)
     (error "eql requires exactly 2 arguments"))
-  (let ((result '())
-        (local-x (env-add-local env (gensym "EQL-X")))
-        (local-y (env-add-local env (gensym "EQL-Y"))))
-    ;; Compile and store both arguments
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set local-x))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set local-y))))
-    ;; Check if x is null
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; x is null - check if y is also null
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31  ; both null => T
-                                  :else
-                                  (:ref.null :none)        ; x null, y not => NIL
-                                  :end)))
-    (setf result (append result (list :else)))
-    ;; x is not null - check if y is null
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:ref.null :none)        ; x not null, y null => NIL
-                                  :else)))
-    ;; Neither is null - check type hierarchy with proper if/else chain
-    ;; Check if x is i31ref (fixnum, char, T)
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '((:ref.test :i31))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; x is i31ref - check if y is also i31ref
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '((:ref.test :i31))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; Both are i31ref - compare with ref.eq
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '((:ref.cast :i31))))
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '((:ref.cast :i31))))
-    (setf result (append result '(:ref.eq)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31
-                                  :else
-                                  (:ref.null :none)
-                                  :end)))
-    (setf result (append result (list :else)))
-    ;; x is i31ref but y is not - NIL (different types)
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result '(:end)))  ; end if y is i31
-    (setf result (append result (list :else)))
-    ;; x is not i31ref - check if x is float
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-float+)))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; x is float - check if y is also float
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-float+)))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; Both are floats - compare values with f64.eq
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-float+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-float+ 0))))
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-float+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-float+ 0))))
-    (setf result (append result '(:f64.eq)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31
-                                  :else
-                                  (:ref.null :none)
-                                  :end)))
-    (setf result (append result (list :else)))
-    ;; x is float but y is not - NIL (different types)
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result '(:end)))  ; end if y is float
-    (setf result (append result (list :else)))
-    ;; x is not float - check if x is ratio
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; x is ratio - check if y is also ratio
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; Both are ratios - compare numerators and denominators
-    ;; For ratios, numerator is field 0, denominator is field 1 (as anyref: fixnum or bignum)
-    ;; Compare numerators using ref.eq (works for i31ref fixnums)
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-ratio+ 0))))
-    (setf result (append result '((:ref.cast :eq))))  ; cast to eqref for ref.eq
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-ratio+ 0))))
-    (setf result (append result '((:ref.cast :eq))))  ; cast to eqref for ref.eq
-    (setf result (append result '(:ref.eq)))
-    (setf result (append result `((:if (:result :anyref)))))
-    ;; Numerators equal - compare denominators
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-ratio+ 1))))
-    (setf result (append result '((:ref.cast :eq))))  ; cast to eqref for ref.eq
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result
-                         (list (list :ref.cast
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-ratio+)))))
-    (setf result (append result
-                         (list (list :struct.get
-                                     clysm/compiler/codegen/gc-types:+type-ratio+ 1))))
-    (setf result (append result '((:ref.cast :eq))))  ; cast to eqref for ref.eq
-    (setf result (append result '(:ref.eq)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31  ; both equal => T
-                                  :else
-                                  (:ref.null :none)        ; denominators differ
-                                  :end)))
-    (setf result (append result (list :else)))
-    ;; Numerators differ
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result '(:end)))  ; end if numerators equal
-    (setf result (append result (list :else)))
-    ;; x is ratio but y is not - NIL
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result '(:end)))  ; end if y is ratio
-    (setf result (append result (list :else)))
-    ;; Default: not i31, not float, not ratio - use ref.eq for other types (symbols, cons, etc.)
-    (setf result (append result (list (list :local.get local-x))))
-    (setf result (append result '((:ref.cast :eq))))
-    (setf result (append result (list (list :local.get local-y))))
-    (setf result (append result '((:ref.cast :eq))))
-    (setf result (append result '(:ref.eq)))
-    (setf result (append result `((:if (:result :anyref))
-                                  (:i32.const 1) :ref.i31
-                                  :else
-                                  (:ref.null :none)
-                                  :end)))
-    ;; Close all the nested if blocks:
-    ;; end if x is ratio, end if x is float, end if x is i31, end else y not null, end if x not null
-    (setf result (append result '(:end :end :end :end :end)))
-    result))
+  (let ((local-x (env-add-local env (gensym "EQL-X")))
+        (local-y (env-add-local env (gensym "EQL-Y")))
+        (float-type clysm/compiler/codegen/gc-types:+type-float+)
+        (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
+    (with-instruction-collector
+      ;; Compile and store both arguments
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set local-x)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set local-y)
+      ;; Check if x is null
+      (emit :local.get local-x)
+      (emit :ref.is_null)
+      (emit '(:if (:result :anyref)))
+      ;; x is null - check if y is also null
+      (emit :local.get local-y)
+      (emit :ref.is_null)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31  ; both null => T
+               :else
+               (:ref.null :none)        ; x null, y not => NIL
+               :end))
+      (emit :else)
+      ;; x is not null - check if y is null
+      (emit :local.get local-y)
+      (emit :ref.is_null)
+      (emit* `((:if (:result :anyref))
+               (:ref.null :none)        ; x not null, y null => NIL
+               :else))
+      ;; Neither is null - check type hierarchy with proper if/else chain
+      ;; Check if x is i31ref (fixnum, char, T)
+      (emit :local.get local-x)
+      (emit '(:ref.test :i31))
+      (emit '(:if (:result :anyref)))
+      ;; x is i31ref - check if y is also i31ref
+      (emit :local.get local-y)
+      (emit '(:ref.test :i31))
+      (emit '(:if (:result :anyref)))
+      ;; Both are i31ref - compare with ref.eq
+      (emit :local.get local-x)
+      (emit '(:ref.cast :i31))
+      (emit :local.get local-y)
+      (emit '(:ref.cast :i31))
+      (emit :ref.eq)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31
+               :else
+               (:ref.null :none)
+               :end))
+      (emit :else)
+      ;; x is i31ref but y is not - NIL (different types)
+      (emit '(:ref.null :none))
+      (emit :end)  ; end if y is i31
+      (emit :else)
+      ;; x is not i31ref - check if x is float
+      (emit :local.get local-x)
+      (emit :ref.test (list :ref float-type))
+      (emit '(:if (:result :anyref)))
+      ;; x is float - check if y is also float
+      (emit :local.get local-y)
+      (emit :ref.test (list :ref float-type))
+      (emit '(:if (:result :anyref)))
+      ;; Both are floats - compare values with f64.eq
+      (emit :local.get local-x)
+      (emit :ref.cast (list :ref float-type))
+      (emit :struct.get float-type 0)
+      (emit :local.get local-y)
+      (emit :ref.cast (list :ref float-type))
+      (emit :struct.get float-type 0)
+      (emit :f64.eq)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31
+               :else
+               (:ref.null :none)
+               :end))
+      (emit :else)
+      ;; x is float but y is not - NIL (different types)
+      (emit '(:ref.null :none))
+      (emit :end)  ; end if y is float
+      (emit :else)
+      ;; x is not float - check if x is ratio
+      (emit :local.get local-x)
+      (emit :ref.test (list :ref ratio-type))
+      (emit '(:if (:result :anyref)))
+      ;; x is ratio - check if y is also ratio
+      (emit :local.get local-y)
+      (emit :ref.test (list :ref ratio-type))
+      (emit '(:if (:result :anyref)))
+      ;; Both are ratios - compare numerators and denominators
+      (emit :local.get local-x)
+      (emit :ref.cast (list :ref ratio-type))
+      (emit :struct.get ratio-type 0)
+      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
+      (emit :local.get local-y)
+      (emit :ref.cast (list :ref ratio-type))
+      (emit :struct.get ratio-type 0)
+      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
+      (emit :ref.eq)
+      (emit '(:if (:result :anyref)))
+      ;; Numerators equal - compare denominators
+      (emit :local.get local-x)
+      (emit :ref.cast (list :ref ratio-type))
+      (emit :struct.get ratio-type 1)
+      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
+      (emit :local.get local-y)
+      (emit :ref.cast (list :ref ratio-type))
+      (emit :struct.get ratio-type 1)
+      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
+      (emit :ref.eq)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31  ; both equal => T
+               :else
+               (:ref.null :none)        ; denominators differ
+               :end))
+      (emit :else)
+      ;; Numerators differ
+      (emit '(:ref.null :none))
+      (emit :end)  ; end if numerators equal
+      (emit :else)
+      ;; x is ratio but y is not - NIL
+      (emit '(:ref.null :none))
+      (emit :end)  ; end if y is ratio
+      (emit :else)
+      ;; Default: not i31, not float, not ratio - use ref.eq for other types
+      (emit :local.get local-x)
+      (emit '(:ref.cast :eq))
+      (emit :local.get local-y)
+      (emit '(:ref.cast :eq))
+      (emit :ref.eq)
+      (emit* `((:if (:result :anyref))
+               (:i32.const 1) :ref.i31
+               :else
+               (:ref.null :none)
+               :end))
+      ;; Close all the nested if blocks
+      (emit* '(:end :end :end :end :end)))))
 
 (defun compile-equal (args env)
   "Compile (equal x y) - returns T if x and y are structurally similar.
@@ -5257,51 +5185,46 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 1)
     (error "atom requires exactly 1 argument"))
-  (let ((result '()))
+  (with-instruction-collector
     ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
+    (emit* (compile-to-instructions (first args) env))
     ;; Test if it's a cons (type 2)
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
+    (emit :ref.test (list :ref clysm/compiler/codegen/gc-types:+type-cons+))
     ;; atom is NOT consp, so invert the result
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)        ; cons -> not atom -> NIL
-                           :else
-                           (:i32.const 1) :ref.i31  ; not cons -> atom -> T
-                           :end)))
-    result))
+    (emit '(:if (:result :anyref)))
+    (emit :ref.null :none)        ; cons -> not atom -> NIL
+    (emit :else)
+    (emit :i32.const 1)
+    (emit :ref.i31)               ; not cons -> atom -> T
+    (emit :end)))
 
 (defun compile-listp (args env)
   "Compile (listp x) - returns T if x is a cons cell or NIL.
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 1)
     (error "listp requires exactly 1 argument"))
-  (let ((result '())
-        (temp-local (env-add-local env (gensym "LISTP-TMP"))))
-    ;; Compile the argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    ;; Store for reuse
-    (setf result (append result (list (list :local.tee temp-local))))
-    ;; First check: is it a cons?
-    (setf result (append result
-                         (list (list :ref.test
-                                     (list :ref clysm/compiler/codegen/gc-types:+type-cons+)))))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:i32.const 1) :ref.i31  ; cons -> T
-                           :else
-                           ;; Not a cons, check if NIL
-                           (:local.get ,temp-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:i32.const 1) :ref.i31  ; nil -> T
-                           :else
-                           (:ref.null :none)        ; neither -> NIL
-                           :end
-                           :end)))
-    result))
+  (let ((temp-local (env-add-local env (gensym "LISTP-TMP"))))
+    (with-instruction-collector
+      ;; Compile the argument
+      (emit* (compile-to-instructions (first args) env))
+      ;; Store for reuse
+      (emit :local.tee temp-local)
+      ;; First check: is it a cons?
+      (emit :ref.test (list :ref clysm/compiler/codegen/gc-types:+type-cons+))
+      (emit '(:if (:result :anyref)))
+      (emit :i32.const 1)
+      (emit :ref.i31)             ; cons -> T
+      (emit :else)
+      ;; Not a cons, check if NIL
+      (emit :local.get temp-local)
+      (emit :ref.is_null)
+      (emit '(:if (:result :anyref)))
+      (emit :i32.const 1)
+      (emit :ref.i31)             ; nil -> T
+      (emit :else)
+      (emit :ref.null :none)      ; neither -> NIL
+      (emit :end)
+      (emit :end))))
 
 ;;; ============================================================
 ;;; ANSI CL Type Predicates (023-type-predicates)
@@ -7974,23 +7897,20 @@
   (when (/= (length args) 2)
     (error "rplaca requires exactly 2 arguments"))
   (let* ((cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-         (result '())
          ;; Local must be typed to hold the cast result (ref null $cons)
          (cons-local (env-add-local env (gensym "RPLACA-CONS")
                                     (list :ref-null cons-type))))
-    ;; Compile the cons argument and save it
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result
-                         (list (list :ref.cast (list :ref cons-type)))))
-    (setf result (append result (list (list :local.tee cons-local))))
-    ;; Compile the new value
-    (setf result (append result (compile-to-instructions (second args) env)))
-    ;; Set the car field (field 0)
-    (setf result (append result
-                         (list (list :struct.set cons-type 0))))
-    ;; Return the cons cell
-    (setf result (append result (list (list :local.get cons-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile the cons argument and save it
+      (emit* (compile-to-instructions (first args) env))
+      (emit :ref.cast (list :ref cons-type))
+      (emit :local.tee cons-local)
+      ;; Compile the new value
+      (emit* (compile-to-instructions (second args) env))
+      ;; Set the car field (field 0)
+      (emit :struct.set cons-type 0)
+      ;; Return the cons cell
+      (emit :local.get cons-local))))
 
 (defun compile-rplacd (args env)
   "Compile (rplacd cons new-value) - destructively modify cdr.
@@ -7999,23 +7919,20 @@
   (when (/= (length args) 2)
     (error "rplacd requires exactly 2 arguments"))
   (let* ((cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-         (result '())
          ;; Local must be typed to hold the cast result (ref null $cons)
          (cons-local (env-add-local env (gensym "RPLACD-CONS")
                                     (list :ref-null cons-type))))
-    ;; Compile the cons argument and save it
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result
-                         (list (list :ref.cast (list :ref cons-type)))))
-    (setf result (append result (list (list :local.tee cons-local))))
-    ;; Compile the new value
-    (setf result (append result (compile-to-instructions (second args) env)))
-    ;; Set the cdr field (field 1)
-    (setf result (append result
-                         (list (list :struct.set cons-type 1))))
-    ;; Return the cons cell
-    (setf result (append result (list (list :local.get cons-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile the cons argument and save it
+      (emit* (compile-to-instructions (first args) env))
+      (emit :ref.cast (list :ref cons-type))
+      (emit :local.tee cons-local)
+      ;; Compile the new value
+      (emit* (compile-to-instructions (second args) env))
+      ;; Set the cdr field (field 1)
+      (emit :struct.set cons-type 1)
+      ;; Return the cons cell
+      (emit :local.get cons-local))))
 
 ;;; ============================================================
 ;;; List Accessors (006-cons-list-ops)
@@ -8027,37 +7944,35 @@
    Stack: [] -> [anyref]"
   (when (/= (length args) 1)
     (error "Position accessor requires exactly 1 argument"))
-  (let ((result '())
-        (list-local (env-add-local env (gensym "NTH-LIST"))))
-    ;; Compile the list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Traverse n times via cdr
-    (dotimes (i n)
-      (setf result (append result (list (list :local.get list-local))))
-      ;; Check for NIL before cdr
-      (setf result (append result '(:ref.is_null)))
-      (setf result (append result
-                           `((:if (:result :anyref))
-                             (:ref.null :none)  ; Return NIL if list ended
-                             :else
-                             (:local.get ,list-local)
-                             (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                             (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                             :end)))
-      (setf result (append result (list (list :local.set list-local)))))
-    ;; Now get car of result
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
-                           :end)))
-    result))
+  (let ((list-local (env-add-local env (gensym "NTH-LIST")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; Compile the list argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list-local)
+      ;; Traverse n times via cdr
+      (dotimes (i n)
+        (emit :local.get list-local)
+        ;; Check for NIL before cdr
+        (emit :ref.is_null)
+        (emit '(:if (:result :anyref)))
+        (emit :ref.null :none)    ; Return NIL if list ended
+        (emit :else)
+        (emit :local.get list-local)
+        (emit :ref.cast (list :ref cons-type))
+        (emit :struct.get cons-type 1)
+        (emit :end)
+        (emit :local.set list-local))
+      ;; Now get car of result
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit '(:if (:result :anyref)))
+      (emit :ref.null :none)
+      (emit :else)
+      (emit :local.get list-local)
+      (emit :ref.cast (list :ref cons-type))
+      (emit :struct.get cons-type 0)
+      (emit :end))))
 
 (defun compile-nth (args env)
   "Compile (nth n list) - 0-indexed access.
@@ -8082,68 +7997,69 @@
 (defun compile-nth-runtime (args env)
   "Compile (nth n list) with runtime index using a loop.
    Stack: [] -> [anyref]"
-  (let ((result '())
-        (index-local (env-add-local env (gensym "NTH-IDX") :i32))
-        (list-local (env-add-local env (gensym "NTH-LIST"))))
-    ;; Compile index and convert to i32
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result '((:ref.cast :i31) :i31.get_s)))
-    (setf result (append result (list (list :local.set index-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check for negative index
-    (setf result (append result (list (list :local.get index-local))))
-    (setf result (append result '((:i32.const 0) :i32.lt_s)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)  ; Negative index -> NIL
-                           :else
-                           ;; Loop to traverse
-                           (:block $nth_done (:result :anyref))
-                           (:loop $nth_loop (:result :anyref))
-                           ;; Check if index is 0
-                           (:local.get ,index-local)
-                           :i32.eqz
-                           (:if (:result :anyref))
-                           ;; Index is 0, return car
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 0)
-                           :end
-                           (:br $nth_done)
-                           :else
-                           ;; Decrement index
-                           (:local.get ,index-local)
-                           (:i32.const 1)
-                           :i32.sub
-                           (:local.set ,index-local)
-                           ;; Check if list is null
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $nth_done)
-                           :else
-                           ;; Get cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                           (:local.set ,list-local)
-                           ;; Continue loop (need to push a dummy value for block type)
-                           (:ref.null :none)
-                           (:br $nth_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end  ; block
-                           :end)))  ; if negative
-    result))
+  (let ((index-local (env-add-local env (gensym "NTH-IDX") :i32))
+        (list-local (env-add-local env (gensym "NTH-LIST")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; Compile index and convert to i32
+      (emit* (compile-to-instructions (first args) env))
+      (emit '(:ref.cast :i31))
+      (emit :i31.get_s)
+      (emit :local.set index-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check for negative index
+      (emit :local.get index-local)
+      (emit :i32.const 0)
+      (emit :i32.lt_s)
+      (emit* `((:if (:result :anyref))
+               (:ref.null :none)  ; Negative index -> NIL
+               :else
+               ;; Loop to traverse
+               (:block $nth_done (:result :anyref))
+               (:loop $nth_loop (:result :anyref))
+               ;; Check if index is 0
+               (:local.get ,index-local)
+               :i32.eqz
+               (:if (:result :anyref))
+               ;; Index is 0, return car
+               (:local.get ,list-local)
+               :ref.is_null
+               (:if (:result :anyref))
+               (:ref.null :none)
+               :else
+               (:local.get ,list-local)
+               (:ref.cast ,(list :ref cons-type))
+               (:struct.get ,cons-type 0)
+               :end
+               (:br $nth_done)
+               :else
+               ;; Decrement index
+               (:local.get ,index-local)
+               (:i32.const 1)
+               :i32.sub
+               (:local.set ,index-local)
+               ;; Check if list is null
+               (:local.get ,list-local)
+               :ref.is_null
+               (:if (:result :anyref))
+               (:ref.null :none)
+               (:br $nth_done)
+               :else
+               ;; Get cdr
+               (:local.get ,list-local)
+               (:ref.cast ,(list :ref cons-type))
+               (:struct.get ,cons-type 1)
+               (:local.set ,list-local)
+               ;; Continue loop (need to push a dummy value for block type)
+               (:ref.null :none)
+               (:br $nth_loop)
+               :end
+               :end
+               :end  ; loop
+               :end  ; block
+               :end)))))
 
 (defun compile-nthcdr (args env)
   "Compile (nthcdr n list) - return list after n cdrs.
@@ -8156,89 +8072,88 @@
              (eq (clysm/compiler/ast:ast-literal-literal-type index-form) :fixnum))
         ;; Constant index - unroll
         (let ((n (clysm/compiler/ast:ast-literal-value index-form))
-              (result '())
-              (list-local (env-add-local env (gensym "NTHCDR-LIST"))))
+              (list-local (env-add-local env (gensym "NTHCDR-LIST")))
+              (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
           (if (< n 0)
               ;; Negative index returns the list unchanged
               (compile-to-instructions list-form env)
-              (progn
+              (with-instruction-collector
                 ;; Compile the list
-                (setf result (append result (compile-to-instructions list-form env)))
-                (setf result (append result (list (list :local.set list-local))))
+                (emit* (compile-to-instructions list-form env))
+                (emit :local.set list-local)
                 ;; Traverse n times via cdr
                 (dotimes (i n)
-                  (setf result (append result (list (list :local.get list-local))))
-                  (setf result (append result '(:ref.is_null)))
-                  (setf result (append result
-                                       `((:if (:result :anyref))
-                                         (:ref.null :none)
-                                         :else
-                                         (:local.get ,list-local)
-                                         (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                                         (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                                         :end)))
-                  (setf result (append result (list (list :local.set list-local)))))
+                  (emit :local.get list-local)
+                  (emit :ref.is_null)
+                  (emit '(:if (:result :anyref)))
+                  (emit :ref.null :none)
+                  (emit :else)
+                  (emit :local.get list-local)
+                  (emit :ref.cast (list :ref cons-type))
+                  (emit :struct.get cons-type 1)
+                  (emit :end)
+                  (emit :local.set list-local))
                 ;; Return the result
-                (setf result (append result (list (list :local.get list-local))))
-                result)))
+                (emit :local.get list-local))))
         ;; Runtime index - generate loop (simplified for now)
         (compile-nthcdr-runtime args env))))
 
 (defun compile-nthcdr-runtime (args env)
   "Compile (nthcdr n list) with runtime index.
    Stack: [] -> [anyref]"
-  (let ((result '())
-        (index-local (env-add-local env (gensym "NTHCDR-IDX") :i32))
-        (list-local (env-add-local env (gensym "NTHCDR-LIST"))))
-    ;; Compile index and convert to i32
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result '((:ref.cast :i31) :i31.get_s)))
-    (setf result (append result (list (list :local.set index-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check for negative/zero index
-    (setf result (append result (list (list :local.get index-local))))
-    (setf result (append result '((:i32.const 0) :i32.le_s)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:local.get ,list-local)  ; <= 0 -> return list
-                           :else
-                           ;; Loop to traverse
-                           (:block $nthcdr_done (:result :anyref))
-                           (:loop $nthcdr_loop (:result :anyref))
-                           ;; Check if list is null
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $nthcdr_done)
-                           :else
-                           ;; Get cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref clysm/compiler/codegen/gc-types:+type-cons+))
-                           (:struct.get ,clysm/compiler/codegen/gc-types:+type-cons+ 1)
-                           (:local.set ,list-local)
-                           ;; Decrement index
-                           (:local.get ,index-local)
-                           (:i32.const 1)
-                           :i32.sub
-                           (:local.set ,index-local)
-                           ;; Check if index is 0
-                           (:local.get ,index-local)
-                           :i32.eqz
-                           (:if (:result :anyref))
-                           (:local.get ,list-local)
-                           (:br $nthcdr_done)
-                           :else
-                           (:ref.null :none)
-                           (:br $nthcdr_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end  ; block
-                           :end)))  ; if negative
-    result))
+  (let ((index-local (env-add-local env (gensym "NTHCDR-IDX") :i32))
+        (list-local (env-add-local env (gensym "NTHCDR-LIST")))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; Compile index and convert to i32
+      (emit* (compile-to-instructions (first args) env))
+      (emit '(:ref.cast :i31))
+      (emit :i31.get_s)
+      (emit :local.set index-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check for negative/zero index
+      (emit :local.get index-local)
+      (emit :i32.const 0)
+      (emit :i32.le_s)
+      (emit* `((:if (:result :anyref))
+               (:local.get ,list-local)  ; <= 0 -> return list
+               :else
+               ;; Loop to traverse
+               (:block $nthcdr_done (:result :anyref))
+               (:loop $nthcdr_loop (:result :anyref))
+               ;; Check if list is null
+               (:local.get ,list-local)
+               :ref.is_null
+               (:if (:result :anyref))
+               (:ref.null :none)
+               (:br $nthcdr_done)
+               :else
+               ;; Get cdr
+               (:local.get ,list-local)
+               (:ref.cast ,(list :ref cons-type))
+               (:struct.get ,cons-type 1)
+               (:local.set ,list-local)
+               ;; Decrement index
+               (:local.get ,index-local)
+               (:i32.const 1)
+               :i32.sub
+               (:local.set ,index-local)
+               ;; Check if index is 0
+               (:local.get ,index-local)
+               :i32.eqz
+               (:if (:result :anyref))
+               (:local.get ,list-local)
+               (:br $nthcdr_done)
+               :else
+               (:ref.null :none)
+               (:br $nthcdr_loop)
+               :end
+               :end
+               :end  ; loop
+               :end  ; block
+               :end)))))
 
 (defun compile-regular-call (function args env)
   "Compile a regular function call (T061).
@@ -8247,14 +8162,14 @@
     (unless func-idx
       (error "Undefined function: ~A" function))
     ;; Compile arguments (not in tail position)
-    (let ((result '())
-          (arg-env (env-with-non-tail env)))
-      (dolist (arg args)
-        (setf result (append result (compile-to-instructions arg arg-env))))
-      ;; Call - use return_call for tail calls
-      (if (cenv-in-tail-position env)
-          (append result (list (list :return_call func-idx)))
-          (append result (list (list :call func-idx)))))))
+    (let ((arg-env (env-with-non-tail env)))
+      (with-instruction-collector
+        (dolist (arg args)
+          (emit* (compile-to-instructions arg arg-env)))
+        ;; Call - use return_call for tail calls
+        (if (cenv-in-tail-position env)
+            (emit :return_call func-idx)
+            (emit :call func-idx))))))
 
 ;;; ============================================================
 ;;; Funcall Compilation (T085-T087)
@@ -8269,46 +8184,31 @@
   (let* ((closure-expr (first args))
          (call-args (rest args))
          (arity (length call-args))
-         (result '())
-         (arg-env (env-with-non-tail env)))
-    ;; Compile the closure expression (not in tail position)
-    (setf result (append result (compile-to-instructions closure-expr arg-env)))
-    ;; Duplicate closure ref for call_ref (closure goes as first param too)
-    ;; We need: closure arg1 arg2 ... closure-code
-    ;; Stack after closure compilation: [..., closure]
-    ;; We need to:
-    ;; 1. Save closure to a local
-    ;; 2. Push closure (for first param)
-    ;; 3. Push all args
-    ;; 4. Get closure, extract code field, call_ref/return_call_ref
-    (let ((closure-local (cenv-local-counter env)))
-      (incf (car (cenv-local-counter-box env)))  ; Allocate temp local
+         (arg-env (env-with-non-tail env))
+         (closure-local (cenv-local-counter env)))
+    (incf (car (cenv-local-counter-box env)))  ; Allocate temp local
+    (with-instruction-collector
+      ;; Compile the closure expression (not in tail position)
+      (emit* (compile-to-instructions closure-expr arg-env))
       ;; Save closure to local
-      (setf result (append result (list (list :local.set closure-local))))
+      (emit :local.set closure-local)
       ;; Push closure as first argument (self reference)
-      (setf result (append result (list (list :local.get closure-local))))
+      (emit :local.get closure-local)
       ;; Push all call arguments (not in tail position)
       (dolist (arg call-args)
-        (setf result (append result (compile-to-instructions arg arg-env))))
+        (emit* (compile-to-instructions arg arg-env)))
       ;; Get closure and extract code_N field (field 3 = code_N for variadic)
-      ;; For specific arities, we could use code_0/1/2 but code_N always works
-      (setf result (append result (list (list :local.get closure-local))))
+      (emit :local.get closure-local)
       ;; Cast to closure type
-      (setf result (append result
-                           (list (list :ref.cast
-                                       clysm/compiler/codegen/gc-types:+type-closure+))))
+      (emit :ref.cast clysm/compiler/codegen/gc-types:+type-closure+)
       ;; Get the appropriate code field based on arity
       (let ((code-field (case arity
                           (0 0)  ; code_0
                           (1 1)  ; code_1
                           (2 2)  ; code_2
                           (t 3)))) ; code_N
-        (setf result (append result
-                             (list (list :struct.get
-                                         clysm/compiler/codegen/gc-types:+type-closure+
-                                         code-field)))))
+        (emit :struct.get clysm/compiler/codegen/gc-types:+type-closure+ code-field))
       ;; Cast the funcref to the specific function type before call_ref
-      ;; call_ref requires a typed function reference
       (let ((func-type (case arity
                          (0 clysm/compiler/codegen/gc-types:+type-func-0+)
                          (1 clysm/compiler/codegen/gc-types:+type-func-1+)
@@ -8316,13 +8216,12 @@
                          (3 clysm/compiler/codegen/gc-types:+type-func-3+)
                          (t clysm/compiler/codegen/gc-types:+type-func-n+))))
         ;; Cast funcref to the specific function type
-        (setf result (append result (list (list :ref.cast func-type))))
+        (emit :ref.cast func-type)
         ;; Call through the typed function reference
         ;; Use return_call_ref for tail calls
         (if (cenv-in-tail-position env)
-            (setf result (append result (list (list :return_call_ref func-type))))
-            (setf result (append result (list (list :call_ref func-type)))))))
-    result))
+            (emit :return_call_ref func-type)
+            (emit :call_ref func-type))))))
 
 ;;; ============================================================
 ;;; Conditional Compilation (T054-T055)
@@ -8438,101 +8337,94 @@
         (body (clysm/compiler/ast:ast-let-body ast))
         (sequential-p (clysm/compiler/ast:ast-let-sequential-p ast))
         (new-env (extend-compilation-env env))
-        (result '())
         (special-save-locals '())  ; ((name . save-local-idx) ...)
         ;; Binding value expressions are NOT in tail position
         (binding-env (env-with-non-tail env)))
-    ;; Process bindings based on let vs let*
-    (if sequential-p
-        ;; let*: each binding sees previous bindings
-        (dolist (binding bindings)
-          (let* ((name (car binding))
-                 (value-form (cdr binding)))
-            (if (binding-is-special-p name)
-                ;; Special binding: save, compute, set global
-                (let* ((save-result (emit-save-special-binding name new-env))
-                       (save-instrs (car save-result))
-                       (save-local (cdr save-result))
-                       (value-instrs (compile-to-instructions value-form (env-with-non-tail new-env)))
-                       (set-instrs (emit-set-special-binding name value-instrs new-env)))
-                  (push (cons name save-local) special-save-locals)
-                  (setf result (append result save-instrs set-instrs)))
-                ;; Lexical binding: use local
-                (let ((idx (env-add-local new-env name)))
-                  (setf result (append result
-                                       (compile-to-instructions value-form (env-with-non-tail new-env))
-                                       (list (list :local.set idx))))))))
-        ;; let: all values computed before any binding visible
-        ;; For special bindings, we still need to save first, then set
-        (let ((compiled-values '())
-              (binding-actions '()))
-          ;; First pass: save special vars and compile all values
+    (with-instruction-collector
+      ;; Process bindings based on let vs let*
+      (if sequential-p
+          ;; let*: each binding sees previous bindings
           (dolist (binding bindings)
             (let* ((name (car binding))
                    (value-form (cdr binding)))
               (if (binding-is-special-p name)
-                  ;; Special: save current value first
+                  ;; Special binding: save, compute, set global
                   (let* ((save-result (emit-save-special-binding name new-env))
                          (save-instrs (car save-result))
-                         (save-local (cdr save-result)))
+                         (save-local (cdr save-result))
+                         (value-instrs (compile-to-instructions value-form (env-with-non-tail new-env)))
+                         (set-instrs (emit-set-special-binding name value-instrs new-env)))
                     (push (cons name save-local) special-save-locals)
-                    (setf result (append result save-instrs))
-                    ;; Compile value (uses original env for parallel semantics, NOT in tail)
-                    (push (cons :special (cons name (compile-to-instructions value-form binding-env)))
-                          compiled-values))
-                  ;; Lexical: just allocate local and compile value
+                    (emit* save-instrs)
+                    (emit* set-instrs))
+                  ;; Lexical binding: use local
                   (let ((idx (env-add-local new-env name)))
-                    (push (cons :lexical (cons idx (compile-to-instructions value-form binding-env)))
-                          compiled-values)))))
-          (setf compiled-values (nreverse compiled-values))
-          ;; Second pass: set all bindings
-          (dolist (cv compiled-values)
-            (let ((kind (car cv))
-                  (data (cdr cv)))
-              (if (eq kind :special)
-                  ;; Set special variable's global
-                  (let ((name (car data))
-                        (value-instrs (cdr data)))
-                    (setf result (append result
-                                         (emit-set-special-binding name value-instrs new-env))))
-                  ;; Set lexical local
-                  (let ((idx (car data))
-                        (value-instrs (cdr data)))
-                    (setf result (append result
-                                         value-instrs
-                                         (list (list :local.set idx))))))))))
-    ;; Compile body - non-final forms are NOT in tail position
-    (let ((non-tail-body-env (env-with-non-tail new-env)))
-      (dolist (form (butlast body))
-        (setf result (append result
-                             (compile-to-instructions form non-tail-body-env)
-                             '(:drop)))))
-    ;; Last body form: tail position ONLY if no special bindings
-    ;; (special bindings require save/restore which breaks TCO)
-    (let* ((has-special-bindings special-save-locals)
-           (last-form-env (if has-special-bindings
-                              (env-with-non-tail new-env)
-                              new-env))  ; inherit tail position only without special bindings
-           (body-result-instrs
-             (when body
-               (compile-to-instructions (car (last body)) last-form-env))))
-      ;; Save result to a local before restore (if we have special bindings)
-      (if special-save-locals
-          (let ((result-local (env-add-local new-env (gensym "let-result"))))
-            (setf result (append result
-                                 body-result-instrs
-                                 (list (list :local.set result-local))))
-            ;; Restore special bindings in reverse order
-            (dolist (save-entry (reverse special-save-locals))
-              (let ((name (car save-entry))
-                    (save-local (cdr save-entry)))
-                (setf result (append result
-                                     (emit-restore-special-binding name save-local)))))
-            ;; Return the saved result
-            (setf result (append result (list (list :local.get result-local)))))
-          ;; No special bindings, just append body result
-          (setf result (append result body-result-instrs))))
-    result))
+                    (emit* (compile-to-instructions value-form (env-with-non-tail new-env)))
+                    (emit :local.set idx)))))
+          ;; let: all values computed before any binding visible
+          ;; For special bindings, we still need to save first, then set
+          (let ((compiled-values '()))
+            ;; First pass: save special vars and compile all values
+            (dolist (binding bindings)
+              (let* ((name (car binding))
+                     (value-form (cdr binding)))
+                (if (binding-is-special-p name)
+                    ;; Special: save current value first
+                    (let* ((save-result (emit-save-special-binding name new-env))
+                           (save-instrs (car save-result))
+                           (save-local (cdr save-result)))
+                      (push (cons name save-local) special-save-locals)
+                      (emit* save-instrs)
+                      ;; Compile value (uses original env for parallel semantics, NOT in tail)
+                      (push (cons :special (cons name (compile-to-instructions value-form binding-env)))
+                            compiled-values))
+                    ;; Lexical: just allocate local and compile value
+                    (let ((idx (env-add-local new-env name)))
+                      (push (cons :lexical (cons idx (compile-to-instructions value-form binding-env)))
+                            compiled-values)))))
+            (setf compiled-values (nreverse compiled-values))
+            ;; Second pass: set all bindings
+            (dolist (cv compiled-values)
+              (let ((kind (car cv))
+                    (data (cdr cv)))
+                (if (eq kind :special)
+                    ;; Set special variable's global
+                    (let ((name (car data))
+                          (value-instrs (cdr data)))
+                      (emit* (emit-set-special-binding name value-instrs new-env)))
+                    ;; Set lexical local
+                    (let ((idx (car data))
+                          (value-instrs (cdr data)))
+                      (emit* value-instrs)
+                      (emit :local.set idx)))))))
+      ;; Compile body - non-final forms are NOT in tail position
+      (let ((non-tail-body-env (env-with-non-tail new-env)))
+        (dolist (form (butlast body))
+          (emit* (compile-to-instructions form non-tail-body-env))
+          (emit :drop)))
+      ;; Last body form: tail position ONLY if no special bindings
+      ;; (special bindings require save/restore which breaks TCO)
+      (let* ((has-special-bindings special-save-locals)
+             (last-form-env (if has-special-bindings
+                                (env-with-non-tail new-env)
+                                new-env))  ; inherit tail position only without special bindings
+             (body-result-instrs
+               (when body
+                 (compile-to-instructions (car (last body)) last-form-env))))
+        ;; Save result to a local before restore (if we have special bindings)
+        (if special-save-locals
+            (let ((result-local (env-add-local new-env (gensym "let-result"))))
+              (emit* body-result-instrs)
+              (emit :local.set result-local)
+              ;; Restore special bindings in reverse order
+              (dolist (save-entry (reverse special-save-locals))
+                (let ((name (car save-entry))
+                      (save-local (cdr save-entry)))
+                  (emit* (emit-restore-special-binding name save-local))))
+              ;; Return the saved result
+              (emit :local.get result-local))
+            ;; No special bindings, just append body result
+            (emit* body-result-instrs))))))
 
 (defun extend-compilation-env (env)
   "Create an extended copy of the compilation environment for a new scope.
@@ -8611,39 +8503,36 @@
   (let* ((definitions (clysm/compiler/ast:ast-flet-definitions ast))
          (body (clysm/compiler/ast:ast-flet-body ast))
          (new-env (extend-compilation-env env))
-         (result '())
          (local-func-bindings '()))
-    ;; For each function definition:
-    ;; 1. Create a lambda from the function
-    ;; 2. Allocate a local for the closure
-    ;; 3. Compile the lambda and store in local
-    (dolist (def definitions)
-      (let* ((name (first def))
-             (params (second def))
-             (func-body (third def))  ; List of parsed AST nodes
-             ;; Allocate a local to hold the closure
-             (local-idx (env-add-local new-env name)))
-        ;; Remember this binding for later funcall translation
-        (push (cons name local-idx) local-func-bindings)
-        ;; Create a lambda AST node
-        (let ((lambda-ast (clysm/compiler/ast:make-ast-lambda
-                           :parameters params
-                           :body func-body)))
-          ;; Compile the lambda (in original env, not new-env, so it can't see itself)
-          (setf result (append result (compile-lambda lambda-ast env)))
-          ;; Store in local
-          (setf result (append result (list (list :local.set local-idx)))))))
-    ;; Register local functions for funcall-style access
-    (setf (cenv-local-functions new-env) (nreverse local-func-bindings))
-    ;; Compile body
-    (dolist (form (butlast body))
-      (setf result (append result
-                           (compile-to-instructions form new-env)
-                           '(:drop))))
-    (when body
-      (setf result (append result
-                           (compile-to-instructions (car (last body)) new-env))))
-    result))
+    (with-instruction-collector
+      ;; For each function definition:
+      ;; 1. Create a lambda from the function
+      ;; 2. Allocate a local for the closure
+      ;; 3. Compile the lambda and store in local
+      (dolist (def definitions)
+        (let* ((name (first def))
+               (params (second def))
+               (func-body (third def))  ; List of parsed AST nodes
+               ;; Allocate a local to hold the closure
+               (local-idx (env-add-local new-env name)))
+          ;; Remember this binding for later funcall translation
+          (push (cons name local-idx) local-func-bindings)
+          ;; Create a lambda AST node
+          (let ((lambda-ast (clysm/compiler/ast:make-ast-lambda
+                             :parameters params
+                             :body func-body)))
+            ;; Compile the lambda (in original env, not new-env, so it can't see itself)
+            (emit* (compile-lambda lambda-ast env))
+            ;; Store in local
+            (emit :local.set local-idx))))
+      ;; Register local functions for funcall-style access
+      (setf (cenv-local-functions new-env) (nreverse local-func-bindings))
+      ;; Compile body
+      (dolist (form (butlast body))
+        (emit* (compile-to-instructions form new-env))
+        (emit :drop))
+      (when body
+        (emit* (compile-to-instructions (car (last body)) new-env))))))
 
 (defun compile-labels (ast env)
   "Compile a labels expression.
@@ -8657,10 +8546,10 @@
   (let* ((definitions (clysm/compiler/ast:ast-labels-definitions ast))
          (body (clysm/compiler/ast:ast-labels-body ast))
          (new-env (extend-compilation-env env))
-         (result '())
          (local-func-bindings '())
          ;; Non-final body forms are NOT in tail position
-         (non-tail-env (env-with-non-tail new-env)))
+         (non-tail-env (env-with-non-tail new-env))
+         (closure-type clysm/compiler/codegen/gc-types:+type-closure+))
     ;; First pass: allocate locals for all function closures
     (dolist (def definitions)
       (let* ((name (first def))
@@ -8669,51 +8558,40 @@
     (setf local-func-bindings (nreverse local-func-bindings))
     ;; Register local functions so the body can call them
     (setf (cenv-local-functions new-env) local-func-bindings)
-    ;; Phase 1: Create closures with null env initially
-    (dolist (def definitions)
-      (let* ((name (first def))
-             (params (second def))
-             (func-body (third def))
-             (local-idx (cdr (assoc name local-func-bindings))))
-        ;; Create lambda AST
-        (let ((lambda-ast (clysm/compiler/ast:make-ast-lambda
-                           :parameters params
-                           :body func-body)))
-          ;; Compile the lambda - initially with null env
-          ;; The func-names will be in captured-vars but we create with null env first
-          (setf result (append result
-                               (compile-labels-lambda-phase1 lambda-ast new-env local-func-bindings)))
-          ;; Store in local
-          (setf result (append result (list (list :local.set local-idx)))))))
-    ;; Phase 2: Now update each closure's env field to point to the env cons-list
-    ;; containing references to all the local function closures
-    (dolist (def definitions)
-      (let* ((name (first def))
-             (local-idx (cdr (assoc name local-func-bindings))))
-        ;; Get the closure
-        (setf result (append result (list (list :local.get local-idx))))
-        ;; Cast to closure type
-        (setf result (append result
-                             (list (list :ref.cast
-                                         clysm/compiler/codegen/gc-types:+type-closure+))))
-        ;; Build the env cons-list containing all local function closures
-        (setf result (append result
-                             (generate-labels-env-update local-func-bindings new-env)))
-        ;; Update the env field (field 4) - struct.set $closure 4
-        (setf result (append result
-                             (list (list :struct.set
-                                         clysm/compiler/codegen/gc-types:+type-closure+
-                                         4))))))
-    ;; Compile body - non-final forms are NOT in tail position
-    (dolist (form (butlast body))
-      (setf result (append result
-                           (compile-to-instructions form non-tail-env)
-                           '(:drop))))
-    ;; Last form inherits tail position from parent for TCO
-    (when body
-      (setf result (append result
-                           (compile-to-instructions (car (last body)) new-env))))
-    result))
+    (with-instruction-collector
+      ;; Phase 1: Create closures with null env initially
+      (dolist (def definitions)
+        (let* ((name (first def))
+               (params (second def))
+               (func-body (third def))
+               (local-idx (cdr (assoc name local-func-bindings))))
+          ;; Create lambda AST
+          (let ((lambda-ast (clysm/compiler/ast:make-ast-lambda
+                             :parameters params
+                             :body func-body)))
+            ;; Compile the lambda - initially with null env
+            (emit* (compile-labels-lambda-phase1 lambda-ast new-env local-func-bindings))
+            ;; Store in local
+            (emit :local.set local-idx))))
+      ;; Phase 2: Now update each closure's env field to point to the env cons-list
+      (dolist (def definitions)
+        (let* ((name (first def))
+               (local-idx (cdr (assoc name local-func-bindings))))
+          ;; Get the closure
+          (emit :local.get local-idx)
+          ;; Cast to closure type
+          (emit :ref.cast closure-type)
+          ;; Build the env cons-list containing all local function closures
+          (emit* (generate-labels-env-update local-func-bindings new-env))
+          ;; Update the env field (field 4) - struct.set $closure 4
+          (emit :struct.set closure-type 4)))
+      ;; Compile body - non-final forms are NOT in tail position
+      (dolist (form (butlast body))
+        (emit* (compile-to-instructions form non-tail-env))
+        (emit :drop))
+      ;; Last form inherits tail position from parent for TCO
+      (when body
+        (emit* (compile-to-instructions (car (last body)) new-env))))))
 
 (defun compile-labels-lambda-phase1 (ast env local-func-bindings)
   "Phase 1: Create a closure with null env - env will be filled in phase 2."
@@ -8732,7 +8610,8 @@
          (free-vars (set-difference regular-free-vars func-names))
          (lambda-name (allocate-lambda-function))
          (func-index (env-add-function env lambda-name))
-         (arity (length params)))
+         (arity (length params))
+         (closure-type clysm/compiler/codegen/gc-types:+type-closure+))
     ;; Register this lambda for later compilation
     (push (list :name lambda-name
                 :params params
@@ -8746,25 +8625,22 @@
                 :is-labels-lambda t)
           *pending-lambdas*)
     ;; Create closure with null env (will be updated in phase 2)
-    (let ((result '()))
+    (with-instruction-collector
       ;; code fields
       (if (= arity 0)
-          (setf result (append result (list (list :ref.func func-index))))
-          (setf result (append result '((:ref.null :func)))))
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
       (if (= arity 1)
-          (setf result (append result (list (list :ref.func func-index))))
-          (setf result (append result '((:ref.null :func)))))
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
       (if (= arity 2)
-          (setf result (append result (list (list :ref.func func-index))))
-          (setf result (append result '((:ref.null :func)))))
-      (setf result (append result (list (list :ref.func func-index))))
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
+      (emit :ref.func func-index)
       ;; env - null initially, will be set in phase 2
-      (setf result (append result '((:ref.null :any))))
+      (emit :ref.null :any)
       ;; Create the struct
-      (setf result (append result
-                           (list (list :struct.new
-                                       clysm/compiler/codegen/gc-types:+type-closure+))))
-      result)))
+      (emit :struct.new closure-type))))
 
 (defun generate-labels-env-update (local-func-bindings env)
   "Generate instructions to create the env cons-list for labels closures.
@@ -8772,43 +8648,21 @@
   (declare (ignore env))
   ;; Build cons-list from the local function closures
   ;; (cons f1 (cons f2 (cons f3 nil)))
-  (let ((result '())
-        (bindings (reverse local-func-bindings)))  ; Build from end
-    (if (null bindings)
-        '((:ref.null :none))
-        (progn
-          ;; Start with nil
-          (setf result '((:ref.null :none)))
-          ;; For each function (in reverse order)
-          (dolist (binding bindings)
-            (let ((local-idx (cdr binding)))
-              ;; Stack: rest-of-list
-              ;; Push the function closure
-              (setf result (append (list (list :local.get local-idx)) result))
-              ;; Stack: closure, rest-of-list
-              ;; Note: Need to swap order for struct.new which takes car, cdr
-              ;; Actually struct.new $cons takes (car, cdr) so we need car first
-              ;; Current: closure, rest
-              ;; Create cons: struct.new takes (car, cdr) in stack order = (cdr, car) push order
-              ;; We want (cons closure rest), so push closure, then rest, then struct.new
-              ;; But we have rest on stack already. Let me re-think...
-              ))
-          ;; Actually let me do this differently - push all closures, then build list
-          (setf result '())
+  (if (null local-func-bindings)
+      '((:ref.null :none))
+      (let ((cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+        (with-instruction-collector
           ;; Push closures in order
           (dolist (binding local-func-bindings)
-            (setf result (append result (list (list :local.get (cdr binding))))))
+            (emit :local.get (cdr binding)))
           ;; Now build the cons list from end
           ;; Stack: f1, f2, f3
           ;; We want: (cons f1 (cons f2 (cons f3 nil)))
           ;; Push nil
-          (setf result (append result '((:ref.null :none))))
+          (emit :ref.null :none)
           ;; For each closure (in reverse), create cons
           (dotimes (i (length local-func-bindings))
-            (setf result (append result
-                                 (list (list :struct.new
-                                             clysm/compiler/codegen/gc-types:+type-cons+)))))
-          result))))
+            (emit :struct.new cons-type))))))
 
 (defun collect-called-functions (body)
   "Collect all function names that are called in the body (list of AST nodes)."
@@ -8862,7 +8716,6 @@
    First scans for defuns and registers them, then compiles all forms.
    Only the last form inherits tail position for TCO."
   (let ((forms (clysm/compiler/ast:ast-progn-forms ast))
-        (result '())
         (non-tail-env (env-with-non-tail env)))
     ;; First pass: register all defuns so they can be called
     (dolist (form forms)
@@ -8870,17 +8723,16 @@
         (let ((name (clysm/compiler/ast:ast-defun-name form)))
           (unless (env-lookup-function env name)
             (env-add-function env name)))))
-    ;; Second pass: compile all forms
-    ;; Non-final forms are NOT in tail position
-    (dolist (form (butlast forms))
-      (setf result (append result
-                           (compile-to-instructions form non-tail-env)
-                           '(:drop))))
-    ;; Last form inherits tail position from parent
-    (when forms
-      (setf result (append result
-                           (compile-to-instructions (car (last forms)) env))))
-    (or result (compile-literal (clysm/compiler/ast:make-nil-literal)))))
+    (if (null forms)
+        (compile-literal (clysm/compiler/ast:make-nil-literal))
+        (with-instruction-collector
+          ;; Second pass: compile all forms
+          ;; Non-final forms are NOT in tail position
+          (dolist (form (butlast forms))
+            (emit* (compile-to-instructions form non-tail-env))
+            (emit :drop))
+          ;; Last form inherits tail position from parent
+          (emit* (compile-to-instructions (car (last forms)) env))))))
 
 ;;; ============================================================
 ;;; Variable Assignment
@@ -9230,32 +9082,30 @@
    The closure has code_0, code_1, code_2, code_N, and env fields.
    Free variables are captured in a cons-list stored in the env field."
   ;; struct.new $closure (code_0, code_1, code_2, code_N, env)
-  (let ((result '()))
-    ;; code_0 - null if arity != 0, ref.func if arity == 0
-    (if (= arity 0)
-        (setf result (append result (list (list :ref.func func-index))))
-        (setf result (append result '((:ref.null :func)))))
-    ;; code_1 - null if arity != 1
-    (if (= arity 1)
-        (setf result (append result (list (list :ref.func func-index))))
-        (setf result (append result '((:ref.null :func)))))
-    ;; code_2 - null if arity != 2
-    (if (= arity 2)
-        (setf result (append result (list (list :ref.func func-index))))
-        (setf result (append result '((:ref.null :func)))))
-    ;; code_N - always the fallback
-    (setf result (append result (list (list :ref.func func-index))))
-    ;; env - capture free variables as a cons-list
-    (if free-vars
-        ;; Build cons-list: (cons var1 (cons var2 (cons var3 nil)))
-        (setf result (append result (generate-env-capture free-vars env)))
-        ;; No free vars, use null
-        (setf result (append result '((:ref.null :any)))))
-    ;; Create the struct
-    (setf result (append result
-                         (list (list :struct.new
-                                     clysm/compiler/codegen/gc-types:+type-closure+))))
-    result))
+  (let ((closure-type clysm/compiler/codegen/gc-types:+type-closure+))
+    (with-instruction-collector
+      ;; code_0 - null if arity != 0, ref.func if arity == 0
+      (if (= arity 0)
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
+      ;; code_1 - null if arity != 1
+      (if (= arity 1)
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
+      ;; code_2 - null if arity != 2
+      (if (= arity 2)
+          (emit :ref.func func-index)
+          (emit :ref.null :func))
+      ;; code_N - always the fallback
+      (emit :ref.func func-index)
+      ;; env - capture free variables as a cons-list
+      (if free-vars
+          ;; Build cons-list: (cons var1 (cons var2 (cons var3 nil)))
+          (emit* (generate-env-capture free-vars env))
+          ;; No free vars, use null
+          (emit :ref.null :any))
+      ;; Create the struct
+      (emit :struct.new closure-type))))
 
 (defun generate-env-capture (free-vars env)
   "Generate instructions to capture free variables as a cons-list.
@@ -9265,20 +9115,18 @@
       ;; Base case: nil (null reference)
       '((:ref.null :none))
       ;; Build cons from end: (cons first-var (cons second-var ...))
-      (let ((result '())
-            (var (first free-vars)))
+      (let ((var (first free-vars))
+            (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
         ;; Push the variable value
         (let ((local-idx (env-lookup-local env var)))
-          (if local-idx
-              (setf result (append result (list (list :local.get local-idx))))
-              (error "Cannot capture unbound variable: ~A" var)))
-        ;; Push rest of the list (recursive)
-        (setf result (append result (generate-env-capture (rest free-vars) env)))
-        ;; Create cons cell: struct.new $cons (car, cdr)
-        (setf result (append result
-                             (list (list :struct.new
-                                         clysm/compiler/codegen/gc-types:+type-cons+))))
-        result)))
+          (unless local-idx
+            (error "Cannot capture unbound variable: ~A" var))
+          (with-instruction-collector
+            (emit :local.get local-idx)
+            ;; Push rest of the list (recursive)
+            (emit* (generate-env-capture (rest free-vars) env))
+            ;; Create cons cell: struct.new $cons (car, cdr)
+            (emit :struct.new cons-type))))))
 
 (defun compile-pending-lambdas ()
   "Compile all pending lambda functions and return their definitions.
@@ -9371,25 +9219,24 @@
   (let* ((name (clysm/compiler/ast:ast-block-name ast))
          (body (clysm/compiler/ast:ast-block-body ast))
          ;; Create new env with block registered
-         (block-env (copy-compilation-env env))
-         (result '()))
+         (block-env (copy-compilation-env env)))
     ;; Register block at current depth (0 means we can br 0 to exit)
     (push (cons name 0) (cenv-blocks block-env))
     ;; Increment depth for any nested blocks
     (incf (cenv-block-depth block-env))
-    ;; Start block with anyref result type
-    (setf result (append result '((:block (:result :anyref)))))
-    ;; Compile body forms (all but last are dropped)
-    (dolist (form (butlast body))
-      (setf result (append result (compile-to-instructions form block-env)))
-      (setf result (append result '(:drop))))
-    ;; Last form (or nil if empty)
-    (if body
-        (setf result (append result (compile-to-instructions (car (last body)) block-env)))
-        (setf result (append result '((:ref.null :none)))))
-    ;; End block
-    (setf result (append result '(:end)))
-    result))
+    (with-instruction-collector
+      ;; Start block with anyref result type
+      (emit '(:block (:result :anyref)))
+      ;; Compile body forms (all but last are dropped)
+      (dolist (form (butlast body))
+        (emit* (compile-to-instructions form block-env))
+        (emit :drop))
+      ;; Last form (or nil if empty)
+      (if body
+          (emit* (compile-to-instructions (car (last body)) block-env))
+          (emit :ref.null :none))
+      ;; End block
+      (emit :end))))
 
 (defun compile-return-from (ast env)
   "Compile return-from.
@@ -9402,13 +9249,12 @@
     (let* ((target-depth (cdr block-info))
            ;; Calculate relative br depth
            ;; If we're at depth 2 and block is at depth 0, br 2
-           (br-depth (- (cenv-block-depth env) target-depth 1))
-           (result '()))
-      ;; Compile value
-      (setf result (compile-to-instructions value env))
-      ;; Branch to block exit
-      (setf result (append result (list (list :br br-depth))))
-      result)))
+           (br-depth (- (cenv-block-depth env) target-depth 1)))
+      (with-instruction-collector
+        ;; Compile value
+        (emit* (compile-to-instructions value env))
+        ;; Branch to block exit
+        (emit :br br-depth)))))
 
 ;;; ============================================================
 ;;; Tagbody/Go Strategy Analysis (T008-T010)
@@ -9519,14 +9365,14 @@
 (defun compile-tagbody-sequential (segments env)
   "Compile tagbody with sequential strategy (no go statements).
    Simply compiles all forms in order and returns NIL."
-  (let ((result '()))
+  (with-instruction-collector
     (dolist (segment segments)
       (let ((forms (cdr segment)))
         (dolist (form forms)
-          (setf result (append result (compile-to-instructions form env)))
-          (setf result (append result '(:drop))))))
+          (emit* (compile-to-instructions form env))
+          (emit :drop))))
     ;; Return NIL
-    (append result '((:ref.null :none)))))
+    (emit :ref.null :none)))
 
 (defun compile-tagbody-simple-loop (segments env context)
   "Compile tagbody with simple-loop strategy.
@@ -9539,8 +9385,7 @@
      - go -> br (current-depth - base-depth) to reach loop
    - end
    - ref.null none"
-  (let* ((result '())
-         (loop-env (copy-compilation-env env)))
+  (let ((loop-env (copy-compilation-env env)))
     ;; Increment block depth for the loop
     (incf (cenv-block-depth loop-env))
     ;; Set up context for compile-go to find
@@ -9548,24 +9393,25 @@
     (setf (tagbody-context-base-block-depth context) (cenv-block-depth loop-env))
     (setf (tagbody-context-base-loop-depth context) 0)  ; br to loop is relative
     (setf (cenv-tagbody-context loop-env) context)
-    ;; Start loop with no result type (void loop)
-    (setf result '((:loop nil)))
-    ;; Compile preamble (forms before first tag)
-    (let ((first-segment (first segments)))
-      (when (null (car first-segment))
-        (dolist (form (cdr first-segment))
-          (setf result (append result (compile-to-instructions form loop-env)))
-          (setf result (append result '(:drop))))))
-    ;; Compile the main tagged segment
-    (dolist (segment segments)
-      (when (car segment) ; Skip preamble, compile tagged segment
-        (dolist (form (cdr segment))
-          (setf result (append result (compile-to-instructions form loop-env)))
-          (setf result (append result '(:drop))))))
-    ;; End loop
-    (setf result (append result '(:end)))
-    ;; Return NIL
-    (append result '((:ref.null :none)))))
+    (with-instruction-collector
+      ;; Start loop with no result type (void loop)
+      (emit '(:loop nil))
+      ;; Compile preamble (forms before first tag)
+      (let ((first-segment (first segments)))
+        (when (null (car first-segment))
+          (dolist (form (cdr first-segment))
+            (emit* (compile-to-instructions form loop-env))
+            (emit :drop))))
+      ;; Compile the main tagged segment
+      (dolist (segment segments)
+        (when (car segment) ; Skip preamble, compile tagged segment
+          (dolist (form (cdr segment))
+            (emit* (compile-to-instructions form loop-env))
+            (emit :drop))))
+      ;; End loop
+      (emit :end)
+      ;; Return NIL
+      (emit :ref.null :none))))
 
 (defun compile-tagbody-dispatch (segments env context)
   "Compile tagbody with dispatch strategy.
@@ -9589,71 +9435,58 @@
        br (depth to exit = 1)
      end
    end"
-  (let* ((result '())
-         (num-segments (length segments))
+  (let* ((num-segments (length segments))
          (pc-local (tagbody-context-pc-local context))
          (dispatch-env (copy-compilation-env env)))
     ;; Track block depth: exit block + loop + num-segments blocks
-    ;; After br_table, we're inside all nested blocks
-    ;; block-depth at segment 0 = env depth + 2 (exit, loop) + num-segments
-    ;; But for go, we need depth relative to the loop, not absolute
     (incf (cenv-block-depth dispatch-env) 2)  ; exit block + loop
     ;; Set up context for compile-go
     (setf (cenv-tagbody-context dispatch-env) context)
-    ;; Initialize $pc to 0 (stored as i31ref since all locals are anyref)
-    (setf result (list (list :i32.const 0)
-                       :ref.i31
-                       (list :local.set pc-local)))
-    ;; Start exit block (result anyref for NIL)
-    (setf result (append result '((:block (:result :anyref)))))
-    ;; Start dispatch loop with anyref result type
-    ;; The loop never falls through (always exits via br 1 to exit block),
-    ;; but the result type is needed for Wasm validation.
-    (setf result (append result '((:loop (:result :anyref)))))
-    ;; Generate nested blocks (innermost = segment 0)
-    (dotimes (i num-segments)
-      (setf result (append result '((:block nil)))))
-    ;; Generate br_table
-    ;; br_table[i] = i (segment index equals br depth to reach that segment's code)
-    ;; When inside innermost block (seg 0), br i exits i blocks to segment i's code area
-    (let ((br-targets (loop for i from 0 below num-segments collect i)))
-      ;; Extract $pc from i31ref to i32 for br_table
-      (setf result (append result (list (list :local.get pc-local)
-                                        '(:ref.cast :i31)
-                                        :i31.get_s)))
-      ;; Default target is num-segments (exit all segment blocks, unreachable in normal operation)
-      (setf result (append result (list (cons :br_table (append br-targets (list num-segments)))))))
-    ;; Close blocks and generate segment code
-    (loop for seg-idx from 0 below num-segments
-          for segment in segments
-          do (let ((segment-env (copy-compilation-env dispatch-env)))
-               ;; Close the block for this segment FIRST
-               (setf result (append result '(:end)))
-               ;; Now segment code runs here, after closing (seg-idx + 1) blocks
-               ;; Remaining nesting from segment seg-idx's code area:
-               ;; - (num-segments - seg-idx - 1) more segment blocks to exit
-               ;; - then the loop (which is the target for br)
-               ;; So base-loop-depth = (num-segments - seg-idx - 1)
-               (let ((remaining-blocks (- num-segments seg-idx 1)))
-                 (setf (cenv-block-depth segment-env)
-                       (+ (cenv-block-depth env) 2 remaining-blocks))
-                 (setf (tagbody-context-base-block-depth (cenv-tagbody-context segment-env))
-                       (cenv-block-depth segment-env))
-                 (setf (tagbody-context-base-loop-depth (cenv-tagbody-context segment-env))
-                       remaining-blocks))
-               ;; Compile segment forms
-               (dolist (form (cdr segment))
-                 (setf result (append result (compile-to-instructions form segment-env)))
-                 (setf result (append result '(:drop))))))
-    ;; After all segments, exit the tagbody with NIL
-    ;; We're inside the loop, exit block is at depth 1
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result '((:br 1))))
-    ;; Close dispatch loop
-    (setf result (append result '(:end)))
-    ;; Close exit block
-    (setf result (append result '(:end)))
-    result))
+    (with-instruction-collector
+      ;; Initialize $pc to 0 (stored as i31ref since all locals are anyref)
+      (emit :i32.const 0)
+      (emit :ref.i31)
+      (emit :local.set pc-local)
+      ;; Start exit block (result anyref for NIL)
+      (emit '(:block (:result :anyref)))
+      ;; Start dispatch loop with anyref result type
+      (emit '(:loop (:result :anyref)))
+      ;; Generate nested blocks (innermost = segment 0)
+      (dotimes (i num-segments)
+        (emit '(:block nil)))
+      ;; Generate br_table
+      (let ((br-targets (loop for i from 0 below num-segments collect i)))
+        ;; Extract $pc from i31ref to i32 for br_table
+        (emit :local.get pc-local)
+        (emit '(:ref.cast :i31))
+        (emit :i31.get_s)
+        ;; Default target is num-segments
+        (emit* (list (cons :br_table (append br-targets (list num-segments))))))
+      ;; Close blocks and generate segment code
+      (loop for seg-idx from 0 below num-segments
+            for segment in segments
+            do (let ((segment-env (copy-compilation-env dispatch-env)))
+                 ;; Close the block for this segment FIRST
+                 (emit :end)
+                 ;; Now segment code runs here
+                 (let ((remaining-blocks (- num-segments seg-idx 1)))
+                   (setf (cenv-block-depth segment-env)
+                         (+ (cenv-block-depth env) 2 remaining-blocks))
+                   (setf (tagbody-context-base-block-depth (cenv-tagbody-context segment-env))
+                         (cenv-block-depth segment-env))
+                   (setf (tagbody-context-base-loop-depth (cenv-tagbody-context segment-env))
+                         remaining-blocks))
+                 ;; Compile segment forms
+                 (dolist (form (cdr segment))
+                   (emit* (compile-to-instructions form segment-env))
+                   (emit :drop))))
+      ;; After all segments, exit the tagbody with NIL
+      (emit :ref.null :none)
+      (emit :br 1)
+      ;; Close dispatch loop
+      (emit :end)
+      ;; Close exit block
+      (emit :end))))
 
 (defun compile-tagbody (ast env)
   "Compile tagbody using appropriate strategy based on analysis.
@@ -9779,98 +9612,90 @@
    ;; Result anyref is now on stack - this IS the catch expression's value"
   (let* ((tag (clysm/compiler/ast:ast-catch-tag ast))
          (body (clysm/compiler/ast:ast-catch-body ast))
-         (result '()))
-    (let ((tag-local (env-add-local env (gensym "catch-tag")))
-          (thrown-tag-local (env-add-local env (gensym "thrown-tag")))
-          (thrown-value-local (env-add-local env (gensym "thrown-value")))
-          (normal-result-local (env-add-local env (gensym "normal-result"))))
+         (tag-local (env-add-local env (gensym "catch-tag")))
+         (thrown-tag-local (env-add-local env (gensym "thrown-tag")))
+         (thrown-value-local (env-add-local env (gensym "thrown-value")))
+         (normal-result-local (env-add-local env (gensym "normal-result"))))
+    (with-instruction-collector
       ;; Evaluate and store the catch tag
-      (setf result (append result (compile-to-instructions tag env)))
-      (setf result (append result (list (list :local.set tag-local))))
+      (emit* (compile-to-instructions tag env))
+      (emit :local.set tag-local)
 
       ;; Create catch environment
       (let ((catch-env (copy-compilation-env env)))
         (push (cons tag-local 0) (cenv-catch-tags catch-env))
 
         ;; Block $catch - type 30: () -> (anyref anyref)
-        ;; Type 30 is $catch_result in the type section
-        (setf result (append result '((:block (:type 30)))))  ;; $catch
+        (emit '(:block (:type 30)))  ;; $catch
 
         ;; try_table inside $catch
-        ;; Catch clause: catch tag 0, branch to label 0 ($catch)
-        (setf result (append result '((:try_table (:result :anyref) (:catch 0 0)))))
+        (emit '(:try_table (:result :anyref) (:catch 0 0)))
 
         ;; Compile body
         (dolist (form (butlast body))
-          (setf result (append result (compile-to-instructions form catch-env)))
-          (setf result (append result (list :drop))))
+          (emit* (compile-to-instructions form catch-env))
+          (emit :drop))
         (when body
-          (setf result (append result (compile-to-instructions (car (last body)) catch-env))))
+          (emit* (compile-to-instructions (car (last body)) catch-env)))
         (unless body
-          (setf result (append result '((:ref.null :none)))))
+          (emit :ref.null :none))
 
-        (setf result (append result (list :end)))  ;; end try_table
+        (emit :end)  ;; end try_table
 
         ;; Normal path: store result, push (nil nil), branch to $catch
-        (setf result (append result (list (list :local.set normal-result-local))))
-        (setf result (append result '((:ref.null :none))))
-        (setf result (append result '((:ref.null :none))))
-        (setf result (append result '((:br 0))))  ;; br to $catch with (nil nil)
+        (emit :local.set normal-result-local)
+        (emit :ref.null :none)
+        (emit :ref.null :none)
+        (emit :br 0)  ;; br to $catch with (nil nil)
 
-        (setf result (append result (list :end)))  ;; end $catch block
+        (emit :end)  ;; end $catch block
 
         ;; At this point: (anyref anyref) on stack
-        ;; Either (nil nil) from normal path, or (tag value) from exception
-        (setf result (append result (list (list :local.set thrown-value-local))))
-        (setf result (append result (list (list :local.set thrown-tag-local))))
+        (emit :local.set thrown-value-local)
+        (emit :local.set thrown-tag-local)
 
         ;; Check if this was a real exception (thrown-tag is not null)
-        ;; Use if with (result anyref) so the result is directly on stack
-        (setf result (append result (list (list :local.get thrown-tag-local))))
-        (setf result (append result (list :ref.is_null)))
-        (setf result (append result '((:if (:result :anyref)))))
+        (emit :local.get thrown-tag-local)
+        (emit :ref.is_null)
+        (emit '(:if (:result :anyref)))
 
         ;; Normal case (null tag): return normal result
-        (setf result (append result (list (list :local.get normal-result-local))))
+        (emit :local.get normal-result-local)
 
-        (setf result (append result (list :else)))
+        (emit :else)
 
         ;; Exception case: compare tags and handle
-        (setf result (append result (list (list :local.get tag-local))))
-        (setf result (append result '((:ref.cast :eq))))
-        (setf result (append result (list (list :local.get thrown-tag-local))))
-        (setf result (append result '((:ref.cast :eq))))
-        (setf result (append result (list :ref.eq)))
-        (setf result (append result '((:if (:result :anyref)))))
+        (emit :local.get tag-local)
+        (emit '(:ref.cast :eq))
+        (emit :local.get thrown-tag-local)
+        (emit '(:ref.cast :eq))
+        (emit :ref.eq)
+        (emit '(:if (:result :anyref)))
 
         ;; Tags match: return thrown-value
-        (setf result (append result (list (list :local.get thrown-value-local))))
+        (emit :local.get thrown-value-local)
 
-        (setf result (append result (list :else)))
-        ;; Tags don't match: rethrow (throw never returns, so dummy value for type check)
-        (setf result (append result (list (list :local.get thrown-tag-local))))
-        (setf result (append result (list (list :local.get thrown-value-local))))
-        (setf result (append result '((:throw 0))))
-        (setf result (append result (list :end)))  ;; end inner if
+        (emit :else)
+        ;; Tags don't match: rethrow
+        (emit :local.get thrown-tag-local)
+        (emit :local.get thrown-value-local)
+        (emit :throw 0)
+        (emit :end)  ;; end inner if
 
-        (setf result (append result (list :end)))))  ;; end outer if
-    ;; Result anyref is on stack - this is the catch expression's value
-    result))
+        (emit :end)))))
 
 (defun compile-throw (ast env)
   "Compile throw using Wasm throw instruction.
    Throws exception with tag index 0 ($lisp-throw) with (tag-symbol, value) payload."
-  (declare (ignore env))
   (let* ((tag (clysm/compiler/ast:ast-throw-tag ast))
-         (value (clysm/compiler/ast:ast-throw-value ast))
-         (result '()))
-    ;; Compile tag expression (evaluates to symbol)
-    (setf result (append result (compile-to-instructions tag env)))
-    ;; Compile value expression
-    (setf result (append result (compile-to-instructions value env)))
-    ;; Throw with tag 0 ($lisp-throw)
-    (setf result (append result '((:throw 0))))
-    result))
+         (value (clysm/compiler/ast:ast-throw-value ast)))
+    (with-instruction-collector
+      ;; Compile tag expression (evaluates to symbol)
+      (emit* (compile-to-instructions tag env))
+      ;; Compile value expression
+      (emit* (compile-to-instructions value env))
+      ;; Throw with tag 0 ($lisp-throw)
+      (emit :throw 0))))
 
 ;;; ============================================================
 ;;; Unwind-Protect Compilation (T116-T119)
@@ -9903,48 +9728,36 @@
          ;; Allocate locals
          (result-local (env-add-local env (gensym "unwind-result")))
          (exnref-local (env-add-local env (gensym "exnref") :exnref))
-         (result '())
-         (cleanup-code '()))
-    ;; Pre-compile cleanup forms (we'll use this twice)
-    (dolist (form cleanup-forms)
-      (setf cleanup-code (append cleanup-code (compile-to-instructions form env)))
-      (setf cleanup-code (append cleanup-code '(:drop))))
-
-    ;; block (result anyref) - outer block for final result
-    (setf result (append result '((:block (:result :anyref)))))
-
-    ;; block (result exnref) - inner block for exception ref
-    (setf result (append result '((:block (:result :exnref)))))
-
-    ;; try_table (result anyref) (catch_all_ref 0)
-    (setf result (append result (list (list :try_table '(:result :anyref)
-                                            (list :catch_all_ref 0)))))  ; 0 = inner block
-
-    ;; Compile protected form
-    (setf result (append result (compile-to-instructions protected-form env)))
-
-    ;; end try_table
-    (setf result (append result '(:end)))
-
-    ;; Normal path: save result, run cleanup, return result, br 1 (to outer block)
-    (setf result (append result (list (list :local.set result-local))))
-    (setf result (append result cleanup-code))
-    (setf result (append result (list (list :local.get result-local))))
-    (setf result (append result '((:br 1))))  ; br to outer block (skip exception path)
-
-    ;; end inner block
-    (setf result (append result '(:end)))
-
-    ;; Exception path: save exnref, run cleanup, throw_ref
-    (setf result (append result (list (list :local.set exnref-local))))
-    (setf result (append result cleanup-code))
-    (setf result (append result (list (list :local.get exnref-local))))
-    (setf result (append result '((:throw_ref))))
-
-    ;; end outer block
-    (setf result (append result '(:end)))
-
-    result))
+         ;; Pre-compile cleanup forms (we'll use this twice)
+         (cleanup-code (with-instruction-collector
+                         (dolist (form cleanup-forms)
+                           (emit* (compile-to-instructions form env))
+                           (emit :drop)))))
+    (with-instruction-collector
+      ;; block (result anyref) - outer block for final result
+      (emit '(:block (:result :anyref)))
+      ;; block (result exnref) - inner block for exception ref
+      (emit '(:block (:result :exnref)))
+      ;; try_table (result anyref) (catch_all_ref 0)
+      (emit (list :try_table '(:result :anyref) (list :catch_all_ref 0)))
+      ;; Compile protected form
+      (emit* (compile-to-instructions protected-form env))
+      ;; end try_table
+      (emit :end)
+      ;; Normal path: save result, run cleanup, return result, br 1 (to outer block)
+      (emit :local.set result-local)
+      (emit* cleanup-code)
+      (emit :local.get result-local)
+      (emit '(:br 1))
+      ;; end inner block
+      (emit :end)
+      ;; Exception path: save exnref, run cleanup, throw_ref
+      (emit :local.set exnref-local)
+      (emit* cleanup-code)
+      (emit :local.get exnref-local)
+      (emit '(:throw_ref))
+      ;; end outer block
+      (emit :end))))
 
 ;;; ============================================================
 ;;; Handler-Case Compilation (001-control-structure-extension US4)
@@ -9976,8 +9789,7 @@
      ... handler dispatch code ...
    end"
   (let* ((expression (clysm/compiler/ast:ast-handler-case-expression ast))
-         (handlers (clysm/compiler/ast:ast-handler-case-handlers ast))
-         (result '()))
+         (handlers (clysm/compiler/ast:ast-handler-case-handlers ast)))
     ;; Handle case with no handlers - just evaluate expression
     (when (null handlers)
       (return-from compile-handler-case
@@ -9986,79 +9798,60 @@
     ;; Allocate locals
     (let ((condition-local (env-add-local env (gensym "hc-condition")))
           (tag-local (env-add-local env (gensym "hc-tag"))))
-
-      ;; block (result anyref) - outer block for final result
-      (setf result (append result '((:block (:result :anyref)))))
-
-      ;; block (type 30) - inner block catches (anyref anyref) result from try_table
-      ;; Type 30 is $catch_result: () -> (anyref anyref)
-      (setf result (append result '((:block (:type 30)))))
-
-      ;; try_table (result anyref) (catch 0 0)
-      ;; catch tag 0 ($lisp-throw), branch to label 0 (inner block)
-      (setf result (append result '((:try_table (:result :anyref) (:catch 0 0)))))
-
-      ;; Compile protected expression
-      (setf result (append result (compile-to-instructions expression env)))
-
-      ;; end try_table
-      (setf result (append result '(:end)))
-
-      ;; Normal path: result on stack, branch past handlers
-      (setf result (append result '((:br 1))))  ; branch to outer block
-
-      ;; end inner block - stack has (anyref anyref) = (tag, value)
-      (setf result (append result '(:end)))
-
-      ;; Exception path: save caught values
-      ;; Stack order after catch: tag, value (tag on top, value below)
-      (setf result (append result (list (list :local.set condition-local))))  ; save condition (value)
-      (setf result (append result (list (list :local.set tag-local))))        ; save tag
-
-      ;; Generate handler dispatch code
-      ;; For now, we match any handler (simplified - no type checking yet)
-      ;; TODO: Add proper type dispatch based on handler type specifier
-      (let ((first-handler t))
-        (dolist (handler handlers)
-          (let ((var (clysm/compiler/ast:handler-clause-var handler))
-                (body (clysm/compiler/ast:handler-clause-body handler)))
-            (when first-handler
-              (setf first-handler nil))
-            ;; For simplified implementation: execute first handler that exists
-            ;; TODO: Add type check: (typep condition handler-type)
-            (if var
-                ;; Bind the condition variable
-                (let* ((handler-env (extend-compilation-env env))
-                       (var-local (env-add-local handler-env var)))
-                  (setf result (append result (list (list :local.get condition-local))))
-                  (setf result (append result (list (list :local.set var-local))))
-                  ;; Compile handler body
-                  (dolist (form (butlast body))
-                    (setf result (append result (compile-to-instructions form handler-env)))
-                    (setf result (append result '(:drop))))
-                  (when body
-                    (setf result (append result
-                                         (compile-to-instructions (car (last body)) handler-env))))
-                  (unless body
-                    (setf result (append result '((:ref.null :none))))))
-                ;; No variable binding - just execute body
-                (progn
-                  (dolist (form (butlast body))
-                    (setf result (append result (compile-to-instructions form env)))
-                    (setf result (append result '(:drop))))
-                  (when body
-                    (setf result (append result
-                                         (compile-to-instructions (car (last body)) env))))
-                  (unless body
-                    (setf result (append result '((:ref.null :none)))))))
-            ;; For now, only use first handler and return
-            ;; TODO: Add proper type dispatch with if/else chain
-            (return))))
-
-      ;; end outer block
-      (setf result (append result '(:end))))
-
-    result))
+      (with-instruction-collector
+        ;; block (result anyref) - outer block for final result
+        (emit '(:block (:result :anyref)))
+        ;; block (type 30) - inner block catches (anyref anyref) result from try_table
+        (emit '(:block (:type 30)))
+        ;; try_table (result anyref) (catch 0 0)
+        (emit '(:try_table (:result :anyref) (:catch 0 0)))
+        ;; Compile protected expression
+        (emit* (compile-to-instructions expression env))
+        ;; end try_table
+        (emit :end)
+        ;; Normal path: result on stack, branch past handlers
+        (emit '(:br 1))
+        ;; end inner block - stack has (anyref anyref) = (tag, value)
+        (emit :end)
+        ;; Exception path: save caught values
+        (emit :local.set condition-local)
+        (emit :local.set tag-local)
+        ;; Generate handler dispatch code
+        ;; For now, we match any handler (simplified - no type checking yet)
+        (let ((first-handler t))
+          (dolist (handler handlers)
+            (let ((var (clysm/compiler/ast:handler-clause-var handler))
+                  (body (clysm/compiler/ast:handler-clause-body handler)))
+              (when first-handler
+                (setf first-handler nil))
+              ;; For simplified implementation: execute first handler that exists
+              (if var
+                  ;; Bind the condition variable
+                  (let* ((handler-env (extend-compilation-env env))
+                         (var-local (env-add-local handler-env var)))
+                    (emit :local.get condition-local)
+                    (emit :local.set var-local)
+                    ;; Compile handler body
+                    (dolist (form (butlast body))
+                      (emit* (compile-to-instructions form handler-env))
+                      (emit :drop))
+                    (when body
+                      (emit* (compile-to-instructions (car (last body)) handler-env)))
+                    (unless body
+                      (emit '(:ref.null :none))))
+                  ;; No variable binding - just execute body
+                  (progn
+                    (dolist (form (butlast body))
+                      (emit* (compile-to-instructions form env))
+                      (emit :drop))
+                    (when body
+                      (emit* (compile-to-instructions (car (last body)) env)))
+                    (unless body
+                      (emit '(:ref.null :none)))))
+              ;; For now, only use first handler and return
+              (return))))
+        ;; end outer block
+        (emit :end)))))
 
 ;;; ============================================================
 ;;; Special Variable Binding Support (T009, T034)
@@ -10624,76 +10417,66 @@
 
 (defun compile-append-two (list1-form list2-form env)
   "Compile (append list1 list2) for exactly two lists."
-  (let ((result '())
-        (list1-local (env-add-local env (gensym "APP-L1")))
+  (let ((list1-local (env-add-local env (gensym "APP-L1")))
         (list2-local (env-add-local env (gensym "APP-L2")))
         (acc-local (env-add-local env (gensym "APP-ACC")))
         (temp-local (env-add-local env (gensym "APP-TMP")))
-        (last-cons-local (env-add-local env (gensym "APP-LAST")))  ; anyref
+        (last-cons-local (env-add-local env (gensym "APP-LAST")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile both lists
-    (setf result (append result (compile-to-instructions list1-form env)))
-    (setf result (append result (list (list :local.set list1-local))))
-    (setf result (append result (compile-to-instructions list2-form env)))
-    (setf result (append result (list (list :local.set list2-local))))
-    ;; If list1 is nil, return list2
-    (setf result (append result (list (list :local.get list1-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:local.get ,list2-local)
-                           :else
-                           ;; Copy list1, then set last cdr to list2
-                           ;; Start with first cons of result
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)  ; car of first
-                           (:ref.null :none)           ; placeholder cdr
-                           (:struct.new ,cons-type)
-                           (:local.tee ,acc-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance list1 to cdr
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           ;; Loop to copy rest of list1
-                           (:block $app_done)
-                           (:loop $app_loop)
-                           (:local.get ,list1-local)
-                           :ref.is_null
-                           (:br_if $app_done)
-                           ;; Create new cons
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.set ,temp-local)
-                           ;; Link previous cons to this one (cast last-cons to ref $cons)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,temp-local)
-                           (:struct.set ,cons-type 1)
-                           ;; Update last-cons
-                           (:local.get ,temp-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance list1
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           (:br $app_loop)
-                           :end  ; loop
-                           :end  ; block
-                           ;; Link last cons to list2 (cast last-cons to ref $cons)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,list2-local)
-                           (:struct.set ,cons-type 1)
-                           (:local.get ,acc-local)
-                           :end)))  ; if
-    result))
+    (with-instruction-collector
+      ;; Compile both lists
+      (emit* (compile-to-instructions list1-form env))
+      (emit :local.set list1-local)
+      (emit* (compile-to-instructions list2-form env))
+      (emit :local.set list2-local)
+      ;; If list1 is nil, return list2
+      (emit :local.get list1-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            `(:local.get ,list2-local)
+            :else
+            ;; Copy list1, then set last cdr to list2
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,acc-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:block $app_done)
+            '(:loop $app_loop)
+            `(:local.get ,list1-local)
+            :ref.is_null
+            '(:br_if $app_done)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.set ,temp-local)
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,temp-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,temp-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:br $app_loop)
+            :end
+            :end
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,list2-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,acc-local)
+            :end))))
 
 (defun compile-reverse (args env)
   "Compile (reverse list) - return new reversed list.
@@ -10701,42 +10484,37 @@
    Stack: [] -> [list]"
   (when (/= (length args) 1)
     (error "reverse requires exactly 1 argument"))
-  (let ((result '())
-        (list-local (env-add-local env (gensym "REV-LIST")))
+  (let ((list-local (env-add-local env (gensym "REV-LIST")))
         (acc-local (env-add-local env (gensym "REV-ACC")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Initialize accumulator to nil
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set acc-local))))
-    ;; Loop: prepend each element to accumulator
-    (setf result (append result
-                         `((:block $rev_done)
-                           (:loop $rev_loop)
-                           ;; Check if list is nil
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:br_if $rev_done)
-                           ;; Create new cons: (cons (car list) acc)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,acc-local)
-                           (:struct.new ,cons-type)
-                           (:local.set ,acc-local)
-                           ;; Advance to cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:br $rev_loop)
-                           :end  ; loop
-                           :end))) ; block
-    ;; Return accumulator
-    (setf result (append result (list (list :local.get acc-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile list argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list-local)
+      ;; Initialize accumulator to nil
+      (emit '(:ref.null :none))
+      (emit :local.set acc-local)
+      ;; Loop: prepend each element to accumulator
+      (emit '(:block $rev_done)
+            '(:loop $rev_loop)
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:br_if $rev_done)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,acc-local)
+            `(:struct.new ,cons-type)
+            `(:local.set ,acc-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:br $rev_loop)
+            :end
+            :end)
+      ;; Return accumulator
+      (emit :local.get acc-local))))
 
 (defun compile-nreverse (args env)
   "Compile (nreverse list) - destructively reverse list.
@@ -10744,47 +10522,40 @@
    Stack: [] -> [list]"
   (when (/= (length args) 1)
     (error "nreverse requires exactly 1 argument"))
-  (let ((result '())
-        (prev-local (env-add-local env (gensym "NREV-PREV")))
+  (let ((prev-local (env-add-local env (gensym "NREV-PREV")))
         (current-local (env-add-local env (gensym "NREV-CURR")))
         (next-local (env-add-local env (gensym "NREV-NEXT")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Initialize prev to nil
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set prev-local))))
-    ;; current = list
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set current-local))))
-    ;; Loop to reverse
-    (setf result (append result
-                         `((:block $nrev_done)
-                           (:loop $nrev_loop)
-                           ;; Check if current is nil
-                           (:local.get ,current-local)
-                           :ref.is_null
-                           (:br_if $nrev_done)
-                           ;; next = cdr(current)
-                           (:local.get ,current-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,next-local)
-                           ;; cdr(current) = prev
-                           (:local.get ,current-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,prev-local)
-                           (:struct.set ,cons-type 1)
-                           ;; prev = current
-                           (:local.get ,current-local)
-                           (:local.set ,prev-local)
-                           ;; current = next
-                           (:local.get ,next-local)
-                           (:local.set ,current-local)
-                           (:br $nrev_loop)
-                           :end  ; loop
-                           :end))) ; block
-    ;; Return prev (new head)
-    (setf result (append result (list (list :local.get prev-local))))
-    result))
+    (with-instruction-collector
+      ;; Initialize prev to nil
+      (emit '(:ref.null :none))
+      (emit :local.set prev-local)
+      ;; current = list
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set current-local)
+      ;; Loop to reverse
+      (emit '(:block $nrev_done)
+            '(:loop $nrev_loop)
+            `(:local.get ,current-local)
+            :ref.is_null
+            '(:br_if $nrev_done)
+            `(:local.get ,current-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,next-local)
+            `(:local.get ,current-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,prev-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,current-local)
+            `(:local.set ,prev-local)
+            `(:local.get ,next-local)
+            `(:local.set ,current-local)
+            '(:br $nrev_loop)
+            :end
+            :end)
+      ;; Return prev (new head)
+      (emit :local.get prev-local))))
 
 (defun compile-last (args env)
   "Compile (last list) - return last cons cell.
@@ -10792,47 +10563,40 @@
   (when (< (length args) 1)
     (error "last requires at least 1 argument"))
   ;; For simplicity, only support (last list), not (last list n)
-  (let ((result '())
-        (list-local (env-add-local env (gensym "LAST-LIST")))
+  (let ((list-local (env-add-local env (gensym "LAST-LIST")))
         (prev-local (env-add-local env (gensym "LAST-PREV")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If list is nil, return nil
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; prev = list
-                           (:local.get ,list-local)
-                           (:local.set ,prev-local)
-                           ;; Loop until cdr is nil
-                           (:block $last_done (:result :anyref))
-                           (:loop $last_loop (:result :anyref))
-                           ;; Get cdr
-                           (:local.get ,prev-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.tee ,list-local)
-                           :ref.is_null
-                           ;; If cdr is nil, return prev
-                           (:if (:result :anyref))
-                           (:local.get ,prev-local)
-                           (:br $last_done)
-                           :else
-                           ;; Else prev = cdr, continue
-                           (:local.get ,list-local)
-                           (:local.set ,prev-local)
-                           (:ref.null :none)
-                           (:br $last_loop)
-                           :end
-                           :end  ; loop
-                           :end  ; block
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile list argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list-local)
+      ;; If list is nil, return nil
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,list-local)
+            `(:local.set ,prev-local)
+            '(:block $last_done (:result :anyref))
+            '(:loop $last_loop (:result :anyref))
+            `(:local.get ,prev-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.tee ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            `(:local.get ,prev-local)
+            '(:br $last_done)
+            :else
+            `(:local.get ,list-local)
+            `(:local.set ,prev-local)
+            '(:ref.null :none)
+            '(:br $last_loop)
+            :end
+            :end
+            :end
+            :end))))
 
 (defun compile-butlast (args env)
   "Compile (butlast list) - return list without last element.
@@ -10841,145 +10605,126 @@
   (when (< (length args) 1)
     (error "butlast requires at least 1 argument"))
   ;; For simplicity, only support (butlast list), not (butlast list n)
-  (let ((result '())
-        (list-local (env-add-local env (gensym "BUTL-LIST")))
+  (let ((list-local (env-add-local env (gensym "BUTL-LIST")))
         (acc-local (env-add-local env (gensym "BUTL-ACC")))
-        (last-cons-local (env-add-local env (gensym "BUTL-LAST")))  ; anyref
+        (last-cons-local (env-add-local env (gensym "BUTL-LAST")))
         (temp-local (env-add-local env (gensym "BUTL-TMP")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If list is nil or single element, return nil
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; Check if cdr is nil (single element)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; Build new list without last element
-                           ;; Start with first cons
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,acc-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           ;; Loop while cddr exists
-                           (:block $butl_done)
-                           (:loop $butl_loop)
-                           ;; Check if cdr(list) is nil (meaning list is last element)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           :ref.is_null
-                           (:br_if $butl_done)
-                           ;; Create new cons for this element
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.set ,temp-local)
-                           ;; Link (cast last-cons to ref $cons)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,temp-local)
-                           (:struct.set ,cons-type 1)
-                           (:local.get ,temp-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:br $butl_loop)
-                           :end  ; loop
-                           :end  ; block
-                           (:local.get ,acc-local)
-                           :end  ; if single
-                           :end))) ; if nil
-    result))
+    (with-instruction-collector
+      ;; Compile list argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list-local)
+      ;; If list is nil or single element, return nil
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            :ref.is_null
+            '(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,acc-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:block $butl_done)
+            '(:loop $butl_loop)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            :ref.is_null
+            '(:br_if $butl_done)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.set ,temp-local)
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,temp-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,temp-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:br $butl_loop)
+            :end
+            :end
+            `(:local.get ,acc-local)
+            :end
+            :end))))
 
 (defun compile-copy-list (args env)
   "Compile (copy-list list) - shallow copy of list.
    Stack: [] -> [list]"
   (when (/= (length args) 1)
     (error "copy-list requires exactly 1 argument"))
-  (let ((result '())
-        (list-local (env-add-local env (gensym "COPY-LIST")))
+  (let ((list-local (env-add-local env (gensym "COPY-LIST")))
         (acc-local (env-add-local env (gensym "COPY-ACC")))
-        (last-cons-local (env-add-local env (gensym "COPY-LAST")))  ; anyref
+        (last-cons-local (env-add-local env (gensym "COPY-LAST")))
         (temp-local (env-add-local env (gensym "COPY-TMP")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If nil, return nil
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; Start with first cons
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,acc-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           ;; Loop to copy rest
-                           (:block $copy_done)
-                           (:loop $copy_loop)
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:br_if $copy_done)
-                           ;; Create new cons
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.set ,temp-local)
-                           ;; Link (cast last-cons to ref $cons)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,temp-local)
-                           (:struct.set ,cons-type 1)
-                           (:local.get ,temp-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:br $copy_loop)
-                           :end  ; loop
-                           :end  ; block
-                           (:local.get ,acc-local)
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile list argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list-local)
+      ;; If nil, return nil
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,acc-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:block $copy_done)
+            '(:loop $copy_loop)
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:br_if $copy_done)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.set ,temp-local)
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,temp-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,temp-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:br $copy_loop)
+            :end
+            :end
+            `(:local.get ,acc-local)
+            :end))))
 
 ;;; --- Tier 2: Higher-Order Sequence Functions ---
 
@@ -10988,242 +10733,219 @@
    Stack: [] -> [list]"
   (when (/= (length args) 2)
     (error "mapcar requires exactly 2 arguments"))
-  (let ((result '())
-        (fn-local (env-add-local env (gensym "MAP-FN")))
+  (let ((fn-local (env-add-local env (gensym "MAP-FN")))
         (list-local (env-add-local env (gensym "MAP-LIST")))
         (acc-local (env-add-local env (gensym "MAP-ACC")))
-        (last-cons-local (env-add-local env (gensym "MAP-LAST")))  ; anyref for type compatibility
+        (last-cons-local (env-add-local env (gensym "MAP-LAST")))
         (temp-local (env-add-local env (gensym "MAP-TMP")))
         (result-local (env-add-local env (gensym "MAP-RES")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile function argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set fn-local))))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If list is nil, return nil
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; Apply fn to first element and create first cons
-                           ;; funcall: closure, arg
-                           (:local.get ,fn-local)  ; closure as first param
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)  ; car
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)  ; code_1
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.set ,result-local)
-                           ;; Create first cons with result
-                           (:local.get ,result-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,acc-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           ;; Loop for rest
-                           (:block $map_done (:result :anyref))
-                           (:loop $map_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:local.get ,acc-local)  ; Return accumulated list
-                           (:br $map_done)
-                           :else
-                           (:ref.null :none)  ; Dummy value for loop iteration
-                           :end
-                           :drop  ; Drop the dummy value
-                           ;; Apply fn
-                           (:local.get ,fn-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.set ,result-local)
-                           ;; Create cons and link
-                           (:local.get ,result-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.set ,temp-local)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,temp-local)
-                           (:struct.set ,cons-type 1)
-                           (:local.get ,temp-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $map_loop)
-                           :end  ; loop
-                           :drop
-                           (:local.get ,acc-local)
-                           :end  ; block
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile function argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set fn-local)
+      ;; Compile list argument
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; If list is nil, return nil
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,fn-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.set ,result-local)
+            `(:local.get ,result-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,acc-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:block $map_done (:result :anyref))
+            '(:loop $map_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            `(:local.get ,acc-local)
+            '(:br $map_done)
+            :else
+            '(:ref.null :none)
+            :end
+            :drop
+            `(:local.get ,fn-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.set ,result-local)
+            `(:local.get ,result-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.set ,temp-local)
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,temp-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,temp-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $map_loop)
+            :end
+            :drop
+            `(:local.get ,acc-local)
+            :end
+            :end))))
 
 (defun compile-mapc (args env)
   "Compile (mapc fn list) - apply fn for side effects, return original list.
    Stack: [] -> [list]"
   (when (/= (length args) 2)
     (error "mapc requires exactly 2 arguments"))
-  (let ((result '())
-        (fn-local (env-add-local env (gensym "MAPC-FN")))
+  (let ((fn-local (env-add-local env (gensym "MAPC-FN")))
         (list-local (env-add-local env (gensym "MAPC-LIST")))
         (original-local (env-add-local env (gensym "MAPC-ORIG")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile function argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set fn-local))))
-    ;; Compile list argument and save original
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.tee original-local))))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Loop applying fn
-    (setf result (append result
-                         `((:block $mapc_done)
-                           (:loop $mapc_loop)
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:br_if $mapc_done)
-                           ;; Apply fn (discard result)
-                           (:local.get ,fn-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           :drop
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:br $mapc_loop)
-                           :end  ; loop
-                           :end))) ; block
-    ;; Return original list
-    (setf result (append result (list (list :local.get original-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile function argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set fn-local)
+      ;; Compile list argument and save original
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.tee original-local)
+      (emit :local.set list-local)
+      ;; Loop applying fn
+      (emit '(:block $mapc_done)
+            '(:loop $mapc_loop)
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:br_if $mapc_done)
+            `(:local.get ,fn-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            :drop
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:br $mapc_loop)
+            :end
+            :end)
+      ;; Return original list
+      (emit :local.get original-local))))
 
 (defun compile-maplist (args env)
   "Compile (maplist fn list) - apply fn to successive cdrs.
    Stack: [] -> [list]"
   (when (/= (length args) 2)
     (error "maplist requires exactly 2 arguments"))
-  (let ((result '())
-        (fn-local (env-add-local env (gensym "MAPL-FN")))
+  (let ((fn-local (env-add-local env (gensym "MAPL-FN")))
         (list-local (env-add-local env (gensym "MAPL-LIST")))
         (acc-local (env-add-local env (gensym "MAPL-ACC")))
-        (last-cons-local (env-add-local env (gensym "MAPL-LAST")))  ; anyref for type compatibility
+        (last-cons-local (env-add-local env (gensym "MAPL-LAST")))
         (temp-local (env-add-local env (gensym "MAPL-TMP")))
         (result-local (env-add-local env (gensym "MAPL-RES")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile function argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set fn-local))))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If list is nil, return nil
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)
-                           :else
-                           ;; Apply fn to list itself (not just car)
-                           (:local.get ,fn-local)
-                           (:local.get ,list-local)  ; pass whole list
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.set ,result-local)
-                           ;; Create first cons
-                           (:local.get ,result-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,acc-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance to cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           ;; Loop for rest
-                           (:block $mapl_done (:result :anyref))
-                           (:loop $mapl_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:local.get ,acc-local)  ; Return accumulated list
-                           (:br $mapl_done)
-                           :else
-                           (:ref.null :none)  ; Dummy value for loop iteration
-                           :end
-                           :drop  ; Drop the dummy value
-                           ;; Apply fn to tail
-                           (:local.get ,fn-local)
-                           (:local.get ,list-local)
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.set ,result-local)
-                           ;; Create cons and link
-                           (:local.get ,result-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.set ,temp-local)
-                           (:local.get ,last-cons-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,temp-local)
-                           (:struct.set ,cons-type 1)
-                           (:local.get ,temp-local)
-                           (:local.set ,last-cons-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $mapl_loop)
-                           :end  ; loop
-                           :drop
-                           (:local.get ,acc-local)
-                           :end  ; block
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile function argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set fn-local)
+      ;; Compile list argument
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; If list is nil, return nil
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,fn-local)
+            `(:local.get ,list-local)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.set ,result-local)
+            `(:local.get ,result-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,acc-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:block $mapl_done (:result :anyref))
+            '(:loop $mapl_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            `(:local.get ,acc-local)
+            '(:br $mapl_done)
+            :else
+            '(:ref.null :none)
+            :end
+            :drop
+            `(:local.get ,fn-local)
+            `(:local.get ,list-local)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.set ,result-local)
+            `(:local.get ,result-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.set ,temp-local)
+            `(:local.get ,last-cons-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,temp-local)
+            `(:struct.set ,cons-type 1)
+            `(:local.get ,temp-local)
+            `(:local.set ,last-cons-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $mapl_loop)
+            :end
+            :drop
+            `(:local.get ,acc-local)
+            :end
+            :end))))
 
 (defun compile-reduce (args env)
   "Compile (reduce fn list) - combine elements using fn.
@@ -11231,73 +10953,66 @@
   (when (< (length args) 2)
     (error "reduce requires at least 2 arguments"))
   ;; For simplicity, no :initial-value support yet
-  (let ((result '())
-        (fn-local (env-add-local env (gensym "RED-FN")))
+  (let ((fn-local (env-add-local env (gensym "RED-FN")))
         (list-local (env-add-local env (gensym "RED-LIST")))
         (acc-local (env-add-local env (gensym "RED-ACC")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-2+))
-    ;; Compile function argument
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set fn-local))))
-    ;; Compile list argument
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; If list is nil, error (or return nil for now)
-    (setf result (append result (list (list :local.get list-local))))
-    (setf result (append result '(:ref.is_null)))
-    (setf result (append result
-                         `((:if (:result :anyref))
-                           (:ref.null :none)  ; Empty list without initial-value
-                           :else
-                           ;; acc = first element
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,acc-local)
-                           ;; Advance to cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           ;; Loop to reduce
-                           (:block $red_done (:result :anyref))
-                           (:loop $red_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           (:local.get ,acc-local)  ; Return accumulated result
-                           (:br $red_done)
-                           :else
-                           (:ref.null :none)  ; Dummy value for loop iteration
-                           :end
-                           :drop  ; Drop the dummy value
-                           ;; acc = (fn acc (car list))
-                           (:local.get ,fn-local)
-                           (:local.get ,acc-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,fn-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 2)  ; code_2 for 2-arity
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.set ,acc-local)
-                           ;; Advance
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $red_loop)
-                           :end  ; loop
-                           :drop
-                           (:local.get ,acc-local)
-                           :end  ; block
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile function argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set fn-local)
+      ;; Compile list argument
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; If list is nil, error (or return nil for now)
+      (emit :local.get list-local)
+      (emit :ref.is_null)
+      (emit `(:if (:result :anyref))
+            '(:ref.null :none)
+            :else
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,acc-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:block $red_done (:result :anyref))
+            '(:loop $red_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            `(:local.get ,acc-local)
+            '(:br $red_done)
+            :else
+            '(:ref.null :none)
+            :end
+            :drop
+            `(:local.get ,fn-local)
+            `(:local.get ,acc-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,fn-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 2)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.set ,acc-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $red_loop)
+            :end
+            :drop
+            `(:local.get ,acc-local)
+            :end
+            :end))))
 
 ;;; --- Tier 4: Set Operations (043-self-hosting-blockers) ---
 
@@ -11309,62 +11024,55 @@
     (error "adjoin requires at least 2 arguments"))
   ;; For simplicity, just cons the item onto the list
   ;; (proper member check would require :test/:key handling)
-  (let ((result '())
-        (item-local (env-add-local env (gensym "ADJ-ITEM")))
+  (let ((item-local (env-add-local env (gensym "ADJ-ITEM")))
         (list-local (env-add-local env (gensym "ADJ-LIST")))
         (found-local (env-add-local env (gensym "ADJ-FOUND") :i32))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile item and list
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set item-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Initialize found flag
-    (setf result (append result '((:i32.const 0))))
-    (setf result (append result (list (list :local.set found-local))))
-    ;; Simple member check loop
-    (setf result (append result
-                         `((:block $adj_check)
-                           (:loop $adj_loop)
-                           ;; Check if list is null
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:br_if $adj_check)
-                           ;; Get car and check equality (using eql)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           ;; Compare with item (simple ref.eq for now)
-                           (:ref.cast :eq)
-                           (:local.get ,item-local)
-                           (:ref.cast :eq)
-                           :ref.eq
-                           (:if)
-                           (:i32.const 1)
-                           (:local.set ,found-local)
-                           (:br $adj_check)
-                           :end
-                           ;; Advance to cdr
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:br $adj_loop)
-                           :end  ; loop
-                           :end))) ; block
-    ;; If not found, cons item onto original list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    (setf result (append result
-                         `((:local.get ,found-local)
-                           (:if (:result :anyref))
-                           (:local.get ,list-local)  ; already in list
-                           :else
-                           (:local.get ,item-local)
-                           (:local.get ,list-local)
-                           (:struct.new ,cons-type)
-                           :end)))
-    result))
+    (with-instruction-collector
+      ;; Compile item and list
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set item-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Initialize found flag
+      (emit '(:i32.const 0))
+      (emit :local.set found-local)
+      ;; Simple member check loop
+      (emit '(:block $adj_check)
+            '(:loop $adj_loop)
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:br_if $adj_check)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.cast :eq)
+            `(:local.get ,item-local)
+            '(:ref.cast :eq)
+            :ref.eq
+            '(:if)
+            '(:i32.const 1)
+            `(:local.set ,found-local)
+            '(:br $adj_check)
+            :end
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:br $adj_loop)
+            :end
+            :end)
+      ;; If not found, cons item onto original list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      (emit `(:local.get ,found-local)
+            '(:if (:result :anyref))
+            `(:local.get ,list-local)
+            :else
+            `(:local.get ,item-local)
+            `(:local.get ,list-local)
+            `(:struct.new ,cons-type)
+            :end))))
 
 (defun compile-union (args env)
   "Compile (union list1 list2) - return union of two lists.
@@ -11373,83 +11081,76 @@
   (when (< (length args) 2)
     (error "union requires at least 2 arguments"))
   ;; Simple implementation: append list1 elements not in list2 to list2
-  (let ((result '())
-        (list1-local (env-add-local env (gensym "UNI-L1")))
+  (let ((list1-local (env-add-local env (gensym "UNI-L1")))
         (list2-local (env-add-local env (gensym "UNI-L2")))
         (result-local (env-add-local env (gensym "UNI-RES")))
         (elem-local (env-add-local env (gensym "UNI-ELEM")))
         (check-local (env-add-local env (gensym "UNI-CHK")))
         (found-local (env-add-local env (gensym "UNI-FND") :i32))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile lists
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list1-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list2-local))))
-    ;; Start with list2 as result
-    (setf result (append result (list (list :local.get list2-local))))
-    (setf result (append result (list (list :local.set result-local))))
-    ;; Loop through list1, add non-duplicates
-    (setf result (append result
-                         `((:block $uni_done)
-                           (:loop $uni_loop)
-                           ;; Check if list1 is null
-                           (:local.get ,list1-local)
-                           :ref.is_null
-                           (:br_if $uni_done)
-                           ;; Get current element
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,elem-local)
-                           ;; Check if in list2
-                           (:i32.const 0)
-                           (:local.set ,found-local)
-                           (:local.get ,list2-local)
-                           (:local.set ,check-local)
-                           (:block $found)
-                           (:loop $check_loop)
-                           (:local.get ,check-local)
-                           :ref.is_null
-                           (:br_if $found)
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.cast :eq)
-                           (:local.get ,elem-local)
-                           (:ref.cast :eq)
-                           :ref.eq
-                           (:if)
-                           (:i32.const 1)
-                           (:local.set ,found-local)
-                           (:br $found)
-                           :end
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,check-local)
-                           (:br $check_loop)
-                           :end  ; check_loop
-                           :end  ; found block
-                           ;; If not found, cons to result
-                           (:local.get ,found-local)
-                           :i32.eqz
-                           (:if)
-                           (:local.get ,elem-local)
-                           (:local.get ,result-local)
-                           (:struct.new ,cons-type)
-                           (:local.set ,result-local)
-                           :end
-                           ;; Advance list1
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           (:br $uni_loop)
-                           :end  ; uni_loop
-                           :end))) ; uni_done
-    (setf result (append result (list (list :local.get result-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile lists
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list1-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list2-local)
+      ;; Start with list2 as result
+      (emit :local.get list2-local)
+      (emit :local.set result-local)
+      ;; Loop through list1, add non-duplicates
+      (emit '(:block $uni_done)
+            '(:loop $uni_loop)
+            `(:local.get ,list1-local)
+            :ref.is_null
+            '(:br_if $uni_done)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,elem-local)
+            '(:i32.const 0)
+            `(:local.set ,found-local)
+            `(:local.get ,list2-local)
+            `(:local.set ,check-local)
+            '(:block $found)
+            '(:loop $check_loop)
+            `(:local.get ,check-local)
+            :ref.is_null
+            '(:br_if $found)
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.cast :eq)
+            `(:local.get ,elem-local)
+            '(:ref.cast :eq)
+            :ref.eq
+            '(:if)
+            '(:i32.const 1)
+            `(:local.set ,found-local)
+            '(:br $found)
+            :end
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,check-local)
+            '(:br $check_loop)
+            :end
+            :end
+            `(:local.get ,found-local)
+            :i32.eqz
+            '(:if)
+            `(:local.get ,elem-local)
+            `(:local.get ,result-local)
+            `(:struct.new ,cons-type)
+            `(:local.set ,result-local)
+            :end
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:br $uni_loop)
+            :end
+            :end)
+      (emit :local.get result-local))))
 
 (defun compile-intersection (args env)
   "Compile (intersection list1 list2) - return intersection of two lists.
@@ -11457,82 +11158,75 @@
    Stack: [] -> [list]"
   (when (< (length args) 2)
     (error "intersection requires at least 2 arguments"))
-  (let ((result '())
-        (list1-local (env-add-local env (gensym "INT-L1")))
+  (let ((list1-local (env-add-local env (gensym "INT-L1")))
         (list2-local (env-add-local env (gensym "INT-L2")))
         (result-local (env-add-local env (gensym "INT-RES")))
         (elem-local (env-add-local env (gensym "INT-ELEM")))
         (check-local (env-add-local env (gensym "INT-CHK")))
         (found-local (env-add-local env (gensym "INT-FND") :i32))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile lists
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list1-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list2-local))))
-    ;; Start with empty result
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set result-local))))
-    ;; Loop through list1, add elements that are in list2
-    (setf result (append result
-                         `((:block $int_done)
-                           (:loop $int_loop)
-                           ;; Check if list1 is null
-                           (:local.get ,list1-local)
-                           :ref.is_null
-                           (:br_if $int_done)
-                           ;; Get current element
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,elem-local)
-                           ;; Check if in list2
-                           (:i32.const 0)
-                           (:local.set ,found-local)
-                           (:local.get ,list2-local)
-                           (:local.set ,check-local)
-                           (:block $found)
-                           (:loop $check_loop)
-                           (:local.get ,check-local)
-                           :ref.is_null
-                           (:br_if $found)
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.cast :eq)
-                           (:local.get ,elem-local)
-                           (:ref.cast :eq)
-                           :ref.eq
-                           (:if)
-                           (:i32.const 1)
-                           (:local.set ,found-local)
-                           (:br $found)
-                           :end
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,check-local)
-                           (:br $check_loop)
-                           :end  ; check_loop
-                           :end  ; found block
-                           ;; If found, cons to result
-                           (:local.get ,found-local)
-                           (:if)
-                           (:local.get ,elem-local)
-                           (:local.get ,result-local)
-                           (:struct.new ,cons-type)
-                           (:local.set ,result-local)
-                           :end
-                           ;; Advance list1
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           (:br $int_loop)
-                           :end  ; int_loop
-                           :end))) ; int_done
-    (setf result (append result (list (list :local.get result-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile lists
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list1-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list2-local)
+      ;; Start with empty result
+      (emit '(:ref.null :none))
+      (emit :local.set result-local)
+      ;; Loop through list1, add elements that are in list2
+      (emit '(:block $int_done)
+            '(:loop $int_loop)
+            `(:local.get ,list1-local)
+            :ref.is_null
+            '(:br_if $int_done)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,elem-local)
+            '(:i32.const 0)
+            `(:local.set ,found-local)
+            `(:local.get ,list2-local)
+            `(:local.set ,check-local)
+            '(:block $found)
+            '(:loop $check_loop)
+            `(:local.get ,check-local)
+            :ref.is_null
+            '(:br_if $found)
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.cast :eq)
+            `(:local.get ,elem-local)
+            '(:ref.cast :eq)
+            :ref.eq
+            '(:if)
+            '(:i32.const 1)
+            `(:local.set ,found-local)
+            '(:br $found)
+            :end
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,check-local)
+            '(:br $check_loop)
+            :end
+            :end
+            `(:local.get ,found-local)
+            '(:if)
+            `(:local.get ,elem-local)
+            `(:local.get ,result-local)
+            `(:struct.new ,cons-type)
+            `(:local.set ,result-local)
+            :end
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:br $int_loop)
+            :end
+            :end)
+      (emit :local.get result-local))))
 
 (defun compile-set-difference (args env)
   "Compile (set-difference list1 list2) - elements in list1 not in list2.
@@ -11540,83 +11234,76 @@
    Stack: [] -> [list]"
   (when (< (length args) 2)
     (error "set-difference requires at least 2 arguments"))
-  (let ((result '())
-        (list1-local (env-add-local env (gensym "DIFF-L1")))
+  (let ((list1-local (env-add-local env (gensym "DIFF-L1")))
         (list2-local (env-add-local env (gensym "DIFF-L2")))
         (result-local (env-add-local env (gensym "DIFF-RES")))
         (elem-local (env-add-local env (gensym "DIFF-ELEM")))
         (check-local (env-add-local env (gensym "DIFF-CHK")))
         (found-local (env-add-local env (gensym "DIFF-FND") :i32))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile lists
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list1-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list2-local))))
-    ;; Start with empty result
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set result-local))))
-    ;; Loop through list1, add elements NOT in list2
-    (setf result (append result
-                         `((:block $diff_done)
-                           (:loop $diff_loop)
-                           ;; Check if list1 is null
-                           (:local.get ,list1-local)
-                           :ref.is_null
-                           (:br_if $diff_done)
-                           ;; Get current element
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,elem-local)
-                           ;; Check if in list2
-                           (:i32.const 0)
-                           (:local.set ,found-local)
-                           (:local.get ,list2-local)
-                           (:local.set ,check-local)
-                           (:block $found)
-                           (:loop $check_loop)
-                           (:local.get ,check-local)
-                           :ref.is_null
-                           (:br_if $found)
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.cast :eq)
-                           (:local.get ,elem-local)
-                           (:ref.cast :eq)
-                           :ref.eq
-                           (:if)
-                           (:i32.const 1)
-                           (:local.set ,found-local)
-                           (:br $found)
-                           :end
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,check-local)
-                           (:br $check_loop)
-                           :end  ; check_loop
-                           :end  ; found block
-                           ;; If NOT found, cons to result
-                           (:local.get ,found-local)
-                           :i32.eqz
-                           (:if)
-                           (:local.get ,elem-local)
-                           (:local.get ,result-local)
-                           (:struct.new ,cons-type)
-                           (:local.set ,result-local)
-                           :end
-                           ;; Advance list1
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           (:br $diff_loop)
-                           :end  ; diff_loop
-                           :end))) ; diff_done
-    (setf result (append result (list (list :local.get result-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile lists
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list1-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list2-local)
+      ;; Start with empty result
+      (emit '(:ref.null :none))
+      (emit :local.set result-local)
+      ;; Loop through list1, add elements NOT in list2
+      (emit '(:block $diff_done)
+            '(:loop $diff_loop)
+            `(:local.get ,list1-local)
+            :ref.is_null
+            '(:br_if $diff_done)
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,elem-local)
+            '(:i32.const 0)
+            `(:local.set ,found-local)
+            `(:local.get ,list2-local)
+            `(:local.set ,check-local)
+            '(:block $found)
+            '(:loop $check_loop)
+            `(:local.get ,check-local)
+            :ref.is_null
+            '(:br_if $found)
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.cast :eq)
+            `(:local.get ,elem-local)
+            '(:ref.cast :eq)
+            :ref.eq
+            '(:if)
+            '(:i32.const 1)
+            `(:local.set ,found-local)
+            '(:br $found)
+            :end
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,check-local)
+            '(:br $check_loop)
+            :end
+            :end
+            `(:local.get ,found-local)
+            :i32.eqz
+            '(:if)
+            `(:local.get ,elem-local)
+            `(:local.get ,result-local)
+            `(:struct.new ,cons-type)
+            `(:local.set ,result-local)
+            :end
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:br $diff_loop)
+            :end
+            :end)
+      (emit :local.get result-local))))
 
 (defun compile-subsetp (args env)
   "Compile (subsetp list1 list2) - test if list1 is subset of list2.
@@ -11624,88 +11311,85 @@
    Stack: [] -> [boolean]"
   (when (< (length args) 2)
     (error "subsetp requires at least 2 arguments"))
-  (let ((result '())
-        (list1-local (env-add-local env (gensym "SUBS-L1")))
+  (let ((list1-local (env-add-local env (gensym "SUBS-L1")))
         (list2-local (env-add-local env (gensym "SUBS-L2")))
         (elem-local (env-add-local env (gensym "SUBS-ELEM")))
         (check-local (env-add-local env (gensym "SUBS-CHK")))
         (found-local (env-add-local env (gensym "SUBS-FND") :i32))
-        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-        (symbol-type clysm/compiler/codegen/gc-types:+type-symbol+))
-    ;; Compile lists
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set list1-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list2-local))))
-    ;; Loop: for each element of list1, check if in list2
-    (setf result (append result
-                         `((:block $subs_done (:result :anyref))
-                           (:loop $subs_loop (:result :anyref))
-                           ;; Check if list1 is null
-                           (:local.get ,list1-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; All elements checked, return T
-                           ,@(compile-to-instructions
-                              (clysm/compiler/ast:make-ast-literal :value t :literal-type :t)
-                              env)
-                           (:br $subs_done)
-                           :else
-                           ;; Get current element
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,elem-local)
-                           ;; Search for it in list2
-                           (:i32.const 0)
-                           (:local.set ,found-local)
-                           (:local.get ,list2-local)
-                           (:local.set ,check-local)
-                           (:block $found)
-                           (:loop $check_loop)
-                           (:local.get ,check-local)
-                           :ref.is_null
-                           (:br_if $found)
-                           ;; Compare current check element with elem
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:ref.cast :eq)
-                           (:local.get ,elem-local)
-                           (:ref.cast :eq)
-                           :ref.eq
-                           (:if)
-                           (:i32.const 1)
-                           (:local.set ,found-local)
-                           (:br $found)
-                           :end
-                           (:local.get ,check-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,check-local)
-                           (:br $check_loop)
-                           :end  ; check_loop
-                           :end  ; found block
-                           ;; If not found, return NIL
-                           (:local.get ,found-local)
-                           :i32.eqz
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $subs_done)
-                           :else
-                           ;; Advance list1 and continue
-                           (:local.get ,list1-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list1-local)
-                           (:ref.null :none)  ; placeholder for loop continuation
-                           :drop
-                           (:br $subs_loop)
-                           :end
-                           :end
-                           :end  ; subs_loop
-                           :end))) ; subs_done
-    result))
+        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; Compile lists
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set list1-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list2-local)
+      ;; Loop: for each element of list1, check if in list2
+      (emit '(:block $subs_done (:result :anyref))
+            '(:loop $subs_loop (:result :anyref))
+            ;; Check if list1 is null
+            `(:local.get ,list1-local)
+            :ref.is_null
+            '(:if (:result :anyref)))
+      ;; All elements checked, return T
+      (emit* (compile-to-instructions
+              (clysm/compiler/ast:make-ast-literal :value t :literal-type :t)
+              env))
+      (emit '(:br $subs_done)
+            :else
+            ;; Get current element
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,elem-local)
+            ;; Search for it in list2
+            '(:i32.const 0)
+            `(:local.set ,found-local)
+            `(:local.get ,list2-local)
+            `(:local.set ,check-local)
+            '(:block $found)
+            '(:loop $check_loop)
+            `(:local.get ,check-local)
+            :ref.is_null
+            '(:br_if $found)
+            ;; Compare current check element with elem
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            '(:ref.cast :eq)
+            `(:local.get ,elem-local)
+            '(:ref.cast :eq)
+            :ref.eq
+            '(:if)
+            '(:i32.const 1)
+            `(:local.set ,found-local)
+            '(:br $found)
+            :end
+            `(:local.get ,check-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,check-local)
+            '(:br $check_loop)
+            :end  ; check_loop
+            :end  ; found block
+            ;; If not found, return NIL
+            `(:local.get ,found-local)
+            :i32.eqz
+            '(:if (:result :anyref))
+            '(:ref.null :none)
+            '(:br $subs_done)
+            :else
+            ;; Advance list1 and continue
+            `(:local.get ,list1-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list1-local)
+            '(:ref.null :none)  ; placeholder for loop continuation
+            :drop
+            '(:br $subs_loop)
+            :end
+            :end
+            :end  ; subs_loop
+            :end))))
 
 (defun compile-acons (args env)
   "Compile (acons key value alist) - prepend (key . value) to alist.
@@ -11713,17 +11397,16 @@
    Stack: [] -> [alist]"
   (when (/= (length args) 3)
     (error "acons requires exactly 3 arguments"))
-  (let ((result '())
-        (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; (cons (cons key value) alist)
-    ;; First create inner cons (key . value)
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :struct.new cons-type))))
-    ;; Then cons that with alist
-    (setf result (append result (compile-to-instructions (third args) env)))
-    (setf result (append result (list (list :struct.new cons-type))))
-    result))
+  (let ((cons-type clysm/compiler/codegen/gc-types:+type-cons+))
+    (with-instruction-collector
+      ;; (cons (cons key value) alist)
+      ;; First create inner cons (key . value)
+      (emit* (compile-to-instructions (first args) env))
+      (emit* (compile-to-instructions (second args) env))
+      (emit :struct.new cons-type)
+      ;; Then cons that with alist
+      (emit* (compile-to-instructions (third args) env))
+      (emit :struct.new cons-type))))
 
 (defun compile-pairlis (args env)
   "Compile (pairlis keys values &optional alist) - build alist from keys and values.
@@ -11731,62 +11414,55 @@
    Stack: [] -> [alist]"
   (when (< (length args) 2)
     (error "pairlis requires at least 2 arguments"))
-  (let ((result '())
-        (keys-local (env-add-local env (gensym "PAIR-K")))
+  (let ((keys-local (env-add-local env (gensym "PAIR-K")))
         (vals-local (env-add-local env (gensym "PAIR-V")))
         (result-local (env-add-local env (gensym "PAIR-RES")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile keys and values
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set keys-local))))
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set vals-local))))
-    ;; Initialize result with optional alist or NIL
-    (if (>= (length args) 3)
-        (progn
-          (setf result (append result (compile-to-instructions (third args) env)))
-          (setf result (append result (list (list :local.set result-local)))))
-        (progn
-          (setf result (append result '((:ref.null :none))))
-          (setf result (append result (list (list :local.set result-local))))))
-    ;; Loop through keys and values, building pairs
-    (setf result (append result
-                         `((:block $pair_done)
-                           (:loop $pair_loop)
-                           ;; Check if keys is null
-                           (:local.get ,keys-local)
-                           :ref.is_null
-                           (:br_if $pair_done)
-                           ;; Check if values is null
-                           (:local.get ,vals-local)
-                           :ref.is_null
-                           (:br_if $pair_done)
-                           ;; Create (car keys . car values)
-                           (:local.get ,keys-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,vals-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:struct.new ,cons-type)
-                           ;; Cons to result
-                           (:local.get ,result-local)
-                           (:struct.new ,cons-type)
-                           (:local.set ,result-local)
-                           ;; Advance keys and values
-                           (:local.get ,keys-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,keys-local)
-                           (:local.get ,vals-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,vals-local)
-                           (:br $pair_loop)
-                           :end  ; pair_loop
-                           :end))) ; pair_done
-    (setf result (append result (list (list :local.get result-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile keys and values
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set keys-local)
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set vals-local)
+      ;; Initialize result with optional alist or NIL
+      (if (>= (length args) 3)
+          (progn
+            (emit* (compile-to-instructions (third args) env))
+            (emit :local.set result-local))
+          (progn
+            (emit '(:ref.null :none))
+            (emit :local.set result-local)))
+      ;; Loop through keys and values, building pairs
+      (emit '(:block $pair_done)
+            '(:loop $pair_loop)
+            `(:local.get ,keys-local)
+            :ref.is_null
+            '(:br_if $pair_done)
+            `(:local.get ,vals-local)
+            :ref.is_null
+            '(:br_if $pair_done)
+            `(:local.get ,keys-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,vals-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:struct.new ,cons-type)
+            `(:local.get ,result-local)
+            `(:struct.new ,cons-type)
+            `(:local.set ,result-local)
+            `(:local.get ,keys-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,keys-local)
+            `(:local.get ,vals-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,vals-local)
+            '(:br $pair_loop)
+            :end
+            :end)
+      (emit :local.get result-local))))
 
 (defun compile-copy-alist (args env)
   "Compile (copy-alist alist) - copy spine and entry cons cells.
@@ -11794,86 +11470,74 @@
    Stack: [] -> [alist]"
   (when (/= (length args) 1)
     (error "copy-alist requires exactly 1 argument"))
-  (let ((result '())
-        (alist-local (env-add-local env (gensym "CA-ALIST")))
+  (let ((alist-local (env-add-local env (gensym "CA-ALIST")))
         (result-local (env-add-local env (gensym "CA-RES")))
         (last-local (env-add-local env (gensym "CA-LAST")))
         (entry-local (env-add-local env (gensym "CA-ENTRY")))
         (new-entry-local (env-add-local env (gensym "CA-NEW")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+))
-    ;; Compile alist
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set alist-local))))
-    ;; Start with empty result
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set result-local))))
-    (setf result (append result '((:ref.null :none))))
-    (setf result (append result (list (list :local.set last-local))))
-    ;; Loop through alist
-    (setf result (append result
-                         `((:block $ca_done)
-                           (:loop $ca_loop)
-                           ;; Check if alist is null
-                           (:local.get ,alist-local)
-                           :ref.is_null
-                           (:br_if $ca_done)
-                           ;; Get entry (could be cons or non-cons)
-                           (:local.get ,alist-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.set ,entry-local)
-                           ;; Check if entry is cons
-                           (:local.get ,entry-local)
-                           (:ref.test ,(list :ref cons-type))
-                           (:if)
-                           ;; Entry is cons - copy it
-                           (:local.get ,entry-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,entry-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:struct.new ,cons-type)
-                           (:local.set ,new-entry-local)
-                           :else
-                           ;; Non-cons entry - just use as is
-                           (:local.get ,entry-local)
-                           (:local.set ,new-entry-local)
-                           :end
-                           ;; Create new spine cons
-                           (:local.get ,new-entry-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           ;; Link to result list
-                           (:local.get ,result-local)
-                           :ref.is_null
-                           (:if)
-                           ;; First element
-                           (:local.get ,new-entry-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,last-local)
-                           (:local.set ,result-local)
-                           :else
-                           ;; Link to previous
-                           (:local.get ,last-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:local.get ,new-entry-local)
-                           (:ref.null :none)
-                           (:struct.new ,cons-type)
-                           (:local.tee ,last-local)
-                           (:struct.set ,cons-type 1)
-                           :end
-                           ;; Advance alist
-                           (:local.get ,alist-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,alist-local)
-                           (:br $ca_loop)
-                           :end  ; ca_loop
-                           :end))) ; ca_done
-    (setf result (append result (list (list :local.get result-local))))
-    result))
+    (with-instruction-collector
+      ;; Compile alist
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set alist-local)
+      ;; Start with empty result
+      (emit '(:ref.null :none))
+      (emit :local.set result-local)
+      (emit '(:ref.null :none))
+      (emit :local.set last-local)
+      ;; Loop through alist
+      (emit '(:block $ca_done)
+            '(:loop $ca_loop)
+            `(:local.get ,alist-local)
+            :ref.is_null
+            '(:br_if $ca_done)
+            `(:local.get ,alist-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.set ,entry-local)
+            `(:local.get ,entry-local)
+            `(:ref.test ,(list :ref cons-type))
+            '(:if)
+            `(:local.get ,entry-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,entry-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:struct.new ,cons-type)
+            `(:local.set ,new-entry-local)
+            :else
+            `(:local.get ,entry-local)
+            `(:local.set ,new-entry-local)
+            :end
+            `(:local.get ,new-entry-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.get ,result-local)
+            :ref.is_null
+            '(:if)
+            `(:local.get ,new-entry-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,last-local)
+            `(:local.set ,result-local)
+            :else
+            `(:local.get ,last-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:local.get ,new-entry-local)
+            '(:ref.null :none)
+            `(:struct.new ,cons-type)
+            `(:local.tee ,last-local)
+            `(:struct.set ,cons-type 1)
+            :end
+            `(:local.get ,alist-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,alist-local)
+            '(:br $ca_loop)
+            :end
+            :end)
+      (emit :local.get result-local))))
 
 
 ;;; --- Tier 4: Quantifier Predicates ---
@@ -11883,118 +11547,114 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 2)
     (error "every requires exactly 2 arguments"))
-  (let ((result '())
-        (pred-local (env-add-local env (gensym "EVERY-PRED")))
+  (let ((pred-local (env-add-local env (gensym "EVERY-PRED")))
         (list-local (env-add-local env (gensym "EVERY-LIST")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile predicate
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set pred-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check loop - return NIL if any fails, T if all pass
-    (setf result (append result
-                         `((:block $every_done (:result :anyref))
-                           (:loop $every_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Empty/exhausted - return T
-                           (:i32.const 1)
-                           :ref.i31
-                           (:br $every_done)
-                           :else
-                           ;; Apply predicate
-                           (:local.get ,pred-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,pred-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Predicate returned NIL - return NIL
-                           (:ref.null :none)
-                           (:br $every_done)
-                           :else
-                           ;; Continue
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $every_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end))) ; block
-    result))
+    (with-instruction-collector
+      ;; Compile predicate
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set pred-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check loop - return NIL if any fails, T if all pass
+      (emit '(:block $every_done (:result :anyref))
+            '(:loop $every_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Empty/exhausted - return T
+            '(:i32.const 1)
+            :ref.i31
+            '(:br $every_done)
+            :else
+            ;; Apply predicate
+            `(:local.get ,pred-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,pred-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Predicate returned NIL - return NIL
+            '(:ref.null :none)
+            '(:br $every_done)
+            :else
+            ;; Continue
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $every_loop)
+            :end
+            :end
+            :end  ; loop
+            :end))))
 
 (defun compile-some (args env)
   "Compile (some pred list) - return first non-nil result.
    Stack: [] -> [value or NIL]"
   (when (/= (length args) 2)
     (error "some requires exactly 2 arguments"))
-  (let ((result '())
-        (pred-local (env-add-local env (gensym "SOME-PRED")))
+  (let ((pred-local (env-add-local env (gensym "SOME-PRED")))
         (list-local (env-add-local env (gensym "SOME-LIST")))
         (pred-result-local (env-add-local env (gensym "SOME-RES")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile predicate
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set pred-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check loop
-    (setf result (append result
-                         `((:block $some_done (:result :anyref))
-                           (:loop $some_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Exhausted - return NIL
-                           (:ref.null :none)
-                           (:br $some_done)
-                           :else
-                           ;; Apply predicate
-                           (:local.get ,pred-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,pred-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           (:local.tee ,pred-result-local)
-                           :ref.is_null
-                           :i32.eqz
-                           (:if (:result :anyref))
-                           ;; Found - return result
-                           (:local.get ,pred-result-local)
-                           (:br $some_done)
-                           :else
-                           ;; Continue
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $some_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end))) ; block
-    result))
+    (with-instruction-collector
+      ;; Compile predicate
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set pred-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check loop
+      (emit '(:block $some_done (:result :anyref))
+            '(:loop $some_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Exhausted - return NIL
+            '(:ref.null :none)
+            '(:br $some_done)
+            :else
+            ;; Apply predicate
+            `(:local.get ,pred-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,pred-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            `(:local.tee ,pred-result-local)
+            :ref.is_null
+            :i32.eqz
+            '(:if (:result :anyref))
+            ;; Found - return result
+            `(:local.get ,pred-result-local)
+            '(:br $some_done)
+            :else
+            ;; Continue
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $some_loop)
+            :end
+            :end
+            :end  ; loop
+            :end))))
 
 (defun compile-notany (args env)
   "Compile (notany pred list) - true if no element satisfies predicate.
@@ -12002,59 +11662,57 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 2)
     (error "notany requires exactly 2 arguments"))
-  (let ((result '())
-        (pred-local (env-add-local env (gensym "NOTANY-PRED")))
+  (let ((pred-local (env-add-local env (gensym "NOTANY-PRED")))
         (list-local (env-add-local env (gensym "NOTANY-LIST")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile predicate
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set pred-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check loop
-    (setf result (append result
-                         `((:block $notany_done (:result :anyref))
-                           (:loop $notany_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Exhausted - return T (none matched)
-                           (:i32.const 1)
-                           :ref.i31
-                           (:br $notany_done)
-                           :else
-                           ;; Apply predicate
-                           (:local.get ,pred-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,pred-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           :ref.is_null
-                           :i32.eqz
-                           (:if (:result :anyref))
-                           ;; Found match - return NIL
-                           (:ref.null :none)
-                           (:br $notany_done)
-                           :else
-                           ;; Continue
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $notany_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end))) ; block
-    result))
+    (with-instruction-collector
+      ;; Compile predicate
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set pred-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check loop
+      (emit '(:block $notany_done (:result :anyref))
+            '(:loop $notany_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Exhausted - return T (none matched)
+            '(:i32.const 1)
+            :ref.i31
+            '(:br $notany_done)
+            :else
+            ;; Apply predicate
+            `(:local.get ,pred-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,pred-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            :ref.is_null
+            :i32.eqz
+            '(:if (:result :anyref))
+            ;; Found match - return NIL
+            '(:ref.null :none)
+            '(:br $notany_done)
+            :else
+            ;; Continue
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $notany_loop)
+            :end
+            :end
+            :end  ; loop
+            :end))))
 
 (defun compile-notevery (args env)
   "Compile (notevery pred list) - true if some element fails predicate.
@@ -12062,58 +11720,56 @@
    Stack: [] -> [T or NIL]"
   (when (/= (length args) 2)
     (error "notevery requires exactly 2 arguments"))
-  (let ((result '())
-        (pred-local (env-add-local env (gensym "NOTEV-PRED")))
+  (let ((pred-local (env-add-local env (gensym "NOTEV-PRED")))
         (list-local (env-add-local env (gensym "NOTEV-LIST")))
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (closure-type clysm/compiler/codegen/gc-types:+type-closure+)
         (func-type clysm/compiler/codegen/gc-types:+type-func-1+))
-    ;; Compile predicate
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result (list (list :local.set pred-local))))
-    ;; Compile list
-    (setf result (append result (compile-to-instructions (second args) env)))
-    (setf result (append result (list (list :local.set list-local))))
-    ;; Check loop
-    (setf result (append result
-                         `((:block $notev_done (:result :anyref))
-                           (:loop $notev_loop (:result :anyref))
-                           (:local.get ,list-local)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Exhausted - all passed, return NIL
-                           (:ref.null :none)
-                           (:br $notev_done)
-                           :else
-                           ;; Apply predicate
-                           (:local.get ,pred-local)
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 0)
-                           (:local.get ,pred-local)
-                           (:ref.cast ,closure-type)
-                           (:struct.get ,closure-type 1)
-                           (:ref.cast ,func-type)
-                           (:call_ref ,func-type)
-                           :ref.is_null
-                           (:if (:result :anyref))
-                           ;; Predicate failed - return T
-                           (:i32.const 1)
-                           :ref.i31
-                           (:br $notev_done)
-                           :else
-                           ;; Continue
-                           (:local.get ,list-local)
-                           (:ref.cast ,(list :ref cons-type))
-                           (:struct.get ,cons-type 1)
-                           (:local.set ,list-local)
-                           (:ref.null :none)
-                           (:br $notev_loop)
-                           :end
-                           :end
-                           :end  ; loop
-                           :end))) ; block
-    result))
+    (with-instruction-collector
+      ;; Compile predicate
+      (emit* (compile-to-instructions (first args) env))
+      (emit :local.set pred-local)
+      ;; Compile list
+      (emit* (compile-to-instructions (second args) env))
+      (emit :local.set list-local)
+      ;; Check loop
+      (emit '(:block $notev_done (:result :anyref))
+            '(:loop $notev_loop (:result :anyref))
+            `(:local.get ,list-local)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Exhausted - all passed, return NIL
+            '(:ref.null :none)
+            '(:br $notev_done)
+            :else
+            ;; Apply predicate
+            `(:local.get ,pred-local)
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 0)
+            `(:local.get ,pred-local)
+            `(:ref.cast ,closure-type)
+            `(:struct.get ,closure-type 1)
+            `(:ref.cast ,func-type)
+            `(:call_ref ,func-type)
+            :ref.is_null
+            '(:if (:result :anyref))
+            ;; Predicate failed - return T
+            '(:i32.const 1)
+            :ref.i31
+            '(:br $notev_done)
+            :else
+            ;; Continue
+            `(:local.get ,list-local)
+            `(:ref.cast ,(list :ref cons-type))
+            `(:struct.get ,cons-type 1)
+            `(:local.set ,list-local)
+            '(:ref.null :none)
+            '(:br $notev_loop)
+            :end
+            :end
+            :end  ; loop
+            :end))))
 
 ;;; ============================================================
 ;;; Character Functions (008-character-string)
@@ -12135,52 +11791,50 @@
    Stack: [] -> [character or NIL]"
   (when (/= (length args) 1)
     (error "code-char requires exactly 1 argument"))
-  (let ((result '())
-        (code-local (env-add-local env (gensym "CODE") :i32)))
-    ;; Compile code argument and save as i32
-    (setf result (append result (compile-to-instructions (first args) env)))
-    (setf result (append result
-                         `((:ref.cast :i31)
-                           :i31.get_s
-                           (:local.set ,code-local)
-                           ;; Check validity: 0 <= code <= #x10FFFF and not surrogate
-                           (:block $code_char_done (:result :anyref))
-                           ;; Check < 0 (invalid)
-                           (:local.get ,code-local)
-                           (:i32.const 0)
-                           :i32.lt_s
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $code_char_done)
-                           :else
-                           ;; Check > #x10FFFF (invalid)
-                           (:local.get ,code-local)
-                           (:i32.const #x10FFFF)
-                           :i32.gt_s
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $code_char_done)
-                           :else
-                           ;; Check surrogate range #xD800-#xDFFF (invalid)
-                           (:local.get ,code-local)
-                           (:i32.const #xD800)
-                           :i32.ge_s
-                           (:local.get ,code-local)
-                           (:i32.const #xDFFF)
-                           :i32.le_s
-                           :i32.mul  ;; AND of both conditions
-                           (:if (:result :anyref))
-                           (:ref.null :none)
-                           (:br $code_char_done)
-                           :else
-                           ;; Valid - return as character (i31ref)
-                           (:local.get ,code-local)
-                           :ref.i31
-                           :end
-                           :end
-                           :end
-                           :end)))
-    result))
+  (let ((code-local (env-add-local env (gensym "CODE") :i32)))
+    (with-instruction-collector
+      ;; Compile code argument and save as i32
+      (emit* (compile-to-instructions (first args) env))
+      (emit '(:ref.cast :i31)
+            :i31.get_s
+            `(:local.set ,code-local)
+            ;; Check validity: 0 <= code <= #x10FFFF and not surrogate
+            '(:block $code_char_done (:result :anyref))
+            ;; Check < 0 (invalid)
+            `(:local.get ,code-local)
+            '(:i32.const 0)
+            :i32.lt_s
+            '(:if (:result :anyref))
+            '(:ref.null :none)
+            '(:br $code_char_done)
+            :else
+            ;; Check > #x10FFFF (invalid)
+            `(:local.get ,code-local)
+            '(:i32.const #x10FFFF)
+            :i32.gt_s
+            '(:if (:result :anyref))
+            '(:ref.null :none)
+            '(:br $code_char_done)
+            :else
+            ;; Check surrogate range #xD800-#xDFFF (invalid)
+            `(:local.get ,code-local)
+            '(:i32.const #xD800)
+            :i32.ge_s
+            `(:local.get ,code-local)
+            '(:i32.const #xDFFF)
+            :i32.le_s
+            :i32.mul  ;; AND of both conditions
+            '(:if (:result :anyref))
+            '(:ref.null :none)
+            '(:br $code_char_done)
+            :else
+            ;; Valid - return as character (i31ref)
+            `(:local.get ,code-local)
+            :ref.i31
+            :end
+            :end
+            :end
+            :end))))
 
 (defun compile-char= (args env)
   "Compile (char= char1 char2) - character equality.

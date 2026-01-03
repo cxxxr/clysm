@@ -60,6 +60,7 @@
       ((:file "wasm-ir")
        (:file "gc-types")
        (:file "type-section")
+       (:file "instruction-collector") ; 001-instruction-collector-refactor: O(n) instruction collection (before func-section)
        (:file "func-section")
        (:file "globals")       ; Phase 13D-4: Global variable compilation
        (:file "wasm-global")   ; Phase 13D-4: Wasm global section helpers
@@ -650,7 +651,9 @@
      ;; AST-TAGBODY handling unit tests (001-wasm-local-binding US4)
      (:file "ast-tagbody-test")
      ;; Quasiquote local variable unit tests (001-quasiquote-local-vars)
-     (:file "quasiquote-local-test")))
+     (:file "quasiquote-local-test")
+     ;; Instruction collector unit tests (001-instruction-collector-refactor)
+     (:file "instruction-collector-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"
