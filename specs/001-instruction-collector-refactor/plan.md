@@ -1,23 +1,23 @@
 # Implementation Plan: Instruction Collector Refactor
 
-**Branch**: `001-instruction-collector-refactor` | **Date**: 2026-01-03 | **Spec**: [spec.md](./spec.md)
+**Branch**: `001-instruction-collector-refactor` | **Date**: 2026-01-03 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/001-instruction-collector-refactor/spec.md`
 
 ## Summary
 
-Refactor the instruction collection pattern in `func-section.lisp` from O(n²) append-based accumulation to O(n) push+nreverse pattern using a new `with-instruction-collector` macro. The macro provides local `emit` and `emit*` macros for ergonomic instruction emission. Migration proceeds incrementally starting with the largest functions (`compile-equalp` at 374 lines, `compile-primitive-call` at 363 lines), targeting 500+ lines of code reduction while maintaining 100% test compatibility and 19%+ Stage 1 compilation rate.
+Migrate the two largest functions in func-section.lisp (`compile-equalp` at 374 lines and `compile-primitive-call` at 363 lines) from O(n²) append-based list construction to O(n) push+nreverse pattern using the existing `with-instruction-collector` macro. The migration must maintain byte-identical Wasm output verified by contract tests.
 
 ## Technical Context
 
 **Language/Version**: Common Lisp (SBCL 2.4+)
-**Primary Dependencies**: alexandria, babel (UTF-8), trivial-gray-streams
-**Storage**: N/A (in-memory compilation, no persistence)
-**Testing**: rove (unit tests in `tests/unit/`, contract tests in `tests/contract/`)
-**Target Platform**: WasmGC (WebAssembly with GC proposal)
-**Project Type**: single (compiler project)
-**Performance Goals**: O(n) instruction collection (vs current O(n²)), 500+ lines code reduction
-**Constraints**: 19%+ Stage 1 compilation rate (current baseline), all existing tests pass, byte-identical Wasm output
-**Scale/Scope**: ~16,500 lines in func-section.lisp, ~525-675 append patterns to migrate
+**Primary Dependencies**: alexandria, babel (UTF-8), trivial-gray-streams, rove (testing)
+**Storage**: N/A (in-memory compilation)
+**Testing**: rove (unit tests), contract tests (Wasm bytecode comparison), wasm-tools (validation)
+**Target Platform**: WasmGC
+**Project Type**: Single (compiler)
+**Performance Goals**: O(n) instruction collection vs O(n²) append-based
+**Constraints**: Byte-identical Wasm output, Stage 1 compilation rate >= 24%
+**Scale/Scope**: 128 append patterns (`,@`) in func-section.lisp (16,137 lines)
 
 ## Constitution Check
 
@@ -25,17 +25,17 @@ Refactor the instruction collection pattern in `func-section.lisp` from O(n²) a
 
 | Principle | Status | Notes |
 |-----------|--------|-------|
-| I. WasmGC-First | N/A | Internal refactor, no type system changes |
-| II. Lispオブジェクト表現規約 | N/A | Internal refactor, no object representation changes |
-| III. 関数・クロージャ実装戦略 | N/A | No closure changes |
-| IV. Wasm制御フロー活用 | N/A | No control flow changes |
-| V. シャローバインディング | N/A | No dynamic scope changes |
-| VI. 段階的動的コンパイル | N/A | No eval/JIT changes |
-| VII. TDD (MUST) | **REQUIRES** | Tests must be written before migration; macro tests required first |
-| VIII. Nix-First | PASS | Using existing `nix flake check` infrastructure |
-| IX. ANSI CL参照規約 | PASS | N/A for internal macro (no ANSI CL function being implemented) |
+| I. WasmGC-First型システム設計 | PASS | No change to type system |
+| II. Lispオブジェクト表現規約 | PASS | No change to object representation |
+| III. 関数・クロージャ実装戦略 | PASS | No change to closure handling |
+| IV. Wasm制御フロー活用 | PASS | No change to control flow |
+| V. シャローバインディング | PASS | No change to dynamic scoping |
+| VI. 段階的動的コンパイル | PASS | Refactoring only, no JIT changes |
+| VII. テスト駆動開発（TDD） | PASS | Unit tests exist, contract tests planned |
+| VIII. Nix-Firstワークフロー | PASS | No build system changes |
+| IX. ANSI CL仕様参照規約 | N/A | No new ANSI CL features implemented |
 
-**Gate Result**: PASS (with TDD requirement noted)
+**Gate Result**: PASS - All constitution principles satisfied or not applicable.
 
 ## Project Structure
 
@@ -44,10 +44,13 @@ Refactor the instruction collection pattern in `func-section.lisp` from O(n²) a
 ```text
 specs/001-instruction-collector-refactor/
 ├── plan.md              # This file
-├── research.md          # Phase 0 output
-├── data-model.md        # Phase 1 output
-├── quickstart.md        # Phase 1 output
-├── contracts/           # Phase 1 output
+├── research.md          # Phase 0 output (complete)
+├── data-model.md        # Phase 1 output (complete)
+├── quickstart.md        # Phase 1 output (complete)
+├── contracts/
+│   └── macro-interface.md  # Macro contract (complete)
+├── checklists/
+│   └── requirements.md  # Quality checklist (complete)
 └── tasks.md             # Phase 2 output (/speckit.tasks command)
 ```
 
@@ -56,50 +59,56 @@ specs/001-instruction-collector-refactor/
 ```text
 src/clysm/
 ├── compiler/
-│   ├── codegen/
-│   │   ├── func-section.lisp    # PRIMARY TARGET (~16,500 lines, ~525 patterns)
-│   │   └── instruction-collector.lisp  # NEW: with-instruction-collector macro
-│   └── ...
-└── lib/
-    └── macros.lisp              # Alternative location for macro
+│   └── codegen/
+│       ├── func-section.lisp      # Target: 16,137 lines, 128 append patterns
+│       └── instruction-collector.lisp  # Macro implementation (50 lines)
+└── package.lisp                    # Exports with-instruction-collector
 
 tests/
 ├── unit/
-│   └── instruction-collector-test.lisp  # NEW: macro unit tests
+│   └── instruction-collector-test.lisp  # 7 tests for macro
 ├── contract/
-│   └── instruction-collector/           # NEW: behavior contract tests
+│   └── instruction-collector/           # Wasm comparison tests (TBD)
 └── integration/
-    └── func-section-migration-test.lisp # NEW: migration validation tests
+    └── bootstrap/                       # Stage 1 verification
 ```
 
-**Structure Decision**: Single project structure. New `instruction-collector.lisp` file in `src/clysm/compiler/codegen/` (colocated with `func-section.lisp` for easy import). Tests follow existing patterns with unit tests for macro behavior and contract tests for migration correctness.
+**Structure Decision**: Single project layout. All changes confined to `src/clysm/compiler/codegen/` with corresponding tests.
 
 ## Complexity Tracking
 
-No Constitution violations requiring justification. This is a pure refactoring with:
-- No new external dependencies
-- No architectural changes
-- No new abstractions beyond the single macro
+No constitution violations requiring justification.
 
-## Migration Strategy
+## Phase 0: Research (Complete)
 
-### Phase 1: Macro Infrastructure
-1. Create `with-instruction-collector` macro with `emit`/`emit*` local macros
-2. Write unit tests validating macro behavior
-3. Export from `clysm` package
+Research artifacts generated and validated:
+- [research.md](research.md) - All NEEDS CLARIFICATION resolved
 
-### Phase 2: Pilot Migration
-1. Migrate `compile-equalp` (line 4881, 374 lines)
-2. Migrate `compile-primitive-call` (line 1173, 363 lines)
-3. Verify all tests pass after each function
+Key decisions:
+1. **Pattern identification**: 128 `,@` (unquote-splicing) patterns identified
+2. **Macro design**: `macrolet` with `emit`/`emit*` local macros (implemented)
+3. **Implementation**: push + nreverse for O(n) complexity (implemented)
+4. **Migration order**: Size-based, largest first (`compile-equalp`, `compile-primitive-call`)
+5. **Test strategy**: Unit → Contract → Integration
 
-### Phase 3: Incremental Migration
-1. Migrate remaining functions by size (largest first)
-2. Run tests after each batch
-3. Track line count reduction
+## Phase 1: Design (Complete)
 
-### Phase 4: Cleanup & Verification
-1. Remove any legacy patterns
-2. Final line count measurement
-3. Stage 1 compilation rate verification
-4. Byte-identical Wasm output verification
+Design artifacts generated:
+- [data-model.md](data-model.md) - Instruction collector entity model
+- [contracts/macro-interface.md](contracts/macro-interface.md) - Macro API contract
+- [quickstart.md](quickstart.md) - Migration guide
+
+Key entities:
+1. **Instruction Collector**: Lexically-scoped accumulator (push-based)
+2. **Wasm Instruction**: S-expression format (`(:opcode operand...)` or bare `:opcode`)
+3. **Instruction List**: Ordered sequence returned by collector
+
+## Next Steps
+
+Run `/speckit.tasks` to generate task breakdown for implementation phase:
+1. Contract tests for `compile-equalp` baseline capture
+2. Contract tests for `compile-primitive-call` baseline capture
+3. Migrate `compile-equalp` to instruction collector
+4. Migrate `compile-primitive-call` to instruction collector
+5. Verify byte-identical output
+6. Measure and report append pattern reduction

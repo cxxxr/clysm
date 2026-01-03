@@ -3,116 +3,121 @@
 **Feature Branch**: `001-instruction-collector-refactor`
 **Created**: 2026-01-03
 **Status**: Draft
-**Input**: User description: "Build a compiler enhancement system for Clysm that refactors the instruction collection pattern in func-section.lisp. The system should replace 525 O(n²) append-based patterns with O(n) push+nreverse patterns using a new with-instruction-collector macro. Include emit and emit* local macros for ergonomic instruction emission. Implement gradual migration starting with the largest functions (compile-equalp at 374 lines, compile-primitive-call at 363 lines). Verify all existing tests pass and maintain 19%+ compilation rate. Target reduction: 500 lines of code."
+**Input**: User description: "Build a compiler code generation optimization for Clysm that migrates the two largest functions (compile-equalp at 374 lines and compile-primitive-call at 363 lines) from O(n²) append-based list construction to O(n) push+nreverse pattern using the existing with-instruction-collector macro. The migration must maintain byte-identical Wasm output verified by contract tests, preserve all existing test coverage, and reduce the remaining 158 append patterns in func-section.lisp. Success is measured by all tests passing, Stage 1 compilation rate >= 24%, and wasm-tools validation success."
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Macro Infrastructure Creation (Priority: P1)
+### User Story 1 - Compile-Equalp Migration (Priority: P1)
 
-As a compiler developer, I need a `with-instruction-collector` macro that provides O(n) instruction collection semantics so that I can migrate existing O(n²) append patterns without changing behavior.
+As a compiler developer, I need `compile-equalp` (374 lines) migrated from O(n²) append-based list construction to O(n) push+nreverse pattern using the existing `with-instruction-collector` macro so that the largest function in func-section.lisp uses efficient instruction collection.
 
-**Why this priority**: The macro is the foundational infrastructure that all other migration work depends on. Without this, no refactoring can begin.
+**Why this priority**: `compile-equalp` is the largest function at 374 lines and represents the greatest opportunity for demonstrating the migration approach works correctly for complex recursive type comparison logic.
 
-**Independent Test**: Can be fully tested by creating a simple function that uses `with-instruction-collector` and verifying the collected instructions match expected output in the correct order.
+**Independent Test**: Can be fully tested by running equality-related tests before and after migration, then comparing generated Wasm bytecode to verify byte-identical output.
 
 **Acceptance Scenarios**:
 
-1. **Given** a body of code using `(emit ...)` forms, **When** `with-instruction-collector` wraps the body, **Then** all emitted instructions are collected in order and returned as a list
-2. **Given** nested uses of `(emit* list)` forms, **When** evaluating the body, **Then** all instructions from the list are collected in the correct order
-3. **Given** an empty body, **When** `with-instruction-collector` is invoked, **Then** it returns an empty list
+1. **Given** `compile-equalp` using append-based instruction accumulation, **When** migrated to `with-instruction-collector`, **Then** all equality predicate tests (equalp, equal) pass
+2. **Given** the migrated `compile-equalp` function, **When** generating Wasm for equality comparisons, **Then** output is byte-identical to pre-migration output
+3. **Given** the migrated function, **When** measuring complexity, **Then** function uses push+nreverse pattern with O(n) time complexity
 
 ---
 
-### User Story 2 - Large Function Migration (Priority: P2)
+### User Story 2 - Compile-Primitive-Call Migration (Priority: P1)
 
-As a compiler developer, I need the largest functions (`compile-equalp` and `compile-primitive-call`) migrated to use the instruction collector so that I can validate the approach works for complex cases and achieve significant code reduction.
+As a compiler developer, I need `compile-primitive-call` (363 lines) migrated to use the instruction collector macro so that the second-largest function benefits from efficient instruction collection.
 
-**Why this priority**: Migrating the two largest functions (374 + 363 = 737 lines) validates the approach at scale and provides the most immediate code reduction benefit.
+**Why this priority**: `compile-primitive-call` is the second-largest function and handles all primitive function dispatch, making it critical for compiler correctness.
 
-**Independent Test**: Can be fully tested by running the existing test suite after migration and verifying identical Wasm output for all compilation scenarios that use these functions.
+**Independent Test**: Can be fully tested by running primitive function call tests and comparing Wasm output before and after migration.
 
 **Acceptance Scenarios**:
 
-1. **Given** `compile-equalp` using legacy append patterns, **When** migrated to instruction collector, **Then** all existing equality tests pass with identical behavior
-2. **Given** `compile-primitive-call` using legacy append patterns, **When** migrated to instruction collector, **Then** all primitive call tests pass with identical behavior
-3. **Given** the migrated functions, **When** measuring line count, **Then** combined reduction is at least 100 lines from these two functions alone
+1. **Given** `compile-primitive-call` using append-based patterns, **When** migrated to `with-instruction-collector`, **Then** all primitive function tests pass
+2. **Given** the migrated function, **When** compiling primitive calls (arithmetic, comparison, type predicates), **Then** generated Wasm is byte-identical to pre-migration output
+3. **Given** complex primitives with multiple code paths, **When** compiled after migration, **Then** all code paths produce correct instructions
 
 ---
 
-### User Story 3 - Full Pattern Migration (Priority: P3)
+### User Story 3 - Remaining Append Pattern Reduction (Priority: P2)
 
-As a compiler developer, I need all 525 O(n²) append-based patterns replaced with O(n) push+nreverse patterns so that the codebase is consistent and maintainable.
+As a compiler developer, I need the remaining 158 append patterns in func-section.lisp reduced so that the codebase consistently uses efficient instruction collection throughout.
 
-**Why this priority**: Completing the full migration ensures consistency and maximizes code reduction, but can proceed incrementally after validating the approach with large functions.
+**Why this priority**: After migrating the two largest functions, addressing remaining patterns completes the optimization effort and ensures codebase consistency.
 
-**Independent Test**: Can be tested by grepping for remaining append patterns and verifying count decreases to zero, while maintaining passing tests throughout migration.
+**Independent Test**: Can be tested by counting remaining append patterns before and after migration and verifying all tests still pass.
 
 **Acceptance Scenarios**:
 
-1. **Given** 525 identified append patterns, **When** all are migrated, **Then** zero O(n²) append patterns remain in func-section.lisp
-2. **Given** the full migration, **When** running all Clysm tests, **Then** all tests pass
-3. **Given** the full migration, **When** measuring total line count reduction, **Then** reduction is at least 500 lines
+1. **Given** 158 remaining append patterns in func-section.lisp, **When** additional functions are migrated, **Then** append pattern count decreases significantly
+2. **Given** incrementally migrated functions, **When** running the full test suite, **Then** all tests continue to pass
+3. **Given** the migrated codebase, **When** reviewing instruction accumulation patterns, **Then** remaining patterns are documented exceptions with justification
 
 ---
 
-### User Story 4 - Compilation Rate Preservation (Priority: P1)
+### User Story 4 - Contract Test Verification (Priority: P1)
 
-As a compiler developer, I need the refactoring to maintain or improve the current 19%+ Stage 1 compilation rate so that bootstrap progress is not regressed.
+As a compiler developer, I need contract tests that verify byte-identical Wasm output so that I have confidence the migration preserves exact behavior.
 
-**Why this priority**: Maintaining compilation rate is a critical constraint that must be verified alongside all migration work.
+**Why this priority**: Byte-identical output verification is the primary correctness guarantee for this refactoring effort.
 
-**Independent Test**: Can be tested by running Stage 1 generation and verifying the compilation rate in the generated report.
+**Independent Test**: Contract tests can run independently to compare pre-migration and post-migration Wasm bytecode.
 
 **Acceptance Scenarios**:
 
-1. **Given** the current 19%+ compilation rate baseline, **When** any migration is performed, **Then** the compilation rate remains at or above 19%
-2. **Given** the fully migrated codebase, **When** running `sbcl --load build/stage1-complete.lisp`, **Then** the resulting Wasm passes validation
+1. **Given** baseline Wasm output captured before migration, **When** running contract tests after migration, **Then** all captured outputs match exactly
+2. **Given** representative test cases for equality and primitive calls, **When** compared byte-by-byte, **Then** zero differences exist
+3. **Given** contract test failures, **When** investigating, **Then** specific instruction differences are clearly reported
 
 ---
 
 ### Edge Cases
 
-- What happens when `emit` is called outside of `with-instruction-collector`? The macro should detect this and signal a clear compile-time or runtime error.
+- What happens when `emit` is called outside of `with-instruction-collector`? The macro should signal a clear compile-time or runtime error.
 - How does the system handle empty instruction lists in `emit*`? It should handle them gracefully as a no-op.
-- What happens when nested `with-instruction-collector` forms are used? Each collector should maintain independent state without interference.
+- What happens with deeply nested control flow in `compile-equalp` (type dispatch for cons, array, hash-table)? Each branch must collect instructions correctly.
+- How are conditional branches handled where different paths emit different instruction counts? The collector must preserve order regardless of control flow.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: System MUST provide a `with-instruction-collector` macro that establishes a dynamic scope for instruction collection
-- **FR-002**: System MUST provide an `emit` local macro that appends a single instruction to the collector using O(n) push semantics
-- **FR-003**: System MUST provide an `emit*` local macro that appends multiple instructions from a list to the collector using O(n) push semantics
-- **FR-004**: System MUST return collected instructions in correct order (using nreverse on completion)
-- **FR-005**: System MUST support nested `with-instruction-collector` forms with independent collection state
-- **FR-006**: System MUST signal a clear error when `emit` or `emit*` is used outside a collector context
-- **FR-007**: System MUST maintain backward compatibility - all existing tests must pass after migration
-- **FR-008**: System MUST achieve at least 500 lines of code reduction in func-section.lisp
-- **FR-009**: System MUST maintain 19%+ Stage 1 compilation rate after migration
-- **FR-010**: System MUST not change the semantics of generated Wasm bytecode
+- **FR-001**: System MUST migrate `compile-equalp` (374 lines) to use `with-instruction-collector` macro
+- **FR-002**: System MUST migrate `compile-primitive-call` (363 lines) to use `with-instruction-collector` macro
+- **FR-003**: System MUST produce byte-identical Wasm output after migration, verified by contract tests
+- **FR-004**: System MUST preserve all existing test coverage with 100% pass rate
+- **FR-005**: System MUST maintain Stage 1 compilation rate at 24% or higher
+- **FR-006**: System MUST pass wasm-tools validation on all generated output
+- **FR-007**: System MUST reduce the 158 remaining append patterns in func-section.lisp
+- **FR-008**: System MUST use O(n) push+nreverse pattern instead of O(n²) append pattern
+- **FR-009**: System MUST support nested instruction collection contexts within migrated functions
+- **FR-010**: System MUST document any append patterns that cannot be migrated with justification
 
 ### Key Entities
 
-- **Instruction Collector**: A lexical scope that accumulates Wasm instructions using O(n) operations
-- **Emit Form**: A local macro that adds a single instruction to the active collector
-- **Emit* Form**: A local macro that adds multiple instructions from a list to the active collector
-- **Migration Target**: A function in func-section.lisp that currently uses append-based instruction accumulation
+- **Instruction Collector**: The existing `with-instruction-collector` macro that establishes O(n) collection scope
+- **compile-equalp**: 374-line function handling equality predicate compilation with type dispatch
+- **compile-primitive-call**: 363-line function handling all primitive function call dispatch
+- **Contract Test**: Test that captures and compares Wasm bytecode to verify identical output
+- **Append Pattern**: Code using `(append accumulated new-instructions)` that needs migration
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: Total line count of func-section.lisp reduced by at least 500 lines (from ~16,500 to ~16,000 or less)
-- **SC-002**: Zero O(n²) append-based instruction accumulation patterns remain in func-section.lisp after migration
+- **SC-001**: `compile-equalp` (374 lines) fully migrated to instruction collector pattern
+- **SC-002**: `compile-primitive-call` (363 lines) fully migrated to instruction collector pattern
 - **SC-003**: 100% of existing Clysm tests pass after migration
-- **SC-004**: Stage 1 compilation rate remains at 19% or higher
-- **SC-005**: Generated Wasm output is byte-for-byte identical for representative test cases before and after migration
-- **SC-006**: `compile-equalp` and `compile-primitive-call` are fully migrated and reduced in line count
+- **SC-004**: Stage 1 compilation rate is 24% or higher
+- **SC-005**: Generated Wasm passes wasm-tools validation
+- **SC-006**: Contract tests verify byte-identical Wasm output for migrated functions
+- **SC-007**: Remaining append patterns in func-section.lisp reduced from 158 baseline
 
 ## Assumptions
 
-- The current append-based pattern count (approximately 525-675) is accurate and stable for the duration of this work
-- The `push + nreverse` pattern provides equivalent semantics to the current append-based accumulation
-- Line count reduction correlates with reduced boilerplate from the macro abstraction
+- The existing `with-instruction-collector` macro is already implemented and functional
+- The current compilation rate baseline is at or near 24% (based on recent project improvements)
+- The 158 append pattern count is accurate for the current state of func-section.lisp
+- Contract tests can capture Wasm bytecode at function-level granularity
+- The push+nreverse pattern provides semantically equivalent output to append
 - Existing test coverage is sufficient to validate behavior preservation
-- The current ~16,500 line count for func-section.lisp is the baseline for measuring reduction

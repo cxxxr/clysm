@@ -4833,12 +4833,13 @@
         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
         (string-type clysm/compiler/codegen/gc-types:+type-string+)
         (float-type clysm/compiler/codegen/gc-types:+type-float+))
-    `(;; Compile both arguments
-      ,@(compile-to-instructions (first args) env)
-      (:local.set ,local-x)
-      ,@(compile-to-instructions (second args) env)
-      (:local.set ,local-y)
-      ;; Initialize worklist with single pair (cons x y)
+    (with-instruction-collector
+      ;; Compile both arguments
+      (emit* (compile-to-instructions (first args) env))
+      (emit `(:local.set ,local-x))
+      (emit* (compile-to-instructions (second args) env))
+      (emit* `((:local.set ,local-y)
+               ;; Initialize worklist with single pair (cons x y)
       (:local.get ,local-x)
       (:local.get ,local-y)
       (:struct.new ,cons-type)
@@ -5174,11 +5175,11 @@
       :end
       :end
       :end
-      :end
-      :end
-      :end
-      :end
-      (:local.get ,result-local))))
+               :end
+               :end
+               :end
+               :end
+               (:local.get ,result-local))))))
 
 (defun compile-atom (args env)
   "Compile (atom x) - returns T if x is not a cons cell, NIL otherwise.
@@ -12520,85 +12521,55 @@
   (when (/= (length args) 1)
     (error "char-name requires exactly 1 argument"))
   (let ((c-local (env-add-local env (gensym "CHAR") :i32)))
-    (append
-     (compile-to-instructions (first args) env)
-     `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
-       (:block $name_done (:result :anyref))
-       ;; Check each named character and return its name
-       ;; Null (0)
-       (:local.get ,c-local)
-       (:i32.const 0)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Null")
-       (:br $name_done)
-       :else
-       ;; Backspace (8)
-       (:local.get ,c-local)
-       (:i32.const 8)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Backspace")
-       (:br $name_done)
-       :else
-       ;; Tab (9)
-       (:local.get ,c-local)
-       (:i32.const 9)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Tab")
-       (:br $name_done)
-       :else
-       ;; Newline/Linefeed (10)
-       (:local.get ,c-local)
-       (:i32.const 10)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Newline")
-       (:br $name_done)
-       :else
-       ;; Page (12)
-       (:local.get ,c-local)
-       (:i32.const 12)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Page")
-       (:br $name_done)
-       :else
-       ;; Return (13)
-       (:local.get ,c-local)
-       (:i32.const 13)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Return")
-       (:br $name_done)
-       :else
-       ;; Space (32)
-       (:local.get ,c-local)
-       (:i32.const 32)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Space")
-       (:br $name_done)
-       :else
-       ;; Rubout/DEL (127)
-       (:local.get ,c-local)
-       (:i32.const 127)
-       :i32.eq
-       (:if (:result :anyref))
-       ,@(compile-string-literal "Rubout")
-       :else
-       ;; Not a named character
-       (:ref.null :none)
-       :end
-       :end
-       :end
-       :end
-       :end
-       :end
-       :end
-       :end
-       :end))))
+    (with-instruction-collector
+      ;; Compile argument and extract character code
+      (emit* (compile-to-instructions (first args) env))
+      (emit* `((:ref.cast :i31) :i31.get_s (:local.set ,c-local)
+               (:block $name_done (:result :anyref))))
+      ;; Check each named character and return its name
+      ;; Null (0)
+      (emit* `((:local.get ,c-local) (:i32.const 0) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Null"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Backspace (8)
+      (emit* `((:local.get ,c-local) (:i32.const 8) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Backspace"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Tab (9)
+      (emit* `((:local.get ,c-local) (:i32.const 9) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Tab"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Newline/Linefeed (10)
+      (emit* `((:local.get ,c-local) (:i32.const 10) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Newline"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Page (12)
+      (emit* `((:local.get ,c-local) (:i32.const 12) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Page"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Return (13)
+      (emit* `((:local.get ,c-local) (:i32.const 13) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Return"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Space (32)
+      (emit* `((:local.get ,c-local) (:i32.const 32) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Space"))
+      (emit '(:br $name_done))
+      (emit :else)
+      ;; Rubout/DEL (127)
+      (emit* `((:local.get ,c-local) (:i32.const 127) :i32.eq (:if (:result :anyref))))
+      (emit* (compile-string-literal "Rubout"))
+      (emit :else)
+      ;; Not a named character
+      (emit :ref.null :none)
+      ;; Close all ifs
+      (emit* '(:end :end :end :end :end :end :end :end :end)))))
 
 (defun compile-name-char (args env)
   "Compile (name-char name) - return character for given name.
@@ -12611,31 +12582,24 @@
   ;; This uses the existing compile-string-equal infrastructure.
   ;; We compile each comparison as a full expression.
   (let ((name-local (env-add-local env (gensym "NAME"))))
-    (append
-     (compile-to-instructions (first args) env)
-     `((:local.set ,name-local)
-       (:block $namechar_done (:result :anyref))
-       ;; Check "Space" (case-insensitive)
-       ,@(compile-name-char-check env name-local "Space" 32)
-       ;; Check "Newline"
-       ,@(compile-name-char-check env name-local "Newline" 10)
-       ;; Check "Tab"
-       ,@(compile-name-char-check env name-local "Tab" 9)
-       ;; Check "Return"
-       ,@(compile-name-char-check env name-local "Return" 13)
-       ;; Check "Page"
-       ,@(compile-name-char-check env name-local "Page" 12)
-       ;; Check "Backspace"
-       ,@(compile-name-char-check env name-local "Backspace" 8)
-       ;; Check "Rubout"
-       ,@(compile-name-char-check env name-local "Rubout" 127)
-       ;; Check "Linefeed" (same as Newline)
-       ,@(compile-name-char-check env name-local "Linefeed" 10)
-       ;; Check "Null"
-       ,@(compile-name-char-check env name-local "Null" 0)
-       ;; Unknown name - return NIL
-       (:ref.null :none)
-       :end))))
+    (with-instruction-collector
+      ;; Compile the name argument
+      (emit* (compile-to-instructions (first args) env))
+      (emit `(:local.set ,name-local))
+      (emit '(:block $namechar_done (:result :anyref)))
+      ;; Check each character name (case-insensitive)
+      (emit* (compile-name-char-check env name-local "Space" 32))
+      (emit* (compile-name-char-check env name-local "Newline" 10))
+      (emit* (compile-name-char-check env name-local "Tab" 9))
+      (emit* (compile-name-char-check env name-local "Return" 13))
+      (emit* (compile-name-char-check env name-local "Page" 12))
+      (emit* (compile-name-char-check env name-local "Backspace" 8))
+      (emit* (compile-name-char-check env name-local "Rubout" 127))
+      (emit* (compile-name-char-check env name-local "Linefeed" 10))
+      (emit* (compile-name-char-check env name-local "Null" 0))
+      ;; Unknown name - return NIL
+      (emit :ref.null :none)
+      (emit :end))))
 
 (defun compile-name-char-check (env name-local expected-name char-code)
   "Generate code to check if name-local equals expected-name (case-insensitive).
