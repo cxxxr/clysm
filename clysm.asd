@@ -170,6 +170,7 @@
      (:file "io-runtime")       ; Phase 13D-1f: I/O runtime functions (001-io-list-runtime)
      (:file "list-runtime")     ; Phase 13D-1f: List runtime functions (001-io-list-runtime)
      (:file "sequence-runtime") ; Phase 13D: Sequence runtime functions (001-sequence-runtime-migration)
+     (:file "string-runtime")   ; Phase 13D: String runtime functions (001-string-runtime-migration)
      (:file "package-stubs")    ; Phase 4 US3: Package system FFI stubs (001-compiler-internal-consolidation)
      (:file "type-construction"))) ; Phase 5 US4: Type construction placeholders (001-compiler-internal-consolidation)
 
@@ -661,7 +662,9 @@
      ;; Primitive dispatch unit tests (001-primitive-dispatch-table)
      (:file "primitive-dispatch-test")
      ;; CXR compiler macro unit tests (001-cxr-compiler-macro)
-     (:file "cxr-macro-test")))
+     (:file "cxr-macro-test")
+     ;; String runtime unit tests (001-string-runtime-migration)
+     (:file "string-runtime-test")))
 
    ;; Stream integration tests (015-ffi-stream-io)
    (:module "streams"

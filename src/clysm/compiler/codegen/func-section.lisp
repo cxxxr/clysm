@@ -234,6 +234,32 @@
   ;; Wasm module header emission (arity 0)
   (register-runtime-function 'clysm:emit-module-header :$emit-module-header-rt 0))
 
+(defun register-string-runtime-functions ()
+  "Register string manipulation functions to use runtime library dispatch.
+   Feature: 001-string-runtime-migration
+   HyperSpec references:
+     [char](resources/HyperSpec/Body/f_char_.htm)
+     [string-trim](resources/HyperSpec/Body/f_stg_tr.htm)
+     [string-capitalize](resources/HyperSpec/Body/f_stg_up.htm)
+     [string-equal](resources/HyperSpec/Body/f_stgeq_.htm)"
+  ;; Character access (arity 2: string, index)
+  (register-runtime-function 'char :$string-char-rt 2)
+  (register-runtime-function 'schar :$string-char-rt 2)
+  ;; String trim family (variadic for :start/:end keywords)
+  (register-runtime-function 'string-trim :$string-trim-rt nil)
+  (register-runtime-function 'string-left-trim :$string-left-trim-rt nil)
+  (register-runtime-function 'string-right-trim :$string-right-trim-rt nil)
+  ;; String capitalize family (variadic for :start/:end keywords)
+  (register-runtime-function 'string-capitalize :$string-capitalize-rt nil)
+  (register-runtime-function 'nstring-capitalize :$nstring-capitalize-rt nil)
+  ;; Case-insensitive string comparison (variadic for keyword args)
+  (register-runtime-function 'string-equal :$string-equal-rt nil)
+  (register-runtime-function 'string-not-equal :$string-not-equal-rt nil)
+  (register-runtime-function 'string-lessp :$string-lessp-rt nil)
+  (register-runtime-function 'string-greaterp :$string-greaterp-rt nil)
+  (register-runtime-function 'string-not-lessp :$string-not-lessp-rt nil)
+  (register-runtime-function 'string-not-greaterp :$string-not-greaterp-rt nil))
+
 (defun clear-runtime-functions ()
   "Clear all runtime function registrations.
    Used for testing and when falling back to inline codegen."
@@ -247,6 +273,7 @@
 (register-io-runtime-functions)
 (register-list-runtime-functions)
 (register-sequence-runtime-functions)
+(register-string-runtime-functions)  ; 001-string-runtime-migration
 (register-package-runtime-functions)
 (register-lexenv-runtime-functions)
 (register-ast-runtime-functions)
