@@ -4336,197 +4336,975 @@
   ;; Delegate to compile-null since they are functionally equivalent
   (compile-null args env))
 
+;;; ============================================================
+;;; Equality Predicate Type-Dispatch Infrastructure
+;;; (Feature: 001-equality-type-dispatch)
+;;;
+;;; Shared helper functions for eq, eql, equal, equalp predicates.
+;;; These emit comparison instructions based on equality level:
+;;;   :eq     - Object identity only (ref.eq)
+;;;   :eql    - Identity + same-type numeric/char comparison
+;;;   :equal  - Structural: descends cons, compares strings byte-by-byte
+;;;   :equalp - Case-insensitive, numeric type coercion
+;;; ============================================================
+
+(defun emit-null-comparison (level local-x local-y)
+  "Emit comparison when x is null. Returns T if y is also null.
+   All equality levels behave the same for null."
+  (declare (ignore level))
+  ;; x is null, check if y is also null
+  `((:local.get ,local-y)
+    :ref.is_null
+    (:if (:result :anyref))
+    (:i32.const 1) :ref.i31  ; both null => T
+    :else
+    (:ref.null :none)        ; x null, y not => NIL
+    :end))
+
+(defun emit-i31-comparison (level local-x local-y)
+  "Emit i31ref comparison (fixnum, char, T).
+   :eq/:eql/:equal use ref.eq.
+   :equalp uses case-insensitive comparison for characters."
+  (case level
+    ((:eq :eql :equal)
+     ;; Both i31ref - compare with ref.eq
+     `((:local.get ,local-x)
+       (:ref.cast :i31)
+       (:local.get ,local-y)
+       (:ref.cast :i31)
+       :ref.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    (:equalp
+     ;; Case-insensitive: convert uppercase to lowercase before compare
+     (let ((val1 (gensym "I31-V1"))
+           (val2 (gensym "I31-V2")))
+       `((:local.get ,local-x)
+         (:ref.cast :i31)
+         :i31.get_s
+         (:local.set ,val1)
+         (:local.get ,local-y)
+         (:ref.cast :i31)
+         :i31.get_s
+         (:local.set ,val2)
+         ;; Convert val1 to lowercase if uppercase (A-Z)
+         (:local.get ,val1)
+         (:i32.const 65)
+         :i32.ge_s
+         (:local.get ,val1)
+         (:i32.const 90)
+         :i32.le_s
+         :i32.and
+         (:if nil)
+         (:local.get ,val1)
+         (:i32.const 32)
+         :i32.add
+         (:local.set ,val1)
+         :end
+         ;; Convert val2 to lowercase if uppercase
+         (:local.get ,val2)
+         (:i32.const 65)
+         :i32.ge_s
+         (:local.get ,val2)
+         (:i32.const 90)
+         :i32.le_s
+         :i32.and
+         (:if nil)
+         (:local.get ,val2)
+         (:i32.const 32)
+         :i32.add
+         (:local.set ,val2)
+         :end
+         ;; Compare
+         (:local.get ,val1)
+         (:local.get ,val2)
+         :i32.eq
+         (:if (:result :anyref))
+         (:i32.const 1) :ref.i31
+         :else
+         (:ref.null :none)
+         :end)))))
+
+(defun emit-float-comparison (level local-x local-y float-type)
+  "Emit float comparison.
+   :eq uses ref.eq (identity).
+   :eql/:equal use f64.eq (same type, same value).
+   :equalp uses numeric= (cross-type via f64)."
+  (case level
+    (:eq
+     ;; Identity only
+     `((:local.get ,local-x)
+       (:ref.cast :eq)
+       (:local.get ,local-y)
+       (:ref.cast :eq)
+       :ref.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    ((:eql :equal :equalp)
+     ;; f64.eq comparison
+     `((:local.get ,local-x)
+       (:ref.cast ,(list :ref float-type))
+       (:struct.get ,float-type 0)
+       (:local.get ,local-y)
+       (:ref.cast ,(list :ref float-type))
+       (:struct.get ,float-type 0)
+       :f64.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))))
+
+(defun emit-ratio-comparison (level local-x local-y ratio-type)
+  "Emit ratio comparison.
+   :eq uses ref.eq.
+   :eql/:equal compare numerator and denominator with ref.eq.
+   :equalp uses numeric= (would need conversion - simplified to same as eql)."
+  (case level
+    (:eq
+     `((:local.get ,local-x)
+       (:ref.cast :eq)
+       (:local.get ,local-y)
+       (:ref.cast :eq)
+       :ref.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end))
+    ((:eql :equal :equalp)
+     ;; Compare numerator and denominator
+     `((:local.get ,local-x)
+       (:ref.cast ,(list :ref ratio-type))
+       (:struct.get ,ratio-type 0)  ; numerator
+       (:ref.cast :eq)
+       (:local.get ,local-y)
+       (:ref.cast ,(list :ref ratio-type))
+       (:struct.get ,ratio-type 0)
+       (:ref.cast :eq)
+       :ref.eq
+       (:if (:result :anyref))
+       ;; Numerators equal - compare denominators
+       (:local.get ,local-x)
+       (:ref.cast ,(list :ref ratio-type))
+       (:struct.get ,ratio-type 1)  ; denominator
+       (:ref.cast :eq)
+       (:local.get ,local-y)
+       (:ref.cast ,(list :ref ratio-type))
+       (:struct.get ,ratio-type 1)
+       (:ref.cast :eq)
+       :ref.eq
+       (:if (:result :anyref))
+       (:i32.const 1) :ref.i31
+       :else
+       (:ref.null :none)
+       :end
+       :else
+       (:ref.null :none)  ; numerators differ
+       :end))))
+
+(defun emit-default-comparison (level local-x local-y)
+  "Emit default comparison for unknown types (ref.eq identity).
+   All levels fall back to ref.eq for types not specifically handled."
+  (declare (ignore level))
+  `((:local.get ,local-x)
+    (:ref.cast :eq)
+    (:local.get ,local-y)
+    (:ref.cast :eq)
+    :ref.eq
+    (:if (:result :anyref))
+    (:i32.const 1) :ref.i31
+    :else
+    (:ref.null :none)
+    :end))
+
+(defun emit-string-comparison-case-sensitive (local-x local-y string-type len1 len2 idx)
+  "Emit case-sensitive string comparison (for :equal level).
+   Returns instructions that branch to $result_nil or fall through on equal."
+  `(;; Get string lengths
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len2)
+    ;; Check length equality first
+    (:local.get ,len1)
+    (:local.get ,len2)
+    :i32.ne
+    (:br_if $result_nil)
+    ;; Compare byte-by-byte
+    (:i32.const 0)
+    (:local.set ,idx)
+    (:block $str_done)
+    (:loop $str_loop)
+    (:local.get ,idx)
+    (:local.get ,len1)
+    :i32.ge_u
+    (:br_if $str_done)
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    :i32.ne
+    (:br_if $result_nil)
+    (:local.get ,idx)
+    (:i32.const 1)
+    :i32.add
+    (:local.set ,idx)
+    (:br $str_loop)
+    :end  ; loop
+    :end  ; block
+    ;; Strings equal - T
+    (:i32.const 1) :ref.i31))
+
+(defun emit-string-comparison-case-insensitive (local-x local-y string-type len1 len2 idx byte1 byte2)
+  "Emit case-insensitive string comparison (for :equalp level).
+   Returns instructions that branch to $result_nil or fall through on equal."
+  `(;; Get string lengths
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len2)
+    ;; Check length equality first
+    (:local.get ,len1)
+    (:local.get ,len2)
+    :i32.ne
+    (:br_if $result_nil)
+    ;; Compare byte-by-byte with case folding
+    (:i32.const 0)
+    (:local.set ,idx)
+    (:block $str_done)
+    (:loop $str_loop)
+    (:local.get ,idx)
+    (:local.get ,len1)
+    :i32.ge_u
+    (:br_if $str_done)
+    ;; Get bytes
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.set ,byte1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.set ,byte2)
+    ;; Convert byte1 to uppercase if lowercase (a-z)
+    (:local.get ,byte1)
+    (:i32.const 97)
+    :i32.ge_u
+    (:local.get ,byte1)
+    (:i32.const 122)
+    :i32.le_u
+    :i32.and
+    (:if nil)
+    (:local.get ,byte1)
+    (:i32.const 32)
+    :i32.sub
+    (:local.set ,byte1)
+    :end
+    ;; Convert byte2 to uppercase if lowercase
+    (:local.get ,byte2)
+    (:i32.const 97)
+    :i32.ge_u
+    (:local.get ,byte2)
+    (:i32.const 122)
+    :i32.le_u
+    :i32.and
+    (:if nil)
+    (:local.get ,byte2)
+    (:i32.const 32)
+    :i32.sub
+    (:local.set ,byte2)
+    :end
+    ;; Compare
+    (:local.get ,byte1)
+    (:local.get ,byte2)
+    :i32.ne
+    (:br_if $result_nil)
+    (:local.get ,idx)
+    (:i32.const 1)
+    :i32.add
+    (:local.set ,idx)
+    (:br $str_loop)
+    :end  ; loop
+    :end  ; block
+    ;; Strings equal - T
+    (:i32.const 1) :ref.i31))
+
+(defun emit-cons-worklist-push (local-x local-y cons-type worklist-local)
+  "Emit instructions to push car and cdr pairs onto worklist for recursive comparison.
+   Used by :equal and :equalp levels."
+  `(;; Push (car x, car y) to worklist
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref cons-type))
+    (:struct.get ,cons-type 0)  ; car x
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref cons-type))
+    (:struct.get ,cons-type 0)  ; car y
+    (:struct.new ,cons-type)    ; (cons car-x car-y)
+    (:local.get ,worklist-local)
+    (:struct.new ,cons-type)    ; (cons pair worklist)
+    (:local.set ,worklist-local)
+    ;; Push (cdr x, cdr y) to worklist
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref cons-type))
+    (:struct.get ,cons-type 1)  ; cdr x
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref cons-type))
+    (:struct.get ,cons-type 1)  ; cdr y
+    (:struct.new ,cons-type)    ; (cons cdr-x cdr-y)
+    (:local.get ,worklist-local)
+    (:struct.new ,cons-type)    ; (cons pair worklist)
+    (:local.set ,worklist-local)))
+
+(defun emit-numeric-cross-type-comparison (local-x local-y float-type)
+  "Emit cross-type numeric comparison for :equalp (fixnum vs float).
+   Converts fixnum to float and compares with f64.eq.
+   Assumes y is float when x is i31, or x is float when y is i31."
+  `(;; Check if y is float (x is i31)
+    (:local.get ,local-y)
+    (:ref.test ,(list :ref float-type))
+    (:if (:result :anyref))
+    ;; y is float, x is i31 - convert x to f64 and compare
+    (:local.get ,local-x)
+    (:ref.cast :i31)
+    :i31.get_s
+    :f64.convert_i32_s
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref float-type))
+    (:struct.get ,float-type 0)
+    :f64.eq
+    (:if (:result :anyref))
+    (:i32.const 1) :ref.i31
+    :else
+    (:ref.null :none)
+    :end
+    :else
+    ;; y is not float - try other direction or NIL
+    (:local.get ,local-x)
+    (:ref.test ,(list :ref float-type))
+    (:if (:result :anyref))
+    ;; x is float, check if y is i31
+    (:local.get ,local-y)
+    (:ref.test :i31)
+    (:if (:result :anyref))
+    ;; y is i31, x is float - convert y to f64 and compare
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref float-type))
+    (:struct.get ,float-type 0)
+    (:local.get ,local-y)
+    (:ref.cast :i31)
+    :i31.get_s
+    :f64.convert_i32_s
+    :f64.eq
+    (:if (:result :anyref))
+    (:i32.const 1) :ref.i31
+    :else
+    (:ref.null :none)
+    :end
+    :else
+    (:ref.null :none)  ; different types, not equalp
+    :end
+    :else
+    (:ref.null :none)  ; neither is float
+    :end
+    :end))
+
+(defun compile-equality-predicate (args env level)
+  "Unified compiler for equality predicates.
+   LEVEL is one of :eq, :eql, :equal, :equalp.
+   Generates optimized Wasm instructions based on equality level.
+
+   :eq     - Object identity only (ref.eq)
+   :eql    - Identity + same-type numeric/char comparison
+   :equal  - Structural: descends cons, compares strings byte-by-byte
+   :equalp - Case-insensitive, numeric type coercion
+
+   Stack: [] -> [T or NIL]"
+  (when (/= (length args) 2)
+    (error "~A requires exactly 2 arguments" level))
+  (let* ((prefix (ecase level (:eq "EQ") (:eql "EQL") (:equal "EQUAL") (:equalp "EQP")))
+         (local-x (env-add-local env (gensym (format nil "~A-X" prefix))))
+         (local-y (env-add-local env (gensym (format nil "~A-Y" prefix))))
+         (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
+         (string-type clysm/compiler/codegen/gc-types:+type-string+)
+         (float-type clysm/compiler/codegen/gc-types:+type-float+)
+         (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+)
+         ;; Use worklist for equal/equalp (structural comparison)
+         (use-worklist (member level '(:equal :equalp))))
+    (if use-worklist
+        ;; Worklist-based comparison for equal/equalp
+        (compile-equality-with-worklist args env level local-x local-y
+                                        cons-type string-type float-type ratio-type prefix)
+        ;; Simple comparison for eq/eql
+        (compile-equality-simple args env level local-x local-y
+                                 float-type ratio-type))))
+
+(defun compile-equality-simple (args env level local-x local-y float-type ratio-type)
+  "Compile simple equality (eq/eql) without worklist.
+   Uses nested if/else for type dispatch."
+  (with-instruction-collector
+    ;; Compile and store both arguments
+    (emit* (compile-to-instructions (first args) env))
+    (emit `(:local.set ,local-x))
+    (emit* (compile-to-instructions (second args) env))
+    (emit `(:local.set ,local-y))
+    ;; Check if x is null
+    (emit `(:local.get ,local-x))
+    (emit :ref.is_null)
+    (emit '(:if (:result :anyref)))
+    ;; x is null
+    (emit* (emit-null-comparison level local-x local-y))
+    (emit :else)
+    ;; x is not null, check if y is null
+    (emit `(:local.get ,local-y))
+    (emit :ref.is_null)
+    (emit* `((:if (:result :anyref))
+             (:ref.null :none)  ; x not null, y null => NIL
+             :else))
+    ;; Neither is null - type dispatch
+    ;; Check if x is i31ref
+    (emit `(:local.get ,local-x))
+    (emit '(:ref.test :i31))
+    (emit '(:if (:result :anyref)))
+    ;; x is i31 - check if y is also i31
+    (emit `(:local.get ,local-y))
+    (emit '(:ref.test :i31))
+    (emit '(:if (:result :anyref)))
+    ;; Both i31 - compare
+    (emit* (emit-i31-comparison level local-x local-y))
+    (emit :else)
+    ;; x is i31, y is not - NIL for eq/eql
+    (emit '(:ref.null :none))
+    (emit :end)  ; if y is i31
+    (emit :else)
+    ;; x is not i31 - check for float (eql only)
+    (when (eq level :eql)
+      (emit `(:local.get ,local-x))
+      (emit `(:ref.test ,(list :ref float-type)))
+      (emit '(:if (:result :anyref)))
+      (emit `(:local.get ,local-y))
+      (emit `(:ref.test ,(list :ref float-type)))
+      (emit '(:if (:result :anyref)))
+      (emit* (emit-float-comparison level local-x local-y float-type))
+      (emit :else)
+      (emit '(:ref.null :none))  ; x float, y not
+      (emit :end)
+      (emit :else)
+      ;; x is not float - check for ratio
+      (emit `(:local.get ,local-x))
+      (emit `(:ref.test ,(list :ref ratio-type)))
+      (emit '(:if (:result :anyref)))
+      (emit `(:local.get ,local-y))
+      (emit `(:ref.test ,(list :ref ratio-type)))
+      (emit '(:if (:result :anyref)))
+      (emit* (emit-ratio-comparison level local-x local-y ratio-type))
+      (emit :else)
+      (emit '(:ref.null :none))  ; x ratio, y not
+      (emit :end)
+      (emit :else))
+    ;; Default: ref.eq for other types
+    (emit* (emit-default-comparison level local-x local-y))
+    ;; Close all if blocks
+    (when (eq level :eql)
+      (emit* '(:end :end)))  ; ratio, float
+    (emit* '(:end :end :end :end))))  ; i31, y-null, x-null
+
+(defun compile-equality-with-worklist (args env level local-x local-y
+                                       cons-type string-type float-type ratio-type prefix)
+  "Compile structural equality (equal/equalp) with worklist for cons recursion.
+   Uses block/loop structure with worklist-based iteration."
+  (let* ((worklist-local (env-add-local env (gensym (format nil "~A-WL" prefix))))
+         (pair-local (env-add-local env (gensym (format nil "~A-PAIR" prefix))))
+         (result-local (env-add-local env (gensym (format nil "~A-RESULT" prefix))))
+         (len1-local (env-add-local env (gensym (format nil "~A-LEN1" prefix)) :i32))
+         (len2-local (env-add-local env (gensym (format nil "~A-LEN2" prefix)) :i32))
+         (idx-local (env-add-local env (gensym (format nil "~A-IDX" prefix)) :i32))
+         (loop-label (if (eq level :equal) '$equal_loop '$equalp_loop))
+         (done-label (if (eq level :equal) '$equal_done '$equalp_done)))
+    ;; Additional locals for equalp string comparison
+    (let ((byte1-local (when (eq level :equalp)
+                         (env-add-local env (gensym (format nil "~A-B1" prefix)) :i32)))
+          (byte2-local (when (eq level :equalp)
+                         (env-add-local env (gensym (format nil "~A-B2" prefix)) :i32))))
+      `(;; Compile both arguments
+        ,@(compile-to-instructions (first args) env)
+        (:local.set ,local-x)
+        ,@(compile-to-instructions (second args) env)
+        (:local.set ,local-y)
+        ;; Initialize worklist with single pair (cons x y)
+        (:local.get ,local-x)
+        (:local.get ,local-y)
+        (:struct.new ,cons-type)
+        (:ref.null :none)
+        (:struct.new ,cons-type)  ; worklist = (cons (cons x y) nil)
+        (:local.set ,worklist-local)
+        ;; Initialize result to T
+        (:i32.const 1) :ref.i31
+        (:local.set ,result-local)
+        ;; Main comparison loop
+        (:block ,done-label)
+        (:loop ,loop-label)
+        ;; Check if worklist is empty
+        (:local.get ,worklist-local)
+        :ref.is_null
+        (:br_if ,done-label)
+        ;; Pop pair from worklist
+        (:local.get ,worklist-local)
+        (:ref.cast ,(list :ref cons-type))
+        (:struct.get ,cons-type 0)
+        (:local.set ,pair-local)
+        (:local.get ,worklist-local)
+        (:ref.cast ,(list :ref cons-type))
+        (:struct.get ,cons-type 1)
+        (:local.set ,worklist-local)
+        ;; Extract x and y from pair
+        (:local.get ,pair-local)
+        (:ref.cast ,(list :ref cons-type))
+        (:struct.get ,cons-type 0)
+        (:local.set ,local-x)
+        (:local.get ,pair-local)
+        (:ref.cast ,(list :ref cons-type))
+        (:struct.get ,cons-type 1)
+        (:local.set ,local-y)
+        ;; Comparison logic (inline to avoid additional function call overhead)
+        ,@(compile-worklist-iteration-body level local-x local-y worklist-local result-local
+                                           len1-local len2-local idx-local byte1-local byte2-local
+                                           cons-type string-type float-type ratio-type
+                                           loop-label done-label)
+        :end  ; loop
+        :end  ; block
+        ;; Return result
+        (:local.get ,result-local)))))
+
+(defun compile-worklist-iteration-body (level local-x local-y worklist-local result-local
+                                         len1-local len2-local idx-local byte1-local byte2-local
+                                         cons-type string-type float-type ratio-type
+                                         loop-label done-label)
+  "Generate the body of the worklist iteration for equal/equalp.
+   Returns instruction list for one iteration of the comparison loop."
+  `(;; Case 1: Both null?
+    (:local.get ,local-x)
+    :ref.is_null
+    (:if nil)
+    (:local.get ,local-y)
+    :ref.is_null
+    (:if nil)
+    (:br ,loop-label)  ; both null, continue
+    :else
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    :else
+    (:local.get ,local-y)
+    :ref.is_null
+    (:if nil)
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    ;; Neither is null - type dispatch
+    ;; Case 2: Both i31ref?
+    (:local.get ,local-x)
+    (:ref.test :i31)
+    (:if nil)
+    (:local.get ,local-y)
+    (:ref.test :i31)
+    (:if nil)
+    ,@(if (eq level :equalp)
+          ;; equalp: case-insensitive i31 comparison
+          `((:local.get ,local-x)
+            (:ref.cast :i31)
+            :i31.get_s
+            (:local.set ,len1-local)  ; reuse len1 as temp
+            (:local.get ,local-y)
+            (:ref.cast :i31)
+            :i31.get_s
+            (:local.set ,len2-local)  ; reuse len2 as temp
+            ;; Case fold len1
+            (:local.get ,len1-local)
+            (:i32.const 65)
+            :i32.ge_s
+            (:local.get ,len1-local)
+            (:i32.const 90)
+            :i32.le_s
+            :i32.and
+            (:if nil)
+            (:local.get ,len1-local)
+            (:i32.const 32)
+            :i32.add
+            (:local.set ,len1-local)
+            :end
+            ;; Case fold len2
+            (:local.get ,len2-local)
+            (:i32.const 65)
+            :i32.ge_s
+            (:local.get ,len2-local)
+            (:i32.const 90)
+            :i32.le_s
+            :i32.and
+            (:if nil)
+            (:local.get ,len2-local)
+            (:i32.const 32)
+            :i32.add
+            (:local.set ,len2-local)
+            :end
+            (:local.get ,len1-local)
+            (:local.get ,len2-local)
+            :i32.eq
+            (:if nil)
+            (:br ,loop-label)
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end)
+          ;; equal: direct ref.eq
+          `((:local.get ,local-x)
+            (:ref.cast :i31)
+            (:local.get ,local-y)
+            (:ref.cast :i31)
+            :ref.eq
+            (:if nil)
+            (:br ,loop-label)
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end))
+    :else
+    ;; x is i31, y is not
+    ,@(if (eq level :equalp)
+          ;; equalp: check for cross-type numeric comparison
+          `((:local.get ,local-y)
+            (:ref.test ,(list :ref float-type))
+            (:if nil)
+            ;; y is float, x is i31 - cross-type comparison
+            (:local.get ,local-x)
+            (:ref.cast :i31)
+            :i31.get_s
+            :f64.convert_i32_s
+            (:local.get ,local-y)
+            (:ref.cast ,(list :ref float-type))
+            (:struct.get ,float-type 0)
+            :f64.eq
+            (:if nil)
+            (:br ,loop-label)
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end)
+          ;; equal: different types => NIL
+          `((:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)))
+    :end  ; if y is i31
+    :else
+    ;; x is not i31
+    ;; Case 3: Both strings?
+    (:local.get ,local-x)
+    (:ref.test ,(list :ref string-type))
+    (:if nil)
+    (:local.get ,local-y)
+    (:ref.test ,(list :ref string-type))
+    (:if nil)
+    ;; String comparison
+    ,@(if (eq level :equalp)
+          (compile-equalp-string-body local-x local-y string-type
+                                      len1-local len2-local idx-local byte1-local byte2-local
+                                      loop-label done-label result-local)
+          (compile-equal-string-body local-x local-y string-type
+                                     len1-local len2-local idx-local
+                                     loop-label done-label result-local))
+    :else
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    :else
+    ;; x is not string
+    ;; Case 4: Both floats?
+    (:local.get ,local-x)
+    (:ref.test ,(list :ref float-type))
+    (:if nil)
+    (:local.get ,local-y)
+    (:ref.test ,(list :ref float-type))
+    (:if nil)
+    ;; Both floats - f64.eq
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref float-type))
+    (:struct.get ,float-type 0)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref float-type))
+    (:struct.get ,float-type 0)
+    :f64.eq
+    (:if nil)
+    (:br ,loop-label)
+    :else
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    :else
+    ;; x is float, y is not
+    ,@(if (eq level :equalp)
+          ;; Check if y is i31 for cross-type
+          `((:local.get ,local-y)
+            (:ref.test :i31)
+            (:if nil)
+            (:local.get ,local-x)
+            (:ref.cast ,(list :ref float-type))
+            (:struct.get ,float-type 0)
+            (:local.get ,local-y)
+            (:ref.cast :i31)
+            :i31.get_s
+            :f64.convert_i32_s
+            :f64.eq
+            (:if nil)
+            (:br ,loop-label)
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end
+            :else
+            (:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)
+            :end)
+          `((:ref.null :none)
+            (:local.set ,result-local)
+            (:br ,done-label)))
+    :end  ; if y is float
+    :else
+    ;; x is not float
+    ;; Case 5: Both cons?
+    (:local.get ,local-x)
+    (:ref.test ,(list :ref cons-type))
+    (:if nil)
+    (:local.get ,local-y)
+    (:ref.test ,(list :ref cons-type))
+    (:if nil)
+    ;; Both cons - push to worklist
+    ,@(emit-cons-worklist-push local-x local-y cons-type worklist-local)
+    (:br ,loop-label)
+    :else
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    :else
+    ;; Default: ref.eq
+    (:local.get ,local-x)
+    (:ref.cast :eq)
+    (:local.get ,local-y)
+    (:ref.cast :eq)
+    :ref.eq
+    (:if nil)
+    (:br ,loop-label)
+    :else
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    :end  ; if cons
+    :end  ; if float
+    :end  ; if string
+    :end  ; if i31
+    :end  ; if x not null
+    ))
+
+(defun compile-equal-string-body (local-x local-y string-type len1 len2 idx
+                                  loop-label done-label result-local)
+  "Generate case-sensitive string comparison for equal."
+  `(;; Get lengths
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len2)
+    ;; Check length
+    (:local.get ,len1)
+    (:local.get ,len2)
+    :i32.ne
+    (:if nil)
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    ;; Compare bytes
+    (:i32.const 0)
+    (:local.set ,idx)
+    (:block $str_cmp_done)
+    (:loop $str_cmp_loop)
+    (:local.get ,idx)
+    (:local.get ,len1)
+    :i32.ge_u
+    (:br_if $str_cmp_done)
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    :i32.ne
+    (:if nil)
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    (:local.get ,idx)
+    (:i32.const 1)
+    :i32.add
+    (:local.set ,idx)
+    (:br $str_cmp_loop)
+    :end  ; loop
+    :end  ; block
+    ;; Strings equal, continue
+    (:br ,loop-label)))
+
+(defun compile-equalp-string-body (local-x local-y string-type len1 len2 idx byte1 byte2
+                                   loop-label done-label result-local)
+  "Generate case-insensitive string comparison for equalp."
+  `(;; Get lengths
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:array.len)
+    (:local.set ,len2)
+    ;; Check length
+    (:local.get ,len1)
+    (:local.get ,len2)
+    :i32.ne
+    (:if nil)
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    ;; Compare bytes with case folding
+    (:i32.const 0)
+    (:local.set ,idx)
+    (:block $str_cmp_done)
+    (:loop $str_cmp_loop)
+    (:local.get ,idx)
+    (:local.get ,len1)
+    :i32.ge_u
+    (:br_if $str_cmp_done)
+    ;; Get bytes
+    (:local.get ,local-x)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.set ,byte1)
+    (:local.get ,local-y)
+    (:ref.cast ,(list :ref string-type))
+    (:local.get ,idx)
+    (:array.get_u ,string-type)
+    (:local.set ,byte2)
+    ;; Fold byte1 to uppercase
+    (:local.get ,byte1)
+    (:i32.const 97)
+    :i32.ge_u
+    (:local.get ,byte1)
+    (:i32.const 122)
+    :i32.le_u
+    :i32.and
+    (:if nil)
+    (:local.get ,byte1)
+    (:i32.const 32)
+    :i32.sub
+    (:local.set ,byte1)
+    :end
+    ;; Fold byte2 to uppercase
+    (:local.get ,byte2)
+    (:i32.const 97)
+    :i32.ge_u
+    (:local.get ,byte2)
+    (:i32.const 122)
+    :i32.le_u
+    :i32.and
+    (:if nil)
+    (:local.get ,byte2)
+    (:i32.const 32)
+    :i32.sub
+    (:local.set ,byte2)
+    :end
+    ;; Compare
+    (:local.get ,byte1)
+    (:local.get ,byte2)
+    :i32.ne
+    (:if nil)
+    (:ref.null :none)
+    (:local.set ,result-local)
+    (:br ,done-label)
+    :end
+    (:local.get ,idx)
+    (:i32.const 1)
+    :i32.add
+    (:local.set ,idx)
+    (:br $str_cmp_loop)
+    :end  ; loop
+    :end  ; block
+    ;; Strings equal, continue
+    (:br ,loop-label)))
+
+;;; ============================================================
+;;; Equality Predicate Wrapper Functions
+;;; (Delegates to compile-equality-predicate)
+;;; ============================================================
+
 (defun compile-eq (args env)
   "Compile (eq x y) - returns T if x and y are the identical object.
    Uses Wasm ref.eq instruction for pointer equality.
-   Handles null (NIL) specially since ref.cast fails on null.
    Stack: [] -> [T or NIL]"
-  (when (/= (length args) 2)
-    (error "eq requires exactly 2 arguments"))
-  (let ((local-x (env-add-local env (gensym "EQ-X")))
-        (local-y (env-add-local env (gensym "EQ-Y"))))
-    (with-instruction-collector
-      ;; Compile and store both arguments
-      (emit* (compile-to-instructions (first args) env))
-      (emit :local.set local-x)
-      (emit* (compile-to-instructions (second args) env))
-      (emit :local.set local-y)
-      ;; Check if both are null (nil eq nil => T)
-      (emit :local.get local-x)
-      (emit :ref.is_null)
-      (emit '(:if (:result :anyref)))
-      ;; x is null, check if y is also null
-      (emit :local.get local-y)
-      (emit :ref.is_null)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31  ; both null => T
-               :else
-               (:ref.null :none)        ; x null, y not => NIL
-               :end))
-      (emit :else)
-      ;; x is not null, check if y is null
-      (emit :local.get local-y)
-      (emit :ref.is_null)
-      (emit* `((:if (:result :anyref))
-               (:ref.null :none)        ; x not null, y null => NIL
-               :else))
-      ;; Neither is null, use ref.eq
-      (emit :local.get local-x)
-      (emit '(:ref.cast :eq))
-      (emit :local.get local-y)
-      (emit '(:ref.cast :eq))
-      (emit :ref.eq)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31  ; eq => T
-               :else
-               (:ref.null :none)        ; not eq => NIL
-               :end
-               :end
-               :end)))))
+  (compile-equality-predicate args env :eq))
 
 (defun compile-eql (args env)
   "Compile (eql x y) - returns T if x and y are identical objects,
    or if they are numbers of the same type with the same value,
    or if they are characters with the same char-code.
    Stack: [] -> [T or NIL]"
-  (when (/= (length args) 2)
-    (error "eql requires exactly 2 arguments"))
-  (let ((local-x (env-add-local env (gensym "EQL-X")))
-        (local-y (env-add-local env (gensym "EQL-Y")))
-        (float-type clysm/compiler/codegen/gc-types:+type-float+)
-        (ratio-type clysm/compiler/codegen/gc-types:+type-ratio+))
-    (with-instruction-collector
-      ;; Compile and store both arguments
-      (emit* (compile-to-instructions (first args) env))
-      (emit :local.set local-x)
-      (emit* (compile-to-instructions (second args) env))
-      (emit :local.set local-y)
-      ;; Check if x is null
-      (emit :local.get local-x)
-      (emit :ref.is_null)
-      (emit '(:if (:result :anyref)))
-      ;; x is null - check if y is also null
-      (emit :local.get local-y)
-      (emit :ref.is_null)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31  ; both null => T
-               :else
-               (:ref.null :none)        ; x null, y not => NIL
-               :end))
-      (emit :else)
-      ;; x is not null - check if y is null
-      (emit :local.get local-y)
-      (emit :ref.is_null)
-      (emit* `((:if (:result :anyref))
-               (:ref.null :none)        ; x not null, y null => NIL
-               :else))
-      ;; Neither is null - check type hierarchy with proper if/else chain
-      ;; Check if x is i31ref (fixnum, char, T)
-      (emit :local.get local-x)
-      (emit '(:ref.test :i31))
-      (emit '(:if (:result :anyref)))
-      ;; x is i31ref - check if y is also i31ref
-      (emit :local.get local-y)
-      (emit '(:ref.test :i31))
-      (emit '(:if (:result :anyref)))
-      ;; Both are i31ref - compare with ref.eq
-      (emit :local.get local-x)
-      (emit '(:ref.cast :i31))
-      (emit :local.get local-y)
-      (emit '(:ref.cast :i31))
-      (emit :ref.eq)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31
-               :else
-               (:ref.null :none)
-               :end))
-      (emit :else)
-      ;; x is i31ref but y is not - NIL (different types)
-      (emit '(:ref.null :none))
-      (emit :end)  ; end if y is i31
-      (emit :else)
-      ;; x is not i31ref - check if x is float
-      (emit :local.get local-x)
-      (emit :ref.test (list :ref float-type))
-      (emit '(:if (:result :anyref)))
-      ;; x is float - check if y is also float
-      (emit :local.get local-y)
-      (emit :ref.test (list :ref float-type))
-      (emit '(:if (:result :anyref)))
-      ;; Both are floats - compare values with f64.eq
-      (emit :local.get local-x)
-      (emit :ref.cast (list :ref float-type))
-      (emit :struct.get float-type 0)
-      (emit :local.get local-y)
-      (emit :ref.cast (list :ref float-type))
-      (emit :struct.get float-type 0)
-      (emit :f64.eq)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31
-               :else
-               (:ref.null :none)
-               :end))
-      (emit :else)
-      ;; x is float but y is not - NIL (different types)
-      (emit '(:ref.null :none))
-      (emit :end)  ; end if y is float
-      (emit :else)
-      ;; x is not float - check if x is ratio
-      (emit :local.get local-x)
-      (emit :ref.test (list :ref ratio-type))
-      (emit '(:if (:result :anyref)))
-      ;; x is ratio - check if y is also ratio
-      (emit :local.get local-y)
-      (emit :ref.test (list :ref ratio-type))
-      (emit '(:if (:result :anyref)))
-      ;; Both are ratios - compare numerators and denominators
-      (emit :local.get local-x)
-      (emit :ref.cast (list :ref ratio-type))
-      (emit :struct.get ratio-type 0)
-      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
-      (emit :local.get local-y)
-      (emit :ref.cast (list :ref ratio-type))
-      (emit :struct.get ratio-type 0)
-      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
-      (emit :ref.eq)
-      (emit '(:if (:result :anyref)))
-      ;; Numerators equal - compare denominators
-      (emit :local.get local-x)
-      (emit :ref.cast (list :ref ratio-type))
-      (emit :struct.get ratio-type 1)
-      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
-      (emit :local.get local-y)
-      (emit :ref.cast (list :ref ratio-type))
-      (emit :struct.get ratio-type 1)
-      (emit '(:ref.cast :eq))  ; cast to eqref for ref.eq
-      (emit :ref.eq)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31  ; both equal => T
-               :else
-               (:ref.null :none)        ; denominators differ
-               :end))
-      (emit :else)
-      ;; Numerators differ
-      (emit '(:ref.null :none))
-      (emit :end)  ; end if numerators equal
-      (emit :else)
-      ;; x is ratio but y is not - NIL
-      (emit '(:ref.null :none))
-      (emit :end)  ; end if y is ratio
-      (emit :else)
-      ;; Default: not i31, not float, not ratio - use ref.eq for other types
-      (emit :local.get local-x)
-      (emit '(:ref.cast :eq))
-      (emit :local.get local-y)
-      (emit '(:ref.cast :eq))
-      (emit :ref.eq)
-      (emit* `((:if (:result :anyref))
-               (:i32.const 1) :ref.i31
-               :else
-               (:ref.null :none)
-               :end))
-      ;; Close all the nested if blocks
-      (emit* '(:end :end :end :end :end)))))
+  (compile-equality-predicate args env :eql))
+
+;;; Legacy compile-eql implementation removed - consolidated into
+;;; compile-equality-predicate infrastructure (001-equality-type-dispatch)
+;;;
+;;; Original: 143 lines of duplicated type dispatch logic.
+;;; Now delegates to shared helper functions.
 
 (defun compile-equal (args env)
   "Compile (equal x y) - returns T if x and y are structurally similar.
@@ -4534,273 +5312,13 @@
    ANSI CL: equal descends into cons cells, compares strings with string=,
    uses eql for numbers/characters/symbols.
    Stack: [] -> [T or NIL]"
-  (when (/= (length args) 2)
-    (error "equal requires exactly 2 arguments"))
-  (let ((local-x (env-add-local env (gensym "EQ-X")))
-        (local-y (env-add-local env (gensym "EQ-Y")))
-        (worklist-local (env-add-local env (gensym "EQ-WL")))
-        (pair-local (env-add-local env (gensym "EQ-PAIR")))
-        (result-local (env-add-local env (gensym "EQ-RESULT")))
-        (len1-local (env-add-local env (gensym "EQ-LEN1") :i32))
-        (len2-local (env-add-local env (gensym "EQ-LEN2") :i32))
-        (idx-local (env-add-local env (gensym "EQ-IDX") :i32))
-        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-        (string-type clysm/compiler/codegen/gc-types:+type-string+)
-        (float-type clysm/compiler/codegen/gc-types:+type-float+))
-    `(;; Compile both arguments
-      ,@(compile-to-instructions (first args) env)
-      (:local.set ,local-x)
-      ,@(compile-to-instructions (second args) env)
-      (:local.set ,local-y)
-      ;; Initialize worklist with single pair (cons x y)
-      (:local.get ,local-x)
-      (:local.get ,local-y)
-      (:struct.new ,cons-type)
-      (:ref.null :none)
-      (:struct.new ,cons-type)  ; worklist = (cons (cons x y) nil)
-      (:local.set ,worklist-local)
-      ;; Initialize result to T (will set to NIL if mismatch found)
-      (:i32.const 1) :ref.i31
-      (:local.set ,result-local)
-      ;; Main comparison loop
-      (:block $equal_done)
-      (:loop $equal_loop)
-      ;; Check if worklist is empty
-      (:local.get ,worklist-local)
-      :ref.is_null
-      (:br_if $equal_done)  ; worklist empty, result is in result-local
-      ;; Pop pair from worklist
-      (:local.get ,worklist-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)  ; car = current pair
-      (:local.set ,pair-local)
-      (:local.get ,worklist-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)  ; cdr = rest of worklist
-      (:local.set ,worklist-local)
-      ;; Extract x and y from pair
-      (:local.get ,pair-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)  ; car = x
-      (:local.set ,local-x)
-      (:local.get ,pair-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)  ; cdr = y
-      (:local.set ,local-y)
-      ;; Case 1: Both null?
-      (:local.get ,local-x)
-      :ref.is_null
-      (:if nil)
-      (:local.get ,local-y)
-      :ref.is_null
-      (:if nil)
-      ;; Both null - equal, continue to next pair
-      (:br $equal_loop)
-      :else
-      ;; x null, y not null - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x not null
-      (:local.get ,local-y)
-      :ref.is_null
-      (:if nil)
-      ;; x not null, y null - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      ;; Neither is null - check types
-      ;; Case 2: Both i31ref?
-      (:local.get ,local-x)
-      (:ref.test :i31)
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test :i31)
-      (:if nil)
-      ;; Both i31ref - compare directly (fixnums, chars, T)
-      (:local.get ,local-x)
-      (:ref.cast :i31)
-      (:local.get ,local-y)
-      (:ref.cast :i31)
-      :ref.eq
-      (:if nil)
-      (:br $equal_loop)  ; equal, continue
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x is i31 but y is not - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x is not i31
-      ;; Case 3: Both strings?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref string-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref string-type))
-      (:if nil)
-      ;; Both strings - compare byte-by-byte
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref string-type))
-      (:array.len)
-      (:local.set ,len1-local)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref string-type))
-      (:array.len)
-      (:local.set ,len2-local)
-      ;; Check lengths
-      (:local.get ,len1-local)
-      (:local.get ,len2-local)
-      :i32.ne
-      (:if nil)
-      ;; Different lengths - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      ;; Same length - compare bytes
-      (:i32.const 0)
-      (:local.set ,idx-local)
-      (:block $str_cmp_done)
-      (:loop $str_cmp_loop)
-      (:local.get ,idx-local)
-      (:local.get ,len1-local)
-      :i32.ge_u
-      (:br_if $str_cmp_done)
-      ;; Compare bytes at idx
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,idx-local)
-      (:array.get_u ,string-type)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,idx-local)
-      (:array.get_u ,string-type)
-      :i32.ne
-      (:if nil)
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      (:local.get ,idx-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,idx-local)
-      (:br $str_cmp_loop)
-      :end  ; loop
-      :end  ; block
-      ;; Strings equal, continue to next pair
-      (:br $equal_loop)
-      :else
-      ;; x is string but y is not - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x is not string
-      ;; Case 4: Both floats?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref float-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref float-type))
-      (:if nil)
-      ;; Both floats - compare values with f64.eq (eql semantics)
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      :f64.eq
-      (:if nil)
-      (:br $equal_loop)  ; equal, continue
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x is float but y is not - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; x is not float
-      ;; Case 5: Both cons?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref cons-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref cons-type))
-      (:if nil)
-      ;; Both cons - push (car x, car y) and (cdr x, cdr y) to worklist
-      ;; Create pair for cars
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)  ; car x
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)  ; car y
-      (:struct.new ,cons-type)    ; (cons car-x car-y)
-      ;; Push to worklist
-      (:local.get ,worklist-local)
-      (:struct.new ,cons-type)    ; (cons pair worklist)
-      (:local.set ,worklist-local)
-      ;; Create pair for cdrs
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)  ; cdr x
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)  ; cdr y
-      (:struct.new ,cons-type)    ; (cons cdr-x cdr-y)
-      ;; Push to worklist
-      (:local.get ,worklist-local)
-      (:struct.new ,cons-type)    ; (cons pair worklist)
-      (:local.set ,worklist-local)
-      ;; Continue to next iteration
-      (:br $equal_loop)
-      :else
-      ;; x is cons but y is not - not equal
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :else
-      ;; Neither is cons - use ref.eq for other types (symbols, etc.)
-      (:local.get ,local-x)
-      (:ref.cast :eq)
-      (:local.get ,local-y)
-      (:ref.cast :eq)
-      :ref.eq
-      (:if nil)
-      (:br $equal_loop)  ; equal, continue
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equal_done)
-      :end
-      :end  ; if cons
-      :end  ; if float
-      :end  ; if string
-      :end  ; if i31
-      :end  ; if x not null
-      :end  ; loop
-      :end  ; block
-      ;; Return result
-      (:local.get ,result-local))))
+  (compile-equality-predicate args env :equal))
+
+;;; Legacy compile-equal implementation removed - consolidated into
+;;; compile-equality-predicate infrastructure (001-equality-type-dispatch)
+;;;
+;;; Original: 273 lines of worklist-based cons iteration with string comparison.
+;;; Now delegates to shared compile-equality-with-worklist.
 
 (defun compile-equalp (args env)
   "Compile (equalp x y) - case-insensitive structural equality.
@@ -4810,372 +5328,14 @@
    - Uses = for numbers (type-coercing: 3 equalp 3.0 is T)
    Uses worklist-based approach for recursive cons comparison.
    Stack: [] -> [T or NIL]"
-  (when (/= (length args) 2)
-    (error "equalp requires exactly 2 arguments"))
-  (let ((local-x (env-add-local env (gensym "EQP-X")))
-        (local-y (env-add-local env (gensym "EQP-Y")))
-        (worklist-local (env-add-local env (gensym "EQP-WL")))
-        (pair-local (env-add-local env (gensym "EQP-PAIR")))
-        (result-local (env-add-local env (gensym "EQP-RESULT")))
-        (len1-local (env-add-local env (gensym "EQP-LEN1") :i32))
-        (len2-local (env-add-local env (gensym "EQP-LEN2") :i32))
-        (idx-local (env-add-local env (gensym "EQP-IDX") :i32))
-        (byte1-local (env-add-local env (gensym "EQP-B1") :i32))
-        (byte2-local (env-add-local env (gensym "EQP-B2") :i32))
-        (val1-local (env-add-local env (gensym "EQP-V1") :i32))
-        (val2-local (env-add-local env (gensym "EQP-V2") :i32))
-        (f1-local (env-add-local env (gensym "EQP-F1") :f64))
-        (f2-local (env-add-local env (gensym "EQP-F2") :f64))
-        (cons-type clysm/compiler/codegen/gc-types:+type-cons+)
-        (string-type clysm/compiler/codegen/gc-types:+type-string+)
-        (float-type clysm/compiler/codegen/gc-types:+type-float+))
-    (with-instruction-collector
-      ;; Compile both arguments
-      (emit* (compile-to-instructions (first args) env))
-      (emit `(:local.set ,local-x))
-      (emit* (compile-to-instructions (second args) env))
-      (emit* `((:local.set ,local-y)
-               ;; Initialize worklist with single pair (cons x y)
-      (:local.get ,local-x)
-      (:local.get ,local-y)
-      (:struct.new ,cons-type)
-      (:ref.null :none)
-      (:struct.new ,cons-type)
-      (:local.set ,worklist-local)
-      ;; Initialize result to T
-      (:i32.const 1) :ref.i31
-      (:local.set ,result-local)
-      ;; Main comparison loop
-      (:block $equalp_done)
-      (:loop $equalp_loop)
-      ;; Check if worklist is empty
-      (:local.get ,worklist-local)
-      :ref.is_null
-      (:br_if $equalp_done)
-      ;; Pop pair from worklist
-      (:local.get ,worklist-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)
-      (:local.set ,pair-local)
-      (:local.get ,worklist-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)
-      (:local.set ,worklist-local)
-      ;; Extract x and y from pair
-      (:local.get ,pair-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)
-      (:local.set ,local-x)
-      (:local.get ,pair-local)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)
-      (:local.set ,local-y)
-      ;; Case 1: Both null?
-      (:local.get ,local-x)
-      :ref.is_null
-      (:if nil)
-      (:local.get ,local-y)
-      :ref.is_null
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      (:local.get ,local-y)
-      :ref.is_null
-      (:if nil)
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      ;; Case 2: Both i31ref? (fixnum or char)
-      (:local.get ,local-x)
-      (:ref.test :i31)
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test :i31)
-      (:if nil)
-      ;; Both i31ref - convert to lowercase and compare (handles chars case-insensitively)
-      (:local.get ,local-x)
-      (:ref.cast :i31)
-      :i31.get_s
-      (:local.set ,val1-local)
-      (:local.get ,local-y)
-      (:ref.cast :i31)
-      :i31.get_s
-      (:local.set ,val2-local)
-      ;; Convert val1 to lowercase if uppercase letter
-      (:local.get ,val1-local)
-      (:i32.const 65)
-      :i32.ge_s
-      (:local.get ,val1-local)
-      (:i32.const 90)
-      :i32.le_s
-      :i32.and
-      (:if nil)
-      (:local.get ,val1-local)
-      (:i32.const 32)
-      :i32.add
-      (:local.set ,val1-local)
-      :end
-      ;; Convert val2 to lowercase if uppercase letter
-      (:local.get ,val2-local)
-      (:i32.const 65)
-      :i32.ge_s
-      (:local.get ,val2-local)
-      (:i32.const 90)
-      :i32.le_s
-      :i32.and
-      (:if nil)
-      (:local.get ,val2-local)
-      (:i32.const 32)
-      :i32.add
-      (:local.set ,val2-local)
-      :end
-      ;; Compare
-      (:local.get ,val1-local)
-      (:local.get ,val2-local)
-      :i32.eq
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      ;; x is i31 but y is not - check if y is float for numeric coercion
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref float-type))
-      (:if nil)
-      ;; y is float, x is fixnum - compare as floats
-      (:local.get ,local-x)
-      (:ref.cast :i31)
-      :i31.get_s
-      :f64.convert_i32_s
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      :f64.eq
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      ;; y is not float - not equalp
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :end
-      :else
-      ;; x is not i31
-      ;; Case 3: Both strings?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref string-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref string-type))
-      (:if nil)
-      ;; Both strings - case-insensitive comparison
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref string-type))
-      (:array.len)
-      (:local.set ,len1-local)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref string-type))
-      (:array.len)
-      (:local.set ,len2-local)
-      (:local.get ,len1-local)
-      (:local.get ,len2-local)
-      :i32.ne
-      (:if nil)
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      (:i32.const 0)
-      (:local.set ,idx-local)
-      (:block $str_cmp_done)
-      (:loop $str_cmp_loop)
-      (:local.get ,idx-local)
-      (:local.get ,len1-local)
-      :i32.ge_u
-      (:br_if $str_cmp_done)
-      ;; Get bytes and convert to uppercase for comparison
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,idx-local)
-      (:array.get_u ,string-type)
-      (:local.set ,byte1-local)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref string-type))
-      (:local.get ,idx-local)
-      (:array.get_u ,string-type)
-      (:local.set ,byte2-local)
-      ;; Convert byte1 to uppercase if lowercase
-      (:local.get ,byte1-local)
-      (:i32.const 97)
-      :i32.ge_u
-      (:local.get ,byte1-local)
-      (:i32.const 122)
-      :i32.le_u
-      :i32.and
-      (:if nil)
-      (:local.get ,byte1-local)
-      (:i32.const 32)
-      :i32.sub
-      (:local.set ,byte1-local)
-      :end
-      ;; Convert byte2 to uppercase if lowercase
-      (:local.get ,byte2-local)
-      (:i32.const 97)
-      :i32.ge_u
-      (:local.get ,byte2-local)
-      (:i32.const 122)
-      :i32.le_u
-      :i32.and
-      (:if nil)
-      (:local.get ,byte2-local)
-      (:i32.const 32)
-      :i32.sub
-      (:local.set ,byte2-local)
-      :end
-      ;; Compare
-      (:local.get ,byte1-local)
-      (:local.get ,byte2-local)
-      :i32.ne
-      (:if nil)
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      (:local.get ,idx-local)
-      (:i32.const 1)
-      :i32.add
-      (:local.set ,idx-local)
-      (:br $str_cmp_loop)
-      :end
-      :end
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      ;; Case 4: Both floats?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref float-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref float-type))
-      (:if nil)
-      ;; Both floats - compare values
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      :f64.eq
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      ;; x is float but y is not - check if y is i31 for numeric coercion
-      (:local.get ,local-y)
-      (:ref.test :i31)
-      (:if nil)
-      ;; y is fixnum, x is float - compare as floats
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref float-type))
-      (:struct.get ,float-type 0)
-      (:local.get ,local-y)
-      (:ref.cast :i31)
-      :i31.get_s
-      :f64.convert_i32_s
-      :f64.eq
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :end
-      :else
-      ;; Case 5: Both cons?
-      (:local.get ,local-x)
-      (:ref.test ,(list :ref cons-type))
-      (:if nil)
-      (:local.get ,local-y)
-      (:ref.test ,(list :ref cons-type))
-      (:if nil)
-      ;; Both cons - push pairs for recursive comparison
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 0)
-      (:struct.new ,cons-type)
-      (:local.get ,worklist-local)
-      (:struct.new ,cons-type)
-      (:local.set ,worklist-local)
-      (:local.get ,local-x)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)
-      (:local.get ,local-y)
-      (:ref.cast ,(list :ref cons-type))
-      (:struct.get ,cons-type 1)
-      (:struct.new ,cons-type)
-      (:local.get ,worklist-local)
-      (:struct.new ,cons-type)
-      (:local.set ,worklist-local)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :else
-      ;; Default: use ref.eq for other types (symbols, etc.)
-      (:local.get ,local-x)
-      (:ref.cast :eq)
-      (:local.get ,local-y)
-      (:ref.cast :eq)
-      :ref.eq
-      (:if nil)
-      (:br $equalp_loop)
-      :else
-      (:ref.null :none)
-      (:local.set ,result-local)
-      (:br $equalp_done)
-      :end
-      :end
-      :end
-      :end
-               :end
-               :end
-               :end
-               :end
-               (:local.get ,result-local))))))
+  (compile-equality-predicate args env :equalp))
+
+;;; Legacy compile-equalp implementation removed - consolidated into
+;;; compile-equality-predicate infrastructure (001-equality-type-dispatch)
+;;;
+;;; Original: 374 lines of worklist-based iteration with case-insensitive
+;;; string comparison and numeric type coercion.
+;;; Now delegates to shared compile-equality-with-worklist.
 
 (defun compile-atom (args env)
   "Compile (atom x) - returns T if x is not a cons cell, NIL otherwise.

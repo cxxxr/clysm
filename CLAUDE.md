@@ -98,10 +98,11 @@ Stage 0 (275 bytes, stubs only) → Stage 1 (empty, 17 bytes)
 3. **Stage 1実行**: Node.js + host-shimでStage 1を実行
 4. **固定点達成**: Stage 1でClysm自身をコンパイル → Stage 2 == Stage 1
 
-### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format, 001-arithmetic-primitives, 002-primitive-dispatch-table)
+### Completed Features (017-045, 001-ansi-array-primitives, 001-ansi-array-ops, 001-ansi-char-functions, 001-ansi-string-trim, 001-defstruct-wasm-compile, 002-numeric-functions, 001-numeric-format, 001-arithmetic-primitives, 002-primitive-dispatch-table, 001-equality-type-dispatch)
 
 | Feature | Description |
 |---------|-------------|
+| 001-equality-type-dispatch | Consolidated [eq](resources/HyperSpec/Body/f_eq.htm), [eql](resources/HyperSpec/Body/f_eql.htm), [equal](resources/HyperSpec/Body/f_equal.htm), [equalp](resources/HyperSpec/Body/f_equalp.htm) into unified type-dispatch infrastructure. compile-equality-predicate master function with :eq/:eql/:equal/:equalp levels. Stage 1 compiles, Wasm validates. |
 | 002-primitive-dispatch-table | Hash-table driven primitive dispatch replacing 538-line case statement. 239 primitives registered with O(1) lookup. Extensible via register-primitive-compiler API. |
 | 001-arithmetic-primitives | Arithmetic primitives [1-](resources/HyperSpec/Body/f_1pl_1_.htm) and [1+](resources/HyperSpec/Body/f_1pl_1_.htm) for recursive/iterative algorithms |
 | 001-ansi-array-primitives | ANSI CL array/sequence primitives (aref, svref, schar, elt, coerce, setf forms) |
@@ -201,6 +202,7 @@ See `docs/features/COMPLETED-FEATURES.md` for detailed documentation.
 - Common Lisp (SBCL 2.4+) + alexandria (hash-table utilities) (001-primitive-dispatch-table)
 - N/A (in-memory dispatch tables) (002-primitive-dispatch-table)
 - Common Lisp (SBCL 2.4+) + alexandria (hash-table utilities), existing clysm compiler infrastructure (001-cxr-compiler-macro)
+- Common Lisp (SBCL 2.4+) for host compiler, WasmGC for target + alexandria, existing primitive-dispatch.lisp infrastructure (001-equality-type-dispatch)
 
 ## Recent Changes
 - 001-cxr-compiler-macro: Consolidated 12 compile-cXXr functions ([caar](resources/HyperSpec/Body/f_car_c.htm), [cadr](resources/HyperSpec/Body/f_car_c.htm), [cdar](resources/HyperSpec/Body/f_car_c.htm), [cddr](resources/HyperSpec/Body/f_car_c.htm), caaar through cdddr) into define-cxr-compiler macro. Added ops-to-expansion helper for docstring generation. Macro validates operation strings (a/d characters only). 12 five-line defuns replaced by 12 single-line macro invocations. Unit tests in tests/unit/cxr-macro-test.lisp (6 tests pass). Stage 1 compilation and Wasm validation pass.
