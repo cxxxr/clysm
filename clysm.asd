@@ -24,7 +24,10 @@
      (:file "wat-print")))
    (:module "runtime"
     :components
-    ((:file "types")))))
+    ((:file "types")))
+   (:module "compiler"
+    :components
+    ((:file "primitives")))))
 
 (asdf:defsystem #:clysm/tests
   :description "Clysm Test Suite"
@@ -40,7 +43,8 @@
     ((:file "util-test")
      (:file "leb128-test")
      (:file "wasm-types-test")
-     (:file "runtime-types-test")))))
+     (:file "runtime-types-test")
+     (:file "primitives-test")))))
 
 (defmethod asdf:perform ((op asdf:test-op)
                          (system (eql (asdf:find-system '#:clysm))))

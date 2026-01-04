@@ -228,7 +228,90 @@
    #:emit-fixnum-to-i32
    #:emit-consp
    #:emit-symbolp
-   #:emit-functionp))
+   #:emit-functionp
+
+   ;; Primitives (compiler/primitives.lisp)
+   ;; Primitive registry
+   #:*primitives*
+   #:primitive
+   #:primitive-name
+   #:primitive-arity
+   #:primitive-generator
+   #:primitive-pure-p
+   #:primitive-foldable-p
+   #:register-primitive
+   #:find-primitive
+   #:primitivep
+   #:init-primitives
+
+   ;; Fixnum arithmetic emitters
+   #:emit-fixnum-add
+   #:emit-fixnum-sub
+   #:emit-fixnum-mul
+   #:emit-fixnum-div
+   #:emit-fixnum-rem
+   #:emit-fixnum-negate
+
+   ;; Fixnum comparison emitters
+   #:emit-fixnum-lt
+   #:emit-fixnum-le
+   #:emit-fixnum-gt
+   #:emit-fixnum-ge
+   #:emit-fixnum-eq
+   #:emit-fixnum-neq
+   #:emit-fixnum-zerop
+   #:emit-fixnum-plusp
+   #:emit-fixnum-minusp
+
+   ;; Cons operation emitters
+   #:emit-cons
+   #:emit-car-op
+   #:emit-cdr-op
+   #:emit-rplaca-op
+   #:emit-rplacd-op
+   #:emit-set-car
+   #:emit-set-cdr
+
+   ;; Type predicate emitters
+   #:emit-null-p
+   #:emit-consp-op
+   #:emit-atom-op
+   #:emit-symbolp-op
+   #:emit-numberp-op
+   #:emit-fixnump-op
+   #:emit-functionp-op
+   #:emit-stringp-op
+   #:emit-vectorp-op
+   #:emit-listp-op
+
+   ;; Equality emitters
+   #:emit-eq-op
+   #:emit-eql-op
+
+   ;; Symbol operation emitters
+   #:emit-symbol-name
+   #:emit-symbol-value
+   #:emit-symbol-function
+   #:emit-symbol-plist
+   #:emit-set-symbol-value
+   #:emit-set-symbol-function
+   #:emit-set-symbol-plist
+
+   ;; Vector operation emitters
+   #:emit-make-vector
+   #:emit-vector-ref
+   #:emit-vector-set
+   #:emit-vector-length
+
+   ;; Closure operation emitters
+   #:emit-closure-env
+   #:emit-make-env
+   #:emit-env-ref
+   #:emit-env-set
+
+   ;; Boolean conversion
+   #:emit-i32-to-boolean
+   #:emit-boolean-to-i32))
 
 (defpackage #:clysm/backend
   (:use #:cl #:clysm)
@@ -237,3 +320,7 @@
 (defpackage #:clysm/runtime
   (:use #:cl #:clysm)
   (:documentation "Runtime type definitions for Lisp objects"))
+
+(defpackage #:clysm/compiler
+  (:use #:cl #:clysm)
+  (:documentation "Common Lisp to WebAssembly compiler"))
