@@ -311,7 +311,121 @@
 
    ;; Boolean conversion
    #:emit-i32-to-boolean
-   #:emit-boolean-to-i32))
+   #:emit-boolean-to-i32
+
+   ;; AST (compiler/ast.lisp)
+   #:ast-node
+   #:ast-node-source
+   #:ast-literal
+   #:make-ast-literal
+   #:ast-literal-value
+   #:ast-literal-type
+   #:ast-quote
+   #:make-ast-quote
+   #:ast-quote-value
+   #:ast-var
+   #:make-ast-var
+   #:ast-var-name
+   #:ast-setq
+   #:make-ast-setq
+   #:ast-setq-name
+   #:ast-setq-value
+   #:ast-if
+   #:make-ast-if
+   #:ast-if-test
+   #:ast-if-then
+   #:ast-if-else
+   #:ast-progn
+   #:make-ast-progn
+   #:ast-progn-forms
+   #:ast-block
+   #:make-ast-block
+   #:ast-block-name
+   #:ast-block-body
+   #:ast-return-from
+   #:make-ast-return-from
+   #:ast-return-from-name
+   #:ast-return-from-value
+   #:ast-let
+   #:make-ast-let
+   #:ast-let-bindings
+   #:ast-let-body
+   #:ast-let-sequential-p
+   #:ast-lambda
+   #:make-ast-lambda
+   #:ast-lambda-params
+   #:ast-lambda-body
+   #:ast-lambda-name
+   #:ast-call
+   #:make-ast-call
+   #:ast-call-func
+   #:ast-call-args
+   #:ast-primitive-call
+   #:make-ast-primitive-call
+   #:ast-primitive-call-name
+   #:ast-primitive-call-args
+   #:ast-defun
+   #:make-ast-defun
+   #:ast-defun-name
+   #:ast-defun-params
+   #:ast-defun-body
+   #:ast-defvar
+   #:make-ast-defvar
+   #:ast-defvar-name
+   #:ast-defvar-value
+   #:ast-defvar-special-p
+   #:*special-forms*
+   #:register-special-form
+   #:special-form-p
+   #:parse-sexp
+   #:init-special-forms
+
+   ;; Compile environment (compiler/env.lisp)
+   #:binding
+   #:make-binding
+   #:binding-name
+   #:binding-kind
+   #:binding-index
+   #:binding-mutable-p
+   #:binding-type
+   #:compile-env
+   #:compile-env-p
+   #:make-compile-env
+   #:compile-env-locals
+   #:compile-env-local-count
+   #:compile-env-captures
+   #:compile-env-closure-depth
+   #:compile-env-tail-position-p
+   #:compile-env-blocks
+   #:compile-env-type-registry
+   #:compile-env-functions
+   #:compile-env-parent
+   #:env-lookup
+   #:env-lookup-local
+   #:env-bind-local
+   #:env-bind-param
+   #:env-bind-closure
+   #:env-push-scope
+   #:env-pop-scope
+   #:env-push-block
+   #:env-pop-block
+   #:env-find-block
+   #:env-in-tail-position
+   #:env-not-in-tail-position
+   #:analyze-free-variables
+   #:env-collect-local-types
+
+   ;; Code generation (compiler/codegen.lisp)
+   #:codegen-context
+   #:codegen-context-p
+   #:make-codegen-context
+   #:codegen-context-module
+   #:codegen-context-type-registry
+   #:compile-toplevel
+   #:compile-expression
+   #:compile-defun
+   #:compile-forms
+   #:compile-to-wasm))
 
 (defpackage #:clysm/backend
   (:use #:cl #:clysm)

@@ -27,7 +27,10 @@
     ((:file "types")))
    (:module "compiler"
     :components
-    ((:file "primitives")))))
+    ((:file "primitives")
+     (:file "ast")
+     (:file "env")
+     (:file "codegen")))))
 
 (asdf:defsystem #:clysm/tests
   :description "Clysm Test Suite"
@@ -44,7 +47,8 @@
      (:file "leb128-test")
      (:file "wasm-types-test")
      (:file "runtime-types-test")
-     (:file "primitives-test")))))
+     (:file "primitives-test")
+     (:file "compiler-test")))))
 
 (defmethod asdf:perform ((op asdf:test-op)
                          (system (eql (asdf:find-system '#:clysm))))
