@@ -181,3 +181,43 @@ line2"))))
   (let ((bundle (clysm:bundle-wasm-module '(0 97 115 109) :format :cjs)))
     (is (stringp bundle))
     (is (search "module.exports" bundle))))
+
+;;; ============================================================
+;;; Wasm Evaluation Tests (End-to-End)
+;;; ============================================================
+
+(defsuite wasm-eval-suite "Wasm evaluation end-to-end tests")
+
+(defun eval-via-wasm (expr)
+  "Helper: read EXPR, compile to Wasm, run, and return result."
+  (let* ((form (clysm:clysm-read-from-string expr))
+         (wasm (clysm:compile-to-wasm (list form))))
+    (clysm:run-wasm-module wasm)))
+
+(deftest test-wasm-eval-addition ()
+  "Test addition via Wasm"
+  (is-eq 3 (eval-via-wasm "(+ 1 2)")))
+
+(deftest test-wasm-eval-multiplication ()
+  "Test multiplication via Wasm"
+  (is-eq 12 (eval-via-wasm "(* 3 4)")))
+
+(deftest test-wasm-eval-subtraction ()
+  "Test subtraction via Wasm"
+  (is-eq 7 (eval-via-wasm "(- 10 3)")))
+
+(deftest test-wasm-eval-nested-arithmetic ()
+  "Test nested arithmetic via Wasm"
+  (is-eq 26 (eval-via-wasm "(+ (* 2 3) (* 4 5))")))
+
+(deftest test-wasm-eval-less-than ()
+  "Test less-than comparison via Wasm"
+  (is (eval-via-wasm "(< 1 2)")))
+
+(deftest test-wasm-eval-greater-than ()
+  "Test greater-than comparison via Wasm"
+  (is (eval-via-wasm "(> 5 3)")))
+
+(deftest test-wasm-eval-equal ()
+  "Test numeric equality via Wasm"
+  (is (eval-via-wasm "(= 42 42)")))
