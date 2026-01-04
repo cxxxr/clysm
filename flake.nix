@@ -29,15 +29,24 @@
           ];
 
           shellHook = ''
+            # Set ASDF source registry to include this project
+            export CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD\") :inherit-configuration)"
+
             echo "Clysm Development Environment"
             echo "=============================="
             echo "SBCL:     $(sbcl --version)"
             echo "Wasmtime: $(wasmtime --version)"
             echo "WABT:     $(wat2wasm --version 2>&1 | head -1)"
             echo ""
+            echo "ASDF:     clysm.asd registered via CL_SOURCE_REGISTRY"
+            echo ""
             echo "Commands:"
-            echo "  sbcl              - Start SBCL REPL"
-            echo "  rlwrap sbcl       - SBCL with readline"
+            echo "  sbcl                        - Start SBCL REPL"
+            echo "  rlwrap sbcl                 - SBCL with readline"
+            echo "  sbcl --eval '(asdf:load-system :clysm)'"
+            echo "  sbcl --eval '(asdf:test-system :clysm)'"
+            echo ""
+            echo "Wasm Tools:"
             echo "  wat2wasm          - Convert WAT to WASM"
             echo "  wasm-validate     - Validate WASM binary"
             echo "  wasmtime          - Run WASM module"

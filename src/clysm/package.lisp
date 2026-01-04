@@ -154,8 +154,86 @@
 
    ;; WAT print (backend/wat-print.lisp)
    #:print-wat
-   #:wat-to-string))
+   #:wat-to-string
+
+   ;; Runtime types (runtime/types.lisp)
+   ;; Type registry
+   #:type-registry
+   #:make-type-registry
+   #:type-registry-func-0
+   #:type-registry-func-1
+   #:type-registry-func-2
+   #:type-registry-func-n
+   #:type-registry-cons
+   #:type-registry-symbol
+   #:type-registry-closure
+   #:type-registry-env
+   #:type-registry-string
+   #:type-registry-vector
+   #:type-registry-nil-type
+   #:type-registry-unbound
+   #:register-core-types
+
+   ;; Type index accessors
+   #:cons-type-index
+   #:symbol-type-index
+   #:closure-type-index
+   #:env-type-index
+   #:string-type-index
+   #:vector-type-index
+   #:nil-type-index
+   #:unbound-type-index
+
+   ;; Field index constants
+   #:+cons-car+
+   #:+cons-cdr+
+   #:+symbol-name+
+   #:+symbol-value+
+   #:+symbol-function+
+   #:+symbol-plist+
+   #:+closure-code-0+
+   #:+closure-code-1+
+   #:+closure-code-2+
+   #:+closure-code-n+
+   #:+closure-env+
+   #:+nil-car+
+   #:+nil-cdr+
+   #:+nil-name+
+   #:+nil-value+
+   #:+nil-function+
+   #:+nil-plist+
+
+   ;; GC instruction emitters
+   #:emit-struct.new
+   #:emit-struct.get
+   #:emit-struct.set
+   #:emit-array.new
+   #:emit-array.new-fixed
+   #:emit-array.get
+   #:emit-array.set
+   #:emit-array.len
+   #:emit-ref.i31
+   #:emit-i31.get-s
+   #:emit-i31.get-u
+   #:emit-ref.test
+   #:emit-ref.cast
+
+   ;; High-level object emitters
+   #:emit-make-cons
+   #:emit-car
+   #:emit-cdr
+   #:emit-rplaca
+   #:emit-rplacd
+   #:emit-fixnum-from-i32
+   #:emit-fixnum-to-i32
+   #:emit-consp
+   #:emit-symbolp
+   #:emit-functionp))
 
 (defpackage #:clysm/backend
   (:use #:cl #:clysm)
   (:documentation "WebAssembly binary generation backend"))
+
+(defpackage #:clysm/runtime
+  (:use #:cl #:clysm)
+  (:documentation "Runtime type definitions for Lisp objects"))
