@@ -38,9 +38,9 @@ EXPORT-NAME is the function to call (default: _start or main)."
   ;; Write bytes to temp file
   (write-file-bytes *temp-wasm-path* wasm-bytes)
 
-  ;; Run with wasmtime
+  ;; Run with wasmtime (GC feature required for WasmGC)
   (let* ((export (or export-name "_start"))
-         (command (format nil "~A --invoke ~A ~A 2>&1"
+         (command (format nil "~A --wasm gc=y --invoke ~A ~A 2>&1"
                           *wasmtime-path* export *temp-wasm-path*))
          (output (run-shell-command command)))
     (parse-wasmtime-result output)))
