@@ -504,3 +504,48 @@ Stack: [env i32-index value] -> []"
 (defun func-n-type-index (registry)
   "Get the type index for N-arg functions."
   (type-registry-func-n registry))
+
+;;; ============================================================
+;;; Special Variable Support (Shallow Binding)
+;;; ============================================================
+;;;
+;;; Shallow binding implementation:
+;;; - Symbol.$value always holds the current (possibly dynamically bound) value
+;;; - When binding a special variable, push (symbol . old-value) to binding stack
+;;; - On exit, pop from binding stack and restore symbol.$value
+;;; - Use unwind-protect to guarantee restoration
+;;;
+;;; The binding stack is a global array that grows dynamically.
+;;; We use a separate stack pointer global to track the current depth.
+
+(defun emit-symbol-get-value (registry)
+  "Get the value slot of a symbol.
+Stack: [symbol] -> [value]"
+  (emit-struct.get (symbol-type-index registry) +symbol-value+))
+
+(defun emit-symbol-set-value (registry)
+  "Set the value slot of a symbol.
+Stack: [symbol new-value] -> []"
+  (emit-struct.set (symbol-type-index registry) +symbol-value+))
+
+(defun emit-push-binding (registry)
+  "Push a binding to the binding stack.
+This creates a cons cell (symbol . old-value) and stores it.
+Stack: [symbol old-value] -> [binding-entry (cons)]"
+  ;; For now, just create a cons cell to hold the binding
+  ;; The actual stack management happens at compile time
+  (emit-make-cons registry))
+
+(defun emit-restore-binding (registry)
+  "Restore a binding from a binding entry.
+Takes a cons cell (symbol . old-value) and restores the symbol's value.
+Stack: [binding-entry] -> []"
+  ;; We need to:
+  ;; 1. Get the symbol from car
+  ;; 2. Get the old value from cdr
+  ;; 3. Set symbol.$value = old-value
+  ;; This requires duplicating the binding entry, so the caller should
+  ;; use local.tee or duplicate it before calling.
+  ;;
+  ;; Simplified version: expects stack already set up as [symbol old-value]
+  (emit-symbol-set-value registry))

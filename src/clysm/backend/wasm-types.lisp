@@ -283,6 +283,12 @@
     (push func (wasm-module-funcs module))
     index))
 
+(defun module-add-global (module global)
+  "Add a global to module, returning its index."
+  (let ((index (length (wasm-module-globals module))))
+    (push global (wasm-module-globals module))
+    index))
+
 (defun module-add-export (module export)
   "Add an export to module."
   (push export (wasm-module-exports module)))

@@ -14,12 +14,31 @@
   type-registry   ; Type registry for this module
   (functions nil) ; List of generated functions
   (pending nil)   ; Pending lambda bodies to compile
-  (lambda-counter 0))  ; Counter for generating unique lambda names
+  (lambda-counter 0)   ; Counter for generating unique lambda names
+  (specials nil)       ; List of globally declared special variables
+  (special-globals (make-hash-table :test 'eq)))  ; Map: symbol -> global-index
 
 (defun make-codegen-context (&key module type-registry)
   "Create a new codegen context."
   (%make-codegen-context :module module
                          :type-registry type-registry))
+
+(defun context-declare-special (context name)
+  "Declare NAME as a globally special variable."
+  (pushnew name (codegen-context-specials context)))
+
+(defun context-special-p (context name)
+  "Check if NAME is a globally declared special variable."
+  (member name (codegen-context-specials context)))
+
+(defun context-special-global-index (context name)
+  "Get the Wasm global index for a special variable.
+Returns nil if not found."
+  (gethash name (codegen-context-special-globals context)))
+
+(defun context-register-special-global (context name global-idx)
+  "Register a Wasm global index for a special variable."
+  (setf (gethash name (codegen-context-special-globals context)) global-idx))
 
 ;;; ============================================================
 ;;; Main Code Generation Entry Point
@@ -187,11 +206,20 @@ Returns a list of Wasm bytecode."
                        (emit-i32.const (binding-index binding))
                        (emit-env-ref registry))))
             (:global
-             ;; Get from symbol's value slot
-             ;; TODO: Implement global variable access
-             (error "Global variable access not yet implemented: ~S" name)))
-          ;; Not found - treat as global
-          (error "Undefined variable: ~S" name)))))
+             ;; Special variable: get from Wasm global
+             (let* ((context (compile-env-codegen-context env))
+                    (global-idx (and context
+                                     (context-special-global-index context name))))
+               (if global-idx
+                   (emit-global.get global-idx)
+                   (error "Global variable access not yet implemented: ~S" name)))))
+          ;; Not found locally - check if it's a special variable
+          (let* ((context (compile-env-codegen-context env))
+                 (global-idx (and context
+                                  (context-special-global-index context name))))
+            (if global-idx
+                (emit-global.get global-idx)
+                (error "Undefined variable: ~S" name)))))))
 
 (defun compile-setq (ast env)
   "Compile variable assignment."
@@ -214,8 +242,22 @@ Returns a list of Wasm bytecode."
                        value-code
                        (emit-env-set registry))))
             (:global
-             (error "Global variable assignment not yet implemented: ~S" name)))
-          (error "Undefined variable: ~S" name)))))
+             ;; Special variable: set via Wasm global
+             (let* ((context (compile-env-codegen-context env))
+                    (global-idx (and context
+                                     (context-special-global-index context name))))
+               (if global-idx
+                   (append value-code
+                           (emit-global.set global-idx))
+                   (error "Global variable assignment not yet implemented: ~S" name)))))
+          ;; Not found locally - check if it's a special variable
+          (let* ((context (compile-env-codegen-context env))
+                 (global-idx (and context
+                                  (context-special-global-index context name))))
+            (if global-idx
+                (append value-code
+                        (emit-global.set global-idx))
+                (error "Undefined variable: ~S" name)))))))
 
 ;;; ============================================================
 ;;; Control Flow Compilation
@@ -578,49 +620,251 @@ Ensures cleanup forms are executed regardless of how control leaves."
 ;;; ============================================================
 
 (defun compile-let (ast env)
-  "Compile let/let* binding."
+  "Compile let/let* binding.
+Handles both lexical and special (dynamic) variables.
+Special variables use shallow binding with guaranteed restoration."
   (let* ((bindings (ast-let-bindings ast))
          (body (ast-let-body ast))
          (sequential-p (ast-let-sequential-p ast))
-         (saved-count (compile-env-local-count env)))
+         (saved-count (compile-env-local-count env))
+         (registry (compile-env-type-registry env))
+         ;; Separate special and lexical bindings
+         (special-bindings (remove-if-not
+                            (lambda (b) (env-special-p env (car b)))
+                            bindings))
+         (lexical-bindings (remove-if
+                            (lambda (b) (env-special-p env (car b)))
+                            bindings)))
 
+    ;; If no special bindings, use the simple path
+    (if (null special-bindings)
+        (compile-let-lexical bindings body sequential-p env saved-count)
+        ;; With special bindings, use shallow binding
+        (compile-let-with-specials bindings body sequential-p env
+                                   saved-count registry))))
+
+(defun compile-let-lexical (bindings body sequential-p env saved-count)
+  "Compile let with only lexical bindings (no specials)."
+  (if sequential-p
+      ;; let* - bind sequentially
+      (let ((code nil))
+        (dolist (binding bindings)
+          (let* ((name (car binding))
+                 (init-ast (cdr binding))
+                 (init-code (compile-expression init-ast env))
+                 (new-binding (env-bind-local env name :mutable t)))
+            (setf code (append code
+                               init-code
+                               (emit-local.set (binding-index new-binding))))))
+        ;; Compile body
+        (setf code (append code (compile-expression body env)))
+        ;; Restore environment
+        (env-pop-scope env saved-count)
+        code)
+
+      ;; let - evaluate all inits first, then bind
+      (let ((code nil)
+            (temp-indices nil))
+        ;; Evaluate all initializers
+        (dolist (binding bindings)
+          (let* ((init-ast (cdr binding))
+                 (init-code (compile-expression init-ast env)))
+            (setf code (append code init-code))))
+        ;; Now bind all variables (in reverse order from stack)
+        (dolist (binding (reverse bindings))
+          (let* ((name (car binding))
+                 (new-binding (env-bind-local env name :mutable t)))
+            (push (binding-index new-binding) temp-indices)
+            (setf code (append code
+                               (emit-local.set (binding-index new-binding))))))
+        ;; Compile body
+        (setf code (append code (compile-expression body env)))
+        ;; Restore environment
+        (env-pop-scope env saved-count)
+        code)))
+
+(defun compile-let-with-specials (bindings body sequential-p env saved-count registry)
+  "Compile let with special variable bindings using shallow binding.
+Structure:
+  1. Save old values of special variables to locals
+  2. Set globals to new values
+  3. Execute body with try_table for cleanup on unwind
+  4. Restore old values from locals to globals"
+  (declare (ignore registry))
+  (let ((code nil)
+        (non-tail-env (env-not-in-tail-position env))
+        (saved-bindings nil)  ; List of (global-idx . saved-local-idx)
+        (context (compile-env-codegen-context env)))
+
+    ;; Phase 1: Evaluate initializers and save old values for specials
     (if sequential-p
-        ;; let* - bind sequentially
-        (let ((code nil))
+        ;; let* - sequential evaluation and binding
+        (dolist (binding bindings)
+          (let* ((name (car binding))
+                 (init-ast (cdr binding))
+                 (special-p (env-special-p env name)))
+            (if special-p
+                ;; Special variable: save old, set new
+                (let ((global-idx (context-special-global-index context name)))
+                  (if global-idx
+                      ;; Has a global - use shallow binding
+                      (let* ((saved-local (env-bind-local env (gensym "saved-")))
+                             (new-local (env-bind-local env (gensym "new-")))
+                             (init-code (compile-expression init-ast non-tail-env)))
+                        ;; Save old value
+                        (setf code (append code
+                                           (emit-global.get global-idx)
+                                           (emit-local.set (binding-index saved-local))))
+                        ;; Compute and store new value
+                        (setf code (append code
+                                           init-code
+                                           (emit-local.set (binding-index new-local))))
+                        ;; Set global to new value
+                        (setf code (append code
+                                           (emit-local.get (binding-index new-local))
+                                           (emit-global.set global-idx)))
+                        ;; Track for restoration
+                        (push (cons global-idx (binding-index saved-local)) saved-bindings)
+                        ;; Also bind as lexical for local shadowing references
+                        (let ((local-binding (env-bind-local env name :mutable t)))
+                          (setf code (append code
+                                             (emit-local.get (binding-index new-local))
+                                             (emit-local.set (binding-index local-binding))))))
+                      ;; No global yet - treat as lexical
+                      (let* ((init-code (compile-expression init-ast non-tail-env))
+                             (new-binding (env-bind-local env name :mutable t)))
+                        (setf code (append code
+                                           init-code
+                                           (emit-local.set (binding-index new-binding)))))))
+                ;; Lexical variable: simple binding
+                (let* ((init-code (compile-expression init-ast non-tail-env))
+                       (new-binding (env-bind-local env name :mutable t)))
+                  (setf code (append code
+                                     init-code
+                                     (emit-local.set (binding-index new-binding))))))))
+
+        ;; let - parallel evaluation
+        (let ((temp-locals nil))
+          ;; Evaluate all initializers first, store to temps
           (dolist (binding bindings)
-            (let* ((name (car binding))
-                   (init-ast (cdr binding))
-                   (init-code (compile-expression init-ast env))
-                   (new-binding (env-bind-local env name :mutable t)))
+            (let* ((init-ast (cdr binding))
+                   (init-code (compile-expression init-ast non-tail-env))
+                   (temp (env-bind-local env (gensym "temp-"))))
+              (push (binding-index temp) temp-locals)
               (setf code (append code
                                  init-code
-                                 (emit-local.set (binding-index new-binding))))))
-          ;; Compile body
+                                 (emit-local.set (binding-index temp))))))
+          (setf temp-locals (nreverse temp-locals))
+
+          ;; Now bind variables (save old specials, set new values)
+          (loop for binding in bindings
+                for temp-idx in temp-locals
+                do (let* ((name (car binding))
+                          (special-p (env-special-p env name)))
+                     (if special-p
+                         (let ((global-idx (context-special-global-index context name)))
+                           (if global-idx
+                               (let ((saved-local (env-bind-local env (gensym "saved-"))))
+                                 ;; Save old value
+                                 (setf code (append code
+                                                    (emit-global.get global-idx)
+                                                    (emit-local.set (binding-index saved-local))))
+                                 ;; Set global to new value
+                                 (setf code (append code
+                                                    (emit-local.get temp-idx)
+                                                    (emit-global.set global-idx)))
+                                 (push (cons global-idx (binding-index saved-local)) saved-bindings)
+                                 ;; Also bind as local
+                                 (let ((local-binding (env-bind-local env name :mutable t)))
+                                   (setf code (append code
+                                                      (emit-local.get temp-idx)
+                                                      (emit-local.set (binding-index local-binding))))))
+                               ;; No global - lexical
+                               (let ((new-binding (env-bind-local env name :mutable t)))
+                                 (setf code (append code
+                                                    (emit-local.get temp-idx)
+                                                    (emit-local.set (binding-index new-binding)))))))
+                         ;; Lexical
+                         (let ((new-binding (env-bind-local env name :mutable t)))
+                           (setf code (append code
+                                              (emit-local.get temp-idx)
+                                              (emit-local.set (binding-index new-binding))))))))))
+
+    ;; Phase 2: Compile body with cleanup for specials
+    (if (null saved-bindings)
+        ;; No special bindings that need restoration - simple case
+        (progn
           (setf code (append code (compile-expression body env)))
-          ;; Restore environment
           (env-pop-scope env saved-count)
           code)
 
-        ;; let - evaluate all inits first, then bind
-        (let ((code nil)
-              (temp-indices nil))
-          ;; Evaluate all initializers
-          (dolist (binding bindings)
-            (let* ((init-ast (cdr binding))
-                   (init-code (compile-expression init-ast env)))
-              (setf code (append code init-code))))
-          ;; Now bind all variables (in reverse order from stack)
-          (dolist (binding (reverse bindings))
-            (let* ((name (car binding))
-                   (new-binding (env-bind-local env name :mutable t)))
-              (push (binding-index new-binding) temp-indices)
-              (setf code (append code
-                                 (emit-local.set (binding-index new-binding))))))
-          ;; Compile body
-          (setf code (append code (compile-expression body env)))
-          ;; Restore environment
+        ;; Has special bindings - use try_table for guaranteed cleanup
+        (let* ((result-local (env-bind-local env (gensym "result-")))
+               (body-code (compile-expression body env))
+               (restore-code (generate-special-restore saved-bindings)))
+
+          ;; Structure:
+          ;; block $done (result anyref)
+          ;;   try_table (catch_all $cleanup)
+          ;;     body
+          ;;     local.set $result
+          ;;     restore specials
+          ;;     local.get $result
+          ;;     br $done
+          ;;   end
+          ;;   $cleanup:
+          ;;   restore specials
+          ;;   throw_ref
+          ;; end
+
+          (setf code
+                (append code
+                        ;; block $done (result anyref)
+                        (list (opcode :block))
+                        (encode-blocktype :anyref)
+
+                        ;; try_table (catch_all $cleanup)
+                        (list (opcode :try_table))
+                        (encode-blocktype nil)  ; try has no result (void)
+                        (encode-uleb128 1)  ; 1 catch clause
+                        (encode-catch-clause '(:catch-all 0))  ; branch to block at depth 0
+
+                        ;; body
+                        body-code
+
+                        ;; save result, restore, get result
+                        (emit-local.set (binding-index result-local))
+                        restore-code
+                        (emit-local.get (binding-index result-local))
+
+                        ;; br $done
+                        (list (opcode :br))
+                        (encode-uleb128 1)  ; branch out of try to $done
+
+                        ;; end try_table
+                        (emit-end)
+
+                        ;; $cleanup: restore then rethrow
+                        restore-code
+                        (list (opcode :throw_ref))
+
+                        ;; end block
+                        (emit-end)))
+
           (env-pop-scope env saved-count)
           code))))
+
+(defun generate-special-restore (saved-bindings)
+  "Generate code to restore special variable bindings.
+SAVED-BINDINGS is a list of (global-idx . saved-local-idx) pairs."
+  (let ((code nil))
+    (dolist (pair saved-bindings)
+      (let ((global-idx (car pair))
+            (saved-local-idx (cdr pair)))
+        (setf code (append code
+                           (emit-local.get saved-local-idx)
+                           (emit-global.set global-idx)))))
+    code))
 
 ;;; ============================================================
 ;;; Lambda Compilation
@@ -633,7 +877,6 @@ Returns code to create a closure."
          (body (ast-lambda-body ast))
          (context (compile-env-codegen-context env))
          (registry (compile-env-type-registry env))
-         (module (codegen-context-module context))
          (arity (length params)))
 
     ;; Analyze free variables
@@ -981,11 +1224,66 @@ ARGS is the list of argument AST nodes."
             func-idx))))))
 
 (defun compile-defvar (ast context)
-  "Compile a variable definition."
-  (declare (ignore ast context))
-  ;; TODO: Implement global variable definition
-  ;; This requires setting up a global and initializing it
-  (error "DEFVAR not yet implemented"))
+  "Compile a variable definition.
+Creates a Wasm global for the special variable value.
+Initialization expression (if any) is compiled to a startup function."
+  (let* ((name (ast-defvar-name ast))
+         (value-ast (ast-defvar-value ast))
+         (module (codegen-context-module context)))
+
+    ;; Mark as special
+    (context-declare-special context name)
+
+    ;; Check if already defined
+    (when (context-special-global-index context name)
+      ;; Already defined - just return (like Common Lisp defvar semantics)
+      (return-from compile-defvar nil))
+
+    ;; Create a Wasm global for this special variable
+    ;; Type: (mut anyref), init: ref.null anyref
+    (let* ((init-expr (list (opcode :ref.null) #x6E))  ; ref.null anyref
+           (global (make-global :anyref init-expr
+                                :mutable t
+                                :name (symbol-name name)))
+           (global-idx (module-add-global module global)))
+
+      ;; Register the global index
+      (context-register-special-global context name global-idx)
+
+      ;; If there's an initial value, compile a function to set it
+      ;; This will be called at startup
+      (when value-ast
+        (compile-defvar-init name value-ast global-idx context))
+
+      global-idx)))
+
+(defun compile-defvar-init (name value-ast global-idx context)
+  "Compile initialization code for a defvar.
+Creates a function that sets the global to the initial value."
+  (let* ((module (codegen-context-module context))
+         (registry (codegen-context-type-registry context)))
+
+    ;; Create function type: () -> ()
+    (let* ((func-type (make-functype nil nil))
+           (type-def (make-wasm-type func-type))
+           (type-idx (module-add-type module type-def)))
+
+      ;; Create compilation environment
+      (let* ((env (make-compile-env :type-registry registry
+                                    :codegen-context context))
+             (value-code (compile-expression value-ast env)))
+
+        ;; Generate: value-code; global.set idx; end
+        (let* ((body-code (append value-code
+                                  (emit-global.set global-idx)
+                                  (emit-end)))
+               (locals (env-collect-local-types env))
+               (func-name (format nil "$init_~A" (symbol-name name)))
+               (func (make-wasm-func type-idx
+                                     :name func-name
+                                     :locals locals
+                                     :body body-code)))
+          (module-add-func module func))))))
 
 (defun compile-expression-as-function (ast context)
   "Compile an expression as an anonymous function."

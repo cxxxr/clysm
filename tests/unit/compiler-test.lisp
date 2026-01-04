@@ -772,3 +772,198 @@
       ;; Both x and y should be free
       (is (member 'x free-vars))
       (is (member 'y free-vars)))))
+
+;;; ============================================================
+;;; Special Variables Tests (Phase 7)
+;;; ============================================================
+
+;;; --- Context Special Variables Tests ---
+
+(deftest test-context-declare-special ()
+  "Test declaring special variables in codegen context"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry)))
+    ;; Initially empty
+    (is-false (clysm:context-special-p context '*foo*))
+
+    ;; Declare special
+    (clysm:context-declare-special context '*foo*)
+
+    ;; Now it's special
+    (is (clysm:context-special-p context '*foo*))
+    (is (member '*foo* (clysm:codegen-context-specials context)))))
+
+(deftest test-context-special-globals ()
+  "Test registering special variable globals"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry)))
+    ;; Initially no global
+    (is-false (clysm:context-special-global-index context '*bar*))
+
+    ;; Register a global
+    (clysm:context-register-special-global context '*bar* 42)
+
+    ;; Now has a global index
+    (is-eql 42 (clysm:context-special-global-index context '*bar*))))
+
+;;; --- Environment Special Tests ---
+
+(deftest test-env-special-p ()
+  "Test env-special-p predicate"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Initially not special
+    (is-false (clysm:env-special-p env '*counter*))
+
+    ;; Declare in context
+    (clysm:context-declare-special context '*counter*)
+
+    ;; Now visible through env
+    (is (clysm:env-special-p env '*counter*))))
+
+(deftest test-env-declare-special ()
+  "Test declaring specials locally in environment"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Declare locally
+    (clysm:env-declare-special env '*local-special*)
+
+    ;; Check local specials
+    (is (member '*local-special* (clysm:compile-env-specials env)))
+    (is (clysm:env-special-p env '*local-special*))))
+
+;;; --- Module Add Global Tests ---
+
+(deftest test-module-add-global ()
+  "Test adding globals to module"
+  (let* ((module (clysm:make-wasm-module))
+         (init-expr (list (clysm:opcode :ref.null) #x6E))
+         (global (clysm:make-global :anyref init-expr :mutable t :name "test")))
+    (let ((idx (clysm:module-add-global module global)))
+      ;; First global gets index 0
+      (is-eql 0 idx)
+      ;; Verify it was added
+      (is-eql 1 (length (clysm:wasm-module-globals module))))))
+
+;;; --- Emit Global Instructions Tests ---
+
+(deftest test-emit-global-get ()
+  "Test global.get instruction emission"
+  (let ((code (clysm:emit-global.get 5)))
+    (is (listp code))
+    (is-eql #x23 (first code))))  ; global.get opcode
+
+(deftest test-emit-global-set ()
+  "Test global.set instruction emission"
+  (let ((code (clysm:emit-global.set 5)))
+    (is (listp code))
+    (is-eql #x24 (first code))))  ; global.set opcode
+
+;;; --- Compile Defvar Tests ---
+
+(deftest test-compile-defvar ()
+  "Test compiling defvar creates a global"
+  (let* ((context (clysm:compile-toplevel '(defvar *my-var* 10))))
+    (is (clysm:codegen-context-p context))
+    ;; Should be declared special
+    (is (clysm:context-special-p context '*my-var*))
+    ;; Should have a global index
+    (is (clysm:context-special-global-index context '*my-var*))
+    ;; Should have created a global in the module
+    (is (>= (length (clysm:wasm-module-globals
+                     (clysm:codegen-context-module context))) 1))))
+
+(deftest test-compile-defvar-no-init ()
+  "Test compiling defvar without initial value"
+  (let* ((context (clysm:compile-toplevel '(defvar *uninit*))))
+    (is (clysm:codegen-context-p context))
+    (is (clysm:context-special-p context '*uninit*))
+    (is (clysm:context-special-global-index context '*uninit*))))
+
+(deftest test-compile-defvar-twice ()
+  "Test that defvar doesn't create duplicate globals"
+  (let* ((context (clysm:compile-toplevel '(defvar *dup* 1))))
+    ;; First defvar
+    (let ((first-idx (clysm:context-special-global-index context '*dup*)))
+      ;; Compile same defvar again
+      (clysm:compile-toplevel '(defvar *dup* 2) context)
+      ;; Should have same global index
+      (is-eql first-idx (clysm:context-special-global-index context '*dup*)))))
+
+;;; --- Special Variable Access Tests ---
+
+(deftest test-compile-special-var-access ()
+  "Test accessing a special variable"
+  (let* ((context (clysm:compile-toplevel '(defvar *acc-test* 0)))
+         (module (clysm:codegen-context-module context))
+         (registry (clysm:codegen-context-type-registry context))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Compile access to *acc-test*
+    (let* ((ast (clysm:parse-sexp '*acc-test*))
+           (code (clysm:compile-expression ast env)))
+      (is (listp code))
+      (is (> (length code) 0))
+      ;; Should contain global.get (#x23)
+      (is (member #x23 code)))))
+
+(deftest test-compile-special-var-setq ()
+  "Test assigning to a special variable"
+  (let* ((context (clysm:compile-toplevel '(defvar *setq-test* 0)))
+         (module (clysm:codegen-context-module context))
+         (registry (clysm:codegen-context-type-registry context))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Compile setq of *setq-test*
+    (let* ((ast (clysm:parse-sexp '(setq *setq-test* 42)))
+           (code (clysm:compile-expression ast env)))
+      (is (listp code))
+      (is (> (length code) 0))
+      ;; Should contain global.set (#x24)
+      (is (member #x24 code)))))
+
+;;; --- Special Let Binding Tests ---
+
+(deftest test-compile-let-with-special ()
+  "Test let binding with a special variable"
+  (let* ((context (clysm:compile-toplevel '(defvar *let-test* 0)))
+         (registry (clysm:codegen-context-type-registry context))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Compile let binding the special variable
+    (let* ((ast (clysm:parse-sexp '(let ((*let-test* 100)) *let-test*)))
+           (code (clysm:compile-expression ast env)))
+      (is (listp code))
+      (is (> (length code) 0))
+      ;; Should contain global.get (save old) and global.set (set new)
+      (is (member #x23 code))  ; global.get
+      (is (member #x24 code)))))  ; global.set
+
+(deftest test-env-special-p-not-by-name ()
+  "Test that *foo* naming convention does not make a variable special"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; *foo* is NOT special unless explicitly declared
+    (is-false (clysm:env-special-p env '*foo*))
+    (is-false (clysm:env-special-p env '*bar*))
+
+    ;; Even with earmuffs, need explicit declaration
+    (clysm:context-declare-special context '*foo*)
+    (is (clysm:env-special-p env '*foo*))
+    (is-false (clysm:env-special-p env '*bar*))))

@@ -38,6 +38,9 @@
   (catch-tags nil :type list)    ; Stack of (tag-local . handler-depth) for catch/throw
   (unwind-depth 0 :type integer) ; Depth of unwind-protect nesting
 
+  ;; Special variables (dynamic scope)
+  (specials nil :type list)      ; List of special variable names
+
   ;; Module context
   (type-registry nil)            ; Type registry for this compilation
   (functions nil :type list)     ; Functions defined in this module
@@ -213,6 +216,26 @@ Returns the handler depth."
 (defun env-catch-depth (env)
   "Return the current catch nesting depth."
   (length (compile-env-catch-tags env)))
+
+;;; ============================================================
+;;; Special Variable Management
+;;; ============================================================
+
+(defun env-declare-special (env name)
+  "Declare NAME as a special variable in ENV."
+  (pushnew name (compile-env-specials env)))
+
+(defun env-special-p (env name)
+  "Check if NAME is a special variable.
+A variable is special only if explicitly declared via defvar/defparameter
+or (declare (special ...)). Naming conventions like *foo* do not imply special."
+  (or (member name (compile-env-specials env))
+      (and (compile-env-parent env)
+           (env-special-p (compile-env-parent env) name))
+      ;; Check global specials in codegen-context
+      (and (compile-env-codegen-context env)
+           (member name (codegen-context-specials
+                         (compile-env-codegen-context env))))))
 
 ;;; ============================================================
 ;;; Tail Position Tracking

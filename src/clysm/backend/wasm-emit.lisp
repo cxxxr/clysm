@@ -276,6 +276,16 @@ Returns a list of bytes."
   (append (list (opcode :local.set))
           (encode-uleb128 index)))
 
+(defun emit-global.get (index)
+  "Emit global.get instruction."
+  (append (list (opcode :global.get))
+          (encode-uleb128 index)))
+
+(defun emit-global.set (index)
+  "Emit global.set instruction."
+  (append (list (opcode :global.set))
+          (encode-uleb128 index)))
+
 (defun emit-call (func-index)
   "Emit call instruction."
   (append (list (opcode :call))

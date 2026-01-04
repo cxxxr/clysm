@@ -122,6 +122,7 @@
    #:wasm-module-custom
    #:module-add-type
    #:module-add-func
+   #:module-add-global
    #:module-add-export
    #:module-finalize
 
@@ -149,6 +150,8 @@
    #:emit-local.get
    #:emit-local.set
    #:emit-local.tee
+   #:emit-global.get
+   #:emit-global.set
    #:emit-call
    #:emit-end
    #:emit-ref.func
@@ -485,6 +488,10 @@
    #:env-push-catch
    #:env-pop-catch
    #:env-catch-depth
+   ;; Special variable management
+   #:compile-env-specials
+   #:env-declare-special
+   #:env-special-p
    ;; Position tracking
    #:env-in-tail-position
    #:env-not-in-tail-position
@@ -498,6 +505,12 @@
    #:codegen-context-module
    #:codegen-context-type-registry
    #:codegen-context-lambda-counter
+   #:codegen-context-specials
+   #:codegen-context-special-globals
+   #:context-declare-special
+   #:context-special-p
+   #:context-special-global-index
+   #:context-register-special-global
    #:compile-toplevel
    #:compile-expression
    #:compile-defun
