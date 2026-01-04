@@ -92,8 +92,10 @@
 
 (defmacro is (form &optional description)
   "Assert that FORM evaluates to a true value."
-  (let ((desc (or description (format nil "~S" form))))
-    `(record-assertion ,form ,desc t ,form)))
+  (let ((desc (or description (format nil "~S" form)))
+        (result (gensym "RESULT")))
+    `(let ((,result ,form))
+       (record-assertion ,result ,desc t ,result))))
 
 (defmacro is-true (form &optional description)
   "Assert that FORM evaluates to exactly T."

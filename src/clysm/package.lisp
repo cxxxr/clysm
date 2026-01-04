@@ -529,7 +529,46 @@
    #:compile-expression
    #:compile-defun
    #:compile-forms
-   #:compile-to-wasm))
+   #:compile-to-wasm
+
+   ;; Reader (reader/lexer.lisp, reader/parser.lisp)
+   ;; Token types
+   #:token
+   #:make-token
+   #:token-type
+   #:token-value
+   #:token-line
+   #:token-column
+   ;; Lexer
+   #:lexer
+   #:make-lexer
+   #:make-lexer-from-string
+   #:lexer-input
+   #:lexer-position
+   #:lexer-length
+   #:lexer-line
+   #:lexer-column
+   #:lexer-eof-p
+   #:lexer-peek-char
+   #:lexer-read-char
+   #:read-token
+   #:peek-token
+   ;; Parser
+   #:reader-state
+   #:make-reader-state
+   #:*reader-state*
+   #:reader-intern
+   #:reader-find-symbol
+   #:parse-sexpr
+   #:expand-backquote
+   #:clysm-read-from-string
+   #:clysm-read-all-from-string
+   #:clysm-read))
+
+;; User package for interned symbols
+(defpackage #:clysm-user
+  (:use)
+  (:documentation "User package for Clysm interned symbols"))
 
 (defpackage #:clysm/backend
   (:use #:cl #:clysm)

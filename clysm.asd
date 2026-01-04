@@ -30,7 +30,11 @@
     ((:file "primitives")
      (:file "ast")
      (:file "env")
-     (:file "codegen")))))
+     (:file "codegen")))
+   (:module "reader"
+    :components
+    ((:file "lexer")
+     (:file "parser")))))
 
 (asdf:defsystem #:clysm/tests
   :description "Clysm Test Suite"
@@ -48,7 +52,8 @@
      (:file "wasm-types-test")
      (:file "runtime-types-test")
      (:file "primitives-test")
-     (:file "compiler-test")))))
+     (:file "compiler-test")
+     (:file "reader-test")))))
 
 (defmethod asdf:perform ((op asdf:test-op)
                          (system (eql (asdf:find-system '#:clysm))))
