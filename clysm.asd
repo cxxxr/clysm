@@ -34,7 +34,12 @@
    (:module "reader"
     :components
     ((:file "lexer")
-     (:file "parser")))))
+     (:file "parser")))
+   (:module "repl"
+    :components
+    ((:file "printer")
+     (:file "core")
+     (:file "loader")))))
 
 (asdf:defsystem #:clysm/tests
   :description "Clysm Test Suite"
@@ -53,7 +58,8 @@
      (:file "runtime-types-test")
      (:file "primitives-test")
      (:file "compiler-test")
-     (:file "reader-test")))))
+     (:file "reader-test")
+     (:file "repl-test")))))
 
 (defmethod asdf:perform ((op asdf:test-op)
                          (system (eql (asdf:find-system '#:clysm))))

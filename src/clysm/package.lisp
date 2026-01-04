@@ -563,7 +563,40 @@
    #:expand-backquote
    #:clysm-read-from-string
    #:clysm-read-all-from-string
-   #:clysm-read))
+   #:clysm-read
+
+   ;; REPL (repl/printer.lisp, repl/core.lisp, repl/loader.lisp)
+   ;; Printer settings
+   #:*clysm-print-readably*
+   #:*clysm-print-circle*
+   #:*clysm-print-length*
+   #:*clysm-print-level*
+   ;; Printer functions
+   #:clysm-prin1
+   #:clysm-princ
+   #:clysm-print
+   #:clysm-write
+   #:clysm-prin1-to-string
+   #:clysm-princ-to-string
+   #:decode-wasm-result
+   #:parse-wasmtime-result
+   ;; REPL core
+   #:*repl-prompt*
+   #:*wasmtime-path*
+   #:*temp-wasm-path*
+   #:run-wasm-module
+   #:validate-wasm-module
+   #:clysm-eval
+   #:clysm-eval-string
+   #:clysm-eval-host
+   #:repl
+   #:clysm-load
+   #:clysm-compile-file
+   ;; JavaScript loader
+   #:generate-js-loader
+   #:generate-html-test-page
+   #:bundle-wasm-module
+   #:bundle-to-file))
 
 ;; User package for interned symbols
 (defpackage #:clysm-user
