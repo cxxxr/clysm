@@ -1289,27 +1289,37 @@ Creates a function that sets the global to the initial value."
           (module-add-func module func))))))
 
 (defun compile-expression-as-function (ast context)
-  "Compile an expression as an anonymous function."
+  "Compile an expression as an anonymous function.
+Exports the function as '_start' for wasmtime execution.
+Returns i32 (unwrapped from i31ref) for display purposes."
   (let* ((module (codegen-context-module context))
          (registry (codegen-context-type-registry context)))
-    ;; Create function type: () -> anyref
-    (let* ((func-type (make-functype nil '(:anyref)))
+    ;; Create function type: () -> i32 (for wasmtime display)
+    (let* ((func-type (make-functype nil '(:i32)))
            (type-def (make-wasm-type func-type))
            (type-idx (module-add-type module type-def)))
 
       ;; Create compilation environment
-      (let ((env (make-compile-env :type-registry registry)))
+      (let ((env (make-compile-env :type-registry registry
+                                   :codegen-context context)))
         (setf (compile-env-tail-position-p env) t)
 
         ;; Compile expression
         (let ((body-code (compile-expression ast env)))
-          ;; Create function
+          ;; Create function - unwrap i31ref to i32 for display
           (let* ((locals (env-collect-local-types env))
-                 (full-code (append body-code (emit-end)))
+                 (full-code (append body-code
+                                    (emit-i31.get-s)  ; unwrap i31ref to i32
+                                    (emit-end)))
                  (func (make-wasm-func type-idx
+                                       :name "_start"
                                        :locals locals
-                                       :body full-code)))
-            (module-add-func module func)))))))
+                                       :body full-code))
+                 (func-idx (module-add-func module func)))
+            ;; Export as _start for wasmtime execution
+            (module-add-export module
+                               (make-export "_start" :func func-idx))
+            func-idx))))))
 
 ;;; ============================================================
 ;;; High-Level Compilation Interface

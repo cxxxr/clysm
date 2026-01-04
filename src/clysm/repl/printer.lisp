@@ -181,28 +181,38 @@ VALUE is the raw i32 returned from wasmtime."
      value)))
 
 (defun parse-wasmtime-result (output)
-  "Parse wasmtime output to extract result value."
-  (let ((trimmed (string-trim '(#\Space #\Newline #\Tab) output)))
+  "Parse wasmtime output to extract result value.
+Handles wasmtime warnings and extracts the actual result."
+  ;; Filter out wasmtime warning lines
+  (let* ((lines (split-sequence #\Newline output))
+         (result-lines (remove-if (lambda (line)
+                                    (or (string-prefix-p "warning:" line)
+                                        (string= line "")))
+                                  lines))
+         (result-str (if result-lines
+                         (string-trim '(#\Space #\Newline #\Tab)
+                                      (first result-lines))
+                         "")))
     (cond
       ;; Empty output
-      ((string= trimmed "")
+      ((string= result-str "")
        nil)
 
       ;; i32 result like "42" or "-10"
-      ((every (lambda (c) (or (digit-char-p c) (char= c #\-))) trimmed)
-       (parse-integer trimmed))
+      ((every (lambda (c) (or (digit-char-p c) (char= c #\-))) result-str)
+       (parse-integer result-str))
 
       ;; ref.i31 result (depends on wasmtime version)
       ;; Format might be "ref.i31 42" or similar
-      ((string-prefix-p "ref.i31" trimmed)
-       (let ((num-start (position-if #'digit-char-p trimmed)))
+      ((string-prefix-p "ref.i31" result-str)
+       (let ((num-start (position-if #'digit-char-p result-str)))
          (when num-start
-           (parse-integer trimmed :start num-start :junk-allowed t))))
+           (parse-integer result-str :start num-start :junk-allowed t))))
 
       ;; ref.null
-      ((string-prefix-p "ref.null" trimmed)
+      ((string-prefix-p "ref.null" result-str)
        nil)
 
       ;; Unknown format - return as string
       (t
-       trimmed))))
+       result-str))))
