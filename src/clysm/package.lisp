@@ -156,6 +156,11 @@
    #:emit-return-call-ref
    #:emit-ref.null
    #:encode-blocktype
+   ;; Exception handling
+   #:emit-throw
+   #:emit-throw-ref
+   #:emit-try-table
+   #:encode-catch-clause
 
    ;; WAT print (backend/wat-print.lisp)
    #:print-wat
@@ -334,65 +339,104 @@
 
    ;; AST (compiler/ast.lisp)
    #:ast-node
+   #:ast-node-p
    #:ast-node-source
    #:ast-literal
+   #:ast-literal-p
    #:make-ast-literal
    #:ast-literal-value
    #:ast-literal-type
    #:ast-quote
+   #:ast-quote-p
    #:make-ast-quote
    #:ast-quote-value
    #:ast-var
+   #:ast-var-p
    #:make-ast-var
    #:ast-var-name
    #:ast-setq
+   #:ast-setq-p
    #:make-ast-setq
    #:ast-setq-name
    #:ast-setq-value
    #:ast-if
+   #:ast-if-p
    #:make-ast-if
    #:ast-if-test
    #:ast-if-then
    #:ast-if-else
    #:ast-progn
+   #:ast-progn-p
    #:make-ast-progn
    #:ast-progn-forms
    #:ast-block
+   #:ast-block-p
    #:make-ast-block
    #:ast-block-name
    #:ast-block-body
    #:ast-return-from
+   #:ast-return-from-p
    #:make-ast-return-from
    #:ast-return-from-name
    #:ast-return-from-value
    #:ast-let
+   #:ast-let-p
    #:make-ast-let
    #:ast-let-bindings
    #:ast-let-body
    #:ast-let-sequential-p
    #:ast-lambda
+   #:ast-lambda-p
    #:make-ast-lambda
    #:ast-lambda-params
    #:ast-lambda-body
    #:ast-lambda-name
    #:ast-call
+   #:ast-call-p
    #:make-ast-call
    #:ast-call-func
    #:ast-call-args
    #:ast-primitive-call
+   #:ast-primitive-call-p
    #:make-ast-primitive-call
    #:ast-primitive-call-name
    #:ast-primitive-call-args
    #:ast-defun
+   #:ast-defun-p
    #:make-ast-defun
    #:ast-defun-name
    #:ast-defun-params
    #:ast-defun-body
    #:ast-defvar
+   #:ast-defvar-p
    #:make-ast-defvar
    #:ast-defvar-name
    #:ast-defvar-value
    #:ast-defvar-special-p
+   ;; Control flow AST nodes
+   #:ast-tagbody
+   #:make-ast-tagbody
+   #:ast-tagbody-p
+   #:ast-tagbody-segments
+   #:ast-go
+   #:make-ast-go
+   #:ast-go-p
+   #:ast-go-tag
+   #:ast-catch
+   #:make-ast-catch
+   #:ast-catch-p
+   #:ast-catch-tag
+   #:ast-catch-body
+   #:ast-throw
+   #:make-ast-throw
+   #:ast-throw-p
+   #:ast-throw-tag
+   #:ast-throw-value
+   #:ast-unwind-protect
+   #:make-ast-unwind-protect
+   #:ast-unwind-protect-p
+   #:ast-unwind-protect-protected
+   #:ast-unwind-protect-cleanup
    #:*special-forms*
    #:register-special-form
    #:special-form-p
@@ -430,6 +474,18 @@
    #:env-push-block
    #:env-pop-block
    #:env-find-block
+   ;; Tagbody/Go management
+   #:compile-env-tags
+   #:env-push-tagbody
+   #:env-pop-tagbody
+   #:env-find-tag
+   ;; Catch/Throw management
+   #:compile-env-catch-tags
+   #:compile-env-unwind-depth
+   #:env-push-catch
+   #:env-pop-catch
+   #:env-catch-depth
+   ;; Position tracking
    #:env-in-tail-position
    #:env-not-in-tail-position
    #:analyze-free-variables

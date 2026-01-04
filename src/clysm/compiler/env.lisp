@@ -34,6 +34,9 @@
   ;; Control flow
   (tail-position-p nil)          ; Are we in tail position?
   (blocks nil :type list)        ; Stack of (name . label-index) for block/return-from
+  (tags nil :type list)          ; Stack of (tag . depth) for tagbody/go
+  (catch-tags nil :type list)    ; Stack of (tag-local . handler-depth) for catch/throw
+  (unwind-depth 0 :type integer) ; Depth of unwind-protect nesting
 
   ;; Module context
   (type-registry nil)            ; Type registry for this compilation
@@ -161,6 +164,57 @@ Returns (values label depth) or (values nil nil)."
   (values nil nil))
 
 ;;; ============================================================
+;;; Tagbody/Go Management
+;;; ============================================================
+
+(defun env-push-tagbody (env tags)
+  "Push tagbody tags onto the tag stack.
+TAGS is a list of tag symbols.
+Returns an alist of (tag . label-index) pairs."
+  (let ((base-depth (length (compile-env-blocks env)))  ; Wasm control depth
+        (tag-entries nil))
+    ;; Each tag gets an index within this tagbody
+    (loop for tag in tags
+          for i from 0
+          do (let ((entry (cons tag (cons i base-depth))))
+               (push entry tag-entries)
+               (push entry (compile-env-tags env))))
+    (nreverse tag-entries)))
+
+(defun env-pop-tagbody (env tag-count)
+  "Pop TAG-COUNT tags from the tag stack."
+  (dotimes (i tag-count)
+    (pop (compile-env-tags env))))
+
+(defun env-find-tag (env tag)
+  "Find a tag in the current tagbody chain.
+Returns (values tag-index block-depth) or (values nil nil)."
+  (loop for (t-name . (t-index . t-depth)) in (compile-env-tags env)
+        when (eql t-name tag)
+          do (return-from env-find-tag (values t-index t-depth)))
+  (values nil nil))
+
+;;; ============================================================
+;;; Catch/Throw Management
+;;; ============================================================
+
+(defun env-push-catch (env tag-local-index)
+  "Push a catch handler onto the catch stack.
+TAG-LOCAL-INDEX is the Wasm local storing the catch tag.
+Returns the handler depth."
+  (let ((depth (length (compile-env-catch-tags env))))
+    (push (cons tag-local-index depth) (compile-env-catch-tags env))
+    depth))
+
+(defun env-pop-catch (env)
+  "Pop the top catch handler from the stack."
+  (pop (compile-env-catch-tags env)))
+
+(defun env-catch-depth (env)
+  "Return the current catch nesting depth."
+  (length (compile-env-catch-tags env)))
+
+;;; ============================================================
 ;;; Tail Position Tracking
 ;;; ============================================================
 
@@ -255,7 +309,28 @@ Returns a list of variable names that are free in AST."
 
                  (ast-defvar
                   (when (ast-defvar-value node)
-                    (analyze (ast-defvar-value node) bound-vars))))))
+                    (analyze (ast-defvar-value node) bound-vars)))
+
+                 ;; Control flow forms
+                 (ast-tagbody
+                  (dolist (segment (ast-tagbody-segments node))
+                    (analyze (cdr segment) bound-vars)))
+
+                 (ast-go
+                  ;; go has no free variables (tag is not a variable)
+                  nil)
+
+                 (ast-catch
+                  (analyze (ast-catch-tag node) bound-vars)
+                  (analyze (ast-catch-body node) bound-vars))
+
+                 (ast-throw
+                  (analyze (ast-throw-tag node) bound-vars)
+                  (analyze (ast-throw-value node) bound-vars))
+
+                 (ast-unwind-protect
+                  (analyze (ast-unwind-protect-protected node) bound-vars)
+                  (analyze (ast-unwind-protect-cleanup node) bound-vars)))))
       (analyze ast nil))
     (nreverse free-vars)))
 

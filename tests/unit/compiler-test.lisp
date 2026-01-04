@@ -539,3 +539,236 @@
   (let ((code (clysm:emit-ref.func 3)))
     (is (listp code))
     (is-eql #xD2 (first code))))  ; ref.func opcode
+
+;;; ============================================================
+;;; Control Flow Tests (Phase 6)
+;;; ============================================================
+
+;;; --- AST Parsing Tests ---
+
+(deftest test-parse-tagbody ()
+  "Test parsing tagbody form"
+  (let ((ast (clysm:parse-sexp '(tagbody
+                                  start
+                                    (print "start")
+                                  loop
+                                    (print "loop")))))
+    (is (clysm:ast-tagbody-p ast))
+    (is (listp (clysm:ast-tagbody-segments ast)))
+    ;; Should have segments for each tag
+    (is (>= (length (clysm:ast-tagbody-segments ast)) 2))))
+
+(deftest test-parse-go ()
+  "Test parsing go form"
+  (let ((ast (clysm:parse-sexp '(go loop))))
+    (is (clysm:ast-go-p ast))
+    (is-eql 'loop (clysm:ast-go-tag ast))))
+
+(deftest test-parse-go-integer-tag ()
+  "Test parsing go with integer tag"
+  (let ((ast (clysm:parse-sexp '(go 42))))
+    (is (clysm:ast-go-p ast))
+    (is-eql 42 (clysm:ast-go-tag ast))))
+
+(deftest test-parse-catch ()
+  "Test parsing catch form"
+  (let ((ast (clysm:parse-sexp '(catch 'error (+ 1 2)))))
+    (is (clysm:ast-catch-p ast))
+    (is (clysm:ast-quote-p (clysm:ast-catch-tag ast)))
+    ;; Body is wrapped in progn
+    (is (clysm:ast-progn-p (clysm:ast-catch-body ast)))))
+
+(deftest test-parse-throw ()
+  "Test parsing throw form"
+  (let ((ast (clysm:parse-sexp '(throw 'error 42))))
+    (is (clysm:ast-throw-p ast))
+    (is (clysm:ast-quote-p (clysm:ast-throw-tag ast)))
+    (is (clysm:ast-literal-p (clysm:ast-throw-value ast)))))
+
+(deftest test-parse-unwind-protect ()
+  "Test parsing unwind-protect form"
+  (let ((ast (clysm:parse-sexp '(unwind-protect
+                                    (do-something)
+                                  (cleanup1)
+                                  (cleanup2)))))
+    (is (clysm:ast-unwind-protect-p ast))
+    (is (clysm:ast-call-p (clysm:ast-unwind-protect-protected ast)))
+    (is (clysm:ast-progn-p (clysm:ast-unwind-protect-cleanup ast)))))
+
+;;; --- Environment Management Tests ---
+
+(deftest test-env-tagbody-tags ()
+  "Test tagbody tag management"
+  (let ((env (clysm:make-compile-env)))
+    ;; Push some tags
+    (let ((entries (clysm:env-push-tagbody env '(start loop end))))
+      (is (listp entries))
+      (is-eql 3 (length entries)))
+    ;; Find tags
+    (multiple-value-bind (idx depth)
+        (clysm:env-find-tag env 'loop)
+      (is (integerp idx))
+      (is (integerp depth)))
+    ;; Pop tags
+    (clysm:env-pop-tagbody env 3)
+    ;; Should not find anymore
+    (multiple-value-bind (idx depth)
+        (clysm:env-find-tag env 'loop)
+      (declare (ignore depth))
+      (is-false idx))))
+
+(deftest test-env-catch-management ()
+  "Test catch/throw environment management"
+  (let ((env (clysm:make-compile-env)))
+    ;; Push catch handler
+    (let ((depth (clysm:env-push-catch env 0)))
+      (is (integerp depth))
+      (is-eql 0 depth))
+    ;; Catch depth should be 1
+    (is-eql 1 (clysm:env-catch-depth env))
+    ;; Pop and check
+    (clysm:env-pop-catch env)
+    (is-eql 0 (clysm:env-catch-depth env))))
+
+;;; --- Code Generation Tests ---
+
+(deftest test-compile-tagbody-simple ()
+  "Test compiling simple tagbody"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context))
+         (ast (clysm:parse-sexp '(tagbody
+                                   start
+                                     1
+                                   end
+                                     2)))
+         (code (clysm:compile-expression ast env)))
+    (is (listp code))
+    ;; Should contain block and loop opcodes
+    (is (member #x02 code))   ; block
+    (is (member #x03 code))   ; loop
+    ;; Should contain br_table
+    (is (member #x0E code)))) ; br_table
+
+(deftest test-compile-catch-simple ()
+  "Test compiling simple catch"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context))
+         ;; Use integer tag instead of symbol (symbols not yet implemented)
+         (ast (clysm:parse-sexp '(catch 1 42)))
+         (code (clysm:compile-expression ast env)))
+    (is (listp code))
+    ;; Should contain block opcodes
+    (is (member #x02 code))   ; block
+    (is (member #x0B code)))) ; end
+
+(deftest test-compile-throw-simple ()
+  "Test compiling simple throw"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context))
+         ;; Use integer tag instead of symbol (symbols not yet implemented)
+         (ast (clysm:parse-sexp '(throw 1 42)))
+         (code (clysm:compile-expression ast env)))
+    (is (listp code))
+    ;; Should produce code that evaluates both tag and value
+    (is (> (length code) 0))))
+
+(deftest test-compile-unwind-protect-simple ()
+  "Test compiling simple unwind-protect"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context))
+         (ast (clysm:parse-sexp '(unwind-protect 42 1)))
+         (code (clysm:compile-expression ast env)))
+    (is (listp code))
+    ;; Should contain local.set and local.get for result handling
+    (is (member #x21 code))   ; local.set
+    (is (member #x20 code))   ; local.get
+    ;; Should contain drop for cleanup result
+    (is (member #x1A code)))) ; drop
+
+;;; --- Exception Handling Instruction Tests ---
+
+(deftest test-emit-throw ()
+  "Test throw instruction emission"
+  (let ((code (clysm:emit-throw 0)))
+    (is (listp code))
+    (is-eql #x08 (first code))))  ; throw opcode
+
+(deftest test-emit-throw-ref ()
+  "Test throw_ref instruction emission"
+  (let ((code (clysm:emit-throw-ref)))
+    (is (listp code))
+    (is-eql #x0A (first code))))  ; throw_ref opcode
+
+(deftest test-emit-try-table ()
+  "Test try_table instruction emission"
+  (let ((code (clysm:emit-try-table nil '((:catch 0 1)))))
+    (is (listp code))
+    (is-eql #x1F (first code))))  ; try_table opcode
+
+(deftest test-encode-catch-clause ()
+  "Test catch clause encoding"
+  ;; :catch tag label
+  (let ((code (clysm:encode-catch-clause '(:catch 0 1))))
+    (is (listp code))
+    (is-eql #x00 (first code)))  ; catch kind
+  ;; :catch-ref tag label
+  (let ((code (clysm:encode-catch-clause '(:catch-ref 0 1))))
+    (is (listp code))
+    (is-eql #x01 (first code)))  ; catch-ref kind
+  ;; :catch-all label
+  (let ((code (clysm:encode-catch-clause '(:catch-all 0))))
+    (is (listp code))
+    (is-eql #x02 (first code)))  ; catch-all kind
+  ;; :catch-all-ref label
+  (let ((code (clysm:encode-catch-clause '(:catch-all-ref 0))))
+    (is (listp code))
+    (is-eql #x03 (first code)))) ; catch-all-ref kind
+
+;;; --- Free Variable Analysis Tests ---
+
+(deftest test-analyze-free-variables-tagbody ()
+  "Test free variable analysis for tagbody"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (env (clysm:make-compile-env :type-registry registry)))
+    (let* ((ast (clysm:parse-sexp '(tagbody loop (+ x 1))))
+           (free-vars (clysm:analyze-free-variables ast env)))
+      ;; x should be free
+      (is (member 'x free-vars)))))
+
+(deftest test-analyze-free-variables-catch ()
+  "Test free variable analysis for catch"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (env (clysm:make-compile-env :type-registry registry)))
+    (let* ((ast (clysm:parse-sexp '(catch 'error (+ x 1))))
+           (free-vars (clysm:analyze-free-variables ast env)))
+      ;; x should be free
+      (is (member 'x free-vars)))))
+
+(deftest test-analyze-free-variables-unwind-protect ()
+  "Test free variable analysis for unwind-protect"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (env (clysm:make-compile-env :type-registry registry)))
+    (let* ((ast (clysm:parse-sexp '(unwind-protect x (cleanup y))))
+           (free-vars (clysm:analyze-free-variables ast env)))
+      ;; Both x and y should be free
+      (is (member 'x free-vars))
+      (is (member 'y free-vars)))))

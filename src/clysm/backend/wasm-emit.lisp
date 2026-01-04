@@ -110,6 +110,11 @@ Returns a list of bytes."
     (:call_ref . #x14)
     (:return_call_ref . #x15)
 
+    ;; Exception handling
+    (:throw . #x08)
+    (:throw_ref . #x0A)
+    (:try_table . #x1F)
+
     ;; Reference instructions
     (:ref.null . #xD0)
     (:ref.is_null . #xD1)
@@ -309,8 +314,63 @@ HEAP-TYPE is a type index or keyword like :func, :extern."
           (cond
             ((eq heap-type :func) (list #x70))
             ((eq heap-type :extern) (list #x6F))
+            ((eq heap-type :exn) (list #x69))
             ((integerp heap-type) (encode-sleb128 heap-type))
             (t (error "Unknown heap type: ~S" heap-type)))))
+
+;;; ============================================================
+;;; Exception Handling Instructions
+;;; ============================================================
+
+(defun emit-throw (tag-index)
+  "Emit throw instruction.
+TAG-INDEX is the exception tag index.
+Stack: [exn-values...] -> []"
+  (append (list (opcode :throw))
+          (encode-uleb128 tag-index)))
+
+(defun emit-throw-ref ()
+  "Emit throw_ref instruction.
+Stack: [exnref] -> []"
+  (list (opcode :throw_ref)))
+
+(defun emit-try-table (blocktype catches)
+  "Emit try_table instruction header.
+BLOCKTYPE is the result type.
+CATCHES is a list of catch clauses, each being:
+  (:catch tag-index label-index)
+  (:catch-ref tag-index label-index)
+  (:catch-all label-index)
+  (:catch-all-ref label-index)
+Returns bytecode for the try_table header (body follows, then end)."
+  (append
+   (list (opcode :try_table))
+   (encode-blocktype blocktype)
+   (encode-uleb128 (length catches))
+   (loop for catch in catches
+         append (encode-catch-clause catch))))
+
+(defun encode-catch-clause (clause)
+  "Encode a single catch clause for try_table."
+  (ecase (first clause)
+    (:catch
+     ;; catch tag label
+     (append (list #x00)
+             (encode-uleb128 (second clause))   ; tag index
+             (encode-uleb128 (third clause))))  ; label index
+    (:catch-ref
+     ;; catch_ref tag label
+     (append (list #x01)
+             (encode-uleb128 (second clause))
+             (encode-uleb128 (third clause))))
+    (:catch-all
+     ;; catch_all label
+     (append (list #x02)
+             (encode-uleb128 (second clause))))
+    (:catch-all-ref
+     ;; catch_all_ref label
+     (append (list #x03)
+             (encode-uleb128 (second clause))))))
 
 ;;; ============================================================
 ;;; Block Type Encoding

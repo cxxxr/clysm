@@ -72,6 +72,35 @@
   name     ; Block name to return from
   value)   ; AST node for return value
 
+(defstruct (ast-tagbody (:include ast-node)
+                        (:constructor make-ast-tagbody (segments)))
+  "Tagbody for go-based control flow.
+SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
+  segments)  ; List of (tag . ast-progn) pairs
+
+(defstruct (ast-go (:include ast-node)
+                   (:constructor make-ast-go (tag)))
+  "Go to a tag in a tagbody."
+  tag)       ; Tag symbol to jump to
+
+(defstruct (ast-catch (:include ast-node)
+                      (:constructor make-ast-catch (tag body)))
+  "Catch form for dynamic non-local exit."
+  tag        ; AST node evaluating to catch tag
+  body)      ; AST node for body
+
+(defstruct (ast-throw (:include ast-node)
+                      (:constructor make-ast-throw (tag value)))
+  "Throw to a catch with matching tag."
+  tag        ; AST node evaluating to throw tag
+  value)     ; AST node for thrown value
+
+(defstruct (ast-unwind-protect (:include ast-node)
+                               (:constructor make-ast-unwind-protect (protected cleanup)))
+  "Unwind-protect for guaranteed cleanup."
+  protected  ; AST node for protected form
+  cleanup)   ; AST node (progn) for cleanup forms
+
 ;;; ------------------------------------------------------------
 ;;; Binding Forms
 ;;; ------------------------------------------------------------
@@ -345,6 +374,63 @@
                        (when value (parse-sexp value))
                        t))))
 
+(defun parse-tagbody (form)
+  "Parse (tagbody {tag | form}*)."
+  (let ((body (cdr form))
+        (segments nil)
+        (current-tag nil)
+        (current-forms nil))
+    ;; Process body elements
+    (dolist (elem body)
+      (if (or (symbolp elem) (integerp elem))
+          ;; It's a tag
+          (progn
+            ;; Save previous segment if any
+            (when (or current-tag current-forms)
+              (push (cons current-tag
+                          (make-ast-progn (nreverse current-forms)))
+                    segments))
+            (setf current-tag elem)
+            (setf current-forms nil))
+          ;; It's a form
+          (push (parse-sexp elem) current-forms)))
+    ;; Save final segment
+    (when (or current-tag current-forms)
+      (push (cons current-tag
+                  (make-ast-progn (nreverse current-forms)))
+            segments))
+    (make-ast-tagbody (nreverse segments))))
+
+(defun parse-go (form)
+  "Parse (go tag)."
+  (unless (= (length form) 2)
+    (error "GO requires exactly one argument: ~S" form))
+  (let ((tag (second form)))
+    (unless (or (symbolp tag) (integerp tag))
+      (error "GO tag must be a symbol or integer: ~S" form))
+    (make-ast-go tag)))
+
+(defun parse-catch (form)
+  "Parse (catch tag body...)."
+  (unless (>= (length form) 2)
+    (error "CATCH requires a tag: ~S" form))
+  (make-ast-catch (parse-sexp (second form))
+                  (make-ast-progn (mapcar #'parse-sexp (cddr form)))))
+
+(defun parse-throw (form)
+  "Parse (throw tag value)."
+  (unless (= (length form) 3)
+    (error "THROW requires exactly two arguments: ~S" form))
+  (make-ast-throw (parse-sexp (second form))
+                  (parse-sexp (third form))))
+
+(defun parse-unwind-protect (form)
+  "Parse (unwind-protect protected-form cleanup-forms...)."
+  (unless (>= (length form) 2)
+    (error "UNWIND-PROTECT requires a protected form: ~S" form))
+  (make-ast-unwind-protect (parse-sexp (second form))
+                           (make-ast-progn (mapcar #'parse-sexp (cddr form)))))
+
 ;;; ============================================================
 ;;; Register Special Forms
 ;;; ============================================================
@@ -363,6 +449,11 @@
   (register-special-form 'return-from #'parse-return-from)
   (register-special-form 'defun #'parse-defun)
   (register-special-form 'defvar #'parse-defvar)
+  (register-special-form 'tagbody #'parse-tagbody)
+  (register-special-form 'go #'parse-go)
+  (register-special-form 'catch #'parse-catch)
+  (register-special-form 'throw #'parse-throw)
+  (register-special-form 'unwind-protect #'parse-unwind-protect)
   *special-forms*)
 
 ;; Initialize on load

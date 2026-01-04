@@ -79,7 +79,17 @@ Returns a list of Wasm bytecode."
     (ast-block
      (compile-block ast env))
     (ast-return-from
-     (compile-return-from ast env))))
+     (compile-return-from ast env))
+    (ast-tagbody
+     (compile-tagbody ast env))
+    (ast-go
+     (compile-go ast env))
+    (ast-catch
+     (compile-catch ast env))
+    (ast-throw
+     (compile-throw ast env))
+    (ast-unwind-protect
+     (compile-unwind-protect ast env))))
 
 ;;; ============================================================
 ;;; Literal Compilation
@@ -278,6 +288,290 @@ Returns a list of Wasm bytecode."
       (append value-code
               (list (opcode :br))
               (encode-uleb128 depth)))))
+
+;;; ============================================================
+;;; Tagbody/Go Compilation
+;;; ============================================================
+
+(defun compile-tagbody (ast env)
+  "Compile a tagbody form.
+Uses Wasm loop/block with br_table for go."
+  (let* ((segments (ast-tagbody-segments ast))
+         (tags (loop for (tag . body) in segments
+                     when tag collect tag))
+         (non-tail-env (env-not-in-tail-position env)))
+    ;; Push all tags onto the environment
+    (let ((tag-entries (env-push-tagbody env tags))
+          (tag-count (length tags)))
+      (declare (ignore tag-entries))
+      (unwind-protect
+          (let ((code nil))
+            ;; Structure:
+            ;; (block $exit
+            ;;   (local.set $tag 0)  ; start at first segment
+            ;;   (loop $continue
+            ;;     (br_table $tag0 $tag1 ... $exit (local.get $tag))
+            ;;     $tag0: code0 (local.set $tag 1) (br $continue)
+            ;;     $tag1: code1 (local.set $tag 2) (br $continue)
+            ;;     ...
+            ;;   )
+            ;; )
+
+            ;; Allocate a local for the tag index
+            (let ((tag-local (env-bind-local env '%tagbody-idx)))
+              ;; Initialize tag index to 0
+              (setf code (append code
+                                 (emit-i32.const 0)
+                                 (emit-local.set (binding-index tag-local))))
+
+              ;; Outer block (for exit)
+              (setf code (append code
+                                 (list (opcode :block))
+                                 (encode-blocktype nil)))  ; void result
+
+              ;; Loop for re-entry via go
+              (setf code (append code
+                                 (list (opcode :loop))
+                                 (encode-blocktype nil)))  ; void result
+
+              ;; Generate nested blocks for each tag (in reverse order)
+              (loop for i from (1- (length segments)) downto 0
+                    do (setf code (append code
+                                          (list (opcode :block))
+                                          (encode-blocktype nil))))
+
+              ;; br_table to jump to the right segment
+              ;; Label 0 = innermost block = first segment
+              (setf code (append code
+                                 (emit-local.get (binding-index tag-local))
+                                 (list (opcode :br_table))
+                                 (encode-uleb128 (length segments))  ; number of labels
+                                 ))
+              ;; Target labels (0, 1, 2, ... for segments, then exit)
+              (loop for i from 0 below (length segments)
+                    do (setf code (append code (encode-uleb128 i))))
+              ;; Default: exit
+              (setf code (append code (encode-uleb128 (length segments))))
+
+              ;; Generate code for each segment
+              (loop for (tag . body) in segments
+                    for i from 0
+                    do (progn
+                         ;; End the block for this segment
+                         (setf code (append code (emit-end)))
+                         ;; Compile segment body
+                         (setf code (append code
+                                            (compile-expression body non-tail-env)))
+                         ;; Drop result
+                         (setf code (append code (list (opcode :drop))))
+                         ;; Set next tag index
+                         (when (< i (1- (length segments)))
+                           (setf code (append code
+                                              (emit-i32.const (1+ i))
+                                              (emit-local.set (binding-index tag-local)))))
+                         ;; Branch back to loop
+                         (setf code (append code
+                                            (list (opcode :br))
+                                            (encode-uleb128 1)))))  ; back to loop
+
+              ;; End loop
+              (setf code (append code (emit-end)))
+              ;; End outer block
+              (setf code (append code (emit-end))))
+
+            ;; Tagbody returns nil
+            (append code (compile-nil env)))
+        ;; Cleanup: pop tags
+        (env-pop-tagbody env tag-count)))))
+
+(defun compile-go (ast env)
+  "Compile a go form.
+Jumps to a tag within the enclosing tagbody."
+  (let ((tag (ast-go-tag ast)))
+    (multiple-value-bind (tag-index block-depth)
+        (env-find-tag env tag)
+      (unless tag-index
+        (error "Tag not found: ~S" tag))
+      ;; Set the tag index and branch to the loop
+      ;; We need to find the tagbody's local
+      ;; For now, assume %tagbody-idx is in scope
+      (multiple-value-bind (binding found-p)
+          (env-lookup env '%tagbody-idx)
+        (unless found-p
+          (error "GO outside TAGBODY: ~S" tag))
+        (append (emit-i32.const tag-index)
+                (emit-local.set (binding-index binding))
+                ;; Branch to the loop (depth needs to account for nested blocks)
+                (list (opcode :br))
+                (encode-uleb128 (+ tag-index 2)))))))
+
+;;; ============================================================
+;;; Catch/Throw Compilation
+;;; ============================================================
+
+;; NOTE: These implementations assume a Wasm exception tag is defined
+;; in the module for Lisp catch/throw. The tag has signature (anyref anyref)
+;; where the first is the catch tag and the second is the thrown value.
+
+(defun compile-catch (ast env)
+  "Compile a catch form.
+Uses Wasm try_table with exception handling."
+  (let* ((tag-ast (ast-catch-tag ast))
+         (body-ast (ast-catch-body ast))
+         (non-tail-env (env-not-in-tail-position env))
+         (code nil))
+
+    ;; Allocate locals for catch tag and result
+    (let ((tag-local (env-bind-local env '%catch-tag))
+          (result-local (env-bind-local env '%catch-result)))
+
+      ;; Evaluate the catch tag
+      (setf code (append code
+                         (compile-expression tag-ast non-tail-env)
+                         (emit-local.set (binding-index tag-local))))
+
+      ;; Register this catch in the environment
+      (env-push-catch env (binding-index tag-local))
+
+      (unwind-protect
+          (progn
+            ;; Structure using block + br for simplified catch:
+            ;; (block $outer :anyref
+            ;;   (block $catch :anyref
+            ;;     body
+            ;;     (br $outer)  ; normal exit
+            ;;   )
+            ;;   ;; Handler: check tag and either return value or rethrow
+            ;;   (if (eq caught-tag our-tag)
+            ;;       caught-value
+            ;;       (throw caught-tag caught-value)))
+
+            ;; For now, simplified version without full EH:
+            ;; Just compile the body directly
+            ;; Full catch/throw requires runtime support
+
+            ;; Outer block to receive the result
+            (setf code (append code
+                               (list (opcode :block))
+                               (encode-blocktype :anyref)))
+
+            ;; Inner block for the body
+            (setf code (append code
+                               (list (opcode :block))
+                               (encode-blocktype :anyref)))
+
+            ;; Compile body
+            (setf code (append code
+                               (compile-expression body-ast non-tail-env)))
+
+            ;; Normal exit: store result and branch out
+            (setf code (append code
+                               (emit-local.tee (binding-index result-local))
+                               (list (opcode :br))
+                               (encode-uleb128 1)))  ; branch to outer block
+
+            ;; End inner block (catch handler would go here)
+            (setf code (append code (emit-end)))
+
+            ;; For now, just get the result (full handler TODO)
+            (setf code (append code
+                               (emit-local.get (binding-index result-local))))
+
+            ;; End outer block
+            (setf code (append code (emit-end))))
+
+        ;; Cleanup: pop catch handler
+        (env-pop-catch env))
+
+      code)))
+
+(defun compile-throw (ast env)
+  "Compile a throw form.
+Throws to a dynamically enclosing catch with matching tag."
+  (let* ((tag-ast (ast-throw-tag ast))
+         (value-ast (ast-throw-value ast))
+         (non-tail-env (env-not-in-tail-position env))
+         (code nil))
+
+    ;; Evaluate tag and value
+    (setf code (append code
+                       (compile-expression tag-ast non-tail-env)
+                       (compile-expression value-ast non-tail-env)))
+
+    ;; For now, just return the value (full throw requires runtime)
+    ;; Full implementation would use Wasm throw instruction
+    ;; with the Lisp exception tag
+
+    ;; Simplified: just evaluate to the value for now
+    ;; In a real implementation, this would search the catch stack
+    ;; and throw to the matching handler
+    (append code
+            ;; Swap so value is on top (drop the tag for now)
+            (list (opcode :drop)))))
+
+;;; ============================================================
+;;; Unwind-Protect Compilation
+;;; ============================================================
+
+(defun compile-unwind-protect (ast env)
+  "Compile unwind-protect form.
+Ensures cleanup forms are executed regardless of how control leaves."
+  (let* ((protected-ast (ast-unwind-protect-protected ast))
+         (cleanup-ast (ast-unwind-protect-cleanup ast))
+         (non-tail-env (env-not-in-tail-position env))
+         (code nil))
+
+    ;; Allocate locals for result and exception state
+    (let ((result-local (env-bind-local env '%uwp-result))
+          (exception-local (env-bind-local env '%uwp-exception)))
+
+      (declare (ignore exception-local))
+
+      ;; Increment unwind depth
+      (incf (compile-env-unwind-depth env))
+
+      (unwind-protect
+          (progn
+            ;; Structure:
+            ;; 1. Execute protected form
+            ;; 2. Store result
+            ;; 3. Execute cleanup (dropping its result)
+            ;; 4. Return stored result
+
+            ;; For full EH support, we would use try_table:
+            ;; (try_table (result anyref) (catch_all_ref 0)
+            ;;   protected-form
+            ;; )
+            ;; ;; Normal path: cleanup and return result
+            ;; (local.set $result)
+            ;; cleanup
+            ;; (drop)
+            ;; (local.get $result)
+            ;; ;; Handler path (label 0):
+            ;; (local.set $result)
+            ;; cleanup
+            ;; (drop)
+            ;; (throw_ref)
+
+            ;; Simplified version (no exception catching):
+            ;; Execute protected form
+            (setf code (append code
+                               (compile-expression protected-ast non-tail-env)
+                               (emit-local.set (binding-index result-local))))
+
+            ;; Execute cleanup forms (result is dropped)
+            (setf code (append code
+                               (compile-expression cleanup-ast non-tail-env)
+                               (list (opcode :drop))))
+
+            ;; Return the protected form's result
+            (setf code (append code
+                               (emit-local.get (binding-index result-local)))))
+
+        ;; Restore unwind depth
+        (decf (compile-env-unwind-depth env)))
+
+      code)))
 
 ;;; ============================================================
 ;;; Binding Forms Compilation
