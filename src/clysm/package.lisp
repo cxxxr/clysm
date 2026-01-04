@@ -530,6 +530,7 @@
    #:compile-defun
    #:compile-forms
    #:compile-to-wasm
+   #:compile-to-wat
 
    ;; Reader (reader/lexer.lisp, reader/parser.lisp)
    ;; Token types

@@ -1340,3 +1340,15 @@ If PATHNAME is provided, write to file. Otherwise return bytes."
     (if pathname
         (emit-wasm-to-file module pathname)
         (emit-wasm-binary module))))
+
+(defun compile-to-wat (forms &optional pathname)
+  "Compile forms to WAT (WebAssembly Text) format.
+If PATHNAME is provided, write to file. Otherwise return string."
+  (let ((module (compile-forms forms)))
+    (if pathname
+        (with-open-file (stream pathname
+                                :direction :output
+                                :if-exists :supersede)
+          (print-wat module stream)
+          pathname)
+        (wat-to-string module))))
