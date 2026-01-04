@@ -106,6 +106,10 @@ Returns a list of bytes."
     (:return_call . #x12)
     (:return_call_indirect . #x13)
 
+    ;; Typed function references
+    (:call_ref . #x14)
+    (:return_call_ref . #x15)
+
     ;; Reference instructions
     (:ref.null . #xD0)
     (:ref.is_null . #xD1)
@@ -275,6 +279,38 @@ Returns a list of bytes."
 (defun emit-end ()
   "Emit end instruction."
   (list (opcode :end)))
+
+(defun emit-ref.func (func-index)
+  "Emit ref.func instruction to get a function reference."
+  (append (list (opcode :ref.func))
+          (encode-uleb128 func-index)))
+
+(defun emit-call-ref (type-index)
+  "Emit call_ref instruction.
+Stack: [args... funcref] -> [results]"
+  (append (list (opcode :call_ref))
+          (encode-uleb128 type-index)))
+
+(defun emit-return-call-ref (type-index)
+  "Emit return_call_ref instruction for tail calls.
+Stack: [args... funcref] -> [results]"
+  (append (list (opcode :return_call_ref))
+          (encode-uleb128 type-index)))
+
+(defun emit-local.tee (index)
+  "Emit local.tee instruction."
+  (append (list (opcode :local.tee))
+          (encode-uleb128 index)))
+
+(defun emit-ref.null (heap-type)
+  "Emit ref.null instruction.
+HEAP-TYPE is a type index or keyword like :func, :extern."
+  (append (list (opcode :ref.null))
+          (cond
+            ((eq heap-type :func) (list #x70))
+            ((eq heap-type :extern) (list #x6F))
+            ((integerp heap-type) (encode-sleb128 heap-type))
+            (t (error "Unknown heap type: ~S" heap-type)))))
 
 ;;; ============================================================
 ;;; Block Type Encoding

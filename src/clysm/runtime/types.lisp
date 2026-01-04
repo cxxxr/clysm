@@ -442,3 +442,65 @@ Stack: [anyref] -> [i32 (0 or 1)]"
   "Emit instructions to test if value is a closure.
 Stack: [anyref] -> [i32 (0 or 1)]"
   (emit-ref.test (closure-type-index registry)))
+
+;;; ============================================================
+;;; Closure Operations
+;;; ============================================================
+
+(defun emit-make-closure (registry)
+  "Emit struct.new for closure type.
+Stack: [code_0 code_1 code_2 code_N env] -> [closure]"
+  (emit-struct.new (closure-type-index registry)))
+
+(defun emit-closure-get-env (registry)
+  "Get the environment from a closure.
+Stack: [closure] -> [env]"
+  (emit-struct.get (closure-type-index registry) +closure-env+))
+
+(defun emit-closure-get-code (registry arity)
+  "Get the code reference for the specified arity.
+ARITY: 0, 1, 2, or :n for variadic.
+Stack: [closure] -> [funcref]"
+  (let ((field (case arity
+                 (0 +closure-code-0+)
+                 (1 +closure-code-1+)
+                 (2 +closure-code-2+)
+                 (:n +closure-code-n+)
+                 (t (error "Invalid closure arity: ~S" arity)))))
+    (emit-struct.get (closure-type-index registry) field)))
+
+(defun emit-create-env (registry num-vars)
+  "Create an environment array with NUM-VARS slots.
+Stack: [val1 val2 ... valN] -> [env]
+Values are consumed from stack in order."
+  (emit-array.new-fixed (env-type-index registry) num-vars))
+
+(defun emit-env-get (registry)
+  "Get a value from environment array.
+Stack: [env i32-index] -> [anyref]"
+  (emit-array.get (env-type-index registry)))
+
+(defun emit-env-set-instr (registry)
+  "Set a value in environment array.
+Stack: [env i32-index value] -> []"
+  (emit-array.set (env-type-index registry)))
+
+;;; ============================================================
+;;; Function Type Index Accessors
+;;; ============================================================
+
+(defun func-0-type-index (registry)
+  "Get the type index for 0-arg functions."
+  (type-registry-func-0 registry))
+
+(defun func-1-type-index (registry)
+  "Get the type index for 1-arg functions."
+  (type-registry-func-1 registry))
+
+(defun func-2-type-index (registry)
+  "Get the type index for 2-arg functions."
+  (type-registry-func-2 registry))
+
+(defun func-n-type-index (registry)
+  "Get the type index for N-arg functions."
+  (type-registry-func-n registry))

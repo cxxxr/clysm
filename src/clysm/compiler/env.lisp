@@ -38,14 +38,18 @@
   ;; Module context
   (type-registry nil)            ; Type registry for this compilation
   (functions nil :type list)     ; Functions defined in this module
+  (codegen-context nil)          ; Codegen context for compiling nested lambdas
 
   ;; Parent environment (for closures)
   (parent nil))
 
-(defun make-compile-env (&key type-registry parent)
+(defun make-compile-env (&key type-registry parent codegen-context)
   "Create a new compilation environment."
   (%make-compile-env :type-registry type-registry
                      :parent parent
+                     :codegen-context (or codegen-context
+                                          (and parent
+                                               (compile-env-codegen-context parent)))
                      :closure-depth (if parent
                                         (1+ (compile-env-closure-depth parent))
                                         0)))

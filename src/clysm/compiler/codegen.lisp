@@ -8,13 +8,18 @@
 ;;; Code Generation Context
 ;;; ============================================================
 
-(defstruct (codegen-context (:constructor make-codegen-context
-                                          (&key module type-registry)))
+(defstruct (codegen-context (:constructor %make-codegen-context))
   "Context for code generation."
   module          ; The wasm-module being built
   type-registry   ; Type registry for this module
   (functions nil) ; List of generated functions
-  (pending nil))  ; Pending lambda bodies to compile
+  (pending nil)   ; Pending lambda bodies to compile
+  (lambda-counter 0))  ; Counter for generating unique lambda names
+
+(defun make-codegen-context (&key module type-registry)
+  "Create a new codegen context."
+  (%make-codegen-context :module module
+                         :type-registry type-registry))
 
 ;;; ============================================================
 ;;; Main Code Generation Entry Point
@@ -330,13 +335,141 @@ Returns a list of Wasm bytecode."
 (defun compile-lambda (ast env)
   "Compile a lambda expression.
 Returns code to create a closure."
-  (declare (ignore env))
-  ;; Lambda compilation is complex - involves:
-  ;; 1. Analyze free variables
-  ;; 2. Create a new function
-  ;; 3. Create closure struct with function refs and captured env
-  ;; For now, return a placeholder
-  (error "Lambda compilation not yet fully implemented"))
+  (let* ((params (ast-lambda-params ast))
+         (body (ast-lambda-body ast))
+         (context (compile-env-codegen-context env))
+         (registry (compile-env-type-registry env))
+         (module (codegen-context-module context))
+         (arity (length params)))
+
+    ;; Analyze free variables
+    (let ((free-vars (analyze-free-variables ast env)))
+
+      ;; Generate unique name for the lambda
+      (incf (codegen-context-lambda-counter context))
+      (let ((lambda-name (format nil "lambda_~D" (codegen-context-lambda-counter context))))
+
+        ;; Compile the lambda body as a new function
+        (let ((func-idx (compile-lambda-body lambda-name params body free-vars
+                                              arity context)))
+
+          ;; Generate code to create the closure at the call site
+          (generate-closure-creation func-idx arity free-vars env registry))))))
+
+(defun compile-lambda-body (name params body free-vars arity context)
+  "Compile a lambda body as a Wasm function.
+Returns the function index."
+  (let* ((module (codegen-context-module context))
+         (registry (codegen-context-type-registry context))
+         (env-type-idx (env-type-index registry)))
+
+    ;; Determine which function type to use based on arity
+    (let* ((func-type-idx (case arity
+                            (0 (func-0-type-index registry))
+                            (1 (func-1-type-index registry))
+                            (2 (func-2-type-index registry))
+                            (t (func-n-type-index registry))))
+           ;; Create new environment for lambda body
+           (lambda-env (make-compile-env :type-registry registry
+                                         :codegen-context context)))
+
+      ;; Bind parameters
+      ;; For arity 0-2: (env arg1 arg2 ...)
+      ;; For arity N: (env args-array)
+      (env-bind-param lambda-env '%env 0 :type `(:ref :null ,env-type-idx))
+
+      (if (<= arity 2)
+          ;; Direct parameters
+          (loop for param in params
+                for i from 1
+                do (env-bind-param lambda-env param i :type :anyref))
+          ;; Array parameter - need to extract at runtime
+          (env-bind-param lambda-env '%args 1 :type :anyref))
+
+      ;; Bind captured variables (accessed via env array)
+      (loop for var in free-vars
+            for i from 0
+            do (env-bind-closure lambda-env var i))
+
+      ;; Set tail position for body
+      (setf (compile-env-tail-position-p lambda-env) t)
+
+      ;; Compile body
+      (let ((body-code
+              (if (> arity 2)
+                  ;; For N-arg functions, need to extract args first
+                  (append (compile-extract-args params lambda-env registry)
+                          (compile-expression body lambda-env))
+                  (compile-expression body lambda-env))))
+
+        ;; Create the function
+        (let* ((locals (env-collect-local-types lambda-env))
+               (full-code (append body-code (emit-end)))
+               (func (make-wasm-func func-type-idx
+                                     :name name
+                                     :locals locals
+                                     :body full-code)))
+          (module-add-func module func))))))
+
+(defun compile-extract-args (params env registry)
+  "Generate code to extract arguments from args array for N-arg functions.
+Binds each parameter as a local variable."
+  (declare (ignore registry))
+  (let ((code nil))
+    (loop for param in params
+          for i from 0
+          do (let ((binding (env-bind-local env param)))
+               ;; Get args array, index, and extract
+               (setf code
+                     (append code
+                             (emit-local.get 1)  ; args array
+                             (emit-i32.const i)
+                             (emit-array.get (env-type-index (compile-env-type-registry env)))
+                             (emit-local.set (binding-index binding))))))
+    code))
+
+(defun generate-closure-creation (func-idx arity free-vars env registry)
+  "Generate code to create a closure struct.
+Returns bytecode that leaves a closure on the stack."
+  (let ((code nil)
+        (num-free-vars (length free-vars)))
+
+    ;; Push null refs for unused arity slots, and ref.func for the used slot
+    (loop for a from 0 to 2
+          do (setf code
+                   (append code
+                           (if (= a arity)
+                               (emit-ref.func func-idx)
+                               (emit-ref.null (case a
+                                                (0 (func-0-type-index registry))
+                                                (1 (func-1-type-index registry))
+                                                (2 (func-2-type-index registry))))))))
+
+    ;; N-arg slot (null for now if arity <= 2)
+    (setf code
+          (append code
+                  (if (> arity 2)
+                      (emit-ref.func func-idx)
+                      (emit-ref.null (func-n-type-index registry)))))
+
+    ;; Create environment array with captured variables
+    (if (zerop num-free-vars)
+        ;; Empty environment - push null
+        (setf code (append code
+                           (emit-ref.null (env-type-index registry))))
+        ;; Capture free variables
+        (progn
+          ;; Push each captured variable's value
+          (loop for var in free-vars
+                do (setf code
+                         (append code
+                                 (compile-var (make-ast-var var) env))))
+          ;; Create the env array
+          (setf code (append code
+                             (emit-create-env registry num-free-vars)))))
+
+    ;; Create the closure struct
+    (append code (emit-make-closure registry))))
 
 ;;; ============================================================
 ;;; Function Call Compilation
@@ -346,7 +479,8 @@ Returns code to create a closure."
   "Compile a function call."
   (let ((func (ast-call-func ast))
         (args (ast-call-args ast))
-        (non-tail-env (env-not-in-tail-position env)))
+        (non-tail-env (env-not-in-tail-position env))
+        (registry (compile-env-type-registry env)))
     ;; Check if it's a direct call to a known function
     (if (and (typep func 'ast-var)
              (primitivep (ast-var-name func)))
@@ -355,13 +489,108 @@ Returns code to create a closure."
          (make-ast-primitive-call (ast-var-name func) args)
          env)
         ;; General function call through closure
-        (let ((arg-code (loop for arg in args
-                              append (compile-expression arg non-tail-env)))
-              (func-code (compile-expression func non-tail-env)))
-          ;; TODO: Implement closure dispatch
-          ;; For now, error
-          (declare (ignore arg-code func-code))
-          (error "General function calls not yet implemented")))))
+        (compile-closure-call func args env non-tail-env registry))))
+
+(defun compile-closure-call (func-ast args env non-tail-env registry)
+  "Compile a call through a closure.
+FUNC-AST is the expression for the closure.
+ARGS is the list of argument AST nodes."
+  (let* ((arity (length args))
+         (func-code (compile-expression func-ast non-tail-env))
+         (tail-p (compile-env-tail-position-p env)))
+
+    (cond
+      ;; Arity 0-2: direct call with individual arguments
+      ((<= arity 2)
+       (compile-direct-closure-call func-code args arity env non-tail-env registry tail-p))
+
+      ;; Arity > 2: pack arguments into array
+      (t
+       (compile-array-closure-call func-code args env non-tail-env registry tail-p)))))
+
+(defun compile-direct-closure-call (func-code args arity env non-tail-env registry tail-p)
+  "Compile a closure call with arity 0-2."
+  (let ((code nil)
+        ;; We need a local to store the closure so we can access it twice
+        ;; (once for env, once for code)
+        (closure-local-idx (compile-env-local-count env)))
+
+    ;; Allocate a local for the closure
+    (env-bind-local env '%closure)
+
+    ;; Evaluate function and store in local
+    (setf code (append code
+                       func-code
+                       (emit-local.tee closure-local-idx)))
+
+    ;; Get environment from closure (first argument to called function)
+    (setf code (append code
+                       (emit-closure-get-env registry)))
+
+    ;; Compile and push arguments
+    (dolist (arg args)
+      (setf code (append code
+                         (compile-expression arg non-tail-env))))
+
+    ;; Get the appropriate code slot from closure
+    (setf code (append code
+                       (emit-local.get closure-local-idx)
+                       (emit-closure-get-code registry arity)))
+
+    ;; Call the function via call_ref
+    (let ((func-type-idx (case arity
+                           (0 (func-0-type-index registry))
+                           (1 (func-1-type-index registry))
+                           (2 (func-2-type-index registry)))))
+      (setf code (append code
+                         (if tail-p
+                             (emit-return-call-ref func-type-idx)
+                             (emit-call-ref func-type-idx)))))
+
+    code))
+
+(defun compile-array-closure-call (func-code args env non-tail-env registry tail-p)
+  "Compile a closure call with arity > 2 (arguments packed in array)."
+  (let ((code nil)
+        (arity (length args))
+        ;; Local for the closure
+        (closure-local-idx (compile-env-local-count env)))
+
+    ;; Allocate local for closure
+    (env-bind-local env '%closure)
+
+    ;; Evaluate function and store in local
+    (setf code (append code
+                       func-code
+                       (emit-local.tee closure-local-idx)))
+
+    ;; Get environment from closure
+    (setf code (append code
+                       (emit-closure-get-env registry)))
+
+    ;; Create arguments array
+    ;; First push all argument values
+    (dolist (arg args)
+      (setf code (append code
+                         (compile-expression arg non-tail-env))))
+
+    ;; Create array with arguments
+    (setf code (append code
+                       (emit-array.new-fixed (vector-type-index registry) arity)))
+
+    ;; Get the N-arg code slot from closure
+    (setf code (append code
+                       (emit-local.get closure-local-idx)
+                       (emit-closure-get-code registry :n)))
+
+    ;; Call via call_ref
+    (let ((func-type-idx (func-n-type-index registry)))
+      (setf code (append code
+                         (if tail-p
+                             (emit-return-call-ref func-type-idx)
+                             (emit-call-ref func-type-idx)))))
+
+    code))
 
 (defun compile-primitive-call (ast env)
   "Compile a direct primitive call."
@@ -409,29 +638,39 @@ Returns code to create a closure."
          (params (ast-defun-params ast))
          (body (ast-defun-body ast))
          (module (codegen-context-module context))
-         (registry (codegen-context-type-registry context)))
+         (registry (codegen-context-type-registry context))
+         (arity (length params)))
 
-    ;; Create function type: (env, params...) -> anyref
-    (let* ((param-types (cons `(:ref :null ,(env-type-index registry))
-                              (make-list (length params)
-                                         :initial-element :anyref)))
-           (func-type (make-functype param-types '(:anyref)))
-           (type-def (make-wasm-type func-type :name (symbol-name name)))
-           (type-idx (module-add-type module type-def)))
+    ;; Use standard function type based on arity
+    (let ((type-idx (case arity
+                      (0 (func-0-type-index registry))
+                      (1 (func-1-type-index registry))
+                      (2 (func-2-type-index registry))
+                      (t (func-n-type-index registry)))))
 
       ;; Create compilation environment for function body
-      (let ((env (make-compile-env :type-registry registry)))
+      (let ((env (make-compile-env :type-registry registry
+                                   :codegen-context context)))
         ;; Bind parameters (env is param 0, then user params)
-        (env-bind-param env '%env 0)
-        (loop for param in params
-              for i from 1
-              do (env-bind-param env param i))
+        (env-bind-param env '%env 0 :type `(:ref :null ,(env-type-index registry)))
+
+        (if (<= arity 2)
+            ;; Direct parameters
+            (loop for param in params
+                  for i from 1
+                  do (env-bind-param env param i :type :anyref))
+            ;; For N-arg, we get an array - extract params as locals
+            (env-bind-param env '%args 1 :type :anyref))
 
         ;; Set tail position for body
         (setf (compile-env-tail-position-p env) t)
 
-        ;; Compile body
-        (let ((body-code (compile-expression body env)))
+        ;; Compile body (with arg extraction for N-arg functions)
+        (let ((body-code
+                (if (> arity 2)
+                    (append (compile-extract-args params env registry)
+                            (compile-expression body env))
+                    (compile-expression body env))))
           ;; Create function
           (let* ((locals (env-collect-local-types env))
                  (full-code (append body-code (emit-end)))

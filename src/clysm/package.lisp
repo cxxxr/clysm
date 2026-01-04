@@ -148,8 +148,13 @@
    #:emit-i64.const
    #:emit-local.get
    #:emit-local.set
+   #:emit-local.tee
    #:emit-call
    #:emit-end
+   #:emit-ref.func
+   #:emit-call-ref
+   #:emit-return-call-ref
+   #:emit-ref.null
    #:encode-blocktype
 
    ;; WAT print (backend/wat-print.lisp)
@@ -217,6 +222,20 @@
    #:emit-i31.get-u
    #:emit-ref.test
    #:emit-ref.cast
+
+   ;; Closure operations
+   #:emit-make-closure
+   #:emit-closure-get-env
+   #:emit-closure-get-code
+   #:emit-create-env
+   #:emit-env-get
+   #:emit-env-set-instr
+
+   ;; Function type accessors
+   #:func-0-type-index
+   #:func-1-type-index
+   #:func-2-type-index
+   #:func-n-type-index
 
    ;; High-level object emitters
    #:emit-make-cons
@@ -399,6 +418,7 @@
    #:compile-env-blocks
    #:compile-env-type-registry
    #:compile-env-functions
+   #:compile-env-codegen-context
    #:compile-env-parent
    #:env-lookup
    #:env-lookup-local
@@ -421,6 +441,7 @@
    #:make-codegen-context
    #:codegen-context-module
    #:codegen-context-type-registry
+   #:codegen-context-lambda-counter
    #:compile-toplevel
    #:compile-expression
    #:compile-defun

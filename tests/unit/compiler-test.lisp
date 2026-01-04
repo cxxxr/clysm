@@ -403,3 +403,139 @@
       (is-eql #x6D (fourth bytes))
       ;; Check version
       (is-eql #x01 (fifth bytes)))))
+
+;;; ============================================================
+;;; Closure Tests (Phase 5)
+;;; ============================================================
+
+(deftest test-emit-closure-operations ()
+  "Test closure instruction emitters"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module)))
+    ;; Test emit-make-closure
+    (let ((code (clysm:emit-make-closure registry)))
+      (is (listp code))
+      (is (member #xFB code)))  ; GC prefix
+    ;; Test emit-closure-get-env
+    (let ((code (clysm:emit-closure-get-env registry)))
+      (is (listp code))
+      (is (member #xFB code)))
+    ;; Test emit-closure-get-code for each arity
+    (dolist (arity '(0 1 2 :n))
+      (let ((code (clysm:emit-closure-get-code registry arity)))
+        (is (listp code))
+        (is (member #xFB code))))))
+
+(deftest test-emit-create-env ()
+  "Test environment array creation"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module)))
+    ;; Test creating empty env
+    (let ((code (clysm:emit-create-env registry 0)))
+      (is (listp code))
+      (is (member #xFB code)))
+    ;; Test creating env with 3 slots
+    (let ((code (clysm:emit-create-env registry 3)))
+      (is (listp code))
+      (is (member #xFB code)))))
+
+(deftest test-func-type-accessors ()
+  "Test function type index accessors"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module)))
+    (is (integerp (clysm:func-0-type-index registry)))
+    (is (integerp (clysm:func-1-type-index registry)))
+    (is (integerp (clysm:func-2-type-index registry)))
+    (is (integerp (clysm:func-n-type-index registry)))
+    ;; All should be distinct
+    (let ((indices (list (clysm:func-0-type-index registry)
+                         (clysm:func-1-type-index registry)
+                         (clysm:func-2-type-index registry)
+                         (clysm:func-n-type-index registry))))
+      (is-eql 4 (length (remove-duplicates indices))))))
+
+(deftest test-analyze-free-variables ()
+  "Test free variable analysis"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (env (clysm:make-compile-env :type-registry registry)))
+    ;; Simple case: lambda with no free variables
+    (let* ((ast (clysm:parse-sexp '(lambda (x) x)))
+           (free-vars (clysm:analyze-free-variables ast env)))
+      ;; x is a param, not free
+      (is-false (member 'x free-vars)))
+    ;; Lambda that captures y (free)
+    (let* ((ast (clysm:parse-sexp '(lambda (x) (+ x y))))
+           (free-vars (clysm:analyze-free-variables ast env)))
+      ;; y should be free (not bound in env or lambda params)
+      (is (member 'y free-vars))
+      ;; x should NOT be free (it's a lambda param)
+      (is-false (member 'x free-vars)))))
+
+(deftest test-compile-simple-lambda ()
+  "Test compiling a simple lambda without captures"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context))
+         (ast (clysm:parse-sexp '(lambda (x) x)))
+         (code (clysm:compile-expression ast env)))
+    (is (listp code))
+    (is (> (length code) 0))
+    ;; Should contain struct.new for closure
+    (is (member #xFB code))
+    ;; Lambda counter should have incremented
+    (is (>= (clysm:codegen-context-lambda-counter context) 1))))
+
+(deftest test-compile-lambda-with-capture ()
+  "Test compiling a lambda that captures a variable"
+  (let* ((module (clysm:make-wasm-module))
+         (registry (clysm:register-core-types module))
+         (context (clysm:make-codegen-context :module module
+                                               :type-registry registry))
+         (env (clysm:make-compile-env :type-registry registry
+                                       :codegen-context context)))
+    ;; Bind y as a local (will be captured by lambda)
+    (clysm:env-bind-local env 'y)
+    ;; Compile lambda that captures y
+    (let* ((ast (clysm:parse-sexp '(lambda (x) (+ x y))))
+           (code (clysm:compile-expression ast env)))
+      (is (listp code))
+      (is (> (length code) 0))
+      ;; Should have created an environment array
+      (is (member #x08 code)))))  ; array.new_fixed
+
+(deftest test-compile-defun-with-multiple-args ()
+  "Test compiling defun with 0, 1, 2, and 3+ args"
+  ;; 0-arg function
+  (let* ((context (clysm:compile-toplevel '(defun zero () 42))))
+    (is (clysm:codegen-context-p context)))
+  ;; 1-arg function
+  (let* ((context (clysm:compile-toplevel '(defun one (x) x))))
+    (is (clysm:codegen-context-p context)))
+  ;; 2-arg function
+  (let* ((context (clysm:compile-toplevel '(defun two (x y) (+ x y)))))
+    (is (clysm:codegen-context-p context)))
+  ;; 3-arg function (uses array calling convention)
+  (let* ((context (clysm:compile-toplevel '(defun three (x y z) (+ x (+ y z))))))
+    (is (clysm:codegen-context-p context))))
+
+(deftest test-emit-call-ref ()
+  "Test call_ref instruction emission"
+  (let ((code (clysm:emit-call-ref 5)))
+    (is (listp code))
+    (is-eql #x14 (first code))))  ; call_ref opcode
+
+(deftest test-emit-return-call-ref ()
+  "Test return_call_ref instruction emission"
+  (let ((code (clysm:emit-return-call-ref 5)))
+    (is (listp code))
+    (is-eql #x15 (first code))))  ; return_call_ref opcode
+
+(deftest test-emit-ref.func ()
+  "Test ref.func instruction emission"
+  (let ((code (clysm:emit-ref.func 3)))
+    (is (listp code))
+    (is-eql #xD2 (first code))))  ; ref.func opcode
