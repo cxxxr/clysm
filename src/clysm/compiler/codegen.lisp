@@ -1294,11 +1294,11 @@ Creates a function that sets the global to the initial value."
 (defun compile-expression-as-function (ast context)
   "Compile an expression as an anonymous function.
 Exports the function as '_start' for wasmtime execution.
-Returns i32 (unwrapped from i31ref) for display purposes."
+Returns anyref to support all Lisp values (fixnums, cons cells, etc.)."
   (let* ((module (codegen-context-module context))
          (registry (codegen-context-type-registry context)))
-    ;; Create function type: () -> i32 (for wasmtime display)
-    (let* ((func-type (make-functype nil '(:i32)))
+    ;; Create function type: () -> anyref (supports all Lisp types)
+    (let* ((func-type (make-functype nil '(:anyref)))
            (type-def (make-wasm-type func-type))
            (type-idx (module-add-type module type-def)))
 
@@ -1309,10 +1309,9 @@ Returns i32 (unwrapped from i31ref) for display purposes."
 
         ;; Compile expression
         (let ((body-code (compile-expression ast env)))
-          ;; Create function - unwrap i31ref to i32 for display
+          ;; Create function - return anyref directly
           (let* ((locals (env-collect-local-types env))
                  (full-code (append body-code
-                                    (emit-i31.get-s)  ; unwrap i31ref to i32
                                     (emit-end)))
                  (func (make-wasm-func type-idx
                                        :name "_start"
