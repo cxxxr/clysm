@@ -9,8 +9,9 @@
 ;;; Primitive Registry
 ;;; ============================================================
 
-(defvar *primitives* (make-hash-table :test 'eq)
-  "Registry of primitive operations and their code generators.")
+(defvar *primitives* (make-hash-table :test 'equal)
+  "Registry of primitive operations and their code generators.
+Keys are symbol names (strings) for package-independent lookup.")
 
 (defstruct primitive
   "A primitive operation."
@@ -21,17 +22,21 @@
   foldable-p)    ; Can be constant-folded?
 
 (defun register-primitive (name arity generator &key pure foldable)
-  "Register a primitive operation."
-  (setf (gethash name *primitives*)
-        (make-primitive :name name
-                        :arity arity
-                        :generator generator
-                        :pure-p pure
-                        :foldable-p foldable)))
+  "Register a primitive operation.
+NAME can be a symbol; it will be stored by its name string."
+  (let ((name-str (if (symbolp name) (symbol-name name) name)))
+    (setf (gethash name-str *primitives*)
+          (make-primitive :name name
+                          :arity arity
+                          :generator generator
+                          :pure-p pure
+                          :foldable-p foldable))))
 
 (defun find-primitive (name)
-  "Find a primitive by name."
-  (gethash name *primitives*))
+  "Find a primitive by name.
+NAME can be a symbol (any package) or a string."
+  (let ((name-str (if (symbolp name) (symbol-name name) name)))
+    (gethash name-str *primitives*)))
 
 (defun primitivep (name)
   "Check if NAME is a registered primitive."

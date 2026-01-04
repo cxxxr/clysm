@@ -1154,13 +1154,16 @@ ARGS is the list of argument AST nodes."
             (loop for arg in args
                   append (compile-expression arg non-tail-env))))
       ;; For fixnum operations, we need to unwrap i31ref first
-      (when (member name '(+ - * truncate rem < <= > >= = /=
-                           zerop plusp minusp))
-        ;; Unwrap all fixnum arguments
-        (setf arg-code
-              (loop for arg in args
-                    append (append (compile-expression arg non-tail-env)
-                                   (emit-i31.get-s)))))
+      ;; Compare by symbol name to handle symbols from different packages
+      (let ((name-str (if (symbolp name) (symbol-name name) name)))
+        (when (member name-str '("+" "-" "*" "TRUNCATE" "REM" "<" "<=" ">" ">=" "=" "/="
+                                 "ZEROP" "PLUSP" "MINUSP")
+                      :test #'string=)
+          ;; Unwrap all fixnum arguments
+          (setf arg-code
+                (loop for arg in args
+                      append (append (compile-expression arg non-tail-env)
+                                     (emit-i31.get-s))))))
 
       ;; Generate primitive code
       (let* ((registry (compile-env-type-registry env))
