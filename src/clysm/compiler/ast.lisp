@@ -153,6 +153,15 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
   value      ; AST node for initial value (or nil)
   special-p) ; T if declared special
 
+(defstruct (ast-defmacro (:include ast-node)
+                         (:constructor make-ast-defmacro (name lambda-list body)))
+  "Macro definition.
+Note: Macro expansion happens in the host Lisp at compile time.
+The AST node is used for tracking but macros are registered immediately."
+  name         ; Macro name (symbol)
+  lambda-list  ; Macro lambda list (may include &body, &rest, etc.)
+  body)        ; List of body forms (unevaluated)
+
 ;;; ============================================================
 ;;; AST Utilities
 ;;; ============================================================
@@ -170,6 +179,11 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
 (defvar *special-forms* (make-hash-table :test 'eq)
   "Registry of special form parsers.")
 
+(defvar *macros* (make-hash-table :test 'eq)
+  "Registry of macro expander functions.
+Each entry maps a symbol to a function that takes the macro call form
+and returns the expanded form.")
+
 (defun register-special-form (name parser)
   "Register a special form parser."
   (setf (gethash name *special-forms*) parser))
@@ -178,6 +192,51 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
   "Check if NAME is a special form."
   (and (symbolp name)
        (gethash name *special-forms*)))
+
+;;; ============================================================
+;;; Macro System
+;;; ============================================================
+
+(defun register-macro (name expander)
+  "Register a macro expander function.
+EXPANDER is a function that takes the full macro call form and returns
+the expanded form."
+  (setf (gethash name *macros*) expander))
+
+(defun unregister-macro (name)
+  "Remove a macro definition."
+  (remhash name *macros*))
+
+(defun get-macro-expander (name)
+  "Return the macro expander function for NAME, or NIL."
+  (gethash name *macros*))
+
+(defun macrop (name)
+  "Check if NAME is a defined macro."
+  (and (symbolp name)
+       (gethash name *macros*)))
+
+(defun clysm-macroexpand-1 (form)
+  "Expand FORM once if it's a macro call.
+Returns (values expanded-form expanded-p)."
+  (if (and (consp form)
+           (symbolp (car form))
+           (macrop (car form)))
+      (let ((expander (get-macro-expander (car form))))
+        (values (funcall expander form) t))
+      (values form nil)))
+
+(defun clysm-macroexpand (form)
+  "Repeatedly expand FORM until it's no longer a macro call.
+Returns (values fully-expanded-form expanded-p)."
+  (let ((expanded-p nil))
+    (loop
+      (multiple-value-bind (new-form did-expand)
+          (clysm-macroexpand-1 form)
+        (unless did-expand
+          (return (values form expanded-p)))
+        (setf form new-form
+              expanded-p t)))))
 
 (defun parse-sexp (form)
   "Parse an S-expression into an AST node."
@@ -206,6 +265,10 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
     ((consp form)
      (let ((op (car form)))
        (cond
+         ;; Macro expansion (before special forms to allow shadowing)
+         ((and (symbolp op) (macrop op))
+          (parse-sexp (clysm-macroexpand form)))
+
          ;; Special forms
          ((special-form-p op)
           (funcall (gethash op *special-forms*) form))
@@ -374,6 +437,41 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
                        (when value (parse-sexp value))
                        t))))
 
+(defun parse-defmacro (form)
+  "Parse (defmacro name lambda-list body...).
+Registers the macro expander in the host Lisp for compile-time expansion."
+  (unless (>= (length form) 3)
+    (error "DEFMACRO requires name and lambda-list: ~S" form))
+  (let ((name (second form))
+        (lambda-list (third form))
+        (body (cdddr form)))
+    (unless (symbolp name)
+      (error "DEFMACRO name must be a symbol: ~S" form))
+    (unless (listp lambda-list)
+      (error "DEFMACRO lambda-list must be a list: ~S" form))
+
+    ;; Create and register the macro expander function
+    ;; The expander takes the whole form and destructures it
+    (let ((expander (make-macro-expander name lambda-list body)))
+      (register-macro name expander))
+
+    ;; Return AST node for tracking
+    (make-ast-defmacro name lambda-list body)))
+
+(defun make-macro-expander (name lambda-list body)
+  "Create a macro expander function for DEFMACRO.
+Returns a function that takes a macro call form and returns the expansion."
+  (declare (ignore name))
+  ;; Build a lambda that destructures the arguments and evaluates the body
+  ;; We use &whole to get the whole form, then skip the macro name
+  (let* ((whole-var (gensym "WHOLE-"))
+         (expander-lambda
+           `(lambda (,whole-var)
+              (destructuring-bind ,lambda-list (cdr ,whole-var)
+                ,@body))))
+    ;; Evaluate in host Lisp to create the function
+    (eval expander-lambda)))
+
 (defun parse-tagbody (form)
   "Parse (tagbody {tag | form}*)."
   (let ((body (cdr form))
@@ -449,6 +547,7 @@ SEGMENTS is a list of (tag . forms) where tag is a symbol or nil."
   (register-special-form 'return-from #'parse-return-from)
   (register-special-form 'defun #'parse-defun)
   (register-special-form 'defvar #'parse-defvar)
+  (register-special-form 'defmacro #'parse-defmacro)
   (register-special-form 'tagbody #'parse-tagbody)
   (register-special-form 'go #'parse-go)
   (register-special-form 'catch #'parse-catch)

@@ -967,3 +967,184 @@
     (clysm:context-declare-special context '*foo*)
     (is (clysm:env-special-p env '*foo*))
     (is-false (clysm:env-special-p env '*bar*))))
+
+;;; ============================================================
+;;; Macro System Tests (Phase 8)
+;;; ============================================================
+
+;;; --- Macro Registry Tests ---
+
+(deftest test-register-macro ()
+  "Test registering a macro"
+  ;; Clean up first
+  (clysm:unregister-macro 'test-macro-1)
+
+  ;; Register a simple macro
+  (clysm:register-macro 'test-macro-1
+                        (lambda (form)
+                          (declare (ignore form))
+                          42))
+
+  ;; Check it's registered
+  (is (clysm:macrop 'test-macro-1))
+  (is (functionp (clysm:get-macro-expander 'test-macro-1)))
+
+  ;; Clean up
+  (clysm:unregister-macro 'test-macro-1))
+
+(deftest test-unregister-macro ()
+  "Test unregistering a macro"
+  (clysm:register-macro 'test-macro-2
+                        (lambda (form) form))
+  (is (clysm:macrop 'test-macro-2))
+
+  (clysm:unregister-macro 'test-macro-2)
+  (is-false (clysm:macrop 'test-macro-2)))
+
+(deftest test-macrop ()
+  "Test macrop predicate"
+  (clysm:unregister-macro 'not-a-macro)
+
+  (is-false (clysm:macrop 'not-a-macro))
+  (is-false (clysm:macrop '+))
+  (is-false (clysm:macrop 'if)))
+
+;;; --- Macro Expansion Tests ---
+
+(deftest test-clysm-macroexpand-1 ()
+  "Test single macro expansion"
+  ;; Register a test macro
+  (clysm:register-macro 'double
+                        (lambda (form)
+                          `(+ ,(second form) ,(second form))))
+
+  ;; Expand once
+  (multiple-value-bind (expanded did-expand)
+      (clysm:clysm-macroexpand-1 '(double 5))
+    (is did-expand)
+    (is (equal '(+ 5 5) expanded)))
+
+  ;; Non-macro form doesn't expand
+  (multiple-value-bind (expanded did-expand)
+      (clysm:clysm-macroexpand-1 '(+ 1 2))
+    (is-false did-expand)
+    (is (equal '(+ 1 2) expanded)))
+
+  (clysm:unregister-macro 'double))
+
+(deftest test-clysm-macroexpand ()
+  "Test full macro expansion"
+  ;; Register nested macros
+  (clysm:register-macro 'inc
+                        (lambda (form)
+                          `(+ 1 ,(second form))))
+  (clysm:register-macro 'inc2
+                        (lambda (form)
+                          `(inc (inc ,(second form)))))
+
+  ;; Full expansion (top-level only, like CL's macroexpand)
+  (multiple-value-bind (expanded did-expand)
+      (clysm:clysm-macroexpand '(inc2 x))
+    (is did-expand)
+    ;; inc2 -> (inc (inc x)) -> (+ 1 (inc x))
+    ;; Stops because + is not a macro (inner inc is NOT expanded)
+    (is (equal '(+ 1 (inc x)) expanded)))
+
+  (clysm:unregister-macro 'inc)
+  (clysm:unregister-macro 'inc2))
+
+;;; --- Defmacro Parsing Tests ---
+
+(deftest test-parse-defmacro ()
+  "Test parsing defmacro"
+  (clysm:unregister-macro 'my-when)
+
+  (let ((ast (clysm:parse-sexp '(defmacro my-when (test &body body)
+                                  `(if ,test (progn ,@body))))))
+    (is (typep ast 'clysm:ast-defmacro))
+    (is-eq 'my-when (clysm:ast-defmacro-name ast))
+    (is (equal '(test &body body) (clysm:ast-defmacro-lambda-list ast)))
+    ;; Macro should be registered
+    (is (clysm:macrop 'my-when)))
+
+  (clysm:unregister-macro 'my-when))
+
+(deftest test-macro-expansion-in-parse ()
+  "Test that macros are expanded during parsing"
+  ;; Define a simple macro
+  (clysm:register-macro 'always-42
+                        (lambda (form)
+                          (declare (ignore form))
+                          42))
+
+  ;; Parse a form using the macro
+  (let ((ast (clysm:parse-sexp '(always-42))))
+    ;; Should be expanded to 42 (a literal)
+    (is (typep ast 'clysm:ast-literal))
+    (is-eql 42 (clysm:ast-literal-value ast)))
+
+  (clysm:unregister-macro 'always-42))
+
+(deftest test-when-macro ()
+  "Test a realistic when macro"
+  (clysm:unregister-macro 'my-when)
+
+  ;; Define when macro
+  (clysm:parse-sexp '(defmacro my-when (test &body body)
+                       `(if ,test (progn ,@body))))
+
+  ;; Use the macro
+  (let ((ast (clysm:parse-sexp '(my-when (< x 10) (+ x 1) (+ x 2)))))
+    ;; Should expand to if form
+    (is (typep ast 'clysm:ast-if))
+    ;; test should be (< x 10) -> primitive-call
+    (is (typep (clysm:ast-if-test ast) 'clysm:ast-primitive-call))
+    ;; then should be progn with two forms
+    (is (typep (clysm:ast-if-then ast) 'clysm:ast-progn))
+    (is-eql 2 (length (clysm:ast-progn-forms (clysm:ast-if-then ast)))))
+
+  (clysm:unregister-macro 'my-when))
+
+(deftest test-unless-macro ()
+  "Test an unless macro"
+  (clysm:unregister-macro 'my-unless)
+
+  ;; Define unless macro
+  (clysm:parse-sexp '(defmacro my-unless (test &body body)
+                       `(if ,test nil (progn ,@body))))
+
+  ;; Use the macro
+  (let ((ast (clysm:parse-sexp '(my-unless flag (do-something)))))
+    (is (typep ast 'clysm:ast-if))
+    ;; else should be progn
+    (is (typep (clysm:ast-if-else ast) 'clysm:ast-progn)))
+
+  (clysm:unregister-macro 'my-unless))
+
+(deftest test-compile-defmacro ()
+  "Test that defmacro compiles without generating code"
+  (clysm:unregister-macro 'compile-test-macro)
+
+  (let* ((context (clysm:compile-toplevel '(defmacro compile-test-macro (x)
+                                              `(+ ,x 1)))))
+    ;; Should return context
+    (is (clysm:codegen-context-p context))
+    ;; Macro should be registered
+    (is (clysm:macrop 'compile-test-macro)))
+
+  (clysm:unregister-macro 'compile-test-macro))
+
+(deftest test-macro-with-rest ()
+  "Test macro with &rest parameter"
+  (clysm:unregister-macro 'my-list)
+
+  (clysm:parse-sexp '(defmacro my-list (&rest items)
+                       `(cons ,(first items)
+                              ,(if (rest items)
+                                   `(my-list ,@(rest items))
+                                   nil))))
+
+  ;; Should be able to use the macro
+  (is (clysm:macrop 'my-list))
+
+  (clysm:unregister-macro 'my-list))

@@ -63,6 +63,9 @@ Returns the codegen context with the compiled form."
      (compile-defun ast context))
     (ast-defvar
      (compile-defvar ast context))
+    (ast-defmacro
+     ;; Macros are already registered at parse time, nothing to compile
+     nil)
     (t
      ;; For other forms, wrap in an anonymous function
      (compile-expression-as-function ast context))))

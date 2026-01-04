@@ -416,6 +416,20 @@
    #:ast-defvar-name
    #:ast-defvar-value
    #:ast-defvar-special-p
+   #:ast-defmacro
+   #:ast-defmacro-p
+   #:make-ast-defmacro
+   #:ast-defmacro-name
+   #:ast-defmacro-lambda-list
+   #:ast-defmacro-body
+   ;; Macro system
+   #:*macros*
+   #:register-macro
+   #:unregister-macro
+   #:get-macro-expander
+   #:macrop
+   #:clysm-macroexpand-1
+   #:clysm-macroexpand
    ;; Control flow AST nodes
    #:ast-tagbody
    #:make-ast-tagbody
