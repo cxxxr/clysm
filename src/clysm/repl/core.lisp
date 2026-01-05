@@ -112,11 +112,8 @@ since each invocation creates a fresh module instance."
   (let* ((wrapped-forms
            (list form))  ; For now, just compile the form
          (wasm-bytes (compile-to-wasm wrapped-forms)))
-    ;; Validate if possible
-    (handler-case
-        (validate-wasm-module wasm-bytes)
-      (error (e)
-        (warn "Wasm validation failed: ~A" e)))
+    ;; Note: wasm-validate (WABT) doesn't support WasmGC, so we skip validation.
+    ;; Wasmtime will report any errors when running the module.
     ;; Run and get result (returns string length)
     (run-wasm-module wasm-bytes)))
 
