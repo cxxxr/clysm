@@ -108,7 +108,9 @@ Returns the new binding."
   (let ((binding (make-binding name :param index)))
     (setf (binding-type binding) type)
     (push binding (compile-env-locals env))
-    ;; Note: params don't increment local-count as they're already allocated
+    ;; Update local-count to be after all params so locals get correct indices
+    (setf (compile-env-local-count env)
+          (max (compile-env-local-count env) (1+ index)))
     binding))
 
 (defun env-bind-closure (env name capture-index)

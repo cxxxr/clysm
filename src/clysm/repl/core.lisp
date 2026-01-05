@@ -45,14 +45,15 @@ EXPORT-NAME is the function to call (default: _start or main)."
          (output (run-shell-command command)))
     (parse-wasmtime-result output)))
 
-(defun read-wasm-result-string (wasm-bytes length)
-  "Read the result string from a Wasm module by calling get_result_char.
-WASM-BYTES is the compiled module (already written to temp file).
-LENGTH is the string length returned by _start."
+(defun read-wasm-result-string (length)
+  "Read the result string from a Wasm module by calling get_char.
+The module must already be written to *temp-wasm-path*.
+LENGTH is the string length returned by _start.
+Each get_char call recomputes the expression (needed for CLI wasmtime)."
   (when (and (integerp length) (> length 0))
     (with-output-to-string (result)
       (dotimes (i length)
-        (let* ((command (format nil "~A --wasm gc=y --wasm function-references=y --invoke get_result_char ~A ~D 2>&1"
+        (let* ((command (format nil "~A --wasm gc=y --wasm function-references=y --invoke get_char ~A ~D 2>&1"
                                 *wasmtime-path* *temp-wasm-path* i))
                (output (run-shell-command command))
                (char-code (parse-wasmtime-result output)))
@@ -61,7 +62,8 @@ LENGTH is the string length returned by _start."
 
 (defun run-wasm-with-print (wasm-bytes)
   "Run a Wasm module and return the printed string result.
-First calls _start to get the length, then reads characters via get_result_char."
+First calls _start to get the length, then reads characters via get_char.
+Each character retrieval recomputes the expression (needed for CLI wasmtime)."
   ;; Write bytes to temp file
   (write-file-bytes *temp-wasm-path* wasm-bytes)
 
@@ -71,7 +73,7 @@ First calls _start to get the length, then reads characters via get_result_char.
          (output (run-shell-command command))
          (length (parse-wasmtime-result output)))
     (if (and (integerp length) (> length 0))
-        (read-wasm-result-string wasm-bytes length)
+        (read-wasm-result-string length)
         "NIL")))
 
 (defun run-shell-command (command)
@@ -104,18 +106,13 @@ Returns T if valid, signals error otherwise."
 
 (defun clysm-eval (form)
   "Compile and evaluate a single Lisp form.
-Returns the string length of the printed result.
-Note: Full string output requires a JavaScript runtime or memory-based approach.
-The result string is stored in a Wasm global but cannot be read via CLI wasmtime
-since each invocation creates a fresh module instance."
+Returns the printed string representation of the result."
   ;; Wrap form in a function that returns the value
   (let* ((wrapped-forms
            (list form))  ; For now, just compile the form
          (wasm-bytes (compile-to-wasm wrapped-forms)))
-    ;; Note: wasm-validate (WABT) doesn't support WasmGC, so we skip validation.
-    ;; Wasmtime will report any errors when running the module.
-    ;; Run and get result (returns string length)
-    (run-wasm-module wasm-bytes)))
+    ;; Run and get the printed result string
+    (run-wasm-with-print wasm-bytes)))
 
 (defun clysm-eval-string (string)
   "Read and evaluate a string containing Lisp code.
@@ -164,17 +161,11 @@ Updates REPL history and result variables."
 (defun repl-print (result)
   "Print the result of evaluation."
   (unless (eq result :error)
-    (cond
-      ((stringp result)
-       ;; Result is already a printed string from Wasm
-       (write-string result))
-      ((integerp result)
-       ;; Result is a string length (Wasm CLI mode)
-       ;; For now, just show the length
-       (format t "[result length: ~D]" result))
-      (t
-       ;; Fallback for host-evaluated results
-       (clysm-print result)))
+    (if (stringp result)
+        ;; Result is a printed string from Wasm
+        (write-string result)
+        ;; Fallback for host-evaluated results
+        (clysm-print result))
     (terpri)))
 
 (defun repl ()

@@ -1313,61 +1313,87 @@ Creates a function that sets the global to the initial value."
 
 (defun compile-expression-as-function (ast context)
   "Compile an expression as an anonymous function.
-Exports the function as '_start' for wasmtime execution.
-Calls prin1-to-string on result, stores in global, and returns string length as i32."
+Exports '_start' (returns string length) and 'get_char' (returns char at index).
+Both functions recompute the expression, allowing CLI wasmtime to read results."
   (let* ((module (codegen-context-module context))
          (registry (codegen-context-type-registry context))
          (printer-reg (codegen-context-printer-registry context))
          (prin1-idx (printer-registry-prin1-to-string printer-reg))
-         (result-global-idx (printer-registry-result-global printer-reg))
          (string-idx (string-type-index registry)))
-    ;; Create function type: () -> i32 (returns string length)
-    (let* ((func-type (make-functype nil '(:i32)))
-           (type-def (make-wasm-type func-type))
-           (type-idx (module-add-type module type-def)))
 
-      ;; Create compilation environment
+    ;; Create function type: () -> i32 (returns string length)
+    (let* ((func-type-void-i32 (make-functype nil '(:i32)))
+           (type-def-void-i32 (make-wasm-type func-type-void-i32))
+           (type-idx-void-i32 (module-add-type module type-def-void-i32))
+           ;; Create function type: (i32) -> i32 (for get_char)
+           (func-type-i32-i32 (make-functype '(:i32) '(:i32)))
+           (type-def-i32-i32 (make-wasm-type func-type-i32-i32))
+           (type-idx-i32-i32 (module-add-type module type-def-i32-i32)))
+
+      ;; Compile _start: () -> i32 (returns length)
       (let ((env (make-compile-env :type-registry registry
                                    :codegen-context context)))
         (setf (compile-env-tail-position-p env) t)
-
-        ;; Allocate a local for storing the result string
         (let ((result-local (env-bind-local env '%result-string
                                             :type `(:ref :null ,string-idx))))
-
-          ;; Compile expression
           (let ((body-code (compile-expression ast env)))
-            ;; Create function:
-            ;; 1. Evaluate expression -> anyref
-            ;; 2. Call prin1-to-string -> ref $string
-            ;; 3. Store in local
-            ;; 4. Store in global (for get_result_char)
-            ;; 5. Get array length -> i32
             (let* ((locals (env-collect-local-types env))
                    (full-code (append body-code
-                                      ;; Call prin1-to-string on result
                                       (list (opcode :call))
                                       (encode-uleb128 prin1-idx)
-                                      ;; Store result in local
                                       (emit-local.set (binding-index result-local))
-                                      ;; Store in global for get_result_char
-                                      (emit-local.get (binding-index result-local))
-                                      (list (opcode :global.set))
-                                      (encode-uleb128 result-global-idx)
-                                      ;; Get result and return length
                                       (emit-local.get (binding-index result-local))
                                       (emit-ref.as-non-null)
                                       (emit-array.len)
                                       (emit-end)))
-                   (func (make-wasm-func type-idx
+                   (func (make-wasm-func type-idx-void-i32
                                          :name "_start"
                                          :locals locals
                                          :body full-code))
                    (func-idx (module-add-func module func)))
-              ;; Export as _start for wasmtime execution
               (module-add-export module
                                  (make-export "_start" :func func-idx))
-              func-idx)))))))
+
+              ;; Compile get_char: (i32) -> i32 (returns char at index)
+              ;; Recomputes the expression each time (needed for CLI wasmtime)
+              (let ((env2 (make-compile-env :type-registry registry
+                                            :codegen-context context)))
+                (setf (compile-env-tail-position-p env2) t)
+                ;; Parameter 0 is the index
+                (env-bind-param env2 '%index 0 :type :i32)
+                (let ((result-local2 (env-bind-local env2 '%result-string
+                                                     :type `(:ref :null ,string-idx))))
+                  (let ((body-code2 (compile-expression ast env2)))
+                    (let* ((locals2 (env-collect-local-types env2))
+                           (full-code2 (append body-code2
+                                               (list (opcode :call))
+                                               (encode-uleb128 prin1-idx)
+                                               (emit-local.set (binding-index result-local2))
+                                               ;; Check bounds: if index >= len, return -1
+                                               (emit-local.get 0)  ; index
+                                               (emit-local.get (binding-index result-local2))
+                                               (emit-ref.as-non-null)
+                                               (emit-array.len)
+                                               (list (opcode :i32.ge_u))
+                                               (list (opcode :if))
+                                               (encode-blocktype :i32)
+                                               (emit-i32.const -1)
+                                               (list (opcode :else))
+                                               ;; Return char at index
+                                               (emit-local.get (binding-index result-local2))
+                                               (emit-ref.as-non-null)
+                                               (emit-local.get 0)  ; index
+                                               (emit-array.get string-idx)
+                                               (emit-end)
+                                               (emit-end)))
+                           (func2 (make-wasm-func type-idx-i32-i32
+                                                  :name "get_char"
+                                                  :locals locals2
+                                                  :body full-code2))
+                           (func-idx2 (module-add-func module func2)))
+                      (module-add-export module
+                                         (make-export "get_char" :func func-idx2))
+                      func-idx)))))))))))
 
 ;;; ============================================================
 ;;; High-Level Compilation Interface
