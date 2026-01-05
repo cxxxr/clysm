@@ -20,6 +20,8 @@
   (print-nil nil :type (or null integer))
   (print-cons nil :type (or null integer))
   (print-cdr-list nil :type (or null integer))
+  (print-symbol nil :type (or null integer))
+  (print-character nil :type (or null integer))
   ;; Main dispatcher
   (prin1-to-string nil :type (or null integer))
   ;; Result storage (for REPL)
@@ -330,7 +332,6 @@ Signature: (cons: anyref) -> ref $string
 Prints a cons cell as (car . cdr) or proper list."
   (let ((string-idx (string-type-index registry))
         (cons-idx (cons-type-index registry))
-        (nil-idx (nil-type-index registry))
         (string-append-idx (printer-registry-string-append printer-reg))
         (prin1-idx (printer-registry-prin1-to-string printer-reg))
         (print-cdr-idx (printer-registry-print-cdr-list printer-reg)))
@@ -367,9 +368,9 @@ Prints a cons cell as (car . cdr) or proper list."
      (encode-uleb128 string-append-idx)
      (emit-local.set 4)
 
-     ;; Check if cdr is NIL
+     ;; Check if cdr is NIL (null reference)
      (emit-local.get 3)
-     (emit-ref.test nil-idx)
+     (emit-ref.is-null)
      (list (opcode :if))
      (encode-blocktype `(:ref :null ,string-idx))
 
@@ -439,7 +440,6 @@ Signature: (cons: anyref) -> ref $string
 Prints the cdr of a list without outer parentheses."
   (let ((string-idx (string-type-index registry))
         (cons-idx (cons-type-index registry))
-        (nil-idx (nil-type-index registry))
         (string-append-idx (printer-registry-string-append printer-reg))
         (prin1-idx (printer-registry-prin1-to-string printer-reg))
         (print-cdr-idx (printer-registry-print-cdr-list printer-reg)))
@@ -468,9 +468,9 @@ Prints the cdr of a list without outer parentheses."
      (encode-uleb128 prin1-idx)
      (emit-local.set 4)
 
-     ;; Check if cdr is NIL
+     ;; Check if cdr is NIL (null reference)
      (emit-local.get 3)
-     (emit-ref.test nil-idx)
+     (emit-ref.is-null)
      (list (opcode :if))
      (encode-blocktype `(:ref :null ,string-idx))
 
@@ -519,6 +519,114 @@ Prints the cdr of a list without outer parentheses."
      (emit-end))))
 
 ;;; ============================================================
+;;; Print Symbol Function
+;;; ============================================================
+
+(defun gen-print-symbol-body (registry)
+  "Generate body for $print-symbol function.
+Signature: (obj: anyref) -> ref $string
+Extracts the symbol's name and returns it."
+  (let ((symbol-idx (symbol-type-index registry))
+        (string-idx (string-type-index registry)))
+    (append
+     ;; Cast to symbol type and get name field
+     (emit-local.get 0)                    ; obj
+     (list #xFB #x17)                      ; ref.cast
+     (encode-uleb128 symbol-idx)
+     (emit-struct.get symbol-idx +symbol-name+)
+
+     ;; Cast name (anyref) to (ref null $string)
+     (list #xFB #x17)                      ; ref.cast
+     (encode-uleb128 string-idx)
+
+     (emit-end))))
+
+;;; ============================================================
+;;; Print Character Function
+;;; ============================================================
+
+(defun gen-print-character-body (registry)
+  "Generate body for $print-character function.
+Signature: (obj: anyref) -> ref $string
+Prints character as #\\x format."
+  (let ((string-idx (string-type-index registry)))
+    (append
+     ;; Locals: char-code (1), result (2), name-len (3)
+
+     ;; Extract i32 from i31ref
+     (emit-local.get 0)                    ; obj
+     (list #xFB #x17 #x6C)                 ; ref.cast i31
+     (emit-i31.get-s)
+     (emit-local.set 1)                    ; char-code
+
+     ;; Check for named characters (Space, Newline, Tab)
+     ;; Space = 32
+     (emit-local.get 1)
+     (emit-i32.const 32)
+     (list (opcode :i32.eq))
+     (list (opcode :if))
+     (encode-blocktype `(:ref :null ,string-idx))
+     ;; Create "#\\Space"
+     (emit-i32.const 35)                   ; '#'
+     (emit-i32.const 92)                   ; '\\'
+     (emit-i32.const 83)                   ; 'S'
+     (emit-i32.const 112)                  ; 'p'
+     (emit-i32.const 97)                   ; 'a'
+     (emit-i32.const 99)                   ; 'c'
+     (emit-i32.const 101)                  ; 'e'
+     (emit-array.new-fixed string-idx 7)
+
+     (list (opcode :else))
+
+     ;; Newline = 10
+     (emit-local.get 1)
+     (emit-i32.const 10)
+     (list (opcode :i32.eq))
+     (list (opcode :if))
+     (encode-blocktype `(:ref :null ,string-idx))
+     ;; Create "#\\Newline"
+     (emit-i32.const 35)                   ; '#'
+     (emit-i32.const 92)                   ; '\\'
+     (emit-i32.const 78)                   ; 'N'
+     (emit-i32.const 101)                  ; 'e'
+     (emit-i32.const 119)                  ; 'w'
+     (emit-i32.const 108)                  ; 'l'
+     (emit-i32.const 105)                  ; 'i'
+     (emit-i32.const 110)                  ; 'n'
+     (emit-i32.const 101)                  ; 'e'
+     (emit-array.new-fixed string-idx 9)
+
+     (list (opcode :else))
+
+     ;; Tab = 9
+     (emit-local.get 1)
+     (emit-i32.const 9)
+     (list (opcode :i32.eq))
+     (list (opcode :if))
+     (encode-blocktype `(:ref :null ,string-idx))
+     ;; Create "#\\Tab"
+     (emit-i32.const 35)                   ; '#'
+     (emit-i32.const 92)                   ; '\\'
+     (emit-i32.const 84)                   ; 'T'
+     (emit-i32.const 97)                   ; 'a'
+     (emit-i32.const 98)                   ; 'b'
+     (emit-array.new-fixed string-idx 5)
+
+     (list (opcode :else))
+
+     ;; Regular character: "#\\x"
+     (emit-i32.const 35)                   ; '#'
+     (emit-i32.const 92)                   ; '\\'
+     (emit-local.get 1)                    ; char-code
+     (emit-array.new-fixed string-idx 3)
+
+     (emit-end)                            ; end Tab check
+     (emit-end)                            ; end Newline check
+     (emit-end)                            ; end Space check
+
+     (emit-end))))
+
+;;; ============================================================
 ;;; Prin1-to-String Main Dispatcher
 ;;; ============================================================
 
@@ -528,9 +636,11 @@ Signature: (obj: anyref) -> ref $string
 Dispatches to type-specific printers."
   (let ((string-idx (string-type-index registry))
         (cons-idx (cons-type-index registry))
+        (symbol-idx (symbol-type-index registry))
         (print-fixnum-idx (printer-registry-print-fixnum printer-reg))
         (print-nil-idx (printer-registry-print-nil printer-reg))
-        (print-cons-idx (printer-registry-print-cons printer-reg)))
+        (print-cons-idx (printer-registry-print-cons printer-reg))
+        (print-symbol-idx (printer-registry-print-symbol printer-reg)))
     (append
      ;; Check for NIL (null reference) first
      (emit-local.get 0)
@@ -570,6 +680,19 @@ Dispatches to type-specific printers."
 
      (list (opcode :else))
 
+     ;; Check for symbol
+     (emit-local.get 0)
+     (emit-ref.test symbol-idx)
+     (list (opcode :if))
+     (encode-blocktype `(:ref :null ,string-idx))
+
+     ;; Is symbol
+     (emit-local.get 0)
+     (list (opcode :call))
+     (encode-uleb128 print-symbol-idx)
+
+     (list (opcode :else))
+
      ;; Unknown type: return "#<?>"
      (emit-i32.const 35)                   ; '#'
      (emit-i32.const 60)                   ; '<'
@@ -577,6 +700,7 @@ Dispatches to type-specific printers."
      (emit-i32.const 62)                   ; '>'
      (emit-array.new-fixed string-idx 4)
 
+     (emit-end)                            ; end symbol check
      (emit-end)                            ; end cons check
      (emit-end)                            ; end fixnum check
      (emit-end)                            ; end nil check
@@ -722,21 +846,39 @@ Returns a printer-registry with function indices."
                      (func-idx (module-add-func module func)))
                 (setf (printer-registry-print-nil printer-reg) func-idx))
 
+              ;; 6. print-symbol
+              (let* ((body (gen-print-symbol-body registry))
+                     (func (make-wasm-func any-string-type-idx
+                                          :name "$print-symbol"
+                                          :locals nil
+                                          :body body))
+                     (func-idx (module-add-func module func)))
+                (setf (printer-registry-print-symbol printer-reg) func-idx))
+
+              ;; 7. print-character
+              (let* ((body (gen-print-character-body registry))
+                     (func (make-wasm-func any-string-type-idx
+                                          :name "$print-character"
+                                          :locals '((1 . :i32))
+                                          :body body))
+                     (func-idx (module-add-func module func)))
+                (setf (printer-registry-print-character printer-reg) func-idx))
+
               ;; Reserve indices for mutually recursive functions
-              ;; 6. prin1-to-string (placeholder)
+              ;; 8. prin1-to-string (placeholder)
               (let ((prin1-idx (module-func-count module)))
                 (setf (printer-registry-prin1-to-string printer-reg) prin1-idx))
 
-              ;; 7. print-cons (placeholder)
+              ;; 9. print-cons (placeholder)
               (let ((print-cons-idx (1+ (printer-registry-prin1-to-string printer-reg))))
                 (setf (printer-registry-print-cons printer-reg) print-cons-idx))
 
-              ;; 8. print-cdr-list (placeholder)
+              ;; 10. print-cdr-list (placeholder)
               (let ((print-cdr-idx (1+ (printer-registry-print-cons printer-reg))))
                 (setf (printer-registry-print-cdr-list printer-reg) print-cdr-idx))
 
               ;; Now add the actual functions
-              ;; 6. prin1-to-string
+              ;; 8. prin1-to-string
               (let* ((body (gen-prin1-to-string-body registry printer-reg))
                      (func (make-wasm-func any-string-type-idx
                                           :name "$prin1-to-string"
@@ -744,7 +886,7 @@ Returns a printer-registry with function indices."
                                           :body body)))
                 (module-add-func module func))
 
-              ;; 7. print-cons
+              ;; 9. print-cons
               ;; Locals: cons-struct (ref cons), car (anyref), cdr (anyref), result (ref string)
               (let* ((body (gen-print-cons-body registry printer-reg))
                      (func (make-wasm-func any-string-type-idx
@@ -755,7 +897,7 @@ Returns a printer-registry with function indices."
                                           :body body)))
                 (module-add-func module func))
 
-              ;; 8. print-cdr-list
+              ;; 10. print-cdr-list
               ;; Locals: cons-struct (ref cons), car (anyref), cdr (anyref), result (ref string)
               (let* ((body (gen-print-cdr-list-body registry printer-reg))
                      (func (make-wasm-func any-string-type-idx
@@ -766,7 +908,7 @@ Returns a printer-registry with function indices."
                                           :body body)))
                 (module-add-func module func))
 
-              ;; 9. Global for storing result string
+              ;; 11. Global for storing result string
               ;; Type: (ref null $string), mutable, initialized to null
               (let* ((global-type `(:ref :null ,string-idx))
                      (init-expr (append
@@ -779,7 +921,7 @@ Returns a printer-registry with function indices."
                      (global-idx (module-add-global module global)))
                 (setf (printer-registry-result-global printer-reg) global-idx))
 
-              ;; 10. get_result_char function
+              ;; 12. get_result_char function
               ;; Signature: (i: i32) -> i32
               ;; Returns the character code at index i, or -1 if out of bounds or null
               (let* ((body (gen-get-result-char-body printer-reg string-idx))

@@ -249,3 +249,15 @@ Returns the string length of the printed result."
 (deftest test-wasm-print-negative ()
   "Test printing negative number - \"-42\" has length 3"
   (is-eq 3 (eval-via-wasm "(- 0 42)")))
+
+(deftest test-wasm-print-symbol ()
+  "Test printing symbol - \"FOO\" has length 3"
+  (is-eq 3 (eval-via-wasm "'foo")))
+
+(deftest test-wasm-print-symbol-long ()
+  "Test printing longer symbol - \"HELLO-WORLD\" has length 11"
+  (is-eq 11 (eval-via-wasm "'hello-world")))
+
+(deftest test-wasm-print-symbol-in-list ()
+  "Test printing list with symbol - \"(A B C)\" has length 7"
+  (is-eq 7 (eval-via-wasm "'(a b c)")))

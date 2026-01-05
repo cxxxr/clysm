@@ -169,7 +169,8 @@ Creates a string array using array.new_fixed with character codes."
 
 (defun compile-quote (ast env)
   "Compile a quoted form."
-  (let ((value (ast-quote-value ast)))
+  (let ((value (ast-quote-value ast))
+        (registry (compile-env-type-registry env)))
     (cond
       ;; NIL
       ((null value)
@@ -181,14 +182,74 @@ Creates a string array using array.new_fixed with character codes."
       ((integerp value)
        (append (emit-i32.const value)
                (emit-ref.i31)))
-      ;; Symbols - need symbol table lookup
+      ;; Characters
+      ((characterp value)
+       (append (emit-i32.const (char-code value))
+               (emit-ref.i31)))
+      ;; Strings
+      ((stringp value)
+       (compile-string-literal value registry))
+      ;; Symbols - create symbol struct
       ((symbolp value)
-       ;; TODO: Implement symbol interning
-       (error "Symbol literals not yet implemented: ~S" value))
-      ;; Lists - need to construct at runtime
+       (compile-symbol-literal value registry))
+      ;; Lists - construct at runtime
       ((consp value)
-       ;; TODO: Implement list literal construction
-       (error "List literals not yet implemented: ~S" value))
+       (compile-list-literal value env))
+      (t
+       (error "Cannot compile quoted value: ~S" value)))))
+
+(defun compile-symbol-literal (sym registry)
+  "Compile a symbol literal.
+Creates a symbol struct with name and null for value/function/plist."
+  (let ((name (symbol-name sym))
+        (symbol-idx (symbol-type-index registry)))
+    (append
+     ;; Field 0: name (string)
+     (compile-string-literal name registry)
+     ;; Field 1: value (null anyref)
+     (list (opcode :ref.null) #x6E)
+     ;; Field 2: function (null anyref)
+     (list (opcode :ref.null) #x6E)
+     ;; Field 3: plist (null anyref)
+     (list (opcode :ref.null) #x6E)
+     ;; Create symbol struct
+     (emit-struct.new symbol-idx))))
+
+(defun compile-list-literal (lst env)
+  "Compile a list literal.
+Recursively constructs cons cells."
+  (let* ((registry (compile-env-type-registry env))
+         (cons-idx (cons-type-index registry)))
+    (if (null lst)
+        (compile-nil env)
+        (append
+         ;; Compile car
+         (compile-quoted-value (car lst) env)
+         ;; Compile cdr
+         (compile-list-literal (cdr lst) env)
+         ;; Create cons cell
+         (emit-struct.new cons-idx)))))
+
+(defun compile-quoted-value (value env)
+  "Compile a value within a quoted form."
+  (let ((registry (compile-env-type-registry env)))
+    (cond
+      ((null value)
+       (compile-nil env))
+      ((eq value t)
+       (compile-t env))
+      ((integerp value)
+       (append (emit-i32.const value)
+               (emit-ref.i31)))
+      ((characterp value)
+       (append (emit-i32.const (char-code value))
+               (emit-ref.i31)))
+      ((stringp value)
+       (compile-string-literal value registry))
+      ((symbolp value)
+       (compile-symbol-literal value registry))
+      ((consp value)
+       (compile-list-literal value env))
       (t
        (error "Cannot compile quoted value: ~S" value)))))
 
