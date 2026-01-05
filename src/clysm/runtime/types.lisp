@@ -347,6 +347,13 @@ Types are registered in dependency order:
   (append (list #xFB #x06)  ; array.new prefix
           (encode-uleb128 type-index)))
 
+(defun emit-array.new-default (type-index)
+  "Emit array.new_default instruction.
+Creates an array with default-initialized elements.
+Stack: [length: i32] -> [ref array]"
+  (append (list #xFB #x07)  ; array.new_default prefix
+          (encode-uleb128 type-index)))
+
 (defun emit-array.new-fixed (type-index length)
   "Emit array.new_fixed instruction."
   (append (list #xFB #x08)  ; array.new_fixed prefix
@@ -388,6 +395,19 @@ Types are registered in dependency order:
   "Emit ref.cast instruction."
   (append (list #xFB #x15)
           (encode-uleb128 type-index)))
+
+(defun emit-ref.as-non-null ()
+  "Emit ref.as_non_null instruction.
+Converts nullable reference to non-null reference.
+Stack: [(ref null $t)] -> [(ref $t)]
+Traps if the reference is null."
+  (list #xD4))
+
+(defun emit-ref.is-null ()
+  "Emit ref.is_null instruction.
+Tests if a reference is null.
+Stack: [ref] -> [i32]"
+  (list #xD1))
 
 ;;; ============================================================
 ;;; High-Level Object Creation Emitters

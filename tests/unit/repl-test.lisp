@@ -186,38 +186,66 @@ line2"))))
 ;;; Wasm Evaluation Tests (End-to-End)
 ;;; ============================================================
 
+;;; NOTE: The Wasm runtime now returns the length of the prin1-to-string
+;;; representation of the result. This allows the host to know the string
+;;; size, though the actual string content is not yet readable from CLI.
+;;; Future versions will support reading the string from Wasm memory.
+
 (defsuite wasm-eval-suite "Wasm evaluation end-to-end tests")
 
 (defun eval-via-wasm (expr)
-  "Helper: read EXPR, compile to Wasm, run, and return result."
+  "Helper: read EXPR, compile to Wasm, run, and return result.
+Returns the string length of the printed result."
   (let* ((form (clysm:clysm-read-from-string expr))
          (wasm (clysm:compile-to-wasm (list form))))
     (clysm:run-wasm-module wasm)))
 
 (deftest test-wasm-eval-addition ()
-  "Test addition via Wasm"
-  (is-eq 3 (eval-via-wasm "(+ 1 2)")))
+  "Test addition via Wasm - returns length of \"3\""
+  (is-eq 1 (eval-via-wasm "(+ 1 2)")))
 
 (deftest test-wasm-eval-multiplication ()
-  "Test multiplication via Wasm"
-  (is-eq 12 (eval-via-wasm "(* 3 4)")))
+  "Test multiplication via Wasm - returns length of \"12\""
+  (is-eq 2 (eval-via-wasm "(* 3 4)")))
 
 (deftest test-wasm-eval-subtraction ()
-  "Test subtraction via Wasm"
-  (is-eq 7 (eval-via-wasm "(- 10 3)")))
+  "Test subtraction via Wasm - returns length of \"7\""
+  (is-eq 1 (eval-via-wasm "(- 10 3)")))
 
 (deftest test-wasm-eval-nested-arithmetic ()
-  "Test nested arithmetic via Wasm"
-  (is-eq 26 (eval-via-wasm "(+ (* 2 3) (* 4 5))")))
+  "Test nested arithmetic via Wasm - returns length of \"26\""
+  (is-eq 2 (eval-via-wasm "(+ (* 2 3) (* 4 5))")))
 
 (deftest test-wasm-eval-less-than ()
-  "Test less-than comparison via Wasm"
+  "Test less-than comparison via Wasm - returns length of \"T\" (1) if true"
   (is (eval-via-wasm "(< 1 2)")))
 
 (deftest test-wasm-eval-greater-than ()
-  "Test greater-than comparison via Wasm"
+  "Test greater-than comparison via Wasm - returns length of \"T\" (1) if true"
   (is (eval-via-wasm "(> 5 3)")))
 
 (deftest test-wasm-eval-equal ()
-  "Test numeric equality via Wasm"
+  "Test numeric equality via Wasm - returns length of \"T\" (1) if true"
   (is (eval-via-wasm "(= 42 42)")))
+
+;;; ============================================================
+;;; Wasm Print Tests (String Length)
+;;; ============================================================
+
+(defsuite wasm-print-suite "Wasm print length tests")
+
+(deftest test-wasm-print-fixnum ()
+  "Test printing fixnum - \"42\" has length 2"
+  (is-eq 2 (eval-via-wasm "42")))
+
+(deftest test-wasm-print-nil ()
+  "Test printing NIL - \"NIL\" has length 3"
+  (is-eq 3 (eval-via-wasm "nil")))
+
+(deftest test-wasm-print-cons ()
+  "Test printing cons cell - \"(1 . 2)\" has length 7"
+  (is-eq 7 (eval-via-wasm "(cons 1 2)")))
+
+(deftest test-wasm-print-negative ()
+  "Test printing negative number - \"-42\" has length 3"
+  (is-eq 3 (eval-via-wasm "(- 0 42)")))

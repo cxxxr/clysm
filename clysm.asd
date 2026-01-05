@@ -24,7 +24,8 @@
      (:file "wat-print")))
    (:module "runtime"
     :components
-    ((:file "types")))
+    ((:file "types")
+     (:file "printer")))
    (:module "compiler"
     :components
     ((:file "primitives")

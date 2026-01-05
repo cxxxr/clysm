@@ -12,16 +12,18 @@
   "Context for code generation."
   module          ; The wasm-module being built
   type-registry   ; Type registry for this module
+  printer-registry ; Printer registry for this module
   (functions nil) ; List of generated functions
   (pending nil)   ; Pending lambda bodies to compile
   (lambda-counter 0)   ; Counter for generating unique lambda names
   (specials nil)       ; List of globally declared special variables
   (special-globals (make-hash-table :test 'eq)))  ; Map: symbol -> global-index
 
-(defun make-codegen-context (&key module type-registry)
+(defun make-codegen-context (&key module type-registry printer-registry)
   "Create a new codegen context."
   (%make-codegen-context :module module
-                         :type-registry type-registry))
+                         :type-registry type-registry
+                         :printer-registry printer-registry))
 
 (defun context-declare-special (context name)
   "Declare NAME as a globally special variable."
@@ -48,10 +50,13 @@ Returns nil if not found."
   "Compile a top-level form.
 Returns the codegen context with the compiled form."
   (unless context
-    (let ((module (make-wasm-module)))
+    (let* ((module (make-wasm-module))
+           (type-registry (register-core-types module))
+           (printer-registry (register-printer-functions module type-registry)))
       (setf context (make-codegen-context
                      :module module
-                     :type-registry (register-core-types module)))))
+                     :type-registry type-registry
+                     :printer-registry printer-registry))))
   (let ((ast (parse-sexp form)))
     (compile-toplevel-ast ast context))
   context)
@@ -119,9 +124,9 @@ Returns a list of Wasm bytecode."
 
 (defun compile-literal (ast env)
   "Compile a literal value."
-  (declare (ignore env))
   (let ((value (ast-literal-value ast))
-        (type (ast-literal-type ast)))
+        (type (ast-literal-type ast))
+        (registry (compile-env-type-registry env)))
     (case type
       (:fixnum
        ;; Wrap integer in i31ref
@@ -132,9 +137,8 @@ Returns a list of Wasm bytecode."
        (append (emit-i32.const (char-code value))
                (emit-ref.i31)))
       (:string
-       ;; Strings need more complex handling - placeholder for now
-       ;; TODO: Implement string literals via data section
-       (error "String literals not yet implemented"))
+       ;; Create string as array of i32 (character codes)
+       (compile-string-literal value registry))
       (t
        ;; Infer type
        (cond
@@ -144,8 +148,24 @@ Returns a list of Wasm bytecode."
          ((characterp value)
           (append (emit-i32.const (char-code value))
                   (emit-ref.i31)))
+         ((stringp value)
+          (compile-string-literal value registry))
          (t
           (error "Unknown literal type: ~S" value)))))))
+
+(defun compile-string-literal (str registry)
+  "Compile a string literal to Wasm code.
+Creates a string array using array.new_fixed with character codes."
+  (let ((len (length str)))
+    (if (zerop len)
+        ;; Empty string: array.new_default $string 0
+        (append (emit-i32.const 0)
+                (emit-array.new (string-type-index registry)))
+        ;; Non-empty string: push all char codes, then array.new_fixed
+        (append
+         (loop for ch across str
+               append (emit-i32.const (char-code ch)))
+         (emit-array.new-fixed (string-type-index registry) len)))))
 
 (defun compile-quote (ast env)
   "Compile a quoted form."
@@ -1294,11 +1314,13 @@ Creates a function that sets the global to the initial value."
 (defun compile-expression-as-function (ast context)
   "Compile an expression as an anonymous function.
 Exports the function as '_start' for wasmtime execution.
-Returns anyref to support all Lisp values (fixnums, cons cells, etc.)."
+Calls prin1-to-string on result and returns string length as i32."
   (let* ((module (codegen-context-module context))
-         (registry (codegen-context-type-registry context)))
-    ;; Create function type: () -> anyref (supports all Lisp types)
-    (let* ((func-type (make-functype nil '(:anyref)))
+         (registry (codegen-context-type-registry context))
+         (printer-reg (codegen-context-printer-registry context))
+         (prin1-idx (printer-registry-prin1-to-string printer-reg)))
+    ;; Create function type: () -> i32 (returns string length)
+    (let* ((func-type (make-functype nil '(:i32)))
            (type-def (make-wasm-type func-type))
            (type-idx (module-add-type module type-def)))
 
@@ -1309,9 +1331,17 @@ Returns anyref to support all Lisp values (fixnums, cons cells, etc.)."
 
         ;; Compile expression
         (let ((body-code (compile-expression ast env)))
-          ;; Create function - return anyref directly
+          ;; Create function:
+          ;; 1. Evaluate expression -> anyref
+          ;; 2. Call prin1-to-string -> ref $string
+          ;; 3. Get array length -> i32
           (let* ((locals (env-collect-local-types env))
                  (full-code (append body-code
+                                    ;; Call prin1-to-string on result
+                                    (list (opcode :call))
+                                    (encode-uleb128 prin1-idx)
+                                    ;; Get string length
+                                    (emit-array.len)
                                     (emit-end)))
                  (func (make-wasm-func type-idx
                                        :name "_start"

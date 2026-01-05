@@ -275,10 +275,14 @@
     (push type (wasm-module-types module))
     index))
 
+(defun module-func-count (module)
+  "Return the next function index that will be assigned."
+  (+ (length (wasm-module-imports module))
+     (length (wasm-module-funcs module))))
+
 (defun module-add-func (module func)
   "Add a function to module, returning its index."
-  (let ((index (+ (length (wasm-module-imports module))
-                  (length (wasm-module-funcs module)))))
+  (let ((index (module-func-count module)))
     (setf (wasm-func-index func) index)
     (push func (wasm-module-funcs module))
     index))

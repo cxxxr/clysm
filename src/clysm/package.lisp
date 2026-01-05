@@ -121,6 +121,7 @@
    #:wasm-module-data
    #:wasm-module-custom
    #:module-add-type
+   #:module-func-count
    #:module-add-func
    #:module-add-global
    #:module-add-export
@@ -187,6 +188,19 @@
    #:type-registry-unbound
    #:register-core-types
 
+   ;; Printer registry (runtime/printer.lisp)
+   #:printer-registry
+   #:make-printer-registry
+   #:printer-registry-string-append
+   #:printer-registry-count-digits
+   #:printer-registry-fixnum-to-string
+   #:printer-registry-print-fixnum
+   #:printer-registry-print-nil
+   #:printer-registry-print-cons
+   #:printer-registry-print-cdr-list
+   #:printer-registry-prin1-to-string
+   #:register-printer-functions
+
    ;; Type index accessors
    #:cons-type-index
    #:symbol-type-index
@@ -221,6 +235,7 @@
    #:emit-struct.get
    #:emit-struct.set
    #:emit-array.new
+   #:emit-array.new-default
    #:emit-array.new-fixed
    #:emit-array.get
    #:emit-array.set
@@ -230,6 +245,8 @@
    #:emit-i31.get-u
    #:emit-ref.test
    #:emit-ref.cast
+   #:emit-ref.as-non-null
+   #:emit-ref.is-null
 
    ;; Closure operations
    #:emit-make-closure
@@ -518,6 +535,7 @@
    #:make-codegen-context
    #:codegen-context-module
    #:codegen-context-type-registry
+   #:codegen-context-printer-registry
    #:codegen-context-lambda-counter
    #:codegen-context-specials
    #:codegen-context-special-globals

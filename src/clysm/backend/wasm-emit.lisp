@@ -388,7 +388,7 @@ Returns bytecode for the try_table header (body follows, then end)."
 
 (defun encode-blocktype (blocktype)
   "Encode a block type.
-NIL = void, valtype = single result, negative = type index."
+NIL = void, valtype = single result, negative = type index, (:ref N) = ref type."
   (cond
     ((null blocktype)
      ;; Empty block type (void)
@@ -399,5 +399,8 @@ NIL = void, valtype = single result, negative = type index."
     ((integerp blocktype)
      ;; Type index (s33)
      (encode-s33 blocktype))
+    ((and (consp blocktype) (eq (car blocktype) :ref))
+     ;; Reference type - delegate to encode-valtype
+     (encode-valtype blocktype))
     (t
      (error "Invalid block type: ~S" blocktype))))
