@@ -21,7 +21,10 @@
   (print-cons nil :type (or null integer))
   (print-cdr-list nil :type (or null integer))
   ;; Main dispatcher
-  (prin1-to-string nil :type (or null integer)))
+  (prin1-to-string nil :type (or null integer))
+  ;; Result storage (for REPL)
+  (result-global nil :type (or null integer))
+  (get-result-char nil :type (or null integer)))
 
 (defun make-printer-registry ()
   "Create an empty printer registry."
@@ -581,6 +584,60 @@ Dispatches to type-specific printers."
      (emit-end))))
 
 ;;; ============================================================
+;;; Get Result Character Function
+;;; ============================================================
+
+(defun gen-get-result-char-body (printer-reg string-idx)
+  "Generate body for $get_result_char function.
+Signature: (i: i32) -> i32
+Returns the character code at index i from the result string.
+Returns -1 if null or out of bounds."
+  (let ((result-global-idx (printer-registry-result-global printer-reg)))
+    (append
+     ;; Get the global result string
+     (list (opcode :global.get))
+     (encode-uleb128 result-global-idx)
+
+     ;; Check if null
+     (emit-ref.is-null)
+     (list (opcode :if))
+     (encode-blocktype :i32)
+
+     ;; Is null: return -1
+     (emit-i32.const -1)
+
+     (list (opcode :else))
+
+     ;; Not null: check bounds
+     ;; First get string again (since we consumed it)
+     (list (opcode :global.get))
+     (encode-uleb128 result-global-idx)
+     (emit-ref.as-non-null)
+     (emit-array.len)                        ; len
+
+     (emit-local.get 0)                      ; i
+     (list (opcode :i32.le_u))               ; len <= i (out of bounds)
+     (list (opcode :if))
+     (encode-blocktype :i32)
+
+     ;; Out of bounds: return -1
+     (emit-i32.const -1)
+
+     (list (opcode :else))
+
+     ;; In bounds: get character
+     (list (opcode :global.get))
+     (encode-uleb128 result-global-idx)
+     (emit-ref.as-non-null)
+     (emit-local.get 0)                      ; i
+     (emit-array.get string-idx)
+
+     (emit-end)                              ; end bounds check
+     (emit-end)                              ; end null check
+
+     (emit-end))))
+
+;;; ============================================================
 ;;; Register Printer Functions
 ;;; ============================================================
 
@@ -707,6 +764,33 @@ Returns a printer-registry with function indices."
                                                     (1 . :anyref) (1 . :anyref)
                                                     (1 . (:ref :null ,string-idx)))
                                           :body body)))
-                (module-add-func module func)))))))
+                (module-add-func module func))
+
+              ;; 9. Global for storing result string
+              ;; Type: (ref null $string), mutable, initialized to null
+              (let* ((global-type `(:ref :null ,string-idx))
+                     (init-expr (append
+                                 (list (opcode :ref.null))
+                                 (encode-sleb128 string-idx)
+                                 (emit-end)))
+                     (global (make-global global-type init-expr
+                                          :mutable t
+                                          :name "$result_string"))
+                     (global-idx (module-add-global module global)))
+                (setf (printer-registry-result-global printer-reg) global-idx))
+
+              ;; 10. get_result_char function
+              ;; Signature: (i: i32) -> i32
+              ;; Returns the character code at index i, or -1 if out of bounds or null
+              (let* ((body (gen-get-result-char-body printer-reg string-idx))
+                     (func (make-wasm-func i32-i32-type-idx
+                                          :name "$get_result_char"
+                                          :locals nil
+                                          :body body))
+                     (func-idx (module-add-func module func)))
+                (setf (printer-registry-get-result-char printer-reg) func-idx)
+                ;; Export the function
+                (module-add-export module
+                                   (make-export "get_result_char" :func func-idx))))))))
 
     printer-reg))

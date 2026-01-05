@@ -363,10 +363,28 @@ Returns a list of variable names that are free in AST."
 
 (defun env-collect-local-types (env)
   "Collect the Wasm local types for this environment.
-Returns a list of (count . valtype) pairs."
-  (let ((type-counts nil))
-    ;; All our locals are anyref for now
-    (when (> (compile-env-local-count env) 0)
-      (push (cons (compile-env-local-count env) :anyref)
-            type-counts))
-    (nreverse type-counts)))
+Returns a list of (count . valtype) pairs for the locals declaration."
+  ;; Collect only :local bindings (not :param or :closure)
+  (let* ((local-bindings (remove-if-not
+                          (lambda (b) (eq (binding-kind b) :local))
+                          (compile-env-locals env)))
+         ;; Sort by index to ensure correct ordering
+         (sorted (sort (copy-list local-bindings)
+                       #'< :key #'binding-index))
+         (result nil)
+         (current-type nil)
+         (current-count 0))
+    ;; Group consecutive locals with the same type
+    (dolist (binding sorted)
+      (let ((type (or (binding-type binding) :anyref)))
+        (if (equal type current-type)
+            (incf current-count)
+            (progn
+              (when current-type
+                (push (cons current-count current-type) result))
+              (setf current-type type)
+              (setf current-count 1)))))
+    ;; Push final group
+    (when current-type
+      (push (cons current-count current-type) result))
+    (nreverse result)))

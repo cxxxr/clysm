@@ -199,6 +199,8 @@
    #:printer-registry-print-cons
    #:printer-registry-print-cdr-list
    #:printer-registry-prin1-to-string
+   #:printer-registry-result-global
+   #:printer-registry-get-result-char
    #:register-printer-functions
 
    ;; Type index accessors
@@ -604,6 +606,8 @@
    #:*wasmtime-path*
    #:*temp-wasm-path*
    #:run-wasm-module
+   #:run-wasm-with-print
+   #:read-wasm-result-string
    #:validate-wasm-module
    #:clysm-eval
    #:clysm-eval-string

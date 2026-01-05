@@ -1314,11 +1314,13 @@ Creates a function that sets the global to the initial value."
 (defun compile-expression-as-function (ast context)
   "Compile an expression as an anonymous function.
 Exports the function as '_start' for wasmtime execution.
-Calls prin1-to-string on result and returns string length as i32."
+Calls prin1-to-string on result, stores in global, and returns string length as i32."
   (let* ((module (codegen-context-module context))
          (registry (codegen-context-type-registry context))
          (printer-reg (codegen-context-printer-registry context))
-         (prin1-idx (printer-registry-prin1-to-string printer-reg)))
+         (prin1-idx (printer-registry-prin1-to-string printer-reg))
+         (result-global-idx (printer-registry-result-global printer-reg))
+         (string-idx (string-type-index registry)))
     ;; Create function type: () -> i32 (returns string length)
     (let* ((func-type (make-functype nil '(:i32)))
            (type-def (make-wasm-type func-type))
@@ -1329,29 +1331,43 @@ Calls prin1-to-string on result and returns string length as i32."
                                    :codegen-context context)))
         (setf (compile-env-tail-position-p env) t)
 
-        ;; Compile expression
-        (let ((body-code (compile-expression ast env)))
-          ;; Create function:
-          ;; 1. Evaluate expression -> anyref
-          ;; 2. Call prin1-to-string -> ref $string
-          ;; 3. Get array length -> i32
-          (let* ((locals (env-collect-local-types env))
-                 (full-code (append body-code
-                                    ;; Call prin1-to-string on result
-                                    (list (opcode :call))
-                                    (encode-uleb128 prin1-idx)
-                                    ;; Get string length
-                                    (emit-array.len)
-                                    (emit-end)))
-                 (func (make-wasm-func type-idx
-                                       :name "_start"
-                                       :locals locals
-                                       :body full-code))
-                 (func-idx (module-add-func module func)))
-            ;; Export as _start for wasmtime execution
-            (module-add-export module
-                               (make-export "_start" :func func-idx))
-            func-idx))))))
+        ;; Allocate a local for storing the result string
+        (let ((result-local (env-bind-local env '%result-string
+                                            :type `(:ref :null ,string-idx))))
+
+          ;; Compile expression
+          (let ((body-code (compile-expression ast env)))
+            ;; Create function:
+            ;; 1. Evaluate expression -> anyref
+            ;; 2. Call prin1-to-string -> ref $string
+            ;; 3. Store in local
+            ;; 4. Store in global (for get_result_char)
+            ;; 5. Get array length -> i32
+            (let* ((locals (env-collect-local-types env))
+                   (full-code (append body-code
+                                      ;; Call prin1-to-string on result
+                                      (list (opcode :call))
+                                      (encode-uleb128 prin1-idx)
+                                      ;; Store result in local
+                                      (emit-local.set (binding-index result-local))
+                                      ;; Store in global for get_result_char
+                                      (emit-local.get (binding-index result-local))
+                                      (list (opcode :global.set))
+                                      (encode-uleb128 result-global-idx)
+                                      ;; Get result and return length
+                                      (emit-local.get (binding-index result-local))
+                                      (emit-ref.as-non-null)
+                                      (emit-array.len)
+                                      (emit-end)))
+                   (func (make-wasm-func type-idx
+                                         :name "_start"
+                                         :locals locals
+                                         :body full-code))
+                   (func-idx (module-add-func module func)))
+              ;; Export as _start for wasmtime execution
+              (module-add-export module
+                                 (make-export "_start" :func func-idx))
+              func-idx)))))))
 
 ;;; ============================================================
 ;;; High-Level Compilation Interface
