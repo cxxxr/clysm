@@ -1,0 +1,241 @@
+version: 2
+
+trigger:
+  paths:
+    - "**/*.lisp"
+    - "**/*.asd"
+    - "contract.yml"
+
+validation:
+  ai:
+    system_prompt: |
+      You are a senior Common Lisp engineer working on Clysm, a Common Lisp to WebAssembly GC Compiler.
+
+      Project characteristics:
+      - Self-hosting ready: No external dependencies allowed
+      - Compiles Common Lisp to WebAssembly with GC (Garbage Collection) support
+      - Custom test framework in tests/framework.lisp
+      - Uses ASDF for system definition
+
+      Key directories:
+      - src/clysm/backend/ - WebAssembly binary generation (LEB128, sections, wasm-emit)
+      - src/clysm/compiler/ - Compiler core (AST, codegen, primitives, env)
+      - src/clysm/reader/ - Lisp reader (lexer, parser)
+      - src/clysm/runtime/ - Runtime type definitions
+      - src/clysm/repl/ - REPL implementation
+      - tests/ - Test suite (unit/ and e2e/)
+
+    rules:
+      - name: special_variable_naming
+        prompt: |
+          動的変数（special variable）の命名規約チェック:
+
+          ✅ 正しい命名:
+          ```lisp
+          (defparameter *database-connection* nil)
+          (defvar *current-user* nil)
+          (defconstant +max-buffer-size+ 4096)
+          ```
+
+          ❌ 間違った命名:
+          ```lisp
+          (defparameter database-connection nil)
+          (defvar current-user nil)
+          (defconstant max-buffer-size 4096)
+          ```
+
+          ⚠️ チェック対象:
+          - defparameter で定義された変数 → *name* 形式
+          - defvar で定義された変数 → *name* 形式
+          - defconstant で定義された定数 → +name+ 形式
+
+          ⚠️ 例外（チェック対象外）:
+          - ローカル変数
+          - テストコード内の一時的な定義
+          - 既存コードの修正（新規追加のみ対象）
+
+      - name: asdf_new_file_registration
+        prompt: |
+          新規 .lisp ファイル追加時のASDFシステム登録チェック:
+
+          ✅ 正しいパターン:
+          ```
+          新規ファイル: src/clysm/compiler/optimizer.lisp
+          clysm.asd の :components に追加:
+          (:module "compiler"
+           :components
+           (... (:file "optimizer")))
+          ```
+
+          ❌ 間違いパターン:
+          ```
+          src/clysm/compiler/optimizer.lisp を追加
+          clysm.asd を更新せず
+          → ビルド時にファイルがロードされない
+          ```
+
+          ⚠️ チェック対象:
+          - src/clysm/ 配下の新規 .lisp ファイル → clysm.asd の更新が必要
+          - tests/ 配下の新規 .lisp ファイル → clysm.asd の clysm/tests 定義の更新が必要
+
+          ⚠️ 例外（チェック対象外）:
+          - scripts/ 配下のファイル
+          - 既存ファイルの変更のみ
+          - スタンドアロンのユーティリティスクリプト
+
+      - name: package_export_sync
+        prompt: |
+          新規エクスポートシンボルの package.lisp 同期チェック:
+
+          ✅ 正しいパターン:
+          ```lisp
+          ;; codegen.lisp に新規関数を追加
+          (defun compile-new-feature (ast env) ...)
+
+          ;; package.lisp の :export に追加
+          #:compile-new-feature
+          ```
+
+          ❌ 間違いパターン:
+          ```lisp
+          ;; 関数は定義したが package.lisp に追加していない
+          → 他のパッケージからアクセスできない
+          ```
+
+          ⚠️ チェック対象:
+          - 他のモジュールから使用される新規 public 関数/マクロ
+          - 新規構造体（make-* / *-p / アクセサ）
+
+          ⚠️ 例外（チェック対象外）:
+          - ファイル内部でのみ使用される private 関数
+          - tests/ 配下のテスト専用関数
+
+      - name: condition_hierarchy
+        prompt: |
+          エラー条件（condition）の継承階層チェック:
+
+          ✅ 正しいパターン:
+          ```lisp
+          (define-condition my-new-error (clysm-compile-error)
+            ((slot :initarg :slot :reader my-error-slot))
+            (:report ...))
+          ```
+
+          ❌ 間違いパターン:
+          ```lisp
+          ;; clysm-error 階層を継承していない
+          (define-condition my-new-error (error)
+            ...)
+          ```
+
+          ⚠️ チェック対象:
+          - src/clysm/ 配下の新規 define-condition
+
+          ⚠️ 適切な親クラス:
+          - コンパイル時エラー → clysm-compile-error
+          - 構文エラー → clysm-syntax-error
+          - 型エラー → clysm-type-error
+          - 未定義エラー → clysm-undefined-error
+          - 実行時エラー → clysm-runtime-error
+          - Wasm生成エラー → clysm-wasm-error
+          - その他 → clysm-error
+
+          ⚠️ 例外（チェック対象外）:
+          - tests/ 配下のテスト用条件
+
+      - name: no_external_dependencies
+        prompt: |
+          外部依存禁止チェック（セルフホスティング要件）:
+
+          ✅ 正しいパターン:
+          ```lisp
+          ;; clysm.asd
+          :depends-on ()  ; 外部依存なし
+
+          ;; 自前ユーティリティを使用
+          (clysm:if-let ((value (get-value)))
+            (process value))
+          ```
+
+          ❌ 間違いパターン:
+          ```lisp
+          ;; 外部ライブラリへの依存を追加
+          :depends-on (#:alexandria #:cl-ppcre)
+
+          ;; 外部ライブラリの関数を使用
+          (alexandria:if-let ...)
+          ```
+
+          ⚠️ チェック対象:
+          - clysm.asd の :depends-on 変更
+          - 新規 quicklisp/外部ライブラリの使用
+
+          ⚠️ 理由:
+          このプロジェクトはセルフホスティングを目指しており、
+          Clysm自身でClysm をコンパイルできる必要がある。
+          外部依存は src/clysm/util.lisp に自前実装を追加すること。
+
+          ⚠️ 例外（チェック対象外）:
+          - clysm/tests システム（テストのみの依存は許容）
+
+      - name: test_coverage
+        prompt: |
+          新規機能のテストカバレッジチェック:
+
+          ✅ 正しいパターン:
+          ```lisp
+          ;; 新規コンパイラ機能を追加
+          (defun compile-multiple-values ...)
+
+          ;; 対応するテストを追加
+          ;; tests/unit/compiler-test.lisp または
+          ;; tests/e2e/multiple-values-test.lisp
+          ```
+
+          ❌ 間違いパターン:
+          ```lisp
+          ;; 新機能を追加したがテストなし
+          ```
+
+          ⚠️ チェック対象:
+          - src/clysm/compiler/ の新規機能 → unit test または e2e test が必要
+          - src/clysm/backend/ の新規機能 → unit test が必要
+          - src/clysm/reader/ の新規機能 → unit test が必要
+
+          ⚠️ テストの種類:
+          - tests/unit/ - 単体テスト（関数単位）
+          - tests/e2e/ - エンドツーエンドテスト（Lisp式→Wasm実行）
+
+          ⚠️ 例外（チェック対象外）:
+          - バグ修正（既存テストでカバーされている場合）
+          - リファクタリング（動作変更なし）
+          - ドキュメント/コメントのみの変更
+
+      - name: wasm_instruction_format
+        prompt: |
+          WebAssembly命令エミッタの命名規約チェック:
+
+          ✅ 正しい命名:
+          ```lisp
+          ;; emit- prefix + WebAssembly命令名
+          (defun emit-i32.const (value) ...)
+          (defun emit-struct.new (type-index) ...)
+          (defun emit-local.get (index) ...)
+          ```
+
+          ❌ 間違った命名:
+          ```lisp
+          ;; prefix なし
+          (defun i32-const (value) ...)
+
+          ;; 不統一な命名
+          (defun generate-i32-const (value) ...)
+          ```
+
+          ⚠️ チェック対象:
+          - src/clysm/backend/wasm-emit.lisp の新規命令エミッタ
+          - src/clysm/runtime/types.lisp のGC命令エミッタ
+
+          ⚠️ 例外（チェック対象外）:
+          - 高レベルヘルパー関数（emit-make-cons など）
+          - 内部補助関数
