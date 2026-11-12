@@ -24,7 +24,7 @@ test-quicklisp:
 	grep -q 'str: ("x" "y")' build/quicklisp-test/log.txt && echo "quicklisp: ok"
 
 test-asdf:
-	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2>&1; \
+	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \
 	if cmp -s build/asdf-test.out tests/asdf/run.expected; then echo "asdf: ok"; \
 	else diff tests/asdf/run.expected build/asdf-test.out; exit 1; fi
 

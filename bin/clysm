@@ -3,8 +3,9 @@
 #
 #   clysm compile FILE... [-o OUT.wasm]   compile Lisp sources (with the runtime) to a Wasm module
 #   clysm run FILE... [-- ARGS]           compile and run on Node.js
-#   clysm repl [--interp]                 start the REPL (runs in Wasm; each form is compiled
-#                                         to a new Wasm module, or interpreted with --interp)
+#   clysm repl [--interp] [--no-userinit] start the REPL (runs in Wasm; each form is compiled
+#                                         to a new Wasm module, or interpreted with --interp);
+#                                         ~/.clysmrc is loaded first unless --no-userinit
 #   clysm script FILE                     load FILE in the REPL image
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
 set -e
@@ -46,8 +47,8 @@ case "$cmd" in
     rm -f "$out.log"
     status=0; "$NODE" "$ROOT/host/run.mjs" "$out" "$@" || status=$?
     rm -f "$out"; exit $status ;;
-  repl)   if [ "$1" = "--interp" ]; then exec "$NODE" "$ROOT/host/run.mjs" "$(interp_image)"; fi
-          exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" ;;
+  repl)   if [ "$1" = "--interp" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(interp_image)" "$@"; fi
+          exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   eval)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
   exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;

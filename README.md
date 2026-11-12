@@ -11,6 +11,7 @@ Wasm exception handling proposal (`try_table` / `throw_ref`), and tail calls use
 $ bin/clysm run tests/hello.lisp          # compile with the runtime, then run on Node.js
 $ bin/clysm compile prog.lisp -o prog.wasm
 $ bin/clysm repl                          # a REPL in Wasm; every form is compiled to a new Wasm module
+                                          # (~/.clysmrc is loaded first, unless --no-userinit)
 $ bin/clysm eval '(expt 2 100)'
 $ bin/clysm script file.lisp              # LOAD a file with the in-image evaluator
 ```
@@ -186,8 +187,12 @@ ASDF 3.3.7 (the latest release, with a small port in `third_party/asdf/`) is bun
 (asdf:test-system :alexandria)
 ```
 
-Systems are compiled with `compile-file` (fasls are cached under
-`~/.cache/common-lisp/`) and loaded into the running image. `make test-asdf`
+Systems are compiled with `compile-file` and loaded into the running image.
+A fasl holds the compiled Wasm modules (consecutive ordinary forms share one
+module) with their constants, and the source forms as a fallback; the fasl
+directory under `~/.cache/common-lisp/` names the image build, so rebuilding
+Clysm recompiles systems. ASDF itself is compiled once per image build
+(`~/.cache/common-lisp/clysm-asdf/`). `make test-asdf`
 loads a small multi-system example (`tests/asdf/`). There are no subprocesses,
 so `uiop:run-program` is not available.
 
@@ -204,6 +209,7 @@ the main thread performs the socket operation.
 ;; an existing installation ($QUICKLISP_HOME, by default ~/quicklisp/)
 (require :quicklisp)
 (ql:quickload :cl-ppcre)
+(ql:add-to-init-file)        ; load Quicklisp in every REPL (writes ~/.clysmrc)
 
 ;; a new installation with the bootstrap file from https://beta.quicklisp.org/quicklisp.lisp
 (load "quicklisp.lisp")

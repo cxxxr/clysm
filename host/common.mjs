@@ -60,8 +60,12 @@ export function makeCommonEnv(state) {
     },
     compile_module(bytes, consts) {
       // instantiate a module compiled inside the image and link it with it
-      const u8 = new Uint8Array(bytes.length);
-      for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
+      // BYTES is a string of octets, or a Uint8Array (e.g. read from a fasl)
+      let u8 = bytes;
+      if (!(bytes instanceof Uint8Array)) {
+        u8 = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
+      }
       const mod = new WebAssembly.Module(u8);
       const ex = state.instance.exports;
       const inst = new WebAssembly.Instance(mod, {

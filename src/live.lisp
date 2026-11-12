@@ -116,4 +116,6 @@ Returns (values bytes constants-vector)."
                                   append `((:global.get ,(static-closure-global l))
                                            (:call (:main ,(lam-id l))) (:local.set result)))
                           (:local.get result)))
+        ;; a module made at run time only needs the helpers it calls
+        (remove-unreachable-functions *m*)
         (values (encode-module *m*) (coerce objects 'simple-vector))))))

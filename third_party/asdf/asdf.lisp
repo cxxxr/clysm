@@ -2297,6 +2297,7 @@ then returning the non-empty string value of the variable"
         #+scl (format nil "~A~A" s
                       ;; ANSI upper case vs lower case.
                       (ecase ext:*case-mode* (:upper "") (:lower "l")))
+        #+clysm (format nil "~A-~A" s (or sys::*image-id* "interpreter"))
         #+ecl (format nil "~A~@[-~A~]" s
                       (let ((vcs-id (ext:lisp-implementation-vcs-id)))
                         (unless (equal vcs-id "UNKNOWN")

@@ -49,7 +49,21 @@ instead (so the error, if any, happens at run time)."
 
 (define-condition sys::%native-compile-failed (error) ())
 
+(defun native-compile-form (form)
+  "Compile FORM to a module (without running it): (values octets constants)."
+  (multiple-value-bind (bytes consts) (live-compile-forms (list form))
+    (values (coerce bytes '(simple-array (unsigned-byte 8) (*))) consts)))
+
+(defun native-run-module (file offset length consts)
+  "Run the module stored in FILE (a native file name) at OFFSET."
+  (let ((bytes (js:call (js:global) "__clysm_read_bytes" file offset length)))
+    (sys::%compile-module bytes (sys::%js-wrap-lisp consts))))
+
 (install-live-hooks)
+(setq sys::*native-compile-form-hook* #'native-compile-form)
+(setq sys::*native-run-module-hook* #'native-run-module)
+;; compiled modules in fasls are valid only for this build of the image
+(setq sys::*image-id* #.(format nil "~36R" (random (expt 2 64) (make-random-state t))))
 (setq sys::*native-compile-hook* #'native-compile)
 (setq sys::*native-eval-hook* #'native-eval)
 (setq *package* (find-package "COMMON-LISP-USER"))

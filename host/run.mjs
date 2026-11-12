@@ -8,6 +8,17 @@ import { makeImports } from './common.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
+// octets of a file (compiled modules in fasls); the last file read is cached
+{
+  let cachedPath = null, cachedBuf = null, cachedMtime = 0;
+  globalThis.__clysm_read_bytes = (path, offset, length) => {
+    const mtime = fs.statSync(path).mtimeMs;
+    if (path !== cachedPath || mtime !== cachedMtime) {
+      cachedBuf = fs.readFileSync(path); cachedPath = path; cachedMtime = mtime;
+    }
+    return new Uint8Array(cachedBuf.buffer, cachedBuf.byteOffset + offset, length);
+  };
+}
 // the Clysm installation directory (REQUIRE finds bundled modules there)
 globalThis.__clysm_root = fileURLToPath(new URL('..', import.meta.url));
 

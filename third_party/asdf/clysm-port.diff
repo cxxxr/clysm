@@ -1,5 +1,5 @@
 --- asdf-3.3.7.orig.lisp	2026-11-12 23:28:02.278235982 +0900
-+++ asdf.lisp	2026-11-12 23:28:36.844534434 +0900
++++ asdf.lisp	2026-11-13 00:48:16.312747194 +0900
 @@ -976,7 +976,7 @@
    #+(or mcl cmucl) (:shadow #:user-homedir-pathname))
  (in-package :uiop/common-lisp)
@@ -78,7 +78,15 @@
  
    #+clozure
    (defun ccl-fasl-version ()
-@@ -2362,6 +2368,7 @@
+@@ -2291,6 +2297,7 @@
+         #+scl (format nil "~A~A" s
+                       ;; ANSI upper case vs lower case.
+                       (ecase ext:*case-mode* (:upper "") (:lower "l")))
++        #+clysm (format nil "~A-~A" s (or sys::*image-id* "interpreter"))
+         #+ecl (format nil "~A~@[-~A~]" s
+                       (let ((vcs-id (ext:lisp-implementation-vcs-id)))
+                         (unless (equal vcs-id "UNKNOWN")
+@@ -2362,6 +2369,7 @@
          #+mkcl (mk-ext:getcwd)
          #+sbcl (sb-ext:parse-native-namestring (sb-unix:posix-getcwd/))
          #+xcl (extensions:current-directory)
@@ -86,7 +94,7 @@
          (not-implemented-error 'getcwd)))
  
    (defun chdir (x)
-@@ -2380,7 +2387,8 @@
+@@ -2380,7 +2388,8 @@
        #+lispworks (hcl:change-directory x)
        #+mkcl (mk-ext:chdir x)
        #+sbcl (progn (require :sb-posix) (symbol-call :sb-posix :chdir (sb-ext:native-namestring x)))
@@ -96,7 +104,7 @@
        (not-implemented-error 'chdir))))
  
  
-@@ -2559,7 +2567,7 @@
+@@ -2559,7 +2568,7 @@
    ;; This will be :unspecific if supported, or NIL if not.
    (defparameter *unspecific-pathname-type*
      #+(or abcl allegro clozure cmucl lispworks sbcl scl) :unspecific
@@ -105,7 +113,7 @@
      "Unspecific type component to use with the underlying implementation's MAKE-PATHNAME")
  
    (defun make-pathname* (&rest keys &key directory host device name type version defaults
-@@ -3861,7 +3869,8 @@
+@@ -3861,7 +3870,8 @@
                 `(,dd directory-pathname) ;; requires SBCL 1.0.44 or later
                 `(progn (require :sb-posix) (symbol-call :sb-posix :rmdir directory-pathname)))
      #+xcl (symbol-call :uiop :run-program `("rmdir" ,(native-namestring directory-pathname)))
@@ -115,7 +123,7 @@
      (not-implemented-error 'delete-empty-directory "(on your platform)")) ; genera
  
    (defun delete-directory-tree (directory-pathname &key (validate nil validatep) (if-does-not-exist :error))
-@@ -4740,7 +4749,8 @@
+@@ -4740,7 +4750,8 @@
                 (cond
                   (exit `(,exit :code code :abort (not finish-output)))
                   (quit `(,quit :unix-status code :recklessly-p (not finish-output)))))
@@ -125,7 +133,7 @@
      (not-implemented-error 'quit "(called with exit code ~S)" code))
  
    (defun die (code format &rest arguments)
-@@ -4899,7 +4909,8 @@
+@@ -4899,7 +4910,8 @@
      #+mkcl (loop :for i :from 0 :below (mkcl:argc) :collect (mkcl:argv i))
      #+sbcl sb-ext:*posix-argv*
      #+xcl system:*argv*
@@ -135,7 +143,7 @@
      (not-implemented-error 'raw-command-line-arguments))
  
    (defun command-line-arguments (&optional (arguments (raw-command-line-arguments)))
-@@ -14035,8 +14046,8 @@
+@@ -14035,8 +14047,8 @@
          :asdf/system ;; used by ECL
          :asdf/upgrade :asdf/system-registry :asdf/operate :asdf/bundle)
    ;; Happily, all those implementations all have the same module-provider hook interface.
@@ -146,7 +154,7 @@
                  #:*module-provider-functions*
                  #+ecl #:*load-hooks*)
    #+(or clasp mkcl) (:import-from :si #:*load-hooks*))
-@@ -14067,7 +14078,7 @@
+@@ -14067,7 +14079,7 @@
      (clear-system "uiop")))
  
  ;;;; Hook ASDF into the implementation's REQUIRE and other entry points.

@@ -47,6 +47,12 @@ s, n4 = re.subn(r"(\n[ \t]*)#\+sbcl \(progn \(require :sb-posix\) \(symbol-call 
                 r"\1#+sbcl (progn (require :sb-posix) (symbol-call :sb-posix :unsetenv ,x))\1#+clysm (sys::%setenv ,x nil)\n\2#-(or clysm ", s)
 assert (n1, n2, n3, n4) == (1, 1, 1, 1), (n1, n2, n3, n4)
 
+# the fasl cache directory names the image build: compiled modules in fasls
+# are only valid for the image that made them
+rep("""        #+ecl (format nil "~A~@[-~A~]" s""",
+    """        #+clysm (format nil "~A-~A" s (or sys::*image-id* "interpreter"))
+        #+ecl (format nil "~A~@[-~A~]" s""")
+
 # implementation type and architecture
 rep("(:cmu :cmucl :cmu) :clasp :ecl :gcl", "(:cmu :cmucl :cmu) :clasp :clysm :ecl :gcl")
 rep("(:java :java :java-1.4 :java-1.5 :java-1.6 :java-1.7))))",

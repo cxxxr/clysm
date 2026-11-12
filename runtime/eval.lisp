@@ -424,6 +424,14 @@ documentation string may appear among the declarations."
 
 (defvar *native-compile-hook* nil "set when the compiler is part of the image")
 (defvar *native-eval-hook* nil "when set, the REPL compiles each form natively")
+(defvar *native-compile-form-hook* nil
+  "When the compiler is part of the image: a function compiling a toplevel form
+to a Wasm module linked with the image, returning (values octets constants).")
+(defvar *native-run-module-hook* nil
+  "When the compiler is part of the image: a function instantiating and running
+a module made by *NATIVE-COMPILE-FORM-HOOK* (octets, constants).")
+(defvar *image-id* nil
+  "Identifies the image build; compiled modules in fasls are only valid for it.")
 
 (defun compile (name &optional definition)
   (when *native-compile-hook*
@@ -481,14 +489,46 @@ documentation string may appear among the declarations."
         (*readtable* *standard-readtable*))
     (funcall fn)))
 
+(defvar *fasl-modules* nil "While loading a compiled file: (native-name . start octet).")
+
+(defun %load-fasl-entry (entry stream)
+  "Evaluate a fasl entry (see COMPILE-FILE): its compiled module is run when it
+was made for this image, otherwise its source form (stored after the module)
+is read and compiled again."
+  (destructuring-bind (id offset length consts source-offset source-length) (cdr entry)
+    (if (and *native-run-module-hook* (equal id *image-id*))
+        (funcall *native-run-module-hook*
+                 (car *fasl-modules*) (+ (cdr *fasl-modules*) offset) length consts)
+        (let ((here (file-position stream)))
+          (file-position stream (+ (cdr *fasl-modules*) source-offset))
+          (let ((form (%call-with-fasl-syntax
+                       (lambda () (let ((*print-readably* nil)) (read stream))))))
+            (declare (ignore source-length))
+            (file-position stream here)
+            (%eval-toplevel form))))))
+
+(defun %skip-fasl-modules (stream)
+  "After the header line: skip the module octets; returns (native-name . start)."
+  (let* ((pos (file-position stream))
+         (line (read-line stream nil "")))
+    (if (and (> (length line) 9) (string= line ";;; wasm " :end1 9))
+        (let ((n (parse-integer line :start 9)) (start (file-position stream)))
+          (file-position stream (+ start n))
+          (cons (namestring (truename stream)) start))
+        (progn (file-position stream pos) nil))))
+
 (defun %load-stream (stream print)
-  (let ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream))))
+  (let* ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream)))
+         (*fasl-modules* (and fasl (%skip-fasl-modules stream))))
     (loop
       (let ((form (if fasl
                       (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
                       (read stream nil %eof-marker))))
         (when (eq form %eof-marker) (return t))
-        (let ((vals (multiple-value-list (%eval-toplevel form))))
+        (let ((vals (multiple-value-list
+                     (if (and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
+                         (%load-fasl-entry form stream)
+                         (%eval-toplevel form)))))
           (when print (format t "~&~{~S~^ ~}~%" vals)))))))
 
 (defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
@@ -523,14 +563,105 @@ documentation string may appear among the declarations."
   "During COMPILE-FILE, a function returning the forms that replace a form
 whose literal objects are externalized with MAKE-LOAD-FORM.")
 
+;;; A compiled file is
+;;;   ;;; Clysm compiled file
+;;;   ;;; wasm N
+;;;   <N octets: the compiled modules, one after the other>
+;;;   <the forms, as text>
+;;; where a form (%FASL-WASM image-id offset length constants form) stands for
+;;; a module (offset relative to the module octets) to be run with the
+;;; constants vector; when the image is not the one it was compiled for, the
+;;; source form is compiled again.
+
+(defvar *cf-modules* nil "During COMPILE-FILE: (modules-reversed total-length).")
+
+(defun %cf-compiled-form (form)
+  "FORM as a fasl entry for its compiled module, or NIL when it cannot be
+compiled or its constants cannot be written readably."
+  (when (and *native-compile-form-hook* *image-id* *cf-modules*)
+    (multiple-value-bind (octets consts)
+        (handler-case (funcall *native-compile-form-hook* form)
+          (error () nil))
+      (when (and octets
+                 ;; the constants must read back as equivalent objects
+                 (%call-with-fasl-syntax
+                  (lambda () (handler-case (progn (prin1-to-string consts) t)
+                               (error () nil)))))
+        (let* ((offset (second *cf-modules*))
+               (source (%string-utf8-octets
+                        (%call-with-fasl-syntax
+                         (lambda () (let ((*print-readably* nil)) (prin1-to-string form))))))
+               (source-offset (+ offset (length octets))))
+          (push octets (first *cf-modules*))
+          (push source (first *cf-modules*))
+          (setf (second *cf-modules*) (+ source-offset (length source)))
+          (list '%fasl-wasm *image-id* offset (length octets) consts
+                source-offset (length source)))))))
+
+(defun %string-utf8-octets (string)
+  (let ((v (make-array (length string) :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t)))
+    (dotimes (i (length string) v)
+      (let ((code (char-code (char string i))))
+        (cond ((< code #x80) (vector-push-extend code v))
+              ((< code #x800)
+               (vector-push-extend (logior #xC0 (ash code -6)) v)
+               (vector-push-extend (logior #x80 (logand code #x3F)) v))
+              ((< code #x10000)
+               (vector-push-extend (logior #xE0 (ash code -12)) v)
+               (vector-push-extend (logior #x80 (logand (ash code -6) #x3F)) v)
+               (vector-push-extend (logior #x80 (logand code #x3F)) v))
+              (t
+               (vector-push-extend (logior #xF0 (ash code -18)) v)
+               (vector-push-extend (logior #x80 (logand (ash code -12) #x3F)) v)
+               (vector-push-extend (logior #x80 (logand (ash code -6) #x3F)) v)
+               (vector-push-extend (logior #x80 (logand code #x3F)) v)))))))
+
+(defun %write-fasl (path text modules total)
+  (with-open-file (out path :direction :output :if-exists :supersede :if-does-not-exist :create)
+    (write-line %fasl-header out)
+    (format out ";;; wasm ~D~%" total)
+    (dolist (m modules)
+      (dotimes (i (length m)) (%fs-put-octet out (aref m i))))
+    (write-string text out)))
+
+(defvar *cf-pending* nil
+  "During COMPILE-FILE: ordinary forms (reversed) waiting to be compiled
+together into one module.  Forms are only batched between compile-time side
+effects, so compiling them later sees the same environment.")
+(defparameter %cf-batch-size 64)
+
+(defun %cf-write (x out)
+  (%call-with-fasl-syntax
+   (lambda ()
+     (handler-case (prin1 x out)
+       (print-not-readable ()
+         (let ((*print-readably* nil)) (prin1 x out))))
+     (terpri out))))
+
+(defun %cf-flush (out)
+  "Write the pending forms: one module for all of them if possible, else one
+per form, else the source forms."
+  (let ((forms (reverse *cf-pending*)))
+    (setq *cf-pending* nil)
+    (when forms
+      (let ((entry (and (cdr forms) (%cf-compiled-form `(progn ,@forms)))))
+        (if entry
+            (%cf-write entry out)
+            (dolist (f forms)
+              (%cf-write (or (%cf-compiled-form f) f) out)))))))
+
 (defun %cf-emit (form out)
-  (dolist (form (if *cf-externalizer* (funcall *cf-externalizer* form) (list form)))
-    (%call-with-fasl-syntax
-     (lambda ()
-       (handler-case (prin1 form out)
-         (print-not-readable ()
-           (let ((*print-readably* nil)) (prin1 form out))))
-       (terpri out)))))
+  (let ((forms (if *cf-externalizer* (funcall *cf-externalizer* form) (list form))))
+    (cond ((not (and *native-compile-form-hook* *image-id* *cf-modules*))
+           (dolist (f forms) (%cf-write f out)))
+          ((cdr forms)
+           ;; literal objects externalized with MAKE-LOAD-FORM: the forms
+           ;; refer to objects that the preceding ones create when loaded (and
+           ;; their constants are read only then), so each is a module of its own
+           (%cf-flush out)
+           (dolist (f forms) (push f *cf-pending*) (%cf-flush out)))
+          (t (push (car forms) *cf-pending*)
+             (when (>= (length *cf-pending*) %cf-batch-size) (%cf-flush out))))))
 
 (defun %cf-toplevel-expansion (form)
   "Expand FORM until it is a form that toplevel processing treats specially.
@@ -548,9 +679,20 @@ Returns the expansion, or NIL when FORM is an ordinary form."
 
 (defun %cf-process (form out compile-time-too)
   (let ((x (%cf-toplevel-expansion form)))
+    ;; a compile-time side effect ends the batch of pending forms
+    ;; (definers with compile-time effects, EVAL-WHEN, special proclamations;
+    ;; other forms evaluated at compile time, like DEFUN in an EVAL-WHEN, do
+    ;; not change how the pending forms compile)
+    (when (or x (and (consp form) (member (car form) '(defvar defparameter proclaim))))
+      (%cf-flush out))
     (cond
       ((null x)
        (when compile-time-too (%eval-toplevel form))
+       ;; CLHS DEFVAR/DEFPARAMETER: the compiler must recognize the variable
+       ;; as special in the rest of the file
+       (when (and (consp form) (member (car form) '(defvar defparameter))
+                  (consp (cdr form)) (symbolp (second form)))
+         (proclaim `(special ,(second form))))
        (%cf-emit form out))
       ((eq (car x) 'progn)
        (dolist (f (cdr x)) (%cf-process f out compile-time-too)))
@@ -594,14 +736,16 @@ Returns the expansion, or NIL when FORM is an ordinary form."
                                   (setq warnings-p t)
                                   (unless (typep c 'style-warning) (setq failure-p t))))
                        (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
-          (with-open-file (out out-path :direction :output :if-exists :supersede
-                                        :if-does-not-exist :create)
-            (write-line %fasl-header out)
-            (loop
-              (let ((form (read in nil %eof-marker)))
-                (when (eq form %eof-marker) (return))
-                (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
-                (%cf-process form out nil)))))
+          (let* ((*cf-modules* (list nil 0))
+                 (*cf-pending* nil)
+                 (text (with-output-to-string (out)
+                         (loop
+                           (let ((form (read in nil %eof-marker)))
+                             (when (eq form %eof-marker) (return))
+                             (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+                             (%cf-process form out nil)))
+                         (%cf-flush out))))
+            (%write-fasl out-path text (reverse (first *cf-modules*)) (second *cf-modules*))))
         (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
     (values (truename out-path) warnings-p failure-p)))
 
@@ -653,6 +797,8 @@ Returns the expansion, or NIL when FORM is an ordinary form."
               (t (handler-case (%repl-eval-print form)
                    (error (c) (format t "~&; Error: ~A~%" c)))))))))
 
+(defvar %read-error-marker (make-symbol "READ-ERROR"))
+
 (defun repl (&key (prompt "* "))
   (let ((*package* *package*))
     (loop
@@ -661,16 +807,32 @@ Returns the expansion, or NIL when FORM is an ordinary form."
       (finish-output)
       (let ((form (handler-case (read *standard-input* nil %eof-marker)
                     (end-of-file () %eof-marker)
-                    (error (c) (format t "~&; read error: ~A~%" c) '(values)))))
+                    (error (c)
+                      (format t "~&; read error: ~A~%" c)
+                      ;; discard the rest of the line, which belongs to the bad form
+                      (loop (let ((ch (read-char *standard-input* nil nil)))
+                              (when (or (null ch) (char= ch #\Newline)) (return))))
+                      %read-error-marker))))
         (when (eq form %eof-marker) (terpri) (return))
-        (restart-case
-            (handler-bind ((error (lambda (c)
-                                    (if (interactive-stream-p *standard-input*)
-                                        (%repl-debugger c)
-                                        (progn (format t "~&; Error: ~A~%" c)
-                                               (invoke-restart 'abort-to-toplevel))))))
-              (%repl-eval-print form))
-          (abort-to-toplevel () :report "Return to the top level." nil))))))
+        (unless (eq form %read-error-marker)
+          (restart-case
+              (handler-bind ((error (lambda (c)
+                                      (if (interactive-stream-p *standard-input*)
+                                          (%repl-debugger c)
+                                          (progn (format t "~&; Error: ~A~%" c)
+                                                 (invoke-restart 'abort-to-toplevel))))))
+                (%repl-eval-print form))
+            (abort-to-toplevel () :report "Return to the top level." nil)))))))
+
+(defun %init-file ()
+  "The user's init file, ~/.clysmrc (as ~/.sbclrc for SBCL), if it exists."
+  (probe-file (merge-pathnames ".clysmrc" (user-homedir-pathname))))
+
+(defun %load-init-file ()
+  (let ((file (%init-file)))
+    (when file
+      (handler-case (load file)
+        (error (c) (format *error-output* "~&; error while loading ~A: ~A~%" (namestring file) c))))))
 
 (defun %script-main (path)
   (handler-bind ((error (lambda (c)
@@ -694,12 +856,17 @@ Returns the expansion, or NIL when FORM is an ordinary form."
   (setq *posix-argv* (%command-line-arguments))
   (%init-default-pathname)
   (%init-host-features)
-  (let ((args *posix-argv*))
+  (let* ((args *posix-argv*)
+         (userinit (not (and args (string= (car args) "--no-userinit")))))
+    (unless userinit (setq args (cdr args) *posix-argv* args))
     (cond ((and args (string= (car args) "--eval"))
+           (when userinit (%load-init-file))
            (dolist (form-string (cdr args))
              (%repl-eval-print (read-from-string form-string))))
+          ;; scripts do not load the init file (as sbcl --script)
           (args (%script-main (car args)))
           (t (format t "Clysm Common Lisp ~A (WebAssembly GC)~%" (lisp-implementation-version))
              (setq *interactive* (eql (%is-tty) 1))
+             (when userinit (%load-init-file))
              (repl)))))
 
