@@ -156,7 +156,10 @@
   (count-if (lambda (s) (fixnump (%slotd-location s))) (%class-effective-slots class)))
 
 (defun %ensure-class-object (name metaclass supers direct-slots kind)
-  (let ((class (or (and name (find-class name nil)) (%allocate-class-object metaclass))))
+  (let ((class (or (let ((c (and name (find-class name nil))))
+                     ;; reuse the class only while NAME is its proper name
+                     (and c (eq (%class-name c) name) c))
+                   (%allocate-class-object metaclass))))
     (%set-instance-layout class metaclass)
     (%set-class-slot class +class-name+ name)
     ;; drop the class from the subclass lists of its former superclasses
@@ -235,7 +238,7 @@
 
 (defun %slot-unbound (instance name)
   (if (fboundp 'slot-unbound)
-      (funcall 'slot-unbound (class-of instance) instance name)
+      (values (funcall 'slot-unbound (class-of instance) instance name))
       (error 'unbound-slot :name name :instance instance)))
 
 (defun %slot-missing (instance name op value)

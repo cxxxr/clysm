@@ -203,7 +203,9 @@
                                        (argument-precedence-order nil apop)
                                        declarations ((:declare declare-option)) environment
                                        &allow-other-keys)
-  (declare (ignore keys environment))
+  (declare (ignore environment))
+  (unless (evenp (length keys))
+    (%program-error "ENSURE-GENERIC-FUNCTION: odd number of keyword arguments ~S" keys))
   (when (and (symbolp name)
              (or (special-operator-p name) (macro-function name)
                  (and (fboundp name) (not (%generic-function-p (fdefinition name))))))
@@ -425,8 +427,7 @@
         (funcall (car entry) args)))))
 
 (defun %check-call-keys (info valid keys)
-  (unless (do ((l keys (cddr l))) ((null l) nil)
-            (when (and (eq (car l) :allow-other-keys) (cadr l)) (return t)))
+  (unless (let ((aok (%plist-find keys :allow-other-keys))) (and aok (cadr aok)))
     (do ((l keys (cddr l))) ((null l))
       (unless (or (eq (car l) :allow-other-keys) (member (car l) valid))
         (%gf-arg-error info "unknown keyword argument ~S (allowed: ~S)" (car l) valid)))))
@@ -727,15 +728,16 @@
          ,gf))))
 
 (defun %defgeneric (name ll combination doc apo gfclass mclass decls)
+  ;; methods defined by a previous DEFGENERIC form are removed
+  (when (and (fboundp name) (%generic-function-p (fdefinition name)))
+    (let* ((f (fdefinition name)) (info (%gf-info f)))
+      (dolist (m (%gf-slot info +gf-initial-methods+)) (%remove-method f m))
+      (%set-gf-slot info +gf-initial-methods+ nil)))
   (let ((f (apply #'ensure-generic-function name :lambda-list ll :method-combination combination
                   :documentation doc :declarations decls
                   (append (if apo (list :argument-precedence-order (car apo)) nil)
                           (if gfclass (list :generic-function-class gfclass) nil)
                           (if mclass (list :method-class mclass) nil)))))
-    ;; methods defined by a previous DEFGENERIC form are removed
-    (let ((info (%gf-info f)))
-      (dolist (m (%gf-slot info +gf-initial-methods+)) (%remove-method f m))
-      (%set-gf-slot info +gf-initial-methods+ nil))
     f))
 
 (defun %set-gf-initial-methods (gf methods)
@@ -769,6 +771,25 @@
             (push (%qualifier-pattern-test (pop rest) qvar) tests)))
       `((or ,@(reverse tests)) (push ,mvar ,var))))
 
+  (defun %rename-arguments-ll (ll)
+    "The variables of an :ARGUMENTS lambda list are bound to forms (fresh
+variables of the effective method) while the effective method form is computed."
+    (let ((r nil) (bindings nil) (keyp nil))
+      (flet ((ren (v) (let ((g (gensym (symbol-name v)))) (push (list v (list 'quote g)) bindings) g)))
+        (dolist (x ll)
+          (cond ((member x lambda-list-keywords) (unless (eq x '&allow-other-keys) (setq keyp (eq x '&key))) (push x r))
+                ((and (symbolp x) keyp) (push (list (list (intern (symbol-name x) "KEYWORD") (ren x))) r))
+                ((symbolp x) (push (ren x) r))
+                (t (let* ((spec (car x))
+                          (spec2 (cond ((and (symbolp spec) keyp)
+                                        (list (intern (symbol-name spec) "KEYWORD") (ren spec)))
+                                       ((symbolp spec) (ren spec))
+                                       (t (list (car spec) (ren (cadr spec)))))))
+                     (push (append (list spec2) (if (cdr x) (list (cadr x)) nil)
+                                   (if (cddr x) (list (ren (caddr x))) nil))
+                           r))))))
+      (values (nreverse r) (nreverse bindings))))
+
   (defun %method-group-options (spec)
     (let ((rest (cdr spec)))
       (do () ((or (null rest) (keywordp (car rest)))) (pop rest))
@@ -801,6 +822,7 @@
             (cond ((and (consp (car body)) (eq (caar body) :arguments)) (setq args-ll (cdr (pop body))))
                   ((and (consp (car body)) (eq (caar body) :generic-function)) (setq gfvar (cadr (pop body))))
                   (t (return))))
+          (multiple-value-bind (args-ll arg-bindings) (%rename-arguments-ll args-ll)
           (multiple-value-bind (decls doc forms) (%parse-body body t)
             (let* ((gf (gensym "GF")) (ms (gensym "METHODS")) (opts (gensym "OPTIONS"))
                    (m (gensym "M")) (q (gensym "Q"))
@@ -809,7 +831,7 @@
                 ',name
                 (lambda (,gf ,ms ,opts)
                   (declare (ignorable ,gf))
-                  (let (,@(if gfvar `((,gfvar ,gf)) nil))
+                  (let (,@(if gfvar `((,gfvar ,gf)) nil) ,@arg-bindings)
                     (apply (lambda ,lambda-list
                              (let (,@vars)
                                ,@decls
@@ -836,7 +858,7 @@
                                          groups)
                                ,@forms))
                            ,opts)))
-                ',args-ll ,doc)))))))
+                ',args-ll ,doc))))))))
 
 (defmacro call-method (method &optional next-methods)
   (declare (ignore method next-methods))
