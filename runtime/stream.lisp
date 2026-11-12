@@ -30,6 +30,7 @@
   signed            ; binary elements are signed
   dirty             ; contents changed since the last write to the host
   native            ; host file name
+  created           ; the file was created by OPEN (CLOSE :ABORT T deletes it)
   (external-format :default))
 (defstruct (string-stream (:include stream) (:constructor %make-string-stream)))
 (defstruct (broadcast-stream (:include stream) (:constructor %make-broadcast-stream)))
@@ -651,9 +652,10 @@
                        ((member if-exists '(:overwrite :append)) :error)
                        (t :create)))))
       (multiple-value-bind (bits signed) (%binary-element-spec element-type)
-        (let ((octets nil) (pos 0))
+        (let ((octets nil) (pos 0) (created nil))
           (cond
             ((not exists)
+             (when (eq if-does-not-exist :create) (setq created t))
              (case if-does-not-exist
                (:error (return-from open
                          (%file-error path "can't open ~A: the file does not exist" native)))
@@ -689,6 +691,7 @@
                                  :octets octets :fill (length octets) :pos pos
                                  :esize (if bits (ceiling bits 8) 0) :signed signed
                                  :native native :external-format external-format
+                                 :created created
                                  :dirty (and (member direction '(:output :io))
                                              (not (member if-exists '(:overwrite :append)))
                                              t))))
@@ -698,8 +701,11 @@
 (defun close (stream &key abort)
   (%check-stream stream)
   (when (stream-open stream)
-    (when (and (eq (stream-kind stream) :file) (not abort))
-      (%fs-flush stream))
+    (when (eq (stream-kind stream) :file)
+      (if abort
+          (when (file-stream-created stream)
+            (ignore-errors (delete-file (stream-pathname stream))))
+          (%fs-flush stream)))
     (setf (stream-open stream) nil))
   t)
 
