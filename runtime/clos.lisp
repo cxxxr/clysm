@@ -47,6 +47,15 @@
                                        generic-function-class method-class argument-precedence-order
                                        declarations environment)
   (declare (ignore generic-function-class method-class argument-precedence-order declarations environment))
+  (when (and (symbolp name)
+             (or (special-operator-p name) (macro-function name)
+                 (and (fboundp name) (not (%generic-function-p (fdefinition name))))))
+    (error 'simple-program-error
+           :format-control "~S already names an ordinary function, macro or special operator"
+           :format-arguments (list name)))
+  (when (and (consp name) (fboundp name) (not (%generic-function-p (fdefinition name))))
+    (error 'simple-program-error :format-control "~S already names an ordinary function"
+                                 :format-arguments (list name)))
   (let ((existing (and (fboundp name) (fdefinition name))))
     (if (and existing (%generic-function-p existing))
         (let ((info (%gf-info existing)))
@@ -333,6 +342,10 @@
        (find-class ',name))))
 
 (defun %ensure-class (name supers direct-slots default-initargs metaclass)
+  (let ((names (mapcar #'%slotd-name direct-slots)))
+    (unless (= (length names) (length (remove-duplicates names)))
+      (error 'simple-program-error :format-control "DEFCLASS ~S: duplicate slot names"
+                                   :format-arguments (list name))))
   (let* ((super-classes (mapcar (lambda (s)
                                   (or (find-class s nil)
                                       (%ensure-class-object s *the-standard-class*

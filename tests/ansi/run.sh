@@ -8,7 +8,8 @@ cd "$(dirname "$0")/../.." || exit 1
 [ -f third_party/ansi-test/rt.lsp ] || git submodule update --init third_party/ansi-test
 IMAGE=$(bin/clysm image-native) || exit 1
 CATS=${*:-"symbols eval-and-compile data-and-control-flow iteration objects conditions cons arrays hash-tables packages numbers sequences structures types-and-classes strings characters pathnames files streams printer reader system-construction environment misc"}
-TIMEOUT=${ANSI_TIMEOUT:-600}
+TIMEOUT=${ANSI_TIMEOUT:-1800}   # whole process
+STALL=${ANSI_STALL:-30}          # seconds without progress before a test is considered hung
 mkdir -p build/ansi
 : > build/ansi/summary.txt
 for cat in $CATS; do
@@ -16,7 +17,20 @@ for cat in $CATS; do
   log="build/ansi/$cat.log"; : > "$log"
   start=0
   while :; do
-    timeout "$TIMEOUT" node host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" >> "$log" 2>&1
+    base=$(wc -c < "$log")
+    timeout "$TIMEOUT" node host/run.mjs "$IMAGE" tests/ansi/driver.lisp "$cat" "$start" >> "$log" 2>&1 &
+    pid=$!
+    # watchdog: kill the run when the log stops growing (a hung test)
+    size=-1; idle=0
+    while kill -0 $pid 2>/dev/null; do
+      sleep 2
+      new=$(wc -c < "$log")
+      if [ "$new" = "$size" ]; then idle=$((idle + 2)); else idle=0; size=$new; fi
+      if [ $idle -ge $STALL ] && tail -c +$((base + 1)) "$log" | grep -aq "^@@TOTAL"; then
+        kill $pid 2>/dev/null; break
+      fi
+    done
+    wait $pid 2>/dev/null
     if grep -aq "^@@DONE" "$log"; then break; fi
     # the process died: the last started test crashed
     last=$(grep -a "^@@START" "$log" | tail -1 | awk '{print $2}')

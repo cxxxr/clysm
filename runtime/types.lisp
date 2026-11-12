@@ -268,6 +268,8 @@
 (defun subtypep (t1 t2 &optional env)
   (declare (ignore env))
   (setq t1 (%expand-type-fully (%type-class-name t1)) t2 (%expand-type-fully (%type-class-name t2)))
+  (multiple-value-bind (r certain unknown) (%subtypep-by-algebra t1 t2)
+    (unless unknown (return-from subtypep (values r certain))))
   (cond ((equal t1 t2) (values t t))
         ((%type-empty-p t1) (values t t))
         ((and (consp t2) (eq (car t2) 'not))

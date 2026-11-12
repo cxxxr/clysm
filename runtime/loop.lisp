@@ -36,6 +36,9 @@
   (defun %loop-at-end (s) (null (%ls s 0)))
 
   (defun %loop-add-binding (s var init)
+    (when (and (symbolp var) var (symbol-package var) (assoc var (%ls s 1)))
+      (error 'simple-program-error :format-control "LOOP: the variable ~S is bound more than once"
+                                   :format-arguments (list var)))
     (setf (%ls s 1) (cons (list var init) (%ls s 1))))
 
   (defun %loop-pattern-vars (pattern)
@@ -59,9 +62,9 @@
     (dolist (v (%loop-pattern-vars pattern)) (%loop-add-binding s v nil)))
 
   (defun %loop-skip-type (s)
-    ;; optional type spec after a variable: of-type x, or a simple type symbol
+    ;; optional type spec after a variable: of-type x, or a simple type symbol; returns it
     (cond ((%lkw (%loop-peek s) "OF-TYPE") (%loop-pop s) (%loop-pop s))
-          ((%lkw-in (%loop-peek s) '("FIXNUM" "FLOAT" "T" "NIL" "INTEGER" "NUMBER" "LIST" "SYMBOL"))
+          ((%lkw-in (%loop-peek s) '("FIXNUM" "FLOAT" "T" "NIL" "INTEGER" "NUMBER" "LIST" "SYMBOL" "SINGLE-FLOAT" "DOUBLE-FLOAT" "SHORT-FLOAT" "LONG-FLOAT" "REAL" "RATIONAL"))
            (%loop-pop s))))
 
   (defun %loop-end-test (s form)
@@ -76,10 +79,12 @@
       (let ((kw (%loop-pop s)))
         (cond
           ((%lkw-in kw '("IN" "ON"))
-           (let ((list-form (%loop-pop s)) (g (gensym "LIST")) (step-fn '(cdr)))
-             (when (%lkw (%loop-peek s) "BY")
-               (%loop-pop s) (setq step-fn (list (%loop-pop s))))
+           (let ((list-form (%loop-pop s)) (g (gensym "LIST")) (step-fn nil))
              (%loop-add-binding s g list-form)
+             (when (%lkw (%loop-peek s) "BY")
+               (%loop-pop s)
+               (setq step-fn (gensym "STEP-FN"))
+               (%loop-add-binding s step-fn (%loop-pop s)))
              (%loop-bind-pattern s var)
              (if (%lkw kw "IN")
                  (progn
@@ -88,10 +93,7 @@
                  (progn
                    (%loop-end-test s `(atom ,g))
                    (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))
-             (%loop-step s `(setq ,g ,(if (and (consp (car step-fn)) (eq (car (car step-fn)) 'function))
-                                         `(funcall ,(car step-fn) ,g)
-                                         (if (equal step-fn '(cdr)) `(cdr ,g)
-                                             `(funcall ,(car step-fn) ,g)))))))
+             (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))))
           ((%lkw kw "ACROSS")
            (let ((vec (gensym "VEC")) (i (gensym "I")))
              (%loop-add-binding s vec (%loop-pop s))
@@ -120,6 +122,7 @@
     ;; the FROM/TO/BY forms are evaluated in the order they appear
     (let ((from 0) (from-seen nil) (dir nil) (inclusive t) (have-to nil) (have-by nil)
           (lim (gensym "LIMIT")) (step (gensym "STEP")) (order nil))
+      (when (null var) (setq var (gensym "VAR")))
       (setf (%ls s 0) (cons kw (%ls s 0)))
       (do () ((not (%lkw-in (%loop-peek s) '("FROM" "UPFROM" "DOWNFROM" "TO" "UPTO" "BELOW"
                                               "DOWNTO" "ABOVE" "BY"))))
@@ -145,7 +148,15 @@
           (%loop-end-test s (if down
                                 (if inclusive `(< ,var ,lim) `(<= ,var ,lim))
                                 (if inclusive `(> ,var ,lim) `(>= ,var ,lim)))))
-        (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step)))))))
+        (if have-to
+            (let ((next (gensym "NEXT")))
+              (%loop-step s `(let ((,next ,(if down `(- ,var ,step) `(+ ,var ,step))))
+                               (when ,(if down
+                                          (if inclusive `(< ,next ,lim) `(<= ,next ,lim))
+                                          (if inclusive `(> ,next ,lim) `(>= ,next ,lim)))
+                                 (go ,(%ls s 11)))
+                               (setq ,var ,next))))
+            (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step))))))))
 
   (defun %loop-parse-being (s var kw)
     (when (%lkw-in kw '("BEING")) (when (%lkw-in (%loop-peek s) '("THE" "EACH")) (%loop-pop s)))
@@ -183,7 +194,7 @@
            (%loop-step s `(setq ,g (cdr ,g))))
           (t (error "LOOP: unknown BEING clause ~S" what))))))
 
-  (defun %loop-accumulator (s into kind)
+  (defun %loop-accumulator (s into kind &optional type)
     "Returns the variable used for accumulation."
     (let ((var (or into (%ls s 10))))
       (unless var
@@ -192,7 +203,11 @@
       (unless (assoc var (%ls s 9))
         (let ((tail (gensym "TAIL")))
           (setf (%ls s 9) (cons (list var kind tail) (%ls s 9)))
-          (%loop-add-binding s var (cond ((member kind '(:sum :count)) 0)
+          (%loop-add-binding s var (cond ((member kind '(:sum :count))
+                                          (if (and type (%lkw-in type '("FLOAT" "SINGLE-FLOAT" "DOUBLE-FLOAT"
+                                                                        "SHORT-FLOAT" "LONG-FLOAT")))
+                                              (if (%lkw-in type '("DOUBLE-FLOAT" "LONG-FLOAT")) 0.0d0 0.0)
+                                              0))
                                          (t nil)))
           (%loop-add-binding s tail nil)
           (unless into
@@ -209,9 +224,9 @@
                        ((%lkw-in kw '("SUM" "SUMMING")) :sum)
                        ((%lkw-in kw '("MAXIMIZE" "MAXIMIZING")) :max)
                        (t :min)))
-           (var (%loop-accumulator s into kind))
+           (type (%loop-skip-type s))
+           (var (%loop-accumulator s into kind type))
            (tail (caddr (assoc var (%ls s 9)))))
-      (%loop-skip-type s)
       (cond ((%lkw-in kw '("COLLECT" "COLLECTING"))
              `(let ((c (list ,form)))
                 (if ,var (setf (cdr ,tail) c) (setq ,var c))

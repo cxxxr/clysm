@@ -1,0 +1,434 @@
+;;;; pathname.lisp — pathnames (CLHS 19)
+;;;;
+;;;; Physical pathnames use Unix namestrings.  Logical pathnames
+;;;; ("HOST:DIR;DIR;NAME.TYPE.VERSION") are supported for hosts defined with
+;;;; (SETF LOGICAL-PATHNAME-TRANSLATIONS).  File system access goes through
+;;;; the host's fs module when it is available (Node.js).
+
+(defstruct (pathname (:constructor %make-pathname (host device directory name type version))
+                     (:predicate pathnamep)
+                     (:conc-name %pathname-)
+                     (:copier nil))
+  host device directory name type version)
+
+(defun pathname-host (p &key case) (declare (ignore case)) (%pathname-host (pathname p)))
+(defun pathname-device (p &key case) (declare (ignore case)) (%pathname-device (pathname p)))
+(defun pathname-directory (p &key case) (declare (ignore case)) (%pathname-directory (pathname p)))
+(defun pathname-name (p &key case) (declare (ignore case)) (%pathname-name (pathname p)))
+(defun pathname-type (p &key case) (declare (ignore case)) (%pathname-type (pathname p)))
+(defun pathname-version (p) (%pathname-version (pathname p)))
+
+(defstruct (logical-pathname (:include pathname)
+                             (:constructor %make-logical-pathname (host device directory name type version))
+                             (:copier nil)))
+
+(defvar *logical-pathname-translations* (make-hash-table :test 'equalp))
+
+(defun %host-fs ()
+  (ignore-errors
+   (let ((fs (js:global "__clysm_fs")))
+     (and (js:js-value-p fs) fs))))
+
+;;; ------------------------------------------------------------
+;;; parsing
+;;; ------------------------------------------------------------
+
+(defun %wild-word (s)
+  (cond ((string= s "*") :wild)
+        ((string= s "**") :wild-inferiors)
+        (t s)))
+
+(defun %split-string (s ch)
+  (let ((parts nil) (start 0))
+    (dotimes (i (length s))
+      (when (char= (char s i) ch)
+        (push (subseq s start i) parts)
+        (setq start (+ i 1))))
+    (push (subseq s start) parts)
+    (nreverse parts)))
+
+(defun %parse-physical-namestring (s)
+  (let* ((slash (position #\/ s :from-end t))
+         (dir-part (if slash (subseq s 0 (+ slash 1)) nil))
+         (file (if slash (subseq s (+ slash 1)) s))
+         (dot (position #\. file :from-end t))
+         (name (cond ((string= file "") nil)
+                     ((and dot (> dot 0)) (subseq file 0 dot))
+                     (t file)))
+         (type (if (and dot (> dot 0)) (subseq file (+ dot 1)) nil))
+         (directory
+           (when dir-part
+             (let* ((absolute (char= (char dir-part 0) #\/))
+                    (parts (remove "" (%split-string dir-part #\/) :test #'string=)))
+               (cons (if absolute :absolute :relative)
+                     (mapcar (lambda (d) (cond ((string= d "..") :up) (t (%wild-word d)))) parts))))))
+    (%make-pathname nil nil directory (and name (%wild-word name)) (and type (%wild-word type)) nil)))
+
+(defun %logical-host-p (host) (nth-value 1 (gethash host *logical-pathname-translations*)))
+
+(defun %parse-logical-namestring (s host-end)
+  (let* ((host (string-upcase (subseq s 0 host-end)))
+         (rest (subseq s (+ host-end 1)))
+         (semi (position #\; rest :from-end t))
+         (dir-part (if semi (subseq rest 0 (+ semi 1)) nil))
+         (file (if semi (subseq rest (+ semi 1)) rest))
+         (fields (%split-string file #\.))
+         (relative (and dir-part (> (length dir-part) 0) (char= (char dir-part 0) #\;)))
+         (dirs (and dir-part (remove "" (%split-string dir-part #\;) :test #'string=))))
+    (flet ((comp (x) (if (or (null x) (string= x "")) nil (%wild-word (string-upcase x)))))
+      (%make-logical-pathname
+       host :unspecific
+       (and dir-part (cons (if relative :relative :absolute)
+                           (mapcar (lambda (d) (if (string= d "..") :up (comp d))) dirs)))
+       (comp (first fields)) (comp (second fields))
+       (let ((v (third fields)))
+         (cond ((null v) nil)
+               ((string-equal v "NEWEST") :newest)
+               ((string= v "*") :wild)
+               (t (parse-integer v :junk-allowed t))))))))
+
+(defun %parse-namestring (s)
+  (let ((colon (position #\: s)))
+    (if (and colon (> colon 0) (%logical-host-p (string-upcase (subseq s 0 colon))))
+        (%parse-logical-namestring s colon)
+        (%parse-physical-namestring s))))
+
+(defun pathname (x)
+  (cond ((pathnamep x) x)
+        ((stringp x) (%parse-namestring x))
+        ((%streamp x) (or (stream-pathname x) (error 'type-error :datum x :expected-type 'file-stream)))
+        (t (%type-error x '(or pathname string stream)))))
+
+(defun pathname-p* (x) (pathnamep x))
+
+(defun parse-namestring (thing &optional host (defaults *default-pathname-defaults*)
+                               &key (start 0) end junk-allowed)
+  (declare (ignore defaults junk-allowed))
+  (cond ((pathnamep thing) (values thing start))
+        ((%streamp thing) (values (pathname thing) start))
+        (t (let* ((s (string thing)) (end (or end (length s)))
+                  (sub (subseq s start end)))
+             (values (if (and host (%logical-host-p (string-upcase (string host))) (not (position #\: sub)))
+                         (%parse-logical-namestring (concatenate 'string (string host) ":" sub) (length (string host)))
+                         (%parse-namestring sub))
+                     end)))))
+
+;;; ------------------------------------------------------------
+;;; components
+;;; ------------------------------------------------------------
+
+
+(defun %valid-directory-p (dir)
+  (or (member dir '(nil :wild :unspecific))
+      (and (consp dir) (member (car dir) '(:absolute :relative)))))
+
+(defun make-pathname (&key (host nil hostp) (device nil devicep) (directory nil dirp) (name nil namep)
+                           (type nil typep) (version nil versionp) defaults (case :local))
+  (declare (ignore case))
+  (let* ((d (if defaults (pathname defaults)
+                (%make-pathname (and hostp host) nil nil nil nil nil)))
+         (host (if hostp host (pathname-host d)))
+         (directory (cond ((not dirp) (pathname-directory d))
+                          ((stringp directory) (list :absolute directory))
+                          ((eq directory :wild) (list :absolute :wild-inferiors))
+                          (t directory))))
+    (unless (%valid-directory-p directory)
+      (error 'type-error :datum directory :expected-type 'list))
+    (when (and (consp directory)
+               (or (member :wild-inferiors (cdr directory)) (member :up (cdr directory)))
+               (let ((tail (member :absolute directory))) (and tail (member (cadr directory) '(:up :back)))))
+      (error 'file-error :pathname directory :format-control "invalid directory ~S" :format-arguments (list directory)))
+    (funcall (if (and (stringp host) (%logical-host-p (string-upcase host)))
+                 #'%make-logical-pathname #'%make-pathname)
+             host
+             (if devicep device (pathname-device d))
+             directory
+             (if namep name (pathname-name d))
+             (if typep type (pathname-type d))
+             (if versionp version (pathname-version d)))))
+
+;;; ------------------------------------------------------------
+;;; namestrings
+;;; ------------------------------------------------------------
+
+(defun %component-string (c)
+  (case c (:wild "*") (:wild-inferiors "**") (:up "..") (:back "..") (t c)))
+
+(defun %logical-namestring (p)
+  (with-output-to-string (s)
+    (write-string (pathname-host p) s) (write-char #\: s)
+    (let ((dir (pathname-directory p)))
+      (when dir
+        (when (eq (car dir) :relative) (write-char #\; s))
+        (dolist (d (cdr dir)) (write-string (%component-string d) s) (write-char #\; s))))
+    (when (pathname-name p) (write-string (%component-string (pathname-name p)) s))
+    (when (pathname-type p) (write-char #\. s) (write-string (%component-string (pathname-type p)) s))
+    (let ((v (pathname-version p)))
+      (when (and v (not (eq v :unspecific)))
+        (write-char #\. s)
+        (write-string (case v (:newest "NEWEST") (:wild "*") (t (princ-to-string v))) s)))))
+
+(defun namestring (x)
+  (let ((p (pathname x)))
+    (if (logical-pathname-p p)
+        (%logical-namestring p)
+        (concatenate 'string (directory-namestring p) (file-namestring p)))))
+
+(defun file-namestring (x)
+  (let* ((p (pathname x)) (name (pathname-name p)) (type (pathname-type p)))
+    (concatenate 'string
+                 (if (stringp (%component-string name)) (%component-string name) "")
+                 (if (and type (not (eq type :unspecific))) "." "")
+                 (if (stringp (%component-string type)) (%component-string type) ""))))
+
+(defun directory-namestring (x)
+  (let ((dir (pathname-directory (pathname x))))
+    (with-output-to-string (s)
+      (when (consp dir)
+        (when (eq (car dir) :absolute) (write-char #\/ s))
+        (dolist (d (cdr dir))
+          (write-string (%component-string d) s) (write-char #\/ s))))))
+
+(defun host-namestring (x)
+  (let ((h (pathname-host (pathname x)))) (if (stringp h) h "")))
+
+(defun enough-namestring (x &optional (defaults *default-pathname-defaults*))
+  (let ((p (pathname x)) (d (pathname defaults)))
+    (let ((pd (pathname-directory p)) (dd (pathname-directory d)))
+      (if (and (consp pd) (consp dd) (eq (car pd) :absolute) (eq (car dd) :absolute)
+               (<= (length dd) (length pd)) (equal dd (subseq pd 0 (length dd))))
+          (namestring (make-pathname :directory (cons :relative (nthcdr (length dd) pd)) :defaults p))
+          (namestring p)))))
+
+;;; ------------------------------------------------------------
+;;; merging, wildcards, translation
+;;; ------------------------------------------------------------
+
+(defvar *default-pathname-defaults* (%make-pathname nil nil nil nil nil nil))
+
+(defun merge-pathnames (path &optional (defaults *default-pathname-defaults*) (default-version :newest))
+  (let* ((d (pathname defaults))
+         (p (if (and (stringp path) (logical-pathname-p d) (not (position #\: path)))
+                (parse-namestring path (pathname-host d))
+                (pathname path)))
+         (pd (pathname-directory p))
+         (dir (cond ((null pd) (pathname-directory d))
+                    ((and (eq (car pd) :relative) (consp (pathname-directory d)))
+                     (let ((merged (append (pathname-directory d) (cdr pd))))
+                       ;; remove name/.. pairs
+                       (let ((r nil))
+                         (dolist (c merged (nreverse r))
+                           (if (and (eq c :back) r (stringp (car r))) (pop r) (push c r))))))
+                    (t pd))))
+    (funcall (if (logical-pathname-p (if (pathname-host p) p d)) #'%make-logical-pathname #'%make-pathname)
+             (or (pathname-host p) (pathname-host d))
+             (or (pathname-device p) (pathname-device d))
+             dir
+             (or (pathname-name p) (pathname-name d))
+             (or (pathname-type p) (pathname-type d))
+             (or (pathname-version p)
+                 (if (pathname-name p) default-version (or (pathname-version d) default-version))))))
+
+(defun wild-pathname-p (p &optional field)
+  (let ((p (pathname p)))
+    (flet ((wild-dir () (and (consp (pathname-directory p))
+                             (some (lambda (c) (or (member c '(:wild :wild-inferiors))
+                                                   (and (stringp c) (find #\* c))))
+                                   (cdr (pathname-directory p)))))
+           (wild (c) (or (eq c :wild) (and (stringp c) (find #\* c)))))
+      (case field
+        ((nil) (not (null (or (wild (pathname-host p)) (wild (pathname-device p)) (wild-dir)
+                   (eq (pathname-directory p) :wild)
+                   (wild (pathname-name p)) (wild (pathname-type p)) (wild (pathname-version p))))))
+        (:host (not (null (wild (pathname-host p)))))
+        (:device (not (null (wild (pathname-device p)))))
+        (:directory (not (null (wild-dir))))
+        (:name (not (null (wild (pathname-name p)))))
+        (:type (not (null (wild (pathname-type p)))))
+        (:version (not (null (wild (pathname-version p)))))
+        (t (error 'type-error :datum field :expected-type '(member nil :host :device :directory :name :type :version)))))))
+
+(defun %glob-match (pattern string)
+  (cond ((eq pattern :wild) t)
+        ((null pattern) (null string))
+        ((not (stringp pattern)) (equal pattern string))
+        ((not (stringp string)) nil)
+        (t (labels ((m (i j)
+                      (cond ((= i (length pattern)) (= j (length string)))
+                            ((char= (char pattern i) #\*)
+                             (loop for k from j to (length string) thereis (m (+ i 1) k)))
+                            ((= j (length string)) nil)
+                            ((char-equal (char pattern i) (char string j)) (m (+ i 1) (+ j 1)))
+                            (t nil))))
+             (m 0 0)))))
+
+(defun %dir-match (pattern dir)
+  (cond ((or (null pattern) (eq pattern :wild)) t)
+        ((null dir) (null pattern))
+        (t (labels ((m (ps ds)
+                      (cond ((null ps) (null ds))
+                            ((eq (car ps) :wild-inferiors)
+                             (loop for tail on (cons nil ds) thereis (m (cdr ps) (cdr tail))))
+                            ((null ds) nil)
+                            ((%glob-match (car ps) (car ds)) (m (cdr ps) (cdr ds)))
+                            (t nil))))
+             (and (eq (car pattern) (car dir)) (m (cdr pattern) (cdr dir)))))))
+
+(defun pathname-match-p (path wildcard)
+  (let ((p (pathname path)) (w (pathname wildcard)))
+    (and (%dir-match (pathname-directory w) (pathname-directory p))
+         (or (null (pathname-name w)) (%glob-match (pathname-name w) (pathname-name p)))
+         (or (null (pathname-type w)) (%glob-match (pathname-type w) (pathname-type p)))
+         (or (member (pathname-version w) '(nil :wild :newest)) (eql (pathname-version w) (pathname-version p)))
+         t)))
+
+(defun %translate-component (source from to)
+  (cond ((or (null to)) source)
+        ((eq to :wild) source)
+        ((and (stringp to) (find #\* to) (stringp source))
+         ;; replace the * by the part of SOURCE matched by * in FROM
+         (let ((star (position #\* to))
+               (matched (if (and (stringp from) (find #\* from))
+                            (let* ((fs (position #\* from)) (prefix (subseq from 0 fs))
+                                   (suffix (subseq from (+ fs 1))))
+                              (subseq source (length prefix) (- (length source) (length suffix))))
+                            source)))
+           (concatenate 'string (subseq to 0 star) matched (subseq to (+ star 1)))))
+        (t to)))
+
+(defun %translate-directory (source from to)
+  (cond ((null to) source)
+        ((not (consp to)) source)
+        (t (let ((wild-part (if (consp from)
+                                (let ((n (position :wild-inferiors (cdr from))))
+                                  (if n (nthcdr n (cdr source)) nil))
+                                (cdr source))))
+             (append (list (car to))
+                     (loop for c in (cdr to)
+                           append (if (eq c :wild-inferiors) wild-part (list c))))))))
+
+(defun translate-pathname (source from-wildcard to-wildcard &key)
+  (let ((s (pathname source)) (f (pathname from-wildcard)) (to (pathname to-wildcard)))
+    (funcall (if (logical-pathname-p to) #'%make-logical-pathname #'%make-pathname)
+             (pathname-host to) (pathname-device to)
+             (%translate-directory (pathname-directory s) (pathname-directory f) (pathname-directory to))
+             (%translate-component (pathname-name s) (pathname-name f) (pathname-name to))
+             (%translate-component (pathname-type s) (pathname-type f) (pathname-type to))
+             (if (member (pathname-version to) '(nil :wild)) (pathname-version s) (pathname-version to)))))
+
+(defun logical-pathname-translations (host)
+  (multiple-value-bind (v found) (gethash (string host) *logical-pathname-translations*)
+    (if found v (error 'type-error :datum host :expected-type 'logical-host))))
+
+(defun %set-lpt (host translations)
+  (setf (gethash (string host) *logical-pathname-translations*) nil)
+  (setf (gethash (string host) *logical-pathname-translations*)
+        (mapcar (lambda (e) (list (pathname (if (stringp (car e))
+                                                (if (position #\: (car e)) (car e)
+                                                    (concatenate 'string (string host) ":" (car e)))
+                                                (car e)))
+                                  (pathname (cadr e))))
+                translations))
+  translations)
+(defun (setf logical-pathname-translations) (translations host) (%set-lpt host translations))
+
+(defun load-logical-pathname-translations (host)
+  (if (%logical-host-p (string-upcase (string host))) nil
+      (error 'file-error :pathname host :format-control "no translations for logical host ~A"
+                         :format-arguments (list host))))
+
+(defun logical-pathname (x)
+  (let ((p (if (stringp x)
+               (let ((colon (position #\: x)))
+                 (unless (and colon (%logical-host-p (string-upcase (subseq x 0 colon))))
+                   (error 'type-error :datum x :expected-type 'logical-pathname))
+                 (%parse-logical-namestring x colon))
+               (pathname x))))
+    (unless (logical-pathname-p p) (error 'type-error :datum x :expected-type 'logical-pathname))
+    p))
+
+(defun translate-logical-pathname (p &key)
+  (let ((p (pathname p)))
+    (if (not (logical-pathname-p p))
+        p
+        (let ((translations (logical-pathname-translations (pathname-host p))))
+          (dolist (e translations (error 'file-error :pathname p :format-control "no translation for ~A"
+                                                     :format-arguments (list (namestring p))))
+            (when (pathname-match-p p (car e))
+              (let ((r (translate-pathname p (car e) (cadr e))))
+                (return (translate-logical-pathname
+                         (if (logical-pathname-p r) r (%downcase-pathname r)))))))))))
+
+(defun %downcase-pathname (p)
+  (flet ((d (c) (if (stringp c) (string-downcase c) c)))
+    (%make-pathname (pathname-host p) (pathname-device p)
+                    (let ((dir (pathname-directory p))) (if (consp dir) (mapcar #'d dir) dir))
+                    (d (pathname-name p)) (d (pathname-type p)) (pathname-version p))))
+
+(defun %physical (x) (translate-logical-pathname (merge-pathnames x)))
+
+;;; ------------------------------------------------------------
+;;; file system
+;;; ------------------------------------------------------------
+
+(defun %native-name (x) (namestring (%physical x)))
+
+(defun probe-file (x)
+  (let ((fs (%host-fs)) (name (%native-name x)))
+    (if fs
+        (and (js:call fs "existsSync" name) (pathname name))
+        (let ((s (open x :direction :input :if-does-not-exist nil)))
+          (if s (progn (close s) (pathname name)) nil)))))
+
+(defun truename (x)
+  (or (probe-file x)
+      (error 'file-error :pathname x :format-control "the file ~A does not exist"
+                         :format-arguments (list (namestring x)))))
+
+(defun delete-file (x)
+  (let ((fs (%host-fs)) (name (%native-name x)))
+    (unless (and fs (js:call fs "existsSync" name))
+      (error 'file-error :pathname x :format-control "cannot delete ~A" :format-arguments (list name)))
+    (js:call fs "unlinkSync" name)
+    t))
+
+(defun rename-file (from to)
+  (let* ((fs (%host-fs)) (old (%native-name from))
+         (new-path (merge-pathnames to (pathname from))) (new (%native-name new-path)))
+    (when fs (js:call fs "renameSync" old new))
+    (values new-path (pathname old) new-path)))
+
+(defun ensure-directories-exist (p &key verbose)
+  (declare (ignore verbose))
+  (let* ((fs (%host-fs)) (dir (directory-namestring (%physical p)))
+         (existed (or (null fs) (equal dir "") (js:call fs "existsSync" dir))))
+    (when (and fs (not existed))
+      (js:call fs "mkdirSync" dir (js:object "recursive" t)))
+    (values p (not existed))))
+
+(defun file-write-date (p)
+  (let ((fs (%host-fs)) (name (%native-name p)))
+    (if (and fs (js:call fs "existsSync" name))
+        (+ +unix-epoch-offset+ (floor (js:get (js:call fs "statSync" name) "mtimeMs") 1000))
+        nil)))
+
+(defun file-author (p) (declare (ignore p)) nil)
+
+(defun directory (p &key)
+  (let* ((fs (%host-fs)) (pat (%physical p)) (dir (directory-namestring pat)))
+    (if (null fs) nil
+        (let ((entries (ignore-errors (js:call fs "readdirSync" (if (string= dir "") "." dir)))))
+          (when entries
+            (let ((r nil) (n (js:get entries "length")))
+              (dotimes (i n (sort r #'string< :key #'namestring))
+                (let ((full (pathname (concatenate 'string dir (js:get entries i)))))
+                  (when (pathname-match-p full pat) (push full r))))))))))
+
+(defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
+(defun compile-file-pathname (p &key output-file) (pathname (or output-file p)))
+
+(defmethod print-object ((p pathname) stream)
+  (if (or *print-escape* *print-readably*)
+      (progn (write-string "#P" stream) (prin1 (namestring p) stream))
+      (write-string (namestring p) stream))
+  p)

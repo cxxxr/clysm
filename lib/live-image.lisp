@@ -21,8 +21,12 @@
   (setf *macros-ready* t))
 
 (defun native-eval (form)
-  "Compile FORM to a new Wasm module linked with this image and run it."
-  (multiple-value-bind (bytes consts) (live-compile-forms (list form))
+  "Compile FORM to a new Wasm module linked with this image and run it.
+If the compiler signals an error, the form is evaluated by the interpreter
+instead (so the error, if any, happens at run time)."
+  (multiple-value-bind (bytes consts)
+      (handler-case (live-compile-forms (list form))
+        (error () (return-from native-eval (eval form))))
     (dotimes (i (length bytes)) (sys::%put-char-buf (aref bytes i)))
     (sys::%compile-module (sys::%js-take-string) (sys::%js-wrap-lisp consts))))
 

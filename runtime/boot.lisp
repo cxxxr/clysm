@@ -357,7 +357,7 @@
                    (let* ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) (cdr ,place)))
                           (stores (mapcar (lambda (x) (declare (ignore x)) (gensym)) ',stores)))
                      (values temps (cdr ,place) stores
-                             (apply (lambda (,@stores ,@ll) ,@body) (append stores temps))
+                             (apply (lambda (,@stores ,@ll) (block ,access-fn ,@body)) (append stores temps))
                              (cons ',access-fn temps)))))
            ',access-fn))))
 

@@ -1,0 +1,7 @@
+(print (let ((i 0)) (loop for nil from 10 to 15 collect (incf i))))
+(print (let (z) (values (loop for x from 1 to 10 count (< x 5) into foo float finally (setq z foo)) z)))
+(print (loop named foo for i in '(a b c) by (return-from foo :good) return :bad))
+(print (loop for x on '(1 2 3 4) by #'cddr collect x))
+(print (handler-case (macroexpand '(loop for x in '(a) for x in '(b) collect x)) (program-error () 'program-error)))
+(print (loop for i from 0 to 10 by 2 sum i into s double-float finally (return s)))
+(terpri)

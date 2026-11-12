@@ -5,6 +5,9 @@ import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { makeImports } from './common.mjs';
 
+// file system access for the Lisp side (pathnames, directories)
+globalThis.__clysm_fs = fs;
+
 function nodePlatform(state, args) {
   const out = { 1: [], 2: [] };
   const flush = () => {

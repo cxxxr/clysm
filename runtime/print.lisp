@@ -176,8 +176,11 @@
   (let ((d (%to-double x)))
     (cond ((%double-nan-p d) (write-string "#<NaN>" stream))
           ((and (%d= d (%d* d (%fixnum-to-double 2))) (not (%d= d (%fixnum-to-double 0))))
-           (write-string (if (%d< d (%fixnum-to-double 0)) "#.SB-EXT:DOUBLE-FLOAT-NEGATIVE-INFINITY"
-                             "#.SB-EXT:DOUBLE-FLOAT-POSITIVE-INFINITY")
+           (write-string (if (%single-float-p x)
+                             (if (%d< d (%fixnum-to-double 0)) "#.SB-EXT:SINGLE-FLOAT-NEGATIVE-INFINITY"
+                                 "#.SB-EXT:SINGLE-FLOAT-POSITIVE-INFINITY")
+                             (if (%d< d (%fixnum-to-double 0)) "#.SB-EXT:DOUBLE-FLOAT-NEGATIVE-INFINITY"
+                                 "#.SB-EXT:DOUBLE-FLOAT-POSITIVE-INFINITY"))
                          stream))
           (t (%write-finite-float x stream)))))
 

@@ -1,6 +1,6 @@
 ;;;; stream.lisp — streams
 
-(defstruct (stream (:constructor %make-stream) (:predicate %streamp))
+(defstruct (stream (:constructor %make-plain-stream) (:predicate %streamp))
   kind              ; :fd-out :fd-in :string-out :string-in :broadcast :two-way :echo :concatenated :synonym :file-out
   fd
   buffer            ; output: adjustable string ; string-in: the string
@@ -15,6 +15,26 @@
   (direction :output)
   (element-type 'character)
   (line 1))
+
+(defstruct (file-stream (:include stream) (:constructor %make-file-stream)))
+(defstruct (string-stream (:include stream) (:constructor %make-string-stream)))
+(defstruct (broadcast-stream (:include stream) (:constructor %make-broadcast-stream)))
+(defstruct (two-way-stream (:include stream) (:constructor %make-two-way-stream)))
+(defstruct (echo-stream (:include stream) (:constructor %make-echo-stream)))
+(defstruct (concatenated-stream (:include stream) (:constructor %make-concatenated-stream)))
+(defstruct (synonym-stream (:include stream) (:constructor %make-synonym-stream)))
+
+(defun %make-stream (&rest args &key kind pathname &allow-other-keys)
+  (apply (case kind
+           ((:fd-out :fd-in :file-out) #'%make-file-stream)
+           ((:string-out :string-in) (if pathname #'%make-file-stream #'%make-string-stream))
+           (:broadcast #'%make-broadcast-stream)
+           (:two-way #'%make-two-way-stream)
+           (:echo #'%make-echo-stream)
+           (:concatenated #'%make-concatenated-stream)
+           (:synonym #'%make-synonym-stream)
+           (t #'%make-plain-stream))
+         args))
 
 (defun streamp (x) (%streamp x))
 (defun input-stream-p (s)
