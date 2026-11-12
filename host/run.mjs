@@ -51,22 +51,19 @@ export function makeImports(state) {
         return id;
       },
       float_to_chars(x, mode) {
-        // mode 0: shortest repr of double, 1: shortest repr of single
+        // Shortest round-trip digits in exponential form "d.ddde+N".
+        // mode 0: double, 1: single
+        if (!isFinite(x)) { charBuf = isNaN(x) ? 'NaN' : (x > 0 ? 'Inf' : '-Inf'); return charBuf.length; }
         if (mode === 1) {
-          // find shortest decimal that round-trips through float32
-          let s;
-          for (let p = 1; p <= 9; p++) {
-            s = x.toPrecision(p);
-            if (Math.fround(parseFloat(s)) === x) break;
+          let p = 1;
+          for (; p < 9; p++) {
+            if (Math.fround(parseFloat(x.toExponential(p - 1))) === x) break;
           }
-          charBuf = String(parseFloat(s) === 0 && Object.is(x, -0) ? '-0' : s);
-          // normalise exponent form from toPrecision
-          const n = Number(charBuf);
-          charBuf = Object.is(x, -0) ? '-0' : n.toString();
-          if (Math.fround(n) !== x) charBuf = s;
+          charBuf = x.toExponential(p - 1);
         } else {
-          charBuf = Object.is(x, -0) ? '-0' : x.toString();
+          charBuf = x.toExponential();
         }
+        if (Object.is(x, -0)) charBuf = '-' + charBuf;
         return charBuf.length;
       },
       get_char(i) { return charBuf.charCodeAt(i); },

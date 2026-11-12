@@ -1,5 +1,5 @@
-(defmacro defun (name ll &body body)
-  `(sys::%defun ',name (function (sys::named-lambda ,name ,ll ,@body))))
+
+
 (defun sys::%type-error (d e) (sys::%exit 10))
 (defun sys::%arg-count-error (f n) (sys::%exit 11))
 (defun sys::%undefined-function-error (s) (sys::%exit 12))

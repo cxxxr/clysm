@@ -215,14 +215,14 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defun idx-code (i) `(,@i (:ref.cast :i31) :i31.get_s))
 
 (defprim clysm-sys::%make-string (n c) :value
-  `(,@c (:call :check-char) ,@(idx-code n) (:array.new :string)))
+  `(,@c (:call :check-char) (:i32.const ,+char-tag+) :i32.sub ,@(idx-code n) (:array.new :string)))
 (defprim clysm-sys::%string-length (s) :value `(,@s (:ref.cast :string) :array.len :ref.i31))
 (defprim clysm-sys::%schar (s i) :value
-  `(,@s (:ref.cast :string) ,@(idx-code i) (:array.get :string) :ref.i31))
+  `(,@s (:ref.cast :string) ,@(idx-code i) (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%set-schar (s i c) :value
   (let ((tmp (new-local)))
     `(,@s (:ref.cast :string) ,@(idx-code i) ,@c (:local.tee ,tmp) (:call :check-char)
-      (:array.set :string) (:local.get ,tmp))))
+      (:i32.const ,+char-tag+) :i32.sub (:array.set :string) (:local.get ,tmp))))
 (defprim clysm-sys::%make-simple-vector (n init) :value
   `(,@init ,@(idx-code n) (:array.new :vector)))
 (defprim clysm-sys::%svlength (v) :value `(,@v (:ref.cast :vector) :array.len :ref.i31))
@@ -490,7 +490,7 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
      (:local.get 0) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ok)
      (:local.get 0) (:call :undefined-function)))
 
-(defhelper :undefined-function :sym-clo ()
+(defhelper :undefined-function :sym-clo ((name (:ref :null :string)) (i :i32))
   ;; call the Lisp error function; it may return a function (via a restart)
   `(:block fail nil
      (:global.get ,(sym-global 'clysm-sys::%undefined-function-error))
@@ -498,7 +498,15 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
      :drop
      (:local.get 0) (:global.get ,(sym-global 'clysm-sys::%undefined-function-error)) (:call (:callsym 1))
      (:call :coerce-function) :return)
-  ;; no error function yet: report via host and trap
+  ;; no error function yet: print the name on stderr and exit
+  '(:local.get 0) `(:struct.get :symbol ,+sym-name+) '(:local.set name)
+  '(:block done nil
+     (:loop again nil
+       (:local.get i) (:local.get name) :array.len :i32.ge_s (:br_if done)
+       (:i32.const 2) (:local.get name) (:local.get i) (:array.get :string) (:call :host-write-char)
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:br again)))
+  '(:i32.const 2) '(:i32.const 10) '(:call :host-write-char)
   '(:i32.const 99) '(:call :host-exit)
   :unreachable)
 
@@ -864,3 +872,84 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
   :drop
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%to-double)) '(:call (:callsym 1))
   '(:ref.cast :double) '(:struct.get :double 0))
+
+;;; ------------------------------------------------------------
+;;; Bignum, ratio, complex, float primitives
+;;; ------------------------------------------------------------
+
+(defprim clysm-sys::%make-limbs (n) :value `(,@(idx-code n) (:array.new_default :limbs)))
+(defprim clysm-sys::%llen (v) :value `(,@v (:ref.cast :limbs) :array.len :ref.i31))
+(defprim clysm-sys::%lref (v i) :value `(,@v (:ref.cast :limbs) ,@(idx-code i) (:array.get :limbs) :ref.i31))
+(defprim clysm-sys::%lset (v i x) :value
+  (let ((tmp (new-local)))
+    `(,@v (:ref.cast :limbs) ,@(idx-code i) ,@x (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s
+      (:array.set :limbs) (:local.get ,tmp))))
+(defprim clysm-sys::%make-bignum (sign mag) :value
+  `(,@sign (:ref.cast :i31) :i31.get_s ,@mag (:ref.cast :limbs) (:struct.new :bignum)))
+(defprim clysm-sys::%bignum-sign (b) :value `(,@b (:ref.cast :bignum) (:struct.get :bignum 0) :ref.i31))
+(defprim clysm-sys::%bignum-mag (b) :value `(,@b (:ref.cast :bignum) (:struct.get :bignum 1)))
+
+(defprim clysm-sys::%make-ratio (n d) :value `(,@n ,@d (:struct.new :ratio)))
+(defprim clysm-sys::%ratio-num (r) :value `(,@r (:ref.cast :ratio) (:struct.get :ratio 0)))
+(defprim clysm-sys::%ratio-den (r) :value `(,@r (:ref.cast :ratio) (:struct.get :ratio 1)))
+(defprim clysm-sys::%make-complex (r i) :value `(,@r ,@i (:struct.new :complex)))
+(defprim clysm-sys::%complex-real (c) :value `(,@c (:ref.cast :complex) (:struct.get :complex 0)))
+(defprim clysm-sys::%complex-imag (c) :value `(,@c (:ref.cast :complex) (:struct.get :complex 1)))
+
+(defun f64-code (x) `(,@x (:ref.cast :double) (:struct.get :double 0)))
+(defun box-f64 () '((:struct.new :double)))
+(macrolet ((dop (name op)
+             `(defprim ,name (a b) :value `(,@(f64-code a) ,@(f64-code b) ,',op ,@(box-f64))))
+           (dcmp (name op)
+             `(defprim ,name (a b) :test `(,@(f64-code a) ,@(f64-code b) ,',op)))
+           (d1 (name op)
+             `(defprim ,name (a) :value `(,@(f64-code a) ,',op ,@(box-f64)))))
+  (dop clysm-sys::%d+ :f64.add) (dop clysm-sys::%d- :f64.sub) (dop clysm-sys::%d* :f64.mul)
+  (dop clysm-sys::%d/ :f64.div) (dop clysm-sys::%dmin :f64.min) (dop clysm-sys::%dmax :f64.max)
+  (dcmp clysm-sys::%d< :f64.lt) (dcmp clysm-sys::%d= :f64.eq) (dcmp clysm-sys::%d<= :f64.le)
+  (d1 clysm-sys::%dneg :f64.neg) (d1 clysm-sys::%dabs :f64.abs) (d1 clysm-sys::%dsqrt :f64.sqrt)
+  (d1 clysm-sys::%dfloor :f64.floor) (d1 clysm-sys::%dceil :f64.ceil) (d1 clysm-sys::%dtrunc :f64.trunc)
+  (d1 clysm-sys::%dround :f64.nearest))
+
+(defprim clysm-sys::%double-eql (a b) :test
+  `(,@(f64-code a) :i64.reinterpret_f64 ,@(f64-code b) :i64.reinterpret_f64 :i64.eq))
+(defprim clysm-sys::%single-eql (a b) :test
+  `(,@a (:ref.cast :single) (:struct.get :single 0) :i32.reinterpret_f32
+    ,@b (:ref.cast :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq))
+(defprim clysm-sys::%fixnum-to-double (n) :value `(,@(idx-code n) :f64.convert_i32_s ,@(box-f64)))
+(defprim clysm-sys::%double-to-fixnum (d) :value
+  ;; caller guarantees the truncated value fits in a fixnum
+  `(,@(f64-code d) :i32.trunc_sat_f64_s :ref.i31))
+(defprim clysm-sys::%double-to-single (d) :value `(,@(f64-code d) :f32.demote_f64 (:struct.new :single)))
+(defprim clysm-sys::%single-to-double (s) :value
+  `(,@s (:ref.cast :single) (:struct.get :single 0) :f64.promote_f32 ,@(box-f64)))
+(defprim clysm-sys::%double-nan-p (d) :test
+  (let ((tmp (new-local :f64)))
+    `(,@(f64-code d) (:local.tee ,tmp) (:local.get ,tmp) :f64.ne)))
+;; decode double: fields as fixnums
+(defprim clysm-sys::%double-sign (d) :value
+  `(,@(f64-code d) :i64.reinterpret_f64 (:i64.const 63) :i64.shr_u :i32.wrap_i64 :ref.i31))
+(defprim clysm-sys::%double-exponent (d) :value
+  `(,@(f64-code d) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and :i32.wrap_i64 :ref.i31))
+(defprim clysm-sys::%double-mant-hi (d) :value
+  `(,@(f64-code d) :i64.reinterpret_f64 (:i64.const 26) :i64.shr_u (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64 :ref.i31))
+(defprim clysm-sys::%double-mant-lo (d) :value
+  `(,@(f64-code d) :i64.reinterpret_f64 (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64 :ref.i31))
+(defprim clysm-sys::%make-double-from-parts (sign expo hi lo) :value
+  ;; sign: 0/1, expo: raw 11 bits, hi: 26 bits, lo: 26 bits
+  `(,@sign (:ref.cast :i31) :i31.get_s :i64.extend_i32_u (:i64.const 63) :i64.shl
+    ,@expo (:ref.cast :i31) :i31.get_s :i64.extend_i32_u (:i64.const 52) :i64.shl :i64.or
+    ,@hi (:ref.cast :i31) :i31.get_s :i64.extend_i32_u (:i64.const 26) :i64.shl :i64.or
+    ,@lo (:ref.cast :i31) :i31.get_s :i64.extend_i32_u :i64.or
+    :f64.reinterpret_i64 ,@(box-f64)))
+(defprim clysm-sys::%float-to-chars (d mode) :value
+  `(,@(f64-code d) ,@(idx-code mode) (:call :host-float-to-chars) :ref.i31))
+(defprim clysm-sys::%host-char (i) :value
+  `(,@(idx-code i) (:call :host-get-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
+(defprim clysm-sys::%math1 (d op) :value `(,@(f64-code d) ,@(idx-code op) (:call :host-math1) ,@(box-f64)))
+(defprim clysm-sys::%math2 (a b op) :value
+  `(,@(f64-code a) ,@(f64-code b) ,@(idx-code op) (:call :host-math2) ,@(box-f64)))
+(defprim clysm-sys::%host-time (k) :value `(,@(idx-code k) (:call :host-time) ,@(box-f64)))
+(defprim clysm-sys::%put-char-buf (c) :value
+  `(,@(idx-code c) (:call :host-put-char-buf) ,@(nil-code)))
+(defprim clysm-sys::%file-open (mode) :value `(,@(idx-code mode) (:call :host-file-open) :ref.i31))

@@ -58,6 +58,12 @@
   (append (loop for c across s collect `(:i32.const ,(char-code c)))
           `((:array.new_fixed :string ,(length s)))))
 
+(defun bignum-digits (n)
+  "Base 2^14 little-endian digits of a non-negative integer."
+  (let ((digits nil))
+    (loop while (plusp n) do (push (ldb (byte 14 0) n) digits) (setf n (ash n -14)))
+    (nreverse digits)))
+
 (defun integer-limbs (n)
   "Little-endian 32-bit two's complement limbs, minimal."
   (let ((limbs nil) (x n))
@@ -87,9 +93,11 @@
         (setf (gethash obj table)
               (new-const-global
                (typecase obj
-                 (integer `(,@(loop for l in (integer-limbs obj) collect `(:i32.const ,l))
-                            (:array.new_fixed :limbs ,(length (integer-limbs obj)))
-                            (:struct.new :bignum)))
+                 (integer (let ((digits (bignum-digits (abs obj))))
+                            `((:i32.const ,(if (minusp obj) 1 0))
+                              ,@(loop for d in digits collect `(:i32.const ,d))
+                              (:array.new_fixed :limbs ,(length digits))
+                              (:struct.new :bignum))))
                  (string (string-array-code obj))
                  (cons `(,@(const-init-code (car obj)) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
                  (simple-vector `(,@(loop for x across obj append (const-init-code x))
@@ -206,7 +214,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:progv (cg-progv node mv))
       (:wasm (cg-wasm node mv))
       (:wasm-test (append (cg-test node) (bool-code) (when mv (mv-one))))
-      (:symtab `((:global.get :symtab) ,@(when mv (mv-one))))
+      (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
       (:values (cg-values (cdr node) mv)))))
 
@@ -407,7 +415,10 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
          (not (gethash sym *notinline*))
          (car lams))))
 
+(defvar *called-functions* (make-hash-table :test 'eq))
+
 (defun fdef-code (sym)
+  (setf (gethash sym *called-functions*) t)
   (let ((l (gensym "FD")))
     `((:block ,l (:ref :closure)
         (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+)
@@ -802,7 +813,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                (when sp (setf any-special t))))
     (let ((body (finish-body lam prologue any-special)))
       (add-func *m* (list :main (lam-id lam)) (main-type n)
-                :locals (reverse (fstate-locals *fs*)) :body body))
+                :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))
     ;; entryN adapter
     (add-func *m* (list :entn (lam-id lam)) :fN
               :body `((:local.get 1) :array.len (:i32.const ,n) :i32.ne
@@ -872,4 +883,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                       (:local.get ,res)))
                   `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
         (add-func *m* (list :main (lam-id lam)) :fN
-                  :locals (reverse (fstate-locals *fs*)) :body body)))))
+                  :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam))))))
+
+(defun lam-display-name (lam)
+  (let ((*package* (find-package :keyword)))
+    (format nil "~A#~D" (or (lam-name lam) (if (lam-toplevel lam) "toplevel" "lambda")) (lam-id lam))))

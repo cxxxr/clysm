@@ -47,7 +47,7 @@
 ;;; ------------------------------------------------------------
 
 (defstruct (wasm-func (:constructor %make-wasm-func))
-  name type params-names locals local-names body export import-module import-name)
+  name type params-names locals local-names body export import-module import-name display)
 
 (defstruct wasm-module
   (types (make-array 0 :adjustable t :fill-pointer 0))   ; vector of (name . def)
@@ -87,8 +87,8 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
     (setf (gethash name (wasm-module-func-table m)) f)
     f))
 
-(defun add-func (m name type &key locals local-names body export param-names)
-  (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names
+(defun add-func (m name type &key locals local-names body export param-names display)
+  (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names :display display
                             :params-names param-names :body body :export export)))
     (setf (gethash name (wasm-module-func-index-table m))
           (+ (fill-pointer (wasm-module-imports m)) (fill-pointer (wasm-module-funcs m))))
@@ -568,7 +568,7 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
         (emit-u32 sub (length all))
         (loop for f in all for i from 0
               do (emit-u32 sub i)
-                 (emit-name sub (let ((n (wasm-func-name f)))
+                 (emit-name sub (let ((n (or (wasm-func-display f) (wasm-func-name f))))
                                   (if (stringp n) n (let ((*package* (find-package :keyword)))
                                                       (prin1-to-string n))))))
         (emit-byte b 1)

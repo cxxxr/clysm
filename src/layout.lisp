@@ -27,7 +27,7 @@
 (defparameter *type-defs*
   '((:string    (:array (:i32 t)))
     (:vector    (:array (:eqref t)))
-    (:limbs     (:array (:i32 nil)))
+    (:limbs     (:array (:i32 t)))
     (:bytes     (:array (:i8 t)))
     (:bits      (:array (:i8 t)))
     (:f64vec    (:array (:f64 t)))
@@ -44,7 +44,7 @@
     (:f4        (:func ((:ref :closure) :eqref :eqref :eqref :eqref) (:eqref)))
     (:fN        (:func ((:ref :closure) (:ref :vector)) (:eqref)))
     (:cell      (:struct ((:eqref t))))
-    (:bignum    (:struct (((:ref :limbs) nil))))
+    (:bignum    (:struct ((:i32 nil) ((:ref :limbs) nil))))
     (:ratio     (:struct ((:eqref nil) (:eqref nil))))
     (:single    (:struct ((:f32 nil))))
     (:double    (:struct ((:f64 nil))))

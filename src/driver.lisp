@@ -33,6 +33,8 @@
         *compiled-lams* (make-hash-table :test 'eq)
         *extra-types* (make-hash-table :test 'equal)
         *ltv-counter* 0
+        *called-functions* (make-hash-table :test 'eq)
+        *initial-symbol-values* (make-hash-table :test 'eq)
         *deferred-macros* nil)
   (setf (gethash 'clysm-sys::*catch-tags* *specials*) t)
   (init-target-packages)
@@ -62,14 +64,22 @@
     (push node *toplevel-nodes*)))
 
 (defun host-eval (form)
-  (let ((*package* (find-package :clysm)))
+  (let ((*package* *read-package*))
     (handler-bind ((warning #'muffle-warning))
       (eval form))))
 
+(defparameter *toplevel-operators*
+  '(progn eval-when locally macrolet symbol-macrolet defmacro in-package defpackage declaim))
+
 (defun process-toplevel (form env &optional compile-time-too)
+  ;; With COMPILE-TIME-TOO, an ordinary form is first evaluated on the host
+  ;; (using host macros), then processed for the target.
+  (when (and compile-time-too
+             (not (and (consp form) (member (car form) *toplevel-operators*))))
+    (host-eval form)
+    (setf compile-time-too nil))
   (loop
     (unless (consp form)
-      (when compile-time-too (host-eval form))
       (return (emit-toplevel-form form env)))
     (case (car form)
       (progn (dolist (f (cdr form)) (process-toplevel f env compile-time-too))
@@ -108,18 +118,17 @@
       (in-package
        (let ((pkg (find-target-package (string (second form)))))
          (setf *read-package* pkg)
-         (return (emit-toplevel-form `(setq *package* (find-package ,(target-package-name pkg))) env))))
+         (return (emit-toplevel-form `(clysm-sys::%in-package ,(target-package-name pkg)) env))))
       (defpackage (process-defpackage form env) (return))
       (declaim (dolist (d (cdr form)) (compile-time-proclaim d))
                (return (emit-toplevel-form `(clysm-sys::%proclaim-list ',(cdr form)) env)))
-      (clysm-sys::%defun (return (process-defun form env compile-time-too)))
+      (clysm-sys::%defun (return (process-defun form env nil)))
       (clysm-sys::%emit-deferred-macros (return (clysm-sys::%emit-deferred-macros-now env)))
       (t
        (multiple-value-bind (new changed) (if (get (car form) 'clysm-native)
                                               (values form nil)
                                               (cmacroexpand-1 form env))
          (unless changed
-           (when compile-time-too (host-eval form))
            (return (emit-toplevel-form form env)))
          (setf form new))))))
 
@@ -236,6 +245,47 @@ destructuring-bind (defined by the runtime)."
                                                              imports))
                           env))))
 
+(defun directify-helper-calls (instrs)
+  "Replace (global.get (:sym S)) (call (:callsym K)) by a direct call stub when
+S names a statically known function."
+  (let ((out nil))
+    (loop while instrs
+          do (let ((i (pop instrs)))
+               (cond ((and (consp i) (eq (car i) :global.get) (consp (second i)) (eq (car (second i)) :sym)
+                           (consp (car instrs)) (eq (car (car instrs)) :call)
+                           (consp (second (car instrs))) (eq (car (second (car instrs))) :callsym)
+                           (let ((lam (known-global-lam (second (second i)))))
+                             (and lam (lam-simple-p lam)
+                                  (= (length (lam-req lam)) (second (second (car instrs)))))))
+                      (let* ((sym (second (second i))) (k (second (second (pop instrs))))
+                             (stub (list :direct sym k)))
+                        (ensure-direct-stub sym k)
+                        (push `(:call ,stub) out)))
+                     ((and (consp i) (member (car i) '(:block :loop)))
+                      (push `(,(first i) ,(second i) ,(third i) ,@(directify-helper-calls (cdddr i))) out))
+                     ((and (consp i) (eq (car i) :if))
+                      (push `(:if ,(second i) ,(third i) ,(directify-helper-calls (fourth i))
+                                  ,(directify-helper-calls (fifth i)))
+                            out))
+                     ((and (consp i) (eq (car i) :try_table))
+                      (push `(:try_table ,(second i) ,(third i) ,(fourth i) ,@(directify-helper-calls (nthcdr 4 i))) out))
+                     (t (push i out)))))
+    (nreverse out)))
+
+(defun ensure-direct-stub (sym k)
+  (let ((name (list :direct sym k)))
+    (unless (func-defined-p *m* name)
+      (let ((lam (known-global-lam sym)))
+        (ensure-lam-compiled lam)
+        (let ((tn (list :direct-type k)))
+          (unless (gethash tn *extra-types*)
+            (setf (gethash tn *extra-types*) t)
+            (add-type *m* tn `(:func ,(make-list k :initial-element :eqref) (:eqref)))))
+        (add-func *m* name (list :direct-type k)
+                  :body `((:global.get ,(static-closure-global lam))
+                          ,@(loop for i below k collect `(:local.get ,i))
+                          (:return_call (:main ,(lam-id lam)))))))))
+
 (defun compile-forms (forms)
   (let ((env (make-cenv)))
     (dolist (f forms) (process-toplevel f env))))
@@ -263,17 +313,35 @@ destructuring-bind (defined by the runtime)."
   (let ((name (symbol-name sym)))
     `(,@(string-array-code name)
       (:ref.null :package)
-      ,@(if (keywordp sym) '((:ref.null :eq)) '((:ref.null :eq)))
+      ,@(multiple-value-bind (v found) (gethash sym *initial-symbol-values*)
+          (if (and found (immediate-initial-value-p sym (car v)))
+              (const-init-code (car v))
+              '((:ref.null :eq))))
       (:ref.null :closure)
       ,@(if (null sym) '((:ref.null :eq)) `((:global.get ,(sym-global nil))))
       (:i32.const ,(string-hash name))
       (:i32.const ,(if (gethash sym *specials*) +flag-special+ 0))
       (:struct.new :symbol))))
 
+(defun immediate-initial-value-p (sym v)
+  (and (not (member sym '(nil t)))
+       (or (fixnump* v) (characterp v) (null v) (eq v t))))
+
+(defun initial-value-prologue ()
+  (let ((code nil))
+    (maphash (lambda (sym v)
+               (unless (immediate-initial-value-p sym (car v))
+                 (setf code (append code `((:global.get ,(sym-global sym))
+                                           ,@(const-init-code (car v))
+                                           (:struct.set :symbol ,+sym-value+))))))
+             *initial-symbol-values*)
+    code))
+
 (defun build-module (&key (entry "_start"))
   (let ((*m* (make-wasm-module)))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
     (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
+    (add-tag *m* :lisp-throw :exn)
     ;; make sure basic symbols exist
     (sym-global nil) (sym-global t)
     (do-external-symbols (s :cl) (sym-global s))
@@ -288,7 +356,7 @@ destructuring-bind (defined by the runtime)."
       (let ((*fs* (make-fstate :lam nil :nparams 0)))
         (dolist (h (reverse *helpers*))
           (destructuring-bind (name type locals body-fn) h
-            (let ((body (funcall body-fn)))
+            (let ((body (directify-helper-calls (funcall body-fn))))
               (add-func *m* name type
                         :locals (mapcar #'second locals)
                         :local-names (mapcar #'first locals)
@@ -296,9 +364,10 @@ destructuring-bind (defined by the runtime)."
       (compile-pending-lams)
       ;; _start
       (add-func *m* :start :v-v :export entry
-                :body (loop for l in tops
+                :body (append (initial-value-prologue)
+                       (loop for l in tops
                             append `((:global.get ,(static-closure-global l))
-                                     (:call (:main ,(lam-id l))) :drop))))
+                                     (:call (:main ,(lam-id l))) :drop)))))
     ;; globals in dependency order
     ;; NIL first, then T, then the other symbols
     (let ((syms (reverse *symbol-globals*)))
@@ -355,7 +424,17 @@ destructuring-bind (defined by the runtime)."
                                                       (lst (mapcar #'str nicks))
                                                       (lst (mapcar #'str uses)))))
                             (:array.new_fixed :vector ,(length pkg-inits)))))))))
+    (report-undefined-functions)
     (encode-module *m*)))
+
+(defun report-undefined-functions ()
+  (let ((undefined nil))
+    (loop for s being the hash-keys of *called-functions*
+          unless (or (gethash s *global-defuns*) (gethash s *macros*))
+            do (push s undefined))
+    (when undefined
+      (format *error-output* "~&; undefined functions (~D):~%;  ~{~S~^ ~}~%"
+              (length undefined) (sort undefined #'string< :key #'symbol-name)))))
 
 (defun compile-program (files &key (output "out.wasm"))
   (reset-compiler)

@@ -91,7 +91,7 @@
 (defun cmacroexpand-1 (form env)
   (cond ((and (consp form) (symbolp (car form)))
          (let ((m (macro-function-in (car form) env)))
-           (if m (values (funcall m form env) t) (values form nil))))
+           (if m (values (let ((*package* *read-package*)) (funcall m form env)) t) (values form nil))))
         ((and (symbolp form) form (not (keywordp form)))
          (let ((e (env-lookup-var env form)))
            (cond ((and e (eq (first e) :smacro)) (values (third e) t))
@@ -210,11 +210,12 @@
       (return-from convert-compound (convert-special form env)))
     (let ((m (macro-function-in op env)))
       (when m
-        (return-from convert-compound (convert (funcall m form env) env))))
+        (return-from convert-compound
+          (convert (let ((*package* *read-package*)) (funcall m form env)) env))))
     ;; compiler macros
     (let ((cm (gethash op *compiler-macros*)))
       (when (and cm (not (gethash op *notinline*)))
-        (let ((new (funcall cm form env)))
+        (let ((new (let ((*package* *read-package*)) (funcall cm form env))))
           (unless (eq new form)
             (return-from convert-compound (convert new env))))))
     (let ((prim (find-primitive op (length (cdr form)))))
@@ -577,6 +578,9 @@
           ((and (consp f) (eq (car f) 'quote) (symbolp (second f))
                 (not (env-lookup-fun env (second f))))
            (convert `(,(second f) ,@(cddr form)) env))
+          ((and (consp f) (eq (car f) 'function) (consp (second f)) (eq (car (second f)) 'setf)
+                (not (env-lookup-fun env (second f))))
+           (convert `(,(setf-function-symbol (second (second f))) ,@(cddr form)) env))
           (t `(:funcall ,(convert f env) ,@(convert-args (cddr form) env))))))
 
 ;;; (sys:%wasm result-type (args...) instrs...) — inline wasm with argument forms
