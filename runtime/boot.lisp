@@ -116,7 +116,8 @@
               ,top
               (if (atom ,l)
                   (progn (if ,l (%type-error ,l 'list))
-                         (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,result))))
+                         ;; the declarations also apply to RESULT
+                         (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,@decls ,result))))
               (let ((,var (car ,l)))
                 ,@decls
                 (tagbody ,@forms))
