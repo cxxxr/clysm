@@ -51,9 +51,6 @@
           do (setf h (ldb (byte 32 0) (* (logxor h (char-code c)) 16777619))))
     (ldb (byte 29 0) h)))
 
-(defun string-const-init (s)
-  `((:array.new_fixed :string ,(length s))))
-
 (defun string-array-code (s)
   (append (loop for c across s collect `(:i32.const ,(char-code c)))
           `((:array.new_fixed :string ,(length s)))))
@@ -63,17 +60,6 @@
   (let ((digits nil))
     (loop while (plusp n) do (push (ldb (byte 14 0) n) digits) (setf n (ash n -14)))
     (nreverse digits)))
-
-(defun integer-limbs (n)
-  "Little-endian 32-bit two's complement limbs, minimal."
-  (let ((limbs nil) (x n))
-    (loop
-      (push (ldb (byte 32 0) x) limbs)
-      (setf x (ash x -32))
-      (when (or (and (zerop x) (not (logbitp 31 (car limbs))))
-                (and (= x -1) (logbitp 31 (car limbs))))
-        (return)))
-    (nreverse limbs)))
 
 (defun new-const-global (init &optional (type :eqref))
   (let ((name (list :const (incf *const-counter*))))

@@ -159,14 +159,6 @@ runtime definition is kept."
   (loop for d in decls
         when (and (consp d) (eq (car d) 'special)) append (cdr d)))
 
-(defun declared-notinline (decls)
-  (loop for d in decls
-        when (and (consp d) (eq (car d) 'notinline)) append (cdr d)))
-
-(defun declared-ignorable (decls)
-  (loop for d in decls
-        when (and (consp d) (member (car d) '(ignore ignorable))) append (cdr d)))
-
 ;;; ------------------------------------------------------------
 ;;; Variable references and capture analysis
 ;;; ------------------------------------------------------------

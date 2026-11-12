@@ -175,6 +175,26 @@ reader and the evaluator, plus `host/web/index.html`). Serve `build/` over HTTP
 and open `web/index.html` for a REPL running entirely in WebAssembly; the host
 calls the exported `eval_string`.
 
+## Status and limitations
+
+Implemented: all special operators, macros and functions of the COMMON-LISP
+package that SBCL defines (checked by listing every fbound/bound external CL
+symbol), including CLOS, the condition system with restarts, the full `loop`,
+`format`, the reader and printer, packages, hash tables, structures, bignums,
+ratios and complex numbers, plus `eval`, `compile`, `load` and a REPL.
+
+Limitations:
+
+* `short-float`/`long-float` are `single-float`/`double-float`.
+* Pathnames are simplified (no logical pathnames, no wild pathnames); file I/O
+  goes through the host.
+* The pretty printer reproduces SBCL's layout for data and common code forms;
+  `pprint-logical-block`/`pprint-newline` in user code are simplified.
+* `compile-file` loads the source (whole programs are compiled ahead of time
+  with `bin/clysm compile`/`run`).
+* No threads and no first-class continuations (not required by the standard).
+* Character names beyond ASCII/Latin control names are not provided.
+
 ## Tests
 
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares

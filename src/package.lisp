@@ -12,7 +12,7 @@
 ;;; Host package that holds the compiler itself.
 (defpackage :clysm
   (:use :cl :clysm-wasm)
-  (:export #:compile-program #:compile-file-to-wasm #:main))
+  (:export #:compile-program))
 
 ;;; Target system-internal package. Runtime library helpers live here.
 ;;; It is a *host* package whose symbols are also used as target symbols

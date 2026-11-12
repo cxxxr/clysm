@@ -158,9 +158,6 @@
 (defun clysm-sys::%compile-time-constant (sym value)
   (setf (gethash sym *specials*) t)
   (setf (gethash sym *constants*) (list value)))
-(defun clysm-sys::%compile-time-symbol-macro (sym exp) (setf (gethash sym *symbol-macros*) exp))
-(defun clysm-sys::%compile-time-compiler-macro (sym fn) (setf (gethash sym *compiler-macros*) fn))
-(defun clysm-sys::%compile-time-macro (sym fn) (setf (gethash sym *macros*) fn))
 (defun clysm-sys::%host-macro-function (sym) (gethash sym *macros*))
 
 (defun process-defmacro (form env)
@@ -321,10 +318,6 @@ they can be FUNCALLed and used by the interpreter."
                         `(clysm-sys::%defun ',name (function (clysm-sys::named-lambda ,name ,args (,name ,@args))))
                         env))))))
              *prims*)))
-
-(defun compile-forms (forms)
-  (let ((env (make-cenv)))
-    (dolist (f forms) (process-toplevel f env))))
 
 (defun compile-source-file (path)
   (with-open-file (s path :external-format :utf-8)
@@ -496,11 +489,20 @@ they can be FUNCALLed and used by the interpreter."
       (format *error-output* "~&; undefined functions (~D):~%;  ~{~S~^ ~}~%"
               (length undefined) (sort undefined #'string< :key #'symbol-name)))))
 
-(defun compile-program (files &key (output "out.wasm"))
+(defun runtime-source-files (runtime-dir)
+  (with-open-file (s (merge-pathnames "../tools/runtime-files.lisp" runtime-dir))
+    (mapcar (lambda (f) (namestring (merge-pathnames (concatenate 'string f ".lisp") runtime-dir)))
+            (read s))))
+
+(defun compile-program (files &key (output "out.wasm") runtime-dir)
+  "Compile the runtime and FILES into the WebAssembly module OUTPUT.
+Returns the number of bytes written."
   (reset-compiler)
+  (let ((*read-package* (find-target-package "SYSTEM")))
+    (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
+    (finish-runtime))
   (dolist (f files) (compile-source-file f))
   (let ((bytes (build-module)))
     (with-open-file (o output :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
       (write-sequence bytes o))
-    (format t "~&; wrote ~A (~D bytes)~%" output (length bytes))
-    output))
+    (length bytes)))

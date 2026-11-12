@@ -293,13 +293,6 @@
         ((eq (first f) :not) (not (feature-match-p (second f))))
         (t nil)))
 
-(defun read-all-forms (stream)
-  (let ((forms nil))
-    (loop
-      (let ((f (target-read stream nil stream)))
-        (when (eq f stream) (return (nreverse forms)))
-        (push f forms)))))
-
 ;;; ------------------------------------------------------------
 ;;; Quasiquote expansion (Bawden's algorithm + simplification)
 ;;; ------------------------------------------------------------
