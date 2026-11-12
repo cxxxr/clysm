@@ -326,22 +326,37 @@
         ((fixnump x) (%fixnum-to-double x))
         ((%single-float-p x) (%single-to-double x))
         ((%bignump x)
-         (let* ((m (%bignum-mag x)) (r (%fixnum-to-double 0)) (base (%fixnum-to-double +digit-base+)))
-           (do ((i (- (%llen m) 1) (- i 1))) ((< i 0))
-             (setq r (%d+ (%d* r base) (%fixnum-to-double (%lref m i)))))
-           (if (eql (%bignum-sign x) 1) (%dneg r) r)))
+         (if (%int-minusp x)
+             (%dneg (%exact-rational-to-double (- x) 1))
+             (%exact-rational-to-double x 1)))
         ((%ratiop x) (%ratio-to-double x))
         (t (%type-error x 'real))))
 
 (defun %ratio-to-double (x)
   (let ((n (%ratio-num x)) (d (%ratio-den x)))
-    ;; scale to keep precision for large values
-    (let ((ln (integer-length n)) (ld (integer-length d)))
-      (if (and (< ln 1000) (< ld 1000))
-          (%d/ (%to-double n) (%to-double d))
-          (let ((shift (- ln ld 60)))
-            (%d* (%to-double (truncate (ash n (- 60 (- ln ld))) d))
-                 (%dexpt2 (- (- ln ld) 60))))))))
+    (if (%int-minusp n)
+        (%dneg (%exact-rational-to-double (- n) d))
+        (%exact-rational-to-double n d))))
+
+(defun %exact-rational-to-double (n d)
+  "The double nearest to N/D (N, D positive integers), rounding to even."
+  (let ((shift (min (- 53 (- (integer-length n) (integer-length d))) 1074)))
+    (loop
+      (multiple-value-bind (q r) (floor (if (>= shift 0) (ash n shift) n)
+                                        (if (>= shift 0) d (ash d (- shift))))
+        (if (and (> (integer-length q) 53) (> shift -2000))
+            (setq shift (- shift 1))
+            (let* ((twice (* 2 r))
+                   (den (if (>= shift 0) d (ash d (- shift))))
+                   (q (if (or (> twice den) (and (= twice den) (oddp q))) (+ q 1) q)))
+              (return (%d* (%small-integer-to-double q) (%dexpt2 (- shift))))))))))
+
+(defun %small-integer-to-double (q)
+  ;; exact for |q| <= 2^53
+  (if (fixnump q) (%fixnum-to-double q)
+      (let* ((m (%bignum-mag q)) (r (%fixnum-to-double 0)) (base (%fixnum-to-double +digit-base+)))
+        (do ((i (- (%llen m) 1) (- i 1))) ((< i 0) r)
+          (setq r (%d+ (%d* r base) (%fixnum-to-double (%lref m i))))))))
 
 (defun %dexpt2 (k)
   (let ((r (%fixnum-to-double 1)) (two (%fixnum-to-double 2)) (half (%d/ (%fixnum-to-double 1) (%fixnum-to-double 2))))

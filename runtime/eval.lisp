@@ -104,6 +104,7 @@
     (declare (ignore env))
     (destructuring-bind (name ll &rest body) (cdr form)
       `(progn (%set-macro-function ',name (function ,(%macro-lambda name ll body)))
+              (%put ',name '%macro-lambda-list ',ll)
               ',name))))
 
 (%set-macro-function 'lambda

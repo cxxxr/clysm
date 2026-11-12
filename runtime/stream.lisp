@@ -360,6 +360,7 @@
   (case (stream-kind s)
     (:synonym (%stream-column (%synonym-target s)))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
+    (:pp (%pp-stream-column s))
     (t (stream-column s))))
 
 (defun fresh-line (&optional stream)

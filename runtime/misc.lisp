@@ -9,6 +9,17 @@
 
 (defvar *random-state* (%make-random-state 123456789 362436069))
 
+;;; printed readably as #.(%MAKE-RANDOM-STATE s0 s1)
+(defmethod print-object ((rs random-state) stream)
+  (if *print-readably*
+      (progn
+        (unless *read-eval* (error 'print-not-readable :object rs))
+        (write-string "#." stream)
+        (let ((*print-base* 10) (*print-radix* nil))
+          (write (list '%make-random-state (random-state-s0 rs) (random-state-s1 rs)) :stream stream)))
+      (call-next-method))
+  rs)
+
 (defun make-random-state (&optional state)
   (cond ((null state) (%make-random-state (random-state-s0 *random-state*) (random-state-s1 *random-state*)))
         ((eq state t) (%make-random-state (logand (get-universal-time) 268435455) 362436069))
