@@ -511,7 +511,15 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
         (output-object (aref v i) stream))
       (write-char #\) stream))))
 
+(defun %print-level-exceeded-p ()
+  (and *print-level* (not *print-readably*) (>= *print-current-level* *print-level*)))
+
 (defun %write-array (a stream)
+  (if (%print-level-exceeded-p)
+      (write-char #\# stream)
+      (%write-array-1 a stream)))
+
+(defun %write-array-1 (a stream)
   (let ((dims (array-dimensions a)))
     (write-char #\# stream)
     (%write-decimal (length dims) stream)

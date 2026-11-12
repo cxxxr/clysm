@@ -429,12 +429,13 @@
 ;;; ------------------------------------------------------------
 
 (defun %check-pp-string (x)
-  (unless (stringp x) (error 'type-error :datum x :expected-type 'string))
-  x)
+  (cond ((stringp x) x)
+        ((%string-like-p x) "")
+        (t (error 'type-error :datum x :expected-type 'string))))
 
 (defun %pprint-logical-block (stream object prefix per-line-p suffix body)
-  (when prefix (%check-pp-string prefix))
-  (%check-pp-string suffix)
+  (setq prefix (%check-pp-string prefix))
+  (setq suffix (%check-pp-string suffix))
   (%with-pretty-stream (%output-stream stream)
     (lambda (ps)
       (if (not (listp object))
@@ -578,15 +579,16 @@
     (flet ((description (s)
              (when type
                (write (type-of object) :stream s :circle nil :level nil :length nil)
-               (when body-fn (write-char #\Space s) (pprint-newline :fill s)))
+               (write-char #\Space s)
+               (when body-fn (pprint-newline :fill s)))
              (when body-fn (funcall body-fn))
              (when identity
-               (write-char #\Space s)
+               (when (or body-fn (not type)) (write-char #\Space s))
                (pprint-newline :fill s)
                (write-char #\{ s)
                (write-string (%integer-to-string (%object-id object) 16) s)
                (write-char #\} s))))
-      (if (and *print-pretty* (%pretty-stream-p stream))
+      (if *print-pretty*
           (pprint-logical-block (stream nil :prefix "#<" :suffix ">")
             (description stream))
           (progn
@@ -601,7 +603,7 @@
     (flet ((slot-key (sd s)
              (write-char #\: s)
              (%output-symbol-token (symbol-name (%slotd-name sd)) s (%print-readtable))))
-      (if (and *print-pretty* (not *print-readably*) (%pretty-stream-p stream))
+      (if (and *print-pretty* (not *print-readably*))
           (pprint-logical-block (stream nil :prefix "#S(" :suffix ")")
             (let ((*print-escape* t)) (output-object (class-name class) stream))
             (when slots
@@ -730,6 +732,9 @@
       (output-object (aref vector i) stream))))
 
 (defun %pprint-multi-dim-array (stream array)
+  (when (%print-level-exceeded-p)
+    (write-char #\# stream)
+    (return-from %pprint-multi-dim-array nil))
   (write-char #\# stream)
   (%write-decimal (array-rank array) stream)
   (write-char #\A stream)

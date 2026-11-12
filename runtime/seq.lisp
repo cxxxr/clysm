@@ -106,7 +106,7 @@
                                 (%simple-string-p (%array-storage x)))))
 (defun simple-string-p (x) (%simple-string-p x))
 (defun bit-vector-p (x)
-  (or (%bits-p x) (and (%mdarray-p x) (null (cdr (%mdarray-dims x))) (%bits-p (%array-storage x)))))
+  (or (%bits-p x) (and (%mdarray-p x) (consp (%mdarray-dims x)) (null (cdr (%mdarray-dims x))) (%bits-p (%array-storage x)))))
 (defun simple-bit-vector-p (x) (%bits-p x))
 
 (defun %array-storage (a)
@@ -147,6 +147,8 @@
 
 (defun %normalize-element-type (et)
   (cond ((member et '(character base-char standard-char extended-character)) 'character)
+        ;; (array nil) is a subtype of STRING: store such arrays as strings
+        ((null et) 'character)
         ((eq et 'bit) 'bit)
         ((and (consp et) (member (car et) '(unsigned-byte mod)) (integerp (cadr et))
               (<= (cadr et) (if (eq (car et) 'mod) 256 8)))

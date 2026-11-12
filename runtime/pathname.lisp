@@ -427,7 +427,18 @@
 (defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
 (defun compile-file-pathname (p &key output-file) (pathname (or output-file p)))
 
+(defun %pathname-round-trips-p (p)
+  (let ((q (ignore-errors (parse-namestring (namestring p) (pathname-host p)))))
+    (and q
+         (equal (pathname-device p) (pathname-device q))
+         (equal (pathname-directory p) (pathname-directory q))
+         (equal (pathname-name p) (pathname-name q))
+         (equal (pathname-type p) (pathname-type q))
+         (equal (pathname-version p) (pathname-version q)))))
+
 (defmethod print-object ((p pathname) stream)
+  (when (and *print-readably* (not (%pathname-round-trips-p p)))
+    (error 'print-not-readable :object p))
   (if (or *print-escape* *print-readably*)
       (progn (write-string "#P" stream) (prin1 (namestring p) stream))
       (write-string (namestring p) stream))
