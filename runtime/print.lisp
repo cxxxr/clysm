@@ -229,7 +229,7 @@
   (if *print-escape*
       (progn
         (write-string "#\\" stream)
-        (let ((name (and (or (not (graphic-char-p c)) (char= c #\Space)) (char-name c))))
+        (let ((name (and (not (graphic-char-p c)) (char-name c))))
           (if name (write-string name stream) (write-char c stream))))
       (write-char c stream)))
 
