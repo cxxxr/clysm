@@ -410,6 +410,8 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
     (:host-put-char-buf :i-v "env" "put_char_buf")
     (:host-argc :v-i "env" "argc")
     (:host-debug-mode :v-i "env" "debug_mode")
+    (:host-backtrace :i-v "env" "backtrace")
+    (:host-is-tty :v-i "env" "is_tty")
     (:js-global :v-x "js" "global")
     (:js-get :xx-x "js" "get")
     (:js-set :xxx-v "js" "set")
@@ -1131,3 +1133,6 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
   (cons :progn-marker (divop-helper-body 'clysm-sys::%rem-slow nil)))
 (defprim mod (a b) :value `(,@a ,@b (:call :mod)))
 (defprim rem (a b) :value `(,@a ,@b (:call :rem)))
+
+(defprim clysm-sys::%backtrace (fd) :value `(,@(idx-code fd) (:call :host-backtrace) ,@(nil-code)))
+(defprim clysm-sys::%is-tty () :value `((:call :host-is-tty) :ref.i31))

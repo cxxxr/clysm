@@ -28,7 +28,14 @@
     (:synonym (output-stream-p (symbol-value (stream-symbol s))))
     (t nil)))
 (defun open-stream-p (s) (stream-open s))
-(defun interactive-stream-p (s) (eq (stream-kind s) :fd-in))
+(defvar *interactive* nil "true when the REPL debugger should be used")
+(defun interactive-stream-p (s)
+  (and *interactive*
+       (case (stream-kind s)
+         (:fd-in t)
+         (:two-way (interactive-stream-p (car (stream-streams s))))
+         (:synonym (interactive-stream-p (symbol-value (stream-symbol s))))
+         (t nil))))
 
 (defun %make-fd-output-stream (fd) (%make-stream :kind :fd-out :fd fd))
 (defun %make-fd-input-stream (fd) (%make-stream :kind :fd-in :fd fd :direction :input))

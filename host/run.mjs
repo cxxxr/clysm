@@ -13,6 +13,7 @@ function nodePlatform(state, args) {
     }
   };
   state.flush = flush;
+  state.writeText = (fd, text) => { flush(); fs.writeSync(fd, text); };
   const stdinBuf = Buffer.alloc(1);
   const readByte = () => {
     try {
@@ -55,6 +56,7 @@ function nodePlatform(state, args) {
     arg_len(i) { return args[i].length; },
     arg_char(i, j) { return args[i].codePointAt(j); },
     debug_mode() { return process.env.CLYSM_DEBUG ? 1 : 0; },
+    is_tty() { return (process.env.CLYSM_INTERACTIVE || workerData?.tty) ? 1 : 0; },
   };
 }
 
@@ -89,7 +91,7 @@ const selfPath = fileURLToPath(import.meta.url);
 if (isMainThread && process.argv[1] === selfPath) {
   const stackMb = Number(process.env.CLYSM_STACK_MB || 512);
   const worker = new Worker(selfPath, {
-    workerData: { file: process.argv[2], args: process.argv.slice(3) },
+    workerData: { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY },
     resourceLimits: { stackSizeMb: stackMb },
     stdin: false,
   });

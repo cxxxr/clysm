@@ -4,7 +4,7 @@
 import { makeImports } from '../common.mjs';
 
 export async function loadClysm(bytes, onOutput = () => {}) {
-  const state = {};
+  const state = { writeText: (fd, text) => onOutput(text, fd) };
   const platform = {
     write_char(fd, code) { onOutput(String.fromCodePoint(code), fd); },
     read_char() { return -1; },
@@ -14,6 +14,7 @@ export async function loadClysm(bytes, onOutput = () => {}) {
     arg_len() { return 0; },
     arg_char() { return 0; },
     debug_mode() { return 0; },
+    is_tty() { return 0; },
   };
   const { instance } = await WebAssembly.instantiate(bytes, makeImports(state, platform));
   state.instance = instance;

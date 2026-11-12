@@ -428,13 +428,20 @@
 (defun %type-error (datum expected)
   (error 'type-error :datum datum :expected-type expected))
 
+(defun %read-new-value ()
+  (format *query-io* "~&Enter a form to evaluate: ")
+  (finish-output *query-io*)
+  (list (eval (read *query-io*))))
+
 (defun %undefined-function-error (name)
   (restart-case (error 'undefined-function :name name)
-    (use-value (f) :report "Use a function instead." f)))
+    (use-value (f) :report "Call a different function." :interactive %read-new-value f)))
 
 (defun %unbound-variable-error (name)
   (restart-case (error 'unbound-variable :name name)
-    (use-value (v) :report "Use a value instead." v)))
+    (use-value (v) :report "Use a value instead." :interactive %read-new-value v)
+    (store-value (v) :report "Set the variable and use the value." :interactive %read-new-value
+      (setf (symbol-value name) v) v)))
 
 (defun %arg-count-error (f nargs)
   (error 'simple-program-error
@@ -477,6 +484,7 @@
     (%early-write-string ": " 2)
     (%early-write-string msg 2)
     (%write-char #\Newline 2)
+    (%backtrace 2)
     (when (eql (%debug-mode) 1) (%wasm nil () :unreachable))
     (%exit 1)))
 

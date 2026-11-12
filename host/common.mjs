@@ -41,6 +41,23 @@ export function makeCommonEnv(state) {
       if (kind === 1) return performance.now();
       return 0;
     },
+    backtrace(fd) {
+      // Lisp frames appear in the JS stack with the names from the wasm name section
+      const old = Error.stackTraceLimit; Error.stackTraceLimit = 60;
+      const frames = (new Error().stack || '').split('\n').slice(1);
+      Error.stackTraceLimit = old;
+      const names = [];
+      for (const f of frames) {
+        const m = f.match(/at (.+?) \(wasm:/);
+        if (!m) continue;
+        let name = m[1].replace(/#\d+(\/generic)?$/, '');
+        if (name.startsWith(':') || name.startsWith('(') || /^(BACKTRACE|%BACKTRACE|ERROR|%REPORT-AND-EXIT|INVOKE-DEBUGGER|SIGNAL|%TYPE-ERROR|%COERCE-TO-CONDITION)$/.test(name)) continue;
+        if (name === 'toplevel') { names.push('<toplevel>'); break; }
+        names.push(name);
+      }
+      const text = 'Backtrace:\n' + names.map((n, i) => `  ${i}: ${n}`).join('\n') + '\n';
+      if (state.writeText) state.writeText(fd, text);
+    },
     put_char_buf(c) {
       if (c < 0) { state.writeBuf = state.nameBuf; state.nameBuf = ''; return; }
       state.nameBuf = (state.nameBuf || '') + String.fromCodePoint(c);

@@ -424,6 +424,35 @@
         (format t "~&; No value~%")
         (dolist (v vals) (prin1 v) (terpri)))))
 
+(defvar *debugger-level* 0)
+
+(defun %restart-report (r)
+  (let ((f (restart-report-function r)))
+    (if f (with-output-to-string (s) (funcall f s)) (string (restart-name r)))))
+
+(defun %repl-debugger (condition)
+  "A small interactive debugger: list the restarts and let the user choose."
+  (let* ((*debugger-level* (+ *debugger-level* 1))
+         (restarts (compute-restarts condition)))
+    (format t "~&; Error: ~A~%; [Condition of type ~S]~%;~%; Restarts:~%" condition (type-of condition))
+    (let ((i 0))
+      (dolist (r restarts)
+        (format t ";  ~D: [~A] ~A~%" i (restart-name r) (%restart-report r))
+        (setq i (+ i 1))))
+    (loop
+      (format t "~&~D] " *debugger-level*)
+      (finish-output)
+      (let ((form (handler-case (read *standard-input* nil %eof-marker)
+                    (error () %eof-marker))))
+        (cond ((eq form %eof-marker)
+               (invoke-restart (car (last restarts))))
+              ((and (integerp form) (< -1 form (length restarts)))
+               (invoke-restart-interactively (nth form restarts)))
+              ((member form '(:abort :q :top))
+               (invoke-restart (car (last restarts))))
+              (t (handler-case (%repl-eval-print form)
+                   (error (c) (format t "~&; Error: ~A~%" c)))))))))
+
 (defun repl (&key (prompt "* "))
   (let ((*package* *package*))
     (loop
@@ -436,10 +465,12 @@
         (when (eq form %eof-marker) (terpri) (return))
         (restart-case
             (handler-bind ((error (lambda (c)
-                                    (format t "~&; Error: ~A~%" c)
-                                    (invoke-restart 'abort-to-toplevel))))
+                                    (if (interactive-stream-p *standard-input*)
+                                        (%repl-debugger c)
+                                        (progn (format t "~&; Error: ~A~%" c)
+                                               (invoke-restart 'abort-to-toplevel))))))
               (%repl-eval-print form))
-          (abort-to-toplevel () nil))))))
+          (abort-to-toplevel () :report "Return to the top level." nil))))))
 
 (defun %script-main (path)
   (handler-bind ((error (lambda (c)
@@ -465,4 +496,5 @@
              (%repl-eval-print (read-from-string form-string))))
           (args (%script-main (car args)))
           (t (format t "Clysm Common Lisp ~A (WebAssembly GC)~%" (lisp-implementation-version))
+             (setq *interactive* (eql (%is-tty) 1))
              (repl)))))
