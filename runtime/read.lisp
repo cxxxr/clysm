@@ -244,11 +244,14 @@ macro character returned no values), :dot or :eof."
   (vector-push-extend c *token-buf*)
   (vector-push-extend escaped *token-esc*))
 
+(defvar %token-last-escape -1)  ; token position where the last escape began
+
 (defun %read-token (s first)
   "Accumulate a token whose first character FIRST has been read already.
 Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
   (let ((rt *readtable*) (escaped nil) (c first) (firstp t))
     (setf (fill-pointer *token-buf*) 0 (fill-pointer *token-esc*) 0)
+    (setq %token-last-escape -1)
     (loop
       (when (eq c :eof) (return))
       (let ((syn (%syntax c rt)))
@@ -256,9 +259,10 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
           (:single-escape
            (let ((n (%stream-read-char s)))
              (when (eq n :eof) (%reader-eof s))
+             (setq %token-last-escape (fill-pointer *token-buf*))
              (%token-push n t) (setq escaped t)))
           (:multiple-escape
-           (setq escaped t)
+           (setq escaped t %token-last-escape (fill-pointer *token-buf*))
            (loop
              (let ((n (%stream-read-char s)))
                (when (eq n :eof) (%reader-eof s))
@@ -340,7 +344,7 @@ token is empty when the next character ends a token."
           (%reader-error s "too many package markers in ~S" str))))
     (cond ((null colon) (values (intern str *package*)))
           ((= colon 0) (values (intern (subseq str name-start) *keyword-package*)))
-          ((= name-start n) (%reader-error s "no symbol name after the package marker in ~S" str))
+          ((and (= name-start n) (< %token-last-escape name-start)) (%reader-error s "no symbol name after the package marker in ~S" str))
           (t (let* ((pname (subseq str 0 colon))
                     (name (subseq str name-start))
                     (pkg (find-package pname)))

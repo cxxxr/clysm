@@ -131,7 +131,10 @@
 (defun get-output-stream-string (s)
   (unless (and (%streamp s) (eq (stream-kind s) :string-out))
     (%type-error s 'string-stream))
-  (let* ((buf (stream-buffer s)) (r (subseq buf 0)))
+  (let* ((buf (stream-buffer s))
+         (r (if (and (null (stream-elt-type s)) (= (length buf) 0))
+                (make-array 0 :element-type nil)   ; a string of element type NIL
+                (subseq buf 0))))
     (setf (fill-pointer buf) 0)
     (setf (stream-column s) 0)
     r))

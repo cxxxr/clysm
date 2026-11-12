@@ -50,9 +50,13 @@ run_category() {
   if grep -aq "^@@LOADFAIL" "$log"; then status="(load failed)"; else status=""; fi
   printf "%-24s total %5s  pass %5s  fail %5s  crash %4s %s\n" "$cat" "${total:-0}" "$pass" "$fail" "$crash" "$status" > "build/ansi/$cat.sum"
 }
+# the streams tests use sandbox/scratch/, which the files tests create (the
+# suite normally runs every category in one process, files before streams)
+case " $CATS " in *" files "*) rm -f build/ansi/files.sum; run_category files;; esac
 running=0
 for cat in $CATS; do
   [ -f "third_party/ansi-test/$cat/load.lsp" ] || { echo "no category $cat"; continue; }
+  [ "$cat" = files ] && continue
   rm -f "build/ansi/$cat.sum"
   run_category "$cat" &
   running=$((running + 1))
