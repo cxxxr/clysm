@@ -68,6 +68,8 @@
 (defun %whitespace[2]p (c)
   (member c '(#\Space #\Tab #\Newline #\Return #\Page #\Linefeed)))
 
+(defun %rt-whitespace-p (c) (%whitespace[2]p c))
+
 (defun %terminating-char-p (c)
   (or (%whitespace[2]p c)
       (let ((e (gethash c (readtable-macros *readtable*))))

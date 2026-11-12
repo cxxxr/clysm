@@ -373,6 +373,14 @@
 
 (defun %native-name (x) (namestring (%physical x)))
 
+(defun %file-exists-p (native)
+  (let ((fs (%host-fs)))
+    (if fs (js:call fs "existsSync" native) (not (null (%host-read-octets native))))))
+
+(defun %host-rename-file (old new)
+  (let ((fs (%host-fs)))
+    (when fs (js:call fs "renameSync" old new))))
+
 (defun probe-file (x)
   (let ((fs (%host-fs)) (name (%native-name x)))
     (if fs
