@@ -69,7 +69,7 @@
     (push node *toplevel-nodes*)))
 
 (defun host-eval (form)
-  #-clysm (setf form (substitute-env-functions form))
+  (setf form (substitute-host-functions form))
   (let ((*package* *read-package*))
     (handler-bind ((warning #'muffle-warning))
       (eval form))))

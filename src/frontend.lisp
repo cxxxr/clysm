@@ -520,14 +520,27 @@ runtime definition is kept."
   '((get-setf-expansion . clysm-sys::%get-setf-expansion)
     (macroexpand-1 . clysm-sys::%macroexpand-1)
     (macroexpand . clysm-sys::%macroexpand)
-    (macro-function . clysm-sys::%host-macro-function*)
-    ;; not environment functions, but they take target package designators
-    (find-package . clysm-sys::%host-find-package)
+    (macro-function . clysm-sys::%host-macro-function*))
+  "CL functions taking an environment argument: host-evaluated macro bodies
+must call the compiler's versions, which understand compiler environments.")
+
+(defparameter *package-function-substitutions*
+  '((find-package . clysm-sys::%host-find-package)
     (intern . clysm-sys::%host-intern)
     (find-symbol . clysm-sys::%host-find-symbol)
     (package-name . clysm-sys::%host-package-name))
-  "CL functions taking an environment argument: host-evaluated macro bodies
-must call the compiler's versions, which understand compiler environments.")
+  "Package functions called by host-evaluated code (macro bodies, #., eval-when):
+target package names designate the host packages that mirror them.")
+
+(defvar *substitutions* nil)
+
+(defun substitute-host-functions (form)
+  "Substitutions for code the compiler evaluates itself: the environment
+functions (only when hosted by SBCL; in the self-hosted compiler the image's
+own functions accept compiler environments) and the package functions."
+  (let ((*substitutions* (append #-clysm *env-function-substitutions*
+                                 *package-function-substitutions*)))
+    (substitute-env-functions form)))
 
 (defun substitute-env-functions (form)
   "Replace calls (and #') of the functions in *ENV-FUNCTION-SUBSTITUTIONS*,
@@ -538,9 +551,9 @@ leaving quoted data alone."
         ((eq (car form) 'clysm-sys::quasiquote)
          (list (car form) (substitute-in-template (second form) 1)))
         ((and (eq (car form) 'function) (consp (cdr form)) (symbolp (second form)))
-         (let ((e (assoc (second form) *env-function-substitutions*)))
+         (let ((e (assoc (second form) (or *substitutions* *env-function-substitutions*))))
            (if e (list 'function (cdr e)) form)))
-        (t (let ((e (and (symbolp (car form)) (assoc (car form) *env-function-substitutions*))))
+        (t (let ((e (and (symbolp (car form)) (assoc (car form) (or *substitutions* *env-function-substitutions*)))))
              (cons (if e (cdr e) (substitute-env-functions (car form)))
                    (labels ((walk (tail)
                               (if (consp tail)
@@ -560,7 +573,7 @@ leaving quoted data alone."
                  (substitute-in-template (cdr x) depth)))))
 
 (defun host-compile (lambda-form)
-  #-clysm (setf lambda-form (substitute-env-functions lambda-form))
+  (setf lambda-form (substitute-host-functions lambda-form))
   (let ((*package* (find-package :clysm)))
     (handler-bind ((warning #'muffle-warning))
       (compile nil lambda-form))))

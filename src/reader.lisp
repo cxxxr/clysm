@@ -38,7 +38,6 @@
   "Let the host package HOST-PKG also be found by the target NAMES (when no
 host package has that name), so that host-evaluated code such as #. forms
 and macro expanders can use target package names."
-  #-clysm
   (dolist (n names)
     (unless (find-package n)
       (rename-package host-pkg (package-name host-pkg)
@@ -282,7 +281,10 @@ and macro expanders can use target package names."
                                t))))))
         (#\: (values (make-symbol (string-upcase (read-raw-token s))) t))
         (#\| (skip-block-comment s) (values nil nil))
-        (#\. (values (let ((*package* *read-package*)) (eval (target-read s))) t))
+        (#\. (values (let ((*package* *read-package*) (form (target-read s)))
+                       (setf form (substitute-host-functions form))
+                       (eval form))
+                     t))
         ((#\+ #\-)
          (let* ((feature (let ((*read-package* (find-package :keyword))) (target-read s)))
                 (ok (feature-match-p feature)))
