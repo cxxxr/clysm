@@ -412,7 +412,8 @@
                (return (values plist t)))))))
 
 ;;; destructuring-bind support
-(defun %db-error (msg) (error "Error while destructuring: ~A" msg))
+(defun %db-error (msg)
+  (error 'simple-program-error :format-control "Error while destructuring: ~A" :format-arguments (list msg)))
 (defun %db-getf (plist key)
   (do ((l plist (cddr l))) ((atom l) '%db-none)
     (when (atom (cdr l)) (%db-error "odd number of keyword arguments"))
@@ -421,7 +422,8 @@
   (unless (or aok (getf plist :allow-other-keys))
     (do ((l plist (cddr l))) ((atom l) nil)
       (unless (or (%member-eql (car l) keys) (eq (car l) :allow-other-keys))
-        (error "Unknown keyword ~S in destructuring (expected one of ~S)" (car l) keys)))))
+        (error 'simple-program-error :format-control "Unknown keyword ~S in destructuring (expected one of ~S)"
+                                     :format-arguments (list (car l) keys))))))
 
 ;;; ------------------------------------------------------------
 ;;; Symbols
