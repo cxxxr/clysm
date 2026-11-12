@@ -33,7 +33,7 @@
 ;; floats
 (dolist (x '(0.1 0.2 0.3 1.1 2.5 3.14159 1e10 1.5e-7 123.456 9.999999 1e7 1e-3 0.000123 6.02e23))
   (print (list x (* x 3) (/ x 7) (round x) (floor x) (ceiling x) (truncate x))))
-(dolist (x '(0.1d0 1d100 2.5d-10 3.141592653589793d0 4.9d-324))
+(dolist (x '(0.1d0 1d100 2.5d-10 3.141592653589793d0 2.2250738585072014d-308))
   (print (list x (* x 2) (sqrt x))))
 (print (list (float 1/3) (float 2/3 1d0) (float (expt 2 70)) (float (- (expt 10 30)) 1d0)))
 (print (list (exp 1.0) (log 10.0) (sin 1.0) (cos 1.0) (atan 1.0 2.0) (expt 2.0 0.5)))

@@ -201,8 +201,12 @@ hang detected by a watchdog) is recorded as `CRASH`, and `tests/ansi/run.sh`
 resumes with the next test. Per-category logs and `summary.txt` are written to
 `build/ansi/`.
 
-The latest results are in `tests/ansi/RESULTS.txt`: 19738 of 21946 tests pass
-(89.9%); 59 tests crash.
+Categories run in parallel (`ANSI_JOBS`, default 8; `files` runs first because
+the `streams` tests use the directory it creates), starting from a pristine
+sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21944 of 21945
+tests pass (99.99%), with no crashes. The one failure, SUBTYPEP-COMPLEX.8,
+assumes that `(complex single-float)` is not a subtype of
+`(complex (float 0.0 1.0))`; Clysm reads `(complex X)` as a set of numbers.
 
 ## Status and limitations
 
@@ -215,13 +219,15 @@ ratios and complex numbers, plus `eval`, `compile`, `load` and a REPL.
 Limitations:
 
 * `short-float`/`long-float` are `single-float`/`double-float`.
-* Pathnames are simplified (no logical pathnames, no wild pathnames); file I/O
-  goes through the host.
-* The pretty printer reproduces SBCL's layout for data and common code forms
-  and supports `pprint-logical-block`, `pprint-newline`, `pprint-indent` and
-  `format`'s `~<...~:>`, `~_`, `~I`; pprint dispatch tables are not supported.
-* `compile-file` loads the source (whole programs are compiled ahead of time
-  with `bin/clysm compile`/`run`).
+* File I/O goes through the host; file streams hold the file's bytes in memory
+  and write them back on `finish-output`/`close`.
+* The pretty printer is an XP-style streaming printer (fill/linear/miser
+  newlines, `pprint-indent`, `pprint-tab`, per-line prefixes, pprint dispatch
+  tables) whose standard table reproduces SBCL's layout.
+* `compile-file` performs the file compiler's toplevel processing (EVAL-WHEN,
+  compile-time definers, `make-load-form` externalization) and writes the
+  processed forms to a `.fasl` text file that `load` compiles form by form
+  (whole programs are compiled ahead of time with `bin/clysm compile`/`run`).
 * No threads and no first-class continuations (not required by the standard).
 * Character names beyond ASCII/Latin control names are not provided.
 

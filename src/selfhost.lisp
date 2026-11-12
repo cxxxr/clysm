@@ -22,6 +22,9 @@
       (format *error-output* "usage: clysmc OUT.wasm FILE... [--runtime DIR]~%")
       (sys::%exit 2))
     (let ((out (first files)) (sources (rest files)))
+      ;; macro expanders run by the image's evaluator receive the compiler's
+      ;; environment objects (e.g. GET-SETF-EXPANSION inside a SETF expander)
+      (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
       (reset-compiler)
       (let ((*read-package* (find-target-package "SYSTEM")))
         (dolist (f (selfhost-runtime-files runtime-dir)) (compile-source-file f))
