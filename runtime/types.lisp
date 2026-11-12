@@ -245,13 +245,13 @@
         ((arrayp x) (list (if (vectorp x) 'vector 'array) (array-element-type x) (array-dimensions x)))
         ((functionp x) (if (%instancep (%closure-name x)) 'standard-generic-function 'function))
         ((%packagep x) 'package)
-        ((%instancep x) (class-name (class-of x)))
+        ((%instancep x) (%class-name (class-of x)))
         (t t)))
 
 ;;; very approximate SUBTYPEP
 (defun %type-class-name (ty)
   "Class objects are type specifiers: use the class name when it names the class."
-  (if (and (%class-p ty) (eq (find-class (class-name ty) nil) ty)) (class-name ty) ty))
+  (if (and (%class-p ty) (eq (find-class (%class-name ty) nil) ty)) (%class-name ty) ty))
 
 (defun %type-empty-p (ty)
   "True when TY is known to denote the empty type."

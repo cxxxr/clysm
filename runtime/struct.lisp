@@ -154,11 +154,11 @@
          (or (eq l class) (and (%instancep l) (not (null (member class (%class-cpl l)))))))))
 
 (defun %struct-ref (x class i)
-  (unless (%structure-typep x class) (%type-error x (class-name class)))
+  (unless (%structure-typep x class) (%type-error x (%class-name class)))
   (%instance-ref x i))
 
 (defun %struct-set (x class i v)
-  (unless (%structure-typep x class) (%type-error x (class-name class)))
+  (unless (%structure-typep x class) (%type-error x (%class-name class)))
   (%set-instance-ref x i v))
 
 (defun copy-structure (x)

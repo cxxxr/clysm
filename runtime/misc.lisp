@@ -105,9 +105,6 @@
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
 (defun require (name &optional paths) (declare (ignore paths)) (provide name))
 
-(defun documentation (x doc-type) (declare (ignore doc-type)) (get (if (symbolp x) x 'nil) '%documentation))
-(defun %set-documentation (value x doc-type) (declare (ignore doc-type))
-  (when (symbolp x) (%put x '%documentation value)) value)
 
 (defgeneric describe-object (object stream))
 (defmethod describe-object (object stream)

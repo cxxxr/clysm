@@ -1,55 +1,6 @@
 ;;;; cond.lisp — the condition system
 
 ;;; ------------------------------------------------------------
-;;; generic slot access by name (used by conditions and CLOS)
-;;; ------------------------------------------------------------
-
-(defun %slot-location (instance name)
-  (let ((e (assoc name (%class-slot (%instance-layout instance) +class-slot-index+))))
-    (if e (cdr e) nil)))
-
-(defun %slot-value-by-name (instance name)
-  (let ((loc (%slot-location instance name)))
-    (cond ((fixnump loc)
-           (let ((v (%instance-ref instance loc)))
-             (if (%unboundp v) (%slot-unbound instance name) v)))
-          ((consp loc)
-           (let ((v (%svref (%class-slot (%instance-layout instance) +class-extra+) (cdr loc))))
-             (if (%unboundp v) (%slot-unbound instance name) v)))
-          (t (%slot-missing instance name 'slot-value)))))
-
-(defun %set-slot-value-by-name (instance name value)
-  (let ((loc (%slot-location instance name)))
-    (cond ((fixnump loc) (%set-instance-ref instance loc value))
-          ((consp loc) (%set-svref (%class-slot (%instance-layout instance) +class-extra+) (cdr loc) value))
-          (t (%slot-missing instance name 'setf)))
-    value))
-
-(defun %slot-unbound (instance name)
-  (error 'unbound-slot :name name :instance instance))
-(defun %slot-missing (instance name op)
-  (declare (ignore op))
-  (error "The slot ~S is missing from the object ~S." name instance))
-
-(defun %allocate-instance (class)
-  (let* ((n (%instance-slot-count class))
-         (v (%make-simple-vector n (%unbound-marker))))
-    (%make-instance class v)))
-
-(defun %initialize-slots-from-initargs (instance initargs)
-  (let ((class (%instance-layout instance)))
-    (dolist (sd (%class-effective-slots class))
-      (let ((loc (%slotd-location sd)) (found nil) (value nil))
-        (do ((l initargs (cddr l))) ((or found (atom l)))
-          (when (member (car l) (%slotd-initargs sd))
-            (setq found t value (cadr l))))
-        (cond (found (if (fixnump loc) (%set-instance-ref instance loc value)
-                         (%set-svref (%class-slot class +class-extra+) (cdr loc) value)))
-              ((and (fixnump loc) (%unboundp (%instance-ref instance loc)) (%slotd-initfunction sd))
-               (%set-instance-ref instance loc (funcall (%slotd-initfunction sd)))))))
-    instance))
-
-;;; ------------------------------------------------------------
 ;;; define-condition
 ;;; ------------------------------------------------------------
 
