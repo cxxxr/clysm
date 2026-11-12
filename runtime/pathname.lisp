@@ -425,7 +425,9 @@
                   (when (pathname-match-p full pat) (push full r))))))))))
 
 (defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
-(defun compile-file-pathname (p &key output-file) (pathname (or output-file p)))
+(defun compile-file-pathname (p &key output-file &allow-other-keys)
+  (let ((default (make-pathname :type "fasl" :version nil :defaults (merge-pathnames p))))
+    (if output-file (merge-pathnames output-file default) default)))
 
 (defmethod print-object ((p pathname) stream)
   (if (or *print-escape* *print-readably*)

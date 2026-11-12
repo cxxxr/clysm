@@ -414,11 +414,12 @@
                            (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
                 (when print (format t "~&~{~S~^ ~}~%" vals)))))))))
 
-(defun compile-file (input-file &key output-file verbose print external-format)
-  (declare (ignore output-file verbose print external-format))
-  ;; there is no file compiler in the image; load the source instead
-  (load input-file)
-  (values (pathname input-file) nil nil))
+(defun compile-file (input-file &key output-file (verbose *compile-verbose*) (print *compile-print*)
+                                     external-format)
+  (declare (ignore external-format))
+  ;; the output is a source file in which literal objects are externalized
+  ;; with MAKE-LOAD-FORM (see %COMPILE-FILE)
+  (%compile-file input-file output-file verbose print))
 
 ;;; ------------------------------------------------------------
 ;;; REPL
