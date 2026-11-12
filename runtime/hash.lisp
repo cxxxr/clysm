@@ -87,7 +87,11 @@
         ((%complexp x) (%fxlogxor (%number-hash (%complex-real x)) (%number-hash (%complex-imag x))))
         (t 0)))
 
-(defun %eql-hash (x) (if (numberp x) (%number-hash x) (%eq-hash x)))
+(defun %eql-hash (x)
+  (cond ((fixnump x) (%fxlogand x 536870911))
+        ((symbolp x) (%symbol-hash x))
+        ((numberp x) (%number-hash x))
+        (t (%eq-hash x))))
 
 (defun %mix (h v) (%fxlogand (%fx+ (%fx* (%fxlogand h 4194303) 31) v) 268435455))
 

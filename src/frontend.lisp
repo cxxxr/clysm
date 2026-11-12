@@ -218,6 +218,11 @@
         (let ((new (let ((*package* *read-package*)) (funcall cm form env))))
           (unless (eq new form)
             (return-from convert-compound (convert new env))))))
+    (let ((tr (and (symbolp op) (get op 'clysm-transform))))
+      (when tr
+        (let ((new (funcall tr form)))
+          (unless (eq new form)
+            (return-from convert-compound (convert new env))))))
     (let ((prim (find-primitive op (length (cdr form)))))
       (when prim
         (return-from convert-compound
@@ -601,3 +606,40 @@
     (let* ((name (second qname))
            (sym (if (consp name) (setf-function-symbol (second name)) name)))
       `(:defun ,sym ,(convert fn-form env)))))
+
+;;; ------------------------------------------------------------
+;;; source transforms for variadic arithmetic and comparisons
+;;; ------------------------------------------------------------
+
+(defmacro deftransform (name (form) &body body)
+  `(setf (get ',name 'clysm-transform) (lambda (,form) ,@body)))
+
+(defun fold-left (op args)
+  (let ((acc (first args)))
+    (dolist (a (rest args) acc) (setf acc (list op acc a)))))
+
+(deftransform + (form)
+  (let ((args (cdr form)))
+    (cond ((null args) 0)
+          ((cddr args) (fold-left '+ args))
+          (t form))))
+(deftransform * (form)
+  (let ((args (cdr form)))
+    (cond ((null args) 1)
+          ((cddr args) (fold-left '* args))
+          (t form))))
+(deftransform - (form)
+  (let ((args (cdr form)))
+    (if (cddr args) (fold-left '- args) form)))
+
+(defun chain-compare (op args)
+  (let ((temps (loop for nil in args collect (gensym "C"))))
+    `(let ,(mapcar #'list temps args)
+       (and ,@(loop for (a b) on temps while b collect (list op a b))))))
+
+(dolist (op '(< > <= >= =))
+  (let ((op op))
+    (setf (get op 'clysm-transform)
+          (lambda (form)
+            (let ((args (cdr form)))
+              (if (cddr args) (chain-compare op args) form))))))

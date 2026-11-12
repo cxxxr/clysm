@@ -1,0 +1,44 @@
+#!/bin/sh
+# Clysm — a Common Lisp implementation targeting WebAssembly GC.
+#
+#   clysm compile FILE... [-o OUT.wasm]   compile Lisp sources (with the runtime) to a Wasm module
+#   clysm run FILE... [-- ARGS]           compile and run on Node.js
+#   clysm repl                            start the interactive REPL (runs in Wasm)
+#   clysm script FILE                     load FILE with the in-image evaluator
+#   clysm exec OUT.wasm [ARGS]            run a compiled module
+set -e
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NODE="${NODE:-node}"
+cmd="$1"; [ $# -gt 0 ] && shift
+repl_image() {
+  img="$ROOT/build/clysm-repl.wasm"
+  if [ ! -f "$img" ] || [ -n "$(find "$ROOT/runtime" "$ROOT/src" -newer "$img" -name '*.lisp' 2>/dev/null | head -1)" ]; then
+    sbcl --script "$ROOT/tools/build.lisp" "$img" "$ROOT/lib/repl-main.lisp" >/dev/null 2>&1 || {
+      echo "clysm: failed to build the REPL image" >&2; exit 1; }
+  fi
+  echo "$img"
+}
+case "$cmd" in
+  compile)
+    out="a.wasm"; files=""
+    while [ $# -gt 0 ]; do
+      case "$1" in -o) out="$2"; shift 2;; *) files="$files $1"; shift;; esac
+    done
+    exec sbcl --script "$ROOT/tools/build.lisp" "$out" $files ;;
+  run)
+    files=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --) shift; break;; *) files="$files $1"; shift;; esac
+    done
+    mkdir -p "$ROOT/build"
+    out="$ROOT/build/run-$$.wasm"
+    sbcl --script "$ROOT/tools/build.lisp" "$out" $files >/dev/null 2>"$out.log" || { cat "$out.log" >&2; rm -f "$out.log"; exit 1; }
+    rm -f "$out.log"
+    status=0; "$NODE" "$ROOT/host/run.mjs" "$out" "$@" || status=$?
+    rm -f "$out"; exit $status ;;
+  repl)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" ;;
+  script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
+  eval)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
+  exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

@@ -251,6 +251,25 @@
   (do ((d (array-dimensions a) (cdr d)) (s subscripts (cdr s))) ((null d) t)
     (unless (< -1 (car s) (car d)) (return nil))))
 
+(defun %aref1 (a i)
+  (cond ((%simple-vector-p a) (%svref a (%check-index a i (%svlength a))))
+        ((%simple-string-p a) (%schar a (%check-index a i (%string-length a))))
+        ((and (%mdarray-p a) (null (cdr (%mdarray-dims a))))
+         (row-major-aref a (%check-index a i (car (%mdarray-dims a)))))
+        ((%mdarray-p a) (aref a i))
+        (t (%simple-ref a (%check-index a i (%simple-length a))))))
+
+(defun %aset1 (a i v)
+  (cond ((%simple-vector-p a) (%set-svref a (%check-index a i (%svlength a)) v))
+        ((%simple-string-p a) (%set-schar a (%check-index a i (%string-length a)) v))
+        ((and (%mdarray-p a) (null (cdr (%mdarray-dims a))))
+         (%row-major-aset a (%check-index a i (car (%mdarray-dims a))) v))
+        (t (%simple-set a (%check-index a i (%simple-length a)) v)))
+  v)
+
+(define-compiler-macro aref (&whole form a &rest subs)
+  (if (and subs (null (cdr subs))) `(%aref1 ,a ,(car subs)) form))
+
 (defun aref (a &rest subscripts)
   (if (and (%simple-vector-p a) subscripts (null (cdr subscripts)))
       (svref a (car subscripts))
