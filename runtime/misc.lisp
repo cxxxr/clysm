@@ -17,10 +17,10 @@
 (defun %random-bits (state)
   ;; 28-bit xorshift-style generator on fixnums
   (let ((x (random-state-s0 state)) (y (random-state-s1 state)))
-    (setq x (%fxlogand (%fxlogxor x (%fxash-left x 7)) 268435455))
-    (setq x (%fxlogxor x (%fxash-right x 9)))
-    (setq x (%fxlogand (%fxlogxor x (%fxash-left x 8)) 268435455))
-    (setq y (%fxlogand (+ (* y 69069) 1) 268435455))
+    (setq x (logand (logxor x (ash x 7)) 268435455))
+    (setq x (logxor x (ash x -9)))
+    (setq x (logand (logxor x (ash x 8)) 268435455))
+    (setq y (logand (+ (* y 69069) 1) 268435455))
     (setf (random-state-s0 state) x (random-state-s1 state) y)
     (%fxlogand (%fxlogxor x y) 268435455)))
 

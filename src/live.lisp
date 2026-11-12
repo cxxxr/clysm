@@ -68,6 +68,7 @@ Returns (values bytes constants-vector)."
     (sym-global nil) (sym-global t)
     (define-standard-helpers)
     (define-argerr-helpers)
+    (define-checked-casts)
     (let ((tops (reverse *toplevel-lams*)))
       (dolist (l tops) (ensure-lam-compiled l) (static-closure-global l))
       (compile-pending-lams)
@@ -102,7 +103,7 @@ Returns (values bytes constants-vector)."
             (add-global *m* name type mutable init)))
         (add-func *m* :run :x-e :export "run"
                   :locals '((:ref :null :vector) :eqref) :local-names '(v result)
-                  :body `((:local.get 0) :any.convert_extern (:ref.cast :vector) (:local.set v)
+                  :body `((:local.get 0) :any.convert_extern (:ref.cast! :vector) (:local.set v)
                           ,@(loop for s in syms for i from 0
                                   append `((:local.get v) (:i32.const ,i) (:array.get :vector)
                                            (:ref.cast :symbol) (:global.set (:sym ,s))))

@@ -215,7 +215,7 @@
   (let ((r nil))
     (dolist (cluster *restart-clusters* (nreverse r))
       (dolist (restart cluster)
-        (when (or (null condition) (null (restart-test-function restart))
+        (when (or (null (restart-test-function restart))
                   (funcall (restart-test-function restart) condition))
           (push restart r))))))
 
@@ -360,6 +360,9 @@
 
 (defun warn (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-warning)))
+    (unless (typep condition 'warning)
+      (error 'simple-type-error :datum condition :expected-type 'warning
+                                :format-control "~S is not a warning" :format-arguments (list condition)))
     (restart-case (progn
                     (signal condition)
                     (format *error-output* "~&WARNING: ~A~%" condition))
@@ -470,7 +473,8 @@
                             :format-control "~S fell through ETYPECASE expression. Wanted one of ~S."
                             :format-arguments (list key (cdr type))))
 
-(defun %check-type-error (place value type)
+(defun %check-type-error (place value type &optional type-string)
+  (declare (ignore type-string))
   (restart-case (error 'simple-type-error :datum value :expected-type type
                                           :format-control "The value of ~S is ~S, which is not of type ~S."
                                           :format-arguments (list place value type))

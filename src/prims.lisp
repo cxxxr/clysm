@@ -112,9 +112,9 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
       (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
       (:if nil :eqref
-           ((:local.get ,ta) (:ref.cast :i31) :i31.get_s (:local.tee ,x)
+           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
             (:i32.const ,+char-tag+) :i32.add
-            (:local.get ,tb) (:ref.cast :i31) :i31.get_s (:local.tee ,y)
+            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y)
             (:i32.const ,+char-tag+) :i32.add :i32.or
             (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
             (:if nil :eqref
@@ -133,9 +133,9 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
       (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
       (:if nil :i32
-           ((:local.get ,ta) (:ref.cast :i31) :i31.get_s (:local.tee ,x)
+           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
             (:i32.const ,+char-tag+) :i32.add
-            (:local.get ,tb) (:ref.cast :i31) :i31.get_s (:local.tee ,y)
+            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y)
             (:i32.const ,+char-tag+) :i32.add :i32.or
             (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
             (:if nil :i32
@@ -164,10 +164,10 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 ;; unchecked fixnum ops for the runtime: (sys:%fx+ a b) etc. operate on i31 directly
 (macrolet ((fxop (name op)
              `(defprim ,name (a b) :value
-                `(,@a (:ref.cast :i31) :i31.get_s ,@b (:ref.cast :i31) :i31.get_s ,',op :ref.i31)))
+                `(,@a (:ref.cast! :i31) :i31.get_s ,@b (:ref.cast! :i31) :i31.get_s ,',op :ref.i31)))
            (fxcmp (name op)
              `(defprim ,name (a b) :test
-                `(,@a (:ref.cast :i31) :i31.get_s ,@b (:ref.cast :i31) :i31.get_s ,',op))))
+                `(,@a (:ref.cast! :i31) :i31.get_s ,@b (:ref.cast! :i31) :i31.get_s ,',op))))
   (fxop clysm-sys::%fx+ :i32.add) (fxop clysm-sys::%fx- :i32.sub) (fxop clysm-sys::%fx* :i32.mul)
   (fxop clysm-sys::%fxlogand :i32.and) (fxop clysm-sys::%fxlogior :i32.or)
   (fxop clysm-sys::%fxlogxor :i32.xor)
@@ -251,7 +251,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 ;;; Strings and vectors (simple)
 ;;; ------------------------------------------------------------
 
-(defun idx-code (i) `(,@i (:ref.cast :i31) :i31.get_s))
+(defun idx-code (i) `(,@i (:ref.cast! :i31) :i31.get_s))
 
 (defprim clysm-sys::%make-string (n c) :value
   `(,@c (:call :check-char) (:i32.const ,+char-tag+) :i32.sub ,@(idx-code n) (:array.new :string)))
@@ -412,6 +412,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
     (:host-debug-mode :v-i "env" "debug_mode")
     (:host-backtrace :i-v "env" "backtrace")
     (:host-is-tty :v-i "env" "is_tty")
+    (:host-flush :v-v "env" "flush")
     (:host-compile-module :xx-x "env" "compile_module")
     (:js-global :v-x "js" "global")
     (:js-get :xx-x "js" "get")
@@ -599,8 +600,8 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
              `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64))
                 '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
                 `(:if nil nil
-                      ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.set x)
-                       (:local.get 1) (:ref.cast :i31) :i31.get_s (:local.set y)
+                      ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.set x)
+                       (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.set y)
                        (:local.get x) (:i32.const ,+char-tag+) :i32.add
                        (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
                        (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
@@ -622,7 +623,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :lt :ee-i ()
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
-        ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.get 1) (:ref.cast :i31) :i31.get_s
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.get 1) (:ref.cast! :i31) :i31.get_s
          :i32.lt_s :return))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-lt)) '(:call (:callsym 2))
@@ -631,7 +632,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :num-eq :ee-i ()
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
-        ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.get 1) (:ref.cast :i31) :i31.get_s
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.get 1) (:ref.cast! :i31) :i31.get_s
          :i32.eq :return))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-num-eq)) '(:call (:callsym 2))
@@ -1073,7 +1074,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :aref1 :ee-e ((v (:ref :null :vector)) (s (:ref :null :string)) (i :i32))
   '(:local.get 1) '(:ref.test :i31)
   `(:if nil nil
-        ((:local.get 1) (:ref.cast :i31) :i31.get_s (:local.set i)
+        ((:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.set i)
          (:block notvec :eqref
            (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
            :array.len (:local.get i) :i32.gt_u
@@ -1093,7 +1094,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :aset1 :eee-e ((v (:ref :null :vector)) (i :i32))
   '(:local.get 1) '(:ref.test :i31)
   `(:if nil nil
-        ((:local.get 1) (:ref.cast :i31) :i31.get_s (:local.set i)
+        ((:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.set i)
          (:block notvec :eqref
            (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
            :array.len (:local.get i) :i32.gt_u
@@ -1112,9 +1113,9 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defun divop-helper-body (lisp-fn modp)
   `((:local.get 0) (:ref.test :i31) (:local.get 1) (:ref.test :i31) :i32.and
     (:if nil nil
-         ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.tee x)
+         ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee x)
           (:i32.const ,+char-tag+) :i32.add
-          (:local.get 1) (:ref.cast :i31) :i31.get_s (:local.tee y)
+          (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.tee y)
           (:i32.const ,+char-tag+) :i32.add :i32.or
           (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
           (:local.get y) :i32.eqz :i32.eqz :i32.and
@@ -1142,3 +1143,33 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defprim clysm-sys::%compile-module (bytes consts) :mv
   `(,@(ext-code bytes) ,@(ext-code consts) (:call :host-compile-module)
     :any.convert_extern (:ref.cast :null :eq)))
+(defprim clysm-sys::%flush () :value `((:call :host-flush) ,@(nil-code)))
+
+;;; ------------------------------------------------------------
+;;; checked casts: ref.cast to these types signals TYPE-ERROR on failure
+;;; ------------------------------------------------------------
+
+(defparameter *checked-cast-types*
+  '((:i31 . fixnum) (:cons . cons) (:symbol . symbol) (:string . simple-string)
+    (:vector . simple-vector) (:instance . structure-object) (:mdarray . array)
+    (:double . double-float) (:single . single-float) (:bignum . integer) (:ratio . ratio)
+    (:complex . complex) (:package . package) (:bytes . (simple-array (unsigned-byte 8) (*)))
+    (:bits . simple-bit-vector) (:f64vec . (simple-array double-float (*))) (:foreign . t)
+    (:limbs . t) (:closure . function)))
+
+(defun define-checked-casts ()
+  (dolist (e *checked-cast-types*)
+    (let* ((type (car e)) (lisp-type (cdr e))
+           (fname (list :castfn type))
+           (tname (list :cast-type type)))
+      (unless (gethash tname *extra-types*)
+        (setf (gethash tname *extra-types*) t)
+        (add-type *m* tname `(:func (:eqref) ((:ref ,type)))))
+      (add-func *m* fname tname
+                :body `((:block fail :eqref
+                          (:local.get 0) (:br_on_cast_fail fail :eqref (:ref ,type)) :return)
+                        :drop
+                        (:local.get 0) ,@(const-init-code lisp-type)
+                        (:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2))
+                        (:ref.cast ,type)))
+      (push (cons type fname) (wasm-module-cast-rewrites *m*)))))

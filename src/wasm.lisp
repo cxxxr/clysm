@@ -106,7 +106,8 @@
   (base-types nil)                                       ; size of the first rec group
   (global-imports (make-array 0 :adjustable t :fill-pointer 0)) ; (name type mutable module field)
   (tag-imports (make-array 0 :adjustable t :fill-pointer 0))    ; (name type module field)
-  (nonnull-globals (make-hash-table :test 'equal)))     ; nullable globals read as non-null
+  (nonnull-globals (make-hash-table :test 'equal))
+  (cast-rewrites nil))                                  ; heap type -> function replacing ref.cast     ; nullable globals read as non-null
 
 (defun add-type (m name def)
   "DEF is (:func params results) | (:struct fields) | (:array field) optionally
@@ -324,6 +325,7 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
       :i64.trunc_sat_f32_s 4 :i64.trunc_sat_f32_u 5 :i64.trunc_sat_f64_s 6 :i64.trunc_sat_f64_u 7))
 
 (defvar *labels*)
+(defvar *current-func* nil)
 (defvar *module*)
 (defvar *locals-map*)
 
@@ -454,8 +456,18 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
         (:array.copy
          (emit-byte buf #xFB) (emit-u32 buf 17)
          (emit-u32 buf (type-index m (first args))) (emit-u32 buf (type-index m (second args))))
+        (:ref.cast!
+         ;; unchecked cast (the type is already known): a plain ref.cast
+         (emit-byte buf #xFB) (emit-u32 buf 22) (emit-heap-type m buf (first args)))
         ((:ref.test :ref.cast)
          ;; (:ref.test ht) / (:ref.test :null ht)
+         ;; checked casts: a non-null ref.cast to a rewritten type calls a
+         ;; function that signals a Lisp error instead of trapping
+         (let ((fn (and (eq op :ref.cast) (not (eq (first args) :null))
+                        (cdr (assoc (first args) (wasm-module-cast-rewrites m))))))
+           (when (and fn (not (equal fn (wasm-func-name *current-func*))))
+             (emit-byte buf #x10) (emit-u32 buf (func-index m fn))
+             (return-from emit-instr)))
          (emit-byte buf #xFB)
          (let ((nullable (eq (first args) :null)))
            (emit-u32 buf (if (eq op :ref.test) (if nullable 21 20) (if nullable 23 22)))
@@ -498,7 +510,8 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
   (cdr (aref (wasm-module-types m) (type-index m (wasm-func-type f)))))
 
 (defun encode-function-body (m f)
-  (let* ((buf (make-buf))
+  (let* ((*current-func* f)
+         (buf (make-buf))
          (*locals-map* (make-hash-table :test 'equal))
          (def (func-type-def m f))
          (params (second (if (eq (first def) :sub) (fourth def) def)))

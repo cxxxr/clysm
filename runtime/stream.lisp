@@ -138,8 +138,8 @@
   (let ((s (%output-stream stream)))
     (if (eql (%stream-column s) 0) nil (progn (write-char #\Newline s) t))))
 
-(defun finish-output (&optional stream) (declare (ignore stream)) nil)
-(defun force-output (&optional stream) (declare (ignore stream)) nil)
+(defun finish-output (&optional stream) (declare (ignore stream)) (%flush) nil)
+(defun force-output (&optional stream) (declare (ignore stream)) (%flush) nil)
 (defun clear-output (&optional stream) (declare (ignore stream)) nil)
 
 (defun write-byte (byte stream)
@@ -256,7 +256,7 @@
 (defun open (filename &key (direction :input) (element-type 'character) if-exists
                            (if-does-not-exist nil idnep) external-format)
   (declare (ignore if-exists external-format))
-  (let ((name (namestring filename)))
+  (let ((name (namestring (merge-pathnames filename))))
     (case direction
       (:input
        (%host-name-buffer name)
@@ -269,9 +269,9 @@
              (let ((s (make-string n)))
                (dotimes (i n) (%set-schar s i (%host-char i)))
                (%make-stream :kind :string-in :buffer s :index 0 :end n :direction :input
-                             :pathname (pathname filename) :element-type element-type)))))
+                             :pathname (merge-pathnames filename) :element-type element-type)))))
       ((:output :io)
-       (%make-stream :kind :file-out :pathname (pathname filename)
+       (%make-stream :kind :file-out :pathname (merge-pathnames filename)
                      :buffer (make-array 256 :element-type 'character :fill-pointer 0 :adjustable t)
                      :element-type element-type))
       (:probe (probe-file filename))

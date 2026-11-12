@@ -38,6 +38,7 @@ function nodePlatform(state, args) {
       return cp;
     },
     exit(code) { flush(); process.exit(code); },
+    flush() { flush(); },
     file_open(mode) {
       // the file name was accumulated by put_char_buf
       const name = state.nameBuf; state.nameBuf = '';
@@ -92,7 +93,7 @@ if (isMainThread && process.argv[1] === selfPath) {
   const stackMb = Number(process.env.CLYSM_STACK_MB || 512);
   const worker = new Worker(selfPath, {
     workerData: { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY },
-    resourceLimits: { stackSizeMb: stackMb },
+    resourceLimits: { stackSizeMb: stackMb, maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096) },
     stdin: false,
   });
   worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });

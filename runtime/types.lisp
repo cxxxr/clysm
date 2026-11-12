@@ -91,6 +91,8 @@
 
 (defun typep (x type &optional env)
   (declare (ignore env))
+  (when (%class-p type)
+    (return-from typep (%subclassp (class-of x) type)))
   (if (symbolp type)
       (case type
         ((t) t)
@@ -247,10 +249,31 @@
         (t t)))
 
 ;;; very approximate SUBTYPEP
+(defun %type-class-name (ty)
+  "Class objects are type specifiers: use the class name when it names the class."
+  (if (and (%class-p ty) (eq (find-class (class-name ty) nil) ty)) (class-name ty) ty))
+
+(defun %type-empty-p (ty)
+  "True when TY is known to denote the empty type."
+  (cond ((null ty) t)
+        ((and (consp ty) (eq (car ty) 'and))
+         (let ((positive (remove-if (lambda (x) (and (consp x) (eq (car x) 'not))) (cdr ty)))
+               (negative (mapcar #'cadr (remove-if-not (lambda (x) (and (consp x) (eq (car x) 'not))) (cdr ty)))))
+           (or (some #'%type-empty-p positive)
+               (some (lambda (p) (some (lambda (n) (subtypep p n)) negative)) positive))))
+        ((and (consp ty) (eq (car ty) 'or)) (every #'%type-empty-p (cdr ty)))
+        ((and (consp ty) (eq (car ty) 'member)) (null (cdr ty)))
+        (t nil)))
+
 (defun subtypep (t1 t2 &optional env)
   (declare (ignore env))
-  (setq t1 (%expand-type-fully t1) t2 (%expand-type-fully t2))
+  (setq t1 (%expand-type-fully (%type-class-name t1)) t2 (%expand-type-fully (%type-class-name t2)))
   (cond ((equal t1 t2) (values t t))
+        ((%type-empty-p t1) (values t t))
+        ((and (consp t2) (eq (car t2) 'not))
+         ;; t1 <= (not x)  iff  (and t1 x) is empty
+         (if (%type-empty-p (list 'and t1 (cadr t2))) (values t t)
+             (if (subtypep t1 (cadr t2)) (values nil t) (values nil nil))))
         ((eq t2 t) (values t t))
         ((null t1) (values t t))
         ((null t2) (values nil t))

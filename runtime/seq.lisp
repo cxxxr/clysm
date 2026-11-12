@@ -837,3 +837,12 @@
           (t (error 'simple-type-error :datum x :expected-type type
                                        :format-control "Cannot coerce ~S to ~S"
                                        :format-arguments (list x type))))))
+
+;;; setf functions, for (setf (apply #'aref ...)) and #'(setf aref)
+(defun (setf aref) (value array &rest subscripts) (apply #'%aset array (append subscripts (list value))))
+(defun (setf bit) (value array &rest subscripts) (apply #'%aset array (append subscripts (list value))))
+(defun (setf sbit) (value array &rest subscripts) (apply #'%aset array (append subscripts (list value))))
+(defun (setf char) (value string index) (%charset string index value))
+(defun (setf schar) (value string index) (%scharset string index value))
+(defun (setf svref) (value vector index) (%svset vector index value))
+(defun (setf elt) (value seq index) (%setelt seq index value))

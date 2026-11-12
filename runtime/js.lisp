@@ -121,3 +121,11 @@
                     (format out "; No value~%")))))
         (error (c) (format out "; Error: ~A~%" c))))
     (js:to-js (get-output-stream-string out))))
+
+(defun %init-default-pathname ()
+  "Set *DEFAULT-PATHNAME-DEFAULTS* to the host's working directory (Node.js)."
+  (let ((cwd (ignore-errors
+              (let ((process (js:global "process")))
+                (and (js:js-value-p process) (js:call process "cwd"))))))
+    (when (stringp cwd)
+      (setq *default-pathname-defaults* (pathname (concatenate 'string cwd "/"))))))

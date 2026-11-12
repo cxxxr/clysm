@@ -241,7 +241,7 @@
 
 (defmacro in-package (name) `(%in-package ,(string name)))
 
-(defun %defpackage (name nicknames uses exports shadows imports)
+(defun %defpackage (name nicknames uses exports shadows imports &optional interns)
   (let ((p (or (find-package name) (%new-package name nicknames))))
     (dolist (n nicknames)
       (unless (member n (%pkg p 1) :test #'string=)
@@ -257,20 +257,22 @@
                 (shadowing-import s p)
                 (import s p))))))
     (use-package uses p)
+    (dolist (i interns) (intern i p))
     (dolist (e exports) (export (intern e p) p))
     p))
 
 (defmacro defpackage (name &rest options)
-  (let ((nicknames nil) (uses nil) (exports nil) (shadows nil) (imports nil))
+  (let ((nicknames nil) (uses nil) (exports nil) (shadows nil) (imports nil) (interns nil))
     (dolist (o options)
       (case (car o)
+        (:intern (setq interns (append interns (mapcar #'string (cdr o)))))
         (:nicknames (setq nicknames (mapcar #'string (cdr o))))
         (:use (setq uses (mapcar #'string (cdr o))))
         (:export (setq exports (append exports (mapcar #'string (cdr o)))))
         (:shadow (setq shadows (append shadows (mapcar #'string (cdr o)))))
         ((:import-from :shadowing-import-from)
          (push (list* (car o) (string (cadr o)) (mapcar #'string (cddr o))) imports))))
-    `(%defpackage ,(string name) ',nicknames ',uses ',exports ',shadows ',imports)))
+    `(%defpackage ,(string name) ',nicknames ',uses ',exports ',shadows ',imports ',interns)))
 
 ;;; ------------------------------------------------------------
 ;;; initialization from the compiler-generated symbol table

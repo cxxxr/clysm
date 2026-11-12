@@ -403,8 +403,8 @@
     (if (null stream)
         nil
         (let ((*package* *package*) (*readtable* *readtable*)
-              (*load-pathname* (if (streamp filespec) nil (pathname filespec)))
-              (*load-truename* (if (streamp filespec) nil (pathname filespec))))
+              (*load-pathname* (if (streamp filespec) nil (merge-pathnames filespec)))
+              (*load-truename* (if (streamp filespec) nil (merge-pathnames filespec))))
           (loop
             (let ((form (read stream nil %eof-marker)))
               (when (eq form %eof-marker) (return t))
@@ -503,6 +503,7 @@
 (defun main ()
   "Entry point of the interactive image: run a script given as argument, or the REPL."
   (setq *posix-argv* (%command-line-arguments))
+  (%init-default-pathname)
   (let ((args *posix-argv*))
     (cond ((and args (string= (car args) "--eval"))
            (dolist (form-string (cdr args))
@@ -511,3 +512,4 @@
           (t (format t "Clysm Common Lisp ~A (WebAssembly GC)~%" (lisp-implementation-version))
              (setq *interactive* (eql (%is-tty) 1))
              (repl)))))
+

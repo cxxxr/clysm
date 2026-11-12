@@ -590,13 +590,23 @@
 
 (defmacro assert (test &optional places datum &rest args)
   (declare (ignore places))
-  `(unless ,test
-     ,(if datum
-          `(error ,datum ,@args)
-          `(error "The assertion ~S failed." ',test))))
+  (let ((top (gensym "ASSERT")))
+    `(block ,top
+       (tagbody
+          again
+          (when ,test (return-from ,top nil))
+          (restart-case ,(if datum
+                             `(error ,datum ,@args)
+                             `(error "The assertion ~S failed." ',test))
+            (continue () :report "Retry the assertion." nil))
+          (go again)))))
 
 (defmacro check-type (place type &optional type-string)
-  (declare (ignore type-string))
-  `(unless (typep ,place ',type)
-     (%check-type-error ',place ,place ',type)))
+  (let ((top (gensym "CHECK-TYPE")))
+    `(block ,top
+       (tagbody
+          again
+          (when (typep ,place ',type) (return-from ,top nil))
+          (setf ,place (%check-type-error ',place ,place ',type ,type-string))
+          (go again)))))
 

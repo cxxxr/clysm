@@ -81,10 +81,13 @@
 (defvar %close-paren-marker (make-symbol "CLOSE-PAREN"))
 (defvar %dot-marker (make-symbol "DOT"))
 
+(defvar *read-labels* nil "alist (n . (placeholder . object)) for #n= / #n#")
+
 (defun read-preserving-whitespace (&optional stream (eof-error-p t) eof-value recursive-p)
-  (declare (ignore recursive-p))
   (let* ((s (%input-stream stream))
-         (x (%read-object s)))
+         (x (if recursive-p
+                (%read-object s)
+                (let ((*read-labels* nil)) (%read-object s)))))
     (cond ((eq x %eof-marker)
            (if eof-error-p (error 'end-of-file :stream s) eof-value))
           ((eq x %close-paren-marker) (%reader-error s "unmatched close parenthesis"))
@@ -402,6 +405,8 @@
     (set-dispatch-macro-character #\# #\A (lambda (s c n) (declare (ignore c))
                                             (let ((contents (%read-object-required s)))
                                               (make-array (%array-dims-from n contents) :initial-contents contents))))
+    (set-dispatch-macro-character #\# #\= (lambda (s c n) (declare (ignore c)) (%read-label-define s n)))
+    (set-dispatch-macro-character #\# #\# (lambda (s c n) (declare (ignore c)) (%read-label-ref s n)))
     (set-dispatch-macro-character #\# #\P (lambda (s c n) (declare (ignore c n)) (pathname (%read-object-required s))))
     (set-dispatch-macro-character #\# #\S (lambda (s c n) (declare (ignore c n))
                                             (let ((l (%read-object-required s)))
@@ -419,6 +424,34 @@
     (setq *standard-readtable* rt)
     (setq *readtable* (copy-readtable rt))
     rt))
+
+(defun %read-label-define (s n)
+  (let* ((placeholder (list '%read-placeholder n))
+         (entry (cons n (cons placeholder placeholder))))
+    (push entry *read-labels*)
+    (let ((obj (%read-object-required s)))
+      (setf (cddr entry) obj)
+      (%read-label-patch obj placeholder obj (make-hash-table :test 'eq)))))
+
+(defun %read-label-patch (tree placeholder obj seen)
+  "Replace PLACEHOLDER by OBJ inside TREE (which may be circular)."
+  (cond ((eq tree placeholder) obj)
+        ((gethash tree seen) tree)
+        ((consp tree)
+         (setf (gethash tree seen) t)
+         (setf (car tree) (%read-label-patch (car tree) placeholder obj seen))
+         (setf (cdr tree) (%read-label-patch (cdr tree) placeholder obj seen))
+         tree)
+        ((and (simple-vector-p tree))
+         (setf (gethash tree seen) t)
+         (dotimes (i (length tree) tree)
+           (setf (svref tree i) (%read-label-patch (svref tree i) placeholder obj seen))))
+        (t tree)))
+
+(defun %read-label-ref (s n)
+  (let ((e (assoc n *read-labels*)))
+    (unless e (%reader-error s "undefined label #~D#" n))
+    (cddr e)))
 
 (defun %array-dims-from (rank contents)
   (if (or (null rank) (= rank 0)) nil

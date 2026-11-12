@@ -538,14 +538,14 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
   (let* ((lam (fun-lam fun))
          (closure-code (var-get-code (fun-lvar fun))))
     (if (lam-accepts-p lam (length args))
-        (direct-call-code lam `(,@closure-code (:ref.cast :closure)) (mapcar #'cg args) tail args)
+        (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
         (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
-               (call-closure-code `(,@closure-code (:ref.cast :closure)) (mapcar #'cg args) mv tail)))))
+               (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))))
 
 (defun cg-defun (node mv)
   (destructuring-bind (sym fnode) (cdr node)
     `((:global.get ,(sym-global sym))
-      ,@(cg fnode) (:ref.cast :closure)
+      ,@(cg fnode) (:ref.cast! :closure)
       (:struct.set :symbol ,+sym-function+)
       (:global.get ,(sym-global sym))
       ,@(when mv (mv-one)))))
@@ -579,7 +579,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                         do (setf code
                                  (append code
                                          `((:local.get ,(cdr (get-loc (fun-lvar f))))
-                                           (:ref.cast :closure)
+                                           (:ref.cast! :closure)
                                            (:struct.get :closure ,+clo-env+)
                                            (:i32.const ,i)
                                            (:local.get ,(cdr (get-loc fv)))

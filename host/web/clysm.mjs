@@ -15,6 +15,7 @@ export async function loadClysm(bytes, onOutput = () => {}) {
     arg_char() { return 0; },
     debug_mode() { return 0; },
     is_tty() { return 0; },
+    flush() {},
   };
   const { instance } = await WebAssembly.instantiate(bytes, makeImports(state, platform));
   state.instance = instance;

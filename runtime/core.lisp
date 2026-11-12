@@ -66,6 +66,10 @@
 (defun apply (f &rest args)
   (apply f (apply #'list* args)))
 
+;;; strict end-of-list test: a non-NIL atom where a list was expected is an error
+(defmacro %endp (x)
+  `(cond ((consp ,x) nil) ((null ,x) t) (t (%type-error ,x 'list))))
+
 ;;; ------------------------------------------------------------
 ;;; Early error support (replaced by the condition system later)
 ;;; ------------------------------------------------------------
@@ -74,7 +78,7 @@
   (dotimes (i (%string-length s)) (%write-char (%schar s i) fd)))
 
 (defun %member-eql (x list)
-  (do ((l list (cdr l))) ((atom l) nil)
+  (do ((l list (cdr l))) ((%endp l) nil)
     (when (eql x (car l)) (return l))))
 
 ;;; ------------------------------------------------------------
@@ -88,7 +92,7 @@
 
 (defun length-of-list (l)
   (let ((n 0))
-    (do ((x l (cdr x))) ((atom x) n) (setq n (+ n 1)))))
+    (do ((x l (cdr x))) ((%endp x) n) (setq n (+ n 1)))))
 
 (defun list-length (l)
   (do ((n 0 (+ n 2))
@@ -100,9 +104,9 @@
     (when (and (eq fast slow) (> n 0)) (return nil))))
 
 (defun nth (n list)
-  (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (atom l)) (car l))))
+  (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) (car l))))
 (defun nthcdr (n list)
-  (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (atom l)) l)))
+  (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) l)))
 (defun %setnth (n list value) (%setcar (nthcdr n list) value))
 
 (defun fifth (l) (nth 4 l)) (defun sixth (l) (nth 5 l)) (defun seventh (l) (nth 6 l))
@@ -144,7 +148,7 @@
 (defun %append2 (a b)
   (if (null a) b
       (let* ((head (cons (car a) nil)) (tail head))
-        (do ((l (cdr a) (cdr l))) ((atom l) (%setcdr tail b) head)
+        (do ((l (cdr a) (cdr l))) ((%endp l) (%setcdr tail b) head)
           (let ((c (cons (car l) nil))) (%setcdr tail c) (setq tail c))))))
 
 (defun append (&rest lists)
@@ -161,15 +165,15 @@
             (setq result l tail l))))))
 
 (defun revappend (x y)
-  (do ((l x (cdr l)) (acc y (cons (car l) acc))) ((atom l) acc)))
+  (do ((l x (cdr l)) (acc y (cons (car l) acc))) ((%endp l) acc)))
 (defun nreconc (x y) (revappend x y))
 
 (defun reverse-list (l)
-  (let ((acc nil)) (do ((x l (cdr x))) ((atom x) acc) (setq acc (cons (car x) acc)))))
+  (let ((acc nil)) (do ((x l (cdr x))) ((%endp x) acc) (setq acc (cons (car x) acc)))))
 
 (defun nreverse-list (l)
   (let ((prev nil))
-    (do () ((atom l) prev)
+    (do () ((%endp l) prev)
       (let ((next (cdr l)))
         (%setcdr l prev)
         (setq prev l l next)))))
@@ -189,6 +193,7 @@
     (when (eql l object) (return t))))
 
 (defun make-list (n &key initial-element)
+  (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
   (let ((r nil)) (dotimes (i n r) (setq r (cons initial-element r)))))
 
 (defun %test-fn (test test-not)
@@ -205,22 +210,22 @@
   (if (and (null key) (null test) (null test-not))
       (%member-eql item list)
       (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
-        (do ((l list (cdr l))) ((atom l) nil)
+        (do ((l list (cdr l))) ((%endp l) nil)
           (when (funcall tf item (%with-key (kf key) (car l))) (return l))))))
 
 (defun member-if (pred list &key key)
   (let ((kf (%key-fn key)))
-    (do ((l list (cdr l))) ((atom l) nil)
+    (do ((l list (cdr l))) ((%endp l) nil)
       (when (funcall pred (%with-key (kf key) (car l))) (return l)))))
 (defun member-if-not (pred list &key key)
   (member-if (complement pred) list :key key))
 
 (defun assoc (item alist &key key test test-not)
   (if (and (null key) (null test) (null test-not))
-      (do ((l alist (cdr l))) ((atom l) nil)
+      (do ((l alist (cdr l))) ((%endp l) nil)
         (let ((e (car l))) (when (and (consp e) (eql item (car e))) (return e))))
       (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
-        (do ((l alist (cdr l))) ((atom l) nil)
+        (do ((l alist (cdr l))) ((%endp l) nil)
           (let ((e (car l)))
             (when (and (consp e) (funcall tf item (%with-key (kf key) (car e)))) (return e)))))))
 
@@ -243,7 +248,7 @@
 (defun acons (key datum alist) (cons (cons key datum) alist))
 (defun pairlis (keys data &optional alist)
   (do ((k keys (cdr k)) (d data (cdr d)) (r alist (cons (cons (car k) (car d)) r)))
-      ((or (atom k) (atom d)) r)))
+      ((or (%endp k) (%endp d)) r)))
 
 (defun adjoin (item list &key key test test-not)
   (if (member (%with-key ((%key-fn key) key) item) list :key key :test test :test-not test-not)
@@ -321,20 +326,20 @@
     (labels ((walk (x y)
                (cond ((and (consp x) (consp y)) (and (walk (car x) (car y)) (walk (cdr x) (cdr y))))
                      ((or (consp x) (consp y)) nil)
-                     (t (funcall tf x y)))))
+                     (t (if (funcall tf x y) t nil)))))
       (walk a b))))
 
 ;;; mapping
 (defun %map1 (f list collect)
   (let* ((head (cons nil nil)) (tail head))
-    (do ((l list (cdr l))) ((atom l))
+    (do ((l list (cdr l))) ((%endp l))
       (let ((v (funcall f (car l))))
         (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c)))))
     (cdr head)))
 
 (defun %mapn (f lists collect on-tails)
   (let* ((head (cons nil nil)) (tail head) (ls (copy-list lists)))
-    (do () ((dolist (l ls nil) (when (atom l) (return t))))
+    (do () ((dolist (l ls nil) (when (%endp l) (return t))))
       (let ((v (apply f (if on-tails ls (mapcar #'car ls)))))
         (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c))))
       (do ((x ls (cdr x))) ((null x)) (%setcar x (cdr (car x)))))
@@ -343,13 +348,13 @@
 (defun mapcar (f list &rest more)
   (if (null more)
       (let* ((head (cons nil nil)) (tail head))
-        (do ((l list (cdr l))) ((atom l) (cdr head))
+        (do ((l list (cdr l))) ((%endp l) (cdr head))
           (let ((c (cons (funcall f (car l)) nil)))
             (%setcdr tail c) (setq tail c))))
       (%mapn f (cons list more) t nil)))
 (defun mapc (f list &rest more)
   (if (null more)
-      (do ((l list (cdr l))) ((atom l) list) (funcall f (car l)))
+      (do ((l list (cdr l))) ((%endp l) list) (funcall f (car l)))
       (progn (%mapn f (cons list more) nil nil) list)))
 (defun mapcan (f list &rest more)
   (apply #'nconc (apply #'mapcar f list more)))
@@ -359,15 +364,15 @@
 
 ;;; property lists
 (defun getf (plist indicator &optional default)
-  (do ((l plist (cddr l))) ((atom l) default)
+  (do ((l plist (cddr l))) ((%endp l) default)
     (when (eq (car l) indicator) (return (cadr l)))))
 
 (defun %putf (plist indicator value)
-  (do ((l plist (cddr l))) ((atom l) (list* indicator value plist))
+  (do ((l plist (cddr l))) ((%endp l) (list* indicator value plist))
     (when (eq (car l) indicator) (%setcar (cdr l) value) (return plist))))
 
 (defun get-properties (plist indicators)
-  (do ((l plist (cddr l))) ((atom l) (values nil nil nil))
+  (do ((l plist (cddr l))) ((%endp l) (values nil nil nil))
     (when (%member-eql (car l) indicators) (return (values (car l) (cadr l) l)))))
 
 (defun get (symbol indicator &optional default)
