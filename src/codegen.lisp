@@ -102,6 +102,15 @@
                  (cons `(,@(const-init-code (car obj)) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
                  (simple-vector `(,@(loop for x across obj append (const-init-code x))
                                   (:array.new_fixed :vector ,(length obj))))
+                 ((and array (not vector))
+                  (let ((elts (loop for i below (array-total-size obj) collect (row-major-aref obj i))))
+                    `(,@(loop for x in elts append (const-init-code x))
+                      (:array.new_fixed :vector ,(length elts))
+                      ,@(const-init-code nil)
+                      ,@(const-init-code (array-dimensions obj))
+                      ,@(const-init-code 0)
+                      ,@(const-init-code (list t nil))
+                      (:struct.new :mdarray))))
                  (bit-vector `(,@(loop for x across obj collect `(:i32.const ,x))
                                (:array.new_fixed :bits ,(length obj))))
                  (single-float `((:f32.const ,obj) (:struct.new :single)))
@@ -675,9 +684,9 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
               (:br ,done))
             (:local.set ,etmp)
             ,@(restore-bsp-code saved)
-            (:global.get :mv-count) (:call :mv-save-count) (:local.set ,mvsave)
+            (:ref.null :eq) (:call :mv-save) (:local.set ,mvsave)
             ,@cleanup-code
-            (:local.get ,mvsave) (:call :mv-restore-count)
+            (:local.get ,mvsave) (:call :mv-restore) :drop
             (:local.get ,etmp) :throw_ref))))))
 
 ;;; ------------------------------------------------------------

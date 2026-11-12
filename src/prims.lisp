@@ -788,8 +788,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                  (:call (:callsym 2)) :drop :return))
   ;; allow-other-keys?
   `(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global :allow-other-keys)) '(:call :find-key) '(:local.tee k)
-  :ref.is_null
-  `(:if nil nil ((:local.get k) ,@(nil-code) :ref.eq (:if nil nil (:return))))
+  :ref.is_null :i32.eqz
+  `(:if nil nil ((:local.get k) ,@(nil-code) :ref.eq :i32.eqz (:if nil nil (:return))))
   '(:local.get 1) '(:local.set i)
   `(:block done nil
      (:loop again nil

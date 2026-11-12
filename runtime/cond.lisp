@@ -375,16 +375,6 @@
     (funcall *invoke-debugger-hook* condition))
   (%report-and-exit condition))
 
-(defun %report-and-exit (condition)
-  (let ((msg (handler-case (princ-to-string condition)
-               (error () "<error while printing condition>"))))
-    (%early-write-string "Unhandled " 2)
-    (%early-write-string (handler-case (symbol-name (type-of condition)) (error () "condition")) 2)
-    (%early-write-string ": " 2)
-    (%early-write-string msg 2)
-    (%write-char #\Newline 2)
-    (%exit 1)))
-
 (defun break (&optional (format-control "Break") &rest args)
   (format *error-output* "~&BREAK: ~?~%" format-control args)
   nil)
@@ -478,3 +468,14 @@
                                           :format-control "The value of ~S is ~S, which is not of type ~S."
                                           :format-arguments (list place value type))
     (store-value (v) :report "Supply a new value." v)))
+
+(defun %report-and-exit (condition)
+  (let ((msg (handler-case (princ-to-string condition)
+               (error () "<error while printing condition>"))))
+    (%early-write-string "Unhandled " 2)
+    (%early-write-string (handler-case (symbol-name (type-of condition)) (error () "condition")) 2)
+    (%early-write-string ": " 2)
+    (%early-write-string msg 2)
+    (%write-char #\Newline 2)
+    (%exit 1)))
+

@@ -430,6 +430,8 @@ S names a statically known function."
 (defun report-undefined-functions ()
   (let ((undefined nil))
     (loop for s being the hash-keys of *called-functions*
+          when (gethash s *macros*)
+            do (cwarn "~S was called as a function before being defined as a macro" s)
           unless (or (gethash s *global-defuns*) (gethash s *macros*))
             do (push s undefined))
     (when undefined

@@ -240,17 +240,18 @@
 
 (defun intersection (l1 l2 &key key test test-not)
   (let ((result nil))
-    (dolist (x l1 (nreverse-list result))
+    (dolist (x l1 result)
       (when (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
         (push x result)))))
 (defun nintersection (l1 l2 &key key test test-not)
   (intersection l1 l2 :key key :test test :test-not test-not))
 
 (defun set-difference (l1 l2 &key key test test-not)
+  (if (null l2) l1
   (let ((result nil))
-    (dolist (x l1 (nreverse-list result))
+    (dolist (x l1 result)
       (unless (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
-        (push x result)))))
+        (push x result))))))
 (defun nset-difference (l1 l2 &key key test test-not)
   (set-difference l1 l2 :key key :test test :test-not test-not))
 

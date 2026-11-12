@@ -46,8 +46,10 @@
 
 (defun %fixnum-mag (n)
   ;; magnitude of a fixnum's absolute value (|n| <= 2^29)
-  (let ((a (if (%fx< n 0) (- n) n)))
-    (cond ((< a +digit-base+) (let ((m (%make-limbs 1))) (%lset m 0 a) m))
+  (let ((a (if (%fx< n 0) (%fx- 0 n) n)))
+    (cond ((%fx= n most-negative-fixnum)
+           (let ((m (%make-limbs 3))) (%lset m 0 0) (%lset m 1 0) (%lset m 2 2) m))
+          ((< a +digit-base+) (let ((m (%make-limbs 1))) (%lset m 0 a) m))
           ((< a 268435456)
            (let ((m (%make-limbs 2)))
              (%lset m 0 (%fxlogand a +digit-mask+))
@@ -220,7 +222,9 @@
                 (t (%make-integer sb (%mag-sub mb ma))))))))
 
 (defun %int-negate (a)
-  (if (fixnump a) (- 0 a) (%make-integer (%fx- 1 (%bignum-sign a)) (%bignum-mag a))))
+  (if (fixnump a)
+      (if (%fx= a most-negative-fixnum) (%make-integer 0 (%fixnum-mag a)) (%fx- 0 a))
+      (%make-integer (%fx- 1 (%bignum-sign a)) (%bignum-mag a))))
 
 (defun %int-sub (a b) (%int-add a (%int-negate b)))
 
@@ -527,7 +531,7 @@
 ;;; division family
 (defun %float-truncate-to-integer (d)
   "D is a double; returns the integer obtained by truncating it."
-  (if (and (%d< d (%fixnum-to-double 536870912)) (%d< (%fixnum-to-double -536870913) d))
+  (if (and (%d< d 536870912.0d0) (%d< -536870913.0d0 d))
       (%double-to-fixnum d)
       (let* ((expo (%double-exponent d))
              (mant (+ (* (+ (%double-mant-hi d) 67108864) 67108864) (%double-mant-lo d)))
