@@ -138,3 +138,60 @@
                 (and (js:js-value-p process) (js:call process "cwd"))))))
     (when (stringp cwd)
       (setq *default-pathname-defaults* (pathname (concatenate 'string cwd "/"))))))
+
+;;; ------------------------------------------------------------
+;;; Host operating system interface (Node.js); used by UIOP/ASDF
+;;; ------------------------------------------------------------
+
+(defun %node-process ()
+  (let ((p (ignore-errors (js:global "process"))))
+    (and (js:js-value-p p) p)))
+
+(defun %init-host-features ()
+  "Add the host operating system to *FEATURES* (CLHS 24.1.2.1.1)."
+  (let* ((process (%node-process))
+         (platform (and process (ignore-errors (js:get process "platform")))))
+    (when (stringp platform)
+      (dolist (f (cond ((string= platform "linux") '(:unix :linux))
+                       ((string= platform "darwin") '(:unix :darwin :bsd))
+                       ((member platform '("freebsd" "openbsd" "netbsd") :test #'string=)
+                        (list :unix :bsd (intern (string-upcase platform) :keyword)))
+                       ((string= platform "win32") '(:windows :win32))
+                       (t '(:unix))))
+        (pushnew f *features*)))))
+
+(defun %getenv (name)
+  "The value of the host environment variable NAME, or NIL."
+  (let ((process (%node-process)))
+    (and process
+         (let ((v (ignore-errors (js:get (js:get process "env") name))))
+           (and (stringp v) v)))))
+
+(defun %setenv (name value)
+  (let ((process (%node-process)))
+    (when process
+      (js:set (js:get process "env") name value)))
+  value)
+
+(defun %getcwd ()
+  "The host's working directory, as a string ending in a slash."
+  (let* ((process (%node-process))
+         (cwd (and process (ignore-errors (js:call process "cwd")))))
+    (if (stringp cwd)
+        (if (and (> (length cwd) 0) (char= (char cwd (1- (length cwd))) #\/))
+            cwd
+            (concatenate 'string cwd "/"))
+        (namestring *default-pathname-defaults*))))
+
+(defun %chdir (directory)
+  (let ((process (%node-process)))
+    (when process (js:call process "chdir" (namestring directory)))
+    t))
+
+(defun %delete-directory (directory)
+  "Delete the empty directory DIRECTORY."
+  (let ((fs (%host-fs)))
+    (unless fs (error 'file-error :pathname directory))
+    (handler-case (js:call fs "rmdirSync" (%native-name (%fs-pathname directory)))
+      (error () (error 'file-error :pathname directory)))
+    t))

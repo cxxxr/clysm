@@ -175,6 +175,22 @@ functions that call back into Lisp through the exported `lisp_apply`):
 (js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
 ```
 
+## ASDF
+
+ASDF (3.2.1, with a small port in `third_party/asdf/`) is bundled:
+
+```lisp
+(require :asdf)
+(push #p"/path/to/alexandria/" asdf:*central-registry*)   ; or ~/common-lisp/, the source registry...
+(asdf:load-system :alexandria)          ; or (require :alexandria)
+(asdf:test-system :alexandria)
+```
+
+Systems are compiled with `compile-file` (fasls are cached under
+`~/.cache/common-lisp/`) and loaded into the running image. `make test-asdf`
+loads a small multi-system example (`tests/asdf/`). There are no subprocesses,
+so `uiop:run-program` is not available.
+
 ## Running in the browser
 
 `tools/build-web.sh` builds `build/web/` (an image containing the runtime, the

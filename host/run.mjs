@@ -7,6 +7,8 @@ import { makeImports } from './common.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
+// the Clysm installation directory (REQUIRE finds bundled modules there)
+globalThis.__clysm_root = fileURLToPath(new URL('..', import.meta.url));
 
 function nodePlatform(state, args) {
   const out = { 1: [], 2: [] };

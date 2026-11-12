@@ -58,6 +58,15 @@
                       ,@(%loop-destructure-setq (cdr pattern) `(cdr ,g))))))
           (t nil)))
 
+  (defun %loop-pattern-paths (pattern form)
+    "(var expression) pairs destructuring FORM (a variable) by PATTERN."
+    (cond ((null pattern) nil)
+          ((symbolp pattern) (list (list pattern form)))
+          ((consp pattern)
+           (append (%loop-pattern-paths (car pattern) `(car ,form))
+                   (%loop-pattern-paths (cdr pattern) `(cdr ,form))))
+          (t nil)))
+
   (defun %loop-bind-pattern (s pattern)
     (dolist (v (%loop-pattern-vars pattern)) (%loop-add-binding s v nil)))
 
@@ -358,10 +367,12 @@
              (let ((var (first e)))
                (if (third e)
                    (if (consp var)
+                       ;; bind the pattern's variables right away (from a
+                       ;; temporary), so that later WITH init forms see them
                        (let ((g (gensym)))
                          (%loop-add-binding s g (second e))
-                         (%loop-bind-pattern s var)
-                         (setf (%ls s 5) (append (reverse (%loop-destructure-setq var g)) (%ls s 5))))
+                         (dolist (b (%loop-pattern-paths var g))
+                           (%loop-add-binding s (first b) (second b))))
                        (%loop-add-binding s var (second e)))
                    (dolist (d (%loop-pattern-defaults var (second e)))
                      (%loop-add-binding s (first d) (second d))))))))

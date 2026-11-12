@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-asdf repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -11,6 +11,12 @@ repl: all
 
 test:
 	tools/run-tests.sh
+
+# load a small system with the bundled ASDF (third_party/asdf)
+test-asdf:
+	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2>&1; \
+	if cmp -s build/asdf-test.out tests/asdf/run.expected; then echo "asdf: ok"; \
+	else diff tests/asdf/run.expected build/asdf-test.out; exit 1; fi
 
 selfhost:
 	tools/build-selfhost.sh
@@ -24,7 +30,7 @@ fixpoint: selfhost
 	node host/run.mjs build/clysmc2.wasm build/clysmc3.wasm $(SRCS)
 	cmp build/clysmc2.wasm build/clysmc3.wasm && echo "fixed point reached"
 
-test-all: test selfhost
+test-all: test test-asdf selfhost
 	INTERP=1 tools/run-tests.sh
 	NATIVE=1 tools/run-tests.sh
 	SELFHOST=1 tools/run-tests.sh

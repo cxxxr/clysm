@@ -691,6 +691,7 @@ Returns the expansion, or NIL when FORM is an ordinary form."
   "Entry point of the interactive image: run a script given as argument, or the REPL."
   (setq *posix-argv* (%command-line-arguments))
   (%init-default-pathname)
+  (%init-host-features)
   (let ((args *posix-argv*))
     (cond ((and args (string= (car args) "--eval"))
            (dolist (form-string (cdr args))

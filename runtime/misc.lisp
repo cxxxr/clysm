@@ -114,12 +114,35 @@
 (defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point))
 (defvar *modules* nil)
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
+(defvar *module-provider-functions* '(%module-provide-contrib)
+  "Functions called by REQUIRE (without pathnames) with the module name; one
+that returns true has provided the module.  ASDF adds its own provider.")
+
+(defun %clysm-root ()
+  "The directory of the Clysm installation, from the host (or NIL)."
+  (let ((root (ignore-errors (js:get (js:global) "__clysm_root"))))
+    (and (stringp root) (pathname (if (char= (char root (1- (length root))) #\/)
+                                      root
+                                      (concatenate 'string root "/"))))))
+
+(defun %module-provide-contrib (name)
+  "Modules shipped with Clysm: ASDF and UIOP (third_party/asdf/asdf.lisp)."
+  (when (member name '("ASDF" "UIOP" "asdf" "uiop") :test #'string=)
+    (let* ((root (%clysm-root))
+           (file (and root (merge-pathnames "third_party/asdf/asdf.lisp" root))))
+      (when (and file (probe-file file))
+        (load file)
+        (provide "ASDF") (provide "UIOP")
+        t))))
+
 (defun require (name &optional pathnames)
   (let ((name (string name)))
     (unless (member name *modules* :test #'string=)
       (cond (pathnames
              (dolist (p (if (listp pathnames) pathnames (list pathnames)))
                (load p)))
+            ((dolist (f *module-provider-functions* nil)
+               (when (funcall f name) (return t))))
             (t (error "REQUIRE: don't know how to load module ~S" name))))
     nil))
 

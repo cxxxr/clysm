@@ -472,19 +472,75 @@ FILE-ERROR for wild pathnames."
       (error 'file-error :pathname p :format-control "invalid directory ~S"
                          :format-arguments (list dir)))))
 
+(defun %dir-entries (fs dir)
+  "The entries of the host directory DIR (a string ending in / or empty), as
+a list of (name . directory-p)."
+  (let ((entries (ignore-errors (js:call fs "readdirSync" (if (string= dir "") "." dir)))))
+    (when entries
+      (let ((r nil))
+        (dotimes (i (js:get entries "length") (nreverse r))
+          (let ((name (js:get entries i)))
+            (push (cons name (not (null (%host-directory-p fs (concatenate 'string dir name)))))
+                  r)))))))
+
+(defun %expand-wild-directories (fs comps base)
+  "The host directories (strings ending in /) below BASE matching the
+directory components COMPS, which may contain :WILD, :WILD-INFERIORS, wild
+strings, :UP and :BACK."
+  (if (null comps)
+      (list base)
+      (let ((c (car comps)) (rest (cdr comps)))
+        (cond ((member c '(:up :back))
+               (%expand-wild-directories fs rest (concatenate 'string base "../")))
+              ((eq c :wild-inferiors)
+               (append (%expand-wild-directories fs rest base)
+                       (loop for (name . dirp) in (%dir-entries fs base)
+                             when dirp
+                               append (%expand-wild-directories
+                                       fs comps (concatenate 'string base name "/")))))
+              ((or (eq c :wild) (and (stringp c) (find #\* c)))
+               (loop for (name . dirp) in (%dir-entries fs base)
+                     when (and dirp (%glob-match c name))
+                       append (%expand-wild-directories fs rest (concatenate 'string base name "/"))))
+              (t (let ((sub (concatenate 'string base (%component-string c) "/")))
+                   (and (%host-directory-p fs sub)
+                        (%expand-wild-directories fs rest sub))))))))
+
 (defun directory (p &key)
   (%check-directory-components (pathname p))
-  (let* ((fs (%host-fs)) (pat (%physical (merge-pathnames p))) (dir (directory-namestring pat)))
+  (let* ((fs (%host-fs)) (pat (%physical (merge-pathnames p)))
+         (dirspec (pathname-directory pat)))
     (if (null fs) nil
-        (let ((entries (ignore-errors (js:call fs "readdirSync" (if (string= dir "") "." dir)))))
-          (when entries
-            (let ((r nil) (n (js:get entries "length")))
-              (dotimes (i n (sort r #'string< :key #'namestring))
-                (let ((full (pathname (concatenate 'string dir (js:get entries i)))))
-                  (when (pathname-match-p full pat)
-                    (push (or (ignore-errors (truename full)) full) r))))))))))
+        (let* ((dirs (if (consp dirspec)
+                         (%expand-wild-directories fs (cdr dirspec)
+                                                   (if (eq (car dirspec) :absolute) "/" ""))
+                         (list "")))
+               (results nil))
+          (dolist (dir dirs)
+            (if (and (null (pathname-name pat)) (null (pathname-type pat)))
+                ;; a directory pattern: the matching directories themselves
+                (push (pathname dir) results)
+                (dolist (e (%dir-entries fs dir))
+                  (let ((full (pathname (concatenate 'string dir (car e)))))
+                    (when (and (or (null (pathname-name pat))
+                                   (%glob-match (pathname-name pat) (pathname-name full)))
+                               (or (null (pathname-type pat))
+                                   (%glob-match (pathname-type pat) (pathname-type full))))
+                      (push full results))))))
+          (let ((seen (make-hash-table :test 'equal)) (out nil))
+            (dolist (r results)
+              (let* ((tn (or (ignore-errors (truename r)) r)) (key (namestring tn)))
+                (unless (gethash key seen)
+                  (setf (gethash key seen) t)
+                  (push tn out))))
+            (sort out #'string< :key #'namestring))))))
 
-(defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
+(defun user-homedir-pathname (&optional host)
+  (declare (ignore host))
+  (let ((home (or (%getenv "HOME") (%getenv "USERPROFILE"))))
+    (pathname (if (and home (> (length home) 0))
+                  (if (char= (char home (1- (length home))) #\/) home (concatenate 'string home "/"))
+                  "/"))))
 (defun %pathname-components (p)
   (list (pathname-host p) (pathname-device p) (pathname-directory p)
         (pathname-name p) (pathname-type p) (pathname-version p)))
