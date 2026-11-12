@@ -697,7 +697,8 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :mv-save :e-e ((v (:ref :null :vector)) (n :i32))
   ;; returns vector [primary, count, v1 ... v(n-1)]
   '(:global.get :mv-count) '(:local.set n)
-  '(:ref.null :eq) '(:local.get n) '(:i32.const 1) :i32.add '(:array.new :vector) '(:local.tee v)
+  ;; n+2 slots: with zero values the count slot is still needed
+  '(:ref.null :eq) '(:local.get n) '(:i32.const 2) :i32.add '(:array.new :vector) '(:local.tee v)
   '(:i32.const 0) '(:local.get 0) '(:array.set :vector)
   '(:local.get v) '(:i32.const 1) '(:local.get n) :ref.i31 '(:array.set :vector)
   '(:local.get n) '(:i32.const 1) :i32.gt_s

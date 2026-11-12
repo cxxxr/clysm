@@ -46,6 +46,9 @@
 (defun get-setf-expansion (place &optional env) (%get-setf-expansion place env))
 
 (defun disassemble (fn)
+  (unless (or (functionp fn) (symbolp fn) (and (consp fn) (eq (car fn) 'lambda))
+              (and (consp fn) (eq (car fn) 'setf) (consp (cdr fn)) (symbolp (cadr fn)) (null (cddr fn))))
+    (error 'type-error :datum fn :expected-type '(or function symbol (cons (eql setf) (cons symbol null)))))
   (format t "~&; ~S is compiled to WebAssembly; use a Wasm disassembler on the module.~%" fn)
   nil)
 
