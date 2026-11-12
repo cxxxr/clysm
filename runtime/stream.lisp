@@ -152,6 +152,7 @@
   (case (stream-kind s)
     (:synonym (%stream-column (symbol-value (stream-symbol s))))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
+    (:pp (%pp-stream-column s))
     (t (stream-column s))))
 
 (defun fresh-line (&optional stream)

@@ -86,6 +86,7 @@
          (*print-escape* t) (*print-gensym* t) (*print-length* nil) (*print-level* nil)
          (*print-lines* nil) (*print-miser-width* nil) (*print-pretty* nil) (*print-radix* nil)
          (*print-readably* t) (*print-right-margin* nil) (*read-base* 10)
+         (*print-pprint-dispatch* *%standard-pprint-dispatch*)
          (*read-default-float-format* 'single-float) (*read-eval* t) (*read-suppress* nil)
          (*readtable* (copy-readtable nil)))
      ,@body))
