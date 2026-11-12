@@ -615,7 +615,7 @@ the type is fully described by the other values (otherwise the result is checked
            (let ((specs (mapcar (lambda (alt) (multiple-value-list (%seq-type-spec alt))) (cdr ty))))
              (dolist (sp (cdr specs))
                (unless (and (eq (first sp) (first (car specs))) (equal (second sp) (second (car specs))))
-                 (error 'type-error :datum type :expected-type 'sequence)))
+                 (error "The sequence type ~S is ambiguous" type)))
              (values (first (car specs)) (second (car specs)) nil nil)))
           ((subtypep ty nil) (error 'type-error :datum type :expected-type 'sequence))
           ((subtypep ty 'list) (values :list nil nil nil))
@@ -671,6 +671,14 @@ the type is fully described by the other values (otherwise the result is checked
          (size (args) (if (or (null args) (eq (car args) '*)) '(*) (list (car args)))))
     (let ((head (if (consp ty) (car ty) ty)) (args (if (consp ty) (cdr ty) nil)))
       (case head
+        ((and)
+         ;; intersect the alternatives of the conjuncts
+         (let ((r (list (list nil '* '*))))
+           (dolist (x args r)
+             (let ((c (%array-type-canon x)) (new nil))
+               (when (eq c :unknown) (return-from %array-type-canon :unknown))
+               (dolist (a r) (dolist (b c) (let ((i (%array-alt-intersect a b))) (when i (push i new)))))
+               (setq r new)))))
         ((array simple-array)
          (list (list (eq head 'simple-array) (et (if args (car args) '*))
                      (dims (if (cdr args) (cadr args) '*)))))
@@ -684,6 +692,17 @@ the type is fully described by the other values (otherwise the result is checked
         ((bit-vector) (list (list nil 'bit (size args))))
         ((simple-bit-vector) (list (list t 'bit (size args))))
         (t :unknown)))))
+
+(defun %array-alt-intersect (a b)
+  (destructuring-bind (s1 e1 d1) a
+    (destructuring-bind (s2 e2 d2) b
+      (let ((et (cond ((eq e1 '*) e2) ((eq e2 '*) e1) ((equal e1 e2) e1) (t (return-from %array-alt-intersect nil))))
+            (dims (cond ((eq d1 '*) d2) ((eq d2 '*) d1)
+                        ((/= (length-of-list d1) (length-of-list d2)) (return-from %array-alt-intersect nil))
+                        (t (mapcar (lambda (x y) (cond ((eq x '*) y) ((eq y '*) x) ((eql x y) x)
+                                                       (t (return-from %array-alt-intersect nil))))
+                                   d1 d2)))))
+        (list (or s1 s2) et dims)))))
 
 (defun %array-alt-subtypep (a b)
   (destructuring-bind (s1 e1 d1) a
@@ -700,6 +719,7 @@ the type is fully described by the other values (otherwise the result is checked
     (if (eq c1 :unknown)
         (values nil nil nil)
         (cond ((member t2 '(t atom)) (values t t t))
+              ((null t2) (values (null c1) t t))
               ((eq t2 'sequence)
                (values (every (lambda (a) (and (listp (third a)) (= (length-of-list (third a)) 1))) c1) t t))
               ((member t2 '(list cons null symbol number character function hash-table package

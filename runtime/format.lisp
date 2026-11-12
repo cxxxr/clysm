@@ -310,8 +310,9 @@ SEGMENTS is a list of (start end separator-colon-p) for clauses separated by ~;"
                           (dotimes (j (+ each (if (< k extra) 1 0))) (write-char padchar stream)))))))
              next))))
     (#\^
-     (let ((done (cond ((cadr params) (= (car params) (cadr params)))
-                       (params (= (car params) 0))
+     (let ((done (cond ((cadr params) (let ((a (car params)) (b (cadr params)))
+                                         (if (and (numberp a) (numberp b)) (= a b) (eql a b))))
+                       (params (eql (car params) 0))
                        (t (<= (%fmt-remaining av) 0)))))
        (when done (throw (if colon '%format-colon-up '%format-up-and-out) nil)))
      i)
