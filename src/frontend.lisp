@@ -518,7 +518,16 @@ runtime definition is kept."
              (declare ,@decls)
              (block ,(if (consp name) (second name) name) ,@forms)))))))
 
+(defparameter *env-function-substitutions*
+  '((get-setf-expansion . clysm-sys::%get-setf-expansion)
+    (macroexpand-1 . clysm-sys::%macroexpand-1)
+    (macroexpand . clysm-sys::%macroexpand)
+    (macro-function . clysm-sys::%host-macro-function*))
+  "CL functions taking an environment argument: host-evaluated macro bodies
+must call the compiler's versions, which understand compiler environments.")
+
 (defun host-compile (lambda-form)
+  #-clysm (setf lambda-form (sublis *env-function-substitutions* lambda-form))
   (let ((*package* (find-package :clysm)))
     (handler-bind ((warning #'muffle-warning))
       (compile nil lambda-form))))

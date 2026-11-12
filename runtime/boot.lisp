@@ -416,10 +416,11 @@
 
 (defmacro define-modify-macro (name lambda-list function &optional doc)
   (declare (ignore doc))
-  (let ((place (gensym "PLACE")) (env (gensym "ENV"))
-        (args (%ll-vars lambda-list)))
+  (let* ((place (gensym "PLACE")) (env (gensym "ENV"))
+         (rest-var (cadr (member '&rest lambda-list)))
+         (args (remove rest-var (%ll-vars lambda-list))))
     `(defmacro ,name (,place ,@lambda-list &environment ,env)
-       (%expand-rmw ,place ,env (lambda (g) (list* ',function g (list ,@args)))))))
+       (%expand-rmw ,place ,env (lambda (g) (list* ',function g (append (list ,@args) ,rest-var)))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %ll-vars (ll)
