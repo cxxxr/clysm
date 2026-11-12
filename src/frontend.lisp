@@ -526,8 +526,24 @@ runtime definition is kept."
   "CL functions taking an environment argument: host-evaluated macro bodies
 must call the compiler's versions, which understand compiler environments.")
 
+(defun substitute-env-functions (form)
+  "Replace calls (and #') of the functions in *ENV-FUNCTION-SUBSTITUTIONS*,
+leaving quoted data alone."
+  (cond ((atom form) form)
+        ((eq (car form) 'quote) form)
+        ((and (eq (car form) 'function) (consp (cdr form)) (symbolp (second form)))
+         (let ((e (assoc (second form) *env-function-substitutions*)))
+           (if e (list 'function (cdr e)) form)))
+        (t (let ((e (and (symbolp (car form)) (assoc (car form) *env-function-substitutions*))))
+             (cons (if e (cdr e) (substitute-env-functions (car form)))
+                   (labels ((walk (tail)
+                              (if (consp tail)
+                                  (cons (substitute-env-functions (car tail)) (walk (cdr tail)))
+                                  tail)))
+                     (walk (cdr form))))))))
+
 (defun host-compile (lambda-form)
-  #-clysm (setf lambda-form (sublis *env-function-substitutions* lambda-form))
+  #-clysm (setf lambda-form (substitute-env-functions lambda-form))
   (let ((*package* (find-package :clysm)))
     (handler-bind ((warning #'muffle-warning))
       (compile nil lambda-form))))
