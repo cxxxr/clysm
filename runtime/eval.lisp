@@ -675,6 +675,8 @@ Returns the expansion, or NIL when FORM is an ordinary form."
 (defun %script-main (path)
   (handler-bind ((error (lambda (c)
                           (format *error-output* "~&Unhandled ~S: ~A~%" (type-of c) c)
+                          (finish-output *error-output*)
+                          (%backtrace 2)
                           (%exit 1))))
     (load path)))
 

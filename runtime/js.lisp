@@ -199,3 +199,41 @@ when VALUE is NIL."
     (handler-case (js:call fs "rmdirSync" (%native-name (%fs-pathname directory)))
       (error () (error 'file-error :pathname directory)))
     t))
+
+;;; ------------------------------------------------------------
+;;; TCP connections (Node.js host; synchronous, see host/run.mjs)
+;;; ------------------------------------------------------------
+
+(defun %host-net ()
+  (let ((n (ignore-errors (js:global "__clysm_net"))))
+    (if (js:js-value-p n) n (error "TCP connections are not available on this host"))))
+
+(defun %tcp-connect (host port)
+  "Open a TCP connection to HOST (a string) and PORT; returns a connection id."
+  (handler-case (js:call (%host-net) "connect" (string host) port)
+    (error (e) (error 'simple-error :format-control "cannot connect to ~A:~D: ~A"
+                                    :format-arguments (list host port e)))))
+
+(defun %tcp-write (id octets &key (start 0) end)
+  "Write the octets of the vector OCTETS (from START to END) to connection ID."
+  (let* ((end (or end (length octets)))
+         (s (make-string (- end start))))
+    (do ((i start (+ i 1))) ((>= i end))
+      (setf (char s (- i start)) (code-char (aref octets i))))
+    (js:call (%host-net) "write" id s)
+    octets))
+
+(defun %tcp-read (id buffer &key (start 0) end)
+  "Read available octets from connection ID into BUFFER (blocking until at
+least one arrives); returns the index after the last octet stored, which is
+START at end of file."
+  (let* ((end (or end (length buffer)))
+         (s (js:call (%host-net) "read" id (- end start)))
+         (n (length s)))
+    (dotimes (i n)
+      (setf (aref buffer (+ start i)) (char-code (char s i))))
+    (+ start n)))
+
+(defun %tcp-close (id)
+  (js:call (%host-net) "close" id)
+  t)

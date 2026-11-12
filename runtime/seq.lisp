@@ -63,26 +63,80 @@
     (when (member (car l) (cdr l) :test #'char-equal) (return nil))))
 
 (defparameter *char-names*
-  '((0 . "Nul") (7 . "Bell") (8 . "Backspace") (9 . "Tab") (10 . "Newline") (12 . "Page")
-    (13 . "Return") (27 . "Escape") (32 . "Space") (127 . "Rubout")))
+  ;; SBCL's names for the C0 and C1 controls and the Latin-1 characters
+  #("Nul" "Soh" "Stx" "Etx" "Eot" "Enq" "Ack" "Bel"
+    "Backspace" "Tab" "Newline" "Vt" "Page" "Return" "So" "Si"
+    "Dle" "Dc1" "Dc2" "Dc3" "Dc4" "Nak" "Syn" "Etb"
+    "Can" "Em" "Sub" "Esc" "Fs" "Gs" "Rs" "Us"
+    "Space" NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL NIL
+    NIL NIL NIL NIL NIL NIL NIL "Rubout"
+    "U80" "U81" "Break-Permitted" "No-Break-Permitted" "U84" "Next-Line" "Start-Selected-Area" "End-Selected-Area"
+    "Character-Tabulation-Set" "Character-Tabulation-With-Justification" "Line-Tabulation-Set" "Partial-Line-Forward" "Partial-Line-Backward" "Reverse-Linefeed" "Single-Shift-Two" "Single-Shift-Three"
+    "Device-Control-String" "Private-Use-One" "Private-Use-Two" "Set-Transmit-State" "Cancel-Character" "Message-Waiting" "Start-Guarded-Area" "End-Guarded-Area"
+    "Start-String" "U99" "Single-Character-Introducer" "Control-Sequence-Introducer" "String-Terminator" "Operating-System-Command" "Privacy-Message" "Application-Program-Command"
+    "NO-BREAK_SPACE" "INVERTED_EXCLAMATION_MARK" "CENT_SIGN" "POUND_SIGN" "CURRENCY_SIGN" "YEN_SIGN" "BROKEN_BAR" "SECTION_SIGN"
+    "DIAERESIS" "COPYRIGHT_SIGN" "FEMININE_ORDINAL_INDICATOR" "LEFT-POINTING_DOUBLE_ANGLE_QUOTATION_MARK" "NOT_SIGN" "SOFT_HYPHEN" "REGISTERED_SIGN" "MACRON"
+    "DEGREE_SIGN" "PLUS-MINUS_SIGN" "SUPERSCRIPT_TWO" "SUPERSCRIPT_THREE" "ACUTE_ACCENT" "MICRO_SIGN" "PILCROW_SIGN" "MIDDLE_DOT"
+    "CEDILLA" "SUPERSCRIPT_ONE" "MASCULINE_ORDINAL_INDICATOR" "RIGHT-POINTING_DOUBLE_ANGLE_QUOTATION_MARK" "VULGAR_FRACTION_ONE_QUARTER" "VULGAR_FRACTION_ONE_HALF" "VULGAR_FRACTION_THREE_QUARTERS" "INVERTED_QUESTION_MARK"
+    "LATIN_CAPITAL_LETTER_A_WITH_GRAVE" "LATIN_CAPITAL_LETTER_A_WITH_ACUTE" "LATIN_CAPITAL_LETTER_A_WITH_CIRCUMFLEX" "LATIN_CAPITAL_LETTER_A_WITH_TILDE" "LATIN_CAPITAL_LETTER_A_WITH_DIAERESIS" "LATIN_CAPITAL_LETTER_A_WITH_RING_ABOVE" "LATIN_CAPITAL_LETTER_AE" "LATIN_CAPITAL_LETTER_C_WITH_CEDILLA"
+    "LATIN_CAPITAL_LETTER_E_WITH_GRAVE" "LATIN_CAPITAL_LETTER_E_WITH_ACUTE" "LATIN_CAPITAL_LETTER_E_WITH_CIRCUMFLEX" "LATIN_CAPITAL_LETTER_E_WITH_DIAERESIS" "LATIN_CAPITAL_LETTER_I_WITH_GRAVE" "LATIN_CAPITAL_LETTER_I_WITH_ACUTE" "LATIN_CAPITAL_LETTER_I_WITH_CIRCUMFLEX" "LATIN_CAPITAL_LETTER_I_WITH_DIAERESIS"
+    "LATIN_CAPITAL_LETTER_ETH" "LATIN_CAPITAL_LETTER_N_WITH_TILDE" "LATIN_CAPITAL_LETTER_O_WITH_GRAVE" "LATIN_CAPITAL_LETTER_O_WITH_ACUTE" "LATIN_CAPITAL_LETTER_O_WITH_CIRCUMFLEX" "LATIN_CAPITAL_LETTER_O_WITH_TILDE" "LATIN_CAPITAL_LETTER_O_WITH_DIAERESIS" "MULTIPLICATION_SIGN"
+    "LATIN_CAPITAL_LETTER_O_WITH_STROKE" "LATIN_CAPITAL_LETTER_U_WITH_GRAVE" "LATIN_CAPITAL_LETTER_U_WITH_ACUTE" "LATIN_CAPITAL_LETTER_U_WITH_CIRCUMFLEX" "LATIN_CAPITAL_LETTER_U_WITH_DIAERESIS" "LATIN_CAPITAL_LETTER_Y_WITH_ACUTE" "LATIN_CAPITAL_LETTER_THORN" "LATIN_SMALL_LETTER_SHARP_S"
+    "LATIN_SMALL_LETTER_A_WITH_GRAVE" "LATIN_SMALL_LETTER_A_WITH_ACUTE" "LATIN_SMALL_LETTER_A_WITH_CIRCUMFLEX" "LATIN_SMALL_LETTER_A_WITH_TILDE" "LATIN_SMALL_LETTER_A_WITH_DIAERESIS" "LATIN_SMALL_LETTER_A_WITH_RING_ABOVE" "LATIN_SMALL_LETTER_AE" "LATIN_SMALL_LETTER_C_WITH_CEDILLA"
+    "LATIN_SMALL_LETTER_E_WITH_GRAVE" "LATIN_SMALL_LETTER_E_WITH_ACUTE" "LATIN_SMALL_LETTER_E_WITH_CIRCUMFLEX" "LATIN_SMALL_LETTER_E_WITH_DIAERESIS" "LATIN_SMALL_LETTER_I_WITH_GRAVE" "LATIN_SMALL_LETTER_I_WITH_ACUTE" "LATIN_SMALL_LETTER_I_WITH_CIRCUMFLEX" "LATIN_SMALL_LETTER_I_WITH_DIAERESIS"
+    "LATIN_SMALL_LETTER_ETH" "LATIN_SMALL_LETTER_N_WITH_TILDE" "LATIN_SMALL_LETTER_O_WITH_GRAVE" "LATIN_SMALL_LETTER_O_WITH_ACUTE" "LATIN_SMALL_LETTER_O_WITH_CIRCUMFLEX" "LATIN_SMALL_LETTER_O_WITH_TILDE" "LATIN_SMALL_LETTER_O_WITH_DIAERESIS" "DIVISION_SIGN"
+    "LATIN_SMALL_LETTER_O_WITH_STROKE" "LATIN_SMALL_LETTER_U_WITH_GRAVE" "LATIN_SMALL_LETTER_U_WITH_ACUTE" "LATIN_SMALL_LETTER_U_WITH_CIRCUMFLEX" "LATIN_SMALL_LETTER_U_WITH_DIAERESIS" "LATIN_SMALL_LETTER_Y_WITH_ACUTE" "LATIN_SMALL_LETTER_THORN" "LATIN_SMALL_LETTER_Y_WITH_DIAERESIS"))
+
+(defparameter *char-name-aliases*
+  '(("Linefeed" . 10) ("Null" . 0) ("Del" . 127) ("Escape" . 27) ("Bell" . 7)
+    ("Backspace" . 8) ("Tab" . 9) ("Page" . 12) ("Return" . 13) ("Space" . 32)
+    ("Rubout" . 127) ("Newline" . 10)))
+
+(defvar *%name-char-table* nil)
+
+;;; Names above Latin-1 come from data/unicode-names.txt in the Clysm
+;;; installation ("HEX NAME" lines), read the first time one is needed
+;;; (%UNICODE-NAMES, misc.lisp).
+(defvar *%unicode-names* nil "(code->name . name->code) hash tables, or :none")
 
 (defun char-name (c)
-  (let ((e (assoc (char-code c) *char-names*)))
-    (cond (e (cdr e))
-          ((not (graphic-char-p c)) (concatenate 'string "U+" (%integer-to-string (char-code c) 16)))
+  (let ((code (char-code c)))
+    (cond ((< code 256) (svref *char-names* code))
+          ((let ((tables (%unicode-names))) (and tables (values (gethash code (car tables))))))
+          ((not (graphic-char-p c)) (concatenate 'string "U+" (%integer-to-string code 16)))
           (t nil))))
 
 (defun name-char (name)
   (let ((name (string name)))
-    (dolist (e *char-names*
-               (cond ((string-equal name "Linefeed") (code-char 10))
-                     ((string-equal name "Null") (code-char 0))
-                     ((string-equal name "Del") (code-char 127))
-                     ((string-equal name "Esc") (code-char 27))
-                     ((and (> (length name) 2) (char-equal (char name 0) #\U) (char= (char name 1) #\+))
-                      (code-char (parse-integer name :start 2 :radix 16)))
-                     (t nil)))
-      (when (string-equal (cdr e) name) (return (code-char (car e)))))))
+    (unless *%name-char-table*
+      (let ((h (make-hash-table :test 'equalp)))
+        (dotimes (i 256)
+          (let ((n (svref *char-names* i))) (when n (setf (gethash n h) i))))
+        (dolist (a *char-name-aliases*) (setf (gethash (car a) h) (cdr a)))
+        (setq *%name-char-table* h)))
+    (let ((code (gethash name *%name-char-table*)))
+      (cond (code (code-char code))
+            ;; U+XXXX, and SBCL's UXX
+            ((and (> (length name) 1) (char-equal (char name 0) #\U)
+                  (let* ((start (if (char= (char name 1) #\+) 2 1))
+                         (n (and (< start (length name))
+                                 (every (lambda (ch) (digit-char-p ch 16)) (subseq name start))
+                                 (parse-integer name :start start :radix 16))))
+                    (and n (< n char-code-limit) (code-char n)))))
+            ((let* ((tables (%unicode-names))
+                    (code (and tables (gethash name (cdr tables)))))
+               (and code (code-char code))))
+            (t nil)))))
 
 (defun character (x)
   (cond ((characterp x) x)

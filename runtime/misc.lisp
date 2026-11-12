@@ -125,15 +125,63 @@ that returns true has provided the module.  ASDF adds its own provider.")
                                       root
                                       (concatenate 'string root "/"))))))
 
-(defun %module-provide-contrib (name)
-  "Modules shipped with Clysm: ASDF and UIOP (third_party/asdf/asdf.lisp)."
-  (when (member name '("ASDF" "UIOP" "asdf" "uiop") :test #'string=)
+(defun %unicode-names ()
+  (when (null *%unicode-names*)
+    (setq *%unicode-names* :none)
+    ;; %CLYSM-ROOT is NIL when the host does not tell where Clysm is installed
     (let* ((root (%clysm-root))
-           (file (and root (merge-pathnames "third_party/asdf/asdf.lisp" root))))
+           (file (and root (merge-pathnames "data/unicode-names.txt" root))))
       (when (and file (probe-file file))
-        (load file)
-        (provide "ASDF") (provide "UIOP")
-        t))))
+        (let ((by-code (make-hash-table)) (by-name (make-hash-table :test 'equalp)))
+          (with-open-file (in file)
+            (loop
+              (let ((line (read-line in nil nil)))
+                (unless line (return))
+                (let* ((sp (position #\Space line))
+                       (code (parse-integer line :end sp :radix 16))
+                       (name (subseq line (+ sp 1))))
+                  (setf (gethash code by-code) name
+                        (gethash name by-name) code)))))
+          (setq *%unicode-names* (cons by-code by-name))))))
+  (if (consp *%unicode-names*) *%unicode-names* nil))
+
+(defun %load-bundled (relative)
+  (let* ((root (%clysm-root))
+         (file (and root (merge-pathnames relative root))))
+    (when (and file (probe-file file))
+      (load file)
+      t)))
+
+(defun %quicklisp-setup-file ()
+  (let ((home (%getenv "QUICKLISP_HOME")))
+    (probe-file (merge-pathnames "setup.lisp"
+                                 (if home
+                                     (pathname (if (char= (char home (1- (length home))) #\/)
+                                                   home (concatenate 'string home "/")))
+                                     (merge-pathnames "quicklisp/" (user-homedir-pathname)))))))
+
+(defun %module-provide-contrib (name)
+  "Modules shipped with Clysm: ASDF and UIOP (third_party/asdf/asdf.lisp),
+QL-CLYSM (Quicklisp support, contrib/ql-clysm.lisp) and QUICKLISP (loads
+$QUICKLISP_HOME/setup.lisp, by default ~/quicklisp/setup.lisp, with that
+support)."
+  (let ((name (string-upcase name)))
+    (cond ((member name '("ASDF" "UIOP") :test #'string=)
+           (when (%load-bundled "third_party/asdf/asdf.lisp")
+             (provide "ASDF") (provide "UIOP")
+             (%load-bundled "contrib/asdf-hooks.lisp")
+             t))
+          ((string= name "QL-CLYSM")
+           (when (%load-bundled "contrib/ql-clysm.lisp")
+             (provide "QL-CLYSM")
+             t))
+          ((string= name "QUICKLISP")
+           (let ((setup (%quicklisp-setup-file)))
+             (when setup
+               (require "ASDF")
+               (load setup)         ; the ASDF hook adds QL-CLYSM
+               (provide "QUICKLISP")
+               t))))))
 
 (defun require (name &optional pathnames)
   (let ((name (string name)))

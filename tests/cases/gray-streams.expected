@@ -1,0 +1,21 @@
+HELLO WORLD
+
+(A B "C") 
+X         Y
+CD
+
+(T T T NIL T CHARACTER NIL) 
+
+(1 2 FOO) 
+"bar" 
+#\l 
+("line2" NIL) 
+("last" T) 
+:EOF 
+:DONE 
+(1 3 #(2 3 4) 5 :EOF) 
+(T NIL) WITH-OPEN-STREAM
+BOTHboth
+
+
+"12345X" 

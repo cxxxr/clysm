@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-asdf repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-asdf test-quicklisp repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -13,6 +13,16 @@ test:
 	tools/run-tests.sh
 
 # load a small system with the bundled ASDF (third_party/asdf)
+# install Quicklisp from scratch into build/quicklisp-test and load libraries
+# (downloads from quicklisp.org)
+test-quicklisp:
+	rm -rf build/quicklisp-test && mkdir -p build/quicklisp-test
+	curl -sfL -o build/quicklisp-test/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+	bin/clysm script tests/quicklisp/install.lisp build/quicklisp-test/quicklisp.lisp build/quicklisp-test/home/ \
+	  | tee build/quicklisp-test/log.txt | tail -2
+	grep -q 'split-sequence: ("a" "b" "" "c")' build/quicklisp-test/log.txt && \
+	grep -q 'str: ("x" "y")' build/quicklisp-test/log.txt && echo "quicklisp: ok"
+
 test-asdf:
 	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2>&1; \
 	if cmp -s build/asdf-test.out tests/asdf/run.expected; then echo "asdf: ok"; \

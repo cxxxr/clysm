@@ -38,6 +38,12 @@
 (defstruct (echo-stream (:include stream) (:constructor %make-echo-stream)))
 (defstruct (concatenated-stream (:include stream) (:constructor %make-concatenated-stream)))
 (defstruct (synonym-stream (:include stream) (:constructor %make-synonym-stream)))
+;;; a binary TCP connection (host sockets, see %TCP-CONNECT)
+(defstruct (socket-stream (:include stream) (:constructor %make-socket-stream))
+  id
+  (in (make-array 65536 :element-type '(unsigned-byte 8)))
+  (in-pos 0) (in-fill 0) in-eof
+  (out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
 
 (defun %make-stream (&rest args &key kind &allow-other-keys)
   (apply (case kind
@@ -48,6 +54,7 @@
            (:echo #'%make-echo-stream)
            (:concatenated #'%make-concatenated-stream)
            (:synonym #'%make-synonym-stream)
+           (:socket #'%make-socket-stream)
            (t #'%make-plain-stream))
          args))
 
@@ -59,34 +66,38 @@
 
 (defun %synonym-target (s) (symbol-value (stream-symbol s)))
 
-(defun input-stream-p (s)
+(defun %native-input-stream-p (s)
   (%check-stream s)
   (case (stream-kind s)
-    ((:fd-in :string-in :two-way :echo :concatenated) t)
+    (:gray (input-stream-p s))
+    ((:fd-in :string-in :two-way :echo :concatenated :socket) t)
     (:file (if (member (stream-direction s) '(:input :io)) t nil))
     (:synonym (input-stream-p (%synonym-target s)))
     (t nil)))
-(defun output-stream-p (s)
+(defun %native-output-stream-p (s)
   (%check-stream s)
   (case (stream-kind s)
-    ((:fd-out :string-out :broadcast :two-way :echo :pp) t)
+    (:gray (output-stream-p s))
+    ((:fd-out :string-out :broadcast :two-way :echo :pp :socket) t)
     (:file (if (member (stream-direction s) '(:output :io)) t nil))
     (:synonym (output-stream-p (%synonym-target s)))
     (t nil)))
-(defun open-stream-p (s) (%check-stream s) (stream-open s))
+(defun %native-open-stream-p (s) (%check-stream s) (stream-open s))
 (defvar *interactive* nil "true when the REPL debugger should be used")
 (defun interactive-stream-p (s)
   (%check-stream s)
   (and *interactive*
        (case (stream-kind s)
          (:fd-in t)
+         (:gray nil)
          (:two-way (interactive-stream-p (car (stream-streams s))))
          (:synonym (interactive-stream-p (%synonym-target s)))
          (t nil))))
 
-(defun stream-element-type (s)
+(defun %native-stream-element-type (s)
   (%check-stream s)
   (case (stream-kind s)
+    (:gray (stream-element-type s))
     (:synonym (stream-element-type (%synonym-target s)))
     (:broadcast (let ((l (last (stream-streams s))))
                   (if l (stream-element-type (car l)) t)))
@@ -297,6 +308,8 @@
 ;;; ------------------------------------------------------------
 
 (defun %stream-write-char (s c)
+  (when (eq (stream-kind s) :gray)
+    (return-from %stream-write-char (stream-write-char s c)))
   (case (stream-kind s)
     (:fd-out (%write-char c (stream-fd s)))
     (:string-out (vector-push-extend c (stream-buffer s)))
@@ -345,6 +358,12 @@
 (defun write-string (string &optional stream &key (start 0) end)
   (unless (stringp string) (%type-error string 'string))
   (let ((s (%output-stream stream)) (end (%check-seq-bounds string start end)))
+    (case (stream-kind s)
+      (:gray (stream-write-string s string start end)
+       (return-from write-string string))
+      ;; each component stream gets the whole string
+      (:broadcast (dolist (x (stream-streams s)) (write-string string x :start start :end end))
+       (return-from write-string string)))
     (if (and (%simple-string-p string) (eq (stream-kind s) :fd-out))
         (do ((i start (+ i 1))) ((>= i end))
           (%stream-write-char s (%schar string i)))
@@ -357,10 +376,14 @@
   (write-char #\Newline stream)
   string)
 
-(defun terpri (&optional stream) (write-char #\Newline stream) nil)
+(defun terpri (&optional stream)
+  (let ((s (%output-stream stream)))
+    (if (eq (stream-kind s) :gray) (stream-terpri s) (%stream-write-char s #\Newline)))
+  nil)
 
 (defun %stream-column (s)
   (case (stream-kind s)
+    (:gray (stream-line-column s))
     (:synonym (%stream-column (%synonym-target s)))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
     (:pp (%pp-stream-column s))
@@ -368,26 +391,46 @@
 
 (defun fresh-line (&optional stream)
   (let ((s (%output-stream stream)))
+    (when (eq (stream-kind s) :gray)
+      (return-from fresh-line (stream-fresh-line s)))
     (if (eql (%stream-column s) 0) nil (progn (write-char #\Newline s) t))))
 
 (defun %finish-output (s)
   (case (stream-kind s)
+    (:gray (stream-finish-output s))
     (:file (%fs-flush s))
     ((:fd-out) (%flush))
+    (:socket (%socket-flush s))
     (:broadcast (mapc #'%finish-output (stream-streams s)))
     ((:two-way :echo) (%finish-output (cadr (stream-streams s))))
     (:synonym (%finish-output (%synonym-target s)))))
 
 (defun finish-output (&optional stream) (%finish-output (%output-stream stream)) nil)
-(defun force-output (&optional stream) (%finish-output (%output-stream stream)) nil)
-(defun clear-output (&optional stream) (%output-stream stream) nil)
+(defun force-output (&optional stream)
+  ;; FORCE-OUTPUT only initiates the output (CLHS 21.2): a file stream keeps
+  ;; its contents in memory and writes the whole file back, so that is left
+  ;; to FINISH-OUTPUT and CLOSE (writing on every FORCE-OUTPUT is quadratic)
+  (let ((s (%output-stream stream)))
+    (case (stream-kind s)
+      (:file nil)
+      (:gray (stream-force-output s))
+      (t (%finish-output s))))
+  nil)
+(defun clear-output (&optional stream)
+  (let ((s (%output-stream stream)))
+    (when (eq (stream-kind s) :gray) (stream-clear-output s)))
+  nil)
 
 (defun %stream-write-byte (s b)
   (case (stream-kind s)
+    (:gray (stream-write-byte s b))
     (:file (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
                         (> (file-stream-esize s) 0))
              (%not-output-stream s 'binary))
      (%fs-write-element s b))
+    (:socket (unless (stream-open s) (%not-output-stream s 'binary))
+     (vector-push-extend (logand b 255) (socket-stream-out s))
+     (when (>= (length (socket-stream-out s)) 65536) (%socket-flush s)))
     (:broadcast (dolist (x (stream-streams s)) (%stream-write-byte x b)))
     ((:two-way :echo) (%stream-write-byte (cadr (stream-streams s)) b))
     (:synonym (%stream-write-byte (%synonym-target s) b))
@@ -405,6 +448,8 @@
 
 (defun %stream-read-char (s)
   "Returns a character or :eof."
+  (when (eq (stream-kind s) :gray)
+    (return-from %stream-read-char (stream-read-char s)))
   (let ((u (stream-unread s)))
     (if u
         (progn (setf (stream-unread s) nil) u)
@@ -433,6 +478,8 @@
 
 (defun %stream-peek-char (s)
   "The next character (or :eof) without consuming it (and without echoing)."
+  (when (eq (stream-kind s) :gray)
+    (return-from %stream-peek-char (stream-peek-char s)))
   (let ((u (stream-unread s)))
     (if u
         u
@@ -463,6 +510,7 @@
 
 (defun %stream-unread-char (s c)
   (case (stream-kind s)
+    (:gray (stream-unread-char s c))
     (:synonym (%stream-unread-char (%synonym-target s) c))
     (:two-way (%stream-unread-char (car (stream-streams s)) c))
     (:concatenated (if (stream-streams s)
@@ -497,10 +545,17 @@
               (t (%stream-read-char s)))))))
 
 (defun read-char-no-hang (&optional stream (eof-error-p t) eof-value recursive-p)
-  (read-char stream eof-error-p eof-value recursive-p))
+  (let ((s (%input-stream stream)))
+    (if (eq (stream-kind s) :gray)
+        (let ((c (stream-read-char-no-hang s)))
+          (if (eq c :eof)
+              (if eof-error-p (error 'end-of-file :stream s) eof-value)
+              c))
+        (read-char s eof-error-p eof-value recursive-p))))
 
 (defun %stream-listen (s)
   (case (stream-kind s)
+    (:gray (stream-listen s))
     (:fd-in (not (null (stream-unread s))))
     (:synonym (%stream-listen (%synonym-target s)))
     ((:two-way :echo) (or (not (null (stream-unread s))) (%stream-listen (car (stream-streams s)))))
@@ -523,13 +578,21 @@
 
 (defun clear-input (&optional stream)
   (let ((s (%input-stream stream)))
-    (when (eq (stream-kind s) :fd-in) (setf (stream-unread s) nil))
+    (case (stream-kind s)
+      (:fd-in (setf (stream-unread s) nil))
+      (:gray (stream-clear-input s)))
     nil))
 
 (defun read-line (&optional stream (eof-error-p t) eof-value recursive-p)
   (declare (ignore recursive-p))
   (let ((s (%input-stream stream))
         (buf (make-array 80 :element-type 'character :fill-pointer 0 :adjustable t)))
+    (when (eq (stream-kind s) :gray)
+      (multiple-value-bind (line missing-newline-p) (stream-read-line s)
+        (return-from read-line
+          (if (and missing-newline-p (or (eq line :eof) (= (length line) 0)))
+              (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
+              (values line missing-newline-p)))))
     (loop
       (let ((c (%stream-read-char s)))
         (cond ((eq c :eof)
@@ -542,10 +605,12 @@
 (defun %stream-read-byte (s)
   "An integer or :eof."
   (case (stream-kind s)
+    (:gray (stream-read-byte s))
     (:file (unless (and (stream-open s) (member (stream-direction s) '(:input :io))
                         (> (file-stream-esize s) 0))
              (%not-input-stream s 'binary))
      (or (%fs-read-element s) :eof))
+    (:socket (%socket-read-byte s))
     (:two-way (%stream-read-byte (car (stream-streams s))))
     (:echo (let ((b (%stream-read-byte (car (stream-streams s)))))
              (unless (eq b :eof) (%stream-write-byte (cadr (stream-streams s)) b))
@@ -568,7 +633,9 @@
 (defun %binary-stream-p (s input)
   "True when the stream S transfers integers rather than characters."
   (case (stream-kind s)
+    (:gray (let ((et (stream-element-type s))) (and et (not (subtypep et 'character)))))
     (:file (> (file-stream-esize s) 0))
+    (:socket t)
     ((:two-way :echo) (%binary-stream-p (if input (car (stream-streams s)) (cadr (stream-streams s))) input))
     (:concatenated (and (stream-streams s) (%binary-stream-p (car (stream-streams s)) input)))
     (:broadcast (and (stream-streams s) (%binary-stream-p (car (last (stream-streams s))) input)))
@@ -578,6 +645,9 @@
 (defun read-sequence (seq stream &key (start 0) end)
   (unless (typep seq 'sequence) (%type-error seq 'sequence))
   (%check-stream stream)
+  (when (eq (stream-kind stream) :gray)
+    (return-from read-sequence
+      (stream-read-sequence stream seq start (%check-seq-bounds seq start end))))
   (let ((end (%check-seq-bounds seq start end))
         (binary (%binary-stream-p stream t))
         (i start))
@@ -601,6 +671,9 @@
   (let* ((s (%output-stream stream))
          (end (%check-seq-bounds seq start end))
          (binary (%binary-stream-p s nil)))
+    (when (eq (stream-kind s) :gray)
+      (stream-write-sequence s seq start end)
+      (return-from write-sequence seq))
     (if (listp seq)
         (let ((tail (nthcdr start seq)))
           (do ((i start (+ i 1))) ((>= i end))
@@ -702,7 +775,7 @@
             (when (eq direction :probe) (setf (stream-open s) nil))
             s))))))
 
-(defun close (stream &key abort)
+(defun %native-close (stream &key abort)
   (%check-stream stream)
   (when (stream-open stream)
     (when (eq (stream-kind stream) :file)
@@ -710,8 +783,42 @@
           (when (file-stream-created stream)
             (ignore-errors (delete-file (stream-pathname stream))))
           (%fs-flush stream)))
+    (when (eq (stream-kind stream) :socket)
+      (unless abort (ignore-errors (%socket-flush stream)))
+      (ignore-errors (%tcp-close (socket-stream-id stream))))
     (setf (stream-open stream) nil))
   t)
+
+;;; ------------------------------------------------------------
+;;; TCP streams
+;;; ------------------------------------------------------------
+
+(defun %socket-flush (s)
+  (let ((out (socket-stream-out s)))
+    (when (> (length out) 0)
+      (%tcp-write (socket-stream-id s) out)
+      (setf (fill-pointer out) 0))))
+
+(defun %socket-read-byte (s)
+  (unless (stream-open s) (%not-input-stream s 'binary))
+  (when (>= (socket-stream-in-pos s) (socket-stream-in-fill s))
+    (if (socket-stream-in-eof s)
+        (return-from %socket-read-byte :eof)
+        (progn
+          ;; send what was written before waiting for the answer
+          (%socket-flush s)
+          (let ((n (%tcp-read (socket-stream-id s) (socket-stream-in s))))
+            (setf (socket-stream-in-pos s) 0 (socket-stream-in-fill s) n)
+            (when (= n 0)
+              (setf (socket-stream-in-eof s) t)
+              (return-from %socket-read-byte :eof))))))
+  (prog1 (aref (socket-stream-in s) (socket-stream-in-pos s))
+    (setf (socket-stream-in-pos s) (+ (socket-stream-in-pos s) 1))))
+
+(defun open-tcp-stream (host port)
+  "A bidirectional binary stream of (UNSIGNED-BYTE 8) connected to HOST:PORT."
+  (%make-stream :kind :socket :id (%tcp-connect host port) :direction :io
+                :elt-type '(unsigned-byte 8)))
 
 (defun %file-stream-designator (s)
   (case (stream-kind s)
@@ -730,6 +837,11 @@
 
 (defun file-position (s &optional (pos nil posp))
   (%check-stream s)
+  (when (eq (stream-kind s) :gray)
+    (return-from file-position
+      (if posp
+          (funcall #'(setf stream-file-position) pos s)
+          (stream-file-position s))))
   (if posp
       (progn
         (unless (or (member pos '(:start :end)) (and (integerp pos) (>= pos 0)))

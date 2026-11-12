@@ -191,6 +191,41 @@ Systems are compiled with `compile-file` (fasls are cached under
 loads a small multi-system example (`tests/asdf/`). There are no subprocesses,
 so `uiop:run-program` is not available.
 
+## Quicklisp
+
+Quicklisp runs on Clysm: `contrib/ql-clysm.lisp` adds Clysm to Quicklisp's
+implementation layer (TCP connections, directory listing), and is installed
+automatically when ASDF loads the Quicklisp client. TCP connections are
+synchronous sockets provided by the Node.js host (`sys::open-tcp-stream`): the
+Lisp program runs in a worker thread, which blocks with `Atomics.wait` while
+the main thread performs the socket operation.
+
+```lisp
+;; an existing installation ($QUICKLISP_HOME, by default ~/quicklisp/)
+(require :quicklisp)
+(ql:quickload :cl-ppcre)
+
+;; a new installation with the bootstrap file from https://beta.quicklisp.org/quicklisp.lisp
+(load "quicklisp.lisp")
+(require :ql-clysm)
+(quicklisp-quickstart:install :path "/path/to/quicklisp/")
+```
+
+`make test-quicklisp` installs Quicklisp from scratch into `build/` and loads
+libraries downloaded from quicklisp.org (split-sequence, and `str` with its
+dependencies cl-ppcre, cl-unicode, flexi-streams and cl-change-case).
+
+## Gray streams
+
+User-defined streams follow the Gray proposal (package `GRAY`, like SBCL's
+`SB-GRAY`): subclasses of `gray:fundamental-character-input-stream` etc. with
+methods on `gray:stream-read-char`, `gray:stream-write-char`, … work with every
+CL stream function; `close`, `open-stream-p`, `input-stream-p`,
+`output-stream-p` and `stream-element-type` are generic functions. The
+trivial-gray-streams extensions (`stream-read-sequence`, `stream-write-sequence`,
+`stream-file-position`) are built in, and `contrib/trivial-gray-streams` is a
+trivial-gray-streams system that ASDF finds before Quicklisp's release.
+
 ## Running in the browser
 
 `tools/build-web.sh` builds `build/web/` (an image containing the runtime, the
@@ -245,7 +280,8 @@ Limitations:
   processed forms to a `.fasl` text file that `load` compiles form by form
   (whole programs are compiled ahead of time with `bin/clysm compile`/`run`).
 * No threads and no first-class continuations (not required by the standard).
-* Character names beyond ASCII/Latin control names are not provided.
+* Character names are SBCL's; names above Latin-1 are read on first use from
+  `data/unicode-names.txt` (`tools/gen-unicode-names.sh`).
 
 ## Tests
 

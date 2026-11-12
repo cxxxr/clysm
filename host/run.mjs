@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
 import { makeImports } from './common.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
@@ -92,19 +93,111 @@ export async function runModule(bytes, args = []) {
   state.flush();
 }
 
+// ---------------------------------------------------------------------------
+// Synchronous TCP sockets for the Lisp side (used e.g. by Quicklisp).
+// The Lisp program runs in a worker; a socket operation posts a request to
+// the main thread, which performs it with node:net, and the worker blocks on
+// Atomics.wait until the reply is in the shared buffer.
+//   control: [state, status, length]  (state 0 = waiting, 1 = done)
+const NET_DATA_BYTES = 1 << 20;
+
+function makeNetServer(worker, sab) {
+  const ctrl = new Int32Array(sab, 0, 3);
+  const data = new Uint8Array(sab, 16);
+  const sockets = new Map();
+  let nextId = 1;
+  const reply = (status, bytes) => {
+    const n = Math.min(bytes.length, data.length);
+    data.set(bytes.subarray(0, n));
+    ctrl[1] = status; ctrl[2] = n;
+    Atomics.store(ctrl, 0, 1);
+    Atomics.notify(ctrl, 0);
+  };
+  const ok = (bytes = new Uint8Array(0)) => reply(0, bytes);
+  const fail = (e) => reply(1, Buffer.from(String((e && e.message) || e), 'utf8'));
+  const tryRead = (s, max) => {
+    if (s.chunks.length) {
+      let chunk = s.chunks[0];
+      if (chunk.length > max) { s.chunks[0] = chunk.subarray(max); chunk = chunk.subarray(0, max); }
+      else s.chunks.shift();
+      ok(chunk); return true;
+    }
+    if (s.error) { fail(s.error); return true; }
+    if (s.ended) { ok(); return true; }
+    return false;
+  };
+  worker.on('message', (m) => {
+    if (!m || m.clysmNet === undefined) return;
+    const { op, args } = m;
+    try {
+      if (op === 'connect') {
+        const [host, port] = args;
+        const sock = net.connect({ host, port });
+        const s = { sock, chunks: [], ended: false, error: null, waiting: null };
+        const wake = () => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
+        sock.on('data', (b) => { s.chunks.push(b); wake(); });
+        sock.on('end', () => { s.ended = true; wake(); });
+        sock.on('close', () => { s.ended = true; wake(); });
+        sock.once('connect', () => {
+          const id = nextId++; sockets.set(id, s);
+          sock.on('error', (e) => { s.error = e; wake(); });
+          ok(Buffer.from(String(id)));
+        });
+        sock.once('error', (e) => { if (![...sockets.values()].includes(s)) fail(e); });
+      } else if (op === 'write') {
+        const s = sockets.get(args[0]);
+        s.sock.write(Buffer.from(args[1], 'latin1'), (e) => (e ? fail(e) : ok()));
+      } else if (op === 'read') {
+        const s = sockets.get(args[0]);
+        if (!tryRead(s, Math.min(args[1], NET_DATA_BYTES))) s.waiting = Math.min(args[1], NET_DATA_BYTES);
+      } else if (op === 'close') {
+        const s = sockets.get(args[0]);
+        if (s) { s.sock.destroy(); sockets.delete(args[0]); }
+        ok();
+      } else fail('unknown socket operation ' + op);
+    } catch (e) { fail(e); }
+  });
+}
+
+function installNetClient(port, sab) {
+  const ctrl = new Int32Array(sab, 0, 3);
+  const data = new Uint8Array(sab, 16);
+  const call = (op, ...args) => {
+    Atomics.store(ctrl, 0, 0);
+    port.postMessage({ clysmNet: 1, op, args });
+    Atomics.wait(ctrl, 0, 0);
+    const bytes = Buffer.from(data.subarray(0, ctrl[2]));
+    if (ctrl[1] !== 0) throw new Error(bytes.toString('utf8'));
+    return bytes;
+  };
+  // strings carry octets (latin1), one character per octet
+  globalThis.__clysm_net = {
+    connect: (host, port) => Number(call('connect', host, port).toString()),
+    write: (id, octets) => { call('write', id, octets); },
+    read: (id, max) => call('read', id, max).toString('latin1'),
+    close: (id) => { call('close', id); },
+  };
+}
+
 // The module runs in a worker thread so that the stack size can be raised
 // (deep non-tail recursion is common in Lisp programs).
 const selfPath = fileURLToPath(import.meta.url);
 if (isMainThread && process.argv[1] === selfPath) {
   const stackMb = Number(process.env.CLYSM_STACK_MB || 512);
+  const netBuffer = new SharedArrayBuffer(16 + NET_DATA_BYTES);
   const worker = new Worker(selfPath, {
-    workerData: { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY },
+    workerData: { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY, netBuffer },
     resourceLimits: { stackSizeMb: stackMb, maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096) },
     stdin: false,
   });
+  makeNetServer(worker, netBuffer);
   worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
   worker.on('exit', (code) => process.exit(code));
 } else if (!isMainThread && workerData && workerData.file) {
+  if (workerData.netBuffer) {
+    const { parentPort } = await import('node:worker_threads');
+    installNetClient(parentPort, workerData.netBuffer);
+  }
   const bytes = fs.readFileSync(workerData.file);
   await runModule(bytes, workerData.args);
   process.exit(0);
