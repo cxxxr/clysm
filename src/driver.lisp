@@ -182,6 +182,9 @@
    `(progn
       (clysm-sys::%set-macro-function ',name
                                       (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
+      ,@(unless (eq (symbol-package name) (find-package :cl))
+          ;; the pretty printer lays out &BODY macros like SBCL
+          `((clysm-sys::%put ',name 'clysm-sys::%macro-lambda-list ',ll)))
       ',name)
    env))
 

@@ -438,7 +438,9 @@
   (setq suffix (%check-pp-string suffix))
   (%with-pretty-stream (%output-stream stream)
     (lambda (ps)
-      (if (not (listp object))
+      (if (or (not (listp object))
+              ;; backquote forms read as (unquote x) etc. print as atoms
+              (and (consp object) (%backquote-prefix object)))
           (output-object object ps)
           (%descend-into ps
             (lambda ()
@@ -703,11 +705,30 @@
   (and (symbolp s) (or (fboundp s) (special-operator-p s) (macro-function s)
                        (member s '(cond and or)))))
 
+(defun %pp-body-macro-count (s)
+  "For a user macro whose lambda list has &BODY: the number of parameters before it."
+  (let ((ll (and (not (eq (symbol-package s) (find-package "COMMON-LISP")))
+                 (macro-function s)
+                 (get s '%macro-lambda-list))))
+    (let ((n 0) (skip nil))
+      (do ((l ll (cdr l))) ((atom l) nil)
+        (let ((x (car l)))
+          (cond (skip (setq skip nil))
+                ((eq x '&body) (return n))
+                ((member x '(&whole &environment)) (setq skip t))
+                ((member x lambda-list-keywords))
+                (t (setq n (+ n 1)))))))))
+
 (defun %standard-pprint-function (object)
   (cond ((consp object)
          (let ((op (car object)))
            (cond ((not (symbolp op)) #'pprint-fill)
                  ((gethash op *%pp-cons-table*))
+                 ((%pp-body-macro-count op)
+                  (let ((n (%pp-body-macro-count op)))
+                    (lambda (stream list &rest noise)
+                      (declare (ignore noise))
+                      (%pprint-body-forms stream list n t))))
                  ((%pp-fboundp op) #'%pprint-fun-call)
                  (t #'pprint-fill))))
         ((and (arrayp object) (not (%string-like-p object)) (not (bit-vector-p object)))
@@ -779,8 +800,9 @@
       (write-char #\Space stream)
       (pprint-newline :fill stream))))
 
-(defun %pprint-body-forms (stream list n)
-  ;; ~:<~^~W~^~3I ~:_~W ... ~1I~@{ ~_~W~}~:> with N leading arguments
+(defun %pprint-body-forms (stream list n &optional mandatory)
+  ;; ~:<~^~W~^~3I ~:_~W ... ~1I~@{ ~_~W~}~:> with N leading arguments;
+  ;; MANDATORY: the first body form always starts a new line (macros with &BODY)
   (pprint-logical-block (stream list :prefix "(" :suffix ")")
     (pprint-exit-if-list-exhausted)
     (output-object (pprint-pop) stream)
@@ -788,13 +810,15 @@
     (pprint-indent :block 3 stream)
     (dotimes (i n)
       (write-char #\Space stream)
-      (pprint-newline (if (= i 0) :fill :linear) stream)
+      (cond ((> i 0) (pprint-newline :linear stream))
+            ((not mandatory) (pprint-newline :fill stream)))
       (output-object (pprint-pop) stream)
       (pprint-exit-if-list-exhausted))
     (pprint-indent :block 1 stream)
     (loop
       (write-char #\Space stream)
-      (pprint-newline :linear stream)
+      (pprint-newline (if mandatory :mandatory :linear) stream)
+      (setq mandatory nil)
       (output-object (pprint-pop) stream)
       (pprint-exit-if-list-exhausted))))
 
@@ -979,7 +1003,8 @@
             (pprint-exit-if-list-exhausted)
             (unless first (write-char #\Space stream))
             (let ((arg (pprint-pop)))
-              (unless first
+              (if first
+                  (pprint-newline :fill stream)
                 (case arg
                   (&optional (setq state :optional) (pprint-newline :linear stream))
                   ((&rest &body) (setq state :required) (pprint-newline :linear stream))
@@ -1109,17 +1134,26 @@
     (write-char #\Space stream)
     (pprint-newline :miser stream)
     (if (and (consp (cdr list)) (consp (cddr list)))
-        (loop
-          (pprint-indent :current 2 stream)
-          (output-object (pprint-pop) stream)
-          (pprint-exit-if-list-exhausted)
-          (write-char #\Space stream)
-          (pprint-newline :fill stream)
-          (pprint-indent :current -2 stream)
-          (output-object (pprint-pop) stream)
-          (pprint-exit-if-list-exhausted)
-          (write-char #\Space stream)
-          (pprint-newline :mandatory stream))
+        (progn
+          (pprint-indent :current 0 stream)
+          (let ((rest (cdr list)))
+          (loop
+            ;; each VAR VALUE pair is a block of its own
+            (let ((var (pprint-pop)))
+              (setq rest (if (consp rest) (cdr rest) nil))
+              (if (not (consp rest))
+                  (output-object var stream)
+                  (let ((value (pprint-pop)))
+                    (setq rest (cdr rest))
+                    (pprint-logical-block (stream nil)
+                      (output-object var stream)
+                      (write-char #\Space stream)
+                      (pprint-indent :block 2 stream)
+                      (pprint-newline :fill stream)
+                      (output-object value stream)))))
+            (pprint-exit-if-list-exhausted)
+            (write-char #\Space stream)
+            (pprint-newline :mandatory stream))))
         (progn
           (pprint-indent :current 0 stream)
           (output-object (pprint-pop) stream)
@@ -1133,7 +1167,7 @@
      (pprint-exit-if-list-exhausted)
      (write-char #\Space ,stream)
      (let ((form-or-tag (pprint-pop)))
-       (pprint-indent :block (if (atom form-or-tag) 0 1) ,stream)
+       (pprint-indent :block (if (or (atom form-or-tag) (%backquote-prefix form-or-tag)) 0 1) ,stream)
        (pprint-newline :linear ,stream)
        (output-object form-or-tag ,stream))))
 
@@ -1366,7 +1400,7 @@
   (let ((n (cdr e)))
     (%pp-register (car e) (lambda (stream list &rest noise)
                             (declare (ignore noise))
-                            (%pprint-body-forms stream list n)))))
+                            (%pprint-body-forms stream list n t)))))
 
 (setq *%standard-pprint-dispatch* (%make-pprint-dispatch-table :read-only t))
 (setq *print-pprint-dispatch* (%make-pprint-dispatch-table))
