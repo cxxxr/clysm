@@ -90,6 +90,11 @@
       (progn (dolist (f (cdr form)) (process-toplevel f env compile-time-too))
              (return))
       (eval-when
+       (when *live-mode*
+         ;; forms compiled into the running image are evaluated, not file-compiled
+         (when (or (member :execute (second form)) (member 'eval (second form)))
+           (dolist (f (cddr form)) (process-toplevel f env nil)))
+         (return))
        (let* ((sits (second form))
               (ct (or (member :compile-toplevel sits) (member 'compile sits)))
               (lt (or (member :load-toplevel sits) (member 'load sits)))
@@ -120,11 +125,15 @@
          (dolist (f (cddr form)) (process-toplevel f new-env compile-time-too)))
        (return))
       (defmacro (process-defmacro form env) (return))
-      (in-package
+      ((in-package defpackage)
+       (when *live-mode*
+         (return (emit-toplevel-form form env)))
+       (when (eq (car form) 'defpackage)
+         (process-defpackage form env)
+         (return))
        (let ((pkg (find-target-package (string (second form)))))
          (setf *read-package* pkg)
          (return (emit-toplevel-form `(clysm-sys::%in-package ,(target-package-name pkg)) env))))
-      (defpackage (process-defpackage form env) (return))
       (declaim (dolist (d (cdr form)) (compile-time-proclaim d))
                (return (emit-toplevel-form `(clysm-sys::%proclaim-list ',(cdr form)) env)))
       (clysm-sys::%defun (return (process-defun form env nil)))
@@ -172,8 +181,10 @@
 
 (defun emit-target-macro (name ll body env)
   (emit-toplevel-form
-   `(clysm-sys::%set-macro-function ',name
-                                    (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
+   `(progn
+      (clysm-sys::%set-macro-function ',name
+                                      (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
+      ',name)
    env))
 
 (defun clysm-sys::%emit-deferred-macros-now (env)
@@ -364,6 +375,7 @@ they can be FUNCALLed and used by the interpreter."
 (defun build-module (&key (entry "_start"))
   (let ((*m* (make-wasm-module)))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
+    (setf (wasm-module-base-types *m*) (length *type-defs*))
     (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
     (add-tag *m* :lisp-throw :exn)
     ;; make sure basic symbols exist
@@ -391,6 +403,11 @@ they can be FUNCALLed and used by the interpreter."
                         :body (remove nil body))))))
       (compile-pending-lams)
       (add-export *m* "lisp_apply" :func :lisp-apply)
+      (add-export *m* "mv_count" :global :mv-count)
+      (add-export *m* "mv_buf" :global :mv-buf)
+      (add-export *m* "bstack" :global :bstack)
+      (add-export *m* "bsp" :global :bsp)
+      (add-export *m* "lisp_throw" :tag :lisp-throw)
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry

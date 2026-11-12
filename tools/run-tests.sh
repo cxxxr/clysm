@@ -3,6 +3,8 @@
 # A file NAME.expected overrides the SBCL output.
 # With INTERP=1 the files are run by the in-image evaluator (bin/clysm script)
 # instead of being compiled to WebAssembly.
+# With NATIVE=1 they are loaded by the REPL image that embeds the compiler
+# (bin/clysm image-native): every toplevel form is compiled to Wasm at run time.
 # With SELFHOST=1 the files are compiled by the compiler running in Wasm
 # (build/clysmc.wasm, see tools/build-selfhost.sh).
 cd "$(dirname "$0")/.." || exit 1
@@ -16,8 +18,10 @@ for f in ${@:-tests/cases/*.lisp}; do
   else
     sbcl --script "$f" > "build/tests/$name.exp" 2>/dev/null
   fi
-  if [ -n "$INTERP" ]; then
-    timeout 60 bin/clysm script "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
+  if [ -n "$NATIVE" ]; then
+    timeout 120 node host/run.mjs "$(bin/clysm image-native)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
+  elif [ -n "$INTERP" ]; then
+    timeout 60 node host/run.mjs "$(bin/clysm image-interp)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
   else
     if [ -n "$SELFHOST" ]; then
       compile="node host/run.mjs build/clysmc.wasm"

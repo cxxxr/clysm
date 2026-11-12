@@ -113,7 +113,8 @@
           (loop
             (let ((form (read s nil %eof-marker)))
               (when (eq form %eof-marker) (return))
-              (let ((vals (multiple-value-list (eval form))))
+              (let ((vals (multiple-value-list
+                           (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
                 (setq /// // // / / vals *** ** ** * * (car vals))
                 (if vals
                     (dolist (v vals) (prin1 v out) (terpri out))

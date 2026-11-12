@@ -58,6 +58,19 @@ export function makeCommonEnv(state) {
       const text = 'Backtrace:\n' + names.map((n, i) => `  ${i}: ${n}`).join('\n') + '\n';
       if (state.writeText) state.writeText(fd, text);
     },
+    compile_module(bytes, consts) {
+      // instantiate a module compiled inside the image and link it with it
+      const u8 = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
+      const mod = new WebAssembly.Module(u8);
+      const ex = state.instance.exports;
+      const inst = new WebAssembly.Instance(mod, {
+        ...state.imports,
+        clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
+                 lisp_throw: ex.lisp_throw },
+      });
+      return inst.exports.run(consts);
+    },
     put_char_buf(c) {
       if (c < 0) { state.writeBuf = state.nameBuf; state.nameBuf = ''; return; }
       state.nameBuf = (state.nameBuf || '') + String.fromCodePoint(c);
@@ -66,8 +79,10 @@ export function makeCommonEnv(state) {
 }
 
 export function makeImports(state, platform) {
-  return {
+  const imports = {
     js: makeJsImports(state),
     env: { ...makeCommonEnv(state), ...platform },
   };
+  state.imports = imports;
+  return imports;
 }

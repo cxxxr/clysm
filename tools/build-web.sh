@@ -3,7 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/web
-sbcl --script tools/build.lisp build/web/clysm.wasm lib/web-main.lisp
+# the image embeds the compiler: forms typed in the page are compiled to
+# WebAssembly in the browser and linked into the running image
+sbcl --script tools/build-repl.lisp build/web/clysm.wasm lib/web-main.lisp
 cp host/web/index.html host/web/clysm.mjs build/web/
 mkdir -p build/host && cp host/common.mjs host/jsffi.mjs build/host/
 sed -i "s#'../common.mjs'#'../host/common.mjs'#" build/web/clysm.mjs

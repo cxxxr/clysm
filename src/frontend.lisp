@@ -42,12 +42,23 @@
 (defvar *current-lam* nil)
 (defvar *warnings* nil)
 
+;;; Live mode: the compiler runs inside a Clysm image and compiles code that
+;;; is linked into that running image.  These hooks give access to the
+;;; image's own macros, special declarations and constants.
+(defvar *live-mode* nil)
+(defvar *live-macro-hook* nil "symbol -> macro function or NIL")
+(defvar *live-special-hook* nil "symbol -> true if proclaimed special")
+(defvar *live-constant-hook* nil "symbol -> (values value constantp)")
+(defvar *live-symbol-macro-hook* nil "symbol -> (values expansion foundp)")
+
 (defun cwarn (fmt &rest args)
   (let ((msg (apply #'format nil fmt args)))
     (push msg *warnings*)
     (format *error-output* "~&; warning: ~A~%" msg)))
 
-(defun special-var-p (sym) (gethash sym *specials*))
+(defun special-var-p (sym)
+  (or (gethash sym *specials*)
+      (and *live-special-hook* (funcall *live-special-hook* sym))))
 
 (defparameter *special-forms*
   '(quote function if progn let let* setq flet labels macrolet symbol-macrolet
@@ -87,7 +98,10 @@
   (let ((e (and env (env-lookup-fun env sym))))
     (cond ((and e (eq (first e) :macro)) (third e))
           (e nil)
-          (t (gethash sym *macros*)))))
+          ((gethash sym *macros*))
+          ((and *live-macro-hook* (not (get sym 'clysm-native)) (not (member sym *special-forms*)))
+           (funcall *live-macro-hook* sym))
+          (t nil))))
 
 (defun cmacroexpand-1 (form env)
   (cond ((and (consp form) (symbolp (car form)))
@@ -98,7 +112,11 @@
            (cond ((and e (eq (first e) :smacro)) (values (third e) t))
                  (e (values form nil))
                  (t (multiple-value-bind (exp found) (gethash form *symbol-macros*)
-                      (if found (values exp t) (values form nil)))))))
+                      (cond (found (values exp t))
+                            (*live-symbol-macro-hook*
+                             (multiple-value-bind (exp2 found2) (funcall *live-symbol-macro-hook* form)
+                               (if found2 (values exp2 t) (values form nil))))
+                            (t (values form nil))))))))
         (t (values form nil))))
 
 (defun cmacroexpand (form env)
@@ -109,9 +127,16 @@
         (setf form new expanded t)))))
 
 ;;; Host-visible entry points used by macros evaluated on the host
-(defun clysm-sys::%macroexpand-1 (form &optional env)
+(defmacro define-host-function (name ll &body body)
+  "Define a SYSTEM function used by host-evaluated code.  When the compiler is
+itself compiled by Clysm and shares the image's SYSTEM package, an existing
+runtime definition is kept."
+  #-clysm `(defun ,name ,ll ,@body)
+  #+clysm `(unless (fboundp ',name) (setf (fdefinition ',name) (lambda ,ll ,@body))))
+
+(define-host-function clysm-sys::%macroexpand-1 (form &optional env)
   (cmacroexpand-1 form (if (cenv-p env) env (make-cenv))))
-(defun clysm-sys::%macroexpand (form &optional env)
+(define-host-function clysm-sys::%macroexpand (form &optional env)
   (cmacroexpand form (if (cenv-p env) env (make-cenv))))
 
 ;;; ------------------------------------------------------------
@@ -193,6 +218,8 @@
                                (if (or (numberp v) (characterp v) (symbolp v) (stringp v))
                                    `(:const ,v)
                                    `(:sref ,sym))))
+                            ((and *live-constant-hook* (nth-value 1 (funcall *live-constant-hook* sym)))
+                             `(:const ,(funcall *live-constant-hook* sym)))
                             (t (unless (special-var-p sym)
                                  (cwarn "undefined variable ~S" sym))
                                `(:sref ,sym))))))))))

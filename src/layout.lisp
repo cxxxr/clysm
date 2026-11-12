@@ -99,6 +99,7 @@
     (:d-x       (:func (:f64) (:externref)))
     (:x-d       (:func (:externref) (:f64)))
     (:xi-i      (:func (:externref :i32) (:i32)))
-    (:i-x       (:func (:i32) (:externref)))))
+    (:i-x       (:func (:i32) (:externref)))
+    (:x-e       (:func (:externref) (:eqref)))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))

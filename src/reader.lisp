@@ -27,8 +27,11 @@
     (or (gethash name *target-packages*)
         (and errorp (error "Clysm reader: unknown package ~A" name)))))
 
+(defvar *live-packages* nil "in live mode, packages map to themselves")
+
 (defun target-package-name (host-pkg)
   (or (gethash host-pkg *host->target-name*)
+      (and *live-packages* (package-name host-pkg))
       (error "host package ~A is not a target package" host-pkg)))
 
 (defun ensure-host-package-for (name)
@@ -361,5 +364,9 @@
                  ((= (length items) 1) `(cons ,(first items) ,tail))
                  (t `(list* ,@items ,tail)))))))
 
-;;; host-side macro so that host-evaluated code (macro bodies) understands backquote
-(defmacro clysm-sys::quasiquote (x) (qq-expand x 0))
+;;; host-side macro so that host-evaluated code (macro bodies) understands backquote.
+;;; When the compiler is itself compiled by Clysm, the macro is installed at
+;;; load time instead (a DEFMACRO would also redefine it in the building host).
+#-clysm (defmacro clysm-sys::quasiquote (x) (qq-expand x 0))
+#+clysm (setf (macro-function 'clysm-sys::quasiquote)
+              (lambda (form env) (declare (ignore env)) (qq-expand (second form) 0)))

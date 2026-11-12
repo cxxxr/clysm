@@ -412,6 +412,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
     (:host-debug-mode :v-i "env" "debug_mode")
     (:host-backtrace :i-v "env" "backtrace")
     (:host-is-tty :v-i "env" "is_tty")
+    (:host-compile-module :xx-x "env" "compile_module")
     (:js-global :v-x "js" "global")
     (:js-get :xx-x "js" "get")
     (:js-set :xxx-v "js" "set")
@@ -1136,3 +1137,8 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 
 (defprim clysm-sys::%backtrace (fd) :value `(,@(idx-code fd) (:call :host-backtrace) ,@(nil-code)))
 (defprim clysm-sys::%is-tty () :value `((:call :host-is-tty) :ref.i31))
+
+;; instantiate a module compiled in the image and run it (see src/live.lisp)
+(defprim clysm-sys::%compile-module (bytes consts) :mv
+  `(,@(ext-code bytes) ,@(ext-code consts) (:call :host-compile-module)
+    :any.convert_extern (:ref.cast :null :eq)))

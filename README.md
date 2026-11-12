@@ -10,7 +10,7 @@ Wasm exception handling proposal (`try_table` / `throw_ref`), and tail calls use
 ```
 $ bin/clysm run tests/hello.lisp          # compile with the runtime, then run on Node.js
 $ bin/clysm compile prog.lisp -o prog.wasm
-$ bin/clysm repl                          # a REPL running inside Wasm (reader + evaluator)
+$ bin/clysm repl                          # a REPL in Wasm; every form is compiled to a new Wasm module
 $ bin/clysm eval '(expt 2 100)'
 $ bin/clysm script file.lisp              # LOAD a file with the in-image evaluator
 ```
@@ -131,6 +131,27 @@ The second- and third-generation compilers are byte-for-byte identical (a
 fixed point), and the whole test suite passes when compiled by the Wasm-hosted
 compiler (`SELFHOST=1 tools/run-tests.sh`). Inside the image, macro expanders
 and `eval-when` code are run by Clysm's own evaluator.
+
+## Compiling inside the running image
+
+The REPL image (`tools/build-repl.lisp`) embeds the compiler. `compile`, `load`
+and every form typed at the REPL are compiled to a **new WebAssembly module
+that is linked with the running image** and executed immediately:
+
+* the base types form one rec group that is identical in every module, so
+  WasmGC struct/array/function types are shared between modules;
+* the multiple-value buffer, the binding stack and the exception tag are
+  exported by the image and imported by each new module;
+* symbols and literal objects are passed in at instantiation as a vector of the
+  live objects themselves (so `eq`-ness of constants is preserved);
+* in this "live" mode the compiler takes macros, special proclamations and
+  constants from the image.
+
+For example `(defun fib ...)` at the REPL produces native code: `(fib 27)` runs
+about 175× faster than with the interpreter (`bin/clysm repl --interp`).
+`NATIVE=1 tools/run-tests.sh` runs the whole test suite this way. The browser
+demo also embeds the compiler, so code typed in the page is compiled to Wasm in
+the browser.
 
 ## JavaScript interoperability (spec: externref ラッパー構造体)
 

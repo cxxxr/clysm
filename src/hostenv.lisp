@@ -6,9 +6,10 @@
 
 (in-package :clysm)
 
-(defun clysm-sys::%put (sym indicator value)
+(define-host-function clysm-sys::%put (sym indicator value)
   (setf (get sym indicator) value))
 
+#-clysm
 (defmacro clysm-sys::%ct-constant (sym form)
   ;; record the constant for the compiler and, for non-CL symbols, also define
   ;; it on the host so that macro expanders can use it
@@ -23,14 +24,18 @@
 (defun clysm-sys::%host-macro-function* (sym env)
   (macro-function-in sym (if (cenv-p env) env nil)))
 
-(defun clysm-sys::%define-symbol-macro (sym expansion)
-  (setf (gethash sym *symbol-macros*) expansion))
+(define-host-function clysm-sys::%define-symbol-macro (sym expansion)
+  (setf (gethash sym *symbol-macros*) expansion)
+  (setf (get sym 'clysm-sys::%symbol-macro) (list expansion))
+  sym)
 
+#-clysm
 (defmacro clysm-sys::%host-define-compiler-macro (name ll &body body)
   `(setf (gethash ',name *compiler-macros*)
          (host-compile ',(make-host-macro-expander name ll body))))
 
 
+#-clysm
 (defmacro clysm-sys::%ct-initial-value (sym form)
   ;; record constant initial values so that the symbol is bound from the start
   (let ((value (cond ((or (numberp form) (characterp form) (stringp form) (keywordp form)
@@ -41,3 +46,37 @@
     (if value
         `(setf (gethash ',sym *initial-symbol-values*) ',value)
         `(remhash ',sym *initial-symbol-values*))))
+
+;;; When the compiler runs inside a Clysm image these host macros are needed
+;;; there too; install them at load time (see the #-clysm definitions above).
+#+clysm
+(progn
+  (setf (macro-function 'clysm-sys::%ct-constant)
+        (lambda (form env)
+          (declare (ignore env))
+          (let ((sym (second form)) (value-form (third form)))
+            `(handler-case
+                 (let ((value ,value-form))
+                   (clysm-sys::%compile-time-constant ',sym value)
+                   ,@(unless (eq (symbol-package sym) (find-package :cl))
+                       `((proclaim '(special ,sym))
+                         (setf (symbol-value ',sym) value))))
+               (error () (clysm-sys::%compile-time-special ',sym))))))
+  (setf (macro-function 'clysm-sys::%host-define-compiler-macro)
+        (lambda (form env)
+          (declare (ignore env))
+          (destructuring-bind (name ll &rest body) (cdr form)
+            `(setf (gethash ',name *compiler-macros*)
+                   (host-compile ',(make-host-macro-expander name ll body))))))
+  (setf (macro-function 'clysm-sys::%ct-initial-value)
+        (lambda (form env)
+          (declare (ignore env))
+          (let* ((sym (second form)) (vform (third form))
+                 (value (cond ((or (numberp vform) (characterp vform) (stringp vform) (keywordp vform)
+                                   (null vform) (eq vform t))
+                               (list vform))
+                              ((and (consp vform) (eq (car vform) 'quote)) (list (second vform)))
+                              (t nil))))
+            (if value
+                `(setf (gethash ',sym *initial-symbol-values*) ',value)
+                `(remhash ',sym *initial-symbol-values*))))))

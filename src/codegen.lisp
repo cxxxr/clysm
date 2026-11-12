@@ -121,7 +121,16 @@
   (loop for (name code) in (reverse *runtime-consts*)
         append `(,@code (:global.set ,name))))
 
+(defvar *live-constants* nil "live mode: list of (global-name . object), reversed")
+
 (defun const-global (obj)
+  (when *live-mode*
+    ;; the constant is the live object itself, passed in at instantiation
+    (return-from const-global
+      (or (gethash obj *const-table*)
+          (let ((name (list :lconst (incf *const-counter*))))
+            (push (cons name obj) *live-constants*)
+            (setf (gethash obj *const-table*) name)))))
   (let ((table (if (stringp obj) *const-string-table* *const-table*)))
     (when (and (not (gethash obj table)) (long-constant-p obj))
       (let ((name (list :rconst (incf *const-counter*))))

@@ -29,7 +29,12 @@
 ;;; macroexpansion
 ;;; ------------------------------------------------------------
 
+(defvar *foreign-env-macroexpand-hook* nil
+  "called for environments that are not interpreter environments (the embedded compiler's)")
+
 (defun macroexpand-1 (form &optional env)
+  (when (and env (not (listp env)) *foreign-env-macroexpand-hook*)
+    (return-from macroexpand-1 (funcall *foreign-env-macroexpand-hook* form env)))
   (cond ((and (consp form) (symbolp (car form)))
          (let ((e (and env (%env-fun env (car form)))))
            (cond ((and e (eq (car e) :fun)) (values form nil))
@@ -250,6 +255,8 @@
     (load-time-value (%eval (cadr form) nil))
     (progv (progv (%eval (cadr form) env) (%eval (caddr form) env) (%eval-body (cdddr form) env)))
     (%defun (let ((name (%eval (cadr form) env)) (fn (%eval (caddr form) env)))
+              (when (and (null env) (consp (caddr form)) (eq (car (caddr form)) 'function))
+                (%put (%function-name-symbol name) '%lambda-source (cadr (caddr form))))
               (%set-fdefinition name fn)
               (when (and (symbolp name) (null (%closure-name fn))) (%set-closure-name fn name))
               name))
@@ -365,7 +372,12 @@
 ;;; compile, load
 ;;; ------------------------------------------------------------
 
+(defvar *native-compile-hook* nil "set when the compiler is part of the image")
+(defvar *native-eval-hook* nil "when set, the REPL compiles each form natively")
+
 (defun compile (name &optional definition)
+  (when *native-compile-hook*
+    (return-from compile (funcall *native-compile-hook* name definition)))
   (let ((fn (cond ((functionp definition) definition)
                   (definition (eval (if (and (consp definition) (eq (car definition) 'lambda))
                                         `(function ,definition) definition)))
@@ -396,7 +408,8 @@
           (loop
             (let ((form (read stream nil %eof-marker)))
               (when (eq form %eof-marker) (return t))
-              (let ((vals (multiple-value-list (eval form))))
+              (let ((vals (multiple-value-list
+                           (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
                 (when print (format t "~&~{~S~^ ~}~%" vals)))))))))
 
 (defun compile-file (input-file &key output-file verbose print external-format)
@@ -416,7 +429,7 @@
 
 (defun %repl-eval-print (form)
   (setq - form)
-  (let ((vals (multiple-value-list (eval form))))
+  (let ((vals (multiple-value-list (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
     (setq +++ ++ ++ + + -)
     (setq /// // // / / vals)
     (setq *** ** ** * * (car vals))

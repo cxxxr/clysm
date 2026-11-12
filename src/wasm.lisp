@@ -102,7 +102,11 @@
   (data (make-array 0 :adjustable t :fill-pointer 0))    ; passive data segments (octet vectors)
   (declared-refs (make-hash-table :test 'equal))
   (start nil)
-  (frozen nil))
+  (frozen nil)
+  (base-types nil)                                       ; size of the first rec group
+  (global-imports (make-array 0 :adjustable t :fill-pointer 0)) ; (name type mutable module field)
+  (tag-imports (make-array 0 :adjustable t :fill-pointer 0))    ; (name type module field)
+  (nonnull-globals (make-hash-table :test 'equal)))     ; nullable globals read as non-null
 
 (defun add-type (m name def)
   "DEF is (:func params results) | (:struct fields) | (:array field) optionally
@@ -145,8 +149,20 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
 (defun declare-func-ref (m name)
   (setf (gethash name (wasm-module-declared-refs m)) t))
 
+(defun add-import-global (m name type mutable module field)
+  (let ((idx (fill-pointer (wasm-module-global-imports m))))
+    (vector-push-extend (list name type mutable module field) (wasm-module-global-imports m))
+    (setf (gethash name (wasm-module-global-table m)) idx)
+    idx))
+
+(defun add-import-tag (m name type module field)
+  (let ((idx (fill-pointer (wasm-module-tag-imports m))))
+    (vector-push-extend (list name type module field) (wasm-module-tag-imports m))
+    (setf (gethash name (wasm-module-tag-table m)) idx)
+    idx))
+
 (defun add-global (m name type mutable init)
-  (let ((idx (fill-pointer (wasm-module-globals m))))
+  (let ((idx (+ (fill-pointer (wasm-module-global-imports m)) (fill-pointer (wasm-module-globals m)))))
     (vector-push-extend (list name type mutable init) (wasm-module-globals m))
     (setf (gethash name (wasm-module-global-table m)) idx)
     idx))
@@ -158,7 +174,7 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
       (error "wasm: unknown global ~S" name)))
 
 (defun add-tag (m name type)
-  (let ((idx (fill-pointer (wasm-module-tags m))))
+  (let ((idx (+ (fill-pointer (wasm-module-tag-imports m)) (fill-pointer (wasm-module-tags m)))))
     (vector-push-extend (list name type) (wasm-module-tags m))
     (setf (gethash name (wasm-module-tag-table m)) idx)
     idx))
@@ -397,7 +413,8 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
         (:local.get (emit-byte buf #x20) (emit-u32 buf (local-index (first args))))
         (:local.set (emit-byte buf #x21) (emit-u32 buf (local-index (first args))))
         (:local.tee (emit-byte buf #x22) (emit-u32 buf (local-index (first args))))
-        (:global.get (emit-byte buf #x23) (emit-u32 buf (global-index m (first args))))
+        (:global.get (emit-byte buf #x23) (emit-u32 buf (global-index m (first args)))
+         (when (gethash (first args) (wasm-module-nonnull-globals m)) (emit-byte buf #xD4)))
         (:global.set (emit-byte buf #x24) (emit-u32 buf (global-index m (first args))))
         (:i32.const (emit-byte buf #x41) (emit-sleb buf (let ((v (first args)))
                                                            (if (>= v (expt 2 31)) (- v (expt 2 32)) v))))
@@ -513,23 +530,36 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
     (emit-bytes out #(#x00 #x61 #x73 #x6D #x01 #x00 #x00 #x00))
     ;; Encode function bodies first, so that ref.func declarations are collected.
     (let ((bodies (map 'list (lambda (f) (encode-function-body m f)) (wasm-module-funcs m))))
-      ;; type section: one rec group containing everything
-      (let ((b (make-buf)))
-        (emit-u32 b 1)
+      ;; type section: the base types form one rec group (identical in every
+      ;; module, so that types are shared across modules); types added later
+      ;; are singleton groups
+      (let* ((b (make-buf))
+             (types (wasm-module-types m))
+             (base (or (wasm-module-base-types m) (length types))))
+        (emit-u32 b (+ 1 (- (length types) base)))
         (emit-byte b #x4E)
-        (emit-u32 b (length (wasm-module-types m)))
-        (loop for (nil . def) across (wasm-module-types m)
-              do (emit-subtype m b def))
+        (emit-u32 b base)
+        (loop for i below base do (emit-subtype m b (cdr (aref types i))))
+        (loop for i from base below (length types)
+              do (emit-subtype m b (cdr (aref types i))))
         (emit-section out 1 b))
       ;; imports
-      (when (plusp (length (wasm-module-imports m)))
+      (when (plusp (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
+                      (length (wasm-module-tag-imports m))))
         (let ((b (make-buf)))
-          (emit-u32 b (length (wasm-module-imports m)))
+          (emit-u32 b (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
+                         (length (wasm-module-tag-imports m))))
           (loop for f across (wasm-module-imports m)
                 do (emit-name b (wasm-func-import-module f))
                    (emit-name b (wasm-func-import-name f))
                    (emit-byte b 0)
                    (emit-u32 b (type-index m (wasm-func-type f))))
+          (loop for (nil type mutable module field) across (wasm-module-global-imports m)
+                do (emit-name b module) (emit-name b field)
+                   (emit-byte b 3) (emit-valtype m b type) (emit-byte b (if mutable 1 0)))
+          (loop for (nil type module field) across (wasm-module-tag-imports m)
+                do (emit-name b module) (emit-name b field)
+                   (emit-byte b 4) (emit-byte b 0) (emit-u32 b (type-index m type)))
           (emit-section out 2 b)))
       ;; function section
       (let ((b (make-buf)))
@@ -562,7 +592,8 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
               (emit-name b name)
               (ecase kind
                 (:func (emit-byte b 0) (emit-u32 b (func-index m ref)))
-                (:global (emit-byte b 3) (emit-u32 b (global-index m ref))))))
+                (:global (emit-byte b 3) (emit-u32 b (global-index m ref)))
+                (:tag (emit-byte b 4) (emit-u32 b (tag-index m ref))))))
           (emit-section out 7 b)))
       ;; start
       (when (wasm-module-start m)
