@@ -99,14 +99,16 @@
 
 (defun arrayp (x) (or (%simple-array-p x) (%mdarray-p x)))
 (defun simple-vector-p (x) (%simple-vector-p x))
+(defun %mdvector-p (x)
+  "A non-simple array of rank 1 (rank 0 arrays have no dimensions)."
+  (and (%mdarray-p x) (consp (%mdarray-dims x)) (null (cdr (%mdarray-dims x)))))
 (defun vectorp (x)
-  (or (%simple-array-p x) (and (%mdarray-p x) (null (cdr (%mdarray-dims x))))))
+  (or (%simple-array-p x) (%mdvector-p x)))
 (defun stringp (x)
-  (or (%simple-string-p x) (and (%mdarray-p x) (null (cdr (%mdarray-dims x)))
-                                (%simple-string-p (%array-storage x)))))
+  (or (%simple-string-p x) (and (%mdvector-p x) (%simple-string-p (%array-storage x)))))
 (defun simple-string-p (x) (%simple-string-p x))
 (defun bit-vector-p (x)
-  (or (%bits-p x) (and (%mdarray-p x) (null (cdr (%mdarray-dims x))) (%bits-p (%array-storage x)))))
+  (or (%bits-p x) (and (%mdvector-p x) (%bits-p (%array-storage x)))))
 (defun simple-bit-vector-p (x) (%bits-p x))
 
 (defun %array-storage (a)

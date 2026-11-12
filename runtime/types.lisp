@@ -79,9 +79,16 @@
   (and (or (eq lo '*) (if (consp lo) (> x (car lo)) (>= x lo)))
        (or (eq hi '*) (if (consp hi) (< x (car hi)) (<= x hi)))))
 
+(defun %simple-array-object-p (x)
+  "Simple arrays: the primitive vectors, and multidimensional arrays that are
+neither adjustable nor displaced and have no fill pointer."
+  (or (%simple-array-p x)
+      (and (%mdarray-p x) (not (array-has-fill-pointer-p x))
+           (not (adjustable-array-p x)) (not (%displaced-p x)))))
+
 (defun %array-type-match (x et dims simple)
   (and (arrayp x)
-       (or (not simple) (%simple-array-p x) (and (%mdarray-p x) nil))
+       (or (not simple) (%simple-array-object-p x))
        (or (eq et '*) (equal (array-element-type x) (%normalize-element-type et))
            (and (eq (%normalize-element-type et) t) (eq (array-element-type x) t)))
        (cond ((eq dims '*) t)
@@ -124,7 +131,7 @@
         (vector (vectorp x))
         (simple-vector (%simple-vector-p x))
         (array (arrayp x))
-        (simple-array (%simple-array-p x))
+        (simple-array (%simple-array-object-p x))
         (bit-vector (bit-vector-p x))
         (simple-bit-vector (%bits-p x))
         (sequence (or (listp x) (vectorp x)))
