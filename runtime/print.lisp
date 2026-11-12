@@ -28,8 +28,19 @@
 (defvar *standard-readtable* nil)
 
 (defmacro print-unreadable-object ((object stream &key type identity) &body body)
-  `(print-unreadable-object* ,object ,stream ,type ,identity
-                             ,(if body `(lambda () ,@body nil) nil)))
+  ;; the body is called with the stream actually printed to (a pretty
+  ;; stream when *print-pretty*), bound to STREAM when it is a variable
+  (let* ((var (cond ((null stream) '*standard-output*)
+                    ((eq stream t) '*terminal-io*)
+                    ((symbolp stream) stream)
+                    (t nil)))
+         (s (gensym "STREAM")))
+    `(print-unreadable-object* ,object ,stream ,type ,identity
+                               ,(if body
+                                    `(lambda (,s)
+                                       (declare (ignorable ,s))
+                                       ,(if var `(let ((,var ,s)) ,@body nil) `(progn ,@body nil)))
+                                    nil))))
 
 ;;; ------------------------------------------------------------
 ;;; entry points

@@ -581,7 +581,7 @@
                (write (type-of object) :stream s :circle nil :level nil :length nil)
                (write-char #\Space s)
                (when body-fn (pprint-newline :fill s)))
-             (when body-fn (funcall body-fn))
+             (when body-fn (funcall body-fn s))
              (when identity
                (when (or body-fn (not type)) (write-char #\Space s))
                (pprint-newline :fill s)
