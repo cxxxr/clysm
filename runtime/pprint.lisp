@@ -303,7 +303,10 @@ include SUFFIX-WIDTH and TRAILING."
 (defun %call-with-logical-block (stream object prefix suffix body)
   "BODY is called with a capture stream and the list."
   (let ((s (%output-stream stream)))
-    (cond ((not *print-pretty*)
+    (cond ((not (listp object))
+           ;; not a list: print it with WRITE (CLHS)
+           (%write-object object s))
+          ((not *print-pretty*)
            (write-string prefix s)
            (catch '%pprint-block-exit (funcall body s object))
            (write-string suffix s))

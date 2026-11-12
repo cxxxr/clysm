@@ -302,7 +302,7 @@
         ((%double-float-p x) (values 'double-float (list (%iv (rational x) nil (rational x) nil))))
         ((keywordp x) (values 'keyword (list :in x)))
         ((symbolp x) (values 'symbol (list :in x)))
-        ((characterp x) (values (if (< (char-code x) 128) 'base-char 'extended-char) (list :in x)))
+        ((characterp x) (values 'base-char (list :in x)))   ; base-char = character
         ((%complexp x) (values (cond ((%single-float-p (realpart x)) 'complex-single-float)
                                      ((%double-float-p (realpart x)) 'complex-double-float)
                                      (t 'complex-rational))
@@ -424,10 +424,10 @@
                     (%type-or (%numeric-type '(integer ratio single-float double-float) nil)
                               (%complex-type nil))))
         (complex (if (> (nargs) 1) :unknown (%complex-type args)))
-        (character (if args :unknown (list (cons 'base-char (list :out)) (cons 'extended-char (list :out)))))
-        ((base-char) (if args :unknown (list (cons 'base-char (list :out)))))
+        (character (if args :unknown (list (cons 'base-char (list :out)))))
+        ((base-char) (if args :unknown (list (cons 'base-char (list :out)))))   ; = character
         ((standard-char) (if args :unknown (list (cons 'base-char (cons :in *standard-chars*)))))
-        ((extended-char) (if args :unknown (list (cons 'extended-char (list :out)))))
+        ((extended-char) (if args :unknown nil))
         (symbol (if args :unknown (list (cons 'symbol (list :out)) (cons 'keyword (list :out)))))
         (keyword (if args :unknown (list (cons 'keyword (list :out)))))
         (null (if args :unknown (list (cons 'symbol (list :in nil)))))

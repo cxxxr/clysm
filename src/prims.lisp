@@ -148,7 +148,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
 (defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
 (defprim * (a b) :value `(,@a ,@b (:call :mul)))
-(defprim - (a) :value `(,@(fixnum-code 0) ,@a (:call :sub)))
+(defprim - (a) :value `(,@a (:call :negate)))
 (defprim 1+ (a) :value `(,@a ,@(fixnum-code 1) (:call :add)))
 (defprim 1- (a) :value `(,@a ,@(fixnum-code 1) (:call :sub)))
 (defprim < (a b) :test (inline-fixnum-cmp a b :i32.lt_s '((:call :lt))))
@@ -620,20 +620,41 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
   (arith :sub :i32.sub clysm-sys::%generic-sub)
   (arith :mul nil clysm-sys::%generic-mul :mul t))
 
-(defhelper :lt :ee-i ()
+(defhelper :negate :e-e ((x :i32))
+  ;; fixnums other than most-negative-fixnum negate inline; (- 0.0) must be -0.0
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee x)
+         (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+         (:local.get x) (:i32.const ,(- +char-tag+)) :i32.ne :i32.and
+         (:if nil nil ((:i32.const 0) (:local.get x) :i32.sub :ref.i31 :return))))
+  '(:local.get 0)
+  `(:global.get ,(sym-global 'clysm-sys::%negate)) '(:call (:callsym 1)))
+
+(defhelper :lt :ee-i ((x :i32) (y :i32))
+  ;; fast path for two fixnums (characters are i31 too and must go the slow way)
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.get 1) (:ref.cast! :i31) :i31.get_s
-         :i32.lt_s :return))
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.set x)
+         (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.set y)
+         (:local.get x) (:i32.const ,+char-tag+) :i32.add
+         (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
+         (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+         (:if nil nil ((:local.get x) (:local.get y) :i32.lt_s :return))))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-lt)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)
 
-(defhelper :num-eq :ee-i ()
+(defhelper :num-eq :ee-i ((x :i32) (y :i32))
+  ;; fast path for two fixnums (characters are i31 too and must go the slow way)
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.get 1) (:ref.cast! :i31) :i31.get_s
-         :i32.eq :return))
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.set x)
+         (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.set y)
+         (:local.get x) (:i32.const ,+char-tag+) :i32.add
+         (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
+         (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+         (:if nil nil ((:local.get x) (:local.get y) :i32.eq :return))))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-num-eq)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)
