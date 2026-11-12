@@ -81,12 +81,19 @@
     (dolist (s slots)
       (multiple-value-bind (form readers writers sname) (%parse-slot-spec s)
         (push form slotd-forms)
-        (dolist (r readers)
-          (push `(defun ,r (c) (%slot-value-by-name c ',sname)) accessor-forms)
-          (push `(%define-condition-accessor ',r ',name #',r nil) accessor-forms))
-        (dolist (w writers)
-          (push `(defun ,w (v c) (%set-slot-value-by-name c ',sname v)) accessor-forms)
-          (push `(%define-condition-accessor ',w ',name #',w t) accessor-forms))))
+        ;; with CLOS present (in the image) readers and writers are methods;
+        ;; when the runtime itself is compiled they are plain functions
+        (let ((generic (and (boundp '*condition-accessor-hook*) (symbol-value '*condition-accessor-hook*))))
+          (dolist (r readers)
+            (push (if generic
+                      `(%define-condition-accessor ',r ',name (lambda (c) (%slot-value-by-name c ',sname)) nil)
+                      `(defun ,r (c) (%slot-value-by-name c ',sname)))
+                  accessor-forms))
+          (dolist (w writers)
+            (push (if generic
+                      `(%define-condition-accessor ',w ',name (lambda (v c) (%set-slot-value-by-name c ',sname v)) t)
+                      `(defun ,w (v c) (%set-slot-value-by-name c ',sname v)))
+                  accessor-forms)))))
     (dolist (o options)
       (case (car o)
         (:report (setq report (cadr o)))
@@ -108,8 +115,9 @@
   "set by CLOS: makes condition slot readers and writers generic functions")
 
 (defun %define-condition-accessor (name class fn writerp)
-  (when *condition-accessor-hook*
-    (funcall *condition-accessor-hook* name class fn writerp))
+  (if *condition-accessor-hook*
+      (funcall *condition-accessor-hook* name class fn writerp)
+      (%set-fdefinition name fn))
   name)
 
 (defun %define-condition-class (name supers direct-slots default-initargs)
@@ -303,7 +311,9 @@
 the restarts are associated with the condition being signaled."
   ;; the compiler's %MACROEXPAND understands its environments (when the
   ;; compiler is in the image or on the host)
-  (let ((exp (if (fboundp '%macroexpand) (funcall '%macroexpand form env) (macroexpand form env))))
+  (let ((exp (if (or (listp env) (not (fboundp '%macroexpand)))
+                 (macroexpand form env)
+                 (funcall '%macroexpand form env))))
     (if (and (consp exp) (member (car exp) '(signal error cerror warn)))
         (let ((c (gensym "C")))
           (multiple-value-bind (datum args fmt)
