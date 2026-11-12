@@ -103,7 +103,14 @@
 (defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point))
 (defvar *modules* nil)
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
-(defun require (name &optional paths) (declare (ignore paths)) (provide name))
+(defun require (name &optional pathnames)
+  (let ((name (string name)))
+    (unless (member name *modules* :test #'string=)
+      (cond (pathnames
+             (dolist (p (if (listp pathnames) pathnames (list pathnames)))
+               (load p)))
+            (t (error "REQUIRE: don't know how to load module ~S" name))))
+    nil))
 
 (defun documentation (x doc-type) (declare (ignore doc-type)) (get (if (symbolp x) x 'nil) '%documentation))
 (defun %set-documentation (value x doc-type) (declare (ignore doc-type))

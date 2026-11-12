@@ -78,8 +78,8 @@
     (flet ((comp (x) (if (or (null x) (string= x "")) nil (%wild-word (string-upcase x)))))
       (%make-logical-pathname
        host :unspecific
-       (and dir-part (cons (if relative :relative :absolute)
-                           (mapcar (lambda (d) (if (string= d "..") :up (comp d))) dirs)))
+       (cons (if relative :relative :absolute)
+             (mapcar (lambda (d) (if (string= d "..") :up (comp d))) dirs))
        (comp (first fields)) (comp (second fields))
        (let ((v (third fields)))
          (cond ((null v) nil)
@@ -425,7 +425,6 @@
                   (when (pathname-match-p full pat) (push full r))))))))))
 
 (defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
-(defun compile-file-pathname (p &key output-file) (pathname (or output-file p)))
 
 (defmethod print-object ((p pathname) stream)
   (if (or *print-escape* *print-readably*)

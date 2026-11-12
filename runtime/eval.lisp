@@ -396,27 +396,158 @@
 (defvar *compile-file-pathname* nil)
 (defvar *compile-file-truename* nil)
 
-(defun load (filespec &key verbose print (if-does-not-exist t) external-format)
-  (declare (ignore verbose external-format))
-  (let ((stream (if (streamp filespec) filespec
-                    (open filespec :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
+;;; Compiled files.  COMPILE-FILE performs the file compiler's toplevel
+;;; processing (CLHS 3.2.3.1): macros are expanded, EVAL-WHEN and definers
+;;; with compile-time side effects are evaluated, and the forms to be
+;;; processed at load time are written to the output file, printed readably
+;;; with every symbol package-qualified.  LOAD recognizes such a file by its
+;;; first line and reads it with standard syntax; each form is compiled when
+;;; it is loaded.
+
+(defvar %fasl-header ";;; Clysm compiled file")
+
+(defun %eval-toplevel (form)
+  (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))
+
+(defun %load-file-stream-p (stream)
+  (let ((pos (file-position stream)))
+    (let ((line (read-line stream nil nil)))
+      (if (and line (string= line %fasl-header))
+          t
+          (progn (file-position stream pos) nil)))))
+
+(defun %load-pathname-of (filespec)
+  (cond ((typep filespec 'file-stream) (pathname filespec))
+        ((streamp filespec) nil)
+        (t (merge-pathnames filespec))))
+
+(defun %call-with-fasl-syntax (fn)
+  (let ((*package* *keyword-package*)
+        (*print-array* t) (*print-base* 10) (*print-case* :upcase) (*print-circle* t)
+        (*print-escape* t) (*print-gensym* t) (*print-length* nil) (*print-level* nil)
+        (*print-lines* nil) (*print-pretty* nil) (*print-radix* nil)
+        (*print-readably* t) (*print-right-margin* nil) (*read-base* 10)
+        (*read-default-float-format* 'single-float) (*read-eval* t) (*read-suppress* nil)
+        (*readtable* *standard-readtable*))
+    (funcall fn)))
+
+(defun %load-stream (stream print)
+  (let ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream))))
+    (loop
+      (let ((form (if fasl
+                      (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
+                      (read stream nil %eof-marker))))
+        (when (eq form %eof-marker) (return t))
+        (let ((vals (multiple-value-list (%eval-toplevel form))))
+          (when print (format t "~&~{~S~^ ~}~%" vals)))))))
+
+(defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
+                           (if-does-not-exist t) external-format)
+  (declare (ignore external-format))
+  (let* ((path (%load-pathname-of filespec))
+         (stream (if (streamp filespec) filespec
+                     (open (if (and (null (pathname-type path)) (not (probe-file path)))
+                               (or (probe-file (make-pathname :type "lisp" :defaults path))
+                                   (probe-file (make-pathname :type "fasl" :defaults path))
+                                   path)
+                               path)
+                           :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
     (if (null stream)
         nil
         (let ((*package* *package*) (*readtable* *readtable*)
-              (*load-pathname* (if (streamp filespec) nil (merge-pathnames filespec)))
-              (*load-truename* (if (streamp filespec) nil (merge-pathnames filespec))))
-          (loop
-            (let ((form (read stream nil %eof-marker)))
-              (when (eq form %eof-marker) (return t))
-              (let ((vals (multiple-value-list
-                           (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
-                (when print (format t "~&~{~S~^ ~}~%" vals)))))))))
+              (*load-pathname* path)
+              (*load-truename* (and path (truename stream))))
+          (when verbose (format t "~&; loading ~S~%" (or path filespec)))
+          (unwind-protect (%load-stream stream print)
+            (unless (streamp filespec) (close stream)))))))
 
-(defun compile-file (input-file &key output-file verbose print external-format)
-  (declare (ignore output-file verbose print external-format))
-  ;; there is no file compiler in the image; load the source instead
-  (load input-file)
-  (values (pathname input-file) nil nil))
+(defparameter %compile-time-definers
+  '(defmacro in-package defpackage declaim deftype defstruct defclass define-condition
+    defsetf define-setf-expander define-modify-macro define-symbol-macro
+    define-compiler-macro define-method-combination))
+
+(defparameter %load-time-definers
+  '(defun defvar defparameter defconstant defgeneric defmethod))
+
+(defun %cf-emit (form out)
+  (%call-with-fasl-syntax
+   (lambda ()
+     (handler-case (prin1 form out)
+       (print-not-readable ()
+         (let ((*print-readably* nil)) (prin1 form out))))
+     (terpri out))))
+
+(defun %cf-toplevel-expansion (form)
+  "Expand FORM until it is a form that toplevel processing treats specially.
+Returns the expansion, or NIL when FORM is an ordinary form."
+  (loop
+    (unless (and (consp form) (symbolp (car form))) (return nil))
+    (let ((op (car form)))
+      (when (or (member op '(progn eval-when)) (member op %compile-time-definers))
+        (return form))
+      (when (or (member op %load-time-definers) (special-operator-p op))
+        (return nil))
+      (multiple-value-bind (new changed) (macroexpand-1 form)
+        (unless changed (return nil))
+        (setq form new)))))
+
+(defun %cf-process (form out compile-time-too)
+  (let ((x (%cf-toplevel-expansion form)))
+    (cond
+      ((null x)
+       (when compile-time-too (%eval-toplevel form))
+       (%cf-emit form out))
+      ((eq (car x) 'progn)
+       (dolist (f (cdr x)) (%cf-process f out compile-time-too)))
+      ((eq (car x) 'eval-when)
+       (let* ((sits (second x))
+              (ct (or (member :compile-toplevel sits) (member 'compile sits)))
+              (lt (or (member :load-toplevel sits) (member 'load sits)))
+              (ex (or (member :execute sits) (member 'eval sits))))
+         (cond ((and lt (or ct (and ex compile-time-too)))
+                (dolist (f (cddr x)) (%cf-process f out t)))
+               (lt (dolist (f (cddr x)) (%cf-process f out nil)))
+               ((or ct (and ex compile-time-too))
+                (%eval-toplevel `(progn ,@(cddr x)))))))
+      (t (%eval-toplevel x)
+         (%cf-emit x out)))))
+
+(defun compile-file-pathname (input-file &key output-file &allow-other-keys)
+  (let* ((in (if (typep input-file 'file-stream) (pathname input-file) (pathname input-file)))
+         (default (make-pathname :type "fasl" :version nil
+                                 :defaults (translate-logical-pathname (merge-pathnames in)))))
+    (if output-file
+        (let ((o (if (streamp output-file) (pathname output-file) (pathname output-file))))
+          (if (typep o 'logical-pathname)
+              (translate-logical-pathname (merge-pathnames o))
+              (merge-pathnames o default)))
+        default)))
+
+(defun compile-file (input-file &key output-file (verbose *compile-verbose*) (print *compile-print*)
+                                     external-format)
+  (declare (ignore external-format))
+  (let* ((in-path (merge-pathnames (pathname input-file)))
+         (out-path (compile-file-pathname input-file :output-file output-file))
+         (warnings-p nil) (failure-p nil))
+    (with-open-file (in in-path :direction :input)
+      (let ((*compile-file-pathname* in-path)
+            (*compile-file-truename* (truename in))
+            (*package* *package*) (*readtable* *readtable*))
+        (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
+        (handler-bind ((warning (lambda (c)
+                                  (setq warnings-p t)
+                                  (unless (typep c 'style-warning) (setq failure-p t))))
+                       (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
+          (with-open-file (out out-path :direction :output :if-exists :supersede
+                                        :if-does-not-exist :create)
+            (write-line %fasl-header out)
+            (loop
+              (let ((form (read in nil %eof-marker)))
+                (when (eq form %eof-marker) (return))
+                (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+                (%cf-process form out nil)))))
+        (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
+    (values (truename out-path) warnings-p failure-p)))
 
 ;;; ------------------------------------------------------------
 ;;; REPL
