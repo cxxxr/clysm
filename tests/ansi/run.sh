@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Run the ANSI test suite (third_party/ansi-test) on Clysm.
 #   tests/ansi/run.sh [CATEGORY...]
 # Each category runs in its own process; if a test crashes the process (a Wasm
@@ -10,10 +10,11 @@ IMAGE=$(bin/clysm image-native) || exit 1
 CATS=${*:-"symbols eval-and-compile data-and-control-flow iteration objects conditions cons arrays hash-tables packages numbers sequences structures types-and-classes strings characters pathnames files streams printer reader system-construction environment misc"}
 TIMEOUT=${ANSI_TIMEOUT:-1800}   # whole process
 STALL=${ANSI_STALL:-30}          # seconds without progress before a test is considered hung
+JOBS=${ANSI_JOBS:-8}             # categories run in parallel
 mkdir -p build/ansi
 : > build/ansi/summary.txt
-for cat in $CATS; do
-  [ -f "third_party/ansi-test/$cat/load.lsp" ] || { echo "no category $cat"; continue; }
+run_category() {
+  cat=$1
   log="build/ansi/$cat.log"; : > "$log"
   start=0
   while :; do
@@ -44,8 +45,18 @@ for cat in $CATS; do
   fail=$(grep -ac "^@@ [0-9]* FAIL" "$log")
   crash=$(grep -ac "^@@ [0-9]* CRASH" "$log")
   if grep -aq "^@@LOADFAIL" "$log"; then status="(load failed)"; else status=""; fi
-  printf "%-24s total %5s  pass %5s  fail %5s  crash %4s %s\n" "$cat" "${total:-0}" "$pass" "$fail" "$crash" "$status" | tee -a build/ansi/summary.txt
+  printf "%-24s total %5s  pass %5s  fail %5s  crash %4s %s\n" "$cat" "${total:-0}" "$pass" "$fail" "$crash" "$status" > "build/ansi/$cat.sum"
+}
+running=0
+for cat in $CATS; do
+  [ -f "third_party/ansi-test/$cat/load.lsp" ] || { echo "no category $cat"; continue; }
+  rm -f "build/ansi/$cat.sum"
+  run_category "$cat" &
+  running=$((running + 1))
+  if [ $running -ge $JOBS ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
 done
+wait
+for cat in $CATS; do [ -f "build/ansi/$cat.sum" ] && cat "build/ansi/$cat.sum"; done | tee build/ansi/summary.txt
 awk '{t+=$3; p+=$5; f+=$7; c+=$9} END {printf "%-24s total %5d  pass %5d  fail %5d  crash %4d  (%.1f%%)\n", "ALL", t, p, f, c, (t ? 100*p/t : 0)}' build/ansi/summary.txt | tee -a build/ansi/summary.txt
 # the tests create and delete files in the suite's sandbox: restore the submodule
 git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
