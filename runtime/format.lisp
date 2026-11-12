@@ -227,7 +227,9 @@ printing directives inside ~<...~> justification."
   (let ((ps nil))
     (labels ((next ()
                (when *fmt-popper* (funcall *fmt-popper*))
-               (if (consp args) (pop args) (%fmt-error "no more arguments")))
+               (cond ((consp args) (pop args))
+                     ((null args) (%fmt-error "no more arguments"))
+                     (t (error 'type-error :datum args :expected-type 'list))))
              (params (max)
                (let ((raw (%fdir-params dir)))
                  (when (> (length raw) max)
@@ -379,7 +381,7 @@ printing directives inside ~<...~> justification."
                    (colon (unless (= (length clauses) 2) (%fmt-error "~~:[ must have exactly two clauses"))
                           (when ps (%fmt-error "~~:[ takes no parameters"))
                           (setq args (%fmt-run stream (if (next) (cadr clauses) (car clauses)) orig args)))
-                   (t (let* ((index (if ps (int 0 nil) (next)))
+                   (t (let* ((index (or (int 0 nil) (next)))
                              (default (and seps (%fdir-colon (car (last seps)))))
                              (nclauses (if default (- (length clauses) 1) (length clauses)))
                              (clause (cond ((not (integerp index))
@@ -397,7 +399,7 @@ printing directives inside ~<...~> justification."
              (if at
                  (setq args (%fmt-iterate stream dir orig args colon max-count insides indirect))
                  (let ((arg (next)))
-                   (unless (listp arg) (%fmt-error "~~{ argument must be a list: ~S" arg))
+                   (unless (listp arg) (error 'type-error :datum arg :expected-type 'list))
                    (let ((*fmt-popper* nil))
                      (%fmt-iterate stream dir arg arg colon max-count insides indirect))))))
           (#\<
@@ -422,7 +424,9 @@ printing directives inside ~<...~> justification."
                          (a1 (eql a1 0))
                          (colon (null *fmt-outside-args*))
                          (t (null args)))
-               (throw (if colon '%fmt-up-up-and-out '%fmt-up-and-out) args))))
+               (if colon
+                   (throw '%fmt-up-up-and-out *fmt-outside-args*)
+                   (throw '%fmt-up-and-out args)))))
           (#\_
            (params 0)
            (pprint-newline (cond ((and colon at) :mandatory) (colon :fill) (at :miser) (t :linear)) stream))
@@ -499,8 +503,10 @@ printing directives inside ~<...~> justification."
                    (%fmt-run stream insides orig args)))
              (bind-args (orig args)
                (if colon
-                   (let ((arg (if (consp args) (pop args) (%fmt-error "no more arguments"))))
-                     (unless (listp arg) (%fmt-error "~~:{ argument must be a list of lists: ~S" arg))
+                   (let ((arg (cond ((consp args) (pop args))
+                                    ((null args) (%fmt-error "no more arguments"))
+                                    (t (error 'type-error :datum args :expected-type 'list)))))
+                     (unless (listp arg) (error 'type-error :datum arg :expected-type 'list))
                      (let ((*fmt-popper* nil) (*fmt-outside-args* args))
                        (catch '%fmt-up-and-out (guts arg arg)))
                      args)
@@ -590,7 +596,9 @@ printing directives inside ~<...~> justification."
                      (vals (mapcar (lambda (p)
                                      (case p
                                        (:arg (when *fmt-popper* (funcall *fmt-popper*))
-                                        (if (consp args) (pop args) (%fmt-error "no more arguments")))
+                                        (cond ((consp args) (pop args))
+                     ((null args) (%fmt-error "no more arguments"))
+                     (t (error 'type-error :datum args :expected-type 'list))))
                                        (:remaining (%fmt-list-length args))
                                        (t p)))
                                    raw)))
@@ -718,7 +726,7 @@ printing directives inside ~<...~> justification."
 ;;; ------------------------------------------------------------
 
 (defun %fmt-nonfinite-p (x)
-  (and (floatp x) (or (/= x x) (and (/= x 0) (= x (* x 2))))))
+  (and (floatp x) (let ((d (%to-double x))) (or (%double-nan-p d) (%float-infinite-p d)))))
 
 (defun %fmt-float-arg (x)
   "Rationals are printed as single floats (or double floats if too large)."
