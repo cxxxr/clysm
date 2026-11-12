@@ -69,7 +69,7 @@
 (defun char-name (c)
   (let ((e (assoc (char-code c) *char-names*)))
     (cond (e (cdr e))
-          ((< (char-code c) 32) (concatenate 'string "U+" (%integer-to-string (char-code c) 16)))
+          ((not (graphic-char-p c)) (concatenate 'string "U+" (%integer-to-string (char-code c) 16)))
           (t nil))))
 
 (defun name-char (name)
