@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clysm REPL</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1d1d1f; --muted: #6b6b70; --accent: #2f5d8a; --panel: #ffffff; --line: #e3e1db; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17181a; --fg: #e8e6e1; --muted: #9a9a9f; --accent: #7fb0e0; --panel: #1f2023; --line: #33343a; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+         min-height: 320px; max-height: 60vh; overflow: auto; white-space: pre-wrap;
+         font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .in { color: var(--accent); }
+  form { display: flex; gap: 8px; margin-top: 12px; }
+  textarea { flex: 1; min-height: 3.2em; resize: vertical; background: var(--panel); color: var(--fg);
+             border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+             font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button { background: var(--accent); color: var(--bg); border: 0; border-radius: 8px; padding: 0 18px;
+           font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Clysm — Common Lisp on WebAssembly GC</h1>
+  <p>The compiler output and the whole runtime run in your browser. Enter Lisp forms; Ctrl+Enter evaluates.</p>
+  <div id="log">Loading…</div>
+  <form id="f"><textarea id="src" spellcheck="false">(defun fact (n) (if (< n 2) 1 (* n (fact (1- n)))))
+(fact 30)</textarea><button>Eval</button></form>
+</main>
+<script type="module">
+  import { loadClysm } from './clysm.mjs';
+  const log = document.getElementById('log');
+  const add = (text, cls) => { const s = document.createElement('span'); if (cls) s.className = cls;
+                               s.textContent = text; log.append(s); log.scrollTop = log.scrollHeight; };
+  const bytes = await (await fetch('clysm.wasm')).arrayBuffer();
+  log.textContent = '';
+  const lisp = await loadClysm(bytes, (t) => add(t));
+  const src = document.getElementById('src');
+  const run = () => { const code = src.value; add('* ' + code + '\n', 'in'); add(lisp.eval(code)); };
+  document.getElementById('f').addEventListener('submit', (e) => { e.preventDefault(); run(); });
+  src.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); } });
+</script>
+</body>
+</html>

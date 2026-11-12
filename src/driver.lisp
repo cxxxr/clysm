@@ -384,6 +384,7 @@ they can be FUNCALLed and used by the interpreter."
                         :body (remove nil body))))))
       (compile-pending-lams)
       (add-export *m* "lisp_apply" :func :lisp-apply)
+      (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry
                 :body (append (initial-value-prologue)

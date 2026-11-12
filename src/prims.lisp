@@ -1021,3 +1021,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defnative vector (form env)
   `(:wasm :eqref ,(convert-args (cdr form) env)
           ((:array.new_fixed :vector ,(length (cdr form))))))
+
+(defhelper :eval-string :x-x ()
+  '(:local.get 0) '(:struct.new :foreign)
+  `(:global.get ,(sym-global 'clysm-sys::%host-eval-string)) '(:call (:callsym 1))
+  '(:ref.cast :foreign) '(:struct.get :foreign 0))

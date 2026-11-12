@@ -116,6 +116,28 @@ access), the reader with readtables, an evaluator for `eval`/`load`, and a REPL.
 Macro expanders run on the host during compilation and are also compiled into
 the image, so `macroexpand`, `eval` and the REPL can use every macro.
 
+## JavaScript interoperability (spec: externref ラッパー構造体)
+
+JavaScript values are `externref`s, which cannot be stored in Lisp data, so they
+are wrapped in a `$foreign` struct. The `JS` package converts automatically
+(numbers, strings, booleans, `NIL`→`null`, vectors/lists→arrays, functions→JS
+functions that call back into Lisp through the exported `lisp_apply`):
+
+```lisp
+(js:log "hello" 42)
+(js:call (js:global "Math") "max" 3 9 4)          ; => 9
+(js:get (js:global "Math") "PI")                  ; => 3.141592653589793d0
+(js:funcall (js:eval "(f, x) => f(x) * 2") (lambda (x) (+ x 1)) 20)   ; => 42
+(js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
+```
+
+## Running in the browser
+
+`tools/build-web.sh` builds `build/web/` (an image containing the runtime, the
+reader and the evaluator, plus `host/web/index.html`). Serve `build/` over HTTP
+and open `web/index.html` for a REPL running entirely in WebAssembly; the host
+calls the exported `eval_string`.
+
 ## Tests
 
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares

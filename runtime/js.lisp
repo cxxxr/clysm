@@ -103,3 +103,20 @@
     (js:to-js (apply f lisp-args))))
 
 (defun %foreign-type-name (x) (js:typeof x))
+
+;;; called by hosts (exported as eval_string): read and evaluate all forms in
+;;; a JS string, return the printed values as a JS string
+(defun %host-eval-string (src)
+  (let ((text (js:to-lisp src)) (out (make-string-output-stream)))
+    (with-input-from-string (s text)
+      (handler-case
+          (loop
+            (let ((form (read s nil %eof-marker)))
+              (when (eq form %eof-marker) (return))
+              (let ((vals (multiple-value-list (eval form))))
+                (setq /// // // / / vals *** ** ** * * (car vals))
+                (if vals
+                    (dolist (v vals) (prin1 v out) (terpri out))
+                    (format out "; No value~%")))))
+        (error (c) (format out "; Error: ~A~%" c))))
+    (js:to-js (get-output-stream-string out))))
