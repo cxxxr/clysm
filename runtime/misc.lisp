@@ -45,7 +45,7 @@
                (mod r limit))))
         ((and (floatp limit) (plusp limit))
          (* limit (/ (float (%random-bits state) limit) (float 268435456 limit))))
-        (t (error "RANDOM: invalid limit ~S" limit))))
+        (t (%type-error limit (quote (or (integer 1) (float (0.0))))))))
 
 ;;; ------------------------------------------------------------
 ;;; time
@@ -144,6 +144,5 @@
 (defmacro step (form) form)
 (defun gc (&key full) (declare (ignore full)) nil)
 (defun function-lambda-expression (f) (values nil t (%closure-name f)))
-(defun upgraded-array-element-type (type &optional env) (declare (ignore env)) (%normalize-element-type type))
 (defun upgraded-complex-part-type (type &optional env) (declare (ignore env)) type)
 (defun arithmetic-error-operation* (c) (arithmetic-error-operation c))
