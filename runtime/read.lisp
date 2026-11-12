@@ -81,7 +81,7 @@
 (defvar %close-paren-marker (make-symbol "CLOSE-PAREN"))
 (defvar %dot-marker (make-symbol "DOT"))
 
-(defun read (&optional stream (eof-error-p t) eof-value recursive-p)
+(defun read-preserving-whitespace (&optional stream (eof-error-p t) eof-value recursive-p)
   (declare (ignore recursive-p))
   (let* ((s (%input-stream stream))
          (x (%read-object s)))
@@ -90,8 +90,17 @@
           ((eq x %close-paren-marker) (%reader-error s "unmatched close parenthesis"))
           (t x))))
 
-(defun read-preserving-whitespace (&optional stream (eof-error-p t) eof-value recursive-p)
-  (read stream eof-error-p eof-value recursive-p))
+(defun read (&optional stream (eof-error-p t) eof-value recursive-p)
+  (let* ((s (%input-stream stream))
+         (x (read-preserving-whitespace s eof-error-p %eof-marker recursive-p)))
+    (if (eq x %eof-marker)
+        eof-value
+        (progn
+          (unless recursive-p
+            ;; consume one whitespace character following the object
+            (let ((c (%stream-read-char s)))
+              (unless (or (eq c :eof) (%whitespace[2]p c)) (unread-char c s))))
+          x))))
 
 (defun read-from-string (string &optional (eof-error-p t) eof-value &key (start 0) end preserve-whitespace)
   (declare (ignore preserve-whitespace))
