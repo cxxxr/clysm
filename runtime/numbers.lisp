@@ -486,7 +486,7 @@
 (defun * (&rest nums)
   (let ((acc 1)) (dolist (n nums acc) (setq acc (* acc n)))))
 (defun - (num &rest more)
-  (if (null more) (- 0 num)
+  (if (null more) (%negate num)
       (let ((acc num)) (dolist (n more acc) (setq acc (- acc n))))))
 (defun / (num &rest more)
   (if (null more) (%generic-div 1 num)

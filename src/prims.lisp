@@ -148,7 +148,7 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
 (defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
 (defprim * (a b) :value `(,@a ,@b (:call :mul)))
-(defprim - (a) :value `(,@(fixnum-code 0) ,@a (:call :sub)))
+;; unary - is a call to the function - (%NEGATE): (- 0 x) would lose the sign of -0.0
 (defprim 1+ (a) :value `(,@a ,@(fixnum-code 1) (:call :add)))
 (defprim 1- (a) :value `(,@a ,@(fixnum-code 1) (:call :sub)))
 (defprim < (a b) :test (inline-fixnum-cmp a b :i32.lt_s '((:call :lt))))
