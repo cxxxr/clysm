@@ -38,7 +38,9 @@
         *called-functions* (make-hash-table :test 'eq)
         *initial-symbol-values* (make-hash-table :test 'eq)
         *deferred-macros* nil
-        *macros-ready* nil)
+        *macros-ready* nil
+        *dynamic-functions* (make-hash-table :test 'eq)
+        *runtime-consts* nil)
   (setf (gethash 'clysm-sys::*catch-tags* *specials*) t)
   (init-target-packages)
   (setf *read-package* (find-target-package "COMMON-LISP-USER")))
@@ -388,7 +390,7 @@ they can be FUNCALLed and used by the interpreter."
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry
-                :body (append (initial-value-prologue)
+                :body (append (runtime-consts-prologue) (initial-value-prologue)
                        (loop for l in tops
                             append `((:global.get ,(static-closure-global l))
                                      (:call (:main ,(lam-id l))) :drop)))))
@@ -405,6 +407,9 @@ they can be FUNCALLed and used by the interpreter."
       (dolist (g (reverse *closure-globals*))
         (destructuring-bind (name type init) g
           (add-global *m* name type nil init)))
+      ;; constants built at startup (they contain long strings)
+      (dolist (g (reverse *runtime-consts*))
+        (add-global *m* (first g) :eqref t '((:ref.null :eq))))
       ;; runtime state
       (add-global *m* :mv-count :i32 t '((:i32.const 1)))
       (add-global *m* :mv-buf '(:ref :vector) nil `((:i32.const ,+mv-limit+) (:array.new_default :vector)))
@@ -463,7 +468,7 @@ they can be FUNCALLed and used by the interpreter."
     (loop for s being the hash-keys of *called-functions*
           when (gethash s *macros*)
             do (cwarn "~S was called as a function before being defined as a macro" s)
-          unless (or (gethash s *global-defuns*) (gethash s *macros*))
+          unless (or (gethash s *global-defuns*) (gethash s *macros*) (gethash s *dynamic-functions*))
             do (push s undefined))
     (when undefined
       (format *error-output* "~&; undefined functions (~D):~%;  ~{~S~^ ~}~%"

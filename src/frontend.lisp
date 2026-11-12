@@ -38,6 +38,7 @@
 (defvar *compiler-macros* (make-hash-table :test 'eq) "symbol -> host fn (form env)")
 (defvar *global-defuns* (make-hash-table :test 'eq) "symbol -> list of lams defined at toplevel")
 (defvar *lam-counter* 0)
+(defvar *dynamic-functions* (make-hash-table :test 'eq) "functions defined at runtime (generic functions)")
 (defvar *current-lam* nil)
 (defvar *warnings* nil)
 
@@ -227,6 +228,9 @@
       (when prim
         (return-from convert-compound
           `(:prim ,prim ,@(convert-args (cdr form) env)))))
+    (when (and (member op '(ensure-generic-function clysm-sys::%add-method-to))
+               (consp (second form)) (eq (car (second form)) 'quote) (symbolp (second (second form))))
+      (setf (gethash (second (second form)) *dynamic-functions*) t))
     `(:call ,op ,@(convert-args (cdr form) env))))
 
 (defun note-fun (fun)

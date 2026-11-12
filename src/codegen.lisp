@@ -87,8 +87,47 @@
         ((symbolp obj) `((:global.get ,(sym-global obj))))
         (t `((:global.get ,(const-global obj))))))
 
+(defvar *runtime-consts* nil "list of (global-name init-code) built in _start")
+(defconstant +max-fixed-elements+ 9000)
+
+(defun long-constant-p (obj &optional (depth 0))
+  (cond ((> depth 1000) nil)
+        ((stringp obj) (> (length obj) +max-fixed-elements+))
+        ((consp obj) (or (long-constant-p (car obj) (1+ depth)) (long-constant-p (cdr obj) (1+ depth))))
+        ((simple-vector-p obj) (or (> (length obj) +max-fixed-elements+)
+                                   (some (lambda (x) (long-constant-p x (1+ depth))) obj)))
+        (t nil)))
+
+(defun runtime-const-code (obj)
+  "Instructions (valid in a function body) that build OBJ."
+  (cond ((and (stringp obj) (> (length obj) +max-fixed-elements+))
+         (let ((bytes (make-array (* 4 (length obj)) :element-type '(unsigned-byte 8))))
+           (loop for c across obj for i from 0
+                 do (let ((code (char-code c)))
+                      (dotimes (k 4) (setf (aref bytes (+ (* 4 i) k)) (ldb (byte 8 (* 8 k)) code)))))
+           (let ((seg (add-data *m* bytes)))
+             `((:i32.const 0) (:i32.const ,(length obj)) (:array.new_data :string ,seg)))))
+        ((not (long-constant-p obj)) (const-init-code obj))
+        ((consp obj) `(,@(runtime-const-code (car obj)) ,@(runtime-const-code (cdr obj)) (:struct.new :cons)))
+        ((simple-vector-p obj)
+         (let ((tmp-elts (coerce obj 'list)))
+           `(,@(loop for x in tmp-elts append (runtime-const-code x))
+             ,@(if (> (length obj) +max-fixed-elements+)
+                   (error "vector constant too long (~D elements)" (length obj))
+                   `((:array.new_fixed :vector ,(length obj)))))))
+        (t (const-init-code obj))))
+
+(defun runtime-consts-prologue ()
+  (loop for (name code) in (reverse *runtime-consts*)
+        append `(,@code (:global.set ,name))))
+
 (defun const-global (obj)
   (let ((table (if (stringp obj) *const-string-table* *const-table*)))
+    (when (and (not (gethash obj table)) (long-constant-p obj))
+      (let ((name (list :rconst (incf *const-counter*))))
+        (setf (gethash obj table) name)
+        (push (list name (runtime-const-code obj)) *runtime-consts*)
+        (return-from const-global name)))
     (or (gethash obj table)
         (setf (gethash obj table)
               (new-const-global
