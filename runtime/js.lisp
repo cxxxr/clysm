@@ -63,15 +63,24 @@
   (%js-set (js:to-js object) (js:to-js key) (js:to-js value))
   value)
 
+(defun %js-result (r)
+  "Signal a Lisp error for a JavaScript exception boxed by the host's apply."
+  (when (eql (%js-typeof r) 5)
+    (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
+      (when (eql (%js-typeof msg) 4)
+        (error 'simple-error :format-control "JavaScript error: ~A"
+                             :format-arguments (list (js:to-lisp msg))))))
+  (js:to-lisp r))
+
 (defun js:call (object method &rest args)
   (let ((o (js:to-js object)))
-    (js:to-lisp (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
+    (%js-result (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
 
 (defun js:funcall (function &rest args)
-  (js:to-lisp (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
+  (%js-result (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
 
 (defun js:new (constructor &rest args)
-  (js:to-lisp (%js-new (js:to-js constructor) (%js-args args))))
+  (%js-result (%js-new (js:to-js constructor) (%js-args args))))
 
 (defun js:eval (code) (js:funcall (js:global "eval") code))
 

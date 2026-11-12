@@ -144,11 +144,13 @@
     (%make-stream :kind :string-in :buffer string :index start :end (or end len)
                   :direction :input)))
 
+(defun %output-stream-object-p (x) (and (%streamp x) (output-stream-p x)))
+(defun %input-stream-object-p (x) (and (%streamp x) (input-stream-p x)))
 (defun %check-output-stream (x)
-  (unless (and (%streamp x) (output-stream-p x)) (%type-error x '(satisfies output-stream-p)))
+  (unless (%output-stream-object-p x) (%type-error x '(satisfies %output-stream-object-p)))
   x)
 (defun %check-input-stream (x)
-  (unless (and (%streamp x) (input-stream-p x)) (%type-error x '(satisfies input-stream-p)))
+  (unless (%input-stream-object-p x) (%type-error x '(satisfies %input-stream-object-p)))
   x)
 
 (defun make-broadcast-stream (&rest streams)
