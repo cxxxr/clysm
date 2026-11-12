@@ -348,7 +348,6 @@ loaded before the next one, so that later files' macros can call them.")
            (compile-source-forms s path env (lambda (form)
                                               (when (and *host-load-defuns* (host-loadable-defun-p form))
                                                 (push (cons form *read-package*) defuns))))
-        #-clysm
         (dolist (d (reverse defuns))
           (let ((*read-package* (cdr d)))
             (ignore-errors (host-eval (car d)))))))))
