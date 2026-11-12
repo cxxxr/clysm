@@ -34,7 +34,7 @@
                (mod r limit))))
         ((and (floatp limit) (plusp limit))
          (* limit (/ (float (%random-bits state) limit) (float 268435456 limit))))
-        (t (error "RANDOM: invalid limit ~S" limit))))
+        (t (%type-error limit (quote (or (integer 1) (float (0.0))))))))
 
 ;;; ------------------------------------------------------------
 ;;; time

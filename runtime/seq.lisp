@@ -613,13 +613,14 @@ the type is fully described by the other values (otherwise the result is checked
           ((subtypep ty nil) (error 'type-error :datum type :expected-type 'sequence))
           ((subtypep ty 'list) (values :list nil nil nil))
           ((subtypep ty 'vector)
-           (values :vector
-                   (cond ((subtypep ty '(vector character)) 'character)
-                         ((subtypep ty '(vector bit)) 'bit)
-                         ((subtypep ty '(vector (unsigned-byte 8))) '(unsigned-byte 8))
-                         ((subtypep ty '(vector double-float)) 'double-float)
-                         (t t))
-                   nil nil))
+           (flet ((sub (x) (multiple-value-bind (r certain) (subtypep ty x) (and r certain))))
+             (values :vector
+                     (cond ((sub '(vector character)) 'character)
+                           ((sub '(vector bit)) 'bit)
+                           ((sub '(vector (unsigned-byte 8))) '(unsigned-byte 8))
+                           ((sub '(vector double-float)) 'double-float)
+                           (t t))
+                     nil nil)))
           (t (error 'type-error :datum type :expected-type 'sequence)))))
 
 (defun %check-result-type (seq type exact)
@@ -649,6 +650,59 @@ the type is fully described by the other values (otherwise the result is checked
            (when initp (dotimes (i size) (%simple-set v i initial-element)))
            v))
      type exact)))
+
+;;; SUBTYPEP on array types.  An array type is canonicalized to a list of
+;;; alternatives (simple element-type dims): SIMPLE is T for simple arrays only,
+;;; ELEMENT-TYPE is an upgraded element type or *, DIMS is * or a list of * / sizes.
+
+(defun %array-type-canon (ty)
+  (flet ((et (x) (if (eq x '*) '* (%normalize-element-type x)))
+         (dims (d) (cond ((eq d '*) '*)
+                         ((fixnump d) (make-list d :initial-element '*))
+                         ((listp d) d)
+                         (t (return-from %array-type-canon :unknown))))
+         (size (args) (if (or (null args) (eq (car args) '*)) '(*) (list (car args)))))
+    (let ((head (if (consp ty) (car ty) ty)) (args (if (consp ty) (cdr ty) nil)))
+      (case head
+        ((array simple-array)
+         (list (list (eq head 'simple-array) (et (if args (car args) '*))
+                     (dims (if (cdr args) (cadr args) '*)))))
+        ((vector)
+         (list (list nil (et (if args (car args) '*)) (size (cdr args)))))
+        ((simple-vector) (list (list t t (size args))))
+        ((string) (list (list nil 'character (size args)) (list nil nil (size args))))
+        ((simple-string) (list (list t 'character (size args)) (list t nil (size args))))
+        ((base-string) (list (list nil 'character (size args))))
+        ((simple-base-string) (list (list t 'character (size args))))
+        ((bit-vector) (list (list nil 'bit (size args))))
+        ((simple-bit-vector) (list (list t 'bit (size args))))
+        (t :unknown)))))
+
+(defun %array-alt-subtypep (a b)
+  (destructuring-bind (s1 e1 d1) a
+    (destructuring-bind (s2 e2 d2) b
+      (and (or (not s2) s1)
+           (or (eq e2 '*) (and (not (eq e1 '*)) (equal e1 e2)))
+           (or (eq d2 '*)
+               (and (listp d1) (= (length-of-list d1) (length-of-list d2))
+                    (every (lambda (x y) (or (eq y '*) (eql x y))) d1 d2)))))))
+
+(defun %subtypep-arrays (t1 t2)
+  "Returns (values result certain known); KNOWN is NIL when the types are not handled."
+  (let ((c1 (%array-type-canon t1)))
+    (if (eq c1 :unknown)
+        (values nil nil nil)
+        (cond ((member t2 '(t atom)) (values t t t))
+              ((eq t2 'sequence)
+               (values (every (lambda (a) (and (listp (third a)) (= (length-of-list (third a)) 1))) c1) t t))
+              ((member t2 '(list cons null symbol number character function hash-table package
+                            integer real float rational structure-object standard-object))
+               (values (null c1) t t))
+              (t (let ((c2 (%array-type-canon t2)))
+                   (if (eq c2 :unknown)
+                       (values nil nil nil)
+                       (values (every (lambda (a) (some (lambda (b) (%array-alt-subtypep a b)) c2)) c1)
+                               t t))))))))
 
 ;;; ------------------------------------------------------------
 ;;; sequences: generic accessors

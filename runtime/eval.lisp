@@ -212,7 +212,9 @@
          (push (list* :macro (car def)
                       (%eval-function (%macro-lambda (car def) (cadr def) (cddr def)) env))
                new-env))
-       (%eval-body (cddr form) new-env)))
+       (multiple-value-bind (decls forms) (%decls-of (cddr form))
+         (declare (ignore decls))
+         (%eval-body forms new-env))))
     (symbol-macrolet
      (let ((new-env env))
        (dolist (b (cadr form)) (push (list* :smacro (car b) (cadr b)) new-env))
