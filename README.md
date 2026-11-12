@@ -188,8 +188,9 @@ Limitations:
 * `short-float`/`long-float` are `single-float`/`double-float`.
 * Pathnames are simplified (no logical pathnames, no wild pathnames); file I/O
   goes through the host.
-* The pretty printer reproduces SBCL's layout for data and common code forms;
-  `pprint-logical-block`/`pprint-newline` in user code are simplified.
+* The pretty printer reproduces SBCL's layout for data and common code forms
+  and supports `pprint-logical-block`, `pprint-newline`, `pprint-indent` and
+  `format`'s `~<...~:>`, `~_`, `~I`; pprint dispatch tables are not supported.
 * `compile-file` loads the source (whole programs are compiled ahead of time
   with `bin/clysm compile`/`run`).
 * No threads and no first-class continuations (not required by the standard).

@@ -276,8 +276,17 @@ SEGMENTS is a list of (start end separator-colon-p) for clauses separated by ~;"
      (multiple-value-bind (segs cc ca next) (%fmt-find-close ctl i end #\>)
        (declare (ignore ca))
        (if cc
-           ;; logical block: just print the contents
-           (progn (dolist (seg segs) (%fmt stream ctl (car seg) (cadr seg) av)) next)
+           ;; logical block ~<prefix~;body~;suffix~:>
+           (let* ((n (length segs))
+                  (prefix (if (> n 1) (subseq ctl (car (first segs)) (cadr (first segs))) (if colon "(" "")))
+                  (suffix (if (> n 2) (subseq ctl (car (third segs)) (cadr (third segs))) (if colon ")" "")))
+                  (body (if (> n 1) (second segs) (first segs)))
+                  (arg (if at (%fmt-rest-list av) (%fmt-next av))))
+             (when at (setf (svref av 1) (length (svref av 0))))
+             (pprint-logical-block (stream arg :prefix prefix :suffix suffix)
+               (catch '%format-up-and-out
+                 (%fmt stream ctl (car body) (cadr body) (vector (coerce arg 'simple-vector) 0))))
+             next)
            (let* ((pieces (mapcar (lambda (seg)
                                     (with-output-to-string (tmp)
                                       (catch '%format-up-and-out
@@ -306,7 +315,8 @@ SEGMENTS is a list of (start end separator-colon-p) for clauses separated by ~;"
                        (t (<= (%fmt-remaining av) 0)))))
        (when done (throw (if colon '%format-colon-up '%format-up-and-out) nil)))
      i)
-    ((#\_ #\I) i)
+    (#\_ (pprint-newline (cond ((and colon at) :mandatory) (colon :fill) (at :miser) (t :linear)) stream) i)
+    (#\I (pprint-indent (if colon :current :block) (%fmt-param params 0 0) stream) i)
     (#\/
      (let* ((close (position #\/ ctl :start i))
             (name (string-upcase (subseq ctl i close)))

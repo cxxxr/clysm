@@ -239,48 +239,132 @@ include SUFFIX-WIDTH and TRAILING."
            (+ col (length suffix))))))
 
 (defun %pretty-write (x stream)
-  (let ((doc (%pp-doc x))
-        (*pp-pending-spaces* 0)
-        (*pp-multiline* nil))
-    (%pp-layout doc stream (%stream-column stream) 0)
-    (%pp-flush-spaces stream)))
+  (let ((doc (%pp-doc x)))
+    (if (%pp-capture-p stream)
+        (%pp-builder-add (stream-buffer stream) doc)
+        (let ((*pp-pending-spaces* 0)
+              (*pp-multiline* nil))
+          (%pp-layout doc stream (%stream-column stream) 0)
+          (%pp-flush-spaces stream)))))
 
 ;;; ------------------------------------------------------------
-;;; user-level pretty printing interface (simplified)
+;;; user-level pretty printing interface
+;;;
+;;; Inside PPRINT-LOGICAL-BLOCK the stream is a capture stream whose output
+;;; becomes a document block; conditional newlines become markers.  The
+;;; outermost block is laid out on the real stream when it ends.
 ;;; ------------------------------------------------------------
+
+;;; builder: #(items-reversed text-accumulator indent)
+(defun %pp-builder () (vector nil (make-string-output-stream) nil))
+
+(defun %pp-builder-flush-text (b)
+  (let ((text (get-output-stream-string (svref b 1))))
+    (when (> (length text) 0) (push text (svref b 0)))))
+
+(defun %pp-builder-add (b item)
+  (%pp-builder-flush-text b)
+  (push item (svref b 0)))
+
+(defun %pp-capture-p (s) (and (%streamp s) (eq (stream-kind s) :pp)))
+
+(defun %pp-capture-write-char (s c)
+  (write-char c (svref (stream-buffer s) 1)))
 
 (defun pprint-newline (kind &optional stream)
-  (declare (ignore kind stream))
-  nil)
-(defun pprint-indent (relative-to n &optional stream)
-  (declare (ignore relative-to n stream))
-  nil)
-(defun pprint-tab (kind colnum colinc &optional stream)
-  (declare (ignore kind colnum colinc stream))
+  (let ((s (%output-stream stream)))
+    (when (and *print-pretty* (%pp-capture-p s))
+      (%pp-builder-add (stream-buffer s)
+                       (ecase kind
+                         (:linear :linear) (:fill :fill) (:miser :miser) (:mandatory :mandatory)))))
   nil)
 
-(defmacro pprint-logical-block ((stream-symbol object &key prefix per-line-prefix suffix) &body body)
-  (let ((obj (gensym "OBJ")) (s (if (member stream-symbol '(t nil)) '*standard-output* stream-symbol)))
-    `(let* ((,s (%output-stream ,(if (eq stream-symbol t) t s)))
-            (,obj ,object))
-       (when ,(or prefix per-line-prefix) (write-string ,(or prefix per-line-prefix) ,s))
-       (block %pprint-block
-         (macrolet ((pprint-pop () '(if (consp ,obj) (pop ,obj) (progn (when ,obj (write-string ". " ,s) (prin1 ,obj ,s)) (return-from %pprint-block nil))))
-                    (pprint-exit-if-list-exhausted () '(when (null ,obj) (return-from %pprint-block nil))))
-           ,@body))
-       (when ,suffix (write-string ,suffix ,s))
-       nil)))
+(defun pprint-indent (relative-to n &optional stream)
+  (let ((s (%output-stream stream)))
+    (when (and *print-pretty* (%pp-capture-p s))
+      (let ((b (stream-buffer s)))
+        (setf (svref b 2) (list relative-to n)))))
+  nil)
+
+(defun pprint-tab (kind colnum colinc &optional stream)
+  (declare (ignore kind colinc))
+  (let ((s (%output-stream stream)))
+    (when (and *print-pretty* (%pp-capture-p s) (> colnum 0))
+      (write-char #\Space s)))
+  nil)
+
+(defun %pp-make-block (prefix suffix builder)
+  (%pp-builder-flush-text builder)
+  (let* ((items (reverse (svref builder 0)))
+         (ind (svref builder 2))
+         (indent (+ (length prefix) (if ind (cadr ind) 0))))
+    (%pp-block prefix suffix items (max 0 indent))))
+
+(defun %call-with-logical-block (stream object prefix suffix body)
+  "BODY is called with a capture stream and the list."
+  (let ((s (%output-stream stream)))
+    (cond ((not *print-pretty*)
+           (write-string prefix s)
+           (catch '%pprint-block-exit (funcall body s object))
+           (write-string suffix s))
+          ((and (not (listp object)))
+           ;; not a list: print it with WRITE (CLHS)
+           (%write-object object s))
+          (t
+           (let* ((builder (%pp-builder))
+                  (capture (%make-stream :kind :pp :buffer builder)))
+             (catch '%pprint-block-exit
+               (funcall body capture object))
+             (let ((block (%pp-make-block prefix suffix builder)))
+               (if (%pp-capture-p s)
+                   (%pp-builder-add (stream-buffer s) block)
+                   (let ((*pp-pending-spaces* 0) (*pp-multiline* nil))
+                     (%pp-layout block s (%stream-column s) 0)
+                     (%pp-flush-spaces s)))))))
+    nil))
+
+(defmacro pprint-logical-block ((stream-symbol object &key (prefix "") per-line-prefix (suffix "")) &body body)
+  (let* ((var (if (member stream-symbol '(t nil)) '*standard-output* stream-symbol))
+         (list (gensym "LIST")) (count (gensym "COUNT")))
+    `(%call-with-logical-block
+      ,(if (eq stream-symbol t) t var) ,object ,(or per-line-prefix prefix) ,suffix
+      (lambda (,var ,list)
+        (declare (ignorable ,list))
+        (let ((,count 0))
+          (declare (ignorable ,count))
+          (macrolet ((pprint-pop ()
+                       '(cond ((and *print-length* (>= ,count *print-length*))
+                               (write-string "..." ,var) (throw '%pprint-block-exit nil))
+                              ((and ,list (atom ,list))
+                               (write-string ". " ,var) (prin1 ,list ,var) (throw '%pprint-block-exit nil))
+                              (t (setq ,count (+ ,count 1)) (pop ,list))))
+                     (pprint-exit-if-list-exhausted ()
+                       '(when (null ,list) (throw '%pprint-block-exit nil))))
+            ,@body))))))
 
 (defun pprint-fill (stream list &optional (colon t) at)
   (declare (ignore at))
-  (let ((s (%output-stream stream)))
-    (if (and colon (listp list))
-        (let ((*print-pretty* t)) (%write-object list s))
-        (%write-object list s))))
-(defun pprint-linear (stream list &optional (colon t) at) (pprint-fill stream list colon at))
-(defun pprint-tabular (stream list &optional (colon t) at tabsize)
-  (declare (ignore tabsize))
-  (pprint-fill stream list colon at))
+  (pprint-logical-block (stream list :prefix (if colon "(" "") :suffix (if colon ")" ""))
+    (pprint-exit-if-list-exhausted)
+    (loop
+      (write (pprint-pop) :stream stream)
+      (pprint-exit-if-list-exhausted)
+      (write-char #\Space stream)
+      (pprint-newline :fill stream))))
+
+(defun pprint-linear (stream list &optional (colon t) at)
+  (declare (ignore at))
+  (pprint-logical-block (stream list :prefix (if colon "(" "") :suffix (if colon ")" ""))
+    (pprint-exit-if-list-exhausted)
+    (loop
+      (write (pprint-pop) :stream stream)
+      (pprint-exit-if-list-exhausted)
+      (write-char #\Space stream)
+      (pprint-newline :linear stream))))
+
+(defun pprint-tabular (stream list &optional (colon t) at (tabsize 16))
+  (declare (ignore at tabsize))
+  (pprint-fill stream list colon))
 
 (defun copy-pprint-dispatch (&optional table) (declare (ignore table)) nil)
 (defun pprint-dispatch (object &optional table) (declare (ignore object table)) (values nil nil))
