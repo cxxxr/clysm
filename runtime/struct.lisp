@@ -92,6 +92,8 @@
       `(progn
          (eval-when (:compile-toplevel :load-toplevel :execute)
            (%put ',name '%struct-slots ',all-slots))
+         ;; the keyword constructor, used by the #S reader macro
+         (%put ',name '%struct-constructor ',(car (find-if (lambda (c) (null (cdr c))) constructors)))
          ,@(unless struct-type
              `((%define-structure-class ',name ',include ',all-slots
                                         ,(cond (print-fn `(function ,print-fn))

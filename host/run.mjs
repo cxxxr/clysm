@@ -46,8 +46,9 @@ function nodePlatform(state, args) {
       // the file name was accumulated by put_char_buf
       const name = state.nameBuf; state.nameBuf = '';
       try {
-        if (mode === 0) {
-          const data = fs.readFileSync(name, 'utf8');
+        if (mode === 0 || mode === 3) {
+          // 0: text (UTF-8), 3: binary (one char per octet)
+          const data = fs.readFileSync(name, mode === 3 ? 'latin1' : 'utf8');
           state.setCharBuf(data);
           return data.length;
         }

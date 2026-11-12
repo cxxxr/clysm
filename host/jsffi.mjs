@@ -1,5 +1,13 @@
 // JavaScript FFI imports shared by the Node.js and browser hosts.
 // JS values cross the boundary as externref; Lisp wraps them in $foreign structs.
+class JsError {
+  constructor(e) { this.__clysm_js_error = String((e && e.message) || e); }
+}
+function boxError(e) {
+  if (e instanceof WebAssembly.Exception) throw e;
+  return new JsError(e);
+}
+
 export function makeJsImports(state) {
   let strCache = null, strCacheArr = null;
   const codePoints = (x) => {
@@ -12,8 +20,14 @@ export function makeJsImports(state) {
       global: () => globalThis,
       get: (o, k) => o[k],
       set: (o, k, v) => { o[k] = v; },
-      apply: (f, t, a) => Reflect.apply(f, t, a),
-      construct: (f, a) => Reflect.construct(f, a),
+      // a JavaScript exception is returned as a JsError box, which the Lisp
+      // side turns into a Lisp error (Lisp non-local exits pass through)
+      apply: (f, t, a) => {
+        try { return Reflect.apply(f, t, a); } catch (e) { return boxError(e); }
+      },
+      construct: (f, a) => {
+        try { return Reflect.construct(f, a); } catch (e) { return boxError(e); }
+      },
       array: () => [],
       push: (a, v) => { a.push(v); },
       number: (d) => d,
