@@ -105,7 +105,16 @@
     (if (and (consp (car body)) (eq (caar body) 'declare))
         (multiple-value-bind (d f) (%split-decls (cdr body))
           (values (cons (car body) d) f))
-        (values nil body))))
+        (values nil body)))
+
+  (defun %split-doc-decls (body)
+    "Like %SPLIT-DECLS, but a documentation string may come before or among
+the declarations (when forms follow it)."
+    (cond ((and (consp (car body)) (eq (caar body) 'declare))
+           (multiple-value-bind (d f) (%split-doc-decls (cdr body))
+             (values (cons (car body) d) f)))
+          ((and (stringp (car body)) (cdr body)) (%split-doc-decls (cdr body)))
+          (t (values nil body)))))
 
 (defmacro dolist ((var list &optional result) &body body)
   (let ((l (gensym "LIST")) (top (gensym "TOP")))
@@ -394,8 +403,8 @@
                           (stores (mapcar (lambda (x) (declare (ignore x)) (gensym)) ',stores)))
                      (values temps (cdr ,place) stores
                              (apply (lambda (,@stores ,@ll)
-                                      ,@(%split-decls body)
-                                      (block ,access-fn ,@(nth-value 1 (%split-decls body))))
+                                      ,@(%split-doc-decls body)
+                                      (block ,access-fn ,@(nth-value 1 (%split-doc-decls body))))
                                     (append stores temps))
                              (cons ',access-fn temps)))))
            ',access-fn))))

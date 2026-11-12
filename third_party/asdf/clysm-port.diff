@@ -1,45 +1,75 @@
---- asdf.lisp.orig	2026-11-12 23:15:03.412761903 +0900
-+++ third_party/asdf/asdf.lisp	2026-11-12 23:19:46.027664244 +0900
-@@ -807,7 +807,7 @@
+--- asdf-3.3.7.orig.lisp	2026-11-12 23:28:02.278235982 +0900
++++ asdf.lisp	2026-11-12 23:28:36.844534434 +0900
+@@ -976,7 +976,7 @@
    #+(or mcl cmucl) (:shadow #:user-homedir-pathname))
  (in-package :uiop/common-lisp)
  
--#-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
-+#-(or abcl allegro clasp clisp clysm clozure cmucl cormanlisp ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
+-#-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
++#-(or abcl allegro clasp clisp clysm clozure cmucl cormanlisp ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
  (error "ASDF is not supported on your implementation. Please help us port it.")
  
  ;; (declaim (optimize (speed 1) (debug 3) (safety 3))) ; DON'T: trust implementation defaults.
-@@ -1948,7 +1948,8 @@
+@@ -2139,7 +2139,8 @@
                  (ccl:%get-cstring value))))
      #+mkcl (#.(or (find-symbol* 'getenv :si nil) (find-symbol* 'getenv :mk-ext nil)) x)
      #+sbcl (sb-ext:posix-getenv x)
--    #-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
+-    #-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
 +    #+clysm (sys::%getenv x)
-+    #-(or abcl allegro clasp clisp clysm clozure cmucl cormanlisp ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
++    #-(or clysm abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
      (not-implemented-error 'getenv))
  
    (defsetf getenv (x) (val)
-@@ -1962,7 +1963,8 @@
-     #+lispworks `(hcl:setenv ,x ,val)
-     #+mkcl `(mkcl:setenv ,x ,val)
-     #+sbcl `(progn (require :sb-posix) (symbol-call :sb-posix :setenv ,x ,val 1))
--    #-(or allegro clisp clozure cmucl ecl lispworks mkcl sbcl)
-+    #+clysm `(sys::%setenv ,x ,val)
-+    #-(or allegro clisp clysm clozure cmucl ecl lispworks mkcl sbcl)
-     '(not-implemented-error '(setf getenv)))
+@@ -2156,7 +2157,8 @@
+          #+lispworks `(setf (lispworks:environment-variable ,x) ,val)
+          #+mkcl `(mkcl:setenv ,x ,val)
+          #+sbcl `(progn (require :sb-posix) (symbol-call :sb-posix :setenv ,x ,val 1))
+-         #-(or allegro clasp clisp clozure cmucl ecl lispworks mkcl sbcl)
++         #+clysm `(sys::%setenv ,x ,val)
++         #-(or clysm allegro clasp clisp clozure cmucl ecl lispworks mkcl sbcl)
+          '(not-implemented-error '(setf getenv))
+          ;; VAL is NIL, unset the variable
+          #+allegro `(symbol-call :excl.osi :unsetenv ,x)
+@@ -2168,7 +2170,8 @@
+          #+lispworks `(setf (lispworks:environment-variable ,x) ,val) ; according to their docs, this should unset the variable
+          #+mkcl `(mkcl:setenv ,x ,val) ; like other ECL-family implementations, don't see UNSETENV
+          #+sbcl `(progn (require :sb-posix) (symbol-call :sb-posix :unsetenv ,x))
+-         #-(or allegro clisp clozure cmucl ecl lispworks mkcl sbcl)
++         #+clysm `(sys::%setenv ,x nil)
++         #-(or clysm allegro clisp clozure cmucl ecl lispworks mkcl sbcl)
+          '(not-implemented-error 'unsetenv))
+         `(if ,val
+              #+allegro (setf (sys:getenv ,x) ,val)
+@@ -2180,7 +2183,8 @@
+              #+lispworks (setf (lispworks:environment-variable ,x) ,val)
+              #+mkcl (mkcl:setenv ,x ,val)
+              #+sbcl (progn (require :sb-posix) (symbol-call :sb-posix :setenv ,x ,val 1))
+-             #-(or allegro clasp clisp clozure cmucl ecl lispworks mkcl sbcl)
++             #+clysm (sys::%setenv ,x ,val)
++             #-(or clysm allegro clasp clisp clozure cmucl ecl lispworks mkcl sbcl)
+              '(not-implemented-error '(setf getenv))
+              ;; VAL is NIL, unset the variable
+              #+allegro (symbol-call :excl.osi :unsetenv ,x)
+@@ -2192,7 +2196,8 @@
+              #+lispworks (setf (lispworks:environment-variable ,x) ,val) ; according to their docs, this should unset the variable
+              #+mkcl (mkcl:setenv ,x ,val) ; like other ECL-family implementations, don't see UNSETENV
+              #+sbcl (progn (require :sb-posix) (symbol-call :sb-posix :unsetenv ,x))
+-             #-(or allegro clisp clozure cmucl ecl lispworks mkcl sbcl)
++             #+clysm (sys::%setenv ,x nil)
++             #-(or clysm allegro clisp clozure cmucl ecl lispworks mkcl sbcl)
+              '(not-implemented-error 'unsetenv))))
  
    (defun getenvp (x)
-@@ -1992,7 +1994,7 @@
+@@ -2222,7 +2227,7 @@
      "The type of Lisp implementation used, as a short UIOP-standardized keyword"
      (first-feature
       '(:abcl (:acl :allegro) (:ccl :clozure) :clisp (:corman :cormanlisp)
 -       (:cmu :cmucl :cmu) :clasp :ecl :gcl
 +       (:cmu :cmucl :cmu) :clasp :clysm :ecl :gcl
         (:lwpe :lispworks-personal-edition) (:lw :lispworks)
-        :mcl :mkcl :sbcl :scl (:smbx :symbolics) :xcl)))
+        :mcl :mezzano :mkcl :sbcl :scl (:smbx :symbolics) :xcl)))
  
-@@ -2021,7 +2023,8 @@
-        :mipsel :mipseb :mips :alpha (:arm :arm :arm-target) :imach
+@@ -2254,7 +2259,8 @@
+        (:arm :arm :arm-target) :vlm :imach
         ;; Java comes last: if someone uses C via CFFI or otherwise JNA or JNI,
         ;; we may have to segregate the code still by architecture.
 -       (:java :java :java-1.4 :java-1.5 :java-1.6 :java-1.7))))
@@ -48,7 +78,7 @@
  
    #+clozure
    (defun ccl-fasl-version ()
-@@ -2126,6 +2129,7 @@
+@@ -2362,6 +2368,7 @@
          #+mkcl (mk-ext:getcwd)
          #+sbcl (sb-ext:parse-native-namestring (sb-unix:posix-getcwd/))
          #+xcl (extensions:current-directory)
@@ -56,72 +86,72 @@
          (not-implemented-error 'getcwd)))
  
    (defun chdir (x)
-@@ -2143,7 +2147,8 @@
+@@ -2380,7 +2387,8 @@
        #+lispworks (hcl:change-directory x)
        #+mkcl (mk-ext:chdir x)
        #+sbcl (progn (require :sb-posix) (symbol-call :sb-posix :chdir (sb-ext:native-namestring x)))
 -      #-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mkcl sbcl scl xcl)
 +      #+clysm (progn (sys::%chdir x) (setf *default-pathname-defaults* (pathname (sys::%getcwd))))
-+      #-(or abcl allegro clasp clisp clysm clozure cmucl cormanlisp ecl gcl genera lispworks mkcl sbcl scl xcl)
++      #-(or clysm abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl genera lispworks mkcl sbcl scl xcl)
        (not-implemented-error 'chdir))))
  
  
-@@ -2324,7 +2329,7 @@
+@@ -2559,7 +2567,7 @@
    ;; This will be :unspecific if supported, or NIL if not.
    (defparameter *unspecific-pathname-type*
-     #+(or abcl allegro clozure cmucl genera lispworks sbcl scl) :unspecific
--    #+(or clasp clisp ecl mkcl gcl xcl #|These haven't been tested:|# cormanlisp mcl) nil
-+    #+(or clasp clisp clysm ecl mkcl gcl xcl #|These haven't been tested:|# cormanlisp mcl) nil
+     #+(or abcl allegro clozure cmucl lispworks sbcl scl) :unspecific
+-    #+(or genera clasp clisp ecl mkcl gcl xcl #|These haven't been tested:|# cormanlisp mcl mezzano) nil
++    #+(or clysm genera clasp clisp ecl mkcl gcl xcl #|These haven't been tested:|# cormanlisp mcl mezzano) nil
      "Unspecific type component to use with the underlying implementation's MAKE-PATHNAME")
  
    (defun make-pathname* (&rest keys &key directory host device name type version defaults
-@@ -3595,7 +3600,8 @@
+@@ -3861,7 +3869,8 @@
                 `(,dd directory-pathname) ;; requires SBCL 1.0.44 or later
                 `(progn (require :sb-posix) (symbol-call :sb-posix :rmdir directory-pathname)))
      #+xcl (symbol-call :uiop :run-program `("rmdir" ,(native-namestring directory-pathname)))
 -    #-(or abcl allegro clasp clisp clozure cmucl cormanlisp digitool ecl gcl genera lispworks mkcl sbcl scl xcl)
 +    #+clysm (sys::%delete-directory directory-pathname)
-+    #-(or abcl allegro clasp clisp clysm clozure cmucl cormanlisp digitool ecl gcl genera lispworks mkcl sbcl scl xcl)
++    #-(or clysm abcl allegro clasp clisp clozure cmucl cormanlisp digitool ecl gcl genera lispworks mkcl sbcl scl xcl)
      (not-implemented-error 'delete-empty-directory "(on your platform)")) ; genera
  
    (defun delete-directory-tree (directory-pathname &key (validate nil validatep) (if-does-not-exist :error))
-@@ -4449,7 +4455,8 @@
+@@ -4740,7 +4749,8 @@
                 (cond
                   (exit `(,exit :code code :abort (not finish-output)))
                   (quit `(,quit :unix-status code :recklessly-p (not finish-output)))))
 -    #-(or abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
 +    #+clysm (progn (when finish-output (finish-outputs)) (sys::%exit code))
-+    #-(or abcl allegro clasp clisp clysm clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
++    #-(or clysm abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
      (not-implemented-error 'quit "(called with exit code ~S)" code))
  
    (defun die (code format &rest arguments)
-@@ -4603,7 +4610,8 @@
+@@ -4899,7 +4909,8 @@
      #+mkcl (loop :for i :from 0 :below (mkcl:argc) :collect (mkcl:argv i))
      #+sbcl sb-ext:*posix-argv*
      #+xcl system:*argv*
--    #-(or abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
+-    #-(or abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
 +    #+clysm (cons "clysm" sys::*posix-argv*)
-+    #-(or abcl allegro clasp clisp clysm clozure cmucl ecl gcl genera lispworks mcl mkcl sbcl scl xcl)
++    #-(or clysm abcl allegro clasp clisp clozure cmucl ecl gcl genera lispworks mcl mezzano mkcl sbcl scl xcl)
      (not-implemented-error 'raw-command-line-arguments))
  
    (defun command-line-arguments (&optional (arguments (raw-command-line-arguments)))
-@@ -12761,8 +12769,9 @@
-   (:use :uiop/common-lisp :uiop
-         :asdf/upgrade :asdf/find-system :asdf/operate :asdf/bundle)
+@@ -14035,8 +14046,8 @@
+         :asdf/system ;; used by ECL
+         :asdf/upgrade :asdf/system-registry :asdf/operate :asdf/bundle)
    ;; Happily, all those implementations all have the same module-provider hook interface.
--  #+(or abcl clasp cmucl clozure ecl mkcl sbcl)
-+  #+(or abcl clasp clysm cmucl clozure ecl mkcl sbcl)
-   (:import-from #+abcl :sys #+(or clasp cmucl ecl) :ext #+clozure :ccl #+mkcl :mk-ext #+sbcl sb-ext
-+                #+clysm :system
- 		#:*module-provider-functions*
- 		#+ecl #:*load-hooks*)
+-  #+(or abcl clasp cmucl clozure ecl mezzano mkcl sbcl)
+-  (:import-from #+abcl :sys #+(or clasp cmucl ecl) :ext #+clozure :ccl #+mkcl :mk-ext #+sbcl sb-ext #+mezzano :sys.int
++  #+(or abcl clasp clysm cmucl clozure ecl mezzano mkcl sbcl)
++  (:import-from #+abcl :sys #+clysm :system #+(or clasp cmucl ecl) :ext #+clozure :ccl #+mkcl :mk-ext #+sbcl sb-ext #+mezzano :sys.int
+                 #:*module-provider-functions*
+                 #+ecl #:*load-hooks*)
    #+(or clasp mkcl) (:import-from :si #:*load-hooks*))
-@@ -12778,7 +12787,7 @@
- 
+@@ -14067,7 +14078,7 @@
+     (clear-system "uiop")))
  
  ;;;; Hook ASDF into the implementation's REQUIRE and other entry points.
--#+(or abcl clasp clisp clozure cmucl ecl mkcl sbcl)
-+#+(or abcl clasp clisp clysm clozure cmucl ecl mkcl sbcl)
+-#+(or abcl clasp clisp clozure cmucl ecl mezzano mkcl sbcl)
++#+(or abcl clasp clisp clysm clozure cmucl ecl mezzano mkcl sbcl)
  (with-upgradability ()
    ;; Hook into CL:REQUIRE.
    #-clisp (pushnew 'module-provide-asdf *module-provider-functions*)

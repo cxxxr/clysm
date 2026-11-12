@@ -177,7 +177,7 @@ functions that call back into Lisp through the exported `lisp_apply`):
 
 ## ASDF
 
-ASDF (3.2.1, with a small port in `third_party/asdf/`) is bundled:
+ASDF 3.3.7 (the latest release, with a small port in `third_party/asdf/`) is bundled:
 
 ```lisp
 (require :asdf)

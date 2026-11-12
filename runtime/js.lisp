@@ -168,9 +168,13 @@
            (and (stringp v) v)))))
 
 (defun %setenv (name value)
+  "Set the host environment variable NAME to VALUE (a string), or unset it
+when VALUE is NIL."
   (let ((process (%node-process)))
     (when process
-      (js:set (js:get process "env") name value)))
+      (if value
+          (js:set (js:get process "env") name value)
+          (js:funcall (js:eval "(o, k) => { delete o[k]; }") (js:get process "env") name))))
   value)
 
 (defun %getcwd ()
