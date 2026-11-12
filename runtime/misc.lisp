@@ -121,12 +121,16 @@
         (t (list x doc-type))))
 (defgeneric documentation (x doc-type))
 (defmethod documentation (x doc-type)
-  (values (gethash (%doc-key x doc-type) %documentation-table)))
+  (if (symbolp x)
+      (%symbol-doc x doc-type)
+      (values (gethash (%doc-key x doc-type) %documentation-table))))
 (defgeneric (setf documentation) (new-value x doc-type))
 (defmethod (setf documentation) (new-value x doc-type)
-  (if new-value
-      (setf (gethash (%doc-key x doc-type) %documentation-table) new-value)
-      (remhash (%doc-key x doc-type) %documentation-table))
+  (cond
+    ((symbolp x) (%set-symbol-doc x doc-type new-value))
+    (new-value
+      (setf (gethash (%doc-key x doc-type) %documentation-table) new-value))
+    (t (remhash (%doc-key x doc-type) %documentation-table)))
   new-value)
 (defun %set-documentation (x doc-type new-value)
   (funcall #'(setf documentation) new-value x doc-type))

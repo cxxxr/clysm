@@ -833,7 +833,14 @@
           ((member ty '(float single-float short-float)) (%to-single x))
           ((member ty '(double-float long-float)) (%to-double x))
           ((eq ty 'complex) (if (complexp x) x (complex x 0)))
-          ((eq ty 'function) (if (functionp x) x (fdefinition x)))
+          ((eq ty 'function)
+           (cond ((functionp x) x)
+                 ((and (consp x) (eq (car x) 'lambda)) (eval (list 'function x)))
+                 ((and (symbolp x) (%macro-or-special-p x) (not (%symbol-function x)))
+                  (error 'simple-type-error :datum x :expected-type 'function
+                                            :format-control "~S names a macro or special operator"
+                                            :format-arguments (list x)))
+                 (t (fdefinition x))))
           ((typep x type) x)
           (t (error 'simple-type-error :datum x :expected-type type
                                        :format-control "Cannot coerce ~S to ~S"

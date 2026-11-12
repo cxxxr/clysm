@@ -75,12 +75,16 @@
   (multiple-value-bind (whole envv clean) (%parse-macro-lambda-list ll)
     (let ((form (gensym "FORM")) (env (gensym "ENV")))
       (multiple-value-bind (decls forms) (%split-decls body)
-        `(named-lambda ,name (,form ,env)
-           (declare (ignorable ,form ,env))
-           (let (,@(when whole `((,whole ,form))) ,@(when envv `((,envv ,env))))
-             (destructuring-bind ,clean (cdr ,form)
-               ,@decls
-               (block ,name ,@forms))))))))
+        (let ((inner `(destructuring-bind ,clean (cdr ,form)
+                        ,@decls
+                        (block ,name ,@forms))))
+          ;; &whole may be a destructuring pattern
+          (when (consp whole)
+            (setq inner `(destructuring-bind ,whole ,form ,inner) whole nil))
+          `(named-lambda ,name (,form ,env)
+             (declare (ignorable ,form ,env))
+             (let (,@(when whole `((,whole ,form))) ,@(when envv `((,envv ,env))))
+               ,inner)))))))
 
 (%set-macro-function 'defmacro
   (lambda (form env)
@@ -108,6 +112,16 @@
       (setq decls (append decls (cdar body)))
       (setq body (cdr body)))
     (values decls body)))
+
+(defun %eval-locally-body (body env)
+  "Evaluate BODY, which may start with declarations; SPECIAL declarations
+affect references in BODY."
+  (multiple-value-bind (decls forms) (%decls-of body)
+    (let ((new-env env))
+      (dolist (d decls)
+        (when (and (consp d) (eq (car d) 'special))
+          (dolist (s (cdr d)) (push (list :special s) new-env))))
+      (%eval-body forms new-env))))
 
 (defun %eval-body (forms env)
   (cond ((null forms) nil)
@@ -203,22 +217,18 @@
                (setf (cddr e) (%make-interpreted-function (car def) (cadr def) (cddr def) def-env
                                                           (if (consp (car def)) (cadar def) (car def)))))
              cells (cadr form))
-       (multiple-value-bind (decls forms) (%decls-of (cddr form))
-         (declare (ignore decls))
-         (%eval-body forms new-env))))
+       (%eval-locally-body (cddr form) new-env)))
     (macrolet
      (let ((new-env env))
        (dolist (def (cadr form))
          (push (list* :macro (car def)
                       (%eval-function (%macro-lambda (car def) (cadr def) (cddr def)) env))
                new-env))
-       (%eval-body (cddr form) new-env)))
+       (%eval-locally-body (cddr form) new-env)))
     (symbol-macrolet
      (let ((new-env env))
        (dolist (b (cadr form)) (push (list* :smacro (car b) (cadr b)) new-env))
-       (multiple-value-bind (decls forms) (%decls-of (cddr form))
-         (declare (ignore decls))
-         (%eval-body forms new-env))))
+       (%eval-locally-body (cddr form) new-env)))
     (block
      (let ((tag (list (cadr form))))
        (catch tag (%eval-body (cddr form) (cons (list* :block (cadr form) tag) env)))))
@@ -243,12 +253,7 @@
        (let ((vals (multiple-value-list (%eval value-form env))))
          (%eval-let (mapcar (lambda (v) (list v (list 'quote (pop vals)))) vars) body env nil))))
     (the (%eval (caddr form) env))
-    (locally (multiple-value-bind (decls forms) (%decls-of (cdr form))
-               (let ((new-env env))
-                 (dolist (d decls)
-                   (when (and (consp d) (eq (car d) 'special))
-                     (dolist (s (cdr d)) (push (list :special s) new-env))))
-                 (%eval-body forms new-env))))
+    (locally (%eval-locally-body (cdr form) env))
     (eval-when (if (or (member :execute (cadr form)) (member 'eval (cadr form)))
                    (%eval-body (cddr form) env)
                    nil))

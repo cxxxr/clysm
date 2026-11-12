@@ -412,7 +412,8 @@
                (return (values plist t)))))))
 
 ;;; destructuring-bind support
-(defun %db-error (msg) (error "Error while destructuring: ~A" msg))
+(defun %db-error (msg)
+  (error 'simple-program-error :format-control "Error while destructuring: ~A" :format-arguments (list msg)))
 (defun %db-getf (plist key)
   (do ((l plist (cddr l))) ((atom l) '%db-none)
     (when (atom (cdr l)) (%db-error "odd number of keyword arguments"))
@@ -421,7 +422,9 @@
   (unless (or aok (getf plist :allow-other-keys))
     (do ((l plist (cddr l))) ((atom l) nil)
       (unless (or (%member-eql (car l) keys) (eq (car l) :allow-other-keys))
-        (error "Unknown keyword ~S in destructuring (expected one of ~S)" (car l) keys)))))
+        (error 'simple-program-error
+               :format-control "Unknown keyword ~S in destructuring (expected one of ~S)"
+               :format-arguments (list (car l) keys))))))
 
 ;;; ------------------------------------------------------------
 ;;; Symbols
@@ -459,7 +462,7 @@
 
 (defun %function-name-symbol (name)
   (cond ((symbolp name) name)
-        ((and (consp name) (eq (car name) 'setf) (symbolp (cadr name)) (null (cddr name)))
+        ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (cadr name)) (null (cddr name)))
          (%setf-function-symbol (cadr name)))
         (t (%type-error name '(or symbol (cons (eql setf) (cons symbol null)))))))
 
@@ -468,11 +471,25 @@
     (intern (concatenate 'string "(SETF " (if pkg (package-name pkg) "") "::" (symbol-name sym) ")")
             *system-package*)))
 
-(defun fboundp (name) (fboundp (%function-name-symbol name)))
+(defun %macro-or-special-p (s)
+  (and (symbolp s) (or (get s '%macro-function) (special-operator-p s)) t))
+
+(defun fboundp (name)
+  (or (fboundp (%function-name-symbol name)) (%macro-or-special-p name)))
+
+(defun %macro-definition-object (s)
+  ;; what SYMBOL-FUNCTION returns for a macro or special operator: a function
+  ;; that signals an error when called
+  (lambda (&rest args)
+    (declare (ignore args))
+    (error 'simple-program-error :format-control "~S names a ~A and cannot be called as a function"
+                                 :format-arguments (list s (if (special-operator-p s) "special operator" "macro")))))
 
 (defun symbol-function (s)
   (let ((f (%symbol-function s)))
-    (if f f (%undefined-function-error s))))
+    (cond (f f)
+          ((%macro-or-special-p s) (%macro-definition-object s))
+          (t (%undefined-function-error s)))))
 
 (defun fdefinition (name) (symbol-function (%function-name-symbol name)))
 
@@ -482,6 +499,7 @@
 
 (defun fmakunbound (name)
   (%set-symbol-function (%function-name-symbol name) nil)
+  (when (symbolp name) (remprop name '%macro-function))
   name)
 
 (defun special-operator-p (s)

@@ -451,6 +451,9 @@
          :format-control "invalid number of arguments: ~S (calling ~S)"
          :format-arguments (list nargs (%closure-name f))))
 
+(defun %values-list-error (list)
+  (error 'type-error :datum list :expected-type 'list))
+
 (defun %no-catch-error (tag)
   (error 'simple-control-error :format-control "attempt to THROW to a tag that does not exist: ~S"
                                :format-arguments (list tag)))
@@ -472,6 +475,15 @@
   (error 'simple-type-error :datum key :expected-type type
                             :format-control "~S fell through ETYPECASE expression. Wanted one of ~S."
                             :format-arguments (list key (cdr type))))
+
+(defun %ccase-failure (key type place)
+  (restart-case (error 'simple-type-error :datum key :expected-type type
+                                          :format-control "The value of ~S, ~S, is not of type ~S."
+                                          :format-arguments (list place key type))
+    (store-value (v)
+      :report (lambda (s) (format s "Supply a new value for ~S." place))
+      :interactive (lambda () (format *query-io* "~&New value: ") (list (eval (read *query-io*))))
+      v)))
 
 (defun %check-type-error (place value type &optional type-string)
   (declare (ignore type-string))
