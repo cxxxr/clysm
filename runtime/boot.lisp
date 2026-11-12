@@ -528,9 +528,11 @@
 (defsetf nth %setnth)
 (defsetf elt %setelt)
 (defsetf fdefinition %set-fdefinition)
-(defsetf macro-function %set-macro-function)
+(defsetf macro-function (name &optional env) (fn)
+  `(progn ,env (%set-macro-function ,name ,fn)))
 (defsetf documentation %set-documentation)
-(defsetf compiler-macro-function %set-compiler-macro-function)
+(defsetf compiler-macro-function (name &optional env) (fn)
+  `(progn ,env (%set-compiler-macro-function ,name ,fn)))
 (defsetf logical-pathname-translations %set-lpt)
 (defsetf bit %aset)
 (defsetf sbit %aset)
@@ -650,7 +652,10 @@
 
 (defmacro define-compiler-macro (name lambda-list &body body)
   ;; compiler macros run on the host at compile time only
+  ;; at run time the definition is recorded; COMPILER-MACRO-FUNCTION makes the
+  ;; expander function from it when it is first asked for
   `(progn (eval-when (:compile-toplevel) (%host-define-compiler-macro ,name ,lambda-list ,@body))
+          (%note-compiler-macro ',name ',lambda-list ',body)
           ',name))
 
 (defmacro assert (test &optional places datum &rest args)

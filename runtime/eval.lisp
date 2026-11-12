@@ -71,10 +71,23 @@
             (t (setq clean (append clean (list (car ll))) ll (cdr ll)))))
     (values whole envv clean)))
 
+(defun %split-decls-and-doc (body)
+  "Like %SPLIT-DECLS, but a documentation string may appear among the declarations."
+  (let ((decls nil) (doc nil))
+    (loop
+      (cond ((and (consp (car body)) (eq (caar body) 'declare))
+             (setq decls (cons (car body) decls) body (cdr body)))
+            ((and (stringp (car body)) (cdr body) (not doc))
+             (setq doc t body (cdr body)))
+            (t (return (values (nreverse decls) body)))))))
+
+(defun %make-compiler-macro-function (name ll body)
+  (eval `(function ,(%macro-lambda (if (consp name) (cadr name) name) ll body))))
+
 (defun %macro-lambda (name ll body)
   (multiple-value-bind (whole envv clean) (%parse-macro-lambda-list ll)
     (let ((form (gensym "FORM")) (env (gensym "ENV")))
-      (multiple-value-bind (decls forms) (%split-decls body)
+      (multiple-value-bind (decls forms) (%split-decls-and-doc body)
         (let ((inner `(destructuring-bind ,clean (cdr ,form)
                         ,@decls
                         (block ,name ,@forms))))
@@ -227,7 +240,16 @@ affect references in BODY."
        (%eval-locally-body (cddr form) new-env)))
     (symbol-macrolet
      (let ((new-env env))
-       (dolist (b (cadr form)) (push (list* :smacro (car b) (cadr b)) new-env))
+       (dolist (b (cadr form))
+         (when (or (not (symbolp (car b))) (constantp (car b)) (%special-p (car b)))
+           (error 'simple-program-error :format-control "SYMBOL-MACROLET: cannot bind ~S"
+                                        :format-arguments (list (car b))))
+         (push (list* :smacro (car b) (cadr b)) new-env))
+       (dolist (d (%decls-of (cddr form)))
+         (when (and (consp d) (eq (car d) 'special)
+                    (some (lambda (s) (assoc s (cadr form))) (cdr d)))
+           (error 'simple-program-error :format-control "SYMBOL-MACROLET: ~S declared special"
+                                        :format-arguments (list (cdr d)))))
        (%eval-locally-body (cddr form) new-env)))
     (block
      (let ((tag (list (cadr form))))
@@ -310,20 +332,44 @@ affect references in BODY."
                                      (if (consp (cadr spec)) (cadadr spec) (cadr spec))))
         (t (error "Bad function designator ~S" spec))))
 
+(defun %function-body-parts (body)
+  "Split a function body into declaration specifiers and forms; one
+documentation string may appear among the declarations."
+  (let ((decls nil) (doc nil))
+    (loop
+      (cond ((and (consp (car body)) (eq (caar body) 'declare))
+             (setq decls (append decls (cdar body)) body (cdr body)))
+            ((and (stringp (car body)) (cdr body) (not doc))
+             (setq doc t body (cdr body)))
+            (t (return (values decls body)))))))
+
 (defun %make-interpreted-function (name ll body env block-name)
-  (multiple-value-bind (decls forms) (%decls-of body)
-    (when (and (stringp (car forms)) (cdr forms)) (setq forms (cdr forms)))
+  (multiple-value-bind (decls forms) (%function-body-parts body)
     (let* ((body-forms (if block-name `((block ,block-name ,@forms)) forms))
            (f (lambda (&rest args) (%apply-interpreted ll decls body-forms env args))))
       (%set-closure-name f name)
       f)))
 
 (defun %apply-interpreted (ll decls body env args)
-  (let ((new-env env) (specials nil) (special-vals nil) (state :req) (keys-seen nil) (rest-args args)
+  ;; special parameters are bound as soon as they are processed, so that
+  ;; later init forms see the bindings; SAVED restores them on exit
+  (let ((saved nil))
+    (unwind-protect (%apply-interpreted-1 ll decls body env args
+                                          (lambda (sym val)
+                                            (push (if (boundp sym) (list sym (symbol-value sym)) (list sym))
+                                                  saved)
+                                            (set sym val)))
+      (do () ((null saved))
+        (let ((e (car saved)))
+          (setq saved (cdr saved))
+          (if (cdr e) (set (car e) (cadr e)) (makunbound (car e))))))))
+
+(defun %apply-interpreted-1 (ll decls body env args bind-special)
+  (let ((new-env env) (state :req) (keys-seen nil) (rest-args args)
         (aok nil))
     (labels ((bind (sym val)
                (if (or (%special-declared-p sym decls) (%special-p sym))
-                   (progn (push sym specials) (push val special-vals) (push (list :special sym) new-env))
+                   (progn (funcall bind-special sym val) (push (list :special sym) new-env))
                    (push (list* :var sym (list val)) new-env)))
              (init (form) (%eval form new-env)))
       (do ((l ll (cdr l))) ((null l))
@@ -369,9 +415,7 @@ affect references in BODY."
       (dolist (d decls)
         (when (and (consp d) (eq (car d) 'special))
           (dolist (s (cdr d)) (push (list :special s) new-env))))
-      (if specials
-          (progv specials special-vals (%eval-body body new-env))
-          (%eval-body body new-env)))))
+      (%eval-body body new-env))))
 
 ;;; ------------------------------------------------------------
 ;;; compile, load
