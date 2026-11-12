@@ -41,7 +41,7 @@
   (clrhash *target-packages*) (clrhash *host->target-name*) (clrhash *target-nicknames*)
   (register-target-package "COMMON-LISP" (find-package :cl) '("CL"))
   (register-target-package "KEYWORD" (find-package :keyword) '())
-  (register-target-package "SYSTEM" (find-package :clysm-sys) '("SYS" "CLYSM"))
+  (register-target-package "SYSTEM" (find-package :clysm-sys) '("SYS"))
   (register-target-package "COMMON-LISP-USER"
                            (or (find-package :clysm-user) (make-package :clysm-user :use '(:cl)))
                            '("CL-USER")))

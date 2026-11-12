@@ -33,10 +33,48 @@
           (progn (emit-byte buf b) (return))
           (emit-byte buf (logior b #x80))))))
 
+(defun utf8-octets (string)
+  (let ((out (make-array (length string) :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+    (loop for ch across string
+          for c = (char-code ch)
+          do (cond ((< c #x80) (vector-push-extend c out))
+                   ((< c #x800)
+                    (vector-push-extend (logior #xC0 (ash c -6)) out)
+                    (vector-push-extend (logior #x80 (logand c #x3F)) out))
+                   ((< c #x10000)
+                    (vector-push-extend (logior #xE0 (ash c -12)) out)
+                    (vector-push-extend (logior #x80 (logand (ash c -6) #x3F)) out)
+                    (vector-push-extend (logior #x80 (logand c #x3F)) out))
+                   (t
+                    (vector-push-extend (logior #xF0 (ash c -18)) out)
+                    (vector-push-extend (logior #x80 (logand (ash c -12) #x3F)) out)
+                    (vector-push-extend (logior #x80 (logand (ash c -6) #x3F)) out)
+                    (vector-push-extend (logior #x80 (logand c #x3F)) out))))
+    out))
+
 (defun emit-name (buf string)
-  (let ((octets (sb-ext:string-to-octets string :external-format :utf-8)))
+  (let ((octets (utf8-octets string)))
     (emit-u32 buf (length octets))
     (emit-bytes buf octets)))
+
+(defun float-bits (x mantissa-bits exponent-bits)
+  "IEEE 754 bit pattern of the float X, computed portably."
+  (let ((bias (1- (ash 1 (1- exponent-bits))))
+        (sign-bit (ash 1 (+ mantissa-bits exponent-bits))))
+    (if (zerop x)
+        (if (minusp (float-sign x)) sign-bit 0)
+        (multiple-value-bind (mant expo sign) (integer-decode-float x)
+          ;; normalize mantissa to MANTISSA-BITS+1 bits
+          (let ((len (integer-length mant)))
+            (setf expo (+ expo (- len (1+ mantissa-bits))))
+            (setf mant (ash mant (- (1+ mantissa-bits) len))))
+          (let ((biased (+ expo mantissa-bits bias)))
+            (when (<= biased 0)
+              ;; subnormal
+              (setf mant (ash mant (1- biased)) biased 0))
+            (logior (if (minusp sign) sign-bit 0)
+                    (ash biased mantissa-bits)
+                    (ldb (byte mantissa-bits 0) mant)))))))
 
 (defun emit-vec-buf (buf sub)
   (emit-u32 buf (length sub))
@@ -367,15 +405,11 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
                                                            (if (>= v (expt 2 63)) (- v (expt 2 64)) v))))
         (:f64.const (emit-byte buf #x44)
          (let ((bits (let ((v (first args)))
-                       (if (integerp v) v
-                           (let ((d (coerce v 'double-float)))
-                             (logior (ash (ldb (byte 32 0) (sb-kernel:double-float-high-bits d)) 32)
-                                     (sb-kernel:double-float-low-bits d)))))))
+                       (if (integerp v) v (float-bits (coerce v 'double-float) 52 11)))))
            (dotimes (i 8) (emit-byte buf (ldb (byte 8 (* 8 i)) bits)))))
         (:f32.const (emit-byte buf #x43)
          (let ((bits (let ((v (first args)))
-                       (if (integerp v) v
-                           (ldb (byte 32 0) (sb-kernel:single-float-bits (coerce v 'single-float)))))))
+                       (if (integerp v) v (float-bits (coerce v 'single-float) 23 8)))))
            (dotimes (i 4) (emit-byte buf (ldb (byte 8 (* 8 i)) bits)))))
         (:ref.null (emit-byte buf #xD0) (emit-heap-type m buf (first args)))
         (:ref.func (emit-byte buf #xD2) (declare-func-ref m (first args))

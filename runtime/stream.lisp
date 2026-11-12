@@ -269,12 +269,17 @@
       (:probe (probe-file filename))
       (t (error "OPEN: unsupported direction ~S" direction)))))
 
+(defun %binary-element-type-p (et)
+  (and et (not (member et '(character base-char standard-char)))
+       (or (member et '(unsigned-byte signed-byte bit))
+           (and (consp et) (member (car et) '(unsigned-byte signed-byte mod))))))
+
 (defun close (stream &key abort)
   (when (and (eq (stream-kind stream) :file-out) (stream-open stream) (not abort))
     (%host-name-buffer (stream-buffer stream))
     (%put-char-buf -1)
     (%host-name-buffer (namestring (stream-pathname stream)))
-    (%file-open 1))
+    (%file-open (if (%binary-element-type-p (stream-element-type stream)) 2 1)))
   (setf (stream-open stream) nil)
   t)
 

@@ -10,7 +10,14 @@
   (setf (get sym indicator) value))
 
 (defmacro clysm-sys::%ct-constant (sym form)
-  `(handler-case (clysm-sys::%compile-time-constant ',sym ,form)
+  ;; record the constant for the compiler and, for non-CL symbols, also define
+  ;; it on the host so that macro expanders can use it
+  `(handler-case
+       (let ((value ,form))
+         (clysm-sys::%compile-time-constant ',sym value)
+         ,@(unless (eq (symbol-package sym) (find-package :cl))
+             `((proclaim '(special ,sym))
+               (setf (symbol-value ',sym) value))))
      (error () (clysm-sys::%compile-time-special ',sym))))
 
 (defun clysm-sys::%host-macro-function* (sym env)
@@ -23,7 +30,6 @@
   `(setf (gethash ',name *compiler-macros*)
          (host-compile ',(make-host-macro-expander name ll body))))
 
-(defvar *initial-symbol-values* (make-hash-table :test 'eq))
 
 (defmacro clysm-sys::%ct-initial-value (sym form)
   ;; record constant initial values so that the symbol is bound from the start

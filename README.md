@@ -116,6 +116,22 @@ access), the reader with readtables, an evaluator for `eval`/`load`, and a REPL.
 Macro expanders run on the host during compilation and are also compiled into
 the image, so `macroexpand`, `eval` and the REPL can use every macro.
 
+## Self-hosting
+
+The compiler is itself written in portable Common Lisp, so Clysm can compile
+itself to WebAssembly:
+
+```
+$ tools/build-selfhost.sh                       # SBCL-hosted Clysm compiles the compiler -> build/clysmc.wasm
+$ node host/run.mjs build/clysmc.wasm out.wasm prog.lisp   # the compiler running in Wasm
+$ node host/run.mjs build/clysmc.wasm build/clysmc2.wasm src/*.lisp ...   # it compiles itself
+```
+
+The second- and third-generation compilers are byte-for-byte identical (a
+fixed point), and the whole test suite passes when compiled by the Wasm-hosted
+compiler (`SELFHOST=1 tools/run-tests.sh`). Inside the image, macro expanders
+and `eval-when` code are run by Clysm's own evaluator.
+
 ## JavaScript interoperability (spec: externref ラッパー構造体)
 
 JavaScript values are `externref`s, which cannot be stored in Lisp data, so they
@@ -141,4 +157,6 @@ calls the exported `eval_string`.
 ## Tests
 
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares
-standard output with SBCL running the same file.
+standard output with SBCL running the same file. `INTERP=1` runs the files with
+the in-image evaluator instead, and `SELFHOST=1` compiles them with the
+Wasm-hosted compiler.

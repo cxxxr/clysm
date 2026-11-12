@@ -3,6 +3,8 @@
 (in-package :clysm)
 
 (defvar *deferred-macros* nil)
+(defvar *macros-ready* nil)
+(defvar *initial-symbol-values* (make-hash-table :test 'eq))
 (defvar *toplevel-lams* nil "reverse list of toplevel lams")
 (defvar *current-toplevel* nil)
 (defvar *toplevel-nodes* nil)
@@ -164,7 +166,6 @@
           (emit-target-macro name ll body env)
           (push (list name ll body) *deferred-macros*)))))
 
-(defvar *macros-ready* nil)
 (defun target-macros-ready-p () *macros-ready*)
 
 (defun emit-target-macro (name ll body env)
@@ -418,14 +419,21 @@ they can be FUNCALLed and used by the interpreter."
              (pkg-index (lambda (name) (position name pkgs :test #'string=))))
         (let ((entries
                 (loop for s in syms
-                      append (let* ((pn (symbol-target-package-name s))
+                      collect (let* ((pn (symbol-target-package-name s))
                                     (ext (and pn (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s)))
                                                      :external))))
                                `((:global.get (:sym ,s))
                                  ,@(fixnum-code (if pn (funcall pkg-index pn) -1))
                                  ,@(if ext `((:global.get (:sym t))) `((:global.get (:sym nil)))))))))
-          (add-global *m* :symtab '(:ref :vector) nil
-                      `(,@entries (:array.new_fixed :vector ,(* 3 (length syms))))))
+          ;; array.new_fixed is limited to 10000 operands: emit chunks of entries
+          (let ((chunks (loop for rest = entries then (nthcdr 3000 rest)
+                              while rest
+                              collect (subseq rest 0 (min 3000 (length rest))))))
+            (add-global *m* :symtab '(:ref :vector) nil
+                        `(,@(loop for chunk in chunks
+                                  append `(,@(apply #'append chunk)
+                                           (:array.new_fixed :vector ,(* 3 (length chunk)))))
+                          (:array.new_fixed :vector ,(length chunks))))))
         ;; pkgtab: vector of (name nicknames uses) built as constant lists of strings
         (let ((pkg-inits
                 (loop for pn in pkgs

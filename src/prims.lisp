@@ -260,7 +260,7 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (macrolet ((acc (name idx)
              `(progn
                 (defprim ,name (a) :value `(,@a (:ref.cast :mdarray) (:struct.get :mdarray ,,idx)))
-                (defprim ,(intern (format nil "%SET-~A" (subseq (symbol-name name) 1)) :clysm-sys) (a v) :value
+                (defprim ,(intern (format nil "%SET-~A" (subseq (symbol-name name) 1)) (symbol-package name)) (a v) :value
                   (let ((tmp (new-local)))
                     `(,@a (:ref.cast :mdarray) ,@v (:local.tee ,tmp) (:struct.set :mdarray ,,idx)
                       (:local.get ,tmp)))))))

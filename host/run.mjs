@@ -46,7 +46,8 @@ function nodePlatform(state, args) {
           state.setCharBuf(data);
           return data.length;
         }
-        fs.writeFileSync(name, state.writeBuf || ''); state.writeBuf = '';
+        const content = state.writeBuf || ''; state.writeBuf = '';
+        fs.writeFileSync(name, mode === 2 ? Buffer.from(content, 'latin1') : content);
         return 0;
       } catch (e) { return -1; }
     },
