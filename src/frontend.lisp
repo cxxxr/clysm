@@ -401,7 +401,9 @@ runtime definition is kept."
       (eval-when (if (intersection (second form) '(:execute eval))
                      (convert-body (cddr form) env)
                      '(:const nil)))
-      (load-time-value `(:ltv ,(let ((*current-lam* nil)) (convert (second form) (make-cenv)))))
+      ;; the form is compiled inline in the current function (in a null lexical
+      ;; environment), so blocks and tags inside it belong to that function
+      (load-time-value `(:ltv ,(convert (second form) (make-cenv))))
       (progv `(:progv ,(convert (second form) env) ,(convert (third form) env)
                       ,(convert-body (cdddr form) env))))))
 

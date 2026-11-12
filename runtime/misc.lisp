@@ -135,7 +135,7 @@
     (t (remhash (%doc-key x doc-type) %documentation-table)))
   new-value)
 (defun %set-documentation (x doc-type new-value)
-  (funcall #'(setf documentation) new-value x doc-type))
+  (funcall (fdefinition '(setf documentation)) new-value x doc-type))
 
 (defgeneric describe-object (object stream))
 (defmethod describe-object (object stream)
@@ -183,7 +183,7 @@
 
 (defun %trace-1 (name)
   (cond ((not (fboundp name)) (warn "~S is not a function; not traced" name))
-        ((or (special-operator-p name) (and (symbolp name) (macro-function name)))
+        ((and (symbolp name) (or (special-operator-p name) (macro-function name)))
          (warn "~S is not a function; not traced" name))
         ((member name (%traced-names) :test #'equal)
          (warn "~S is already traced" name))

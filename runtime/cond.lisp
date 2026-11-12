@@ -82,11 +82,11 @@
       (multiple-value-bind (form readers writers sname) (%parse-slot-spec s)
         (push form slotd-forms)
         (dolist (r readers)
-          (push `(%define-condition-accessor ',r ',name (lambda (c) (%slot-value-by-name c ',sname)) nil)
-                accessor-forms))
+          (push `(defun ,r (c) (%slot-value-by-name c ',sname)) accessor-forms)
+          (push `(%define-condition-accessor ',r ',name #',r nil) accessor-forms))
         (dolist (w writers)
-          (push `(%define-condition-accessor ',w ',name (lambda (v c) (%set-slot-value-by-name c ',sname v)) t)
-                accessor-forms))))
+          (push `(defun ,w (v c) (%set-slot-value-by-name c ',sname v)) accessor-forms)
+          (push `(%define-condition-accessor ',w ',name #',w t) accessor-forms))))
     (dolist (o options)
       (case (car o)
         (:report (setq report (cadr o)))
@@ -108,9 +108,8 @@
   "set by CLOS: makes condition slot readers and writers generic functions")
 
 (defun %define-condition-accessor (name class fn writerp)
-  (if *condition-accessor-hook*
-      (funcall *condition-accessor-hook* name class fn writerp)
-      (%set-fdefinition name fn))
+  (when *condition-accessor-hook*
+    (funcall *condition-accessor-hook* name class fn writerp))
   name)
 
 (defun %define-condition-class (name supers direct-slots default-initargs)
@@ -302,7 +301,9 @@
 (defun %restart-case-signal-form (form env)
   "CLHS RESTART-CASE: when FORM is a call to SIGNAL, ERROR, CERROR or WARN,
 the restarts are associated with the condition being signaled."
-  (let ((exp (macroexpand form env)))
+  ;; the compiler's %MACROEXPAND understands its environments (when the
+  ;; compiler is in the image or on the host)
+  (let ((exp (if (fboundp '%macroexpand) (funcall '%macroexpand form env) (macroexpand form env))))
     (if (and (consp exp) (member (car exp) '(signal error cerror warn)))
         (let ((c (gensym "C")))
           (multiple-value-bind (datum args fmt)
