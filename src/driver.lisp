@@ -383,6 +383,7 @@ they can be FUNCALLed and used by the interpreter."
                         :local-names (mapcar #'first locals)
                         :body (remove nil body))))))
       (compile-pending-lams)
+      (add-export *m* "lisp_apply" :func :lisp-apply)
       ;; _start
       (add-func *m* :start :v-v :export entry
                 :body (append (initial-value-prologue)

@@ -113,6 +113,10 @@
          (if (package-name x) (%write-string-object (package-name x) stream) (write-string "(deleted)" stream))
          (write-string ">" stream))
         ((%cellp x) (write-string "#<CELL>" stream))
+        ((%foreignp x)
+         (write-string "#<JS-VALUE " stream)
+         (write-string (symbol-name (%foreign-type-name x)) stream)
+         (write-string ">" stream))
         (t (write-string "#<unknown object>" stream))))
 
 ;;; ------------------------------------------------------------

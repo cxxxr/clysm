@@ -1,0 +1,122 @@
+# Clysm — Common Lisp on WebAssembly GC
+
+Clysm is a Common Lisp implementation written from scratch that compiles Lisp
+to **WebAssembly GC** binaries. It follows the design in
+`Wasm向けLispコンパイラ開発仕様.pdf`: Lisp objects are WasmGC structs/arrays and
+`i31ref` immediates, memory is managed by the host GC, non-local exits use the
+Wasm exception handling proposal (`try_table` / `throw_ref`), and tail calls use
+`return_call` / `return_call_ref`.
+
+```
+$ bin/clysm run tests/hello.lisp          # compile with the runtime, then run on Node.js
+$ bin/clysm compile prog.lisp -o prog.wasm
+$ bin/clysm repl                          # a REPL running inside Wasm (reader + evaluator)
+$ bin/clysm eval '(expt 2 100)'
+$ bin/clysm script file.lisp              # LOAD a file with the in-image evaluator
+```
+
+Requirements: SBCL (hosts the cross compiler) and Node.js ≥ 22 (WasmGC,
+exnref and tail calls enabled by default).
+
+## Layout
+
+| Path | Contents |
+|------|----------|
+| `src/wasm.lisp` | Wasm binary encoder (GC types in a single rec group, EH `try_table`, tail calls, symbolic labels) |
+| `src/reader.lisp` | host-side reader for target source (target packages mirrored as host packages, backquote) |
+| `src/layout.lisp` | WasmGC object layout |
+| `src/frontend.lisp` | macroexpansion, special forms → AST, closure/assignment conversion analysis |
+| `src/codegen.lisp` | AST → Wasm instructions (calling convention, MV, dynamic binding, non-local exits) |
+| `src/prims.lisp` | inline primitives and hand-written Wasm runtime helpers |
+| `src/driver.lisp` | toplevel processing (`eval-when`, `defmacro`, `defpackage`…) and module assembly |
+| `runtime/*.lisp` | the Common Lisp library, written in Lisp and compiled by Clysm |
+| `host/run.mjs` | Node.js host: I/O imports, runs the module in a worker with a large stack |
+| `tools/run-tests.sh` | runs every `tests/cases/*.lisp` on SBCL and Clysm and compares the output |
+
+## Object representation (spec: データ構造のWasmGCマッピング)
+
+The universal value type is `(ref null eq)`.
+
+* **fixnum** — `i31ref`, values in [-2^29, 2^29). **character** — `i31ref` with
+  the upper-bit tag `01` (value = 2^29 + code point). Both are scalars for the GC.
+* **NIL / T** — singleton `$symbol` structs held in immutable globals (NIL is a
+  real symbol, so `symbol-name`/`symbol-plist` work on it).
+* **cons** — `struct { car: mut eqref, cdr: mut eqref }`.
+* **symbol** — `struct { name: (ref $string), package: mut (ref null $package),
+  value: mut eqref, function: mut (ref null $closure), plist: mut eqref, hash: i32, flags: mut i32 }`.
+  Unbound = null value slot.
+* **string** — `(array (mut i32))` of code points; **simple-vector** — `(array (mut eqref))`;
+  also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
+  multi-dimensional, displaced) use a header struct around a simple array.
+* **bignum** — `struct { sign: i32, digits: (ref (array i32)) }` (base 2^14),
+  **ratio**, **complex**, **single-float** (`f32`), **double-float** (`f64`) structs.
+* **package** — `$package` struct with hash tables of symbols.
+* **instances** (structures, conditions, CLOS objects) — `struct { layout, slots }`
+  where the layout is the class object.
+* **closures** — see below. **foreign objects** — `struct { externref }` wrapper.
+
+All types live in one recursive type group, so structurally identical types
+(e.g. strings vs. bignum digit arrays) remain distinct for `ref.test`. Type
+predicates compile to `ref.test`, never to pointer tag arithmetic.
+
+## Calling convention (spec: ハイブリッド渡し)
+
+A closure is `struct { entry0..entry4, entryN, env, name }`. A call with k ≤ 4
+arguments uses `call_ref` on `entry_k` with the arguments as native Wasm
+parameters; more arguments, `apply`, and `multiple-value-call` use `entryN`,
+which takes an argument array. For a function with only required parameters the
+matching entry *is* the function body; the other fixed entries are shared
+argument-count-error stubs, and `entryN` is a small unpacking adapter. Functions
+with `&optional/&rest/&key` take the argument array directly (shared packing
+stubs fill the fixed entries). Calls to functions defined in the same program
+are compiled as direct `call`s (CLHS 3.2.2.3), and tail calls become
+`return_call` / `return_call_ref`.
+
+Closure conversion: free variables are copied into the closure's environment
+array; variables that are both captured and assigned are boxed in cells.
+`labels` closures are created first and their environments patched afterwards.
+
+## Multiple values (spec: 多値リターン用バッファ)
+
+The primary value is the Wasm return value. A global `mv-count` and a global
+value buffer hold the full set; `values` fills them, and every non-call
+expression in a multiple-value context sets the count to 1. Calls in tail
+position pass values through untouched.
+
+## Dynamic binding (spec: シャローバインディング)
+
+The symbol's value slot holds the current value; binding pushes the old value
+on a global binding stack. Every exit point (normal return, `catch`,
+`unwind-protect` cleanup, non-local `return-from`/`go`) restores the binding
+stack to its saved depth.
+
+## Non-local exits (spec: Wasm EH)
+
+`block`/`return-from` and `tagbody`/`go` inside one function compile to Wasm
+`block`/`br` and a `loop` + `br_table` dispatcher. When the exit crosses a
+closure boundary or an `unwind-protect`, a fresh tag object is created and the
+exit `throw`s the single exception tag `$lisp-throw(tag, value)`; the target is
+a `try_table` with `catch_ref` that compares the tag and otherwise rethrows with
+`throw_ref`. `catch`/`throw` use the same mechanism (with a dynamic list of
+active catch tags so that throwing to a missing tag signals `control-error`).
+`unwind-protect` uses `catch_all_ref`, runs the cleanup (saving multiple
+values), and resumes with `throw_ref`.
+
+## The runtime
+
+Written in Lisp (`runtime/`): macros (`setf` machinery, `loop`,
+`destructuring-bind`…), lists, the numeric tower with bignums and ratios,
+sequences, strings, characters, arrays, hash tables (insertion ordered),
+packages, `defstruct`, the condition system with restarts, streams, the printer
+(including an XP-style pretty printer that reproduces SBCL's layout), `format`,
+CLOS (generic functions with standard and operator method combinations,
+`defclass`, `make-instance`, `initialize-instance`, `print-object`, slot
+access), the reader with readtables, an evaluator for `eval`/`load`, and a REPL.
+
+Macro expanders run on the host during compilation and are also compiled into
+the image, so `macroexpand`, `eval` and the REPL can use every macro.
+
+## Tests
+
+`tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares
+standard output with SBCL running the same file.

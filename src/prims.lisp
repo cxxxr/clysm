@@ -371,6 +371,24 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
     (:host-put-char-buf :i-v "env" "put_char_buf")
     (:host-argc :v-i "env" "argc")
     (:host-debug-mode :v-i "env" "debug_mode")
+    (:js-global :v-x "js" "global")
+    (:js-get :xx-x "js" "get")
+    (:js-set :xxx-v "js" "set")
+    (:js-apply :xxx-x "js" "apply")
+    (:js-new :xx-x "js" "construct")
+    (:js-array :v-x "js" "array")
+    (:js-push :xx-v "js" "push")
+    (:js-number :d-x "js" "number")
+    (:js-to-number :x-d "js" "to_number")
+    (:js-typeof :x-i "js" "typeof")
+    (:js-take-string :v-x "js" "take_string")
+    (:js-str-len :x-i "js" "str_len")
+    (:js-str-char :xi-i "js" "str_char")
+    (:js-bool :i-x "js" "bool")
+    (:js-special :i-x "js" "special")
+    (:js-wrap-fn :x-x "js" "wrap_fn")
+    (:js-truthy :x-i "js" "truthy")
+    (:js-is-lisp :x-i "js" "is_lisp")
     (:host-arg-len :i-i "env" "arg_len")
     (:host-arg-char :ii-i "env" "arg_char")))
 
@@ -962,3 +980,40 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defprim clysm-sys::%arg-char (i j) :value
   `(,@(idx-code i) ,@(idx-code j) (:call :host-arg-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%debug-mode () :value `((:call :host-debug-mode) :ref.i31))
+
+;;; ------------------------------------------------------------
+;;; JavaScript interop: externref values are wrapped in $foreign structs
+;;; ------------------------------------------------------------
+
+(defun ext-code (x) `(,@x (:ref.cast :foreign) (:struct.get :foreign 0)))
+(defun wrap-ext () '((:struct.new :foreign)))
+
+(defprim clysm-sys::%js-global () :value `((:call :js-global) ,@(wrap-ext)))
+(defprim clysm-sys::%js-get (o k) :value `(,@(ext-code o) ,@(ext-code k) (:call :js-get) ,@(wrap-ext)))
+(defprim clysm-sys::%js-set (o k v) :value
+  `(,@(ext-code o) ,@(ext-code k) ,@(ext-code v) (:call :js-set) ,@(nil-code)))
+(defprim clysm-sys::%js-apply (f this args) :value
+  `(,@(ext-code f) ,@(ext-code this) ,@(ext-code args) (:call :js-apply) ,@(wrap-ext)))
+(defprim clysm-sys::%js-new (f args) :value `(,@(ext-code f) ,@(ext-code args) (:call :js-new) ,@(wrap-ext)))
+(defprim clysm-sys::%js-array () :value `((:call :js-array) ,@(wrap-ext)))
+(defprim clysm-sys::%js-push (a v) :value `(,@(ext-code a) ,@(ext-code v) (:call :js-push) ,@(nil-code)))
+(defprim clysm-sys::%js-number (d) :value `(,@(f64-code d) (:call :js-number) ,@(wrap-ext)))
+(defprim clysm-sys::%js-to-number (o) :value `(,@(ext-code o) (:call :js-to-number) ,@(box-f64)))
+(defprim clysm-sys::%js-typeof (o) :value `(,@(ext-code o) (:call :js-typeof) :ref.i31))
+(defprim clysm-sys::%js-take-string () :value `((:call :js-take-string) ,@(wrap-ext)))
+(defprim clysm-sys::%js-str-len (o) :value `(,@(ext-code o) (:call :js-str-len) :ref.i31))
+(defprim clysm-sys::%js-str-char (o i) :value
+  `(,@(ext-code o) ,@(idx-code i) (:call :js-str-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
+(defprim clysm-sys::%js-bool (b) :value `(,@(idx-code b) (:call :js-bool) ,@(wrap-ext)))
+(defprim clysm-sys::%js-special (k) :value `(,@(idx-code k) (:call :js-special) ,@(wrap-ext)))
+(defprim clysm-sys::%js-wrap-fn (f) :value `(,@f (:ref.cast :closure) :extern.convert_any (:call :js-wrap-fn) ,@(wrap-ext)))
+(defprim clysm-sys::%js-truthy (o) :test `(,@(ext-code o) (:call :js-truthy)))
+(defprim clysm-sys::%js-lisp-object-p (o) :test `(,@(ext-code o) (:call :js-is-lisp)))
+(defprim clysm-sys::%js-wrap-lisp (x) :value `(,@x :extern.convert_any ,@(wrap-ext)))
+(defprim clysm-sys::%js-unwrap-lisp (o) :value `(,@(ext-code o) :any.convert_extern (:ref.cast :null :eq)))
+
+;; exported entry used by JS to call Lisp closures
+(defhelper :lisp-apply :xx-x ()
+  '(:local.get 0) '(:struct.new :foreign) '(:local.get 1) '(:struct.new :foreign)
+  `(:global.get ,(sym-global 'clysm-sys::%js-callback)) '(:call (:callsym 2))
+  '(:ref.cast :foreign) '(:struct.get :foreign 0))

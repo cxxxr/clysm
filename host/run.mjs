@@ -1,5 +1,7 @@
 // Clysm host runtime for Node.js: instantiates a compiled Lisp module.
 import fs from 'node:fs';
+import { Worker, isMainThread, workerData } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
 
 export function makeImports(state, args = []) {
   const out = { 1: [], 2: [] };
@@ -25,7 +27,42 @@ export function makeImports(state, args = []) {
                  Math.sqrt, Math.sinh, Math.cosh, Math.tanh, Math.asinh, Math.acosh, Math.atanh,
                  Math.floor, Math.ceil, Math.trunc, Math.round, Math.log10, Math.log2];
   const math2 = [Math.pow, Math.atan2, (a, b) => a % b];
+  let strCache = null, strCacheArr = null;
+  const codePoints = (x) => {
+    if (strCache !== x) { strCache = x; strCacheArr = Array.from(x); }
+    return strCacheArr;
+  };
+  const isLisp = (x) => x !== null && typeof x === 'object' && Object.getPrototypeOf(x) === null
+                         && !Object.isExtensible(x);
   return {
+    js: {
+      global: () => globalThis,
+      get: (o, k) => o[k],
+      set: (o, k, v) => { o[k] = v; },
+      apply: (f, t, a) => Reflect.apply(f, t, a),
+      construct: (f, a) => Reflect.construct(f, a),
+      array: () => [],
+      push: (a, v) => { a.push(v); },
+      number: (d) => d,
+      to_number: (x) => Number(x),
+      typeof: (x) => {
+        if (x === undefined) return 0;
+        if (x === null) return 1;
+        switch (typeof x) {
+          case 'boolean': return 2; case 'number': return 3; case 'string': return 4;
+          case 'function': return 6; case 'bigint': return 7; case 'symbol': return 8;
+          default: return isLisp(x) ? 9 : 5;
+        }
+      },
+      take_string: () => { const s = state.nameBuf || ''; state.nameBuf = ''; return s; },
+      str_len: (x) => codePoints(x).length,
+      str_char: (x, i) => codePoints(x)[i].codePointAt(0),
+      bool: (b) => b !== 0,
+      special: (k) => (k === 0 ? null : undefined),
+      wrap_fn: (closure) => (...args) => state.instance.exports.lisp_apply(closure, args),
+      truthy: (x) => (x ? 1 : 0),
+      is_lisp: (x) => (isLisp(x) ? 1 : 0),
+    },
     env: {
       write_char(fd, code) {
         const o = out[fd] || out[1];
@@ -106,6 +143,7 @@ export async function runModule(bytes, args = []) {
   let instance;
   try {
     ({ instance } = await WebAssembly.instantiate(bytes, imports));
+    state.instance = instance;
   } catch (e) {
     console.error('instantiate failed:', e.message);
     process.exit(3);
@@ -124,7 +162,20 @@ export async function runModule(bytes, args = []) {
   state.flush();
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const bytes = fs.readFileSync(process.argv[2]);
-  await runModule(bytes, process.argv.slice(3));
+// The module runs in a worker thread so that the stack size can be raised
+// (deep non-tail recursion is common in Lisp programs).
+const selfPath = fileURLToPath(import.meta.url);
+if (isMainThread && process.argv[1] === selfPath) {
+  const stackMb = Number(process.env.CLYSM_STACK_MB || 512);
+  const worker = new Worker(selfPath, {
+    workerData: { file: process.argv[2], args: process.argv.slice(3) },
+    resourceLimits: { stackSizeMb: stackMb },
+    stdin: false,
+  });
+  worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
+  worker.on('exit', (code) => process.exit(code));
+} else if (!isMainThread && workerData && workerData.file) {
+  const bytes = fs.readFileSync(workerData.file);
+  await runModule(bytes, workerData.args);
+  process.exit(0);
 }
