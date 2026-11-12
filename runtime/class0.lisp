@@ -310,8 +310,9 @@
         (%set-instance-layout top bic)
         (%set-instance-layout (find-class 'function) bic))
       (%set-instance-layout (find-class 'structure-object) (find-class 'structure-class))
+      (%ensure-class-object 'compiled-function (find-class 'built-in-class) (list (find-class 'function)) nil :built-in)
       (%ensure-class-object 'funcallable-standard-object sc
-                            (list (find-class 'standard-object) (find-class 'function)) nil :standard)
+                            (list (find-class 'standard-object) (find-class 'compiled-function)) nil :standard)
       (%ensure-class-object 'generic-function (find-class 'funcallable-standard-class)
                             (list (find-class 'metaobject) (find-class 'funcallable-standard-object)) nil :standard)
       (%ensure-class-object 'standard-generic-function (find-class 'funcallable-standard-class)
@@ -331,7 +332,7 @@
                     (symbol t) (sequence t) (list sequence) (null symbol list) (keyword symbol) (cons list)
                     (array t) (vector array sequence) (string vector) (simple-string string)
                     (bit-vector vector) (simple-vector vector) (hash-table t) (package t)
-                    (compiled-function function)))
+))
       (%ensure-class-object (car spec) bic (mapcar #'find-class (cdr spec)) nil :built-in))))
 
 (%bootstrap-classes)

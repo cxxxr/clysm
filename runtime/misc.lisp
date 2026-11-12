@@ -131,5 +131,4 @@
 (defun gc (&key full) (declare (ignore full)) nil)
 (defun function-lambda-expression (f) (values nil t (%closure-name f)))
 (defun upgraded-array-element-type (type &optional env) (declare (ignore env)) (%normalize-element-type type))
-(defun upgraded-complex-part-type (type &optional env) (declare (ignore env)) type)
 (defun arithmetic-error-operation* (c) (arithmetic-error-operation c))

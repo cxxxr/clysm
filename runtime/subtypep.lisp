@@ -13,7 +13,9 @@
 
 (defparameter *numeric-categories* '(integer ratio single-float double-float))
 (defparameter *set-categories* '(base-char extended-char keyword symbol
-                                 complex-rational complex-single-float complex-double-float))
+                                 complex-rational complex-single-float complex-double-float
+                                 ;; -0.0 is kept apart from the intervals (= 0 but not EQL to 0.0)
+                                 single-float-negzero double-float-negzero))
 (defparameter *array-element-categories* '(t character bit (unsigned-byte 8) double-float))
 (defparameter *array-categories*
   (let ((r nil))
@@ -87,6 +89,8 @@
   (cond ((eq p :all) t)
         ((eq (car p) :eql) (eql x (cadr p)))
         ((eq (car p) :class) (%subclassp (class-of x) (cadr p)))
+        ((eq (car p) :cons)
+         (and (consp x) (%ctype-member-p (car x) (cadr p)) (%ctype-member-p (cdr x) (caddr p))))
         ((eq (car p) :dims)
          (let ((rank (cadr p)) (dims (cddr p)))
            (or (eq rank :any)
@@ -199,7 +203,10 @@
 
 (defun %cat-empty-p (cat c)
   (cond ((%numeric-cat-p cat) (null c))
-        ((%set-cat-p cat) (or (null c) (and (eq (car c) :in) (null (cdr c)))))
+        ((%set-cat-p cat) (or (null c) (and (eq (car c) :in) (null (cdr c)))
+                              ;; a category with the single element -0.0
+                              (and (member cat '(single-float-negzero double-float-negzero))
+                                   (eq (car c) :out) (not (null (cdr c))))))
         (t (every #'%term-empty-p c))))
 
 (defun %cat-union (cat a b)
@@ -276,7 +283,10 @@
     (when (eq iv :unknown) (return-from %numeric-type :unknown))
     (dolist (cat cats r)
       (let ((ivs (if (eq cat 'integer) (%iv-normalize-int iv) (if (%iv-empty-p iv cat) nil (list iv)))))
-        (when ivs (push (cons cat ivs) r))))))
+        (when ivs
+          (push (cons cat ivs) r)
+          (when (and (member cat '(single-float double-float)) (%iv-intersect iv (%iv 0 nil 0 nil) cat))
+            (push (cons (if (eq cat 'single-float) 'single-float-negzero 'double-float-negzero) (list :out)) r)))))))
 
 (defun %array-elt-category (x)
   (let ((e (array-element-type x)))
@@ -284,7 +294,9 @@
 
 (defun %object-category (x)
   "The category of the object X and its constraint as a member of a set."
-  (cond ((integerp x) (values 'integer (list (%iv x nil x nil))))
+  (cond ((and (floatp x) (zerop x) (minusp (float-sign x)))
+         (values (if (%single-float-p x) 'single-float-negzero 'double-float-negzero) (list :in x)))
+        ((integerp x) (values 'integer (list (%iv x nil x nil))))
         ((%ratiop x) (values 'ratio (list (%iv x nil x nil))))
         ((%single-float-p x) (values 'single-float (list (%iv (rational x) nil (rational x) nil))))
         ((%double-float-p x) (values 'double-float (list (%iv (rational x) nil (rational x) nil))))
@@ -295,10 +307,16 @@
                                      ((%double-float-p (realpart x)) 'complex-double-float)
                                      (t 'complex-rational))
                                (list :in x)))
-        ((consp x) (values :unknown nil))
+        ((consp x) (values 'cons (list (list (list :eql x)))))
         ((arrayp x) (values (list 'array (%array-elt-category x) (not (null (%simple-array-p x))))
                             (list (list (list :eql x)))))
         (t (values 'object (list (list (list :eql x)))))))
+
+(defun %ctype-member-p (x ctype)
+  "True when the object X is an element of the canonical type CTYPE."
+  (multiple-value-bind (cat c) (%object-category x)
+    (let ((constraint (%type-get ctype cat)))
+      (and constraint (not (%cat-empty-p cat (%cat-intersect cat c constraint)))))))
 
 (defun %member-type (objects)
   (let ((r nil))
@@ -441,3 +459,19 @@
     (if (or (eq c1 :unknown) (eq c2 :unknown))
         (values nil nil :unknown)
         (values (null (%type-and c1 (%type-not c2))) t nil))))
+
+(defun upgraded-complex-part-type (type &optional env)
+  (declare (ignore env))
+  (let ((c (%canon type)))
+    (if (eq c :unknown)
+        'real
+        (let ((rat (or (%type-get c 'integer) (%type-get c 'ratio)))
+              (sf (%type-get c 'single-float)) (df (%type-get c 'double-float)))
+          (cond ((and rat (not sf) (not df)) 'rational)
+                ((and sf (not rat) (not df)) 'single-float)
+                ((and df (not rat) (not sf)) 'double-float)
+                ((and sf df (not rat)) 'float)
+                ((and (not rat) (not sf) (not df)) nil)
+                ((and rat sf (not df)) '(or rational single-float))
+                ((and rat df (not sf)) '(or rational double-float))
+                (t 'real))))))
