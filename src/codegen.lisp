@@ -409,15 +409,61 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
     (and (>= n req)
          (or (lam-rest lam) (lam-keyp lam) (<= n (+ req (length (lam-opt lam))))))))
 
-(defun direct-call-code (lam closure-code arg-codes tail)
+(defun lam-keyed-p (lam)
+  "Complex lambdas without &rest are compiled with a fixed argument layout:
+#(req... opt... key...) where unsupplied optional/key slots are null."
+  (and (not (lam-simple-p lam)) (null (lam-rest lam))))
+
+(defun lam-fixed-size (lam)
+  (+ (length (lam-req lam)) (length (lam-opt lam)) (length (lam-keys lam))))
+
+(defun keyed-call-layout (lam nodes)
+  "For a direct call, map each fixed slot to the index of the argument node
+supplying it (or NIL).  Returns NIL when the call cannot be laid out statically."
+  (let* ((nreq (length (lam-req lam))) (nopt (length (lam-opt lam)))
+         (npos (+ nreq nopt)) (keys (mapcar #'first (lam-keys lam)))
+         (n (length nodes))
+         (layout (make-array (lam-fixed-size lam) :initial-element nil)))
+    (cond ((< n nreq) nil)
+          ((and (> n npos) (not (lam-keyp lam))) nil)
+          ((oddp (max 0 (- n npos))) nil)
+          (t
+           (dotimes (i (min n npos)) (setf (aref layout i) i))
+           (loop for i from npos below n by 2
+                 for k = (nth i nodes)
+                 do (unless (and (eq (car k) :const) (member (second k) keys))
+                      (return-from keyed-call-layout nil))
+                    (let ((slot (+ npos (position (second k) keys))))
+                      (unless (aref layout slot) (setf (aref layout slot) (1+ i)))))
+           layout))))
+
+(defun direct-call-code (lam closure-code arg-codes tail &optional arg-nodes)
   "Call LAM's main function directly."
   (ensure-lam-compiled lam)
   (let ((call (if tail :return_call :call)))
-    (if (lam-simple-p lam)
-        `(,@closure-code ,@(apply #'append arg-codes) (,call (:main ,(lam-id lam))))
-        `(,@closure-code ,@(apply #'append arg-codes)
-          (:array.new_fixed :vector ,(length arg-codes))
-          (,call (:main ,(lam-id lam)))))))
+    (cond ((lam-simple-p lam)
+           `(,@closure-code ,@(apply #'append arg-codes) (,call (:main ,(lam-id lam)))))
+          ((and arg-nodes (lam-keyed-p lam) (keyed-call-layout lam arg-nodes))
+           (let* ((layout (keyed-call-layout lam arg-nodes))
+                  (temps (loop for nil in arg-codes collect (new-local))))
+             `(,@closure-code
+               ,@(loop for code in arg-codes for tmp in temps for node in arg-nodes
+                       unless (and (eq (car node) :const) (= 1 (length (cg-const (second node)))))
+                         append `(,@code (:local.set ,tmp)))
+               ,@(loop for idx across layout
+                       collect (if idx
+                                   (let ((node (nth idx arg-nodes)))
+                                     (if (and (eq (car node) :const)
+                                              (= 1 (length (cg-const (second node)))))
+                                         (car (cg-const (second node)))
+                                         `(:local.get ,(nth idx temps))))
+                                   '(:ref.null :eq)))
+               (:array.new_fixed :vector ,(length layout))
+               (,call (:kmain ,(lam-id lam))))))
+          (t
+           `(,@closure-code ,@(apply #'append arg-codes)
+             (:array.new_fixed :vector ,(length arg-codes))
+             (,call (:main ,(lam-id lam))))))))
 
 (defun known-global-lam (sym)
   (let ((lams (gethash sym *global-defuns*)))
@@ -440,7 +486,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
   (let ((lam (known-global-lam sym))
         (arg-codes (mapcar #'cg args)))
     (if (and lam (lam-accepts-p lam (length args)))
-        (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail)
+        (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail args)
         (progn
           (when (and lam (not (lam-accepts-p lam (length args))))
             (cwarn "~S called with ~D arguments" sym (length args)))
@@ -450,7 +496,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
   (if (eq (car fnode) :lambda)
       (let ((lam (second fnode)))
         (if (lam-accepts-p lam (length args))
-            (direct-call-code lam (cg-closure lam) (mapcar #'cg args) tail)
+            (direct-call-code lam (cg-closure lam) (mapcar #'cg args) tail args)
             (call-closure-code (cg-closure lam) (mapcar #'cg args) mv tail)))
       (call-closure-code `(,@(cg fnode) (:call :coerce-function)) (mapcar #'cg args) mv tail)))
 
@@ -458,7 +504,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
   (let* ((lam (fun-lam fun))
          (closure-code (var-get-code (fun-lvar fun))))
     (if (lam-accepts-p lam (length args))
-        (direct-call-code lam `(,@closure-code (:ref.cast :closure)) (mapcar #'cg args) tail)
+        (direct-call-code lam `(,@closure-code (:ref.cast :closure)) (mapcar #'cg args) tail args)
         (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
                (call-closure-code `(,@closure-code (:ref.cast :closure)) (mapcar #'cg args) mv tail)))))
 
@@ -808,9 +854,9 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
 (defun compile-lam (lam)
-  (if (lam-simple-p lam)
-      (compile-simple-lam lam)
-      (compile-complex-lam lam)))
+  (cond ((lam-simple-p lam) (compile-simple-lam lam))
+        ((lam-keyed-p lam) (compile-keyed-lam lam))
+        (t (compile-complex-lam lam))))
 
 (defun compile-simple-lam (lam)
   (let* ((n (length (lam-req lam)))
@@ -899,3 +945,71 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 (defun lam-display-name (lam)
   (let ((*package* (find-package :keyword)))
     (format nil "~A#~D" (or (lam-name lam) (if (lam-toplevel lam) "toplevel" "lambda")) (lam-id lam))))
+
+(defun compile-keyed-lam (lam)
+  "Body takes a fixed-layout vector; MAIN is an adapter from a generic argument vector."
+  (let* ((nreq (length (lam-req lam))) (nopt (length (lam-opt lam)))
+         (npos (+ nreq nopt)) (size (lam-fixed-size lam)))
+    ;; generic entry: argument checks, key lookup, then call the keyed body
+    (let* ((*fs* (make-fstate :lam lam :nparams 2))
+           (nargs (new-local :i32))
+           (body
+             `((:local.get 1) :array.len (:local.set ,nargs)
+               (:local.get ,nargs) (:i32.const ,nreq) :i32.lt_s
+               ,@(unless (lam-keyp lam)
+                   `((:local.get ,nargs) (:i32.const ,npos) :i32.gt_s :i32.or))
+               (:if nil nil ((:local.get 0) (:local.get 1) (:return_call :argerr-n)))
+               ,@(when (and (lam-keyp lam) (not (lam-allow-other-keys lam)))
+                   `((:local.get 1) (:i32.const ,npos)
+                     ,@(const-init-code (mapcar #'first (lam-keys lam)))
+                     (:call :check-keys)))
+               (:local.get 0)
+               ,@(loop for i below nreq
+                       append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
+               ,@(loop for i from nreq below npos
+                       append `((:local.get ,nargs) (:i32.const ,i) :i32.gt_s
+                                (:if nil :eqref ((:local.get 1) (:i32.const ,i) (:array.get :vector))
+                                     ((:ref.null :eq)))))
+               ,@(loop for (kw) in (lam-keys lam)
+                       append `((:local.get 1) (:i32.const ,npos) ,@(const-init-code kw) (:call :find-key)))
+               (:array.new_fixed :vector ,size)
+               (:return_call (:kmain ,(lam-id lam))))))
+      (add-func *m* (list :main (lam-id lam)) :fN
+                :locals (reverse (fstate-locals *fs*)) :body body
+                :display (format nil "~A/generic" (lam-display-name lam))))
+    ;; the body
+    (let* ((*fs* (make-fstate :lam lam :nparams 2))
+           (*dyn-depth* 0) (*uwp-depth* 0)
+           (prologue (setup-free-vars lam))
+           (specials nil)
+           (saved (new-local :i32))
+           (code nil))
+      (labels ((emit (&rest instrs) (setf code (append code (apply #'append instrs))))
+               (bind (lv value-code)
+                 (if (lvar-special lv)
+                     (progn (push lv specials)
+                            (emit `((:global.get ,(sym-global (lvar-name lv))) ,@value-code (:call :bind))))
+                     (emit (bind-new-var-code lv value-code))))
+               (slot (i) `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
+               (bind-defaulted (lv init sv i)
+                 (let ((tmp (new-local)) (*tail-ok* nil))
+                   (emit `(,@(slot i) (:local.set ,tmp)))
+                   (bind lv `((:local.get ,tmp) :ref.is_null
+                              (:if nil :eqref ,(let ((*dyn-depth* (+ *dyn-depth* (if specials 1 0)))) (cg init))
+                                   ((:local.get ,tmp)))))
+                   (when sv (bind sv `((:local.get ,tmp) :ref.is_null :i32.eqz ,@(bool-code)))))))
+        (emit prologue `((:global.get :bsp) (:local.set ,saved)))
+        (loop for lv in (lam-req lam) for i from 0 do (bind lv (slot i)))
+        (loop for (lv init sv) in (lam-opt lam) for i from nreq do (bind-defaulted lv init sv i))
+        (loop for (nil lv init sv) in (lam-keys lam) for i from npos do (bind-defaulted lv init sv i))
+        (let ((body
+                (if specials
+                    (let ((res (new-local)))
+                      `(,@code
+                        ,@(with-dynamic-scope () (cg (lam-body lam) t nil))
+                        (:local.set ,res)
+                        ,@(restore-bsp-code saved)
+                        (:local.get ,res)))
+                    `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
+          (add-func *m* (list :kmain (lam-id lam)) :fN
+                    :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))))))
