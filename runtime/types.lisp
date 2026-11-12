@@ -54,10 +54,24 @@
     `(eval-when (:compile-toplevel :load-toplevel :execute)
        (%put ',name '%deftype
              (lambda (,args)
-               (destructuring-bind ,(%deftype-ll lambda-list) ,args ,@body)))
+               (destructuring-bind ,(%deftype-ll lambda-list) ,args
+                 ,@(%deftype-decls body)
+                 (block ,name ,@(%deftype-forms body)))))
        ',name)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %deftype-decls (body)
+    (let ((r nil))
+      (dolist (x body (nreverse r))
+        (cond ((and (consp x) (eq (car x) 'declare)) (push x r))
+              ((and (stringp x) (not (eq x (car (last body))))) nil)
+              (t (return (nreverse r)))))))
+  (defun %deftype-forms (body)
+    (do ((b body (cdr b)))
+        ((not (or (and (consp (car b)) (eq (caar b) 'declare))
+                  (and (stringp (car b)) (cdr b))))
+         b)))
+
   (defun %deftype-ll (ll)
     ;; unsupplied optional parameters default to *
     (let ((state nil) (r nil))
@@ -140,7 +154,7 @@
         (unsigned-byte (and (integerp x) (>= x 0)))
         (signed-byte (integerp x))
         (structure-object (structurep x))
-        (standard-object (and (%instancep x) (not (structurep x))))
+        (standard-object (%subclassp (class-of x) (find-class 'standard-object)))
         (otherwise
          (let ((c (find-class type nil)))
            (if c
@@ -183,8 +197,12 @@
            (and (bit-vector-p x) (or (null args) (eq (car args) '*) (= (length x) (car args)))))
           ((array) (%array-type-match x (if args (car args) '*) (if (cdr args) (cadr args) '*) nil))
           ((simple-array) (%array-type-match x (if args (car args) '*) (if (cdr args) (cadr args) '*) t))
-          ((function) (functionp x))
-          ((values) (typep x (car args)))
+          ((function) (if args
+                          (error 'simple-error :format-control "TYPEP: ~S is not a valid type specifier for TYPEP"
+                                               :format-arguments (list type))
+                          (functionp x)))
+          ((values) (error 'simple-error :format-control "TYPEP: ~S is not a valid type specifier for TYPEP"
+                                         :format-arguments (list type)))
           (otherwise
            (multiple-value-bind (exp found) (%expand-deftype type)
              (if found (typep x exp) (error "Unknown type specifier: ~S" type))))))))
@@ -234,12 +252,16 @@
 (defun type-of (x)
   (cond ((null x) 'null)
         ((eq x t) 'boolean)
-        ((fixnump x) (if (or (eql x 0) (eql x 1)) 'bit 'fixnum))
-        ((%bignump x) 'bignum)
+        ((fixnump x) (cond ((or (eql x 0) (eql x 1)) 'bit)
+                           ((> x 0) (list 'integer 0 most-positive-fixnum))
+                           (t 'fixnum)))
+        ((%bignump x) (if (> x 0) (list 'integer (+ most-positive-fixnum 1)) 'bignum))
         ((%ratiop x) 'ratio)
         ((%single-float-p x) 'single-float)
         ((%double-float-p x) 'double-float)
-        ((%complexp x) 'complex)
+        ((%complexp x) (list 'complex (cond ((%single-float-p (realpart x)) 'single-float)
+                                            ((%double-float-p (realpart x)) 'double-float)
+                                            (t 'rational))))
         ((characterp x) (if (standard-char-p x) 'standard-char 'character))
         ((keywordp x) 'keyword)
         ((symbolp x) 'symbol)
@@ -247,17 +269,21 @@
         ((%simple-string-p x) (list 'simple-array 'character (list (length x))))
         ((%simple-vector-p x) (list 'simple-vector (length x)))
         ((%bits-p x) (list 'simple-bit-vector (length x)))
-        ((%bytes-p x) (list 'simple-array '(unsigned-byte 8) (list (length x))))
-        ((arrayp x) (list (if (vectorp x) 'vector 'array) (array-element-type x) (array-dimensions x)))
-        ((functionp x) (if (%instancep (%closure-name x)) 'standard-generic-function 'function))
+        ((arrayp x)
+         (list (if (%simple-array-type-p x) 'simple-array 'array) (array-element-type x) (array-dimensions x)))
+        ((functionp x) (let ((c (class-of x)))
+                         (if (eq c (find-class 'compiled-function)) 'compiled-function (%type-of-class c))))
         ((%packagep x) 'package)
-        ((%instancep x) (class-name (class-of x)))
-        (t t)))
+        (t (%type-of-class (class-of x)))))
+
+(defun %type-of-class (c)
+  (let ((name (%class-name c)))
+    (if (and name (eq (find-class name nil) c)) name c)))
 
 ;;; very approximate SUBTYPEP
 (defun %type-class-name (ty)
   "Class objects are type specifiers: use the class name when it names the class."
-  (if (and (%class-p ty) (eq (find-class (class-name ty) nil) ty)) (class-name ty) ty))
+  (if (and (%class-p ty) (eq (find-class (%class-name ty) nil) ty)) (%class-name ty) ty))
 
 (defun %type-empty-p (ty)
   "True when TY is known to denote the empty type."
@@ -278,15 +304,17 @@
     (unless unknown (return-from subtypep (values r certain))))
   (multiple-value-bind (r certain known) (%subtypep-arrays t1 t2)
     (when known (return-from subtypep (values r certain))))
+  (%subtypep-fallback t1 t2))
+
+(defun %subtypep-fallback (t1 t2)
+  "SUBTYPEP for types the set algebra cannot represent: only certain answers
+are returned as such."
   (cond ((equal t1 t2) (values t t))
-        ((%type-empty-p t1) (values t t))
-        ((and (consp t2) (eq (car t2) 'not))
-         ;; t1 <= (not x)  iff  (and t1 x) is empty
-         (if (%type-empty-p (list 'and t1 (cadr t2))) (values t t)
-             (if (subtypep t1 (cadr t2)) (values nil t) (values nil nil))))
         ((eq t2 t) (values t t))
         ((null t1) (values t t))
-        ((null t2) (values nil t))
+        ((and (consp t1) (eq (car t1) 'member))
+         (values (every (lambda (x) (typep x t2)) (cdr t1)) t))
+        ((and (consp t1) (eq (car t1) 'eql)) (values (typep (cadr t1) t2) t))
         ((and (consp t2) (eq (car t2) 'or))
          (if (some (lambda (x) (subtypep t1 x)) (cdr t2)) (values t t) (values nil nil)))
         ((and (consp t1) (eq (car t1) 'or))
@@ -295,19 +323,8 @@
          (if (every (lambda (x) (subtypep t1 x)) (cdr t2)) (values t t) (values nil nil)))
         ((and (consp t1) (eq (car t1) 'and))
          (if (some (lambda (x) (subtypep x t2)) (cdr t1)) (values t t) (values nil nil)))
-        ((and (consp t1) (eq (car t1) 'member))
-         (values (every (lambda (x) (typep x t2)) (cdr t1)) t))
-        ((and (consp t1) (eq (car t1) 'eql)) (values (typep (cadr t1) t2) t))
-        ((and (symbolp t1) (symbolp t2))
-         (let ((c1 (find-class t1 nil)) (c2 (find-class t2 nil)))
-           (cond ((and c1 c2) (values (%subclassp c1 c2) t))
-                 ((member t2 (cdr (assoc t1 *subtype-table*))) (values t t))
-                 ((assoc t1 *subtype-table*) (values nil t))
-                 (t (values nil nil)))))
-        ((and (consp t1) (symbolp t2))
-         (subtypep (car t1) t2))
-        ((and (consp t1) (consp t2) (eq (car t1) (car t2)))
-         (values t nil))
+        ((and (consp t1) (eq (car t1) 'function))
+         (if (subtypep 'function t2) (values t t) (values nil nil)))
         (t (values nil nil))))
 
 (defun %expand-type-fully (ty)

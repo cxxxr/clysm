@@ -519,13 +519,18 @@ documentation string may appear among the declarations."
 (defparameter %load-time-definers
   '(defun defvar defparameter defconstant defgeneric defmethod))
 
+(defvar *cf-externalizer* nil
+  "During COMPILE-FILE, a function returning the forms that replace a form
+whose literal objects are externalized with MAKE-LOAD-FORM.")
+
 (defun %cf-emit (form out)
-  (%call-with-fasl-syntax
-   (lambda ()
-     (handler-case (prin1 form out)
-       (print-not-readable ()
-         (let ((*print-readably* nil)) (prin1 form out))))
-     (terpri out))))
+  (dolist (form (if *cf-externalizer* (funcall *cf-externalizer* form) (list form)))
+    (%call-with-fasl-syntax
+     (lambda ()
+       (handler-case (prin1 form out)
+         (print-not-readable ()
+           (let ((*print-readably* nil)) (prin1 form out))))
+       (terpri out)))))
 
 (defun %cf-toplevel-expansion (form)
   "Expand FORM until it is a form that toplevel processing treats specially.
@@ -582,7 +587,8 @@ Returns the expansion, or NIL when FORM is an ordinary form."
     (with-open-file (in in-path :direction :input)
       (let ((*compile-file-pathname* in-path)
             (*compile-file-truename* (truename in))
-            (*package* *package*) (*readtable* *readtable*))
+            (*package* *package*) (*readtable* *readtable*)
+            (*cf-externalizer* (%new-externalizer in-path)))
         (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
         (handler-bind ((warning (lambda (c)
                                   (setq warnings-p t)

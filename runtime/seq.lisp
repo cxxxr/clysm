@@ -578,7 +578,7 @@ IDX is bound to the index of each element.  (RETURN x) exits."
   "Analyzes a sequence type specifier.  Returns (values kind element-type length exact):
 KIND is :LIST or :VECTOR, LENGTH is the required length or NIL, and EXACT is true when
 the type is fully described by the other values (otherwise the result is checked with TYPEP)."
-  (let ((ty (if (%class-p type) (class-name type) type)))
+  (let ((ty (if (%class-p type) (%class-name type) type)))
     (flet ((len (x) (if (or (null x) (eq x '*)) nil x)))
       (cond
         ((symbolp ty)
@@ -1272,7 +1272,7 @@ the type is fully described by the other values (otherwise the result is checked
                             :format-arguments (list x type)))
 
 (defun coerce (x type)
-  (let* ((type (if (%class-p type) (class-name type) type))
+  (let* ((type (if (%class-p type) (%class-name type) type))
          (ty (if (consp type) (car type) type)))
     (cond ((eq type t) x)
           ((eq type 'list) (cond ((listp x) x) ((vectorp x) (%seq-to-list x)) (t (%coerce-error x type))))
