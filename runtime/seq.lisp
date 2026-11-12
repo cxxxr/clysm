@@ -251,7 +251,7 @@
   (do ((d (array-dimensions a) (cdr d)) (s subscripts (cdr s))) ((null d) t)
     (unless (< -1 (car s) (car d)) (return nil))))
 
-(defun %aref1 (a i)
+(defun %aref1-slow (a i)
   (cond ((%simple-vector-p a) (%svref a (%check-index a i (%svlength a))))
         ((%simple-string-p a) (%schar a (%check-index a i (%string-length a))))
         ((and (%mdarray-p a) (null (cdr (%mdarray-dims a))))
@@ -259,7 +259,7 @@
         ((%mdarray-p a) (aref a i))
         (t (%simple-ref a (%check-index a i (%simple-length a))))))
 
-(defun %aset1 (a i v)
+(defun %aset1-slow (a i v)
   (cond ((%simple-vector-p a) (%set-svref a (%check-index a i (%svlength a)) v))
         ((%simple-string-p a) (%set-schar a (%check-index a i (%string-length a)) v))
         ((and (%mdarray-p a) (null (cdr (%mdarray-dims a))))
@@ -288,6 +288,8 @@
 (defun svref (v i)
   (unless (%simple-vector-p v) (%type-error v 'simple-vector))
   (%svref v (%check-index v i (%svlength v))))
+(defun %aref1 (a i) (%aref1 a i))
+(defun %aset1 (a i v) (%aset1 a i v))
 (defun %svset (v i x)
   (unless (%simple-vector-p v) (%type-error v 'simple-vector))
   (%set-svref v (%check-index v i (%svlength v)) x))

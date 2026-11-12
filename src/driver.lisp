@@ -380,7 +380,11 @@ they can be FUNCALLed and used by the interpreter."
       (let ((*fs* (make-fstate :lam nil :nparams 0)))
         (dolist (h (reverse *helpers*))
           (destructuring-bind (name type locals body-fn) h
-            (let ((body (directify-helper-calls (funcall body-fn))))
+            (let ((body (directify-helper-calls
+                         (loop for item in (funcall body-fn)
+                               if (and (consp item) (eq (car item) :progn-marker))
+                                 append (cdr item)
+                               else collect item))))
               (add-func *m* name type
                         :locals (mapcar #'second locals)
                         :local-names (mapcar #'first locals)

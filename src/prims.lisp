@@ -106,17 +106,56 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 ;;; Fixnum / numbers
 ;;; ------------------------------------------------------------
 
-(defprim + (a b) :value `(,@a ,@b (:call :add)))
-(defprim - (a b) :value `(,@a ,@b (:call :sub)))
+(defun inline-fixnum-op (a b op helper)
+  "Inline fixnum fast path; falls back to HELPER."
+  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+    `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
+      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
+      (:if nil :eqref
+           ((:local.get ,ta) (:ref.cast :i31) :i31.get_s (:local.tee ,x)
+            (:i32.const ,+char-tag+) :i32.add
+            (:local.get ,tb) (:ref.cast :i31) :i31.get_s (:local.tee ,y)
+            (:i32.const ,+char-tag+) :i32.add :i32.or
+            (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+            (:if nil :eqref
+                 ((:local.get ,x) (:local.get ,y) ,op (:local.tee ,x)
+                  (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                  (:if nil :eqref ((:local.get ,x) :ref.i31)
+                       ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))
+                 ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))
+           ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))))
+
+(defun inline-fixnum-cmp (a b op helper-code &optional swap)
+  "Inline comparison when both arguments are i31 (characters never reach here
+as the generic helper is used for anything that is not a fixnum pair... the
+i31 order is the fixnum order); falls back to HELPER-CODE."
+  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+    `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
+      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
+      (:if nil :i32
+           ((:local.get ,ta) (:ref.cast :i31) :i31.get_s (:local.tee ,x)
+            (:i32.const ,+char-tag+) :i32.add
+            (:local.get ,tb) (:ref.cast :i31) :i31.get_s (:local.tee ,y)
+            (:i32.const ,+char-tag+) :i32.add :i32.or
+            (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+            (:if nil :i32
+                 ((:local.get ,x) (:local.get ,y) ,op)
+                 (,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
+                  ,@helper-code)))
+           (,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
+            ,@helper-code)))))
+
+(defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
+(defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
 (defprim * (a b) :value `(,@a ,@b (:call :mul)))
 (defprim - (a) :value `(,@(fixnum-code 0) ,@a (:call :sub)))
 (defprim 1+ (a) :value `(,@a ,@(fixnum-code 1) (:call :add)))
 (defprim 1- (a) :value `(,@a ,@(fixnum-code 1) (:call :sub)))
-(defprim < (a b) :test `(,@a ,@b (:call :lt)))
-(defprim > (a b) :test `(,@b ,@a (:call :lt)))
-(defprim <= (a b) :test `(,@b ,@a (:call :lt) :i32.eqz))
-(defprim >= (a b) :test `(,@a ,@b (:call :lt) :i32.eqz))
-(defprim = (a b) :test `(,@a ,@b (:call :num-eq)))
+(defprim < (a b) :test (inline-fixnum-cmp a b :i32.lt_s '((:call :lt))))
+(defprim > (a b) :test (inline-fixnum-cmp a b :i32.gt_s '((:call :lt)) t))
+(defprim <= (a b) :test (inline-fixnum-cmp a b :i32.le_s '((:call :lt) :i32.eqz) t))
+(defprim >= (a b) :test (inline-fixnum-cmp a b :i32.ge_s '((:call :lt) :i32.eqz)))
+(defprim = (a b) :test (inline-fixnum-cmp a b :i32.eq '((:call :num-eq))))
 (defprim /= (a b) :test `(,@a ,@b (:call :num-eq) :i32.eqz))
 (defprim zerop (a) :test `(,@a ,@(fixnum-code 0) (:call :num-eq)))
 (defprim plusp (a) :test `(,@(fixnum-code 0) ,@a (:call :lt)))
@@ -1026,3 +1065,69 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
   '(:local.get 0) '(:struct.new :foreign)
   `(:global.get ,(sym-global 'clysm-sys::%host-eval-string)) '(:call (:callsym 1))
   '(:ref.cast :foreign) '(:struct.get :foreign 0))
+
+;;; fast paths for 1-D AREF / (SETF AREF) on simple vectors and strings
+(defhelper :aref1 :ee-e ((v (:ref :null :vector)) (s (:ref :null :string)) (i :i32))
+  '(:local.get 1) '(:ref.test :i31)
+  `(:if nil nil
+        ((:local.get 1) (:ref.cast :i31) :i31.get_s (:local.set i)
+         (:block notvec :eqref
+           (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
+           :array.len (:local.get i) :i32.gt_u
+           (:if nil nil ((:local.get v) (:local.get i) (:array.get :vector) :return))
+           (:local.get 0))
+         :drop
+         (:block notstr :eqref
+           (:local.get 0) (:br_on_cast_fail notstr :eqref (:ref :string)) (:local.tee s)
+           :array.len (:local.get i) :i32.gt_u
+           (:if nil nil ((:local.get s) (:local.get i) (:array.get :string)
+                         (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))
+           (:local.get 0))
+         :drop))
+  '(:local.get 0) '(:local.get 1)
+  `(:global.get ,(sym-global 'clysm-sys::%aref1-slow)) '(:call (:callsym 2)))
+
+(defhelper :aset1 :eee-e ((v (:ref :null :vector)) (i :i32))
+  '(:local.get 1) '(:ref.test :i31)
+  `(:if nil nil
+        ((:local.get 1) (:ref.cast :i31) :i31.get_s (:local.set i)
+         (:block notvec :eqref
+           (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
+           :array.len (:local.get i) :i32.gt_u
+           (:if nil nil ((:local.get v) (:local.get i) (:local.get 2) (:array.set :vector)
+                         (:local.get 2) :return))
+           (:local.get 0))
+         :drop))
+  '(:local.get 0) '(:local.get 1) '(:local.get 2)
+  `(:global.get ,(sym-global 'clysm-sys::%aset1-slow)) '(:call (:callsym 3)))
+
+(defprim clysm-sys::%aref1 (a i) :value `(,@a ,@i (:call :aref1)))
+(defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
+(defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
+
+;;; MOD / REM fast paths
+(defun divop-helper-body (lisp-fn modp)
+  `((:local.get 0) (:ref.test :i31) (:local.get 1) (:ref.test :i31) :i32.and
+    (:if nil nil
+         ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.tee x)
+          (:i32.const ,+char-tag+) :i32.add
+          (:local.get 1) (:ref.cast :i31) :i31.get_s (:local.tee y)
+          (:i32.const ,+char-tag+) :i32.add :i32.or
+          (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+          (:local.get y) :i32.eqz :i32.eqz :i32.and
+          (:if nil nil
+               ((:local.get x) (:local.get y) :i32.rem_s (:local.set r)
+                ,@(when modp
+                    '((:local.get r) :i32.eqz :i32.eqz
+                      (:local.get r) (:local.get y) :i32.xor (:i32.const 0) :i32.lt_s :i32.and
+                      (:if nil nil ((:local.get r) (:local.get y) :i32.add (:local.set r)))))
+                (:local.get r) :ref.i31 :return))))
+    (:local.get 0) (:local.get 1)
+    (:global.get ,(sym-global lisp-fn)) (:call (:callsym 2))))
+
+(defhelper :mod :ee-e ((x :i32) (y :i32) (r :i32))
+  (cons :progn-marker (divop-helper-body 'clysm-sys::%mod-slow t)))
+(defhelper :rem :ee-e ((x :i32) (y :i32) (r :i32))
+  (cons :progn-marker (divop-helper-body 'clysm-sys::%rem-slow nil)))
+(defprim mod (a b) :value `(,@a ,@b (:call :mod)))
+(defprim rem (a b) :value `(,@a ,@b (:call :rem)))

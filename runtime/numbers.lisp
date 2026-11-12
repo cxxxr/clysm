@@ -555,6 +555,12 @@
              (values iq (- number (* (float iq (%float-result (%fixnum-to-double 0) r)) divisor)))))))
 
 (defun floor (number &optional (divisor 1))
+  (when (and (fixnump number) (fixnump divisor) (not (eql divisor 0)))
+    (let ((q (%fxtruncate number divisor)) (r (%fxrem number divisor)))
+      (return-from floor
+        (if (and (not (eql r 0)) (%fx< (%fxlogxor r divisor) 0))
+            (values (%fx- q 1) (%fx+ r divisor))
+            (values q r)))))
   (multiple-value-bind (q r) (truncate number divisor)
     (if (and (not (zerop r)) (if (minusp divisor) (plusp r) (minusp r)))
         (values (- q 1) (+ r divisor))
@@ -575,8 +581,10 @@
                  (values (- q 1) (+ r divisor))))
             (t (values q r))))))
 
-(defun mod (n d) (nth-value 1 (floor n d)))
-(defun rem (n d) (nth-value 1 (truncate n d)))
+(defun %mod-slow (n d) (nth-value 1 (floor n d)))
+(defun %rem-slow (n d) (nth-value 1 (truncate n d)))
+(defun mod (n d) (mod n d))
+(defun rem (n d) (rem n d))
 
 (defun %float-of (x proto) (if (and proto (%single-float-p proto)) (%to-single x) (%to-double x)))
 (defun ffloor (n &optional (d 1)) (multiple-value-bind (q r) (floor n d) (values (float q (if (floatp n) n 1.0)) r)))
