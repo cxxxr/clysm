@@ -20,6 +20,25 @@
   (boundp s) (%set-symbol-value s v) (%set-symbol-plist s v) (%set-symbol-function s f)
   (values-list l))
 
+(macrolet ((define-cxrs ()
+             (let ((defs nil))
+               (labels ((gen (path depth)
+                          (when (<= 2 depth 4)
+                            (let ((name (intern (concatenate 'string "C" path "R") "COMMON-LISP")))
+                              (unless (member name '(caar cadr cdar cddr caddr cdddr caadr cddar cdadr
+                                                     cadar caaar cdaar cadddr cddddr))
+                                (push `(defun ,name (x)
+                                         ,(let ((form 'x))
+                                            (dolist (c (reverse (coerce path 'list)) form)
+                                              (setq form (list (if (char= c #\A) 'car 'cdr) form)))))
+                                      defs))))
+                          (when (< depth 4)
+                            (gen (concatenate 'string path "A") (+ depth 1))
+                            (gen (concatenate 'string path "D") (+ depth 1)))))
+                 (gen "" 0))
+               `(progn ,@defs))))
+  (define-cxrs))
+
 (defun code-char (n)
   (if (and (fixnump n) (>= n 0) (< n #x110000)) (code-char n) nil))
 

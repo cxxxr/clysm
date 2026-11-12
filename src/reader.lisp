@@ -61,7 +61,7 @@
 (defparameter +uq+ 'clysm-sys::unquote)
 (defparameter +uqs+ 'clysm-sys::unquote-splicing)
 
-(defun whitespacep (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page #\Linefeed (code-char 12))))
+(defun whitespacep (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page #\Linefeed)))
 (defun terminatingp (c)
   (or (whitespacep c) (member c '(#\( #\) #\' #\" #\; #\` #\,))))
 

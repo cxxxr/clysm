@@ -477,5 +477,6 @@
     (%early-write-string ": " 2)
     (%early-write-string msg 2)
     (%write-char #\Newline 2)
+    (when (eql (%debug-mode) 1) (%wasm nil () :unreachable))
     (%exit 1)))
 

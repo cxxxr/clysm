@@ -225,7 +225,9 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:wasm-test (append (cg-test node) (bool-code) (when mv (mv-one))))
       (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
-      (:values (cg-values (cdr node) mv)))))
+      (:values (cg-values (cdr node) mv))
+      (:apply `(,@(cg (second node)) ,@(cg (third node))
+                (,(if tail :return_call :call) :apply-list))))))
 
 (defun cg-values (args mv)
   (cond ((null args) `(,@(nil-code) ,@(when mv '((:i32.const 0) (:global.set :mv-count)))))

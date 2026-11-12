@@ -12,7 +12,8 @@
       (progn
         (reset-compiler)
         (let ((*read-package* (find-target-package "SYSTEM")))
-          (dolist (f *runtime-files*) (compile-source-file f)))
+          (dolist (f *runtime-files*) (compile-source-file f))
+          (finish-runtime))
         (dolist (f files) (compile-source-file f))
         (let ((bytes (build-module)))
           (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)

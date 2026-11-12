@@ -35,7 +35,8 @@
         *ltv-counter* 0
         *called-functions* (make-hash-table :test 'eq)
         *initial-symbol-values* (make-hash-table :test 'eq)
-        *deferred-macros* nil)
+        *deferred-macros* nil
+        *macros-ready* nil)
   (setf (gethash 'clysm-sys::*catch-tags* *specials*) t)
   (init-target-packages)
   (setf *read-package* (find-target-package "COMMON-LISP-USER")))
@@ -163,9 +164,8 @@
           (emit-target-macro name ll body env)
           (push (list name ll body) *deferred-macros*)))))
 
-(defun target-macros-ready-p ()
-  (and (gethash 'destructuring-bind *macros*)
-       (gethash 'clysm-sys::%set-macro-function *global-defuns*)))
+(defvar *macros-ready* nil)
+(defun target-macros-ready-p () *macros-ready*)
 
 (defun emit-target-macro (name ll body env)
   (emit-toplevel-form
@@ -174,6 +174,7 @@
    env))
 
 (defun clysm-sys::%emit-deferred-macros-now (env)
+  (setf *macros-ready* t)
   (dolist (d (reverse *deferred-macros*))
     (destructuring-bind (name ll body) d
       (emit-target-macro name ll body env)))
@@ -285,6 +286,26 @@ S names a statically known function."
                   :body `((:global.get ,(static-closure-global lam))
                           ,@(loop for i below k collect `(:local.get ,i))
                           (:return_call (:main ,(lam-id lam)))))))))
+
+(defun finish-runtime ()
+  "Called after the runtime sources have been processed."
+  (let ((*read-package* (find-target-package "SYSTEM"))) (emit-primitive-wrappers)))
+
+(defun emit-primitive-wrappers ()
+  "Define functions for primitives that have no function definition, so that
+they can be FUNCALLed and used by the interpreter."
+  (let ((env (make-cenv)))
+    (maphash (lambda (name prims)
+               (unless (or (gethash name *global-defuns*) (gethash name *macros*)
+                           (get name 'clysm-native))
+                 (let ((p (find-if (lambda (p) (integerp (prim-nargs p))) prims)))
+                   (when (and p (= (length prims) 1))
+                     (let ((args (loop for i below (prim-nargs p)
+                                       collect (intern (format nil "A~D" i) :clysm-sys))))
+                       (process-toplevel
+                        `(clysm-sys::%defun ',name (function (clysm-sys::named-lambda ,name ,args (,name ,@args))))
+                        env))))))
+             *prims*)))
 
 (defun compile-forms (forms)
   (let ((env (make-cenv)))

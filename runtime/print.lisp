@@ -299,8 +299,16 @@
 ;;; lists and vectors
 ;;; ------------------------------------------------------------
 
+(defun %quote-prefix (x)
+  (and (consp (cdr x)) (null (cddr x))
+       (case (car x)
+         (quote "'") (function "#'") (quasiquote "`") (unquote ",") (unquote-splicing ",@")
+         (t nil))))
+
 (defun %write-list (x stream)
-  (cond ((and (eq (car x) 'quote) (consp (cdr x)) (null (cddr x)))
+  (cond ((and (member (car x) '(quasiquote unquote unquote-splicing)) (%quote-prefix x))
+         (write-string (%quote-prefix x) stream) (%write-object-1 (cadr x) stream))
+        ((and (eq (car x) 'quote) (consp (cdr x)) (null (cddr x)))
          (write-char #\' stream) (%write-object-1 (cadr x) stream))
         ((and (eq (car x) 'function) (consp (cdr x)) (null (cddr x)))
          (write-string "#'" stream) (%write-object-1 (cadr x) stream))

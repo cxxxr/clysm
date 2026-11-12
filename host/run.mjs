@@ -1,7 +1,7 @@
 // Clysm host runtime for Node.js: instantiates a compiled Lisp module.
 import fs from 'node:fs';
 
-export function makeImports(state) {
+export function makeImports(state, args = []) {
   const out = { 1: [], 2: [] };
   const flush = () => {
     for (const fd of [1, 2]) {
@@ -30,7 +30,7 @@ export function makeImports(state) {
       write_char(fd, code) {
         const o = out[fd] || out[1];
         o.push(String.fromCodePoint(code));
-        if (o.length > 8192) flush();
+        if (fd === 2 || o.length > 8192) flush();
       },
       read_char() {
         flush();
@@ -88,6 +88,10 @@ export function makeImports(state) {
           }
         } catch (e) { return -1; }
       },
+      argc() { return args.length; },
+      debug_mode() { return process.env.CLYSM_DEBUG ? 1 : 0; },
+      arg_len(i) { return args[i].length; },
+      arg_char(i, j) { return args[i].codePointAt(j); },
       put_char_buf(c) {
         if (c < 0) { state.writeBuf = state.nameBuf; state.nameBuf = ''; return; }
         state.nameBuf = (state.nameBuf || '') + String.fromCodePoint(c);
@@ -96,9 +100,9 @@ export function makeImports(state) {
   };
 }
 
-export async function runModule(bytes) {
+export async function runModule(bytes, args = []) {
   const state = {};
-  const imports = makeImports(state);
+  const imports = makeImports(state, args);
   let instance;
   try {
     ({ instance } = await WebAssembly.instantiate(bytes, imports));
@@ -122,5 +126,5 @@ export async function runModule(bytes) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const bytes = fs.readFileSync(process.argv[2]);
-  await runModule(bytes);
+  await runModule(bytes, process.argv.slice(3));
 }

@@ -72,10 +72,9 @@
       (setq first nil))))
 
 (defun %pp-list-doc (x)
-  (cond ((and (eq (car x) 'quote) (consp (cdr x)) (null (cddr x)))
-         (%pp-block "'" "" (list (%pp-doc (cadr x))) 1))
-        ((and (eq (car x) 'function) (consp (cdr x)) (null (cddr x)))
-         (%pp-block "#'" "" (list (%pp-doc (cadr x))) 2))
+  (cond ((%quote-prefix x)
+         (let ((p (%quote-prefix x)))
+           (%pp-block p "" (list (%pp-doc (cadr x))) (length p))))
         ((and *print-level* (>= *pp-level* *print-level*)) "#")
         (t
          (let ((*pp-level* (+ *pp-level* 1)))

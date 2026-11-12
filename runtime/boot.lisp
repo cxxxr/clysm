@@ -481,7 +481,6 @@
 (defsetf macro-function %set-macro-function)
 (defsetf documentation %set-documentation)
 (defsetf compiler-macro-function %set-compiler-macro-function)
-(defsetf readtable-case %set-readtable-case)
 (defsetf logical-pathname-translations %set-lpt)
 (defsetf bit %aset)
 (defsetf sbit %aset)

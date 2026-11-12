@@ -32,7 +32,7 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
   (let ((codes (mapcar #'cg args)))
     (append (funcall (prim-fn p) codes)
             (when (eq (prim-kind p) :test) (bool-code))
-            (when mv (mv-one)))))
+            (when (and mv (not (eq (prim-kind p) :mv))) (mv-one)))))
 
 (defun fixnum-code (n) `((:i32.const ,(ldb (byte 32 0) n)) :ref.i31))
 
@@ -303,7 +303,7 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 
 ;;; misc
 (defprim clysm-sys::%unbound-marker () :value `((:ref.null :eq)))
-(defprim values-list (l) :value `(,@l (:call :values-list)))
+(defprim values-list (l) :mv `(,@l (:call :values-list)))
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
 (defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
 (defprim clysm-sys::%write-char (c fd) :value
@@ -314,7 +314,7 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defprim clysm-sys::%exit (code) :value `(,@code (:ref.cast :i31) :i31.get_s (:call :host-exit) ,@(nil-code)))
 (defprim clysm-sys::%apply-vector (f v) :value
   (let ((tmp (new-local '(:ref :null :closure))))
-    `(,@f (:call :coerce-function) (:local.tee ,tmp) ,@v (:ref.cast :vector)
+    `(,@f (:call :coerce-function) (:local.tee ,tmp) :ref.as_non_null ,@v (:ref.cast :vector)
       (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+) (:call_ref :fN))))
 (defprim clysm-sys::%identity-hash (x) :value
   `(,@x (:call :identity-hash) :ref.i31))
@@ -341,11 +341,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defnative apply (form env)
   (let ((args (cdr form)))
     (if (null (cddr args))
-        `(:wasm :eqref ,(convert-args args env) ((:call :apply-list)))
-        `(:wasm :eqref ,(convert-args (list (first args)
-                                            `(list* ,@(rest args)))
-                                      env)
-                ((:call :apply-list))))))
+        `(:apply ,@(convert-args args env))
+        `(:apply ,@(convert-args (list (first args) `(list* ,@(rest args))) env)))))
 
 ;;; ------------------------------------------------------------
 ;;; Hand-written wasm runtime helpers
@@ -371,7 +368,11 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
     (:host-math2 :ddi-d "env" "math2")
     (:host-time :i-d "env" "time")
     (:host-file-open :i-i "env" "file_open")
-    (:host-put-char-buf :i-v "env" "put_char_buf")))
+    (:host-put-char-buf :i-v "env" "put_char_buf")
+    (:host-argc :v-i "env" "argc")
+    (:host-debug-mode :v-i "env" "debug_mode")
+    (:host-arg-len :i-i "env" "arg_len")
+    (:host-arg-char :ii-i "env" "arg_char")))
 
 (defun lisp-call-instrs (sym nargs)
   "Call Lisp function SYM with NARGS eqref args already pushed (helper context)."
@@ -783,6 +784,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defhelper :check-keys :vie-v ((i :i32) (n :i32) (k :eqref) (aok :i32))
   ;; verify even count and that every key is in the list (unless :allow-other-keys t)
   '(:local.get 0) :array.len '(:local.set n)
+  '(:local.get n) '(:local.get 1) :i32.le_s
+  '(:if nil nil (:return))
   '(:local.get n) '(:local.get 1) :i32.sub '(:i32.const 1) :i32.and
   `(:if nil nil ((:local.get 0) (:local.get 1) :ref.i31 (:global.get ,(sym-global 'clysm-sys::%odd-keys-error))
                  (:call (:callsym 2)) :drop :return))
@@ -953,3 +956,9 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defprim clysm-sys::%put-char-buf (c) :value
   `(,@(idx-code c) (:call :host-put-char-buf) ,@(nil-code)))
 (defprim clysm-sys::%file-open (mode) :value `(,@(idx-code mode) (:call :host-file-open) :ref.i31))
+
+(defprim clysm-sys::%argc () :value `((:call :host-argc) :ref.i31))
+(defprim clysm-sys::%arg-len (i) :value `(,@(idx-code i) (:call :host-arg-len) :ref.i31))
+(defprim clysm-sys::%arg-char (i j) :value
+  `(,@(idx-code i) ,@(idx-code j) (:call :host-arg-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
+(defprim clysm-sys::%debug-mode () :value `((:call :host-debug-mode) :ref.i31))
