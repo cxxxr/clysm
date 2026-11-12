@@ -182,6 +182,28 @@ reader and the evaluator, plus `host/web/index.html`). Serve `build/` over HTTP
 and open `web/index.html` for a REPL running entirely in WebAssembly; the host
 calls the exported `eval_string`.
 
+## ANSI test suite
+
+The community ANSI conformance suite used by SBCL, ECL, CLISP and others
+([ansi-test](https://gitlab.common-lisp.net/ansi-test/ansi-test)) is included
+as a git submodule in `third_party/ansi-test`.
+
+```
+$ git submodule update --init third_party/ansi-test
+$ make ansi                          # all categories
+$ tests/ansi/run.sh cons numbers     # selected categories
+```
+
+`tests/ansi/driver.lisp` loads the suite's `rt` framework and one category into
+the REPL image (every form is compiled to Wasm at run time) and runs the tests
+one by one. A test that crashes the process (a Wasm trap, out of memory, or a
+hang detected by a watchdog) is recorded as `CRASH`, and `tests/ansi/run.sh`
+resumes with the next test. Per-category logs and `summary.txt` are written to
+`build/ansi/`.
+
+The latest results are in `tests/ansi/RESULTS.txt`: 19738 of 21946 tests pass
+(89.9%); 59 tests crash.
+
 ## Status and limitations
 
 Implemented: all special operators, macros and functions of the COMMON-LISP

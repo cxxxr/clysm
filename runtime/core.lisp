@@ -106,6 +106,7 @@
 (defun nth (n list)
   (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) (car l))))
 (defun nthcdr (n list)
+  (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
   (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) l)))
 (defun %setnth (n list value) (%setcar (nthcdr n list) value))
 
@@ -116,10 +117,12 @@
 (defsetf nthcdr (n l) (v) `(%setcdr (nthcdr (1- ,n) ,l) ,v))
 
 (defun last (list &optional (n 1))
-  (if (= n 1)
-      (do ((l list (cdr l))) ((atom (cdr l)) l))
-      (let ((len (length-of-list list)))
-        (nthcdr (max 0 (- len n)) list))))
+  (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
+  (unless (listp list) (%type-error list 'list))
+  (let ((count 0))
+    (do ((l list (cdr l))) ((atom l)) (setq count (+ count 1)))
+    (let ((l list))
+      (dotimes (i (max 0 (- count n)) l) (setq l (cdr l))))))
 
 (defun butlast (list &optional (n 1))
   (let ((len (length-of-list list)))
@@ -179,6 +182,7 @@
         (setq prev l l next)))))
 
 (defun ldiff (list object)
+  (unless (listp list) (%type-error list 'list))
   (let ((result nil))
     (do ((l list (cdr l)))
         ((or (atom l) (eq l object))

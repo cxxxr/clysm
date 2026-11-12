@@ -217,7 +217,9 @@
     (dolist (m methods)
       (let ((q (%method-qualifiers m)))
         (cond ((equal q '(:around)) (push m around))
-              (t (push m primary)))))
+              ((equal q (list op)) (push m primary))
+              (t (error "Method ~S has qualifiers ~S, which are invalid for the ~S method combination"
+                        m q op)))))
     (setq around (nreverse around) primary (nreverse primary))
     (when most-specific-last (setq primary (reverse primary)))
     (if (null primary)

@@ -276,7 +276,7 @@
 (defun open (filename &key (direction :input) (element-type 'character) if-exists
                            (if-does-not-exist nil idnep) external-format)
   (declare (ignore if-exists external-format))
-  (let ((name (namestring (merge-pathnames filename))))
+  (let ((name (%native-name filename)))
     (case direction
       (:input
        (%host-name-buffer name)
@@ -306,7 +306,7 @@
   (when (and (eq (stream-kind stream) :file-out) (stream-open stream) (not abort))
     (%host-name-buffer (stream-buffer stream))
     (%put-char-buf -1)
-    (%host-name-buffer (namestring (stream-pathname stream)))
+    (%host-name-buffer (%native-name (stream-pathname stream)))
     (%file-open (if (%binary-element-type-p (stream-element-type stream)) 2 1)))
   (setf (stream-open stream) nil)
   t)

@@ -99,7 +99,9 @@
          (let ((,l ,list))
            (tagbody
               ,top
-              (if (atom ,l) (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,result)))
+              (if (atom ,l)
+                  (progn (if ,l (%type-error ,l 'list))
+                         (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,result))))
               (let ((,var (car ,l)))
                 ,@decls
                 (tagbody ,@forms))

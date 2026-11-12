@@ -47,3 +47,7 @@ for cat in $CATS; do
   printf "%-24s total %5s  pass %5s  fail %5s  crash %4s %s\n" "$cat" "${total:-0}" "$pass" "$fail" "$crash" "$status" | tee -a build/ansi/summary.txt
 done
 awk '{t+=$3; p+=$5; f+=$7; c+=$9} END {printf "%-24s total %5d  pass %5d  fail %5d  crash %4d  (%.1f%%)\n", "ALL", t, p, f, c, (t ? 100*p/t : 0)}' build/ansi/summary.txt | tee -a build/ansi/summary.txt
+# the tests create and delete files in the suite's sandbox: restore the submodule
+git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
+git -C third_party/ansi-test clean -qfd sandbox 2>/dev/null
+true

@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all repl selfhost fixpoint web clean
+.PHONY: all test test-all repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -31,6 +31,11 @@ test-all: test selfhost
 
 web:
 	tools/build-web.sh
+
+# the ANSI test suite (third_party/ansi-test); results in build/ansi/
+ansi:
+	git submodule update --init third_party/ansi-test
+	tests/ansi/run.sh
 
 clean:
 	rm -rf build
