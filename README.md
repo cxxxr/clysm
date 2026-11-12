@@ -18,6 +18,13 @@ $ bin/clysm script file.lisp              # LOAD a file with the in-image evalua
 Requirements: SBCL (hosts the cross compiler) and Node.js ≥ 22 (WasmGC,
 exnref and tail calls enabled by default).
 
+```
+$ make test        # compile and run every test case, compare with SBCL
+$ make test-all    # the same in all four modes (AOT, interpreter, run-time native, self-hosted)
+$ make fixpoint    # the compiler compiles itself twice; the results are identical
+$ make web         # browser demo in build/web
+```
+
 ## Layout
 
 | Path | Contents |
