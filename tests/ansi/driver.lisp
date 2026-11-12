@@ -46,7 +46,9 @@
     (when (>= i cl-user::*start*)
       (format t "~&@@START ~D ~S~%" i (rt::name entry))
       (finish-output)
-      (let ((ok (let ((*default-pathname-defaults* (merge-pathnames "sandbox/" cl-user::*ansi-root*)))
+      ;; tests run as if from the REPL: not inside LOAD
+      (let ((ok (let ((*default-pathname-defaults* (merge-pathnames "sandbox/" cl-user::*ansi-root*))
+                      (*load-pathname* nil) (*load-truename* nil))
                   (rt::do-entry entry *standard-output*))))
         (format t "~&@@ ~D ~A ~S~%" i (if ok "PASS" "FAIL") (rt::name entry))
         (finish-output)))

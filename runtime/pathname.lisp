@@ -485,10 +485,26 @@ FILE-ERROR for wild pathnames."
                     (push (or (ignore-errors (truename full)) full) r))))))))))
 
 (defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
-(defun compile-file-pathname (p &key output-file) (pathname (or output-file p)))
+(defun compile-file-pathname (input-file &key output-file &allow-other-keys)
+  (let ((in (merge-pathnames input-file)))
+    (if output-file
+        (merge-pathnames output-file (make-pathname :type "fasl" :defaults (translate-logical-pathname in)))
+        (make-pathname :type "fasl" :defaults (translate-logical-pathname in)))))
+
+(defun %pathname-components (p)
+  (list (pathname-host p) (pathname-device p) (pathname-directory p)
+        (pathname-name p) (pathname-type p) (pathname-version p)))
 
 (defmethod print-object ((p pathname) stream)
-  (if (or *print-escape* *print-readably*)
-      (progn (write-string "#P" stream) (prin1 (namestring p) stream))
-      (write-string (namestring p) stream))
+  (cond ((and *print-readably*
+              (not (ignore-errors (equal (%pathname-components p)
+                                         (%pathname-components (pathname (namestring p)))))))
+         ;; the namestring does not read back as P (e.g. its version)
+         (format stream "#.(~S ~S ~S ~S ~S ~S '~S ~S ~S ~S ~S ~S ~S)"
+                 'make-pathname :host (pathname-host p) :device (pathname-device p)
+                 :directory (pathname-directory p) :name (pathname-name p)
+                 :type (pathname-type p) :version (pathname-version p)))
+        ((or *print-escape* *print-readably*)
+         (write-string "#P" stream) (prin1 (namestring p) stream))
+        (t (write-string (namestring p) stream)))
   p)

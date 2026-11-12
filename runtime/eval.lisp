@@ -396,27 +396,99 @@
 (defvar *compile-file-pathname* nil)
 (defvar *compile-file-truename* nil)
 
-(defun load (filespec &key verbose print (if-does-not-exist t) external-format)
-  (declare (ignore verbose external-format))
-  (let ((stream (if (streamp filespec) filespec
-                    (open filespec :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
+(defun load (filespec &key (verbose *load-verbose*) (print *load-print*) (if-does-not-exist t)
+                          external-format)
+  (declare (ignore external-format))
+  (let* ((own (not (streamp filespec)))
+         (stream (if own
+                     (open filespec :direction :input :if-does-not-exist (if if-does-not-exist :error nil))
+                     filespec)))
     (if (null stream)
         nil
-        (let ((*package* *package*) (*readtable* *readtable*)
-              (*load-pathname* (if (streamp filespec) nil (merge-pathnames filespec)))
-              (*load-truename* (if (streamp filespec) nil (merge-pathnames filespec))))
-          (loop
-            (let ((form (read stream nil %eof-marker)))
-              (when (eq form %eof-marker) (return t))
-              (let ((vals (multiple-value-list
-                           (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
-                (when print (format t "~&~{~S~^ ~}~%" vals)))))))))
+        (unwind-protect
+             (let* ((file (and (typep stream 'file-stream) (stream-pathname stream)))
+                    (*package* *package*) (*readtable* *readtable*)
+                    (*load-pathname* (and file (if own (merge-pathnames filespec) file)))
+                    (*load-truename* (and file (truename stream))))
+               (when verbose (format t "~&; loading ~A~%" (if file (namestring file) stream)))
+               (loop
+                 (let ((form (read stream nil %eof-marker)))
+                   (when (eq form %eof-marker) (return t))
+                   (let ((vals (multiple-value-list
+                                (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
+                     (when print (format t "~&; ~{~S~^ ~}~%" vals))))))
+          (when own (close stream))))))
 
-(defun compile-file (input-file &key output-file verbose print external-format)
-  (declare (ignore output-file verbose print external-format))
-  ;; there is no file compiler in the image; load the source instead
-  (load input-file)
-  (values (pathname input-file) nil nil))
+;;; COMPILE-FILE: there is no file compiler in the image.  The source is read
+;;; with the compile-time side effects of CLHS 3.2.3.1 (EVAL-WHEN,
+;;; IN-PACKAGE, DEFMACRO, ...), and the "fasl" written is the processed
+;;; top-level forms, printed readably; LOAD evaluates it like a source file.
+
+(defun %compile-time-eval (form)
+  (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))
+
+(defun %eval-when-situations (situations)
+  (values (or (member :compile-toplevel situations) (member 'compile situations))
+          (or (member :load-toplevel situations) (member 'load situations))
+          (or (member :execute situations) (member 'eval situations))))
+
+(defun %compile-file-form (form ctt out)
+  "Process one top-level FORM (compile-time-too mode CTT); push the forms to
+be written to the fasl onto the cell OUT."
+  (cond ((and (consp form) (eq (car form) 'progn))
+         (dolist (f (cdr form)) (%compile-file-form f ctt out)))
+        ((and (consp form) (eq (car form) 'eval-when))
+         (multiple-value-bind (ct lt ex) (%eval-when-situations (cadr form))
+           (cond (lt (dolist (f (cddr form))
+                       (%compile-file-form f (or (and ct t) (and ex ctt)) out)))
+                 ((or ct (and ex ctt)) (%compile-time-eval `(progn ,@(cddr form)))))))
+        ((and (consp form) (symbolp (car form))
+              (member (car form) '(in-package defpackage defmacro define-symbol-macro defsetf
+                                   define-setf-expander define-modify-macro deftype
+                                   declaim proclaim)))
+         (%compile-time-eval form)
+         (push form (car out)))
+        ((and (consp form) (symbolp (car form)) (macro-function (car form))
+              (let ((exp (macroexpand-1 form)))
+                (and (consp exp) (member (car exp) '(progn eval-when)))))
+         (%compile-file-form (macroexpand-1 form) ctt out))
+        (t (when ctt (%compile-time-eval form))
+           (push form (car out)))))
+
+(defun compile-file (input-file &key output-file (verbose *compile-verbose*) (print *compile-print*)
+                                     external-format)
+  (declare (ignore external-format))
+  (let* ((input (merge-pathnames input-file))
+         (output (compile-file-pathname input :output-file output-file))
+         (warnings-p nil) (failure-p nil)
+         (out (list nil)))
+    (when verbose (format t "~&; compiling ~A~%" (namestring input)))
+    (with-open-file (in input)
+      (let ((*package* *package*) (*readtable* *readtable*)
+            (*compile-file-pathname* input)
+            (*compile-file-truename* (truename in)))
+        (handler-bind ((warning (lambda (c)
+                                  (setq warnings-p t)
+                                  (unless (typep c 'style-warning) (setq failure-p t)))))
+          (loop
+            (let ((form (handler-case (read in nil %eof-marker)
+                          (error (c) (setq warnings-p t failure-p t)
+                            (format *error-output* "~&; read error: ~A~%" c)
+                            %eof-marker))))
+              (when (eq form %eof-marker) (return))
+              (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+              (handler-case (%compile-file-form form nil out)
+                (error (c) (setq warnings-p t failure-p t)
+                  (format *error-output* "~&; compile-time error: ~A~%" c))))))
+        (with-open-file (o output :direction :output :if-exists :supersede)
+          (let ((*package* (find-package "KEYWORD"))
+                (*print-readably* t) (*print-circle* t) (*print-pretty* nil)
+                (*print-length* nil) (*print-level* nil))
+            (dolist (f (reverse (car out)))
+              (handler-case (progn (prin1 f o) (terpri o))
+                (error (c) (setq warnings-p t failure-p t)
+                  (format *error-output* "~&; cannot write ~S: ~A~%" f c))))))))
+    (values (truename output) warnings-p failure-p)))
 
 ;;; ------------------------------------------------------------
 ;;; REPL
