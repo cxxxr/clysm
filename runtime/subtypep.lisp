@@ -16,7 +16,7 @@
                                  complex-rational complex-single-float complex-double-float
                                  ;; -0.0 is kept apart from the intervals (= 0 but not EQL to 0.0)
                                  single-float-negzero double-float-negzero))
-(defparameter *array-element-categories* '(t character bit (unsigned-byte 8) double-float))
+(defparameter *array-element-categories* '(t character bit (unsigned-byte 8) double-float nil))
 (defparameter *array-categories*
   (let ((r nil))
     (dolist (e *array-element-categories* (nreverse r))
@@ -308,7 +308,7 @@
                                      (t 'complex-rational))
                                (list :in x)))
         ((consp x) (values 'cons (list (list (list :eql x)))))
-        ((arrayp x) (values (list 'array (%array-elt-category x) (not (null (%simple-array-p x))))
+        ((arrayp x) (values (list 'array (%array-elt-category x) (not (null (%simple-array-type-p x))))
                             (list (list (list :eql x)))))
         (t (values 'object (list (list (list :eql x)))))))
 
@@ -445,8 +445,13 @@
         (simple-array (if (> (nargs) 2) :unknown (%array-type (arg 0) (arg 1) t)))
         (vector (if (> (nargs) 2) :unknown (%vector-type (arg 0) (arg 1) nil)))
         (simple-vector (if (> (nargs) 1) :unknown (%vector-type t (arg 0) t)))
-        ((string base-string) (if (> (nargs) 1) :unknown (%vector-type 'character (arg 0) nil)))
-        ((simple-string simple-base-string) (if (> (nargs) 1) :unknown (%vector-type 'character (arg 0) t)))
+        ;; strings are the vectors of CHARACTER and of NIL
+        (string (if (> (nargs) 1) :unknown
+                    (%type-or (%vector-type 'character (arg 0) nil) (%vector-type nil (arg 0) nil))))
+        (simple-string (if (> (nargs) 1) :unknown
+                           (%type-or (%vector-type 'character (arg 0) t) (%vector-type nil (arg 0) t))))
+        (base-string (if (> (nargs) 1) :unknown (%vector-type 'character (arg 0) nil)))
+        (simple-base-string (if (> (nargs) 1) :unknown (%vector-type 'character (arg 0) t)))
         (bit-vector (if (> (nargs) 1) :unknown (%vector-type 'bit (arg 0) nil)))
         (simple-bit-vector (if (> (nargs) 1) :unknown (%vector-type 'bit (arg 0) t)))
         (otherwise

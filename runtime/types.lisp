@@ -269,7 +269,7 @@
         ((%simple-vector-p x) (list 'simple-vector (length x)))
         ((%bits-p x) (list 'simple-bit-vector (length x)))
         ((arrayp x)
-         (list (if (%simple-array-p x) 'simple-array 'array) (array-element-type x) (array-dimensions x)))
+         (list (if (%simple-array-type-p x) 'simple-array 'array) (array-element-type x) (array-dimensions x)))
         ((functionp x) (let ((c (class-of x)))
                          (if (eq c (find-class 'compiled-function)) 'compiled-function (%type-of-class c))))
         ((%packagep x) 'package)
