@@ -1288,6 +1288,9 @@ keyword parameters are valid initialization arguments."
       (lambda (x stream)
         (print-object x stream)))
 
+;;; used by SUBTYPEP (defined before HANDLER-CASE exists)
+(defun %safe-typep (x type) (handler-case (typep x type) (error () nil)))
+
 ;;; ------------------------------------------------------------
 ;;; documentation
 ;;; ------------------------------------------------------------

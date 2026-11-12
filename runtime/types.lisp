@@ -299,7 +299,7 @@
         ((and (consp t1) (symbolp t2))
          (subtypep (car t1) t2))
         ((and (consp t1) (consp t2) (eq (car t1) (car t2)))
-         (values t nil))
+         (values nil nil))
         (t (values nil nil))))
 
 (defun %expand-type-fully (ty)
