@@ -422,7 +422,7 @@
 (defmethod make-instance ((class standard-class) &rest initargs)
   (when (eq (%class-kind class) :forward)
     (error "Cannot instantiate the forward-referenced class ~S" (class-name class)))
-  (let* ((all-initargs (append initargs (%class-default-initargs-all class)))
+  (let* ((all-initargs (append initargs (%class-default-initargs-all class initargs)))
          (instance (apply #'allocate-instance class all-initargs)))
     (apply #'initialize-instance instance all-initargs)
     instance))
@@ -520,3 +520,13 @@
             (%method-qualifiers m)
             (mapcar (lambda (s) (if (consp s) s (class-name s))) (%method-specializers m))))
   m)
+
+;;; slot readers and writers of conditions defined from now on are generic
+;;; functions (CLHS DEFINE-CONDITION)
+(setq *condition-accessor-hook*
+      (lambda (name class fn writerp)
+        (when (and (fboundp name) (not (%generic-function-p (fdefinition name))))
+          (fmakunbound name))
+        (%add-method-to name nil (if writerp (list t class) (list class))
+                        (if writerp '(new-value condition) '(condition))
+                        (lambda (args next) (declare (ignore next)) (apply fn args)))))

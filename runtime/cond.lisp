@@ -82,9 +82,11 @@
       (multiple-value-bind (form readers writers sname) (%parse-slot-spec s)
         (push form slotd-forms)
         (dolist (r readers)
-          (push `(defun ,r (c) (%slot-value-by-name c ',sname)) accessor-forms))
+          (push `(%define-condition-accessor ',r ',name (lambda (c) (%slot-value-by-name c ',sname)) nil)
+                accessor-forms))
         (dolist (w writers)
-          (push `(defun ,w (v c) (%set-slot-value-by-name c ',sname v)) accessor-forms))))
+          (push `(%define-condition-accessor ',w ',name (lambda (v c) (%set-slot-value-by-name c ',sname v)) t)
+                accessor-forms))))
     (dolist (o options)
       (case (car o)
         (:report (setq report (cadr o)))
@@ -102,24 +104,57 @@
        ,@(reverse accessor-forms)
        ',name)))
 
+(defvar *condition-accessor-hook* nil
+  "set by CLOS: makes condition slot readers and writers generic functions")
+
+(defun %define-condition-accessor (name class fn writerp)
+  (if *condition-accessor-hook*
+      (funcall *condition-accessor-hook* name class fn writerp)
+      (%set-fdefinition name fn))
+  name)
+
 (defun %define-condition-class (name supers direct-slots default-initargs)
   (let ((class (%ensure-class-object name *the-standard-class* (mapcar #'find-class supers)
                                      direct-slots :condition)))
     (%set-class-slot class +class-default-initargs+ default-initargs)
     class))
 
-(defun %class-default-initargs-all (class)
+(defun %plist-key-p (plist key)
+  (do ((l plist (cddr l))) ((atom l) nil)
+    (when (eq (car l) key) (return t))))
+
+(defun %class-default-initargs-all (class &optional supplied)
+  "The default initargs of CLASS not in SUPPLIED, with their forms evaluated."
   (let ((r nil))
     (dolist (c (%class-cpl class) r)
       (let ((d (%class-slot c +class-default-initargs+)))
         (do ((l d (cddr l))) ((null l))
-          (unless (getf r (car l) nil)
+          (unless (or (%plist-key-p r (car l)) (%plist-key-p supplied (car l)))
             (setq r (append r (list (car l) (funcall (cadr l)))))))))))
 
+(defun %condition-class-for-type (type &optional (errorp t))
+  (cond ((%class-p type) type)
+        ((symbolp type) (find-class type errorp))
+        ((and (consp type) (member (car type) '(or and)))
+         ;; a compound type specifier: a class among its members (for AND,
+         ;; preferably one that is a subtype of all the members)
+         (let ((classes (remove nil (mapcar (lambda (x) (%condition-class-for-type x nil))
+                                            (cdr type)))))
+           (or (and (eq (car type) 'and)
+                    (find-if (lambda (c) (every (lambda (x) (subtypep c x)) (cdr type))) classes))
+               (car classes)
+               (if errorp
+                   (error 'simple-type-error :datum type :expected-type '(satisfies subtypep-condition)
+                                             :format-control "~S is not a condition type"
+                                             :format-arguments (list type))
+                   nil))))
+        (errorp (%type-error type 'symbol))
+        (t nil)))
+
 (defun make-condition (type &rest initargs)
-  (let* ((class (if (%class-p type) type (find-class type)))
+  (let* ((class (%condition-class-for-type type))
          (c (%allocate-instance class)))
-    (%initialize-slots-from-initargs c (append initargs (%class-default-initargs-all class)))
+    (%initialize-slots-from-initargs c (append initargs (%class-default-initargs-all class initargs)))
     c))
 
 (defun conditionp (x)
@@ -140,6 +175,13 @@
              (apply #'format s (or (simple-condition-format-control c) "")
                     (simple-condition-format-arguments c)))))
 (define-condition simple-error (simple-condition error) ())
+;; conditions that carry a format control without being SIMPLE-CONDITIONs
+(define-condition %formatted-condition (condition)
+  ((format-control :initarg :format-control :initform nil)
+   (format-arguments :initarg :format-arguments :initform nil))
+  (:report (lambda (c s)
+             (apply #'format s (or (simple-condition-format-control c) "")
+                    (simple-condition-format-arguments c)))))
 (define-condition simple-warning (simple-condition warning) ())
 (define-condition type-error (error)
   ((datum :initarg :datum :initform nil :reader type-error-datum)
@@ -160,13 +202,13 @@
 (define-condition simple-program-error (simple-condition program-error) ())
 (define-condition control-error (error) ())
 (define-condition simple-control-error (simple-condition control-error) ())
-(define-condition package-error (simple-condition error)
+(define-condition package-error (error %formatted-condition)
   ((package :initarg :package :initform nil :reader package-error-package)))
 (define-condition stream-error (error)
   ((stream :initarg :stream :initform nil :reader stream-error-stream)))
 (define-condition end-of-file (stream-error) ()
   (:report (lambda (c s) (format s "end of file on ~S" (stream-error-stream c)))))
-(define-condition file-error (simple-condition error)
+(define-condition file-error (error %formatted-condition)
   ((pathname :initarg :pathname :initform nil :reader file-error-pathname))
   (:report (lambda (c s)
              (if (simple-condition-format-control c)
@@ -174,7 +216,7 @@
                  (format s "error on file ~A" (file-error-pathname c))))))
 (define-condition parse-error (error) ())
 (define-condition parse-error-simple (simple-condition parse-error) ())
-(define-condition reader-error (parse-error stream-error simple-condition) ()
+(define-condition reader-error (parse-error stream-error %formatted-condition) ()
   (:report (lambda (c s)
              (apply #'format s (or (simple-condition-format-control c) "reader error")
                     (simple-condition-format-arguments c)))))
@@ -206,7 +248,9 @@
 ;;; ------------------------------------------------------------
 
 (defstruct (restart (:constructor %make-restart (name function report-function interactive-function test-function)))
-  name function report-function interactive-function test-function)
+  name function report-function interactive-function test-function
+  (conditions nil))                     ; the conditions it is associated with
+
 
 (defvar *restart-clusters* nil)
 (defvar *condition-restarts* nil)
@@ -215,8 +259,10 @@
   (let ((r nil))
     (dolist (cluster *restart-clusters* (nreverse r))
       (dolist (restart cluster)
-        (when (or (null (restart-test-function restart))
-                  (funcall (restart-test-function restart) condition))
+        (when (and (or (null condition) (null (restart-conditions restart))
+                       (member condition (restart-conditions restart)))
+                   (or (null (restart-test-function restart))
+                       (funcall (restart-test-function restart) condition)))
           (push restart r))))))
 
 (defun find-restart (name &optional condition)
@@ -224,13 +270,22 @@
       (dolist (r (compute-restarts condition) nil)
         (when (eq (restart-name r) name) (return r)))))
 
+(defun %find-active-restart (restart)
+  (let ((r (if (restart-p restart)
+               (dolist (cluster *restart-clusters* nil)
+                 (when (member restart cluster) (return restart)))
+               (find-restart restart))))
+    (unless r
+      (error 'simple-control-error :format-control "The restart ~S is not active."
+                                   :format-arguments (list restart)))
+    r))
+
 (defun invoke-restart (restart &rest args)
-  (let ((r (find-restart restart)))
-    (unless r (error 'control-error))
+  (let ((r (%find-active-restart restart)))
     (apply (restart-function r) args)))
 
 (defun invoke-restart-interactively (restart)
-  (let ((r (find-restart restart)))
+  (let ((r (%find-active-restart restart)))
     (apply (restart-function r)
            (if (restart-interactive-function r) (funcall (restart-interactive-function r)) nil))))
 
@@ -243,7 +298,28 @@
                  *restart-clusters*)))
      ,@body))
 
-(defmacro restart-case (form &rest clauses)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defun %restart-case-signal-form (form env)
+  "CLHS RESTART-CASE: when FORM is a call to SIGNAL, ERROR, CERROR or WARN,
+the restarts are associated with the condition being signaled."
+  (let ((exp (macroexpand form env)))
+    (if (and (consp exp) (member (car exp) '(signal error cerror warn)))
+        (let ((c (gensym "C")))
+          (multiple-value-bind (datum args fmt)
+              (if (eq (car exp) 'cerror)
+                  (values (third exp) (cdddr exp) (second exp))
+                  (values (second exp) (cddr exp) nil))
+            `(let ((,c (%coerce-to-condition ,datum (list ,@args)
+                                             ',(case (car exp) (signal 'simple-condition)
+                                                 (warn 'simple-warning) (t 'simple-error)))))
+               (with-condition-restarts ,c (car *restart-clusters*)
+                 ,(if (eq (car exp) 'cerror)
+                      `(cerror ,fmt ,c ,@args)
+                      `(,(car exp) ,c))))))
+        form))))
+
+(defmacro restart-case (form &rest clauses &environment env)
+  (setq form (%restart-case-signal-form form env))
   (let* ((block (gensym "RC")) (args (gensym "ARGS"))
          (tags (mapcar (lambda (c) (declare (ignore c)) (gensym "R")) clauses)))
     `(block ,block
@@ -283,12 +359,17 @@
      (,name () :report (lambda (s) (format s ,format-control ,@args)) (values nil t))))
 
 (defmacro with-condition-restarts (condition restarts &body body)
-  (declare (ignore condition restarts))
-  `(progn ,@body))
+  (let ((c (gensym "C")) (rs (gensym "RESTARTS")))
+    `(let ((,c ,condition) (,rs ,restarts))
+       (dolist (r ,rs) (setf (restart-conditions r) (cons ,c (restart-conditions r))))
+       (unwind-protect (progn ,@body)
+         (dolist (r ,rs) (setf (restart-conditions r) (remove ,c (restart-conditions r) :count 1)))))))
 
 (defun abort (&optional condition)
   (let ((r (find-restart 'abort condition)))
-    (if r (invoke-restart r) (%exit 1))))
+    (if r (invoke-restart r)
+        (error 'simple-control-error :format-control "There is no active ABORT restart."
+                                     :format-arguments nil))))
 (defun continue (&optional condition)
   (let ((r (find-restart 'continue condition))) (when r (invoke-restart r))))
 (defun muffle-warning (&optional condition)
@@ -308,8 +389,13 @@
 (defvar *debugger-hook* nil)
 (defvar *invoke-debugger-hook* nil)
 
-(defun %coerce-to-condition (datum args default-type)
-  (cond ((conditionp datum) datum)
+(defun %coerce-to-condition (datum args default-type &optional allow-args)
+  (cond ((conditionp datum)
+         (when (and args (not allow-args))
+           (error 'simple-type-error :datum args :expected-type 'null
+                                     :format-control "Arguments ~S given with the condition ~S"
+                                     :format-arguments (list args datum)))
+         datum)
         ((or (stringp datum) (functionp datum))
          (make-condition default-type :format-control datum :format-arguments args))
         ((symbolp datum) (apply #'make-condition datum args))
@@ -354,8 +440,9 @@
     (invoke-debugger condition)))
 
 (defun cerror (continue-format datum &rest args)
-  (with-simple-restart (continue "~?" continue-format args)
-    (apply #'error datum args))
+  (let ((c (%coerce-to-condition datum args 'simple-error t)))
+    (restart-case (error c)
+      (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
   nil)
 
 (defun warn (datum &rest args)
@@ -417,7 +504,7 @@
                                     `(return-from ,block
                                        ,(if var
                                             `(let ((,var ,cvar)) ,@body)
-                                            `(progn ,@body))))))
+                                            `(locally ,@body))))))
                           clauses tags)))))))
 
 (defmacro ignore-errors (&body body)
