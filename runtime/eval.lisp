@@ -71,22 +71,40 @@
             (t (setq clean (append clean (list (car ll))) ll (cdr ll)))))
     (values whole envv clean)))
 
+(defun %split-decls-and-doc (body)
+  "Like %SPLIT-DECLS, but a documentation string may appear among the declarations."
+  (let ((decls nil) (doc nil))
+    (loop
+      (cond ((and (consp (car body)) (eq (caar body) 'declare))
+             (setq decls (cons (car body) decls) body (cdr body)))
+            ((and (stringp (car body)) (cdr body) (not doc))
+             (setq doc t body (cdr body)))
+            (t (return (values (nreverse decls) body)))))))
+
+(defun %make-compiler-macro-function (name ll body)
+  (eval `(function ,(%macro-lambda (if (consp name) (cadr name) name) ll body))))
+
 (defun %macro-lambda (name ll body)
   (multiple-value-bind (whole envv clean) (%parse-macro-lambda-list ll)
     (let ((form (gensym "FORM")) (env (gensym "ENV")))
-      (multiple-value-bind (decls forms) (%split-decls body)
-        `(named-lambda ,name (,form ,env)
-           (declare (ignorable ,form ,env))
-           (let (,@(when whole `((,whole ,form))) ,@(when envv `((,envv ,env))))
-             (destructuring-bind ,clean (cdr ,form)
-               ,@decls
-               (block ,name ,@forms))))))))
+      (multiple-value-bind (decls forms) (%split-decls-and-doc body)
+        (let ((inner `(destructuring-bind ,clean (cdr ,form)
+                        ,@decls
+                        (block ,name ,@forms))))
+          ;; &whole may be a destructuring pattern
+          (when (consp whole)
+            (setq inner `(destructuring-bind ,whole ,form ,inner) whole nil))
+          `(named-lambda ,name (,form ,env)
+             (declare (ignorable ,form ,env))
+             (let (,@(when whole `((,whole ,form))) ,@(when envv `((,envv ,env))))
+               ,inner)))))))
 
 (%set-macro-function 'defmacro
   (lambda (form env)
     (declare (ignore env))
     (destructuring-bind (name ll &rest body) (cdr form)
       `(progn (%set-macro-function ',name (function ,(%macro-lambda name ll body)))
+              (%put ',name '%macro-lambda-list ',ll)
               ',name))))
 
 (%set-macro-function 'lambda
@@ -108,6 +126,16 @@
       (setq decls (append decls (cdar body)))
       (setq body (cdr body)))
     (values decls body)))
+
+(defun %eval-locally-body (body env)
+  "Evaluate BODY, which may start with declarations; SPECIAL declarations
+affect references in BODY."
+  (multiple-value-bind (decls forms) (%decls-of body)
+    (let ((new-env env))
+      (dolist (d decls)
+        (when (and (consp d) (eq (car d) 'special))
+          (dolist (s (cdr d)) (push (list :special s) new-env))))
+      (%eval-body forms new-env))))
 
 (defun %eval-body (forms env)
   (cond ((null forms) nil)
@@ -203,24 +231,27 @@
                (setf (cddr e) (%make-interpreted-function (car def) (cadr def) (cddr def) def-env
                                                           (if (consp (car def)) (cadar def) (car def)))))
              cells (cadr form))
-       (multiple-value-bind (decls forms) (%decls-of (cddr form))
-         (declare (ignore decls))
-         (%eval-body forms new-env))))
+       (%eval-locally-body (cddr form) new-env)))
     (macrolet
      (let ((new-env env))
        (dolist (def (cadr form))
          (push (list* :macro (car def)
                       (%eval-function (%macro-lambda (car def) (cadr def) (cddr def)) env))
                new-env))
-       (multiple-value-bind (decls forms) (%decls-of (cddr form))
-         (declare (ignore decls))
-         (%eval-body forms new-env))))
+       (%eval-locally-body (cddr form) new-env)))
     (symbol-macrolet
      (let ((new-env env))
-       (dolist (b (cadr form)) (push (list* :smacro (car b) (cadr b)) new-env))
-       (multiple-value-bind (decls forms) (%decls-of (cddr form))
-         (declare (ignore decls))
-         (%eval-body forms new-env))))
+       (dolist (b (cadr form))
+         (when (or (not (symbolp (car b))) (constantp (car b)) (%special-p (car b)))
+           (error 'simple-program-error :format-control "SYMBOL-MACROLET: cannot bind ~S"
+                                        :format-arguments (list (car b))))
+         (push (list* :smacro (car b) (cadr b)) new-env))
+       (dolist (d (%decls-of (cddr form)))
+         (when (and (consp d) (eq (car d) 'special)
+                    (some (lambda (s) (assoc s (cadr form))) (cdr d)))
+           (error 'simple-program-error :format-control "SYMBOL-MACROLET: ~S declared special"
+                                        :format-arguments (list (cdr d)))))
+       (%eval-locally-body (cddr form) new-env)))
     (block
      (let ((tag (list (cadr form))))
        (catch tag (%eval-body (cddr form) (cons (list* :block (cadr form) tag) env)))))
@@ -245,12 +276,7 @@
        (let ((vals (multiple-value-list (%eval value-form env))))
          (%eval-let (mapcar (lambda (v) (list v (list 'quote (pop vals)))) vars) body env nil))))
     (the (%eval (caddr form) env))
-    (locally (multiple-value-bind (decls forms) (%decls-of (cdr form))
-               (let ((new-env env))
-                 (dolist (d decls)
-                   (when (and (consp d) (eq (car d) 'special))
-                     (dolist (s (cdr d)) (push (list :special s) new-env))))
-                 (%eval-body forms new-env))))
+    (locally (%eval-locally-body (cdr form) env))
     (eval-when (if (or (member :execute (cadr form)) (member 'eval (cadr form)))
                    (%eval-body (cddr form) env)
                    nil))
@@ -307,20 +333,44 @@
                                      (if (consp (cadr spec)) (cadadr spec) (cadr spec))))
         (t (error "Bad function designator ~S" spec))))
 
+(defun %function-body-parts (body)
+  "Split a function body into declaration specifiers and forms; one
+documentation string may appear among the declarations."
+  (let ((decls nil) (doc nil))
+    (loop
+      (cond ((and (consp (car body)) (eq (caar body) 'declare))
+             (setq decls (append decls (cdar body)) body (cdr body)))
+            ((and (stringp (car body)) (cdr body) (not doc))
+             (setq doc t body (cdr body)))
+            (t (return (values decls body)))))))
+
 (defun %make-interpreted-function (name ll body env block-name)
-  (multiple-value-bind (decls forms) (%decls-of body)
-    (when (and (stringp (car forms)) (cdr forms)) (setq forms (cdr forms)))
+  (multiple-value-bind (decls forms) (%function-body-parts body)
     (let* ((body-forms (if block-name `((block ,block-name ,@forms)) forms))
            (f (lambda (&rest args) (%apply-interpreted ll decls body-forms env args))))
       (%set-closure-name f name)
       f)))
 
 (defun %apply-interpreted (ll decls body env args)
-  (let ((new-env env) (specials nil) (special-vals nil) (state :req) (keys-seen nil) (rest-args args)
+  ;; special parameters are bound as soon as they are processed, so that
+  ;; later init forms see the bindings; SAVED restores them on exit
+  (let ((saved nil))
+    (unwind-protect (%apply-interpreted-1 ll decls body env args
+                                          (lambda (sym val)
+                                            (push (if (boundp sym) (list sym (symbol-value sym)) (list sym))
+                                                  saved)
+                                            (set sym val)))
+      (do () ((null saved))
+        (let ((e (car saved)))
+          (setq saved (cdr saved))
+          (if (cdr e) (set (car e) (cadr e)) (makunbound (car e))))))))
+
+(defun %apply-interpreted-1 (ll decls body env args bind-special)
+  (let ((new-env env) (state :req) (keys-seen nil) (rest-args args)
         (aok nil))
     (labels ((bind (sym val)
                (if (or (%special-declared-p sym decls) (%special-p sym))
-                   (progn (push sym specials) (push val special-vals) (push (list :special sym) new-env))
+                   (progn (funcall bind-special sym val) (push (list :special sym) new-env))
                    (push (list* :var sym (list val)) new-env)))
              (init (form) (%eval form new-env)))
       (do ((l ll (cdr l))) ((null l))
@@ -366,9 +416,7 @@
       (dolist (d decls)
         (when (and (consp d) (eq (car d) 'special))
           (dolist (s (cdr d)) (push (list :special s) new-env))))
-      (if specials
-          (progv specials special-vals (%eval-body body new-env))
-          (%eval-body body new-env)))))
+      (%eval-body body new-env))))
 
 ;;; ------------------------------------------------------------
 ;;; compile, load
@@ -398,28 +446,164 @@
 (defvar *compile-file-pathname* nil)
 (defvar *compile-file-truename* nil)
 
-(defun load (filespec &key verbose print (if-does-not-exist t) external-format)
-  (declare (ignore verbose external-format))
-  (let ((stream (if (streamp filespec) filespec
-                    (open filespec :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
+;;; Compiled files.  COMPILE-FILE performs the file compiler's toplevel
+;;; processing (CLHS 3.2.3.1): macros are expanded, EVAL-WHEN and definers
+;;; with compile-time side effects are evaluated, and the forms to be
+;;; processed at load time are written to the output file, printed readably
+;;; with every symbol package-qualified.  LOAD recognizes such a file by its
+;;; first line and reads it with standard syntax; each form is compiled when
+;;; it is loaded.
+
+(defvar %fasl-header ";;; Clysm compiled file")
+
+(defun %eval-toplevel (form)
+  (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))
+
+(defun %load-file-stream-p (stream)
+  (let ((pos (file-position stream)))
+    (let ((line (read-line stream nil nil)))
+      (if (and line (string= line %fasl-header))
+          t
+          (progn (file-position stream pos) nil)))))
+
+(defun %load-pathname-of (filespec)
+  (cond ((typep filespec 'file-stream) (pathname filespec))
+        ((streamp filespec) nil)
+        (t (merge-pathnames filespec))))
+
+(defun %call-with-fasl-syntax (fn)
+  (let ((*package* *keyword-package*)
+        (*print-array* t) (*print-base* 10) (*print-case* :upcase) (*print-circle* t)
+        (*print-escape* t) (*print-gensym* t) (*print-length* nil) (*print-level* nil)
+        (*print-lines* nil) (*print-pretty* nil) (*print-radix* nil)
+        (*print-readably* t) (*print-right-margin* nil) (*read-base* 10)
+        (*read-default-float-format* 'single-float) (*read-eval* t) (*read-suppress* nil)
+        (*readtable* *standard-readtable*))
+    (funcall fn)))
+
+(defun %load-stream (stream print)
+  (let ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream))))
+    (loop
+      (let ((form (if fasl
+                      (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
+                      (read stream nil %eof-marker))))
+        (when (eq form %eof-marker) (return t))
+        (let ((vals (multiple-value-list (%eval-toplevel form))))
+          (when print (format t "~&~{~S~^ ~}~%" vals)))))))
+
+(defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
+                           (if-does-not-exist t) external-format)
+  (declare (ignore external-format))
+  (let* ((path (%load-pathname-of filespec))
+         (stream (if (streamp filespec) filespec
+                     (open (if (and (null (pathname-type path)) (not (probe-file path)))
+                               (or (probe-file (make-pathname :type "lisp" :defaults path))
+                                   (probe-file (make-pathname :type "fasl" :defaults path))
+                                   path)
+                               path)
+                           :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
     (if (null stream)
         nil
         (let ((*package* *package*) (*readtable* *readtable*)
-              (*load-pathname* (if (streamp filespec) nil (merge-pathnames filespec)))
-              (*load-truename* (if (streamp filespec) nil (merge-pathnames filespec))))
-          (loop
-            (let ((form (read stream nil %eof-marker)))
-              (when (eq form %eof-marker) (return t))
-              (let ((vals (multiple-value-list
-                           (if *native-eval-hook* (funcall *native-eval-hook* form) (eval form)))))
-                (when print (format t "~&~{~S~^ ~}~%" vals)))))))))
+              (*load-pathname* path)
+              (*load-truename* (and path (truename stream))))
+          (when verbose (format t "~&; loading ~S~%" (or path filespec)))
+          (unwind-protect (%load-stream stream print)
+            (unless (streamp filespec) (close stream)))))))
+
+(defparameter %compile-time-definers
+  '(defmacro in-package defpackage declaim deftype defstruct defclass define-condition
+    defsetf define-setf-expander define-modify-macro define-symbol-macro
+    define-compiler-macro define-method-combination))
+
+(defparameter %load-time-definers
+  '(defun defvar defparameter defconstant defgeneric defmethod))
+
+(defvar *cf-externalizer* nil
+  "During COMPILE-FILE, a function returning the forms that replace a form
+whose literal objects are externalized with MAKE-LOAD-FORM.")
+
+(defun %cf-emit (form out)
+  (dolist (form (if *cf-externalizer* (funcall *cf-externalizer* form) (list form)))
+    (%call-with-fasl-syntax
+     (lambda ()
+       (handler-case (prin1 form out)
+         (print-not-readable ()
+           (let ((*print-readably* nil)) (prin1 form out))))
+       (terpri out)))))
+
+(defun %cf-toplevel-expansion (form)
+  "Expand FORM until it is a form that toplevel processing treats specially.
+Returns the expansion, or NIL when FORM is an ordinary form."
+  (loop
+    (unless (and (consp form) (symbolp (car form))) (return nil))
+    (let ((op (car form)))
+      (when (or (member op '(progn eval-when)) (member op %compile-time-definers))
+        (return form))
+      (when (or (member op %load-time-definers) (special-operator-p op))
+        (return nil))
+      (multiple-value-bind (new changed) (macroexpand-1 form)
+        (unless changed (return nil))
+        (setq form new)))))
+
+(defun %cf-process (form out compile-time-too)
+  (let ((x (%cf-toplevel-expansion form)))
+    (cond
+      ((null x)
+       (when compile-time-too (%eval-toplevel form))
+       (%cf-emit form out))
+      ((eq (car x) 'progn)
+       (dolist (f (cdr x)) (%cf-process f out compile-time-too)))
+      ((eq (car x) 'eval-when)
+       (let* ((sits (second x))
+              (ct (or (member :compile-toplevel sits) (member 'compile sits)))
+              (lt (or (member :load-toplevel sits) (member 'load sits)))
+              (ex (or (member :execute sits) (member 'eval sits))))
+         (cond ((and lt (or ct (and ex compile-time-too)))
+                (dolist (f (cddr x)) (%cf-process f out t)))
+               (lt (dolist (f (cddr x)) (%cf-process f out nil)))
+               ((or ct (and ex compile-time-too))
+                (%eval-toplevel `(progn ,@(cddr x)))))))
+      (t (%eval-toplevel x)
+         (%cf-emit x out)))))
+
+(defun compile-file-pathname (input-file &key output-file &allow-other-keys)
+  (let* ((in (if (typep input-file 'file-stream) (pathname input-file) (pathname input-file)))
+         (default (make-pathname :type "fasl" :version nil
+                                 :defaults (translate-logical-pathname (merge-pathnames in)))))
+    (if output-file
+        (let ((o (if (streamp output-file) (pathname output-file) (pathname output-file))))
+          (if (typep o 'logical-pathname)
+              (translate-logical-pathname (merge-pathnames o))
+              (merge-pathnames o default)))
+        default)))
 
 (defun compile-file (input-file &key output-file (verbose *compile-verbose*) (print *compile-print*)
                                      external-format)
   (declare (ignore external-format))
-  ;; the output is a source file in which literal objects are externalized
-  ;; with MAKE-LOAD-FORM (see %COMPILE-FILE)
-  (%compile-file input-file output-file verbose print))
+  (let* ((in-path (merge-pathnames (pathname input-file)))
+         (out-path (compile-file-pathname input-file :output-file output-file))
+         (warnings-p nil) (failure-p nil))
+    (with-open-file (in in-path :direction :input)
+      (let ((*compile-file-pathname* in-path)
+            (*compile-file-truename* (truename in))
+            (*package* *package*) (*readtable* *readtable*)
+            (*cf-externalizer* (%new-externalizer in-path)))
+        (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
+        (handler-bind ((warning (lambda (c)
+                                  (setq warnings-p t)
+                                  (unless (typep c 'style-warning) (setq failure-p t))))
+                       (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
+          (with-open-file (out out-path :direction :output :if-exists :supersede
+                                        :if-does-not-exist :create)
+            (write-line %fasl-header out)
+            (loop
+              (let ((form (read in nil %eof-marker)))
+                (when (eq form %eof-marker) (return))
+                (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+                (%cf-process form out nil)))))
+        (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
+    (values (truename out-path) warnings-p failure-p)))
 
 ;;; ------------------------------------------------------------
 ;;; REPL

@@ -52,24 +52,35 @@
   `(progn ,first (prog1 ,second ,@body)))
 (defmacro return (&optional value) `(return-from nil ,value))
 
-(defmacro defvar (var &optional (value nil valuep) doc)
-  (declare (ignore doc))
+(defmacro defvar (var &optional (value nil valuep) (doc nil docp))
   `(progn (declaim (special ,var))
           ,@(when valuep `((eval-when (:compile-toplevel) (%ct-initial-value ,var ,value))
                            (unless (boundp ',var) (setq ,var ,value))))
+          ,@(when docp `((%set-symbol-doc ',var 'variable ,doc)))
           ',var))
 
-(defmacro defparameter (var value &optional doc)
-  (declare (ignore doc))
+(defmacro defparameter (var value &optional (doc nil docp))
   `(progn (declaim (special ,var))
           (eval-when (:compile-toplevel) (%ct-initial-value ,var ,value))
-          (setq ,var ,value) ',var))
+          (setq ,var ,value)
+          ,@(when docp `((%set-symbol-doc ',var 'variable ,doc)))
+          ',var))
 
-(defmacro defconstant (var value &optional doc)
-  (declare (ignore doc))
+(defmacro defconstant (var value &optional (doc nil docp))
   `(progn (eval-when (:compile-toplevel) (%ct-constant ,var ,value))
           (declaim (special ,var))
+          ,@(when docp `((%set-symbol-doc ',var 'variable ,doc)))
           (%defconstant ',var ,value)))
+
+;;; documentation strings of symbols: an alist (doc-type . string) on the plist
+(defun %symbol-doc (sym doc-type)
+  (cdr (assoc doc-type (get sym '%documentation))))
+(defun %set-symbol-doc (sym doc-type doc)
+  (let* ((alist (get sym '%documentation))
+         (e (assoc doc-type alist)))
+    (cond (e (rplacd e doc))
+          (doc (%put sym '%documentation (cons (cons doc-type doc) alist))))
+    doc))
 
 (defconstant lambda-list-keywords
   '(&optional &rest &key &aux &body &whole &environment &allow-other-keys))
@@ -77,7 +88,11 @@
 (defconstant lambda-parameters-limit 536870911)
 (defconstant multiple-values-limit 1024)
 
-(defmacro psetq (&rest pairs)
+(defmacro psetq (&rest pairs &environment env)
+  (do ((p pairs (cddr p))) ((null p))
+    (when (nth-value 1 (%macroexpand-1 (car p) env))
+      ;; a symbol macro: PSETQ is PSETF
+      (return-from psetq `(psetf ,@pairs))))
   (let ((bindings nil) (sets nil))
     (do ((p pairs (cddr p))) ((null p))
       (let ((g (gensym)))
@@ -101,7 +116,8 @@
               ,top
               (if (atom ,l)
                   (progn (if ,l (%type-error ,l 'list))
-                         (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,result))))
+                         ;; the declarations also apply to RESULT
+                         (return-from nil (let ((,var nil)) (declare (ignorable ,var)) ,@decls ,result))))
               (let ((,var (car ,l)))
                 ,@decls
                 (tagbody ,@forms))
@@ -150,23 +166,27 @@
               (setq ,var (1+ ,var))
               (go ,top)))))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %case-cond-clauses (k clauses exhaustive typecase)
+    ;; EXHAUSTIVE (ecase, ccase, ...): T and OTHERWISE are ordinary keys
+    (mapcar (lambda (c)
+              (let ((keys (car c)) (body (or (cdr c) (list nil))))
+                (cond ((and (not exhaustive) (member keys '(t otherwise))) `(t ,@body))
+                      (typecase `((typep ,k ',keys) ,@body))
+                      ((listp keys) `((%member-eql ,k ',keys) ,@body))
+                      (t `((eql ,k ',keys) ,@body)))))
+            clauses)))
+
 (defmacro case (key &rest clauses)
   (let ((k (gensym "KEY")))
     `(let ((,k ,key))
-       (cond ,@(mapcar (lambda (c)
-                         (let ((keys (car c)))
-                           (cond ((member keys '(t otherwise)) `(t ,@(cdr c)))
-                                 ((listp keys) `((%member-eql ,k ',keys) ,@(cdr c)))
-                                 (t `((eql ,k ',keys) ,@(cdr c))))))
-                       clauses)))))
+       (cond ,@(%case-cond-clauses k clauses nil nil)))))
 
 (defmacro ecase (key &rest clauses)
   (let ((k (gensym "KEY")))
     `(let ((,k ,key))
-       (case ,k ,@clauses
-         (otherwise (%case-failure ,k ',(%case-keys clauses)))))))
-
-(defmacro ccase (key &rest clauses) `(ecase ,key ,@clauses))
+       (cond ,@(%case-cond-clauses k clauses t nil)
+             (t (%case-failure ,k ',(%case-keys clauses)))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %case-keys (clauses)
@@ -180,7 +200,11 @@
 (defmacro multiple-value-list (form) `(multiple-value-call #'list ,form))
 (defmacro nth-value (n form) `(nth ,n (multiple-value-list ,form)))
 
-(defmacro multiple-value-setq (vars form)
+(defmacro multiple-value-setq (vars form &environment env)
+  (dolist (v vars)
+    (when (nth-value 1 (%macroexpand-1 v env))
+      ;; a symbol macro: defined in terms of SETF of VALUES
+      (return-from multiple-value-setq `(values (setf (values ,@vars) ,form)))))
   (let ((temps (mapcar (lambda (v) (declare (ignore v)) (gensym)) vars)))
     (if (null vars)
         `(values ,form)
@@ -229,11 +253,15 @@
                 ((eq x '&allow-other-keys) (setq aok t))
                 ((eq x '&aux) (setq state :aux))
                 ((eq x '&whole)
-                 (setq bindings (cons (list (car ll) cur) bindings))
+                 (if (consp (car ll))
+                     (let ((g (gensym)))
+                       (setq bindings (cons (list g cur) bindings))
+                       (setq bindings (append (reverse (%db-bindings (car ll) g)) bindings)))
+                     (setq bindings (cons (list (car ll) cur) bindings)))
                  (setq ll (cdr ll)))
                 ((eq x '&environment) (setq ll (cdr ll)))
                 ((eq state :req)
-                 (if (consp x)
+                 (if (listp x)   ; NIL is an empty pattern
                      (let ((g (gensym)))
                        (setq bindings (cons `(,g (if ,cur (car ,cur) (%db-error "too few elements"))) bindings))
                        (setq bindings (append (reverse (%db-bindings x g)) bindings)))
@@ -337,12 +365,18 @@
              `(progn ,@(reverse forms))))))
 
 (defmacro psetf (&rest pairs &environment env)
-  (let ((lets nil) (sets nil))
-    (do ((p pairs (cddr p))) ((null p))
-      (let ((g (gensym)))
-        (setq lets (cons (list g (cadr p)) lets))
-        (setq sets (cons (%expand-setf-1 (car p) g env) sets))))
-    `(let ,(reverse lets) ,@(reverse sets) nil)))
+  ;; evaluate each place's subforms and then its value, left to right; then
+  ;; store all the values
+  (let ((setters nil))
+    (labels ((expand (p)
+               (if (null p)
+                   `(progn ,@(reverse setters) nil)
+                   (multiple-value-bind (temps vals stores setter) (%get-setf-expansion (car p) env)
+                     (setq setters (cons setter setters))
+                     `(let* ,(mapcar #'list temps vals)
+                        (multiple-value-bind ,stores ,(cadr p)
+                          ,(expand (cddr p))))))))
+      (expand pairs))))
 
 (defmacro defsetf (access-fn &rest rest)
   (if (and rest (symbolp (car rest)))
@@ -359,7 +393,10 @@
                    (let* ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) (cdr ,place)))
                           (stores (mapcar (lambda (x) (declare (ignore x)) (gensym)) ',stores)))
                      (values temps (cdr ,place) stores
-                             (apply (lambda (,@stores ,@ll) (block ,access-fn ,@body)) (append stores temps))
+                             (apply (lambda (,@stores ,@ll)
+                                      ,@(%split-decls body)
+                                      (block ,access-fn ,@(nth-value 1 (%split-decls body))))
+                                    (append stores temps))
                              (cons ',access-fn temps)))))
            ',access-fn))))
 
@@ -369,7 +406,9 @@
        (%put ',access-fn 'setf-expander
              (lambda (,place ,env)
                (declare (ignorable ,env))
-               (destructuring-bind ,(%remove-env-from-ll lambda-list env) (cdr ,place) ,@body)))
+               (destructuring-bind ,(%remove-env-from-ll lambda-list env) (cdr ,place)
+                 ,@(%split-decls body)
+                 (block ,access-fn ,@(nth-value 1 (%split-decls body))))))
        ',access-fn)))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -490,13 +529,17 @@
 (defsetf row-major-aref %row-major-aset)
 (defsetf fill-pointer %set-fill-pointer)
 (defsetf gethash %puthash)
-(defsetf get %put)
+(defsetf get (symbol indicator &optional default) (value)
+  ;; DEFAULT is evaluated (in order) but not used
+  `(progn ,default (%put ,symbol ,indicator ,value)))
 (defsetf nth %setnth)
 (defsetf elt %setelt)
 (defsetf fdefinition %set-fdefinition)
-(defsetf macro-function %set-macro-function)
+(defsetf macro-function (name &optional env) (fn)
+  `(progn ,env (%set-macro-function ,name ,fn)))
 (defsetf documentation %set-documentation)
-(defsetf compiler-macro-function %set-compiler-macro-function)
+(defsetf compiler-macro-function (name &optional env) (fn)
+  `(progn ,env (%set-compiler-macro-function ,name ,fn)))
 (defsetf logical-pathname-translations %set-lpt)
 (defsetf bit %aset)
 (defsetf sbit %aset)
@@ -540,6 +583,10 @@
       (multiple-value-bind (ts vs ss setter getter) (%get-setf-expansion p env)
         (setq temps (append temps ts) vals (append vals vs)
               stores (append stores (list (car ss))))
+        ;; a place with several store variables (a nested VALUES) gets only
+        ;; one value; the others are NIL
+        (when (cdr ss)
+          (setq setter `(let ,(mapcar (lambda (s) (list s nil)) (cdr ss)) ,setter)))
         (setq setters (append setters (list setter)) getters (append getters (list getter)))))
     (values temps vals stores `(values ,@setters) `(values ,@getters))))
 
@@ -575,18 +622,37 @@
 (defmacro typecase (key &rest clauses)
   (let ((k (gensym "KEY")))
     `(let ((,k ,key))
-       (cond ,@(mapcar (lambda (c)
-                         (if (member (car c) '(t otherwise))
-                             `(t ,@(cdr c))
-                             `((typep ,k ',(car c)) ,@(cdr c))))
-                       clauses)))))
+       (cond ,@(%case-cond-clauses k clauses nil t)))))
 
 (defmacro etypecase (key &rest clauses)
   (let ((k (gensym "KEY")))
     `(let ((,k ,key))
-       (typecase ,k ,@clauses
-         (otherwise (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
-(defmacro ctypecase (key &rest clauses) `(etypecase ,key ,@clauses))
+       (cond ,@(%case-cond-clauses k clauses t t)
+             (t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
+
+;;; CCASE/CTYPECASE: the STORE-VALUE restart stores a new value into the
+;;; place and the clauses are tried again
+(defmacro ccase (keyplace &rest clauses)
+  (let ((k (gensym "KEY")) (b (gensym "CCASE")) (again (gensym "AGAIN")))
+    `(block ,b
+       (tagbody
+          ,again
+          (return-from ,b
+            (let ((,k ,keyplace))
+              (cond ,@(%case-cond-clauses k clauses t nil)
+                    (t (setf ,keyplace (%ccase-failure ,k '(member ,@(%case-keys clauses)) ',keyplace))
+                       (go ,again)))))))))
+
+(defmacro ctypecase (keyplace &rest clauses)
+  (let ((k (gensym "KEY")) (b (gensym "CTYPECASE")) (again (gensym "AGAIN")))
+    `(block ,b
+       (tagbody
+          ,again
+          (return-from ,b
+            (let ((,k ,keyplace))
+              (cond ,@(%case-cond-clauses k clauses t t)
+                    (t (setf ,keyplace (%ccase-failure ,k '(or ,@(mapcar #'car clauses)) ',keyplace))
+                       (go ,again)))))))))
 
 (defmacro with-gensyms (names &body body)
   `(let ,(mapcar (lambda (n) `(,n (gensym ,(symbol-name n)))) names) ,@body))
@@ -599,7 +665,10 @@
 
 (defmacro define-compiler-macro (name lambda-list &body body)
   ;; compiler macros run on the host at compile time only
+  ;; at run time the definition is recorded; COMPILER-MACRO-FUNCTION makes the
+  ;; expander function from it when it is first asked for
   `(progn (eval-when (:compile-toplevel) (%host-define-compiler-macro ,name ,lambda-list ,@body))
+          (%note-compiler-macro ',name ',lambda-list ',body)
           ',name))
 
 (defmacro assert (test &optional places datum &rest args)

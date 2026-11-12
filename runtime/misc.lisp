@@ -9,6 +9,17 @@
 
 (defvar *random-state* (%make-random-state 123456789 362436069))
 
+;;; printed readably as #.(%MAKE-RANDOM-STATE s0 s1)
+(defmethod print-object ((rs random-state) stream)
+  (if *print-readably*
+      (progn
+        (unless *read-eval* (error 'print-not-readable :object rs))
+        (write-string "#." stream)
+        (let ((*print-base* 10) (*print-radix* nil))
+          (write (list '%make-random-state (random-state-s0 rs) (random-state-s1 rs)) :stream stream)))
+      (call-next-method))
+  rs)
+
 (defun make-random-state (&optional state)
   (cond ((null state) (%make-random-state (random-state-s0 *random-state*) (random-state-s1 *random-state*)))
         ((eq state t) (%make-random-state (logand (get-universal-time) 268435455) 362436069))
@@ -103,18 +114,61 @@
 (defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point))
 (defvar *modules* nil)
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
-(defun require (name &optional paths) (declare (ignore paths)) (provide name))
+(defun require (name &optional pathnames)
+  (let ((name (string name)))
+    (unless (member name *modules* :test #'string=)
+      (cond (pathnames
+             (dolist (p (if (listp pathnames) pathnames (list pathnames)))
+               (load p)))
+            (t (error "REQUIRE: don't know how to load module ~S" name))))
+    nil))
 
+(deftype string-designator () '(or string symbol character))
+
+;;; Documentation strings live in a table keyed by (object doc-type); a
+;;; function or class has one string for doc-types T/FUNCTION resp. T/TYPE.
+(defvar %documentation-table (make-hash-table :test 'equal))
+(defun %doc-key (x doc-type)
+  (cond ((and (functionp x) (member doc-type '(t function))) (list x 'function))
+        ((and (%class-p x) (member doc-type '(t type))) (list x 'type))
+        (t (list x doc-type))))
+(defgeneric documentation (x doc-type))
+(defmethod documentation (x doc-type)
+  (if (symbolp x)
+      (%symbol-doc x doc-type)
+      (values (gethash (%doc-key x doc-type) %documentation-table))))
+(defgeneric (setf documentation) (new-value x doc-type))
+(defmethod (setf documentation) (new-value x doc-type)
+  (cond
+    ((symbolp x) (%set-symbol-doc x doc-type new-value))
+    (new-value
+      (setf (gethash (%doc-key x doc-type) %documentation-table) new-value))
+    (t (remhash (%doc-key x doc-type) %documentation-table)))
+  new-value)
+(defun %set-documentation (x doc-type new-value)
+  (funcall (fdefinition '(setf documentation)) new-value x doc-type))
 
 (defgeneric describe-object (object stream))
 (defmethod describe-object (object stream)
-  (format stream "~&~S~%  [~A]~%" object (type-of object)))
+  (format stream "~&~S~%  [~S]~%" object (type-of object))
+  (when (symbolp object)
+    (when (boundp object) (format stream "~&  Its value is ~S~%" (symbol-value object)))
+    (when (fboundp object)
+      (format stream "~&  It is ~A~%" (cond ((special-operator-p object) "a special operator")
+                                            ((macro-function object) "a macro")
+                                            (t "a function"))))
+    (when (symbol-package object)
+      (format stream "~&  It is in package ~A~%" (package-name (symbol-package object))))))
 (defun describe (object &optional stream)
   (let ((s (%output-stream stream)))
     (describe-object object s)
     (values)))
 (defun inspect (object) (describe object))
-(defun room (&optional x) (declare (ignore x)) (values))
+(defun room (&optional (x :default))
+  (declare (ignore x))
+  (format t "~&Memory is managed by the WebAssembly host's garbage collector;~%~
+             no allocation statistics are available.~%")
+  (values))
 (defun ed (&optional x) (declare (ignore x)) nil)
 (defun dribble (&optional x) (declare (ignore x)) nil)
 (defun apropos-list (string &optional package)
@@ -125,9 +179,58 @@
 (defun apropos (string &optional package)
   (dolist (s (apropos-list string package)) (format t "~S~%" s))
   (values))
-(defmacro trace (&rest names) `',names)
-(defmacro untrace (&rest names) `',names)
+;;; TRACE replaces the function definition with a wrapper that reports calls
+;;; and returns on *TRACE-OUTPUT*.  A generic function's wrapper shares its
+;;; metaobject, so methods added later are still found.
+(defvar %traced-functions nil "list of (name original wrapper)")
+(defvar %trace-depth 0)
+
+(defun %trace-entry-current-p (e)
+  (and (fboundp (car e)) (eq (fdefinition (car e)) (third e))))
+
+(defun %traced-names ()
+  (setq %traced-functions (remove-if-not #'%trace-entry-current-p %traced-functions))
+  (mapcar #'car %traced-functions))
+
+(defun %trace-1 (name)
+  (cond ((not (fboundp name)) (warn "~S is not a function; not traced" name))
+        ((and (symbolp name) (or (special-operator-p name) (macro-function name)))
+         (warn "~S is not a function; not traced" name))
+        ((member name (%traced-names) :test #'equal)
+         (warn "~S is already traced" name))
+        (t
+         (let* ((original (fdefinition name))
+                (wrapper (lambda (&rest args)
+                           (let ((depth %trace-depth))
+                             (format *trace-output* "~&~V@T~D: ~S~%" (* 2 depth) depth (cons name args))
+                             (let ((vals (let ((%trace-depth (+ depth 1)))
+                                           (multiple-value-list (apply original args)))))
+                               (format *trace-output* "~&~V@T~D: ~S returned~{ ~S~}~%"
+                                       (* 2 depth) depth name vals)
+                               (values-list vals))))))
+           (%set-closure-name wrapper (or (%gf-info original) name))
+           (%set-fdefinition name wrapper)
+           (push (list name original wrapper) %traced-functions))))
+  name)
+
+(defun %untrace-1 (name)
+  (let ((e (find name %traced-functions :key #'car :test #'equal)))
+    (if e
+        (progn (when (%trace-entry-current-p e) (%set-fdefinition name (second e)))
+               (setq %traced-functions (remove e %traced-functions)))
+        (warn "~S is not traced" name))
+    name))
+
+(defmacro trace (&rest names)
+  (if names
+      `(mapcar #'%trace-1 ',names)
+      `(%traced-names)))
+(defmacro untrace (&rest names)
+  (if names
+      `(mapcar #'%untrace-1 ',names)
+      `(mapcar #'%untrace-1 (%traced-names))))
 (defmacro step (form) form)
 (defun gc (&key full) (declare (ignore full)) nil)
 (defun function-lambda-expression (f) (values nil t (%closure-name f)))
+(defun upgraded-complex-part-type (type &optional env) (declare (ignore env)) type)
 (defun arithmetic-error-operation* (c) (arithmetic-error-operation c))

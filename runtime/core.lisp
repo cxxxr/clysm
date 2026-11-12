@@ -438,8 +438,9 @@
   (unless (or aok (getf plist :allow-other-keys))
     (do ((l plist (cddr l))) ((atom l) nil)
       (unless (or (%member-eql (car l) keys) (eq (car l) :allow-other-keys))
-        (error 'simple-program-error :format-control "Unknown keyword ~S in destructuring (expected one of ~S)"
-                                     :format-arguments (list (car l) keys))))))
+        (error 'simple-program-error
+               :format-control "Unknown keyword ~S in destructuring (expected one of ~S)"
+               :format-arguments (list (car l) keys))))))
 
 ;;; ------------------------------------------------------------
 ;;; Symbols
@@ -448,9 +449,14 @@
 (defvar *gensym-counter* 1)
 
 (defun make-symbol (name)
-  (%make-symbol (%copy-simple-string (string name)) (%string-hash name)))
+  (unless (stringp name) (%type-error name 'string))
+  (%make-symbol (%copy-simple-string name) (%string-hash name)))
 
 (defun gensym (&optional (x "G"))
+  (unless (or (stringp x) (and (integerp x) (>= x 0)))
+    (%type-error x '(or string unsigned-byte)))
+  (unless (or (integerp x) (and (integerp *gensym-counter*) (>= *gensym-counter* 0)))
+    (%type-error *gensym-counter* 'unsigned-byte))
   (let ((prefix (if (stringp x) x "G"))
         (n (if (integerp x) x *gensym-counter*)))
     (unless (integerp x) (setq *gensym-counter* (+ *gensym-counter* 1)))
@@ -458,6 +464,8 @@
 
 (defvar *gentemp-counter* 1)
 (defun gentemp (&optional (prefix "T") (package *package*))
+  (unless (stringp prefix) (%type-error prefix 'string))
+  (setq package (%find-package-or-die package))
   (loop
     (let ((name (concatenate 'string prefix (%integer-to-string *gentemp-counter* 10))))
       (setq *gentemp-counter* (+ *gentemp-counter* 1))
@@ -477,7 +485,7 @@
 
 (defun %function-name-symbol (name)
   (cond ((symbolp name) name)
-        ((and (consp name) (eq (car name) 'setf) (symbolp (cadr name)) (null (cddr name)))
+        ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (cadr name)) (null (cddr name)))
          (%setf-function-symbol (cadr name)))
         (t (%type-error name '(or symbol (cons (eql setf) (cons symbol null)))))))
 
@@ -486,11 +494,25 @@
     (intern (concatenate 'string "(SETF " (if pkg (package-name pkg) "") "::" (symbol-name sym) ")")
             *system-package*)))
 
-(defun fboundp (name) (fboundp (%function-name-symbol name)))
+(defun %macro-or-special-p (s)
+  (and (symbolp s) (or (get s '%macro-function) (special-operator-p s)) t))
+
+(defun fboundp (name)
+  (or (fboundp (%function-name-symbol name)) (%macro-or-special-p name)))
+
+(defun %macro-definition-object (s)
+  ;; what SYMBOL-FUNCTION returns for a macro or special operator: a function
+  ;; that signals an error when called
+  (lambda (&rest args)
+    (declare (ignore args))
+    (error 'simple-program-error :format-control "~S names a ~A and cannot be called as a function"
+                                 :format-arguments (list s (if (special-operator-p s) "special operator" "macro")))))
 
 (defun symbol-function (s)
   (let ((f (%symbol-function s)))
-    (if f f (%undefined-function-error s))))
+    (cond (f f)
+          ((%macro-or-special-p s) (%macro-definition-object s))
+          (t (%undefined-function-error s)))))
 
 (defun fdefinition (name) (symbol-function (%function-name-symbol name)))
 
@@ -500,9 +522,11 @@
 
 (defun fmakunbound (name)
   (%set-symbol-function (%function-name-symbol name) nil)
+  (when (symbolp name) (remprop name '%macro-function))
   name)
 
 (defun special-operator-p (s)
+  (unless (symbolp s) (%type-error s 'symbol))
   (and (%member-eql s '(quote function if progn let let* setq flet labels macrolet symbol-macrolet
                         block return-from tagbody go catch throw unwind-protect
                         multiple-value-call multiple-value-prog1 the locally eval-when
@@ -516,8 +540,25 @@
 (defun %set-macro-function (s f)
   (%put s '%macro-function f)
   f)
-(defun compiler-macro-function (name &optional env) (declare (ignore name env)) nil)
-(defun %set-compiler-macro-function (name f) (declare (ignore name)) f)
+(defun %note-compiler-macro (name lambda-list body)
+  (let ((s (%function-name-symbol name)))
+    (%put s '%compiler-macro-function nil)
+    (%put s '%compiler-macro-source (list name lambda-list body))
+    name))
+(defun compiler-macro-function (name &optional env)
+  (declare (ignore env))
+  (let ((s (%function-name-symbol name)))
+    (or (get s '%compiler-macro-function)
+        (let ((src (get s '%compiler-macro-source)))
+          (when src
+            (let ((fn (%make-compiler-macro-function (first src) (second src) (third src))))
+              (%put s '%compiler-macro-function fn)
+              fn))))))
+(defun %set-compiler-macro-function (name f)
+  (let ((s (%function-name-symbol name)))
+    (%put s '%compiler-macro-source nil)
+    (%put s '%compiler-macro-function f)
+    f))
 
 (defun %defconstant (s v)
   (%set-symbol-value s v)
@@ -527,7 +568,14 @@
 (defun %proclaim-list (specs)
   (dolist (s specs) (proclaim s)))
 
+(defun %proper-list-p (x)
+  (loop (cond ((null x) (return t)) ((atom x) (return nil)) (t (setq x (cdr x))))))
+
 (defun proclaim (spec)
+  (unless (and (consp spec) (%proper-list-p spec)
+               (or (not (member (car spec) '(type ftype))) (consp (cdr spec))))
+    (error 'simple-type-error :datum spec :expected-type '(cons symbol list)
+                              :format-control "Malformed proclamation ~S" :format-arguments (list spec)))
   (when (and (consp spec) (eq (car spec) 'special))
     (dolist (s (cdr spec))
       (%set-symbol-flags s (%fxlogior (%symbol-flags s) 1))))

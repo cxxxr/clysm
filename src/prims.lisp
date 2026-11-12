@@ -718,7 +718,8 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 (defhelper :mv-save :e-e ((v (:ref :null :vector)) (n :i32))
   ;; returns vector [primary, count, v1 ... v(n-1)]
   '(:global.get :mv-count) '(:local.set n)
-  '(:ref.null :eq) '(:local.get n) '(:i32.const 1) :i32.add '(:array.new :vector) '(:local.tee v)
+  ;; n+2 slots: with zero values the count slot is still needed
+  '(:ref.null :eq) '(:local.get n) '(:i32.const 2) :i32.add '(:array.new :vector) '(:local.tee v)
   '(:i32.const 0) '(:local.get 0) '(:array.set :vector)
   '(:local.get v) '(:i32.const 1) '(:local.get n) :ref.i31 '(:array.set :vector)
   '(:local.get n) '(:i32.const 1) :i32.gt_s
@@ -751,7 +752,10 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 
 (defhelper :values-list :e-e ((l :eqref) (i :i32) (first :eqref))
   '(:local.get 0) '(:ref.test :cons) :i32.eqz
-  `(:if nil nil ((:i32.const 0) (:global.set :mv-count) ,@(nil-code) :return))
+  `(:if nil nil ((:local.get 0) ,@(nil-code) :ref.eq :i32.eqz
+                 (:if nil nil ((:local.get 0) (:global.get ,(sym-global 'clysm-sys::%values-list-error))
+                               (:call (:callsym 1)) :drop))
+                 (:i32.const 0) (:global.set :mv-count) ,@(nil-code) :return))
   '(:local.get 0) '(:ref.cast :cons) '(:struct.get :cons 0) '(:local.set first)
   '(:local.get 0) '(:ref.cast :cons) '(:struct.get :cons 1) '(:local.set l)
   '(:i32.const 1) '(:local.set i)
@@ -763,6 +767,10 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
        (:local.get l) (:ref.cast :cons) (:struct.get :cons 1) (:local.set l)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
+  ;; a dotted list
+  '(:local.get l) (car (nil-code)) :ref.eq :i32.eqz
+  `(:if nil nil ((:local.get l) (:global.get ,(sym-global 'clysm-sys::%values-list-error))
+                 (:call (:callsym 1)) :drop))
   '(:local.get i) '(:global.set :mv-count)
   '(:local.get first))
 

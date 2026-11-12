@@ -182,6 +182,9 @@
    `(progn
       (clysm-sys::%set-macro-function ',name
                                       (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
+      ,@(unless (eq (symbol-package name) (find-package :cl))
+          ;; the pretty printer lays out &BODY macros like SBCL
+          `((clysm-sys::%put ',name 'clysm-sys::%macro-lambda-list ',ll)))
       ',name)
    env))
 
@@ -205,13 +208,17 @@ destructuring-bind (defined by the runtime)."
                      (t (push x clean)))))
     (setf clean (nreverse clean))
     (multiple-value-bind (decls forms) (parse-body body)
-      `(lambda (,form ,envv)
-         (declare (ignorable ,form ,envv))
-         (let (,@(when whole `((,whole ,form)))
-               ,@(when envp `((,envp ,envv))))
-           (destructuring-bind ,clean (cdr ,form)
-             (declare ,@decls)
-             ,@forms))))))
+      (let ((inner `(destructuring-bind ,clean (cdr ,form)
+                      (declare ,@decls)
+                      ,@forms)))
+        ;; &whole may be a destructuring pattern
+        (when (consp whole)
+          (setf inner `(destructuring-bind ,whole ,form ,inner) whole nil))
+        `(lambda (,form ,envv)
+           (declare (ignorable ,form ,envv))
+           (let (,@(when whole `((,whole ,form)))
+                 ,@(when envp `((,envp ,envv))))
+             ,inner))))))
 
 (defun process-defun (form env compile-time-too)
   (declare (ignore compile-time-too))

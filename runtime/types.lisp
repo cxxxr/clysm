@@ -32,6 +32,7 @@
                              (unless (and found (equalp v v2)) (return-from cmp nil))))
                          a)
                 t)))
+        ((pathnamep a) (equal a b))
         ((and (%instancep a) (%instancep b) (structurep a))
          (and (eq (%instance-layout a) (%instance-layout b))
               (let ((sa (%instance-slots a)) (sb (%instance-slots b)))

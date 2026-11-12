@@ -401,7 +401,9 @@ runtime definition is kept."
       (eval-when (if (intersection (second form) '(:execute eval))
                      (convert-body (cddr form) env)
                      '(:const nil)))
-      (load-time-value `(:ltv ,(let ((*current-lam* nil)) (convert (second form) (make-cenv)))))
+      ;; the form is compiled inline in the current function (in a null lexical
+      ;; environment), so blocks and tags inside it belong to that function
+      (load-time-value `(:ltv ,(convert (second form) (make-cenv))))
       (progv `(:progv ,(convert (second form) env) ,(convert (third form) env)
                       ,(convert-body (cdddr form) env))))))
 
@@ -501,14 +503,18 @@ runtime definition is kept."
                      (t (push x clean)))))
     (setf clean (nreverse clean))
     (multiple-value-bind (decls forms) (parse-body body)
-      `(lambda (,form ,envv)
-         (declare (ignorable ,form ,envv))
-         (let (,@(when whole `((,whole ,form)))
-               ,@(when envp `((,envp ,envv))))
-           (declare (ignorable ,@(when whole (list whole)) ,@(when envp (list envp))))
-           (destructuring-bind ,clean (cdr ,form)
-             (declare ,@decls)
-             (block ,(if (consp name) (second name) name) ,@forms)))))))
+      (let ((inner `(destructuring-bind ,clean (cdr ,form)
+                      (declare ,@decls)
+                      (block ,(if (consp name) (second name) name) ,@forms))))
+        ;; &whole may be a destructuring pattern
+        (when (consp whole)
+          (setf inner `(destructuring-bind ,whole ,form ,inner) whole nil))
+        `(lambda (,form ,envv)
+           (declare (ignorable ,form ,envv))
+           (let (,@(when whole `((,whole ,form)))
+                 ,@(when envp `((,envp ,envv))))
+             (declare (ignorable ,@(when whole (list whole)) ,@(when envp (list envp))))
+             ,inner))))))
 
 (defparameter *env-function-substitutions*
   '((get-setf-expansion . clysm-sys::%get-setf-expansion)

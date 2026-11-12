@@ -10,6 +10,9 @@ IMAGE=$(bin/clysm image-native) || exit 1
 CATS=${*:-"symbols eval-and-compile data-and-control-flow iteration objects conditions cons arrays hash-tables packages numbers sequences structures types-and-classes strings characters pathnames files streams printer reader system-construction environment misc"}
 TIMEOUT=${ANSI_TIMEOUT:-1800}   # whole process
 STALL=${ANSI_STALL:-30}          # seconds without progress before a test is considered hung
+# start from a pristine sandbox
+git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
+git -C third_party/ansi-test clean -qfdx sandbox 2>/dev/null
 JOBS=${ANSI_JOBS:-8}             # categories run in parallel
 mkdir -p build/ansi
 : > build/ansi/summary.txt
@@ -60,5 +63,5 @@ for cat in $CATS; do [ -f "build/ansi/$cat.sum" ] && cat "build/ansi/$cat.sum"; 
 awk '{t+=$3; p+=$5; f+=$7; c+=$9} END {printf "%-24s total %5d  pass %5d  fail %5d  crash %4d  (%.1f%%)\n", "ALL", t, p, f, c, (t ? 100*p/t : 0)}' build/ansi/summary.txt | tee -a build/ansi/summary.txt
 # the tests create and delete files in the suite's sandbox: restore the submodule
 git -C third_party/ansi-test checkout -q -- sandbox 2>/dev/null
-git -C third_party/ansi-test clean -qfd sandbox 2>/dev/null
+git -C third_party/ansi-test clean -qfdx sandbox 2>/dev/null
 true

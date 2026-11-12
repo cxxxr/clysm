@@ -78,8 +78,8 @@
     (flet ((comp (x) (if (or (null x) (string= x "")) nil (%wild-word (string-upcase x)))))
       (%make-logical-pathname
        host :unspecific
-       (and dir-part (cons (if relative :relative :absolute)
-                           (mapcar (lambda (d) (if (string= d "..") :up (comp d))) dirs)))
+       (cons (if relative :relative :absolute)
+             (mapcar (lambda (d) (if (string= d "..") :up (comp d))) dirs))
        (comp (first fields)) (comp (second fields))
        (let ((v (third fields)))
          (cond ((null v) nil)
@@ -134,10 +134,6 @@
                           (t directory))))
     (unless (%valid-directory-p directory)
       (error 'type-error :datum directory :expected-type 'list))
-    (when (and (consp directory)
-               (or (member :wild-inferiors (cdr directory)) (member :up (cdr directory)))
-               (let ((tail (member :absolute directory))) (and tail (member (cadr directory) '(:up :back)))))
-      (error 'file-error :pathname directory :format-control "invalid directory ~S" :format-arguments (list directory)))
     (funcall (if (and (stringp host) (%logical-host-p (string-upcase host)))
                  #'%make-logical-pathname #'%make-pathname)
              host
@@ -373,64 +369,136 @@
 
 (defun %native-name (x) (namestring (%physical x)))
 
-(defun probe-file (x)
-  (let ((fs (%host-fs)) (name (%native-name x)))
+(defun %file-exists-p (native)
+  (let ((fs (%host-fs)))
+    (if fs (js:call fs "existsSync" native) (not (null (%host-read-octets native))))))
+
+(defun %host-rename-file (old new)
+  (let ((fs (%host-fs)))
+    (when fs (js:call fs "renameSync" old new))))
+
+(defun %fs-pathname (x)
+  "The pathname designated by X (a file stream designates its pathname); a
+FILE-ERROR for wild pathnames."
+  (let ((p (pathname x)))
+    (when (wild-pathname-p p)
+      (error 'file-error :pathname p :format-control "wild pathname ~A not allowed here"
+                         :format-arguments (list (namestring p))))
+    p))
+
+(defun %host-directory-p (fs native)
+  (ignore-errors (js:call (js:call fs "statSync" native) "isDirectory")))
+
+(defun %truename-or-nil (x)
+  (let* ((p (%fs-pathname x)) (fs (%host-fs)) (name (%native-name p)))
     (if fs
-        (and (js:call fs "existsSync" name) (pathname name))
-        (let ((s (open x :direction :input :if-does-not-exist nil)))
-          (if s (progn (close s) (pathname name)) nil)))))
+        (and (js:call fs "existsSync" name)
+             (let ((real (or (ignore-errors (js:call fs "realpathSync" name)) name)))
+               (if (and (%host-directory-p fs real)
+                        (not (and (> (length real) 0) (char= (char real (- (length real) 1)) #\/))))
+                   (pathname (concatenate 'string real "/"))
+                   (pathname real))))
+        (and (%host-read-octets name) (pathname name)))))
+
+(defun probe-file (x) (%truename-or-nil x))
 
 (defun truename (x)
-  (or (probe-file x)
+  (or (%truename-or-nil x)
       (error 'file-error :pathname x :format-control "the file ~A does not exist"
                          :format-arguments (list (namestring x)))))
 
 (defun delete-file (x)
-  (let ((fs (%host-fs)) (name (%native-name x)))
+  (let* ((p (%fs-pathname x)) (fs (%host-fs)) (name (%native-name p)))
     (unless (and fs (js:call fs "existsSync" name))
-      (error 'file-error :pathname x :format-control "cannot delete ~A" :format-arguments (list name)))
-    (js:call fs "unlinkSync" name)
+      (error 'file-error :pathname x :format-control "cannot delete ~A: no such file"
+                         :format-arguments (list name)))
+    (handler-case
+        (if (%host-directory-p fs name)
+            (js:call fs "rmdirSync" name)
+            (js:call fs "unlinkSync" name))
+      (error (c)
+        (error 'file-error :pathname x :format-control "cannot delete ~A: ~A"
+                           :format-arguments (list name c))))
+    (when (%streamp x) (setf (stream-open x) nil))
     t))
 
 (defun rename-file (from to)
-  (let* ((fs (%host-fs)) (old (%native-name from))
-         (new-path (merge-pathnames to (pathname from))) (new (%native-name new-path)))
-    (when fs (js:call fs "renameSync" old new))
-    (values new-path (pathname old) new-path)))
+  (let* ((fs (%host-fs))
+         (from-path (%fs-pathname from))
+         (old-true (truename from))
+         (old (%native-name from-path))
+         (new-path (merge-pathnames to from-path))
+         (new (%native-name new-path)))
+    (when (wild-pathname-p new-path)
+      (error 'file-error :pathname to :format-control "wild pathname ~A not allowed here"
+                         :format-arguments (list (namestring new-path))))
+    (when fs
+      (handler-case (js:call fs "renameSync" old new)
+        (error (c)
+          (error 'file-error :pathname from :format-control "cannot rename ~A: ~A"
+                             :format-arguments (list old c)))))
+    (values new-path old-true (truename new-path))))
 
 (defun ensure-directories-exist (p &key verbose)
   (declare (ignore verbose))
-  (let* ((fs (%host-fs)) (dir (directory-namestring (%physical p)))
-         (existed (or (null fs) (equal dir "") (js:call fs "existsSync" dir))))
-    (when (and fs (not existed))
-      (js:call fs "mkdirSync" dir (js:object "recursive" t)))
-    (values p (not existed))))
+  (let* ((path (pathname p)))
+    (when (wild-pathname-p path :directory)
+      (error 'file-error :pathname path :format-control "wild directory in ~A"
+                         :format-arguments (list (namestring path))))
+    (let* ((fs (%host-fs)) (dir (directory-namestring (%physical path)))
+           (existed (or (null fs) (equal dir "") (js:call fs "existsSync" dir))))
+      (when (and fs (not existed))
+        (js:call fs "mkdirSync" dir (js:object "recursive" t)))
+      (values p (not existed)))))
 
 (defun file-write-date (p)
-  (let ((fs (%host-fs)) (name (%native-name p)))
+  (let* ((path (%fs-pathname p)) (fs (%host-fs)) (name (%native-name path)))
     (if (and fs (js:call fs "existsSync" name))
         (+ +unix-epoch-offset+ (floor (js:get (js:call fs "statSync" name) "mtimeMs") 1000))
         nil)))
 
-(defun file-author (p) (declare (ignore p)) nil)
+(defun file-author (p)
+  (%fs-pathname p)
+  nil)
+
+(defun %check-directory-components (p)
+  "A FILE-ERROR for directories that cannot name anything: (:absolute :up ...),
+(:absolute :back ...) and :wild-inferiors followed by :up or :back."
+  (let ((dir (pathname-directory p)))
+    (when (and (consp dir)
+               (or (and (eq (car dir) :absolute) (member (cadr dir) '(:up :back)))
+                   (loop for (a b) on (cdr dir)
+                         thereis (and (eq a :wild-inferiors) (member b '(:up :back))))))
+      (error 'file-error :pathname p :format-control "invalid directory ~S"
+                         :format-arguments (list dir)))))
 
 (defun directory (p &key)
-  (let* ((fs (%host-fs)) (pat (%physical p)) (dir (directory-namestring pat)))
+  (%check-directory-components (pathname p))
+  (let* ((fs (%host-fs)) (pat (%physical (merge-pathnames p))) (dir (directory-namestring pat)))
     (if (null fs) nil
         (let ((entries (ignore-errors (js:call fs "readdirSync" (if (string= dir "") "." dir)))))
           (when entries
             (let ((r nil) (n (js:get entries "length")))
               (dotimes (i n (sort r #'string< :key #'namestring))
                 (let ((full (pathname (concatenate 'string dir (js:get entries i)))))
-                  (when (pathname-match-p full pat) (push full r))))))))))
+                  (when (pathname-match-p full pat)
+                    (push (or (ignore-errors (truename full)) full) r))))))))))
 
 (defun user-homedir-pathname (&optional host) (declare (ignore host)) (pathname "/"))
-(defun compile-file-pathname (p &key output-file &allow-other-keys)
-  (let ((default (make-pathname :type "fasl" :version nil :defaults (merge-pathnames p))))
-    (if output-file (merge-pathnames output-file default) default)))
+(defun %pathname-components (p)
+  (list (pathname-host p) (pathname-device p) (pathname-directory p)
+        (pathname-name p) (pathname-type p) (pathname-version p)))
 
 (defmethod print-object ((p pathname) stream)
-  (if (or *print-escape* *print-readably*)
-      (progn (write-string "#P" stream) (prin1 (namestring p) stream))
-      (write-string (namestring p) stream))
+  (cond ((and *print-readably*
+              (not (ignore-errors (equal (%pathname-components p)
+                                         (%pathname-components (pathname (namestring p)))))))
+         ;; the namestring does not read back as P (e.g. its version)
+         (format stream "#.(~S ~S ~S ~S ~S ~S '~S ~S ~S ~S ~S ~S ~S)"
+                 'make-pathname :host (pathname-host p) :device (pathname-device p)
+                 :directory (pathname-directory p) :name (pathname-name p)
+                 :type (pathname-type p) :version (pathname-version p)))
+        ((or *print-escape* *print-readably*)
+         (write-string "#P" stream) (prin1 (namestring p) stream))
+        (t (write-string (namestring p) stream)))
   p)
