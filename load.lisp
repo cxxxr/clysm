@@ -1,0 +1,15 @@
+;;;; load.lisp — load the Clysm compiler into SBCL
+(defpackage :clysm-build (:use :cl))
+(in-package :clysm-build)
+(defparameter *root* (make-pathname :name nil :type nil :defaults *load-truename*))
+(defparameter *files* '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend"
+                        "src/codegen" "src/prims" "src/driver"))
+(ensure-directories-exist (merge-pathnames "build/fasl/" *root*))
+(let ((*compile-verbose* nil) (*compile-print* nil))
+  (handler-bind ((warning #'muffle-warning))
+    (dolist (f *files*)
+      (let* ((src (merge-pathnames (concatenate 'string f ".lisp") *root*))
+             (fasl (merge-pathnames (concatenate 'string "build/fasl/" (pathname-name src) ".fasl") *root*)))
+        (when (or (not (probe-file fasl)) (> (file-write-date src) (file-write-date fasl)))
+          (compile-file src :output-file fasl))
+        (load fasl)))))
