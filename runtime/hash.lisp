@@ -62,12 +62,13 @@
 (defun %ht-bucket-count (cap)
   (let ((n 7)) (do () ((>= n cap) n) (setq n (+ (* n 2) 1)))))
 
-(defun hash-table-count (h) (%ht h +ht-count+))
-(defun hash-table-test (h) (%ht h +ht-test+))
-(defun hash-table-size (h) (%svlength (%ht h +ht-keys+)))
-(defun hash-table-rehash-size (h) (%ht h +ht-rehash-size+))
-(defun hash-table-rehash-threshold (h) (%ht h +ht-rehash-threshold+))
-(defun hash-table-weakness (h) (%ht h +ht-weakness+))
+(defmacro %check-ht (h) `(unless (hash-table-p ,h) (%type-error ,h 'hash-table)))
+(defun hash-table-count (h) (%check-ht h) (%ht h +ht-count+))
+(defun hash-table-test (h) (%check-ht h) (%ht h +ht-test+))
+(defun hash-table-size (h) (%check-ht h) (%svlength (%ht h +ht-keys+)))
+(defun hash-table-rehash-size (h) (%check-ht h) (%ht h +ht-rehash-size+))
+(defun hash-table-rehash-threshold (h) (%check-ht h) (%ht h +ht-rehash-threshold+))
+(defun hash-table-weakness (h) (%check-ht h) (%ht h +ht-weakness+))
 
 ;;; hashing
 (defun %eq-hash (x)
@@ -110,6 +111,7 @@
 
 (defun %equalp-hash (x depth)
   (cond ((characterp x) (%char-code (char-upcase x)))
+        ((and (complexp x) (zerop (imagpart x))) (%equalp-hash (realpart x) depth))
         ((numberp x) (if (and (realp x) (= x (truncate x))) (%number-hash (truncate x)) 13))
         ((stringp x) (let ((h 5)) (dotimes (i (length x) h) (setq h (%mix h (%char-code (char-upcase (char x i))))))))
         ((consp x) (if (<= depth 0) 17
@@ -152,6 +154,7 @@
       (setq i (%svref next i)))))
 
 (defun gethash (key h &optional default)
+  (%check-ht h)
   (let ((i (%ht-find h key (%ht-hash h key))))
     (if (%fx< i 0)
         (values default nil)
@@ -164,6 +167,7 @@
     value))
 
 (defun %ht-put (h key value)
+  (%check-ht h)
   (let* ((hash (%ht-hash h key))
          (i (%ht-find h key hash)))
     (if (%fx>= i 0)
@@ -194,6 +198,7 @@
           (%ht-put h k (%svref vals i)))))))
 
 (defun remhash (key h)
+  (%check-ht h)
   (let* ((hash (%ht-hash h key))
          (buckets (%ht h +ht-buckets+))
          (b (%fxrem hash (%svlength buckets)))
@@ -213,10 +218,12 @@
       (setq prev i i (%svref next i)))))
 
 (defun clrhash (h)
+  (%check-ht h)
   (%ht-init-storage h (%svlength (%ht h +ht-keys+)))
   h)
 
 (defun maphash (fn h)
+  (%check-ht h)
   (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+)))
     (dotimes (i fill nil)
       (let ((k (%svref keys i)))
