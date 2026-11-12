@@ -266,6 +266,10 @@
   (let ((n (length name)) (i 0) (digits 0))
     (when (and (> n 0) (member (char name 0) '(#\+ #\-))) (setq i 1))
     (when (>= i n) (return-from %potential-number-p nil))
+    ;; CLHS 2.3.1.1: a potential number begins with a digit, sign, decimal
+    ;; point or extension character
+    (unless (or (digit-char-p (char name 0)) (member (char name 0) '(#\+ #\- #\. #\^ #\_)))
+      (return-from %potential-number-p nil))
     (do ((j i (+ j 1))) ((>= j n))
       (let ((c (char name j)))
         (cond ((digit-char-p c) (setq digits (+ digits 1)))

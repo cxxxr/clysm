@@ -522,7 +522,9 @@
 (defsetf row-major-aref %row-major-aset)
 (defsetf fill-pointer %set-fill-pointer)
 (defsetf gethash %puthash)
-(defsetf get %put)
+(defsetf get (symbol indicator &optional default) (value)
+  ;; DEFAULT is evaluated (in order) but not used
+  `(progn ,default (%put ,symbol ,indicator ,value)))
 (defsetf nth %setnth)
 (defsetf elt %setelt)
 (defsetf fdefinition %set-fdefinition)

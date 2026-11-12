@@ -25,7 +25,8 @@
 (defmacro %ht (h i) `(%instance-ref ,h ,i))
 (defmacro %ht-set (h i v) `(%set-instance-ref ,h ,i ,v))
 
-(defconstant +deleted+ '%deleted-entry)
+;; the marker of a removed entry: an uninterned symbol, so that no key can be EQ to it
+(defvar +deleted+ (make-symbol "DELETED-ENTRY"))
 
 (defun %ht-kind-of (test)
   (cond ((or (eq test 'eq) (eq test #'eq)) 0)

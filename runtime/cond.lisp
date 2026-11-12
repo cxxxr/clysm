@@ -451,6 +451,13 @@
          :format-control "invalid number of arguments: ~S (calling ~S)"
          :format-arguments (list nargs (%closure-name f))))
 
+(defun %correctable-package-error (package report control &rest args)
+  "Signal a PACKAGE-ERROR with a CONTINUE restart; returns T if continued."
+  (restart-case (progn (error 'package-error :package package :format-control control
+                                             :format-arguments args)
+                       nil)
+    (continue () :report (lambda (s) (write-string report s)) t)))
+
 (defun %values-list-error (list)
   (error 'type-error :datum list :expected-type 'list))
 

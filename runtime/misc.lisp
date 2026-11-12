@@ -112,6 +112,8 @@
             (t (error "REQUIRE: don't know how to load module ~S" name))))
     nil))
 
+(deftype string-designator () '(or string symbol character))
+
 ;;; Documentation strings live in a table keyed by (object doc-type); a
 ;;; function or class has one string for doc-types T/FUNCTION resp. T/TYPE.
 (defvar %documentation-table (make-hash-table :test 'equal))

@@ -433,9 +433,14 @@
 (defvar *gensym-counter* 1)
 
 (defun make-symbol (name)
-  (%make-symbol (%copy-simple-string (string name)) (%string-hash name)))
+  (unless (stringp name) (%type-error name 'string))
+  (%make-symbol (%copy-simple-string name) (%string-hash name)))
 
 (defun gensym (&optional (x "G"))
+  (unless (or (stringp x) (and (integerp x) (>= x 0)))
+    (%type-error x '(or string unsigned-byte)))
+  (unless (or (integerp x) (and (integerp *gensym-counter*) (>= *gensym-counter* 0)))
+    (%type-error *gensym-counter* 'unsigned-byte))
   (let ((prefix (if (stringp x) x "G"))
         (n (if (integerp x) x *gensym-counter*)))
     (unless (integerp x) (setq *gensym-counter* (+ *gensym-counter* 1)))
@@ -443,6 +448,8 @@
 
 (defvar *gentemp-counter* 1)
 (defun gentemp (&optional (prefix "T") (package *package*))
+  (unless (stringp prefix) (%type-error prefix 'string))
+  (setq package (%find-package-or-die package))
   (loop
     (let ((name (concatenate 'string prefix (%integer-to-string *gentemp-counter* 10))))
       (setq *gentemp-counter* (+ *gentemp-counter* 1))
@@ -503,6 +510,7 @@
   name)
 
 (defun special-operator-p (s)
+  (unless (symbolp s) (%type-error s 'symbol))
   (and (%member-eql s '(quote function if progn let let* setq flet labels macrolet symbol-macrolet
                         block return-from tagbody go catch throw unwind-protect
                         multiple-value-call multiple-value-prog1 the locally eval-when
