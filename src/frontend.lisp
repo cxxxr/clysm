@@ -520,7 +520,12 @@ runtime definition is kept."
   '((get-setf-expansion . clysm-sys::%get-setf-expansion)
     (macroexpand-1 . clysm-sys::%macroexpand-1)
     (macroexpand . clysm-sys::%macroexpand)
-    (macro-function . clysm-sys::%host-macro-function*))
+    (macro-function . clysm-sys::%host-macro-function*)
+    ;; not environment functions, but they take target package designators
+    (find-package . clysm-sys::%host-find-package)
+    (intern . clysm-sys::%host-intern)
+    (find-symbol . clysm-sys::%host-find-symbol)
+    (package-name . clysm-sys::%host-package-name))
   "CL functions taking an environment argument: host-evaluated macro bodies
 must call the compiler's versions, which understand compiler environments.")
 
@@ -529,6 +534,9 @@ must call the compiler's versions, which understand compiler environments.")
 leaving quoted data alone."
   (cond ((atom form) form)
         ((eq (car form) 'quote) form)
+        ;; a backquote template is data except where it is unquoted
+        ((eq (car form) 'clysm-sys::quasiquote)
+         (list (car form) (substitute-in-template (second form) 1)))
         ((and (eq (car form) 'function) (consp (cdr form)) (symbolp (second form)))
          (let ((e (assoc (second form) *env-function-substitutions*)))
            (if e (list 'function (cdr e)) form)))
@@ -539,6 +547,17 @@ leaving quoted data alone."
                                   (cons (substitute-env-functions (car tail)) (walk (cdr tail)))
                                   tail)))
                      (walk (cdr form))))))))
+
+(defun substitute-in-template (x depth)
+  (cond ((atom x) x)
+        ((member (car x) '(clysm-sys::unquote clysm-sys::unquote-splicing))
+         (list (car x) (if (= depth 1)
+                           (substitute-env-functions (second x))
+                           (substitute-in-template (second x) (1- depth)))))
+        ((eq (car x) 'clysm-sys::quasiquote)
+         (list (car x) (substitute-in-template (second x) (1+ depth))))
+        (t (cons (substitute-in-template (car x) depth)
+                 (substitute-in-template (cdr x) depth)))))
 
 (defun host-compile (lambda-form)
   #-clysm (setf lambda-form (substitute-env-functions lambda-form))

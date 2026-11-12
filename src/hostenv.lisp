@@ -21,6 +21,23 @@
                (setf (symbol-value ',sym) value))))
      (error () (clysm-sys::%compile-time-special ',sym))))
 
+;;; Package functions called by host-evaluated macro code: target package
+;;; names (e.g. :ALEXANDRIA) designate the host packages that mirror them.
+(defun clysm-sys::%host-find-package (designator)
+  (cond ((packagep designator) designator)
+        ((find-target-package (string designator) nil))
+        (t (find-package designator))))
+(defun %host-package-or-die (designator)
+  (or (clysm-sys::%host-find-package designator)
+      (error 'package-error :package designator)))
+(defun clysm-sys::%host-intern (name &optional (package *package*))
+  (intern name (%host-package-or-die package)))
+(defun clysm-sys::%host-find-symbol (name &optional (package *package*))
+  (find-symbol name (%host-package-or-die package)))
+(defun clysm-sys::%host-package-name (package)
+  (let ((p (%host-package-or-die package)))
+    (or (gethash p *host->target-name*) (package-name p))))
+
 (defun clysm-sys::%host-macro-function* (sym env)
   (macro-function-in sym (if (cenv-p env) env nil)))
 

@@ -34,10 +34,21 @@
       (and *live-packages* (package-name host-pkg))
       (error "host package ~A is not a target package" host-pkg)))
 
+(defun add-host-nicknames (host-pkg names)
+  "Let the host package HOST-PKG also be found by the target NAMES (when no
+host package has that name), so that host-evaluated code such as #. forms
+and macro expanders can use target package names."
+  #-clysm
+  (dolist (n names)
+    (unless (find-package n)
+      (rename-package host-pkg (package-name host-pkg)
+                      (cons n (package-nicknames host-pkg))))))
+
 (defun ensure-host-package-for (name)
   (or (find-target-package name nil)
       (let ((hp (or (find-package (format nil "CLYSM-T/~A" name))
                     (make-package (format nil "CLYSM-T/~A" name) :use nil))))
+        (add-host-nicknames hp (list name))
         (register-target-package name hp))))
 
 (defun init-target-packages ()
@@ -162,6 +173,8 @@
 
 (defun read-token (s)
   (multiple-value-bind (str escaped escpos) (read-raw-token s)
+    ;; inside a skipped #+/#- form: no package lookup, no interning
+    (when *read-suppress* (return-from read-token nil))
     (when (and (not escaped) (string= str ".")) (return-from read-token *dot-marker*))
     (unless escaped
       (let ((n (parse-number-token str)))
@@ -243,6 +256,12 @@
     (loop while (digit-char-p (peek-char nil s))
           do (setf numarg (+ (* (or numarg 0) 10) (digit-char-p (read-char s)))))
     (let ((c (read-char s)))
+      (when (and *read-suppress* (member (char-downcase c) '(#\. #\x #\b #\o #\r #\* #\c #\a #\p #\s)))
+        ;; inside a skipped #+/#- form: read the following object, build nothing
+        (if (member (char-downcase c) '(#\x #\b #\o #\r #\*))
+            (read-raw-token s)
+            (target-read s))
+        (return-from read-sharp (values nil t)))
       (case (char-downcase c)
         (#\' (values (list 'function (target-read s)) t))
         (#\( (values (coerce (read-list-rest s) 'simple-vector) t))
@@ -258,11 +277,12 @@
                                            (char= (char name 1) #\+))
                                       (code-char (parse-integer name :start 2 :radix 16)))
                                      ((name-char name))
+                                     (*read-suppress* nil)
                                      (t (error "Clysm reader: unknown character name ~A" name)))
                                t))))))
         (#\: (values (make-symbol (string-upcase (read-raw-token s))) t))
         (#\| (skip-block-comment s) (values nil nil))
-        (#\. (values (eval (target-read s)) t))
+        (#\. (values (let ((*package* *read-package*)) (eval (target-read s))) t))
         ((#\+ #\-)
          (let* ((feature (let ((*read-package* (find-package :keyword))) (target-read s)))
                 (ok (feature-match-p feature)))

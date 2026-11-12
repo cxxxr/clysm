@@ -249,6 +249,7 @@ destructuring-bind (defined by the runtime)."
           (:shadowing-import-from (push opt imports))
           (:import-from (push opt imports))))
       (dolist (n nicknames) (setf (gethash n *target-packages*) hp))
+      (add-host-nicknames hp nicknames)
       (setf (gethash name *target-nicknames*) nicknames)
       (dolist (s shadows) (shadow s hp))
       (dolist (opt imports)
@@ -329,16 +330,38 @@ they can be FUNCALLed and used by the interpreter."
                         env))))))
              *prims*)))
 
+(defvar *host-load-defuns* nil
+  "True while compiling user files ahead of time: after each file, its toplevel
+DEFUNs are also defined on the host, as if the file had been compiled and
+loaded before the next one, so that later files' macros can call them.")
+
+(defun host-loadable-defun-p (form)
+  (and (consp form) (eq (car form) 'defun) (consp (cdr form))
+       (symbolp (second form))
+       (let ((target (symbol-target-package-name (second form))))
+         (and target (not (member target '("COMMON-LISP" "SYSTEM" "KEYWORD") :test #'string=))))))
+
 (defun compile-source-file (path)
   (with-open-file (s path :external-format :utf-8)
-    (let ((env (make-cenv)) (*read-package* *read-package*))
-      (loop
-        (let ((form (target-read s nil s)))
-          (when (eq form s) (return))
-          (handler-bind ((error (lambda (c)
-                                  (format *error-output* "~&;; error while compiling ~A~%;;   form: ~S~%;;   ~A~%"
-                                          path (if (consp form) (list (car form) (if (consp (cdr form)) (cadr form))) form) c))))
-            (process-toplevel form env)))))))
+    (let ((env (make-cenv)) (*read-package* *read-package*) (defuns nil))
+      (unwind-protect
+           (compile-source-forms s path env (lambda (form)
+                                              (when (and *host-load-defuns* (host-loadable-defun-p form))
+                                                (push (cons form *read-package*) defuns))))
+        #-clysm
+        (dolist (d (reverse defuns))
+          (let ((*read-package* (cdr d)))
+            (ignore-errors (host-eval (car d)))))))))
+
+(defun compile-source-forms (s path env note)
+  (loop
+    (let ((form (target-read s nil s)))
+      (when (eq form s) (return))
+      (funcall note form)
+      (handler-bind ((error (lambda (c)
+                              (format *error-output* "~&;; error while compiling ~A~%;;   form: ~S~%;;   ~A~%"
+                                      path (if (consp form) (list (car form) (if (consp (cdr form)) (cadr form))) form) c))))
+        (process-toplevel form env)))))
 
 ;;; ------------------------------------------------------------
 ;;; Module assembly
@@ -512,7 +535,8 @@ Returns the number of bytes written."
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
     (finish-runtime))
-  (dolist (f files) (compile-source-file f))
+  (let ((*host-load-defuns* t))
+    (dolist (f files) (compile-source-file f)))
   (let ((bytes (build-module)))
     (with-open-file (o output :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
       (write-sequence bytes o))
