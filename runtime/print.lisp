@@ -355,6 +355,11 @@
            (write-char #\) stream)))))
 
 (defun %write-array (a stream)
+  (unless (or *print-array* *print-readably*)
+    (write-string "#<ARRAY " stream)
+    (let ((*print-array* t)) (%write-object-1 (array-dimensions a) stream))
+    (write-char #\> stream)
+    (return-from %write-array nil))
   (let ((dims (array-dimensions a)))
     (write-char #\# stream)
     (%write-decimal (length dims) stream)
