@@ -81,6 +81,13 @@
                     `(%make-instance (load-time-value (find-class ',name)) (vector ,@vals)))
                    ((eq struct-type 'list)
                     `(list ,@(make-list initial-offset) ,@(when named `(',name)) ,@vals))
+                   ((consp struct-type)
+                    ;; (:type (vector element-type)): a specialized vector
+                    `(make-array ,(+ offset (length vals)) :element-type ',(cadr struct-type)
+                                 :initial-contents
+                                 (list ,@(make-list initial-offset :initial-element
+                                                    (if (eq (%normalize-element-type (cadr struct-type)) t) nil 0))
+                                       ,@(when named `(',name)) ,@vals)))
                    (t `(vector ,@(make-list initial-offset) ,@(when named `(',name)) ,@vals)))))
       `(progn
          (eval-when (:compile-toplevel :load-toplevel :execute)
