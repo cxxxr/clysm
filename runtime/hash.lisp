@@ -228,7 +228,11 @@ every test, without a call."
                      (or (eq k key)
                          (cond ((%fx= kind 0) nil)
                                ((%fx= kind 1) (eql k key))
-                               ((%fx= kind 2) (equal k key))
+                               ((%fx= kind 2)
+                                ;; strings, the usual keys, are compared here
+                                (if (and (%simple-string-p k) (%simple-string-p key))
+                                    (%simple-string= k key)
+                                    (equal k key)))
                                (t (equalp k key))))))
           (return j))
         (setq i (%lref next j))))))
@@ -269,8 +273,10 @@ for here, without a call."
 
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
-  (let ((i (%ht-find h key hash)))
-    (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t))))
+  (if (eql (%ht h +ht-count+) 0)
+      (values nil nil)                  ; e.g. the external symbols of a package without any
+      (let ((i (%ht-find-general (%instance-slots h) key hash 2)))
+        (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t)))))
 
 (defun %puthash (key h &rest rest)
   ;; (setf (gethash key h [default]) value): value is the last argument
