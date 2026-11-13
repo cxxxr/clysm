@@ -209,6 +209,13 @@
              (if found (typep x exp) (error "Unknown type specifier: ~S" type))))))))
 
 ;;; compile-time expansion of TYPEP with a constant type
+;;;
+;;; (typep x 'TYPE) with a constant TYPE compiles to direct tests: predicate
+;;; calls for the standard atomic types, comparisons for numeric ranges,
+;;; AND/OR/NOT of the expansions of compound types, the expansion of a DEFTYPE
+;;; known at compile time, and for any other symbol (a class or structure
+;;; name, or a type defined later) a test against the name's type cell, which
+;;; holds the class once it exists.
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter *typep-predicates*
     '((null . null) (cons . consp) (list . listp) (atom . atom) (symbol . symbolp)
@@ -218,27 +225,124 @@
       (array . arrayp) (function . functionp) (hash-table . hash-table-p) (keyword . keywordp)
       (single-float . single-float-p) (double-float . double-float-p) (complex . complexp)
       (bit-vector . bit-vector-p) (package . packagep) (sequence . sequencep)
-      (structure-object . structurep) (ratio . ratiop) (bignum . bignump)))
+      (structure-object . structurep) (ratio . ratiop) (bignum . bignump)
+      (short-float . single-float-p) (long-float . double-float-p) (signed-byte . integerp)
+      (base-char . characterp) (compiled-function . functionp)
+      (simple-array . %simple-array-type-p) (simple-bit-vector . simple-bit-vector-p)))
+
+  ;; the names TYPEP itself knows that are not classes or need more than a predicate
+  (defparameter *typep-special-names*
+    '(boolean bit unsigned-byte standard-char extended-char simple-base-string base-string))
+
+  (defun %typep-bound-ok (b)
+    (or (eq b '*) (realp b) (and (consp b) (null (cdr b)) (realp (car b)))))
+
+  (defun %typep-range-expansion (x pred args)
+    (let ((lo (if args (car args) '*)) (hi (if (cdr args) (cadr args) '*)))
+      (if (and (%typep-bound-ok lo) (%typep-bound-ok hi) (null (cddr args)))
+          `(and (,(if (and (eq pred 'integerp) (integerp lo) (integerp hi)
+                           (<= -536870912 lo 536870911) (<= -536870912 hi 536870911))
+                      'fixnump       ; a range within the fixnums: no generic comparison
+                      pred)
+                 ,x)
+                ,@(cond ((eq lo '*) nil) ((consp lo) `((> ,x ,(car lo)))) (t `((>= ,x ,lo))))
+                ,@(cond ((eq hi '*) nil) ((consp hi) `((< ,x ,(car hi)))) (t `((<= ,x ,hi)))))
+          nil)))
+
+  (defun %typep-size-ok (args)
+    (and (null (cdr args)) (or (null args) (eq (car args) '*) (integerp (car args)))))
+
+  (defun %typep-sized-expansion (x pred args)
+    (if (or (null args) (eq (car args) '*))
+        `(,pred ,x)
+        `(and (,pred ,x) (eql (length ,x) ,(car args)))))
 
   (defun %typep-expansion (x type)
-    (cond ((eq type t) t)
-          ((null type) nil)
-          ((and (symbolp type) (assoc type *typep-predicates*))
-           `(,(cdr (assoc type *typep-predicates*)) ,x))
-          ((and (consp type) (member (car type) '(or and)) (symbolp x))
-           `(,(car type) ,@(mapcar (lambda (ty) (%typep-expansion x ty)) (cdr type))))
-          ((and (consp type) (eq (car type) 'not) (symbolp x))
-           `(not ,(%typep-expansion x (cadr type))))
-          ((and (consp type) (eq (car type) 'member))
-           `(member ,x ',(cdr type)))
-          ((and (consp type) (eq (car type) 'eql))
-           `(eql ,x ',(cadr type)))
-          ((and (consp type) (eq (car type) 'satisfies) (symbolp x))
-           `(,(cadr type) ,x))
-          (t `(typep ,x ',type)))))
+    "A form testing the variable X for the constant type specifier TYPE; a
+(typep X 'TYPE) form when the test is left to TYPEP."
+    (let ((default `(typep ,x ',type)))
+      (cond ((eq type t) `(progn ,x t))
+            ((null type) `(progn ,x nil))
+            ((symbolp type)
+             (cond ((assoc type *typep-predicates*) `(,(cdr (assoc type *typep-predicates*)) ,x))
+                   ((eq type 'boolean) `(or (eq ,x t) (eq ,x nil)))
+                   ((eq type 'bit) `(or (eql ,x 0) (eql ,x 1)))
+                   ((eq type 'unsigned-byte) `(and (integerp ,x) (>= ,x 0)))
+                   ((eq type 'standard-char) `(and (characterp ,x) (standard-char-p ,x)))
+                   ((eq type 'extended-char) `(progn ,x nil))
+                   ((member type *typep-special-names*) default)
+                   ((get type '%deftype)
+                    (let ((exp (handler-case (list (funcall (get type '%deftype) nil)) (error () nil))))
+                      (if exp (%typep-expansion x (car exp)) default)))
+                   ((or (keywordp type) (null (symbol-package type))) default)
+                   (t `(%typep-cell ,x (load-time-value (%type-cell ',type))))))
+            ((not (and (consp type) (symbolp (car type)) (listp (cdr type)) (null (cdr (last type)))))
+             default)
+            (t
+             (let ((head (car type)) (args (cdr type)))
+               (case head
+                 ((or and) `(,head ,@(mapcar (lambda (ty) (%typep-expansion x ty)) args)))
+                 (not (if (and args (null (cdr args))) `(not ,(%typep-expansion x (car args))) default))
+                 (member (cond ((null args) `(progn ,x nil))
+                               ((null (cdr args)) `(eql ,x ',(car args)))
+                               (t `(if (member ,x ',args) t nil))))
+                 (eql (if (and args (null (cdr args))) `(eql ,x ',(car args)) default))
+                 (satisfies (if (and args (null (cdr args)) (symbolp (car args)))
+                                `(if (,(car args) ,x) t nil)
+                                default))
+                 (integer (or (%typep-range-expansion x 'integerp args) default))
+                 (rational (or (%typep-range-expansion x 'rationalp args) default))
+                 (real (or (%typep-range-expansion x 'realp args) default))
+                 (float (or (%typep-range-expansion x 'floatp args) default))
+                 ((single-float short-float) (or (%typep-range-expansion x 'single-float-p args) default))
+                 ((double-float long-float) (or (%typep-range-expansion x 'double-float-p args) default))
+                 (mod (if (and args (null (cdr args)) (integerp (car args)) (plusp (car args)))
+                          (%typep-range-expansion x 'integerp (list 0 (- (car args) 1)))
+                          default))
+                 (unsigned-byte
+                  (cond ((or (null args) (and (eq (car args) '*) (null (cdr args)))) `(and (integerp ,x) (>= ,x 0)))
+                        ((and (integerp (car args)) (plusp (car args)) (null (cdr args)))
+                         (%typep-range-expansion x 'integerp (list 0 (- (ash 1 (car args)) 1))))
+                        (t default)))
+                 (signed-byte
+                  (cond ((or (null args) (and (eq (car args) '*) (null (cdr args)))) `(integerp ,x))
+                        ((and (integerp (car args)) (plusp (car args)) (null (cdr args)))
+                         (let ((lim (ash 1 (- (car args) 1))))
+                           (%typep-range-expansion x 'integerp (list (- lim) (- lim 1)))))
+                        (t default)))
+                 (cons
+                  (if (null (cddr args))
+                      (let ((a (if args (car args) '*)) (d (if (cdr args) (cadr args) '*)) (g (gensym)))
+                        `(and (consp ,x)
+                              ,@(if (member a '(* t)) nil `((let ((,g (car ,x))) ,(%typep-expansion g a))))
+                              ,@(if (member d '(* t)) nil `((let ((,g (cdr ,x))) ,(%typep-expansion g d))))))
+                      default))
+                 (simple-vector (if (%typep-size-ok args) (%typep-sized-expansion x 'simple-vector-p args) default))
+                 (string (if (%typep-size-ok args) (%typep-sized-expansion x 'stringp args) default))
+                 (simple-string (if (%typep-size-ok args) (%typep-sized-expansion x 'simple-string-p args) default))
+                 ((bit-vector simple-bit-vector)
+                  (if (%typep-size-ok args) (%typep-sized-expansion x 'bit-vector-p args) default))
+                 (vector
+                  (if (and (null (cddr args)) (or (null (cdr args)) (eq (cadr args) '*) (integerp (cadr args))))
+                      (let ((et (if args (car args) '*)))
+                        `(and (vectorp ,x)
+                              ,@(if (eq et '*) nil `((%array-type-match ,x ',et '* nil)))
+                              ,@(if (or (null (cdr args)) (eq (cadr args) '*)) nil
+                                    `((eql (length ,x) ,(cadr args))))))
+                      default))
+                 ((array simple-array)
+                  (if (null (cddr args))
+                      `(%array-type-match ,x ',(if args (car args) '*) ',(if (cdr args) (cadr args) '*)
+                                          ,(eq head 'simple-array))
+                      default))
+                 ((complex function values base-string simple-base-string) default)
+                 (otherwise
+                  (let ((exp (and (get head '%deftype)
+                                  (handler-case (list (funcall (get head '%deftype) args)) (error () nil)))))
+                    (if exp (%typep-expansion x (car exp)) default))))))))))
 
 (define-compiler-macro typep (&whole form x type &optional env)
-  (if (and (null env) (consp type) (eq (car type) 'quote))
+  (if (and (null env) (consp type) (eq (car type) 'quote) (consp (cdr type)) (null (cddr type)))
       (let ((ty (cadr type)))
         (if (symbolp x)
             (let ((e (%typep-expansion x ty)))
@@ -247,6 +351,23 @@
               (let ((e (%typep-expansion g ty)))
                 (if (and (consp e) (eq (car e) 'typep)) form `(let ((,g ,x)) ,e))))))
       form))
+
+;;; The type cell of a symbol: (class-or-nil . name).  %SET-FIND-CLASS keeps
+;;; the class in it up to date, so a compiled test of a class or structure
+;;; name costs one load instead of a FIND-CLASS.
+(defun %type-cell (name)
+  (or (get name '%type-cell)
+      (let ((cell (cons (get name '%class) name)))
+        (%put name '%type-cell cell)
+        cell)))
+
+(defun %typep-cell (x cell)
+  (let ((c (car cell)))
+    (cond ((null c) (typep x (cdr cell)))
+          ((%instancep x) (%structure-typep x c))
+          ;; only functions (generic functions) and instances have classes that are not built in
+          ((and (not (eq (%class-kind c) :built-in)) (not (functionp x))) nil)
+          (t (%subclassp (class-of x) c)))))
 
 (defun packagep (x) (%packagep x))
 

@@ -92,6 +92,9 @@
     (if (null class)
         (%remprop-class name)
         (%put name '%class class))
+    ;; the cell compiled TYPEP tests of NAME read (see %TYPE-CELL)
+    (let ((cell (get name '%type-cell)))
+      (when cell (%setcar cell class)))
     (fill *builtin-classes* nil)
     (when (boundp '*ctor-generation*) (set '*ctor-generation* (+ (symbol-value '*ctor-generation*) 1)))
     class))
@@ -282,7 +285,10 @@ grows when CLASS has more instance slots)."
       (%finalize-class sub))
     class))
 
-(defun %subclassp (c1 c2) (or (eq c1 c2) (not (null (member c2 (%class-cpl c1))))))
+(defun %subclassp (c1 c2)
+  (or (eq c1 c2)
+      (do ((l (%class-cpl c1) (cdr l))) ((atom l) nil)
+        (when (eq (car l) c2) (return t)))))
 
 ;;; ------------------------------------------------------------
 ;;; slot access by name (used by conditions and CLOS)
