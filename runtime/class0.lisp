@@ -20,7 +20,9 @@
 (defconstant +class-direct-default-initargs+ 14) ; ((key form fn) ...) as given to DEFCLASS
 (defconstant +class-protocol+ 15)   ; true: the metaclass is not a standard one (MOP generic protocols apply)
 (defconstant +class-plist+ 16)
-(defconstant +class-size+ 17)
+(defconstant +class-make-info+ 17)  ; what MAKE-INSTANCE does for the class (clos.lisp)
+(defconstant +class-instance-size+ 18) ; the number of slots in an instance (set by the finalization)
+(defconstant +class-size+ 19)
 
 (defvar *the-standard-class* nil)
 (defvar *the-direct-slotd-class* nil)
@@ -284,6 +286,7 @@ grows when CLASS has more instance slots)."
             nil
             (progn (when old-cpl (setq changed t))
                    (%set-class-slot class +class-slot-index+ index)))))
+    (%set-class-slot class +class-instance-size+ (%instance-slot-count class))
     ;; a class with a forward-referenced superclass is not finalized (AMOP)
     (%set-class-slot class +class-finalized+
                      (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
@@ -337,7 +340,7 @@ grows when CLASS has more instance slots)."
                            :format-arguments (list name instance))))
 
 (defun %allocate-instance (class)
-  (let* ((n (%instance-slot-count class))
+  (let* ((n (or (%class-slot class +class-instance-size+) (%instance-slot-count class)))
          (v (%make-simple-vector n (%unbound-marker))))
     (%make-instance class v)))
 
