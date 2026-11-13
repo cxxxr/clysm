@@ -302,10 +302,23 @@ trivial-gray-streams system that ASDF finds before Quicklisp's release.
 
 ## Running in the browser
 
-`tools/build-web.sh` builds `build/web/` (an image containing the runtime, the
-reader and the evaluator, plus `host/web/index.html`). Serve `build/` over HTTP
-and open `web/index.html` for a REPL running entirely in WebAssembly; the host
-calls the exported `eval_string`.
+`tools/build-web.sh` (`make web`) builds `build/web/` (an image containing the
+runtime, the reader, the evaluator and the compiler, plus `host/web/index.html`).
+Serve `build/` over HTTP and open `web/index.html` for a REPL running entirely
+in WebAssembly: forms typed in the page are compiled to Wasm in the browser,
+and the host calls the exported `eval_string`.
+
+```
+$ make web
+$ python3 -m http.server -d build      # open http://localhost:8000/web/
+```
+
+Enter evaluates a complete input and starts a new line in an incomplete one
+(the image's reader decides, through `clysmRepl.complete`), ↑/↓ recall the
+history (kept in `localStorage`), and the prompt shows the current package.
+Standard input (`read-line`, `read`) is asked for with a dialog; Cancel is end
+of file. A stack overflow is reported as an error, and the dynamic bindings it
+skipped are undone.
 
 ## ANSI test suite
 

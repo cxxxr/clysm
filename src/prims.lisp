@@ -508,6 +508,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim values-list (l) :mv `(,@l (:call :values-list)))
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
 (defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
+(defprim clysm-sys::%unbind-to (sp) :value `(,@sp (:ref.cast :i31) :i31.get_s (:call :unbind-to) ,@(nil-code)))
 (defprim clysm-sys::%write-char (c fd) :value
   (let ((tmp (new-local)))
     `(,@fd (:ref.cast :i31) :i31.get_s ,@c (:local.tee ,tmp) (:call :check-char) (:i32.const ,+char-tag+) :i32.sub (:call :host-write-char)
