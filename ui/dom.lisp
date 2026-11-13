@@ -55,10 +55,26 @@
     (:for "for")
     (t (string-downcase (symbol-name key)))))
 
+;;; the elements of drawings (graphics.lisp) are SVG: they are created in
+;;; its namespace, and all their properties are attributes
+
+(defvar *svg-tags* '("svg" "g" "line" "rect" "circle" "ellipse" "polygon" "polyline" "path"
+                     "text" "tspan"))
+(defvar +svg-namespace+ (js:to-js "http://www.w3.org/2000/svg"))
+(defvar *svg-element-p* (js:eval "(node) => node instanceof SVGElement"))
+
+(defun svg-node-p (node)
+  (eq (js:funcall *svg-element-p* node) t))
+
+(defun svg-attribute-name (key)
+  (if (eq key :viewbox) "viewBox" (attribute-name key)))
+
 (defmethod make-element-node ((backend dom-backend) tag)
-  (js:call (backend-document backend) +create-element+
-           (or (gethash tag *js-tags*)
-               (setf (gethash tag *js-tags*) (js:to-js tag)))))
+  (let ((name (or (gethash tag *js-tags*)
+                  (setf (gethash tag *js-tags*) (js:to-js tag)))))
+    (if (member tag *svg-tags* :test #'string=)
+        (js:call (backend-document backend) "createElementNS" +svg-namespace+ name)
+        (js:call (backend-document backend) +create-element+ name))))
 
 (defmethod make-text-node ((backend dom-backend) string)
   (js:call (backend-document backend) +create-text-node+ string))
@@ -69,6 +85,7 @@
 (defmethod set-property ((backend dom-backend) node name value)
   (multiple-value-bind (attributep js-name) (property-name name)
     (cond (attributep (js:call node +set-attribute+ js-name value))
+          ((svg-node-p node) (js:call node +set-attribute+ (svg-attribute-name name) value))
           ;; what the user may have changed: only set a different value
           ;; (setting the value of a text field moves the cursor)
           ((eq name :value)
@@ -79,6 +96,7 @@
 (defmethod remove-property ((backend dom-backend) node name old-value)
   (multiple-value-bind (attributep js-name) (property-name name)
     (cond (attributep (js:call node +remove-attribute+ js-name))
+          ((svg-node-p node) (js:call node +remove-attribute+ (svg-attribute-name name)))
           ((eq name :value) (js:set node js-name ""))
           ((or (eq name :checked) (eq old-value t)) (js:set node js-name :false))
           (t (js:call node +remove-attribute+ (attribute-name name))))))
@@ -136,6 +154,26 @@
 (defmethod set-title ((backend dom-backend) string)
   (js:set (backend-document backend) "title" string))
 
+(defvar *reveal-selection*
+  (js:eval "(event) => { const node = event.currentTarget || event.target;
+     queueMicrotask(() => { const item = node.querySelector('.selected');
+                            if (item) item.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }); }"))
+
+(defmethod reveal-selection ((backend dom-backend) event)
+  ;; the display is brought up to date in a microtask that is already queued
+  (when event (js:funcall *reveal-selection* event))
+  nil)
+
+(defvar *event-position*
+  (js:eval "(event) => { let node = event.currentTarget || event.target;
+     if (!(node instanceof SVGSVGElement)) node = node.ownerSVGElement || node.querySelector('svg');
+     const p = new DOMPoint(event.clientX, event.clientY).matrixTransform(node.getScreenCTM().inverse());
+     return [p.x, p.y]; }"))
+
+(defmethod event-position ((backend dom-backend) event)
+  (let ((position (js:funcall *event-position* event)))
+    (values (js:get position 0) (js:get position 1))))
+
 (defmethod previous-sibling-size ((backend dom-backend) event)
   (let* ((target (js:get event "target"))
          (previous (js:get target "previousElementSibling")))
@@ -149,7 +187,10 @@
         (window (js:global)))
     (js:call (js:global "console") "error" message)
     (if (null (cdr restarts))
-        (progn (js:call window "alert" message) nil)
+        (progn (if *error-message-function*
+                   (funcall *error-message-function* message)
+                   (js:call window "alert" message))
+               nil)
         (let ((answer (js:call window "prompt"
                                (format nil "~A~%~%~{~D: ~A~%~}" message
                                        (loop for restart in restarts for i from 1
@@ -177,7 +218,8 @@ menu bar."))
   (js:call (backend-document backend) +add-event-listener+ "keydown"
            (lambda (event)
              (let ((command (and (stringp (js:get event "key"))
-                                 (command-for-key (event-key event)))))
+                                 (let ((*backend* backend))
+                                   (command-for-key (event-key event))))))
                (when command
                  (js:call event "preventDefault")
                  (invoke-command (command-name command))))

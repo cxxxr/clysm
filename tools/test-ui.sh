@@ -23,5 +23,5 @@ run() {
   check "$name" native
 }
 run ui ui/ui.lisp ui/command.lisp ui/sexp.lisp
-run pane ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp ui/sexp.lisp
+run pane ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp ui/graphics.lisp ui/sexp.lisp
 exit $status

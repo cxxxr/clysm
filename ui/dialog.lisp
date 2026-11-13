@@ -164,3 +164,53 @@ the string, returns true."
 
 (defmethod accept-presentation-type ((name (eql 'member)) type prompt continuation)
   (prompt-with-list (cdr type) prompt :continuation (when-answered continuation)))
+
+;;; ------------------------------------------------------------------
+;;; An error without restarts to choose is shown in a dialog of the page
+
+(setf *error-message-function*
+      (lambda (message)
+        ;; not more of them than can be read (an error in every rendering)
+        (when (< (length *dialogs*) 3)
+          (display-message "~A" message))))
+
+;;; ------------------------------------------------------------------
+;;; The command palette: every command by its name (as in the interactor
+;;; of CLIM, a command is typed, and asks for its arguments)
+
+(defvar *command-palette-prompt* "Type the name of a command")
+
+(defun palette-commands (filter)
+  (remove-if-not (lambda (command)
+                   (and (not (eq (command-name command) 'command-palette))
+                        (command-active-p command)
+                        (command-enabled-p (command-name command))
+                        (search filter (command-label command) :test #'char-equal)))
+                 *commands*))
+
+(define-command (command-palette :label "Command palette…" :key "CmdOrCtrl+Shift+P") ()
+  (let* ((input nil)
+         (list (make-instance 'list-panel
+                              :items (computed (palette-commands (text-input-pane-text input)))
+                              :print-function (lambda (command)
+                                                (html (:span :class "ui-palette-item"
+                                                        (:span (command-label command))
+                                                        (:span :class "ui-menu-key"
+                                                          (or (key-label (command-key command)) "")))))
+                              :min-height 160 :max-height 320))
+         (run (lambda (&optional (command (or (choice-selected-item list)
+                                              (first (collection-items list)))))
+                (when command
+                  (exit-dialog nil)
+                  (invoke-command (command-name command))))))
+    (setf input (make-instance 'text-input-pane :placeholder *command-palette-prompt*
+                                                :navigates list
+                                                :callback-type :none :callback run)
+          (pane-callback-type list) :data
+          (choice-action-callback list) run)
+    ;; what is typed selects the first command
+    (setf (text-input-pane-change-callback input)
+          (lambda () (setf (choice-selected-item list) (first (collection-items list)))))
+    (display-dialog (make-instance 'interface
+                                   :class "ui-command-palette"
+                                   :layout (make-instance 'column-layout :description (list input list))))))

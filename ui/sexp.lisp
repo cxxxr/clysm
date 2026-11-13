@@ -120,6 +120,12 @@
 (defmethod set-title ((backend sexp-backend) string)
   (note backend :title string))
 
+(defmethod reveal-selection ((backend sexp-backend) event)
+  (note backend :reveal-selection))
+
+(defmethod event-position ((backend sexp-backend) event)
+  (values (getf event :x) (getf event :y)))
+
 (defmethod previous-sibling-size ((backend sexp-backend) event)
   (values (getf event :width) (getf event :height)))
 

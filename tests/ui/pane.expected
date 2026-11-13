@@ -514,3 +514,117 @@ login: NIL NIL
  (:DIV (:CLASS "ui-menu-backdrop")))
 open menus: 0, dialogs: 1
 log: (:PAINT :RED)
+
+== sortable columns
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV
+   (:TABINDEX 0 :CLASS "ui-pane ui-multi-column-list-panel" :STYLE
+    "flex:1 1 0;")
+   (:TABLE (:ROLE "grid")
+    (:THEAD NIL
+     (:TR NIL (:TH (:CLASS "ui-adjust-left ui-sortable") "Name")
+      (:TH (:CLASS "ui-adjust-right ui-sortable") "Age")
+      (:TH (:CLASS "ui-adjust-left") "Initial")))
+    (:TBODY NIL
+     (:TR (:ARIA-SELECTED "false" :CLASS "ui-item")
+      (:TD (:CLASS "ui-adjust-left") "Grace")
+      (:TD (:CLASS "ui-adjust-right") "85")
+      (:TD (:CLASS "ui-adjust-left") "G"))
+     (:TR (:ARIA-SELECTED "false" :CLASS "ui-item")
+      (:TD (:CLASS "ui-adjust-left") "ada")
+      (:TD (:CLASS "ui-adjust-right") "36")
+      (:TD (:CLASS "ui-adjust-left") "a"))
+     (:TR (:ARIA-SELECTED "false" :CLASS "ui-item")
+      (:TD (:CLASS "ui-adjust-left") "Barbara")
+      (:TD (:CLASS "ui-adjust-right") "76")
+      (:TD (:CLASS "ui-adjust-left") "B")))))))
+by name: ("ada" "a" "Barbara" "B" "Grace" "G")
+-- sorted
+   (:SET :TH :ARIA-SORT "ascending")
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-sort-mark")
+   (:CREATE-TEXT "▲")
+   (:INSERT "▲" :IN :SPAN)
+   (:INSERT :SPAN :IN :TH)
+   (:TEXT "Grace" "ada")
+   (:TEXT "85" "36")
+   (:TEXT "G" "a")
+   (:TEXT "ada" "Barbara")
+   (:TEXT "36" "76")
+   (:TEXT "a" "B")
+   (:TEXT "Barbara" "Grace")
+   (:TEXT "76" "85")
+   (:TEXT "B" "G")
+by age: ("ada" "a" "Barbara" "B" "Grace" "G")
+descending: ("Grace" "G" "Barbara" "B" "ada" "a") "descending"
+first: ("Grace" 85)
+-- Home
+   (:UNSET :TH :ARIA-SORT)
+   (:REMOVE :SPAN)
+   (:SET :TH :ARIA-SORT "ascending")
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-sort-mark")
+   (:CREATE-TEXT "▲")
+   (:INSERT "▲" :IN :SPAN)
+   (:INSERT :SPAN :IN :TH)
+   (:SET :TH :ARIA-SORT "descending")
+   (:TEXT "▲" "▼")
+   (:TEXT "ada" "Grace")
+   (:TEXT "36" "85")
+   (:TEXT "a" "G")
+   (:TEXT "Grace" "ada")
+   (:TEXT "85" "36")
+   (:TEXT "G" "a")
+   (:REVEAL-SELECTION)
+   (:SET :TR :CLASS "ui-item selected")
+   (:SET :TR :ARIA-SELECTED "true")
+unsorted: ("Grace" "G" "ada" "a" "Barbara" "B") NIL
+
+== drawing
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:SVG
+   (:VIEWBOX "0 0 100 50" :CLASS "ui-pane ui-output-pane" :STYLE "flex:1 1 0;")
+   (:RECT
+    (:STROKE "currentColor" :FILL "none" :RX "4" :HEIGHT "50" :WIDTH "100" :Y
+     "0" :X "0"))
+   (:LINE
+    (:STROKE-WIDTH "2" :STROKE "red" :FILL "none" :Y2 "50" :X2 "100" :Y1 "0"
+     :X1 "0"))
+   (:POLYLINE
+    (:STROKE-DASHARRAY "4 2" :STROKE-WIDTH "2" :STROKE "red" :FILL "none"
+     :POINTS "0,50 50,25 100,50"))
+   (:POLYGON (:STROKE-WIDTH "2" :FILL "blue" :POINTS "10,10 20,10 15,20"))
+   (:CIRCLE
+    (:CLASS "ui-presentation" :OPACITY "0.5" :FILL "currentColor" :R "10" :CY
+     "25" :CX "50"))
+   (:ELLIPSE
+    (:STROKE "currentColor" :FILL "yellow" :RY "10" :RX "20" :CY "25" :CX
+     "50"))
+   (:PATH (:STROKE "currentColor" :FILL "none" :D "M60 25 A10 10 0 0 1 50 35"))
+   (:PATH (:CLASS "mark" :STROKE "currentColor" :FILL "none" :D "M0 0 L5 5 Z"))
+   (:G (:TRANSFORM "translate(10 20)")
+    (:G (:TRANSFORM "scale(2 2)")
+     (:TEXT
+      (:FILL "currentColor" :DOMINANT-BASELINE "central" :TEXT-ANCHOR "middle"
+       :FONT-SIZE "6" :Y "0" :X "0")
+      "label")))
+   (:G (:CLASS "group")
+    (:CIRCLE (:STROKE "currentColor" :FILL "none" :R "1" :CY "1" :CX "1"))
+    (:CIRCLE (:STROKE "currentColor" :FILL "none" :R "1" :CY "2" :CX "2"))))))
+-- only the circle changes
+   (:SET :CIRCLE :R "12.5")
+pressed at ((30 40))
+outside a pane: UI: a drawing function was called outside the DISPLAY-CALLBACK of an OUTPUT-PANE
+
+== command tables
+before: (("People") NIL NIL)
+displayed: (("People" "View") T (VIEWER))
+quit: (("People") NIL NIL)
+
+== command palette
+commands: ("Remove…" "Show" "Rename…" "Add…Ctrl+N" "Paint")
+matching "re": ("Remove…" "Rename…")
+selected: ("Rename…")
+dialogs: 0, accepting: T

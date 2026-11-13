@@ -25,18 +25,29 @@
    (separator :initarg :separator :reader command-separator)
    (enabled :initarg :enabled :reader command-enabled)
    ;; the required parameters: (name type prompt), TYPE NIL if it has none
-   (parameters :initarg :parameters :initform nil :reader command-parameters)))
+   (parameters :initarg :parameters :initform nil :reader command-parameters)
+   ;; NIL, or the name of the command table it belongs to
+   (table :initarg :table :initform nil :reader command-table)))
+
+(defstate *command-tables* nil
+  "The names of the command tables in use: those of the interfaces on the screen.")
+
+(defun command-active-p (command)
+  "True if COMMAND is offered to the user (in menus, by its key): it has no
+command table, or its table is in use."
+  (or (null (command-table command))
+      (and (member (command-table command) *command-tables*) t)))
 
 (defstate *commands* nil "The commands, in the order of their definition.")
 
 (defun find-command (name)
   (find name *commands* :key #'command-name))
 
-(defun register-command (name &key label menu key separator enabled parameters)
+(defun register-command (name &key label menu key separator enabled parameters table)
   (let ((command (make-instance 'command :name name
                                          :label (or label (string-capitalize (substitute #\Space #\- (symbol-name name))))
                                          :menu menu :key key :separator separator :enabled enabled
-                                         :parameters parameters))
+                                         :parameters parameters :table table))
         (old (find-command name)))
     (setf *commands* (if old
                          (substitute command old *commands*)
@@ -61,25 +72,28 @@ be (NAME TYPE &key PROMPT), and the forms for their (name type prompt)."
 
 (defmacro define-command (name-and-options lambda-list &body body)
   "Define the function NAME as a command.  NAME-AND-OPTIONS is NAME or
-  (NAME :label string :menu string :key string :separator boolean :enabled form)
+  (NAME :label string :menu string :key string :separator boolean :enabled form
+        :table symbol)
 LABEL is the text of its menu item or button, MENU the title of the menu it
 is in, KEY its key (like \"CmdOrCtrl+Shift+S\"), SEPARATOR true to draw a line
 above it in the menu.  The command can be invoked while ENABLED, a form
-evaluated when needed (reading state in it is observed), is true.
+evaluated when needed (reading state in it is observed), is true.  With
+TABLE, the name of a command table, the command is in menus and has its key
+only while an interface with that :COMMAND-TABLE is on the screen.
 
 A required parameter of LAMBDA-LIST may be (NAME TYPE &key PROMPT), where
 TYPE is evaluated: when the command is invoked without that argument, the
 user is asked for it (see ACCEPT in present.lisp) — by clicking an object
 presented with that type or, for strings, numbers and (MEMBER ...), in a
 dialog."
-  (destructuring-bind (name &key label menu key separator (enabled nil enabledp))
+  (destructuring-bind (name &key label menu key separator (enabled nil enabledp) table)
       (if (consp name-and-options) name-and-options (list name-and-options))
     (multiple-value-bind (lambda-list parameters) (parse-command-parameters lambda-list)
       `(progn
          (defun ,name ,lambda-list ,@body)
          (register-command ',name :label ,label :menu ,menu :key ,key :separator ,separator
                                   :enabled ,(and enabledp `(lambda () ,enabled))
-                                  :parameters (list ,@parameters))
+                                  :parameters (list ,@parameters) :table ,table)
          ',name))))
 
 (defun command-enabled-p (name)
@@ -127,7 +141,7 @@ ARGUMENTS, disabled while the command is."
   "The menus: a list of (title command...), in the order of definition."
   (let ((menus '()))
     (dolist (command *commands*)
-      (when (command-menu command)
+      (when (and (command-menu command) (command-active-p command))
         (let ((menu (assoc (command-menu command) menus :test #'string=)))
           (if menu
               (push command (cdr menu))
@@ -158,6 +172,7 @@ in upper case and the modifiers among :CTRL (also Cmd), :ALT and :SHIFT, sorted.
   "The enabled command whose key is KEY (as returned by PARSE-KEY), or NIL."
   (let ((command (find-if (lambda (command)
                             (and (command-key command)
+                                 (command-active-p command)
                                  (equal (parse-key (command-key command)) key)))
                           *commands*)))
     (and command (command-enabled-p (command-name command)) command)))

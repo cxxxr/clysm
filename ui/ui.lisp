@@ -35,7 +35,7 @@
    "DEFINE-COMMAND" "COMMAND" "INVOKE-COMMAND" "FIND-COMMAND" "COMMAND-ENABLED-P"
    "COMMAND-NAME" "COMMAND-LABEL" "COMMAND-MENU" "COMMAND-KEY" "COMMAND-SEPARATOR"
    "COMMAND-BUTTON" "COMMAND-MENUS" "COMMAND-FOR-KEY" "PARSE-KEY" "*COMMANDS*"
-   "COMMAND-PARAMETERS"
+   "COMMAND-PARAMETERS" "COMMAND-TABLE" "*COMMAND-TABLES*" "COMMAND-ACTIVE-P"
    ;; presentations (present.lisp)
    "PRESENT" "PRESENT-OBJECT" "WITH-OUTPUT-AS-PRESENTATION" "PRESENTING"
    "DEFINE-PRESENTATION-TYPE" "PRESENTATION-TYPE-OF" "PRESENTATION-SUBTYPEP"
@@ -57,10 +57,17 @@
    "LAYOUT" "LAYOUT-DESCRIPTION" "LAYOUT-RATIOS" "COLUMN-LAYOUT" "ROW-LAYOUT" "GRID-LAYOUT"
    "TAB-LAYOUT" "SWITCHABLE-LAYOUT" "SWITCHABLE-LAYOUT-VISIBLE-CHILD"
    "INTERFACE" "DEFINE-INTERFACE" "INTERFACE-TITLE" "INTERFACE-LAYOUT" "INTERFACE-MENU-BAR"
-   "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE"
+   "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE" "INTERFACE-COMMAND-TABLE"
+   "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING"
+   ;; drawing (graphics.lisp)
+   "OUTPUT-PANE" "OUTPUT-PANE-DISPLAY-CALLBACK" "DRAW-LINE" "DRAW-LINES" "DRAW-RECTANGLE"
+   "DRAW-CIRCLE" "DRAW-ELLIPSE" "DRAW-POLYGON" "DRAW-STRING" "DRAW-PATH" "DRAW-ARC"
+   "WITH-GRAPHICS-STATE" "WITH-GRAPHICS-TRANSLATION" "WITH-GRAPHICS-ROTATION"
+   "WITH-GRAPHICS-SCALE" "WITH-DRAWING-GROUP"
    ;; dialogs (dialog.lisp)
    "DISPLAY-DIALOG" "EXIT-DIALOG" "ABORT-DIALOG" "DISPLAY-MESSAGE" "PROMPT-FOR-STRING"
    "PROMPT-FOR-CONFIRMATION" "PROMPT-WITH-LIST" "PROMPT-FOR-NUMBER"
+   "COMMAND-PALETTE" "*COMMAND-PALETTE-PROMPT*"
    "*OK-LABEL*" "*YES-LABEL*" "*NO-LABEL*"
    ;; development
    "REFRESH"
@@ -70,6 +77,7 @@
    "NODE-FOLLOWS-P" "REQUEST-FLUSH" "RESOLVE-CONTAINER"
    "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
    "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
+   "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
@@ -131,6 +139,16 @@ happens on NODE.  Called once for every event of a node."))
   (:documentation "Call FUNCTION with the event when EVENT happens anywhere."))
 (defgeneric set-title (backend string)
   (:documentation "Set the title of the window."))
+(defgeneric reveal-selection (backend event)
+  (:documentation "Once the display is up to date, scroll the selected item of the
+node EVENT happened on into view.")
+  (:method (backend event) nil))
+(defgeneric event-position (backend event)
+  (:documentation "The position X, Y of the pointer EVENT in the coordinates of the
+drawing (an OUTPUT-PANE) it happened on."))
+(defgeneric native-menus-p (backend)
+  (:documentation "True if the menus of the commands are shown outside the page.")
+  (:method (backend) nil))
 (defgeneric previous-sibling-size (backend event)
   (:documentation "The width and height of the node in front of the one the pointer
 EVENT happened on, which gets the following events of that pointer."))
@@ -147,6 +165,10 @@ EVENT happened on, which gets the following events of that pointer."))
 (defgeneric choose-restart (backend condition restarts)
   (:documentation "Tell the user about CONDITION and ask which of RESTARTS (never
 empty, the last is ABORT) to invoke; return it, or NIL for ABORT."))
+
+(defvar *error-message-function* nil
+  "NIL, or a function of a string that shows the message of an error that
+has no restart to choose (dialog.lisp sets it).")
 
 (defvar *abort-label* "Cancel" "How the ABORT restart of WITH-ERROR-DIALOG is described to the user.")
 

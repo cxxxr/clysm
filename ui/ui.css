@@ -150,7 +150,21 @@
 .ui-adjust-right { text-align: right; font-variant-numeric: tabular-nums; }
 .ui-adjust-center { text-align: center; }
 
+.ui-multi-column-list-panel th.ui-sortable { cursor: pointer; user-select: none; }
+.ui-multi-column-list-panel th.ui-sortable:hover { color: var(--ui-fg); }
+.ui-sort-mark { font-size: 9px; margin-left: 5px; color: var(--ui-accent); }
+
 .ui-application-pane { overflow: auto; }
+.ui-output-pane { display: block; width: 100%; height: 100%; touch-action: none; user-select: none;
+                  font: var(--ui-font); }
+/* shapes that are presentations */
+.ui-output-pane .ui-presentation.ui-acceptable {
+  outline: none; background: none; cursor: pointer; filter: drop-shadow(0 0 2.5px var(--ui-accent));
+}
+.ui-output-pane .ui-presentation.ui-acceptable:hover { filter: drop-shadow(0 0 5px var(--ui-accent)); }
+.ui-palette-item { display: flex; justify-content: space-between; gap: 24px; }
+.ui-dialog .ui-command-palette .ui-list-panel { border: 0; background: none; padding: 0; }
+.ui-dialog:has(.ui-command-palette) { margin-top: 12vh; width: min(520px, calc(100vw - 32px)); }
 
 /* ---- commands: tool bars and menus ---- */
 

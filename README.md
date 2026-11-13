@@ -222,6 +222,7 @@ offers the commands for it.
 ```
 $ examples/contacts/build.sh                # build/contacts/
 $ python3 -m http.server -d build/contacts
+$ examples/contacts/build-desktop.sh        # build/contacts-desktop/, the desktop application
 ```
 
 With `--dev`, these scripts build the [development version](#development-with-a-repl),
@@ -338,7 +339,8 @@ layouts, without markup.
   `list-panel`, `multi-column-list-panel`, `option-pane`, `radio-button-panel`,
   `check-button-panel` and `tree-view` (`:items`, `:print-function`,
   `:interaction`, `:selection-callback`, `:action-callback`;
-  `ui:choice-selected-item`), `slider`, `progress-bar`, `toolbar` (buttons
+  `ui:choice-selected-item`; the arrow keys select, and a click on the title
+  of a table column with `:sort` sorts by it), `slider`, `progress-bar`, `toolbar` (buttons
   for commands) and `application-pane`, whose `:display-function` returns
   markup. Callbacks get what `:callback-type` says, by default the data and
   the interface.
@@ -349,7 +351,8 @@ layouts, without markup.
 * **`define-interface`** is `defmodel` plus `:panes` and `:layouts`; the
   initarg forms see `ui:interface` and the panes made before them.
   `ui:display` shows an interface in an element of the page (`ui:contain` a
-  single pane), with `:menu-bar t` under the menus of the commands.
+  single pane), with `:menu-bar t` under the menus of the commands (in the
+  desktop application they are in its menu bar instead).
 * **A new kind of pane** is a class and a method of `ui:render-pane` that
   returns markup; `(ui:pane-node pane)` puts a pane into markup.
 * **The look** is `ui/ui.css`, linked from the page: light and dark, and
@@ -357,8 +360,35 @@ layouts, without markup.
 
 ```
 $ bin/clysm compile ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp \
-    ui/dom.lisp app.lisp -o app.wasm
+    ui/graphics.lisp ui/dom.lisp app.lisp -o app.wasm
 ```
+
+### Drawing
+
+An `ui:output-pane` (`ui/graphics.lisp`) shows what its `:display-callback`
+draws with `ui:draw-line`, `draw-lines`, `draw-rectangle`, `draw-circle`,
+`draw-ellipse`, `draw-arc`, `draw-polygon`, `draw-path` and `draw-string`:
+
+```lisp
+(make-instance 'ui:output-pane
+  :view-width 200 :view-height 100                 ; its coordinates, scaled to the pane
+  :press-callback (lambda (pane x y) ...)          ; also :motion-callback, :release-callback
+  :display-callback
+  (lambda (pane)
+    (ui:with-graphics-state (pane :foreground "steelblue" :thickness 2)
+      (ui:draw-lines pane (route-points *route*)))
+    (dolist (city *cities*)
+      (ui:with-output-as-presentation (city 'city) ; a shape that is a city
+        (ui:draw-circle pane (city-x city) (city-y city) 4 :filled t)))))
+```
+
+The graphics state is keyword arguments (`:foreground`, `:filled`, `:fill`,
+`:thickness`, `:dashes`, `:opacity`, `:class`) with the defaults of
+`ui:with-graphics-state`; `with-graphics-translation`, `-rotation` and
+`-scale` transform, and `with-drawing-group` makes one shape of several. A
+drawing is a tree of shapes (SVG), not pixels: the callback runs again when
+state it read has changed and only the shapes that differ change, and a
+shape can be a presentation like anything else on the screen.
 
 ### Presentations and commands with typed arguments
 
@@ -393,6 +423,10 @@ presentation type, and a command says what its arguments are.
   `ui:define-presentation-type` gives one supertypes and a description, and
   methods of `ui:present-object` say how objects are shown.
 
+`ui:command-palette` (Ctrl+Shift+P) is a dialog in which a command is chosen
+by typing part of its name — every command of the application, which then
+asks for its arguments.
+
 ### Dialogs
 
 `ui/dialog.lisp`: `ui:display-message`, `ui:prompt-for-string`,
@@ -421,6 +455,10 @@ menu, a key and a condition under which it is enabled:
   (setf *todos* (remove-if #'todo-done *todos*)))
 ```
 
+With `:table 'name`, a command belongs to a command table: it is in the
+menus and has its key only while an interface made with
+`:command-table 'name` is on the screen.
+
 The same command is used everywhere: `(ui:command clear-completed)` is a
 listener for a button (and `(ui:command-button 'clear-completed)` a button
 that is disabled while the command is), `(ui:install-commands ui:*backend*)`
@@ -444,7 +482,8 @@ failing operation, and `abort` — and the one they choose is invoked.
 ```
 
 The desktop application asks with a native message box whose buttons are the
-restarts, a browser with `prompt`, and the S-expression backend calls
+restarts, a browser with `prompt` (with `ui/dialog.lisp`, an error that has
+no restart to choose is shown in a dialog of the page), and the S-expression backend calls
 `(ui:backend-chooser backend)`. A component that fails to render keeps what
 it showed.
 

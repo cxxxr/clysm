@@ -7,7 +7,8 @@
 ;;;; on the screen are presentations: a command that needs a contact asks the
 ;;;; user to click one, and a right click on a contact offers the commands
 ;;;; for it.
-;;;; Build with examples/contacts/build.sh and serve build/contacts/.
+;;;; Build with examples/contacts/build.sh and serve build/contacts/, or with
+;;;; examples/contacts/build-desktop.sh for the desktop application.
 
 (defpackage "CONTACTS"
   (:use "CL" "UI"))
@@ -66,7 +67,34 @@
                    +groups+))
       (:p :class "hint"
         "名前を右クリックするとその連絡先のコマンドが出ます。"
-        "メニューの「削除…」は、削除する連絡先を画面のどこからでもクリックで選べます。"))))
+        "メニューの「削除…」は、削除する連絡先を画面のどこからでもクリックで選べます。"
+        "Ctrl+Shift+P でコマンドを名前から実行できます。"))))
+
+(defun draw-chart (pane)
+  "What the tab グラフ shows: a bar for every group, and its contacts as
+circles that are presentations (click, right click) like their names."
+  (let ((largest (max 1 (reduce #'max (mapcar (lambda (group) (length (contacts-in group))) +groups+)))))
+    (draw-line pane 20 170 340 170 :opacity 0.4)
+    (loop for group in +groups+
+          for x from 50 by 100
+          for contacts = (contacts-in group)
+          for height = (* 130 (/ (length contacts) largest))
+          do (draw-rectangle pane x (- 170 height) 60 height :radius 3 :filled t
+                                                             :foreground "var(--ui-accent)" :opacity 0.25)
+             (draw-string pane group (+ x 30) 188 :anchor :middle :font-size 11)
+             (draw-string pane (length contacts) (+ x 30) (- 162 height) :anchor :middle :font-size 11
+                                                                         :opacity 0.6)
+             (loop for contact in contacts
+                   for y downfrom 156 by 22
+                   do (with-output-as-presentation (contact 'contact)
+                        (with-drawing-group (pane :class "dot")
+                          (draw-circle pane (+ x 30) y 8 :filled t
+                                                         :foreground (if (contact-favorite contact)
+                                                                         "var(--ui-accent)"
+                                                                         "var(--ui-muted)"))
+                          (draw-string pane (char (contact-name contact) 0) (+ x 30) y
+                                       :anchor :middle :baseline :middle :font-size 9
+                                       :foreground "var(--ui-accent-fg)")))))))
 
 (define-interface address-book ()
   ((selected :initform nil :accessor selected-contact)
@@ -104,20 +132,22 @@
    (nobody title-pane :text "連絡先を選んでください" :class "nobody")
    (table multi-column-list-panel
           :items (computed *contacts*)
-          :columns '((:title "名前" :width 160) (:title "メール") (:title "グループ" :width 90)
-                     (:title "★" :width 40 :adjust :center))
+          :columns '((:title "名前" :width 160 :sort t) (:title "メール" :sort t)
+                     (:title "グループ" :width 90 :sort t) (:title "★" :width 40 :adjust :center :sort t))
           :column-function (lambda (contact)
                              (list (contact-name contact) (contact-email contact)
                                    (contact-group contact) (if (contact-favorite contact) "★" "")))
           :selected-item (binding (selected-contact interface))
           :presentation-type 'contact)
-   (overview application-pane :display-function #'summary))
+   (overview application-pane :display-function #'summary)
+   (chart output-pane :view-width 360 :view-height 200 :display-callback #'draw-chart
+                      :max-width 720))
   (:layouts
    (main column-layout '(tools body))
    (body row-layout '(sidebar :divider content) :gap 12)
    (sidebar column-layout '(search lists) :width 250 :stretch nil)
    (lists tab-layout '(("一覧" people) ("グループ" groups)))
-   (content tab-layout '(("詳細" detail) ("表" table) ("概要" overview)))
+   (content tab-layout '(("詳細" detail) ("表" table) ("概要" overview) ("グラフ" chart)))
    (detail switchable-layout '(nobody form)
            :visible-child (computed (if (selected-contact interface) 'form 'nobody)))
    (form grid-layout '("名前" name-field "メール" email-field "グループ" group-field
@@ -174,4 +204,6 @@
 (setf *abort-label* "キャンセル" *yes-label* "はい" *no-label* "いいえ"
       *accept-prompt* "~Aをクリックしてください")
 (setf *app* (display (make-instance 'address-book)))
-(install-commands *backend*)
+;; the keys of the commands; in the desktop application (ui/electron) also
+;; its menu bar, and the interface then has none in the page
+(install-commands *backend* :edit-label "編集" :view-label "表示" :quit-label "終了")

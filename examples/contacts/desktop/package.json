@@ -1,0 +1,21 @@
+{
+  "name": "clysm-contacts",
+  "productName": "Clysm アドレス帳",
+  "version": "0.1.0",
+  "description": "An address book written in Common Lisp, compiled to WebAssembly by Clysm",
+  "main": "main.js",
+  "private": true,
+  "window": {
+    "width": 1000,
+    "height": 680,
+    "minWidth": 640,
+    "minHeight": 400,
+    "backgroundColor": { "light": "#f4f4f2", "dark": "#1b1c1e" }
+  },
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  }
+}

@@ -364,3 +364,106 @@ lines" :rows 3))
   (abort-dialog)
   (fire (find-node root "button" :index 3) "click")
   (format t "log: ~S~%" (first *log*)))
+
+;;; ---- sorting the columns of a table
+
+(let* ((table (make-instance 'multi-column-list-panel
+                             :items '(("Grace" 85) ("ada" 36) ("Barbara" 76))
+                             :columns '((:title "Name" :sort t) (:title "Age" :sort t :adjust :right)
+                                        (:title "Initial"))
+                             :column-function (lambda (item) (append item (list (char (first item) 0))))))
+       (root (choice-test "sortable columns" table)))
+  (flet ((names () (mapcar #'node-text (find-nodes root "td" :class "ui-adjust-left"))))
+    (fire (find-node root "th" :index 0) "click")
+    (format t "by name: ~S~%" (names))
+    (show-log "sorted")
+    (fire (find-node root "th" :index 1) "click")
+    (format t "by age: ~S~%" (names))
+    (fire (find-node root "th" :index 1) "click")
+    (format t "descending: ~S ~S~%" (names) (getf (second (to-sexp (find-node root "th" :index 1))) :aria-sort))
+    ;; the keys follow what is shown
+    (fire (find-node root "div" :class "ui-pane ui-multi-column-list-panel") "keydown" '(:key "Home"))
+    (format t "first: ~S~%" (choice-selected-item table))
+    (show-log "Home")
+    (fire (find-node root "th" :index 1) "click")
+    (format t "unsorted: ~S ~S~%" (names) (list-panel-sort-column table))))
+
+;;; ---- drawing
+
+(defstate *radius* 10)
+
+(let* ((clicks '())
+       (pane (make-instance 'output-pane
+                            :view-width 100 :view-height 50
+                            :press-callback (lambda (pane x y)
+                                              (declare (ignore pane))
+                                              (push (list x y) clicks))
+                            :display-callback
+                            (lambda (pane)
+                              (draw-rectangle pane 0 0 100 50 :radius 4)
+                              (with-graphics-state (pane :foreground "red" :thickness 2)
+                                (draw-line pane 0 0 100 50)
+                                (draw-lines pane '(0 50 50 25 100 50) :dashes '(4 2))
+                                (draw-polygon pane '((10 10) (20 10) (15 20)) :filled t :foreground "blue"))
+                              (with-output-as-presentation (*people* 'cons)
+                                (draw-circle pane 50 25 *radius* :filled t :opacity 1/2))
+                              (draw-ellipse pane 50 25 20 10 :fill "yellow")
+                              (draw-arc pane 50 25 10 0 (/ pi 2))
+                              (draw-path pane "M0 0 L5 5 Z" :class "mark")
+                              (with-graphics-translation (pane 10 20)
+                                (with-graphics-scale (pane 2)
+                                  (draw-string pane "label" 0 0 :anchor :middle :baseline :middle
+                                                                :font-size 6)))
+                              (with-drawing-group (pane :class "group")
+                                (draw-circle pane 1 1 1)
+                                (draw-circle pane 2 2 1)))))
+       (root (make-root)))
+  (contain pane :container root)
+  (show "drawing" root)
+  (backend-log *backend*)
+  (setf *radius* 12.5)
+  (flush)
+  (show-log "only the circle changes")
+  (fire (find-node root "svg") "pointerdown" '(:x 30 :y 40))
+  (format t "pressed at ~S~%" clicks)
+  (format t "outside a pane: ~A~%" (handler-case (draw-line nil 0 0 1 1) (error (e) e))))
+
+;;; ---- command tables
+
+(define-command (zoom-in :menu "View" :key "CmdOrCtrl+=" :table 'viewer) ()
+  (push :zoom *log*))
+
+(define-interface viewer ()
+  ()
+  (:panes (text title-pane :text "a viewer"))
+  (:default-initargs :command-table 'viewer))
+
+(flet ((state ()
+         (list (mapcar #'car (command-menus))
+               (and (command-for-key (parse-key "Ctrl+=")) t)
+               *command-tables*)))
+  (let ((root (make-root))
+        (viewer (make-instance 'viewer)))
+    (format t "~&~%== command tables~%before: ~S~%" (state))
+    (display viewer :container root)
+    (format t "displayed: ~S~%" (state))
+    (quit-interface viewer)
+    (format t "quit: ~S~%" (state))))
+
+;;; ---- the command palette
+
+(progn
+  (setf *people* (list (make-instance 'person :name "Eve")))
+  (invoke-command 'command-palette)
+  (flush)
+  (flet ((labels-shown () (mapcar #'node-text (find-nodes (overlay) "li"))))
+    (format t "~&~%== command palette~%commands: ~S~%" (labels-shown))
+    (fire (find-node (overlay) "input") "input" '(:value "re"))
+    (format t "matching \"re\": ~S~%" (labels-shown))
+    (fire (find-node (overlay) "input") "keydown" '(:key "ArrowDown"))
+    (format t "selected: ~S~%" (mapcar #'node-text (find-nodes (overlay) "li" :class "ui-item selected")))
+    (fire (find-node (overlay) "input") "keydown" '(:key "Enter"))
+    (format t "dialogs: ~D, accepting: ~S~%" (length (find-nodes (overlay) "dialog")) (accepting-p))
+    (cancel-accept)
+    (abort-dialog)
+    (flush)))

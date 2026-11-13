@@ -263,6 +263,7 @@ commands whose first parameter is of that type."
     (dolist (command *commands*)
       (let ((parameter (first (command-parameters command))))
         (when (and parameter (second parameter)
+                   (command-active-p command)
                    (presentation-matches-p object type (second parameter))
                    (command-enabled-p (command-name command))
                    (not (find (command-name command) translators :key #'translator-command)))

@@ -12,6 +12,8 @@
 (defclass desktop-backend (dom-backend)
   ((api :initform (js:global "desktop") :reader desktop-api)))
 
+(defmethod native-menus-p ((backend desktop-backend)) t)
+
 (defun desktop-p ()
   "True if the program runs in the desktop application."
   (typep *backend* 'desktop-backend))

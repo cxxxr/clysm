@@ -176,7 +176,9 @@ says: by default the data and the interface."))
    ;; called with the text when the user presses Enter
    (callback :initarg :callback :initform nil :accessor text-input-pane-callback)
    ;; called with the text whenever the user changes it
-   (change-callback :initarg :change-callback :initform nil :accessor text-input-pane-change-callback))
+   (change-callback :initarg :change-callback :initform nil :accessor text-input-pane-change-callback)
+   ;; a choice (a list) whose selection the arrow keys move while the user types here
+   (navigates :initarg :navigates :initform nil :accessor text-input-pane-navigates))
   (:documentation "A line of text that the user edits."))
 
 (defun text-changed (pane event)
@@ -193,11 +195,14 @@ says: by default the data and the interface."))
                 :readonly (and (text-input-pane-read-only pane) t)
                 :on-input (lambda (&optional event) (text-changed pane event))
                 :on-keydown (lambda (&optional event)
-                              (when (and (equal (event-get *backend* event "key") "Enter")
-                                         ;; not the Enter that confirms IME input
-                                         (not (event-get *backend* event "isComposing")))
-                                (call-callback pane (text-input-pane-callback pane)
-                                               :data (text-input-pane-text pane)))))))
+                              (let ((key (event-get *backend* event "key"))
+                                    (list (text-input-pane-navigates pane)))
+                                (cond ((event-get *backend* event "isComposing"))   ; IME input
+                                      ((equal key "Enter")
+                                       (call-callback pane (text-input-pane-callback pane)
+                                                      :data (text-input-pane-text pane)))
+                                      ((and list (member key '("ArrowDown" "ArrowUp") :test #'equal))
+                                       (move-selection list key event))))))))
 
 (defmodel multi-line-text-input-pane (text-input-pane)
   ((rows :initarg :rows :initform 4 :accessor text-input-pane-rows))
@@ -361,7 +366,8 @@ True if KEY was one of them."
     (cond (target
            (when event (stop-event *backend* event))
            (unless (eql target index)
-             (select-item choice (nth target items)))
+             (select-item choice (nth target items))
+             (reveal-selection *backend* event))
            t)
           ((and (equal key "Enter") current)
            (activate-item choice current)
@@ -405,30 +411,75 @@ True if KEY was one of them."
   (;; a list of (:title string :width size :adjust :left/:right/:center)
    (columns :initarg :columns :initform nil :accessor list-panel-columns)
    ;; a function of an item that returns the list of what its columns show
-   (column-function :initarg :column-function :initform nil :accessor list-panel-column-function))
-  (:documentation "A list of items with several columns."))
+   (column-function :initarg :column-function :initform nil :accessor list-panel-column-function)
+   ;; the index of the column the items are sorted by (NIL: as they are)
+   (sort-column :initarg :sort-column :initform nil :accessor list-panel-sort-column)
+   (sort-descending :initarg :sort-descending :initform nil :accessor list-panel-sort-descending))
+  (:documentation "A list of items with several columns.  A click on the title of a
+column with :SORT sorts the items by it (again: the other way round, then
+not at all): :SORT T compares what the column shows, a function what it
+returns for an item — numbers by size, everything else as text."))
+
+(defun item-cells (pane item)
+  (let ((function (list-panel-column-function pane)))
+    (if function (funcall function item) (list (print-item pane item)))))
+
+(defun sort-value-less-p (a b)
+  (if (and (realp a) (realp b))
+      (< a b)
+      (and (string-lessp (text-of a) (text-of b)) t)))
+
+(defmethod choice-visible-items ((pane multi-column-list-panel))
+  (let* ((items (collection-items pane))
+         (index (list-panel-sort-column pane))
+         (sort (and index (getf (nth index (list-panel-columns pane)) :sort))))
+    (if (null sort)
+        items
+        (let ((sorted (stable-sort (copy-list items) #'sort-value-less-p
+                                   :key (if (functionp sort)
+                                            sort
+                                            (lambda (item) (nth index (item-cells pane item)))))))
+          (if (list-panel-sort-descending pane) (reverse sorted) sorted)))))
+
+(defun sort-by-column (pane index)
+  "The user clicked the title of the column INDEX."
+  (cond ((not (eql index (list-panel-sort-column pane)))
+         (setf (list-panel-sort-column pane) index
+               (list-panel-sort-descending pane) nil))
+        ((list-panel-sort-descending pane)
+         (setf (list-panel-sort-column pane) nil
+               (list-panel-sort-descending pane) nil))
+        (t (setf (list-panel-sort-descending pane) t))))
 
 (defmethod render-pane ((pane multi-column-list-panel))
   (let ((columns (list-panel-columns pane))
-        (column-function (list-panel-column-function pane)))
+        (sort-column (list-panel-sort-column pane))
+        (descending (list-panel-sort-descending pane)))
     (html
       (:div :class "ui-multi-column-list-panel" :tabindex (if (pane-enabled pane) 0 -1)
             :on-keydown (lambda (&optional event)
                           (move-selection pane (event-get *backend* event "key") event))
         (:table :role "grid"
           (:thead
-            (:tr (mapcar (lambda (column)
-                           (:th :style (let ((width (getf column :width)))
-                                         (and width (format nil "width:~A" (css-length width))))
-                                :class (format nil "ui-adjust-~(~A~)" (getf column :adjust :left))
-                             (getf column :title "")))
-                         columns)))
+            (:tr (loop for column in columns
+                       for index from 0
+                       collect (let ((index index)
+                                     (sorted (eql index sort-column)))
+                                 (:th :style (let ((width (getf column :width)))
+                                               (and width (format nil "width:~A" (css-length width))))
+                                      :class (format nil "ui-adjust-~(~A~)~:[~; ui-sortable~]"
+                                                     (getf column :adjust :left) (getf column :sort))
+                                      :aria-sort (and sorted (if descending "descending" "ascending"))
+                                      :on-click (and (getf column :sort)
+                                                     (lambda (&optional event)
+                                                       (declare (ignore event))
+                                                       (sort-by-column pane index)))
+                                   (getf column :title "")
+                                   (and sorted (:span :class "ui-sort-mark" (if descending "▼" "▲"))))))))
           (:tbody
             (mapcar (lambda (item)
                       (let ((selected (item-selected-p pane item))
-                            (cells (if column-function
-                                       (funcall column-function item)
-                                       (list (print-item pane item)))))
+                            (cells (item-cells pane item)))
                         (item-element
                          pane item
                          (:tr :class (if selected "ui-item selected" "ui-item")
@@ -442,7 +493,7 @@ True if KEY was one of them."
                                  for column = (nth index columns)
                                  collect (:td :class (format nil "ui-adjust-~(~A~)" (getf column :adjust :left))
                                            (if (node-p cell) cell (text-of cell))))))))
-                    (collection-items pane))))))))
+                    (choice-visible-items pane))))))))
 
 ;;; a menu of items
 
@@ -878,8 +929,12 @@ pane of the selected one."))
 (defmodel interface (pane)
   (;; the pane it shows, or the name of one of its panes
    (layout :initarg :layout :initform nil :accessor interface-layout)
-   ;; true to show the menus of the commands above the layout
+   ;; true to show the menus of the commands above the layout (in the
+   ;; desktop application they are in its menu bar instead)
    (menu-bar :initarg :menu-bar :initform nil :accessor interface-menu-bar)
+   ;; the name of a command table: its commands are offered (menus, keys)
+   ;; while the interface is on the screen
+   (command-table :initarg :command-table :initform nil :accessor interface-command-table)
    (root :initform nil :accessor interface-root)
    (title-reaction :initform nil :accessor interface-title-reaction))
   (:default-initargs :stretch t)
@@ -910,7 +965,8 @@ pane of the selected one."))
   (let ((layout (interface-layout interface)))
     (html
       (:div :class "ui-interface"
-        (when (interface-menu-bar interface) (menu-bar-view))
+        (when (and (interface-menu-bar interface) (not (native-menus-p *backend*)))
+          (menu-bar-view))
         (and layout (child-node interface layout "flex:1 1 0"))))))
 
 (defmacro define-interface (name superclasses slots &rest options)
@@ -932,7 +988,7 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
     (dolist (pane (append panes layouts))
       (when (member (car pane) '(name interface title title-position enabled visible help class
                                  width height min-width min-height max-width max-height stretch
-                                 layout menu-bar root title-reaction))
+                                 layout menu-bar command-table root title-reaction))
         (error "DEFINE-INTERFACE ~S: a pane cannot be named ~S, which is a slot of every interface"
                name (car pane))))
     (flet ((slot-options (initargs)
@@ -971,10 +1027,20 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
                                                        :description ',(mapcar #'car panes))))))
          ',name))))
 
+(defvar *command-table-users* nil "The interfaces on the screen that have a command table.")
+
+(defun use-command-table (interface use)
+  (when (interface-command-table interface)
+    (setf *command-table-users* (remove interface *command-table-users*))
+    (when use (push interface *command-table-users*))
+    (setf *command-tables*
+          (remove-duplicates (mapcar #'interface-command-table *command-table-users*)))))
+
 (defun display (interface &key (container "#app"))
   "Show INTERFACE in CONTAINER (for the DOM, a CSS selector or a node); the
 title of the window is its title.  Return the interface."
   (let ((backend *backend*))
+    (use-command-table interface t)
     (setf (interface-root interface) (mount (pane-node interface) container)
           (interface-title-reaction interface)
           (autorun (lambda ()
@@ -995,6 +1061,7 @@ return the interface."
   (let ((interface (pane-interface interface)))
     (cond ((interface-root interface)
            (unmount (interface-root interface))
+           (use-command-table interface nil)
            (stop (interface-title-reaction interface))
            (setf (interface-root interface) nil))
           ;; dialog.lisp
