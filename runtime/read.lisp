@@ -162,8 +162,43 @@ macro character returned no values), :dot or :eof."
                  (let ((vals (multiple-value-list (funcall (gethash c (%rt-macros rt)) s c))))
                    (return (if vals (values (car vals) :object) (values nil :none)))))
                 (t
+                 (multiple-value-bind (found sym) (%read-plain-symbol s c rt)
+                   (when found (return (values sym :object))))
                  (let ((x (%read-token-object s c allow-dot)))
                    (return (values x (if (eq x %dot-marker) :dot :object)))))))))))
+
+(defun %read-plain-symbol (s c rt)
+  "When the token starting with C (just read from S) is an ordinary symbol
+name in a string stream — a letter followed by constituent letters, digits
+and the characters of ASCII that are plain constituents, no package marker —
+read it and return T and the symbol, else return NIL with nothing consumed."
+  (when (and (eq (stream-kind s) :string-in) (null (stream-unread s)) (not *read-suppress*)
+             (eq (%rt-case rt) :upcase) (%simple-string-p (stream-buffer s))
+             ;; in bases above ten letters are digits
+             (<= *read-base* 10))
+    (let ((code0 (char-code c)))
+      (when (and (or (<= 65 code0 90) (<= 97 code0 122))
+                 (eq (svref (%rt-ascii rt) code0) :constituent))
+        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
+               (ascii (%rt-ascii rt)))
+          (declare (fixnum i0 i end))
+          (do () ((>= i end))
+            (let ((code (char-code (%schar buf i))))
+              (if (and (<= 33 code 126) (/= code 58) (eq (svref ascii code) :constituent))
+                  (setq i (+ i 1))
+                  (return))))
+          ;; the token must end at a character that ends tokens (not an escape)
+          (when (or (>= i end)
+                    (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
+            (let* ((n (+ 1 (- i i0))) (name (%make-string n #\0)))
+              (declare (fixnum n))
+              (%set-schar name 0 (char-upcase c))
+              (do ((k i0 (+ k 1)) (j 1 (+ j 1))) ((>= k i))
+                (declare (fixnum k j))
+                (let ((code (char-code (%schar buf k))))
+                  (%set-schar name j (if (<= 97 code 122) (code-char (- code 32)) (%schar buf k)))))
+              (setf (stream-index s) i)
+              (values t (values (intern name *package*))))))))))
 
 (defun %read-top (s eof-error-p eof-value)
   (loop

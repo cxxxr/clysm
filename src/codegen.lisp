@@ -1153,7 +1153,7 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
          ;; known to be a fixnum / double (in a specialized clone): unboxed copy
          (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
            (set-loc lv (cons :local idx))
-           (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv)) (:local.set ,idx)) nil)))
+           (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv)) (:local.set ,idx)) nil)))
         (t (set-loc lv (cons :local local-idx)) (values nil nil))))
 
 (defun finish-body (lam prologue any-special)
