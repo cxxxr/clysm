@@ -11,6 +11,7 @@
                                     (format s "#<LVAR ~S>" (lvar-name v)))))
   name owner captured mutated special (refs 0) ignorable
   (type nil)    ; union of the types of its values (types.lisp)
+  (decl nil)    ; a declared type specifier (trusted)
   (rep nil))    ; :f64 / :i32 when held unboxed in a local of that type
 
 (defstruct (lam (:print-function (lambda (l s d) (declare (ignore d))
@@ -157,6 +158,25 @@ runtime definition is kept."
              (setf doc (pop body)))
             (t (return))))
     (values decls body doc)))
+
+(defparameter *decl-type-names*
+  '(fixnum integer float double-float single-float short-float long-float character base-char
+    string simple-string simple-vector cons list symbol number real rational bit function
+    unsigned-byte signed-byte null))
+
+(defun apply-type-decls (decls lvars)
+  "Record the types declared in DECLS for the variables LVARS."
+  (dolist (d decls)
+    (when (consp d)
+      (multiple-value-bind (spec vars)
+          (cond ((eq (car d) 'type) (values (second d) (cddr d)))
+                ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
+                ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte)))
+                 (values (car d) (cdr d))))
+        (when spec
+          (dolist (v vars)
+            (let ((lv (find v lvars :key #'lvar-name :from-end t)))
+              (when (and lv (symbolp v)) (setf (lvar-decl lv) spec)))))))))
 
 (defun declared-specials (decls)
   (loop for d in decls
@@ -334,6 +354,9 @@ runtime definition is kept."
                                      (lv (bind-var var))
                                      (sv (and svar (bind-var svar))))
                                 (list kw lv init-node sv)))))
+        (apply-type-decls decls (append (lam-req lam) (mapcar #'first (lam-opt lam))
+                                        (when (lam-rest lam) (list (lam-rest lam)))
+                                        (mapcar #'second (lam-keys lam))))
         (let ((body-forms (if block-name `((block ,block-name ,@forms)) forms)))
           (when (getf pl :aux)
             (setf body-forms `((let* ,(getf pl :aux) (declare ,@decls) ,@body-forms))))
@@ -428,6 +451,7 @@ runtime definition is kept."
           (push lv lvars)
           (push (if sp (list :special sym) (list :var sym lv)) entries)))
       (setf lvars (nreverse lvars))
+      (apply-type-decls decls lvars)
       (let ((free-specials (loop for s in dspecials
                                  unless (find s bindings :key (lambda (b) (if (consp b) (car b) b)))
                                    collect (list :special s))))
@@ -457,6 +481,7 @@ runtime definition is kept."
                                 (sp (binding-special-p sym dspecials))
                                 (lv (new-lvar sym sp))
                                 (new-env (env-extend env (if sp (list :special sym) (list :var sym lv)))))
+                           (apply-type-decls decls (list lv))
                            `(:let ((,lv . ,init)) ,(nest (cdr bs) new-env))))))
             (nest bindings env))))))
 
@@ -648,7 +673,9 @@ leaving quoted data alone."
     (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
       (let* ((dspecials (declared-specials decls))
              (vnode (convert value-form env))
-             (lvars (loop for v in vars collect (new-lvar v (binding-special-p v dspecials))))
+             (lvars (let ((l (loop for v in vars collect (new-lvar v (binding-special-p v dspecials)))))
+                      (apply-type-decls decls l)
+                      l))
              (new-env (apply #'env-extend env
                              (append (loop for v in vars for lv in lvars
                                            collect (if (lvar-special lv) (list :special v) (list :var v lv)))

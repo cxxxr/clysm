@@ -1069,7 +1069,12 @@ the type is fully described by the other values (otherwise the result is checked
 comparing elements with EQL; ON-MATCH runs with I bound; RESULT at the end.
 Expands to NIL when SEQ is of none of those kinds (the caller then goes the
 general way)."
-  `(cond ((%simple-string-p ,seq)
+  `(cond ((and (%simple-string-p ,seq) (characterp ,item))
+          ;; a character is EQL to the elements it is EQ to
+          (let ((end (%check-bounds ,start ,end (%string-length ,seq))))
+            (do ((i ,start (+ i 1))) ((>= i end) ,result)
+              (when (eq ,item (%schar ,seq i)) ,on-match))))
+         ((%simple-string-p ,seq)
           (let ((end (%check-bounds ,start ,end (%string-length ,seq))))
             (do ((i ,start (+ i 1))) ((>= i end) ,result)
               (when (eql ,item (%schar ,seq i)) ,on-match))))
@@ -1418,9 +1423,20 @@ general way)."
 
 (defun %string-case (s start end upcasep)
   (let* ((s (string s)) (r (%copy-simple-string s)) (end (%check-bounds start end (length r))))
+    (declare (fixnum end) (simple-string r))
     (if upcasep
-        (do ((i start (+ i 1))) ((>= i end) r) (%set-schar r i (char-upcase (%schar r i))))
-        (do ((i start (+ i 1))) ((>= i end) r) (%set-schar r i (char-downcase (%schar r i)))))))
+        (do ((i start (+ i 1))) ((>= i end) r)
+          (declare (fixnum i))
+          (let ((code (char-code (%schar r i))))
+            (cond ((< code 97))
+                  ((<= code 122) (%set-schar r i (code-char (- code 32))))
+                  ((> code 127) (%set-schar r i (char-upcase (%schar r i)))))))
+        (do ((i start (+ i 1))) ((>= i end) r)
+          (declare (fixnum i))
+          (let ((code (char-code (%schar r i))))
+            (cond ((< code 65))
+                  ((<= code 90) (%set-schar r i (code-char (+ code 32))))
+                  ((> code 127) (%set-schar r i (char-downcase (%schar r i))))))))))
 (defun string-upcase (s &key (start 0) end) (%string-case s start end t))
 (defun string-downcase (s &key (start 0) end) (%string-case s start end nil))
 (defun string-capitalize (s &key (start 0) end)

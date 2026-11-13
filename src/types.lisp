@@ -472,19 +472,25 @@
 (defun note-lvar-ty (lv ty)
   (setf (lvar-type lv) (if (lvar-type lv) (ty-union (lvar-type lv) ty) ty)))
 
-(defun ti-bind (lv ty)
-  (unless (lvar-special lv)
+(defun decl-ty (lv ty)
+  "TY restricted to the type declared for LV."
+  (if (lvar-decl lv) (ty-intersect ty (declared-ty (lvar-decl lv))) ty))
+
+(defun ti-bind (lv value-ty)
+  (let ((ty (decl-ty lv value-ty)))
+   (unless (lvar-special lv)
     (note-lvar-ty lv ty)
     (let ((k (ti-slot lv)))
       (when (and k (not (eq *env* :bottom)))
-        (setf (svref *env* k) ty)))))
+        (setf (svref *env* k) ty))))))
 
-(defun ti-assign (lv ty)
+(defun ti-assign (lv value-ty)
+  (let ((ty (decl-ty lv value-ty)))
   (note-lvar-ty lv ty)
   (let ((k (ti-slot lv)))
     (when k
       (dolist (r *ti-regions*) (setf (svref r k) (ty-union (svref r k) ty)))
-      (unless (eq *env* :bottom) (setf (svref *env* k) ty)))))
+      (unless (eq *env* :bottom) (setf (svref *env* k) ty))))))
 
 (defun new-region () (make-array *ti-nslots* :initial-element *ty-bottom*))
 (defun region-env (entry region)
@@ -555,7 +561,7 @@
         (ti-collect (lam-body lam))
         (let ((*env* (make-array *ti-nslots* :initial-element *ty-top*)))
           (loop for lv in params for i from 0
-                do (let ((ty (if (< i (length param-types)) (nth i param-types) *ty-top*)))
+                do (let ((ty (decl-ty lv (if (< i (length param-types)) (nth i param-types) *ty-top*))))
                      (note-lvar-ty lv ty)
                      (let ((k (ti-slot lv))) (when k (setf (svref *env* k) ty)))))
           (ti (lam-body lam)))
