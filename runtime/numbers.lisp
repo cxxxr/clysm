@@ -444,6 +444,19 @@ converts to a double exactly, so only bignums and ratios need it."
   (do ((l (cons n more) (cdr l))) ((null l) t)
     (dolist (m (cdr l)) (when (= (car l) m) (return-from /= nil)))))
 
+(defmacro %fast-entries (name one two)
+  "Give the function NAME entries for one and two arguments (FUNCALL #'< from
+SORT and the like make no argument list)."
+  `(setf (fdefinition ',name) (%make-gf-closure (fdefinition ',name) ,one ,two)))
+(%fast-entries + (lambda (a) (%check-number a)) (lambda (a b) (+ a b)))
+(%fast-entries * (lambda (a) (%check-number a)) (lambda (a b) (* a b)))
+(%fast-entries - (lambda (a) (- a)) (lambda (a b) (- a b)))
+(%fast-entries = (lambda (a) (%check-number a) t) (lambda (a b) (= a b)))
+(%fast-entries < (lambda (a) (%check-real a) t) (lambda (a b) (< a b)))
+(%fast-entries > (lambda (a) (%check-real a) t) (lambda (a b) (> a b)))
+(%fast-entries <= (lambda (a) (%check-real a) t) (lambda (a b) (<= a b)))
+(%fast-entries >= (lambda (a) (%check-real a) t) (lambda (a b) (>= a b)))
+
 (defun max (n &rest more)
   (let ((m (%check-real n)))
     (dolist (x more m)

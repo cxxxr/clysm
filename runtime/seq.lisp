@@ -1307,10 +1307,16 @@ general way)."
 
 (defun %sort-list (l pred key)
   (let ((n (length-of-list l)))
-    (if (< n 2) l
-        (let* ((mid (nthcdr (- (floor n 2) 1) l)) (b (cdr mid)))
-          (%setcdr mid nil)
-          (%merge-lists (%sort-list l pred key) (%sort-list b pred key) pred key)))))
+    (if (< n 2) l (values (%sort-list-n l n pred key)))))
+
+(defun %sort-list-n (l n pred key)
+  "Sort the first N (> 0) conses of L; returns the sorted list and the rest of L."
+  (if (eql n 1)
+      (let ((rest (cdr l))) (%setcdr l nil) (values l rest))
+      (let ((h (ash n -1)))
+        (multiple-value-bind (a rest) (%sort-list-n l h pred key)
+          (multiple-value-bind (b rest2) (%sort-list-n rest (- n h) pred key)
+            (values (%merge-lists a b pred key) rest2))))))
 
 (defun sort (seq pred &key key)
   (let ((pred (%fn pred)) (key (%keyfn key)))
