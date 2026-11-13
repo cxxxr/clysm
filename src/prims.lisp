@@ -1026,6 +1026,31 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   '(:local.get r) :ref.as_non_null)
 (defprim clysm-sys::%mag-mul-fast (a b) :value `(,@a ,@b (:call :mag-mul)))
 
+;;; A times one digit 0 < D < 2^28: the trimmed product
+(defhelper :mag-mul1 :ee-e ((a (:ref :null :limbs)) (r (:ref :null :limbs)) (n :i32) (i :i32) (d :i64)
+                            (carry :i64) (tt :i64))
+  '(:local.get 0) '(:ref.cast! :limbs) '(:local.set a)
+  '(:local.get 0) '(:call :mag-len) '(:local.tee n) '(:i32.const 1) :i32.add '(:array.new_default :limbs) '(:local.set r)
+  '(:local.get 1) '(:ref.cast! :i31) :i31.get_s :i64.extend_i32_s '(:local.set d)
+  `(:block done nil
+     (:loop again nil
+       (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.get d) :i64.mul
+       (:local.get carry) :i64.add (:local.set tt)
+       (:local.get r) (:local.get i) (:local.get tt) (:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 (:array.set :limbs)
+       (:local.get tt) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set carry)
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:br again)))
+  '(:local.get carry) :i64.eqz
+  `(:if nil nil
+        (;; no carry out: the first N limbs
+         (:local.get n) (:array.new_default :limbs) (:local.set a)
+         (:local.get a) (:i32.const 0) (:local.get r) (:i32.const 0) (:local.get n) (:array.copy :limbs :limbs)
+         (:local.get a) :ref.as_non_null :return))
+  '(:local.get r) '(:local.get n) '(:local.get carry) :i32.wrap_i64 '(:array.set :limbs)
+  '(:local.get r) :ref.as_non_null)
+(defprim clysm-sys::%mag-mul-digit (a d) :value `(,@a ,@d (:call :mag-mul1)))
+
 ;;; a + b (magnitudes)
 (defhelper :mag-add :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
                            (la :i32) (lb :i32) (n :i32) (i :i32) (s :i32))

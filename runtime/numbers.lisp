@@ -117,6 +117,13 @@
 (defun %int-sub (a b) (or (%int64-op a b 1) (%int-add-big a (%int-negate b))))
 
 (defun %int-mul (a b)
+  ;; a bignum times a fixnum below the digit base
+  (when (and (fixnump b) (%bignump a) (%fx< (%fx- 0 +digit-base+) b) (%fx< b +digit-base+) (not (%fx= b 0)))
+    (return-from %int-mul
+      (%make-bignum (if (%fx< b 0) (%fx- 1 (%bignum-sign a)) (%bignum-sign a))
+                    (%mag-mul-digit (%bignum-mag a) (if (%fx< b 0) (%fx- 0 b) b)))))
+  (when (and (fixnump a) (%bignump b) (%fx< (%fx- 0 +digit-base+) a) (%fx< a +digit-base+) (not (%fx= a 0)))
+    (return-from %int-mul (%int-mul b a)))
   (or (%int64-op a b 2)
       (%make-integer (%fxlogxor (%int-sign a) (%int-sign b)) (%mag-mul (%int-mag a) (%int-mag b)))))
 
