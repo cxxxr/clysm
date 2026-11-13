@@ -1121,6 +1121,26 @@ What makes the code fast:
   `format` with a constant control string (all directives), `coerce` and
   `parse-integer` compiled at the call site; string streams as buffers.
 
+### Size and start-up
+
+A whole program carries the runtime: `tests/hello.lisp` is 3.5 MB (0.97 MB
+with gzip). With `--shake` (`bin/clysm compile --shake`, `bin/clysm library
+--shake`) the global functions that nothing refers to by name are left out
+(`shake-module` in `src/wasm.lisp`): the definition of each function is a
+small Wasm function `(:install SYMBOL N)`, kept only when the symbol is
+reached from the exports, the start function or the initializer of a reached
+global, and the functions and globals that are then unreachable are dropped.
+Hello becomes 3.0 MB (0.84 MB with gzip), and a library starts in about 50 ms
+instead of 65 (12 ms to compile the module, the rest the toplevel forms of
+the runtime). Every symbol stays, so `intern` and `read` work, but a function
+called only by a name made at run time (`(funcall (intern ...))`, `eval` of
+new code, `~/name/` in a control string made at run time) is not there.
+`SHAKE=1 tools/run-tests.sh` runs the test suite this way. What remains is
+mostly reached through generic paths (the printer, `format`, CLOS dispatch,
+conditions) and the names of the symbols (the global section, 0.6 MB).
+For pages, the module is best served as a file of its own, which the browser
+caches for every page that uses it.
+
 `tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions.

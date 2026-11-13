@@ -1,14 +1,17 @@
 #!/bin/sh
 # Clysm — a Common Lisp implementation targeting WebAssembly GC.
 #
-#   clysm compile FILE... [-o OUT.wasm]   compile Lisp sources (with the runtime) to a Wasm module
+#   clysm compile [--shake] FILE... [-o OUT.wasm]
+#                                         compile Lisp sources (with the runtime) to a Wasm module;
+#                                         --shake leaves out the functions nothing refers to
 #   clysm run FILE... [-- ARGS]           compile and run on Node.js
 #   clysm repl [--interp] [--no-userinit] start the REPL (runs in Wasm; each form is compiled
 #                                         to a new Wasm module, or interpreted with --interp);
 #                                         ~/.clysmrc is loaded first unless --no-userinit
 #   clysm script FILE                     load FILE in the REPL image
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
-#   clysm library FILE... -o DIR/NAME.wasm compile a library for JavaScript: NAME.wasm,
+#   clysm library [--shake] FILE... -o DIR/NAME.wasm
+#                                         compile a library for JavaScript: NAME.wasm,
 #                                         NAME.mjs (the functions of JS:EXPORT), NAME.d.ts
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,19 +36,19 @@ repl_image() {
 }
 case "$cmd" in
   compile)
-    out="a.wasm"; files=""
+    out="a.wasm"; files=""; shake=""
     while [ $# -gt 0 ]; do
-      case "$1" in -o) out="$2"; shift 2;; *) files="$files $1"; shift;; esac
+      case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake"; shift;; *) files="$files $1"; shift;; esac
     done
-    exec sbcl --script "$ROOT/tools/build.lisp" "$out" $files ;;
+    exec sbcl --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
   library)
-    out=""; files=""
+    out=""; files=""; shake=""
     while [ $# -gt 0 ]; do
-      case "$1" in -o) out="$2"; shift 2;; *) files="$files $1"; shift;; esac
+      case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake"; shift;; *) files="$files $1"; shift;; esac
     done
     [ -n "$out" ] || { echo "clysm library: -o DIR/NAME.wasm is needed" >&2; exit 1; }
     mkdir -p "$(dirname "$out")"
-    sbcl --script "$ROOT/tools/build.lisp" "$out" $files || exit 1
+    sbcl --script "$ROOT/tools/build.lisp" $shake "$out" $files || exit 1
     exec "$NODE" "$ROOT/tools/gen-library.mjs" "$out" ;;
   run)
     files=""
@@ -65,5 +68,5 @@ case "$cmd" in
   exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

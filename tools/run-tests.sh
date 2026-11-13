@@ -7,6 +7,8 @@
 # (bin/clysm image-native): every toplevel form is compiled to Wasm at run time.
 # With SELFHOST=1 the files are compiled by the compiler running in Wasm
 # (build/clysmc.wasm, see tools/build-selfhost.sh).
+# With SHAKE=1 they are compiled with --shake (the functions nothing refers
+# to are left out).
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p build/tests
 pass=0; fail=0; failed=""
@@ -26,7 +28,7 @@ for f in ${@:-tests/cases/*.lisp}; do
     if [ -n "$SELFHOST" ]; then
       compile="node host/run.mjs build/clysmc.wasm"
     else
-      compile="sbcl --script tools/build.lisp"
+      compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}"
     fi
     if ! $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1; then
       echo "FAIL $name (compile)"; fail=$((fail+1)); failed="$failed $name"; continue

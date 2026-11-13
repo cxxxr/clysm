@@ -529,6 +529,7 @@ loaded before the next one, so that later files' macros can call them.")
                                                       (lst (mapcar #'str uses)))))
                             (:array.new_fixed :vector ,(length pkg-inits)))))))))
     (report-undefined-functions)
+    (when *shake* (shake-module *m*))
     (encode-module *m*)))
 
 (defun report-undefined-functions ()
@@ -547,9 +548,11 @@ loaded before the next one, so that later files' macros can call them.")
     (mapcar (lambda (f) (namestring (merge-pathnames (concatenate 'string f ".lisp") runtime-dir)))
             (read s))))
 
-(defun compile-program (files &key (output "out.wasm") runtime-dir)
-  "Compile the runtime and FILES into the WebAssembly module OUTPUT.
-Returns the number of bytes written."
+(defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*))
+  "Compile the runtime and FILES into the WebAssembly module OUTPUT.  With
+SHAKE, the global functions that nothing refers to by name are left out
+(SHAKE-MODULE): the program must not call functions by names it makes at
+run time (INTERN, READ, EVAL of new code).  Returns the number of bytes written."
   (reset-compiler)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))

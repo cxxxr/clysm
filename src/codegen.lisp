@@ -921,13 +921,33 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
       ,@(when (and flagging (not tail))
           (if (or *fexit* *catchers*) (pending-exit-check-code) (pending-exit-throw-code))))))
 
+(defvar *shake* nil
+  "True when the whole program is shaken (SHAKE-MODULE): a global definition
+of a function without free variables is a function (:install SYMBOL N) of its
+own, which the shaker keeps only if something refers to SYMBOL.")
+(defvar *install-counter* 0)
+
 (defun cg-defun (node mv)
   (destructuring-bind (sym fnode) (cdr node)
-    `((:global.get ,(sym-global sym))
-      ,@(cg fnode) (:ref.cast! :closure)
-      (:struct.set :symbol ,+sym-function+)
-      (:global.get ,(sym-global sym))
-      ,@(when mv (mv-one)))))
+    (let ((install `((:global.get ,(sym-global sym))
+                     ,@(cg fnode) (:ref.cast! :closure)
+                     (:struct.set :symbol ,+sym-function+))))
+      (if (and *shake* (not (tree-find-if (lambda (x) (member x '(:local.get :local.set :local.tee)))
+                                          install)))
+          (let ((name (list :install sym (incf *install-counter*))))
+            ;; (it returns the symbol, the value of the definition: a
+            ;; reference to the symbol here would keep the function)
+            (add-func *m* name :v-e :body `(,@install (:global.get ,(sym-global sym))))
+            `((:call ,name)
+              ,@(when mv (mv-one))))
+          `(,@install
+            (:global.get ,(sym-global sym))
+            ,@(when mv (mv-one)))))))
+
+(defun tree-find-if (pred tree)
+  (cond ((funcall pred tree) t)
+        ((consp tree) (or (tree-find-if pred (car tree)) (tree-find-if pred (cdr tree))))
+        (t nil)))
 
 ;;; ------------------------------------------------------------
 ;;; FLET / LABELS
