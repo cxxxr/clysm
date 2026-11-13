@@ -20,7 +20,9 @@
 (defconstant +class-direct-default-initargs+ 14) ; ((key form fn) ...) as given to DEFCLASS
 (defconstant +class-protocol+ 15)   ; true: the metaclass is not a standard one (MOP generic protocols apply)
 (defconstant +class-plist+ 16)
-(defconstant +class-size+ 17)
+(defconstant +class-make-info+ 17)  ; what MAKE-INSTANCE does for the class (clos.lisp)
+(defconstant +class-instance-size+ 18) ; the number of slots in an instance (set by the finalization)
+(defconstant +class-size+ 19)
 
 (defvar *the-standard-class* nil)
 (defvar *the-direct-slotd-class* nil)
@@ -285,10 +287,17 @@ grows when CLASS has more instance slots)."
       (when (eq (%instance-layout instance) class)
         (%update-instance-layout instance old-index class)))))
 
+(defun %same-slot-index-p (a b)
+  (do ((a a (cdr a)) (b b (cdr b))) ((or (null a) (null b)) (and (null a) (null b)))
+    (unless (and (eq (caar a) (caar b)) (eq (cdar a) (cdar b))) (return nil))))
+
 (defun %finalize-class (class)
-  (let ((cpl (if (eq (%class-name class) t) (list class)
-                 (%compute-cpl class (%class-slot class +class-supers+))))
-        (old-index (%class-slot class +class-slot-index+)))
+  (let* ((cpl (if (eq (%class-name class) t) (list class)
+                  (%compute-cpl class (%class-slot class +class-supers+))))
+         (old-cpl (%class-slot class +class-cpl+))
+         (old-index (%class-slot class +class-slot-index+))
+         ;; a class that was finalized gets another precedence list or other slot locations
+         (changed (and old-cpl (not (equal cpl old-cpl)))))
     (%set-class-slot class +class-cpl+ cpl)
     ;; shared slots allocated by this class: keep the cells (and values) of
     ;; slots that stay shared, initialize new ones from their initforms
@@ -309,14 +318,19 @@ grows when CLASS has more instance slots)."
                      (funcall *compute-slots-hook* class)
                      (%compute-effective-slots cpl))))
       (%set-class-slot class +class-slots+ slots)
-      ;; slot index: alist name -> location
-      (%set-class-slot class +class-slot-index+
-                       (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
+      ;; slot index: alist name -> location (the same object as long as the
+      ;; locations are the same: caches of slot locations compare it)
+      (let ((index (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
+        (if (and old-cpl (%same-slot-index-p index old-index))
+            nil
+            (progn (when old-cpl (setq changed t))
+                   (%set-class-slot class +class-slot-index+ index)))))
+    (%set-class-slot class +class-instance-size+ (%instance-slot-count class))
     ;; a class with a forward-referenced superclass is not finalized (AMOP)
     (%set-class-slot class +class-finalized+
                      (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
     (%set-class-slot class +class-prototype+ nil)
-    (when *class-finalization-hook* (funcall *class-finalization-hook* class))
+    (when *class-finalization-hook* (funcall *class-finalization-hook* class changed))
     (when *live-instances-hook* (%update-obsolete-instances class old-index))
     ;; refinalize subclasses
     (dolist (sub (%class-slot class +class-subclasses+))
@@ -366,7 +380,7 @@ grows when CLASS has more instance slots)."
                            :format-arguments (list name instance))))
 
 (defun %allocate-instance (class)
-  (let* ((n (%instance-slot-count class))
+  (let* ((n (or (%class-slot class +class-instance-size+) (%instance-slot-count class)))
          (v (%make-simple-vector n (%unbound-marker))))
     (if *track-instance-hook*
         (let ((instance (%make-instance class v)))
@@ -395,14 +409,6 @@ grows when CLASS has more instance slots)."
     (dolist (c (%class-cpl class) (nreverse r))
       (do ((l (%class-slot c +class-default-initargs+) (cddr l))) ((null l))
         (unless (assoc (car l) r) (push (cons (car l) (cadr l)) r))))))
-
-(defun %add-default-initargs (class initargs)
-  (let ((extra nil))
-    (dolist (d (%class-default-initargs-list class))
-      (unless (do ((l initargs (cddr l))) ((atom l) nil) (when (eq (car l) (car d)) (return t)))
-        (push (car d) extra)
-        (push (funcall (cdr d)) extra)))
-    (if extra (append initargs (nreverse extra)) initargs)))
 
 ;;; bootstrap metaclasses: standard-class is an instance of itself
 (defun %bootstrap-classes ()
@@ -485,6 +491,8 @@ grows when CLASS has more instance slots)."
 ;;; class-of: built-in classes are cached (cleared by (SETF FIND-CLASS))
 (defmacro %builtin-class (i name)
   `(or (svref *builtin-classes* ,i) (setf (svref *builtin-classes* ,i) (find-class ',name))))
+;;; (the tests of one representation come first: STRINGP, VECTORP, ARRAYP and
+;;; BIT-VECTOR-P look into array headers)
 (defun class-of (x)
   (cond ((%instancep x) (%instance-layout x))
         ((fixnump x) (%builtin-class 0 fixnum))
@@ -493,17 +501,17 @@ grows when CLASS has more instance slots)."
         ((symbolp x) (if (keywordp x) (%builtin-class 3 keyword) (%builtin-class 4 symbol)))
         ((characterp x) (%builtin-class 5 character))
         ((%simple-string-p x) (%builtin-class 6 simple-string))
-        ((stringp x) (%builtin-class 7 string))
+        ((%double-float-p x) (%builtin-class 15 double-float))
+        ((%single-float-p x) (%builtin-class 16 single-float))
         ((%simple-vector-p x) (%builtin-class 8 simple-vector))
-        ((bit-vector-p x) (%builtin-class 9 bit-vector))
-        ((vectorp x) (%builtin-class 10 vector))
-        ((arrayp x) (%builtin-class 11 array))
         ((functionp x) (let ((gf (%closure-name x)))
                          (if (%instancep gf) (%instance-layout gf) (%builtin-class 12 compiled-function))))
         ((%bignump x) (%builtin-class 13 bignum))
         ((%ratiop x) (%builtin-class 14 ratio))
-        ((%double-float-p x) (%builtin-class 15 double-float))
-        ((%single-float-p x) (%builtin-class 16 single-float))
         ((%complexp x) (%builtin-class 17 complex))
         ((%packagep x) (%builtin-class 18 package))
+        ((stringp x) (%builtin-class 7 string))
+        ((bit-vector-p x) (%builtin-class 9 bit-vector))
+        ((vectorp x) (%builtin-class 10 vector))
+        ((arrayp x) (%builtin-class 11 array))
         (t (%builtin-class 19 t))))
