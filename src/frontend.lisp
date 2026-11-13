@@ -9,7 +9,9 @@
 
 (defstruct (lvar (:print-function (lambda (v s d) (declare (ignore d))
                                     (format s "#<LVAR ~S>" (lvar-name v)))))
-  name owner captured mutated special (refs 0) ignorable)
+  name owner captured mutated special (refs 0) ignorable
+  (type nil)    ; union of the types of its values (types.lisp)
+  (rep nil))    ; :f64 / :i32 when held unboxed in a local of that type
 
 (defstruct (lam (:print-function (lambda (l s d) (declare (ignore d))
                                    (format s "#<LAM ~S ~D>" (lam-name l) (lam-id l)))))

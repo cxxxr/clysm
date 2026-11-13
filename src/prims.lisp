@@ -179,6 +179,22 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                  ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))
            ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))))
 
+(defun inline-fixnum-mul (a b)
+  "Inline fixnum product (in i64); falls back to the :mul helper."
+  (let ((ta (new-local)) (tb (new-local)) (r (new-local :i64)))
+    `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
+      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
+      (:if nil :eqref
+           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s
+            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s :i64.mul (:local.tee ,r)
+            ;; characters are i31s outside the fixnum range: their products are too
+            (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+            (:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :i32.and
+            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :i32.and
+            (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31)
+                 ((:local.get ,ta) (:local.get ,tb) (:call :mul))))
+           ((:local.get ,ta) (:local.get ,tb) (:call :mul))))))
+
 (defun inline-fixnum-cmp (a b op helper-code &optional swap)
   "Inline comparison when both arguments are i31 (characters never reach here
 as the generic helper is used for anything that is not a fixnum pair... the
@@ -201,10 +217,10 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 
 (defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
 (defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
-(defprim * (a b) :value `(,@a ,@b (:call :mul)))
+(defprim * (a b) :value (inline-fixnum-mul a b))
 (defprim - (a) :value `(,@a (:call :negate)))
-(defprim 1+ (a) :value `(,@a ,@(fixnum-code 1) (:call :add)))
-(defprim 1- (a) :value `(,@a ,@(fixnum-code 1) (:call :sub)))
+(defprim 1+ (a) :value (inline-fixnum-op a (fixnum-code 1) :i32.add :add))
+(defprim 1- (a) :value (inline-fixnum-op a (fixnum-code 1) :i32.sub :sub))
 (defprim < (a b) :test (inline-fixnum-cmp a b :i32.lt_s '((:call :lt))))
 (defprim > (a b) :test (inline-fixnum-cmp a b :i32.gt_s '((:call :lt)) t))
 (defprim <= (a b) :test (inline-fixnum-cmp a b :i32.le_s '((:call :lt) :i32.eqz) t))
@@ -1113,8 +1129,36 @@ element (local I) of it.  D is a scratch eqref local."
 (defprim clysm-sys::%simple-string= (a b) :test `(,@a ,@b (:call :simple-string=)))
 
 ;;; arithmetic fast paths
+(defun f64-of-param-code (p v fail)
+  "Push param P (a double or a fixnum) as an f64, or branch to FAIL."
+  `((:local.get ,p) (:ref.test :double)
+    (:if nil :f64 ((:local.get ,p) (:ref.cast! :double) (:struct.get :double 0))
+         ((:local.get ,p) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+          (:local.get ,p) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
+          (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+          (:local.get ,v) :f64.convert_i32_s))))
+
+(defun double-fast-path-code (body)
+  "When one argument is a double and the other a double or a fixnum: BODY
+with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
+  `((:local.get 0) (:ref.test :double) (:local.get 1) (:ref.test :double) :i32.or
+    (:if nil nil
+         ((:block slow nil
+            ,@(f64-of-param-code 0 'v 'slow) (:local.set da)
+            ,@(f64-of-param-code 1 'v 'slow) (:local.set db)
+            ,@body)))))
+
+(defun double-arith-code (op zero-check)
+  (double-fast-path-code
+   `((:local.get da) (:local.get db) ,op (:local.tee dr)
+     ;; infinite / NaN (and zero for *): the generic function decides
+     (:local.get dr) :f64.sub (:f64.const 0) :f64.ne
+     ,@(when zero-check '((:local.get dr) (:f64.const 0) :f64.eq :i32.or))
+     (:br_if slow)
+     (:local.get dr) (:struct.new :double) :return)))
+
 (macrolet ((arith (name op lisp-fn &key mul opcode)
-             `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (e :eqref))
+             `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (e :eqref) (v :i32) (da :f64) (db :f64) (dr :f64))
                 '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
                 `(:if nil nil
                       ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.set x)
@@ -1131,6 +1175,7 @@ element (local I) of it.  D is a scratch eqref local."
                                      `((:local.get x) (:local.get y) ,op (:local.tee x)
                                        (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
                                        (:if nil nil ((:local.get x) :ref.i31 :return))))))))
+                (double-arith-code ,(case opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul)) ,mul)
                 '(:local.get 0) '(:local.get 1) '(:i32.const ,opcode) '(:call :int64-op) '(:local.tee e)
                 (car (nil-code)) :ref.eq :i32.eqz '(:if nil nil ((:local.get e) :return))
                 '(:local.get 0) '(:local.get 1)
@@ -1150,7 +1195,7 @@ element (local I) of it.  D is a scratch eqref local."
   '(:local.get 0)
   `(:global.get ,(sym-global 'clysm-sys::%negate)) '(:call (:callsym 1)))
 
-(defhelper :lt :ee-i ((x :i32) (y :i32))
+(defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
   ;; fast path for two fixnums (characters are i31 too and must go the slow way)
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
@@ -1160,11 +1205,12 @@ element (local I) of it.  D is a scratch eqref local."
          (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
          (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
          (:if nil nil ((:local.get x) (:local.get y) :i32.lt_s :return))))
+  (double-fast-path-code '((:local.get da) (:local.get db) :f64.lt :return))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-lt)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)
 
-(defhelper :num-eq :ee-i ((x :i32) (y :i32))
+(defhelper :num-eq :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
   ;; fast path for two fixnums (characters are i31 too and must go the slow way)
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
   `(:if nil nil
@@ -1174,6 +1220,7 @@ element (local I) of it.  D is a scratch eqref local."
          (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
          (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
          (:if nil nil ((:local.get x) (:local.get y) :i32.eq :return))))
+  (double-fast-path-code '((:local.get da) (:local.get db) :f64.eq :return))
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-num-eq)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)

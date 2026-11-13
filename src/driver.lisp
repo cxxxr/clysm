@@ -40,7 +40,11 @@
         *deferred-macros* nil
         *macros-ready* nil
         *dynamic-functions* (make-hash-table :test 'eq)
-        *runtime-consts* nil)
+        *runtime-consts* nil
+        *node-types* (make-hash-table :test 'eq)
+        *ti-analyzed* (make-hash-table :test 'eq)
+        *spec-clones* (make-hash-table :test 'equal)
+        *spec-cloneable* (make-hash-table :test 'eq))
   (setf (gethash 'clysm-sys::*catch-tags* *specials*) t)
   (init-target-packages)
   (setf *read-package* (find-target-package "COMMON-LISP-USER")))

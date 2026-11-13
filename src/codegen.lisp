@@ -187,11 +187,25 @@ to the innermost one's cleanup, which then continues the exit.")
   (or (gethash lv (fstate-locs *fs*))
       (error "codegen: no location for ~S in ~S" lv (fstate-lam *fs*))))
 
+(defun lvar-rep* (lv) (or (lvar-rep lv) :eqref))
+(defun rep-wasm-type (rep) (ecase rep (:eqref :eqref) (:f64 :f64) (:i32 :i32)))
+(defun box-rep-code (rep)
+  (ecase rep (:eqref nil) (:f64 '((:struct.new :double))) (:i32 '(:ref.i31))))
+(defun unbox-rep-code (rep)
+  (ecase rep
+    (:eqref nil)
+    (:f64 '((:ref.cast! :double) (:struct.get :double 0)))
+    (:i32 '((:ref.cast! :i31) :i31.get_s))))
+
+(defun unboxed-local-p (lv)
+  "LV is held in a local of the function being compiled in its representation."
+  (and (lvar-rep lv) (not (boxed-p lv)) (eq (car (get-loc lv)) :local)))
+
 (defun var-raw-code (lv)
   "Push the raw content of a variable's location (cell if boxed)."
   (let ((loc (get-loc lv)))
     (ecase (car loc)
-      (:local `((:local.get ,(cdr loc))))
+      (:local `((:local.get ,(cdr loc)) ,@(box-rep-code (lvar-rep* lv))))
       (:env `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) (:array.get :vector))))))
 
 (defun var-get-code (lv)
@@ -204,12 +218,16 @@ to the innermost one's cleanup, which then continues the exit.")
   (let ((loc (get-loc lv)))
     (cond ((boxed-p lv)
            `(,@(var-raw-code lv) (:ref.cast :cell) ,@value-code (:struct.set :cell 0)))
-          ((eq (car loc) :local) `(,@value-code (:local.set ,(cdr loc))))
+          ((eq (car loc) :local) `(,@value-code ,@(unbox-rep-code (lvar-rep* lv)) (:local.set ,(cdr loc))))
           (t `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) ,@value-code
                (:array.set :vector))))))
 
 (defun bind-new-var-code (lv value-code)
   "Initialize a fresh lexical variable (allocating its local)."
+  (when (and (lvar-rep lv) (not (boxed-p lv)))
+    (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
+      (set-loc lv (cons :local idx))
+      (return-from bind-new-var-code `(,@value-code ,@(unbox-rep-code (lvar-rep lv)) (:local.set ,idx)))))
   (let ((idx (new-local)))
     (set-loc lv (cons :local idx))
     (if (boxed-p lv)
@@ -229,9 +247,13 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
     (ecase (car node)
       (:const (append (cg-const (second node)) (when mv (mv-one))))
       (:lref (append (var-get-code (second node)) (when mv (mv-one))))
-      (:lset (let ((tmp (new-local)))
+      (:lset (if (unboxed-local-p (second node))
+                 (let ((rep (lvar-rep (second node))))
+                   `(,@(cg-rep (third node) rep) (:local.tee ,(cdr (get-loc (second node))))
+                     ,@(box-rep-code rep) ,@(when mv (mv-one))))
+               (let ((tmp (new-local)))
                `(,@(var-set-code (second node) `(,@(cg (third node)) (:local.tee ,tmp)))
-                 (:local.get ,tmp) ,@(when mv (mv-one)))))
+                 (:local.get ,tmp) ,@(when mv (mv-one))))))
       (:sref `((:global.get ,(sym-global (second node))) (:call :symbol-value) ,@(when mv (mv-one))))
       (:sset (let ((tmp (new-local)))
                `((:global.get ,(sym-global (second node)))
@@ -244,10 +266,10 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:mvbind (cg-mvbind node mv tail))
       (:lambda (append (cg-closure (second node)) (when mv (mv-one))))
       (:fref `((:global.get ,(sym-global (second node))) (:call :fdefinition) ,@(when mv (mv-one))))
-      (:call (cg-global-call (second node) (cddr node) mv tail))
+      (:call (or (typed-cg node mv) (cg-global-call (second node) (cddr node) mv tail)))
       (:funcall (cg-funcall (second node) (cddr node) mv tail))
       (:lcall (cg-local-call (second node) (cddr node) mv tail))
-      (:prim (cg-prim (second node) (cddr node) mv))
+      (:prim (or (typed-cg node mv) (cg-prim (second node) (cddr node) mv)))
       ((:flet :labels) (cg-flet node mv tail))
       (:block (cg-block node mv tail))
       (:return-from (cg-return-from node))
@@ -285,6 +307,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 
 (defun cg-test (node)
   "Instructions leaving an i32 (0 = false)."
+  (let ((typed (and (member (car node) '(:prim :call)) (typed-test-code node))))
+    (when typed (return-from cg-test typed)))
   (case (car node)
     (:const (if (second node) '((:i32.const 1)) '((:i32.const 0))))
     (:prim (let ((p (second node)))
@@ -309,8 +333,21 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 (defun cg-progn (nodes mv tail)
   (if (null nodes)
       (append (nil-code) (when mv (mv-one)))
-      `(,@(loop for n in (butlast nodes) append `(,@(cg n) :drop))
+      `(,@(loop for n in (butlast nodes) append (cg-effect n))
         ,@(cg (car (last nodes)) mv tail))))
+
+(defun cg-effect (node)
+  "Instructions evaluating NODE for its effects (leaving nothing)."
+  (case (car node)
+    ((:const :lref) nil)
+    (:lset (let ((lv (second node)))
+             (if (unboxed-local-p lv)
+                 `(,@(cg-rep (third node) (lvar-rep lv)) (:local.set ,(cdr (get-loc lv))))
+                 (var-set-code lv (cg (third node))))))
+    (:progn (loop for n in (cdr node) append (cg-effect n)))
+    (:if `(,@(cg-test (second node)) (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node)))))
+    (:let (cg-let node nil nil :effect))
+    (t `(,@(cg node) :drop))))
 
 ;;; ------------------------------------------------------------
 ;;; Dynamic binding helpers
@@ -326,28 +363,41 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 ;;; LET
 ;;; ------------------------------------------------------------
 
-(defun cg-let (node mv tail)
+(defun cg-let (node mv tail &optional (rep :eqref))
+  "REP: :eqref (the value as usual), :f64 / :i32 (the value in that
+representation) or :effect (no value)."
   (destructuring-bind (bindings body) (cdr node)
     (let ((code nil) (specials nil))
       ;; evaluate inits in order
       (dolist (b bindings)
         (let ((lv (car b)) (init (cdr b)))
-          (if (lvar-special lv)
-              (let ((tmp (new-local)))
-                (setf code (append code (cg init) `((:local.set ,tmp))))
-                (push (cons lv tmp) specials))
-              (setf code (append code (bind-new-var-code lv (cg init)))))))
-      (if (null specials)
-          (append code (cg body mv tail))
-          (let ((saved (new-local :i32)) (res (new-local)))
-            (append code
-                    (save-bsp-code saved)
-                    (loop for (lv . tmp) in (reverse specials)
-                          append `((:global.get ,(sym-global (lvar-name lv))) (:local.get ,tmp) (:call :bind)))
-                    (with-dynamic-scope () (cg body mv nil))
-                    `((:local.set ,res))
-                    (restore-bsp-code saved)
-                    `((:local.get ,res))))))))
+          (cond ((lvar-special lv)
+                 (let ((tmp (new-local)))
+                   (setf code (append code (cg init) `((:local.set ,tmp))))
+                   (push (cons lv tmp) specials)))
+                ((and (lvar-rep lv) (not (boxed-p lv)))
+                 (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
+                   ;; the init is compiled before the variable has a location
+                   (setf code (append code (cg-rep init (lvar-rep lv)) `((:local.set ,idx))))
+                   (set-loc lv (cons :local idx))))
+                (t (setf code (append code (bind-new-var-code lv (cg init))))))))
+      (flet ((body-code (tail)
+               (case rep
+                 (:eqref (cg body mv tail))
+                 (:effect (cg-effect body))
+                 (t (cg-rep body rep)))))
+        (if (null specials)
+            (append code (body-code tail))
+            (let ((saved (new-local :i32)) (res (unless (eq rep :effect)
+                                                 (new-local (if (eq rep :eqref) :eqref (rep-wasm-type rep))))))
+              (append code
+                      (save-bsp-code saved)
+                      (loop for (lv . tmp) in (reverse specials)
+                            append `((:global.get ,(sym-global (lvar-name lv))) (:local.get ,tmp) (:call :bind)))
+                      (with-dynamic-scope () (body-code nil))
+                      (when res `((:local.set ,res)))
+                      (restore-bsp-code saved)
+                      (when res `((:local.get ,res))))))))))
 
 (defun cg-mvbind (node mv tail)
   (destructuring-bind (lvars vnode body) (cdr node)
@@ -526,7 +576,13 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
   (let ((lam (known-global-lam sym))
         (arg-codes (mapcar #'cg args)))
     (if (and lam (lam-accepts-p lam (length args)))
-        (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail args)
+        (let ((sig (spec-signature lam args)))
+          (if sig
+              (progn
+                (ensure-lam-compiled lam)
+                `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
+                  (,(if tail :return_call :call) ,(spec-clone-name lam sig))))
+              (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail args)))
         (progn
           (when (and lam (not (lam-accepts-p lam (length args))))
             (cwarn "~S called with ~D arguments" sym (length args)))
@@ -686,7 +742,7 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
       (let* ((seg-codes (let ((*tail-ok* nil))
                           (loop for (nil . forms) in segments
-                                collect (loop for f in forms append `(,@(cg f) :drop)))))
+                                collect (loop for f in forms append (cg-effect f)))))
              ;; build nested blocks: innermost has br_table
              (inner `((:local.get ,pc) (:br_table ,@labels ,(car (last labels)))))
              (blocks (let ((acc inner))
@@ -915,10 +971,13 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
 (defun compile-pending-lams ()
   (loop while *pending-lams*
         do (let ((lam (pop *pending-lams*)))
-             (if (consp lam)
-                 (compile-catch-clone (car lam) (cdr lam))
-                 (progn (compile-lam lam)
-                        (setf (gethash lam *compiled-lams*) t))))))
+             (cond ((and (consp lam) (eq (car lam) :spec))
+                    (compile-spec-clone (second lam) (third lam)))
+                   ((consp lam)
+                    (compile-catch-clone (car lam) (cdr lam)))
+                   (t
+                    (compile-lam lam)
+                    (setf (gethash lam *compiled-lams*) t))))))
 
 ;;; (CATCH 'TAG (F ...)) where F is a known function of required parameters
 ;;; calls a copy of F in which a (THROW 'TAG value) not inside a CATCH,
@@ -937,6 +996,7 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
     (catch-clone-name lam tag)))
 
 (defun compile-catch-clone (lam tag)
+  (infer-lam lam)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
          (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
@@ -978,6 +1038,11 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
         ((boxed-p lv)
          (set-loc lv (cons :local local-idx))
          (values `((:local.get ,local-idx) (:struct.new :cell) (:local.set ,local-idx)) nil))
+        ((lvar-rep lv)
+         ;; known to be a fixnum / double (in a specialized clone): unboxed copy
+         (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
+           (set-loc lv (cons :local idx))
+           (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv)) (:local.set ,idx)) nil)))
         (t (set-loc lv (cons :local local-idx)) (values nil nil))))
 
 (defun finish-body (lam prologue any-special)
@@ -994,11 +1059,24 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
 (defun compile-lam (lam &aux (*catching-tag* nil))
+  (infer-lam lam)
   (cond ((lam-simple-p lam) (compile-simple-lam lam))
         ((lam-keyed-p lam) (compile-keyed-lam lam))
         (t (compile-complex-lam lam))))
 
 (defun compile-simple-lam (lam)
+  (compile-simple-main lam (list :main (lam-id lam)) (lam-display-name lam))
+  (let ((n (length (lam-req lam))))
+    ;; entryN adapter
+    (add-func *m* (list :entn (lam-id lam)) :fN
+              :body `((:local.get 1) :array.len (:i32.const ,n) :i32.ne
+                      (:if nil nil ((:local.get 0) (:local.get 1) (:return_call :argerr-n)))
+                      (:local.get 0)
+                      ,@(loop for i below n
+                              append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
+                      (:return_call (:main ,(lam-id lam)))))))
+
+(defun compile-simple-main (lam name display)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
          (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
@@ -1009,16 +1087,80 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
                (setf prologue (append prologue code))
                (when sp (setf any-special t))))
     (let ((body (finish-body lam prologue any-special)))
-      (add-func *m* (list :main (lam-id lam)) (main-type n)
-                :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))
-    ;; entryN adapter
-    (add-func *m* (list :entn (lam-id lam)) :fN
-              :body `((:local.get 1) :array.len (:i32.const ,n) :i32.ne
-                      (:if nil nil ((:local.get 0) (:local.get 1) (:return_call :argerr-n)))
-                      (:local.get 0)
-                      ,@(loop for i below n
-                              append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
-                      (:return_call (:main ,(lam-id lam)))))))
+      (add-func *m* name (main-type n)
+                :locals (reverse (fstate-locals *fs*)) :body body :display display))))
+
+;;; A direct call of a known function with required parameters whose
+;;; arguments include fixnums or doubles calls a copy of the function
+;;; compiled for those argument types (its own type analysis, the parameters
+;;; unboxed).
+(defvar *spec-clones* (make-hash-table :test 'equal))
+(defvar *spec-cloneable* (make-hash-table :test 'eq))
+(defparameter *spec-max-nodes* 3000)
+
+(defun spec-cloneable-p (lam)
+  (multiple-value-bind (v found) (gethash lam *spec-cloneable*)
+    (if found v
+        (setf (gethash lam *spec-cloneable*)
+              (and (lam-simple-p lam) (null (lam-free-vars lam)) (lam-req lam)
+                   (notany #'lvar-special (lam-req lam))
+                   (let ((n 0))
+                     (labels ((walk (node)
+                                (when (> (incf n) *spec-max-nodes*) (return-from spec-cloneable-p
+                                                                       (setf (gethash lam *spec-cloneable*) nil)))
+                                (when (member (car node) '(:lambda :flet :labels :ltv))
+                                  (return-from spec-cloneable-p (setf (gethash lam *spec-cloneable*) nil)))
+                                (map-subnodes #'walk node)))
+                       (walk (lam-body lam))
+                       t)))))))
+
+(defun arg-class (node)
+  (let ((ty (node-ty node)))
+    (cond ((ty-fixnum-p ty) :fixnum)
+          ((ty-double-p ty) :double))))
+
+(defun class-ty (class)
+  (ecase class
+    (:fixnum *ty-fixnum*)
+    (:double (mkty +k-double+))
+    ((nil) *ty-top*)))
+
+(defun spec-signature (lam args)
+  (when (and (spec-cloneable-p lam) (= (length args) (length (lam-req lam))))
+    (let ((sig (mapcar #'arg-class args)))
+      (when (some #'identity sig) sig))))
+
+(defun spec-clone-name (lam sig)
+  (let ((key (list (lam-id lam) sig)))
+    (unless (gethash key *spec-clones*)
+      (setf (gethash key *spec-clones*) t)
+      (push (list :spec lam sig) *pending-lams*))
+    (list :spec (lam-id lam) sig)))
+
+(defun lam-all-lvars (lam)
+  (let ((r (copy-list (lam-req lam))))
+    (labels ((walk (n)
+               (case (car n)
+                 (:let (dolist (b (second n)) (push (car b) r)))
+                 (:mvbind (dolist (lv (second n)) (push lv r))))
+               (map-subnodes #'walk n)))
+      (walk (lam-body lam)))
+    r))
+
+(defun compile-spec-clone (lam sig)
+  (let* ((lvars (lam-all-lvars lam))
+         (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars)))
+    (dolist (lv lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))
+    (unwind-protect
+         (let ((*node-types* (make-hash-table :test 'eq))
+               (*ti-analyzed* (make-hash-table :test 'eq))
+               (*catching-tag* nil))
+           (infer-lam lam (mapcar #'class-ty sig))
+           (compile-simple-main lam (list :spec (lam-id lam) sig)
+                                (format nil "~A/~{~(~A~)~^,~}" (lam-display-name lam)
+                                        (mapcar (lambda (c) (or c "t")) sig))))
+      (loop for lv in lvars for (ty . rep) in saved
+            do (setf (lvar-type lv) ty (lvar-rep lv) rep)))))
 
 (defun compile-complex-lam (lam)
   (let* ((*fs* (make-fstate :lam lam :nparams 2))

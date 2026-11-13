@@ -17,8 +17,8 @@
         ;; the compiler's own CLYSM-SYS package is the image's SYSTEM package
         (setf (gethash "CLYSM-SYS" *target-packages*) (find-package :clysm-sys))
         (push "CLYSM-SYS" (gethash "SYSTEM" *target-nicknames*))
-        (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/codegen"
-                     "src/prims" "src/driver" "src/hostenv" "src/live" "lib/live-image"))
+        (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/types" "src/codegen"
+                     "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "lib/live-image"))
           (compile-source-file (rpath (concatenate 'string f ".lisp"))))
         (compile-source-file (if (probe-file main) main (rpath main)))
         (let ((bytes (build-module)))

@@ -36,7 +36,7 @@ selfhost:
 	tools/build-selfhost.sh
 
 SRCS = src/package.lisp src/wasm.lisp src/reader.lisp src/layout.lisp src/frontend.lisp \
-       src/codegen.lisp src/prims.lisp src/driver.lisp src/hostenv.lisp src/selfhost.lisp
+       src/types.lisp src/codegen.lisp src/prims.lisp src/typed.lisp src/driver.lisp src/hostenv.lisp src/selfhost.lisp
 
 # stage 2 and stage 3 compilers (built by the Wasm-hosted compiler) must be identical
 fixpoint: selfhost
