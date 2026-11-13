@@ -115,6 +115,7 @@
     (:ll-e      (:func (:i64 :i64) (:eqref)))
     (:eii-e     (:func (:eqref :i32 :i32) (:eqref)))
     (:ee-d      (:func (:eqref :eqref) (:f64)))
-    (:eeei-e    (:func (:eqref :eqref :eqref :i32) (:eqref)))))
+    (:eeei-e    (:func (:eqref :eqref :eqref :i32) (:eqref)))
+    (:ll-l      (:func (:i64 :i64) (:i64)))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))
