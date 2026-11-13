@@ -213,21 +213,26 @@
 (defmethod lem-if:get-font ((implementation clysm))
   (values *font-family* *font-size*))
 
-;;; ---- the clipboard (Electron's, which is read without waiting)
+;;; ---- the clipboard (Electron's, which is read without waiting: in the
+;;; renderer itself before Electron 45, through the desktop shell's
+;;; synchronous calls since)
 
 (defvar *clipboard*
   (ignore-errors
    (let ((require (js:global "require")))
      (and require (js:get (js:funcall require "electron") "clipboard")))))
 
+(defvar *desktop*
+  (ignore-errors (let ((d (js:global "desktop"))) (and (js:js-value-p d) d))))
+
 (defmethod lem-if:clipboard-copy ((implementation clysm) text)
-  (if *clipboard*
-      (js:call *clipboard* "writeText" text)
-      (ui:write-clipboard ui:*backend* text))
-  nil)
+  (cond (*clipboard* (js:call *clipboard* "writeText" text))
+        (*desktop* (js:call *desktop* "call" "writeClipboard" text))
+        (t (ui:write-clipboard ui:*backend* text))))
 
 (defmethod lem-if:clipboard-paste ((implementation clysm))
-  (and *clipboard* (js:call *clipboard* "readText")))
+  (cond (*clipboard* (js:call *clipboard* "readText"))
+        (*desktop* (js:call *desktop* "call" "readClipboard"))))
 
 ;;; ---- starting Lem
 

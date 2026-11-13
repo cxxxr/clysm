@@ -14,7 +14,7 @@
 // The environment variable CLYSM_ELECTRON_TEST names a module whose function
 // is called with the window (tests drive the page with sendInputEvent and
 // look at it with capturePage); the window is then not shown.
-const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol, clipboard } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -73,6 +73,9 @@ const api = {
     });
   },
   setMenu(spec) { buildMenu(spec); return null; },
+  // (the renderer of Electron 45 has no clipboard module of its own)
+  readClipboard() { return clipboard.readText(); },
+  writeClipboard(text) { clipboard.writeText(String(text)); return null; },
 };
 
 ipcMain.on('desktop', (event, name, args) => {
