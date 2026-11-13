@@ -920,6 +920,14 @@ SORT and the like make no argument list)."
 (defun %digit-char (d) (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
 
 (defun parse-integer (string &key (start 0) end (radix 10) junk-allowed)
+  (%parse-integer string start end radix junk-allowed))
+
+(defun %parse-integer (string start end radix junk-allowed)
+  (when (and (%simple-string-p string) (fixnump start) (or (null end) (fixnump end))
+             (fixnump radix) (<= 2 radix 36))
+    (let ((e (or end (%string-length string))))
+      (when (<= 0 start e (%string-length string))
+        (return-from %parse-integer (%parse-integer-simple string start e radix junk-allowed)))))
   (let* ((end (or end (length string)))
          (i start) (sign 1) (value 0) (any nil))
     (do () ((not (and (< i end) (%whitespace-char-p (char string i))))) (setq i (+ i 1)))
@@ -938,6 +946,93 @@ SORT and the like make no argument list)."
           (junk-allowed (values nil i))
           (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"
                                          :format-arguments (list string))))))
+
+;;; For each radix: the number of digits that always make a fixnum, and RADIX
+;;; to that power.  The tables are made when first needed.
+(defvar *%fixnum-digit-capacities* nil)
+(defvar *%fixnum-digit-powers* nil)
+
+(defun %make-fixnum-digit-tables ()
+  (let ((capacities (%make-simple-vector 37 0)) (powers (%make-simple-vector 37 1)))
+    (do ((r 2 (+ r 1))) ((> r 36))
+      (let ((limit (truncate most-positive-fixnum r)) (p 1) (k 0))
+        (do () ((> p limit)) (setq p (* p r) k (+ k 1)))
+        (%set-svref capacities r k)
+        (%set-svref powers r p)))
+    (setq *%fixnum-digit-powers* powers
+          *%fixnum-digit-capacities* capacities)))
+
+(defun %fixnum-digit-capacity (radix)
+  "The number of digits in RADIX (2 to 36) that always make a fixnum."
+  (%svref (or *%fixnum-digit-capacities* (%make-fixnum-digit-tables)) radix))
+
+(defun %fixnum-power (radix k)
+  "RADIX^K, a fixnum (K is at most the digit capacity of RADIX)."
+  (declare (fixnum radix k))
+  (if (eql k (the fixnum (%fixnum-digit-capacity radix)))
+      (%svref *%fixnum-digit-powers* radix)
+      (let ((p 1))
+        (declare (fixnum p))
+        (dotimes (i k p) (setq p (* p radix))))))
+
+(defun %parse-integer-simple (string start end radix junk-allowed)
+  "PARSE-INTEGER for a simple string and valid bounds."
+  (declare (fixnum start end radix))
+  ;; The digits are accumulated in a fixnum (SMALL, of K digits); when it is
+  ;; full, it is added to VALUE: an integer beyond the fixnums costs one
+  ;; multiplication per group of digits, not one per digit.
+  (let ((i start) (neg nil) (small 0) (k 0) (value nil) (any nil)
+        (kmax (%fixnum-digit-capacity radix)))
+    (declare (fixnum i small k kmax))
+    (macrolet ((whitespace-p (code)
+                 `(let ((code ,code)) (or (eql code 32) (and (<= 9 code 13) (not (eql code 11))))))
+               (skip-whitespace ()
+                 `(do () ((not (and (< i end) (whitespace-p (char-code (%schar string i))))))
+                    (setq i (+ i 1)))))
+      (skip-whitespace)
+      (when (< i end)
+        (let ((c (%schar string i)))
+          (cond ((eq c #\-) (setq neg t i (+ i 1)))
+                ((eq c #\+) (setq i (+ i 1))))))
+      (loop
+        (when (>= i end) (return))
+        (let* ((code (char-code (%schar string i)))
+               (d (cond ((<= 48 code 57) (- code 48))
+                        ((<= 65 code 90) (- code 55))
+                        ((<= 97 code 122) (- code 87))
+                        (t 99))))
+          (declare (fixnum code d))
+          (when (>= d radix) (return))
+          (when (eql k kmax)
+            (setq value (if value (+ (* value (%fixnum-power radix k)) small) small) small 0 k 0))
+          (setq small (+ (* small radix) d) k (+ k 1))
+          (setq any t i (+ i 1))))
+      ;; with JUNK-ALLOWED the index is that of the character after the digits
+      (unless (and any junk-allowed) (skip-whitespace))
+      (cond ((and any (or junk-allowed (eql i end)))
+             (values (let ((v (if value (+ (* value (%fixnum-power radix k)) small) small)))
+                       (if neg (- v) v))
+                     i))
+            (junk-allowed (values nil i))
+            (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"
+                                           :format-arguments (list string)))))))
+
+;;; a call with literal keywords does not parse a keyword list
+(define-compiler-macro parse-integer (&whole form string &rest keys)
+  (let ((start 0) (end nil) (radix 10) (junk nil) (seen nil) (temps nil) (ok t))
+    (do ((l keys (cddr l))) ((null l))
+      (let ((key (car l)))
+        (if (and (consp (cdr l)) (member key '(:start :end :radix :junk-allowed)) (not (member key seen)))
+            (let ((g (gensym "V")))
+              (push key seen)
+              (push (list g (cadr l)) temps)
+              (case key (:start (setq start g)) (:end (setq end g)) (:radix (setq radix g)) (t (setq junk g))))
+            (progn (setq ok nil) (return)))))
+    (if ok
+        (let ((s (gensym "STRING")))
+          `(let* ((,s ,string) ,@(nreverse temps))
+             (%parse-integer ,s ,start ,end ,radix ,junk)))
+        form)))
 
 (defun %whitespace-char-p (c)
   (member c '(#\Space #\Tab #\Newline #\Return #\Page #\Linefeed)))
