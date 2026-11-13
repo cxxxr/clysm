@@ -62,8 +62,17 @@
   try {
     const bytes = await (await fetch('todo.wasm')).arrayBuffer();
     // Lisp output (PRINT, errors) goes to the console
-    await loadClysm(bytes, (text) => console.log(text));
+    let io = { write: (text) => console.log(text), readLine: () => null };
+    const lisp = await loadClysm(bytes, (text, fd) => io.write(text, fd), { readLine: () => io.readLine() });
     status.remove();
+    // the development build (build.sh --dev) has a REPL
+    if (globalThis.clysmUiRefresh) {
+      const { dockRepl } = await import('./repl.mjs');
+      io = dockRepl({ afterEval: globalThis.clysmUiRefresh });
+      io.info('The application runs in this image: (in-package :todo), then try\n' +
+              '  (push (make-instance \'todo :text "from the REPL") *todos*)\n');
+      io.start(lisp, { focus: false });
+    }
   } catch (e) {
     status.textContent = 'エラー: ' + e.message;
     throw e;

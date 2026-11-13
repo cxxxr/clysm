@@ -5,11 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Clysm REPL</title>
 <style>
-  :root { --bg: #fbfaf7; --fg: #1d1d1f; --muted: #6b6b70; --accent: #2f5d8a; --panel: #ffffff;
-          --line: #e3e1db; --value: #1f6b4f; --error: #b3261e; }
+  :root { --bg: #fbfaf7; --fg: #1d1d1f; --muted: #6b6b70; --line: #e3e1db; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #17181a; --fg: #e8e6e1; --muted: #9a9a9f; --accent: #7fb0e0; --panel: #1f2023;
-            --line: #33343a; --value: #8fd1a8; --error: #f2948a; }
+    :root { --bg: #17181a; --fg: #e8e6e1; --muted: #9a9a9f; --line: #33343a; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -21,19 +19,7 @@
   header button { font: inherit; font-size: 13px; color: var(--muted); background: none; cursor: pointer;
                   border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; }
   header button:hover { color: var(--fg); }
-  #term { flex: 1; min-height: 0; overflow: auto; background: var(--panel); border: 1px solid var(--line);
-          border-radius: 8px; padding: 12px 14px; cursor: text;
-          font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  #log { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .in { color: var(--accent); }
-  .val { color: var(--value); }
-  .err { color: var(--error); }
-  .info { color: var(--muted); }
-  .entry { display: flex; }
-  #prompt { color: var(--accent); white-space: pre; user-select: none; }
-  #src { flex: 1; border: 0; outline: 0; padding: 0; margin: 0; resize: none; overflow: hidden;
-         background: transparent; color: var(--fg); font: inherit; line-height: inherit; }
-  #src:disabled { opacity: .5; }
+  #term { flex: 1; min-height: 0; }
 </style>
 </head>
 <body>
@@ -43,133 +29,22 @@
     <p>Common Lisp on WebAssembly GC — each form is compiled to WebAssembly in your browser.</p>
     <button id="clear" title="Ctrl+L">Clear</button>
   </header>
-  <div id="term">
-    <div id="log">Loading…</div>
-    <div class="entry"><span id="prompt"></span><textarea id="src" rows="1" spellcheck="false"
-      autocapitalize="off" autocomplete="off" disabled aria-label="Lisp input"></textarea></div>
-  </div>
+  <div id="term"></div>
 </main>
 <script type="module">
   import { loadClysm } from './clysm.mjs';
-  const term = document.getElementById('term');
-  const log = document.getElementById('log');
-  const src = document.getElementById('src');
-  const promptEl = document.getElementById('prompt');
-
-  let lastChar = '\n';   // the last character written to the log
-  let pending = '';      // output since the last newline (a prompt for READ-LINE)
-  const add = (text, cls) => {
-    if (!text) return;
-    const s = document.createElement('span');
-    if (cls) s.className = cls;
-    s.textContent = text;
-    log.append(s);
-    lastChar = text[text.length - 1];
-    const nl = text.lastIndexOf('\n');
-    pending = nl < 0 ? pending + text : text.slice(nl + 1);
-  };
-  const freshLine = () => { if (lastChar !== '\n') add('\n'); };
-  const scroll = () => { term.scrollTop = term.scrollHeight; };
-
-  // input history, kept in localStorage
-  const HISTORY_KEY = 'clysm-repl-history';
-  let history = [];
-  try { history = JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch {}
-  let hpos = history.length, draft = '';
-  const remember = (code) => {
-    if (history[history.length - 1] !== code) history.push(code);
-    history = history.slice(-500);
-    hpos = history.length;
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch {}
-  };
-
-  const resize = () => { src.rows = Math.max(1, src.value.split('\n').length); };
-  const setInput = (text) => { src.value = text; resize(); src.setSelectionRange(text.length, text.length); };
-
-  let lisp;
-  const prompt = () => `${globalThis.clysmRepl.packageName()}> `;
-  const showResult = (result) => {
-    // the values, one per line, possibly followed by "; Error: ..."
-    const m = /(^|\n); Error: /.exec(result);
-    const at = m ? m.index + m[1].length : result.length;
-    add(result.slice(0, at), 'val');
-    add(result.slice(at), 'err');
-  };
-  const run = async (code) => {
-    const p = promptEl.textContent;
-    freshLine();
-    add(p + code.replace(/\n/g, '\n' + ' '.repeat(p.length)) + '\n', 'in');
-    setInput('');
-    if (code.trim()) remember(code);
-    src.disabled = true;
-    scroll();
-    // let the page paint before a long computation
-    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-    const bsp = lisp.instance.exports.bsp.value;
-    try {
-      const result = lisp.eval(code);
-      freshLine();
-      showResult(result);
-    } catch (e) {
-      freshLine();
-      add(e instanceof RangeError ? '; Error: control stack exhausted\n'
-                                  : `; Internal error: ${e.message}\n`, 'err');
-      // the exception skipped the code that restores special variables
-      globalThis.clysmRepl.unbindTo(bsp);
-    }
-    promptEl.textContent = prompt();
-    src.disabled = false;
-    src.focus();
-    scroll();
-  };
-
-  src.addEventListener('input', resize);
-  src.addEventListener('keydown', (e) => {
-    if (e.isComposing) return;
-    const before = src.value.slice(0, src.selectionStart);
-    const after = src.value.slice(src.selectionEnd);
-    if (e.key === 'Enter' && !e.shiftKey) {
-      // Enter evaluates a complete input and continues an incomplete one;
-      // Ctrl+Enter always evaluates
-      if (e.ctrlKey || e.metaKey || !after.trim() && globalThis.clysmRepl.complete(src.value)) {
-        e.preventDefault();
-        if (src.value.trim() || e.ctrlKey || e.metaKey) run(src.value);
-      }
-    } else if (e.key === 'ArrowUp' && !before.includes('\n') && hpos > 0) {
-      e.preventDefault();
-      if (hpos === history.length) draft = src.value;
-      setInput(history[--hpos]);
-    } else if (e.key === 'ArrowDown' && !after.includes('\n') && hpos < history.length) {
-      e.preventDefault();
-      hpos++;
-      setInput(hpos === history.length ? draft : history[hpos]);
-    } else if (e.key === 'l' && e.ctrlKey) {
-      e.preventDefault();
-      clear();
-    } else if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault();
-      document.execCommand('insertText', false, '  ');
-    }
-  });
-  // clicking the terminal focuses the input, unless text is being selected
-  term.addEventListener('click', () => { if (!getSelection().toString()) src.focus(); });
-  const clear = () => { log.textContent = ''; lastChar = '\n'; pending = ''; src.focus(); };
-  document.getElementById('clear').addEventListener('click', clear);
-
+  import { createRepl } from './repl.mjs';
+  const repl = createRepl(document.getElementById('term'));
+  document.getElementById('clear').addEventListener('click', repl.clear);
+  repl.info('Loading…\n');
   try {
     const bytes = await (await fetch('clysm.wasm')).arrayBuffer();
-    log.textContent = '';
-    lisp = await loadClysm(bytes, (text, fd) => add(text, fd === 2 ? 'err' : undefined), {
-      // standard input (READ-LINE, READ...): ask with a dialog; Cancel is end of file
-      readLine: () => window.prompt(pending.trim() || 'Standard input'),
-    });
-    add('Enter evaluates, Shift+Enter starts a new line, ↑/↓ recall history, Ctrl+L clears.\n', 'info');
-    promptEl.textContent = prompt();
-    src.disabled = false;
-    src.focus();
+    const lisp = await loadClysm(bytes, repl.write, { readLine: repl.readLine });
+    repl.clear();
+    repl.info('Enter evaluates, Shift+Enter starts a new line, ↑/↓ recall history, Ctrl+L clears.\n');
+    repl.start(lisp);
   } catch (e) {
-    log.textContent = '';
-    add(`Could not start Clysm: ${e.message}\n`, 'err');
+    repl.error(`Could not start Clysm: ${e.message}\n`);
   }
 </script>
 </body>

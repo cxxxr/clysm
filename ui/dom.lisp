@@ -8,6 +8,8 @@
 ;;;; :CLASS (className), :FOR (htmlFor), and :STYLE and names with a hyphen
 ;;;; (:ARIA-LABEL, :DATA-ID), which are attributes.  Listeners are called with
 ;;;; the DOM event.
+;;;;
+;;;; Compile it after ui.lisp and command.lisp.
 
 (in-package "UI")
 
@@ -104,5 +106,46 @@
       (or (js:call (backend-document backend) +query-selector+ container)
           (error "UI: no element matches ~S" container))
       container))
+
+;;; errors: the browser's dialogs
+
+(defmethod choose-restart ((backend dom-backend) condition restarts)
+  (let ((message (princ-to-string condition))
+        (window (js:global)))
+    (js:call (js:global "console") "error" message)
+    (if (null (cdr restarts))
+        (progn (js:call window "alert" message) nil)
+        (let ((answer (js:call window "prompt"
+                               (format nil "~A~%~%~{~D: ~A~%~}" message
+                                       (loop for restart in restarts for i from 1
+                                             collect i collect (princ-to-string restart)))
+                               "1")))
+          (and (stringp answer)
+               (let ((n (parse-integer answer :junk-allowed t)))
+                 (and n (<= 1 n (length restarts)) (nth (1- n) restarts))))))))
+
+;;; commands: their keys
+
+(defun event-key (event)
+  "The key of the keyboard event EVENT in the form of PARSE-KEY."
+  (cons (string-upcase (js:get event "key"))
+        (append (and (js:get event "altKey") '(:alt))
+                (and (or (js:get event "ctrlKey") (js:get event "metaKey")) '(:ctrl))
+                (and (js:get event "shiftKey") '(:shift)))))
+
+(defgeneric install-commands (backend &key &allow-other-keys)
+  (:documentation "Make the commands available to the user in the way of
+BACKEND: in a browser by their keys, in the desktop application also in the
+menu bar."))
+
+(defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
+  (js:call (backend-document backend) +add-event-listener+ "keydown"
+           (lambda (event)
+             (let ((command (and (stringp (js:get event "key"))
+                                 (command-for-key (event-key event)))))
+               (when command
+                 (js:call event "preventDefault")
+                 (invoke-command (command-name command))))
+             nil)))
 
 (setf *backend* (make-instance 'dom-backend))

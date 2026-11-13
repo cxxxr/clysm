@@ -156,3 +156,85 @@
   (incf *a*)
   (flush)
   (format t "~&~%== autorun~%~S~%" (reverse log)))
+
+;;; ---- commands
+
+(defstate *count* 0)
+
+(define-command (increment :label "Add one" :menu "Edit" :key "CmdOrCtrl+I") (&optional (n 1))
+  (incf *count* n))
+
+(define-command (reset :menu "Edit" :separator t :enabled (plusp *count*)) ()
+  (setf *count* 0))
+
+(define-command (fail :menu "Debug") ()
+  (restart-case (error "it failed at ~D" *count*)
+    (use-seven () :report "Use 7" (setf *count* 7))))
+
+(defcomponent counter ()
+  (:div (:span *count*)
+        (:button :on-click (command increment 2) "+2")
+        (command-button 'reset)))
+
+(let ((root (make-root)))
+  (mount (counter) root)
+  (show "commands" root)
+  (format t "menus: ~S~%"
+          (mapcar (lambda (menu) (cons (car menu) (mapcar #'command-label (cdr menu))))
+                  (command-menus)))
+  (format t "keys: ~S ~S ~S~%" (parse-key "CmdOrCtrl+Shift+S")
+          (command-name (command-for-key (parse-key "ctrl+i")))
+          (command-for-key (parse-key "Ctrl+Shift+I")))
+  (backend-log *backend*)
+  (format t "reset while disabled: ~S~%" (invoke-command 'reset))
+  (fire (find-node root "button" :index 0) "click" :event)
+  (show-log "+2 (the reset button is enabled)")
+  (increment)                            ; as from the REPL
+  (flush)
+  (show-log "(increment)")
+  (fire (find-node root "button" :index 1) "click" :event)
+  (show-log "reset")
+
+  ;; ---- errors: the "user" chooses a restart
+  (invoke-command 'fail)
+  (flush)
+  (show-log "fail, cancelled")
+  (setf (backend-chooser *backend*) (lambda (condition restarts)
+                                      (declare (ignore condition))
+                                      (first restarts)))
+  (invoke-command 'fail)
+  (flush)
+  (show-log "fail, with the restart Use 7")
+  (setf (backend-chooser *backend*) nil))
+
+;;; an error while rendering: the component keeps what it showed
+
+(defcomponent fragile ()
+  (:p "count " (if (> *count* 100) (error "too many") *count*)))
+
+(let ((root (make-root)))
+  (setf *count* 1)
+  (mount (fragile) root)
+  (backend-log *backend*)
+  (setf *count* 101)
+  (flush)
+  (show-log "an error in render")
+  (show "still shown" root)
+  (setf *count* 2)
+  (flush)
+  (show "and it recovers" root))
+
+;;; ---- a redefinition shows at once
+
+(defcomponent greeting (name &state (clicks 0))
+  (:p :on-click (lambda () (incf clicks)) "hello " name " " clicks))
+
+(let ((root (make-root)))
+  (mount (greeting "world") root)
+  (fire (find-node root "p") "click")
+  (backend-log *backend*)
+  (eval '(defcomponent greeting (name &state (clicks 0) (extra "!"))
+          (:h1 :on-click (lambda () (incf clicks)) "HELLO " name " " clicks extra)))
+  (flush)
+  (show-log "redefined")
+  (show "redefined" root))

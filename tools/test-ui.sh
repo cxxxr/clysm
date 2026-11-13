@@ -12,9 +12,9 @@ check() {
     echo "FAIL ui ($1)"; diff tests/ui/ui.expected "build/tests/ui-$1.out" | head -20; status=1
   fi
 }
-bin/clysm run ui/ui.lisp ui/sexp.lisp tests/ui/ui.lisp > build/tests/ui-aot.out 2> build/tests/ui-aot.err
+bin/clysm run ui/ui.lisp ui/command.lisp ui/sexp.lisp tests/ui/ui.lisp > build/tests/ui-aot.out 2> build/tests/ui-aot.err
 check aot
-cat ui/ui.lisp ui/sexp.lisp tests/ui/ui.lisp > build/tests/ui-all.lisp
+cat ui/ui.lisp ui/command.lisp ui/sexp.lisp tests/ui/ui.lisp > build/tests/ui-all.lisp
 bin/clysm script build/tests/ui-all.lisp > build/tests/ui-native.out 2> build/tests/ui-native.err
 check native
 exit $status

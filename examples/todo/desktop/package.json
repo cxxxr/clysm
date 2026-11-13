@@ -5,6 +5,13 @@
   "description": "A TODO list written in Common Lisp, compiled to WebAssembly by Clysm",
   "main": "main.js",
   "private": true,
+  "window": {
+    "width": 640,
+    "height": 720,
+    "minWidth": 380,
+    "minHeight": 400,
+    "backgroundColor": { "light": "#f6f4ef", "dark": "#151618" }
+  },
   "scripts": {
     "start": "electron ."
   },

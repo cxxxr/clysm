@@ -4,8 +4,9 @@
 ;;;; UI framework (ui/): the state is CLOS objects and DEFSTATE variables, and
 ;;;; the components follow them — no code here updates the page.
 ;;;; Build with examples/todo/build.sh and open build/todo/index.html.
-;;;; The same program is a desktop app in examples/todo/desktop (Electron),
-;;;; where it saves to a file and answers the commands of the menu.
+;;;; The same program is a desktop application (examples/todo/build-desktop.sh,
+;;;; in the Electron shell ui/electron), where it saves to a file and its
+;;;; commands are in the menu bar.
 
 (defpackage "TODO"
   (:use "CL" "UI"))
@@ -32,21 +33,19 @@
 (defun add-todo (text)
   (setf *todos* (append *todos* (list (make-instance 'todo :text text)))))
 
-(defun delete-todo (todo)
-  (setf *todos* (remove todo *todos*)))
-
 ;;; ------------------------------------------------------------------
-;;; Persistence, as JSON: in a file when the page runs in the desktop app
-;;; (examples/todo/desktop, which provides the global `desktop`), otherwise
-;;; in localStorage
+;;; Persistence, as JSON: in a file in the desktop application
+;;; (ui/desktop.lisp), otherwise in localStorage
 
 (defparameter +storage-key+ "clysm-todo")
+(defparameter +filters+ '(("TODO リスト" "json")))
 
 (defun storage () (js:global "localStorage"))
 
-(defun desktop ()
-  "The desktop app's API (see desktop/preload.js), or NIL in a browser."
-  (js:global "desktop"))
+(define-condition not-a-todo-list (error)
+  ((path :initarg :path :initform nil :reader not-a-todo-list-path))
+  (:report (lambda (condition stream)
+             (format stream "~@[~A は~]TODOリストではありません。" (not-a-todo-list-path condition)))))
 
 (defun todos-json ()
   (js:call (js:global "JSON") "stringify"
@@ -55,65 +54,112 @@
                                           "done" (if (todo-done todo) t :false)))
                              *todos*))))
 
-(defun parse-todos (json)
-  "The tasks of a saved list; an error unless JSON is one."
-  (let ((array (js:call (js:global "JSON") "parse" json)))
-    (unless (js:call (js:global "Array") "isArray" array)
-      (error "not a TODO list"))
-    (loop for i below (js:get array "length")
-          for item = (js:get array i)
-          for text = (and (js:js-value-p item) (js:get item "text"))
-          unless (stringp text) do (error "not a TODO list")
-          collect (make-instance 'todo :text text :done (eq (js:get item "done") t)))))
+(defun parse-todos (json &optional path)
+  "The tasks of a saved list; the error NOT-A-TODO-LIST unless JSON is one."
+  (flet ((fail () (error 'not-a-todo-list :path path)))
+    (let ((array (handler-case (js:call (js:global "JSON") "parse" json)
+                   (error () (fail)))))
+      (unless (js:call (js:global "Array") "isArray" array) (fail))
+      (loop for i below (js:get array "length")
+            for item = (js:get array i)
+            for text = (and (js:js-value-p item) (js:get item "text"))
+            unless (stringp text) do (fail)
+            collect (make-instance 'todo :text text :done (eq (js:get item "done") t))))))
 
 (defun save ()
   "Called (by AUTORUN) whenever the tasks or the file have changed."
-  (let ((json (todos-json)))
-    (if (desktop)
-        (when *file* (js:call (desktop) "save" *file* json))
-        (ignore-errors (js:call (storage) "setItem" +storage-key+ json)))))
+  (let ((json (todos-json)) (file *file*))
+    (cond ((not (desktop-p))
+           (ignore-errors (js:call (storage) "setItem" +storage-key+ json)))
+          (file
+           ;; if the file cannot be written, the user chooses what to do
+           (restart-case (write-file file json)
+             (retry ()
+               :report "もう一度保存する"
+               (save))
+             (save-elsewhere ()
+               :report "別の場所に保存する…"
+               (save-list-as)))))))
 
-(defun alert (message) (js:call (js:global) "alert" message))
+;;; the desktop application remembers the file of the list in its settings
+
+(defun settings-file () (user-data-file "settings.json"))
+
+(defun last-file ()
+  (or (let ((text (read-file (settings-file))))
+        (and text
+             (ignore-errors
+              (let ((settings (js:call (js:global "JSON") "parse" text)))
+                (and (js:js-value-p settings)
+                     (stringp (js:get settings "file"))
+                     (js:get settings "file"))))))
+      (user-data-file "todos.json")))
+
+(defun use-file (path)
+  (setf *file* path)
+  (add-recent-document path)
+  (ignore-errors
+   (write-file (settings-file)
+               (js:call (js:global "JSON") "stringify" (js:object "file" path)))))
+
+(defun load-file (path)
+  "Show the list in the file PATH (an empty one if there is no such file)."
+  (let ((text (read-file path)))
+    (setf *todos* (and text (parse-todos text path))
+          *file* path)))
 
 (defun load-todos ()
-  (if (desktop)
-      (let* ((last (js:call (desktop) "load"))
-             (text (js:get last "text")))
-        (setf *file* (js:get last "path"))
-        (when (stringp text)
-          (handler-case (setf *todos* (parse-todos text))
-            (error ()
-              (alert (format nil "~A を読み込めませんでした。" *file*))
-              ;; leave the file alone
-              (setf *file* nil)))))
+  (if (desktop-p)
+      ;; if this fails the list has no file: the file is left alone
+      (load-file (last-file))
       (let ((json (ignore-errors (js:call (storage) "getItem" +storage-key+))))
         (when (stringp json)
           (ignore-errors (setf *todos* (parse-todos json)))))))
 
-;;; the commands of the desktop app's menu
+;;; ------------------------------------------------------------------
+;;; Commands: called from the buttons, the menu bar of the desktop
+;;; application, their keys, or the REPL
 
-(defun use-file (path)
-  (setf *file* path)
-  (js:call (desktop) "setFile" path))
+(define-command (new-list :menu "ファイル" :label "新しいリスト…" :key "CmdOrCtrl+N"
+                          :enabled (desktop-p))
+    ()
+  (let ((path (choose-file-to-save :title "新しいリスト" :default-name "todo.json"
+                                   :filters +filters+)))
+    (when path
+      (setf *todos* nil)
+      (use-file path))))
 
-(defun menu-command (command)
-  (cond ((string= command "new")
-         (let ((path (js:call (desktop) "chooseFile" "新しいリスト")))
-           (when (stringp path)
-             (setf *todos* nil)
-             (use-file path))))
-        ((string= command "open")
-         (let ((file (js:call (desktop) "open")))
-           (when (js:js-value-p file)
-             (let ((path (js:get file "path")))
-               (handler-case (setf *todos* (parse-todos (js:get file "text")))
-                 (error ()
-                   (alert (format nil "~A はTODOリストではありません。" path))
-                   (return-from menu-command)))
-               (use-file path)))))
-        ((string= command "save-as")
-         (let ((path (js:call (desktop) "chooseFile" "名前を付けて保存")))
-           (when (stringp path) (use-file path))))))
+(define-command (open-list :menu "ファイル" :label "開く…" :key "CmdOrCtrl+O"
+                           :enabled (desktop-p))
+    ()
+  (let ((path (choose-file-to-open :filters +filters+)))
+    (when path
+      (restart-case (progn (load-file path)
+                           (use-file path))
+        (choose-another ()
+          :report "別のファイルを選ぶ…"
+          (open-list))))))
+
+(define-command (save-list-as :menu "ファイル" :label "名前を付けて保存…" :key "CmdOrCtrl+Shift+S"
+                              :enabled (desktop-p))
+    ()
+  (let ((path (choose-file-to-save :title "名前を付けて保存" :default-name "todo.json"
+                                   :filters +filters+)))
+    (when path (use-file path))))
+
+(define-command (complete-all :menu "リスト" :label "すべて完了にする"
+                              :enabled (notevery #'todo-done *todos*))
+    ()
+  (dolist (todo *todos*) (setf (todo-done todo) t)))
+
+(define-command (clear-completed :menu "リスト" :label "完了済みを削除"
+                                 :key "CmdOrCtrl+Shift+Backspace"
+                                 :enabled (some #'todo-done *todos*))
+    ()
+  (setf *todos* (remove-if #'todo-done *todos*)))
+
+(define-command delete-todo (todo)
+  (setf *todos* (remove todo *todos*)))
 
 (defun file-name (path)
   (subseq path (1+ (or (position-if (lambda (c) (member c '(#\/ #\\))) path :from-end t) -1))))
@@ -151,8 +197,7 @@
           (:span :class "text" :title "ダブルクリックで編集"
                  :on-dblclick (lambda (e) (declare (ignore e)) (setf editing t))
                  (todo-text todo)))
-      (:button :class "delete" :title "削除"
-               :on-click (lambda (e) (declare (ignore e)) (delete-todo todo))
+      (:button :class "delete" :title "削除" :on-click (command delete-todo todo)
                "×"))))
 
 (defcomponent filter-button (filter label)
@@ -163,14 +208,13 @@
 (defcomponent note ()
   (:p :class "note" :id "note"
     "ダブルクリックで編集 ・ "
-    (cond ((not (desktop)) "データはブラウザの localStorage に保存されます")
+    (cond ((not (desktop-p)) "データはブラウザの localStorage に保存されます")
           (*file* (format nil "保存先: ~A" *file*))
           (t "保存先がありません（ファイル → 名前を付けて保存）"))))
 
 (defcomponent app ()
-  (let* ((visible (visible-todos))
-         (active (count-if-not #'todo-done *todos*))
-         (done (- (length *todos*) active)))
+  (let ((visible (visible-todos))
+        (active (count-if-not #'todo-done *todos*)))
     (:div
       (:div :class "card"
         (:div :class "entry"
@@ -201,10 +245,8 @@
             (filter-button :all "すべて")
             (filter-button :active "未完了")
             (filter-button :done "完了"))
-          (:button :id "clear" :hidden (zerop done)
-                   :on-click (lambda (e)
-                               (declare (ignore e))
-                               (setf *todos* (remove-if #'todo-done *todos*)))
+          (:button :id "clear" :hidden (not (command-enabled-p 'clear-completed))
+                   :on-click (command clear-completed)
                    "完了済みを削除")))
       (note))))
 
@@ -217,10 +259,10 @@
                   (and *file* (file-name *file*))
                   (count-if-not #'todo-done *todos*))))
 
-(when (desktop)
-  (js:call (desktop) "onMenu" #'menu-command))
-(load-todos)
+(setf *abort-label* "キャンセル")
+(with-error-dialog (load-todos))
 (mount (app) "#app")
+(install-commands *backend* :edit-label "編集" :view-label "表示" :quit-label "終了")
 ;; from now on, every change of the tasks is saved and shown in the title
 (autorun #'save)
 (autorun #'update-title)

@@ -239,7 +239,9 @@ destructuring-bind (defined by the runtime)."
            (fnode (convert fn-form env)))
       (when (and (eq (car fnode) :lambda) (null (lam-free-vars (second fnode))))
         (setf (lam-static-p (second fnode)) t)
-        (push (second fnode) (gethash sym *global-defuns*)))
+        (push (second fnode) (gethash sym *global-defuns*))
+        ;; in a development image the function may be redefined at run time
+        (when *redefinable-functions* (setf (gethash sym *notinline*) t)))
       (push `(:defun ,sym ,fnode) *toplevel-nodes*))))
 
 (defun process-defpackage (form env)

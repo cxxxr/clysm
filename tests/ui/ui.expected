@@ -65,3 +65,49 @@ events: ((:FOCUS :INPUT) (:UNMOUNTED "x") (:UNMOUNTED "z"))
 
 == autorun
 (11 17 18)
+
+== commands
+(:ROOT NIL
+ (:DIV NIL (:SPAN NIL "0") (:BUTTON NIL "+2") (:BUTTON (:DISABLED T) "Reset")))
+menus: (("Edit" "Add one" "Reset") ("Debug" "Fail"))
+keys: ("S" :CTRL :SHIFT) INCREMENT NIL
+reset while disabled: NIL
+-- +2 (the reset button is enabled)
+   (:TEXT "0" "2")
+   (:UNSET :BUTTON :DISABLED)
+-- (increment)
+   (:TEXT "2" "3")
+-- reset
+   (:TEXT "3" "0")
+   (:SET :BUTTON :DISABLED T)
+-- fail, cancelled
+   (:ERROR "it failed at 0" ("Use 7" "Cancel"))
+-- fail, with the restart Use 7
+   (:ERROR "it failed at 0" ("Use 7" "Cancel"))
+   (:TEXT "0" "7")
+   (:UNSET :BUTTON :DISABLED)
+-- an error in render
+   (:ERROR "too many" ("Cancel"))
+   (:TEXT "7" "101")
+
+== still shown
+(:ROOT NIL (:P NIL "count " "1"))
+
+== and it recovers
+(:ROOT NIL (:P NIL "count " "2"))
+-- redefined
+   (:CREATE "h1")
+   (:CREATE-TEXT "HELLO ")
+   (:INSERT "HELLO " :IN :H1)
+   (:CREATE-TEXT "world")
+   (:INSERT "world" :IN :H1)
+   (:CREATE-TEXT " ")
+   (:INSERT " " :IN :H1)
+   (:CREATE-TEXT "1")
+   (:INSERT "1" :IN :H1)
+   (:CREATE-TEXT "!")
+   (:INSERT "!" :IN :H1)
+   (:REPLACE :P :H1)
+
+== redefined
+(:ROOT NIL (:H1 NIL "HELLO " "world" " " "1" "!"))

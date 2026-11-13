@@ -38,7 +38,7 @@ $ make web         # browser demo in build/web
 | `src/prims.lisp` | inline primitives and hand-written Wasm runtime helpers |
 | `src/driver.lisp` | toplevel processing (`eval-when`, `defmacro`, `defpackage`…) and module assembly |
 | `runtime/*.lisp` | the Common Lisp library, written in Lisp and compiled by Clysm |
-| `ui/*.lisp` | the GUI framework (see [GUI framework](#gui-framework)) |
+| `ui/*.lisp` | the GUI framework (see [GUI framework](#gui-framework)); `ui/electron/` is its desktop shell |
 | `host/run.mjs` | Node.js host: I/O imports, runs the module in a worker with a large stack |
 | `tools/run-tests.sh` | runs every `tests/cases/*.lisp` on SBCL and Clysm and compares the output |
 
@@ -184,29 +184,39 @@ functions that call back into Lisp through the exported `lisp_apply`):
 (js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
 ```
 
-### A browser application
+`js:get` of `null` or `undefined` (`NIL`) is `NIL`; a JavaScript exception in
+`js:call`, `js:funcall` or `js:new` is a Lisp error.
+
+### A browser and desktop application
 
 `examples/todo/` is a TODO list written entirely in Lisp with the
 [UI framework](#gui-framework): `todo.lisp` describes the page with
-components, and saves to `localStorage` through the `JS` package. It is
-compiled ahead of time to `todo.wasm`, which `index.html` loads with the
-browser host (`host/web/clysm.mjs`).
+components, defines its operations as commands, and saves through the `JS`
+package. It is compiled ahead of time to `todo.wasm`, which `index.html`
+loads with the browser host (`host/web/clysm.mjs`).
 
 ```
 $ examples/todo/build.sh                    # build/todo/
 $ python3 -m http.server -d build/todo      # open http://localhost:8000/
 ```
 
-The same program is a desktop application with [Electron](https://www.electronjs.org/)
-(`examples/todo/desktop/`): it saves the list to a JSON file, and the menu
-creates, opens and saves lists with the native dialogs. `main.js` and
-`preload.js` give the page a small synchronous API (the global `desktop`) that
-`todo.lisp` calls through the `JS` package; in a browser, where it is absent,
-the program uses `localStorage`.
+The same program is a desktop application in the Electron shell
+`ui/electron/`: there it saves the list to a JSON file, its commands are in
+the menu bar, files are chosen with the native dialogs, and a file that
+cannot be read or written is reported with the restarts to choose from. In a
+browser it uses `localStorage`.
 
 ```
 $ examples/todo/build-desktop.sh            # build/todo-desktop/, installs Electron with npm
 $ (cd build/todo-desktop && npm start)
+```
+
+With `--dev`, both scripts build the [development version](#development-with-a-repl),
+which has a REPL in its window:
+
+```
+TODO> (push (make-instance 'todo :text "from the REPL") *todos*)
+TODO> (defcomponent filter-button (filter label) ...)     ; the buttons change
 ```
 
 ## GUI framework
@@ -270,11 +280,80 @@ code tells the screen to update.
   S-expressions and records every change, so components are tested without a
   browser (`make test-ui`, `tests/ui/ui.lisp`).
 
-An application is compiled together with the framework:
+An application is compiled together with the framework (`ui/desktop.lisp`
+only if it is also a desktop application):
 
 ```
-$ bin/clysm compile ui/ui.lisp ui/dom.lisp app.lisp -o app.wasm
+$ bin/clysm compile ui/ui.lisp ui/command.lisp ui/dom.lisp ui/desktop.lisp app.lisp -o app.wasm
 ```
+
+### Commands
+
+A command (`ui/command.lisp`) is a function with a label and, optionally, a
+menu, a key and a condition under which it is enabled:
+
+```lisp
+(ui:define-command (open-list :menu "File" :label "Open…" :key "CmdOrCtrl+O") ()
+  ...)
+(ui:define-command (clear-completed :menu "List" :label "Clear completed"
+                                    :enabled (some #'todo-done *todos*)) ()
+  (setf *todos* (remove-if #'todo-done *todos*)))
+```
+
+The same command is used everywhere: `(ui:command clear-completed)` is a
+listener for a button (and `(ui:command-button 'clear-completed)` a button
+that is disabled while the command is), `(ui:install-commands ui:*backend*)`
+binds the keys in a browser and builds the menu bar of the desktop
+application, and `(clear-completed)` calls it from the REPL. The `:enabled`
+form is observed like the state read by a component, so buttons and menu
+items follow it.
+
+### Errors and restarts
+
+Listeners, commands and rendering run inside `ui:with-error-dialog`. An
+error there does not stop the application: the user is shown the message
+and the restarts that are active — those the program established around the
+failing operation, and `abort` — and the one they choose is invoked.
+
+```lisp
+(defun save ()
+  (restart-case (ui:write-file *file* (todos-json))
+    (retry () :report "Try again" (save))
+    (save-elsewhere () :report "Save to another file…" (save-list-as))))
+```
+
+The desktop application asks with a native message box whose buttons are the
+restarts, a browser with `prompt`, and the S-expression backend calls
+`(ui:backend-chooser backend)`. A component that fails to render keeps what
+it showed.
+
+### Desktop applications
+
+`ui/electron/` is an [Electron](https://www.electronjs.org/) shell without
+anything specific to an application: it opens the window described in the
+application's `package.json` and shows its page. When a program runs in it,
+`ui/desktop.lisp` makes `ui:desktop-backend` the backend — the DOM backend,
+plus the menu bar built from the commands, native dialogs
+(`ui:choose-file-to-open`, `ui:choose-file-to-save`, `ui:message-box`) and
+files (`ui:read-file`, `ui:write-file`, `ui:user-data-file`). `(ui:desktop-p)`
+tells whether it does, so one program can be a web page and a desktop
+application.
+
+### Development with a REPL
+
+`tools/build-ui-dev.sh OUT.wasm APP.lisp...` builds a development image: the
+compiler, the framework and the application. A page that loads it docks a
+REPL (`host/web/repl.mjs`, see `examples/todo/index.html`), and what is
+evaluated there is compiled in the page and changes the running application:
+
+* a redefined component is shown at once, with the state of its instances
+  (`&state` variables can be added);
+* a redefined function is used from then on (the functions of a development
+  image are compiled `notinline`), and every component is rendered again
+  after each evaluation;
+* the instances of a redefined `defmodel` class get its new slots
+  (`sys::track-instances` is on);
+* a command defined or changed there appears in the menu bar.
 
 ## ASDF
 
@@ -394,7 +473,7 @@ $ make web
 $ python3 -m http.server -d build      # open http://localhost:8000/web/
 ```
 
-Enter evaluates a complete input and starts a new line in an incomplete one
+The terminal is `host/web/repl.mjs`. Enter evaluates a complete input and starts a new line in an incomplete one
 (the image's reader decides, through `clysmRepl.complete`), ↑/↓ recall the
 history (kept in `localStorage`), and the prompt shows the current package.
 Standard input (`read-line`, `read`) is asked for with a dialog; Cancel is end
@@ -557,6 +636,9 @@ What makes the generated code fast:
 functions (by name), which helps to see what a form compiles to.
 
 ## Tests
+
+`make test-ui` tests the GUI framework on its S-expression backend
+(`tests/ui/ui.lisp`), compiled ahead of time and in the REPL image.
 
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares
 standard output with SBCL running the same file. `INTERP=1` runs the files with

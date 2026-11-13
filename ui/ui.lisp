@@ -29,13 +29,26 @@
    "MOUNT" "UNMOUNT"
    ;; state
    "DEFMODEL" "MODEL" "MODEL-CLASS" "DEFSTATE" "AUTORUN" "STOP" "FLUSH"
+   ;; errors
+   "WITH-ERROR-DIALOG" "CALL-WITH-ERROR-DIALOG" "*ABORT-LABEL*" "CHOOSE-RESTART"
+   ;; commands (command.lisp)
+   "DEFINE-COMMAND" "COMMAND" "INVOKE-COMMAND" "FIND-COMMAND" "COMMAND-ENABLED-P"
+   "COMMAND-NAME" "COMMAND-LABEL" "COMMAND-MENU" "COMMAND-KEY" "COMMAND-SEPARATOR"
+   "COMMAND-BUTTON" "COMMAND-MENUS" "COMMAND-FOR-KEY" "PARSE-KEY" "*COMMANDS*"
+   ;; development
+   "REFRESH"
    ;; the backend protocol
    "*BACKEND*" "MAKE-ELEMENT-NODE" "MAKE-TEXT-NODE" "SET-NODE-TEXT" "SET-PROPERTY"
    "REMOVE-PROPERTY" "SET-LISTENER" "INSERT-NODE" "REMOVE-NODE" "REPLACE-NODE"
    "NODE-FOLLOWS-P" "REQUEST-FLUSH" "RESOLVE-CONTAINER"
    ;; the backends: dom.lisp, sexp.lisp
-   "DOM-BACKEND"
-   "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"))
+   "DOM-BACKEND" "INSTALL-COMMANDS"
+   "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
+   "BACKEND-CHOOSER"
+   ;; the desktop application (desktop.lisp)
+   "DESKTOP-BACKEND" "DESKTOP-P" "READ-FILE" "WRITE-FILE" "DESKTOP-FILE-ERROR"
+   "CHOOSE-FILE-TO-OPEN" "CHOOSE-FILE-TO-SAVE" "MESSAGE-BOX" "USER-DATA-FILE"
+   "ADD-RECENT-DOCUMENT"))
 
 (in-package "UI")
 
@@ -70,6 +83,47 @@ happens on NODE.  Called once for every event of a node."))
 (defgeneric resolve-container (backend container)
   (:documentation "The node for the CONTAINER argument of MOUNT.")
   (:method (backend container) container))
+
+;;; ------------------------------------------------------------------
+;;; Errors: the user chooses a restart
+;;;
+;;; Event listeners, commands and rendering run inside WITH-ERROR-DIALOG.  An
+;;; error there is not fatal: the backend shows its message with the restarts
+;;; that are available — those the application established with
+;;; RESTART-CASE around the failing operation, and ABORT, which gives up the
+;;; operation — and the chosen restart is invoked.
+
+(defgeneric choose-restart (backend condition restarts)
+  (:documentation "Tell the user about CONDITION and ask which of RESTARTS (never
+empty, the last is ABORT) to invoke; return it, or NIL for ABORT."))
+
+(defvar *abort-label* "Cancel" "How the ABORT restart of WITH-ERROR-DIALOG is described to the user.")
+
+(defvar *error-dialog* nil "True inside WITH-ERROR-DIALOG.")
+
+(defun report-error (condition)
+  (let* ((restarts (compute-restarts condition))
+         (abort (find 'abort restarts :key #'restart-name))
+         ;; up to the ABORT of the dialog; what is outside is not offered
+         (offered (ldiff restarts (cdr (member abort restarts))))
+         (choice (and *backend* (choose-restart *backend* condition offered))))
+    (invoke-restart-interactively (or choice abort))))
+
+(defun call-with-error-dialog (function)
+  (if *error-dialog*
+      (funcall function)
+      (let ((*error-dialog* t))
+        (restart-case (handler-bind ((error #'report-error))
+                        (funcall function))
+          (abort ()
+            :report (lambda (stream) (write-string *abort-label* stream))
+            nil)))))
+
+(defmacro with-error-dialog (&body body)
+  "Evaluate BODY; if it signals an error, the user is shown the error and
+chooses one of the active restarts.  The restart ABORT established here
+returns NIL from the form."
+  `(call-with-error-dialog (lambda () ,@body)))
 
 ;;; ------------------------------------------------------------------
 ;;; Observers: what runs again when the state it read changes
@@ -122,8 +176,9 @@ state changed (parents before the components inside them)."
                   (dolist (observer (sort (shiftf *dirty* nil) #'< :key #'observer-depth))
                     (when (and (observer-alive observer) (observer-dirty observer))
                       (let ((*backend* (observer-backend observer)))
-                        (run-observer observer)))))
-         (run-mount-hooks))
+                        ;; an observer that fails keeps what it showed
+                        (with-error-dialog (run-observer observer))))))
+         (with-error-dialog (run-mount-hooks)))
     (setf *flush-requested* nil)))
 
 ;;; AUTORUN: a function that runs again when what it read changes
@@ -142,7 +197,7 @@ changed.  STOP of the value ends that."
   (let ((reaction (make-instance 'reaction :function function)))
     ;; after the components
     (setf (observer-depth reaction) most-positive-fixnum)
-    (run-observer reaction)
+    (with-error-dialog (run-observer reaction))
     reaction))
 
 (defun stop (reaction)
@@ -344,6 +399,14 @@ display, :KEY the key (see KEYED).  A child is a node, a string or number
 (defgeneric initial-state (component)
   (:method (component) nil))
 
+(defun ensure-state (component count)
+  "After a redefinition with other &STATE variables: keep the first values."
+  (unless (= (length (component-state component)) count)
+    (let ((old (component-state component))
+          (new (initial-state component)))
+      (replace new old)
+      (setf (component-state component) new))))
+
 (defmacro defcomponent (name lambda-list &body body)
   "Define the component NAME: a function with LAMBDA-LIST that returns a node
 for the markup, and the class NAME of its instances on the display.
@@ -364,6 +427,7 @@ one renders the component again.  SELF is the instance."
                    ,ignorable
                    (vector ,@(mapcar (lambda (s) `(make-cell ,(second s))) state))))))
          (defmethod render ((self ,name))
+           ,@(when state `((ensure-state self ,(length state))))
            (destructuring-bind ,params (component-args self)
              ,ignorable
              (symbol-macrolet ,(loop for s in state for i from 0
@@ -372,6 +436,8 @@ one renders the component again.  SELF is the instance."
          (defun ,name (&rest args)
            ,@doc
            (make-call ',name args))
+         ;; a redefinition shows at once
+         (refresh)
          ',name))))
 
 ;;; ------------------------------------------------------------------
@@ -409,10 +475,13 @@ patch (the backend compares with the value on the display)."
                  (let ((cell (list new)))
                    (setf (getf (element-listeners element) key) cell)
                    (set-listener *backend* dom (string-downcase (subseq (symbol-name key) 3))
-                                 (lambda (&rest args)
-                                   (when (car cell) (apply (car cell) args))
-                                   ;; nothing to convert for the backend
-                                   nil))))))
+                                 (let ((backend *backend*))
+                                   (lambda (&rest args)
+                                     (when (car cell)
+                                       (let ((*backend* backend))
+                                         (with-error-dialog (apply (car cell) args))))
+                                     ;; nothing to convert for the backend
+                                     nil)))))))
           ((null new) (remove-property *backend* dom key old))
           (t (set-property *backend* dom key new)))))
 
@@ -549,6 +618,20 @@ patch (the backend compares with the value on the display)."
                 (update-component component)))))))
   new)
 
+(defvar *roots* nil "The mounted nodes.")
+
+(defun refresh ()
+  "Render every component on the display again (after functions that they
+call were redefined)."
+  (labels ((visit (node)
+             (typecase node
+               (element (mapc #'visit (element-children node)))
+               (call (let ((component (call-instance node)))
+                       (invalidate component)
+                       (visit (component-tree component)))))))
+    (mapc #'visit *roots*)
+    nil))
+
 (defun mount (node container &key (backend *backend*))
   "Put NODE (the value of a component function or of HTML) on the display
 as the last child of CONTAINER; from then on it follows the state.
@@ -557,9 +640,11 @@ Return the node, for UNMOUNT."
          (*parent* nil)
          (node (as-node node)))
     (insert-node backend (resolve-container backend container) (create node) nil)
+    (push node *roots*)
     (run-mount-hooks)
     node))
 
 (defun unmount (node &key (backend *backend*))
+  (setf *roots* (remove node *roots*))
   (remove-node backend (dom-of node))
   (destroy node))

@@ -7,11 +7,16 @@
 ;;;;     (print (ui:to-sexp root))
 ;;;;     (ui:fire (ui:find-node root "button") "click")   ; calls the listener, then FLUSH
 ;;;;     (print (ui:backend-log ui:*backend*)))            ; what was changed
+;;;; An error in a listener is noted in the log, and the restart that the
+;;;; function (ui:backend-chooser backend) returns is invoked.
 
 (in-package "UI")
 
 (defclass sexp-backend ()
-  ((log :initform nil :accessor %backend-log)))
+  ((log :initform nil :accessor %backend-log)
+   ;; NIL, or a function of an error and its restarts that returns the
+   ;; restart the "user" chooses (NIL: abort)
+   (chooser :initform nil :initarg :chooser :accessor backend-chooser)))
 
 (defstruct snode tag text props listeners children parent)
 
@@ -46,7 +51,7 @@
   (setf (snode-text node) string))
 
 (defmethod set-property ((backend sexp-backend) node name value)
-  (unless (and (live-property-p name) (eql (getf (snode-props node) name) value))
+  (unless (and (live-property-p name) (equal (getf (snode-props node) name) value))
     (note backend :set (label node) name value)
     (setf (getf (snode-props node) name) value)))
 
@@ -85,6 +90,11 @@
 (defmethod request-flush ((backend sexp-backend))
   ;; tests call FLUSH (FIRE does)
   nil)
+
+(defmethod choose-restart ((backend sexp-backend) condition restarts)
+  (note backend :error (princ-to-string condition) (mapcar #'princ-to-string restarts))
+  (and (backend-chooser backend)
+       (funcall (backend-chooser backend) condition restarts)))
 
 (defun to-sexp (node)
   "NODE of the display as (:tag (property value...) child...), text as strings."

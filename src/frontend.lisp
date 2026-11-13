@@ -39,6 +39,9 @@
 (defvar *specials* (make-hash-table :test 'eq))
 (defvar *constants* (make-hash-table :test 'eq) "symbol -> (value)")
 (defvar *notinline* (make-hash-table :test 'eq))
+(defvar *redefinable-functions* nil
+  "True while compiling files whose functions may be redefined in the running
+image: they are all NOTINLINE, so their callers go through the function cell.")
 (defvar *compiler-macros* (make-hash-table :test 'eq) "symbol -> host fn (form env)")
 (defvar *global-defuns* (make-hash-table :test 'eq) "symbol -> list of lams defined at toplevel")
 (defvar *lam-counter* 0)

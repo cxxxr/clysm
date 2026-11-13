@@ -18,7 +18,9 @@ export function makeJsImports(state) {
                          && !Object.isExtensible(x);
   return {
       global: () => globalThis,
-      get: (o, k) => o[k],
+      // a property of null or undefined is undefined (NIL in Lisp), not a
+      // JavaScript exception, which Lisp code could not handle
+      get: (o, k) => (o === null || o === undefined ? undefined : o[k]),
       set: (o, k, v) => { o[k] = v; },
       // a JavaScript exception is returned as a JsError box, which the Lisp
       // side turns into a Lisp error (Lisp non-local exits pass through)
