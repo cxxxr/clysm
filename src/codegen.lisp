@@ -280,7 +280,12 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                  (:local.get ,tmp) ,@(when mv (mv-one)))))
       (:if (cg-if node mv tail))
       (:progn (cg-progn (cdr node) mv tail))
-      (:let (cg-let node mv tail))
+      (:let (if (and (or-let-p node) (eq (car (cdr (first (second node)))) :prim)
+                     (eq (prim-kind (second (cdr (first (second node))))) :test))
+                ;; (or test b): T when the test holds, else B
+                `(,@(cg-test (cdr (first (second node))))
+                  (:if nil :eqref (,@(t-code) ,@(when mv (mv-one))) ,(cg (fourth (third node)) mv tail)))
+                (cg-let node mv tail)))
       (:mvbind (cg-mvbind node mv tail))
       (:lambda (append (cg-closure (second node)) (when mv (mv-one))))
       (:fref `((:global.get ,(sym-global (second node))) (:call :fdefinition) ,@(when mv (mv-one))))
@@ -330,6 +335,11 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
   ;; (not x) / (null x): the test of X, negated (no T/NIL in between)
   (when (and (eq (car node) :prim) (member (prim-name (second node)) '(not null)))
     (return-from cg-test `(,@(cg-test (third node)) :i32.eqz)))
+  ;; (or a b) is (let ((g a)) (if g g b)): as a test, A's test or B's
+  (when (or-let-p node)
+    (return-from cg-test
+      `(,@(cg-test (cdr (first (second node))))
+        (:if nil :i32 ((:i32.const 1)) ,(cg-test (fourth (third node)))))))
   (case (car node)
     (:const (if (second node) '((:i32.const 1)) '((:i32.const 0))))
     (:prim (let ((p (second node)))
@@ -345,6 +355,14 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                   ,@(cg-test (car (last node))))
                 '((:i32.const 0))))
     (t `(,@(cg node) ,@(nil-code) :ref.eq :i32.eqz))))
+
+(defun or-let-p (node)
+  "NODE is (let ((g a)) (if g g b)), as OR expands."
+  (and (eq (car node) :let) (= (length (second node)) 1)
+       (let ((lv (car (first (second node)))) (body (third node)))
+         (and (not (lvar-special lv)) (eq (car body) :if)
+              (eq (car (second body)) :lref) (eq (second (second body)) lv)
+              (eq (car (third body)) :lref) (eq (second (third body)) lv)))))
 
 (defun cg-if (node mv tail)
   (destructuring-bind (c a b) (cdr node)
