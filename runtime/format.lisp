@@ -982,11 +982,40 @@ anything else."
       (when (> n start) (push (subseq control start n) r))
       (cons t (nreverse r)))))
 
+(defun %fmt-decimal-string (arg)
+  (if (integerp arg) (%integer-to-string arg 10) (with-output-to-string (s) (%fmt-decimal arg s))))
+(defun %fmt-princ-string (arg) (if (stringp arg) arg (princ-to-string arg)))
+
+(defun %concat-strings (strings)
+  "A fresh simple string of the characters of STRINGS."
+  (let ((n 0))
+    (dolist (x strings) (setq n (+ n (length x))))
+    (let ((r (%make-string n #\Space)) (i 0))
+      (dolist (x strings r)
+        (let ((k (length x)))
+          (if (%simple-string-p x)
+              (%string-copy r i x 0 k)
+              (dotimes (j k) (%set-schar r (+ i j) (char x j))))
+          (setq i (+ i k)))))))
+
 (define-compiler-macro format (&whole form destination control &rest args)
   (let ((parsed (and (stringp control) (%fmt-simple-parse control))))
     (if (or (null parsed)
             (/= (count-if (lambda (x) (member x '(#\A #\S #\D))) (cdr parsed)) (length args)))
         form
+     (if (and (null destination) (not (member #\& (cdr parsed))) (not (member #\~ (cdr parsed))))
+        ;; (format nil ...) of strings, ~A ~S ~D ~%: the pieces concatenated
+        (let ((vars (mapcar (lambda (a) (declare (ignore a)) (gensym "A")) args)))
+          `(let ,(mapcar #'list vars args)
+             (%concat-strings
+              (list ,@(let ((vs vars))
+                        (mapcar (lambda (x)
+                                  (cond ((stringp x) x)
+                                        ((char= x #\A) `(%fmt-princ-string ,(pop vs)))
+                                        ((char= x #\S) `(prin1-to-string ,(pop vs)))
+                                        ((char= x #\D) `(%fmt-decimal-string ,(pop vs)))
+                                        (t (string #\Newline))))
+                                (cdr parsed)))))))
         (let ((d (gensym "D")) (s (gensym "S"))
               (vars (mapcar (lambda (a) (declare (ignore a)) (gensym "A")) args)))
           `(let ((,d ,destination) ,@(mapcar #'list vars args))
@@ -1001,4 +1030,4 @@ anything else."
                                                     ((char= x #\&) `(fresh-line ,s))
                                                     (t `(write-char #\~ ,s))))
                                             (cdr parsed)))
-                                nil)))))))
+                                nil))))))))

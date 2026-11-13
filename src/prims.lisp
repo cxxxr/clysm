@@ -57,8 +57,12 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                   ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
                    (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
                    (:local.get ,v) :i64.extend_i32_s)
-                  ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
-                   (:local.get ,e) (:call :int-i64))))))
+                  ;; a bignum holding its value as an i64 (no limbs), else the helpers
+                  ((:local.get ,e) (:ref.test :bignum) :i32.eqz (:br_if ,fail)
+                   (:local.get ,e) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null
+                   (:if nil :i64 ((:local.get ,e) (:ref.cast! :bignum) (:struct.get :bignum 2))
+                        ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
+                         (:local.get ,e) (:call :int-i64))))))))
         (t
          (let ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
                (op (cdr (assoc (prim-name (second node)) *fusable-ops*))))
