@@ -291,9 +291,14 @@ runtime definition is kept."
       (when prim
         (return-from convert-compound
           `(:prim ,prim ,@(convert-args (cdr form) env)))))
-    (when (and (member op '(ensure-generic-function clysm-sys::%add-method-to))
-               (consp (second form)) (eq (car (second form)) 'quote) (symbolp (second (second form))))
-      (setf (gethash (second (second form)) *dynamic-functions*) t))
+    ;; a function defined at run time (a generic function)
+    (when (and (member op '(ensure-generic-function clysm-sys::%add-method-to clysm-sys::%defmethod
+                            clysm-sys::%defgeneric))
+               (consp (second form)) (eq (car (second form)) 'quote))
+      (let ((name (second (second form))))
+        (cond ((symbolp name) (setf (gethash name *dynamic-functions*) t))
+              ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (second name)))
+               (setf (gethash (setf-function-symbol (second name)) *dynamic-functions*) t)))))
     `(:call ,op ,@(convert-args (cdr form) env))))
 
 (defun note-fun (fun)

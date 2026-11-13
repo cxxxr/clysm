@@ -280,6 +280,7 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
 (defconstant +gf-cache-header+ 5)
 
 (defun %gf-reset-cache (info)
+  (%bump-clos-epoch)                    ; the caches of call sites
   (let* ((nreq (%gf-slot info +gf-nreq+))
          (fast (if (and (fixnump nreq) (<= 1 nreq 4) (eql (%gf-slot info +gf-nopt+) 0)
                         (not (%gf-slot info +gf-restp+))
@@ -1034,6 +1035,9 @@ the N arguments, or NIL when its operator is not a function."
                         (if (%unboundp v) (funcall mf args nil) v))
                       (funcall mf args nil))))))))))
 
+(defvar *reader-locations* (make-hash-table :test 'eq)
+  "reader function made by %FAST-ACCESSOR-FN -> the location of the slot it reads")
+
 (defun %fast-accessor-fn (info methods args)
   "Like %FAST-ACCESSOR-EMF for a function of the arguments themselves."
   (let ((acc (and (null (cdr methods)) (null (%method-qualifiers (car methods)))
@@ -1055,11 +1059,14 @@ the N arguments, or NIL when its operator is not a function."
           (if writerp
               (lambda (v o)
                 (if (%instancep o) (%set-instance-ref o loc v) (funcall mf (list v o) nil)))
-              (lambda (o)
-                (if (%instancep o)
-                    (let ((v (%instance-ref o loc)))
-                      (if (%unboundp v) (funcall mf (list o) nil) v))
-                    (funcall mf (list o) nil)))))))))
+              (let ((reader (lambda (o)
+                              (if (%instancep o)
+                                  (let ((v (%instance-ref o loc)))
+                                    (if (%unboundp v) (funcall mf (list o) nil) v))
+                                  (funcall mf (list o) nil)))))
+                ;; (a call site caches the location instead of the function)
+                (setf (gethash reader *reader-locations*) loc)
+                reader)))))))
 
 (defun %compute-emf (gf info methods args)
   "Returns (emf . valid-keys)."
@@ -1443,7 +1450,7 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                           (next-method-p () (not (null ,next))))
                      ,inner))))))))
 
-(defmacro defmethod (name &rest args)
+(defmacro %defmethod-1 (name &rest args)
   (multiple-value-bind (quals ll body) (%split-method-args args)
     (let ((cell (gensym "CELL")) (fast (gensym "FAST")))
       (multiple-value-bind (lam specs plain-ll doc) (%method-lambda name ll body cell)
@@ -1482,7 +1489,144 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                  `(let ((,cell (list nil)) (*gf-function-maker* ,maker))
                     (%defmethod ',name ',quals ,specs-form ',plain-ll (function ,lam) ,doc ,cell)))))))))
 
+;;; ------------------------------------------------------------
+;;; Caches at call sites
+;;; ------------------------------------------------------------
+;;; A call (F x) or (F x y) of a generic function F of one or two required
+;;; parameters, compiled after its DEFGENERIC or a DEFMETHOD, first looks in
+;;; a cache of its own: a vector with two entries of the classes of the
+;;; arguments (0 for a parameter that no method specializes) and the function
+;;; that the generic function found for them.  A hit calls that function
+;;; directly; anything else (another class, a changed *CLOS-EPOCH*, a generic
+;;; function with EQL specializers, a name that is no longer a generic
+;;; function of that shape) calls the function of the name as usual.
+;;;   one argument:   #(epoch class-a fn-a class-b fn-b name)
+;;;   two arguments:  #(epoch a0 a1 fn-a b0 b1 fn-b name)
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %gf-site-expansion (form args name n)
+    (if (not (= (length args) n))
+        form
+        (let ((c (if (eql n 1) (vector 0 nil nil nil nil name 0) (vector 0 nil nil nil nil nil nil name 0)))
+              (a (gensym "A")) (b (gensym "B")) (k (gensym "K")))
+          (if (eql n 1)
+              `(let ((,a ,(car args)))
+                 (if (eq (%svref ',c 0) *clos-epoch*)
+                     (let ((,k (%fast-class-of ,a)))
+                       ;; the value of an entry: the function to call, or the
+                       ;; location of the slot that a reader reads
+                       (flet ((hit (f)
+                                (if (fixnump f)
+                                    (let ((v (%instance-ref ,a f)))
+                                      (if (%unboundp v) (%gf-site-call1 ',c ,a) v))
+                                    (funcall (the function f) ,a))))
+                         (declare (inline hit))
+                         (cond ((eq (%svref ',c 1) ,k) (hit (%svref ',c 2)))
+                               ((eq (%svref ',c 3) ,k) (hit (%svref ',c 4)))
+                               (t (%gf-site-miss1 ',c ,a)))))
+                     ;; a site that is not cached (-1): the usual call
+                     (if (eq (%svref ',c 0) -1)
+                         (locally (declare (notinline ,name)) (,name ,a))
+                         (%gf-site-miss1 ',c ,a))))
+              `(let ((,a ,(car args)) (,b ,(cadr args)))
+                 (if (eq (%svref ',c 0) *clos-epoch*)
+                     (cond ((and (or (eq (%svref ',c 1) 0) (eq (%svref ',c 1) (%fast-class-of ,a)))
+                                 (or (eq (%svref ',c 2) 0) (eq (%svref ',c 2) (%fast-class-of ,b))))
+                            (funcall (the function (%svref ',c 3)) ,a ,b))
+                           ((and (%svref ',c 6)
+                                 (or (eq (%svref ',c 4) 0) (eq (%svref ',c 4) (%fast-class-of ,a)))
+                                 (or (eq (%svref ',c 5) 0) (eq (%svref ',c 5) (%fast-class-of ,b))))
+                            (funcall (the function (%svref ',c 6)) ,a ,b))
+                           (t (%gf-site-miss2 ',c ,a ,b)))
+                     (if (eq (%svref ',c 0) -1)
+                         (locally (declare (notinline ,name)) (,name ,a ,b))
+                         (%gf-site-miss2 ',c ,a ,b))))))))
+
+  (defun %gf-site-macro-forms (name lambda-list)
+    "Forms defining the compiler macro of the generic function NAME that
+gives its call sites a cache, when LAMBDA-LIST has one or two required
+parameters and nothing else, and NAME is a symbol outside the implementation's packages."
+    (let ((n (and (listp lambda-list) (length lambda-list))))
+      (if (and (symbolp name) n (<= 1 n 2)
+               (notany (lambda (x) (member x lambda-list-keywords)) lambda-list)
+               (symbol-package name)
+               (not (member (package-name (symbol-package name)) '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD")
+                            :test #'string=))
+               (not (eql (get name '%gf-site-macro) n)))
+          (progn
+            (%put name '%gf-site-macro n)
+            `((define-compiler-macro ,name (&whole form &rest args)
+                (%gf-site-expansion form args ',name ,n))))
+          nil))))
+
+(defun %gf-site-info (name n)
+  "The generic function metaobject of NAME when its call sites may cache by
+the classes of N arguments."
+  (and (fboundp name)
+       (let ((info (%gf-info (symbol-function name))))
+         (and info
+              (let ((pic (%gf-slot info +gf-cache+)))
+                (and (eq (%svref pic 1) n) (null (%svref pic 2)) info))))))
+
+(defun %gf-site-miss-count (c i)
+  "Count a miss of the site cache C (the count is at index I); a site that
+keeps missing (more classes than entries) stops caching."
+  (let ((m (%fx+ (%svref c i) 1)))
+    (%set-svref c i m)
+    (when (%fx> m 16) (%set-svref c 0 -1))))
+
+(defun %gf-site-miss1 (c a)
+  (let* ((name (%svref c 5)) (info (%gf-site-info name 1)))
+    (if (null info)
+        (progn (%set-svref c 0 -1) (funcall name a))
+        (let ((f (%gf-find1 info a)))
+          (if (null f)
+              (funcall name a)
+              (progn
+                ;; (the search may have changed the epoch: the first call of a method computes things)
+                (if (eq (%svref c 0) *clos-epoch*)
+                    (progn (%set-svref c 3 (%svref c 1)) (%set-svref c 4 (%svref c 2))
+                           (when (%svref c 3) (%gf-site-miss-count c 6)))
+                    (progn (%set-svref c 3 nil) (%set-svref c 4 nil) (%set-svref c 6 0)
+                           (%set-svref c 0 *clos-epoch*)))
+                (%set-svref c 1 (if (eq (%fxlogand (%svref (%gf-slot info +gf-cache+) 3) 1) 0) (%fast-class-of a) 0))
+                (%set-svref c 2 (if (eq (%svref c 1) 0) f (or (gethash f *reader-locations*) f)))
+                (funcall (the function f) a)))))))
+
+(defun %gf-site-call1 (c a) (funcall (%svref c 5) a))
+
+(defun %gf-site-miss2 (c a b)
+  (let* ((name (%svref c 7)) (info (%gf-site-info name 2)))
+    (if (null info)
+        (progn (%set-svref c 0 -1) (funcall name a b))
+        (let ((f (%gf-find2 info a b)))
+          (if (null f)
+              (funcall name a b)
+              (let ((unspec (%svref (%gf-slot info +gf-cache+) 3)))
+                (if (eq (%svref c 0) *clos-epoch*)
+                    (progn (%set-svref c 4 (%svref c 1)) (%set-svref c 5 (%svref c 2)) (%set-svref c 6 (%svref c 3))
+                           (when (%svref c 6) (%gf-site-miss-count c 8)))
+                    (progn (%set-svref c 6 nil) (%set-svref c 8 0) (%set-svref c 0 *clos-epoch*)))
+                (%set-svref c 1 (if (eq (%fxlogand unspec 1) 0) (%fast-class-of a) 0))
+                (%set-svref c 2 (if (eq (%fxlogand unspec 2) 0) (%fast-class-of b) 0))
+                (%set-svref c 3 f)
+                (funcall (the function f) a b)))))))
+
+(defmacro defmethod (name &rest args)
+  (multiple-value-bind (quals ll body) (%split-method-args args)
+    (declare (ignore quals body))
+    (let ((site (%gf-site-macro-forms name (and (listp ll) (mapcar (lambda (x) (if (consp x) (car x) x)) ll)))))
+      (if site
+          `(progn ,@site (%defmethod-1 ,name ,@args))
+          `(%defmethod-1 ,name ,@args)))))
+
 (defmacro defgeneric (name lambda-list &rest options)
+  (let ((site (%gf-site-macro-forms name lambda-list)))
+    (if site
+        `(progn ,@site (%defgeneric-1 ,name ,lambda-list ,@options))
+        `(%defgeneric-1 ,name ,lambda-list ,@options))))
+
+(defmacro %defgeneric-1 (name lambda-list &rest options)
   (let ((combination nil) (methods nil) (doc nil) (apo nil) (gfclass nil) (mclass nil) (decls nil)
         (seen nil))
     (%check-gf-lambda-list lambda-list)
@@ -1719,7 +1863,7 @@ variables of the effective method) while the effective method form is computed."
 
 (defmacro defclass (name supers slots &rest options)
   (let ((slotd-forms nil) (accessor-forms nil) (default-initargs nil) (metaclass nil) (doc nil)
-        (seen nil) (slot-names nil) (others nil))
+        (seen nil) (slot-names nil) (others nil) (site-forms nil))
     (unless (and (symbolp name) name) (%program-error "DEFCLASS: invalid class name ~S" name))
     (unless (and (listp supers) (every #'symbolp supers))
       (%program-error "DEFCLASS ~S: invalid superclass list ~S" name supers))
@@ -1730,6 +1874,8 @@ variables of the effective method) while the effective method form is computed."
         (push sname slot-names)
         (push form slotd-forms)
         (dolist (r readers)
+          ;; (the compiler macro giving the reader's call sites a cache: a toplevel form)
+          (setq site-forms (append (%gf-site-macro-forms r '(object)) site-forms))
           (push `(%note-slot-accessor (defmethod ,r ((object ,name)) (slot-value object ',sname)) ',sname nil)
                 accessor-forms))
         (dolist (w writers)
@@ -1759,6 +1905,7 @@ variables of the effective method) while the effective method form is computed."
     `(progn
        (eval-when (:compile-toplevel :load-toplevel :execute)
          (%put ',name '%defclass t))
+       ,@site-forms
        (%ensure-class ',name ',supers (list ,@(reverse slotd-forms))
                       (list ,@(let ((r nil))
                                 (do ((l default-initargs (cddr l))) ((null l) (reverse r))
@@ -2813,12 +2960,36 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
                                        ((consp src) (nth (car src) defaults))
                                        (t (funcall src))))))))))
 
+;;; Up to four initargs: no argument list (the general function when the
+;;; constructor is not up to date or the class has default initargs)
+(defmacro %define-ctor-entry (name &rest params)
+  `(defun ,name (ctor ,@params)
+     (declare (simple-vector ctor))
+     (if (and (eql (svref ctor 0) *ctor-generation*) (svref ctor 3) (null (svref ctor 5)))
+         (let ((inst (%allocate-instance (svref ctor 3))))
+           (dolist (p (svref ctor 4) inst)
+             (let ((src (cdr p)))
+               (%set-instance-ref inst (car p)
+                                  (if (fixnump src)
+                                      (case src ,@(let ((i -1)) (mapcar (lambda (v) (setq i (+ i 1)) (list i v)) params))
+                                        (t nil))
+                                      (funcall src))))))
+         (%ctor-make-instance ctor ,@params))))
+(%define-ctor-entry %ctor-make-instance-0)
+(%define-ctor-entry %ctor-make-instance-1 a)
+(%define-ctor-entry %ctor-make-instance-2 a b)
+(%define-ctor-entry %ctor-make-instance-3 a b c)
+(%define-ctor-entry %ctor-make-instance-4 a b c d)
+
 (define-compiler-macro make-instance (&whole form class &rest initargs)
   (if (and (consp class) (eq (car class) 'quote) (consp (cdr class)) (symbolp (cadr class))
            (evenp (length initargs))
            (do ((l initargs (cddr l))) ((null l) t) (unless (keywordp (car l)) (return nil))))
       (let ((keys nil) (vals nil))
         (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
-        `(%ctor-make-instance (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
-                              ,@(reverse vals)))
+        `(,(case (length vals)
+             (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
+             (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (t '%ctor-make-instance))
+          (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
+          ,@(reverse vals)))
       form))

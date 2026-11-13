@@ -622,11 +622,25 @@ test is not one a hash table has."
 
 (defun fdefinition (name) (symbol-function (%function-name-symbol name)))
 
+;;; Call sites of generic functions cache the functions found for the classes
+;;; of their arguments (clos.lisp); the caches are valid while this number is
+;;; the one they were filled at.  It changes when the methods of a generic
+;;; function or a class change, and when a name stops naming a generic function.
+(defvar *clos-epoch* 1)
+(defun %bump-clos-epoch () (setq *clos-epoch* (%fx+ *clos-epoch* 1)))
+(defun %note-function-change (sym)
+  (when (fboundp sym)
+    (let ((old (symbol-function sym)))
+      (when (and (functionp old) (%instancep (%closure-name old))) (%bump-clos-epoch)))))
+
 (defun %set-fdefinition (name f)
-  (%set-symbol-function (%function-name-symbol name) f)
+  (let ((sym (%function-name-symbol name)))
+    (%note-function-change sym)
+    (%set-symbol-function sym f))
   f)
 
 (defun fmakunbound (name)
+  (%note-function-change (%function-name-symbol name))
   (%set-symbol-function (%function-name-symbol name) nil)
   (when (symbolp name) (remprop name '%macro-function))
   name)
