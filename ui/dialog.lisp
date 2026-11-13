@@ -22,9 +22,9 @@
 
 (in-package "UI")
 
-(defvar *ok-label* "OK")
-(defvar *yes-label* "Yes")
-(defvar *no-label* "No")
+(defvar *ok-label* "OK" "The label of the button that answers a dialog.")
+(defvar *yes-label* "Yes" "The label of the button that says yes.")
+(defvar *no-label* "No" "The label of the button that says no.")
 
 (defcomponent dialog-view (dialog)
   (let ((interface (dialog-interface dialog))
@@ -326,7 +326,8 @@ is ABORT); return the chosen one, or NIL if the dialog was cancelled."
 ;;; The command palette: every command by its name (as in the interactor
 ;;; of CLIM, a command is typed, and asks for its arguments)
 
-(defvar *command-palette-prompt* "Type the name of a command")
+(defvar *command-palette-prompt* "Type the name of a command"
+  "The placeholder of the field of the command palette.")
 
 (defun palette-commands (filter)
   (remove-if-not (lambda (command)
@@ -337,6 +338,8 @@ is ABORT); return the chosen one, or NIL if the dialog was cancelled."
                  *commands*))
 
 (define-command (command-palette :label "Command palette…" :key "CmdOrCtrl+Shift+P") ()
+  "Show a dialog in which a command is chosen by typing part of its label;
+Enter (or a double click) invokes it, which asks for its arguments."
   (let* ((input nil)
          (list (make-instance 'list-panel
                               :items (computed (palette-commands (text-input-pane-text input)))

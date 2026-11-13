@@ -38,21 +38,33 @@
 ;;; Panes
 
 (defmodel pane ()
-  ((name :initarg :name :initform nil :accessor pane-name)
+  (;; its name in its interface (see FIND-PANE)
+   (name :initarg :name :initform nil :accessor pane-name)
+   ;; the interface it belongs to
    (interface :initarg :interface :initform nil :accessor pane-interface)
+   ;; a label shown with it, or NIL
    (title :initarg :title :initform nil :accessor pane-title)
    ;; :TOP, :LEFT or :FRAME (a box around the pane)
    (title-position :initarg :title-position :initform :top :accessor pane-title-position)
+   ;; false to show it disabled: the user cannot use it
    (enabled :initarg :enabled :initform t :accessor pane-enabled)
+   ;; false to hide it
    (visible :initarg :visible :initform t :accessor pane-visible)
+   ;; the text of its tooltip, or NIL
    (help :initarg :help :initform nil :accessor pane-help)
+   ;; more CSS classes of its element, or NIL
    (class :initarg :class :initform nil :accessor pane-class)
-   ;; sizes: a number of pixels or a CSS length
+   ;; its width: a number of pixels or a CSS length
    (width :initarg :width :initform nil :accessor pane-width)
+   ;; its height: a number of pixels or a CSS length
    (height :initarg :height :initform nil :accessor pane-height)
+   ;; the smallest width it gets
    (min-width :initarg :min-width :initform nil :accessor pane-min-width)
+   ;; the smallest height it gets
    (min-height :initarg :min-height :initform nil :accessor pane-min-height)
+   ;; the largest width it gets
    (max-width :initarg :max-width :initform nil :accessor pane-max-width)
+   ;; the largest height it gets
    (max-height :initarg :max-height :initform nil :accessor pane-max-height)
    ;; whether it takes the free space of its row or column: T, or a weight
    (stretch :initarg :stretch :initform nil :accessor pane-stretch)
@@ -161,7 +173,9 @@ tooltip, CLASS additional CSS classes."))
                    (callback-type-list (pane-callback-type pane))))))
 
 (defmodel callbacks ()
-  ((callback-type :initarg :callback-type :initform '(:data :interface) :accessor pane-callback-type))
+  (;; what the callbacks are called with: a list of :DATA, :ITEM, :INTERFACE
+   ;; and :ELEMENT (the pane), a keyword made of them like :DATA-INTERFACE, or :NONE
+   (callback-type :initarg :callback-type :initform '(:data :interface) :accessor pane-callback-type))
   (:documentation "A pane with callbacks, which are called with what CALLBACK-TYPE
 says: by default the data and the interface."))
 
@@ -169,7 +183,8 @@ says: by default the data and the interface."))
 ;;; Text
 
 (defmodel title-pane (pane)
-  ((text :initarg :text :initform "" :accessor title-pane-text))
+  (;; the text: a string, or a number or other object that is printed
+   (text :initarg :text :initform "" :accessor title-pane-text))
   (:documentation "A line of text."))
 
 (defun text-of (x)
@@ -187,16 +202,21 @@ says: by default the data and the interface."))
   (html (:span :class "ui-title-pane" (text-of (title-pane-text pane)))))
 
 (defmodel display-pane (pane)
-  ((text :initarg :text :initform "" :accessor display-pane-text))
+  (;; the text; a newline in it starts a new line
+   (text :initarg :text :initform "" :accessor display-pane-text))
   (:documentation "Text of several lines that the user reads."))
 
 (defmethod render-pane ((pane display-pane))
   (html (:div :class "ui-display-pane" (text-of (display-pane-text pane)))))
 
 (defmodel text-input-pane (pane callbacks)
-  ((text :initarg :text :initform "" :accessor text-input-pane-text)
+  (;; the text in the field; it changes as the user types
+   (text :initarg :text :initform "" :accessor text-input-pane-text)
+   ;; the text shown, dimmed, while the field is empty
    (placeholder :initarg :placeholder :initform nil :accessor text-input-pane-placeholder)
+   ;; true to hide what is typed
    (password :initarg :password :initform nil :accessor text-input-pane-password)
+   ;; true if the user cannot change the text
    (read-only :initarg :read-only :initform nil :accessor text-input-pane-read-only)
    ;; called with the text when the user presses Enter
    (callback :initarg :callback :initform nil :accessor text-input-pane-callback)
@@ -234,7 +254,8 @@ says: by default the data and the interface."))
                                        (move-selection list key event))))))))
 
 (defmodel multi-line-text-input-pane (text-input-pane)
-  ((rows :initarg :rows :initform 4 :accessor text-input-pane-rows))
+  (;; how many lines high it is
+   (rows :initarg :rows :initform 4 :accessor text-input-pane-rows))
   (:documentation "Text of several lines that the user edits."))
 
 (defmethod render-pane ((pane multi-line-text-input-pane))
@@ -250,12 +271,16 @@ says: by default the data and the interface."))
 ;;; Buttons
 
 (defmodel push-button (pane callbacks)
-  ((text :initarg :text :initform nil :accessor button-text)
+  (;; the label (by default that of its command)
+   (text :initarg :text :initform nil :accessor button-text)
+   ;; what the callback gets as the data (by default the text)
    (data :initarg :data :initform nil :accessor button-data)
+   ;; called with the data when the button is pressed
    (callback :initarg :callback :initform nil :accessor button-callback)
    ;; the name of a command, or (name argument...): the button invokes it,
    ;; has its label and is enabled while the command is
    (command :initarg :command :initform nil :accessor button-command)
+   ;; true for the button that answers its dialog: it is emphasized
    (default-p :initarg :default-p :initform nil :accessor button-default-p))
   (:documentation "A button.  Its callback is called with its DATA (by default its text)."))
 
@@ -279,8 +304,11 @@ says: by default the data and the interface."))
             text))))
 
 (defmodel check-button (pane callbacks)
-  ((text :initarg :text :initform "" :accessor button-text)
+  (;; the label
+   (text :initarg :text :initform "" :accessor button-text)
+   ;; whether it is checked
    (selected :initarg :selected :initform nil :accessor button-selected)
+   ;; called with whether it is checked when the user changes it
    (callback :initarg :callback :initform nil :accessor button-callback))
   (:documentation "A check box.  Its callback is called with whether it is selected."))
 
@@ -299,9 +327,11 @@ says: by default the data and the interface."))
 ;;; Choices: panes that show items, some of which are selected
 
 (defmodel choice (pane callbacks)
-  ((items :initarg :items :initform nil :accessor collection-items)
+  (;; the items: any objects
+   (items :initarg :items :initform nil :accessor collection-items)
    ;; a function of an item that returns its text (or a node)
    (print-function :initarg :print-function :initform nil :accessor collection-print-function)
+   ;; how items are compared (selection, keys of the display)
    (test :initarg :test :initform #'eql :accessor collection-test)
    ;; :SINGLE-SELECTION or :MULTIPLE-SELECTION
    (interaction :initarg :interaction :initform :single-selection :accessor choice-interaction)
@@ -314,28 +344,34 @@ says: by default the data and the interface."))
    (action-callback :initarg :action-callback :initform nil :accessor choice-action-callback)
    ;; if true, the items are presentations of this type (T: PRESENTATION-TYPE-OF;
    ;; a function: of what it returns for the item)
-   (presentation-type :initarg :presentation-type :initform nil :accessor choice-presentation-type)))
+   (presentation-type :initarg :presentation-type :initform nil :accessor choice-presentation-type))
+  (:documentation "The superclass of the panes that show items of which the user selects
+some: lists, tables, trees, option panes, button panels, tabs, graphs."))
 
 (defun multiple-selection-p (choice)
   (eq (choice-interaction choice) :multiple-selection))
 
 (defgeneric choice-selected-items (choice)
+  (:documentation "The list of the selected items of CHOICE.")
   (:method ((choice choice))
     (let ((selection (choice-selection choice)))
       (cond ((multiple-selection-p choice) selection)
             (selection (list selection))))))
 
 (defgeneric choice-selected-item (choice)
+  (:documentation "The selected item of CHOICE (the first, with multiple selection), or NIL.")
   (:method ((choice choice))
     (if (multiple-selection-p choice)
         (first (choice-selection choice))
         (choice-selection choice))))
 
 (defun (setf choice-selected-items) (items choice)
+  "Select the ITEMS of CHOICE (with single selection, the first of them)."
   (setf (choice-selection choice) (if (multiple-selection-p choice) items (first items)))
   items)
 
 (defun (setf choice-selected-item) (item choice)
+  "Select ITEM of CHOICE, and nothing else (NIL: nothing)."
   (setf (choice-selection choice) (if (multiple-selection-p choice) (and item (list item)) item))
   item)
 
@@ -419,6 +455,7 @@ True if KEY was one of them."
   (;; true to show a field above the list: only the items whose text contains
    ;; what the user typed there are shown
    (filter :initarg :filter :initform nil :accessor list-panel-filter)
+   ;; what the user typed in the field of the filter
    (filter-text :initform "" :accessor list-panel-filter-text))
   (:default-initargs :stretch t)
   (:documentation "A list of items."))
@@ -478,6 +515,7 @@ True if KEY was one of them."
    (column-function :initarg :column-function :initform nil :accessor list-panel-column-function)
    ;; the index of the column the items are sorted by (NIL: as they are)
    (sort-column :initarg :sort-column :initform nil :accessor list-panel-sort-column)
+   ;; true if they are sorted from the largest to the smallest
    (sort-descending :initarg :sort-descending :initform nil :accessor list-panel-sort-descending))
   (:documentation "A list of items with several columns.  A click on the title of a
 column with :SORT sorts the items by it (again: the other way round, then
@@ -590,7 +628,8 @@ returns for an item — numbers by size, everything else as text."))
 (defvar *button-panels* 0)
 
 (defmodel radio-button-panel (choice)
-  ((orientation :initarg :orientation :initform :row :accessor button-panel-orientation)
+  (;; :ROW or :COLUMN
+   (orientation :initarg :orientation :initform :row :accessor button-panel-orientation)
    (id :initform (incf *button-panels*) :reader button-panel-id))
   (:documentation "A button for every item, one of which is selected."))
 
@@ -632,10 +671,15 @@ returns for an item — numbers by size, everything else as text."))
 (defmethod initialize-instance :after ((pane tree-view) &key (roots nil rootsp))
   (when rootsp (setf (collection-items pane) roots)))
 
-(defun tree-view-roots (pane) (collection-items pane))
-(defun (setf tree-view-roots) (roots pane) (setf (collection-items pane) roots))
+(defun tree-view-roots (pane)
+  "The items at the top of the tree PANE (its COLLECTION-ITEMS)."
+  (collection-items pane))
+(defun (setf tree-view-roots) (roots pane)
+  (setf (collection-items pane) roots))
 
 (defun tree-view-expanded-p (pane item)
+  "True if ITEM of the tree PANE is open: the items under it are shown.
+SETF of it opens or closes it."
   (let ((entry (assoc item (tree-view-expanded pane) :test (collection-test pane))))
     (if entry
         (cdr entry)
@@ -706,12 +750,17 @@ returns for an item — numbers by size, everything else as text."))
 ;;; Ranges
 
 (defmodel range (pane callbacks)
-  ((start :initarg :start :initform 0 :accessor range-start)
+  (;; the smallest value
+   (start :initarg :start :initform 0 :accessor range-start)
+   ;; the largest value
    (end :initarg :end :initform 100 :accessor range-end)
-   (value :initarg :value :initform 0 :accessor range-value)))
+   ;; the value
+   (value :initarg :value :initform 0 :accessor range-value))
+  (:documentation "The superclass of the panes that show a number between START and END."))
 
 (defmodel slider (range)
-  ((step :initarg :step :initform 1 :accessor slider-step)
+  (;; the steps in which the value changes
+   (step :initarg :step :initform 1 :accessor slider-step)
    ;; called with the value when the user moves the slider
    (callback :initarg :callback :initform nil :accessor slider-callback))
   (:documentation "A number between START and END that the user sets."))
@@ -798,23 +847,30 @@ HTML and PRESENT); it is called again when state it read has changed."))
 ;;; Menus (the :MENUS and :MENU-BAR of DEFINE-INTERFACE)
 
 (defmodel menu ()
-  ((name :initarg :name :initform nil :accessor menu-name)
+  (;; its name in its interface
+   (name :initarg :name :initform nil :accessor menu-name)
+   ;; the interface it belongs to
    (interface :initarg :interface :initform nil :accessor menu-interface)
    ;; the character after & is the mnemonic: Alt and it opens the menu
    (title :initarg :title :initform "" :accessor menu-title)
    ;; menu entries, :SEPARATOR, menus (or their names in the interface: they
    ;; open beside this one), names of commands and (command argument...)
    (items :initarg :items :initform nil :accessor menu-items)
+   ;; false to show it disabled
    (enabled :initarg :enabled :initform t :accessor menu-enabled))
   (:documentation "A menu of an interface."))
 
 (defmodel menu-entry (callbacks)
-  ((interface :initarg :interface :initform nil :accessor menu-entry-interface)
+  (;; the interface it belongs to: its callback gets it
+   (interface :initarg :interface :initform nil :accessor menu-entry-interface)
+   ;; the text; the character after & is its mnemonic
    (title :initarg :title :initform "" :accessor menu-entry-title)
+   ;; what the callback gets as the data (by default the title)
    (data :initarg :data :initform nil :accessor menu-entry-data)
    ;; called with the data (by default the title; for an entry with a check
    ;; mark, whether it is checked now) and the interface
    (callback :initarg :callback :initform nil :accessor menu-entry-callback)
+   ;; false to show it disabled
    (enabled :initarg :enabled :initform t :accessor menu-entry-enabled)
    ;; like "CmdOrCtrl+E"
    (key :initarg :key :initform nil :accessor menu-entry-key)
@@ -1016,6 +1072,7 @@ item of the open menu chooses it."
    ;; where the panes are across the direction of the layout: NIL (each
    ;; kind of pane as usual), :START, :CENTER, :END or :STRETCH
    (adjust :initarg :adjust :initform nil :accessor layout-adjust)
+   ;; the space between the panes: pixels or a CSS length (NIL: the usual)
    (gap :initarg :gap :initform nil :accessor layout-gap)
    ;; the sizes the user gave with dividers: ((index . pixels)...)
    (sizes :initform nil :accessor layout-sizes)
@@ -1104,7 +1161,8 @@ size of the pane in front of it."
   (render-box pane "ui-row-layout" t))
 
 (defmodel grid-layout (layout)
-  ((columns :initarg :columns :initform 2 :accessor grid-layout-columns))
+  (;; how many panes there are in a row
+   (columns :initarg :columns :initform 2 :accessor grid-layout-columns))
   (:documentation "The panes in rows of COLUMNS columns.  RATIOS are the weights of the
 columns (NIL: as wide as needed); by default the last column takes the rest."))
 
@@ -1125,7 +1183,8 @@ columns (NIL: as wide as needed); by default the last column takes the rest."))
                 (layout-description pane))))))
 
 (defmodel switchable-layout (layout)
-  ((visible-child :initarg :visible-child :initform nil :accessor switchable-layout-visible-child))
+  (;; the pane it shows (or the name of one in the interface)
+   (visible-child :initarg :visible-child :initform nil :accessor switchable-layout-visible-child))
   (:documentation "Shows one of its panes, VISIBLE-CHILD (by default the first)."))
 
 (defmethod render-pane ((pane switchable-layout))
@@ -1206,7 +1265,8 @@ same interface.  Its callback is called with its data when it is selected."))
           (:span (text-of (button-text pane))))))
 
 (defmodel push-button-panel (choice)
-  ((orientation :initarg :orientation :initform :row :accessor button-panel-orientation))
+  (;; :ROW or :COLUMN
+   (orientation :initarg :orientation :initform :row :accessor button-panel-orientation))
   (:documentation "A push button for every item; the selection callback is called with
 the item whose button was pressed."))
 
@@ -1240,7 +1300,8 @@ the item whose button was pressed."))
               (mapcar (lambda (item) (:option :value (text-of item))) (collection-items pane)))))))
 
 (defmodel browser-pane (pane)
-  ((url :initarg :url :initform "about:blank" :accessor browser-pane-url))
+  (;; the address of the page
+   (url :initarg :url :initform "about:blank" :accessor browser-pane-url))
   (:default-initargs :stretch t)
   (:documentation "A pane that shows the page at URL."))
 
@@ -1248,7 +1309,9 @@ the item whose button was pressed."))
   (html (:iframe :class "ui-browser-pane" :src (browser-pane-url pane))))
 
 (defmodel image-pane (pane)
-  ((url :initarg :url :initform nil :accessor image-pane-url)
+  (;; the address of the image
+   (url :initarg :url :initform nil :accessor image-pane-url)
+   ;; what the image shows, for those who do not see it
    (description :initarg :description :initform "" :accessor image-pane-description))
   (:documentation "A pane that shows the image at URL."))
 
@@ -1258,6 +1321,7 @@ the item whose button was pressed."))
 (defmodel color-pane (pane callbacks)
   (;; like "#3366cc"
    (color :initarg :color :initform "#000000" :accessor color-pane-color)
+   ;; called with the colour when the user changes it
    (callback :initarg :callback :initform nil :accessor color-pane-callback))
   (:documentation "A colour that the user chooses."))
 
@@ -1292,7 +1356,8 @@ the item whose button was pressed."))
               (layout-description pane)))))
 
 (defmodel docking-layout (layout)
-  ((orientation :initarg :orientation :initform :column :accessor docking-layout-orientation)
+  (;; :COLUMN (the panes one below the other) or :ROW
+   (orientation :initarg :orientation :initform :column :accessor docking-layout-orientation)
    ;; (item . interface) of the panes that are in windows of their own
    (undocked :initform nil :accessor docking-layout-undocked))
   (:documentation "Panes with a title bar each — an element of the description is
@@ -1349,8 +1414,11 @@ closing that window)."))
   (:default-initargs :stretch t)
   (:documentation "A window: panes in a layout, with a title.  See DEFINE-INTERFACE."))
 
-(defun interface-title (interface) (pane-title interface))
-(defun (setf interface-title) (title interface) (setf (pane-title interface) title))
+(defun interface-title (interface)
+  "The title of INTERFACE: of the window of the page, or of its window or dialog."
+  (pane-title interface))
+(defun (setf interface-title) (title interface)
+  (setf (pane-title interface) title))
 
 (defmethod pane-shows-title-p ((pane interface)) nil)
 
@@ -1472,16 +1540,24 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
 ;;; and closes
 
 (defmodel window ()
-  ((interface :initarg :interface :reader window-interface)
+  (;; the interface it shows
+   (interface :initarg :interface :reader window-interface)
+   ;; the position of its left side, in pixels from the left of the page
    (x :initarg :x :accessor window-x)
+   ;; the position of its top, in pixels from the top of the page
    (y :initarg :y :accessor window-y)
+   ;; its width in pixels
    (width :initarg :width :accessor window-width)
+   ;; its height in pixels
    (height :initarg :height :accessor window-height)
+   ;; true while it covers the page
    (maximized :initform nil :accessor window-maximized)
    ;; the window with the largest number is on top
    (z :initarg :z :accessor window-z)
    ;; (kind pointer-x pointer-y x y width height) while it is moved or resized
-   (drag :initform nil :accessor window-drag)))
+   (drag :initform nil :accessor window-drag))
+  (:documentation "A window of an interface above the application (DISPLAY with :WINDOW T);
+see INTERFACE-WINDOW."))
 
 (defvar *top-z* 0)
 

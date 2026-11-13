@@ -18,16 +18,23 @@
 (in-package "UI")
 
 (defclass command ()
-  ((name :initarg :name :reader command-name)
+  (;; the symbol that names it and its function
+   (name :initarg :name :reader command-name)
+   ;; the text of its menu item or button
    (label :initarg :label :reader command-label)
+   ;; the title of the menu it is in, or NIL
    (menu :initarg :menu :reader command-menu)
+   ;; its key, like "CmdOrCtrl+Shift+S", or NIL
    (key :initarg :key :reader command-key)
+   ;; true if a line is drawn above it in its menu
    (separator :initarg :separator :reader command-separator)
+   ;; NIL, or a function that says whether it can be invoked
    (enabled :initarg :enabled :reader command-enabled)
    ;; the required parameters: (name type prompt), TYPE NIL if it has none
    (parameters :initarg :parameters :initform nil :reader command-parameters)
    ;; NIL, or the name of the command table it belongs to
-   (table :initarg :table :initform nil :reader command-table)))
+   (table :initarg :table :initform nil :reader command-table))
+  (:documentation "What DEFINE-COMMAND defines (see FIND-COMMAND)."))
 
 (defstate *command-tables* nil
   "The names of the command tables in use: those of the interfaces on the screen.")
@@ -41,6 +48,7 @@ command table, or its table is in use."
 (defstate *commands* nil "The commands, in the order of their definition.")
 
 (defun find-command (name)
+  "The command named NAME (a symbol), or NIL."
   (find name *commands* :key #'command-name))
 
 (defun register-command (name &key label menu key separator enabled parameters table)
@@ -97,6 +105,8 @@ dialog."
          ',name))))
 
 (defun command-enabled-p (name)
+  "True if the command NAME can be invoked now: its :ENABLED form is true.
+State read by that form is observed, like in a component."
   (let ((command (find-command name)))
     (and command
          (or (null (command-enabled command))

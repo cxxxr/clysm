@@ -159,6 +159,7 @@ FORMATTING-CELL is a table."
   `(call-with-records ,pane :table nil nil (lambda () ,@body)))
 
 (defmacro formatting-row ((pane) &body body)
+  "A row of the FORMATTING-TABLE: its cells are what BODY writes with FORMATTING-CELL."
   `(call-with-records ,pane :row nil nil (lambda () ,@body)))
 
 (defmacro formatting-cell ((pane &key (align :left)) &body body)
@@ -288,7 +289,9 @@ type TYPE: what the interactor offers as completions.")
 ;;; The interactor
 
 (defmodel interactor-pane (stream-pane)
-  ((prompt :initarg :prompt :initform "Command:" :accessor interactor-prompt)
+  (;; what is shown in front of the line
+   (prompt :initarg :prompt :initform "Command:" :accessor interactor-prompt)
+   ;; the text in the line
    (input :initform "" :accessor interactor-input)
    ;; what was entered, the latest first, and where the arrow keys are in it
    (history :initform nil :accessor interactor-history)

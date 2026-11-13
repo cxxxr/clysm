@@ -69,6 +69,21 @@
    "INTERFACE" "DEFINE-INTERFACE" "INTERFACE-TITLE" "INTERFACE-LAYOUT" "INTERFACE-MENU-BAR"
    "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE" "INTERFACE-COMMAND-TABLE"
    "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING" "LIST-PANEL-FILTER"
+   ;; more accessors of the panes
+   "CALLBACKS" "PANE-CALLBACK-TYPE" "RANGE" "WINDOW" "WINDOW-INTERFACE" "PANE-TITLE-POSITION" "PANE-MIN-WIDTH" "PANE-MIN-HEIGHT"
+   "PANE-MAX-WIDTH" "PANE-MAX-HEIGHT" "TEXT-INPUT-PANE-PLACEHOLDER" "TEXT-INPUT-PANE-PASSWORD"
+   "TEXT-INPUT-PANE-READ-ONLY" "TEXT-INPUT-PANE-CALLBACK" "TEXT-INPUT-PANE-CHANGE-CALLBACK"
+   "TEXT-INPUT-PANE-NAVIGATES" "TEXT-INPUT-PANE-ROWS" "BUTTON-CALLBACK" "BUTTON-DEFAULT-P"
+   "COLLECTION-TEST" "CHOICE-SELECTION-CALLBACK" "CHOICE-ACTION-CALLBACK" "CHOICE-PRESENTATION-TYPE"
+   "LIST-PANEL-FILTER-TEXT" "LIST-PANEL-COLUMN-FUNCTION" "BUTTON-PANEL-ORIENTATION"
+   "TREE-VIEW-CHILDREN-FUNCTION" "TREE-VIEW-EXPANDP-FUNCTION" "SLIDER-STEP" "SLIDER-CALLBACK"
+   "MENU-NAME" "MENU-INTERFACE" "MENU-ENABLED" "MENU-ENTRY-INTERFACE" "MENU-ENTRY-DATA"
+   "MENU-ENTRY-CALLBACK" "MENU-ENTRY-KEY" "LAYOUT-ADJUST" "LAYOUT-GAP" "GRID-LAYOUT-COLUMNS"
+   "TAB-LAYOUT-VISIBLE-CHILD-FUNCTION" "RADIO-BUTTON-GROUP" "IMAGE-PANE-DESCRIPTION"
+   "COLOR-PANE-CALLBACK" "DOCKING-LAYOUT-ORIENTATION" "OUTPUT-PANE-VIEW-WIDTH"
+   "OUTPUT-PANE-VIEW-HEIGHT" "OUTPUT-PANE-PRESS-CALLBACK" "OUTPUT-PANE-MOTION-CALLBACK"
+   "OUTPUT-PANE-RELEASE-CALLBACK" "GRAPH-PANE-CHILDREN-FUNCTION" "INTERACTOR-INPUT"
+   "DESKTOP-FILE-ERROR-PATH" "DESKTOP-FILE-ERROR-MESSAGE" "BACKEND-CLIPBOARD"
    "PASSWORD-PANE" "EDITOR-PANE" "RADIO-BUTTON" "PUSH-BUTTON-PANEL" "TEXT-INPUT-CHOICE"
    "BROWSER-PANE" "BROWSER-PANE-URL" "IMAGE-PANE" "IMAGE-PANE-URL" "COLOR-PANE" "COLOR-PANE-COLOR"
    "SIMPLE-LAYOUT" "PINBOARD-LAYOUT" "INTERFACE-POINTER-DOCUMENTATION"
@@ -101,7 +116,7 @@
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
-   "FIRE-GLOBAL" "NODE-TEXT" "BACKEND-FILE"
+   "FIRE-GLOBAL" "NODE-TEXT" "BACKEND-FILE" "NAMED-ROOT" "NAMED-ROOTS"
    "BACKEND-CHOOSER"
    ;; the desktop application (desktop.lisp)
    "DESKTOP-BACKEND" "DESKTOP-P" "READ-FILE" "WRITE-FILE" "DESKTOP-FILE-ERROR"
@@ -120,8 +135,10 @@
 
 (defgeneric make-element-node (backend tag)
   (:documentation "Make an element; TAG is a lowercase string."))
-(defgeneric make-text-node (backend string))
-(defgeneric set-node-text (backend node string))
+(defgeneric make-text-node (backend string)
+  (:documentation "Make a node of text that shows STRING."))
+(defgeneric set-node-text (backend node string)
+  (:documentation "Make the node of text NODE show STRING."))
 (defgeneric set-property (backend node name value)
   (:documentation "Set the property NAME (a keyword) of NODE to VALUE, which is not NIL."))
 (defgeneric remove-property (backend node name old-value)
@@ -132,8 +149,10 @@ happens on NODE.  Called once for every event of a node."))
 (defgeneric insert-node (backend parent node before)
   (:documentation "Make NODE the child of PARENT in front of the child BEFORE
 (at the end if BEFORE is NIL), moving it if it is in the tree."))
-(defgeneric remove-node (backend node))
-(defgeneric replace-node (backend old new))
+(defgeneric remove-node (backend node)
+  (:documentation "Take NODE out of the tree."))
+(defgeneric replace-node (backend old new)
+  (:documentation "Put the node NEW where the node OLD is, and take OLD out of the tree."))
 (defgeneric node-follows-p (backend node next)
   (:documentation "True if the sibling after NODE is NEXT (NIL: NODE is the last child)."))
 (defgeneric request-flush (backend)
@@ -185,6 +204,10 @@ following events of that pointer.")
 (defgeneric begin-drag (backend event text)
   (:documentation "The drag that EVENT starts carries TEXT (for other applications).")
   (:method (backend event text) nil))
+(defgeneric install-commands (backend &key &allow-other-keys)
+  (:documentation "Make the commands available to the user in the way of
+BACKEND: in a browser by their keys, in the desktop application also in the
+menu bar."))
 (defgeneric choose-file (backend continuation &key accept)
   (:documentation "Let the user choose a file to read (ACCEPT: what kinds, like
 \".json,.txt\") and call CONTINUATION with its name and its text, or with NIL
@@ -237,6 +260,7 @@ It is called where the backend can wait (CAN-WAIT-P).")
     (invoke-restart-interactively (or choice abort))))
 
 (defun call-with-error-dialog (function)
+  "Call FUNCTION as WITH-ERROR-DIALOG evaluates its body."
   (if *error-dialog*
       (funcall function)
       (let ((*error-dialog* t))
@@ -328,6 +352,7 @@ changed.  STOP of the value ends that."
     reaction))
 
 (defun stop (reaction)
+  "Stop the function that AUTORUN returned REACTION for: it is not called again."
   (setf (observer-alive reaction) nil))
 
 ;;; ------------------------------------------------------------------
@@ -341,7 +366,8 @@ running observer, and writing it invalidates the observers that read it."))
 
 (defclass model ()
   ((%observers :initform nil))          ; ((slot-name observer...)...)
-  (:metaclass model-class))
+  (:metaclass model-class)
+  (:documentation "The superclass of the classes DEFMODEL defines: their slots are observed."))
 
 (defun observe (object name)
   (let ((observer *observer*) (*observer* nil))
@@ -367,6 +393,7 @@ running observer, and writing it invalidates the observers that read it."))
 ;;; other state.  With a setter (BINDING), writing the slot writes the place.
 
 (defstruct (computed (:constructor make-computed (function &optional setter)))
+  "What the macros COMPUTED and BINDING put into a slot of a model."
   function setter)
 
 (defmacro computed (form)
@@ -551,7 +578,9 @@ display, :KEY the key (see KEYED).  A child is a node, a string or number
 (defclass component (observer)
   ((args :initform nil :accessor component-args)
    (state :initform nil :accessor component-state)   ; a vector of cells
-   (tree :initform nil :accessor component-tree)))   ; the node rendered last
+   (tree :initform nil :accessor component-tree))    ; the node rendered last
+  (:documentation "The superclass of the classes of components (DEFCOMPONENT): an
+instance is a component on the display."))
 
 (defgeneric render (component)
   (:documentation "The node that describes COMPONENT now."))
@@ -804,6 +833,7 @@ Return the node, for UNMOUNT."
     node))
 
 (defun unmount (node &key (backend *backend*))
+  "Take NODE, which MOUNT returned, off the display; its components are gone."
   (setf *roots* (remove node *roots*))
   (remove-node backend (dom-of node))
   (destroy node))

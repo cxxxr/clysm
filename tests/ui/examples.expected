@@ -1,0 +1,99 @@
+== 02-getting-started/first-program
+#app: 0 clicksClick me
+== 03-interfaces/interface-basics
+#app: ユーザー名パスワードログイン
+== 03-interfaces/interface-without-layouts
+#app: メモ
+== 03-interfaces/contain
+#app: りんごみかんぶどう
+== 03-interfaces/find-pane
+#app: 0+1
+== 03-interfaces/callback-types
+#app: ABAPPLEORANGENIL
+== 03-interfaces/quit
+#app: 閉じる
+閉じました
+== 04-state/defmodel
+#app: パンを買う
+== 04-state/defstate
+#app: 25 度
+== 04-state/computed
+#app: 20 ℃ = 68.0 ℉
+== 04-state/binding-form
+#app: 名前年齢管理者Ada（36 歳）
+== 04-state/autorun
+保存: NIL
+保存: ("b" "a")
+== 05-panes/text-panes
+#app: 見出し1行目 2行目42
+== 05-panes/text-input
+#app: パスワード色メモコード
+== 05-panes/buttons
+#app: OK太字小中太字: いいえ、大きさ: 中
+== 05-panes/list-panel
+#app: AppleBananaCherryGrapeMelon選択: NIL
+== 05-panes/multi-column-list-panel
+#app: 名前年齢都市Ada36LondonGrace85New YorkAlan41Manchester
+== 05-panes/tree-view
+#app: //usr/home
+== 05-panes/button-panels
+#app: 大きさsmallmediumlarge色赤緑青追加cheesebacon保存破棄
+== 05-panes/ranges
+== 05-panes/application-pane
+#app: こんにちは元気ですか
+== 06-layouts/rows-and-columns
+#app: 受信送信下書き会議の件見積もり本文返信転送
+== 06-layouts/grid-layout
+#app: 名前メールお知らせを受け取る
+== 06-layouts/tabs-and-switching
+#app: 一般詳細一般の設定
+== 06-layouts/other-layouts
+#app: ファイル⇱a.lispb.lispメモ⇱結果出力
+== 07-commands-and-menus/define-command
+#app: ファイル編集保存すべて消去
+== 07-commands-and-menus/interface-menus
+#app: ファイル(F)表示(V)
+== 07-commands-and-menus/command-tables
+#app: ファイル編集画像画像
+== 08-presentations/presentations
+#app: 吾輩は猫である銀河鉄道の夜おすすめ: 吾輩は猫である
+== 08-presentations/typed-arguments
+#app: ファイル編集本吾輩は猫である銀河鉄道の夜
+== 08-presentations/drag-and-drop
+#app: 机鍵鞄財布
+== 09-dialogs/confirmation
+overlay: すべてのファイルを削除しますか？NoYes
+== 09-dialogs/prompt-for-values
+overlay: 新しいユーザー名前年齢管理者色REDGREENBLUECancelOK
+== 09-dialogs/popup-confirmer
+overlay: いくつ作りますか？CancelOK
+== 09-dialogs/display-dialog
+overlay: ログインユーザー名パスワードキャンセルログイン
+== 09-dialogs/restarts
+#app: 保存
+== 10-graphics/output-pane
+#app: 売上
+== 10-graphics/drawing-presentations
+#app: 東京大阪
+== 10-graphics/drawing-input
+== 10-graphics/graph-pane
+#app: panechoicelist-paneltree-viewlayoutrow-layout
+== 11-streams/stream-pane
+#app: こんにちは1 + 2 = 3注意
+== 11-streams/formatting-table
+#app: 地球1火星2木星95
+== 11-streams/display-function
+#app: 待っている仕事: 2 件・印刷・保存
+== 11-streams/interactor
+#app: コマンド:
+== 12-windows/windows
+overlay: メモ□×もう1つのメモ□×
+== 12-windows/docking
+#app: ファイル⇱main.lisputil.lispエディタ⇱出力⇱出力
+== 13-components/markup
+#app: 買い物牛乳パン2 件
+== 13-components/defcomponent
+#app: 牛乳を買う手紙を書く2 件残っています
+== 13-components/new-pane
+#app: 評価★★★☆☆3 点
+== 15-development/testing
