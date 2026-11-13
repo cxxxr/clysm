@@ -674,11 +674,44 @@ eqref), the local of the remainder and its representation; or NIL."
 ;;; bits takes the generic operation, whose result goes to the eqref local.
 
 (defvar *dual-vars* (make-hash-table :test 'eq) "lvar -> index of its i64 local")
+(defvar *dual-uses-lam* nil "the function whose variables *DUAL-USES* describes")
+(defvar *dual-uses* (make-hash-table :test 'eq)
+  "lvar -> (arithmetic assignments . other uses) in the function being compiled")
+
+(defun dual-uses (lv)
+  "How LV is used in the function being compiled: the number of its
+assignments from integer arithmetic, and of its uses other than as an operand
+of those.  (Each other use after an update makes the integer, so the pair of
+locals pays only for a variable that is updated more than it is looked at:
+a sum or a hash value, not a loop index.)"
+  (let ((lam (fstate-lam *fs*)))
+    (unless (eq lam *dual-uses-lam*)
+      (clrhash *dual-uses*)
+      (setf *dual-uses-lam* lam)
+      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (cons 0 0))))
+               (operands (v n)
+                 ;; the references of V among the leaves of the arithmetic tree N are not other uses
+                 (cond ((and (eq (car n) :lref) (eq (second n) v)) nil)
+                       ((fusable-op-node-p n) (dolist (a (cddr n)) (operands v a)))
+                       (t (walk n))))
+               (walk (n)
+                 (when (consp n)
+                   (case (car n)
+                     (:lref (incf (cdr (entry (second n)))))
+                     (:lset (let ((v (second n)) (e (third n)))
+                              (if (and (eq (car e) :prim) (fusable-op-node-p e))
+                                  (progn (incf (car (entry v))) (operands v e))
+                                  (walk e))))
+                     (t (map-subnodes #'walk n))))))
+        (walk (lam-body lam))))
+    (or (gethash lv *dual-uses*) (cons 0 0))))
 
 (defun note-dual-var (lv)
   "Called when LV gets its location (BIND-NEW-VAR-CODE)."
   (if (and (lvar-mutated lv) (not (lvar-captured lv)) (not (lvar-special lv)) (null (lvar-rep lv))
-           (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+))
+           (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)
+           (let ((uses (dual-uses lv)))
+             (and (> (car uses) 0) (<= (cdr uses) (car uses)))))
       (setf (gethash lv *dual-vars*) (new-local :i64))
       (remhash lv *dual-vars*)))
 
