@@ -56,11 +56,14 @@ The universal value type is `(ref null eq)`.
 * **string** — `(array (mut i32))` of code points; **simple-vector** — `(array (mut eqref))`;
   also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
   multi-dimensional, displaced) use a header struct around a simple array.
-* **bignum** — `struct { sign: i32, digits: (ref (array i32)) }` (base 2^14),
+* **bignum** — `struct { sign: i32, digits: mut (ref null (array i32)), value: i64 }`
+  (base 2^14 digits). Integers beyond the fixnum range that fit in 64 bits are
+  computed with i64 arithmetic and made without digits (the `value` field holds
+  them); the digits are made when the general bignum code asks for them.
   **ratio**, **complex**, **single-float** (`f32`), **double-float** (`f64`) structs.
 * **package** — `$package` struct with hash tables of symbols.
-* **instances** (structures, conditions, CLOS objects) — `struct { layout, slots }`
-  where the layout is the class object.
+* **instances** (structures, conditions, CLOS objects) — `struct { layout, slots, hash: mut i32 }`
+  where the layout is the class object (the hash caches the identity hash).
 * **closures** — see below. **foreign objects** — `struct { externref }` wrapper.
 
 All types live in one recursive type group, so structurally identical types
@@ -101,9 +104,12 @@ stack to its saved depth.
 ## Non-local exits (spec: Wasm EH)
 
 `block`/`return-from` and `tagbody`/`go` inside one function compile to Wasm
-`block`/`br` and a `loop` + `br_table` dispatcher. When the exit crosses a
-closure boundary or an `unwind-protect`, a fresh tag object is created and the
-exit `throw`s the single exception tag `$lisp-throw(tag, value)`; the target is
+`block`/`br` and a `loop` + `br_table` dispatcher. An exit through
+`unwind-protect` forms of the same function sets an exit number and branches to
+the innermost cleanup, which runs and then continues the exit (to the next
+cleanup or the target). When the exit crosses a closure boundary, a fresh tag
+object is created and the exit `throw`s the single exception tag
+`$lisp-throw(tag, value)`; the target is
 a `try_table` with `catch_ref` that compares the tag and otherwise rethrows with
 `throw_ref`. `catch`/`throw` use the same mechanism (with a dynamic list of
 active catch tags so that throwing to a missing tag signals `control-error`).
@@ -344,6 +350,44 @@ Limitations:
 * No threads and no first-class continuations (not required by the standard).
 * Character names are SBCL's; names above Latin-1 are read on first use from
   `data/unicode-names.txt` (`tools/gen-unicode-names.sh`).
+
+## Performance
+
+`tools/bench.sh [FILE]` runs a benchmark file (`bench/suite.lisp` by default,
+or `bench/gabriel.lisp`) on SBCL and on Clysm (Node.js) and prints the time
+ratio of each benchmark and their geometric mean. On an x86-64 machine with
+SBCL 2.6 and Node.js 24, Clysm takes about 3.9 times as long as SBCL on
+`bench/suite.lisp` (function calls, arrays, floats, lists, sorting, hash tables,
+strings, FORMAT, the printer and reader, bignums and ratios, structures, CLOS,
+special variables, non-local exits) and about 2.2 times as long on the
+Gabriel-style `bench/gabriel.lisp`; no benchmark takes more than 10 times as
+long. The slowest relative to SBCL are CLOS dispatch, the reader, `mandel`
+(boxed double-floats) and integers between 2^29 and 2^62 (fixnums in SBCL,
+boxed here), at 7-10 times.
+
+What makes the generated code fast:
+
+* fixnum arithmetic and comparisons inline, with i64 arithmetic (no digit
+  vectors) for integers up to 64 bits, and Wasm loops for bignum digits;
+* inline `logand`/`logior`/`logxor`/`ash`, `char`/`schar`, one- and
+  two-dimensional `aref` (also on vectors with fill pointers), structure
+  accessors (compiler macros that check the layout inline), `eql` against
+  literals as `eq`, `member` of a literal list, `case` as `eq` tests;
+* `format` with a constant control string of `~A ~S ~D ~% ~& ~~` compiles to
+  direct output calls; other control strings are parsed once and cached;
+* generic functions dispatch through a per-function cache searched without
+  consing; slot readers and writers made by `defclass` access the slot at its
+  location; `make-instance` with a constant class and initarg keys uses a
+  per-call-site constructor;
+* nested integer arithmetic on variables and constants runs in i64 without
+  intermediate boxes;
+* exits through `unwind-protect` within a function branch to the cleanup
+  instead of throwing; `(catch 'tag (f ...))` calls a copy of the known
+  function F in which `(throw 'tag ...)` is a return, so the common
+  catch-in-the-caller pattern needs no Wasm exception.
+
+`tools/dump-func.lisp FILE NAME...` prints the Wasm instructions generated for
+functions (by name), which helps to see what a form compiles to.
 
 ## Tests
 

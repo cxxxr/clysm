@@ -44,12 +44,12 @@
     (:f4        (:func ((:ref :closure) :eqref :eqref :eqref :eqref) (:eqref)))
     (:fN        (:func ((:ref :closure) (:ref :vector)) (:eqref)))
     (:cell      (:struct ((:eqref t))))
-    (:bignum    (:struct ((:i32 nil) ((:ref :limbs) nil))))
+    (:bignum    (:struct ((:i32 nil) ((:ref :null :limbs) t) (:i64 nil))))  ; sign limbs value (limbs null: |value| < 2^63 in VALUE)
     (:ratio     (:struct ((:eqref nil) (:eqref nil))))
     (:single    (:struct ((:f32 nil))))
     (:double    (:struct ((:f64 nil))))
     (:complex   (:struct ((:eqref nil) (:eqref nil))))
-    (:instance  (:struct ((:eqref t) ((:ref :vector) t))))
+    (:instance  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))  ; layout slots hash
     (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
     (:foreign   (:struct ((:externref nil))))
     ;; misc function types
@@ -100,6 +100,10 @@
     (:x-d       (:func (:externref) (:f64)))
     (:xi-i      (:func (:externref :i32) (:i32)))
     (:i-x       (:func (:i32) (:externref)))
-    (:x-e       (:func (:externref) (:eqref)))))
+    (:x-e       (:func (:externref) (:eqref)))
+    (:e-l       (:func (:eqref) (:i64)))
+    (:l-e       (:func (:i64) (:eqref)))
+    (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))
+    (:ei-e      (:func (:eqref :i32) (:eqref)))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))

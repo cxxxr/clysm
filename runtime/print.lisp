@@ -335,6 +335,11 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
   "True when NAME could be read as a potential number (CLHS 2.3.1.1) in BASE."
   (let ((n (length name)) (has-dot nil))
     (when (= n 0) (return-from %potential-number-p nil))
+    ;; a potential number has a digit
+    (when (and (<= base 10)
+               (dotimes (i n t) (let ((code (char-code (char name i))))
+                                  (when (and (>= code 48) (<= code 57)) (return nil)))))
+      (return-from %potential-number-p nil))
     (dotimes (i n)
       (let ((c (char name i)))
         (cond ((char= c #\.) (setq has-dot t))
@@ -370,15 +375,18 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
                         (:upcase (lower-case-p c))
                         (:downcase (upper-case-p c))
                         (t nil))
-                      (multiple-value-bind (fn non-terminating) (get-macro-character c readtable)
-                        (and fn (or (not non-terminating) (= i 0)))))
+                      (let ((syn (%syntax c readtable)))
+                        (and (or (eq syn :terminating) (and (eq syn :non-terminating) (= i 0)))
+                             (gethash c (%rt-macros readtable)))))
               (return t))))
-        (every (lambda (c) (char= c #\.)) name)
+        (dotimes (i n t) (unless (eql (char name i) #\.) (return nil)))
         (%potential-number-p name *print-base*))))
 
 (defun %output-symbol-name-cased (name stream readtable)
   "Write NAME without escapes, applying *print-case* and the readtable case."
   (let ((rcase (readtable-case readtable)) (pcase *print-case*))
+    (when (and (eq rcase :upcase) (eq pcase :upcase))     ; the usual case: no change
+      (return-from %output-symbol-name-cased (write-string name stream)))
     (case rcase
       (:preserve (write-string name stream))
       (:invert

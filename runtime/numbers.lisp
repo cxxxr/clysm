@@ -94,36 +94,11 @@
                  (cond ((%fx< da db) (return -1))
                        ((%fx> da db) (return 1)))))))))
 
-(defun %mag-add (a b)
-  (let* ((la (%mag-length a)) (lb (%mag-length b))
-         (n (%fx+ (if (%fx> la lb) la lb) 1))
-         (r (%make-limbs n)) (carry 0))
-    (dotimes (i n r)
-      (let ((s (%fx+ (%fx+ (if (%fx< i la) (%lref a i) 0) (if (%fx< i lb) (%lref b i) 0)) carry)))
-        (%lset r i (%fxlogand s +digit-mask+))
-        (setq carry (%fxash-right s 14))))))
+(defun %mag-add (a b) (%mag-add-fast a b))
 
-(defun %mag-sub (a b)
-  ;; a >= b
-  (let* ((la (%mag-length a)) (lb (%mag-length b))
-         (r (%make-limbs la)) (borrow 0))
-    (dotimes (i la r)
-      (let ((d (%fx- (%fx- (%lref a i) (if (%fx< i lb) (%lref b i) 0)) borrow)))
-        (if (%fx< d 0)
-            (progn (%lset r i (%fx+ d +digit-base+)) (setq borrow 1))
-            (progn (%lset r i d) (setq borrow 0)))))))
+(defun %mag-sub (a b) (%mag-sub-fast a b))
 
-(defun %mag-mul (a b)
-  (let* ((la (%mag-length a)) (lb (%mag-length b))
-         (r (%make-limbs (%fx+ la lb))))
-    (dotimes (i la r)
-      (let ((carry 0) (ai (%lref a i)))
-        (unless (%fx= ai 0)
-          (dotimes (j lb)
-            (let ((tt (%fx+ (%fx+ (%fx* ai (%lref b j)) (%lref r (%fx+ i j))) carry)))
-              (%lset r (%fx+ i j) (%fxlogand tt +digit-mask+))
-              (setq carry (%fxash-right tt 14))))
-          (%lset r (%fx+ i lb) carry))))))
+(defun %mag-mul (a b) (%mag-mul-fast a b))
 
 (defun %mag-divmod-small (a d)
   "Divide magnitude A by fixnum 0 < d < 2^14.  Returns (values q-mag remainder)."
@@ -213,6 +188,8 @@
 ;;; ------------------------------------------------------------
 
 (defun %int-add (a b)
+  (or (%int64-op a b 0) (%int-add-big a b)))
+(defun %int-add-big (a b)
   (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
     (if (%fx= sa sb)
         (%make-integer sa (%mag-add ma mb))
@@ -226,13 +203,16 @@
       (if (%fx= a most-negative-fixnum) (%make-integer 0 (%fixnum-mag a)) (%fx- 0 a))
       (%make-integer (%fx- 1 (%bignum-sign a)) (%bignum-mag a))))
 
-(defun %int-sub (a b) (%int-add a (%int-negate b)))
+(defun %int-sub (a b) (or (%int64-op a b 1) (%int-add-big a (%int-negate b))))
 
 (defun %int-mul (a b)
-  (%make-integer (%fxlogxor (%int-sign a) (%int-sign b)) (%mag-mul (%int-mag a) (%int-mag b))))
+  (or (%int64-op a b 2)
+      (%make-integer (%fxlogxor (%int-sign a) (%int-sign b)) (%mag-mul (%int-mag a) (%int-mag b)))))
 
 (defun %int-truncate (a b)
   "Returns (values quotient remainder) of integers."
+  (let ((q (%int64-op a b 6)))
+    (when q (return-from %int-truncate (values q (%int64-op a b 7)))))
   (if (and (fixnump a) (fixnump b))
       (if (%fx= b 0)
           (error 'division-by-zero :operation 'truncate :operands (list a b))
@@ -244,6 +224,7 @@
           (values (%make-integer (%fxlogxor sa sb) q) (%make-integer sa r))))))
 
 (defun %int-cmp (a b)
+  (let ((c (%int64-op a b 8))) (when c (return-from %int-cmp c)))
   (if (and (fixnump a) (fixnump b))
       (cond ((%fx< a b) -1) ((%fx> a b) 1) (t 0))
       (let ((sa (%int-sign a)) (sb (%int-sign b)))
@@ -257,6 +238,7 @@
 
 (defun %int-ash (x count)
   (cond ((eql x 0) 0)
+        ((and (fixnump count) (%int64-op x count 9)))
         ((eql count 0) x)
         ((> count 0)
          (if (and (fixnump x) (< count 29)
@@ -303,6 +285,7 @@
 (defun %int-logop (op a b)
   (if (and (fixnump a) (fixnump b))
       (case op (0 (%fxlogand a b)) (1 (%fxlogior a b)) (t (%fxlogxor a b)))
+    (or (%int64-op a b (case op (0 3) (1 4) (t 5)))
       (let* ((n (+ 1 (max (%llen (%int-mag a)) (%llen (%int-mag b)))))
              (ta (%int-to-twos a n)) (tb (%int-to-twos b n))
              (r (%make-limbs n))
@@ -310,7 +293,7 @@
         (dotimes (i n)
           (let ((x (%lref ta i)) (y (%lref tb i)))
             (%lset r i (case op (0 (%fxlogand x y)) (1 (%fxlogior x y)) (t (%fxlogxor x y))))))
-        (%twos-to-int r (case op (0 (and na nb)) (1 (or na nb)) (t (not (eq na nb))))))))
+        (%twos-to-int r (case op (0 (and na nb)) (1 (or na nb)) (t (not (eq na nb)))))))))
 
 ;;; ------------------------------------------------------------
 ;;; generic dispatch
@@ -428,8 +411,10 @@
           (t (%complex-div a b)))))
 
 (defun %exact-compare-p (a b)
-  "Rational vs float comparisons are done exactly (CLHS 12.1.4.1)."
+  "Rational vs float comparisons are done exactly (CLHS 12.1.4.1).  A fixnum
+converts to a double exactly, so only bignums and ratios need it."
   (and (or (floatp a) (floatp b)) (not (and (floatp a) (floatp b)))
+       (not (fixnump a)) (not (fixnump b))
        (realp a) (realp b)
        (not (%float-infinite-p (%to-double (if (floatp a) a b))))
        (not (%double-nan-p (%to-double (if (floatp a) a b))))))
@@ -472,11 +457,27 @@
       (setq n (truncate n g) d (truncate d g)))
     (if (eql d 1) n (%make-ratio n d))))
 
+(defun %exact-quotient (a b) (if (eql b 1) a (values (%int-truncate a b))))
 (defun %ratio-add (a b)
-  (%make-rational (+ (* (numerator a) (denominator b)) (* (numerator b) (denominator a)))
-                  (* (denominator a) (denominator b))))
+  ;; Knuth 4.5.1: the gcds are taken of the (small) common factors only
+  (let* ((na (numerator a)) (da (denominator a)) (nb (numerator b)) (db (denominator b))
+         (g1 (%gcd2 da db)))
+    (if (eql g1 1)
+        (%make-ratio-or-integer (+ (* na db) (* nb da)) (* da db))
+        (let* ((da1 (%exact-quotient da g1))
+               (tt (+ (* na (%exact-quotient db g1)) (* nb da1)))
+               (g2 (%gcd2 tt g1)))
+          (%make-ratio-or-integer (%exact-quotient tt g2) (* da1 (%exact-quotient db g2)))))))
+(defun %make-ratio-or-integer (n d)
+  ;; N/D in lowest terms with D > 0
+  (if (eql d 1) n (%make-ratio n d)))
 (defun %ratio-mul (a b)
-  (%make-rational (* (numerator a) (numerator b)) (* (denominator a) (denominator b))))
+  (let* ((na (numerator a)) (da (denominator a)) (nb (numerator b)) (db (denominator b))
+         (g1 (%gcd2 na db)) (g2 (%gcd2 nb da)))
+    (if (or (eql g1 0) (eql g2 0))
+        0
+        (%make-ratio-or-integer (* (%exact-quotient na g1) (%exact-quotient nb g2))
+                                (* (%exact-quotient da g2) (%exact-quotient db g1))))))
 (defun %rational-reciprocal (x)
   (%make-rational (denominator x) (numerator x)))
 
@@ -600,7 +601,8 @@
              (values iq (- number (* (float iq (%float-result (%fixnum-to-double 0) r)) divisor)))))))
 
 (defun floor (number &optional (divisor 1))
-  (when (and (fixnump number) (fixnump divisor) (not (eql divisor 0)))
+  (when (and (fixnump number) (fixnump divisor) (not (eql divisor 0))
+             (not (and (eql divisor -1) (eql number most-negative-fixnum))))
     (let ((q (%fxtruncate number divisor)) (r (%fxrem number divisor)))
       (return-from floor
         (if (and (not (eql r 0)) (%fx< (%fxlogxor r divisor) 0))

@@ -52,6 +52,28 @@
          (host-compile ',(make-host-macro-expander name ll body))))
 
 
+;;; DEFSTRUCT accessors are compiled inline (as compiler macros) at call sites
+;;; compiled after the DEFSTRUCT, unless declared NOTINLINE.
+(defun register-struct-accessor-inline (acc name idx writable)
+  (flet ((ref (obj) `(clysm-sys::%struct-ref ,obj (load-time-value (find-class ',name)) ,idx)))
+    (setf (gethash acc *compiler-macros*)
+          (lambda (form env)
+            (declare (ignore env))
+            (if (and (consp (cdr form)) (null (cddr form))) (ref (second form)) form)))
+    (when writable
+      (setf (gethash (setf-function-symbol acc) *compiler-macros*)
+            (lambda (form env)
+              (declare (ignore env))
+              (if (and (consp (cdr form)) (consp (cddr form)) (null (cdddr form)))
+                  `(clysm-sys::%struct-set ,(third form) (load-time-value (find-class ',name)) ,idx
+                                           ,(second form))
+                  form))))
+    acc))
+
+#-clysm
+(defmacro clysm-sys::%host-inline-struct-accessor (acc name idx writable)
+  `(register-struct-accessor-inline ',acc ',name ',idx ',writable))
+
 #-clysm
 (defmacro clysm-sys::%ct-initial-value (sym form)
   ;; record constant initial values so that the symbol is bound from the start
@@ -85,6 +107,10 @@
           (destructuring-bind (name ll &rest body) (cdr form)
             `(setf (gethash ',name *compiler-macros*)
                    (host-compile ',(make-host-macro-expander name ll body))))))
+  (setf (macro-function 'clysm-sys::%host-inline-struct-accessor)
+        (lambda (form env)
+          (declare (ignore env))
+          `(register-struct-accessor-inline ,@(mapcar (lambda (x) `',x) (cdr form)))))
   (setf (macro-function 'clysm-sys::%ct-initial-value)
         (lambda (form env)
           (declare (ignore env))

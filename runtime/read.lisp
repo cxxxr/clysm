@@ -367,6 +367,11 @@ token is empty when the next character ends a token."
   "Returns (list number) or NIL."
   (let ((len (length str)) (i 0) (sign 1))
     (when (= len 0) (return-from %parse-number-token nil))
+    ;; a number has a decimal digit (letters are digits only above base 10)
+    (when (and (<= base 10)
+               (dotimes (k len t)
+                 (let ((code (char-code (char str k)))) (when (and (>= code 48) (<= code 57)) (return nil)))))
+      (return-from %parse-number-token nil))
     (when (member (char str 0) '(#\+ #\-))
       (when (char= (char str 0) #\-) (setq sign -1))
       (setq i 1))

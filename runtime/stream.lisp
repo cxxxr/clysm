@@ -355,6 +355,20 @@
                              :format-arguments (list start end len)))
       end)))
 
+(defun %write-string-2 (string stream)
+  (let ((s (if (or (null stream) (eq stream t)) (%output-stream stream) stream)))
+    (if (and (%simple-string-p string) (%streamp s) (eq (stream-kind s) :string-out)
+             (%string-buffer-append (stream-buffer s) string 0 (length string)))
+        (let* ((end (length string))
+               (nl (do ((i (- end 1) (- i 1))) ((< i 0) nil)
+                     (when (eql (%schar string i) #\Newline) (return i)))))
+          (setf (stream-column s) (if nl (- end nl 1) (+ (stream-column s) end)))
+          string)
+        (write-string string stream))))
+
+(define-compiler-macro write-string (&whole form string &optional (stream nil streamp) &rest keys)
+  (if keys form `(%write-string-2 ,string ,(if streamp stream nil))))
+
 (defun write-string (string &optional stream &key (start 0) end)
   (unless (stringp string) (%type-error string 'string))
   (let ((s (%output-stream stream)) (end (%check-seq-bounds string start end)))
@@ -364,6 +378,12 @@
       ;; each component stream gets the whole string
       (:broadcast (dolist (x (stream-streams s)) (write-string string x :start start :end end))
        (return-from write-string string)))
+    (when (and (eq (stream-kind s) :string-out) (< start end)
+               (%string-buffer-append (stream-buffer s) string start end))
+      (let ((nl (do ((i (- end 1) (- i 1))) ((< i start) nil)
+                  (when (eql (%schar string i) #\Newline) (return i)))))
+        (setf (stream-column s) (if nl (- end nl 1) (+ (stream-column s) (- end start)))))
+      (return-from write-string string))
     (if (and (%simple-string-p string) (eq (stream-kind s) :fd-out))
         (do ((i start (+ i 1))) ((>= i end))
           (%stream-write-char s (%schar string i)))

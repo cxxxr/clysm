@@ -131,6 +131,7 @@
                             `((:i32.const ,(if (minusp obj) 1 0))
                               ,@(loop for d in digits collect `(:i32.const ,d))
                               (:array.new_fixed :limbs ,(length digits))
+                              (:i64.const 0)
                               (:struct.new :bignum))))
                  (string (string-array-code obj))
                  (cons `(,@(const-init-code (car obj)) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
@@ -167,6 +168,11 @@
 (defvar *tail-ok* nil "true when a call in tail position may become return_call")
 (defvar *dyn-depth* 0 "number of dynamic-binding scopes active in the current function")
 (defvar *uwp-depth* 0 "number of unwind-protect/catch regions active in the current function")
+(defvar *uwp-frames* nil
+  "The unwind-protect (a UWPF) and catch (:CATCH) regions active in the current
+function, innermost first.  A local exit through unwind-protect regions jumps
+to the innermost one's cleanup, which then continues the exit.")
+(defstruct uwpf code res landing (exits nil) (nexits 0) dyn-depth uwp-depth parent mv-used)
 
 (defun new-local (&optional (type :eqref))
   (let ((idx (+ (fstate-nparams *fs*) (fstate-nlocals *fs*))))
@@ -597,6 +603,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
             (blk-mv blk) mv
             (blk-dyn-depth blk) *dyn-depth*
             (blk-uwp-depth blk) *uwp-depth*
+            (blk-uwp-frames blk) *uwp-frames*
             (blk-saved-bsp blk) (new-local :i32))
       (set-loc (blk-tag-var blk) (cons :local (new-local)))
       (let ((body-code (let ((*tail-ok* (and *tail-ok* (not (blk-nonlocal blk)))))
@@ -623,20 +630,39 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                        ((:local.get ,etmp) :throw_ref))
                   :unreachable))))))))
 
+(defun innermost-uwpf-between (frames outer)
+  "The innermost unwind-protect frame in FRAMES above the tail OUTER, or NIL."
+  (do ((f frames (cdr f))) ((or (null f) (eq f outer)) nil)
+    (when (uwpf-p (car f)) (return (car f)))))
+
+(defun register-uwp-exit (frame continuation)
+  "Register a local exit through FRAME; CONTINUATION generates the code that
+continues the exit after the cleanup (in the context outside FRAME).  Returns
+the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
+  (let ((k (incf (uwpf-nexits frame))))
+    (push (cons k continuation) (uwpf-exits frame))
+    `((:i32.const ,k) (:local.set ,(uwpf-code frame)) (:br ,(uwpf-landing frame)))))
+
+(defun local-exit-to-block (blk value-code)
+  "Code for a return-from BLK in the current function, VALUE-CODE pushing the value."
+  (let ((frame (innermost-uwpf-between *uwp-frames* (blk-uwp-frames blk))))
+    (if (null frame)
+        `(,@value-code
+          ,@(when (> *dyn-depth* (blk-dyn-depth blk))
+              (restore-bsp-code (blk-saved-bsp blk)))
+          (:br ,(blk-label blk)))
+        (progn
+          (when (blk-mv blk) (setf (uwpf-mv-used frame) t))
+          `(,@value-code (:local.set ,(uwpf-res frame))
+            ,@(register-uwp-exit
+               frame (lambda () (local-exit-to-block blk `((:local.get ,(uwpf-res frame)))))))))))
+
 (defun cg-return-from (node)
   (destructuring-bind (blk value) (cdr node)
     (let ((local-p (eq (blk-lam blk) (fstate-lam *fs*))))
-      (if (and local-p (= *uwp-depth* (blk-uwp-depth blk)))
-          ;; plain branch
-          `(,@(cg value (blk-mv blk))
-            ,@(when (> *dyn-depth* (blk-dyn-depth blk))
-                (restore-bsp-code (blk-saved-bsp blk)))
-            (:br ,(blk-label blk)))
+      (if local-p
+          (local-exit-to-block blk (cg value (blk-mv blk)))
           (progn
-            (when local-p
-              ;; crossing unwind-protect within the same function: use throw;
-              ;; mark nonlocal (block codegen checks after body generation)
-              (setf (blk-nonlocal blk) t))
             (let ((tmp (new-local)))
               `(,@(cg value t) (:local.set ,tmp)
                 ,@(var-get-code (blk-tag-var blk))
@@ -655,7 +681,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
            (end (gensym "TBEND"))
            (pc (new-local :i32)))
       (setf (tb-labels tb) labels (tb-dispatch tb) dispatch (tb-pc tb) pc
-            (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth*
+            (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth* (tb-uwp-frames tb) *uwp-frames*
             (tb-saved-bsp tb) (new-local :i32))
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
       (let* ((seg-codes (let ((*tail-ok* nil))
@@ -692,15 +718,20 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
           ,@(nil-code)
           ,@(when mv (mv-one)))))))
 
+(defun local-go (tb index)
+  (let ((frame (innermost-uwpf-between *uwp-frames* (tb-uwp-frames tb))))
+    (if (null frame)
+        `(,@(when (> *dyn-depth* (tb-dyn-depth tb)) (restore-bsp-code (tb-saved-bsp tb)))
+          (:i32.const ,index) (:local.set ,(tb-pc tb))
+          (:br ,(tb-dispatch tb)))
+        (register-uwp-exit frame (lambda () (local-go tb index))))))
+
 (defun cg-go (node)
   (destructuring-bind (tb index) (cdr node)
     (let ((local-p (eq (tb-lam tb) (fstate-lam *fs*))))
-      (if (and local-p (= *uwp-depth* (tb-uwp-depth tb)))
-          `(,@(when (> *dyn-depth* (tb-dyn-depth tb)) (restore-bsp-code (tb-saved-bsp tb)))
-            (:i32.const ,index) (:local.set ,(tb-pc tb))
-            (:br ,(tb-dispatch tb)))
+      (if local-p
+          (local-go tb index)
           (progn
-            (when local-p (setf (tb-nonlocal tb) t))
             `(,@(var-get-code (tb-tag-var tb))
               (:i32.const ,index) :ref.i31
               (:throw :lisp-throw)))))))
@@ -725,8 +756,9 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         (:block ,done :eqref
           (:block ,h (:type :bt-catch)
             (:try_table nil :eqref ((:catch_ref :lisp-throw ,h))
-              ,@(let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)) (*dyn-depth* (1+ *dyn-depth*)))
-                  (cg body mv)))
+              ,@(let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)) (*dyn-depth* (1+ *dyn-depth*))
+                      (*uwp-frames* (cons :catch *uwp-frames*)))
+                  (or (catch-clone-call tag-node body) (cg body mv))))
             ,@(restore-bsp-code saved)
             (:br ,done))
           (:local.set ,etmp) (:local.set ,vtmp) (:local.set ,ttmp)
@@ -738,6 +770,9 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun cg-throw (node)
   (destructuring-bind (tag-node value) (cdr node)
+    (when (and *catching-tag* (null *uwp-frames*) (eq (car tag-node) :const)
+               (eq (second tag-node) *catching-tag*))
+      (return-from cg-throw `(,@(cg value t) :return)))
     (let ((tag (new-local)) (v (new-local)))
       `(,@(cg tag-node) (:local.tee ,tag) (:call :check-catch-tag)
         ,@(cg value t) (:local.set ,v)
@@ -746,23 +781,49 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun cg-unwind-protect (node mv)
   (destructuring-bind (form cleanup) (cdr node)
-    (let ((saved (new-local :i32)) (res (new-local)) (etmp (new-local :exnref))
-          (mvsave (new-local))
-          (done (gensym "UWP")) (h (gensym "H")))
-      (let ((cleanup-code (let ((*tail-ok* nil)) `(,@(cg cleanup) :drop))))
+    (let* ((saved (new-local :i32)) (res (new-local)) (etmp (new-local :exnref))
+           (mvsave (new-local)) (code (new-local :i32))
+           (done (gensym "UWP")) (h (gensym "H")) (land (gensym "LAND"))
+           (frame (make-uwpf :code code :res res :landing land :dyn-depth *dyn-depth*
+                             :uwp-depth *uwp-depth* :parent *uwp-frames*))
+           (body-code (let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
+                            (*uwp-frames* (cons frame *uwp-frames*)))
+                        (cg form mv))))
+      (let* ((cleanup-code (let ((*tail-ok* nil)) `(,@(cg cleanup) :drop)))
+             (normal-code (if mv
+                             `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)
+                               ,@cleanup-code
+                               (:local.get ,mvsave) (:call :mv-restore))
+                             `(,@cleanup-code (:local.get ,res)))))
         `(,@(save-bsp-code saved)
+          ,@(when (uwpf-exits frame) `((:i32.const 0) (:local.set ,code)))
           (:block ,done :eqref
             (:block ,h :exnref
-              (:try_table nil :eqref ((:catch_all_ref ,h))
-                ,@(let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)))
-                    (cg form mv)))
-              ;; normal exit
-              (:local.set ,res)
-              ,@(if mv
-                    `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)
-                      ,@cleanup-code
-                      (:local.get ,mvsave) (:call :mv-restore))
-                    `(,@cleanup-code (:local.get ,res)))
+              ,@(if (null (uwpf-exits frame))
+                    `((:try_table nil :eqref ((:catch_all_ref ,h)) ,@body-code)
+                      ;; normal exit
+                      (:local.set ,res)
+                      ,@normal-code)
+                    ;; local exits through the cleanup: they set CODE and RES, and branch to LAND
+                    `((:block ,land nil
+                        (:try_table nil :eqref ((:catch_all_ref ,h)) ,@body-code)
+                        (:local.set ,res)
+                        (:br ,land))
+                      (:local.get ,code) :i32.eqz
+                      (:if nil :eqref
+                           ,normal-code
+                           (,@(restore-bsp-code saved)
+                            ,@(when (uwpf-mv-used frame)
+                                `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)))
+                            ,@cleanup-code
+                            ,@(when (uwpf-mv-used frame)
+                                `((:local.get ,mvsave) (:call :mv-restore) :drop))
+                            ,@(let ((*uwp-frames* (uwpf-parent frame)) (*uwp-depth* (uwpf-uwp-depth frame))
+                                    (*dyn-depth* (uwpf-dyn-depth frame)) (*tail-ok* nil))
+                                (loop for (k . cont) in (reverse (uwpf-exits frame))
+                                      append `((:local.get ,code) (:i32.const ,k) :i32.eq
+                                               (:if nil nil ,(funcall cont)))))
+                            :unreachable))))
               (:br ,done))
             (:local.set ,etmp)
             ,@(restore-bsp-code saved)
@@ -854,8 +915,53 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 (defun compile-pending-lams ()
   (loop while *pending-lams*
         do (let ((lam (pop *pending-lams*)))
-             (compile-lam lam)
-             (setf (gethash lam *compiled-lams*) t))))
+             (if (consp lam)
+                 (compile-catch-clone (car lam) (cdr lam))
+                 (progn (compile-lam lam)
+                        (setf (gethash lam *compiled-lams*) t))))))
+
+;;; (CATCH 'TAG (F ...)) where F is a known function of required parameters
+;;; calls a copy of F in which a (THROW 'TAG value) not inside a CATCH,
+;;; UNWIND-PROTECT or local function of F is a plain return: the catch is F's
+;;; caller, and the value of either way out is the value of the CATCH.
+(defvar *catching-tag* nil "in a catch clone: the tag whose throws return")
+(defvar *catch-clones* (make-hash-table :test 'equal))
+
+(defun catch-clone-name (lam tag) (list :catch-main (lam-id lam) (sym-global tag)))
+
+(defun ensure-catch-clone (lam tag)
+  (let ((key (cons (lam-id lam) tag)))
+    (unless (gethash key *catch-clones*)
+      (setf (gethash key *catch-clones*) t)
+      (push (cons lam tag) *pending-lams*))
+    (catch-clone-name lam tag)))
+
+(defun compile-catch-clone (lam tag)
+  (let* ((n (length (lam-req lam)))
+         (*fs* (make-fstate :lam lam :nparams (1+ n)))
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+         (prologue (setup-free-vars lam))
+         (any-special nil))
+    (loop for lv in (lam-req lam) for i from 1
+          do (multiple-value-bind (code sp) (param-setup-code lv i)
+               (setf prologue (append prologue code))
+               (when sp (setf any-special t))))
+    (let ((body (let ((*catching-tag* tag)) (finish-body lam prologue any-special))))
+      (add-func *m* (catch-clone-name lam tag) (main-type n)
+                :locals (reverse (fstate-locals *fs*)) :body body
+                :display (format nil "~A/catch" (lam-display-name lam))))))
+
+(defun catch-clone-call (tag-node body)
+  "The catch-clone call code for (CATCH TAG-NODE BODY), or NIL."
+  (let ((tag (and (eq (car tag-node) :const) (symbolp (second tag-node)) (second tag-node))))
+    (when (and tag (eq (car body) :call))
+      (let ((lam (known-global-lam (second body))) (args (cddr body)))
+        (when (and lam (lam-simple-p lam) (null (lam-free-vars lam))
+                   (= (length args) (length (lam-req lam))))
+          (let ((arg-codes (mapcar #'cg args)))
+            (ensure-lam-compiled lam)
+            `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
+              (:call ,(ensure-catch-clone lam tag)))))))))
 
 (defun setup-free-vars (lam)
   (when (lam-free-vars lam)
@@ -887,7 +993,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                   (:local.get ,res))))
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
-(defun compile-lam (lam)
+(defun compile-lam (lam &aux (*catching-tag* nil))
   (cond ((lam-simple-p lam) (compile-simple-lam lam))
         ((lam-keyed-p lam) (compile-keyed-lam lam))
         (t (compile-complex-lam lam))))
@@ -895,7 +1001,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 (defun compile-simple-lam (lam)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
          (prologue (setup-free-vars lam))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
@@ -916,7 +1022,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun compile-complex-lam (lam)
   (let* ((*fs* (make-fstate :lam lam :nparams 2))
-         (*dyn-depth* 0) (*uwp-depth* 0)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
          (prologue (setup-free-vars lam))
          (nargs (new-local :i32))
          (nreq (length (lam-req lam)))
@@ -1013,7 +1119,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                 :display (format nil "~A/generic" (lam-display-name lam))))
     ;; the body
     (let* ((*fs* (make-fstate :lam lam :nparams 2))
-           (*dyn-depth* 0) (*uwp-depth* 0)
+           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
            (prologue (setup-free-vars lam))
            (specials nil)
            (saved (new-local :i32))

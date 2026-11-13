@@ -3,6 +3,7 @@
 (defun equal (a b)
   (cond ((eql a b) t)
         ((consp a) (and (consp b) (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+        ((and (%simple-string-p a) (%simple-string-p b)) (%simple-string= a b))
         ((stringp a) (and (stringp b) (string= a b)))
         ((bit-vector-p a) (and (bit-vector-p b) (= (length a) (length b))
                                (dotimes (i (length a) t) (unless (eql (bit a i) (bit b i)) (return nil)))))

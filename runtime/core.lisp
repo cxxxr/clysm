@@ -237,6 +237,10 @@
 (defmacro %alist-entry-p (e)
   `(cond ((consp ,e) t) ((null ,e) nil) (t (%type-error ,e 'list))))
 
+(defun %assoc-eql (item alist)
+  (do ((l alist (cdr l))) ((%endp l) nil)
+    (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (car e))) (return e)))))
+
 (defun assoc (item alist &key key test test-not)
   (if (and (null key) (null test) (null test-not))
       (do ((l alist (cdr l))) ((%endp l) nil)

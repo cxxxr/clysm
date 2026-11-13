@@ -22,8 +22,8 @@
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
 
-(defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp)
-(defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp)
+(defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp uwp-frames)
+(defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp uwp-frames)
 (defstruct fun name lvar lam)
 
 ;;; ------------------------------------------------------------
@@ -717,6 +717,40 @@ leaving quoted data alone."
 (deftransform - (form)
   (let ((args (cdr form)))
     (if (cddr args) (fold-left '- args) form)))
+
+(dolist (op '(logand logior logxor))
+  (let ((op op))
+    (setf (get op 'clysm-transform)
+          (lambda (form)
+            (let ((args (cdr form)))
+              (if (cddr args) (fold-left op args) form))))))
+
+(defun eq-comparable-constant-p (x)
+  "A literal for which EQL is EQ (fixnums, characters, symbols)."
+  (let ((v (cond ((and (consp x) (eq (car x) 'quote) (consp (cdr x))) (list (second x)))
+                 ((or (and (symbolp x) (or (keywordp x) (member x '(nil t)))) (characterp x) (integerp x))
+                  (list x)))))
+    (and v (let ((v (car v)))
+             (or (symbolp v) (characterp v)
+                 (and (integerp v) (<= +most-negative-fixnum+ v +most-positive-fixnum+)))))))
+
+(deftransform eql (form)
+  (if (and (= (length form) 3)
+           (or (eq-comparable-constant-p (second form)) (eq-comparable-constant-p (third form))))
+      `(eq ,(second form) ,(third form))
+      form))
+
+(deftransform member (form)
+  (let ((args (cdr form)))
+    (cond ((/= (length args) 2) form)
+          ((and (consp (second args)) (eq (car (second args)) 'quote)
+                (let ((l (second (second args))))
+                  (and (listp l) (null (cdr (last l))) (<= (length l) 64)
+                       (every (lambda (x) (eq-comparable-constant-p (list 'quote x))) l))))
+           `(clysm-sys::%memq ,@args))
+          (t `(clysm-sys::%member-eql ,@args)))))
+(deftransform assoc (form)
+  (if (= (length form) 3) `(clysm-sys::%assoc-eql ,@(cdr form)) form))
 
 (defun chain-compare (op args)
   (let ((temps (loop for nil in args collect (gensym "C"))))

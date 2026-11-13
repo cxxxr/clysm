@@ -62,7 +62,21 @@
 ;;; tokenizer
 ;;; ------------------------------------------------------------
 
+(defvar *fmt-recent* (make-array 16 :initial-element nil))   ; control, copy, tree, ...
+(defvar *fmt-recent-next* 0)
+
 (defun %fmt-parse-cached (control)
+  ;; recently used control strings, found by identity (and checked for changes)
+  (let ((v *fmt-recent*))
+    (do ((i 0 (+ i 3))) ((>= i 15))
+      (when (and (eq (svref v i) control) (string= (svref v (+ i 1)) control))
+        (return-from %fmt-parse-cached (svref v (+ i 2)))))
+    (let ((tree (%fmt-parse-cached-1 control)) (i *fmt-recent-next*))
+      (setf (svref v i) control (svref v (+ i 1)) (copy-seq control) (svref v (+ i 2)) tree)
+      (setq *fmt-recent-next* (if (>= i 12) 0 (+ i 3)))
+      tree)))
+
+(defun %fmt-parse-cached-1 (control)
   (unless *fmt-cache* (setq *fmt-cache* (make-hash-table :test 'equal)))
   (let ((key (if (simple-string-p control) control (coerce control 'simple-string))))
     (or (gethash key *fmt-cache*)
@@ -922,3 +936,65 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
                       (progn (dotimes (i padn) (write-char pad stream))
                              (write-string sign stream)))
                   (write-string body stream))))))))
+
+;;; ------------------------------------------------------------
+;;; constant control strings made only of text and ~A ~S ~D ~% ~& ~~ (without
+;;; parameters or modifiers) compile to direct output calls
+;;; ------------------------------------------------------------
+
+(defun %format-call (destination fn)
+  (cond ((null destination)
+         (let ((s (make-string-output-stream)))
+           (funcall fn s)
+           (get-output-stream-string s)))
+        ((or (eq destination t) (streamp destination))
+         (funcall fn (if (eq destination t) *standard-output* (%output-stream destination)))
+         nil)
+        ((and (stringp destination) (array-has-fill-pointer-p destination))
+         (funcall fn (%make-stream :kind :string-out :buffer destination))
+         nil)
+        (t (error 'type-error :datum destination :expected-type '(or (member nil t) stream string)))))
+
+(defun %fmt-decimal (arg stream)
+  (if (integerp arg)
+      (write-string (%integer-to-string arg 10) stream)
+      (%fmt-integer stream arg 10 nil nil 0 #\Space #\, 3)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %fmt-simple-parse (control)
+    "A list of strings and directive characters, or NIL when CONTROL uses
+anything else."
+    (let ((r nil) (start 0) (n (length control)))
+      (do ((i 0)) ((>= i n))
+        (if (char= (char control i) #\~)
+            (progn
+              (when (>= (+ i 1) n) (return-from %fmt-simple-parse nil))
+              (let ((c (char-upcase (char control (+ i 1)))))
+                (unless (member c '(#\A #\S #\D #\% #\& #\~)) (return-from %fmt-simple-parse nil))
+                (when (> i start) (push (subseq control start i) r))
+                (push c r)
+                (setq i (+ i 2) start i)))
+            (setq i (+ i 1))))
+      (when (> n start) (push (subseq control start n) r))
+      (cons t (nreverse r)))))
+
+(define-compiler-macro format (&whole form destination control &rest args)
+  (let ((parsed (and (stringp control) (%fmt-simple-parse control))))
+    (if (or (null parsed)
+            (/= (count-if (lambda (x) (member x '(#\A #\S #\D))) (cdr parsed)) (length args)))
+        form
+        (let ((d (gensym "D")) (s (gensym "S"))
+              (vars (mapcar (lambda (a) (declare (ignore a)) (gensym "A")) args)))
+          `(let ((,d ,destination) ,@(mapcar #'list vars args))
+             (%format-call ,d (lambda (,s)
+                                ,@(let ((vs vars))
+                                    (mapcar (lambda (x)
+                                              (cond ((stringp x) `(write-string ,x ,s))
+                                                    ((char= x #\A) `(princ ,(pop vs) ,s))
+                                                    ((char= x #\S) `(prin1 ,(pop vs) ,s))
+                                                    ((char= x #\D) `(%fmt-decimal ,(pop vs) ,s))
+                                                    ((char= x #\%) `(terpri ,s))
+                                                    ((char= x #\&) `(fresh-line ,s))
+                                                    (t `(write-char #\~ ,s))))
+                                            (cdr parsed)))
+                                nil)))))))
