@@ -377,6 +377,21 @@
           (let ((c (cons (funcall f (car l)) nil)))
             (%setcdr tail c) (setq tail c))))
       (%mapn f (cons list more) t nil)))
+(define-compiler-macro mapcar (&whole form f list &rest more)
+  ;; one list: a loop, so that a lambda or #'name is called directly
+  (if more form
+      (let ((fn (gensym "F")) (head (gensym "HEAD")) (tail (gensym "TAIL")) (l (gensym "L")) (c (gensym "C")))
+        `(let ((,fn ,f))
+           (let* ((,head (cons nil nil)) (,tail ,head))
+             (do ((,l ,list (cdr ,l))) ((%endp ,l) (cdr ,head))
+               (let ((,c (cons (funcall ,fn (car ,l)) nil)))
+                 (%setcdr ,tail ,c) (setq ,tail ,c))))))))
+(define-compiler-macro mapc (&whole form f list &rest more)
+  (if more form
+      (let ((fn (gensym "F")) (l0 (gensym "L0")) (l (gensym "L")))
+        `(let ((,fn ,f) (,l0 ,list))
+           (do ((,l ,l0 (cdr ,l))) ((%endp ,l) ,l0) (funcall ,fn (car ,l)))))))
+
 (defun mapc (f list &rest more)
   (if (null more)
       (do ((l list (cdr l))) ((%endp l) list) (funcall f (car l)))
