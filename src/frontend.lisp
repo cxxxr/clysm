@@ -22,7 +22,9 @@
   (toplevel nil)          ; global defun with no free vars
   (static-p nil)          ; closure object is a module constant
   (flagging nil)          ; a local function whose non-local exits are returns (codegen.lisp)
-  (flag-analyzed nil))    ; (of an outermost lambda) FLAGGING is set in its tree
+  (flag-analyzed nil)     ; (of an outermost lambda) FLAGGING is set in its tree
+  (may-flag nil)          ; :yes / :no: a flag clone of this global function is worth making
+  (flag-clone nil))       ; its flag clone has been requested
 
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))

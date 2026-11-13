@@ -179,6 +179,7 @@ to the innermost one's cleanup, which then continues the exit.")
 (defstruct uwpf code res landing (exits nil) (nexits 0) dyn-depth uwp-depth parent mv-used)
 (defvar *fexit* nil
   "In a flagging function: (blk tag-local value-local); BLK is around the whole body.")
+(defvar *flag-clone* nil "the function whose flag clone is being compiled")
 (defvar *catchers* nil
   "The constructs around the code being compiled in the current function that
 catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
@@ -722,12 +723,16 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
           (:return_call ,(ensure-catch-clone lam *catching-tag*)))))
     (if (and lam (lam-accepts-p lam (length args)))
-        (let ((sig (spec-signature lam args)))
-          (if sig
-              (progn
+        (let ((sig (spec-signature lam args))
+              ;; the callee's flag clone: its exits come back pending
+              (flag (flag-clone-call-p lam tail)))
+          (if (or sig flag)
+              (let ((tail (if flag (and tail *fexit*) tail)))
                 (ensure-lam-compiled lam)
                 `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
-                  (,(if tail :return_call :call) ,(spec-clone-name lam sig))))
+                  (,(if tail :return_call :call)
+                   ,(if sig (spec-clone-name lam sig flag) (ensure-flag-clone lam)))
+                  ,@(when (and flag (not tail)) (pending-exit-check-code))))
               (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail args)))
         (progn
           (when (and lam (not (lam-accepts-p lam (length args))))
@@ -998,10 +1003,10 @@ no other function exits any more (the lambdas that did were inlined) is local."
       (setf (lam-flag-analyzed root) t)
       (analyze-flagging root))))
 
-(defun make-fexit (lam)
-  "The exit of the function being compiled if it is flagging, else NIL.  Call
-when *FS* is set up, before any code of the function is generated."
-  (when (lam-flagging lam)
+(defun make-fexit (lam &optional force)
+  "The exit of the function being compiled if it is flagging (or FORCE), else
+NIL.  Call when *FS* is set up, before any code of the function is generated."
+  (when (or force (lam-flagging lam))
     (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
                     :uwp-frames nil :saved-bsp (new-local :i32))
           (new-local) (new-local))))
@@ -1401,7 +1406,9 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (loop while *pending-lams*
         do (let ((lam (pop *pending-lams*)) (*catchers* nil))
              (cond ((and (consp lam) (eq (car lam) :spec))
-                    (compile-spec-clone (second lam) (third lam)))
+                    (compile-spec-clone (second lam) (third lam) (fourth lam)))
+                   ((and (consp lam) (eq (car lam) :flag))
+                    (compile-flag-clone (second lam)))
                    ((consp lam)
                     (compile-catch-clone (car lam) (cdr lam)))
                    (t
@@ -1424,21 +1431,23 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
       (push (cons lam tag) *pending-lams*))
     (catch-clone-name lam tag)))
 
-(defun compile-catch-clone (lam tag)
+(defun compile-catch-clone (lam tag &aux (*flag-clone* lam))
+  ;; (it is a flag clone as well: the other exits that leave it, such as a
+  ;; throw to the tag from a recursive call, return to the CATCH pending)
   (ensure-flag-analysis lam)
   (inline-calls lam)
   (refine-nonlocal lam)
   (infer-lam lam)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* nil) (*catchers* nil)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam t)) (*catchers* nil)
          (prologue (setup-free-vars lam))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
           do (multiple-value-bind (code sp) (param-setup-code lv i)
                (setf prologue (append prologue code))
                (when sp (setf any-special (append any-special (list sp))))))
-    (let ((body (let ((*catching-tag* tag)) (finish-body lam prologue any-special))))
+    (let ((body (wrap-fexit (let ((*catching-tag* tag)) (finish-body lam prologue any-special)))))
       (add-func *m* (catch-clone-name lam tag) (main-type n)
                 :locals (reverse (fstate-locals *fs*)) :body body
                 :display (format nil "~A/catch" (lam-display-name lam))))))
@@ -1453,7 +1462,77 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
           (let ((arg-codes (mapcar #'cg args)))
             (ensure-lam-compiled lam)
             `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
-              (:call ,(ensure-catch-clone lam tag)))))))))
+              (:call ,(ensure-catch-clone lam tag))
+              ,@(pending-exit-check-code))))))))
+
+;;; A flag clone of a known global function F is a copy of F compiled as a
+;;; flagging function (see "Non-local exits of local functions as returns"):
+;;; the exits that leave F - the handler-case exits of the ERROR, SIGNAL, WARN
+;;; and CERROR calls in it, its throws, the exits of its local functions -
+;;; return to F's caller pending.  It is called where that is of use: from a
+;;; call of F with a CATCH or HANDLER-CASE around it in the calling function
+;;; (which then takes the exit with a branch), and from a flag clone, by the
+;;; calls of the function itself and the tail calls of other functions.
+
+(defparameter *flag-clone-max-nodes* 600 "larger functions get no flag clone")
+
+(defun may-flag-p (lam)
+  "LAM has exits that its flag clone would return (and is not too large)."
+  (when (null (lam-may-flag lam))
+    (setf (lam-may-flag lam) :no)       ; (for recursive functions)
+    (ensure-flag-analysis lam)
+    (inline-calls lam)
+    (let ((n 0) (found nil))
+      (labels ((walk (node)
+                 (when (or (> (incf n) *flag-clone-max-nodes*)
+                           (eq (car node) :ltv)) ; (evaluated once, not once per copy)
+                   (return-from may-flag-p nil))
+                 (when (case (car node)
+                         (:throw t)
+                         (:call (assoc (second node) *flag-returning-calls*))
+                         (:lcall (lam-flagging (fun-lam (second node)))))
+                   (setf found t))
+                 (map-subnodes #'walk node)))
+        (walk (lam-body lam)))
+      (when found (setf (lam-may-flag lam) :yes))))
+  (eq (lam-may-flag lam) :yes))
+
+(defun flag-clone-call-p (lam tail)
+  "A direct call of the global function LAM at this place calls its flag clone."
+  (and (lam-simple-p lam) (null (lam-free-vars lam))
+       (if *fexit*
+           (and *flag-clone* (or tail (eq lam *flag-clone*)))
+           (some (lambda (c) (eq (car c) :catch)) *catchers*))
+       (may-flag-p lam)))
+
+(defun flag-clone-name (lam) (list :flag-main (lam-id lam)))
+
+(defun ensure-flag-clone (lam)
+  (unless (lam-flag-clone lam)
+    (setf (lam-flag-clone lam) t)
+    (push (list :flag lam) *pending-lams*))
+  (flag-clone-name lam))
+
+(defun compile-flag-clone (lam)
+  (ensure-flag-analysis lam)
+  (inline-calls lam)
+  (refine-nonlocal lam)
+  (infer-lam lam)
+  (let* ((n (length (lam-req lam)))
+         (*fs* (make-fstate :lam lam :nparams (1+ n)))
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*catchers* nil) (*catching-tag* nil)
+         (*flag-clone* lam)
+         (*fexit* (make-fexit lam t))
+         (prologue (setup-free-vars lam))
+         (specials nil))
+    (loop for lv in (lam-req lam) for i from 1
+          do (multiple-value-bind (code sp) (param-setup-code lv i)
+               (setf prologue (append prologue code))
+               (when sp (setf specials (append specials (list sp))))))
+    (let ((body (wrap-fexit (finish-body lam prologue specials))))
+      (add-func *m* (flag-clone-name lam) (main-type n)
+                :locals (reverse (fstate-locals *fs*)) :body body
+                :display (format nil "~A/flag" (lam-display-name lam))))))
 
 (defun setup-free-vars (lam)
   (when (lam-free-vars lam)
@@ -1491,7 +1570,7 @@ list of (symbol . local), which are bound around the body."
                   (:local.get ,res))))
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
-(defun compile-lam (lam &aux (*catching-tag* nil))
+(defun compile-lam (lam &aux (*catching-tag* nil) (*flag-clone* nil))
   (ensure-flag-analysis lam)
   (inline-calls lam)
   (refine-nonlocal lam)
@@ -1513,10 +1592,10 @@ list of (symbol . local), which are bound around the body."
                               append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
                       (:return_call (:main ,(lam-id lam)))))))
 
-(defun compile-simple-main (lam name display)
+(defun compile-simple-main (lam name display &optional flag)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam)) (*catchers* nil)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam flag)) (*catchers* nil)
          (prologue (setup-free-vars lam))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
@@ -1567,12 +1646,13 @@ list of (symbol . local), which are bound around the body."
     (let ((sig (mapcar #'arg-class args)))
       (when (some #'identity sig) sig))))
 
-(defun spec-clone-name (lam sig)
-  (let ((key (list (lam-id lam) sig)))
+(defun spec-clone-name (lam sig &optional flag)
+  "FLAG: the clone is also a flag clone."
+  (let ((key (if flag (list (lam-id lam) sig :flag) (list (lam-id lam) sig))))
     (unless (gethash key *spec-clones*)
       (setf (gethash key *spec-clones*) t)
-      (push (list :spec lam sig) *pending-lams*))
-    (list :spec (lam-id lam) sig)))
+      (push (list :spec lam sig flag) *pending-lams*))
+    (cons :spec key)))
 
 (defun lam-all-lvars (lam)
   (let ((r (copy-list (lam-req lam))))
@@ -1584,7 +1664,7 @@ list of (symbol . local), which are bound around the body."
       (walk (lam-body lam)))
     r))
 
-(defun compile-spec-clone (lam sig)
+(defun compile-spec-clone (lam sig flag &aux (*flag-clone* (and flag lam)))
   (ensure-flag-analysis lam)
   (inline-calls lam)
   (refine-nonlocal lam)
@@ -1596,9 +1676,10 @@ list of (symbol . local), which are bound around the body."
                (*ti-analyzed* (make-hash-table :test 'eq))
                (*catching-tag* nil))
            (infer-lam lam (mapcar #'class-ty sig))
-           (compile-simple-main lam (list :spec (lam-id lam) sig)
-                                (format nil "~A/~{~(~A~)~^,~}" (lam-display-name lam)
-                                        (mapcar (lambda (c) (or c "t")) sig))))
+           (compile-simple-main lam (spec-clone-name lam sig flag)
+                                (format nil "~A/~{~(~A~)~^,~}~:[~;/flag~]" (lam-display-name lam)
+                                        (mapcar (lambda (c) (or c "t")) sig) flag)
+                                flag))
       (loop for lv in lvars for (ty . rep) in saved
             do (setf (lvar-type lv) ty (lvar-rep lv) rep)))))
 
