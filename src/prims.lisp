@@ -46,9 +46,9 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defun fused-i64-code (node fail)
   "Code leaving the i64 value of NODE, branching to FAIL when that is not possible."
   (cond ((eq (car node) :const) `((:i64.const ,(second node))))
-        ((and (ty-fixnum-p (node-ty node)) (not (fusable-op-node-p node)))
+        ((and (ty-int32-p (node-ty node)) (not (fusable-op-node-p node)))
          `(,@(cg-rep node :i32) :i64.extend_i32_s))
-        ((and (ty-fixnum-p (node-ty node)) (i32-op-code node))
+        ((and (ty-int32-p (node-ty node)) (i32-op-code node))
          `(,@(i32-op-code node) :i64.extend_i32_s))
         ((eq (car node) :lref)
          (let ((e (new-local)) (v (new-local :i32)))
@@ -97,7 +97,7 @@ its type is a fixnum), the generic code when that fails."
                   (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
           (:br ,done))
         ,@(let ((*no-fuse* t)) (cg-prim (second node) (cddr node) nil))
-        ,@(when (eq rep :i32) (unbox-rep-code :i32))))))
+        ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node)))))))
 
 (defun cg-prim (p args mv)
   (when (fused-tree-node-p `(:prim ,p ,@args))
@@ -805,6 +805,12 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
        (:br again)))
   '(:local.get 0) '(:ref.cast! :bignum) '(:struct.get :bignum 0)
   '(:if nil :i64 ((:i64.const 0) (:local.get r) :i64.sub) ((:local.get r))))
+
+(defhelper :box-i32 :i-e ()
+  ;; an i32 as a fixnum, or a bignum outside the fixnum range
+  `(:local.get 0) `(:i32.const ,+char-tag+) :i32.add `(:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+  '(:if nil nil ((:local.get 0) :ref.i31 :return))
+  '(:local.get 0) :i64.extend_i32_s '(:call :i64-int))
 
 (defhelper :i64-int :l-e ()
   ;; a fixnum, or a bignum holding the value (its limbs are made when needed)

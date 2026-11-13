@@ -566,7 +566,8 @@
   (let ((ty (lvar-type lv)))
     (cond ((or (null ty) (ty-bottom-p ty) (lvar-special lv) (boxed-p lv)) nil)
           ((ty-double-p ty) :f64)
-          ((ty-fixnum-p ty) :i32)
+          ((ty-int32-p ty) :i32)
+          ((ty-int64-p ty) :i64)
           (t nil))))
 
 (defun ti (node)
@@ -766,7 +767,9 @@ dimensional with no other options than the initial element or contents."
                                   (setf changed t (svref heads k) new))
                                 (setf *env* (env-copy new))))
                             (dolist (f forms) (ti f)))
-                   (when (not changed) (return))
+                   (when (not changed)
+                     (when (> iter 1) (ti-tagbody-narrow node rec entry region heads))
+                     (return))
                    (when (> iter 30)
                      ;; no fixed point: forget what is known about every variable in the loop
                      (dotimes (k (length heads))
@@ -779,6 +782,35 @@ dimensional with no other options than the initial element or contents."
                               (dolist (f forms) (ti f)))
                      (return)))))
       (mkty +k-null+))))
+
+(defun clear-node-types (node)
+  (when (consp node)
+    (remhash node *node-types*)
+    (map-subnodes #'clear-node-types node)))
+
+(defun ti-tagbody-narrow (node rec entry region heads)
+  "HEADS is a fixed point reached by widening.  Recompute the loop heads once
+from it (still a fixed point, and narrower), then analyze the body again
+with them, replacing the node types of the widened iterations."
+  (let* ((segments (third node)) (n (length segments))
+         (new (make-array n :initial-element :bottom)))
+    (setf (texit-tags rec) nil)
+    (setf *env* (env-copy entry))
+    (loop for (nil . forms) in segments for k from 0
+          do (when (> k 0)
+               (setf (svref new k) (env-copy *env*))
+               (setf *env* (env-copy (svref heads k))))
+             (dolist (f forms) (ti f)))
+    (loop for (idx) in segments for k from 0
+          when (> k 0)
+            do (let ((in (env-join (svref new k) (or (cdr (assoc idx (texit-tags rec))) :bottom))))
+                 (setf (svref new k) (if region (env-join in (region-env entry region)) in))))
+    (dolist (s segments) (mapc #'clear-node-types (cdr s)))
+    (setf (texit-tags rec) nil)
+    (setf *env* (env-copy entry))
+    (loop for (nil . forms) in segments for k from 0
+          do (when (> k 0) (setf *env* (env-copy (svref new k))))
+             (dolist (f forms) (ti f)))))
 
 (defun ti-cond (node)
   "Analyze NODE as a test; returns the environments when it is true and false."
