@@ -542,8 +542,9 @@ What makes the generated code fast:
   constructor;
 * `format` with a constant control string compiles to Lisp code (and so does
   `formatter`): every directive with its parameters, `~{...~}` as a loop,
-  `~[...~]` as a `case`, `~^` as a local exit; only `~<...~>` and strings
-  with errors are interpreted. Other control strings are parsed once and
+  `~[...~]` as a `case`, `~^` as a local exit; only logical blocks
+  (`~<...~:>`) and strings with errors are interpreted, and so are control
+  strings that are not constants: they are parsed once and
   cached; interpreter and compiled code call the same directive functions.
   Integers are printed from a digit buffer; the shortest digits of single
   floats, and of doubles that need at most 15, are computed with exact
