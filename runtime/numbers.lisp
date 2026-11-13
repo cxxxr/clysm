@@ -447,7 +447,9 @@ converts to a double exactly, so only bignums and ratios need it."
 (defmacro %fast-entries (name one two)
   "Give the function NAME entries for one and two arguments (FUNCALL #'< from
 SORT and the like make no argument list)."
-  `(setf (fdefinition ',name) (%make-gf-closure (fdefinition ',name) ,one ,two)))
+  ;; (NOTINLINE: #'NAME is the new function, not the one DEFUN made)
+  `(progn (declaim (notinline ,name))
+          (setf (fdefinition ',name) (%make-gf-closure (fdefinition ',name) ,one ,two))))
 (%fast-entries + (lambda (a) (%check-number a)) (lambda (a b) (+ a b)))
 (%fast-entries * (lambda (a) (%check-number a)) (lambda (a b) (* a b)))
 (%fast-entries - (lambda (a) (- a)) (lambda (a b) (- a b)))

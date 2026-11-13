@@ -288,7 +288,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                 (cg-let node mv tail)))
       (:mvbind (cg-mvbind node mv tail))
       (:lambda (append (cg-closure (second node)) (when mv (mv-one))))
-      (:fref (let ((lam (known-global-lam (second node))))
+      (:fref (let ((lam (and (not (gethash (second node) *dynamic-functions*))
+                             (known-global-lam (second node)))))
                (if lam
                    ;; a known function: its closure (as with direct calls, the
                    ;; definition is assumed not to change)
