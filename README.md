@@ -356,35 +356,58 @@ Limitations:
 `tools/bench.sh [FILE]` runs a benchmark file (`bench/suite.lisp` by default,
 or `bench/gabriel.lisp`) on SBCL and on Clysm (Node.js) and prints the time
 ratio of each benchmark and their geometric mean. On an x86-64 machine with
-SBCL 2.6 and Node.js 24, Clysm takes about 3.9 times as long as SBCL on
+SBCL 2.6 and Node.js 24, Clysm takes about 1.4 times as long as SBCL on
 `bench/suite.lisp` (function calls, arrays, floats, lists, sorting, hash tables,
 strings, FORMAT, the printer and reader, bignums and ratios, structures, CLOS,
-special variables, non-local exits) and about 2.2 times as long on the
-Gabriel-style `bench/gabriel.lisp`; no benchmark takes more than 10 times as
-long. The slowest relative to SBCL are CLOS dispatch, the reader, `mandel`
-(boxed double-floats) and integers between 2^29 and 2^62 (fixnums in SBCL,
-boxed here), at 7-10 times.
+special variables, non-local exits) and about 1.4 times as long on the
+Gabriel-style `bench/gabriel.lisp`. Float code, function calls (`fib`, `tak`),
+sorting and simple-vector loops run as fast as with SBCL or faster; the
+slowest relative to SBCL are the reader (4 times), CLOS dispatch and
+`make-instance`, the printer and FORMAT, hash tables, bignums and integers
+between 2^29 and 2^62 (fixnums in SBCL, boxed here), at 2-3 times.
 
 What makes the generated code fast:
 
-* fixnum arithmetic and comparisons inline, with i64 arithmetic (no digit
-  vectors) for integers up to 64 bits, and Wasm loops for bignum digits;
-* inline `logand`/`logior`/`logxor`/`ash`, `char`/`schar`, one- and
-  two-dimensional `aref` (also on vectors with fill pointers), structure
-  accessors (compiler macros that check the layout inline), `eql` against
-  literals as `eq`, `member` of a literal list, `case` as `eq` tests;
+* **type inference** (`src/types.lisp`): before a function is compiled its
+  body is interpreted abstractly. Every lexical variable has a type at every
+  point (a set of kinds — fixnum/integer with a range, double-float split by
+  sign, cons, string, structure class… — that assignments update and tests
+  such as `(< i n)`, `(consp x)` or `(minusp x)` refine in each branch); loops
+  are iterated to a fixed point with widening, then narrowed. The types of
+  known functions' results are those of their bodies;
+* **unboxed representations** (`src/typed.lisp`): a variable whose values are
+  all doubles lives in an f64 local, one within 32 or 64 bits in an i32 or i64
+  local; arithmetic and comparisons on such values are single Wasm
+  instructions (float results that are infinite, NaN or an underflow are
+  redone by the generic function, which signals as before). Typed vector,
+  string, limb and structure accesses are inline without checks once the
+  object's type is known;
+* **specialized copies**: a direct call of a known function with fixnum or
+  double arguments calls a copy compiled for those argument types;
+* **inlining** (`src/inline.lisp`): calls of small known functions, of small
+  local functions and of lambdas bound to variables are replaced by copies of
+  their bodies before type inference;
+* fixnum arithmetic and comparisons inline on untyped values too, with i64
+  arithmetic for integers up to 64 bits; bignums of base 2^28 digits with
+  multiplication, division (Knuth D) and shifts as Wasm kernels;
+* `tagbody` loops compile to Wasm `loop`s and blocks (a `br_table` dispatch
+  only for jumps back from a later segment); checked casts test inline and
+  call the error function only on failure;
+* functions of required and `&optional` parameters, and of required and
+  `&rest` parameters, take them as Wasm parameters (callers build the rest
+  list); `&key` functions get their parameter slots as Wasm parameters too;
+* generic functions of one or two required parameters dispatch on the classes
+  of the arguments without an argument list and call a method function of the
+  arguments directly when the method does not use `call-next-method`; slot
+  readers and writers made by `defclass` access the slot at its location;
+  `make-instance` with a constant class and initarg keys uses a per-call-site
+  constructor;
 * `format` with a constant control string of `~A ~S ~D ~% ~& ~~` compiles to
   direct output calls; other control strings are parsed once and cached;
-* generic functions dispatch through a per-function cache searched without
-  consing; slot readers and writers made by `defclass` access the slot at its
-  location; `make-instance` with a constant class and initarg keys uses a
-  per-call-site constructor;
-* nested integer arithmetic on variables and constants runs in i64 without
-  intermediate boxes;
 * exits through `unwind-protect` within a function branch to the cleanup
-  instead of throwing; `(catch 'tag (f ...))` calls a copy of the known
-  function F in which `(throw 'tag ...)` is a return, so the common
-  catch-in-the-caller pattern needs no Wasm exception.
+  instead of throwing; a `throw` to a `catch` of the same constant tag in the
+  same function is a branch; `(catch 'tag (f ...))` calls a copy of the known
+  function F in which `(throw 'tag ...)` is a return.
 
 `tools/dump-func.lisp FILE NAME...` prints the Wasm instructions generated for
 functions (by name), which helps to see what a form compiles to.

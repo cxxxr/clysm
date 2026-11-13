@@ -955,6 +955,10 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
          nil)
         (t (error 'type-error :datum destination :expected-type '(or (member nil t) stream string)))))
 
+(defun %fmt-princ (arg stream)
+  ;; PRINC of a string is WRITE-STRING
+  (if (stringp arg) (write-string arg stream) (princ arg stream)))
+
 (defun %fmt-decimal (arg stream)
   (if (integerp arg)
       (write-string (%integer-to-string arg 10) stream)
@@ -990,7 +994,7 @@ anything else."
                                 ,@(let ((vs vars))
                                     (mapcar (lambda (x)
                                               (cond ((stringp x) `(write-string ,x ,s))
-                                                    ((char= x #\A) `(princ ,(pop vs) ,s))
+                                                    ((char= x #\A) `(%fmt-princ ,(pop vs) ,s))
                                                     ((char= x #\S) `(prin1 ,(pop vs) ,s))
                                                     ((char= x #\D) `(%fmt-decimal ,(pop vs) ,s))
                                                     ((char= x #\%) `(terpri ,s))
