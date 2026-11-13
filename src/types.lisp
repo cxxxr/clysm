@@ -182,9 +182,22 @@
       (:f64vec (mkty +k-double+))
       (t (int-ty lo hi)))))
 
+(defun deftype-expansion (spec)
+  "The expansion of SPEC when it names a type defined by DEFTYPE (known to the
+compiler: in the file being compiled, or in the image), else NIL."
+  (let* ((name (if (consp spec) (car spec) spec))
+         (expander (and (symbolp name) name (get name 'clysm-sys::%deftype))))
+    (when expander
+      (let ((r (ignore-errors (list (funcall expander (if (consp spec) (cdr spec) nil))))))
+        (and r (not (equal (car r) spec)) (car r))))))
+
+(defun expand-deftypes (spec &optional (depth 0))
+  (let ((e (and (< depth 8) (deftype-expansion spec))))
+    (if e (expand-deftypes e (1+ depth)) spec)))
+
 (defun array-spec-ty (et dims)
   "The type of (SIMPLE-ARRAY ET DIMS)."
-  (let ((kind (storage-kind-of-element-type et))
+  (let ((kind (storage-kind-of-element-type (expand-deftypes et)))
         (rank (cond ((integerp dims) dims) ((listp dims) (length dims)))))
     (cond ((or (null kind) (eq et '*)) *ty-top*)
           ((eql rank 1) (vec-ty kind))
@@ -194,7 +207,8 @@
 
 (defun declared-ty (spec)
   "The type of the Lisp type specifier SPEC (an over-approximation)."
-  (let ((name (if (consp spec) (car spec) spec)))
+  (let* ((spec (expand-deftypes spec))
+         (name (if (consp spec) (car spec) spec)))
     (flet ((int-range (lo hi)
              (int-ty (cond ((integerp lo) lo) ((and (consp lo) (integerp (car lo))) (1+ (car lo))))
                      (cond ((integerp hi) hi) ((and (consp hi) (integerp (car hi))) (1- (car hi)))))))

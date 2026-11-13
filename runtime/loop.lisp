@@ -82,6 +82,24 @@
     (cond ((%lkw (%loop-peek s) "OF-TYPE") (%loop-pop s) (%loop-pop s))
           ((%loop-simple-type-p (%loop-peek s)) (%loop-pop s))))
 
+  (defun %loop-note-type (s var type)
+    "Record the type given for the variable VAR (declared in the expansion); returns TYPE."
+    (when (and type (symbolp var) var (not (eq type t)))
+      (setf (%ls s 15) (cons (cons var type) (%ls s 15))))
+    type)
+
+  (defun %loop-type-declarations (s)
+    "Declarations for the typed variables: a variable that starts as NIL gets
+the default value of its type (and no declaration when there is none)."
+    (let ((r nil))
+      (dolist (e (%ls s 15) r)
+        (let ((b (assoc (car e) (%ls s 1))))
+          (when b
+            (cond ((cadr b) (push (list 'type (cdr e) (car e)) r))
+                  ((%loop-type-default (cdr e))
+                   (setf (cadr b) (%loop-type-default (cdr e)))
+                   (push (list 'type (cdr e) (car e)) r))))))))
+
   (defun %loop-type-default (type)
     ;; the initial value of a WITH variable without an init form
     (cond ((%lkw-in type '("FIXNUM" "INTEGER" "NUMBER" "REAL" "RATIONAL")) 0)
@@ -113,7 +131,7 @@
     ;; GROUP-STEPS: the step list when the group of FOR clauses joined by AND
     ;; started; LATER: this is not the first clause of the group
     (let ((var (%loop-pop s)))
-      (%loop-skip-type s)
+      (%loop-note-type s var (%loop-skip-type s))
       (let ((kw (%loop-pop s)))
         (cond
           ((%lkw-in kw '("IN" "ON"))
@@ -359,7 +377,7 @@
          ;; evaluated into temporaries first
          (let ((more t) (group nil))
            (do () ((not more))
-             (let* ((var (%loop-pop s)) (type (%loop-skip-type s)))
+             (let* ((var (%loop-pop s)) (type (%loop-note-type s var (%loop-skip-type s))))
                (if (%lkw (%loop-peek s) "=")
                    (progn (%loop-pop s) (push (list var (%loop-pop s) t) group))
                    (push (list var type nil) group)))
@@ -426,10 +444,12 @@
                  (top (gensym "LOOP-TOP"))
                  (end (%ls s 11))
                  (first (%ls s 12))
-                 (result (%ls s 7)))
+                 (result (%ls s 7))
+                 (type-decls nil))
             `(block ,name
-               (let* (,@(reverse (%ls s 1)) ,@(when first `((,first t))))
-                 (declare (ignorable ,@(mapcar #'car (%ls s 1))))
+               (let* (,@(progn (setq type-decls (%loop-type-declarations s)) (reverse (%ls s 1)))
+                      ,@(when first `((,first t))))
+                 (declare (ignorable ,@(mapcar #'car (%ls s 1))) ,@type-decls)
                  (macrolet ((loop-finish () '(go ,end)))
                  (tagbody
                     ,@(reverse (%ls s 5))

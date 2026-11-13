@@ -672,7 +672,11 @@ SORT and the like make no argument list)."
 (defun deposit-field (new b n) (%deposit-field new (byte-size b) (byte-position b) n))
 ;;; with a literal (BYTE size position) no byte specifier is made
 (define-compiler-macro ldb (&whole form b n)
-  (if (and (consp b) (eq (car b) 'byte) (= (length b) 3)) `(%ldb ,(second b) ,(third b) ,n) form))
+  (cond ((not (and (consp b) (eq (car b) 'byte) (= (length b) 3))) form)
+        ;; a literal size and position: a shift and a mask (inline for integers of known range)
+        ((and (integerp (second b)) (integerp (third b)) (<= 0 (second b) 62) (<= 0 (third b) 62))
+         `(logand (ash ,n ,(- (third b))) ,(- (ash 1 (second b)) 1)))
+        (t `(%ldb ,(second b) ,(third b) ,n))))
 (define-compiler-macro ldb-test (&whole form b n)
   (if (and (consp b) (eq (car b) 'byte) (= (length b) 3)) `(not (zerop (%ldb ,(second b) ,(third b) ,n))) form))
 (define-compiler-macro mask-field (&whole form b n)
