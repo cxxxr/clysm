@@ -226,7 +226,9 @@
 (defun %key-fn (key) (cond ((null key) nil) ((functionp key) key) (t (fdefinition key))))
 
 (defmacro %with-key ((var key) x) `(if ,var (funcall ,var ,x) ,x))
-(defmacro %key (key x) `(if ,key (funcall ,key ,x) ,x))
+;; KEY and FN below are functions (the callers coerce designators with %KEYFN
+;; and %FN), so the calls do not check again
+(defmacro %key (key x) `(if ,key (funcall (the function ,key) ,x) ,x))
 
 ;;; How an element is selected by the functions that take an item or a
 ;;; predicate (MEMBER, ASSOC, the set functions, and the sequence functions in
@@ -248,8 +250,8 @@
   (let ((m (gensym)) (v (gensym)))
     `(let* ((,v ,x)
             (,m (cond ((eql ,mode 0) (eql ,item ,v))
-                      ((eql ,mode 1) (funcall ,fn ,item ,v))
-                      (t (funcall ,fn ,v)))))
+                      ((eql ,mode 1) (funcall (the function ,fn) ,item ,v))
+                      (t (funcall (the function ,fn) ,v)))))
        (if ,neg (not ,m) ,m))))
 
 (defun %member (item list mode fn neg key)
