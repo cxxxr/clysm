@@ -18,6 +18,12 @@
             (if e (values (car e) t) (values nil nil)))))
   ;; compiler macros defined by the runtime (AREF, FORMAT, MAKE-INSTANCE ...) and by loaded code
   (setf *live-compiler-macro-hook* (lambda (s) (compiler-macro-function s)))
+  ;; calls with constant keywords use the fixed slots of the function's keyed main function
+  (setf *live-key-layout-hook*
+        (lambda (s)
+          (and (symbolp s) (fboundp s) (not (macro-function s)) (not (special-operator-p s))
+               (let ((f (symbol-function s)))
+                 (and (functionp f) (sys::%closure-key-layout f))))))
   ;; structure accessors and predicates are inline in code compiled after the DEFSTRUCT
   (setq sys::*struct-inline-hook*
         (lambda (kind function-name name index writable)

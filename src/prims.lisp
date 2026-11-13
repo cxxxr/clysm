@@ -342,6 +342,7 @@ leaving them in the i32 locals X and Y."
       (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
       (:local.get ,tg) (:struct.get :closure ,+clo-env+)
       (:local.get ,tg) (:struct.get :closure ,+clo-name+)
+      (:ref.null :func) (:ref.null :eq)
       (:struct.new :closure))))
 (defprim clysm-sys::%make-gf-closure4 (g f1 f2 f3 f4) :value
   ;; like %MAKE-GF-CLOSURE with the entries for one to four arguments (G
@@ -360,7 +361,12 @@ leaving them in the i32 locals X and Y."
       (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
       (:local.get ,tg) (:struct.get :closure ,+clo-env+)
       (:local.get ,tg) (:struct.get :closure ,+clo-name+)
+      (:ref.null :func) (:ref.null :eq)
       (:struct.new :closure))))
+(defprim clysm-sys::%closure-key-layout (f) :value
+  (let ((tmp (new-local)))
+    `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-klayout+) (:local.tee ,tmp) :ref.is_null
+      (:if nil :eqref ,(nil-code) ((:local.get ,tmp))))))
 (defprim clysm-sys::%closure-name (f) :value `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-name+)))
 (defprim clysm-sys::%set-closure-name (f n) :value
   (let ((tmp (new-local)))
@@ -2356,8 +2362,11 @@ instructions (FN kind typed-local), which must return or leave nothing."
                          (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))
            (:local.get 0))
          :drop
-         (:local.get 0) (:local.get i) (:call :typed-ref) (:local.tee d) :ref.is_null :i32.eqz
-         (:if nil nil ((:local.get d) :return))))
+         ;; a specialized vector (array headers are handled below)
+         (:local.get 0) (:ref.test :mdarray) :i32.eqz
+         (:if nil nil
+              ((:local.get 0) (:local.get i) (:call :typed-ref) (:local.tee d) :ref.is_null :i32.eqz
+               (:if nil nil ((:local.get d) :return))))))
   (md1-ref-code 'd 'i nil)
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%aref1-slow)) '(:call (:callsym 2)))
@@ -2373,7 +2382,7 @@ instructions (FN kind typed-local), which must return or leave nothing."
                          (:local.get 2) :return))
            (:local.get 0))
          :drop
-         (:local.get 0) (:ref.test :string) :i32.eqz
+         (:local.get 0) (:ref.test :string) (:local.get 0) (:ref.test :mdarray) :i32.or :i32.eqz
          (:if nil nil ((:local.get 0) (:local.get i) (:local.get 2) (:call :typed-set)
                        (:if nil nil ((:local.get 2) :return))))))
   (md1-set-code 'd 'i 'c nil)

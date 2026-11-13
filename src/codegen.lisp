@@ -620,6 +620,16 @@ representation) or :effect (no value)."
                          (t (list :argerr k))))
      (list (if simple (list :entn id) (list :main id))))))
 
+(defun lam-key-layout (lam)
+  "(required optional . keywords): how the keyed main function of LAM takes its arguments."
+  (list* (length (lam-req lam)) (length (lam-opt lam)) (mapcar #'first (lam-keys lam))))
+
+(defun lam-kmain-code (lam)
+  "The last two fields of LAM's closure."
+  (if (and (lam-keyed-p lam) (lam-keyp lam))
+      `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (lam-key-layout lam)))
+      `((:ref.null :func) (:ref.null :eq))))
+
 (defun lam-name-code (lam)
   (let ((name (lam-name lam)))
     (cond ((symbolp name) `((:global.get ,(sym-global name))))
@@ -638,6 +648,7 @@ representation) or :effect (no value)."
                     `(,@(loop for e in (lam-entry-names lam) collect `(:ref.func ,e))
                       (:ref.null :vector)
                       ,@(lam-name-code lam)
+                      ,@(lam-kmain-code lam)
                       (:struct.new :closure)))
               *closure-globals*)))
     name))
@@ -650,6 +661,7 @@ representation) or :effect (no value)."
         ,@(loop for fv in (lam-free-vars lam) append (var-raw-code fv))
         (:array.new_fixed :vector ,(length (lam-free-vars lam)))
         ,@(lam-name-code lam)
+        ,@(lam-kmain-code lam)
         (:struct.new :closure))))
 
 ;;; ------------------------------------------------------------
@@ -806,7 +818,47 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         (progn
           (when (and lam (not (lam-accepts-p lam (length args))))
             (cwarn "~S called with ~D arguments" sym (length args)))
-          (call-closure-code (fdef-code sym) arg-codes mv tail)))))
+          (or (and (null lam) (live-keyed-call-code sym args arg-codes tail))
+              (call-closure-code (fdef-code sym) arg-codes mv tail))))))
+
+;;; In the image, a call with constant keywords of a global function that has
+;;; keyword parameters passes the arguments in the fixed slots of the
+;;; function's keyed main function (no argument vector, no search for the
+;;; keys) as long as the symbol's function is one with the layout it had when
+;;; the call was compiled (the layout object in the closure is compared).
+(defvar *live-key-layout-hook* nil "symbol -> the key layout of its global function, or NIL")
+
+(defun live-keyed-call-code (sym args arg-codes tail)
+  (let ((layout-list (and *live-key-layout-hook* (not (gethash sym *notinline*))
+                          (not (member sym *local-notinline*))
+                          (funcall *live-key-layout-hook* sym))))
+    (when (and (consp layout-list) (cddr layout-list))
+      (destructuring-bind (nreq nopt &rest keys) layout-list
+        (let* ((stub (make-lam :id -1 :name sym :keyp t
+                               :req (make-list nreq) :opt (make-list nopt)
+                               :keys (mapcar #'list keys)))
+               (layout (keyed-call-layout stub args)))
+          (when layout
+            (let* ((temps (loop for nil in args collect (new-local)))
+                   (f (new-local '(:ref :null :closure)))
+                   (type (main-type (length layout)))
+                   (slow (gensym "GENERIC")) (done (gensym "KCALL")))
+              `(,@(loop for code in arg-codes for tmp in temps append `(,@code (:local.set ,tmp)))
+                (:block ,done :eqref
+                  (:block ,slow nil
+                    (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) (:local.tee ,f)
+                    :ref.is_null (:br_if ,slow)
+                    (:local.get ,f) (:struct.get :closure ,+clo-klayout+)
+                    ,@(const-init-code layout-list) :ref.eq :i32.eqz (:br_if ,slow)
+                    (:local.get ,f) :ref.as_non_null
+                    ,@(loop for idx across layout
+                            collect (if idx `(:local.get ,(nth idx temps)) '(:ref.null :eq)))
+                    (:local.get ,f) (:struct.get :closure ,+clo-kmain+) (:ref.cast! ,type)
+                    (,(if tail :return_call_ref :call_ref) ,type)
+                    (:br ,done))
+                  ,@(call-closure-code (fdef-code sym)
+                                       (loop for tmp in temps collect `((:local.get ,tmp)))
+                                       nil tail))))))))))
 
 (defvar *lvar-lams* (make-hash-table :test 'eq) "lvar -> the lam it is always bound to")
 

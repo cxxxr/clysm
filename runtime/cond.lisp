@@ -731,3 +731,9 @@ the restarts are associated with the condition being signaled."
     (when (eql (%debug-mode) 1) (%wasm nil () :unreachable))
     (%exit 1)))
 
+
+;;; (for the TYPEP compiler macro in types.lisp, which is compiled before HANDLER-CASE is defined)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %deftype-expansion-list (name args)
+    "A list of the expansion of the type (NAME . ARGS) defined by DEFTYPE, or NIL when the expander signals an error."
+    (handler-case (list (funcall (get name '%deftype) args)) (error () nil))))

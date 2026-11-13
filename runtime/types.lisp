@@ -324,7 +324,7 @@ expansions on the way: a type defined in terms of itself, such as
                    ((member type *typep-special-names*) default)
                    ((get type '%deftype)
                     (let ((exp (and (< depth 6)
-                                    (handler-case (list (funcall (get type '%deftype) nil)) (error () nil)))))
+                                    (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list type nil)))))
                       (if exp (%typep-expansion x (car exp) (+ depth 1)) default)))
                    ((or (keywordp type) (null (symbol-package type))) default)
                    (t `(%typep-cell ,x (load-time-value (%type-cell ',type))))))
@@ -390,7 +390,7 @@ expansions on the way: a type defined in terms of itself, such as
                  ((complex function values base-string simple-base-string) default)
                  (otherwise
                   (let ((exp (and (get head '%deftype) (< depth 6)
-                                  (handler-case (list (funcall (get head '%deftype) args)) (error () nil)))))
+                                  (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list head args)))))
                     (if exp (%typep-expansion x (car exp) (+ depth 1)) default))))))))))
 
 (define-compiler-macro typep (&whole form x type &optional env)

@@ -22,6 +22,7 @@
 (defconstant +sym-function+ 3) (defconstant +sym-plist+ 4) (defconstant +sym-hash+ 5)
 (defconstant +sym-flags+ 6)
 (defconstant +clo-entry-n+ 5) (defconstant +clo-env+ 6) (defconstant +clo-name+ 7)
+(defconstant +clo-kmain+ 8) (defconstant +clo-klayout+ 9)
 
 ;; symbol flags
 (defconstant +flag-special+ 1)
@@ -113,7 +114,10 @@ when ET is not one of the specifiers recognized at compile time."
     (:symbol    (:struct (((:ref :string) nil) ((:ref :null :package) t) (:eqref t)
                           ((:ref :null :closure) t) (:eqref t) (:i32 nil) (:i32 t))))
     (:closure   (:struct (((:ref :f0) nil) ((:ref :f1) nil) ((:ref :f2) nil) ((:ref :f3) nil)
-                          ((:ref :f4) nil) ((:ref :fN) nil) ((:ref :null :vector) nil) (:eqref t))))
+                          ((:ref :f4) nil) ((:ref :fN) nil) ((:ref :null :vector) nil) (:eqref t)
+                          ;; for a function with keyword parameters: the function taking them
+                          ;; in fixed slots, and its layout (required optional . keywords)
+                          ((:ref :null :func) nil) (:eqref nil))))
     (:f0        (:func ((:ref :closure)) (:eqref)))
     (:f1        (:func ((:ref :closure) :eqref) (:eqref)))
     (:f2        (:func ((:ref :closure) :eqref :eqref) (:eqref)))
