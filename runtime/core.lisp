@@ -89,6 +89,8 @@
   (cond ((null x) t)
         ((consp x) nil)
         (t (%type-error x 'list))))
+(define-compiler-macro endp (x)
+  (let ((v (gensym "L"))) `(let ((,v ,x)) (%endp ,v))))
 
 (defun length-of-list (l)
   (let ((n 0) (x l))

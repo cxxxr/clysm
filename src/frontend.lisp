@@ -794,8 +794,12 @@ leaving quoted data alone."
   (let ((op op))
     (setf (get op 'clysm-transform)
           (lambda (form)
-            (let ((args (cdr form)))
-              (if (cddr args) (fold-left op args) form))))))
+            (let ((args (cdr form)) (identity (if (eq op 'logand) -1 0)))
+              (cond ((cddr args) (fold-left op args))
+                    ((null args) identity)
+                    ;; one argument: itself, checked to be an integer
+                    ((null (cdr args)) (list op (car args) identity))
+                    (t form)))))))
 
 (defun eq-comparable-constant-p (x)
   "A literal for which EQL is EQ (fixnums, characters, symbols)."

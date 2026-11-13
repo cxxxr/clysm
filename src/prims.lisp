@@ -3536,6 +3536,20 @@ in local V and the index in local K; else branch to FAIL."
 (defprim clysm-sys::%aref2 (a i j) :value `(,@a ,@i ,@j (:call :aref2)))
 (defprim clysm-sys::%aset2 (a i j v) :value `(,@a ,@i ,@j ,@v (:call :aset2)))
 (defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
+;; (SETF SVREF): a simple vector and an index within it inline, else the Lisp function (which signals)
+(defhelper :svset :eee-e ((v (:ref :null :vector)) (i :i32))
+  '(:local.get 1) '(:ref.test :i31)
+  `(:if nil nil
+        ((:block notvec :eqref
+           (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
+           :array.len (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.tee i) :i32.gt_u
+           (:if nil nil ((:local.get v) (:local.get i) (:local.get 2) (:array.set :vector)
+                         (:local.get 2) :return))
+           (:local.get 0))
+         :drop))
+  '(:local.get 0) '(:local.get 1) '(:local.get 2)
+  `(:global.get ,(sym-global 'clysm-sys::%svset)) '(:call (:callsym 3)))
+(defprim clysm-sys::%svset (v i x) :value `(,@v ,@i ,@x (:call :svset)))
 (defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
 
 ;;; ------------------------------------------------------------
