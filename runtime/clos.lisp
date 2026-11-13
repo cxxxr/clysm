@@ -448,6 +448,7 @@
 (defmacro %fast-class-of (x)
   `(let ((x ,x)) (if (%instancep x) (%instance-layout x) (class-of x))))
 
+(declaim (inline %gf-call1 %gf-call2))
 (defun %gf-call1 (info a)
   (when (eql (%gf-slot info +gf-nreq+) 1)
     (let ((c (%fast-class-of a)))

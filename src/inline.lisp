@@ -14,6 +14,8 @@
 (defvar *inline-candidates* (make-hash-table :test 'eq) "lam -> inlinable-p")
 (defvar *inlined-into* (make-hash-table :test 'eq) "lams whose bodies were processed")
 (defvar *inline-caller* nil "the lam receiving the copies")
+(defvar *declared-inline* (make-hash-table :test 'eq) "functions declaimed INLINE (no size limit)")
+(defparameter *inline-max-declared-nodes* 400)
 
 (defun inlinable-lam-p (lam sym)
   (multiple-value-bind (v found) (gethash lam *inline-candidates*)
@@ -21,9 +23,10 @@
         (setf (gethash lam *inline-candidates*)
               (and (lam-simple-p lam) (null (lam-free-vars lam)) (lam-static-p lam)
                    (notany #'lvar-special (lam-req lam))
-                   (let ((n 0))
+                   (let ((n 0) (limit (if (gethash sym *declared-inline*)
+                                          *inline-max-declared-nodes* *inline-max-nodes*)))
                      (labels ((walk (node)
-                                (when (or (> (incf n) *inline-max-nodes*)
+                                (when (or (> (incf n) limit)
                                           (member (car node) '(:lambda :flet :labels :ltv :defun :lcall
                                                                :symtab :catch :unwind-protect :progv))
                                           (and (eq (car node) :call) (eq (second node) sym)))
