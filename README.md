@@ -252,6 +252,9 @@ CLIM applications open windows on an X server (Unix domain or TCP sockets of
 the Node.js host), draw with TrueType fonts, and read keyboard and pointer
 input. Clysm has no threads, so McCLIM runs in its single-process mode.
 
+It needs a Quicklisp installation (`$QUICKLISP_HOME`, by default `~/quicklisp/`;
+see [Quicklisp](#quicklisp) for installing it from Clysm) and an X server.
+
 ```
 $ DISPLAY=:0 bin/clysm script tests/mcclim/hello.lisp     # a small application
 $ make test-mcclim        # McCLIM's test suite and the application on Xvfb

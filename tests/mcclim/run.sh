@@ -7,6 +7,8 @@ out=build/mcclim-test; mkdir -p $out
 for tool in Xvfb xdotool import convert; do
   command -v $tool >/dev/null || { echo "mcclim: $tool not found, skipped"; exit 0; }
 done
+ql="${QUICKLISP_HOME:-$HOME/quicklisp}"
+[ -f "${ql%/}/setup.lisp" ] || { echo "mcclim: no Quicklisp in ${ql%/}/ (set QUICKLISP_HOME), skipped"; exit 0; }
 disp=:${MCCLIM_TEST_DISPLAY:-87}
 Xvfb $disp -screen 0 800x600x24 -nolisten tcp > $out/xvfb.log 2>&1 &
 xvfb=$!

@@ -181,13 +181,16 @@ once per image build and cached in ~/.cache/common-lisp/ ($XDG_CACHE_HOME)."
                (load (if (probe-file fasl) fasl source))
                t)))))
 
-(defun %quicklisp-setup-file ()
+(defun %quicklisp-setup-pathname ()
+  "Where Quicklisp's setup.lisp is looked for: in $QUICKLISP_HOME, by default ~/quicklisp/."
   (let ((home (%getenv "QUICKLISP_HOME")))
-    (probe-file (merge-pathnames "setup.lisp"
-                                 (if home
-                                     (pathname (if (char= (char home (1- (length home))) #\/)
-                                                   home (concatenate 'string home "/")))
-                                     (merge-pathnames "quicklisp/" (user-homedir-pathname)))))))
+    (merge-pathnames "setup.lisp"
+                     (if (and home (> (length home) 0))
+                         (pathname (if (char= (char home (1- (length home))) #\/)
+                                       home (concatenate 'string home "/")))
+                         (merge-pathnames "quicklisp/" (user-homedir-pathname))))))
+
+(defun %quicklisp-setup-file () (probe-file (%quicklisp-setup-pathname)))
 
 (defun %module-provide-contrib (name)
   "Modules shipped with Clysm: ASDF and UIOP (third_party/asdf/asdf.lisp),
@@ -206,6 +209,12 @@ support)."
              t))
           ((string= name "QUICKLISP")
            (let ((setup (%quicklisp-setup-file)))
+             (unless setup
+               (error "REQUIRE: Quicklisp is not installed: there is no ~A~%~
+                       (set QUICKLISP_HOME to the Quicklisp directory, or install Quicklisp:~%~
+                       download https://beta.quicklisp.org/quicklisp.lisp, then~%~
+                       (load \"quicklisp.lisp\") (require :ql-clysm) (quicklisp-quickstart:install))"
+                      (namestring (%quicklisp-setup-pathname))))
              (when setup
                (require "ASDF")
                (load setup)         ; the ASDF hook adds QL-CLYSM
