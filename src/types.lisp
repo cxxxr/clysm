@@ -380,6 +380,21 @@
         (int-ty 0 nil))))
 (def-ti-rule (clysm-sys::%lcm2) (a) (int-ty 0 nil))
 
+(def-ti-rule (atan) (a)
+  (cond ((and (= (length a) 1) (ty-double-p (first a))) (mkty +k-double+))
+        ((and (= (length a) 2) (float-divmod-types-p a)) (mkty +k-double+))
+        (t *ty-number*)))
+(def-ti-rule (sinh cosh tanh asinh) (a)
+  (if (ty-double-p (first a)) (mkty +k-double+) *ty-number*))
+;; (the logarithm of a double that is not MINUSP is a double; of others, maybe complex)
+(def-ti-rule (log) (a)
+  (if (and (= (length a) 1) (ty-double-p (first a)) (ty-nonneg-p (first a))) (mkty +k-double+) *ty-number*))
+(def-ti-rule (expt) (a)
+  (let ((b (first a)) (p (second a)))
+    (cond ((and (ty-double-p b) (ty-nonneg-p b) (ty-double-p p)) (mkty +k-dpos+))
+          ((and (ty-only-p b +k-int+) (ty-only-p p +k-int+) (ty-lo p) (>= (ty-lo p) 0)) (int-ty nil nil))
+          (t *ty-number*))))
+
 (defun numeric-mv-types (name node)
   "Types of the values of a call of a numeric function, or NIL."
   (let ((tys (mapcar #'node-ty (cddr node))))

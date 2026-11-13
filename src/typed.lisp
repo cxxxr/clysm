@@ -514,7 +514,35 @@ computed for a division by 1 unless NEED-REM)."
              `(,@code (:local.get ,r))))
           ((and (member name '(ffloor fceiling ftruncate fround)) (float-divmod-node-p node))
            (values (typed-float-divmod node :fquotient)))
+          ((and (member name '(sin cos tan atan exp log sinh cosh tanh asinh)) (= (length (cddr node)) 1)
+                (ty-double-p (node-ty (third node))))
+           ;; the host function; a result that is not finite (or a zero of
+           ;; EXP) is redone by the helper, which signals
+           (let ((x (new-local :f64)) (r (new-local :f64)))
+             `(,@(cg-rep (third node) :f64) (:local.tee ,x) (:call ,(math-import name)) (:local.tee ,r)
+               (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+               ,@(when (eq name 'exp) `((:local.get ,r) (:f64.const 0) :f64.eq :i32.or))
+               (:if nil :f64
+                    ((:local.get ,x) (:struct.new :double) (:call ,(math-helper name))
+                     (:ref.cast :double) (:struct.get :double 0))
+                    ((:local.get ,r))))))
+          ((and (eq name 'atan) (= (length (cddr node)) 2) (float-divmod-node-p-args (cddr node)))
+           `(,@(f64-arg-code (third node)) ,@(f64-arg-code (fourth node)) (:call :math-atan2)))
+          ((and (eq name 'expt) (every (lambda (a) (ty-double-p (node-ty a))) (cddr node)))
+           (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "EXPT")))
+             `(,@(cg-rep (third node) :f64) (:local.set ,x) ,@(cg-rep (fourth node) :f64) (:local.set ,y)
+               (:block ,done :f64
+                 (:block ,slow nil
+                   (:local.get ,x) (:f64.const 0) :f64.gt :i32.eqz (:br_if ,slow)
+                   (:local.get ,x) (:local.get ,y) (:call :math-pow) (:local.tee ,r)
+                   (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,slow)
+                   (:local.get ,r) (:br ,done))
+                 (:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double) (:call :fn-expt)
+                 (:ref.cast :double) (:struct.get :double 0)))))
           (t nil))))
+
+(defun float-divmod-node-p-args (args)
+  (float-divmod-types-p (mapcar #'node-ty args)))
 
 (defun numeric-i32-op-code (node)
   "i32 code for a numeric function whose result is within 32 bits, or NIL."

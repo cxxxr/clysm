@@ -754,7 +754,14 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:js-truthy :x-i "js" "truthy")
     (:js-is-lisp :x-i "js" "is_lisp")
     (:host-arg-len :i-i "env" "arg_len")
-    (:host-arg-char :ii-i "env" "arg_char")))
+    (:host-arg-char :ii-i "env" "arg_char")
+    ;; the host's Math functions, imported one by one (a direct call each)
+    (:math-sin :d-d "math" "sin") (:math-cos :d-d "math" "cos") (:math-tan :d-d "math" "tan")
+    (:math-asin :d-d "math" "asin") (:math-acos :d-d "math" "acos") (:math-atan :d-d "math" "atan")
+    (:math-exp :d-d "math" "exp") (:math-log :d-d "math" "log")
+    (:math-sinh :d-d "math" "sinh") (:math-cosh :d-d "math" "cosh") (:math-tanh :d-d "math" "tanh")
+    (:math-asinh :d-d "math" "asinh") (:math-acosh :d-d "math" "acosh") (:math-atanh :d-d "math" "atanh")
+    (:math-pow :dd-d "math" "pow") (:math-atan2 :dd-d "math" "atan2")))
 
 (defun lisp-call-instrs (sym nargs)
   "Call Lisp function SYM with NARGS eqref args already pushed (helper context)."
@@ -2757,6 +2764,90 @@ in local V and the index in local K; else branch to FAIL."
 (defprim clysm-sys::%aset2 (a i j v) :value `(,@a ,@i ,@j ,@v (:call :aset2)))
 (defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
 (defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
+
+;;; ------------------------------------------------------------
+;;; Irrational functions
+;;; ------------------------------------------------------------
+;;; SIN COS TAN ASIN ACOS ATAN EXP LOG SINH COSH TANH ASINH ACOSH ATANH of
+;;; one argument are primitives: for a double, a single or an integer within
+;;; 64 bits the helper calls the host function and returns a float of the
+;;; argument's format (a single for an integer).  A result that is not
+;;; finite (outside the domain: the result is complex; an overflow), a zero
+;;; of EXP or a single zero of a nonzero double (an underflow), and every
+;;; other argument go to the Lisp function %NAME-SLOW.
+(defparameter *math1-functions* '(sin cos tan asin acos atan exp log sinh cosh tanh asinh acosh atanh))
+(defun math-import (name) (intern (concatenate 'string "MATH-" (symbol-name name)) :keyword))
+(defun math-helper (name) (intern (concatenate 'string "FN-" (symbol-name name)) :keyword))
+(defun math-slow-function (name)
+  (intern (concatenate 'string "%" (symbol-name name) "-SLOW") (find-package :clysm-sys)))
+
+(defun math1-helper-body (name)
+  `((:block slow nil
+      ,@(num-decode-code 0 'xa 'da 'ka 'slow)
+      (:local.get ka) :i32.eqz (:if nil nil ((:local.get xa) :f64.convert_i64_s (:local.set da)))
+      (:local.get da) (:call ,(math-import name)) (:local.tee dr)
+      (:local.get dr) :f64.sub (:f64.const 0) :f64.ne (:br_if slow)
+      (:local.get ka) (:i32.const 2) :i32.eq
+      (:if nil nil
+           (,@(when (eq name 'exp) '((:local.get dr) (:f64.const 0) :f64.eq (:br_if slow)))
+            (:local.get dr) (:struct.new :double) :return))
+      (:local.get dr) :f32.demote_f64 (:local.tee fr) (:local.get fr) :f32.sub (:f32.const 0) :f32.ne (:br_if slow)
+      (:local.get fr) (:f32.const 0) :f32.eq
+      ,@(unless (eq name 'exp) '((:local.get dr) (:f64.const 0) :f64.ne :i32.and))
+      (:br_if slow)
+      (:local.get fr) (:struct.new :single) :return)
+    (:local.get 0) (:global.get ,(sym-global (math-slow-function name))) (:call (:callsym 1))))
+
+(defun define-math-helpers ()
+  (dolist (name *math1-functions*)
+    (let ((name name) (helper (math-helper name)))
+      (setf *helpers* (remove helper *helpers* :key #'first :test #'equal))
+      (push (list helper :e-e '((v :i32) (xa :i64) (ka :i32) (da :f64) (dr :f64) (fr :f32))
+                  (lambda () (math1-helper-body name)))
+            *helpers*)
+      (let ((p (make-prim :name name :nargs 1 :kind :value
+                          :fn (lambda (argv) `(,@(first argv) (:call ,helper))))))
+        (setf (gethash name *prims*) (cons p (remove 1 (gethash name *prims*) :key #'prim-nargs)))))))
+(define-math-helpers)
+
+;;; (ATAN y x): floats and integers within 64 bits
+(defhelper :fn-atan2 :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa 'da 'ka 'slow)
+     ,@(num-decode-code 1 'xb 'db 'kb 'slow)
+     (:local.get ka) :i32.eqz (:if nil nil ((:local.get xa) :f64.convert_i64_s (:local.set da)))
+     (:local.get kb) :i32.eqz (:if nil nil ((:local.get xb) :f64.convert_i64_s (:local.set db)))
+     (:local.get da) (:local.get db) (:call :math-atan2) (:local.set da)
+     (:local.get ka) (:local.get kb) :i32.or (:i32.const 2) :i32.and
+     (:if nil nil ((:local.get da) (:struct.new :double) :return))
+     (:local.get da) :f32.demote_f64 (:struct.new :single) :return)
+  '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%atan2-slow)) '(:call (:callsym 2)))
+(defprim atan (y x) :value `(,@y ,@x (:call :fn-atan2)))
+
+;;; (EXPT base power) of doubles with a positive base
+(defhelper :fn-expt :ee-e ((da :f64) (dr :f64))
+  '(:block slow nil
+     (:local.get 0) (:ref.test :double) (:local.get 1) (:ref.test :double) :i32.and :i32.eqz (:br_if slow)
+     (:local.get 0) (:ref.cast! :double) (:struct.get :double 0) (:local.tee da) (:f64.const 0) :f64.gt :i32.eqz
+     (:br_if slow)
+     (:local.get da) (:local.get 1) (:ref.cast! :double) (:struct.get :double 0) (:call :math-pow) (:local.tee dr)
+     (:local.get dr) :f64.sub (:f64.const 0) :f64.ne (:br_if slow)
+     (:local.get dr) (:struct.new :double) :return)
+  '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%expt-slow)) '(:call (:callsym 2)))
+(defprim expt (b p) :value `(,@b ,@p (:call :fn-expt)))
+
+;;; SQRT of a float that is not negative
+(defhelper :fn-sqrt :e-e ((da :f64))
+  '(:local.get 0) '(:ref.test :double)
+  '(:if nil nil
+        ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) (:local.tee da) (:f64.const 0) :f64.ge
+         (:if nil nil ((:local.get da) :f64.sqrt (:struct.new :double) :return))))
+  '(:local.get 0) '(:ref.test :single)
+  '(:if nil nil
+        ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 (:local.tee da) (:f64.const 0) :f64.ge
+         (:if nil nil ((:local.get da) :f64.sqrt :f32.demote_f64 (:struct.new :single) :return))))
+  '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%sqrt-slow)) '(:call (:callsym 1)))
+(defprim sqrt (x) :value `(,@x (:call :fn-sqrt)))
 
 ;;; ISQRT of an integer within 64 bits
 (defhelper :isqrt :e-e ((v :i32) (xa :i64) (ka :i32) (r :i64))
