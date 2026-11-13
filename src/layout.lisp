@@ -126,6 +126,9 @@ when ET is not one of the specifiers recognized at compile time."
     (:single    (:struct ((:f32 nil))))
     (:double    (:struct ((:f64 nil))))
     (:complex   (:struct ((:eqref nil) (:eqref nil))))
+    ;; complex numbers whose parts are double floats / single floats
+    (:complex-d (:struct ((:f64 nil) (:f64 nil))))
+    (:complex-s (:struct ((:f32 nil) (:f32 nil))))
     (:instance  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))  ; layout slots hash
     ;; data fill dims offset info, and the two dimensions of a rank-2 array (else 0 0)
     (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:i32 t) (:i32 t))))
@@ -184,6 +187,8 @@ when ET is not one of the specifiers recognized at compile time."
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))
     (:ei-e      (:func (:eqref :i32) (:eqref)))
+    (:v-dd      (:func () (:f64 :f64)))
+    (:v-ff      (:func () (:f32 :f32)))
     (:eie-i     (:func (:eqref :i32 :eqref) (:i32)))
     (:eie-e     (:func (:eqref :i32 :eqref) (:eqref)))
     (:ii-e      (:func (:i32 :i32) (:eqref)))

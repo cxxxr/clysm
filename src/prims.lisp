@@ -135,7 +135,9 @@ its type is a fixnum), the generic code when that fails."
 (defprim clysm-sys::%ratiop (x) :test `(,@x (:ref.test :ratio)))
 (defprim clysm-sys::%single-float-p (x) :test `(,@x (:ref.test :single)))
 (defprim clysm-sys::%double-float-p (x) :test `(,@x (:ref.test :double)))
-(defprim clysm-sys::%complexp (x) :test `(,@x (:ref.test :complex)))
+(defprim clysm-sys::%complexp (x) :test `(,@x (:call :complexp)))
+(defprim clysm-sys::%complex-d-p (x) :test `(,@x (:ref.test :complex-d)))
+(defprim clysm-sys::%complex-s-p (x) :test `(,@x (:ref.test :complex-s)))
 (defprim clysm-sys::%simple-string-p (x) :test `(,@x (:ref.test :string)))
 (defprim clysm-sys::%simple-vector-p (x) :test `(,@x (:ref.test :vector)))
 (defprim clysm-sys::%bytes-p (x) :test `(,@x (:ref.test :bytes)))
@@ -1422,18 +1424,55 @@ element (local I) of it.  D is a scratch eqref local."
 
 ;;; arithmetic fast paths
 (defun f64-of-param-code (p v fail)
-  "Push param P (a double or a fixnum) as an f64, or branch to FAIL."
+  "Push param P (a double, a single or a fixnum) as an f64, or branch to FAIL."
   `((:local.get ,p) (:ref.test :double)
     (:if nil :f64 ((:local.get ,p) (:ref.cast! :double) (:struct.get :double 0))
+         ((:local.get ,p) (:ref.test :single)
+          (:if nil :f64 ((:local.get ,p) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32)
+               ((:local.get ,p) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+                (:local.get ,p) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
+                (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+                (:local.get ,v) :f64.convert_i32_s))))))
+
+(defun f32-of-param-code (p v fail)
+  "Push param P (a single or a fixnum) as an f32, or branch to FAIL."
+  `((:local.get ,p) (:ref.test :single)
+    (:if nil :f32 ((:local.get ,p) (:ref.cast! :single) (:struct.get :single 0))
          ((:local.get ,p) (:ref.test :i31) :i32.eqz (:br_if ,fail)
           (:local.get ,p) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
           (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
-          (:local.get ,v) :f64.convert_i32_s))))
+          (:local.get ,v) :f32.convert_i32_s))))
 
-(defun double-fast-path-code (body)
-  "When one argument is a double and the other a double or a fixnum: BODY
-with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
+(defun single-arith-code (op zero-check)
+  "When one argument is a single and the other a single or a fixnum: the
+operation in f32 (locals SA, SB, SR), the generic function when the result is
+not finite (or a zero that may be an underflow)."
+  `((:local.get 0) (:ref.test :single) (:local.get 1) (:ref.test :single) :i32.or
+    (:if nil nil
+         ((:block slow nil
+            ,@(f32-of-param-code 0 'v 'slow) (:local.set sa)
+            ,@(f32-of-param-code 1 'v 'slow) (:local.set sb)
+            (:local.get sa) (:local.get sb) ,op (:local.tee sr)
+            (:local.get sr) :f32.sub (:f32.const 0.0) :f32.ne
+            ,@(when zero-check '((:local.get sr) (:f32.const 0.0) :f32.eq
+                                 (:local.get sa) (:f32.const 0.0) :f32.ne :i32.and
+                                 (:local.get sb) (:f32.const 0.0) :f32.ne :i32.and :i32.or))
+            (:br_if slow)
+            (:local.get sr) (:struct.new :single) :return)))))
+
+(defun complex-arith-code (lisp-fn)
+  "When an argument is a complex of floats: the Lisp function for complex numbers."
+  `((:local.get 0) (:ref.test :complex-d) (:local.get 0) (:ref.test :complex-s) :i32.or
+    (:local.get 1) (:ref.test :complex-d) :i32.or (:local.get 1) (:ref.test :complex-s) :i32.or
+    (:if nil nil ((:local.get 0) (:local.get 1) ,@(lisp-call-instrs lisp-fn 2) :return))))
+
+(defun double-fast-path-code (body &optional singles)
+  "When one argument is a double and the other a double, a single or a
+fixnum (with SINGLES: also when one is a single and the other a single or a
+fixnum, for comparisons, which are exact in f64): BODY with the arguments as
+f64s in locals DA and DB (it may branch to SLOW)."
   `((:local.get 0) (:ref.test :double) (:local.get 1) (:ref.test :double) :i32.or
+    ,@(when singles '((:local.get 0) (:ref.test :single) :i32.or (:local.get 1) (:ref.test :single) :i32.or))
     (:if nil nil
          ((:block slow nil
             ,@(f64-of-param-code 0 'v 'slow) (:local.set da)
@@ -1452,7 +1491,8 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
      (:local.get dr) (:struct.new :double) :return)))
 
 (macrolet ((arith (name op lisp-fn &key mul opcode)
-             `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (e :eqref) (v :i32) (da :f64) (db :f64) (dr :f64))
+             `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (e :eqref) (v :i32) (da :f64) (db :f64) (dr :f64)
+                                      (sa :f32) (sb :f32) (sr :f32))
                 '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.and
                 `(:if nil nil
                       ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.set x)
@@ -1470,6 +1510,9 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
                                        (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
                                        (:if nil nil ((:local.get x) :ref.i31 :return))))))))
                 (double-arith-code ,(case opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul)) ,mul)
+                (single-arith-code ,(case opcode (0 :f32.add) (1 :f32.sub) (2 :f32.mul)) ,mul)
+                (complex-arith-code ',(case opcode (0 'clysm-sys::%complex-add) (1 'clysm-sys::%complex-sub)
+                                        (2 'clysm-sys::%complex-mul)))
                 '(:local.get 0) '(:local.get 1) '(:i32.const ,opcode) '(:call :int64-op) '(:local.tee e)
                 (car (nil-code)) :ref.eq :i32.eqz '(:if nil nil ((:local.get e) :return))
                 '(:local.get 0) '(:local.get 1)
@@ -1499,7 +1542,7 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
          (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
          (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
          (:if nil nil ((:local.get x) (:local.get y) :i32.lt_s :return))))
-  (double-fast-path-code '((:local.get da) (:local.get db) :f64.lt :return))
+  (double-fast-path-code '((:local.get da) (:local.get db) :f64.lt :return) t)
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-lt)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)
@@ -1514,7 +1557,7 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
          (:local.get y) (:i32.const ,+char-tag+) :i32.add :i32.or
          (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
          (:if nil nil ((:local.get x) (:local.get y) :i32.eq :return))))
-  (double-fast-path-code '((:local.get da) (:local.get db) :f64.eq :return))
+  (double-fast-path-code '((:local.get da) (:local.get db) :f64.eq :return) t)
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%generic-num-eq)) '(:call (:callsym 2))
   (car (nil-code)) :ref.eq :i32.eqz)
@@ -1873,9 +1916,48 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
 (defprim clysm-sys::%make-ratio (n d) :value `(,@n ,@d (:struct.new :ratio)))
 (defprim clysm-sys::%ratio-num (r) :value `(,@r (:ref.cast :ratio) (:struct.get :ratio 0)))
 (defprim clysm-sys::%ratio-den (r) :value `(,@r (:ref.cast :ratio) (:struct.get :ratio 1)))
-(defprim clysm-sys::%make-complex (r i) :value `(,@r ,@i (:struct.new :complex)))
-(defprim clysm-sys::%complex-real (c) :value `(,@c (:ref.cast :complex) (:struct.get :complex 0)))
-(defprim clysm-sys::%complex-imag (c) :value `(,@c (:ref.cast :complex) (:struct.get :complex 1)))
+;;; Complex numbers: a $complex-d holds two f64s, a $complex-s two f32s, a
+;;; $complex the parts of any other complex number.
+(defhelper :complexp :e-i ()
+  '(:local.get 0) '(:ref.test :complex-d) '(:if nil nil ((:i32.const 1) :return))
+  '(:local.get 0) '(:ref.test :complex-s) '(:if nil nil ((:i32.const 1) :return))
+  '(:local.get 0) '(:ref.test :complex))
+(defhelper :make-complex :ee-e ()
+  '(:local.get 0) '(:ref.test :double) '(:local.get 1) '(:ref.test :double) :i32.and
+  '(:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0)
+                 (:local.get 1) (:ref.cast! :double) (:struct.get :double 0) (:struct.new :complex-d) :return))
+  '(:local.get 0) '(:ref.test :single) '(:local.get 1) '(:ref.test :single) :i32.and
+  '(:if nil nil ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0)
+                 (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) (:struct.new :complex-s) :return))
+  '(:local.get 0) '(:local.get 1) '(:struct.new :complex))
+(macrolet ((part (name field)
+             `(defhelper ,name :e-e ()
+                '(:block n1 :eqref
+                  (:local.get 0) (:br_on_cast_fail n1 :eqref (:ref :complex-d)) (:struct.get :complex-d ,field)
+                  (:struct.new :double) :return)
+                :drop
+                '(:block n2 :eqref
+                  (:local.get 0) (:br_on_cast_fail n2 :eqref (:ref :complex-s)) (:struct.get :complex-s ,field)
+                  (:struct.new :single) :return)
+                :drop
+                '(:local.get 0) '(:ref.cast :complex) '(:struct.get :complex ,field))))
+  (part :complex-real 0)
+  (part :complex-imag 1))
+(defprim clysm-sys::%make-complex (r i) :value `(,@r ,@i (:call :make-complex)))
+(defprim clysm-sys::%complex-real (c) :value `(,@c (:call :complex-real)))
+(defprim clysm-sys::%complex-imag (c) :value `(,@c (:call :complex-imag)))
+;; the parts of a complex number known to be a $complex-d / $complex-s (the
+;; typed code generation keeps them unboxed)
+(defprim clysm-sys::%cd-real (c) :value `(,@c (:ref.cast :complex-d) (:struct.get :complex-d 0) (:struct.new :double)))
+(defprim clysm-sys::%cd-imag (c) :value `(,@c (:ref.cast :complex-d) (:struct.get :complex-d 1) (:struct.new :double)))
+(defprim clysm-sys::%cs-real (c) :value `(,@c (:ref.cast :complex-s) (:struct.get :complex-s 0) (:struct.new :single)))
+(defprim clysm-sys::%cs-imag (c) :value `(,@c (:ref.cast :complex-s) (:struct.get :complex-s 1) (:struct.new :single)))
+(defprim clysm-sys::%make-complex-d (r i) :value
+  `(,@r (:ref.cast :double) (:struct.get :double 0) ,@i (:ref.cast :double) (:struct.get :double 0)
+    (:struct.new :complex-d)))
+(defprim clysm-sys::%make-complex-s (r i) :value
+  `(,@r (:ref.cast :single) (:struct.get :single 0) ,@i (:ref.cast :single) (:struct.get :single 0)
+    (:struct.new :complex-s)))
 
 (defun f64-code (x) `(,@x (:ref.cast :double) (:struct.get :double 0)))
 (defun box-f64 () '((:struct.new :double)))
@@ -2350,7 +2432,8 @@ in local V and the index in local K; else branch to FAIL."
   '((:i31 . fixnum) (:cons . cons) (:symbol . symbol) (:string . simple-string)
     (:vector . simple-vector) (:instance . structure-object) (:mdarray . array)
     (:double . double-float) (:single . single-float) (:bignum . integer) (:ratio . ratio)
-    (:complex . complex) (:package . package) (:bytes . (simple-array (unsigned-byte 8) (*)))
+    (:complex . complex) (:complex-d . (complex double-float)) (:complex-s . (complex single-float))
+    (:package . package) (:bytes . (simple-array (unsigned-byte 8) (*)))
     (:bits . simple-bit-vector) (:f64vec . (simple-array double-float (*))) (:foreign . t)
     (:limbs . t) (:closure . function)))
 

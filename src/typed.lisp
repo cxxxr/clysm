@@ -30,12 +30,17 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     (:const (let ((v (second node)))
               (ecase rep
                 (:f64 (when (typep v 'double-float) `((:f64.const ,v))))
+                (:f32 (when (typep v 'single-float) `((:f32.const ,v))))
+                (:c64 (when (and (complexp v) (typep (realpart v) 'double-float))
+                        `((:f64.const ,(realpart v)) (:f64.const ,(imagpart v)))))
+                (:c32 (when (and (complexp v) (typep (realpart v) 'single-float))
+                        `((:f32.const ,(realpart v)) (:f32.const ,(imagpart v)))))
                 (:i32 (when (typep v '(signed-byte 32)) `((:i32.const ,v))))
                 (:i64 (when (typep v '(signed-byte 64)) `((:i64.const ,v)))))))
     (:lref (let ((lv (second node)))
              (when (unboxed-local-p lv)
                (let ((get `(:local.get ,(cdr (get-loc lv)))))
-                 (cond ((eq (lvar-rep lv) rep) (list get))
+                 (cond ((eq (lvar-rep lv) rep) (rep-get-code rep (cdr (get-loc lv))))
                        ((and (eq (lvar-rep lv) :i64) (eq rep :i32)) (list get :i32.wrap_i64))
                        ((and (eq (lvar-rep lv) :i32) (eq rep :i64)) (list get :i64.extend_i32_s)))))))
     (:lset (let ((lv (second node)))
@@ -46,7 +51,7 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
               `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
                 ,@(cg-rep (car (last node)) rep))))
     (:if `(,@(cg-test (second node))
-           (:if nil ,(rep-wasm-type rep) ,(cg-rep (third node) rep) ,(cg-rep (fourth node) rep))))
+           (:if nil ,(rep-block-type rep) ,(cg-rep (third node) rep) ,(cg-rep (fourth node) rep))))
     (:let (cg-let node nil nil rep))
     ((:prim :call)
      (or (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
@@ -55,6 +60,9 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
                      (:i64 (cond ((ty-int32-p (node-ty node)) `(,@(cg-rep node :i32) :i64.extend_i32_s))
                                  ((ty-int64-p (node-ty node)) (i64-op-code node))))
                      (:f64 (when (ty-double-p (node-ty node)) (f64-op-code node)))
+                     (:f32 (when (ty-single-p (node-ty node)) (f32-op-code node)))
+                     (:c64 (when (ty-cdouble-p (node-ty node)) (cplx-op-code node :f64)))
+                     (:c32 (when (ty-csingle-p (node-ty node)) (cplx-op-code node :f32)))
                      (:i32 (when (ty-int32-p (node-ty node))
                              (or (i32-op-code node)
                                  ;; operands beyond 32 bits: in i64 (exact, as the result is within 32 bits)
@@ -70,12 +78,13 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
   "NODE can be converted to an f64 inline (EXACT: without rounding, as
 comparisons need)."
   (let ((ty (node-ty node)))
-    (or (ty-double-p ty) (ty-int32-p ty)
+    (or (ty-double-p ty) (ty-int32-p ty) (ty-single-p ty)
         (and (not exact) (ty-only-p ty +k-real+)))))
 
 (defun f64-arg-code (node)
   (let ((ty (node-ty node)))
     (cond ((ty-double-p ty) (cg-rep node :f64))
+          ((ty-single-p ty) `(,@(cg-rep node :f32) :f64.promote_f32))
           ((ty-int32-p ty) `(,@(cg-rep node :i32) :f64.convert_i32_s))
           (t `(,@(cg node) (:call :to-f64))))))
 
@@ -125,8 +134,13 @@ that may be an underflow, is redone by the generic function, which decides."
       (sqrt (let ((ty (node-ty (first args))))
               (when (and (ty-double-p ty) (ty-nonneg-p ty))
                 `(,@(cg-rep (first args) :f64) :f64.sqrt))))
-      (abs (when (ty-double-p (node-ty (first args)))
-             `(,@(cg-rep (first args) :f64) :f64.abs)))
+      (abs (cond ((ty-double-p (node-ty (first args)))
+                  `(,@(cg-rep (first args) :f64) :f64.abs))
+                 ((ty-cdouble-p (node-ty (first args))) (cplx-abs-code (first args) :f64))))
+      ((realpart imagpart) (cplx-part-code name (first args) :f64))
+      ((clysm-sys::%cd-real clysm-sys::%cd-imag)
+       `(,@(cg (first args)) (:ref.cast :complex-d)
+         (:struct.get :complex-d ,(if (eq name 'clysm-sys::%cd-real) 0 1))))
       (float (let ((x (first args)) (proto (second args)))
                (when (and (f64-arg-p x)
                           (or (and proto (ty-double-p (node-ty proto)))
@@ -136,6 +150,206 @@ that may be an underflow, is redone by the generic function, which decides."
                        `(,@(f64-arg-code x) (:local.set ,tmp) ,@(cg-effect proto) (:local.get ,tmp)))
                      (f64-arg-code x)))))
       (t nil))))
+
+;;; ------------------------------------------------------------
+;;; f32 (single floats)
+;;; ------------------------------------------------------------
+
+(defun f32-arg-p (node)
+  "NODE is a single float, or an integer that the operation converts to one."
+  (let ((ty (node-ty node)))
+    (or (ty-single-p ty) (ty-int32-p ty))))
+
+(defun f32-arg-code (node)
+  (if (ty-single-p (node-ty node))
+      (cg-rep node :f32)
+      `(,@(cg-rep node :i32) :f32.convert_i32_s)))
+
+(defun f32-binop-code (name a-code b-code)
+  "A-CODE and B-CODE leave f32s; as F64-BINOP-CODE."
+  (let* ((x (new-local :f32)) (y (new-local :f32)) (r (new-local :f32))
+         (op (ecase name (+ :f32.add) (- :f32.sub) (* :f32.mul) (/ :f32.div)))
+         (generic `((:local.get ,x) (:struct.new :single) (:local.get ,y) (:struct.new :single)
+                    ,@(lisp-call-instrs (cdr (assoc name *f64-generic*)) 2)
+                    (:ref.cast :single) (:struct.get :single 0))))
+    `(,@a-code (:local.set ,x) ,@b-code (:local.set ,y)
+      (:local.get ,x) (:local.get ,y) ,op (:local.set ,r)
+      ,@(if (member name '(+ -))
+            `((:local.get ,r) (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
+              (:hint 0) (:if nil :f32 ,generic ((:local.get ,r))))
+            `((:local.get ,r) :i32.reinterpret_f32 (:i32.const 23) :i32.shr_u
+              (:i32.const #xFF) :i32.and (:i32.const 1) :i32.sub (:i32.const #xFE) :i32.ge_u
+              (:hint 0)
+              (:if nil :f32
+                   ((:local.get ,r) (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
+                    (:local.get ,r) (:f32.const 0.0) :f32.eq (:local.get ,x) (:f32.const 0.0) :f32.ne :i32.and
+                    ,@(when (eq name '*) `((:local.get ,y) (:f32.const 0.0) :f32.ne :i32.and))
+                    :i32.or
+                    (:if nil :f32 ,generic ((:local.get ,r))))
+                   ((:local.get ,r))))))))
+
+(defun f32-op-code (node)
+  "f32 code for an operation whose result is a single float, or NIL."
+  (let ((name (node-op-name node)) (args (cddr node)))
+    (case name
+      ((+ - * /)
+       (cond ((and (= (length args) 2) (every #'f32-arg-p args) (some (lambda (a) (ty-single-p (node-ty a))) args))
+              (f32-binop-code name (f32-arg-code (first args)) (f32-arg-code (second args))))
+             ((and (eq name '-) (= (length args) 1) (ty-single-p (node-ty (first args))))
+              `(,@(cg-rep (first args) :f32) :f32.neg))))
+      ((1+ 1-)
+       (when (ty-single-p (node-ty (first args)))
+         (f32-binop-code (if (eq name '1+) '+ '-) (cg-rep (first args) :f32) '((:f32.const 1.0)))))
+      (abs (cond ((ty-single-p (node-ty (first args)))
+                  `(,@(cg-rep (first args) :f32) :f32.abs))
+                 ((ty-csingle-p (node-ty (first args))) (cplx-abs-code (first args) :f32))))
+      ((realpart imagpart) (cplx-part-code name (first args) :f32))
+      ((clysm-sys::%cs-real clysm-sys::%cs-imag)
+       `(,@(cg (first args)) (:ref.cast :complex-s)
+         (:struct.get :complex-s ,(if (eq name 'clysm-sys::%cs-real) 0 1))))
+      (float (let ((x (first args)) (proto (second args)))
+               (when (and proto (eq (car proto) :const) (ty-single-p (node-ty proto)) (ty-double-p (node-ty x)))
+                 ;; a double rounded to a single; the generic function when it overflows or underflows
+                 (let ((d (new-local :f64)) (r (new-local :f32)))
+                   (return-from f32-op-code
+                     `(,@(cg-rep x :f64) (:local.tee ,d) :f32.demote_f64 (:local.tee ,r)
+                       :i32.reinterpret_f32 (:i32.const 23) :i32.shr_u
+                       (:i32.const #xFF) :i32.and (:i32.const 1) :i32.sub (:i32.const #xFE) :i32.ge_u
+                       (:local.get ,d) (:f64.const 0) :f64.ne :i32.and
+                       (:hint 0)
+                       (:if nil :f32
+                            ((:local.get ,d) (:struct.new :double) ,@(cg proto) ,@(lisp-call-instrs 'float 2)
+                             (:ref.cast :single) (:struct.get :single 0))
+                            ((:local.get ,r)))))))
+               (when (and (f32-arg-p x)
+                          (or (null proto) (ty-single-p (node-ty proto))))
+                 (if (and proto (not (eq (car proto) :const)))
+                     (let ((tmp (new-local :f32)))
+                       `(,@(f32-arg-code x) (:local.set ,tmp) ,@(cg-effect proto) (:local.get ,tmp)))
+                     (f32-arg-code x)))))
+      (t nil))))
+
+;;; ------------------------------------------------------------
+;;; complex numbers of floats: the two parts on the stack (W: :f64 or :f32)
+;;; ------------------------------------------------------------
+
+(defun fop (w op) (intern (concatenate 'string (symbol-name w) "." (symbol-name op)) :keyword))
+(defun fzero (w) (if (eq w :f64) '(:f64.const 0d0) '(:f32.const 0.0)))
+(defun cplx-rep (w) (if (eq w :f64) :c64 :c32))
+(defun cplx-struct (w) (if (eq w :f64) :complex-d :complex-s))
+(defun ty-cplx-p (ty w) (if (eq w :f64) (ty-cdouble-p ty) (ty-csingle-p ty)))
+(defun float-arg-p (node w) (if (eq w :f64) (f64-arg-p node t) (f32-arg-p node)))
+(defun float-arg-code (node w) (if (eq w :f64) (f64-arg-code node) (f32-arg-code node)))
+
+(defun cplx-arg-p (node w)
+  "NODE is a complex number of W floats, or a number that an operation with one converts exactly."
+  (let ((ty (node-ty node)))
+    (or (ty-cplx-p ty w) (float-arg-p node w) (and (eq w :f64) (ty-csingle-p ty)))))
+
+(defun cplx-arg-code (node w)
+  "The real and imaginary parts of NODE as W floats (the imaginary part of a
+real number X is (* 0 X), as IMAGPART gives it)."
+  (let ((ty (node-ty node)))
+    (cond ((ty-cplx-p ty w) (cg-rep node (cplx-rep w)))
+          ((and (eq w :f64) (ty-csingle-p ty))
+           (let ((tmp (new-local :f32)))
+             `(,@(cg-rep node :c32) (:local.set ,tmp) :f64.promote_f32 (:local.get ,tmp) :f64.promote_f32)))
+          ((ty-only-p ty +k-int+) `(,@(float-arg-code node w) ,(fzero w)))
+          (t (let ((tmp (new-local w)))
+               `(,@(float-arg-code node w) (:local.tee ,tmp) ,(fzero w) (:local.get ,tmp) ,(fop w :mul)))))))
+
+(defun cplx-binop-code (name w a-code b-code)
+  "A-CODE and B-CODE leave the parts of two complex numbers; the sum,
+difference or product inline, redone by the Lisp function for complex numbers
+when a part of the result is not finite or a product may have underflowed."
+  (let* ((ar (new-local w)) (ai (new-local w)) (br (new-local w)) (bi (new-local w))
+         (re (new-local w)) (im (new-local w))
+         (bt (rep-block-type (cplx-rep w))) (st (cplx-struct w))
+         (generic `((:local.get ,ar) (:local.get ,ai) (:struct.new ,st)
+                    (:local.get ,br) (:local.get ,bi) (:struct.new ,st)
+                    ,@(lisp-call-instrs (ecase name (+ 'clysm-sys::%complex-add) (- 'clysm-sys::%complex-sub)
+                                          (* 'clysm-sys::%complex-mul))
+                                        2)
+                    ,@(unbox-rep-code (cplx-rep w))))
+         (result `((:local.get ,re) (:local.get ,im)))
+         (not-finite `((:local.get ,re) (:local.get ,re) ,(fop w :sub) (:local.get ,im) (:local.get ,im) ,(fop w :sub)
+                       ,(fop w :add) ,(fzero w) ,(fop w :ne))))
+    `(,@a-code (:local.set ,ai) (:local.set ,ar) ,@b-code (:local.set ,bi) (:local.set ,br)
+      ,@(if (member name '(+ -))
+            (let ((op (fop w (if (eq name '+) :add :sub))))
+              `((:local.get ,ar) (:local.get ,br) ,op (:local.set ,re)
+                (:local.get ,ai) (:local.get ,bi) ,op (:local.set ,im)
+                ,@not-finite (:hint 0) (:if nil ,bt ,generic ,result)))
+            (let ((p1 (new-local w)) (p2 (new-local w)) (p3 (new-local w)) (p4 (new-local w)))
+              (flet ((zerop-code (p) `((:local.get ,p) ,(fzero w) ,(fop w :eq)))
+                     (underflow (p x y) `((:local.get ,p) ,(fzero w) ,(fop w :eq)
+                                          (:local.get ,x) ,(fzero w) ,(fop w :ne) :i32.and
+                                          (:local.get ,y) ,(fzero w) ,(fop w :ne) :i32.and)))
+                `((:local.get ,ar) (:local.get ,br) ,(fop w :mul) (:local.set ,p1)
+                  (:local.get ,ai) (:local.get ,bi) ,(fop w :mul) (:local.set ,p2)
+                  (:local.get ,ar) (:local.get ,bi) ,(fop w :mul) (:local.set ,p3)
+                  (:local.get ,ai) (:local.get ,br) ,(fop w :mul) (:local.set ,p4)
+                  (:local.get ,p1) (:local.get ,p2) ,(fop w :sub) (:local.set ,re)
+                  (:local.get ,p3) (:local.get ,p4) ,(fop w :add) (:local.set ,im)
+                  ,@not-finite ,@(zerop-code p1) :i32.or ,@(zerop-code p2) :i32.or
+                  ,@(zerop-code p3) :i32.or ,@(zerop-code p4) :i32.or
+                  (:hint 0)
+                  (:if nil ,bt
+                       (,@not-finite ,@(underflow p1 ar br) :i32.or ,@(underflow p2 ai bi) :i32.or
+                        ,@(underflow p3 ar bi) :i32.or ,@(underflow p4 ai br) :i32.or
+                        (:if nil ,bt ,generic ,result))
+                       ,result))))))))
+
+(defun cplx-op-code (node w)
+  "Code leaving the two parts of an operation whose result is a complex number of W floats, or NIL."
+  (let ((name (node-op-name node)) (args (cddr node)) (rep (cplx-rep w)))
+    (case name
+      ((+ - *)
+       (cond ((and (= (length args) 2) (every (lambda (a) (cplx-arg-p a w)) args))
+              (cplx-binop-code name w (cplx-arg-code (first args) w) (cplx-arg-code (second args) w)))
+             ((and (eq name '-) (= (length args) 1) (ty-cplx-p (node-ty (first args)) w))
+              (let ((tmp (new-local w)))
+                `(,@(cg-rep (first args) rep) (:local.set ,tmp) ,(fop w :neg) (:local.get ,tmp) ,(fop w :neg))))))
+      (complex
+       (flet ((part-p (a) (if (eq w :f64) (f64-arg-p a) (f32-arg-p a)))
+              (part-code (a) (if (eq w :f64) (f64-arg-code a) (f32-arg-code a))))
+         (when (and (<= 1 (length args) 2) (every #'part-p args))
+           `(,@(part-code (first args)) ,@(if (second args) (part-code (second args)) (list (fzero w)))))))
+      (conjugate
+       (when (ty-cplx-p (node-ty (first args)) w)
+         `(,@(cg-rep (first args) rep) ,(fop w :neg))))
+      (t nil))))
+
+(defun cplx-part-code (name arg w)
+  "REALPART / IMAGPART of a complex number of W floats."
+  (when (ty-cplx-p (node-ty arg) w)
+    (if (eq name 'realpart)
+        `(,@(cg-rep arg (cplx-rep w)) :drop)
+        (let ((tmp (new-local w)))
+          `(,@(cg-rep arg (cplx-rep w)) (:local.set ,tmp) :drop (:local.get ,tmp))))))
+
+(defun cplx-abs-code (arg w)
+  "ABS of a complex number of W floats (in f64; the Lisp function when the sum
+of the squares is zero, subnormal or not finite, or the result not a single)."
+  (let ((r (new-local :f64)) (i (new-local :f64)) (s (new-local :f64)) (r32 (new-local :f32))
+        (tmp (new-local w)))
+    `(,@(cg-rep arg (cplx-rep w)) (:local.set ,tmp)
+      ,@(when (eq w :f32) '(:f64.promote_f32)) (:local.set ,r)
+      (:local.get ,tmp) ,@(when (eq w :f32) '(:f64.promote_f32)) (:local.set ,i)
+      (:local.get ,r) (:local.get ,r) :f64.mul (:local.get ,i) (:local.get ,i) :f64.mul :f64.add (:local.tee ,s)
+      :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
+      (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
+      ,@(when (eq w :f32)
+          `((:local.get ,s) :f64.sqrt :f32.demote_f64 (:local.tee ,r32)
+            (:local.get ,r32) :f32.sub (:f32.const 0.0) :f32.ne :i32.or))
+      (:hint 0)
+      (:if nil ,w
+           ((:local.get ,r) ,@(when (eq w :f32) '(:f32.demote_f64))
+            (:local.get ,i) ,@(when (eq w :f32) '(:f32.demote_f64))
+            (:struct.new ,(cplx-struct w))
+            ,@(lisp-call-instrs 'clysm-sys::%complex-abs 1)
+            ,@(unbox-rep-code w))
+           ,(if (eq w :f32) `((:local.get ,r32)) `((:local.get ,s) :f64.sqrt))))))
 
 ;;; ------------------------------------------------------------
 ;;; i32 (fixnums)
@@ -256,8 +470,18 @@ that may be an underflow, is redone by the generic function, which decides."
                   ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
                                   clysm-sys::%svref clysm-sys::%set-svref))
                    (typed-access-code node))
+                  ((and (eq name 'clysm-sys::%make-complex-d) (every (lambda (a) (ty-double-p (node-ty a))) args))
+                   `(,@(cg-rep (first args) :f64) ,@(cg-rep (second args) :f64) (:struct.new :complex-d)))
+                  ((and (eq name 'clysm-sys::%make-complex-s) (every (lambda (a) (ty-single-p (node-ty a))) args))
+                   `(,@(cg-rep (first args) :f32) ,@(cg-rep (second args) :f32) (:struct.new :complex-s)))
                   ((ty-double-p ty)
                    (let ((c (f64-op-code node))) (when c `(,@c (:struct.new :double)))))
+                  ((ty-single-p ty)
+                   (let ((c (f32-op-code node))) (when c `(,@c (:struct.new :single)))))
+                  ((ty-cdouble-p ty)
+                   (let ((c (cplx-op-code node :f64))) (when c `(,@c (:struct.new :complex-d)))))
+                  ((ty-csingle-p ty)
+                   (let ((c (cplx-op-code node :f32))) (when c `(,@c (:struct.new :complex-s)))))
                   ((and (ty-int32-p ty) (or (i32-op-code node) (i64-op-code node)))
                    (let ((c (or (i32-op-code node) `(,@(i64-op-code node) :i32.wrap_i64))))
                      `(,@c ,@(box-rep-code :i32 ty))))
@@ -292,6 +516,7 @@ when REP cannot hold every element."
                     ((member kind '(:s64vec :u63vec)) nil)
                     (t :no)))
         (:f64 (if (eq wt :f64) nil :no))
+        (:f32 (if (eq wt :f32) nil :no))
         (t :no)))))
 
 (defun array-locate-code (name args slow)
@@ -428,7 +653,7 @@ code leaves nothing, else the value."
                  (proven (case kind
                            (:vector :eqref)
                            (:string nil)
-                           (:f32vec nil)
+                           (:f32vec (and (ty-single-p vty) :f32))
                            (:f64vec (and (ty-double-p vty) :f64))
                            ((:u64vec :u63vec) (and (ty-in-range-p vty 0 (1- (expt 2 63))) :i64))
                            ((:s64vec) (and (ty-int64-p vty) :i64))
@@ -519,7 +744,8 @@ code leaves nothing, else the value."
                 `(,@(cg-rep a :i64) ,@(cg-rep b :i64)
                   ,(ecase name (< :i64.lt_s) (> :i64.gt_s) (<= :i64.le_s) (>= :i64.ge_s) (= :i64.eq) (/= :i64.ne))))
                ((and (f64-arg-p a t) (f64-arg-p b t)
-                     (or (ty-double-p (node-ty a)) (ty-double-p (node-ty b))))
+                     (or (ty-double-p (node-ty a)) (ty-double-p (node-ty b))
+                         (ty-single-p (node-ty a)) (ty-single-p (node-ty b))))
                 `(,@(f64-arg-code a) ,@(f64-arg-code b)
                   ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne)))))))
       ((zerop plusp minusp)
@@ -527,7 +753,9 @@ code leaves nothing, else the value."
                                                   (plusp '((:i32.const 0) :i32.gt_s))
                                                   (minusp '((:i32.const 0) :i32.lt_s)))))
              ((ty-double-p (node-ty a))
-              `(,@(cg-rep a :f64) (:f64.const 0) ,(ecase name (zerop :f64.eq) (plusp :f64.gt) (minusp :f64.lt))))))
+              `(,@(cg-rep a :f64) (:f64.const 0) ,(ecase name (zerop :f64.eq) (plusp :f64.gt) (minusp :f64.lt))))
+             ((ty-single-p (node-ty a))
+              `(,@(cg-rep a :f32) (:f32.const 0.0) ,(ecase name (zerop :f32.eq) (plusp :f32.gt) (minusp :f32.lt))))))
       ((evenp oddp)
        (when (i32-arg-p a)
          `(,@(cg-rep a :i32) (:i32.const 1) :i32.and ,@(when (eq name 'evenp) '(:i32.eqz)))))
