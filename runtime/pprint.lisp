@@ -101,6 +101,17 @@
             (%set-schar (%pps-buffer pps) fill c)
             (setf (%pps-fill pps) (+ fill 1)))))))
 
+(defun %pp-capture-write-string (pps string start end)
+  "Like %PP-CAPTURE-WRITE-CHAR for the characters of a simple string, which
+are not newlines."
+  (do () ((>= start end))
+    (let* ((avail (%ensure-space-in-buffer pps (- end start)))
+           (k (min avail (- end start)))
+           (fill (%pps-fill pps)))
+      (%string-copy (%pps-buffer pps) fill string start k)
+      (setf (%pps-fill pps) (+ fill k))
+      (setq start (+ start k)))))
+
 (defun %ensure-space-in-buffer (pps want)
   (loop
     (let* ((buffer (%pps-buffer pps))
@@ -229,8 +240,7 @@
 
 (defun %write-buffer (pps start end)
   (let ((buffer (%pps-buffer pps)) (target (%pps-target pps)))
-    (do ((i start (+ i 1))) ((>= i end))
-      (write-char (%schar buffer i) target))))
+    (when (< start end) (write-string buffer target :start start :end end))))
 
 (defun %output-line (pps until)
   (let* ((target (%pps-target pps))

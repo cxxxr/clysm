@@ -282,6 +282,20 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
                  (%token-push c nil))
                (progn (%stream-unread-char s c) (return))))))
       (setq firstp nil)
+      ;; a run of ordinary constituents read straight from a string stream
+      (when (and (eq (stream-kind s) :string-in) (null (stream-unread s))
+                 (%simple-string-p (stream-buffer s)))
+        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
+               (ascii (%rt-ascii rt)))
+          (do () ((>= i end))
+            (let ((code (char-code (%schar buf i))))
+              (if (and (<= 33 code 126) (eq (svref ascii code) :constituent))
+                  (setq i (+ i 1))
+                  (return))))
+          (when (> i i0)
+            (%string-buffer-append *token-buf* buf i0 i)
+            (dotimes (k (- i i0)) (vector-push-extend nil *token-esc*))
+            (setf (stream-index s) i))))
       (setq c (%stream-read-char s)))
     escaped))
 
@@ -302,7 +316,15 @@ token is empty when the next character ends a token."
         (%string-copy r 0 (%mdarray-data buf) 0 n)
         (dotimes (i n) (setf (char r i) (char buf i))))
     (case mode
-      (:upcase (dotimes (i n) (unless (aref esc i) (setf (char r i) (char-upcase (char r i))))))
+      (:upcase
+       (if (< %token-last-escape 0)
+           ;; no escaped characters
+           (dotimes (i n)
+             (let ((code (char-code (char r i))))
+               (cond ((< code 97))
+                     ((<= code 122) (setf (char r i) (code-char (- code 32))))
+                     ((> code 127) (setf (char r i) (char-upcase (char r i)))))))
+           (dotimes (i n) (unless (aref esc i) (setf (char r i) (char-upcase (char r i)))))))
       (:downcase (dotimes (i n) (unless (aref esc i) (setf (char r i) (char-downcase (char r i))))))
       (:invert
        (let ((upper nil) (lower nil))

@@ -151,12 +151,31 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
              (output-object x stream))))
         (t (%print-dispatched x stream))))
 
+(defun %flat-atom-list-p (x)
+  "X is a short proper list of numbers, characters, symbols and strings."
+  (let ((n 0))
+    (do ((l x (cdr l))) ((null l) t)
+      (unless (and (consp l) (< (setq n (+ n 1)) 64)) (return nil))
+      (let ((e (car l)))
+        (unless (or (numberp e) (characterp e) (symbolp e) (stringp e)) (return nil))))))
+
 (defun %print-dispatched (x stream)
   (if *print-pretty*
       (let ((fn (%pprint-dispatch-function x)))
-        (if fn
-            (%with-pretty-stream stream (lambda (s) (funcall fn s x)))
-            (output-ugly-object x stream)))
+        (cond ((null fn) (output-ugly-object x stream))
+              ((and (consp x) (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call))
+                    (not (%pretty-stream-p stream)) (null *print-lines*) (null *print-circle*)
+                    (%flat-atom-list-p x))
+               ;; when it fits on the line, the pretty printer prints such a
+               ;; list as the plain printer does
+               (let ((str (let ((o (make-string-output-stream)))
+                            (output-ugly-object x o)
+                            (get-output-stream-string o))))
+                 (if (and (< (+ (or (%stream-column stream) 0) (length str)) (or *print-right-margin* 80))
+                          (not (find #\Newline str)))
+                     (write-string str stream)
+                     (%with-pretty-stream stream (lambda (s) (funcall fn s x))))))
+              (t (%with-pretty-stream stream (lambda (s) (funcall fn s x))))))
       (output-ugly-object x stream)))
 
 ;;; *print-level* handling: prints # instead of calling FN when too deep
@@ -365,6 +384,17 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
   "True when NAME must be printed with |...| to be read back as a symbol name."
   (let ((n (length name))
         (rcase (readtable-case readtable)))
+    ;; the usual case: upper-case letters, digits and - * + only, starting with
+    ;; a letter, all constituents (no potential number in bases up to 10)
+    (when (and (eq rcase :upcase) (> n 0) (%simple-string-p name) (<= *print-base* 10)
+               (<= 65 (char-code (%schar name 0)) 90))
+      (let ((ascii (%rt-ascii readtable)))
+        (when (dotimes (i n t)
+                (let ((c (char-code (%schar name i))))
+                  (unless (and (or (<= 65 c 90) (<= 48 c 57) (= c 45) (= c 42) (= c 43))
+                               (eq (svref ascii c) :constituent))
+                    (return nil))))
+          (return-from %symbol-quote-p nil))))
     (or (= n 0)
         (dotimes (i n nil)
           (let ((c (char name i)))

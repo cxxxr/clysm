@@ -904,7 +904,19 @@ converts to a double exactly, so only bignums and ratios need it."
 ;;; integer <-> string
 ;;; ------------------------------------------------------------
 
+(defun %fixnum-to-string (n base)
+  "N a fixnum other than MOST-NEGATIVE-FIXNUM, BASE in [2, 36]."
+  (let* ((neg (%fx< n 0)) (x (if neg (%fx- 0 n) n)) (d 1))
+    (do ((q (%fxtruncate x base) (%fxtruncate q base))) ((%fx= q 0)) (setq d (%fx+ d 1)))
+    (let* ((len (if neg (%fx+ d 1) d)) (s (%make-string len #\0)))
+      (when neg (%set-schar s 0 #\-))
+      (do ((i (%fx- len 1) (%fx- i 1)) (k 0 (%fx+ k 1))) ((%fx= k d) s)
+        (%set-schar s i (%digit-char (%fxrem x base)))
+        (setq x (%fxtruncate x base))))))
+
 (defun %integer-to-string (n base)
+  (when (and (fixnump n) (not (eql n most-negative-fixnum)))
+    (return-from %integer-to-string (%fixnum-to-string n base)))
   (if (eql n 0) "0"
       (let ((digits nil) (neg (%int-minusp n)) (x (abs n)))
         (if (fixnump x)
