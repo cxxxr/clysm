@@ -97,7 +97,7 @@
    "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
    "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
    "CAPTURE-POINTER" "VIEWPORT-SIZE" "BEGIN-DRAG" "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
-   "CAN-WAIT-P" "WAIT-FOR" "WAIT-FOR-ANSWER" "*RESTART-CHOOSER*" "BACKEND-WAITER"
+   "*PASTE-FUNCTION*" "*PASTE-PROMPT*" "CAN-WAIT-P" "WAIT-FOR" "WAIT-FOR-ANSWER" "*RESTART-CHOOSER*" "BACKEND-WAITER"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
@@ -213,6 +213,11 @@ empty, the last is ABORT) to invoke; return it, or NIL for ABORT."))
 (defvar *error-message-function* nil
   "NIL, or a function of a string that shows the message of an error that
 has no restart to choose (dialog.lisp sets it).")
+
+(defvar *paste-function* nil
+  "NIL, or a function of a continuation that asks the user to paste the text
+of the clipboard and calls the continuation with it (or NIL): what a backend
+does that is not allowed to read the clipboard itself (dialog.lisp sets it).")
 
 (defvar *restart-chooser* nil
   "NIL, or a function of an error and its restarts (more than one) that asks
