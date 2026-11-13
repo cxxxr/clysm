@@ -83,7 +83,12 @@ comparisons need)."
       (:local.get ,x) (:local.get ,y) ,op (:local.tee ,r)
       ;; not finite (or zero for * and /): the generic function decides
       (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-      ,@(when (member name '(* /)) `((:local.get ,r) (:f64.const 0) :f64.eq :i32.or))
+      ;; (a zero result of nonzero operands may be an underflow)
+      ,@(when (eq name '*) `((:local.get ,r) (:f64.const 0) :f64.eq
+                             (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
+                             (:local.get ,y) (:f64.const 0) :f64.ne :i32.and :i32.or))
+      ,@(when (eq name '/) `((:local.get ,r) (:f64.const 0) :f64.eq
+                             (:local.get ,x) (:f64.const 0) :f64.ne :i32.and :i32.or))
       (:if nil :f64
            ((:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double)
             ,@(lisp-call-instrs (cdr (assoc name *f64-generic*)) 2)

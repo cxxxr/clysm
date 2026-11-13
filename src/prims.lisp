@@ -1393,7 +1393,9 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
    `((:local.get da) (:local.get db) ,op (:local.tee dr)
      ;; infinite / NaN (and zero for *): the generic function decides
      (:local.get dr) :f64.sub (:f64.const 0) :f64.ne
-     ,@(when zero-check '((:local.get dr) (:f64.const 0) :f64.eq :i32.or))
+     ,@(when zero-check '((:local.get dr) (:f64.const 0) :f64.eq
+                          (:local.get da) (:f64.const 0) :f64.ne :i32.and
+                          (:local.get db) (:f64.const 0) :f64.ne :i32.and :i32.or))
      (:br_if slow)
      (:local.get dr) (:struct.new :double) :return)))
 
