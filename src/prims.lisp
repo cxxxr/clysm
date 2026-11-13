@@ -527,6 +527,18 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
 (defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
 (defprim clysm-sys::%unbind-to (sp) :value `(,@sp (:ref.cast :i31) :i31.get_s (:call :unbind-to) ,@(nil-code)))
+;; throw to a SYS:%CATCH (the tag is known to be active); in a flagging
+;; function, a return with the exit pending
+(defprim clysm-sys::%throw (tag value) :value
+  (if *fexit*
+      `((:i32.const 1) (:global.set :mv-count) ,@(flagged-exit-code tag value) :unreachable)
+      `(,@tag ,@value (:i32.const 1) (:global.set :mv-count) (:throw :lisp-throw))))
+;; after a call of a function that may have returned with an exit pending
+;; (a handler written in the HANDLER-BIND form): take it up
+(defprim clysm-sys::%take-pending-exit () :value
+  (if (or *fexit* *catchers*)
+      `(,@(nil-code) ,@(pending-exit-check-code))
+      `(,@(pending-exit-throw-code) ,@(nil-code))))
 (defprim clysm-sys::%write-char (c fd) :value
   (let ((tmp (new-local)))
     `(,@fd (:ref.cast :i31) :i31.get_s ,@c (:local.tee ,tmp) (:call :check-char) (:i32.const ,+char-tag+) :i32.sub (:call :host-write-char)
@@ -1581,15 +1593,17 @@ f64s in locals DA and DB (it may branch to SLOW)."
   (car (nil-code)) :ref.eq :i32.eqz)
 
 ;;; dynamic binding
-(defhelper :bind :ee-v ((sp :i32) (new (:ref :vector)))
+(defhelper :grow-bstack :v-v ((new (:ref :vector)))
+  '(:ref.null :eq) '(:global.get :bstack) :array.len '(:i32.const 2) :i32.mul
+  '(:array.new :vector) '(:local.set new)
+  '(:local.get new) '(:i32.const 0) '(:global.get :bstack) '(:i32.const 0) '(:global.get :bsp)
+  '(:array.copy :vector :vector)
+  '(:local.get new) '(:global.set :bstack))
+
+(defhelper :bind :ee-v ((sp :i32))
   ;; grow if needed
   '(:global.get :bsp) '(:i32.const 2) :i32.add '(:global.get :bstack) :array.len :i32.gt_u
-  '(:if nil nil
-        ((:ref.null :eq) (:global.get :bstack) :array.len (:i32.const 2) :i32.mul
-         (:array.new :vector) (:local.set new)
-         (:local.get new) (:i32.const 0) (:global.get :bstack) (:i32.const 0) (:global.get :bsp)
-         (:array.copy :vector :vector)
-         (:local.get new) (:global.set :bstack)))
+  '(:if nil nil ((:call :grow-bstack)))
   '(:global.get :bstack) '(:global.get :bsp) '(:local.get 0) '(:array.set :vector)
   '(:global.get :bstack) '(:global.get :bsp) '(:i32.const 1) :i32.add
   '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)
@@ -1641,6 +1655,15 @@ f64s in locals DA and DB (it may branch to SLOW)."
              (:local.get 0) :ref.eq (:if nil nil (:return))))
        (:br again)))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%no-catch-error)) '(:call (:callsym 1)) :drop)
+
+;;; the pending non-local exit (codegen.lisp, "Non-local exits of local
+;;; functions as returns") is thrown
+(defhelper :throw-pending-exit :v-v ((tag :eqref) (val :eqref))
+  `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) `(:struct.get :symbol ,+sym-value+) '(:local.set tag)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-value)) `(:struct.get :symbol ,+sym-value+) '(:local.set val)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) '(:ref.null :eq) `(:struct.set :symbol ,+sym-value+)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-value)) '(:ref.null :eq) `(:struct.set :symbol ,+sym-value+)
+  '(:local.get tag) '(:local.get val) '(:throw :lisp-throw))
 
 ;;; multiple values
 (defhelper :mv-save :e-e ((v (:ref :null :vector)) (n :i32))

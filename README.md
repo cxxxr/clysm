@@ -100,7 +100,9 @@ position pass values through untouched.
 The symbol's value slot holds the current value; binding pushes the old value
 on a global binding stack. Every exit point (normal return, `catch`,
 `unwind-protect` cleanup, non-local `return-from`/`go`) restores the binding
-stack to its saved depth.
+stack to its saved depth. A `let` of up to six special variables writes its
+stack entries inline with one check of the stack size, and stores the old
+values back from their known positions at the normal exit.
 
 ## Non-local exits (spec: Wasm EH)
 
@@ -116,6 +118,46 @@ a `try_table` with `catch_ref` that compares the tag and otherwise rethrows with
 active catch tags so that throwing to a missing tag signals `control-error`).
 `unwind-protect` uses `catch_all_ref`, runs the cleanup (saving multiple
 values), and resumes with `throw_ref`.
+
+A Wasm exception is expensive in V8 (about 85 ns per throw plus 33 ns per
+frame it unwinds; SBCL's `throw` takes about 7 ns), so an exit is not thrown
+where the frames it leaves are known. Such an exit is a *return with the exit
+pending*: the tag and the value are stored in two internal variables, the
+function returns (through its own cleanups and bindings, like a local exit),
+and the code after the call tests for a pending exit. If its tag belongs to a
+catcher around the call in that function (a non-local block or tagbody, a
+`catch`, a `handler-case` or `restart-case`), it branches there; if the
+function itself returns its exits this way, it returns in turn; otherwise it
+throws the exit as described above. The functions that return their exits
+("flagging" functions) are:
+
+* local functions (`flet`/`labels`) that are only called, never used as
+  values, and contain a `return-from`/`go` to an enclosing function or a
+  `throw`, or call such a function;
+* *flag clones*: a direct call of a known global function with a catcher
+  around it calls a copy of the function compiled this way (when it contains
+  an exit and is not large), and the copy calls the copy of itself and of the
+  functions it tail-calls;
+* the twins of `error`, `signal`, `warn`, `cerror`, `invoke-restart` and the
+  standard restart functions (`runtime/cond.lisp`, `%define-twin`), which
+  direct calls use where a catcher is around the call or the caller is
+  flagging; the functions themselves throw;
+* the lambdas written as handlers in `handler-bind`, whose only callers are
+  the signalling functions.
+
+So `(handler-case (f x) (my-error (c) ...))` where `f` calls `error`,
+`handler-bind` with a handler that does `return-from` or `invoke-restart`,
+and a recursive tree walk that leaves by `return-from` or `throw`, run
+without a Wasm exception. An exit from a closure called by a library
+function (`(block b (maphash (lambda (k v) ... (return-from b k)) table))`),
+or from several ordinary calls below the catcher, is still thrown.
+
+`handler-case` is one `sys:%catch` (a `catch` whose tag is not recorded in
+the list of active tags) whose tag is the handler cluster itself, a small
+vector `#(next types clause-number)` bound to the list of clusters; `signal`
+stores the number of the clause and leaves for it with the condition, and the
+clauses are inline code after the catch. `restart-case` is built the same way
+around its first restart object.
 
 ## The runtime
 
@@ -725,7 +767,9 @@ do not.
 * **About as fast as SBCL (1-2 times), sometimes faster**: fixnum and
   double-float arithmetic, function calls and closures (direct, through
   `funcall`, `labels`), lists, strings, simple vectors of type T, sorting,
-  `equal` and `eql` hash tables, structures, special variables, catch/throw.
+  `equal` and `eql` hash tables, structures, special variables, catch/throw,
+  `handler-case`/`handler-bind`/`restart-case` with conditions signalled a
+  known call away (see [Non-local exits](#non-local-exits-spec-wasm-eh)).
   The holdout programs made of these (an n-body simulation, a small Lisp
   interpreter, word counting, Dijkstra with a heap in an adjustable vector, a
   symbolic simplifier) take 1.2-2.0 times as long as with SBCL.
@@ -741,7 +785,9 @@ do not.
   without arguments), and `:before`/`:around` methods (4-6); sequence
   functions outside the fast paths, such as `remove-duplicates`, which is
   quadratic; `format` directives other than `~A ~S ~D ~%`, such as `~F` and
-  `~{~}` (5-10); signalling an error to a `handler-case` (8).
+  `~{~}` (5-10); a non-local exit that has to be a Wasm exception: from a
+  closure called by a library function, or to a catcher several ordinary
+  calls up (10 times SBCL's cost per exit, and more with the depth).
 
 Code loaded at the REPL or by `load` (and so libraries loaded with ASDF or
 Quicklisp) is compiled form by form, without the whole-program knowledge of
@@ -788,9 +834,12 @@ What makes the generated code fast:
 * `format` with a constant control string of `~A ~S ~D ~% ~& ~~` compiles to
   direct output calls; other control strings are parsed once and cached;
 * exits through `unwind-protect` within a function branch to the cleanup
-  instead of throwing; a `throw` to a `catch` of the same constant tag in the
-  same function is a branch; `(catch 'tag (f ...))` calls a copy of the known
-  function F in which `(throw 'tag ...)` is a return.
+  instead of throwing; a `throw` to a `catch` of the same function is a
+  branch; `(catch 'tag (f ...))` calls a copy of the known function F in
+  which `(throw 'tag ...)` is a return; non-local exits of local functions,
+  of functions called under a catcher, of the signalling functions and of
+  `handler-bind` handlers are returns with the exit pending
+  (see [Non-local exits](#non-local-exits-spec-wasm-eh)).
 
 `tools/dump-func.lisp FILE NAME...` prints the Wasm instructions generated for
 functions (by name), which helps to see what a form compiles to.

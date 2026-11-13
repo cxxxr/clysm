@@ -20,7 +20,11 @@
   req opt rest keyp keys allow-other-keys
   body free-vars
   (toplevel nil)          ; global defun with no free vars
-  (static-p nil))         ; closure object is a module constant
+  (static-p nil)          ; closure object is a module constant
+  (flagging nil)          ; a local function whose non-local exits are returns (codegen.lisp)
+  (flag-analyzed nil)     ; (of an outermost lambda) FLAGGING is set in its tree
+  (may-flag nil)          ; :yes / :no: a flag clone of this global function is worth making
+  (flag-clone nil))       ; its flag clone has been requested
 
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
@@ -731,6 +735,21 @@ leaving quoted data alone."
 (defnative clysm-sys::%wasm (form env)
   (destructuring-bind (rtype args &rest instrs) (cdr form)
     `(:wasm ,rtype ,(convert-args args env) ,instrs)))
+
+;;; (sys:%catch tag-form body...) — CATCH for tags that only SYS:%THROW throws
+;;; to while the %CATCH is active (fresh objects, as in HANDLER-CASE): the tag
+;;; is not recorded in the list of active catch tags
+(defnative clysm-sys::%catch (form env)
+  `(:catch ,(convert (second form) env) ,(convert-body (cddr form) env) t))
+
+;;; (sys:%handler-function form) — FORM is a handler of HANDLER-BIND.  A lambda
+;;; written there is only called by the signalling functions, which look at
+;;; the pending exit after the call: it is compiled as a flagging function
+;;; (codegen.lisp, "Non-local exits of local functions as returns").
+(defnative clysm-sys::%handler-function (form env)
+  (let ((node (convert (second form) env)))
+    (when (eq (car node) :lambda) (setf (lam-flagging (second node)) t))
+    node))
 
 ;;; (sys:%wasm-test (args...) instrs...) — inline wasm producing an i32 boolean
 (defnative clysm-sys::%wasm-test (form env)

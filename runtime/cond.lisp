@@ -78,7 +78,13 @@
   (let ((class (%ensure-class-object name *the-standard-class* (mapcar #'find-class supers)
                                      direct-slots :condition)))
     (%set-class-slot class +class-default-initargs+ default-initargs)
+    (%forget-condition-plans class)
     class))
+
+(defun %forget-condition-plans (class)
+  "CLASS was (re)defined: it and its subclasses compute how they are made again."
+  (when (eq (%class-kind class) :condition) (%set-class-slot class +class-extra+ nil))
+  (dolist (sub (%class-slot class +class-subclasses+)) (%forget-condition-plans sub)))
 
 (defun %plist-key-p (plist key)
   (do ((l plist (cddr l))) ((atom l) nil)
@@ -112,11 +118,61 @@
         (errorp (%type-error type 'symbol))
         (t nil)))
 
+;;; A condition class caches how its instances are made in its EXTRA slot:
+;;;   #(effective-slots nslots keys initfunctions)
+;;; NSLOTS is the size of the slot vector, KEYS an alist (initarg . locations)
+;;; and INITFUNCTIONS a list of (location . function) for the slots with an
+;;; initform.  NSLOTS is NIL when this way does not apply (default initargs,
+;;; shared slots).  The plan is valid while the class's list of effective
+;;; slots is the one it was made from.
+(defun %compute-condition-plan (class)
+  (let ((slots (%class-effective-slots class)) (n 0) (keys nil) (initfns nil) (ok t))
+    (dolist (c (%class-cpl class))
+      (when (%class-slot c +class-default-initargs+) (setq ok nil)))
+    (dolist (sd slots)
+      (let ((loc (%slotd-location sd)))
+        (if (fixnump loc)
+            (progn
+              (setq n (+ n 1))
+              (dolist (k (%slotd-initargs sd))
+                (let ((e (assoc k keys)))
+                  (if e
+                      (setf (cdr e) (append (cdr e) (list loc)))
+                      (setq keys (append keys (list (list k loc)))))))
+              (when (%slotd-initfunction sd)
+                (setq initfns (append initfns (list (cons loc (%slotd-initfunction sd)))))))
+            (setq ok nil))))
+    (let ((plan (vector slots (if ok n nil) keys initfns)))
+      (%set-class-slot class +class-extra+ plan)
+      plan)))
+
+(defun %make-condition (type initargs)
+  (let* ((class (or (and (symbolp type) (get type '%class)) (%condition-class-for-type type)))
+         (plan (and (eq (%class-kind class) :condition)
+                    (let ((plan (%class-slot class +class-extra+)))
+                      (if (and plan (eq (%svref plan 0) (%class-effective-slots class)))
+                          plan
+                          (%compute-condition-plan class)))))
+         (n (and plan (%svref plan 1))))
+    (if n
+        (let ((v (%make-simple-vector n (%unbound-marker))))
+          ;; the leftmost initarg of a slot wins
+          (do ((l initargs (cddr l))) ((atom l))
+            (let ((key (car l)))
+              (do ((e (%svref plan 2) (cdr e))) ((null e))
+                (when (eq (car (car e)) key)
+                  (dolist (loc (cdr (car e)))
+                    (when (%unboundp (%svref v loc)) (%set-svref v loc (cadr l))))
+                  (return)))))
+          (dolist (e (%svref plan 3))
+            (when (%unboundp (%svref v (car e))) (%set-svref v (car e) (funcall (cdr e)))))
+          (%make-instance class v))
+        (let ((c (%allocate-instance class)))
+          (%initialize-slots-from-initargs c (append initargs (%class-default-initargs-all class initargs)))
+          c))))
+
 (defun make-condition (type &rest initargs)
-  (let* ((class (%condition-class-for-type type))
-         (c (%allocate-instance class)))
-    (%initialize-slots-from-initargs c (append initargs (%class-default-initargs-all class initargs)))
-    c))
+  (%make-condition type initargs))
 
 (defun conditionp (x)
   (and (%instancep x) (let ((c (%instance-layout x))) (and (%instancep c) (eq (%class-kind c) :condition)))))
@@ -208,28 +264,38 @@
 ;;; restarts
 ;;; ------------------------------------------------------------
 
-(defstruct (restart (:constructor %make-restart (name function report-function interactive-function test-function)))
+;;; A restart of RESTART-BIND has a FUNCTION.  A restart of RESTART-CASE has
+;;; none: INVOKE-RESTART stores its INDEX (the number of its clause) in the
+;;; CHOSEN slot of its TAG, the first restart of the RESTART-CASE, which is
+;;; the tag of the %CATCH around the form, and throws the arguments to it.
+(defstruct (restart (:constructor %make-restart (name function report-function interactive-function test-function))
+                    (:constructor %make-case-restart (name index report-function interactive-function test-function)))
   name function report-function interactive-function test-function
-  (conditions nil))                     ; the conditions it is associated with
-
+  (conditions nil)                      ; the conditions it is associated with
+  (index 0) (tag nil) (chosen nil))
 
 (defvar *restart-clusters* nil)
 (defvar *condition-restarts* nil)
+
+(defun %restart-visible-p (restart condition)
+  (and (or (null condition) (null (restart-conditions restart))
+           (member condition (restart-conditions restart)))
+       (or (null (restart-test-function restart))
+           (funcall (restart-test-function restart) condition))))
 
 (defun compute-restarts (&optional condition)
   (let ((r nil))
     (dolist (cluster *restart-clusters* (nreverse r))
       (dolist (restart cluster)
-        (when (and (or (null condition) (null (restart-conditions restart))
-                       (member condition (restart-conditions restart)))
-                   (or (null (restart-test-function restart))
-                       (funcall (restart-test-function restart) condition)))
+        (when (%restart-visible-p restart condition)
           (push restart r))))))
 
 (defun find-restart (name &optional condition)
   (if (restart-p name) name
-      (dolist (r (compute-restarts condition) nil)
-        (when (eq (restart-name r) name) (return r)))))
+      (dolist (cluster *restart-clusters* nil)
+        (dolist (restart cluster)
+          (when (and (eq (restart-name restart) name) (%restart-visible-p restart condition))
+            (return-from find-restart restart))))))
 
 (defun %find-active-restart (restart)
   (let ((r (if (restart-p restart)
@@ -241,13 +307,26 @@
                                    :format-arguments (list restart)))
     r))
 
-(defun invoke-restart (restart &rest args)
-  (let ((r (%find-active-restart restart)))
-    (apply (restart-function r) args)))
+;;; Functions that leave by a non-local exit to a HANDLER-CASE or RESTART-CASE
+;;; exist twice: the function itself, where %THROW throws, and a twin that
+;;; the compiler calls (src/codegen.lisp, *FLAG-RETURNING-CALLS*) and
+;;; compiles as a flagging function, where %THROW and the calls of other
+;;; such functions return with the exit pending.
+(defmacro %define-twin (name twin lambda-list &body body)
+  `(progn (defun ,name ,lambda-list ,@body)
+          (defun ,twin ,lambda-list ,@body)))
+
+(%define-twin invoke-restart %invoke-restart* (restart &rest args)
+  (let* ((r (%find-active-restart restart)) (f (restart-function r)))
+    (if f
+        (apply f args)
+        (let ((tag (or (restart-tag r) r)))
+          (setf (restart-chosen tag) (restart-index r))
+          (%throw tag args)))))
 
 (defun invoke-restart-interactively (restart)
   (let ((r (%find-active-restart restart)))
-    (apply (restart-function r)
+    (apply #'invoke-restart r
            (if (restart-interactive-function r) (funcall (restart-interactive-function r)) nil))))
 
 (defmacro restart-bind (bindings &body body)
@@ -258,6 +337,16 @@
                                  bindings))
                  *restart-clusters*)))
      ,@body))
+
+(defun %associate-restarts (condition restarts)
+  "Associate RESTARTS with CONDITION for the rest of their extent."
+  (dolist (r restarts) (setf (restart-conditions r) (cons condition (restart-conditions r))))
+  condition)
+
+(defun %case-restart-cluster (first rest)
+  "The cluster of a RESTART-CASE: FIRST is the tag of the others."
+  (dolist (r rest) (setf (restart-tag r) first))
+  (cons first rest))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
 (defun %restart-case-signal-form (form env)
@@ -274,50 +363,65 @@ the restarts are associated with the condition being signaled."
               (if (eq (car exp) 'cerror)
                   (values (third exp) (cdddr exp) (second exp))
                   (values (second exp) (cddr exp) nil))
-            `(let ((,c (%coerce-to-condition ,datum (list ,@args)
-                                             ',(case (car exp) (signal 'simple-condition)
-                                                 (warn 'simple-warning) (t 'simple-error)))))
-               (with-condition-restarts ,c (car *restart-clusters*)
-                 ,(if (eq (car exp) 'cerror)
-                      `(cerror ,fmt ,c ,@args)
-                      `(,(car exp) ,c))))))
+            ;; the restarts are out of reach once the form is left, so the
+            ;; association is not undone
+            `(let ((,c (%associate-restarts
+                        (%coerce-to-condition ,datum (list ,@args)
+                                              ',(case (car exp) (signal 'simple-condition)
+                                                  (warn 'simple-warning) (t 'simple-error)))
+                        (car *restart-clusters*))))
+               ,(if (eq (car exp) 'cerror)
+                    `(cerror ,fmt ,c ,@args)
+                    `(,(car exp) ,c)))))
         form))))
 
 (defmacro restart-case (form &rest clauses &environment env)
   (setq form (%restart-case-signal-form form env))
-  (let* ((block (gensym "RC")) (args (gensym "ARGS"))
-         (tags (mapcar (lambda (c) (declare (ignore c)) (gensym "R")) clauses)))
-    `(block ,block
-       (let ((,args nil))
-         (declare (ignorable ,args))
-         (tagbody
-            (return-from ,block
-              (restart-bind
-                  ,(mapcar (lambda (c tag)
-                             (let* ((name (car c)) (rest (cddr c))
-                                    (report nil) (interactive nil) (test nil))
-                               (do () ((not (member (car rest) '(:report :interactive :test))))
-                                 (case (car rest)
-                                   (:report (setq report (cadr rest)))
-                                   (:interactive (setq interactive (cadr rest)))
-                                   (:test (setq test (cadr rest))))
-                                 (setq rest (cddr rest)))
-                               `(,name (lambda (&rest temp) (setq ,args temp) (go ,tag))
-                                       ,@(when report
-                                           `(:report-function
-                                             ,(if (stringp report)
-                                                  `(lambda (s) (write-string ,report s))
-                                                  `(function ,report))))
-                                       ,@(when interactive `(:interactive-function (function ,interactive)))
-                                       ,@(when test `(:test-function (function ,test))))))
-                           clauses tags)
-                ,form))
-            ,@(mapcan (lambda (c tag)
-                        (let* ((ll (cadr c)) (body (cddr c)))
-                          (do () ((not (member (car body) '(:report :interactive :test))))
-                            (setq body (cddr body)))
-                          (list tag `(return-from ,block (apply (lambda ,ll ,@body) ,args)))))
-                      clauses tags))))))
+  (if (null clauses)
+      form
+      (let* ((block (gensym "RC")) (args (gensym "ARGS")) (first (gensym "RESTART")) (index -1)
+             (makers (mapcar (lambda (c)
+                               (let* ((name (car c)) (rest (cddr c))
+                                      (report nil) (interactive nil) (test nil))
+                                 (do () ((not (member (car rest) '(:report :interactive :test))))
+                                   (case (car rest)
+                                     (:report (setq report (cadr rest)))
+                                     (:interactive (setq interactive (cadr rest)))
+                                     (:test (setq test (cadr rest))))
+                                   (setq rest (cddr rest)))
+                                 `(%make-case-restart
+                                   ',name ,(setq index (+ index 1))
+                                   ,(cond ((null report) nil)
+                                          ((stringp report) `(lambda (s) (write-string ,report s)))
+                                          (t `(function ,report)))
+                                   ,(if interactive `(function ,interactive) nil)
+                                   ,(if test `(function ,test) nil))))
+                             clauses))
+             (bodies (mapcar (lambda (c)
+                               (let* ((ll (cadr c)) (body (cddr c)))
+                                 (do () ((not (member (car body) '(:report :interactive :test))))
+                                   (setq body (cddr body)))
+                                 `(apply (lambda ,ll ,@body) ,args)))
+                             clauses)))
+        ;; the first restart is the tag of the %CATCH: INVOKE-RESTART throws
+        ;; the arguments to it after storing the clause number in it
+        `(block ,block
+           (let* ((,first ,(car makers))
+                  (,args (%catch ,first
+                           (return-from ,block
+                             (let ((*restart-clusters*
+                                     (cons ,(if (cdr makers)
+                                                `(%case-restart-cluster ,first (list ,@(cdr makers)))
+                                                `(list ,first))
+                                           *restart-clusters*)))
+                               ,form)))))
+             (declare (ignorable ,args))
+             ,(if (null (cdr bodies))
+                  (car bodies)
+                  (let ((i -1))
+                    `(case (restart-chosen ,first)
+                       ,@(mapcar (lambda (b) (list (if (cdr (member b bodies)) (setq i (+ i 1)) t) b))
+                                 bodies)))))))))
 
 (defmacro with-simple-restart ((name format-control &rest args) &body body)
   `(restart-case (progn ,@body)
@@ -330,19 +434,19 @@ the restarts are associated with the condition being signaled."
        (unwind-protect (progn ,@body)
          (dolist (r ,rs) (setf (restart-conditions r) (remove ,c (restart-conditions r) :count 1)))))))
 
-(defun abort (&optional condition)
+(%define-twin abort %abort* (&optional condition)
   (let ((r (find-restart 'abort condition)))
     (if r (invoke-restart r)
         (error 'simple-control-error :format-control "There is no active ABORT restart."
                                      :format-arguments nil))))
-(defun continue (&optional condition)
+(%define-twin continue %continue* (&optional condition)
   (let ((r (find-restart 'continue condition))) (when r (invoke-restart r))))
-(defun muffle-warning (&optional condition)
+(%define-twin muffle-warning %muffle-warning* (&optional condition)
   (let ((r (find-restart 'muffle-warning condition)))
     (if r (invoke-restart r) (error 'control-error))))
-(defun use-value (value &optional condition)
+(%define-twin use-value %use-value* (value &optional condition)
   (let ((r (find-restart 'use-value condition))) (when r (invoke-restart r value))))
-(defun store-value (value &optional condition)
+(%define-twin store-value %store-value* (value &optional condition)
   (let ((r (find-restart 'store-value condition))) (when r (invoke-restart r value))))
 
 ;;; ------------------------------------------------------------
@@ -362,23 +466,63 @@ the restarts are associated with the condition being signaled."
                                      :format-arguments (list args datum)))
          datum)
         ((or (stringp datum) (functionp datum))
-         (make-condition default-type :format-control datum :format-arguments args))
-        ((symbolp datum) (apply #'make-condition datum args))
-        ((%class-p datum) (apply #'make-condition datum args))
+         (%make-condition default-type (list :format-control datum :format-arguments args)))
+        ((symbolp datum) (%make-condition datum args))
+        ((%class-p datum) (%make-condition datum args))
         (t (error 'simple-type-error :datum datum :expected-type '(or condition string symbol)
                                      :format-control "Bad condition designator ~S"
                                      :format-arguments (list datum)))))
 
-(defun signal (datum &rest args)
+;;; *HANDLER-CLUSTERS* is a chain of simple vectors, innermost first:
+;;;   #(next types kind function...)
+;;; NEXT is the enclosing cluster, TYPES a simple vector of type specifiers.
+;;; A HANDLER-BIND cluster has KIND = T and one function per type.  A
+;;; HANDLER-CASE cluster has no functions: it is the tag of the %CATCH around
+;;; the form, and SIGNAL stores the number of the chosen clause in KIND before
+;;; it throws the condition to it.
+
+(defun %condition-of-type-p (condition type)
+  (if (symbolp type)
+      (let ((class (get type '%class)))
+        (if class
+            ;; the usual case, a class name: is the class in the condition's
+            ;; class precedence list?
+            (do ((l (%class-cpl (%instance-layout condition)) (cdr l))) ((null l) nil)
+              (when (eq (car l) class) (return t)))
+            (typep condition type)))
+      (typep condition type)))
+
+;;; the body of SIGNAL, also expanded in ERROR and WARN: the frames between
+;;; the signalling function and the handler make a transfer of control slower
+(defmacro %signal-condition (condition)
+  `(let ((cluster *handler-clusters*))
+    (do () ((null cluster))
+      (let* ((next (%svref cluster 0)) (types (%svref cluster 1)) (n (length types)))
+        (if (eq (%svref cluster 2) t)
+            (do ((i 0 (+ i 1))) ((>= i n))
+              (when (%condition-of-type-p ,condition (%svref types i))
+                (let ((*handler-clusters* next))
+                  (funcall (%svref cluster (+ i 3)) ,condition))
+                ;; a handler written in the HANDLER-BIND form returns with
+                ;; its non-local exit pending
+                (%take-pending-exit)))
+            (do ((i 0 (+ i 1))) ((>= i n))
+              (when (%condition-of-type-p ,condition (%svref types i))
+                (%set-svref cluster 2 i)
+                (%throw cluster ,condition))))
+        (setq cluster next)))))
+
+(defun %throw (tag value) (%throw tag value))
+(defun %take-pending-exit () (%take-pending-exit))
+
+;;; The pending non-local exit (src/codegen.lisp, "Non-local exits of local
+;;; functions as returns"): unbound when there is none.
+(defvar %exit-tag)
+(defvar %exit-value)
+
+(%define-twin signal %signal* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-condition)))
-    (let ((clusters *handler-clusters*))
-      (do () ((null clusters))
-        (let ((cluster (car clusters)))
-          (setq clusters (cdr clusters))
-          (dolist (binding cluster)
-            (when (typep condition (car binding))
-              (let ((*handler-clusters* clusters))
-                (funcall (cdr binding) condition)))))))
+    (%signal-condition condition)
     nil))
 
 (defvar *error-depth* 0)
@@ -397,26 +541,31 @@ the restarts are associated with the condition being signaled."
   ;; trap so that the host prints a stack trace
   (%wasm nil () :unreachable))
 
-(defun error (datum &rest args)
+(%define-twin error %error* (datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let* ((*error-depth* (+ *error-depth* 1))
          (condition (%coerce-to-condition datum args 'simple-error)))
-    (signal condition)
+    (%signal-condition condition)
     (invoke-debugger condition)))
 
-(defun cerror (continue-format datum &rest args)
+(%define-twin cerror %cerror* (continue-format datum &rest args)
+  (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
-    (restart-case (error c)
+    (restart-case (progn
+                    (%associate-restarts c (car *restart-clusters*))
+                    (let ((*error-depth* (+ *error-depth* 1)))
+                      (%signal-condition c))
+                    (invoke-debugger c))
       (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
   nil)
 
-(defun warn (datum &rest args)
+(%define-twin warn %warn* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-warning)))
     (unless (typep condition 'warning)
       (error 'simple-type-error :datum condition :expected-type 'warning
                                 :format-control "~S is not a warning" :format-arguments (list condition)))
     (restart-case (progn
-                    (signal condition)
+                    (%signal-condition condition)
                     (format *error-output* "~&WARNING: ~A~%" condition))
       (muffle-warning () :report "Skip warning." nil))
     nil))
@@ -435,42 +584,50 @@ the restarts are associated with the condition being signaled."
   nil)
 
 ;;; handler macros
+;;; (the compiler compiles a lambda written as a handler so that its
+;;; non-local exits are returns to the signalling function: frontend.lisp)
+(defmacro %handler-function (function) function)
+
 (defmacro handler-bind (bindings &body body)
   `(let ((*handler-clusters*
-           (cons (list ,@(mapcar (lambda (b) `(cons ',(car b) ,(cadr b))) bindings))
-                 *handler-clusters*)))
+           (vector *handler-clusters* ',(apply #'vector (mapcar #'car bindings)) t
+                   ,@(mapcar (lambda (b) `(%handler-function ,(cadr b))) bindings))))
      ,@body))
 
 (defmacro handler-case (form &rest clauses)
   (let* ((no-error (find :no-error clauses :key #'car))
          (clauses (remove :no-error clauses :key #'car))
-         (block (gensym "HC")) (cvar (gensym "C"))
-         (tags (mapcar (lambda (c) (declare (ignore c)) (gensym "TAG")) clauses)))
-    (if no-error
-        (let ((normal (gensym "NORMAL")))
-          `(block ,normal
-             (multiple-value-call (lambda ,(cadr no-error) ,@(cddr no-error))
-               (block ,block
-                 (return-from ,normal
-                   (handler-case (return-from ,block ,form)
-                     ,@clauses))))))
-        `(block ,block
-           (let ((,cvar nil))
-             (declare (ignorable ,cvar))
-             (tagbody
-                (return-from ,block
-                  (handler-bind ,(mapcar (lambda (c tag)
-                                           `(,(car c) (lambda (temp) (setq ,cvar temp) (go ,tag))))
-                                         clauses tags)
-                    ,form))
-                ,@(mapcan (lambda (c tag)
-                            (let ((var (car (cadr c))) (body (cddr c)))
-                              (list tag
-                                    `(return-from ,block
-                                       ,(if var
-                                            `(let ((,var ,cvar)) ,@body)
-                                            `(locally ,@body))))))
-                          clauses tags)))))))
+         (block (gensym "HC")) (cvar (gensym "C")) (cluster (gensym "CLUSTER")))
+    (cond (no-error
+           (let ((normal (gensym "NORMAL")))
+             `(block ,normal
+                (multiple-value-call (lambda ,(cadr no-error) ,@(cddr no-error))
+                  (block ,block
+                    (return-from ,normal
+                      (handler-case (return-from ,block ,form)
+                        ,@clauses)))))))
+          ((null clauses) form)
+          (t
+           ;; the cluster is the tag of the %CATCH: SIGNAL throws the
+           ;; condition to it after storing the clause number in it
+           (let ((bodies (mapcar (lambda (c)
+                                   (let ((var (car (cadr c))) (body (cddr c)))
+                                     (if var
+                                         `(let ((,var ,cvar)) ,@body)
+                                         `(locally ,@body))))
+                                 clauses)))
+             `(block ,block
+                (let* ((,cluster (vector *handler-clusters* ',(apply #'vector (mapcar #'car clauses)) nil))
+                       (,cvar (%catch ,cluster
+                                (return-from ,block
+                                  (let ((*handler-clusters* ,cluster)) ,form)))))
+                  (declare (ignorable ,cvar))
+                  ,(if (null (cdr bodies))
+                       (car bodies)
+                       (let ((i -1))
+                         `(case (%svref ,cluster 2)
+                            ,@(mapcar (lambda (b) (list (if (cdr (member b bodies)) (setq i (+ i 1)) t) b))
+                                      bodies)))))))))))
 
 (defmacro ignore-errors (&body body)
   `(handler-case (progn ,@body)
