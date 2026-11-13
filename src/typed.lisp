@@ -98,6 +98,7 @@ comparisons need)."
 (defun f64-op-code (node)
   "f64 code for an operation whose result is a double, or NIL."
   (let ((name (node-op-name node)) (args (cddr node)))
+    (or
     (case name
       ((+ - * /)
        (cond ((and (= (length args) 2) (every #'f64-arg-p args))
@@ -120,7 +121,9 @@ comparisons need)."
                      (let ((tmp (new-local :f64)))
                        `(,@(f64-arg-code x) (:local.set ,tmp) ,@(cg-effect proto) (:local.get ,tmp)))
                      (f64-arg-code x)))))
-      (t (numeric-f64-op-code node)))))
+      (t nil))
+    ;; the numeric library (below)
+    (numeric-f64-op-code node))))
 
 ;;; ------------------------------------------------------------
 ;;; i32 (fixnums)
@@ -139,6 +142,7 @@ comparisons need)."
          (a (first args)) (b (second args)))
     (flet ((both (op) (when (and (= (length args) 2) (i32-arg-p a) (i32-arg-p b))
                         `(,@(cg-rep a :i32) ,@(cg-rep b :i32) ,op))))
+      (or
       (case name
         (+ (both :i32.add))
         (- (if (= (length args) 1)
@@ -190,7 +194,9 @@ comparisons need)."
                               (:local.get ,r) (:local.get ,y) :i32.xor (:i32.const 0) :i32.lt_s
                               (:local.get ,r) (:i32.const 0) :i32.ne :i32.and
                               :i32.sub)))))))))   ; q - 1 when the remainder has the wrong sign
-        (t (numeric-i32-op-code node))))))
+        (t nil))
+      ;; the numeric library (below)
+      (numeric-i32-op-code node)))))
 
 ;;; ------------------------------------------------------------
 ;;; eqref results and tests
@@ -203,6 +209,7 @@ comparisons need)."
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
     (flet ((both (op) (when (and (= (length args) 2) (i64-arg-p a) (i64-arg-p b))
                         `(,@(cg-rep a :i64) ,@(cg-rep b :i64) ,op))))
+      (or
       (case name
         (+ (both :i64.add))
         (- (if (= (length args) 1)
@@ -219,7 +226,9 @@ comparisons need)."
                  (if (>= c 0)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,c) :i64.shl)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,(min 63 (- c))) :i64.shr_s)))))
-        (t (numeric-i64-op-code node))))))
+        (t nil))
+      ;; the numeric library (below)
+      (numeric-i64-op-code node)))))
 
 (defun typed-cg (node mv)
   "Code for a :PRIM or :CALL node using its types, or NIL."
@@ -544,8 +553,7 @@ computed for a division by 1 unless NEED-REM)."
 (defun float-divmod-node-p-args (args)
   (float-divmod-types-p (mapcar #'node-ty args)))
 
-(defun numeric-i32-op-code (node)
-  "i32 code for a numeric function whose result is within 32 bits, or NIL."
+(defun numeric-i32-op-code-1 (node)
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)))
     (case name
       ((integer-length logcount)
@@ -573,12 +581,16 @@ computed for a division by 1 unless NEED-REM)."
        (let ((ty (node-ty a)))
          (when (and (i32-arg-p a) (>= (ty-lo ty) 0))
            `(,@(cg-rep a :i32) :f64.convert_i32_s :f64.sqrt :i32.trunc_sat_f64_s))))
-      (t
-       ;; a result within 32 bits of operands within 64 (a mask, a right
-       ;; shift, a difference): the i64 operation, wrapped
-       (when (and (ty-int32-p (node-ty node)) (some #'i64-arg-p args)
-                  (notevery #'i32-arg-p args))
-         (let ((c (i64-op-code node))) (when c `(,@c :i32.wrap_i64))))))))
+      (t nil))))
+
+(defun numeric-i32-op-code (node)
+  "i32 code for a numeric function whose result is within 32 bits, or NIL."
+  (or (numeric-i32-op-code-1 node)
+      ;; a result within 32 bits of operands within 64 (a mask, a right
+      ;; shift, a remainder): the i64 operation, wrapped
+      (let ((args (cddr node)))
+        (when (and (ty-int32-p (node-ty node)) (some #'i64-arg-p args) (notevery #'i32-arg-p args))
+          (let ((c (i64-op-code node))) (when c `(,@c :i32.wrap_i64)))))))
 
 (defun numeric-test-code (node)
   "i32 code for a numeric predicate using the argument types, or NIL."
@@ -600,14 +612,45 @@ computed for a division by 1 unless NEED-REM)."
              (:i32.const 1) :i32.and))))
       (t nil))))
 
+(defun i64-division-args-p (a b)
+  "A and B are within 64 bits, B is not zero, and A / B cannot overflow."
+  (and a b (i64-arg-p a) (i64-arg-p b)
+       (let ((at (node-ty a)) (bt (node-ty b)))
+         (and (or (> (ty-lo bt) 0) (< (ty-hi bt) 0))
+              (or (> (ty-lo bt) 0) (> (ty-lo at) (- (expt 2 63))))))))
+
 (defun numeric-i64-op-code (node)
   "i64 code for a numeric function whose result is within 64 bits, or NIL."
-  (declare (ignorable node))
-  nil)
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (case name
+      ((mod rem truncate floor)
+       (when (and (= (length args) 2) (i64-division-args-p a b))
+         (let ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
+               (t1 (new-local :i64)) (t2 (new-local :i64)))
+           `(,@(cg-rep a :i64) (:local.set ,x) ,@(cg-rep b :i64) (:local.set ,y)
+             (:local.get ,x) (:local.get ,y) :i64.div_s (:local.set ,q)
+             (:local.get ,x) (:local.get ,q) (:local.get ,y) :i64.mul :i64.sub (:local.set ,r)
+             ,@(when (member name '(mod floor)) (int-divmod-adjust-code :i64 1 x y q r t1 t2))
+             (:local.get ,(if (member name '(mod rem)) r q))))))
+      (t nil))))
 
 (defun numeric-divmod-code (vnode)
   "For MULTIPLE-VALUE-BIND of a division: code leaving the quotient (an
 eqref), the local of the remainder and its representation; or NIL."
+  ;; (floor a b) / (truncate a b) of integers within 64 bits
+  (when (and (member (car vnode) '(:call :prim)) (member (node-op-name vnode) '(floor truncate))
+             (= (length (cddr vnode)) 2) (i64-division-args-p (third vnode) (fourth vnode)))
+    (let ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
+          (t1 (new-local :i64)) (t2 (new-local :i64)))
+      (return-from numeric-divmod-code
+        (values
+         `(,@(cg-rep (third vnode) :i64) (:local.set ,x) ,@(cg-rep (fourth vnode) :i64) (:local.set ,y)
+           (:local.get ,x) (:local.get ,y) :i64.div_s (:local.set ,q)
+           (:local.get ,x) (:local.get ,q) (:local.get ,y) :i64.mul :i64.sub (:local.set ,r)
+           ,@(when (eq (node-op-name vnode) 'floor) (int-divmod-adjust-code :i64 1 x y q r t1 t2))
+           (:local.get ,q) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+           (:if nil :eqref ((:local.get ,q) :i32.wrap_i64 :ref.i31) ((:local.get ,q) (:call :i64-int))))
+         r :i64))))
   (when (float-divmod-node-p vnode)
     (let ((name (node-op-name vnode)))
       (cond ((member name '(floor truncate ceiling round))

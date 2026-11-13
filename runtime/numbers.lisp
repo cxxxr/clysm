@@ -904,8 +904,8 @@ SORT and the like make no argument list)."
         (setq x (%fxtruncate x base))))))
 
 (defun %integer-to-string (n base)
-  (if (and (fixnump n) (not (eql n most-negative-fixnum)))
-      (%fixnum-to-string n base)
+  ;; (the helper writes integers within 64 bits)
+  (or (%int64-to-string n base)
       (%bignum-to-string n base)))
 
 (defun %bignum-to-string (n base)

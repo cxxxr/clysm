@@ -3177,6 +3177,66 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%sqrt-slow)) '(:call (:callsym 1)))
 (defprim sqrt (x) :value `(,@x (:call :fn-sqrt)))
 
+;;; The hash of a bignum: over the base 2^28 digits of its magnitude, h := (31 h
+;;; + digit) mod 2^28 starting from the sign (the same value whether the
+;;; integer holds its value or limbs; nothing is allocated)
+(defhelper :bignum-hash :e-e ((b (:ref :null :bignum)) (h :i32) (w :i64) (m (:ref :null :limbs)) (i :i32) (n :i32))
+  '(:local.get 0) '(:ref.cast :bignum) '(:local.tee b) '(:struct.get :bignum 0) '(:local.set h)
+  '(:local.get b) '(:struct.get :bignum 2) '(:local.tee w) :i64.eqz
+  `(:if nil nil
+        (;; limbs
+         (:local.get b) (:struct.get :bignum 1) (:local.tee m) :ref.is_null (:if nil nil ((:local.get h) :ref.i31 :return))
+         (:local.get m) :array.len (:local.set n)
+         (:block done nil
+           (:loop again nil
+             (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
+             (:local.get h) (:i32.const 31) :i32.mul (:local.get m) (:local.get i) (:array.get :limbs) :i32.add
+             (:i32.const ,+limb-mask+) :i32.and (:local.set h)
+             (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+             (:br again))))
+        (;; the digits of |value|
+         (:local.get w) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:local.set w)))
+         (:block done2 nil
+           (:loop again2 nil
+             (:local.get w) :i64.eqz (:br_if done2)
+             (:local.get h) (:i32.const 31) :i32.mul (:local.get w) :i32.wrap_i64 (:i32.const ,+limb-mask+) :i32.and :i32.add
+             (:i32.const ,+limb-mask+) :i32.and (:local.set h)
+             (:local.get w) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set w)
+             (:br again2)))))
+  '(:local.get h) :ref.i31)
+(defprim clysm-sys::%bignum-hash (x) :value `(,@x (:call :bignum-hash)))
+
+;;; The digits of a fixnum or an integer within 64 bits in base 2 .. 36 as a
+;;; string; NIL for other integers
+(defhelper :int64-string :ei-e ((v :i32) (xa :i64) (ka :i32) (m :i64) (tt :i64) (b :i64) (n :i32) (neg :i32) (d :i32)
+                                (str (:ref :null :string)))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+     (:local.get 1) :i64.extend_i32_u (:local.set b)
+     (:local.get xa) (:i64.const 0) :i64.lt_s (:local.tee neg)
+     (:if nil :i64 ((:i64.const 0) (:local.get xa) :i64.sub) ((:local.get xa))) (:local.set m)
+     ;; the number of digits
+     (:i32.const 1) (:local.set n) (:local.get m) (:local.set tt)
+     (:block cdone nil
+       (:loop cagain nil
+         (:local.get tt) (:local.get b) :i64.div_u (:local.tee tt) :i64.eqz (:br_if cdone)
+         (:local.get n) (:i32.const 1) :i32.add (:local.set n)
+         (:br cagain)))
+     (:local.get n) (:local.get neg) :i32.add (:local.tee n) (:array.new_default :string) (:local.set str)
+     (:local.get neg) (:if nil nil ((:local.get str) (:i32.const 0) (:i32.const 45) (:array.set :string)))
+     (:block fdone nil
+       (:loop fagain nil
+         (:local.get n) (:i32.const 1) :i32.sub (:local.set n)
+         (:local.get m) (:local.get b) :i64.rem_u :i32.wrap_i64 (:local.set d)
+         (:local.get str) (:local.get n)
+         (:i32.const 48) (:i32.const 55) (:local.get d) (:i32.const 10) :i32.lt_u :select (:local.get d) :i32.add
+         (:array.set :string)
+         (:local.get m) (:local.get b) :i64.div_u (:local.tee m) :i64.eqz (:br_if fdone)
+         (:br fagain)))
+     (:local.get str) :ref.as_non_null :return)
+  (car (nil-code)))
+(defprim clysm-sys::%int64-to-string (x base) :value `(,@x ,@(idx-code base) (:call :int64-string)))
+
 ;;; ISQRT of an integer within 64 bits
 (defhelper :isqrt :e-e ((v :i32) (xa :i64) (ka :i32) (r :i64))
   `(:block slow nil
