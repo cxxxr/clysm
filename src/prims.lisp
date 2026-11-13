@@ -1525,14 +1525,22 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
        (:br again))))
 
 ;;; catch tags
-(defhelper :check-catch-tag :e-v ((l :eqref))
-  `(:global.get ,(sym-global 'clysm-sys::*catch-tags*)) `(:struct.get :symbol ,+sym-value+) '(:local.set l)
-  '(:block done nil
+(defhelper :check-catch-tag :e-v ((sp :i32))
+  ;; the innermost catch's tag is the value of *catch-tags*; the bindings of
+  ;; *catch-tags* on the binding stack saved the others (the outermost saved
+  ;; its unbound value, which no tag is EQ to)
+  `(:global.get ,(sym-global 'clysm-sys::*catch-tags*)) `(:struct.get :symbol ,+sym-value+) '(:local.get 0) :ref.eq
+  '(:if nil nil (:return))
+  '(:global.get :bsp) '(:local.set sp)
+  `(:block done nil
      (:loop again nil
-       (:local.get l) (:ref.test :cons) :i32.eqz (:br_if done)
-       (:local.get l) (:ref.cast :cons) (:struct.get :cons 0) (:local.get 0) :ref.eq
-       (:if nil nil (:return))
-       (:local.get l) (:ref.cast :cons) (:struct.get :cons 1) (:local.set l)
+       (:local.get sp) (:i32.const 2) :i32.lt_s (:br_if done)
+       (:local.get sp) (:i32.const 2) :i32.sub (:local.set sp)
+       (:global.get :bstack) (:local.get sp) (:array.get :vector)
+       (:global.get ,(sym-global 'clysm-sys::*catch-tags*)) :ref.eq
+       (:if nil nil
+            ((:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
+             (:local.get 0) :ref.eq (:if nil nil (:return))))
        (:br again)))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%no-catch-error)) '(:call (:callsym 1)) :drop)
 

@@ -899,11 +899,10 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
           (done (gensym "CATCH")) (h (gensym "H")))
       `(,@(cg tag-node) (:local.set ,tag)
         ,@(save-bsp-code saved)
-        ;; push tag on *catch-tags* (dynamically bound)
+        ;; bind *catch-tags* to the tag: the active tags are its value and the
+        ;; values saved by its bindings on the binding stack
         (:global.get ,(sym-global 'clysm-sys::*catch-tags*))
         (:local.get ,tag)
-        (:global.get ,(sym-global 'clysm-sys::*catch-tags*)) (:struct.get :symbol ,+sym-value+)
-        (:struct.new :cons)
         (:call :bind)
         (:block ,done :eqref
           (:block ,h (:type :bt-catch)
