@@ -43,7 +43,9 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     (:let (cg-let node nil nil rep))
     ((:prim :call) (ecase rep
                      (:f64 (when (ty-double-p (node-ty node)) (f64-op-code node)))
-                     (:i32 (when (ty-fixnum-p (node-ty node)) (i32-op-code node)))))
+                     (:i32 (when (ty-fixnum-p (node-ty node))
+                             (or (i32-op-code node)
+                                 (when (fused-tree-node-p node) (fused-code node :i32)))))))
     (t nil)))
 
 ;;; ------------------------------------------------------------
@@ -187,6 +189,8 @@ comparisons need)."
     (let ((code
             (cond ((and (eq (car node) :prim) (eq (prim-kind (second node)) :test))
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
+                  ((member name '(clysm-sys::%aref1 svref clysm-sys::%aset1 clysm-sys::%svset char schar))
+                   (typed-ref-code node))
                   ((ty-double-p ty)
                    (let ((c (f64-op-code node))) (when c `(,@c (:struct.new :double)))))
                   ((ty-fixnum-p ty)
@@ -206,6 +210,39 @@ comparisons need)."
                             ((:local.get ,r) (:call :i64-int))))))
                   (t nil))))
       (when code (append code (when mv (mv-one)))))))
+
+(defun typed-ref-code (node)
+  "Element access of a simple vector / string known to be one, with a
+fixnum index: inline with a bounds check (else the generic code, which signals)."
+  (let* ((name (node-op-name node)) (args (cddr node))
+         (a (first args)) (i (second args)) (val (third args))
+         (aty (and a (node-ty a))))
+    (when (and a i (fx-arg-p i))
+      (let ((v (new-local)) (k (new-local :i32)) (x (new-local)))
+        (flet ((guarded (cast len-type fast slow)
+                 `(,@(cg a) (:local.set ,v) ,@(cg-rep i :i32) (:local.set ,k)
+                   ,@(when val `(,@(cg val) (:local.set ,x)))
+                   (:local.get ,k) (:local.get ,v) (:ref.cast! ,cast) :array.len :i32.lt_u
+                   (:if nil :eqref ,fast ,slow)
+                   ,@(progn len-type nil))))
+          (case name
+            ((clysm-sys::%aref1 svref)
+             (when (ty-only-p aty +k-svec+)
+               (guarded :vector :vector
+                        `((:local.get ,v) (:ref.cast! :vector) (:local.get ,k) (:array.get :vector))
+                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:call :aref1)))))
+            ((clysm-sys::%aset1 clysm-sys::%svset)
+             (when (and val (ty-only-p aty +k-svec+))
+               (guarded :vector :vector
+                        `((:local.get ,v) (:ref.cast! :vector) (:local.get ,k) (:local.get ,x) (:array.set :vector)
+                          (:local.get ,x))
+                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:local.get ,x) (:call :aset1)))))
+            ((char schar)
+             (when (ty-only-p aty +k-string+)
+               (guarded :string :string
+                        `((:local.get ,v) (:ref.cast! :string) (:local.get ,k) (:array.get :string)
+                          (:i32.const ,+char-tag+) :i32.add :ref.i31)
+                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:call :schar-ref)))))))))))
 
 (defun typed-test-code (node)
   "i32 code for a numeric comparison or predicate using the argument types, or NIL."

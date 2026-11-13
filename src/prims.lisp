@@ -46,10 +46,19 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defun fused-i64-code (node fail)
   "Code leaving the i64 value of NODE, branching to FAIL when that is not possible."
   (cond ((eq (car node) :const) `((:i64.const ,(second node))))
+        ((and (ty-fixnum-p (node-ty node)) (not (fusable-op-node-p node)))
+         `(,@(cg-rep node :i32) :i64.extend_i32_s))
+        ((and (ty-fixnum-p (node-ty node)) (i32-op-code node))
+         `(,@(i32-op-code node) :i64.extend_i32_s))
         ((eq (car node) :lref)
-         (let ((e (new-local)))
-           `(,@(cg node) (:local.tee ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
-             (:local.get ,e) (:call :int-i64))))
+         (let ((e (new-local)) (v (new-local :i32)))
+           `(,@(cg node) (:local.tee ,e) (:ref.test :i31)
+             (:if nil :i64
+                  ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
+                   (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+                   (:local.get ,v) :i64.extend_i32_s)
+                  ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
+                   (:local.get ,e) (:call :int-i64))))))
         (t
          (let ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
                (op (cdr (assoc (prim-name (second node)) *fusable-ops*))))
@@ -71,18 +80,29 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                  (:xor `((:local.get ,x) (:local.get ,y) :i64.xor (:local.set ,r))))
              (:local.get ,r))))))
 
+(defun fused-tree-node-p (node)
+  (and (not *no-fuse*) (eq (car node) :prim) (assoc (prim-name (second node)) *fusable-ops*)
+       (fusable-tree-p node) (some #'fusable-op-node-p (cddr node))))
+
+(defun fused-code (node rep)
+  "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
+its type is a fixnum), the generic code when that fails."
+  (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (r (new-local :i64)))
+    `((:block ,done ,rep
+        (:block ,fail nil
+          ,@(fused-i64-code node fail)
+          ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
+                `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
+                `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                  (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
+          (:br ,done))
+        ,@(let ((*no-fuse* t)) (cg-prim (second node) (cddr node) nil))
+        ,@(when (eq rep :i32) (unbox-rep-code :i32))))))
+
 (defun cg-prim (p args mv)
-  (when (and (not *no-fuse*) (assoc (prim-name p) *fusable-ops*)
-             (fusable-tree-p `(:prim ,p ,@args))
-             (some #'fusable-op-node-p args))
-    (let ((done (gensym "FUSED")) (fail (gensym "SLOW")))
-      (return-from cg-prim
-        `((:block ,done :eqref
-            (:block ,fail nil
-              ,@(fused-i64-code `(:prim ,p ,@args) fail)
-              (:call :i64-int) (:br ,done))
-            ,@(let ((*no-fuse* t)) (cg-prim p args nil)))
-          ,@(when mv (mv-one))))))
+  (when (fused-tree-node-p `(:prim ,p ,@args))
+    (return-from cg-prim
+      `(,@(fused-code `(:prim ,p ,@args) :eqref) ,@(when mv (mv-one)))))
   (let ((codes (mapcar #'cg args)))
     (append (funcall (prim-fn p) codes)
             (when (eq (prim-kind p) :test) (bool-code))
@@ -307,6 +327,22 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 ;;; Functions / closures
 ;;; ------------------------------------------------------------
 
+(defprim clysm-sys::%make-gf-closure (g f1 f2) :value
+  ;; the entries of G, except for one and two arguments those of F1 and F2
+  ;; (the three closures have the same environment layout)
+  (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure)))
+        (t2 (new-local '(:ref :null :closure))))
+    `(,@g (:ref.cast :closure) (:local.set ,tg) ,@f1 (:ref.cast :closure) (:local.set ,t1)
+      ,@f2 (:ref.cast :closure) (:local.set ,t2)
+      (:local.get ,tg) (:struct.get :closure 0)
+      (:local.get ,t1) (:struct.get :closure 1)
+      (:local.get ,t2) (:struct.get :closure 2)
+      (:local.get ,tg) (:struct.get :closure 3)
+      (:local.get ,tg) (:struct.get :closure 4)
+      (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
+      (:local.get ,tg) (:struct.get :closure ,+clo-env+)
+      (:local.get ,tg) (:struct.get :closure ,+clo-name+)
+      (:struct.new :closure))))
 (defprim clysm-sys::%closure-name (f) :value `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-name+)))
 (defprim clysm-sys::%set-closure-name (f n) :value
   (let ((tmp (new-local)))
@@ -495,10 +531,29 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
               (,@(loop repeat (1- (length (cdr form))) collect '(:struct.new :cons))))))
 
 (defnative apply (form env)
-  (let ((args (cdr form)))
-    (if (null (cddr args))
-        `(:apply ,@(convert-args args env))
-        `(:apply ,@(convert-args (list (first args) `(list* ,@(rest args))) env)))))
+  (block apply-native
+    (let ((args (cdr form)))
+      ;; (apply (lambda (a b) . body) list) binds the elements of the list
+      (let ((f (first args)))
+        (when (and (= (length args) 2) (consp f)
+                   (or (eq (car f) 'lambda)
+                       (and (eq (car f) 'function) (consp (second f)) (eq (car (second f)) 'lambda))))
+          (let* ((lam (if (eq (car f) 'lambda) f (second f))) (ll (second lam)))
+            (when (and (listp ll) (every #'symbolp ll)
+                       (notany (lambda (x) (member x lambda-list-keywords)) ll))
+              (multiple-value-bind (decls forms) (parse-body (cddr lam))
+                (let ((l (gensym "ARGS")))
+                  (return-from apply-native
+                    (convert `(let ((,l ,(second args)))
+                                (clysm-sys::%check-arg-list ,l ,(length ll))
+                                (let* ,(loop for v in ll
+                                             collect `(,v (prog1 (car ,l) (setq ,l (cdr ,l)))))
+                                  (declare ,@decls)
+                                  ,@forms))
+                             env))))))))
+      (if (null (cddr args))
+          `(:apply ,@(convert-args args env))
+          `(:apply ,@(convert-args (list (first args) `(list* ,@(rest args))) env))))))
 
 ;;; ------------------------------------------------------------
 ;;; Hand-written wasm runtime helpers
@@ -1712,6 +1767,45 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
   `(:global.get ,(sym-global 'clysm-sys::%aset1-slow)) '(:call (:callsym 3)))
 
 (defprim clysm-sys::%aref1 (a i) :value `(,@a ,@i (:call :aref1)))
+
+;;; two-dimensional arrays over a simple vector inline, else the Lisp functions
+(defun aref2-index-code (fail)
+  "Helper-body code: when local 0 is a two-dimensional array over a simple
+vector and locals 1, 2 are indices within its dimensions, leave the vector
+in local V and the index in local K; else branch to FAIL."
+  `((:local.get 0) (:ref.test :mdarray) :i32.eqz (:br_if ,fail)
+    (:local.get 0) (:ref.cast! :mdarray) (:local.set m)
+    (:local.get m) (:struct.get :mdarray 2) (:local.tee dims) (:ref.test :cons) :i32.eqz (:br_if ,fail)
+    (:local.get dims) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee rest) (:ref.test :cons) :i32.eqz (:br_if ,fail)
+    (:local.get rest) (:ref.cast! :cons) (:struct.get :cons 1) ,@(nil-code) :ref.eq :i32.eqz (:br_if ,fail)
+    (:local.get 1) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+    (:local.get 2) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+    (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.tee x)
+    (:local.get dims) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31) :i31.get_s :i32.ge_u (:br_if ,fail)
+    (:local.get 2) (:ref.cast! :i31) :i31.get_s (:local.tee y)
+    (:local.get rest) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31) :i31.get_s (:local.tee d1)
+    :i32.ge_u (:br_if ,fail)
+    (:local.get m) (:struct.get :mdarray 0) (:ref.test :vector) :i32.eqz (:br_if ,fail)
+    (:local.get m) (:struct.get :mdarray 0) (:ref.cast! :vector) (:local.set v)
+    (:local.get m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+    (:local.get x) (:local.get d1) :i32.mul :i32.add (:local.get y) :i32.add (:local.set k)))
+
+(defhelper :aref2 :eee-e ((m (:ref :null :mdarray)) (dims :eqref) (rest :eqref) (x :i32) (y :i32) (d1 :i32)
+                          (v (:ref :null :vector)) (k :i32))
+  `(:block slow nil ,@(aref2-index-code 'slow)
+     (:local.get v) (:local.get k) (:array.get :vector) :return)
+  '(:local.get 0) '(:local.get 1) '(:local.get 2)
+  `(:global.get ,(sym-global 'clysm-sys::%aref2)) '(:call (:callsym 3)))
+
+(defhelper :aset2 :eeee-e ((m (:ref :null :mdarray)) (dims :eqref) (rest :eqref) (x :i32) (y :i32) (d1 :i32)
+                           (v (:ref :null :vector)) (k :i32))
+  `(:block slow nil ,@(aref2-index-code 'slow)
+     (:local.get v) (:local.get k) (:local.get 3) (:array.set :vector) (:local.get 3) :return)
+  '(:local.get 0) '(:local.get 1) '(:local.get 2) '(:local.get 3)
+  `(:global.get ,(sym-global 'clysm-sys::%aset2)) '(:call (:callsym 4)))
+
+(defprim clysm-sys::%aref2 (a i j) :value `(,@a ,@i ,@j (:call :aref2)))
+(defprim clysm-sys::%aset2 (a i j v) :value `(,@a ,@i ,@j ,@v (:call :aset2)))
 (defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
 (defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
 

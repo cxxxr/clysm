@@ -25,7 +25,8 @@
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
 
 (defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp uwp-frames)
-(defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp uwp-frames)
+(defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp uwp-frames
+  modes loop-labels cur)
 (defstruct fun name lvar lam)
 
 ;;; ------------------------------------------------------------

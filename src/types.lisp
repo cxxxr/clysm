@@ -592,6 +592,7 @@
     (:fref (mkty +k-func+))
     (:call (let ((tys (ti-args (cddr node))) (sym (second node)))
              (cond ((gethash sym *ti-noreturn*) (setf *env* :bottom) *ty-bottom*)
+                   ((eq sym 'make-array) (make-array-ty (cddr node)))
                    ((gethash sym *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash sym *ti-rules*) tys)))
                    (t *ty-top*))))
@@ -648,6 +649,22 @@
     (:defun (ti (third node)) (mkty +k-sym+))
     (:values (let ((tys (ti-args (cdr node)))) (if tys (first tys) (mkty +k-null+))))
     (t *ty-top*)))
+
+(defun make-array-ty (args)
+  "The type of (MAKE-ARRAY . ARGS): a simple vector or string when it is one
+dimensional with no other options than the initial element or contents."
+  (let ((dims (first args)) (keys (rest args)))
+    (if (and (ty-only-p (node-ty dims) +k-int+) (evenp (length keys))
+             (loop for (k v) on keys by #'cddr
+                   always (and (eq (car k) :const)
+                               (or (member (second k) '(:initial-element :initial-contents))
+                                   (and (eq (second k) :element-type) (eq (car v) :const))))))
+        (let ((et (loop for (k v) on keys by #'cddr
+                        when (eq (second k) :element-type) return (list (second v)))))
+          (cond ((or (null et) (eq (car et) t)) (mkty +k-svec+))
+                ((member (car et) '(character base-char standard-char)) (mkty +k-string+))
+                (t (mkty +k-other+))))
+        (mkty (logior +k-svec+ +k-string+ +k-other+)))))
 
 (defun mv-types (node)
   "Types of the values of NODE when known (a list), else NIL."

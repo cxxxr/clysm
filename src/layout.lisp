@@ -61,6 +61,7 @@
     (:e-e       (:func (:eqref) (:eqref)))
     (:ee-e      (:func (:eqref :eqref) (:eqref)))
     (:eee-e     (:func (:eqref :eqref :eqref) (:eqref)))
+    (:eeee-e    (:func (:eqref :eqref :eqref :eqref) (:eqref)))
     (:ee-v      (:func (:eqref :eqref) ()))
     (:e-i       (:func (:eqref) (:i32)))
     (:ee-i      (:func (:eqref :eqref) (:i32)))

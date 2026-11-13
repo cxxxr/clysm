@@ -498,6 +498,17 @@ the restarts are associated with the condition being signaled."
     (store-value (v) :report "Set the variable and use the value." :interactive %read-new-value
       (setf (symbol-value name) v) v)))
 
+(defun %check-arg-list (l n)
+  "L is a proper list of N elements (APPLY of a lambda of N required parameters)."
+  (let ((x l))
+    (dotimes (i n) (if (consp x) (setq x (cdr x)) (return-from %check-arg-list (%arg-list-error l n))))
+    (when x (%arg-list-error l n))))
+
+(defun %arg-list-error (l n)
+  (error 'simple-program-error
+         :format-control "invalid number of arguments: ~S (applying a function of ~S arguments)"
+         :format-arguments (list (if (listp l) (length l) l) n)))
+
 (defun %arg-count-error (f nargs)
   (error 'simple-program-error
          :format-control "invalid number of arguments: ~S (calling ~S)"

@@ -617,8 +617,9 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 ;;; ------------------------------------------------------------
 
 (defun cg-flet (node mv tail)
-  (destructuring-bind (op funs body) node
-    (let ((code nil))
+  (destructuring-bind (op all-funs body) node
+    ;; functions that are never referenced need no closure
+    (let ((code nil) (funs (remove-if (lambda (f) (zerop (lvar-refs (fun-lvar f)))) all-funs)))
       (if (eq op :flet)
           (let ((tmps (loop for f in funs collect (let ((tmp (new-local)))
                                                     (setf code (append code (cg-closure (fun-lam f))
@@ -729,22 +730,48 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
 ;;; TAGBODY / GO
 ;;; ------------------------------------------------------------
 
+(defun tagbody-go-modes (tb segments)
+  "For each tag of TB: :FAR when a local GO jumps to it from a later segment,
+:SELF when only from its own segment (and earlier ones), else NIL."
+  (let ((modes (make-array (length segments) :initial-element nil)))
+    (loop for (k . forms) in segments
+          do (labels ((walk (n)
+                        (when (and (eq (car n) :go) (eq (second n) tb))
+                          (let ((idx (third n)))
+                            (cond ((< idx k) (setf (aref modes idx) :far))
+                                  ((= idx k) (unless (aref modes idx) (setf (aref modes idx) :self))))))
+                        (map-subnodes #'walk n)))
+               (mapc #'walk forms)))
+    modes))
+
 (defun cg-tagbody (node mv)
+  "Segment K starts after the end of block K, which encloses the segments
+before it: a GO forward is a BR to that block.  A segment that is the
+target of GOs from within itself is a LOOP.  Only GOs back from a later
+segment (and from closures) set a segment number and branch to a dispatch
+loop with a BR_TABLE."
   (destructuring-bind (tb segments) (cdr node)
     (let* ((n (length segments))
            (labels (loop for i below n collect (gensym (format nil "SEG~D-" i))))
            (dispatch (gensym "DISPATCH"))
            (end (gensym "TBEND"))
-           (pc (new-local :i32)))
+           (pc (new-local :i32))
+           (modes (tagbody-go-modes tb segments))
+           (need-dispatch (or (tb-nonlocal tb) (find :far modes)))
+           (loop-labels (loop for i below n collect (and (eq (aref modes i) :self) (gensym "TAGLOOP")))))
       (setf (tb-labels tb) labels (tb-dispatch tb) dispatch (tb-pc tb) pc
+            (tb-modes tb) modes (tb-loop-labels tb) loop-labels
             (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth* (tb-uwp-frames tb) *uwp-frames*
             (tb-saved-bsp tb) (new-local :i32))
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
       (let* ((seg-codes (let ((*tail-ok* nil))
-                          (loop for (nil . forms) in segments
-                                collect (loop for f in forms append (cg-effect f)))))
+                          (loop for (k . forms) in segments for ll in loop-labels
+                                collect (progn
+                                          (setf (tb-cur tb) k)
+                                          (let ((code (loop for f in forms append (cg-effect f))))
+                                            (if ll `((:loop ,ll nil ,@code)) code))))))
              ;; build nested blocks: innermost has br_table
-             (inner `((:local.get ,pc) (:br_table ,@labels ,(car (last labels)))))
+             (inner (when need-dispatch `((:local.get ,pc) (:br_table ,@labels ,(car (last labels))))))
              (blocks (let ((acc inner))
                        (loop for label in labels for code in seg-codes
                              do (setf acc `((:block ,label nil ,@acc) ,@code)))
@@ -765,12 +792,12 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
                                       (:br ,dispatch))
                                      ((:local.get ,etmp) :throw_ref))))
                             `(,@blocks (:br ,end)))))
-        `((:i32.const 0) (:local.set ,pc)
+        `(,@(when need-dispatch `((:i32.const 0) (:local.set ,pc)))
           ,@(save-bsp-code (tb-saved-bsp tb))
           ,@(when (tb-nonlocal tb)
               (var-set-code (tb-tag-var tb) `(,@(nil-code) (:struct.new :cell))))
           (:block ,end nil
-            (:loop ,dispatch nil ,@loop-body))
+            ,@(if need-dispatch `((:loop ,dispatch nil ,@loop-body)) loop-body))
           ,@(nil-code)
           ,@(when mv (mv-one)))))))
 
@@ -778,8 +805,12 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
   (let ((frame (innermost-uwpf-between *uwp-frames* (tb-uwp-frames tb))))
     (if (null frame)
         `(,@(when (> *dyn-depth* (tb-dyn-depth tb)) (restore-bsp-code (tb-saved-bsp tb)))
-          (:i32.const ,index) (:local.set ,(tb-pc tb))
-          (:br ,(tb-dispatch tb)))
+          ,@(case (aref (tb-modes tb) index)
+              (:far `((:i32.const ,index) (:local.set ,(tb-pc tb)) (:br ,(tb-dispatch tb))))
+              (:self `((:br ,(if (eql (tb-cur tb) index)
+                                 (nth index (tb-loop-labels tb))
+                                 (nth index (tb-labels tb))))))
+              (t `((:br ,(nth index (tb-labels tb)))))))
         (register-uwp-exit frame (lambda () (local-go tb index))))))
 
 (defun cg-go (node)
