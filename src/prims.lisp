@@ -401,7 +401,10 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
 ;; generic array copy for simple arrays of the same kind: (%replace-simple dst dstart src sstart n)
 ;;; array headers
 (defprim clysm-sys::%make-mdarray (data fill dims offset info) :value
-  `(,@data ,@fill ,@dims ,@offset ,@info (:struct.new :mdarray)))
+  (let ((d (new-local)))
+    `(,@data ,@fill ,@dims (:local.tee ,d) ,@offset ,@info
+      (:local.get ,d) (:call :dims-2d-0) (:local.get ,d) (:call :dims-2d-1)
+      (:struct.new :mdarray))))
 (macrolet ((acc (name idx)
              `(progn
                 (defprim ,name (a) :value `(,@a (:ref.cast :mdarray) (:struct.get :mdarray ,,idx)))
@@ -411,6 +414,13 @@ i31 order is the fixnum order); falls back to HELPER-CODE."
                       (:local.get ,tmp)))))))
   (acc clysm-sys::%mdarray-data 0) (acc clysm-sys::%mdarray-fill 1)
   (acc clysm-sys::%mdarray-dims 2) (acc clysm-sys::%mdarray-offset 3) (acc clysm-sys::%mdarray-info 4))
+;; setting the dimensions also sets the rank-2 dimension fields
+(defprim clysm-sys::%set-mdarray-dims (a v) :value
+  (let ((m (new-local '(:ref :null :mdarray))) (tmp (new-local)))
+    `(,@a (:ref.cast :mdarray) (:local.tee ,m) ,@v (:local.tee ,tmp) (:struct.set :mdarray 2)
+      (:local.get ,m) (:local.get ,tmp) (:call :dims-2d-0) (:struct.set :mdarray 5)
+      (:local.get ,m) (:local.get ,tmp) (:call :dims-2d-1) (:struct.set :mdarray 6)
+      (:local.get ,tmp))))
 
 (defun struct-check-code (o c)
   "Push 1 when local O is a structure of class (local C): its layout is C, or C
@@ -1967,6 +1977,21 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
 
 (defprim clysm-sys::%aref1 (a i) :value `(,@a ,@i (:call :aref1)))
 
+(macrolet ((dim-of-2d (name second)
+             ;; dimension 0 / 1 of a rank-2 dimension list, else 0
+             `(defhelper ,name :e-i ((r :eqref))
+                '(:local.get 0) '(:ref.test :cons) :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+                '(:local.get 0) '(:ref.cast! :cons) '(:struct.get :cons 1) '(:local.tee r) '(:ref.test :cons) :i32.eqz
+                '(:if nil nil ((:i32.const 0) :return))
+                '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 1) (car (nil-code)) :ref.eq :i32.eqz
+                '(:if nil nil ((:i32.const 0) :return))
+                ,(if second
+                     ''(:local.get r)
+                     ''(:local.get 0))
+                '(:ref.cast! :cons) '(:struct.get :cons 0) '(:ref.cast :i31) :i31.get_s)))
+  (dim-of-2d :dims-2d-0 nil)
+  (dim-of-2d :dims-2d-1 t))
+
 ;;; two-dimensional arrays over a simple vector inline, else the Lisp functions
 (defun aref2-index-code (fail)
   "Helper-body code: when local 0 is a two-dimensional array over a simple
@@ -1974,15 +1999,11 @@ vector and locals 1, 2 are indices within its dimensions, leave the vector
 in local V and the index in local K; else branch to FAIL."
   `((:local.get 0) (:ref.test :mdarray) :i32.eqz (:br_if ,fail)
     (:local.get 0) (:ref.cast! :mdarray) (:local.set m)
-    (:local.get m) (:struct.get :mdarray 2) (:local.tee dims) (:ref.test :cons) :i32.eqz (:br_if ,fail)
-    (:local.get dims) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee rest) (:ref.test :cons) :i32.eqz (:br_if ,fail)
-    (:local.get rest) (:ref.cast! :cons) (:struct.get :cons 1) ,@(nil-code) :ref.eq :i32.eqz (:br_if ,fail)
     (:local.get 1) (:ref.test :i31) :i32.eqz (:br_if ,fail)
     (:local.get 2) (:ref.test :i31) :i32.eqz (:br_if ,fail)
-    (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.tee x)
-    (:local.get dims) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31) :i31.get_s :i32.ge_u (:br_if ,fail)
-    (:local.get 2) (:ref.cast! :i31) :i31.get_s (:local.tee y)
-    (:local.get rest) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31) :i31.get_s (:local.tee d1)
+    (:local.get 1) (:ref.cast! :i31) :i31.get_s (:local.tee x) (:local.get m) (:struct.get :mdarray 5)
+    :i32.ge_u (:br_if ,fail)
+    (:local.get 2) (:ref.cast! :i31) :i31.get_s (:local.tee y) (:local.get m) (:struct.get :mdarray 6) (:local.tee d1)
     :i32.ge_u (:br_if ,fail)
     (:local.get m) (:struct.get :mdarray 0) (:ref.test :vector) :i32.eqz (:br_if ,fail)
     (:local.get m) (:struct.get :mdarray 0) (:ref.cast! :vector) (:local.set v)

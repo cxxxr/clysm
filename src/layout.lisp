@@ -53,7 +53,8 @@
     (:double    (:struct ((:f64 nil))))
     (:complex   (:struct ((:eqref nil) (:eqref nil))))
     (:instance  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))  ; layout slots hash
-    (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
+    ;; data fill dims offset info, and the two dimensions of a rank-2 array (else 0 0)
+    (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:i32 t) (:i32 t))))
     (:foreign   (:struct ((:externref nil))))
     ;; misc function types
     (:exn       (:func (:eqref :eqref) ()))

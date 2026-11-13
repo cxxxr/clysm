@@ -337,15 +337,9 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
           (:block ,done :eqref
             (:block ,fail nil
               (:local.get ,av) (:ref.test :mdarray) :i32.eqz (:br_if ,fail)
-              (:local.get ,av) (:ref.cast! :mdarray) (:local.tee ,m) (:struct.get :mdarray 2) (:local.tee ,dims)
-              (:ref.test :cons) :i32.eqz (:br_if ,fail)
-              (:local.get ,dims) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee ,rest) (:ref.test :cons)
-              :i32.eqz (:br_if ,fail)
-              (:local.get ,x) (:local.get ,dims) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31)
-              :i31.get_s :i32.ge_u (:br_if ,fail)
-              (:local.get ,y) (:local.get ,rest) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31)
-              :i31.get_s (:local.tee ,d1) :i32.ge_u (:br_if ,fail)
-              (:local.get ,rest) (:ref.cast! :cons) (:struct.get :cons 1) ,@(nil-code) :ref.eq :i32.eqz (:br_if ,fail)
+              (:local.get ,av) (:ref.cast! :mdarray) (:local.set ,m)
+              (:local.get ,x) (:local.get ,m) (:struct.get :mdarray 5) :i32.ge_u (:br_if ,fail)
+              (:local.get ,y) (:local.get ,m) (:struct.get :mdarray 6) (:local.tee ,d1) :i32.ge_u (:br_if ,fail)
               (:local.get ,m) (:struct.get :mdarray 0) (:ref.test :vector) :i32.eqz (:br_if ,fail)
               (:local.get ,m) (:struct.get :mdarray 0) (:ref.cast! :vector)
               (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
