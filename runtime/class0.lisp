@@ -246,9 +246,17 @@ grows when CLASS has more instance slots)."
 
 (defvar *class-finalization-hook* nil)
 
+(defun %same-slot-index-p (a b)
+  (do ((a a (cdr a)) (b b (cdr b))) ((or (null a) (null b)) (and (null a) (null b)))
+    (unless (and (eq (caar a) (caar b)) (eq (cdar a) (cdar b))) (return nil))))
+
 (defun %finalize-class (class)
-  (let ((cpl (if (eq (%class-name class) t) (list class)
-                 (%compute-cpl class (%class-slot class +class-supers+)))))
+  (let* ((cpl (if (eq (%class-name class) t) (list class)
+                  (%compute-cpl class (%class-slot class +class-supers+))))
+         (old-cpl (%class-slot class +class-cpl+))
+         (old-index (%class-slot class +class-slot-index+))
+         ;; a class that was finalized gets another precedence list or other slot locations
+         (changed (and old-cpl (not (equal cpl old-cpl)))))
     (%set-class-slot class +class-cpl+ cpl)
     ;; shared slots allocated by this class: keep the cells (and values) of
     ;; slots that stay shared, initialize new ones from their initforms
@@ -269,14 +277,18 @@ grows when CLASS has more instance slots)."
                      (funcall *compute-slots-hook* class)
                      (%compute-effective-slots cpl))))
       (%set-class-slot class +class-slots+ slots)
-      ;; slot index: alist name -> location
-      (%set-class-slot class +class-slot-index+
-                       (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
+      ;; slot index: alist name -> location (the same object as long as the
+      ;; locations are the same: caches of slot locations compare it)
+      (let ((index (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
+        (if (and old-cpl (%same-slot-index-p index old-index))
+            nil
+            (progn (when old-cpl (setq changed t))
+                   (%set-class-slot class +class-slot-index+ index)))))
     ;; a class with a forward-referenced superclass is not finalized (AMOP)
     (%set-class-slot class +class-finalized+
                      (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
     (%set-class-slot class +class-prototype+ nil)
-    (when *class-finalization-hook* (funcall *class-finalization-hook* class))
+    (when *class-finalization-hook* (funcall *class-finalization-hook* class changed))
     ;; refinalize subclasses
     (dolist (sub (%class-slot class +class-subclasses+))
       (%finalize-class sub))

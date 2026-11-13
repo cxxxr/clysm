@@ -15,12 +15,14 @@
 ;;; +GF-FAST+: the number of required parameters (1..4) when the effective
 ;;; methods are functions of the arguments themselves, else 0.
 ;;; +GF-TABLE+: the part of the cache beyond the first entries.
-(defconstant +gf-fast+ 17) (defconstant +gf-table+ 18)
+;;; +GF-UNSPECIALIZED+: bit i is set when no method has a specializer other
+;;; than T for the required parameter i.
+(defconstant +gf-fast+ 17) (defconstant +gf-table+ 18) (defconstant +gf-unspecialized+ 19)
 
 (defparameter *gf-slot-names*
   '(%name %lambda-list %methods %method-combination %cache %nreq %eql-specializers %documentation
     %function %argument-precedence-order %declarations %method-class %nopt %restp %keyp %keys
-    %initial-methods %fast %table))
+    %initial-methods %fast %table %unspecialized))
 
 ;;; method: 0 gf 1 qualifiers 2 specializers 3 function 4 lambda-list 5 doc 6 keys
 (defparameter *method-slot-names*
@@ -223,6 +225,9 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
         (length ll)
         nil)))
 
+;;; every generic function: their caches are emptied when a class is redefined
+(defvar *generic-function-infos* nil)
+
 (defun %make-generic-function (name lambda-list combination class)
   (let* ((info (%allocate-instance (or class (find-class 'standard-generic-function))))
          (f (if *gf-function-maker*
@@ -235,21 +240,24 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
     (%gf-set-lambda-list info lambda-list)
     (%set-closure-name f info)
     (%set-gf-slot info +gf-function+ f)
+    (push info *generic-function-infos*)
     f))
 
 ;;; The cache (+GF-CACHE+) is a simple-vector
 ;;;   #(tag  key-0 ... key-(nreq-1) value methods  key-0 ...)
 ;;; searched without consing.  A key is the class of a required argument, or
 ;;; the marker (object . hash) of the EQL specializer object the argument is
-;;; (+GF-EQL+: a list (position marker...)).  VALUE is a function of the
+;;; (+GF-EQL+: a list (position marker...)), or 0 for a parameter that no
+;;; method specializes (+GF-UNSPECIALIZED+).  VALUE is a function of the
 ;;; required arguments when +GF-FAST+ is not 0, else (effective-method-function
 ;;; . valid-keys), a function of the argument list; METHODS are the applicable
-;;; methods.  TAG is +GF-FAST+ when the keys are all classes (the dispatch
-;;; inlined in the function of the generic function compares the classes of
-;;; the arguments), else 0.  After +GF-CACHE-ENTRIES+ entries the others go to
-;;; +GF-TABLE+: (count . #(mask key... value methods ...)), an open-addressing
-;;; hash table on the keys.
-(defconstant +gf-cache-entries+ 6)
+;;; methods.  TAG is +GF-FAST+ + 16 * (the first four bits of
+;;; +GF-UNSPECIALIZED+) when no key is an EQL marker (the dispatch inlined in
+;;; the function of the generic function compares the classes of the
+;;; arguments), else 0.  With more than +GF-CACHE-ENTRIES+ entries they all
+;;; move to +GF-TABLE+: (count . #(mask key... value methods ...)), an
+;;; open-addressing hash table on the keys (the vector is then #(0)).
+(defconstant +gf-cache-entries+ 8)
 
 (defun %gf-reset-cache (info)
   (let* ((nreq (%gf-slot info +gf-nreq+))
@@ -259,7 +267,11 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
                             (eq (%instance-layout info) *the-standard-generic-function-class*)))
                    nreq 0)))
     (%set-gf-slot info +gf-fast+ fast)
-    (%set-gf-slot info +gf-cache+ (vector (if (%gf-slot info +gf-eql+) 0 fast)))
+    (unless (%gf-slot info +gf-unspecialized+) (%set-gf-slot info +gf-unspecialized+ 0))
+    (%set-gf-slot info +gf-cache+
+                  (vector (if (or (%gf-slot info +gf-eql+) (eql fast 0))
+                              0
+                              (+ fast (* 16 (logand (%gf-slot info +gf-unspecialized+) 15))))))
     (%set-gf-slot info +gf-table+ nil)))
 
 (defun %gf-invalidate (info)
@@ -369,11 +381,14 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
     m))
 
 (defvar *eql-marker-count* 0)
-(defun %update-eql-info (info)
-  (let ((r nil))
+(defun %update-dispatch-info (info)
+  "Set +GF-EQL+ and +GF-UNSPECIALIZED+ from the methods."
+  (let ((r nil) (specialized 0) (top (find-class t)))
     (dolist (m (%gf-slot info +gf-methods+))
       (let ((i 0))
         (dolist (s (%method-specializers m))
+          (unless (eq s top)
+            (when (< i 24) (setq specialized (logior specialized (ash 1 i)))))
           (when (consp s)
             (let ((e (assoc i r)) (x (cadr s)))
               (unless e (setq e (list i)) (push e r))
@@ -381,7 +396,8 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
                 (setq *eql-marker-count* (%fxlogand (+ *eql-marker-count* 1) #xFFFFF))
                 (push (cons x *eql-marker-count*) (cdr e)))))
           (setq i (+ i 1)))))
-    (%set-gf-slot info +gf-eql+ r)))
+    (%set-gf-slot info +gf-eql+ r)
+    (%set-gf-slot info +gf-unspecialized+ (logxor specialized #xFFFFFF))))
 
 (defvar *add-method-hook* nil)
 
@@ -407,7 +423,7 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
       (when (and old *add-method-hook*) (funcall *add-method-hook* old nil))
       (%set-gf-slot info +gf-methods+ (cons method (remove old (%gf-slot info +gf-methods+))))
       (when *add-method-hook* (funcall *add-method-hook* method t)))
-    (%update-eql-info info)
+    (%update-dispatch-info info)
     (%gf-invalidate info)
     gf))
 
@@ -417,7 +433,7 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
       (%set-gf-slot info +gf-methods+ (remove method (%gf-slot info +gf-methods+)))
       (when *add-method-hook* (funcall *add-method-hook* method nil))
       (%set-instance-ref method 0 nil)
-      (%update-eql-info info)
+      (%update-dispatch-info info)
       (%gf-invalidate info))
     gf))
 
@@ -493,18 +509,34 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
          :format-arguments (list (%gf-slot info +gf-name+) (apply #'format nil control args))))
 
 (defmacro %fast-class-of (x)
-  `(let ((x ,x)) (if (%instancep x) (%instance-layout x) (class-of x))))
+  `(let ((x ,x))
+     (cond ((%instancep x) (%instance-layout x))
+           ((fixnump x) (or (%svref *builtin-classes* 0) (class-of x)))
+           (t (class-of x)))))
 
 (defun %eql-key (eqls i x)
   "The cache key of the argument X at position I: the marker of the EQL
 specializer object that X is, else the class of X."
-  (dolist (e eqls (%fast-class-of x))
+  (dolist (e eqls)
     (when (eq (car e) i)
-      (return (dolist (k (cdr e) (%fast-class-of x))
-                (when (eql (car k) x) (return k)))))))
+      (if (or (fixnump x) (symbolp x) (%instancep x))
+          (dolist (k (cdr e)) (when (eq (car k) x) (return-from %eql-key k)))
+          (dolist (k (cdr e)) (when (eql (car k) x) (return-from %eql-key k))))
+      (return)))
+  (%fast-class-of x))
+
+;;; the cache key of the argument X at position I (UNSPEC: +GF-UNSPECIALIZED+,
+;;; EQLS: +GF-EQL+)
+(defmacro %arg-key (unspec eqls i x)
+  `(cond ((not (eq (%fxlogand ,unspec ,(if (integerp i) (ash 1 i) `(ash 1 ,i))) 0)) 0)
+         (,eqls (%eql-key ,eqls ,i ,x))
+         (t (%fast-class-of ,x))))
 
 (defmacro %key-hash (k)
-  `(let ((k ,k)) (%fxlogand (if (consp k) (cdr k) (%identity-hash k)) #xFFFFF)))
+  `(let ((k ,k))
+     (cond ((consp k) (cdr k))
+           ((fixnump k) 0)
+           (t (%fxlogand (%identity-hash k) #xFFFFF)))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %splice-args (tree vars)
@@ -525,9 +557,9 @@ specializer object that X is, else the class of X."
      (t ,(%splice-args form (%arity-vars 4)))))
 
 (defun %gf-keys (info args nreq)
-  (let ((eqls (%gf-slot info +gf-eql+)) (r nil) (a args))
+  (let ((eqls (%gf-slot info +gf-eql+)) (unspec (%gf-slot info +gf-unspecialized+)) (r nil) (a args))
     (dotimes (i nreq (nreverse r))
-      (push (if eqls (%eql-key eqls i (car a)) (class-of (car a))) r)
+      (push (if (< i 24) (%arg-key unspec eqls i (car a)) (class-of (car a))) r)
       (setq a (cdr a)))))
 
 (defun %keys-hash (keys)
@@ -539,7 +571,7 @@ specializer object that X is, else the class of X."
   (let* ((stride (+ nreq 2)) (mask (svref vec 0)) (i (logand (%keys-hash keys) mask)))
     (loop
       (let ((base (+ 1 (* i stride))))
-        (cond ((eq (svref vec base) 0) (return nil))
+        (cond ((null (svref vec base)) (return nil))
               ((do ((j base (+ j 1)) (l keys (cdr l))) ((null l) t)
                  (unless (eq (svref vec j) (car l)) (return nil)))
                (return (+ base nreq))))
@@ -549,7 +581,7 @@ specializer object that X is, else the class of X."
   (let* ((stride (+ nreq 2)) (mask (svref vec 0)) (i (logand (%keys-hash keys) mask)))
     (loop
       (let ((base (+ 1 (* i stride))))
-        (when (eq (svref vec base) 0)
+        (when (null (svref vec base))
           (do ((j base (+ j 1)) (l keys (cdr l))) ((null l))
             (setf (svref vec j) (car l)))
           (setf (svref vec (+ base nreq)) value (svref vec (+ base nreq 1)) methods)
@@ -557,7 +589,7 @@ specializer object that X is, else the class of X."
         (setq i (logand (+ i 1) mask))))))
 
 (defun %gf-make-table (capacity nreq)
-  (let ((vec (make-array (+ 1 (* capacity (+ nreq 2))) :initial-element 0)))
+  (let ((vec (make-array (+ 1 (* capacity (+ nreq 2))) :initial-element nil)))
     (setf (svref vec 0) (- capacity 1))
     vec))
 
@@ -567,7 +599,7 @@ specializer object that X is, else the class of X."
     (when (> (* 2 (+ (car table) 1)) (svref (cdr table) 0))
       (let* ((old (cdr table)) (new (%gf-make-table (* 2 (+ (svref old 0) 1)) nreq)) (stride (+ nreq 2)))
         (do ((b 1 (+ b stride))) ((>= b (length old)))
-          (unless (eq (svref old b) 0)
+          (unless (null (svref old b))
             (%gf-table-insert new (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref old (+ b j)) r)))
                               nreq (svref old (+ b nreq)) (svref old (+ b nreq 1)))))
         (setf (cdr table) new)))
@@ -580,35 +612,36 @@ specializer object that X is, else the class of X."
     (multiple-value-bind (value methods) (%gf-compute-value info args)
       ;; computing the effective method may have invalidated the cache
       (when (eq pic (%gf-slot info +gf-cache+))
-        (let ((len (length pic)))
-          (if (< len (* +gf-cache-entries+ (+ nreq 2)))
-              (let ((new (make-array (+ len nreq 2))) (j len))
-                (dotimes (i len) (setf (svref new i) (svref pic i)))
-                (dolist (k keys) (setf (svref new j) k) (setq j (+ j 1)))
-                (setf (svref new j) value (svref new (+ j 1)) methods)
-                (%set-gf-slot info +gf-cache+ new))
-              (%gf-table-put info keys nreq value methods))))
+        (let ((len (length pic)) (stride (+ nreq 2)))
+          (cond ((%gf-slot info +gf-table+) (%gf-table-put info keys nreq value methods))
+                ((< len (* +gf-cache-entries+ stride))
+                 (let ((new (make-array (+ len stride))) (j len))
+                   (dotimes (i len) (setf (svref new i) (svref pic i)))
+                   (dolist (k keys) (setf (svref new j) k) (setq j (+ j 1)))
+                   (setf (svref new j) value (svref new (+ j 1)) methods)
+                   (%set-gf-slot info +gf-cache+ new)))
+                (t
+                 (do ((b 1 (+ b stride))) ((>= b len))
+                   (%gf-table-put info (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref pic (+ b j)) r)))
+                                  nreq (svref pic (+ b nreq)) (svref pic (+ b nreq 1))))
+                 (%gf-table-put info keys nreq value methods)
+                 (%set-gf-slot info +gf-cache+ (vector 0))))))
       (if (eql which 0) value methods))))
 
 (defun %gf-lookup (info args nreq which)
   "The cache entry for ARGS: its value (WHICH = 0) or the applicable methods (1)."
-  (let* ((eqls (%gf-slot info +gf-eql+))
-         (keys (if eqls (%gf-keys info args nreq) nil))
+  (let* ((keys (%gf-keys info args nreq))
          (pic (%gf-slot info +gf-cache+)) (len (length pic)) (stride (+ nreq 2)))
     (declare (simple-vector pic))
     (do ((i 1 (+ i stride))) ((>= i len))
-      (when (if eqls
-                (do ((j i (+ j 1)) (l keys (cdr l))) ((null l) t)
-                  (unless (eq (svref pic j) (car l)) (return nil)))
-                (do ((j i (+ j 1)) (p 0 (+ p 1)) (a args (cdr a))) ((>= p nreq) t)
-                  (unless (eq (svref pic j) (%fast-class-of (car a))) (return nil))))
+      (when (do ((j i (+ j 1)) (l keys (cdr l))) ((null l) t)
+              (unless (eq (svref pic j) (car l)) (return nil)))
         (return-from %gf-lookup (svref pic (+ i nreq which)))))
-    (let ((keys (or keys (%gf-keys info args nreq)))
-          (table (%gf-slot info +gf-table+)))
-      (let ((pos (and table (%gf-table-find (cdr table) keys nreq))))
-        (if pos
-            (svref (cdr table) (+ pos which))
-            (%gf-fill info keys args nreq which))))))
+    (let* ((table (%gf-slot info +gf-table+))
+           (pos (and table (%gf-table-find (cdr table) keys nreq))))
+      (if pos
+          (svref (cdr table) (+ pos which))
+          (%gf-fill info keys args nreq which)))))
 
 (defun %gf-compute-value (info args)
   "Returns the value of the cache entry for ARGS and the applicable methods."
@@ -657,30 +690,36 @@ specializer object that X is, else the class of X."
                `(and ,@(mapcar (lambda (k)
                                  (setq i (+ i 1))
                                  `(eq (%svref ,vec ,(if (eql i 0) base `(%fx+ ,base ,i))) ,k))
-                               keys)))))
+                               keys))))
+           (funcall-value (form) `(funcall (the function ,form) ,@args)))
       `(progn
          (declaim (inline ,call))
          (defun ,call (info ,@args)
-           (let ((pic (%gf-slot info +gf-cache+)))
-             (when (eq (%svref pic 0) ,n)
-               (let (,@(mapcar (lambda (k a) `(,k (%fast-class-of ,a))) keys args)
+           ;; (the method is called inside the loop, not in tail position:
+           ;; the engine then inlines it into the dispatch)
+           (let* ((pic (%gf-slot info +gf-cache+))
+                  (tag (%svref pic 0)))
+             (when (eq (%fxlogand tag 15) ,n)
+               (let (,@(let ((i -1))
+                         (mapcar (lambda (k a)
+                                   (setq i (+ i 1))
+                                   `(,k (if (eq (%fxlogand tag ,(ash 16 i)) 0) (%fast-class-of ,a) 0)))
+                                 keys args))
                      (len (%svlength pic)))
                  (do ((i 1 (%fx+ i ,stride))) ((%fx>= i len))
                    (when ,(match 'pic 'i)
-                     (return-from ,call (funcall (the function (%svref pic (%fx+ i ,n))) ,@args))))))
+                     (return-from ,call ,(funcall-value (list '%svref 'pic (list '%fx+ 'i n))))))))
              (,miss info ,@args)))
          (defun ,miss (info ,@args)
            (if (eql (%gf-slot info +gf-fast+) ,n)
-               (let* ((eqls (%gf-slot info +gf-eql+))
+               (let* ((eqls (%gf-slot info +gf-eql+)) (unspec (%gf-slot info +gf-unspecialized+))
                       ,@(let ((i -1))
-                          (mapcar (lambda (k a)
-                                    (setq i (+ i 1))
-                                    `(,k (if eqls (%eql-key eqls ,i ,a) (%fast-class-of ,a))))
+                          (mapcar (lambda (k a) (setq i (+ i 1)) `(,k (%arg-key unspec eqls ,i ,a)))
                                   keys args))
                       (pic (%gf-slot info +gf-cache+)) (len (%svlength pic)))
                  (do ((i 1 (%fx+ i ,stride))) ((%fx>= i len))
                    (when ,(match 'pic 'i)
-                     (return-from ,miss (funcall (the function (%svref pic (%fx+ i ,n))) ,@args))))
+                     (return-from ,miss ,(funcall-value (list '%svref 'pic (list '%fx+ 'i n))))))
                  (let ((table (%gf-slot info +gf-table+)))
                    (when table
                      (let* ((vec (cdr table)) (mask (%svref vec 0))
@@ -692,12 +731,11 @@ specializer object that X is, else the class of X."
                                           mask)))
                        (loop
                          (let ((base (%fx+ 1 (%fx* i ,stride))))
-                           (cond ((eq (%svref vec base) 0) (return))
+                           (cond ((null (%svref vec base)) (return))
                                  (,(match 'vec 'base)
-                                  (return-from ,miss
-                                    (funcall (the function (%svref vec (%fx+ base ,n))) ,@args))))
+                                  (return-from ,miss ,(funcall-value (list '%svref 'vec (list '%fx+ 'base n))))))
                            (setq i (%fxlogand (%fx+ i 1) mask)))))))
-                 (funcall (the function (%gf-fill info (list ,@keys) (list ,@args) ,n 0)) ,@args))
+                 ,(funcall-value (list '%gf-fill 'info (cons 'list keys) (cons 'list args) n 0)))
                (%gf-invoke info (list ,@args))))))))
 
 (%define-gf-dispatch 1)
@@ -708,7 +746,8 @@ specializer object that X is, else the class of X."
 ;;; Methods of only required parameters (at most four) are also known as
 ;;; functions of the arguments: either such a function (a method that does not
 ;;; use CALL-NEXT-METHOD or NEXT-METHOD-P), or a function making one from the
-;;; next method (a function of the arguments, or NIL).
+;;; next method (a function of the arguments, or NIL) and the bits of the
+;;; parameters that CALL-NEXT-METHOD may be given any argument for.
 (defvar *method-fast-functions* (make-hash-table :test 'eq))
 (defvar *method-fast-makers* (make-hash-table :test 'eq))
 (defun %note-method-fast-function (m f)
@@ -722,15 +761,16 @@ specializer object that X is, else the class of X."
   "The method function (of the argument list and the next method functions) of
 a method known by MAKER."
   (lambda (args next)
-    (apply (the function (funcall maker (if next (lambda (&rest a) (funcall (car next) a (cdr next))) nil)))
+    (apply (the function (funcall maker (if next (lambda (&rest a) (funcall (car next) a (cdr next))) nil) 0))
            args)))
 
-(defun %method-fast-fn (m next n)
+(defun %method-fast-fn (m next n unspec)
   "A function of the N required arguments calling the method M, NEXT (a function
-of the arguments, or NIL) being its next method."
+of the arguments, or NIL) being its next method; UNSPEC is +GF-UNSPECIALIZED+
+of the generic function."
   (let ((maker (gethash m *method-fast-makers*)))
     (if maker
-        (funcall maker next)
+        (funcall maker next unspec)
         (or (gethash m *method-fast-functions*)
             (let ((mf (%method-function m))
                   (nexts (if next (list (lambda (args n) (declare (ignore n)) (apply next args))) nil)))
@@ -740,11 +780,11 @@ of the arguments, or NIL) being its next method."
   (cond ((null methods) (%arity-case n (lambda (%args) (no-applicable-method gf %args))))
         ((%fast-accessor-fn info methods args))
         ((eq (%gf-slot info +gf-combination+) *standard-method-combination*)
-         (%standard-fast-emf gf methods n))
+         (%standard-fast-emf gf methods n (%gf-slot info +gf-unspecialized+)))
         (t (let ((emf (%effective-method-function gf info methods)))
              (%arity-case n (lambda (%args) (funcall emf (list %args))))))))
 
-(defun %standard-fast-emf (gf methods n)
+(defun %standard-fast-emf (gf methods n unspec)
   (let ((around nil) (before nil) (primary nil) (after nil))
     (dolist (m methods)
       (let ((q (%method-qualifiers m)))
@@ -757,10 +797,10 @@ of the arguments, or NIL) being its next method."
     (if (null primary)
         (%arity-case n (lambda (%args) (no-applicable-method gf %args)))
         (let ((f nil))
-          (dolist (m primary) (setq f (%method-fast-fn m f n)))
+          (dolist (m primary) (setq f (%method-fast-fn m f n unspec)))
           (when (or before after)
-            (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n)) (nreverse before)))
-                  (afns (mapcar (lambda (m) (%method-fast-fn m nil n)) after))
+            (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec)) (nreverse before)))
+                  (afns (mapcar (lambda (m) (%method-fast-fn m nil n unspec)) after))
                   (p f))
               (setq f (if afns
                           (%arity-case n (lambda (%args)
@@ -770,7 +810,7 @@ of the arguments, or NIL) being its next method."
                           (%arity-case n (lambda (%args)
                                            (dolist (b bfns) (funcall (the function b) %args))
                                            (funcall (the function p) %args)))))))
-          (dolist (m around) (setq f (%method-fast-fn m f n)))
+          (dolist (m around) (setq f (%method-fast-fn m f n unspec)))
           f))))
 
 (defun %check-call-keys (info valid keys)
@@ -849,14 +889,14 @@ of the arguments, or NIL) being its next method."
              (loc (cdr (assoc (car acc) index)))
              (mf (%method-function (car methods)))
              (nreq (%gf-slot info +gf-nreq+)))
+        ;; the object is a direct instance of CLASS (the key of the cache
+        ;; entry), whose slot locations stay while the entry does
         (when (and (fixnump loc) (eql nreq (if writerp 2 1)))
           (if writerp
               (lambda (v o)
-                (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index))
-                    (%set-instance-ref o loc v)
-                    (funcall mf (list v o) nil)))
+                (if (%instancep o) (%set-instance-ref o loc v) (funcall mf (list v o) nil)))
               (lambda (o)
-                (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index))
+                (if (%instancep o)
                     (let ((v (%instance-ref o loc)))
                       (if (%unboundp v) (funcall mf (list o) nil) v))
                     (funcall mf (list o) nil)))))))))
@@ -1038,8 +1078,7 @@ of the arguments, or NIL) being its next method."
     (apply #'no-next-method (and m (%method-gf m)) m args)))
 
 (defun %call-next-method (args next cnm-args cell)
-  (when (and cnm-args (car cell))
-    (%check-cnm-args (car cell) args cnm-args))
+  (when cnm-args (%check-cnm-args cell args cnm-args))
   (if (null next)
       (%no-next-method cell (or cnm-args args))
       (funcall (car next) (or cnm-args args) (cdr next))))
@@ -1047,8 +1086,7 @@ of the arguments, or NIL) being its next method."
 (defun %call-next-method-fast (args next cnm-args cell)
   "CALL-NEXT-METHOD as a function in a method whose next method NEXT is a
 function of the arguments (or NIL)."
-  (when (and cnm-args (car cell))
-    (%check-cnm-args (car cell) args cnm-args))
+  (when cnm-args (%check-cnm-args cell args cnm-args))
   (if (null next)
       (%no-next-method cell (or cnm-args args))
       (apply (the function next) (or cnm-args args))))
@@ -1057,33 +1095,36 @@ function of the arguments (or NIL)."
 ;;; methods must be the one of the original arguments.  It is when every
 ;;; argument has the cache key (class or EQL specializer object) of the
 ;;; original one; otherwise the applicable methods of the two cache entries
-;;; are compared.
+;;; are compared.  CELL is (method . memo): the memo is #(cache old-keys
+;;; new-keys) of the last such comparison that passed.
 (defun %cnm-arg-ok (cell i old new)
   "True when the required argument NEW at position I, given to
 CALL-NEXT-METHOD in place of OLD, has the same cache key."
   (let* ((m (car cell)) (gf (and m (%method-gf m))))
     (or (null gf)
-        (let ((eqls (%gf-slot (%closure-name gf) +gf-eql+)))
-          (if eqls
-              (eq (%eql-key eqls i old) (%eql-key eqls i new))
-              (eq (%fast-class-of old) (%fast-class-of new)))))))
+        (let* ((info (%closure-name gf)) (eqls (%gf-slot info +gf-eql+)))
+          (eq (%arg-key (%gf-slot info +gf-unspecialized+) eqls i old)
+              (%arg-key (%gf-slot info +gf-unspecialized+) eqls i new))))))
 
-(defun %check-cnm-args (method args cnm-args)
-  (let ((gf (%method-gf method)))
+(defun %check-cnm-args (cell args cnm-args)
+  (let* ((method (car cell)) (gf (and method (%method-gf method))))
     (when gf
-      (let* ((info (%gf-info gf)) (nreq (%gf-slot info +gf-nreq+)) (eqls (%gf-slot info +gf-eql+)))
-        (unless (or (do ((i 0 (+ i 1)) (a args (cdr a)) (b cnm-args (cdr b))) ((>= i nreq) t)
-                      (when (or (atom a) (atom b)) (return (and (atom a) (atom b))))
-                      (unless (or (eq (car a) (car b))
-                                  (if eqls
-                                      (eq (%eql-key eqls i (car a)) (%eql-key eqls i (car b)))
-                                      (eq (%fast-class-of (car a)) (%fast-class-of (car b)))))
-                        (return nil)))
-                    (< (length cnm-args) nreq)   ; the call of the next method signals the error
-                    (equal (%gf-lookup info args nreq 1) (%gf-lookup info cnm-args nreq 1)))
-          (error 'simple-error
-                 :format-control "CALL-NEXT-METHOD: the arguments ~S change the set of applicable methods of ~S"
-                 :format-arguments (list cnm-args gf)))))))
+      (let* ((info (%gf-info gf)) (nreq (%gf-slot info +gf-nreq+)))
+        (unless (< (length cnm-args) nreq)   ; else the call of the next method signals the error
+          (let ((old (%gf-keys info args nreq)) (new (%gf-keys info cnm-args nreq))
+                (memo (cdr cell)) (cache (%gf-slot info +gf-cache+)))
+            (unless (or (do ((a old (cdr a)) (b new (cdr b))) ((null a) t)
+                          (unless (eq (car a) (car b)) (return nil)))
+                        (and memo (eq (svref memo 0) cache)
+                             (do ((i 1 (+ i 1)) (a old (cdr a))) ((null a) t)
+                               (unless (eq (svref memo i) (car a)) (return nil)))
+                             (do ((i (+ nreq 1) (+ i 1)) (b new (cdr b))) ((null b) t)
+                               (unless (eq (svref memo i) (car b)) (return nil)))))
+              (if (equal (%gf-lookup info args nreq 1) (%gf-lookup info cnm-args nreq 1))
+                  (setf (cdr cell) (apply #'vector (%gf-slot info +gf-cache+) (append old new)))
+                  (error 'simple-error
+                         :format-control "CALL-NEXT-METHOD: the arguments ~S change the set of applicable methods of ~S"
+                         :format-arguments (list cnm-args gf))))))))))
 
 ;;; ------------------------------------------------------------
 ;;; defgeneric / defmethod
@@ -1150,10 +1191,11 @@ of lists (so that binding them as local macros cannot change the meaning of
              (cond ((consp x) (unless (%only-operators-p x syms) (return nil)))
                    ((member x syms) (return nil)))))))
 
-  (defun %expand-fast-cnm (cnm-args vars next cell)
+  (defun %expand-fast-cnm (cnm-args vars next cell unspec)
     "The expansion of (CALL-NEXT-METHOD . CNM-ARGS) in a method whose required
 arguments are in VARS and whose next method (a function of the arguments, or
-NIL) is in NEXT."
+NIL) is in NEXT.  UNSPEC holds the bits of the parameters that no method of
+the generic function specializes: any argument will do for them."
     (cond ((null cnm-args)
            `(if ,next
                 (funcall (the function ,next) ,@vars)
@@ -1163,9 +1205,10 @@ NIL) is in NEXT."
              `(let ,(mapcar #'list new cnm-args)
                 (unless (and ,@(mapcar (lambda (v n)
                                          (setq i (+ i 1))
-                                         `(or (eq ,v ,n) (%cnm-arg-ok ,cell ,i ,v ,n)))
+                                         `(or (eq ,v ,n) (not (eq (%fxlogand ,unspec ,(ash 1 i)) 0))
+                                              (%cnm-arg-ok ,cell ,i ,v ,n)))
                                        vars new))
-                  (%check-cnm-args (car ,cell) (list ,@vars) (list ,@new)))
+                  (%check-cnm-args ,cell (list ,@vars) (list ,@new)))
                 (if ,next
                     (funcall (the function ,next) ,@new)
                     (%no-next-method ,cell (list ,@new))))))
@@ -1177,17 +1220,18 @@ arguments of a method with the required parameters PLAIN-LL whose BODY uses
 CALL-NEXT-METHOD or NEXT-METHOD-P."
     (multiple-value-bind (decls doc forms) (%parse-body body t)
       (declare (ignore doc))
-      (let* ((next (gensym "NEXT"))
+      (let* ((next (gensym "NEXT")) (unspec (gensym "UNSPEC"))
              (vars (mapcar (lambda (v) (declare (ignore v)) (gensym "A")) plain-ll))
              (inner `(let ,(mapcar #'list plain-ll vars)
                        ,@decls
                        (declare (ignorable ,@plain-ll))
                        (block ,(if (consp name) (cadr name) name) ,@forms))))
-        `(lambda (,next)
+        `(lambda (,next ,unspec)
+           (declare (ignorable ,unspec))
            (lambda ,vars
              ,(if (%only-operators-p (cons 'progn body) '(call-next-method next-method-p))
                   `(macrolet ((call-next-method (&rest cnm-args)
-                                (%expand-fast-cnm cnm-args ',vars ',next ',cell))
+                                (%expand-fast-cnm cnm-args ',vars ',next ',cell ',unspec))
                               (next-method-p () '(not (null ,next))))
                      ,inner)
                   `(flet ((call-next-method (&rest cnm-args)
@@ -1618,9 +1662,15 @@ specification (or a slot definition)."
                    metaclass documentation extra
                    (mapcar (lambda (d) (list (car d) (cadr d))) direct-default-initargs))))
 
-;;; a class finalization invalidates the initarg caches
+;;; a class finalization invalidates the initarg caches; when it changes the
+;;; class precedence list or the slot locations of a class, the caches of the
+;;; generic functions too (their keys are the classes)
 (setq *class-finalization-hook*
-      (lambda (class) (declare (ignore class)) (%clear-initarg-caches)))
+      (lambda (class changedp)
+        (declare (ignore class))
+        (when changedp
+          (dolist (info *generic-function-infos*) (%gf-reset-cache info)))
+        (%clear-initarg-caches)))
 
 ;;; ------------------------------------------------------------
 ;;; slots
