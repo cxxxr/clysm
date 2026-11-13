@@ -200,6 +200,8 @@ function installNetClient(port, sab) {
 // (deep non-tail recursion is common in Lisp programs).
 const selfPath = fileURLToPath(import.meta.url);
 if (isMainThread && process.argv[1] === selfPath) {
+  // the compiler marks unlikely branches (the branch hinting section of the modules)
+  try { (await import('node:v8')).setFlagsFromString('--experimental-wasm-branch-hinting'); } catch (e) {}
   const stackMb = Number(process.env.CLYSM_STACK_MB || 1024);
   const netBuffer = new SharedArrayBuffer(16 + NET_DATA_BYTES);
   const worker = new Worker(selfPath, {

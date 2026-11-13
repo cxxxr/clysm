@@ -24,6 +24,11 @@
           (and (symbolp s) (fboundp s) (not (macro-function s)) (not (special-operator-p s))
                (let ((f (symbol-function s)))
                  (and (functionp f) (sys::%closure-key-layout f))))))
+  ;; small functions defined in the image are copied into later callers (guarded)
+  (setf *live-inline-closure-hook*
+        (lambda (s)
+          (let ((c (get s 'sys::%inline-closure)))
+            (and c (fboundp s) (eq c (symbol-function s)) c))))
   ;; structure accessors and predicates are inline in code compiled after the DEFSTRUCT
   (setq sys::*struct-inline-hook*
         (lambda (kind function-name name index writable)
@@ -43,7 +48,7 @@
 If the compiler signals an error, the form is evaluated by the interpreter
 instead (so the error, if any, happens at run time)."
   (multiple-value-bind (bytes consts)
-      (handler-case (live-compile-forms (list form))
+      (handler-case (let ((*live-inline-ok* t)) (live-compile-forms (list form)))
         (error (e)
           (setq *native-eval-failure* e)
           (return-from native-eval (eval form))))

@@ -259,6 +259,87 @@ runtime definition is kept."
                                  (cwarn "undefined variable ~S" sym))
                                `(:sref ,sym))))))))))
 
+;;; Code evaluated in the image (the REPL, LOAD of a source file) may contain
+;;; a copy of the body of a small global function defined there earlier, as
+;;; whole-program compilation does: the copy is used as long as the symbol's
+;;; function is the one whose source it is (the closure is compared at each
+;;; call; a redefinition makes the call an ordinary one).
+(defvar *live-inline-ok* nil "true while compiling a form that is evaluated at once in the image")
+(defvar *live-inline-sources* (make-hash-table :test 'eq)
+  "symbol -> (lambda-list body stale): the source of its definition; STALE is
+the function the symbol had when the source was recorded")
+(defvar *live-inline-closure-hook* nil "symbol -> the function made by its recorded definition, if it is still the symbol's function")
+(defvar *live-inline-depth* 0)
+(defparameter *live-inline-max-size* 60)
+
+(defun form-size (x limit)
+  "The number of conses and atoms of X, or more than LIMIT."
+  (let ((n 0))
+    (labels ((walk (x)
+               (when (> (incf n) limit) (return-from form-size n))
+               (when (consp x) (walk (car x)) (walk (cdr x)))))
+      (walk x))
+    n))
+
+(defun tree-mentions-p (x sym)
+  (if (consp x) (or (tree-mentions-p (car x) sym) (tree-mentions-p (cdr x) sym)) (eq x sym)))
+
+(defun uses-redefinable-macros-p (x)
+  "X mentions a macro or a global symbol macro that is not COMMON-LISP's: a
+copy of X made later could expand it differently than the function did."
+  (cond ((consp x)
+         (or (and (symbolp (car x)) (car x)
+                  (not (eq (symbol-package (car x)) (symbol-package 'car)))
+                  (macro-function-in (car x) nil))
+             (uses-redefinable-macros-p (car x))
+             (uses-redefinable-macros-p (cdr x))))
+        ((and (symbolp x) x (not (keywordp x))) (nth-value 1 (global-symbol-macro x)))
+        (t nil)))
+
+(defun live-inline-record (sym fn-form)
+  "Record the source of SYM's definition FN-FORM, #'(named-lambda name ll . body), when it may be copied."
+  (remhash sym *live-inline-sources*)
+  (when (and (consp fn-form) (eq (car fn-form) 'function) (consp (second fn-form))
+             (member (car (second fn-form)) '(clysm-sys::named-lambda lambda)))
+    (let* ((l (second fn-form))
+           (ll (if (eq (car l) 'lambda) (second l) (third l)))
+           (body (if (eq (car l) 'lambda) (cddr l) (cdddr l))))
+      (when (and (listp ll) (every #'symbolp ll)
+                 (notany (lambda (x) (member x lambda-list-keywords)) ll)
+                 (not (tree-mentions-p body sym))
+                 (not (uses-redefinable-macros-p body))
+                 ;; a loop stays in its own function (which the engine optimizes when it is called again)
+                 (notany (lambda (op) (tree-mentions-p body op))
+                         '(dotimes dolist do do* loop tagbody go prog prog* do-symbols do-external-symbols
+                           do-all-symbols))
+                 (<= (form-size body *live-inline-max-size*) *live-inline-max-size*))
+        (setf (gethash sym *live-inline-sources*)
+              (list ll body (and *live-inline-closure-hook* (funcall *live-inline-closure-hook* sym))))
+        t))))
+
+(defun live-inline-call (form)
+  "FORM with a guarded copy of the body of the function it calls, or NIL."
+  (let* ((op (car form))
+         (rec (and *live-inline-ok* *live-inline-closure-hook* (< *live-inline-depth* 2)
+                   ;; (not into the code of a toplevel form, which runs once)
+                   *current-lam* (lam-parent *current-lam*)
+                   (gethash op *live-inline-sources*))))
+    (when (and rec (= (length (cdr form)) (length (first rec)))
+               (not (gethash op *notinline*)) (not (member op *local-notinline*)))
+      (let ((closure (funcall *live-inline-closure-hook* op)))
+        (when (and closure (not (eq closure (third rec))))
+          (multiple-value-bind (decls forms) (parse-body (second rec))
+            (let ((temps (loop for nil in (cdr form) collect (gensym "ARG"))))
+              `(let ,(mapcar #'list temps (cdr form))
+                 (if (clysm-sys::%function-cell-eq ',op ',closure)
+                     ;; (the body sees none of the caller's lexical bindings)
+                     (clysm-sys::%with-only-variables ,temps
+                       ((lambda ,(first rec)
+                          ,@(when decls `((declare ,@decls)))
+                          (block ,op ,@forms))
+                        ,@temps))
+                     (locally (declare (notinline ,op)) (,op ,@temps)))))))))))
+
 (defun convert-compound (form env)
   (let ((op (car form)))
     ;; local functions shadow everything
@@ -291,6 +372,10 @@ runtime definition is kept."
       (when prim
         (return-from convert-compound
           `(:prim ,prim ,@(convert-args (cdr form) env)))))
+    (let ((inlined (and (symbolp op) (not (member op *local-notinline*)) (live-inline-call form))))
+      (when inlined
+        (return-from convert-compound
+          (let ((*live-inline-depth* (1+ *live-inline-depth*))) (convert inlined env)))))
     ;; a function defined at run time (a generic function)
     (when (and (member op '(ensure-generic-function clysm-sys::%add-method-to clysm-sys::%defmethod
                             clysm-sys::%defgeneric))
@@ -714,6 +799,15 @@ leaving quoted data alone."
                                      (loop for s in dspecials unless (member s vars)
                                            collect (list :special s))))))
         `(:mvbind ,lvars ,vnode ,(convert-body forms new-env)))))))
+
+(defnative clysm-sys::%with-only-variables (form env)
+  ;; (%with-only-variables (var...) form): FORM converted in a lexical
+  ;; environment with only those variables of the current one
+  (let ((*local-notinline* nil))
+    (convert (third form)
+             (make-cenv (loop for v in (second form)
+                              for e = (env-lookup-var env v)
+                              when e collect e)))))
 
 (defnative clysm-sys::named-lambda (form env)
   (convert-function-designator form env))

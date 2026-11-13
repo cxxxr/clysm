@@ -633,6 +633,9 @@ test is not one a hash table has."
     (let ((old (symbol-function sym)))
       (when (and (functionp old) (%instancep (%closure-name old))) (%bump-clos-epoch)))))
 
+;; (the compiler in the image: the function made by the definition whose source it recorded)
+(defun %note-live-inline (sym) (%put sym '%inline-closure (symbol-function sym)) sym)
+
 (defun %set-fdefinition (name f)
   (let ((sym (%function-name-symbol name)))
     (%note-function-change sym)

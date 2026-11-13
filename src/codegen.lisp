@@ -449,6 +449,9 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 (defun cg-if (node mv tail)
   (destructuring-bind (c a b) (cdr node)
     `(,@(cg-test c)
+      ;; the guard of a copied function body is expected to hold
+      ,@(when (and (eq (car c) :prim) (eq (prim-name (second c)) 'clysm-sys::%function-cell-eq))
+          '((:hint 1)))
       (:if nil :eqref ,(cg a mv tail) ,(cg b mv tail)))))
 
 (defun cg-progn (nodes mv tail)

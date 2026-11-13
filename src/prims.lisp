@@ -504,6 +504,9 @@ leaving them in the i32 locals X and Y."
       (:local.get ,tg) (:struct.get :closure ,+clo-name+)
       (:ref.null :func) (:ref.null :eq)
       (:struct.new :closure))))
+;; the function of a symbol is (EQ) a given function
+(defprim clysm-sys::%function-cell-eq (sym f) :test
+  `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
 (defprim clysm-sys::%closure-key-layout (f) :value
   (let ((tmp (new-local)))
     `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-klayout+) (:local.tee ,tmp) :ref.is_null

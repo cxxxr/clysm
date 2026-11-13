@@ -242,7 +242,12 @@ destructuring-bind (defined by the runtime)."
         (push (second fnode) (gethash sym *global-defuns*))
         ;; in a development image the function may be redefined at run time
         (when *redefinable-functions* (setf (gethash sym *notinline*) t)))
-      (push `(:defun ,sym ,fnode) *toplevel-nodes*))))
+      (push `(:defun ,sym ,fnode) *toplevel-nodes*)
+      ;; a small function defined at top level in the image: later calls may
+      ;; contain a copy of its body (LIVE-INLINE-CALL)
+      (when (and *live-inline-ok* (symbolp name) (eq (car fnode) :lambda)
+                 (null (cenv-entries env)) (live-inline-record sym fn-form))
+        (emit-toplevel-form `(clysm-sys::%note-live-inline ',sym) env)))))
 
 (defun process-defpackage (form env)
   (destructuring-bind (name &rest options) (cdr form)
