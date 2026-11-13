@@ -215,7 +215,17 @@
                                  ,(if (eql n 2) '(lambda (a b) (%gf-call2 info a b)) 'g)
                                  ,(if (eql n 3) '(lambda (a b c) (%gf-call3 info a b c)) 'g)
                                  ,(if (eql n 4) '(lambda (a b c d) (%gf-call4 info a b c d)) 'g)))))
-        (t '(lambda (info) (lambda (&rest args) (%gf-invoke info args))))))
+        (t '(lambda (info) (%make-list-gf-function info)))))
+
+(defun %make-list-gf-function (info)
+  "The function of a generic function called with a list of its arguments
+(its lambda list has &optional, &rest or &key, or more than four required
+parameters): calls with one to four arguments make the list directly."
+  (%make-gf-closure4 (lambda (&rest args) (%gf-invoke info args))
+                     (lambda (a) (%gf-invoke info (list a)))
+                     (lambda (a b) (%gf-invoke info (list a b)))
+                     (lambda (a b c) (%gf-invoke info (list a b c)))
+                     (lambda (a b c d) (%gf-invoke info (list a b c d)))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %fast-arity (ll)
@@ -250,8 +260,9 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
 ;;; the vector of +GF-TABLE+ or NIL -- what the dispatch needs, in one object)
 ;;; searched without consing.  A key is the class of a required argument, or
 ;;; the marker (object . hash) of the EQL specializer object the argument is
-;;; (+GF-EQL+: NIL or a simple-vector of the markers per parameter), or 0 for a parameter that no
-;;; method specializes (+GF-UNSPECIALIZED+).  VALUE is a function of the
+;;; (+GF-EQL+: NIL or a simple-vector of the markers per parameter), or 0 for
+;;; a parameter that no method specializes (+GF-UNSPECIALIZED+).  VALUE is a
+;;; function of the
 ;;; required arguments when +GF-FAST+ is not 0, else (effective-method-function
 ;;; . valid-keys), a function of the argument list; METHODS are the applicable
 ;;; methods.  TAG is +GF-FAST+ + 16 * (the first four bits of
@@ -695,23 +706,30 @@ own, which the dispatch on classes does not find."
 
 (defun %gf-lookup (info args nreq which)
   "The cache entry for ARGS: its value (WHICH = 0) or the applicable methods (1)."
-  (let* ((pic (%gf-slot info +gf-cache+)) (len (length pic)) (stride (+ nreq 2)))
-    (declare (simple-vector pic))
-    (when (> len +gf-cache-header+)
-      (let ((eqls (%gf-slot info +gf-eql+)) (unspec (%gf-slot info +gf-unspecialized+)))
-        (if (and (null eqls) (<= nreq 4))
+  (declare (fixnum nreq which))
+  (let* ((pic (%gf-slot info +gf-cache+)) (len (%svlength pic)) (stride (%fx+ nreq 2)))
+    (declare (fixnum len stride))
+    (when (%fx> len +gf-cache-header+)
+      (let ((eqls (%svref pic 2)) (unspec (the fixnum (%svref pic 3))))
+        (declare (fixnum unspec))
+        (if (and (null eqls) (%fx<= nreq 4))
             ;; the keys are classes (or 0)
-            (do ((i +gf-cache-header+ (+ i stride))) ((>= i len))
-              (when (do ((j i (+ j 1)) (p 0 (+ p 1)) (a args (cdr a))) ((>= p nreq) t)
-                      (unless (eq (svref pic j)
-                                  (if (eq (%fxlogand unspec (ash 1 p)) 0) (%fast-class-of (car a)) 0))
+            (do ((i +gf-cache-header+ (%fx+ i stride))) ((%fx>= i len))
+              (declare (fixnum i))
+              (when (do ((j i (%fx+ j 1)) (p 0 (%fx+ p 1)) (bit 1 (%fx* bit 2)) (a args (cdr a)))
+                        ((%fx>= p nreq) t)
+                      (declare (fixnum j p bit))
+                      (unless (eq (%svref pic j)
+                                  (if (eq (%fxlogand unspec bit) 0) (%fast-class-of (car a)) 0))
                         (return nil)))
-                (return-from %gf-lookup (svref pic (+ i nreq which)))))
+                (return-from %gf-lookup (%svref pic (%fx+ i (%fx+ nreq which))))))
             (let ((keys (%gf-keys info args nreq)))
-              (do ((i +gf-cache-header+ (+ i stride))) ((>= i len))
-                (when (do ((j i (+ j 1)) (l keys (cdr l))) ((null l) t)
-                        (unless (eq (svref pic j) (car l)) (return nil)))
-                  (return-from %gf-lookup (svref pic (+ i nreq which)))))))))
+              (do ((i +gf-cache-header+ (%fx+ i stride))) ((%fx>= i len))
+                (declare (fixnum i))
+                (when (do ((j i (%fx+ j 1)) (l keys (cdr l))) ((null l) t)
+                        (declare (fixnum j))
+                        (unless (eq (%svref pic j) (car l)) (return nil)))
+                  (return-from %gf-lookup (%svref pic (%fx+ i (%fx+ nreq which))))))))))
     (let* ((keys (%gf-keys info args nreq))
            (table (%gf-slot info +gf-table+))
            (pos (and table (%gf-table-find (cdr table) keys nreq))))
@@ -730,15 +748,19 @@ own, which the dispatch on classes does not find."
             methods)))
 
 (defun %gf-invoke (info args)
-  (let* ((nreq (%gf-slot info +gf-nreq+)) (nopt (%gf-slot info +gf-nopt+))
+  (let* ((nreq (the fixnum (%gf-slot info +gf-nreq+))) (nopt (the fixnum (%gf-slot info +gf-nopt+)))
          (rest args))
+    (declare (fixnum nreq nopt))
     ;; REST: the arguments after the required and optional ones
-    (dotimes (i nreq)
+    (do ((i 0 (%fx+ i 1))) ((%fx>= i nreq))
+      (declare (fixnum i))
       (when (atom rest)
         (%gf-arg-error info "too few arguments (~S given, ~S required)" (length args) nreq))
       (setq rest (cdr rest)))
-    (unless (eql nopt 0)
-      (dotimes (i nopt) (when (atom rest) (return)) (setq rest (cdr rest))))
+    (unless (eq nopt 0)
+      (do ((i 0 (%fx+ i 1))) ((or (%fx>= i nopt) (atom rest)))
+        (declare (fixnum i))
+        (setq rest (cdr rest))))
     (when rest
       (if (%gf-slot info +gf-restp+)
           (when (%gf-slot info +gf-keyp+)
@@ -1994,6 +2016,11 @@ access protocol; else NIL."
   (if (%constant-slot-name-p name)
       `(%set-slot-value-cached ,object ,name ,value (load-time-value (%make-slot-cache)))
       form))
+
+;;; (setf (slot-value x 'name) v): the constant name reaches the compiler macro
+;;; (the short DEFSETF form of boot.lisp binds it to a variable)
+(defsetf slot-value (object slot-name) (value)
+  `(%set-slot-value ,object ,slot-name ,value))
 
 (define-compiler-macro slot-boundp (&whole form object name)
   (if (%constant-slot-name-p name)

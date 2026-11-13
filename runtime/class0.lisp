@@ -366,14 +366,6 @@ grows when CLASS has more instance slots)."
       (do ((l (%class-slot c +class-default-initargs+) (cddr l))) ((null l))
         (unless (assoc (car l) r) (push (cons (car l) (cadr l)) r))))))
 
-(defun %add-default-initargs (class initargs)
-  (let ((extra nil))
-    (dolist (d (%class-default-initargs-list class))
-      (unless (do ((l initargs (cddr l))) ((atom l) nil) (when (eq (car l) (car d)) (return t)))
-        (push (car d) extra)
-        (push (funcall (cdr d)) extra)))
-    (if extra (append initargs (nreverse extra)) initargs)))
-
 ;;; bootstrap metaclasses: standard-class is an instance of itself
 (defun %bootstrap-classes ()
   (let ((sc (%make-instance nil (%make-simple-vector +class-size+ nil))))
