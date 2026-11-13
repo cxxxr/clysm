@@ -1,7 +1,7 @@
 symbols                  total  1145  pass  1145  fail     0  crash    0 
 eval-and-compile         total   318  pass   318  fail     0  crash    0 
 data-and-control-flow    total  1428  pass  1428  fail     0  crash    0 
-iteration                total   843  pass   843  fail     0  crash    0 
+iteration                total   838  pass   838  fail     0  crash    0 
 objects                  total   862  pass   862  fail     0  crash    0 
 conditions               total   673  pass   673  fail     0  crash    0 
 cons                     total  1882  pass  1882  fail     0  crash    0 
@@ -22,4 +22,4 @@ reader                   total   673  pass   673  fail     0  crash    0
 system-construction      total    77  pass    77  fail     0  crash    0 
 environment              total   210  pass   210  fail     0  crash    0 
 misc                     total   740  pass   740  fail     0  crash    0 
-ALL                      total 21945  pass 21944  fail     1  crash    0  (100.0%)
+ALL                      total 21940  pass 21939  fail     1  crash    0  (100.0%)

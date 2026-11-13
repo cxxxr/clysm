@@ -131,7 +131,10 @@
                  (progn
                    (%loop-end-test s `(atom ,g))
                    (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))
-             (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))))
+             ;; each clause is stepped and then tested (the clauses after
+             ;; it are not stepped when it terminates the loop)
+             (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))
+             (%loop-step s `(when ,(if (%lkw kw "IN") `(endp ,g) `(atom ,g)) (go ,(%ls s 11))))))
           ((%lkw kw "ACROSS")
            (let ((vec (gensym "VEC")) (i (gensym "I")))
              (%loop-add-binding s vec (%loop-pop s))
@@ -139,7 +142,8 @@
              (%loop-bind-pattern s var)
              (%loop-end-test s `(>= ,i (length ,vec)))
              (dolist (f (%loop-destructure-setq var `(aref ,vec ,i))) (%loop-pre s f))
-             (%loop-step s `(setq ,i (+ ,i 1)))))
+             (%loop-step s `(setq ,i (+ ,i 1)))
+             (%loop-step s `(when (>= ,i (length ,vec)) (go ,(%ls s 11))))))
           ((%lkw kw "=")
            (let ((init (%loop-pop s)))
              (%loop-bind-pattern s var)
@@ -196,15 +200,14 @@
           (%loop-end-test s (if down
                                 (if inclusive `(< ,var ,lim) `(<= ,var ,lim))
                                 (if inclusive `(> ,var ,lim) `(>= ,var ,lim)))))
-        (if have-to
-            (let ((next (gensym "NEXT")))
-              (%loop-step s `(let ((,next ,(if down `(- ,var ,step) `(+ ,var ,step))))
-                               (when ,(if down
-                                          (if inclusive `(< ,next ,lim) `(<= ,next ,lim))
-                                          (if inclusive `(> ,next ,lim) `(>= ,next ,lim)))
-                                 (go ,(%ls s 11)))
-                               (setq ,var ,next))))
-            (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step))))))))
+        ;; stepped, then tested: after the loop the variable has the first
+        ;; value beyond the limit (as in the MIT LOOP)
+        (%loop-step s `(setq ,var ,(if down `(- ,var ,step) `(+ ,var ,step))))
+        (when have-to
+          (%loop-step s `(when ,(if down
+                                    (if inclusive `(< ,var ,lim) `(<= ,var ,lim))
+                                    (if inclusive `(> ,var ,lim) `(>= ,var ,lim)))
+                           (go ,(%ls s 11))))))))
 
   (defun %loop-parse-being (s var kw)
     (when (%lkw-in kw '("BEING")) (when (%lkw-in (%loop-peek s) '("THE" "EACH")) (%loop-pop s)))

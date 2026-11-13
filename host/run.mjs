@@ -143,7 +143,8 @@ function makeNetServer(worker, sab) {
     try {
       if (op === 'connect') {
         const [host, port] = args;
-        const sock = net.connect({ host, port });
+        // a null port: HOST is the path of a Unix domain socket
+        const sock = (port === null || port === undefined) ? net.connect({ path: host }) : net.connect({ host, port });
         const s = { sock, chunks: [], ended: false, error: null, waiting: null };
         const wake = () => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
         sock.on('data', (b) => { s.chunks.push(b); wake(); });
@@ -161,6 +162,10 @@ function makeNetServer(worker, sab) {
       } else if (op === 'read') {
         const s = sockets.get(args[0]);
         if (!tryRead(s, Math.min(args[1], NET_DATA_BYTES))) s.waiting = Math.min(args[1], NET_DATA_BYTES);
+      } else if (op === 'available') {
+        // is a read possible without waiting?
+        const s = sockets.get(args[0]);
+        ok(Buffer.from(s && (s.chunks.length || s.ended || s.error) ? '1' : '0'));
       } else if (op === 'close') {
         const s = sockets.get(args[0]);
         if (s) { s.sock.destroy(); sockets.delete(args[0]); }
@@ -187,6 +192,7 @@ function installNetClient(port, sab) {
     write: (id, octets) => { call('write', id, octets); },
     read: (id, max) => call('read', id, max).toString('latin1'),
     close: (id) => { call('close', id); },
+    available: (id) => call('available', id).toString() === '1',
   };
 }
 

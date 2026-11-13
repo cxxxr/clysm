@@ -33,13 +33,18 @@
   (cl-user::compile-and-load* "random-aux.lsp")
   (cl-user::compile-and-load* "ansi-aux.lsp")
   (load "cl-symbol-names.lsp")
-  (load "notes.lsp"))
+  (load "notes.lsp")
+  ;; like SBCL (and the MIT LOOP that libraries such as McCLIM rely on), an
+  ;; arithmetic FOR variable is stepped past its limit before the loop ends:
+  ;; the tests that assume otherwise (marked :ANSI-SPEC-PROBLEM) are inactive
+  (funcall (find-symbol "DISABLE-NOTE" "RT") :loop-iteration-values-in-finally))
 
 (in-package :cl-test)
 
 (let ((*default-pathname-defaults* cl-user::*ansi-root*))
   (load (concatenate 'string cl-user::*category* "/load.lsp")))
 
+(setf (cdr rt::*entries*) (remove-if #'rt::has-disabled-note (cdr rt::*entries*)))
 (format t "~&@@TOTAL ~D~%" (length (cdr rt::*entries*)))
 (let ((i 0))
   (dolist (entry (cdr rt::*entries*))

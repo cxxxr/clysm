@@ -25,10 +25,24 @@
 ;;; method combination: 0 name 1 options
 (defparameter *method-combination-slot-names* '(%name %options))
 
-(defun %define-raw-slots (class-name names)
-  (let ((class (find-class class-name)))
-    (%set-class-slot class +class-direct-slots+ (mapcar (lambda (n) (%make-slotd n)) names))
-    (%finalize-class class)))
+
+(%define-raw-slots 'slot-definition
+                   (let ((none (lambda () nil)))
+                     (list (list '%name :name none) (list '%initargs :initargs none)
+                           (list '%initform :initform none) (list '%initfunction :initfunction none)
+                           (list '%readers :readers none) (list '%writers :writers none)
+                           (list '%allocation :allocation (lambda () :instance))
+                           (list '%type :type (lambda () t)) (list '%documentation :documentation none)
+                           (list '%location nil none))))
+
+(%define-raw-slots 'class
+                   '(%name %direct-superclasses %direct-slots %class-precedence-list %slots
+                     %direct-subclasses %finalized-p %kind %slot-index %default-initargs %documentation
+                     %extra %shared %prototype %direct-default-initargs %protocol %plist))
+
+(setq *standard-metaclasses*
+      (mapcar #'find-class '(standard-class funcallable-standard-class built-in-class structure-class
+                             forward-referenced-class)))
 
 (%define-raw-slots 'generic-function *gf-slot-names*)
 (%define-raw-slots 'method *method-slot-names*)
@@ -291,6 +305,8 @@
           (setq i (+ i 1)))))
     (%set-gf-slot info +gf-eql+ r)))
 
+(defvar *add-method-hook* nil)
+
 (defun %add-method (gf method)
   (let* ((info (%gf-info gf))
          (specs (%method-specializers method))
@@ -310,7 +326,9 @@
                         (%gf-slot info +gf-methods+))))
       (when old (%set-instance-ref old 0 nil))
       (%set-instance-ref method 0 gf)
-      (%set-gf-slot info +gf-methods+ (cons method (remove old (%gf-slot info +gf-methods+)))))
+      (when (and old *add-method-hook*) (funcall *add-method-hook* old nil))
+      (%set-gf-slot info +gf-methods+ (cons method (remove old (%gf-slot info +gf-methods+))))
+      (when *add-method-hook* (funcall *add-method-hook* method t)))
     (%update-eql-info info)
     (%gf-invalidate info)
     gf))
@@ -319,6 +337,7 @@
   (let ((info (%gf-info gf)))
     (when (member method (%gf-slot info +gf-methods+))
       (%set-gf-slot info +gf-methods+ (remove method (%gf-slot info +gf-methods+)))
+      (when *add-method-hook* (funcall *add-method-hook* method nil))
       (%set-instance-ref method 0 nil)
       (%update-eql-info info)
       (%gf-invalidate info))
@@ -439,10 +458,24 @@
         (when (eq k :any) (return :any))
         (dolist (x k) (pushnew x r))))))
 
+(defvar *the-standard-generic-function-class* nil)
+
+(defun %gf-applicable-methods (gf info args)
+  (if (or (eq (%instance-layout info) *the-standard-generic-function-class*)
+          (null *the-standard-generic-function-class*))
+      (%compute-applicable-methods gf args)
+      ;; a generic function of a user-defined class (AMOP: the
+      ;; discriminating function calls COMPUTE-APPLICABLE-METHODS-USING-CLASSES
+      ;; first, then COMPUTE-APPLICABLE-METHODS)
+      (multiple-value-bind (methods ok)
+          (compute-applicable-methods-using-classes
+           gf (mapcar #'class-of (subseq args 0 (min (length args) (%gf-slot info +gf-nreq+)))))
+        (if ok methods (compute-applicable-methods gf args)))))
+
 (defun %compute-emf (info args)
   "Returns (emf . valid-keys)."
   (let* ((gf (%gf-slot info +gf-function+))
-         (methods (%compute-applicable-methods gf args))
+         (methods (%gf-applicable-methods gf info args))
          (gfll (%gf-slot info +gf-ll+)))
     (cons (if (null methods)
               (lambda (args) (apply #'no-applicable-method gf args))
@@ -885,11 +918,11 @@ variables of the effective method) while the effective method form is computed."
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %defclass-slot (class-name spec)
-    "Returns (values slotd-form readers writers name)."
+    "Returns (values canonical-slot-spec-form readers writers name)."
     (let* ((spec (if (consp spec) spec (list spec)))
            (name (car spec)) (opts (cdr spec))
            (initargs nil) (initform nil) (initformp nil) (readers nil) (writers nil)
-           (allocation :instance) (type t) (doc nil) (seen nil))
+           (allocation :instance) (type t) (doc nil) (seen nil) (others nil))
       (unless (and (symbolp name) name (not (constantp name)))
         (%program-error "DEFCLASS ~S: invalid slot name ~S" class-name name))
       (unless (evenp (length opts))
@@ -914,16 +947,21 @@ variables of the effective method) while the effective method form is computed."
             (:type (setq type val))
             (:documentation (unless (stringp val) (%program-error "DEFCLASS ~S: invalid documentation ~S" class-name val))
              (setq doc val))
-            (t (%program-error "DEFCLASS ~S: unknown slot option ~S" class-name key)))))
-      (values `(%make-slotd ',name :initargs ',(reverse initargs) :initform ',initform
-                            :initfunction ,(if initformp `(lambda () ,initform) nil)
-                            :readers ',(reverse readers) :writers ',(reverse writers) :allocation ',allocation
-                            :type ',type :doc ',doc)
+            ;; other slot options are passed to the slot definition class
+            ;; (AMOP: one value, or the list of values of repeated options)
+            (t (let ((e (assoc key others)))
+                 (if e (setf (cdr e) (append (cdr e) (list val))) (push (list key val) others)))))))
+      (values `(list :name ',name :initargs ',(reverse initargs) :initform ',initform
+                     :initfunction ,(if initformp `(lambda () ,initform) nil)
+                     :readers ',(reverse readers) :writers ',(reverse writers) :allocation ',allocation
+                     :type ',type :documentation ',doc
+                     ,@(mapcan (lambda (e) (list `',(car e) (if (cddr e) `',(cdr e) `',(cadr e))))
+                               (reverse others)))
               (reverse readers) (reverse writers) name))))
 
 (defmacro defclass (name supers slots &rest options)
   (let ((slotd-forms nil) (accessor-forms nil) (default-initargs nil) (metaclass nil) (doc nil)
-        (seen nil) (slot-names nil))
+        (seen nil) (slot-names nil) (others nil))
     (unless (and (symbolp name) name) (%program-error "DEFCLASS: invalid class name ~S" name))
     (unless (and (listp supers) (every #'symbolp supers))
       (%program-error "DEFCLASS ~S: invalid superclass list ~S" name supers))
@@ -939,8 +977,8 @@ variables of the effective method) while the effective method form is computed."
           (push `(defmethod ,w (new-value (object ,name)) (setf (slot-value object ',sname) new-value))
                 accessor-forms))))
     (dolist (o options)
-      (unless (and (consp o) (member (car o) '(:default-initargs :metaclass :documentation)))
-        (%program-error "DEFCLASS ~S: unknown class option ~S" name o))
+      (unless (and (consp o) (symbolp (car o)))
+        (%program-error "DEFCLASS ~S: invalid class option ~S" name o))
       (when (member (car o) seen) (%program-error "DEFCLASS ~S: class option ~S given more than once" name (car o)))
       (push (car o) seen)
       (case (car o)
@@ -954,7 +992,9 @@ variables of the effective method) while the effective method form is computed."
                (%program-error "DEFCLASS ~S: duplicate default initarg ~S" name (car l)))
              (push (car l) keys))))
         (:metaclass (setq metaclass (cadr o)))
-        (:documentation (setq doc (cadr o)))))
+        (:documentation (setq doc (cadr o)))
+        ;; other class options are initialization arguments of the class
+        (t (push `',(car o) others) (push `',(cdr o) others))))
     `(progn
        (eval-when (:compile-toplevel :load-toplevel :execute)
          (%put ',name '%defclass t))
@@ -962,12 +1002,43 @@ variables of the effective method) while the effective method form is computed."
                       (list ,@(let ((r nil))
                                 (do ((l default-initargs (cddr l))) ((null l) (reverse r))
                                   (push `',(car l) r) (push `(lambda () ,(cadr l)) r))))
-                      ',metaclass ,doc)
+                      ',metaclass ,doc
+                      (list ,@(reverse others))
+                      ',(let ((r nil))
+                          (do ((l default-initargs (cddr l))) ((null l) (reverse r))
+                            (push (list (car l) (cadr l)) r))))
        ,@(reverse accessor-forms)
        (find-class ',name))))
 
-(defun %ensure-class (name supers direct-slots default-initargs metaclass &optional doc)
-  (let ((names (mapcar #'%slotd-name direct-slots)))
+(defun %standard-metaclass-p (meta) (not (null (member meta *standard-metaclasses*))))
+
+(defparameter *standard-slot-keys*
+  '(:name :initargs :initform :initfunction :readers :writers :allocation :type :documentation))
+
+(defun %canonical-slot-name (s) (if (consp s) (getf s :name) (%slotd-name s)))
+
+(defun %standard-direct-slotd (class-name spec)
+  "A slot definition of a class of a standard metaclass from a canonical slot
+specification (or a slot definition)."
+  (if (%slotd-p spec)
+      spec
+      (progn
+        (do ((l spec (cddr l))) ((null l))
+          (unless (member (car l) *standard-slot-keys*)
+            (%program-error "DEFCLASS ~S: unknown slot option ~S" class-name (car l))))
+        (%make-slotd (getf spec :name) :initargs (getf spec :initargs) :initform (getf spec :initform)
+                                       :initfunction (getf spec :initfunction) :readers (getf spec :readers)
+                                       :writers (getf spec :writers)
+                                       :allocation (getf spec :allocation :instance)
+                                       :type (getf spec :type t) :doc (getf spec :documentation)))))
+
+(defun %mop-direct-slotd (class spec)
+  (if (%slotd-p spec)
+      spec
+      (apply #'make-instance (apply #'direct-slot-definition-class class spec) spec)))
+
+(defun %ensure-class (name supers direct-slots default-initargs metaclass &optional doc extra direct-default-initargs)
+  (let ((names (mapcar #'%canonical-slot-name direct-slots)))
     (unless (= (length names) (length (remove-duplicates names)))
       (%program-error "DEFCLASS ~S: duplicate slot names" name)))
   (let* ((super-classes (mapcar (lambda (s)
@@ -975,32 +1046,64 @@ variables of the effective method) while the effective method form is computed."
                                       (or (find-class s nil)
                                           (%ensure-class-object s (find-class 'forward-referenced-class)
                                                                 nil nil :forward))))
-                                (or supers '(standard-object))))
+                                (or supers
+                                    (if (and metaclass (%subclassp (if (%class-p metaclass) metaclass (find-class metaclass))
+                                                                   (find-class 'forward-referenced-class)))
+                                        nil
+                                        '(standard-object)))))
          (meta (cond ((null metaclass) *the-standard-class*)
                      ((%class-p metaclass) metaclass)
                      (t (find-class metaclass))))
-         (kind (cond ((some (lambda (c) (eq (%class-kind c) :condition)) super-classes) :condition)
+         (standard (%standard-metaclass-p meta))
+         (kind (cond ((%subclassp meta (find-class 'forward-referenced-class)) :forward)
+                     ((some (lambda (c) (eq (%class-kind c) :condition)) super-classes) :condition)
                      ((some (lambda (c) (and (%subclassp c (find-class 'class)) (not (eq (%class-kind c) :forward))))
                             super-classes)
                       :metaclass)
                      (t :standard)))
-         (existing (find-class name nil)))
-    (when (and existing (eq (%class-kind existing) :forward) (not (eq meta (%instance-layout existing))))
-      (%set-instance-layout existing meta))
-    (let ((class (%ensure-class-object name meta super-classes direct-slots kind)))
+         (existing (let ((c (find-class name nil))) (and c (eq (%class-name c) name) c))))
+    (when (and standard extra)
+      (%program-error "DEFCLASS ~S: unknown class option ~S" name (car extra)))
+    (let ((class (%ensure-class-object
+                  name meta super-classes nil kind
+                  (lambda (class)
+                    (unless (or standard (eq kind :forward))
+                      (dolist (s super-classes)
+                        (unless (validate-superclass class s)
+                          (error 'simple-error
+                                 :format-control "The class ~S is not a valid superclass of ~S (metaclass ~S)"
+                                 :format-arguments (list s name (%class-name meta))))))
+                    (mapcar (lambda (spec) (if standard (%standard-direct-slotd name spec) (%mop-direct-slotd class spec)))
+                            direct-slots)))))
       (%set-class-slot class +class-default-initargs+ default-initargs)
+      (%set-class-slot class +class-direct-default-initargs+
+                       (let ((r nil) (l default-initargs))
+                         (dolist (d direct-default-initargs (nreverse r))
+                           (push (list (car d) (cadr d) (cadr (member (car d) l))) r))))
       (%set-class-slot class +class-doc+ doc)
+      (unless standard
+        (apply (if existing #'reinitialize-instance #'initialize-instance) class
+               :name name :direct-superclasses super-classes
+               :direct-slots (remove-if #'%slotd-p direct-slots)
+               :direct-default-initargs (%class-slot class +class-direct-default-initargs+)
+               :documentation doc
+               extra))
       class)))
 
-(defun ensure-class (name &key direct-superclasses direct-slots metaclass direct-default-initargs
+(defun ensure-class (name &rest initargs &key direct-superclasses direct-slots metaclass direct-default-initargs
                             documentation &allow-other-keys)
-  (%ensure-class name (mapcar (lambda (c) (if (%class-p c) c c)) direct-superclasses)
-                 (mapcar (lambda (s) (if (vectorp s) s (apply #'%make-slotd (getf s :name) :allow-other-keys t s)))
-                         direct-slots)
-                 (let ((r nil))
-                   (dolist (d direct-default-initargs (nreverse r))
-                     (push (car d) r) (push (or (caddr d) (let ((form (cadr d))) (lambda () (eval form)))) r)))
-                 metaclass documentation))
+  (let ((extra (let ((r nil))
+                 (do ((l initargs (cddr l))) ((null l) (nreverse r))
+                   (unless (member (car l) '(:name :direct-superclasses :direct-slots :metaclass
+                                             :direct-default-initargs :documentation))
+                     (push (car l) r) (push (cadr l) r))))))
+    (%ensure-class name direct-superclasses
+                   (mapcar (lambda (s) (if (%slotd-p s) s (cons :name (cons (getf s :name) s)))) direct-slots)
+                   (let ((r nil))
+                     (dolist (d direct-default-initargs (nreverse r))
+                       (push (car d) r) (push (or (caddr d) (let ((form (cadr d))) (lambda () (eval form)))) r)))
+                   metaclass documentation extra
+                   (mapcar (lambda (d) (list (car d) (cadr d))) direct-default-initargs))))
 
 ;;; a class finalization invalidates the initarg caches
 (setq *class-finalization-hook*
@@ -1010,24 +1113,110 @@ variables of the effective method) while the effective method form is computed."
 ;;; slots
 ;;; ------------------------------------------------------------
 
-(defun slot-value (object slot-name) (%slot-value-by-name object slot-name))
-(defun %set-slot-value (object slot-name value) (%set-slot-value-by-name object slot-name value))
+(defun %fi-object (x)
+  "The instance holding the slots of X (a funcallable instance is a closure
+whose name is that instance)."
+  (if (functionp x)
+      (let ((info (%closure-name x))) (if (%instancep info) info x))
+      x))
+
+(defun %protocol-class (object)
+  "The class of OBJECT when slot access goes through the generic functions
+(SLOT-VALUE-USING-CLASS ...), else NIL."
+  (and (%instancep object)
+       (let ((c (%instance-layout object)))
+         (and (%instancep c) (%class-slot c +class-protocol+) c))))
+
+(defun %find-effective-slotd (class name)
+  (dolist (s (%class-effective-slots class) nil)
+    (when (eq (%slotd-name s) name) (return s))))
+
+(defun slot-value (object slot-name)
+  (setq object (%fi-object object))
+  (let ((class (%protocol-class object)))
+    (if class
+        (let ((sd (%find-effective-slotd class slot-name)))
+          (if sd
+              (slot-value-using-class class object sd)
+              (values (slot-missing class object slot-name 'slot-value))))
+        (%slot-value-by-name object slot-name))))
+
+(defun %set-slot-value (object slot-name value)
+  (setq object (%fi-object object))
+  (let ((class (%protocol-class object)))
+    (if class
+        (let ((sd (%find-effective-slotd class slot-name)))
+          (if sd
+              (funcall #'(setf slot-value-using-class) value class object sd)
+              (slot-missing class object slot-name 'setf value))
+          value)
+        (%set-slot-value-by-name object slot-name value))))
 
 (defun slot-boundp (object slot-name)
-  (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
-    (cond ((fixnump loc) (not (%unboundp (%instance-ref object loc))))
-          ((consp loc) (not (%unboundp (cdr loc))))
-          (t (values (%slot-missing object slot-name 'slot-boundp nil))))))
+  (setq object (%fi-object object))
+  (let ((class (%protocol-class object)))
+    (if class
+        (let ((sd (%find-effective-slotd class slot-name)))
+          (if sd
+              (not (null (slot-boundp-using-class class object sd)))
+              (values (slot-missing class object slot-name 'slot-boundp))))
+        (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
+          (cond ((fixnump loc) (not (%unboundp (%instance-ref object loc))))
+                ((consp loc) (not (%unboundp (cdr loc))))
+                (t (values (%slot-missing object slot-name 'slot-boundp nil))))))))
 
 (defun slot-makunbound (object slot-name)
-  (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
-    (cond ((fixnump loc) (%set-instance-ref object loc (%unbound-marker)))
-          ((consp loc) (setf (cdr loc) (%unbound-marker)))
-          (t (%slot-missing object slot-name 'slot-makunbound nil)))
-    object))
+  (setq object (%fi-object object))
+  (let ((class (%protocol-class object)))
+    (if class
+        (let ((sd (%find-effective-slotd class slot-name)))
+          (if sd
+              (slot-makunbound-using-class class object sd)
+              (slot-missing class object slot-name 'slot-makunbound))
+          object)
+        (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
+          (cond ((fixnump loc) (%set-instance-ref object loc (%unbound-marker)))
+                ((consp loc) (setf (cdr loc) (%unbound-marker)))
+                (t (%slot-missing object slot-name 'slot-makunbound nil)))
+          object))))
 
 (defun slot-exists-p (object slot-name)
+  (setq object (%fi-object object))
   (and (%instancep object) (not (null (%slot-location object slot-name)))))
+
+;;; the slot access protocol (AMOP): applies to instances of classes whose
+;;; metaclass is not one of the implementation's
+(defun %slotd-raw-value (object slotd)
+  (let ((loc (%slotd-location slotd)))
+    (if (fixnump loc) (%instance-ref object loc) (cdr loc))))
+
+(defgeneric slot-value-using-class (class object slotd))
+(defmethod slot-value-using-class ((class t) object slotd)
+  (let ((v (%slotd-raw-value object slotd)))
+    (if (%unboundp v) (values (slot-unbound class object (%slotd-name slotd))) v)))
+
+(defgeneric (setf slot-value-using-class) (new-value class object slotd))
+(defmethod (setf slot-value-using-class) (new-value (class t) object slotd)
+  (let ((loc (%slotd-location slotd)))
+    (if (fixnump loc) (%set-instance-ref object loc new-value) (setf (cdr loc) new-value))
+    new-value))
+
+(defgeneric slot-boundp-using-class (class object slotd))
+(defmethod slot-boundp-using-class ((class t) object slotd)
+  (not (%unboundp (%slotd-raw-value object slotd))))
+
+(defgeneric slot-makunbound-using-class (class object slotd))
+(defmethod slot-makunbound-using-class ((class t) object slotd)
+  (let ((loc (%slotd-location slotd)))
+    (if (fixnump loc) (%set-instance-ref object loc (%unbound-marker)) (setf (cdr loc) (%unbound-marker)))
+    object))
+
+(defun standard-instance-access (instance location) (%instance-ref instance location))
+(defun (setf standard-instance-access) (value instance location) (%set-instance-ref instance location value))
+(defun funcallable-standard-instance-access (instance location)
+  (%instance-ref (if (functionp instance) (%closure-name instance) instance) location))
+(defun (setf funcallable-standard-instance-access) (value instance location)
+  (%set-instance-ref (if (functionp instance) (%closure-name instance) instance) location value))
 
 (defmacro with-slots (slots instance &body body)
   (let ((g (gensym "INSTANCE")))
@@ -1152,6 +1341,8 @@ keyword parameters are valid initialization arguments."
   (when (eq (%class-kind class) :forward)
     (error 'simple-error :format-control "Cannot instantiate the forward-referenced class ~S"
                          :format-arguments (list (%class-name class))))
+  (unless (%class-slot class +class-finalized+)
+    (finalize-inheritance class))
   (%check-plist initargs 'make-instance)
   (let* ((initargs (%add-default-initargs class initargs))
          (proto (%class-prototype class)))
@@ -1179,9 +1370,25 @@ keyword parameters are valid initialization arguments."
   (apply #'shared-initialize instance nil initargs))
 
 (defgeneric shared-initialize (instance slot-names &rest initargs &key &allow-other-keys))
-(defmethod shared-initialize ((instance standard-object) slot-names &rest initargs)
+(defun %protocol-shared-initialize (instance class slot-names initargs)
+  (dolist (sd (%class-effective-slots class))
+    (let ((found nil) (value nil))
+      (do ((l initargs (cddr l))) ((or found (atom l)))
+        (when (member (car l) (%slotd-initargs sd))
+          (setq found t value (cadr l))))
+      (cond (found (funcall #'(setf slot-value-using-class) value class instance sd))
+            ((and (%slotd-initfunction sd)
+                  (or (eq slot-names t) (member (%slotd-name sd) slot-names))
+                  (not (slot-boundp-using-class class instance sd)))
+             (funcall #'(setf slot-value-using-class) (funcall (%slotd-initfunction sd)) class instance sd)))))
+  instance)
+
+(defmethod shared-initialize ((original standard-object) slot-names &rest initargs)
   (%check-plist initargs 'shared-initialize)
-  (let ((class (class-of instance)))
+  (let ((class (class-of original)) (instance (%fi-object original)))
+    (when (%class-slot class +class-protocol+)
+      (%protocol-shared-initialize instance class slot-names initargs)
+      (return-from shared-initialize original))
     (dolist (sd (%class-effective-slots class))
       (let ((loc (%slotd-location sd)) (found nil) (value nil))
         (do ((l initargs (cddr l))) ((or found (atom l)))
@@ -1194,7 +1401,7 @@ keyword parameters are valid initialization arguments."
                     (if (fixnump loc) (%unboundp (%instance-ref instance loc)) (%unboundp (cdr loc))))
                (let ((v (funcall (%slotd-initfunction sd))))
                  (if (fixnump loc) (%set-instance-ref instance loc v) (setf (cdr loc) v)))))))
-    instance))
+    original))
 
 (defgeneric update-instance-for-different-class (previous current &rest initargs &key &allow-other-keys))
 (defmethod update-instance-for-different-class ((previous standard-object) (current standard-object)
@@ -1303,15 +1510,106 @@ keyword parameters are valid initialization arguments."
 ;;; introspection (subset of the MOP)
 ;;; ------------------------------------------------------------
 
+;;; the class definition protocol (AMOP), used for classes whose metaclass
+;;; is not one of the implementation's
+(defgeneric validate-superclass (class superclass))
+(defmethod validate-superclass ((class class) (superclass class))
+  (let ((m1 (class-of class)) (m2 (class-of superclass)) (std (find-class 'standard-class))
+        (fsc (find-class 'funcallable-standard-class)))
+    (or (eq superclass (find-class t))
+        (eq m1 m2)
+        (and (eq m1 std) (eq m2 fsc))
+        (and (eq m1 fsc) (eq m2 std))
+        (%subclassp m2 (find-class 'forward-referenced-class))
+        ;; a subclass of a standard metaclass, as the standard metaclass
+        (and (%subclassp m1 std) (eq m2 std))
+        (and (%subclassp m1 fsc) (or (eq m2 fsc) (eq m2 std))))))
+
+(defgeneric direct-slot-definition-class (class &rest initargs))
+(defmethod direct-slot-definition-class ((class class) &rest initargs)
+  (declare (ignore initargs))
+  *the-direct-slotd-class*)
+
+(defgeneric effective-slot-definition-class (class &rest initargs))
+(defmethod effective-slot-definition-class ((class class) &rest initargs)
+  (declare (ignore initargs))
+  *the-effective-slotd-class*)
+
+(defgeneric compute-effective-slot-definition (class name direct-slot-definitions))
+(defmethod compute-effective-slot-definition ((class class) name direct-slotds)
+  (let* ((v (%effective-slotd-values (mapcar (lambda (d) (cons nil d)) direct-slotds)))
+         (initargs (list :name name :initargs (svref v 1) :initform (svref v 2) :initfunction (svref v 3)
+                         :allocation (svref v 6) :type (svref v 7) :documentation (svref v 8))))
+    (apply #'make-instance (apply #'effective-slot-definition-class class initargs) initargs)))
+
+(defgeneric compute-slots (class))
+(defmethod compute-slots ((class class))
+  (let ((cpl (%class-cpl class)))
+    (mapcar (lambda (name)
+              (compute-effective-slot-definition class name (mapcar #'cdr (%direct-slotds-named cpl name))))
+            (%effective-slot-names cpl))))
+
+;;; the locations are assigned to the slots that COMPUTE-SLOTS returns (as
+;;; by an :AROUND method in other implementations: methods may add slots)
+(setq *compute-slots-hook* (lambda (class) (%assign-slot-locations class (compute-slots class))))
+
+;;; class metaobjects accept the class definition initialization arguments
+(defmethod shared-initialize ((class class) slot-names &rest initargs
+                              &key name direct-superclasses direct-slots direct-default-initargs documentation
+                              &allow-other-keys)
+  (declare (ignore name direct-superclasses direct-slots direct-default-initargs documentation))
+  (apply #'call-next-method class slot-names initargs))
+
+(defun ensure-class-using-class (class name &rest initargs)
+  (declare (ignore class))
+  (apply #'ensure-class name initargs))
+
+(defun compute-class-precedence-list (class) (%compute-cpl class (%class-slot class +class-supers+)))
+
+;;; generic functions
+(defgeneric compute-applicable-methods-using-classes (generic-function classes))
+(defmethod compute-applicable-methods-using-classes ((gf generic-function) classes)
+  (let* ((info (%gf-info gf)) (methods (%gf-slot info +gf-methods+)))
+    (if (some (lambda (m) (some #'consp (%method-specializers m))) methods)
+        (values nil nil)
+        (let ((ms (remove-if-not (lambda (m)
+                                   (do ((specs (%method-specializers m) (cdr specs)) (c classes (cdr c)))
+                                       ((null specs) t)
+                                     (unless (%subclassp (car c) (car specs)) (return nil))))
+                                 methods))
+              (apo (%gf-slot info +gf-apo+)))
+          (values (stable-sort (copy-list ms)
+                               (lambda (m1 m2)
+                                 (let ((s1 (%method-specializers m1)) (s2 (%method-specializers m2)))
+                                   (dolist (i (or apo (let ((r nil)) (dotimes (i (length classes) (nreverse r)) (push i r))))
+                                              nil)
+                                     (let ((a (nth i s1)) (b (nth i s2)) (cpl (%class-cpl (nth i classes))))
+                                       (unless (eq a b)
+                                         (return (< (or (position a cpl) 1000) (or (position b cpl) 1000)))))))))
+                  t)))))
+
+(setq *the-standard-generic-function-class* (find-class 'standard-generic-function))
+
 (defun class-direct-superclasses (c) (%class-slot c +class-supers+))
 (defun class-direct-subclasses (c) (%class-slot c +class-subclasses+))
 (defun class-precedence-list (c) (%class-cpl c))
 (defun class-slots (c) (%class-effective-slots c))
 (defun class-direct-slots (c) (%class-slot c +class-direct-slots+))
 (defun class-finalized-p (c) (%class-slot c +class-finalized+))
-(defun finalize-inheritance (c) (%finalize-class c))
-(defun class-default-initargs (c) (%class-default-initargs-list c))
-(defun class-direct-default-initargs (c) (%class-slot c +class-default-initargs+))
+(defun finalize-inheritance (c)
+  (let ((fwd (find-if (lambda (k) (eq (%class-kind k) :forward)) (%compute-cpl c (%class-slot c +class-supers+)))))
+    (when fwd
+      (error 'simple-error :format-control "Cannot finalize ~S: its superclass ~S is not defined"
+                           :format-arguments (list c (%class-name fwd))))
+    (%finalize-class c)))
+(defun class-direct-default-initargs (c) (%class-slot c +class-direct-default-initargs+))
+(defun class-default-initargs (c)
+  (let ((r nil))
+    (dolist (k (%class-cpl c) (nreverse r))
+      (dolist (d (%class-slot k +class-direct-default-initargs+))
+        (unless (assoc (car d) r) (push d r))))))
+(defun classp (x) (%class-p x))
+(defun slot-definition-documentation (s) (%slotd-doc s))
 (defun slot-definition-name (s) (%slotd-name s))
 (defun slot-definition-initargs (s) (%slotd-initargs s))
 (defun slot-definition-initform (s) (%slotd-initform s))
@@ -1336,7 +1634,10 @@ keyword parameters are valid initialization arguments."
 (defun method-function (m) (%method-function m))
 (defun method-lambda-list (m) (%instance-ref m 4))
 (defun method-generic-function (m) (%method-gf m))
-(defun class-prototype (c) (%class-prototype c))
+(defun class-prototype (c)
+  (unless (%class-slot c +class-finalized+)
+    (error 'simple-error :format-control "The class ~S is not finalized" :format-arguments (list c)))
+  (%class-prototype c))
 (defun eql-specializer-object (s) (cadr s))
 (defun intern-eql-specializer (x) (list 'eql x))
 

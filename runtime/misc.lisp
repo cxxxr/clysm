@@ -111,7 +111,7 @@
 (defun software-version () "")
 (defun short-site-name () "")
 (defun long-site-name () "")
-(defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point))
+(defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point :package-local-nicknames))
 (defvar *modules* nil)
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
 (defvar *module-provider-functions* '(%module-provide-contrib)

@@ -10,6 +10,7 @@
 (defvar *read-base* 10)
 (defvar *read-eval* t)
 (defvar *read-suppress* nil)
+(defvar *fasl-syntax* nil "true while reading or writing a compiled file")
 
 (defstruct (readtable (:constructor %make-readtable) (:predicate readtablep) (:copier nil)
                       (:conc-name %rt-)
@@ -354,6 +355,9 @@ token is empty when the next character ends a token."
                    (multiple-value-bind (sym status) (find-symbol name pkg)
                      (cond ((eq status :external) sym)
                            ((eq pkg *keyword-package*) (values (intern name pkg)))
+                           ;; a compiled file names the symbols that were external
+                           ;; when it was compiled (they may be exported later in it)
+                           (*fasl-syntax* (values (intern name pkg)))
                            ((null status)
                             (%reader-error s "symbol ~S not found in the ~A package" name pname))
                            (t (%reader-error s "symbol ~S is not external in the ~A package"

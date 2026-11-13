@@ -234,6 +234,16 @@ START at end of file."
       (setf (aref buffer (+ start i)) (char-code (char s i))))
     (+ start n)))
 
+(defun %tcp-available-p (id)
+  "True when a read of connection ID would not wait."
+  (js:call (%host-net) "available" id))
+
+(defun %local-connect (path)
+  "Open a connection to the Unix domain socket PATH; returns a connection id."
+  (handler-case (js:call (%host-net) "connect" (namestring path) nil)
+    (error (e) (error 'simple-error :format-control "cannot connect to ~A: ~A"
+                                    :format-arguments (list path e)))))
+
 (defun %tcp-close (id)
   (js:call (%host-net) "close" id)
   t)

@@ -143,7 +143,11 @@
            (%put ',name '%struct-constructor ',(car (find-if (lambda (c) (null (cdr c))) constructors)))
            ,@(unless seq-kind
                `((%define-structure-class ',name ',include ',class-slots
-                                          ,(cond (print-fn `(function ,print-fn))
+                                          ;; a function name is looked up when printing
+                                          ;; (it may be defined after the structure)
+                                          ,(cond ((and print-fn (symbolp print-fn)) `',print-fn)
+                                                 (print-fn `(function ,print-fn))
+                                                 ((and print-obj (symbolp print-obj)) `',print-obj)
                                                  (print-obj `(function ,print-obj))
                                                  (t nil))
                                           ,(if print-obj t nil))))

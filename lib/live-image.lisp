@@ -20,23 +20,36 @@
   (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
   (setf *macros-ready* t))
 
+(defvar *native-eval-failure* nil
+  "The error the compiler signaled for the last form NATIVE-EVAL interpreted instead.")
+
 (defun native-eval (form)
   "Compile FORM to a new Wasm module linked with this image and run it.
 If the compiler signals an error, the form is evaluated by the interpreter
 instead (so the error, if any, happens at run time)."
   (multiple-value-bind (bytes consts)
       (handler-case (live-compile-forms (list form))
-        (error () (return-from native-eval (eval form))))
+        (error (e)
+          (setq *native-eval-failure* e)
+          (return-from native-eval (eval form))))
     (dotimes (i (length bytes)) (sys::%put-char-buf (aref bytes i)))
     (sys::%compile-module (sys::%js-take-string) (sys::%js-wrap-lisp consts))))
 
 (defun native-compile (name definition)
   (cond (definition
-         (let ((fn (if (functionp definition)
-                       definition
-                       (native-eval `(function ,definition)))))
+         (let* ((*native-eval-failure* nil)
+                (fn (if (functionp definition)
+                        definition
+                        (native-eval `(function ,definition)))))
            (when name (setf (fdefinition name) fn))
-           (values (or name fn) nil nil)))
+           ;; CLHS 3.2.5: an error during compilation (e.g. in a macro
+           ;; expander) is reported as a warning, and COMPILE reports failure;
+           ;; the function signals the error when it is called
+           (if *native-eval-failure*
+               (progn
+                 (warn "COMPILE: ~A" *native-eval-failure*)
+                 (values (or name fn) t t))
+               (values (or name fn) nil nil))))
         (t
          (let ((src (get (sys::%function-name-symbol name) 'sys::%lambda-source)))
            (when src

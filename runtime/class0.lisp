@@ -18,9 +18,19 @@
 (defconstant +class-shared+ 12)     ; alist slot-name -> cell (name . value) of slots this class allocates
 (defconstant +class-prototype+ 13)
 (defconstant +class-direct-default-initargs+ 14) ; ((key form fn) ...) as given to DEFCLASS
-(defconstant +class-size+ 15)
+(defconstant +class-protocol+ 15)   ; true: the metaclass is not a standard one (MOP generic protocols apply)
+(defconstant +class-plist+ 16)
+(defconstant +class-size+ 17)
 
 (defvar *the-standard-class* nil)
+(defvar *the-direct-slotd-class* nil)
+(defvar *the-effective-slotd-class* nil)
+;;; classes whose instances have a fixed layout of raw slots (they come first)
+(defvar *raw-layout-classes* nil)
+;;; the metaclasses defined by the implementation; classes of other
+;;; metaclasses go through the generic functions of the metaobject protocol
+(defvar *standard-metaclasses* nil)
+(defvar *compute-slots-hook* nil)
 
 (defun %class-p (x)
   (and (%instancep x)
@@ -35,27 +45,37 @@
   (let ((n (if (%class-slot metaclass +class-slots+)
                (max +class-size+ (%instance-slot-count metaclass))
                +class-size+)))
-    (%make-instance metaclass (%make-simple-vector n nil))))
+    (let ((v (%make-simple-vector n nil)))
+      ;; the slots of a user-defined metaclass start unbound
+      (do ((i +class-size+ (+ i 1))) ((>= i n)) (setf (svref v i) (%unbound-marker)))
+      (%make-instance metaclass v))))
 
 (defun %class-name (c) (%class-slot c +class-name+))
 (defun %class-cpl (c) (%class-slot c +class-cpl+))
 (defun %class-kind (c) (%class-slot c +class-kind+))
 (defun %class-effective-slots (c) (%class-slot c +class-slots+))
 
-;;; slot definitions: simple vectors
-;;; #(name initargs initform initfunction readers writers allocation type documentation location)
+;;; slot definitions: instances of (subclasses of) SLOT-DEFINITION whose
+;;; first slots are
+;;; name initargs initform initfunction readers writers allocation type documentation location
+(defconstant +slotd-size+ 10)
 (defun %make-slotd (name &key initargs initform initfunction readers writers (allocation :instance) (type t) doc)
-  (vector name initargs initform initfunction readers writers allocation type doc nil))
-(defun %slotd-name (s) (svref s 0))
-(defun %slotd-initargs (s) (svref s 1))
-(defun %slotd-initform (s) (svref s 2))
-(defun %slotd-initfunction (s) (svref s 3))
-(defun %slotd-readers (s) (svref s 4))
-(defun %slotd-writers (s) (svref s 5))
-(defun %slotd-allocation (s) (svref s 6))
-(defun %slotd-type (s) (svref s 7))
-(defun %slotd-doc (s) (svref s 8))
-(defun %slotd-location (s) (svref s 9))
+  (%make-instance *the-direct-slotd-class*
+                  (vector name initargs initform initfunction readers writers allocation type doc nil)))
+(defun %slotd-name (s) (%instance-ref s 0))
+(defun %slotd-initargs (s) (%instance-ref s 1))
+(defun %slotd-initform (s) (%instance-ref s 2))
+(defun %slotd-initfunction (s) (%instance-ref s 3))
+(defun %slotd-readers (s) (%instance-ref s 4))
+(defun %slotd-writers (s) (%instance-ref s 5))
+(defun %slotd-allocation (s) (%instance-ref s 6))
+(defun %slotd-type (s) (%instance-ref s 7))
+(defun %slotd-doc (s) (%instance-ref s 8))
+(defun %slotd-location (s) (%instance-ref s 9))
+(defun %set-slotd (s i v) (%set-instance-ref s i v))
+(defun %slotd-p (x)
+  (and (%instancep x) (%instancep (%instance-layout x))
+       (not (null (member (find-class 'slot-definition nil) (%class-cpl (%instance-layout x)))))))
 
 (defun find-class (name &optional (errorp t) env)
   (declare (ignore env))
@@ -114,37 +134,61 @@
               (setq remaining (remove choice remaining)))))))))
 
 ;;; effective slots (CLHS 7.5.3).  Inherited slots come first so that the
-;;; locations of a superclass's slots are kept under single inheritance.
+;;; locations of a superclass's slots are kept under single inheritance;
+;;; the raw slots of metaobject classes come before all others.
+(defun %effective-slot-names (cpl)
+  (let ((names nil) (rcpl (reverse cpl)))
+    (dolist (pass '(t nil) names)
+      (dolist (c rcpl)
+        (when (eq pass (not (null (member c *raw-layout-classes*))))
+          (dolist (sd (%class-slot c +class-direct-slots+))
+            (unless (member (%slotd-name sd) names) (setq names (append names (list (%slotd-name sd)))))))))))
+
+(defun %direct-slotds-named (cpl name)
+  "(class . direct-slotd) for the slot NAME, most specific first."
+  (let ((direct nil))
+    (dolist (c cpl)
+      (let ((sd (find name (%class-slot c +class-direct-slots+) :key #'%slotd-name)))
+        (when sd (push (cons c sd) direct))))
+    (nreverse direct)))
+
+(defun %effective-slotd-values (direct)
+  "The raw slot values (a simple vector) of the effective slot computed from
+DIRECT, a list (class . direct-slotd), most specific first.  The location is
+not set."
+  (let* ((first (cdar direct))
+         (v (subseq (%instance-slots first) 0 +slotd-size+))
+         (init (find-if (lambda (e) (%slotd-initfunction (cdr e))) direct))
+         (docd (find-if (lambda (e) (%slotd-doc (cdr e))) direct))
+         (types (remove t (remove-duplicates (mapcar (lambda (e) (%slotd-type (cdr e))) direct)
+                                             :test #'equal))))
+    (setf (svref v 1) (remove-duplicates (mapcan (lambda (e) (copy-list (%slotd-initargs (cdr e)))) direct)
+                                         :from-end t))
+    (setf (svref v 2) (if init (%slotd-initform (cdr init)) nil)
+          (svref v 3) (if init (%slotd-initfunction (cdr init)) nil))
+    (setf (svref v 7) (cond ((null types) t) ((null (cdr types)) (car types)) (t (cons 'and types))))
+    (setf (svref v 8) (if docd (%slotd-doc (cdr docd)) nil))
+    (setf (svref v 4) nil (svref v 5) nil (svref v 9) nil)
+    v))
+
+(defun %assign-slot-locations (class slots)
+  "Instance slots get consecutive indices, class slots the shared cell of the
+class that defines them."
+  (let ((i 0) (cpl (%class-cpl class)))
+    (dolist (eff slots slots)
+      (let ((name (%slotd-name eff)))
+        (if (eq (%slotd-allocation eff) :instance)
+            (progn (%set-slotd eff 9 i) (setq i (+ i 1)))
+            (let ((owner (car (find-if (lambda (e) (eq (%slotd-allocation (cdr e)) (%slotd-allocation eff)))
+                                       (%direct-slotds-named cpl name)))))
+              (%set-slotd eff 9 (%class-shared-cell (or owner class) name))))))))
+
 (defun %compute-effective-slots (cpl)
-  (let ((names nil))
-    (dolist (c (reverse cpl))
-      (dolist (sd (%class-slot c +class-direct-slots+))
-        (unless (member (%slotd-name sd) names) (setq names (append names (list (%slotd-name sd)))))))
-    (let ((slots nil) (i 0))
-      (dolist (name names)
-        (let ((direct nil))           ; (class . slotd), most specific first
-          (dolist (c cpl)
-            (let ((sd (find name (%class-slot c +class-direct-slots+) :key #'%slotd-name)))
-              (when sd (push (cons c sd) direct))))
-          (setq direct (nreverse direct))
-          (let* ((first (cdar direct))
-                 (eff (copy-seq first))
-                 (init (find-if (lambda (e) (%slotd-initfunction (cdr e))) direct))
-                 (docd (find-if (lambda (e) (%slotd-doc (cdr e))) direct))
-                 (types (remove t (remove-duplicates (mapcar (lambda (e) (%slotd-type (cdr e))) direct)
-                                                     :test #'equal))))
-            (setf (svref eff 1) (remove-duplicates (mapcan (lambda (e) (copy-list (%slotd-initargs (cdr e)))) direct)
-                                                   :from-end t))
-            (setf (svref eff 2) (if init (%slotd-initform (cdr init)) nil)
-                  (svref eff 3) (if init (%slotd-initfunction (cdr init)) nil))
-            (setf (svref eff 7) (cond ((null types) t) ((null (cdr types)) (car types)) (t (cons 'and types))))
-            (setf (svref eff 8) (if docd (%slotd-doc (cdr docd)) nil))
-            (setf (svref eff 4) nil (svref eff 5) nil)
-            (if (eq (%slotd-allocation first) :class)
-                (setf (svref eff 9) (%class-shared-cell (caar direct) name))
-                (setf (svref eff 9) i i (+ i 1)))
-            (push eff slots))))
-      (nreverse slots))))
+  (let ((slots nil))
+    (dolist (name (%effective-slot-names cpl))
+      (push (%make-instance *the-effective-slotd-class* (%effective-slotd-values (%direct-slotds-named cpl name)))
+            slots))
+    (%assign-slot-locations (car cpl) (nreverse slots))))
 
 (defun %class-shared-cell (class name)
   (or (cdr (assoc name (%class-slot class +class-shared+)))
@@ -155,13 +199,32 @@
 (defun %instance-slot-count (class)
   (count-if (lambda (s) (fixnump (%slotd-location s))) (%class-effective-slots class)))
 
-(defun %ensure-class-object (name metaclass supers direct-slots kind)
+(defun %change-layout (object class)
+  "Make OBJECT an instance of CLASS, keeping its slot values (the slot vector
+grows when CLASS has more instance slots)."
+  (let* ((old (%instance-slots object))
+         (n (if (%class-slot class +class-slots+) (%instance-slot-count class) 0)))
+    (when (< (length old) n)
+      (let ((new (%make-simple-vector n (%unbound-marker))))
+        (dotimes (i (length old)) (setf (svref new i) (svref old i)))
+        (%set-instance-slots object new)))
+    (%set-instance-layout object class)
+    object))
+
+;;; PREPARE, when given, is called with the class object before its direct
+;;; slots are set, and returns them (DIRECT-SLOTS is then ignored).
+(defun %ensure-class-object (name metaclass supers direct-slots kind &optional prepare)
   (let ((class (or (let ((c (and name (find-class name nil))))
                      ;; reuse the class only while NAME is its proper name
                      (and c (eq (%class-name c) name) c))
                    (%allocate-class-object metaclass))))
-    (%set-instance-layout class metaclass)
+    (if (eq (%instance-layout class) metaclass)
+        nil
+        (if (%instance-layout class)
+            (%change-layout class metaclass)
+            (%set-instance-layout class metaclass)))
     (%set-class-slot class +class-name+ name)
+    (when prepare (setq direct-slots (funcall prepare class)))
     ;; drop the class from the subclass lists of its former superclasses
     (dolist (s (%class-slot class +class-supers+))
       (unless (member s supers)
@@ -186,7 +249,7 @@
     ;; slots that stay shared, initialize new ones from their initforms
     (let ((old (%class-slot class +class-shared+)) (new nil))
       (dolist (sd (%class-slot class +class-direct-slots+))
-        (when (eq (%slotd-allocation sd) :class)
+        (unless (eq (%slotd-allocation sd) :instance)
           (let ((cell (cdr (assoc (%slotd-name sd) old))))
             (unless cell
               (setq cell (cons (%slotd-name sd) (%unbound-marker)))
@@ -194,17 +257,24 @@
                 (setf (cdr cell) (funcall (%slotd-initfunction sd)))))
             (push (cons (%slotd-name sd) cell) new))))
       (%set-class-slot class +class-shared+ (nreverse new)))
-    (let ((slots (%compute-effective-slots cpl)))
+    (%set-class-slot class +class-protocol+
+                     (and *standard-metaclasses*
+                          (not (member (%instance-layout class) *standard-metaclasses*))))
+    (let ((slots (if (and *compute-slots-hook* (%class-slot class +class-protocol+))
+                     (funcall *compute-slots-hook* class)
+                     (%compute-effective-slots cpl))))
       (%set-class-slot class +class-slots+ slots)
       ;; slot index: alist name -> location
       (%set-class-slot class +class-slot-index+
                        (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
-    (%set-class-slot class +class-finalized+ t)
+    ;; a class with a forward-referenced superclass is not finalized (AMOP)
+    (%set-class-slot class +class-finalized+
+                     (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
     (%set-class-slot class +class-prototype+ nil)
     (when *class-finalization-hook* (funcall *class-finalization-hook* class))
     ;; refinalize subclasses
     (dolist (sub (%class-slot class +class-subclasses+))
-      (when (%class-slot sub +class-finalized+) (%finalize-class sub)))
+      (%finalize-class sub))
     class))
 
 (defun %subclassp (c1 c2) (or (eq c1 c2) (not (null (member c2 (%class-cpl c1))))))
@@ -322,6 +392,17 @@
       (%ensure-class-object 'method-combination sc (list (find-class 'metaobject)) nil :standard)
       (%ensure-class-object 'eql-specializer sc (list (find-class 'specializer)) nil :standard)
       (%ensure-class-object 'slot-definition sc (list (find-class 'metaobject)) nil :standard)
+      (%ensure-class-object 'standard-slot-definition sc (list (find-class 'slot-definition)) nil :standard)
+      (%ensure-class-object 'direct-slot-definition sc (list (find-class 'slot-definition)) nil :standard)
+      (%ensure-class-object 'effective-slot-definition sc (list (find-class 'slot-definition)) nil :standard)
+      (%ensure-class-object 'standard-direct-slot-definition sc
+                            (list (find-class 'standard-slot-definition) (find-class 'direct-slot-definition))
+                            nil :standard)
+      (%ensure-class-object 'standard-effective-slot-definition sc
+                            (list (find-class 'standard-slot-definition) (find-class 'effective-slot-definition))
+                            nil :standard)
+      (setq *the-direct-slotd-class* (find-class 'standard-direct-slot-definition)
+            *the-effective-slotd-class* (find-class 'standard-effective-slot-definition))
       (%define-built-in-classes))))
 
 (defun %define-built-in-classes ()
@@ -336,6 +417,20 @@
       (%ensure-class-object (car spec) bic (mapcar #'find-class (cdr spec)) nil :built-in))))
 
 (%bootstrap-classes)
+
+;;; raw slots: SPECS are names or (name initarg [initfunction])
+(defun %define-raw-slots (class-name specs)
+  (let ((class (find-class class-name)))
+    (pushnew class *raw-layout-classes*)
+    (%set-class-slot class +class-direct-slots+
+                     (mapcar (lambda (s)
+                               (if (consp s)
+                                   (%make-slotd (car s) :initargs (if (cadr s) (list (cadr s)) nil)
+                                                        :initfunction (caddr s))
+                                   (%make-slotd s)))
+                             specs))
+    (%finalize-class class)))
+
 
 ;;; class-of
 (defun class-of (x)

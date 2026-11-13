@@ -939,7 +939,9 @@
         (if d
             (setq value (+ (* value radix) d) any t i (+ i 1))
             (return))))
-    (do () ((not (and (< i end) (%whitespace-char-p (char string i))))) (setq i (+ i 1)))
+    ;; with JUNK-ALLOWED the index is that of the character after the digits
+    (unless (and any junk-allowed)
+      (do () ((not (and (< i end) (%whitespace-char-p (char string i))))) (setq i (+ i 1))))
     (cond ((and any (or junk-allowed (= i end))) (values (* sign value) i))
           (junk-allowed (values nil i))
           (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"

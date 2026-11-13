@@ -53,6 +53,13 @@ rep("""        #+ecl (format nil "~A~@[-~A~]" s""",
     """        #+clysm (format nil "~A-~A" s (or sys::*image-id* "interpreter"))
         #+ecl (format nil "~A~@[-~A~]" s""")
 
+# package-local nicknames are in SYSTEM
+rep("""   #+lispworks #:hcl
+   #-(or allegro sbcl clasp abcl ccl lispworks ecl)""",
+    """   #+lispworks #:hcl
+   #+clysm #:system
+   #-(or allegro sbcl clasp abcl ccl lispworks ecl clysm)""")
+
 # implementation type and architecture
 rep("(:cmu :cmucl :cmu) :clasp :ecl :gcl", "(:cmu :cmucl :cmu) :clasp :clysm :ecl :gcl")
 rep("(:java :java :java-1.4 :java-1.5 :java-1.6 :java-1.7))))",

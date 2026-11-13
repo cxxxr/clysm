@@ -399,14 +399,19 @@ the declarations (when forms follow it)."
            (%put ',access-fn 'setf-expander
                  (lambda (,place ,env)
                    (declare (ignore ,env))
-                   (let* ((temps (mapcar (lambda (x) (declare (ignore x)) (gensym)) (cdr ,place)))
+                   ;; constant subforms (e.g. keyword names of &KEY parameters)
+                   ;; are passed as they are, the others through temporaries
+                   (let* ((args (mapcar (lambda (x) (if (constantp x) x (gensym))) (cdr ,place)))
+                          (temps nil) (vals nil)
                           (stores (mapcar (lambda (x) (declare (ignore x)) (gensym)) ',stores)))
-                     (values temps (cdr ,place) stores
+                     (mapc (lambda (a x) (unless (eq a x) (setq temps (cons a temps) vals (cons x vals))))
+                           args (cdr ,place))
+                     (values (reverse temps) (reverse vals) stores
                              (apply (lambda (,@stores ,@ll)
                                       ,@(%split-doc-decls body)
                                       (block ,access-fn ,@(nth-value 1 (%split-doc-decls body))))
-                                    (append stores temps))
-                             (cons ',access-fn temps)))))
+                                    (append stores args))
+                             (cons ',access-fn args)))))
            ',access-fn))))
 
 (defmacro define-setf-expander (access-fn lambda-list &body body)

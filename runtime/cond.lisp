@@ -58,7 +58,10 @@
            `((%put ',name '%condition-report
                    ,(if (stringp report)
                         `(lambda (c s) (declare (ignore c)) (write-string ,report s))
-                        `(function ,report)))))
+                        (if (symbolp report)
+                            ;; looked up when reporting (it may be defined later)
+                            `(lambda (c s) (funcall ',report c s))
+                            `(function ,report))))))
        ,@(reverse accessor-forms)
        ',name)))
 

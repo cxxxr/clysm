@@ -480,7 +480,8 @@ a module made by *NATIVE-COMPILE-FORM-HOOK* (octets, constants).")
         (t (merge-pathnames filespec))))
 
 (defun %call-with-fasl-syntax (fn)
-  (let ((*package* *keyword-package*)
+  (let ((*fasl-syntax* t)
+        (*package* *keyword-package*)
         (*print-array* t) (*print-base* 10) (*print-case* :upcase) (*print-circle* t)
         (*print-escape* t) (*print-gensym* t) (*print-length* nil) (*print-level* nil)
         (*print-lines* nil) (*print-pretty* nil) (*print-radix* nil)
@@ -663,19 +664,53 @@ per form, else the source forms."
           (t (push (car forms) *cf-pending*)
              (when (>= (length *cf-pending*) %cf-batch-size) (%cf-flush out))))))
 
+(defvar *cf-env* nil "the interpreter environment of local macros around toplevel forms")
+(defvar *cf-wrappers* nil "(op bindings declarations...) of the forms around toplevel forms, innermost first")
+
 (defun %cf-toplevel-expansion (form)
   "Expand FORM until it is a form that toplevel processing treats specially.
 Returns the expansion, or NIL when FORM is an ordinary form."
   (loop
     (unless (and (consp form) (symbolp (car form))) (return nil))
     (let ((op (car form)))
-      (when (or (member op '(progn eval-when)) (member op %compile-time-definers))
+      (when (and (member op '(progn eval-when macrolet symbol-macrolet locally))
+                 (not (%env-fun *cf-env* op)))
+        (return form))
+      (when (and (member op %compile-time-definers) (not (%env-fun *cf-env* op)))
         (return form))
       (when (or (member op %load-time-definers) (special-operator-p op))
         (return nil))
-      (multiple-value-bind (new changed) (macroexpand-1 form)
+      (multiple-value-bind (new changed) (macroexpand-1 form *cf-env*)
         (unless changed (return nil))
         (setq form new)))))
+
+(defun %cf-wrap (form)
+  "FORM inside the MACROLET, SYMBOL-MACROLET and LOCALLY forms around it."
+  (dolist (w *cf-wrappers* form)
+    (setq form (append w (list form)))))
+
+(defun %cf-local (x out compile-time-too)
+  "Toplevel MACROLET, SYMBOL-MACROLET and LOCALLY: the body forms are processed
+as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
+  (let* ((op (car x))
+         (bindings (if (eq op 'locally) nil (cadr x)))
+         (body (if (eq op 'locally) (cdr x) (cddr x)))
+         (decls (let ((r nil))
+                  (loop (if (and (consp (car body)) (eq (caar body) 'declare)) (push (pop body) r) (return)))
+                  (nreverse r)))
+         (env *cf-env*))
+    (case op
+      (macrolet
+       (dolist (def bindings)
+         (push (list* :macro (car def)
+                      (%eval-function (%macro-lambda (car def) (cadr def) (cddr def)) *cf-env*))
+               env)))
+      (symbol-macrolet
+       (dolist (b bindings) (push (list* :smacro (car b) (cadr b)) env))))
+    (let ((*cf-env* env)
+          (*cf-wrappers* (cons (if (eq op 'locally) (cons 'locally decls) (list* op bindings decls))
+                               *cf-wrappers*)))
+      (dolist (f body) (%cf-process f out compile-time-too)))))
 
 (defun %cf-process (form out compile-time-too)
   (let ((x (%cf-toplevel-expansion form)))
@@ -687,13 +722,15 @@ Returns the expansion, or NIL when FORM is an ordinary form."
       (%cf-flush out))
     (cond
       ((null x)
-       (when compile-time-too (%eval-toplevel form))
+       (when compile-time-too (%eval-toplevel (%cf-wrap form)))
        ;; CLHS DEFVAR/DEFPARAMETER: the compiler must recognize the variable
        ;; as special in the rest of the file
        (when (and (consp form) (member (car form) '(defvar defparameter))
                   (consp (cdr form)) (symbolp (second form)))
          (proclaim `(special ,(second form))))
-       (%cf-emit form out))
+       (%cf-emit (%cf-wrap form) out))
+      ((member (car x) '(macrolet symbol-macrolet locally))
+       (%cf-local x out compile-time-too))
       ((eq (car x) 'progn)
        (dolist (f (cdr x)) (%cf-process f out compile-time-too)))
       ((eq (car x) 'eval-when)
@@ -705,9 +742,9 @@ Returns the expansion, or NIL when FORM is an ordinary form."
                 (dolist (f (cddr x)) (%cf-process f out t)))
                (lt (dolist (f (cddr x)) (%cf-process f out nil)))
                ((or ct (and ex compile-time-too))
-                (%eval-toplevel `(progn ,@(cddr x)))))))
-      (t (%eval-toplevel x)
-         (%cf-emit x out)))))
+                (%eval-toplevel (%cf-wrap `(progn ,@(cddr x))))))))
+      (t (%eval-toplevel (%cf-wrap x))
+         (%cf-emit (%cf-wrap x) out)))))
 
 (defun compile-file-pathname (input-file &key output-file &allow-other-keys)
   (let* ((in (if (typep input-file 'file-stream) (pathname input-file) (pathname input-file)))

@@ -557,6 +557,7 @@
   (case (stream-kind s)
     (:gray (stream-listen s))
     (:fd-in (not (null (stream-unread s))))
+    (:socket (%socket-listen s))
     (:synonym (%stream-listen (%synonym-target s)))
     ((:two-way :echo) (or (not (null (stream-unread s))) (%stream-listen (car (stream-streams s)))))
     (:concatenated
@@ -648,6 +649,8 @@
   (when (eq (stream-kind stream) :gray)
     (return-from read-sequence
       (stream-read-sequence stream seq start (%check-seq-bounds seq start end))))
+  (when (and (eq (stream-kind stream) :socket) (vectorp seq))
+    (return-from read-sequence (%socket-read-sequence seq stream start (%check-seq-bounds seq start end))))
   (let ((end (%check-seq-bounds seq start end))
         (binary (%binary-stream-p stream t))
         (i start))
@@ -673,6 +676,13 @@
          (binary (%binary-stream-p s nil)))
     (when (eq (stream-kind s) :gray)
       (stream-write-sequence s seq start end)
+      (return-from write-sequence seq))
+    (when (and (eq (stream-kind s) :socket) (vectorp seq))
+      (unless (stream-open s) (%not-output-stream s 'binary))
+      (let ((out (socket-stream-out s)))
+        (do ((i start (+ i 1))) ((>= i end))
+          (vector-push-extend (logand (aref seq i) 255) out))
+        (when (>= (length out) 65536) (%socket-flush s)))
       (return-from write-sequence seq))
     (if (listp seq)
         (let ((tail (nthcdr start seq)))
@@ -819,6 +829,40 @@
   "A bidirectional binary stream of (UNSIGNED-BYTE 8) connected to HOST:PORT."
   (%make-stream :kind :socket :id (%tcp-connect host port) :direction :io
                 :elt-type '(unsigned-byte 8)))
+
+(defun open-local-stream (path)
+  "A bidirectional binary stream of (UNSIGNED-BYTE 8) connected to the Unix
+domain socket PATH."
+  (%make-stream :kind :socket :id (%local-connect path) :direction :io
+                :elt-type '(unsigned-byte 8)))
+
+(defun %socket-listen (s)
+  (and (stream-open s)
+       (or (< (socket-stream-in-pos s) (socket-stream-in-fill s))
+           (and (not (socket-stream-in-eof s))
+                (progn (%socket-flush s) (%tcp-available-p (socket-stream-id s)))
+                (not (eq (%socket-peek-byte s) :eof))))))
+
+(defun %socket-read-sequence (seq s start end)
+  (let ((i start))
+    (loop
+      (when (>= i end) (return i))
+      (when (>= (socket-stream-in-pos s) (socket-stream-in-fill s))
+        ;; refill the buffer (waits for at least one octet)
+        (let ((b (%socket-read-byte s)))
+          (when (eq b :eof) (return i))
+          (setf (socket-stream-in-pos s) (- (socket-stream-in-pos s) 1))))
+      (let* ((pos (socket-stream-in-pos s))
+             (n (min (- end i) (- (socket-stream-in-fill s) pos)))
+             (in (socket-stream-in s)))
+        (dotimes (k n) (setf (aref seq (+ i k)) (aref in (+ pos k))))
+        (setf (socket-stream-in-pos s) (+ pos n))
+        (setq i (+ i n))))))
+
+(defun %socket-peek-byte (s)
+  (let ((b (%socket-read-byte s)))
+    (unless (eq b :eof) (setf (socket-stream-in-pos s) (- (socket-stream-in-pos s) 1)))
+    b))
 
 (defun %file-stream-designator (s)
   (case (stream-kind s)

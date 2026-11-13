@@ -119,7 +119,8 @@ packages, `defstruct`, the condition system with restarts, streams, the printer
 (including an XP-style pretty printer that reproduces SBCL's layout), `format`,
 CLOS (generic functions with standard and operator method combinations,
 `defclass`, `make-instance`, `initialize-instance`, `print-object`, slot
-access), the reader with readtables, an evaluator for `eval`/`load`, and a REPL.
+access) with a metaobject protocol (below), the reader with readtables, an
+evaluator for `eval`/`load`, and a REPL.
 
 Macro expanders run on the host during compilation and are also compiled into
 the image, so `macroexpand`, `eval` and the REPL can use every macro.
@@ -221,6 +222,52 @@ the main thread performs the socket operation.
 libraries downloaded from quicklisp.org (split-sequence, and `str` with its
 dependencies cl-ppcre, cl-unicode, flexi-streams and cl-change-case).
 
+## Metaobject protocol
+
+The package `CLYSM-MOP` (like SBCL's `SB-MOP`) exports the AMOP's metaobject
+classes and generic functions; `contrib/closer-mop` defines Closer to MOP's
+packages (`CLOSER-MOP`/`C2MOP`, `C2CL`) on top of it. Classes of the
+implementation's metaclasses are defined and accessed by fast internal code;
+classes of user-defined metaclasses go through the protocol:
+`validate-superclass`, `direct-slot-definition-class`, `compute-slots`,
+`compute-effective-slot-definition`, `effective-slot-definition-class`,
+`initialize-instance`/`reinitialize-instance` of the class metaobject (with
+the metaclass's own slots and non-standard class and slot options), and
+`slot-value-using-class`, `(setf slot-value-using-class)`,
+`slot-boundp-using-class` and `slot-makunbound-using-class` for their
+instances. Slot definitions are instances of `standard-direct-slot-definition`
+and `standard-effective-slot-definition` (or subclasses). Generic functions of
+user-defined generic function classes call
+`compute-applicable-methods-using-classes` and `compute-applicable-methods`.
+Classes with forward-referenced superclasses are not finalized. Funcallable
+instances (`funcallable-standard-class`, `set-funcallable-instance-function`)
+are supported; `compute-discriminating-function` and `make-method-lambda` are
+not called by the implementation.
+
+## McCLIM
+
+[McCLIM](https://mcclim.common-lisp.dev/) runs on Clysm with its CLX backend:
+`(ql:quickload :mcclim)` builds it and its ~60 dependencies from Quicklisp, and
+CLIM applications open windows on an X server (Unix domain or TCP sockets of
+the Node.js host), draw with TrueType fonts, and read keyboard and pointer
+input. Clysm has no threads, so McCLIM runs in its single-process mode.
+
+```
+$ DISPLAY=:0 bin/clysm script tests/mcclim/hello.lisp     # a small application
+$ make test-mcclim        # McCLIM's test suite and the application on Xvfb
+```
+
+McCLIM's own test suite (`mcclim/test`, without the thread tests) passes
+except STREAM-READ-GESTURE.SMOKE, which also fails on SBCL in the
+single-process mode. Portability libraries without Clysm support are provided
+in `contrib/` (closer-mop, trivial-features, trivial-garbage, static-vectors,
+trivial-gray-streams) and found by ASDF before the Quicklisp releases; others
+get small fixups when their system is defined (`contrib/fixups.lisp`: 3bz and
+pngload use their non-FFI code, Drei builds without SWANK, CLX and McCLIM get
+Clysm cases for sockets, environment variables and host names, applied as
+string replacements to a copy of the source under
+`~/.cache/common-lisp/clysm-patches/`).
+
 ## Gray streams
 
 User-defined streams follow the Gray proposal (package `GRAY`, like SBCL's
@@ -260,8 +307,11 @@ resumes with the next test. Per-category logs and `summary.txt` are written to
 
 Categories run in parallel (`ANSI_JOBS`, default 8; `files` runs first because
 the `streams` tests use the directory it creates), starting from a pristine
-sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21944 of 21945
-tests pass (99.99%), with no crashes. The one failure, SUBTYPEP-COMPLEX.8,
+sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21939 of 21940
+tests pass (99.99%), with no crashes. The five tests with the note
+`:loop-iteration-values-in-finally` (marked `:ansi-spec-problem`) are
+inactive, as on SBCL: like the MIT LOOP, an arithmetic `for` variable is
+stepped past its limit before the loop ends, and libraries rely on it. The one failure, SUBTYPEP-COMPLEX.8,
 assumes that `(complex single-float)` is not a subtype of
 `(complex (float 0.0 1.0))`; Clysm reads `(complex X)` as a set of numbers.
 
@@ -272,6 +322,9 @@ package that SBCL defines (checked by listing every fbound/bound external CL
 symbol), including CLOS, the condition system with restarts, the full `loop`,
 `format`, the reader and printer, packages, hash tables, structures, bignums,
 ratios and complex numbers, plus `eval`, `compile`, `load` and a REPL.
+Extensions: the metaobject protocol, Gray streams, package-local nicknames
+(the `:local-nicknames` option of `defpackage`, and
+`sys:add-package-local-nickname` & co., also through UIOP).
 
 Limitations:
 

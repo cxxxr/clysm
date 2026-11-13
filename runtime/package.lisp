@@ -23,9 +23,51 @@
 (defun %package-internals (p) (%pkg p 4))
 (defun %package-externals (p) (%pkg p 5))
 
+(defvar *package-local-nicknames* nil) ; package -> ((nickname . package) ...)
+
 (defun find-package (name)
   (if (%packagep name) name
-      (values (gethash (string name) *package-table*))))
+      (let ((s (string name)))
+        (or (and *package-local-nicknames* *package*
+                 (cdr (assoc s (gethash *package* *package-local-nicknames*) :test #'string=)))
+            (values (gethash s *package-table*))))))
+
+;;; package-local nicknames (as in SBCL, CCL, ECL...)
+(defun package-local-nicknames (package)
+  (let ((p (%find-package-or-die package)))
+    (if *package-local-nicknames*
+        (mapcar (lambda (e) (cons (car e) (cdr e))) (gethash p *package-local-nicknames*))
+        nil)))
+
+(defun add-package-local-nickname (local-nickname actual-package &optional (package *package*))
+  (let ((nick (string local-nickname))
+        (actual (%find-package-or-die actual-package))
+        (p (%find-package-or-die package)))
+    (unless *package-local-nicknames* (setq *package-local-nicknames* (make-hash-table :test 'eq)))
+    (let* ((alist (gethash p *package-local-nicknames*))
+           (old (assoc nick alist :test #'string=)))
+      (when (and old (not (eq (cdr old) actual)))
+        (%package-error p "~A is already a package-local nickname for ~A in ~A"
+                        nick (package-name (cdr old)) (package-name p)))
+      (when (member nick '("CL" "COMMON-LISP" "KEYWORD") :test #'string=)
+        (%package-error p "~A cannot be a package-local nickname" nick))
+      (unless old
+        (setf (gethash p *package-local-nicknames*) (append alist (list (cons nick actual))))))
+    p))
+
+(defun remove-package-local-nickname (old-nickname &optional (package *package*))
+  (let* ((p (%find-package-or-die package))
+         (alist (and *package-local-nicknames* (gethash p *package-local-nicknames*)))
+         (e (assoc (string old-nickname) alist :test #'string=)))
+    (when e
+      (setf (gethash p *package-local-nicknames*) (remove e alist))
+      t)))
+
+(defun package-locally-nicknamed-by-list (package)
+  (let ((p (%find-package-or-die package)) (r nil))
+    (when *package-local-nicknames*
+      (maphash (lambda (k alist) (when (rassoc p alist) (push k r))) *package-local-nicknames*))
+    r))
 
 (defun %find-package-or-die (name)
   (or (find-package name)
@@ -389,8 +431,13 @@
 
 (defmacro in-package (name) `(%in-package ,(string name)))
 
-(defun %defpackage (name nicknames uses exports shadows imports &optional interns doc)
+(defun %defpackage (name nicknames uses exports shadows imports &optional interns doc local-nicknames)
   (let ((p (or (find-package name) (make-package name :nicknames nicknames :use nil))))
+    (when (or local-nicknames (and *package-local-nicknames* (gethash p *package-local-nicknames*)))
+      (unless *package-local-nicknames* (setq *package-local-nicknames* (make-hash-table :test 'eq)))
+      (setf (gethash p *package-local-nicknames*) nil)
+      (dolist (ln local-nicknames)
+        (add-package-local-nickname (car ln) (cadr ln) p)))
     (dolist (n nicknames)
       (unless (member n (%pkg p 1) :test #'string=)
         (when (find-package n)
@@ -406,7 +453,7 @@
       (unless (eq (car imp) :shadowing-import-from)
         (%defpackage-import p imp)))
     (dolist (i interns) (intern i p))
-    (dolist (e exports) (export (intern e p) p))
+    (dolist (e exports) (export (list (intern e p)) p))
     (when doc (%set-documentation p t doc))
     p))
 
@@ -418,12 +465,13 @@
           (if (%correctable-package-error from (format nil "Intern ~A in ~A." sname (package-name from))
                                           "DEFPACKAGE: there is no symbol named ~S in ~A."
                                           sname (package-name from))
-              (setq s (intern sname from))
+              (setq s (intern sname from) status t)
               (setq s nil)))
-        (when s
+        ;; S may be NIL itself
+        (when status
           (if (eq (car imp) :shadowing-import-from)
-              (shadowing-import s p)
-              (import s p)))))))
+              (shadowing-import (list s) p)
+              (import (list s) p)))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %defpackage-check (shadows interns imports exports)
@@ -445,11 +493,11 @@
 
 (defmacro defpackage (name &rest options)
   (let ((nicknames nil) (uses nil) (use-given nil) (exports nil) (shadows nil) (imports nil)
-        (interns nil) (doc nil) (seen nil))
+        (interns nil) (doc nil) (seen nil) (local-nicknames nil))
     (dolist (o options)
       (unless (and (consp o) (member (car o) '(:nicknames :documentation :use :shadow
                                                :shadowing-import-from :import-from :export
-                                               :intern :size)))
+                                               :intern :size :local-nicknames)))
         (error 'simple-program-error :format-control "DEFPACKAGE: bad option ~S"
                                      :format-arguments (list o)))
       (when (member (car o) '(:size :documentation))
@@ -459,6 +507,9 @@
         (setq seen (cons (car o) seen)))
       (case (car o)
         (:documentation (setq doc (cadr o)))
+        (:local-nicknames
+         (setq local-nicknames (append local-nicknames
+                                       (mapcar (lambda (e) (list (string (car e)) (string (cadr e)))) (cdr o)))))
         (:intern (setq interns (append interns (mapcar #'string (cdr o)))))
         (:nicknames (setq nicknames (append nicknames (mapcar #'string (cdr o)))))
         (:use (setq use-given t uses (append uses (mapcar #'string (cdr o)))))
@@ -469,7 +520,7 @@
                                (list (list* (car o) (string (cadr o)) (mapcar #'string (cddr o)))))))))
     (%defpackage-check shadows interns imports exports)
     `(%defpackage ,(string name) ',nicknames ',(if use-given uses '("COMMON-LISP")) ',exports ',shadows
-                  ',imports ',interns ,doc)))
+                  ',imports ',interns ,doc ',local-nicknames)))
 
 ;;; ------------------------------------------------------------
 ;;; initialization from the compiler-generated symbol table

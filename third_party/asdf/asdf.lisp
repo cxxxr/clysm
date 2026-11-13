@@ -138,7 +138,8 @@
    #+(or clasp abcl ecl) #:ext
    #+ccl #:ccl
    #+lispworks #:hcl
-   #-(or allegro sbcl clasp abcl ccl lispworks ecl)
+   #+clysm #:system
+   #-(or allegro sbcl clasp abcl ccl lispworks ecl clysm)
    (error "Don't know from which package this lisp supplies the local-package-nicknames API.")
    #:remove-package-local-nickname #:package-local-nicknames #:add-package-local-nickname)
   (:export
