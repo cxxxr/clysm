@@ -307,7 +307,13 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
                 (let ((tmp (new-local)))
                   `(,@(cg a) (:local.tee ,tmp) (:ref.test :cons)
                     (:if nil :eqref ((:local.get ,tmp) (:ref.cast! :cons) (:struct.get :cons ,field))
-                         ,(nil-code))))))))
+                         ,(nil-code)))))
+               (t
+                ;; a cons inline, anything else by the helper (NIL, or the type error)
+                (let ((tmp (new-local)))
+                  `(,@(cg a) (:local.tee ,tmp) (:ref.test :cons)
+                    (:if nil :eqref ((:local.get ,tmp) (:ref.cast! :cons) (:struct.get :cons ,field))
+                         ((:local.get ,tmp) (:call ,(if (= field 0) :car :cdr))))))))))
       (clysm-sys::%lref
        (when (ty-only-p aty +k-limbs+)
          `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code (second args)) (:array.get :limbs) :ref.i31)))
