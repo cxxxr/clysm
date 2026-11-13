@@ -225,14 +225,19 @@
         (cond
           ((%lkw-in what '("HASH-KEY" "HASH-KEYS" "HASH-VALUE" "HASH-VALUES"))
            (let ((keysp (%lkw-in what '("HASH-KEY" "HASH-KEYS"))))
-             (%loop-add-binding s g `(%hash-table-pairs ,obj))
-             (%loop-bind-pattern s var)
-             (when other (%loop-bind-pattern s other))
-             (%loop-end-test s `(endp ,g))
-             (dolist (f (%loop-destructure-setq var (if keysp `(caar ,g) `(cdar ,g)))) (%loop-pre s f))
-             (when other
-               (dolist (f (%loop-destructure-setq other (if keysp `(cdar ,g) `(caar ,g)))) (%loop-pre s f)))
-             (%loop-step s `(setq ,g (cdr ,g)))))
+             ;; the entries are visited in place, by index (-1 after the last)
+             (let ((i (gensym "INDEX")))
+               (%loop-add-binding s g `(%ht-checked ,obj))
+               (%loop-add-binding s i `(%ht-next-index ,g 0))
+               (%loop-bind-pattern s var)
+               (when other (%loop-bind-pattern s other))
+               (%loop-end-test s `(< ,i 0))
+               (dolist (f (%loop-destructure-setq var (if keysp `(%ht-key-at ,g ,i) `(%ht-value-at ,g ,i))))
+                 (%loop-pre s f))
+               (when other
+                 (dolist (f (%loop-destructure-setq other (if keysp `(%ht-value-at ,g ,i) `(%ht-key-at ,g ,i))))
+                   (%loop-pre s f)))
+               (%loop-step s `(setq ,i (%ht-next-index ,g (+ ,i 1)))))))
           ((%lkw-in what '("SYMBOL" "SYMBOLS" "PRESENT-SYMBOL" "PRESENT-SYMBOLS"
                            "EXTERNAL-SYMBOL" "EXTERNAL-SYMBOLS"))
            (%loop-add-binding s g `(%package-symbol-list ,obj
