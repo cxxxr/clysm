@@ -368,10 +368,17 @@ the default value of its type (and no declaration when there is none)."
       (cond
         ((%lkw kw "NAMED") (setf (%ls s 8) (%loop-pop s)))
         ((%lkw-in kw '("FOR" "AS"))
-         (let ((group-steps (%ls s 4)))
+         (let ((group-steps (%ls s 4)) (pre (%ls s 2)))
            (%loop-parse-for s group-steps nil)
            (do () ((not (%lkw (%loop-peek s) "AND")))
-             (%loop-pop s) (%loop-parse-for s group-steps t))))
+             (%loop-pop s) (%loop-parse-for s group-steps t))
+           ;; after a main clause (e.g. WHILE), the variables are set and
+           ;; tested where the clause is, as other implementations do
+           (when (%ls s 3)
+             (let ((new nil) (p (%ls s 2)))
+               (do () ((eq p pre)) (push (car p) new) (setq p (cdr p)))
+               (setf (%ls s 2) pre
+                     (%ls s 3) (append (reverse new) (%ls s 3)))))))
         ((%lkw kw "WITH")
          ;; WITH clauses joined by AND bind in parallel: the init forms are
          ;; evaluated into temporaries first
@@ -455,8 +462,8 @@ the default value of its type (and no declaration when there is none)."
                     ,@(reverse (%ls s 5))
                     ,top
                     ,@(reverse (%ls s 2))
-                    ,@(when first `((setq ,first nil)))
                     ,@(reverse (%ls s 3))
+                    ,@(when first `((setq ,first nil)))
                     ,@(reverse (%ls s 4))
                     (go ,top)
                     ,end

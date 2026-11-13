@@ -8,7 +8,7 @@
 (let ((contrib (uiop:pathname-directory-pathname
                 (or *load-truename* (error "asdf-hooks.lisp must be loaded")))))
   (dolist (system '("trivial-gray-streams" "closer-mop" "trivial-features" "trivial-garbage"
-                    "static-vectors"))
+                    "static-vectors" "bordeaux-threads"))
     (pushnew (merge-pathnames (concatenate 'string system "/") contrib) *central-registry* :test #'equal)))
 
 ;;; When the Quicklisp client system is loaded (by Quicklisp's setup.lisp),

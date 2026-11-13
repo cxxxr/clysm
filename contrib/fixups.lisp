@@ -90,3 +90,18 @@
 (progn
 
 ;;; This overrides"))
+
+;;; Trivia's optimizer declaration needs DEFINE-DECLARATION of CLtL2
+;;; (trivial-cltl2), which Clysm does not have; it takes the global
+;;; optimizer instead, as on the implementations without it.
+(define-clysm-fixup "trivia.level2" (s)
+  (clysm-drop-dependencies s "trivial-cltl2")
+  (clysm-patch-component s '("impl")
+    "#-(or abcl clasp ecl mezzano clisp cmu
+      lispworks5 lispworks6 lispworks7.0) ; hcl"
+    "#-(or abcl clasp ecl mezzano clisp cmu clysm
+      lispworks5 lispworks6 lispworks7.0) ; hcl"
+    "(funcall (or #-(or abcl clasp ecl mezzano clisp cmu
+"
+    "(funcall (or #-(or abcl clasp ecl mezzano clisp cmu clysm
+"))

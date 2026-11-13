@@ -2582,6 +2582,22 @@ whose make-info is MI."
         `(find-class ',name)
         (error 'simple-error :format-control "The class ~S has no proper name" :format-arguments (list object)))))
 
+;;; A literal hash table (e.g. #.(make-table) in a source file) is made
+;;; again with its test and filled with its entries, which are externalized
+;;; like any other literal objects.
+(defmethod make-load-form ((object hash-table) &optional environment)
+  (declare (ignore environment))
+  (values `(make-hash-table :test ',(hash-table-test object) :size ,(max 1 (hash-table-count object)))
+          `(%fill-hash-table ',object
+                             ',(let ((entries nil))
+                                 (maphash (lambda (k v) (push v entries) (push k entries)) object)
+                                 entries))))
+
+(defun %fill-hash-table (table entries)
+  (loop (when (null entries) (return table))
+        (setf (gethash (car entries) table) (cadr entries))
+        (setq entries (cddr entries))))
+
 (defun make-load-form-saving-slots (object &key (slot-names nil slot-names-p) environment)
   (declare (ignore environment))
   (let* ((class (class-of object))
@@ -2788,7 +2804,7 @@ whose make-info is MI."
   (and (%instancep x)
        (not (pathnamep x))
        (not (%fasl-marker-p x))
-       (or (typep x 'standard-object) (typep x 'structure-object))))
+       (or (typep x 'standard-object) (typep x 'structure-object) (hash-table-p x))))
 
 (defun %literal-objects (form exclude)
   "The externalizable objects in FORM, in order of appearance."
