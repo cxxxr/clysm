@@ -929,12 +929,18 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   `(:block x :eqref ,@(type-error-instrs 0 'function))
   '(:call :coerce-function))
 
-(defhelper :eql :ee-i ((wa :i64) (wb :i64))
+(defhelper :eql :ee-i ()
   '(:local.get 0) '(:local.get 1) :ref.eq
   '(:if nil nil ((:i32.const 1) :return))
   ;; both numbers of the same boxed type?
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.or
   '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:ref.test :cons) '(:local.get 0) '(:ref.test :symbol) :i32.or
+  '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:local.get 1) '(:return_call :eql-gen))
+
+;;; two different heap objects that are not conses or symbols
+(defhelper :eql-gen :ee-i ((wa :i64) (wb :i64))
   '(:local.get 0) '(:ref.test :double)
   '(:if nil nil
         ((:local.get 1) (:ref.test :double) :i32.eqz (:if nil nil ((:i32.const 0) :return))
@@ -2271,14 +2277,70 @@ anything else branches to SLOW.  Uses the i32 local V."
         (:local.get 0) (:local.get 1)
         (:global.get ,(sym-global lisp-fn)) (:call (:callsym 2))))))
 
-(macrolet ((arith (name opcode lisp-fn)
-             `(defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (xa :i64) (xb :i64)
-                                      (ka :i32) (kb :i32) (da :f64) (db :f64) (dr :f64) (fr :f32) (e :eqref))
-                (cons :progn-marker (arith-helper-body ,opcode ',lisp-fn)))))
-  (arith :add 0 clysm-sys::%generic-add)
-  (arith :sub 1 clysm-sys::%generic-sub)
-  (arith :mul 2 clysm-sys::%generic-mul)
-  (arith :div 3 clysm-sys::%generic-div))
+;;; The helpers the compiled code calls are small (the engine inlines them):
+;;; two fixnums, or a double with a double or a fixnum; everything else is
+;;; the general helper behind (:add-gen ...).
+(defun f64-of-param-code (p v fail)
+  "Push param P (a double or a fixnum) as an f64, or branch to FAIL."
+  `((:local.get ,p) (:ref.test :double)
+    (:if nil :f64 ((:local.get ,p) (:ref.cast! :double) (:struct.get :double 0))
+         ((:local.get ,p) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+          (:local.get ,p) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
+          (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+          (:local.get ,v) :f64.convert_i32_s))))
+
+(defun double-fast-path-code (body)
+  "When one argument is a double and the other a double or a fixnum: BODY
+with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
+  `((:local.get 0) (:ref.test :double) (:local.get 1) (:ref.test :double) :i32.or
+    (:if nil nil
+         ((:block slow nil
+            ,@(f64-of-param-code 0 'v 'slow) (:local.set da)
+            ,@(f64-of-param-code 1 'v 'slow) (:local.set db)
+            ,@body)))))
+
+(defun arith-front-body (opcode gen)
+  `(,@(fixnum-pair-code
+       (ecase opcode
+         ((0 1) `((:local.get x) (:local.get y) ,(if (= opcode 0) :i32.add :i32.sub) (:local.tee x)
+                  (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                  (:if nil nil ((:local.get x) :ref.i31 :return))
+                  (:local.get x) :i64.extend_i32_s (:call :i64-int) :return))
+         (2 `((:local.get x) :i64.extend_i32_s (:local.get y) :i64.extend_i32_s :i64.mul (:local.tee r)
+              (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+              (:if nil nil ((:local.get r) :i32.wrap_i64 :ref.i31 :return))
+              (:local.get r) (:call :i64-int) :return))
+         (3 `((:local.get y)
+              (:if nil nil
+                   ((:local.get x) (:local.get y) :i32.rem_s :i32.eqz
+                    (:if nil nil ((:local.get x) (:local.get y) :i32.div_s (:call :box-i32) :return))))))))
+    ,@(double-fast-path-code
+       `(,@(when (= opcode 3) '((:local.get db) (:f64.const 0) :f64.eq (:br_if slow)))
+         (:local.get da) (:local.get db) ,(ecase opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul) (3 :f64.div))
+         (:local.tee dr)
+         ;; not finite, or a zero that may be an underflow: the general helper decides
+         (:local.get dr) :f64.sub (:f64.const 0) :f64.ne
+         ,@(case opcode
+             (2 '((:local.get dr) (:f64.const 0) :f64.eq
+                  (:local.get da) (:f64.const 0) :f64.ne :i32.and
+                  (:local.get db) (:f64.const 0) :f64.ne :i32.and :i32.or))
+             (3 '((:local.get dr) (:f64.const 0) :f64.eq
+                  (:local.get da) (:f64.const 0) :f64.ne :i32.and :i32.or)))
+         (:br_if slow)
+         (:local.get dr) (:struct.new :double) :return))
+    (:local.get 0) (:local.get 1) (:return_call ,gen)))
+
+(macrolet ((arith (name gen opcode lisp-fn)
+             `(progn
+                (defhelper ,gen :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (xa :i64) (xb :i64)
+                                       (ka :i32) (kb :i32) (da :f64) (db :f64) (dr :f64) (fr :f32) (e :eqref))
+                  (cons :progn-marker (arith-helper-body ,opcode ',lisp-fn)))
+                (defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (da :f64) (db :f64) (dr :f64))
+                  (cons :progn-marker (arith-front-body ,opcode ,gen))))))
+  (arith :add :add-gen 0 clysm-sys::%generic-add)
+  (arith :sub :sub-gen 1 clysm-sys::%generic-sub)
+  (arith :mul :mul-gen 2 clysm-sys::%generic-mul)
+  (arith :div :div-gen 3 clysm-sys::%generic-div))
 
 (defprim / (a b) :value `(,@a ,@b (:call :div)))
 (defprim / (a) :value `(,@(fixnum-code 1) ,@a (:call :div)))
@@ -2325,11 +2387,20 @@ anything else branches to SLOW.  Uses the i32 local V."
       (:global.get ,(sym-global lisp-fn)) (:call (:callsym 2))
       ,(car (nil-code)) :ref.eq :i32.eqz)))
 
-(defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
-  (cons :progn-marker (compare-helper-body :i64.lt_s :f64.lt 'clysm-sys::%generic-lt)))
+(defun compare-front-body (iop fop gen)
+  `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,iop :return))
+    ,@(double-fast-path-code `((:local.get da) (:local.get db) ,fop :return))
+    (:local.get 0) (:local.get 1) (:return_call ,gen)))
 
-(defhelper :num-eq :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
+(defhelper :lt-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
+  (cons :progn-marker (compare-helper-body :i64.lt_s :f64.lt 'clysm-sys::%generic-lt)))
+(defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
+  (cons :progn-marker (compare-front-body :i32.lt_s :f64.lt :lt-gen)))
+
+(defhelper :num-eq-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
   (cons :progn-marker (compare-helper-body :i64.eq :f64.eq 'clysm-sys::%generic-num-eq)))
+(defhelper :num-eq :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
+  (cons :progn-marker (compare-front-body :i32.eq :f64.eq :num-eq-gen)))
 
 ;;; dynamic binding
 (defhelper :bind :ee-v ((sp :i32) (new (:ref :vector)))
@@ -3454,7 +3525,7 @@ in local V and the index in local K; else branch to FAIL."
   '(:ref.null :eq))
 
 ;;; MOD / REM fast paths: fixnums, then integers within 64 bits
-(defun divop-helper-body (lisp-fn modp)
+(defun divop-front-body (gen modp)
   `((:local.get 0) (:ref.test :i31) (:local.get 1) (:ref.test :i31) :i32.and
     (:if nil nil
          ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee x)
@@ -3470,7 +3541,10 @@ in local V and the index in local K; else branch to FAIL."
                       (:local.get r) (:local.get y) :i32.xor (:i32.const 0) :i32.lt_s :i32.and
                       (:if nil nil ((:local.get r) (:local.get y) :i32.add (:local.set r)))))
                 (:local.get r) :ref.i31 :return))))
-    (:block slow nil
+    (:local.get 0) (:local.get 1) (:return_call ,gen)))
+
+(defun divop-helper-body (lisp-fn modp)
+  `((:block slow nil
       ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
       ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
       (:local.get xb) :i64.eqz (:br_if slow)
@@ -3486,10 +3560,14 @@ in local V and the index in local K; else branch to FAIL."
     (:local.get 0) (:local.get 1)
     (:global.get ,(sym-global lisp-fn)) (:call (:callsym 2))))
 
-(defhelper :mod :ee-e ((x :i32) (y :i32) (r :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64))
+(defhelper :mod-gen :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64))
   (cons :progn-marker (divop-helper-body 'clysm-sys::%mod-slow t)))
-(defhelper :rem :ee-e ((x :i32) (y :i32) (r :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64))
+(defhelper :rem-gen :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64))
   (cons :progn-marker (divop-helper-body 'clysm-sys::%rem-slow nil)))
+(defhelper :mod :ee-e ((x :i32) (y :i32) (r :i32))
+  (cons :progn-marker (divop-front-body :mod-gen t)))
+(defhelper :rem :ee-e ((x :i32) (y :i32) (r :i32))
+  (cons :progn-marker (divop-front-body :rem-gen nil)))
 (defprim mod (a b) :value `(,@a ,@b (:call :mod)))
 (defprim rem (a b) :value `(,@a ,@b (:call :rem)))
 
