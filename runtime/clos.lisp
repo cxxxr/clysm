@@ -1747,6 +1747,77 @@ whose name is that instance)."
   (setq object (%fi-object object))
   (and (%instancep object) (not (null (%slot-location object slot-name)))))
 
+;;; Slot access by a constant name: (SLOT-VALUE x 'name), (SETF SLOT-VALUE),
+;;; SLOT-BOUNDP (and so WITH-SLOTS) are compiled to a call with a cache of the
+;;; form, #(index location index location index location index location next):
+;;; the slot indexes of four classes seen there (the slot index of a class is
+;;; replaced when its slot locations change), with the location of the slot
+;;; in their instances, and the entry to replace next.
+(defun %make-slot-cache () (vector 0 0 0 0 0 0 0 0 0))
+
+(defun %slot-cache-miss (object name cache index)
+  "The location of the slot NAME in the instance OBJECT, whose class has the
+slot index INDEX, when it is a slot of the instance accessed without the slot
+access protocol; else NIL."
+  (declare (simple-vector cache))
+  (cond ((eq index (svref cache 4)) (svref cache 5))
+        ((eq index (svref cache 6)) (svref cache 7))
+        (t (let* ((class (%instance-layout object))
+                  (loc (and (%instancep class) (not (%class-slot class +class-protocol+))
+                            (cdr (assoc name index)))))
+             (if (fixnump loc)
+                 (let ((i (svref cache 8)))
+                   (setf (svref cache i) index (svref cache (+ i 1)) loc
+                         (svref cache 8) (logand (+ i 2) 7))
+                   loc)
+                 nil)))))
+
+(declaim (inline %cached-slot-location))
+(defun %cached-slot-location (object name cache)
+  (let ((index (%class-slot (%instance-layout object) +class-slot-index+)))
+    (cond ((eq index (%svref cache 0)) (%svref cache 1))
+          ((eq index (%svref cache 2)) (%svref cache 3))
+          (t (%slot-cache-miss object name cache index)))))
+
+(defun %slot-value-cached (object name cache)
+  (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
+    (if loc
+        (let ((v (%instance-ref object loc)))
+          (if (%unboundp v) (slot-value object name) v))
+        (slot-value object name))))
+
+(defun %set-slot-value-cached (object name value cache)
+  (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
+    (if loc
+        (%set-instance-ref object loc value)
+        (%set-slot-value object name value))))
+
+(defun %slot-boundp-cached (object name cache)
+  (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
+    (if loc
+        (not (%unboundp (%instance-ref object loc)))
+        (slot-boundp object name))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %constant-slot-name-p (form)
+    (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
+         (symbolp (cadr form)))))
+
+(define-compiler-macro slot-value (&whole form object name)
+  (if (%constant-slot-name-p name)
+      `(%slot-value-cached ,object ,name (load-time-value (%make-slot-cache)))
+      form))
+
+(define-compiler-macro %set-slot-value (&whole form object name value)
+  (if (%constant-slot-name-p name)
+      `(%set-slot-value-cached ,object ,name ,value (load-time-value (%make-slot-cache)))
+      form))
+
+(define-compiler-macro slot-boundp (&whole form object name)
+  (if (%constant-slot-name-p name)
+      `(%slot-boundp-cached ,object ,name (load-time-value (%make-slot-cache)))
+      form))
+
 ;;; the slot access protocol (AMOP): applies to instances of classes whose
 ;;; metaclass is not one of the implementation's
 (defun %slotd-raw-value (object slotd)
