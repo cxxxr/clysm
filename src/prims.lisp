@@ -1511,15 +1511,17 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
   (car (nil-code)) :ref.eq :i32.eqz)
 
 ;;; dynamic binding
-(defhelper :bind :ee-v ((sp :i32) (new (:ref :vector)))
+(defhelper :grow-bstack :v-v ((new (:ref :vector)))
+  '(:ref.null :eq) '(:global.get :bstack) :array.len '(:i32.const 2) :i32.mul
+  '(:array.new :vector) '(:local.set new)
+  '(:local.get new) '(:i32.const 0) '(:global.get :bstack) '(:i32.const 0) '(:global.get :bsp)
+  '(:array.copy :vector :vector)
+  '(:local.get new) '(:global.set :bstack))
+
+(defhelper :bind :ee-v ((sp :i32))
   ;; grow if needed
   '(:global.get :bsp) '(:i32.const 2) :i32.add '(:global.get :bstack) :array.len :i32.gt_u
-  '(:if nil nil
-        ((:ref.null :eq) (:global.get :bstack) :array.len (:i32.const 2) :i32.mul
-         (:array.new :vector) (:local.set new)
-         (:local.get new) (:i32.const 0) (:global.get :bstack) (:i32.const 0) (:global.get :bsp)
-         (:array.copy :vector :vector)
-         (:local.get new) (:global.set :bstack)))
+  '(:if nil nil ((:call :grow-bstack)))
   '(:global.get :bstack) '(:global.get :bsp) '(:local.get 0) '(:array.set :vector)
   '(:global.get :bstack) '(:global.get :bsp) '(:i32.const 1) :i32.add
   '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)

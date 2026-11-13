@@ -402,6 +402,47 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 (defun save-bsp-code (local) `((:global.get :bsp) (:local.set ,local)))
 (defun restore-bsp-code (local) `((:local.get ,local) (:call :unbind-to)))
 
+;;; Binding special variables whose symbols are known: the entries
+;;; (symbol, old value) are written to the binding stack inline, with one
+;;; check of its size.  At the normal exit of the form the old values are
+;;; stored back from the known positions.  (Non-local exits use :UNBIND-TO,
+;;; which reads the symbols from the stack.)
+(defparameter *inline-bind-max* 6 "more variables than this are bound by calls of :BIND")
+
+(defun bind-specials-code (saved bindings)
+  "Save the binding stack pointer in the local SAVED and bind the symbols of
+BINDINGS, a list of (symbol . local holding the new value), in order."
+  (let ((n (length bindings)))
+    (if (or (zerop n) (> n *inline-bind-max*))
+        `(,@(save-bsp-code saved)
+          ,@(loop for (sym . tmp) in bindings
+                  append `((:global.get ,(sym-global sym)) (:local.get ,tmp) (:call :bind))))
+        (let ((st (new-local '(:ref :null :vector))))
+          `((:global.get :bsp) (:local.tee ,saved) (:i32.const ,(* 2 n)) :i32.add
+            (:global.get :bstack) :array.len :i32.gt_u
+            (:if nil nil ((:call :grow-bstack)))
+            (:global.get :bstack) (:local.set ,st)
+            ,@(loop for (sym . tmp) in bindings for i from 0 by 2
+                    append `((:local.get ,st) (:local.get ,saved) ,@(unless (zerop i) `((:i32.const ,i) :i32.add))
+                             (:global.get ,(sym-global sym)) (:array.set :vector)
+                             (:local.get ,st) (:local.get ,saved) (:i32.const ,(1+ i)) :i32.add
+                             (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:array.set :vector)
+                             (:global.get ,(sym-global sym)) (:local.get ,tmp) (:struct.set :symbol ,+sym-value+)))
+            (:local.get ,saved) (:i32.const ,(* 2 n)) :i32.add (:global.set :bsp))))))
+
+(defun unbind-specials-code (saved symbols)
+  "Undo, at the normal exit, the bindings of SYMBOLS made by BIND-SPECIALS-CODE."
+  (let ((n (length symbols)))
+    (if (or (zerop n) (> n *inline-bind-max*))
+        (restore-bsp-code saved)
+        (let ((st (new-local '(:ref :null :vector))))
+          `((:global.get :bstack) (:local.set ,st)
+            ,@(loop for sym in (reverse symbols) for i downfrom (1- (* 2 n)) by 2
+                    append `((:global.get ,(sym-global sym))
+                             (:local.get ,st) (:local.get ,saved) (:i32.const ,i) :i32.add (:array.get :vector)
+                             (:struct.set :symbol ,+sym-value+)))
+            (:local.get ,saved) (:global.set :bsp))))))
+
 (defmacro with-dynamic-scope (() &body body)
   `(let ((*dyn-depth* (1+ *dyn-depth*)) (*tail-ok* nil)) ,@body))
 
@@ -442,13 +483,12 @@ representation) or :effect (no value)."
             (append code (body-code tail))
             (let ((saved (new-local :i32)) (res (unless (eq rep :effect)
                                                  (new-local (if (eq rep :eqref) :eqref (rep-wasm-type rep))))))
+              (setf specials (loop for (lv . tmp) in (reverse specials) collect (cons (lvar-name lv) tmp)))
               (append code
-                      (save-bsp-code saved)
-                      (loop for (lv . tmp) in (reverse specials)
-                            append `((:global.get ,(sym-global (lvar-name lv))) (:local.get ,tmp) (:call :bind)))
+                      (bind-specials-code saved specials)
                       (with-dynamic-scope () (body-code nil))
                       (when res `((:local.set ,res)))
-                      (restore-bsp-code saved)
+                      (unbind-specials-code saved (mapcar #'car specials))
                       (when res `((:local.get ,res))))))))))
 
 (defun cg-mvbind (node mv tail)
@@ -477,12 +517,12 @@ representation) or :effect (no value)."
       (if (null specials)
           (append code (cg body mv tail))
           (let ((saved (new-local :i32)) (res (new-local)))
-            (append code (save-bsp-code saved)
-                    (loop for (lv . tmp) in (reverse specials)
-                          append `((:global.get ,(sym-global (lvar-name lv))) (:local.get ,tmp) (:call :bind)))
+            (setf specials (loop for (lv . tmp) in (reverse specials) collect (cons (lvar-name lv) tmp)))
+            (append code
+                    (bind-specials-code saved specials)
                     (with-dynamic-scope () (cg body mv nil))
                     `((:local.set ,res))
-                    (restore-bsp-code saved)
+                    (unbind-specials-code saved (mapcar #'car specials))
                     `((:local.get ,res)))))))))
 
 ;;; ------------------------------------------------------------
@@ -1147,7 +1187,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
     (loop for lv in (lam-req lam) for i from 1
           do (multiple-value-bind (code sp) (param-setup-code lv i)
                (setf prologue (append prologue code))
-               (when sp (setf any-special t))))
+               (when sp (setf any-special (append any-special (list sp))))))
     (let ((body (let ((*catching-tag* tag)) (finish-body lam prologue any-special))))
       (add-func *m* (catch-clone-name lam tag) (main-type n)
                 :locals (reverse (fstate-locals *fs*)) :body body
@@ -1174,9 +1214,10 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
       `((:local.get 0) (:struct.get :closure ,+clo-env+) (:local.set ,env)))))
 
 (defun param-setup-code (lv local-idx)
-  "LV was passed in LOCAL-IDX.  Returns (values code special-p)."
+  "LV was passed in LOCAL-IDX.  Returns (values code special-p); a special
+parameter has no code here: FINISH-BODY binds it."
   (cond ((lvar-special lv)
-         (values `((:global.get ,(sym-global (lvar-name lv))) (:local.get ,local-idx) (:call :bind)) t))
+         (values nil (cons (lvar-name lv) local-idx)))
         ((boxed-p lv)
          (set-loc lv (cons :local local-idx))
          (values `((:local.get ,local-idx) (:struct.new :cell) (:local.set ,local-idx)) nil))
@@ -1187,16 +1228,16 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
            (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv)) (:local.set ,idx)) nil)))
         (t (set-loc lv (cons :local local-idx)) (values nil nil))))
 
-(defun finish-body (lam prologue any-special)
-  "Compile LAM's body after PROLOGUE.  If ANY-SPECIAL, unbind at the end."
-  (if any-special
+(defun finish-body (lam prologue specials)
+  "Compile LAM's body after PROLOGUE.  SPECIALS: the special parameters, a
+list of (symbol . local), which are bound around the body."
+  (if specials
       (let ((saved (new-local :i32)) (res (new-local)))
-        ;; saved bsp must be captured before binding: prologue is wrapped
-        (values `((:global.get :bsp) (:local.set ,saved)
-                  ,@prologue
+        (values `(,@prologue
+                  ,@(bind-specials-code saved specials)
                   ,@(with-dynamic-scope () (cg (lam-body lam) t nil))
                   (:local.set ,res)
-                  ,@(restore-bsp-code saved)
+                  ,@(unbind-specials-code saved (mapcar #'car specials))
                   (:local.get ,res))))
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
@@ -1229,7 +1270,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
     (loop for lv in (lam-req lam) for i from 1
           do (multiple-value-bind (code sp) (param-setup-code lv i)
                (setf prologue (append prologue code))
-               (when sp (setf any-special t))))
+               (when sp (setf any-special (append any-special (list sp))))))
     (let ((body (finish-body lam prologue any-special)))
       (add-func *m* name (main-type n)
                 :locals (reverse (fstate-locals *fs*)) :body body :display display))))
@@ -1318,7 +1359,7 @@ its last parameter; the entries for few arguments make the list."
       (loop for lv in (append (lam-req lam) (list (lam-rest lam))) for i from 1
             do (multiple-value-bind (code sp) (param-setup-code lv i)
                  (setf prologue (append prologue code))
-                 (when sp (setf any-special t))))
+                 (when sp (setf any-special (append any-special (list sp))))))
       (let ((body (finish-body lam prologue any-special)))
         (add-func *m* (list :rmain id) (main-type (1+ n))
                   :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam))))
