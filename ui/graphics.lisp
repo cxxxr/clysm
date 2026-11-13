@@ -27,11 +27,14 @@
    ;; the size of the drawing in its own coordinates; it is scaled to the
    ;; pane.  Without it, the coordinates are the pixels of the pane.
    (view-width :initarg :view-width :initform nil :accessor output-pane-view-width)
+   ;; (see VIEW-WIDTH)
    (view-height :initarg :view-height :initform nil :accessor output-pane-view-height)
    ;; functions of the pane and the position X, Y in the drawing where the
    ;; pointer was pressed, moved and released
    (press-callback :initarg :press-callback :initform nil :accessor output-pane-press-callback)
+   ;; called with the pane and X, Y when the pointer moves on the drawing
    (motion-callback :initarg :motion-callback :initform nil :accessor output-pane-motion-callback)
+   ;; called with the pane and X, Y when the pointer is released
    (release-callback :initarg :release-callback :initform nil :accessor output-pane-release-callback))
   (:default-initargs :stretch t)
   (:documentation "A pane for drawing."))
@@ -119,6 +122,7 @@ drawing; return its node."
       node)))
 
 (defun draw-line (pane x1 y1 x2 y2 &rest options)
+  "Draw a line from X1, Y1 to X2, Y2."
   (shape pane "line" (list :x1 (number-text x1) :y1 (number-text y1)
                            :x2 (number-text x2) :y2 (number-text y2))
          options))
@@ -148,10 +152,12 @@ drawing; return its node."
          options))
 
 (defun draw-circle (pane x y radius &rest options)
+  "Draw a circle around X, Y; with :FILLED, a disc."
   (shape pane "circle" (list :cx (number-text x) :cy (number-text y) :r (number-text radius))
          options))
 
 (defun draw-ellipse (pane x y x-radius y-radius &rest options)
+  "Draw an ellipse around X, Y with the radii X-RADIUS and Y-RADIUS."
   (shape pane "ellipse" (list :cx (number-text x) :cy (number-text y)
                               :rx (number-text x-radius) :ry (number-text y-radius))
          options))
@@ -264,8 +270,11 @@ the pane has a :PRESENTATION-TYPE."))
 (defmethod initialize-instance :after ((pane graph-pane) &key (roots nil rootsp))
   (when rootsp (setf (collection-items pane) roots)))
 
-(defun graph-pane-roots (pane) (collection-items pane))
-(defun (setf graph-pane-roots) (roots pane) (setf (collection-items pane) roots))
+(defun graph-pane-roots (pane)
+  "The items the graph PANE starts from (its COLLECTION-ITEMS)."
+  (collection-items pane))
+(defun (setf graph-pane-roots) (roots pane)
+  (setf (collection-items pane) roots))
 
 (defun text-width (string)
   "About how wide STRING is, in pixels of the font of the panes."

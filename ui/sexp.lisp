@@ -13,7 +13,8 @@
 (in-package "UI")
 
 (defclass sexp-backend ()
-  ((log :initform nil :accessor %backend-log)
+  (;; (the operations on the display, the latest first)
+   (log :initform nil :accessor %backend-log)
    ;; NIL, or a function of an error and its restarts that returns the
    ;; restart the "user" chooses (NIL: abort)
    (chooser :initform nil :initarg :chooser :accessor backend-chooser)
@@ -22,9 +23,13 @@
    (waiter :initform nil :initarg :waiter :accessor backend-waiter)
    ;; (name text) of the file the "user" chooses, and the clipboard
    (file :initform nil :initarg :file :accessor backend-file)
+   ;; the text on its clipboard
    (clipboard :initform nil :accessor backend-clipboard)
    (overlay :initform nil)
-   (global-listeners :initform nil :accessor backend-global-listeners)))
+   (global-listeners :initform nil :accessor backend-global-listeners))
+  (:documentation "A backend whose display is a tree of S-expressions, for tests: it
+records every change (BACKEND-LOG), FIRE calls listeners, and the user's
+answers are functions (BACKEND-CHOOSER, BACKEND-WAITER, BACKEND-FILE)."))
 
 (defstruct snode tag text props listeners children parent)
 
@@ -35,7 +40,29 @@
 (defun note (backend &rest operation)
   (push operation (%backend-log backend)))
 
-(defun make-root () (make-snode :tag "root"))
+(defun make-root ()
+  "A new node of the S-expression backend to MOUNT or DISPLAY into."
+  (make-snode :tag "root"))
+
+(defvar *named-roots* '() "(name . root)... made by NAMED-ROOT.")
+
+(defun named-root (name)
+  "The root (as of MAKE-ROOT) for the container NAME, a string: what a
+program that displays into \"#app\" uses on this backend."
+  (or (cdr (assoc name *named-roots* :test #'string=))
+      (let ((root (make-root)))
+        (push (cons name root) *named-roots*)
+        root)))
+
+(defun named-roots ()
+  "The names and roots of NAMED-ROOT, as (name . root)..., oldest first."
+  (reverse *named-roots*))
+
+(defmethod resolve-container ((backend sexp-backend) container)
+  (if (stringp container) (named-root container) container))
+
+(defmethod install-commands ((backend sexp-backend) &key &allow-other-keys)
+  (note backend :install-commands))
 
 (defun label (node)
   (or (snode-text node) (intern (string-upcase (snode-tag node)) "KEYWORD")))
@@ -197,6 +224,7 @@
     (nreverse result)))
 
 (defun find-node (root tag &key class (index 0))
+  "The element number INDEX of FIND-NODES (by default the first), or NIL."
   (nth index (find-nodes root tag :class class)))
 
 (defun fire (node event &rest arguments)

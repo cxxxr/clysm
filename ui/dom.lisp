@@ -15,7 +15,9 @@
 
 (defclass dom-backend ()
   ((document :initform (js:global "document") :reader backend-document)
-   (flush :initform (js:async-function #'flush))))
+   (flush :initform (js:async-function #'flush)))
+  (:documentation "The backend for the DOM of a page; loading dom.lisp makes an
+instance of it the value of *BACKEND*."))
 
 ;;; the JavaScript strings of names are made once (a string is converted
 ;;; character by character)
@@ -295,10 +297,6 @@
                 (and (or (js:get event "ctrlKey") (js:get event "metaKey")) '(:ctrl))
                 (and (js:get event "shiftKey") '(:shift)))))
 
-(defgeneric install-commands (backend &key &allow-other-keys)
-  (:documentation "Make the commands available to the user in the way of
-BACKEND: in a browser by their keys, in the desktop application also in the
-menu bar."))
 
 (defun install-command-keys (backend &key (command-predicate (constantly t)) (handlers t))
   "Invoke the commands that satisfy COMMAND-PREDICATE when their keys are

@@ -10,7 +10,10 @@
 (in-package "UI")
 
 (defclass desktop-backend (dom-backend)
-  ((api :initform (js:global "desktop") :reader desktop-api)))
+  ((api :initform (js:global "desktop") :reader desktop-api))
+  (:documentation "The backend of a page in the desktop application (ui/electron): the
+DOM backend with a native menu bar, native dialogs and files.  Loading
+desktop.lisp makes it *BACKEND* when the program runs there."))
 
 (defmethod native-menus-p ((backend desktop-backend)) t)
 
@@ -25,8 +28,11 @@
 ;;; files
 
 (define-condition desktop-file-error (error)
-  ((path :initarg :path :reader desktop-file-error-path)
+  (;; the file
+   (path :initarg :path :reader desktop-file-error-path)
+   ;; why it could not be written
    (message :initarg :message :reader desktop-file-error-message))
+  (:documentation "Signalled by WRITE-FILE when a file cannot be written.")
   (:report (lambda (condition stream)
              (format stream "~A: ~A" (desktop-file-error-path condition)
                      (desktop-file-error-message condition)))))
@@ -47,6 +53,8 @@
   (desktop-call "userDataFile" name))
 
 (defun add-recent-document (path)
+  "Add the file PATH to the recent documents of the system (the menu of the
+application in the dock or the task bar)."
   (desktop-call "addRecentDocument" path))
 
 ;;; dialogs

@@ -194,6 +194,8 @@ presentation type without this; it may still be given a description.)"
     (t (class-name (class-of object)))))
 
 (defun presentation-subtypep (type supertype)
+  "True if the presentation type TYPE is SUPERTYPE or a subtype of it: by the
+supertypes of DEFINE-PRESENTATION-TYPE, or as SUBTYPEP says."
   (or (eq supertype t)
       (equal type supertype)
       (and (symbolp type)

@@ -293,6 +293,10 @@ TODO> (defcomponent filter-button (filter label) ...)     ; the buttons change
 
 ## GUI framework
 
+The complete manual — a user guide (in Japanese) and a reference of every
+exported symbol — is [docs/ui/README.md](docs/ui/README.md).
+`tools/new-ui-app.sh DIRECTORY` makes a new application anywhere.
+
 `ui/` is a framework for graphical applications. The state of an application
 is ordinary CLOS objects and variables, and the screen follows them: a
 component is rendered again when a slot or variable that it read is set. No
