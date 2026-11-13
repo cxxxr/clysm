@@ -109,6 +109,11 @@
     (:e-l       (:func (:eqref) (:i64)))
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))
-    (:ei-e      (:func (:eqref :i32) (:eqref)))))
+    (:ei-e      (:func (:eqref :i32) (:eqref)))
+    ;; numeric helpers (prims.lisp)
+    (:d-e       (:func (:f64) (:eqref)))
+    (:ll-e      (:func (:i64 :i64) (:eqref)))
+    (:eii-e     (:func (:eqref :i32 :i32) (:eqref)))
+    (:ee-d      (:func (:eqref :eqref) (:f64)))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))

@@ -31,6 +31,13 @@
 ;;; ------------------------------------------------------------
 ;;; magnitudes: limbs arrays of base 2^28 digits, little endian
 ;;; ------------------------------------------------------------
+;;;
+;;; The kernels are Wasm helpers (src/prims.lisp): %MAKE-INTEGER (sign and
+;;; magnitude to a fixnum, an integer within 64 bits or a bignum), %INT-MAG,
+;;; %INT-SIGN, %MAG-CMP, %INT-ADD-BIG, %INT-SUB-BIG, %INT-MUL-BIG,
+;;; %INT-LOGOP-BIG, %MAG-SHL, %MAG-SHR, %MAG-BITLEN, %MAG-POPCOUNT, %MAG-CTZ.
+;;; Integers within 64 bits never reach the functions below from the
+;;; arithmetic operators: the generic helpers compute them in i64.
 
 (defun %mag-length (m)
   ;; length without leading zero digits
@@ -42,41 +49,7 @@
   (let ((n (%mag-length m)))
     (if (%fx= n (%llen m)) m (%limbs-prefix m n))))
 
-(defun %fixnum-mag (n)
-  ;; magnitude of a fixnum's absolute value (|n| <= 2^29)
-  (let ((a (if (%fx< n 0) (%fx- 0 n) n)))
-    (cond ((%fx= n most-negative-fixnum)
-           (let ((m (%make-limbs 2))) (%lset m 0 0) (%lset m 1 2) m))
-          ((%fx< a +digit-base+) (let ((m (%make-limbs 1))) (%lset m 0 a) m))
-          (t (let ((m (%make-limbs 2)))
-               (%lset m 0 (%fxlogand a +digit-mask+))
-               (%lset m 1 (%fxash-right a +digit-bits+))
-               m)))))
-
-(defun %int-sign (x) (if (fixnump x) (if (%fx< x 0) 1 0) (%bignum-sign x)))
-(defun %int-mag (x) (if (fixnump x) (%fixnum-mag x) (%bignum-mag x)))
-
-(defun %make-integer (sign mag)
-  "Normalize a sign/magnitude pair into a fixnum or bignum."
-  (let ((n (%mag-length mag)))
-    (cond ((%fx= n 0) 0)
-          ((%fx= n 1) (if (%fx= sign 1) (%fx- 0 (%lref mag 0)) (%lref mag 0)))
-          ((and (%fx= n 2) (%fx< (%lref mag 1) 2))
-           (let ((v (%fx+ (%lref mag 0) (%fxash-left (%lref mag 1) +digit-bits+))))
-             (if (%fx= sign 1) (%fx- 0 v) v)))
-          ((and (%fx= n 2) (%fx= sign 1) (%fx= (%lref mag 1) 2) (%fx= (%lref mag 0) 0))
-           most-negative-fixnum)
-          (t (%make-bignum sign (%mag-trim mag))))))
-
-(defun %mag-cmp (a b)
-  (let ((la (%mag-length a)) (lb (%mag-length b)))
-    (cond ((%fx< la lb) -1)
-          ((%fx> la lb) 1)
-          (t (do ((i (%fx- la 1) (%fx- i 1)))
-                 ((%fx< i 0) 0)
-               (let ((da (%lref a i)) (db (%lref b i)))
-                 (cond ((%fx< da db) (return -1))
-                       ((%fx> da db) (return 1)))))))))
+(defun %fixnum-mag (n) (%int-mag n))
 
 (defun %mag-add (a b) (%mag-add-fast a b))
 
@@ -98,120 +71,54 @@
 ;;; integer arithmetic
 ;;; ------------------------------------------------------------
 
-(defun %int-add (a b)
-  (or (%int64-op a b 0) (%int-add-big a b)))
-(defun %int-add-big (a b)
-  (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
-    (if (%fx= sa sb)
-        (%make-integer sa (%mag-add ma mb))
-        (let ((c (%mag-cmp ma mb)))
-          (cond ((%fx= c 0) 0)
-                ((%fx> c 0) (%make-integer sa (%mag-sub ma mb)))
-                (t (%make-integer sb (%mag-sub mb ma))))))))
+(defun %int-add (a b) (or (%int64-op a b 0) (%int-add-big a b)))
+(defun %int-sub (a b) (or (%int64-op a b 1) (%int-sub-big a b)))
 
 (defun %int-negate (a)
   (if (fixnump a)
-      (if (%fx= a most-negative-fixnum) (%make-integer 0 (%fixnum-mag a)) (%fx- 0 a))
+      (if (%fx= a most-negative-fixnum) 536870912 (%fx- 0 a))
       (%make-integer (%fx- 1 (%bignum-sign a)) (%bignum-mag a))))
 
-(defun %int-sub (a b) (or (%int64-op a b 1) (%int-add-big a (%int-negate b))))
-
-(defun %int-mul (a b)
-  ;; a bignum times a fixnum below the digit base
-  (when (and (fixnump b) (%bignump a) (%fx< (%fx- 0 +digit-base+) b) (%fx< b +digit-base+) (not (%fx= b 0)))
-    (return-from %int-mul
-      (%make-bignum (if (%fx< b 0) (%fx- 1 (%bignum-sign a)) (%bignum-sign a))
-                    (%mag-mul-digit (%bignum-mag a) (if (%fx< b 0) (%fx- 0 b) b)))))
-  (when (and (fixnump a) (%bignump b) (%fx< (%fx- 0 +digit-base+) a) (%fx< a +digit-base+) (not (%fx= a 0)))
-    (return-from %int-mul (%int-mul b a)))
-  (or (%int64-op a b 2)
-      (%make-integer (%fxlogxor (%int-sign a) (%int-sign b)) (%mag-mul (%int-mag a) (%int-mag b)))))
+(defun %int-mul (a b) (or (%int64-op a b 2) (%int-mul-big a b)))
 
 (defun %int-truncate (a b)
   "Returns (values quotient remainder) of integers."
   (let ((q (%int64-op a b 6)))
     (when q (return-from %int-truncate (values q (%int64-op a b 7)))))
-  (if (and (fixnump a) (fixnump b))
-      (if (%fx= b 0)
-          (error 'division-by-zero :operation 'truncate :operands (list a b))
-          (if (and (%fx= b -1) (%fx= a most-negative-fixnum))
-              (values (- a) 0)
-              (values (%fxtruncate a b) (%fxrem a b))))
-      (let ((sa (%int-sign a)) (sb (%int-sign b)))
-        (multiple-value-bind (q r) (%mag-divmod (%int-mag a) (%int-mag b))
+  (when (eql b 0) (error 'division-by-zero :operation 'truncate :operands (list a b)))
+  (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
+    (if (%fx= (%mag-length mb) 1)
+        ;; a divisor of one digit: no remainder magnitude
+        (multiple-value-bind (q r) (%mag-divmod-small ma (%lref mb 0))
+          (values (%make-integer (%fxlogxor sa sb) q) (if (%fx= sa 1) (%fx- 0 r) r)))
+        (multiple-value-bind (q r) (%mag-divmod ma mb)
           (values (%make-integer (%fxlogxor sa sb) q) (%make-integer sa r))))))
 
 (defun %int-cmp (a b)
-  (let ((c (%int64-op a b 8))) (when c (return-from %int-cmp c)))
-  (if (and (fixnump a) (fixnump b))
-      (cond ((%fx< a b) -1) ((%fx> a b) 1) (t 0))
-      (let ((sa (%int-sign a)) (sb (%int-sign b)))
-        (cond ((%fx< sa sb) 1)
-              ((%fx> sa sb) -1)
-              (t (let ((c (%mag-cmp (%int-mag a) (%int-mag b))))
-                   (if (%fx= sa 1) (%fx- 0 c) c)))))))
+  (or (%int64-op a b 8) (%int-cmp-big a b)))
 
 (defun %int-zerop (x) (eql x 0))
 (defun %int-minusp (x) (if (fixnump x) (%fx< x 0) (%fx= (%bignum-sign x) 1)))
 
+(defun %ash2 (n count) (%int-ash (%check-integer n) (%check-integer count)))
 (defun %int-ash (x count)
+  ;; (an integer within 64 bits whose result is one too is shifted by the helper)
   (cond ((eql x 0) 0)
-        ((and (fixnump count) (%int64-op x count 9)))
-        ((eql count 0) x)
-        ((> count 0)
-         (if (and (fixnump x) (< count 29)
-                  (let ((y (%fxash-left x count)))
-                    (and (fixnump y) (%fx= (%fxash-right y count) x))))
-             (%fxash-left x count)
-             (let* ((digits (truncate count +digit-bits+)) (bits (- count (* digits +digit-bits+)))
-                    (m (%mag-shift-left-bits (%int-mag x) bits))
-                    (r (%make-limbs (+ (%llen m) digits))))
-               (dotimes (i (%llen m)) (%lset r (+ i digits) (%lref m i)))
-               (%make-integer (%int-sign x) r))))
-        (t
-         (let ((n (- count)))
-           (if (fixnump x)
-               (if (>= n 30) (if (%fx< x 0) -1 0) (%fxash-right x n))
-               (if (%int-minusp x)
-                   ;; floor semantics: -((|x|-1) >> n) - 1
-                   (%int-sub (%int-negate (%int-ash (%int-sub (%int-negate x) 1) count)) 1)
-                   (let* ((digits (truncate n +digit-bits+)) (bits (- n (* digits +digit-bits+)))
-                          (m (%bignum-mag x)) (len (%llen m)))
-                     (if (>= digits len) 0
-                         (let ((r (%make-limbs (- len digits))))
-                           (dotimes (i (- len digits)) (%lset r i (%lref m (+ i digits))))
-                           (%make-integer 0 (%mag-shift-right-bits r bits)))))))))))
+        ((or (not (fixnump count)) (%fx= count most-negative-fixnum))
+         (if (%int-minusp count)
+             (if (%int-minusp x) -1 0)
+             (error "ASH: the shift count ~S is too large" count)))
+        ((%fx> count 0) (%make-integer (%int-sign x) (%mag-shl (%int-mag x) count)))
+        ((%fx= count 0) x)
+        (t (let* ((n (%fx- 0 count)) (m (%int-mag x)) (q (%make-integer 0 (%mag-shr m n))))
+             (if (%int-minusp x)
+                 ;; floor: -(q + 1) when a 1 bit is shifted out
+                 (if (%fx< (%mag-ctz m) n) (- -1 q) (- q))
+                 q)))))
 
-;;; two's complement digit vectors for logical ops
-(defun %int-to-twos (x n)
-  "N digits of the two's complement representation of X."
-  (let ((r (%make-limbs n)) (m (%int-mag x)))
-    (if (not (%int-minusp x))
-        (dotimes (i n r) (%lset r i (if (< i (%llen m)) (%lref m i) 0)))
-        ;; negative: complement of (|x| - 1)
-        (let ((m1 (%int-mag (%int-sub (%int-negate x) 1))))
-          (dotimes (i n r)
-            (%lset r i (%fxlogxor +digit-mask+ (if (< i (%llen m1)) (%lref m1 i) 0))))))))
-
-(defun %twos-to-int (r negative)
-  (if (not negative)
-      (%make-integer 0 r)
-      (let ((m (%make-limbs (%llen r))))
-        (dotimes (i (%llen r)) (%lset m i (%fxlogxor +digit-mask+ (%lref r i))))
-        (%int-sub (%int-negate (%make-integer 0 m)) 1))))
-
-(defun %int-logop (op a b)
-  (if (and (fixnump a) (fixnump b))
-      (case op (0 (%fxlogand a b)) (1 (%fxlogior a b)) (t (%fxlogxor a b)))
-    (or (%int64-op a b (case op (0 3) (1 4) (t 5)))
-      (let* ((n (+ 1 (max (%llen (%int-mag a)) (%llen (%int-mag b)))))
-             (ta (%int-to-twos a n)) (tb (%int-to-twos b n))
-             (r (%make-limbs n))
-             (na (%int-minusp a)) (nb (%int-minusp b)))
-        (dotimes (i n)
-          (let ((x (%lref ta i)) (y (%lref tb i)))
-            (%lset r i (case op (0 (%fxlogand x y)) (1 (%fxlogior x y)) (t (%fxlogxor x y))))))
-        (%twos-to-int r (case op (0 (and na nb)) (1 (or na nb)) (t (not (eq na nb)))))))))
+(defun %logand2 (a b) (%int-logop-big (%check-integer a) (%check-integer b) 0))
+(defun %logior2 (a b) (%int-logop-big (%check-integer a) (%check-integer b) 1))
+(defun %logxor2 (a b) (%int-logop-big (%check-integer a) (%check-integer b) 2))
 
 ;;; ------------------------------------------------------------
 ;;; generic dispatch
@@ -282,6 +189,7 @@
     (if (> ra rb) ra rb)))
 
 (defun %generic-add (a b)
+  (when (and (integerp a) (integerp b)) (return-from %generic-add (%int-add-big a b)))
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-add a b))
           ((= r 1) (%ratio-add a b))
@@ -289,6 +197,7 @@
           (t (%complex-add a b)))))
 
 (defun %generic-sub (a b)
+  (when (and (integerp a) (integerp b)) (return-from %generic-sub (%int-sub-big a b)))
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-sub a b))
           ((= r 1) (%ratio-add a (%negate b)))
@@ -310,6 +219,7 @@
   result)
 
 (defun %generic-mul (a b)
+  (when (and (integerp a) (integerp b)) (return-from %generic-mul (%int-mul-big a b)))
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-mul a b))
           ((= r 1) (%ratio-mul a b))
@@ -354,7 +264,7 @@ converts to a double exactly, so only bignums and ratios need it."
           (t (and (= (realpart a) (realpart b)) (= (imagpart a) (imagpart b)))))))
 
 (defun %eql-boxed (a b)
-  (cond ((and (%bignump a) (%bignump b)) (= (%int-cmp a b) 0))
+  (cond ((and (%bignump a) (%bignump b)) (%fx= (%int-cmp-big a b) 0))
         ((and (%double-float-p a) (%double-float-p b)) (%double-eql a b))
         ((and (%single-float-p a) (%single-float-p b)) (%single-eql a b))
         ((and (%ratiop a) (%ratiop b))
@@ -436,8 +346,8 @@ converts to a double exactly, so only bignums and ratios need it."
   (if (null more) (- num)
       (let ((acc num)) (dolist (n more acc) (setq acc (- acc n))))))
 (defun / (num &rest more)
-  (if (null more) (%generic-div 1 num)
-      (let ((acc num)) (dolist (n more acc) (setq acc (%generic-div acc n))))))
+  (if (null more) (/ 1 num)
+      (let ((acc num)) (dolist (n more acc) (setq acc (/ acc n))))))
 
 (defun %compare-chain (pred nums)
   (do ((l nums (cdr l))) ((null (cdr l)) t)
@@ -460,6 +370,7 @@ SORT and the like make no argument list)."
 (%fast-entries + (lambda (a) (%check-number a)) (lambda (a b) (+ a b)))
 (%fast-entries * (lambda (a) (%check-number a)) (lambda (a b) (* a b)))
 (%fast-entries - (lambda (a) (- a)) (lambda (a b) (- a b)))
+(%fast-entries / (lambda (a) (/ 1 a)) (lambda (a b) (/ a b)))
 (%fast-entries = (lambda (a) (%check-number a) t) (lambda (a b) (= a b)))
 (%fast-entries < (lambda (a) (%check-real a) t) (lambda (a b) (< a b)))
 (%fast-entries > (lambda (a) (%check-real a) t) (lambda (a b) (> a b)))
@@ -573,9 +484,12 @@ SORT and the like make no argument list)."
 (defun fround (n &optional (d 1)) (multiple-value-bind (q r) (round n d) (values (float q (if (floatp n) n 1.0)) r)))
 
 ;;; logical
-(defun logand (&rest ns) (let ((a -1)) (dolist (n ns a) (setq a (%int-logop 0 a (%check-integer n))))))
-(defun logior (&rest ns) (let ((a 0)) (dolist (n ns a) (setq a (%int-logop 1 a (%check-integer n))))))
-(defun logxor (&rest ns) (let ((a 0)) (dolist (n ns a) (setq a (%int-logop 2 a (%check-integer n))))))
+(defun logand (&rest ns) (let ((a -1)) (dolist (n ns a) (setq a (logand a (%check-integer n))))))
+(defun logior (&rest ns) (let ((a 0)) (dolist (n ns a) (setq a (logior a (%check-integer n))))))
+(defun logxor (&rest ns) (let ((a 0)) (dolist (n ns a) (setq a (logxor a (%check-integer n))))))
+(%fast-entries logand (lambda (a) (%check-integer a)) (lambda (a b) (logand a b)))
+(%fast-entries logior (lambda (a) (%check-integer a)) (lambda (a b) (logior a b)))
+(%fast-entries logxor (lambda (a) (%check-integer a)) (lambda (a b) (logxor a b)))
 (defun lognot (n) (- -1 (%check-integer n)))
 (defun logeqv (&rest ns)
   (let ((acc -1)) (dolist (n ns acc) (setq acc (lognot (logxor acc (%check-integer n)))))))
@@ -587,22 +501,30 @@ SORT and the like make no argument list)."
 (defun logorc2 (a b) (logior a (lognot b)))
 (defun logtest (a b) (not (zerop (logand a b))))
 (defun logbitp (index n)
-  (unless (and (integerp index) (>= index 0)) (%type-error index 'unsigned-byte))
-  (oddp (ash (%check-integer n) (- index))))
-(defun ash (n count) (%int-ash (%check-integer n) (%check-integer count)))
+  (if (and (fixnump index) (fixnump n) (%fx>= index 0))
+      (if (%fx< index 30) (%fx= (%fxlogand (%fxash-right n index) 1) 1) (%fx< n 0))
+      (progn
+        (unless (and (integerp index) (>= index 0)) (%type-error index 'unsigned-byte))
+        (oddp (ash (%check-integer n) (- index))))))
+(defun ash (n count) (ash n count))
 
-(defun integer-length (n)
-  (let ((x (if (%int-minusp n) (lognot n) n)))
-    (if (fixnump x)
-        (let ((len 0)) (do () ((eql x 0) len) (setq x (%fxash-right x 1)) (setq len (%fx+ len 1))))
-        (let* ((m (%bignum-mag x)) (top (- (%mag-length m) 1)) (d (%lref m top)) (len (* top +digit-bits+)))
-          (do () ((eql d 0) len) (setq d (%fxash-right d 1)) (setq len (+ len 1)))))))
+;;; INTEGER-LENGTH and LOGCOUNT of fixnums and integers within 64 bits are
+;;; computed by the helpers (clz / popcnt)
+(defun integer-length (n) (integer-length n))
+(defun %integer-length-big (n)
+  (unless (%bignump n) (%type-error n 'integer))
+  (let* ((m (%bignum-mag n)) (len (%mag-bitlen m)))
+    ;; of a negative integer: the length of |n| - 1
+    (if (and (%fx= (%bignum-sign n) 1) (%fx= (%mag-popcount m) 1)) (%fx- len 1) len)))
 
-(defun logcount (n)
-  (let ((x (if (minusp n) (lognot n) n)) (c 0))
-    (do () ((eql x 0) c)
-      (when (oddp x) (setq c (+ c 1)))
-      (setq x (ash x -1)))))
+(defun logcount (n) (logcount n))
+(defun %logcount-big (n)
+  (unless (%bignump n) (%type-error n 'integer))
+  (let ((m (%bignum-mag n)))
+    ;; of a negative integer: the 1 bits of |n| - 1
+    (if (%fx= (%bignum-sign n) 1)
+        (%fx+ (%fx- (%mag-popcount m) 1) (%mag-ctz m))
+        (%mag-popcount m))))
 
 (defconstant boole-clr 0) (defconstant boole-set 1) (defconstant boole-1 2) (defconstant boole-2 3)
 (defconstant boole-c1 4) (defconstant boole-c2 5) (defconstant boole-and 6) (defconstant boole-ior 7)
