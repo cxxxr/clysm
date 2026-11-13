@@ -396,7 +396,7 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
        (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b)
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
          `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq)))
-      (t nil))))
+      (t (numeric-test-code node)))))
 
 (defun typed-divmod-code (node)
   "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a
@@ -536,6 +536,40 @@ computed for a division by 1 unless NEED-REM)."
                         '(:i64.popcnt :i32.wrap_i64)
                         (let ((n (new-local :i32)))
                           `(:i64.clz :i32.wrap_i64 (:local.set ,n) (:i32.const 64) (:local.get ,n) :i32.sub))))))))
+      (abs (when (i32-arg-p a)
+             (let ((x (new-local :i32)) (m (new-local :i32)))
+               `(,@(cg-rep a :i32) (:local.tee ,x) (:i32.const 31) :i32.shr_s (:local.tee ,m)
+                 (:local.get ,x) :i32.xor (:local.get ,m) :i32.sub))))
+      (isqrt
+       ;; exact: the argument converts exactly and the square root is correctly rounded
+       (let ((ty (node-ty a)))
+         (when (and (i32-arg-p a) (>= (ty-lo ty) 0))
+           `(,@(cg-rep a :i32) :f64.convert_i32_s :f64.sqrt :i32.trunc_sat_f64_s))))
+      (t
+       ;; a result within 32 bits of operands within 64 (a mask, a right
+       ;; shift, a difference): the i64 operation, wrapped
+       (when (and (ty-int32-p (node-ty node)) (some #'i64-arg-p args)
+                  (notevery #'i32-arg-p args))
+         (let ((c (i64-op-code node))) (when c `(,@c :i32.wrap_i64))))))))
+
+(defun numeric-test-code (node)
+  "i32 code for a numeric predicate using the argument types, or NIL."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (case name
+      ((zerop plusp minusp)
+       (when (i64-arg-p a)
+         `(,@(cg-rep a :i64) ,@(ecase name (zerop '(:i64.eqz))
+                                 (plusp '((:i64.const 0) :i64.gt_s))
+                                 (minusp '((:i64.const 0) :i64.lt_s))))))
+      ((evenp oddp)
+       (when (i64-arg-p a)
+         `(,@(cg-rep a :i64) :i32.wrap_i64 (:i32.const 1) :i32.and ,@(when (eq name 'evenp) '(:i32.eqz)))))
+      (logbitp
+       ;; a constant index into an integer within 64 bits
+       (let ((k (and a (const-int-node a))))
+         (when (and k (>= k 0) b (i64-arg-p b))
+           `(,@(cg-effect a) ,@(cg-rep b :i64) (:i64.const ,(min k 63)) :i64.shr_s :i32.wrap_i64
+             (:i32.const 1) :i32.and))))
       (t nil))))
 
 (defun numeric-i64-op-code (node)

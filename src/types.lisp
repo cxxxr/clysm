@@ -367,6 +367,19 @@
         (int-ty 0 (max (integer-length (ty-lo x)) (integer-length (ty-hi x))))
         (int-ty 0 +most-positive-fixnum+))))
 
+(def-ti-rule (isqrt) (a)
+  (let ((x (first a)))
+    (if (and (ty-only-p x +k-int+) (ty-lo x) (ty-hi x) (>= (ty-lo x) 0))
+        (int-ty (isqrt (ty-lo x)) (isqrt (ty-hi x)))
+        (int-ty 0 nil))))
+(def-ti-rule (clysm-sys::%gcd) (a)
+  ;; at most the larger magnitude
+  (let ((x (first a)) (y (second a)))
+    (if (and (ty-only-p x +k-int+) (ty-only-p y +k-int+) (ty-lo x) (ty-hi x) (ty-lo y) (ty-hi y))
+        (int-ty 0 (max (abs (ty-lo x)) (abs (ty-hi x)) (abs (ty-lo y)) (abs (ty-hi y))))
+        (int-ty 0 nil))))
+(def-ti-rule (clysm-sys::%lcm2) (a) (int-ty 0 nil))
+
 (defun numeric-mv-types (name node)
   "Types of the values of a call of a numeric function, or NIL."
   (let ((tys (mapcar #'node-ty (cddr node))))

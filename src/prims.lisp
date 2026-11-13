@@ -28,29 +28,59 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                              :key #'prim-nargs)))
        ',name)))
 
-;;; Nested integer arithmetic whose leaves are variables and integer constants
-;;; is first tried in i64 (no intermediate boxes); when a leaf is not a small
-;;; integer or a step overflows, the usual generic code runs.
+;;; Nested integer arithmetic whose leaves are variables, integer constants
+;;; and pure integer primitives of those is first tried in i64 (no
+;;; intermediate boxes); when a leaf is not an integer within 64 bits or a
+;;; step overflows, the usual generic code runs (it evaluates the leaves
+;;; again, which is why they must be pure).
+;;;
+;;; Under a LOGAND with an operand known to be within [0, 2^63) only the low
+;;; 64 bits of the other operand matter, so + - * LOGAND LOGIOR LOGXOR and
+;;; left shifts below it are computed modulo 2^64 without overflow checks:
+;;; (logand (* h 16777619) #xFFFFFFFF), (logand (+ (* x a) c) mask) and the
+;;; like never make a bignum.
 (defparameter *fusable-ops* '((+ . :add) (- . :sub) (* . :mul) (logand . :and) (logior . :or) (logxor . :xor)))
+(defparameter *fused-pure-prims*
+  '(mod rem ash char-code clysm-sys::%char-code integer-length logcount logand logior logxor + - * 1+ 1-
+    clysm-sys::%fx+ clysm-sys::%fx- clysm-sys::%fxlogand clysm-sys::%fxlogior clysm-sys::%fxlogxor
+    clysm-sys::%fxash-left clysm-sys::%fxash-right))
 (defvar *no-fuse* nil)
 
+(defun fusable-ash-node-p (node)
+  "(ASH x constant) with the count within -63 .. 63."
+  (and (eq (car node) :prim) (eq (prim-name (second node)) 'ash) (= (length (cddr node)) 2)
+       (let ((c (fourth node))) (and (eq (car c) :const) (integerp (second c)) (<= -63 (second c) 63)))))
 (defun fusable-op-node-p (node)
-  (and (eq (car node) :prim) (assoc (prim-name (second node)) *fusable-ops*) (= (length (cddr node)) 2)))
+  (and (eq (car node) :prim)
+       (or (and (assoc (prim-name (second node)) *fusable-ops*) (= (length (cddr node)) 2))
+           (fusable-ash-node-p node))))
+(defun fused-pure-node-p (node)
+  "A primitive without side effects whose arguments are variables, constants or such primitives."
+  (and (eq (car node) :prim) (member (prim-name (second node)) *fused-pure-prims*)
+       (every (lambda (a) (or (member (car a) '(:lref :const)) (fused-pure-node-p a))) (cddr node))))
 (defun fused-leaf-p (node)
   (or (eq (car node) :lref)
-      (and (eq (car node) :const) (integerp (second node)) (typep (second node) '(signed-byte 62)))))
+      (and (eq (car node) :const) (integerp (second node)) (typep (second node) '(signed-byte 64)))
+      (fused-pure-node-p node)))
 (defun fusable-tree-p (node)
   (and (fusable-op-node-p node)
-       (every (lambda (a) (or (fused-leaf-p a) (fusable-tree-p a))) (cddr node))))
+       (every (lambda (a) (or (fusable-tree-p a) (fused-leaf-p a))) (cddr node))))
 
-(defun fused-i64-code (node fail)
-  "Code leaving the i64 value of NODE, branching to FAIL when that is not possible."
+(defun fused-mask-p (node)
+  "NODE is known to be an integer within [0, 2^63)."
+  (or (and (eq (car node) :const) (integerp (second node)) (<= 0 (second node) (1- (expt 2 63))))
+      (ty-in-range-p (node-ty node) 0 (1- (expt 2 63)))))
+
+(defun fused-i64-code (node fail &optional wrap)
+  "Code leaving the i64 value of NODE (with WRAP: its low 64 bits),
+branching to FAIL when that is not possible."
   (cond ((eq (car node) :const) `((:i64.const ,(second node))))
-        ((and (ty-int32-p (node-ty node)) (not (fusable-op-node-p node)))
+        ((and (ty-int32-p (node-ty node)) (not (fusable-tree-p node)))
          `(,@(cg-rep node :i32) :i64.extend_i32_s))
         ((and (ty-int32-p (node-ty node)) (i32-op-code node))
          `(,@(i32-op-code node) :i64.extend_i32_s))
-        ((eq (car node) :lref)
+        ((not (fusable-tree-p node))
+         ;; a leaf: a fixnum or an integer within 64 bits
          (let ((e (new-local)) (v (new-local :i32)) (w (new-local :i64)))
            `(,@(cg node) (:local.tee ,e) (:ref.test :i31)
              (:if nil :i64
@@ -64,30 +94,51 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                         ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
                          (:local.get ,e) (:call :int-i64))
                         ((:local.get ,w))))))))
+        ((fusable-ash-node-p node)
+         (let ((c (second (fourth node))) (x (new-local :i64)) (r (new-local :i64)))
+           (cond ((< c 0) `(,@(fused-i64-code (third node) fail nil) (:i64.const ,(- c)) :i64.shr_s))
+                 (wrap `(,@(fused-i64-code (third node) fail t) (:i64.const ,c) :i64.shl))
+                 (t `(,@(fused-i64-code (third node) fail nil) (:local.tee ,x) (:i64.const ,c) :i64.shl (:local.tee ,r)
+                      (:i64.const ,c) :i64.shr_s (:local.get ,x) :i64.ne (:br_if ,fail)
+                      (:local.get ,r))))))
         (t
-         (let ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
-               (op (cdr (assoc (prim-name (second node)) *fusable-ops*))))
-           `(,@(fused-i64-code (third node) fail) (:local.set ,x)
-             ,@(fused-i64-code (fourth node) fail) (:local.set ,y)
-             ,@(ecase op
-                 (:add `((:local.get ,x) (:local.get ,y) :i64.add (:local.tee ,r) (:local.get ,x) :i64.xor
-                         (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
-                 (:sub `((:local.get ,x) (:local.get ,y) :i64.sub (:local.tee ,r) (:local.get ,x) :i64.xor
-                         (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
-                 (:mul `((:local.get ,x) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
-                         (:local.get ,y) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
-                         (:local.get ,x) (:local.get ,y) :i64.mul (:local.set ,r)
-                         (:local.get ,x) :i64.eqz :i32.eqz
-                         (:if nil nil ((:local.get ,r) (:local.get ,x) :i64.div_s (:local.get ,y) :i64.ne
-                                       (:br_if ,fail)))))
-                 (:and `((:local.get ,x) (:local.get ,y) :i64.and (:local.set ,r)))
-                 (:or `((:local.get ,x) (:local.get ,y) :i64.or (:local.set ,r)))
-                 (:xor `((:local.get ,x) (:local.get ,y) :i64.xor (:local.set ,r))))
-             (:local.get ,r))))))
+         (let* ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
+                (op (cdr (assoc (prim-name (second node)) *fusable-ops*)))
+                (a (third node)) (b (fourth node))
+                ;; under a mask the other operand is needed modulo 2^64 only
+                (wrap-a (or wrap (and (eq op :and) (fused-mask-p b))))
+                (wrap-b (or wrap (and (eq op :and) (fused-mask-p a)))))
+           (if (member op '(:and :or :xor))
+               `(,@(fused-i64-code a fail wrap-a) ,@(fused-i64-code b fail wrap-b)
+                 ,(ecase op (:and :i64.and) (:or :i64.or) (:xor :i64.xor)))
+               `(,@(fused-i64-code a fail wrap) (:local.set ,x)
+                 ,@(fused-i64-code b fail wrap) (:local.set ,y)
+                 ,@(if wrap
+                       `((:local.get ,x) (:local.get ,y) ,(ecase op (:add :i64.add) (:sub :i64.sub) (:mul :i64.mul)))
+                       (ecase op
+                         (:add `((:local.get ,x) (:local.get ,y) :i64.add (:local.tee ,r) (:local.get ,x) :i64.xor
+                                 (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)
+                                 (:local.get ,r)))
+                         (:sub `((:local.get ,x) (:local.get ,y) :i64.sub (:local.tee ,r) (:local.get ,x) :i64.xor
+                                 (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)
+                                 (:local.get ,r)))
+                         (:mul `(;; both within 32 bits: the product fits
+                                 (:local.get ,x) (:i64.const ,(expt 2 31)) :i64.add
+                                 (:local.get ,y) (:i64.const ,(expt 2 31)) :i64.add :i64.or (:i64.const 32) :i64.shr_u
+                                 :i64.eqz
+                                 (:if nil :i64
+                                      ((:local.get ,x) (:local.get ,y) :i64.mul)
+                                      ((:local.get ,x) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
+                                       (:local.get ,y) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
+                                       (:local.get ,x) :i64.eqz
+                                       (:if nil :i64
+                                            ((:i64.const 0))
+                                            ((:local.get ,x) (:local.get ,y) :i64.mul (:local.tee ,r)
+                                             (:local.get ,x) :i64.div_s (:local.get ,y) :i64.ne (:br_if ,fail)
+                                             (:local.get ,r)))))))))))))))
 
 (defun fused-tree-node-p (node)
-  (and (not *no-fuse*) (eq (car node) :prim) (assoc (prim-name (second node)) *fusable-ops*)
-       (fusable-tree-p node) (some #'fusable-op-node-p (cddr node))))
+  (and (not *no-fuse*) (fusable-tree-p node) (some #'fusable-tree-p (cddr node))))
 
 (defun fused-code (node rep)
   "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
@@ -2633,6 +2684,85 @@ in local V and the index in local K; else branch to FAIL."
 (defprim clysm-sys::%aset2 (a i j v) :value `(,@a ,@i ,@j ,@v (:call :aset2)))
 (defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
 (defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
+
+;;; ISQRT of an integer within 64 bits
+(defhelper :isqrt :e-e ((v :i32) (xa :i64) (ka :i32) (r :i64))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+     (:local.get xa) (:i64.const 0) :i64.lt_s (:br_if slow)
+     (:local.get xa) :f64.convert_i64_s :f64.sqrt :i64.trunc_sat_f64_s (:local.set r)
+     ;; (beyond 2^53 the conversion rounds: correct the estimate)
+     (:block d1 nil
+       (:loop l1 nil
+         (:local.get r) (:local.get r) :i64.mul (:local.get xa) :i64.le_u (:br_if d1)
+         (:local.get r) (:i64.const 1) :i64.sub (:local.set r)
+         (:br l1)))
+     (:block d2 nil
+       (:loop l2 nil
+         (:local.get r) (:i64.const 1) :i64.add (:local.get r) (:i64.const 1) :i64.add :i64.mul
+         (:local.get xa) :i64.gt_u (:br_if d2)
+         (:local.get r) (:i64.const 1) :i64.add (:local.set r)
+         (:br l2)))
+     (:local.get r) (:call :i64-int) :return)
+  '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%isqrt-big)) '(:call (:callsym 1)))
+(defprim isqrt (n) :value `(,@n (:call :isqrt)))
+
+;;; GCD of integers within 64 bits (Euclid)
+(defhelper :gcd :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (tt :i64))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+     ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
+     (:local.get xa) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if slow)
+     (:local.get xb) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if slow)
+     (:local.get xa) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get xa) :i64.sub (:local.set xa)))
+     (:local.get xb) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get xb) :i64.sub (:local.set xb)))
+     (:block done nil
+       (:loop again nil
+         (:local.get xb) :i64.eqz (:br_if done)
+         (:local.get xa) (:local.get xb) :i64.rem_u (:local.set tt)
+         (:local.get xb) (:local.set xa) (:local.get tt) (:local.set xb)
+         (:br again)))
+     (:local.get xa) (:call :i64-int) :return)
+  '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%gcd-big)) '(:call (:callsym 2)))
+(defprim clysm-sys::%gcd (a b) :value `(,@a ,@b (:call :gcd)))
+
+;;; ABS of a fixnum, an integer within 64 bits or a double
+(defhelper :abs :e-e ((v :i32) (w :i64))
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil
+        ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
+         (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+         (:if nil nil
+              ((:local.get v) (:i32.const 0) :i32.ge_s (:if nil nil ((:local.get 0) :return))
+               (:i32.const 0) (:local.get v) :i32.sub (:call :box-i32) :return))))
+  '(:local.get 0) '(:ref.test :double)
+  '(:if nil nil
+        ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64 (:i64.const 0) :i64.ge_s
+         (:if nil nil ((:local.get 0) :return))
+         (:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :f64.abs (:struct.new :double) :return))
+  '(:local.get 0) '(:ref.test :bignum)
+  `(:if nil nil
+        ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) (:i64.const 0) :i64.gt_s
+         (:if nil nil ((:local.get 0) :return))
+         (:local.get w) :i64.eqz (:local.get w) (:i64.const ,(- (expt 2 63))) :i64.eq :i32.or :i32.eqz
+         (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:call :i64-int) :return))))
+  '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%abs-slow)) '(:call (:callsym 1)))
+(defprim abs (x) :value `(,@x (:call :abs)))
+
+;;; LOGBITP with a fixnum index and an integer within 64 bits
+(defhelper :logbitp :ee-i ((v :i32) (xa :i64) (ka :i32) (i :i32))
+  `(:block slow nil
+     (:local.get 0) (:ref.test :i31) :i32.eqz (:br_if slow)
+     ;; 0 <= index (not a character)
+     (:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee i) (:i32.const ,+char-tag+) :i32.ge_u (:br_if slow)
+     ,@(num-decode-code 1 'xa nil 'ka 'slow nil)
+     (:local.get xa)
+     (:local.get i) (:i32.const 63) (:local.get i) (:i32.const 63) :i32.lt_u :select :i64.extend_i32_u
+     :i64.shr_s :i32.wrap_i64 (:i32.const 1) :i32.and :return)
+  '(:local.get 0) '(:local.get 1)
+  `(:global.get ,(sym-global 'clysm-sys::%logbitp-slow)) '(:call (:callsym 2))
+  (car (nil-code)) :ref.eq :i32.eqz)
+(defprim logbitp (i n) :test `(,@i ,@n (:call :logbitp)))
 
 ;;; MOD / REM fast paths: fixnums, then integers within 64 bits
 (defun divop-helper-body (lisp-fn modp)
