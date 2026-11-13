@@ -122,6 +122,7 @@ that may be an underflow, is redone by the generic function, which decides."
 (defun f64-op-code (node)
   "f64 code for an operation whose result is a double, or NIL."
   (let ((name (node-op-name node)) (args (cddr node)))
+    (or
     (case name
       ((+ - * /)
        (cond ((and (= (length args) 2) (every #'f64-arg-p args))
@@ -149,7 +150,9 @@ that may be an underflow, is redone by the generic function, which decides."
                      (let ((tmp (new-local :f64)))
                        `(,@(f64-arg-code x) (:local.set ,tmp) ,@(cg-effect proto) (:local.get ,tmp)))
                      (f64-arg-code x)))))
-      (t nil))))
+      (t nil))
+    ;; the numeric library (below)
+    (numeric-f64-op-code node))))
 
 ;;; ------------------------------------------------------------
 ;;; f32 (single floats)
@@ -368,6 +371,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
          (a (first args)) (b (second args)))
     (flet ((both (op) (when (and (= (length args) 2) (i32-arg-p a) (i32-arg-p b))
                         `(,@(cg-rep a :i32) ,@(cg-rep b :i32) ,op))))
+      (or
       (case name
         (+ (both :i32.add))
         (- (if (= (length args) 1)
@@ -421,7 +425,9 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                               (:local.get ,r) (:local.get ,y) :i32.xor (:i32.const 0) :i32.lt_s
                               (:local.get ,r) (:i32.const 0) :i32.ne :i32.and
                               :i32.sub)))))))))   ; q - 1 when the remainder has the wrong sign
-        (t nil)))))
+        (t nil))
+      ;; the numeric library (below)
+      (numeric-i32-op-code node)))))
 
 ;;; ------------------------------------------------------------
 ;;; eqref results and tests
@@ -434,6 +440,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
     (flet ((both (op) (when (and (= (length args) 2) (i64-arg-p a) (i64-arg-p b))
                         `(,@(cg-rep a :i64) ,@(cg-rep b :i64) ,op))))
+      (or
       (case name
         (+ (both :i64.add))
         (- (if (= (length args) 1)
@@ -450,7 +457,9 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                  (if (>= c 0)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,c) :i64.shl)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,(min 63 (- c))) :i64.shr_s)))))
-        (t nil)))))
+        (t nil))
+      ;; the numeric library (below)
+      (numeric-i64-op-code node)))))
 
 (defun typed-cg (node mv)
   "Code for a :PRIM or :CALL node using its types, or NIL."
@@ -460,6 +469,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
     (let ((code
             (cond ((and (eq (car node) :prim) (eq (prim-kind (second node)) :test))
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
+                  ((numeric-typed-code node mv))
                   ((member name '(clysm-sys::%aref1 svref char schar row-major-aref clysm-sys::%aref2))
                    (typed-elt-code node :eqref))
                   ((member name '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
@@ -763,7 +773,7 @@ code leaves nothing, else the value."
        (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b)
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
          `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq)))
-      (t nil))))
+      (t (numeric-test-code node)))))
 
 (defun typed-divmod-code (node)
   "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a
@@ -791,3 +801,322 @@ fixnum) whose remainder is left in an eqref local; returns (values code local)."
 
 (defun lvar-rep-of (node)
   (and (eq (car node) :lref) (unboxed-local-p (second node)) (lvar-rep (second node))))
+
+;;; ------------------------------------------------------------
+;;; Numeric library: typed code for the division functions and the bit
+;;; operations (called from F64-OP-CODE, I32-OP-CODE, I64-OP-CODE, TYPED-CG and
+;;; CG-MVBIND; the result types are in the "Numeric library" part of types.lisp)
+;;; ------------------------------------------------------------
+
+(defparameter *divmod-modes*
+  '((truncate . 0) (floor . 1) (ceiling . 2) (round . 3)
+    (ftruncate . 0) (ffloor . 1) (fceiling . 2) (fround . 3) (rem . 0) (mod . 1)))
+
+(defun float-divmod-node-p (node)
+  (and (member (car node) '(:call :prim))
+       (assoc (node-op-name node) *divmod-modes*)
+       (float-divmod-types-p (mapcar #'node-ty (cddr node)))))
+
+(defun typed-float-divmod (node want &optional need-rem)
+  "Division of doubles (or a double and a 32-bit integer) inline, by the
+algorithm of the helper :divmod, which is called when a value is not finite
+or the divisor is zero.  WANT: :quotient (the integer quotient is left on the
+stack), :fquotient (the quotient as an f64) or :remainder (nothing is left).
+Returns the code and the f64 local that holds the remainder (it is not
+computed for a division by 1 unless NEED-REM)."
+  (let* ((args (cddr node)) (mode (cdr (assoc (node-op-name node) *divmod-modes*)))
+         (da (new-local :f64)) (db (new-local :f64)) (q (new-local :f64)) (r (new-local :f64))
+         (tmp (new-local :f64)) (adj (new-local :i32)) (w (new-local :i64))
+         (slow (gensym "SLOW")) (done (gensym "DIV"))
+         (unit (null (second args))))
+    (if (and unit (not need-rem) (not (eq want :remainder)))
+        ;; one argument, the quotient only: the rounding instruction (the
+        ;; remainder of a division by 1 is exact, so truncating and
+        ;; adjusting by it gives the same integer)
+        (let ((op (ecase mode (0 :f64.trunc) (1 :f64.floor) (2 :f64.ceil) (3 :f64.nearest))))
+          (ecase want
+            (:quotient
+             `(,@(f64-arg-code (first args)) ,op (:local.tee ,q) :f64.abs (:f64.const 536870912d0) :f64.lt
+               (:if nil :eqref
+                    ((:local.get ,q) :i32.trunc_sat_f64_s :ref.i31)
+                    ;; (signals when it is not finite)
+                    ((:local.get ,q) (:call :f64-int)))))
+            (:fquotient
+             `(,@(f64-arg-code (first args)) (:local.tee ,da) ,op (:f64.const 0) :f64.add (:local.tee ,q)
+               (:local.get ,q) :f64.sub (:f64.const 0) :f64.ne
+               (:if nil :f64
+                    ((:local.get ,da) (:struct.new :double) ,@(fixnum-code 1) (:i32.const ,mode) (:call :divmod)
+                     (:call :to-f64))
+                    ((:local.get ,q)))))))
+        (values
+         `(,@(f64-arg-code (first args)) (:local.set ,da)
+           ,@(if unit '((:f64.const 1d0)) (f64-arg-code (second args))) (:local.set ,db)
+           (:block ,done ,(ecase want (:quotient :eqref) (:fquotient :f64) (:remainder nil))
+             (:block ,slow nil
+               ,@(float-divmod-code mode slow da db q r adj nil tmp unit)
+               ,@(ecase want
+                   (:quotient
+                    `((:local.get ,q) :f64.abs (:f64.const 536870910d0) :f64.lt
+                      (:if nil :eqref
+                           ((:local.get ,q) :i32.trunc_sat_f64_s (:local.get ,adj) :i32.add :ref.i31)
+                           ((:local.get ,q) :f64.abs (:f64.const 4.611686018427388d18) :f64.lt :i32.eqz (:br_if ,slow)
+                            (:local.get ,q) :i64.trunc_sat_f64_s (:local.get ,adj) :i64.extend_i32_s :i64.add
+                            (:call :i64-int)))))
+                   (:fquotient `((:local.get ,q) (:local.get ,adj) :f64.convert_i32_s :f64.add))
+                   (:remainder nil))
+               (:br ,done))
+             ;; the helper decides (and signals)
+             (:local.get ,da) (:struct.new :double) (:local.get ,db) (:struct.new :double)
+             (:i32.const ,mode) (:call :divmod)
+             ,@(ecase want
+                 (:quotient nil)
+                 (:fquotient '((:call :to-f64)))
+                 (:remainder '(:drop)))
+             (:global.get :mv-buf) (:i32.const 0) (:array.get :vector) (:ref.cast :double) (:struct.get :double 0)
+             (:local.set ,r)))
+         r))))
+
+(defun numeric-typed-code (node mv)
+  "Code for a :PRIM or :CALL node of a numeric function (an eqref), or NIL."
+  (let ((name (node-op-name node)))
+    (cond ((and (not mv) (member name '(floor truncate ceiling round)) (float-divmod-node-p node))
+           (values (typed-float-divmod node :quotient)))
+          (t nil))))
+
+(defun numeric-f64-op-code (node)
+  "f64 code for a numeric function whose result is a double, or NIL."
+  (let ((name (node-op-name node)))
+    (cond ((and (member name '(mod rem)) (float-divmod-node-p node))
+           (multiple-value-bind (code r) (typed-float-divmod node :remainder)
+             `(,@code (:local.get ,r))))
+          ((and (member name '(ffloor fceiling ftruncate fround)) (float-divmod-node-p node))
+           (values (typed-float-divmod node :fquotient)))
+          ((and (member name '(sin cos tan atan exp log sinh cosh tanh asinh)) (= (length (cddr node)) 1)
+                (ty-double-p (node-ty (third node))))
+           ;; the host function; a result that is not finite (or a zero of
+           ;; EXP) is redone by the helper, which signals
+           (let ((x (new-local :f64)) (r (new-local :f64)))
+             `(,@(cg-rep (third node) :f64) (:local.tee ,x) (:call ,(math-import name)) (:local.tee ,r)
+               (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+               ,@(when (eq name 'exp) `((:local.get ,r) (:f64.const 0) :f64.eq :i32.or))
+               (:if nil :f64
+                    ((:local.get ,x) (:struct.new :double) (:call ,(math-helper name))
+                     (:ref.cast :double) (:struct.get :double 0))
+                    ((:local.get ,r))))))
+          ((and (eq name 'atan) (= (length (cddr node)) 2) (float-divmod-node-p-args (cddr node)))
+           `(,@(f64-arg-code (third node)) ,@(f64-arg-code (fourth node)) (:call :math-atan2)))
+          ((and (eq name 'expt) (every (lambda (a) (ty-double-p (node-ty a))) (cddr node)))
+           (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "EXPT")))
+             `(,@(cg-rep (third node) :f64) (:local.set ,x) ,@(cg-rep (fourth node) :f64) (:local.set ,y)
+               (:block ,done :f64
+                 (:block ,slow nil
+                   (:local.get ,x) (:f64.const 0) :f64.gt :i32.eqz (:br_if ,slow)
+                   (:local.get ,x) (:local.get ,y) (:call :math-pow) (:local.tee ,r)
+                   (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,slow)
+                   (:local.get ,r) (:br ,done))
+                 (:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double) (:call :fn-expt)
+                 (:ref.cast :double) (:struct.get :double 0)))))
+          (t nil))))
+
+(defun float-divmod-node-p-args (args)
+  (float-divmod-types-p (mapcar #'node-ty args)))
+
+(defun numeric-i32-op-code-1 (node)
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)))
+    (case name
+      ((integer-length logcount)
+       ;; of X when it is not negative, else of (LOGNOT X)
+       (cond ((i32-arg-p a)
+              (let ((x (new-local :i32)))
+                `(,@(cg-rep a :i32) (:local.tee ,x) (:local.get ,x) (:i32.const 31) :i32.shr_s :i32.xor
+                  ,@(if (eq name 'logcount)
+                        '(:i32.popcnt)
+                        (let ((n (new-local :i32)))
+                          `(:i32.clz (:local.set ,n) (:i32.const 32) (:local.get ,n) :i32.sub))))))
+             ((i64-arg-p a)
+              (let ((x (new-local :i64)))
+                `(,@(cg-rep a :i64) (:local.tee ,x) (:local.get ,x) (:i64.const 63) :i64.shr_s :i64.xor
+                  ,@(if (eq name 'logcount)
+                        '(:i64.popcnt :i32.wrap_i64)
+                        (let ((n (new-local :i32)))
+                          `(:i64.clz :i32.wrap_i64 (:local.set ,n) (:i32.const 64) (:local.get ,n) :i32.sub))))))))
+      (abs (when (i32-arg-p a)
+             (let ((x (new-local :i32)) (m (new-local :i32)))
+               `(,@(cg-rep a :i32) (:local.tee ,x) (:i32.const 31) :i32.shr_s (:local.tee ,m)
+                 (:local.get ,x) :i32.xor (:local.get ,m) :i32.sub))))
+      (isqrt
+       ;; exact: the argument converts exactly and the square root is correctly rounded
+       (let ((ty (node-ty a)))
+         (when (and (i32-arg-p a) (>= (ty-lo ty) 0))
+           `(,@(cg-rep a :i32) :f64.convert_i32_s :f64.sqrt :i32.trunc_sat_f64_s))))
+      (t nil))))
+
+(defun numeric-i32-op-code (node)
+  "i32 code for a numeric function whose result is within 32 bits, or NIL."
+  (or (numeric-i32-op-code-1 node)
+      ;; a result within 32 bits of operands within 64 (a mask, a right
+      ;; shift, a remainder): the i64 operation, wrapped
+      (let ((args (cddr node)))
+        (when (and (ty-int32-p (node-ty node)) (some #'i64-arg-p args) (notevery #'i32-arg-p args))
+          (let ((c (i64-op-code node))) (when c `(,@c :i32.wrap_i64)))))))
+
+(defun numeric-test-code (node)
+  "i32 code for a numeric predicate using the argument types, or NIL."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (case name
+      ((zerop plusp minusp)
+       (when (i64-arg-p a)
+         `(,@(cg-rep a :i64) ,@(ecase name (zerop '(:i64.eqz))
+                                 (plusp '((:i64.const 0) :i64.gt_s))
+                                 (minusp '((:i64.const 0) :i64.lt_s))))))
+      ((evenp oddp)
+       (when (i64-arg-p a)
+         `(,@(cg-rep a :i64) :i32.wrap_i64 (:i32.const 1) :i32.and ,@(when (eq name 'evenp) '(:i32.eqz)))))
+      (logbitp
+       ;; a constant index into an integer within 64 bits
+       (let ((k (and a (const-int-node a))))
+         (when (and k (>= k 0) b (i64-arg-p b))
+           `(,@(cg-effect a) ,@(cg-rep b :i64) (:i64.const ,(min k 63)) :i64.shr_s :i32.wrap_i64
+             (:i32.const 1) :i32.and))))
+      (t nil))))
+
+(defun i64-division-args-p (a b)
+  "A and B are within 64 bits, B is not zero, and A / B cannot overflow."
+  (and a b (i64-arg-p a) (i64-arg-p b)
+       (let ((at (node-ty a)) (bt (node-ty b)))
+         (and (or (> (ty-lo bt) 0) (< (ty-hi bt) 0))
+              (or (> (ty-lo bt) 0) (> (ty-lo at) (- (expt 2 63))))))))
+
+(defun numeric-i64-op-code (node)
+  "i64 code for a numeric function whose result is within 64 bits, or NIL."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (case name
+      ((mod rem truncate floor)
+       (when (and (= (length args) 2) (i64-division-args-p a b))
+         (let ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
+               (t1 (new-local :i64)) (t2 (new-local :i64)))
+           `(,@(cg-rep a :i64) (:local.set ,x) ,@(cg-rep b :i64) (:local.set ,y)
+             (:local.get ,x) (:local.get ,y) :i64.div_s (:local.set ,q)
+             (:local.get ,x) (:local.get ,q) (:local.get ,y) :i64.mul :i64.sub (:local.set ,r)
+             ,@(when (member name '(mod floor)) (int-divmod-adjust-code :i64 1 x y q r t1 t2))
+             (:local.get ,(if (member name '(mod rem)) r q))))))
+      (t nil))))
+
+(defun numeric-divmod-code (vnode)
+  "For MULTIPLE-VALUE-BIND of a division: code leaving the quotient (an
+eqref), the local of the remainder and its representation; or NIL."
+  ;; (floor a b) / (truncate a b) of integers within 64 bits
+  (when (and (member (car vnode) '(:call :prim)) (member (node-op-name vnode) '(floor truncate))
+             (= (length (cddr vnode)) 2) (i64-division-args-p (third vnode) (fourth vnode)))
+    (let ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
+          (t1 (new-local :i64)) (t2 (new-local :i64)))
+      (return-from numeric-divmod-code
+        (values
+         `(,@(cg-rep (third vnode) :i64) (:local.set ,x) ,@(cg-rep (fourth vnode) :i64) (:local.set ,y)
+           (:local.get ,x) (:local.get ,y) :i64.div_s (:local.set ,q)
+           (:local.get ,x) (:local.get ,q) (:local.get ,y) :i64.mul :i64.sub (:local.set ,r)
+           ,@(when (eq (node-op-name vnode) 'floor) (int-divmod-adjust-code :i64 1 x y q r t1 t2))
+           (:local.get ,q) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+           (:if nil :eqref ((:local.get ,q) :i32.wrap_i64 :ref.i31) ((:local.get ,q) (:call :i64-int))))
+         r :i64))))
+  (when (float-divmod-node-p vnode)
+    (let ((name (node-op-name vnode)))
+      (cond ((member name '(floor truncate ceiling round))
+             (multiple-value-bind (code r) (typed-float-divmod vnode :quotient t)
+               (values code r :f64)))
+            ((member name '(ffloor fceiling ftruncate fround))
+             (multiple-value-bind (code r) (typed-float-divmod vnode :fquotient t)
+               (values `(,@code (:struct.new :double)) r :f64)))))))
+
+;;; ------------------------------------------------------------
+;;; Integer accumulators
+;;; ------------------------------------------------------------
+;;; A LET (or MULTIPLE-VALUE-BIND) variable that is assigned, not captured,
+;;; and holds only integers, but not provably within 64 bits (a sum, a
+;;; counter, a hash value), has an i64 local beside its eqref local.  When
+;;; the eqref local is null the value is the i64.  (SETQ var (op var E)) and
+;;; assignments of nested integer arithmetic compute in i64 and store there,
+;;; so that a value between 2^29 and 2^63 is not boxed at every step; the
+;;; first other use of the variable makes the integer and keeps it in the
+;;; eqref local.  An overflow or an operand that is not an integer within 64
+;;; bits takes the generic operation, whose result goes to the eqref local.
+
+(defvar *dual-vars* (make-hash-table :test 'eq) "lvar -> index of its i64 local")
+(defvar *dual-uses-lam* nil "the function whose variables *DUAL-USES* describes")
+(defvar *dual-uses* (make-hash-table :test 'eq)
+  "lvar -> (arithmetic assignments . other uses) in the function being compiled")
+
+(defun dual-uses (lv)
+  "How LV is used in the function being compiled: the number of its
+assignments from integer arithmetic, and of its uses other than as an operand
+of those.  (Each other use after an update makes the integer, so the pair of
+locals pays only for a variable that is updated more than it is looked at:
+a sum or a hash value, not a loop index.)"
+  (let ((lam (fstate-lam *fs*)))
+    (unless (eq lam *dual-uses-lam*)
+      (clrhash *dual-uses*)
+      (setf *dual-uses-lam* lam)
+      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (cons 0 0))))
+               (operands (v n)
+                 ;; the references of V among the leaves of the arithmetic tree N are not other uses
+                 (cond ((and (eq (car n) :lref) (eq (second n) v)) nil)
+                       ((fusable-op-node-p n) (dolist (a (cddr n)) (operands v a)))
+                       (t (walk n))))
+               (walk (n)
+                 (when (consp n)
+                   (case (car n)
+                     (:lref (incf (cdr (entry (second n)))))
+                     (:lset (let ((v (second n)) (e (third n)))
+                              (if (and (eq (car e) :prim) (fusable-op-node-p e))
+                                  (progn (incf (car (entry v))) (operands v e))
+                                  (walk e))))
+                     (t (map-subnodes #'walk n))))))
+        (walk (lam-body lam))))
+    (or (gethash lv *dual-uses*) (cons 0 0))))
+
+(defun note-dual-var (lv)
+  "Called when LV gets its location (BIND-NEW-VAR-CODE)."
+  (if (and (lvar-mutated lv) (not (lvar-captured lv)) (not (lvar-special lv)) (null (lvar-rep lv))
+           (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)
+           (let ((uses (dual-uses lv)))
+             (and (> (car uses) 0) (<= (cdr uses) (car uses)))))
+      (setf (gethash lv *dual-vars*) (new-local :i64))
+      (remhash lv *dual-vars*)))
+
+(defun dual-local (lv)
+  (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
+
+(defun dual-materialize-code (b v)
+  "The integer of the pair of locals B (eqref) and V (i64), kept in B."
+  (let ((ok (gensym "DUAL")))
+    `((:block ,ok (:ref :eq)
+        (:local.get ,b) (:br_on_non_null ,ok)
+        (:local.get ,v) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+        (:if nil :eqref ((:local.get ,v) :i32.wrap_i64 :ref.i31) ((:local.get ,v) (:call :i64-int)))
+        (:local.tee ,b) :ref.as_non_null))))
+
+(defun dual-get-code (lv)
+  (dual-materialize-code (cdr (get-loc lv)) (dual-local lv)))
+
+(defun dual-pair-i64-code (b v fail)
+  `((:local.get ,b) :ref.is_null
+    (:if nil :i64 ((:local.get ,v)) ,(i64-decode-code `((:local.get ,b)) fail))))
+
+(defun dual-lset-code (node effect)
+  "Code for (:LSET var expr) when VAR is an integer accumulator and EXPR is
+integer arithmetic (the fused trees of prims.lisp, here also a single
+operation); NIL otherwise.  EFFECT: no value is left."
+  (let* ((lv (second node)) (v (dual-local lv)) (expr (third node)))
+    (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*) (fusable-op-node-p expr)
+               (not (eq (fused-plan expr nil) :no)))
+      (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (done (gensym "ACC")))
+        (multiple-value-bind (leaves i64-code generic) (fused-parts expr)
+          `(,@leaves
+            (:block ,done nil
+              (:block ,fail nil
+                ,@(funcall i64-code fail)
+                (:local.set ,v) (:ref.null :eq) (:local.set ,b)
+                (:br ,done))
+              ,@generic
+              (:local.set ,b))
+            ,@(unless effect (dual-materialize-code b v))))))))

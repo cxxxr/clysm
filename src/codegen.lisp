@@ -127,12 +127,16 @@
         (setf (gethash obj table)
               (new-const-global
                (typecase obj
-                 (integer (let ((digits (bignum-digits (abs obj))))
-                            `((:i32.const ,(if (minusp obj) 1 0))
-                              ,@(loop for d in digits collect `(:i32.const ,d))
-                              (:array.new_fixed :limbs ,(length digits))
-                              (:i64.const 0)
-                              (:struct.new :bignum))))
+                 (integer (if (typep obj '(signed-byte 64))
+                              ;; within 64 bits: the value, no limbs (as :i64-int makes them)
+                              `((:i32.const ,(if (minusp obj) 1 0)) (:ref.null :limbs) (:i64.const ,obj)
+                                (:struct.new :bignum))
+                              (let ((digits (bignum-digits (abs obj))))
+                                `((:i32.const ,(if (minusp obj) 1 0))
+                                  ,@(loop for d in digits collect `(:i32.const ,d))
+                                  (:array.new_fixed :limbs ,(length digits))
+                                  (:i64.const 0)
+                                  (:struct.new :bignum)))))
                  (string (string-array-code obj))
                  (cons `(,@(const-init-code (car obj)) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
                  (simple-vector `(,@(loop for x across obj append (const-init-code x))
@@ -284,7 +288,9 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
   "Push the raw content of a variable's location (cell if boxed)."
   (let ((loc (get-loc lv)))
     (ecase (car loc)
-      (:local `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv))))
+      (:local (if (dual-local lv)
+                  (dual-get-code lv)    ; an integer accumulator (typed.lisp)
+                  `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv)))))
       (:env `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) (:array.get :vector))))))
 
 (defun var-get-code (lv)
@@ -304,6 +310,7 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
 
 (defun bind-new-var-code (lv value-code)
   "Initialize a fresh lexical variable (allocating its local)."
+  (note-dual-var lv)                    ; integer accumulators (typed.lisp)
   (when (and (lvar-rep lv) (not (boxed-p lv)))
     (let ((idx (new-rep-local (lvar-rep lv))))
       (set-loc lv (cons :local idx))
@@ -332,7 +339,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                  (let ((rep (lvar-rep (second node))))
                    `(,@(cg-rep (third node) rep) ,@(rep-local-set-code (second node) (cdr (get-loc (second node))) t)
                      ,@(box-rep-code rep (lvar-type (second node))) ,@(when mv (mv-one))))
-               (let ((tmp (new-local)))
+               (let ((tmp (new-local)) (dual (dual-lset-code node nil)))
+                 (when dual (return-from cg `(,@dual ,@(when mv (mv-one)))))
                `(,@(var-set-code (second node) `(,@(cg (third node)) (:local.tee ,tmp)))
                  (:local.get ,tmp) ,@(when mv (mv-one))))))
       (:sref (let ((ok (gensym "BOUND")))
@@ -456,7 +464,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
     (:lset (let ((lv (second node)))
              (if (unboxed-local-p lv)
                  `(,@(cg-rep (third node) (lvar-rep lv)) ,@(rep-local-set-code lv (cdr (get-loc lv))))
-                 (var-set-code lv (cg (third node))))))
+                 (or (dual-lset-code node t)
+                     (var-set-code lv (cg (third node)))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
     (:if `(,@(cg-test (second node)) (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node)))))
     (:let (cg-let node nil nil :effect))
@@ -564,27 +573,44 @@ representation) or :effect (no value)."
 
 (defun cg-mvbind (node mv tail)
   (destructuring-bind (lvars vnode body) (cdr node)
-    (multiple-value-bind (divmod rem-local) (and lvars (typed-divmod-code vnode))
+    ;; a division whose values are computed inline: the quotient on the
+    ;; stack, the remainder in REM-LOCAL (of representation REM-REP when it
+    ;; is not an eqref)
+    (multiple-value-bind (divmod rem-local rem-rep)
+        (if lvars
+            (multiple-value-bind (c l) (typed-divmod-code vnode)
+              (if c (values c l nil) (numeric-divmod-code vnode)))
+            nil)
       (let* ((code (or divmod (cg vnode t)))
              (tmps (loop for nil in lvars collect (new-local)))
-             (specials nil))
+             (specials nil)
+             ;; the second variable takes the unboxed remainder as it is
+             (direct (and divmod rem-rep (second lvars)
+                          (let ((lv (second lvars)))
+                            (and (eq (lvar-rep lv) rem-rep) (not (boxed-p lv)) (not (lvar-special lv)))))))
         (when (null lvars) (setf code (append code '(:drop))))
         ;; primary
         (when lvars
           (setf code (append code `((:local.set ,(first tmps))))))
         (loop for i from 1 for tmp in (rest tmps)
               do (setf code (append code
-                                    (cond ((and divmod (= i 1)) `((:local.get ,rem-local) (:local.set ,tmp)))
+                                    (cond ((and divmod (= i 1) direct) nil)
+                                          ((and divmod (= i 1))
+                                           `((:local.get ,rem-local) ,@(when rem-rep (box-rep-code rem-rep))
+                                             (:local.set ,tmp)))
                                           (divmod `(,@(nil-code) (:local.set ,tmp)))
                                           (t `((:global.get :mv-count) (:i32.const ,i) :i32.gt_s
                                                (:if nil :eqref
                                                     ((:global.get :mv-buf) (:i32.const ,(1- i)) (:array.get :vector))
                                                     ,(nil-code))
                                                (:local.set ,tmp)))))))
-      (loop for lv in lvars for tmp in tmps
-            do (if (lvar-special lv)
-                   (push (cons lv tmp) specials)
-                   (setf code (append code (bind-new-var-code lv `((:local.get ,tmp)))))))
+      (loop for lv in lvars for tmp in tmps for i from 0
+            do (cond ((lvar-special lv) (push (cons lv tmp) specials))
+                     ((and direct (= i 1))
+                      (let ((idx (new-local (rep-wasm-type rem-rep))))
+                        (set-loc lv (cons :local idx))
+                        (setf code (append code `((:local.get ,rem-local) (:local.set ,idx))))))
+                     (t (setf code (append code (bind-new-var-code lv `((:local.get ,tmp))))))))
       (if (null specials)
           (append code (cg body mv tail))
           (let ((saved (new-local :i32)) (res (new-local)))

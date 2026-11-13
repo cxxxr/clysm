@@ -82,10 +82,19 @@ export function makeCommonEnv(state) {
   };
 }
 
+// The Math functions themselves (not wrappers): the engine calls its own
+// implementation directly from Wasm.
+const mathImports = {
+  sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
+  exp: Math.exp, log: Math.log, sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+  asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh, pow: Math.pow, atan2: Math.atan2,
+};
+
 export function makeImports(state, platform) {
   const imports = {
     js: makeJsImports(state),
     env: { ...makeCommonEnv(state), ...platform },
+    math: mathImports,
   };
   state.imports = imports;
   return imports;

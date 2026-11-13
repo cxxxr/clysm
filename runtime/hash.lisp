@@ -106,9 +106,8 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 
 (defun %number-hash (x)
   (cond ((fixnump x) (%fxlogand x 536870911))
-        ((%bignump x)
-         (let ((m (%bignum-mag x)) (h (%bignum-sign x)))
-           (dotimes (i (%llen m) h) (setq h (%fxlogand (%fx+ (%fx* h 31) (%lref m i)) 268435455)))))
+        ;; (over the base 2^28 digits, in Wasm: no limbs are made for an integer within 64 bits)
+        ((%bignump x) (%bignum-hash x))
         ((%ratiop x) (%fxlogxor (%number-hash (%ratio-num x)) (%number-hash (%ratio-den x))))
         ((%double-float-p x)
          ;; the bits that differ between doubles of the same magnitude are
