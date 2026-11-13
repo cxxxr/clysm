@@ -554,7 +554,6 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                                          (car (cg-const (second node)))
                                          `(:local.get ,(nth idx temps))))
                                    '(:ref.null :eq)))
-               (:array.new_fixed :vector ,(length layout))
                (,call (:kmain ,(lam-id lam))))))
           (t
            `(,@closure-code ,@(apply #'append arg-codes)
@@ -581,6 +580,14 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 (defun cg-global-call (sym args mv tail)
   (let ((lam (known-global-lam sym))
         (arg-codes (mapcar #'cg args)))
+    ;; in a catch clone, a tail call under no CATCH or UNWIND-PROTECT may call
+    ;; the callee's clone for the same tag: its throws to the tag are returns
+    (when (and lam tail *tail-ok* *catching-tag* (null *uwp-frames*) (lam-simple-p lam)
+               (null (lam-free-vars lam)) (= (length args) (length (lam-req lam))))
+      (ensure-lam-compiled lam)
+      (return-from cg-global-call
+        `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
+          (:return_call ,(ensure-catch-clone lam *catching-tag*)))))
     (if (and lam (lam-accepts-p lam (length args)))
         (let ((sig (spec-signature lam args)))
           (if sig
@@ -1322,13 +1329,12 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                                      ((:ref.null :eq)))))
                ,@(loop for (kw) in (lam-keys lam)
                        append `((:local.get 1) (:i32.const ,npos) ,@(const-init-code kw) (:call :find-key)))
-               (:array.new_fixed :vector ,size)
                (:return_call (:kmain ,(lam-id lam))))))
       (add-func *m* (list :main (lam-id lam)) :fN
                 :locals (reverse (fstate-locals *fs*)) :body body
                 :display (format nil "~A/generic" (lam-display-name lam))))
     ;; the body
-    (let* ((*fs* (make-fstate :lam lam :nparams 2))
+    (let* ((*fs* (make-fstate :lam lam :nparams (1+ size)))
            (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
            (prologue (setup-free-vars lam))
            (specials nil)
@@ -1340,7 +1346,7 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                      (progn (push lv specials)
                             (emit `((:global.get ,(sym-global (lvar-name lv))) ,@value-code (:call :bind))))
                      (emit (bind-new-var-code lv value-code))))
-               (slot (i) `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
+               (slot (i) `((:local.get ,(1+ i))))
                (bind-defaulted (lv init sv i)
                  (let ((tmp (new-local)) (*tail-ok* nil))
                    (emit `(,@(slot i) (:local.set ,tmp)))
@@ -1361,5 +1367,5 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                         ,@(restore-bsp-code saved)
                         (:local.get ,res)))
                     `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
-          (add-func *m* (list :kmain (lam-id lam)) :fN
+          (add-func *m* (list :kmain (lam-id lam)) (main-type size)
                     :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))))))

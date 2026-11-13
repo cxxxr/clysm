@@ -552,7 +552,8 @@ the declarations (when forms follow it)."
             `(aref ,atemp ,@stemps))))
 (defsetf row-major-aref %row-major-aset)
 (defsetf fill-pointer %set-fill-pointer)
-(defsetf gethash %puthash)
+(defsetf gethash (key hash-table &optional default) (value)
+  `(progn ,default (%ht-put ,hash-table ,key ,value)))
 (defsetf get (symbol indicator &optional default) (value)
   ;; DEFAULT is evaluated (in order) but not used
   `(progn ,default (%put ,symbol ,indicator ,value)))

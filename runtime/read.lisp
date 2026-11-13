@@ -298,7 +298,9 @@ token is empty when the next character ends a token."
   "The current token as a string, converted by the readtable case."
   (let* ((buf *token-buf*) (esc *token-esc*) (n (fill-pointer buf))
          (r (make-string n)) (mode (%rt-case *readtable*)))
-    (dotimes (i n) (setf (char r i) (char buf i)))
+    (if (and (%mdarray-p buf) (eql (%mdarray-offset buf) 0) (%simple-string-p (%mdarray-data buf)))
+        (%string-copy r 0 (%mdarray-data buf) 0 n)
+        (dotimes (i n) (setf (char r i) (char buf i))))
     (case mode
       (:upcase (dotimes (i n) (unless (aref esc i) (setf (char r i) (char-upcase (char r i))))))
       (:downcase (dotimes (i n) (unless (aref esc i) (setf (char r i) (char-downcase (char r i))))))

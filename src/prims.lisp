@@ -1613,6 +1613,11 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
       (:array.new_default :limbs) (:local.tee ,r)
       (:i32.const 0) (:local.get ,src) (:i32.const 0) (:local.get ,k) (:array.copy :limbs :limbs)
       (:local.get ,r))))
+(defprim clysm-sys::%string-copy (dst dstart src sstart n) :value
+  ;; copy N characters of simple string SRC from SSTART into DST at DSTART
+  (let ((d (new-local)))
+    `(,@dst (:local.tee ,d) (:ref.cast :string) ,@(idx-code dstart) ,@src (:ref.cast :string) ,@(idx-code sstart)
+      ,@(idx-code n) (:array.copy :string :string) (:local.get ,d))))
 (defprim clysm-sys::%llen (v) :value `(,@v (:ref.cast :limbs) :array.len :ref.i31))
 (defprim clysm-sys::%lref (v i) :value `(,@v (:ref.cast :limbs) ,@(idx-code i) (:array.get :limbs) :ref.i31))
 (defprim clysm-sys::%lset (v i x) :value
