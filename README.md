@@ -38,6 +38,7 @@ $ make web         # browser demo in build/web
 | `src/prims.lisp` | inline primitives and hand-written Wasm runtime helpers |
 | `src/driver.lisp` | toplevel processing (`eval-when`, `defmacro`, `defpackage`…) and module assembly |
 | `runtime/*.lisp` | the Common Lisp library, written in Lisp and compiled by Clysm |
+| `ui/*.lisp` | the GUI framework (see [GUI framework](#gui-framework)) |
 | `host/run.mjs` | Node.js host: I/O imports, runs the module in a worker with a large stack |
 | `tools/run-tests.sh` | runs every `tests/cases/*.lisp` on SBCL and Clysm and compares the output |
 
@@ -185,9 +186,10 @@ functions that call back into Lisp through the exported `lisp_apply`):
 
 ### A browser application
 
-`examples/todo/` is a TODO list written entirely in Lisp: `todo.lisp` builds
-the DOM, handles events and saves to `localStorage` through the `JS` package,
-and is compiled ahead of time to `todo.wasm`, which `index.html` loads with the
+`examples/todo/` is a TODO list written entirely in Lisp with the
+[UI framework](#gui-framework): `todo.lisp` describes the page with
+components, and saves to `localStorage` through the `JS` package. It is
+compiled ahead of time to `todo.wasm`, which `index.html` loads with the
 browser host (`host/web/clysm.mjs`).
 
 ```
@@ -205,6 +207,73 @@ the program uses `localStorage`.
 ```
 $ examples/todo/build-desktop.sh            # build/todo-desktop/, installs Electron with npm
 $ (cd build/todo-desktop && npm start)
+```
+
+## GUI framework
+
+`ui/` is a framework for graphical applications. The state of an application
+is ordinary CLOS objects and variables, and the screen follows them: a
+component is rendered again when a slot or variable that it read is set. No
+code tells the screen to update.
+
+```lisp
+(ui:defmodel todo ()                       ; DEFCLASS, with observed slots
+  ((text :initarg :text :accessor todo-text)
+   (done :initform nil :accessor todo-done)))
+
+(ui:defstate *todos* nil)                  ; an observed global variable
+
+(ui:defcomponent todo-item (todo &state (hover nil))
+  (:li :class (if (todo-done todo) "done" nil)
+       :on-mouseenter (lambda (e) (setf hover t))
+       :on-mouseleave (lambda (e) (setf hover nil))
+    (:input :type "checkbox" :checked (todo-done todo)
+            :on-change (lambda (e) (setf (todo-done todo) (not (todo-done todo)))))
+    (todo-text todo)
+    (when hover
+      (:button :on-click (lambda (e) (setf *todos* (remove todo *todos*))) "×"))))
+
+(ui:defcomponent todo-list ()
+  (:div
+    (:ul (mapcar (lambda (todo) (ui:keyed todo (todo-item todo))) *todos*))
+    (:p (count-if-not #'todo-done *todos*) " left")))
+
+(ui:mount (todo-list) "#app")
+(push (make-instance 'todo :text "write Lisp") *todos*)    ; the list shows it
+```
+
+* **Markup** — in the body of `defcomponent` (and in `ui:html`), a list that
+  starts with a keyword is an element: `(:tag :property value ... child ...)`.
+  Everything else is Lisp, so conditions and loops are `if`, `when`, `mapcar`
+  or `loop`. A child is a node, a string or number, `nil` (nothing) or a list
+  of children. `:on-<event>` properties are functions called with the event,
+  `:on-mount` one called with the node once it is on the screen.
+* **`defmodel`** is `defclass` with the metaclass `ui:model-class`, whose
+  `slot-value-using-class` methods record the component that reads a slot and
+  invalidate it when the slot is written. **`defstate`** defines a global place
+  with the same behaviour (a symbol macro, so `setf`, `push`, `incf` work).
+  Only assignments are seen: replace a list instead of modifying its conses.
+* **`defcomponent`** defines a function that returns a node and a class for
+  the instances on the screen; `ui:render` is a generic function, and
+  `ui:mounted` / `ui:unmounted` are called when an instance appears and
+  disappears. Variables after `&state` belong to the instance. A component
+  called again with `equal` arguments is not rendered again, and `ui:keyed`
+  children keep their instance when the list is reordered.
+* **Updates** are collected and applied once after the event handler has
+  returned (`ui:flush`), by comparing the new description of each invalidated
+  component with the previous one and changing only what differs.
+  `(ui:autorun function)` runs a function again whenever state it read
+  changes (saving, the window title).
+* **Backends** — the framework changes the screen through a dozen generic
+  functions (`ui:make-element-node`, `ui:set-property`, `ui:insert-node`…).
+  `ui/dom.lisp` implements them for the browser's DOM; `ui/sexp.lisp` builds
+  S-expressions and records every change, so components are tested without a
+  browser (`make test-ui`, `tests/ui/ui.lisp`).
+
+An application is compiled together with the framework:
+
+```
+$ bin/clysm compile ui/ui.lisp ui/dom.lisp app.lisp -o app.wasm
 ```
 
 ## ASDF

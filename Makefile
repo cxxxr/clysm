@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-ui test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -26,6 +26,9 @@ test-quicklisp:
 # McCLIM (from an existing Quicklisp installation) on a virtual X server
 test-mcclim:
 	tests/mcclim/run.sh
+
+test-ui:
+	tools/test-ui.sh
 
 test-asdf:
 	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \

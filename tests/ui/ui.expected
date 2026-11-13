@@ -1,0 +1,67 @@
+
+== markup
+(:ROOT NIL
+ (:DIV (:CLASS "box") "n = " "42" (:UL NIL (:LI NIL "a") (:LI NIL "b"))
+  (:B NIL "two")))
+
+== todo list
+(:ROOT NIL
+ (:DIV NIL (:H1 NIL "list")
+  (:UL NIL (:LI NIL (:INPUT (:TYPE "checkbox")) "a")
+   (:LI NIL (:INPUT (:TYPE "checkbox")) "b")
+   (:LI NIL (:INPUT (:TYPE "checkbox")) "c"))
+  (:P NIL "3" " left")))
+rendered: (:LIST "a" "b" "c")
+-- text of b
+   (:TEXT "b" "B!")
+rendered: ("B!")
+-- a done (through the listener)
+   (:SET :LI :CLASS "done")
+   (:SET :INPUT :CHECKED T)
+   (:TEXT "3" "2")
+rendered: (:LIST "a")
+-- title
+   (:TEXT "list" "my list")
+rendered: (:LIST)
+-- c moved to the front
+   (:INSERT :LI :IN :UL)
+   (:INSERT :LI :IN :UL)
+rendered: (:LIST)
+-- a removed
+   (:REMOVE :LI)
+rendered: (:LIST)
+rendered: (:LIST "d" "C" "B!")
+
+== after all
+(:ROOT NIL
+ (:DIV NIL (:H1 NIL "done")
+  (:UL NIL (:LI NIL (:INPUT (:TYPE "checkbox")) "d")
+   (:LI (:CLASS "done") (:INPUT (:CHECKED T :TYPE "checkbox")) "C")
+   (:LI (:CLASS "done") (:INPUT (:CHECKED T :TYPE "checkbox")) "B!"))
+  (:P NIL "1" " left")))
+rendered: NIL
+
+== state
+events: ((:MOUNTED "x") (:MOUNTED "y"))
+-- y is edited
+   (:CREATE "input")
+   (:SET :INPUT :VALUE "y")
+   (:TEXT "0" "1")
+   (:REMOVE :SPAN)
+   (:INSERT :INPUT :IN :DIV)
+events: ((:FOCUS :INPUT))
+
+== y first
+(:ROOT NIL
+ (:SECTION NIL (:DIV NIL (:INPUT (:VALUE "y")) " edited " "1" " times")
+  (:DIV NIL (:SPAN NIL "x") " edited " "0" " times")
+  (:DIV NIL (:SPAN NIL "z") " edited " "0" " times")))
+events: ((:MOUNTED "z"))
+
+== only y
+(:ROOT NIL
+ (:SECTION NIL (:DIV NIL (:INPUT (:VALUE "y")) " edited " "2" " times")))
+events: ((:FOCUS :INPUT) (:UNMOUNTED "x") (:UNMOUNTED "z"))
+
+== autorun
+(11 17 18)

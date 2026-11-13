@@ -54,6 +54,12 @@
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
 (defvar *live-symbol-macro-hook* nil "symbol -> (values expansion foundp)")
+(defun global-symbol-macro (sym)
+  "The expansion of the global symbol macro SYM, and whether there is one."
+  (multiple-value-bind (exp found) (gethash sym *symbol-macros*)
+    (cond (found (values exp t))
+          (*live-symbol-macro-hook* (funcall *live-symbol-macro-hook* sym))
+          (t (values nil nil)))))
 
 (defun cwarn (fmt &rest args)
   (let ((msg (apply #'format nil fmt args)))
@@ -115,12 +121,8 @@
          (let ((e (env-lookup-var env form)))
            (cond ((and e (eq (first e) :smacro)) (values (third e) t))
                  (e (values form nil))
-                 (t (multiple-value-bind (exp found) (gethash form *symbol-macros*)
-                      (cond (found (values exp t))
-                            (*live-symbol-macro-hook*
-                             (multiple-value-bind (exp2 found2) (funcall *live-symbol-macro-hook* form)
-                               (if found2 (values exp2 t) (values form nil))))
-                            (t (values form nil))))))))
+                 (t (multiple-value-bind (exp found) (global-symbol-macro form)
+                      (if found (values exp t) (values form nil)))))))
         (t (values form nil))))
 
 (defun cmacroexpand (form env)
@@ -226,7 +228,7 @@ runtime definition is kept."
            (cond ((and e (eq (first e) :var)) `(:lref ,(note-ref (third e))))
                  ((and e (eq (first e) :special)) `(:sref ,sym))
                  ((and e (eq (first e) :smacro)) (convert (third e) env))
-                 (t (multiple-value-bind (exp found) (gethash sym *symbol-macros*)
+                 (t (multiple-value-bind (exp found) (global-symbol-macro sym)
                       (cond (found (convert exp env))
                             ((nth-value 1 (gethash sym *constants*))
                              (let ((v (car (gethash sym *constants*))))
@@ -498,8 +500,8 @@ runtime definition is kept."
                            `(:lset ,lv ,(convert val env))))
                         ((and e (eq (first e) :smacro))
                          (convert `(setf ,(third e) ,val) env))
-                        ((and (null e) (nth-value 1 (gethash var *symbol-macros*)))
-                         (convert `(setf ,(gethash var *symbol-macros*) ,val) env))
+                        ((and (null e) (nth-value 1 (global-symbol-macro var)))
+                         (convert `(setf ,(global-symbol-macro var) ,val) env))
                         (t
                          (unless (or e (special-var-p var))
                            (cwarn "undefined variable ~S (setq)" var))
