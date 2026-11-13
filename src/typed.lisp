@@ -588,3 +588,63 @@ eqref), the local of the remainder and its representation; or NIL."
             ((member name '(ffloor fceiling ftruncate fround))
              (multiple-value-bind (code r) (typed-float-divmod vnode :fquotient t)
                (values `(,@code (:struct.new :double)) r :f64)))))))
+
+;;; ------------------------------------------------------------
+;;; Integer accumulators
+;;; ------------------------------------------------------------
+;;; A LET (or MULTIPLE-VALUE-BIND) variable that is assigned, not captured,
+;;; and holds only integers, but not provably within 64 bits (a sum, a
+;;; counter, a hash value), has an i64 local beside its eqref local.  When
+;;; the eqref local is null the value is the i64.  (SETQ var (op var E)) and
+;;; assignments of nested integer arithmetic compute in i64 and store there,
+;;; so that a value between 2^29 and 2^63 is not boxed at every step; the
+;;; first other use of the variable makes the integer and keeps it in the
+;;; eqref local.  An overflow or an operand that is not an integer within 64
+;;; bits takes the generic operation, whose result goes to the eqref local.
+
+(defvar *dual-vars* (make-hash-table :test 'eq) "lvar -> index of its i64 local")
+
+(defun note-dual-var (lv)
+  "Called when LV gets its location (BIND-NEW-VAR-CODE)."
+  (if (and (lvar-mutated lv) (not (lvar-captured lv)) (not (lvar-special lv)) (null (lvar-rep lv))
+           (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+))
+      (setf (gethash lv *dual-vars*) (new-local :i64))
+      (remhash lv *dual-vars*)))
+
+(defun dual-local (lv)
+  (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
+
+(defun dual-materialize-code (b v)
+  "The integer of the pair of locals B (eqref) and V (i64), kept in B."
+  (let ((ok (gensym "DUAL")))
+    `((:block ,ok (:ref :eq)
+        (:local.get ,b) (:br_on_non_null ,ok)
+        (:local.get ,v) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+        (:if nil :eqref ((:local.get ,v) :i32.wrap_i64 :ref.i31) ((:local.get ,v) (:call :i64-int)))
+        (:local.tee ,b) :ref.as_non_null))))
+
+(defun dual-get-code (lv)
+  (dual-materialize-code (cdr (get-loc lv)) (dual-local lv)))
+
+(defun dual-pair-i64-code (b v fail)
+  `((:local.get ,b) :ref.is_null
+    (:if nil :i64 ((:local.get ,v)) ,(i64-decode-code `((:local.get ,b)) fail))))
+
+(defun dual-lset-code (node effect)
+  "Code for (:LSET var expr) when VAR is an integer accumulator and EXPR is
+integer arithmetic (the fused trees of prims.lisp, here also a single
+operation); NIL otherwise.  EFFECT: no value is left."
+  (let* ((lv (second node)) (v (dual-local lv)) (expr (third node)))
+    (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*) (fusable-op-node-p expr)
+               (not (eq (fused-plan expr nil) :no)))
+      (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (done (gensym "ACC")))
+        (multiple-value-bind (leaves i64-code generic) (fused-parts expr)
+          `(,@leaves
+            (:block ,done nil
+              (:block ,fail nil
+                ,@(funcall i64-code fail)
+                (:local.set ,v) (:ref.null :eq) (:local.set ,b)
+                (:br ,done))
+              ,@generic
+              (:local.set ,b))
+            ,@(unless effect (dual-materialize-code b v))))))))

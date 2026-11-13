@@ -28,23 +28,24 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
                              :key #'prim-nargs)))
        ',name)))
 
-;;; Nested integer arithmetic whose leaves are variables, integer constants
-;;; and pure integer primitives of those is first tried in i64 (no
-;;; intermediate boxes); when a leaf is not an integer within 64 bits or a
-;;; step overflows, the usual generic code runs (it evaluates the leaves
-;;; again, which is why they must be pure).
+;;; Nested integer arithmetic (+ - * 1+ 1- LOGAND LOGIOR LOGXOR and ASH by a
+;;; constant) is first tried in i64, without boxes for the intermediate
+;;; values.  The leaves of the tree (anything else: variables, constants,
+;;; calls) are evaluated once, in order, into locals; when a leaf is not an
+;;; integer within 64 bits or a step overflows, the generic helpers compute
+;;; the tree from the same locals.
 ;;;
 ;;; Under a LOGAND with an operand known to be within [0, 2^63) only the low
 ;;; 64 bits of the other operand matter, so + - * LOGAND LOGIOR LOGXOR and
 ;;; left shifts below it are computed modulo 2^64 without overflow checks:
 ;;; (logand (* h 16777619) #xFFFFFFFF), (logand (+ (* x a) c) mask) and the
 ;;; like never make a bignum.
-(defparameter *fusable-ops* '((+ . :add) (- . :sub) (* . :mul) (logand . :and) (logior . :or) (logxor . :xor)))
-(defparameter *fused-pure-prims*
-  '(mod rem ash char-code clysm-sys::%char-code integer-length logcount logand logior logxor + - * 1+ 1-
-    clysm-sys::%fx+ clysm-sys::%fx- clysm-sys::%fxlogand clysm-sys::%fxlogior clysm-sys::%fxlogxor
-    clysm-sys::%fxash-left clysm-sys::%fxash-right))
+(defparameter *fusable-ops*
+  '((+ . :add) (- . :sub) (* . :mul) (logand . :and) (logior . :or) (logxor . :xor) (1+ . :add) (1- . :sub)))
+(defparameter *fused-helpers*
+  '((:add . :add) (:sub . :sub) (:mul . :mul) (:and . :logand2) (:or . :logior2) (:xor . :logxor2)))
 (defvar *no-fuse* nil)
+(defvar *fused-rest* nil "the records of the leaves not yet visited by the walk in progress")
 
 (defun fusable-ash-node-p (node)
   "(ASH x constant) with the count within -63 .. 63."
@@ -52,108 +53,180 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
        (let ((c (fourth node))) (and (eq (car c) :const) (integerp (second c)) (<= -63 (second c) 63)))))
 (defun fusable-op-node-p (node)
   (and (eq (car node) :prim)
-       (or (and (assoc (prim-name (second node)) *fusable-ops*) (= (length (cddr node)) 2))
-           (fusable-ash-node-p node))))
-(defun fused-pure-node-p (node)
-  "A primitive without side effects whose arguments are variables, constants or such primitives."
-  (and (eq (car node) :prim) (member (prim-name (second node)) *fused-pure-prims*)
-       (every (lambda (a) (or (member (car a) '(:lref :const)) (fused-pure-node-p a))) (cddr node))))
-(defun fused-leaf-p (node)
-  (or (eq (car node) :lref)
-      (and (eq (car node) :const) (integerp (second node)) (typep (second node) '(signed-byte 64)))
-      (fused-pure-node-p node)))
-(defun fusable-tree-p (node)
-  (and (fusable-op-node-p node)
-       (every (lambda (a) (or (fusable-tree-p a) (fused-leaf-p a))) (cddr node))))
+       (let ((name (prim-name (second node))) (n (length (cddr node))))
+         (or (and (member name '(+ - * logand logior logxor)) (= n 2))
+             (and (member name '(1+ 1-)) (= n 1))
+             (fusable-ash-node-p node)))))
+(defun fused-operands (node)
+  "The operation (:add ... or :ash) and the two operands of a fusable node."
+  (let ((name (prim-name (second node))))
+    (cond ((eq name 'ash) (values :ash (third node) (fourth node)))
+          ((member name '(1+ 1-)) (values (cdr (assoc name *fusable-ops*)) (third node) '(:const 1)))
+          (t (values (cdr (assoc name *fusable-ops*)) (third node) (fourth node))))))
+
+(defun fused-int-node-p (node)
+  (if (eq (car node) :const) (integerp (second node)) (ty-only-p (node-ty node) +k-int+)))
+
+(defun fused-plan (root alloc)
+  "The leaves of the arithmetic tree ROOT in evaluation order, as records
+\(node kind local...) with their locals when ALLOC; or :NO when the tree
+cannot be fused: after an operation that may signal (an operand not known to
+be an integer) only variables and constants may be evaluated, so that the
+operations can all be done after the leaves."
+  (let ((recs nil) (tainted nil))
+    (labels ((leaf (n)
+               (when (and tainted (not (member (car n) '(:lref :const)))) (return-from fused-plan :no))
+               (push (cond ((and (eq (car n) :const) (typep (second n) '(signed-byte 64))) (list n :const))
+                           ((and (eq (car n) :lref) (dual-local (second n)))
+                            (list* n :dual (when alloc (list (new-local) (new-local :i64)))))
+                           ((ty-int64-p (node-ty n)) (list* n :i64 (when alloc (list (new-local :i64)))))
+                           (t (list* n :eqref (when alloc (list (new-local))))))
+                     recs))
+             (walk (n top)
+               (cond ((and (not top) (not (eq (car n) :const)) (ty-int64-p (node-ty n))) (leaf n))
+                     ((fusable-op-node-p n)
+                      (multiple-value-bind (op a b) (fused-operands n)
+                        (walk a nil)
+                        (unless (eq op :ash) (walk b nil))
+                        (unless (and (fused-int-node-p a) (fused-int-node-p b)) (setf tainted t))))
+                     (t (leaf n)))))
+      (walk root t)
+      (nreverse recs))))
+
+(defun fused-leaf-eval-code (rec)
+  (destructuring-bind (node kind &rest locs) rec
+    (ecase kind
+      (:const nil)
+      (:dual (let ((lv (second node)))
+               `((:local.get ,(cdr (get-loc lv))) (:local.set ,(first locs))
+                 (:local.get ,(dual-local lv)) (:local.set ,(second locs)))))
+      (:i64 `(,@(cg-rep node :i64) (:local.set ,(first locs))))
+      (:eqref `(,@(cg node) (:local.set ,(first locs)))))))
 
 (defun fused-mask-p (node)
   "NODE is known to be an integer within [0, 2^63)."
   (or (and (eq (car node) :const) (integerp (second node)) (<= 0 (second node) (1- (expt 2 63))))
-      (ty-in-range-p (node-ty node) 0 (1- (expt 2 63)))))
+      (and (not (eq (car node) :const)) (ty-in-range-p (node-ty node) 0 (1- (expt 2 63))))))
 
-(defun fused-i64-code (node fail &optional wrap)
+(defun i64-decode-code (value-code fail)
+  "The i64 value of the eqref left by VALUE-CODE when it is a fixnum or an
+integer within 64 bits; anything else branches to FAIL."
+  (let ((e (new-local)) (v (new-local :i32)) (w (new-local :i64)))
+    `(,@value-code (:local.tee ,e) (:ref.test :i31)
+      (:if nil :i64
+           ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
+            (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
+            (:local.get ,v) :i64.extend_i32_s)
+           ;; a bignum holding its value as an i64 (nonzero), else the helpers
+           ((:local.get ,e) (:ref.test :bignum) :i32.eqz (:br_if ,fail)
+            (:local.get ,e) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,w) :i64.eqz
+            (:if nil :i64
+                 ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
+                  (:local.get ,e) (:call :int-i64))
+                 ((:local.get ,w))))))))
+
+(defun i64-checked-op-code (op x y r fail)
+  "OP (:add :sub :mul) of the i64 locals X and Y into the local R, branching
+to FAIL when the result does not fit."
+  (ecase op
+    (:add `((:local.get ,x) (:local.get ,y) :i64.add (:local.tee ,r) (:local.get ,x) :i64.xor
+            (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
+    (:sub `((:local.get ,x) (:local.get ,y) :i64.sub (:local.tee ,r) (:local.get ,x) :i64.xor
+            (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)))
+    (:mul `(;; both within 32 bits: the product fits
+            (:local.get ,x) (:i64.const ,(expt 2 31)) :i64.add
+            (:local.get ,y) (:i64.const ,(expt 2 31)) :i64.add :i64.or (:i64.const 32) :i64.shr_u :i64.eqz
+            (:if nil nil
+                 ((:local.get ,x) (:local.get ,y) :i64.mul (:local.set ,r))
+                 ((:local.get ,x) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
+                  (:local.get ,y) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
+                  (:local.get ,x) :i64.eqz
+                  (:if nil nil
+                       ((:i64.const 0) (:local.set ,r))
+                       ((:local.get ,x) (:local.get ,y) :i64.mul (:local.tee ,r)
+                        (:local.get ,x) :i64.div_s (:local.get ,y) :i64.ne (:br_if ,fail)))))))))
+
+(defun fused-i64-code (node fail &optional wrap top)
   "Code leaving the i64 value of NODE (with WRAP: its low 64 bits),
-branching to FAIL when that is not possible."
-  (cond ((eq (car node) :const) `((:i64.const ,(second node))))
-        ((and (ty-int32-p (node-ty node)) (not (fusable-tree-p node)))
-         `(,@(cg-rep node :i32) :i64.extend_i32_s))
-        ((and (ty-int32-p (node-ty node)) (i32-op-code node))
-         `(,@(i32-op-code node) :i64.extend_i32_s))
-        ((not (fusable-tree-p node))
-         ;; a leaf: a fixnum or an integer within 64 bits
-         (let ((e (new-local)) (v (new-local :i32)) (w (new-local :i64)))
-           `(,@(cg node) (:local.tee ,e) (:ref.test :i31)
-             (:if nil :i64
-                  ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
-                   (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
-                   (:local.get ,v) :i64.extend_i32_s)
-                  ;; a bignum holding its value as an i64 (nonzero), else the helpers
-                  ((:local.get ,e) (:ref.test :bignum) :i32.eqz (:br_if ,fail)
-                   (:local.get ,e) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,w) :i64.eqz
-                   (:if nil :i64
-                        ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
-                         (:local.get ,e) (:call :int-i64))
-                        ((:local.get ,w))))))))
-        ((fusable-ash-node-p node)
-         (let ((c (second (fourth node))) (x (new-local :i64)) (r (new-local :i64)))
-           (cond ((< c 0) `(,@(fused-i64-code (third node) fail nil) (:i64.const ,(- c)) :i64.shr_s))
-                 (wrap `(,@(fused-i64-code (third node) fail t) (:i64.const ,c) :i64.shl))
-                 (t `(,@(fused-i64-code (third node) fail nil) (:local.tee ,x) (:i64.const ,c) :i64.shl (:local.tee ,r)
-                      (:i64.const ,c) :i64.shr_s (:local.get ,x) :i64.ne (:br_if ,fail)
-                      (:local.get ,r))))))
+branching to FAIL when that is not possible.  The leaves are taken from
+*FUSED-REST* in order."
+  (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+         (multiple-value-bind (op a b) (fused-operands node)
+           (cond ((eq op :ash)
+                  (let ((c (second b)) (x (new-local :i64)) (r (new-local :i64)))
+                    (cond ((< c 0) `(,@(fused-i64-code a fail nil) (:i64.const ,(- c)) :i64.shr_s))
+                          (wrap `(,@(fused-i64-code a fail t) (:i64.const ,c) :i64.shl))
+                          (t `(,@(fused-i64-code a fail nil) (:local.tee ,x) (:i64.const ,c) :i64.shl (:local.tee ,r)
+                               (:i64.const ,c) :i64.shr_s (:local.get ,x) :i64.ne (:br_if ,fail)
+                               (:local.get ,r))))))
+                 ((member op '(:and :or :xor))
+                  ;; under a mask the other operand is needed modulo 2^64 only
+                  (let* ((wrap-a (or wrap (and (eq op :and) (fused-mask-p b))))
+                         (wrap-b (or wrap (and (eq op :and) (fused-mask-p a))))
+                         (ca (fused-i64-code a fail wrap-a))
+                         (cb (fused-i64-code b fail wrap-b)))
+                    `(,@ca ,@cb ,(ecase op (:and :i64.and) (:or :i64.or) (:xor :i64.xor)))))
+                 (t
+                  (let* ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
+                         (ca (fused-i64-code a fail wrap))
+                         (cb (fused-i64-code b fail wrap)))
+                    `(,@ca (:local.set ,x) ,@cb (:local.set ,y)
+                      ,@(if wrap
+                            `((:local.get ,x) (:local.get ,y) ,(ecase op (:add :i64.add) (:sub :i64.sub) (:mul :i64.mul)))
+                            `(,@(i64-checked-op-code op x y r fail) (:local.get ,r)))))))))
         (t
-         (let* ((x (new-local :i64)) (y (new-local :i64)) (r (new-local :i64))
-                (op (cdr (assoc (prim-name (second node)) *fusable-ops*)))
-                (a (third node)) (b (fourth node))
-                ;; under a mask the other operand is needed modulo 2^64 only
-                (wrap-a (or wrap (and (eq op :and) (fused-mask-p b))))
-                (wrap-b (or wrap (and (eq op :and) (fused-mask-p a)))))
-           (if (member op '(:and :or :xor))
-               `(,@(fused-i64-code a fail wrap-a) ,@(fused-i64-code b fail wrap-b)
-                 ,(ecase op (:and :i64.and) (:or :i64.or) (:xor :i64.xor)))
-               `(,@(fused-i64-code a fail wrap) (:local.set ,x)
-                 ,@(fused-i64-code b fail wrap) (:local.set ,y)
-                 ,@(if wrap
-                       `((:local.get ,x) (:local.get ,y) ,(ecase op (:add :i64.add) (:sub :i64.sub) (:mul :i64.mul)))
-                       (ecase op
-                         (:add `((:local.get ,x) (:local.get ,y) :i64.add (:local.tee ,r) (:local.get ,x) :i64.xor
-                                 (:local.get ,r) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)
-                                 (:local.get ,r)))
-                         (:sub `((:local.get ,x) (:local.get ,y) :i64.sub (:local.tee ,r) (:local.get ,x) :i64.xor
-                                 (:local.get ,x) (:local.get ,y) :i64.xor :i64.and (:i64.const 0) :i64.lt_s (:br_if ,fail)
-                                 (:local.get ,r)))
-                         (:mul `(;; both within 32 bits: the product fits
-                                 (:local.get ,x) (:i64.const ,(expt 2 31)) :i64.add
-                                 (:local.get ,y) (:i64.const ,(expt 2 31)) :i64.add :i64.or (:i64.const 32) :i64.shr_u
-                                 :i64.eqz
-                                 (:if nil :i64
-                                      ((:local.get ,x) (:local.get ,y) :i64.mul)
-                                      ((:local.get ,x) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
-                                       (:local.get ,y) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)
-                                       (:local.get ,x) :i64.eqz
-                                       (:if nil :i64
-                                            ((:i64.const 0))
-                                            ((:local.get ,x) (:local.get ,y) :i64.mul (:local.tee ,r)
-                                             (:local.get ,x) :i64.div_s (:local.get ,y) :i64.ne (:br_if ,fail)
-                                             (:local.get ,r)))))))))))))))
+         ;; a leaf
+         (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
+           (ecase kind
+             (:const `((:i64.const ,(second leaf))))
+             (:dual (dual-pair-i64-code (first locs) (second locs) fail))
+             (:i64 `((:local.get ,(first locs))))
+             (:eqref (i64-decode-code `((:local.get ,(first locs))) fail)))))))
+
+(defun fused-generic-code (node &optional top)
+  "The value of the tree NODE by the generic helpers, from the locals of its leaves."
+  (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+         (multiple-value-bind (op a b) (fused-operands node)
+           (if (eq op :ash)
+               `(,@(fused-generic-code a) ,@(cg b) (:call :ash-fx))
+               (let* ((ca (fused-generic-code a)) (cb (fused-generic-code b)))
+                 `(,@ca ,@cb (:call ,(cdr (assoc op *fused-helpers*))))))))
+        (t
+         (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
+           (ecase kind
+             (:const (cg leaf))
+             (:dual (dual-materialize-code (first locs) (second locs)))
+             (:i64 `((:local.get ,(first locs)) ,@(box-rep-code :i64 (node-ty leaf))))
+             (:eqref `((:local.get ,(first locs)))))))))
 
 (defun fused-tree-node-p (node)
-  (and (not *no-fuse*) (fusable-tree-p node) (some #'fusable-tree-p (cddr node))))
+  (and (not *no-fuse*) (fusable-op-node-p node) (some #'fusable-op-node-p (cddr node))
+       (not (eq (fused-plan node nil) :no))))
+
+(defun fused-parts (node)
+  "For the fusable tree NODE: the code evaluating its leaves, a function of a
+label giving the i64 code, and the generic code."
+  (let ((recs (fused-plan node t)))
+    (values (loop for rec in recs append (fused-leaf-eval-code rec))
+            (lambda (fail) (let ((*fused-rest* recs)) (fused-i64-code node fail nil t)))
+            (let ((*fused-rest* recs)) (fused-generic-code node t)))))
 
 (defun fused-code (node rep)
   "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
 its type is a fixnum), the generic code when that fails."
   (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (r (new-local :i64)))
-    `((:block ,done ,rep
-        (:block ,fail nil
-          ,@(fused-i64-code node fail)
-          ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
-                `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
-                `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-                  (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
-          (:br ,done))
-        ,@(let ((*no-fuse* t)) (cg-prim (second node) (cddr node) nil))
-        ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node)))))))
+    (multiple-value-bind (leaves i64-code generic) (fused-parts node)
+      `(,@leaves
+        (:block ,done ,rep
+          (:block ,fail nil
+            ,@(funcall i64-code fail)
+            ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
+                  `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
+                  `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                    (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
+            (:br ,done))
+          ,@generic
+          ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
 
 (defun cg-prim (p args mv)
   (when (fused-tree-node-p `(:prim ,p ,@args))
