@@ -374,7 +374,7 @@
   (%check-array a)
   (and (%mdarray-p a) (not (null (%mdarray-fill a)))))
 (defun fill-pointer (a)
-  (if (and (arrayp a) (array-has-fill-pointer-p a)) (%mdarray-fill a)
+  (if (and (%mdarray-p a) (%mdarray-fill a)) (%mdarray-fill a)
       (error 'type-error :datum a :expected-type '(and vector (satisfies array-has-fill-pointer-p)))))
 (defun %set-fill-pointer (a n)
   (unless (and (arrayp a) (array-has-fill-pointer-p a))
@@ -543,8 +543,14 @@
 
 (defun vector-push (x v)
   (let ((fp (fill-pointer v)))
-    (if (< fp (array-dimension v 0))
-        (progn (%row-major-aset v fp x) (%set-mdarray-fill v (+ fp 1)) fp)
+    (declare (fixnum fp))
+    (if (< fp (car (%mdarray-dims v)))
+        (let ((data (%mdarray-data v)))
+          (if (and (%simple-vector-p data) (eql (%mdarray-offset v) 0))
+              (%set-svref data fp x)
+              (%row-major-aset v fp x))
+          (%set-mdarray-fill v (+ fp 1))
+          fp)
         nil)))
 
 (defun vector-push-extend (x v &optional (extension 16))
@@ -584,18 +590,20 @@
 
 (defun vector-pop (v)
   (let ((fp (fill-pointer v)))
-    (when (= fp 0) (error "VECTOR-POP: empty vector ~S" v))
+    (declare (fixnum fp))
+    (when (eql fp 0) (error "VECTOR-POP: empty vector ~S" v))
     (%set-mdarray-fill v (- fp 1))
-    (row-major-aref v (- fp 1))))
+    (let ((data (%mdarray-data v)))
+      (if (and (%simple-vector-p data) (eql (%mdarray-offset v) 0))
+          (%svref data (- fp 1))
+          (row-major-aref v (- fp 1))))))
 
 (defun %adjust-vector-storage (v new-size)
   (let* ((et (%array-info-type v))
          (new (%make-storage new-size et))
-         (n (min new-size (array-total-size v)))
-         (old (%mdarray-data v)))
-    (if (and (eql (%mdarray-offset v) 0) (%simple-string-p old) (%simple-string-p new))
-        (%string-copy new 0 old 0 n)
-        (dotimes (i n) (%simple-set new i (row-major-aref v i))))
+         (n (min new-size (array-total-size v))))
+    ;; storage to storage (the element types are the same)
+    (%copy-elements new 0 (%array-storage v) (%array-total-offset v) n)
     (%set-mdarray-data v new)
     (%set-mdarray-offset v 0)
     (%set-mdarray-dims v (list new-size))
@@ -622,6 +630,16 @@
                        (make-array dims :element-type et :displaced-to displaced-to
                                         :displaced-index-offset displaced-index-offset))
                       (contentsp (make-array dims :element-type et :initial-contents initial-contents))
+                      ((and (null (cdr dims)) (vectorp a))
+                       ;; a vector: the elements kept are copied storage to storage
+                       (let* ((size (car dims))
+                              (n (make-array size :element-type et
+                                                  :initial-element (if initp initial-element
+                                                                       (%default-element et))))
+                              (old (array-dimension a 0)))
+                         (%copy-elements (%array-storage n) (%array-total-offset n)
+                                         (%array-storage a) (%array-total-offset a) (min size old))
+                         n))
                       (t (let ((n (make-array dims :element-type et
                                                    :initial-element (if initp initial-element
                                                                         (%default-element et)))))
@@ -667,7 +685,6 @@
         (test (%fn test))
         (test-not (let ((tn (%fn test-not))) (lambda (a b) (not (funcall tn a b)))))
         (t #'eql)))
-(defmacro %key (key x) `(if ,key (funcall ,key ,x) ,x))
 
 (defun %list-length-checked (l)
   (let ((n (list-length l)))
@@ -778,29 +795,6 @@ for the end of a list).  A list region read backwards is copied to a vector."
               (let ((,idx (- ,i ,off)) (,var (%vref ,d ,i)))
                 (declare (ignorable ,idx))
                 ,@body))))))))
-
-;;; How an element is selected: MODE 0 compares it with the item by EQL,
-;;; MODE 1 calls the two-argument test FN on the item and the element, MODE 2
-;;; calls the predicate FN on the element; NEG inverts the result (:TEST-NOT
-;;; and the -IF-NOT functions).  The sequence functions that take an item or a
-;;; predicate share one implementation per family this way, and no closure is
-;;; made to turn the one into the other.
-(defmacro %with-test ((mode fn neg) (test test-not) &body body)
-  `(let ((,mode 0) (,fn nil) (,neg nil))
-     (cond (,test
-            (when ,test-not (error "Both :TEST and :TEST-NOT were supplied"))
-            (setq ,fn (%fn ,test))
-            (unless (or (eq ,fn #'eql) (eq ,fn #'eq)) (setq ,mode 1)))
-           (,test-not (setq ,fn (%fn ,test-not) ,mode 1 ,neg t)))
-     ,@body))
-
-(defmacro %match (mode fn neg item x)
-  (let ((m (gensym)) (v (gensym)))
-    `(let* ((,v ,x)
-            (,m (cond ((eql ,mode 0) (eql ,item ,v))
-                      ((eql ,mode 1) (funcall ,fn ,item ,v))
-                      (t (funcall ,fn ,v)))))
-       (if ,neg (not ,m) ,m))))
 
 ;;; ------------------------------------------------------------
 ;;; sequence result types
@@ -1486,7 +1480,7 @@ list result shares the tail after END."
                     (%do-region (x i seq start end nil) (%set-svref v (- i start) (%key key x)))
                     v))
            (marks (%make-simple-vector n nil)) (found 0)
-           (table-test (cond ((< n 20) nil)
+           (table-test (cond ((or (< n 20) (not (boundp '*hash-table-class*))) nil)
                              ((eql mode 0) 'eql)
                              (neg nil)
                              ((eq fn #'equal) 'equal)
@@ -1690,13 +1684,25 @@ list result shares the tail after END."
 (defun notany (pred seq &rest more) (not (%quantify 1 pred seq more)))
 (defun notevery (pred seq &rest more) (not (%quantify 0 pred seq more)))
 
-;;; sorting (merge sort on lists)
+;;; sorting: a stable merge sort, of the conses of a list and of the storage
+;;; of a vector.  The key of an element is computed once for each merge step
+;;; it takes part in (lists) or once in all (vectors).
 (defun %merge-lists (a b pred key)
   (let* ((head (cons nil nil)) (tail head))
-    (do () ((or (null a) (null b)))
-      (if (funcall pred (%key key (car b)) (%key key (car a)))
-          (progn (%setcdr tail b) (setq tail b b (cdr b)))
-          (progn (%setcdr tail a) (setq tail a a (cdr a)))))
+    (if key
+        (when (and a b)
+          ;; the keys of the two front elements are kept
+          (let ((ka (funcall key (car a))) (kb (funcall key (car b))))
+            (loop
+              (if (funcall pred kb ka)
+                  (progn (%setcdr tail b) (setq tail b b (cdr b))
+                         (if b (setq kb (funcall key (car b))) (return)))
+                  (progn (%setcdr tail a) (setq tail a a (cdr a))
+                         (if a (setq ka (funcall key (car a))) (return)))))))
+        (do () ((or (null a) (null b)))
+          (if (funcall pred (car b) (car a))
+              (progn (%setcdr tail b) (setq tail b b (cdr b)))
+              (progn (%setcdr tail a) (setq tail a a (cdr a))))))
     (%setcdr tail (if a a b))
     (cdr head)))
 
@@ -1713,24 +1719,92 @@ list result shares the tail after END."
           (multiple-value-bind (b rest2) (%sort-list-n rest (- n h) pred key)
             (values (%merge-lists a b pred key) rest2))))))
 
+(defun %sort-simple-vector (v keys lo hi pred tmp ktmp)
+  "Sorts the elements [LO, HI) of the simple vector V, stably, by the keys in
+the simple vector KEYS (which is V itself when there is no key function; the
+keys are moved with their elements).  TMP and KTMP are scratch vectors of at
+least half the length (KTMP is TMP when KEYS is V)."
+  (declare (fixnum lo hi))
+  (if (< (- hi lo) 10)
+      ;; insertion sort
+      (do ((i (+ lo 1) (+ i 1))) ((>= i hi))
+        (declare (fixnum i))
+        (let ((x (%svref v i)) (kx (%svref keys i)) (j i))
+          (declare (fixnum j))
+          (do () ((or (<= j lo) (not (funcall pred kx (%svref keys (- j 1))))))
+            (%set-svref v j (%svref v (- j 1)))
+            (%set-svref keys j (%svref keys (- j 1)))
+            (setq j (- j 1)))
+          (%set-svref v j x)
+          (%set-svref keys j kx)))
+      (let ((mid (+ lo (ash (- hi lo) -1))))
+        (declare (fixnum mid))
+        (%sort-simple-vector v keys lo mid pred tmp ktmp)
+        (%sort-simple-vector v keys mid hi pred tmp ktmp)
+        ;; merge, unless the halves are in order already
+        (when (funcall pred (%svref keys mid) (%svref keys (- mid 1)))
+          (let ((n1 (- mid lo)) (same (eq v keys)))
+            (declare (fixnum n1))
+            (dotimes (i n1)
+              (%set-svref tmp i (%svref v (+ lo i)))
+              (unless same (%set-svref ktmp i (%svref keys (+ lo i)))))
+            (let ((i 0) (j mid) (k lo))
+              (declare (fixnum i j k))
+              (do () ((or (>= i n1) (>= j hi)))
+                (if (funcall pred (%svref keys j) (%svref ktmp i))
+                    (progn (%set-svref v k (%svref v j))
+                           (unless same (%set-svref keys k (%svref keys j)))
+                           (setq j (+ j 1)))
+                    (progn (%set-svref v k (%svref tmp i))
+                           (unless same (%set-svref keys k (%svref ktmp i)))
+                           (setq i (+ i 1))))
+                (setq k (+ k 1)))
+              ;; what is left of the first half (the rest of the second is in place)
+              (do () ((>= i n1))
+                (%set-svref v k (%svref tmp i))
+                (unless same (%set-svref keys k (%svref ktmp i)))
+                (setq i (+ i 1) k (+ k 1)))))))))
+
+(defun %sort-vector (seq pred key)
+  (let* ((n (length seq)) (d (%array-storage seq)) (off (%array-total-offset seq)))
+    (declare (fixnum n off))
+    (when (> n 1)
+      (let* ((direct (%simple-vector-p d))
+             ;; other storage (strings, bits, ...) is sorted in a copy
+             (v (if direct d (let ((c (%make-simple-vector n nil)))
+                               (dotimes (i n c) (%set-svref c i (%vref d (+ i off)))))))
+             (lo (if direct off 0))
+             (half (+ 1 (ash n -1)))
+             (tmp (%make-simple-vector half nil)))
+        (declare (fixnum lo half))
+        (if key
+            (let ((keys (%make-simple-vector (+ lo n) nil)))
+              (dotimes (i n) (%set-svref keys (+ lo i) (funcall key (%svref v (+ lo i)))))
+              (%sort-simple-vector v keys lo (+ lo n) pred tmp (%make-simple-vector half nil)))
+            (%sort-simple-vector v v lo (+ lo n) pred tmp tmp))
+        (unless direct
+          (dotimes (i n) (%vset d (+ i off) (%svref v i))))))
+    seq))
+
 (defun sort (seq pred &key key)
-  (let ((pred (%fn pred)) (key (%keyfn key)))
+  (let ((pred (%two-arg-fn (%fn pred))) (key (%keyfn key)))
     (cond ((listp seq) (%sort-list seq pred key))
-          ((vectorp seq)
-           (let ((sorted (%sort-list (%seq-to-list seq) pred key)) (i 0))
-             (dolist (x sorted seq) (%row-major-aset seq i x) (setq i (+ i 1)))))
+          ((vectorp seq) (%sort-vector seq pred key))
           (t (%type-error seq 'sequence)))))
-(defun stable-sort (seq pred &key key) (sort seq pred :key key))
+(defun stable-sort (seq pred &key key)
+  (let ((pred (%two-arg-fn (%fn pred))) (key (%keyfn key)))
+    (cond ((listp seq) (%sort-list seq pred key))
+          ((vectorp seq) (%sort-vector seq pred key))
+          (t (%type-error seq 'sequence)))))
 
 (defun merge (result-type s1 s2 pred &key key)
-  (let ((pred (%fn pred)) (key (%keyfn key)))
+  (let ((pred (%two-arg-fn (%fn pred))) (key (%keyfn key)))
     (%seq-type-spec result-type)
     (unless (or (listp s1) (vectorp s1)) (%type-error s1 'sequence))
     (unless (or (listp s2) (vectorp s2)) (%type-error s2 'sequence))
     (%make-sequence-from-list
      result-type
      (%merge-lists (copy-list (%seq-to-list s1)) (copy-list (%seq-to-list s2)) pred key))))
-
 
 ;;; ------------------------------------------------------------
 ;;; strings
@@ -1828,17 +1902,61 @@ difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
   (%string-eq s1 s2 start1 end1 start2 end2 nil))
 (defun string-equal (s1 s2 &key (start1 0) end1 (start2 0) end2)
   (%string-eq s1 s2 start1 end1 start2 end2 t))
-(macrolet ((def (name ci &rest codes)
+(macrolet ((def (name name-2 ci &rest codes)
              ;; CODES: the results of %STRING-COMPARE for which NAME is true
-             `(defun ,name (s1 s2 &key (start1 0) end1 (start2 0) end2)
-                (let* ((r (%string-compare s1 s2 start1 end1 start2 end2 ,ci))
-                       (code (logand r 3)))
-                  (declare (fixnum r code))
-                  (if (or ,@(mapcar (lambda (c) `(eql code ,c)) codes)) (ash r -2) nil)))))
-  (def string< nil 1) (def string> nil 2) (def string<= nil 1 0) (def string>= nil 2 0)
-  (def string/= nil 1 2)
-  (def string-lessp t 1) (def string-greaterp t 2) (def string-not-greaterp t 1 0)
-  (def string-not-lessp t 2 0) (def string-not-equal t 1 2))
+             `(progn
+                (defun ,name (s1 s2 &key (start1 0) end1 (start2 0) end2)
+                  (let* ((r (%string-compare s1 s2 start1 end1 start2 end2 ,ci))
+                         (code (logand r 3)))
+                    (declare (fixnum r code))
+                    (if (or ,@(mapcar (lambda (c) `(eql code ,c)) codes)) (ash r -2) nil)))
+                ;; the function of two strings (see %TWO-ARG-FN)
+                (defun ,name-2 (s1 s2)
+                  (let* ((r (%string-compare s1 s2 0 nil 0 nil ,ci))
+                         (code (logand r 3)))
+                    (declare (fixnum r code))
+                    (if (or ,@(mapcar (lambda (c) `(eql code ,c)) codes)) (ash r -2) nil))))))
+  (def string< %string<-2 nil 1) (def string> %string>-2 nil 2)
+  (def string<= %string<=-2 nil 1 0) (def string>= %string>=-2 nil 2 0)
+  (def string/= %string/=-2 nil 1 2)
+  (def string-lessp %string-lessp-2 t 1) (def string-greaterp %string-greaterp-2 t 2)
+  (def string-not-greaterp %string-not-greaterp-2 t 1 0)
+  (def string-not-lessp %string-not-lessp-2 t 2 0) (def string-not-equal %string-not-equal-2 t 1 2))
+
+(defun %string-equal-2 (s1 s2) (%string-eq s1 s2 0 nil 0 nil t))
+(defun %char=-2 (a b) (char= a b))
+(defun %char/=-2 (a b) (not (char= a b)))
+(defun %char-not-equal-2 (a b) (not (%char-equal-2 a b)))
+
+(defun %two-arg-fn (fn)
+  "FN, or for one of the string and character comparison functions (which
+take keyword or any number of arguments) the function of two arguments that
+does the same: a test or predicate is called with two."
+  (cond ((eq fn #'string=) #'%string=-2)
+        ((eq fn #'string<) #'%string<-2)
+        ((eq fn #'string-equal) #'%string-equal-2)
+        ((eq fn #'char=) #'%char=-2)
+        ((eq fn #'char-equal) #'%char-equal-2)
+        ((eq fn #'string>) #'%string>-2)
+        ((eq fn #'string-lessp) #'%string-lessp-2)
+        ((eq fn #'char<) #'%char<-2)
+        ((eq fn #'char>) #'%char>-2)
+        ((eq fn #'string<=) #'%string<=-2)
+        ((eq fn #'string>=) #'%string>=-2)
+        ((eq fn #'string/=) #'%string/=-2)
+        ((eq fn #'string-greaterp) #'%string-greaterp-2)
+        ((eq fn #'string-not-greaterp) #'%string-not-greaterp-2)
+        ((eq fn #'string-not-lessp) #'%string-not-lessp-2)
+        ((eq fn #'string-not-equal) #'%string-not-equal-2)
+        ((eq fn #'char/=) #'%char/=-2)
+        ((eq fn #'char<=) #'%char<=-2)
+        ((eq fn #'char>=) #'%char>=-2)
+        ((eq fn #'char-lessp) #'%char-lessp-2)
+        ((eq fn #'char-greaterp) #'%char-greaterp-2)
+        ((eq fn #'char-not-equal) #'%char-not-equal-2)
+        ((eq fn #'char-not-greaterp) #'%char-not-greaterp-2)
+        ((eq fn #'char-not-lessp) #'%char-not-lessp-2)
+        (t fn)))
 
 (defun %string-case (s start end upcasep)
   (let* ((s (string s)) (r (%copy-simple-string s)) (end (%check-bounds start end (length r))))

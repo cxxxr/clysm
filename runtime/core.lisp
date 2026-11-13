@@ -226,20 +226,46 @@
 (defun %key-fn (key) (cond ((null key) nil) ((functionp key) key) (t (fdefinition key))))
 
 (defmacro %with-key ((var key) x) `(if ,var (funcall ,var ,x) ,x))
+(defmacro %key (key x) `(if ,key (funcall ,key ,x) ,x))
+
+;;; How an element is selected by the functions that take an item or a
+;;; predicate (MEMBER, ASSOC, the set functions, and the sequence functions in
+;;; seq.lisp): MODE 0 compares it with the item by EQL, MODE 1 calls the
+;;; two-argument test FN on the item and the element, MODE 2 calls the
+;;; predicate FN on the element; NEG inverts the result (:TEST-NOT and the
+;;; -IF-NOT functions).  The functions of a family share one implementation
+;;; this way, and no closure is made to turn the one into the other.
+(defmacro %with-test ((mode fn neg) (test test-not) &body body)
+  `(let ((,mode 0) (,fn nil) (,neg nil))
+     (cond (,test
+            (when ,test-not (error "Both :TEST and :TEST-NOT were supplied"))
+            (setq ,fn (%fn ,test))
+            (unless (or (eq ,fn #'eql) (eq ,fn #'eq)) (setq ,fn (%two-arg-fn ,fn) ,mode 1)))
+           (,test-not (setq ,fn (%two-arg-fn (%fn ,test-not)) ,mode 1 ,neg t)))
+     ,@body))
+
+(defmacro %match (mode fn neg item x)
+  (let ((m (gensym)) (v (gensym)))
+    `(let* ((,v ,x)
+            (,m (cond ((eql ,mode 0) (eql ,item ,v))
+                      ((eql ,mode 1) (funcall ,fn ,item ,v))
+                      (t (funcall ,fn ,v)))))
+       (if ,neg (not ,m) ,m))))
+
+(defun %member (item list mode fn neg key)
+  "The tail of LIST whose first element is selected (see %MATCH)."
+  (do ((l list (cdr l))) ((%endp l) nil)
+    (when (%match mode fn neg item (%key key (car l))) (return l))))
 
 (defun member (item list &key key test test-not)
   (if (and (null key) (null test) (null test-not))
       (%member-eql item list)
-      (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
-        (do ((l list (cdr l))) ((%endp l) nil)
-          (when (funcall tf item (%with-key (kf key) (car l))) (return l))))))
-
+      (%with-test (mode fn neg) (test test-not)
+        (%member item list mode fn neg (%keyfn key)))))
 (defun member-if (pred list &key key)
-  (let ((kf (%key-fn key)))
-    (do ((l list (cdr l))) ((%endp l) nil)
-      (when (funcall pred (%with-key (kf key) (car l))) (return l)))))
+  (%member nil list 2 (%fn pred) nil (%keyfn key)))
 (defun member-if-not (pred list &key key)
-  (member-if (complement pred) list :key key))
+  (%member nil list 2 (%fn pred) t (%keyfn key)))
 
 (defmacro %alist-entry-p (e)
   `(cond ((consp ,e) t) ((null ,e) nil) (t (%type-error ,e 'list))))
@@ -248,33 +274,31 @@
   (do ((l alist (cdr l))) ((%endp l) nil)
     (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (car e))) (return e)))))
 
+(defun %assoc (item alist mode fn neg key by-cdr)
+  "The first entry of ALIST whose CAR (CDR when BY-CDR) is selected."
+  (do ((l alist (cdr l))) ((%endp l) nil)
+    (let ((e (car l)))
+      (when (and (%alist-entry-p e)
+                 (%match mode fn neg item (%key key (if by-cdr (cdr e) (car e)))))
+        (return e)))))
+
 (defun assoc (item alist &key key test test-not)
   (if (and (null key) (null test) (null test-not))
       (do ((l alist (cdr l))) ((%endp l) nil)
         (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (car e))) (return e))))
-      (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
-        (do ((l alist (cdr l))) ((%endp l) nil)
-          (let ((e (car l)))
-            (when (and (%alist-entry-p e) (funcall tf item (%with-key (kf key) (car e)))) (return e)))))))
-
-(defun assoc-if (pred alist &key key)
-  (let ((kf (%key-fn key)))
-    (do ((l alist (cdr l))) ((%endp l) nil)
-      (let ((e (car l)))
-        (when (and (%alist-entry-p e) (funcall pred (%with-key (kf key) (car e)))) (return e))))))
-(defun assoc-if-not (pred alist &key key) (assoc-if (complement pred) alist :key key))
+      (%with-test (mode fn neg) (test test-not)
+        (%assoc item alist mode fn neg (%keyfn key) nil))))
+(defun assoc-if (pred alist &key key) (%assoc nil alist 2 (%fn pred) nil (%keyfn key) nil))
+(defun assoc-if-not (pred alist &key key) (%assoc nil alist 2 (%fn pred) t (%keyfn key) nil))
 
 (defun rassoc (item alist &key key test test-not)
-  (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
-    (do ((l alist (cdr l))) ((%endp l) nil)
-      (let ((e (car l)))
-        (when (and (%alist-entry-p e) (funcall tf item (%with-key (kf key) (cdr e)))) (return e))))))
-(defun rassoc-if (pred alist &key key)
-  (let ((kf (%key-fn key)))
-    (do ((l alist (cdr l))) ((%endp l) nil)
-      (let ((e (car l)))
-        (when (and (%alist-entry-p e) (funcall pred (%with-key (kf key) (cdr e)))) (return e))))))
-(defun rassoc-if-not (pred alist &key key) (rassoc-if (complement pred) alist :key key))
+  (if (and (null key) (null test) (null test-not))
+      (do ((l alist (cdr l))) ((%endp l) nil)
+        (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (cdr e))) (return e))))
+      (%with-test (mode fn neg) (test test-not)
+        (%assoc item alist mode fn neg (%keyfn key) t))))
+(defun rassoc-if (pred alist &key key) (%assoc nil alist 2 (%fn pred) nil (%keyfn key) t))
+(defun rassoc-if-not (pred alist &key key) (%assoc nil alist 2 (%fn pred) t (%keyfn key) t))
 
 (defun acons (key datum alist) (cons (cons key datum) alist))
 (defun pairlis (keys data &optional alist)
@@ -282,46 +306,77 @@
       ((or (%endp k) (%endp d)) r)))
 
 (defun adjoin (item list &key key test test-not)
-  (if (member (%with-key ((%key-fn key) key) item) list :key key :test test :test-not test-not)
-      list
-      (cons item list)))
+  (%with-test (mode fn neg) (test test-not)
+    (let ((key (%keyfn key)))
+      (if (%member (%key key item) list mode fn neg key) list (cons item list)))))
+
+;;; The set functions.  Whether an element of the first list has a match in
+;;; the second is asked of a hash table of the second list's keys when the
+;;; test is EQ, EQL, EQUAL or EQUALP and both lists are long; of the list
+;;; itself otherwise.
+(defun %set-table (l1 l2 mode fn neg key)
+  "A hash table of the keys of L2, or NIL when the lists are short or the
+test is not one a hash table has."
+  (let ((test (cond (neg nil)
+                    ((eql mode 0) 'eql)
+                    ((eq fn #'equal) 'equal)
+                    ((eq fn #'equalp) 'equalp)
+                    (t nil))))
+    (if (and test (consp (nthcdr 15 l1)) (consp (nthcdr 15 l2)) (boundp '*hash-table-class*))
+        (let ((table (make-hash-table :test test :size (length-of-list l2))))
+          (dolist (y l2 table) (setf (gethash (%key key y) table) t)))
+        nil)))
+
+(defmacro %in-set-p (x l2 table mode fn neg key)
+  "True when the element X of the first list has a match in L2."
+  (let ((k (gensym)))
+    `(let ((,k (%key ,key ,x)))
+       (if ,table
+           (nth-value 1 (gethash ,k ,table))
+           (%member ,k ,l2 ,mode ,fn ,neg ,key)))))
 
 (defun union (l1 l2 &key key test test-not)
-  (let ((result l2))
-    (dolist (x l1 result)
-      (unless (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
-        (push x result)))))
+  (%with-test (mode fn neg) (test test-not)
+    (let* ((key (%keyfn key)) (table (%set-table l1 l2 mode fn neg key)) (result l2))
+      (dolist (x l1 result)
+        (unless (%in-set-p x l2 table mode fn neg key) (push x result))))))
 (defun nunion (l1 l2 &key key test test-not) (union l1 l2 :key key :test test :test-not test-not))
 
 (defun intersection (l1 l2 &key key test test-not)
-  (let ((result nil))
-    (dolist (x l1 result)
-      (when (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
-        (push x result)))))
+  (%with-test (mode fn neg) (test test-not)
+    (let* ((key (%keyfn key)) (table (%set-table l1 l2 mode fn neg key)) (result nil))
+      (dolist (x l1 result)
+        (when (%in-set-p x l2 table mode fn neg key) (push x result))))))
 (defun nintersection (l1 l2 &key key test test-not)
   (intersection l1 l2 :key key :test test :test-not test-not))
 
 (defun set-difference (l1 l2 &key key test test-not)
-  (if (null l2) l1
-  (let ((result nil))
-    (dolist (x l1 result)
-      (unless (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
-        (push x result))))))
+  (if (null l2)
+      l1
+      (%with-test (mode fn neg) (test test-not)
+        (let* ((key (%keyfn key)) (table (%set-table l1 l2 mode fn neg key)) (result nil))
+          (dolist (x l1 result)
+            (unless (%in-set-p x l2 table mode fn neg key) (push x result)))))))
 (defun nset-difference (l1 l2 &key key test test-not)
   (set-difference l1 l2 :key key :test test :test-not test-not))
 
 (defun set-exclusive-or (l1 l2 &key key test test-not)
   (append (set-difference l1 l2 :key key :test test :test-not test-not)
-          (set-difference l2 l1 :key key
-                                :test (if test (lambda (a b) (funcall test b a)) nil)
-                                :test-not (if test-not (lambda (a b) (funcall test-not b a)) nil))))
+          (if (and (null test-not)
+                   (or (null test) (%member-eql test (list 'eq 'eql 'equal 'equalp #'eq #'eql #'equal #'equalp))))
+              ;; a symmetric test: the order of its arguments does not matter
+              (set-difference l2 l1 :key key :test test)
+              (set-difference l2 l1 :key key
+                                    :test (if test (lambda (a b) (funcall test b a)) nil)
+                                    :test-not (if test-not (lambda (a b) (funcall test-not b a)) nil)))))
 (defun nset-exclusive-or (l1 l2 &key key test test-not)
   (set-exclusive-or l1 l2 :key key :test test :test-not test-not))
 
 (defun subsetp (l1 l2 &key key test test-not)
-  (dolist (x l1 t)
-    (unless (member (%with-key ((%key-fn key) key) x) l2 :key key :test test :test-not test-not)
-      (return nil))))
+  (%with-test (mode fn neg) (test test-not)
+    (let* ((key (%keyfn key)) (table (%set-table l1 l2 mode fn neg key)))
+      (dolist (x l1 t)
+        (unless (%in-set-p x l2 table mode fn neg key) (return nil))))))
 
 (defun subst (new old tree &key key test test-not)
   (let ((tf (%test-fn test test-not)) (kf (%key-fn key)))
@@ -369,20 +424,32 @@
     (cdr head)))
 
 (defun %mapn (f lists collect on-tails)
-  (let* ((head (cons nil nil)) (tail head) (ls (copy-list lists)))
+  (let* ((head (cons nil nil)) (tail head) (ls (copy-list lists))
+         ;; the argument list is made once and refilled (APPLY does not keep it)
+         (args (if on-tails ls (copy-list lists))))
     (do () ((dolist (l ls nil) (when (%endp l) (return t))))
-      (let ((v (apply f (if on-tails ls (mapcar #'car ls)))))
+      (unless on-tails
+        (do ((a args (cdr a)) (x ls (cdr x))) ((null x)) (%setcar a (car (car x)))))
+      (let ((v (apply f args)))
         (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c))))
       (do ((x ls (cdr x))) ((null x)) (%setcar x (cdr (car x)))))
     (cdr head)))
 
+(defun %map2 (f l1 l2 collect)
+  "F on the elements of two lists in step, without an argument list."
+  (let* ((head (cons nil nil)) (tail head))
+    (do ((a l1 (cdr a)) (b l2 (cdr b))) ((or (%endp a) (%endp b)) (cdr head))
+      (let ((v (funcall f (car a) (car b))))
+        (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c)))))))
+
 (defun mapcar (f list &rest more)
-  (if (null more)
-      (let* ((head (cons nil nil)) (tail head))
-        (do ((l list (cdr l))) ((%endp l) (cdr head))
-          (let ((c (cons (funcall f (car l)) nil)))
-            (%setcdr tail c) (setq tail c))))
-      (%mapn f (cons list more) t nil)))
+  (cond ((null more)
+         (let* ((head (cons nil nil)) (tail head))
+           (do ((l list (cdr l))) ((%endp l) (cdr head))
+             (let ((c (cons (funcall f (car l)) nil)))
+               (%setcdr tail c) (setq tail c)))))
+        ((null (cdr more)) (%map2 f list (car more) t))
+        (t (%mapn f (cons list more) t nil))))
 (define-compiler-macro mapcar (&whole form f list &rest more)
   ;; one list: a loop, so that a lambda or #'name is called directly
   (if more form
@@ -399,11 +466,20 @@
            (do ((,l ,l0 (cdr ,l))) ((%endp ,l) ,l0) (funcall ,fn (car ,l)))))))
 
 (defun mapc (f list &rest more)
-  (if (null more)
-      (do ((l list (cdr l))) ((%endp l) list) (funcall f (car l)))
-      (progn (%mapn f (cons list more) nil nil) list)))
+  (cond ((null more) (do ((l list (cdr l))) ((%endp l) list) (funcall f (car l))))
+        ((null (cdr more)) (%map2 f list (car more) nil) list)
+        (t (%mapn f (cons list more) nil nil) list)))
 (defun mapcan (f list &rest more)
-  (apply #'nconc (apply #'mapcar f list more)))
+  (if (cdr more)
+      (apply #'nconc (apply #'mapcar f list more))
+      ;; one or two lists: each result is linked to the last cons so far
+      (let* ((head (cons nil nil)) (tail head) (two (not (null more))) (l2 (car more)))
+        (do ((l list (cdr l))) ((or (%endp l) (and two (%endp l2))) (cdr head))
+          (let ((r (if two (funcall f (car l) (car l2)) (funcall f (car l)))))
+            (when two (setq l2 (cdr l2)))
+            (when r
+              (%setcdr tail r)
+              (when (consp r) (setq tail (last r)))))))))
 (defun maplist (f list &rest more) (%mapn f (cons list more) t t))
 (defun mapl (f list &rest more) (%mapn f (cons list more) nil t) list)
 (defun mapcon (f list &rest more) (apply #'nconc (apply #'maplist f list more)))
