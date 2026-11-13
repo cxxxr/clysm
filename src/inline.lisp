@@ -28,8 +28,10 @@
                                           *inline-max-declared-nodes* *inline-max-nodes*)))
                      (labels ((walk (node)
                                 (when (or (> (incf n) limit)
-                                          (member (car node) '(:lambda :flet :labels :ltv :defun :lcall
+                                          (member (car node) '(:lambda :flet :labels :defun :lcall
                                                                :symtab :catch :unwind-protect :progv))
+                                          ;; (load-time-value (find-class 'x)) may be copied
+                                          (and (eq (car node) :ltv) (not (struct-class-node-name node)))
                                           (and (eq (car node) :call) (eq (second node) sym)))
                                   (return-from inlinable-lam-p
                                     (setf (gethash lam *inline-candidates*) nil)))
@@ -49,6 +51,7 @@
            (c (n) (copy-node-for-inline n map)))
     (case (car node)
       ((:const :sref :fref) node)
+      (:ltv `(:ltv ,(c (second node))))
       (:lref `(:lref ,(m (second node))))
       (:lset `(:lset ,(m (second node)) ,(c (third node))))
       (:sset `(:sset ,(second node) ,(c (third node))))
