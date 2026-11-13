@@ -1,7 +1,7 @@
-;;;; Every name that the table "What of CAPI and CLIM is here" of the README
+;;;; Every name that the table "What of CAPI and CLIM is here" of docs/INTERNALS.md
 ;;;; gives for this framework is an exported symbol of the UI package (or a
 ;;;; name of Common Lisp) that names a class, a function, a macro or a variable.  tools/test-ui.sh takes
-;;;; the names from the README (*README-NAMES*) and compares the output with
+;;;; the names from docs/INTERNALS.md (*README-NAMES*) and compares the output with
 ;;;; names.expected.
 
 (in-package "CL-USER")

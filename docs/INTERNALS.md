@@ -912,112 +912,96 @@ Limitations:
 
 ## Performance
 
-`tools/bench.sh [FILE]` runs a benchmark file on SBCL and on Clysm (Node.js)
-and prints the time ratio of each benchmark and their geometric mean. How fast
-a program is relative to SBCL depends on what it uses; one figure does not
-describe it. On an x86-64 machine with SBCL 2.6 and Node.js 24, compiling whole
-programs ahead of time (`bin/clysm run`), Clysm takes this many times as long
-as SBCL:
+Time relative to SBCL 2.6 on Node.js 24 (x86-64), measured by `tools/bench.sh
+FILE` (best of three runs per benchmark; whole programs compiled ahead of
+time unless noted):
 
-| File | Programs | Geometric mean | Range |
-|---|---|---|---|
-| `bench/suite.lisp` | 24 benchmarks the compiler was tuned on | 1.2 | 0.1 – 2.8 |
-| `bench/gabriel.lisp` | 10 Gabriel-style benchmarks, also tuned on | 1.1 | 0.8 – 1.7 |
-| `bench/holdout.lisp` | 17 programs written afterwards and not tuned on | 4.5 | 1.0 – 39 |
+| File | Programs | Geometric mean | Slowest | Fastest |
+|---|---|---|---|---|
+| `bench/suite.lisp` | 24, used for tuning | 0.94 | `b-bignum` 1.91 | `b-mandel` 0.08 |
+| `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
+| `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.79 | `l-babel` 2.92 | `l-alexandria-tests` 0.32 |
+| `bench/programs.lisp` | 63 more programs | 1.20 | `p-vector-push` 3.29 | `p-remove-duplicates` 0.03 |
 
-The first two files guided the optimization work, so their figures are the
-best case, not what an arbitrary program gets. `bench/holdout.lisp` mixes
-programs in ordinary style with ones that use features the first two files
-do not.
+Code loaded form by form into the image (`clysm script`, the REPL, `load`)
+against the same file compiled as a whole program (`MODE=script tools/bench.sh
+bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 
-* **About as fast as SBCL (1-2 times), sometimes faster**: fixnum and
-  double-float arithmetic, function calls and closures (direct, through
-  `funcall`, `labels`), lists, strings, simple vectors of type T, sorting,
-  `equal` and `eql` hash tables, structures, special variables, catch/throw,
-  `handler-case`/`handler-bind`/`restart-case` with conditions signalled a
-  known call away (see [Non-local exits](#non-local-exits-spec-wasm-eh)).
-  The holdout programs made of these (an n-body simulation, a small Lisp
-  interpreter, word counting, Dijkstra with a heap in an adjustable vector, a
-  symbolic simplifier) take 1.2-2.0 times as long as with SBCL.
-* **2-3 times**: generic function dispatch and `make-instance`, two-dimensional
-  arrays of type T, the reader and printer, `format` to streams, hash table
-  allocation, bignums, and integers between 2^29 and 2^62 (fixnums in SBCL,
-  boxed here).
-* **5-40 times**: what has not been optimized yet —
-  specialized arrays (bit vectors 39, `double-float` two-dimensional arrays
-  26, `(unsigned-byte 8)` and `fixnum` vectors 5-14); single floats and
-  complex numbers, which are always boxed (8-30); `call-next-method` with
-  arguments, which recomputes the applicable methods to check them (40; 5
-  without arguments), and `:before`/`:around` methods (4-6); sequence
-  functions outside the fast paths, such as `remove-duplicates`, which is
-  quadratic; `format` directives other than `~A ~S ~D ~%`, such as `~F` and
-  `~{~}` (5-10); a non-local exit that has to be a Wasm exception: from a
-  closure called by a library function, or to a catcher several ordinary
-  calls up (10 times SBCL's cost per exit, and more with the depth).
+The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
+fixed as whole features, and each fix was measured on programs written for
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
+5.2), `bench/control.lisp` (1.6; `v-go-closure` 66), `bench/io.lisp` (1.8;
+`i-file-roundtrip` 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
-Code loaded at the REPL or by `load` (and so libraries loaded with ASDF or
-Quicklisp) is compiled form by form, without the whole-program knowledge of
-`bin/clysm run`: `bench/suite.lisp` run with `bin/clysm script` takes about
-twice as long as with `bin/clysm run` (geometric mean; up to 12 times for
-two-dimensional arrays, catch/throw, structures and `make-instance`).
+What is not as fast as intended, and why:
 
-What makes the generated code fast:
+* **Code loaded into the image, single items.** The geometric mean is within
+  1.3, but `b-special` (2.7), `b-call` (1.9), `b-struct` (1.35) and `b-catch`
+  (1.3) are not. A call of a function with `&key` or `&rest` parameters
+  defined in another form goes through the function cell and a comparison of
+  the layout; `b-special` runs at 1.6 times the whole-program speed once the
+  form that defines it has returned but at 2.7 while that form is still
+  running (it also runs the benchmark), which is not understood yet.
+* **Libraries** are within 3 but close to it (`l-babel` 2.9, `l-ppcre-replace`
+  2.9, `l-split-sequence` 2.8): they are compiled to fasls file by file, where
+  calls between global functions are ordinary calls and small functions are
+  not copied into their callers.
+* **Exits from closures called by code the compiler does not see** (a
+  `return-from` or `go` out of a lambda passed to `maphash`, `map` or a user
+  function) are Wasm exceptions: about 90 ns plus 30 ns per frame, against
+  about 7 ns on SBCL (`v-go-closure`, `t-return-maphash`: 50–70 times).
+* **Generic functions**: dispatch on EQL specializers or on many classes at
+  one call site (4–5 times), `make-instance` with a class that is not a
+  constant (5), generic functions with `&optional`/`&key` (3).
+* **Integers between 2^29 and 2^63** are boxed when they are stored in data
+  structures or passed between functions (fixnums in SBCL); **bignums** have
+  28-bit digits (2–2.7 times); adjustable vectors grow by allocation of new
+  storage (`p-vector-push` 3.3); `equal` hash tables with string keys (2.4).
+* **Files**: octets cross to the host one call each (`i-file-roundtrip` 13).
 
-* **type inference** (`src/types.lisp`): before a function is compiled its
-  body is interpreted abstractly. Every lexical variable has a type at every
-  point (a set of kinds — fixnum/integer with a range, double-float split by
-  sign, cons, string, structure class… — that assignments update and tests
-  such as `(< i n)`, `(consp x)` or `(minusp x)` refine in each branch); loops
-  are iterated to a fixed point with widening, then narrowed. The types of
-  known functions' results are those of their bodies;
-* **unboxed representations** (`src/typed.lisp`): a variable whose values are
-  all doubles lives in an f64 local, one within 32 or 64 bits in an i32 or i64
-  local; arithmetic and comparisons on such values are single Wasm
-  instructions (float results that are infinite, NaN or an underflow are
-  redone by the generic function, which signals as before). Typed vector,
-  string, limb and structure accesses are inline without checks once the
-  object's type is known;
-* **specialized copies**: a direct call of a known function with fixnum or
-  double arguments calls a copy compiled for those argument types;
-* **inlining** (`src/inline.lisp`): calls of small known functions, of small
-  local functions and of lambdas bound to variables are replaced by copies of
-  their bodies before type inference;
-* fixnum arithmetic and comparisons inline on untyped values too, with i64
-  arithmetic for integers up to 64 bits; bignums of base 2^28 digits with
-  multiplication, division (Knuth D) and shifts as Wasm kernels;
-* `tagbody` loops compile to Wasm `loop`s and blocks (a `br_table` dispatch
-  only for jumps back from a later segment); checked casts test inline and
-  call the error function only on failure;
-* functions of required and `&optional` parameters, and of required and
-  `&rest` parameters, take them as Wasm parameters (callers build the rest
-  list); `&key` functions get their parameter slots as Wasm parameters too;
-* generic functions of one or two required parameters dispatch on the classes
-  of the arguments without an argument list and call a method function of the
-  arguments directly when the method does not use `call-next-method`; slot
-  readers and writers made by `defclass` access the slot at its location;
-  `make-instance` with a constant class and initarg keys uses a per-call-site
-  constructor;
-* `format` with a constant control string compiles to Lisp code (and so does
-  `formatter`): every directive with its parameters, `~{...~}` as a loop,
-  `~[...~]` as a `case`, `~^` as a local exit; only logical blocks
-  (`~<...~:>`) and strings with errors are interpreted, and so are control
-  strings that are not constants: they are parsed once and
-  cached; interpreter and compiled code call the same directive functions.
-  Integers are printed from a digit buffer; the shortest digits of single
-  floats, and of doubles that need at most 15, are computed with exact
-  double arithmetic (others by the host); a string output stream is a plain
-  buffer with a fill index, and `format nil`, `princ-to-string` and
-  `prin1-to-string` reuse one;
-* exits through `unwind-protect` within a function branch to the cleanup
-  instead of throwing; a `throw` to a `catch` of the same function is a
-  branch; `(catch 'tag (f ...))` calls a copy of the known function F in
-  which `(throw 'tag ...)` is a return; non-local exits of local functions,
-  of functions called under a catcher, of the signalling functions and of
-  `handler-bind` handlers are returns with the exit pending
-  (see [Non-local exits](#non-local-exits-spec-wasm-eh)).
+What makes the code fast:
 
-`tools/dump-func.lisp FILE NAME...` prints the Wasm instructions generated for
-functions (by name), which helps to see what a form compiles to.
+* **Type inference** (`src/types.lisp`) per function, flow-sensitive, with
+  integer ranges; loops are iterated to a fixed point and what the earlier
+  passes recorded outside a loop is undone. **Unboxed representations**
+  (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
+  floats, complex numbers of floats (two locals), references to specialized
+  vectors, two-dimensional arrays with their storage and dimensions in locals.
+* **Specialized arrays**: every upgraded element type (bit, the integer types
+  of 7 to 64 bits, single and double floats, characters) has its own Wasm
+  array type; `aref` on an array whose element type is known (from
+  `make-array` or a declaration) is inline with a bounds check, and the
+  generic function is only called to signal the error.
+* **Versions of a function**: a function with a loop or a recursive call
+  whose parameters are used as numbers tests its arguments on entry and
+  continues in a copy compiled for fixnums (or doubles). Small functions are
+  copied into their callers — in the image with a test that the function has
+  not been redefined.
+* **Calls**: direct calls between the functions of a program; keyword
+  arguments passed in fixed slots (in the image too, checked against the
+  layout of the function's current definition); structure accessors inline.
+* **CLOS**: generic functions of one to four required arguments dispatch and
+  combine methods without argument lists; `call-next-method` is a direct
+  call; call sites cache the functions for the classes of their arguments
+  and read slots of readers inline; `slot-value` with a constant name and
+  `make-instance` with a constant class use caches at the call site.
+* **Non-local exits** that stay within the functions the compiler sees
+  (`handler-case`, `restart-case`, `catch`/`throw`, `return-from` out of
+  local functions, `error` under a handler one call away) are returns with a
+  pending exit, not Wasm exceptions; special bindings are inline.
+* **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
+  in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
+  irrational functions as primitives; bignum kernels in Wasm.
+* **Library**: sequence functions with one implementation per family and
+  direct loops over lists, simple vectors and strings; hash tables for
+  `remove-duplicates` and the set functions; `typep` with a constant type,
+  `format` with a constant control string (all directives), `coerce` and
+  `parse-integer` compiled at the call site; string streams as buffers.
+
+`tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
+image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
+NAME...` prints the Wasm generated for functions.
 
 ## Tests
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Test the UI framework (ui/) on its S-expression backend: tests/ui/ui.lisp
 # (components, state, commands), tests/ui/pane.lisp (panes, presentations,
-# dialogs...), tests/ui/names.lisp (the names the README gives exist) and
+# dialogs...), tests/ui/names.lisp (the names docs/INTERNALS.md gives exist) and
 # the examples of the guide (docs/ui/guide) are compiled ahead of time, and loaded by the REPL image (which
 # compiles every form at run time); the outputs are compared with
 # tests/ui/NAME.expected.
@@ -30,11 +30,11 @@ run() {
   name="$1"; shift
   run_files "$name" "$@" "tests/ui/$name.lisp"
 }
-# the names that the README's table of CAPI and CLIM gives for this framework:
+# the names that the table of CAPI and CLIM in docs/INTERNALS.md gives for this framework:
 # what is in backquotes in the right column — and in the left one where the
 # right one says "the same" — and is a plain symbol (not a keyword, not T)
 readme_names() {
-  sed -n '/^### What of CAPI and CLIM is here/,/^### Commands/p' README.md | grep '^|' | grep -v '^| CAPI\|^| CLIM\|^|---' \
+  sed -n '/^### What of CAPI and CLIM is here/,/^### Commands/p' docs/INTERNALS.md | grep '^|' | grep -v '^| CAPI\|^| CLIM\|^|---' \
     | awk -F'|' '{ if ($3 ~ /the same/) print $2 " " $3; else print $3 }' \
     | grep -o '`[^`]*`' | tr -d '`' | tr ' /' '\n\n' | sed 's/^ui://' \
     | grep -x '[a-z*][a-z0-9*-]*[a-z0-9*]' | grep -v -x 'nil' | sort -u
