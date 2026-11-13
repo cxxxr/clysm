@@ -3,6 +3,8 @@
 ;;;; The whole application is Lisp compiled to WebAssembly: it builds the DOM,
 ;;;; handles events and saves to localStorage through the JS package.
 ;;;; Build with examples/todo/build.sh and open build/todo/index.html.
+;;;; The same program is a desktop app in examples/todo/desktop (Electron),
+;;;; where it saves to a file and answers the commands of the menu.
 
 ;;; ------------------------------------------------------------------
 ;;; A small DOM layer
@@ -70,32 +72,95 @@ handlers; CHILDREN are elements or strings (NIL is skipped)."
   (setf *todos* (remove id *todos* :key #'todo-id)))
 
 ;;; ------------------------------------------------------------------
-;;; Persistence (localStorage, as JSON)
+;;; Persistence, as JSON: in a file when the page runs in the desktop app
+;;; (examples/todo/desktop, which provides the global `desktop`), otherwise
+;;; in localStorage
 
 (defparameter +storage-key+ "clysm-todo")
 
 (defun storage () (js:global "localStorage"))
 
+(defun desktop ()
+  "The desktop app's API (see desktop/preload.js), or NIL in a browser."
+  (js:global "desktop"))
+
+(defvar *file* nil "In the desktop app, the path of the list file (NIL: none).")
+
+(defun todos-json ()
+  (js:call (js:global "JSON") "stringify"
+           (js:to-js (mapcar (lambda (todo)
+                               (js:object "text" (todo-text todo)
+                                          "done" (js-bool (todo-done todo))))
+                             *todos*))))
+
+(defun parse-todos (json)
+  "The tasks of a saved list as (TEXT . DONE) pairs; an error unless JSON is one."
+  (let ((array (js:call (js:global "JSON") "parse" json)))
+    (unless (js:call (js:global "Array") "isArray" array)
+      (error "not a TODO list"))
+    (loop for i below (js:get array "length")
+          for item = (js:get array i)
+          for text = (and (js:js-value-p item) (js:get item "text"))
+          unless (stringp text) do (error "not a TODO list")
+          collect (cons text (eq (js:get item "done") t)))))
+
+(defun set-todos (pairs)
+  (setf *todos* nil *next-id* 1 *editing* nil)
+  (loop for (text . done) in pairs
+        do (add-todo text)
+           (setf (todo-done (car (last *todos*))) done)))
+
 (defun save ()
-  (ignore-errors
-   (js:call (storage) "setItem" +storage-key+
-            (js:call (js:global "JSON") "stringify"
-                     (js:to-js (mapcar (lambda (todo)
-                                         (js:object "text" (todo-text todo)
-                                                    "done" (js-bool (todo-done todo))))
-                                       *todos*))))))
+  (let ((json (todos-json)))
+    (if (desktop)
+        (when *file* (js:call (desktop) "save" *file* json))
+        (ignore-errors (js:call (storage) "setItem" +storage-key+ json)))))
+
+(defun alert (message) (js:call (js:global) "alert" message))
 
 (defun load-todos ()
-  (ignore-errors
-   (let ((json (js:call (storage) "getItem" +storage-key+)))
-     (when (stringp json)
-       (let* ((array (js:call (js:global "JSON") "parse" json))
-              (n (js:get array "length")))
-         (dotimes (i n)
-           (let ((item (js:get array i)))
-             (add-todo (js:get item "text"))
-             (setf (todo-done (car (last *todos*)))
-                   (eq (js:get item "done") t)))))))))
+  (if (desktop)
+      (let* ((last (js:call (desktop) "load"))
+             (text (js:get last "text")))
+        (setf *file* (js:get last "path"))
+        (when (stringp text)
+          (handler-case (set-todos (parse-todos text))
+            (error ()
+              (alert (format nil "~A を読み込めませんでした。" *file*))
+              ;; leave the file alone
+              (setf *file* nil)))))
+      (let ((json (ignore-errors (js:call (storage) "getItem" +storage-key+))))
+        (when (stringp json)
+          (ignore-errors (set-todos (parse-todos json)))))))
+
+;;; the commands of the desktop app's menu
+
+(defun use-file (path)
+  (setf *file* path)
+  (js:call (desktop) "setFile" path)
+  (render))
+
+(defun menu-command (command)
+  (cond ((string= command "new")
+         (let ((path (js:call (desktop) "chooseFile" "新しいリスト")))
+           (when (stringp path)
+             (set-todos nil)
+             (use-file path))))
+        ((string= command "open")
+         (let ((file (js:call (desktop) "open")))
+           (when (js:js-value-p file)
+             (let ((path (js:get file "path")) (text (js:get file "text")))
+               (handler-case (set-todos (parse-todos text))
+                 (error ()
+                   (alert (format nil "~A はTODOリストではありません。" path))
+                   (return-from menu-command)))
+               (use-file path)))))
+        ((string= command "save-as")
+         (let ((path (js:call (desktop) "chooseFile" "名前を付けて保存")))
+           (when (stringp path) (use-file path))))))
+
+(defun file-name (path)
+  (subseq path (1+ (or (position-if (lambda (c) (member c '(#\/ #\\))) path :from-end t) -1))))
 
 ;;; ------------------------------------------------------------------
 ;;; Rendering
@@ -166,6 +231,13 @@ handlers; CHILDREN are elements or strings (NIL is skipped)."
               (:done "完了したタスクはありません")))
     (js:set ($ "#footer") "hidden" (js-bool (null *todos*)))
     (js:set ($ "#count") "textContent" (format nil "残り ~D 件" active))
+    (js:set *document* "title"
+            (format nil "~@[~A — ~]TODO（残り ~D 件）" (and *file* (file-name *file*)) active))
+    (when (desktop)
+      (js:set ($ "#note") "textContent"
+              (if *file*
+                  (format nil "ダブルクリックで編集 ・ 保存先: ~A" *file*)
+                  "ダブルクリックで編集 ・ 保存先がありません（ファイル → 名前を付けて保存）")))
     (replace-children ($ "#filters")
                       (filter-button :all "すべて")
                       (filter-button :active "未完了")
@@ -201,6 +273,8 @@ handlers; CHILDREN are elements or strings (NIL is skipped)."
         (declare (ignore e))
         (setf *todos* (remove-if #'todo-done *todos*))
         (render)))
+  (when (desktop)
+    (js:call (desktop) "onMenu" #'menu-command))
   (load-todos)
   (render))
 

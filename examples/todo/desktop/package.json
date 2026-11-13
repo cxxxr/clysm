@@ -1,0 +1,14 @@
+{
+  "name": "clysm-todo",
+  "productName": "Clysm TODO",
+  "version": "0.1.0",
+  "description": "A TODO list written in Common Lisp, compiled to WebAssembly by Clysm",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  }
+}

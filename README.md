@@ -195,6 +195,18 @@ $ examples/todo/build.sh                    # build/todo/
 $ python3 -m http.server -d build/todo      # open http://localhost:8000/
 ```
 
+The same program is a desktop application with [Electron](https://www.electronjs.org/)
+(`examples/todo/desktop/`): it saves the list to a JSON file, and the menu
+creates, opens and saves lists with the native dialogs. `main.js` and
+`preload.js` give the page a small synchronous API (the global `desktop`) that
+`todo.lisp` calls through the `JS` package; in a browser, where it is absent,
+the program uses `localStorage`.
+
+```
+$ examples/todo/build-desktop.sh            # build/todo-desktop/, installs Electron with npm
+$ (cd build/todo-desktop && npm start)
+```
+
 ## ASDF
 
 ASDF 3.3.7 (the latest release, with a small port in `third_party/asdf/`) is bundled:
