@@ -467,7 +467,8 @@ for every instance, so it is meant for development."
               (let ((process (js:global "process")))
                 (and (js:js-value-p process) (js:call process "cwd"))))))
     (when (stringp cwd)
-      (setq *default-pathname-defaults* (pathname (concatenate 'string cwd "/"))))))
+      (setq *default-pathname-defaults*
+            (pathname (concatenate 'string cwd (if *windows-paths* "\\" "/")))))))
 
 ;;; ------------------------------------------------------------
 ;;; Host operating system interface (Node.js); used by UIOP/ASDF
@@ -481,6 +482,7 @@ for every instance, so it is meant for development."
   "Add the host operating system to *FEATURES* (CLHS 24.1.2.1.1)."
   (let* ((process (%node-process))
          (platform (and process (ignore-errors (js:get process "platform")))))
+    (when (equal platform "win32") (setq *windows-paths* t))
     (when (stringp platform)
       (dolist (f (cond ((string= platform "linux") '(:unix :linux))
                        ((string= platform "darwin") '(:unix :darwin :bsd))
@@ -515,6 +517,7 @@ when VALUE is NIL."
   "The host's working directory, as a string ending in a slash."
   (let* ((process (%node-process))
          (cwd (or *%cwd* (and process (ignore-errors (js:call process "cwd"))))))
+    (when (and (stringp cwd) *windows-paths*) (setq cwd (substitute #\/ #\\ cwd)))
     (if (stringp cwd)
         (if (and (> (length cwd) 0) (char= (char cwd (1- (length cwd))) #\/))
             cwd

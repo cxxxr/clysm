@@ -47,7 +47,43 @@
     (push (subseq s start) parts)
     (nreverse parts)))
 
+(defvar *windows-paths*
+  (let ((process (ignore-errors (js:global "process"))))
+    (and (js:js-value-p process) (equal (ignore-errors (js:get process "platform")) "win32")))
+  "True on a Windows host (Node.js's process.platform is win32): in
+namestrings a backslash is a slash, \"C:\" is the device \"C\", and
+\"//server/share\" (or \"\\\\server\\share\") the device of a UNC name.")
+
+(defun %windows-device (s)
+  "On a Windows host, the device at the start of the namestring S (whose
+backslashes are slashes) and the rest of S; otherwise NIL and S."
+  (cond ((not *windows-paths*) (values nil s))
+        ((and (>= (length s) 2) (char= (char s 1) #\:) (alpha-char-p (char s 0)))
+         (values (string (char-upcase (char s 0))) (subseq s 2)))
+        ((and (> (length s) 2) (char= (char s 0) #\/) (char= (char s 1) #\/)
+              (not (char= (char s 2) #\/)))
+         ;; //server/share/...: the device is "//server/share"
+         (let* ((server-end (position #\/ s :start 2))
+                (share-end (and server-end (position #\/ s :start (+ server-end 1)))))
+           (if server-end
+               (values (subseq s 0 (or share-end (length s))) (if share-end (subseq s share-end) "/"))
+               (values nil s))))
+        (t (values nil s))))
+
+(defun %device-prefix (device)
+  (cond ((not (stringp device)) "")
+        ((and (> (length device) 1) (char= (char device 0) #\/)) device)
+        (t (concatenate 'string device ":"))))
+
 (defun %parse-physical-namestring (s)
+  (multiple-value-bind (device s)
+      (%windows-device (if *windows-paths* (substitute #\/ #\\ s) s))
+    (let ((p (%parse-physical-namestring-1 s)))
+      (if device
+          (%make-pathname nil device (pathname-directory p) (pathname-name p) (pathname-type p) nil)
+          p))))
+
+(defun %parse-physical-namestring-1 (s)
   (let* ((slash (position #\/ s :from-end t))
          (dir-part (if slash (subseq s 0 (+ slash 1)) nil))
          (file (if slash (subseq s (+ slash 1)) s))
@@ -168,7 +204,8 @@
   (let ((p (pathname x)))
     (if (logical-pathname-p p)
         (%logical-namestring p)
-        (concatenate 'string (directory-namestring p) (file-namestring p)))))
+        (concatenate 'string (%device-prefix (pathname-device p))
+                     (directory-namestring p) (file-namestring p)))))
 
 (defun file-namestring (x)
   (let* ((p (pathname x)) (name (pathname-name p)) (type (pathname-type p)))
@@ -445,7 +482,9 @@ FILE-ERROR for wild pathnames."
     (when (wild-pathname-p path :directory)
       (error 'file-error :pathname path :format-control "wild directory in ~A"
                          :format-arguments (list (namestring path))))
-    (let* ((fs (%host-fs)) (dir (directory-namestring (%physical path)))
+    (let* ((fs (%host-fs))
+           (dir (let ((p (%physical path)))
+                  (concatenate 'string (%device-prefix (pathname-device p)) (directory-namestring p))))
            (existed (or (null fs) (equal dir "") (js:call fs "existsSync" dir))))
       (when (and fs (not existed))
         (js:call fs "mkdirSync" dir (js:object "recursive" t)))
@@ -513,7 +552,9 @@ strings, :UP and :BACK."
     (if (null fs) nil
         (let* ((dirs (if (consp dirspec)
                          (%expand-wild-directories fs (cdr dirspec)
-                                                   (if (eq (car dirspec) :absolute) "/" ""))
+                                                   (if (eq (car dirspec) :absolute)
+                                                       (concatenate 'string (%device-prefix (pathname-device pat)) "/")
+                                                       ""))
                          (list "")))
                (results nil))
           (dolist (dir dirs)

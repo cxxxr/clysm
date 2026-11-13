@@ -1022,6 +1022,12 @@ Limitations:
 * No threads and no first-class continuations (not required by the standard);
   computations of `js:async-function` wait concurrently, each with its own
   dynamic bindings.
+* Pathnames are Unix namestrings; on a Windows host (Node.js's
+  `process.platform` is `win32`, `sys::*windows-paths*`) a backslash in a
+  namestring is a slash, `C:` is the device `"C"` and `\\server\share` the
+  device `"//server/share"` of a UNC name (so the clones of a WSL
+  distribution, `\\wsl$\Ubuntu\...`, have pathnames too); namestrings are
+  written with slashes, which Node.js takes on Windows.
 * Character names are SBCL's; names above Latin-1 are read on first use from
   `data/unicode-names.txt` (`tools/gen-unicode-names.sh`).
 

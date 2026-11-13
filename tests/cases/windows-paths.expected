@@ -1,0 +1,15 @@
+
+("C:\\Users\\me\\src\\map.lisp" "C" (:ABSOLUTE "Users" "me" "src") "map" "lisp"
+ "C:/Users/me/src/map.lisp") 
+("c:/work/" "C" (:ABSOLUTE "work") NIL NIL "C:/work/") 
+("D:relative\\x.txt" "D" (:RELATIVE "relative") "x" "txt" "D:relative/x.txt") 
+("\\\\wsl$\\Ubuntu\\home\\me\\repo\\" "//wsl$/Ubuntu"
+ (:ABSOLUTE "home" "me" "repo") NIL NIL "//wsl$/Ubuntu/home/me/repo/") 
+("//server/share/a/b.c" "//server/share" (:ABSOLUTE "a") "b" "c"
+ "//server/share/a/b.c") 
+("/no/device.txt" NIL (:ABSOLUTE "no") "device" "txt" "/no/device.txt") 
+("plain.txt" NIL NIL "plain" "txt" "plain.txt") 
+"C:/Users/me/lib/x.lisp" 
+"C:/etc/hosts" 
+"//wsl$/Ubuntu/home/y.txt" 
+(NIL "C:/x") 
