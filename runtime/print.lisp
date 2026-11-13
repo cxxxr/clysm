@@ -46,7 +46,7 @@
 ;;; entry points
 ;;; ------------------------------------------------------------
 
-(defun write (object &key (stream nil) (escape *print-escape*) (radix *print-radix*)
+(defun %write-with-keys (object &key (stream nil) (escape *print-escape*) (radix *print-radix*)
                           (base *print-base*) (circle *print-circle*) (pretty *print-pretty*)
                           (level *print-level*) (length *print-length*) (case *print-case*)
                           (gensym *print-gensym*) (array *print-array*) (readably *print-readably*)
@@ -60,10 +60,59 @@
     (output-object object (%output-stream stream))
     object))
 
+(defun write (object &rest keys)
+  (cond ((null keys) (output-object object *standard-output*) object)
+        ((and (eq (car keys) :stream) (consp (cdr keys)) (null (cddr keys)))
+         (output-object object (%output-stream (cadr keys)))
+         object)
+        (t (apply #'%write-with-keys object keys))))
+
+;;; WRITE and WRITE-TO-STRING with literal keywords bind only the printer
+;;; variables that are given
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %write-key-variable (key)
+    (case key
+      (:escape '*print-escape*) (:radix '*print-radix*) (:base '*print-base*)
+      (:circle '*print-circle*) (:pretty '*print-pretty*) (:level '*print-level*)
+      (:length '*print-length*) (:case '*print-case*) (:gensym '*print-gensym*)
+      (:array '*print-array*) (:readably '*print-readably*)
+      (:right-margin '*print-right-margin*) (:lines '*print-lines*)
+      (:miser-width '*print-miser-width*) (:pprint-dispatch '*print-pprint-dispatch*)
+      (t nil)))
+  (defun %write-keys-expansion (keys allow-stream)
+    "For a WRITE keyword list with literal, distinct keywords: (values
+temporaries-bindings special-bindings stream-form), else NIL."
+    (let ((temps nil) (specials nil) (stream nil) (seen nil))
+      (do ((l keys (cddr l))) ((null l) (values (nreverse temps) (nreverse specials) stream t))
+        (let ((key (car l)))
+          (unless (and (consp (cdr l)) (keywordp key) (not (member key seen))
+                       (or (%write-key-variable key) (and allow-stream (eq key :stream))))
+            (return nil))
+          (push key seen)
+          (let ((g (gensym "V")))
+            (push (list g (cadr l)) temps)
+            (if (eq key :stream) (setq stream g) (push (list (%write-key-variable key) g) specials))))))))
+
+(define-compiler-macro write (&whole form object &rest keys)
+  (multiple-value-bind (temps specials stream ok) (%write-keys-expansion keys t)
+    (if (not ok)
+        form
+        (let ((o (gensym "OBJECT")))
+          `(let* ((,o ,object) ,@temps)
+             (let ,specials
+               (output-object ,o (%output-stream ,stream)))
+             ,o)))))
+
 (defun prin1 (object &optional stream)
-  (let ((*print-escape* t)) (output-object object (%output-stream stream))) object)
+  (if *print-escape*
+      (output-object object (%output-stream stream))
+      (let ((*print-escape* t)) (output-object object (%output-stream stream))))
+  object)
 (defun princ (object &optional stream)
-  (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream))) object)
+  (if (or *print-escape* *print-readably*)
+      (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream)))
+      (output-object object (%output-stream stream)))
+  object)
 (defun print (object &optional stream)
   (let ((s (%output-stream stream)))
     (terpri s) (prin1 object s) (write-char #\Space s) object))
@@ -72,9 +121,33 @@
     (terpri s) (output-object object s) (values)))
 
 (defun write-to-string (object &rest keys)
-  (with-output-to-string (s) (apply #'write object :stream s keys)))
-(defun prin1-to-string (object) (with-output-to-string (s) (prin1 object s)))
-(defun princ-to-string (object) (with-output-to-string (s) (princ object s)))
+  (let ((s (%scratch-string-stream)))
+    (if keys
+        (apply #'%write-with-keys object :stream s keys)
+        (output-object object s))
+    (%scratch-string-result s)))
+
+(define-compiler-macro write-to-string (&whole form object &rest keys)
+  (multiple-value-bind (temps specials stream ok) (%write-keys-expansion keys nil)
+    (declare (ignore stream))
+    (if (not ok)
+        form
+        (let ((o (gensym "OBJECT")) (s (gensym "STREAM")))
+          `(let* ((,o ,object) ,@temps (,s (%scratch-string-stream)))
+             (let ,specials
+               (output-object ,o ,s))
+             (%scratch-string-result ,s))))))
+
+(defun prin1-to-string (object)
+  (let ((s (%scratch-string-stream)))
+    (prin1 object s)
+    (%scratch-string-result s)))
+(defun princ-to-string (object)
+  (if (and (%simple-string-p object) (not (and *print-pretty* (%ppd-user-entries-p))))
+      (%simple-substring object 0 (%string-length object))
+      (let ((s (%scratch-string-stream)))
+        (princ object s)
+        (%scratch-string-result s))))
 
 ;;; compatibility for other runtime files
 (defun %write-object (x stream) (output-object x stream))
@@ -159,8 +232,16 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
       (let ((e (car l)))
         (unless (or (numberp e) (characterp e) (symbolp e) (stringp e)) (return nil))))))
 
+(defun %ppd-user-entries-p ()
+  "True when the current pprint dispatch table has entries made by the user."
+  (let ((table *print-pprint-dispatch*))
+    (and (pprint-dispatch-table-p table) (pprint-dispatch-table-entries table) t)))
+
 (defun %print-dispatched (x stream)
-  (if *print-pretty*
+  ;; only conses and arrays other than strings have standard pretty printing
+  ;; functions
+  (if (and *print-pretty*
+           (or (consp x) (and (arrayp x) (not (%simple-string-p x))) (%ppd-user-entries-p)))
       (let ((fn (%pprint-dispatch-function x)))
         (cond ((null fn) (output-ugly-object x stream))
               ((and (consp x) (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call))
@@ -168,9 +249,9 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
                     (%flat-atom-list-p x))
                ;; when it fits on the line, the pretty printer prints such a
                ;; list as the plain printer does
-               (let ((str (let ((o (make-string-output-stream)))
+               (let ((str (let ((o (%scratch-string-stream)))
                             (output-ugly-object x o)
-                            (get-output-stream-string o))))
+                            (%scratch-string-result o))))
                  (if (and (< (+ (or (%stream-column stream) 0) (length str)) (or *print-right-margin* 80))
                           (not (find #\Newline str)))
                      (write-string str stream)
@@ -222,7 +303,77 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
 ;;; numbers
 ;;; ------------------------------------------------------------
 
-(defun %write-decimal (n stream) (write-string (%integer-to-string n 10) stream))
+;;; Digits are made at the end of a scratch buffer and copied to the stream
+;;; at once (nothing else runs between the two steps).
+(defvar *%digit-buffer* (%make-string 80 #\0))
+
+(defun %fixnum-digits (n base buf i)
+  "Store the digits of the nonnegative fixnum N in BASE into the simple
+string BUF, ending before index I; returns the index of the first digit."
+  (declare (fixnum n base i))
+  (if (eql base 10)
+      (loop
+        (let ((q (%fxtruncate n 10)))
+          (declare (fixnum q))
+          (setq i (- i 1))
+          (%set-schar buf i (code-char (+ 48 (- n (* q 10)))))
+          (when (eql q 0) (return i))
+          (setq n q)))
+      (loop
+        (let* ((q (%fxtruncate n base)) (d (- n (* q base))))
+          (declare (fixnum q d))
+          (setq i (- i 1))
+          (%set-schar buf i (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
+          (when (eql q 0) (return i))
+          (setq n q)))))
+
+(defun %fixnum-digits-padded (n buf i width)
+  "Like %FIXNUM-DIGITS in base 10, with leading zeros up to WIDTH digits."
+  (declare (fixnum n i width))
+  (let ((start (- i width)))
+    (declare (fixnum start))
+    (setq i (%fixnum-digits n 10 buf i))
+    (do () ((<= i start) i)
+      (setq i (- i 1))
+      (%set-schar buf i #\0))))
+
+(defun %integer-digits (n base buf)
+  "Store the digits of the magnitude of the integer N in BASE at the end of
+the scratch buffer BUF and return the index of the first one, or NIL when N
+is too large for the buffer (it has more than 62 bits)."
+  (let ((end (%string-length buf)))
+    (cond ((and (fixnump n) (not (eql n most-negative-fixnum)))
+           (%fixnum-digits (if (< n 0) (- n) n) base buf end))
+          ((and (eql base 10) (< (integer-length n) 63))
+           ;; chunks of eight decimal digits, which are fixnums
+           (let ((x (abs n)) (i end))
+             (loop
+               (when (fixnump x) (return (%fixnum-digits x 10 buf i)))
+               (multiple-value-bind (q r) (truncate x 100000000)
+                 (setq i (%fixnum-digits-padded r buf i 8))
+                 (setq x q)))))
+          (t nil))))
+
+(defun %write-integer-digits (n base stream)
+  "Write the integer N in BASE (with a minus sign when negative)."
+  (let* ((buf *%digit-buffer*) (i (%integer-digits n base buf)))
+    (if i
+        (progn
+          (when (< n 0) (setq i (- i 1)) (%set-schar buf i #\-))
+          (%stream-write-scratch stream buf i (%string-length buf)))
+        (%stream-write-simple-string-whole stream (%integer-to-string n base)))))
+
+(defun %stream-write-scratch (stream buf start end)
+  "Write the characters START..END of a scratch buffer.  Streams that may
+run other code while they take the characters get a copy."
+  (case (stream-kind stream)
+    ((:string-out :string-fp :fd-out :file) (%stream-write-simple-string stream buf start end))
+    (t (%stream-write-simple-string stream (%simple-substring buf start end) 0 (- end start)))))
+
+(defun %stream-write-simple-string-whole (stream string)
+  (%stream-write-simple-string stream string 0 (%string-length string)))
+
+(defun %write-decimal (n stream) (%write-integer-digits n 10 stream))
 
 (defun %write-radix-prefix (base stream)
   (case base
@@ -233,9 +384,12 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
 
 (defun %write-integer (n stream)
   (let ((base *print-base*))
-    (when (and *print-radix* (/= base 10)) (%write-radix-prefix base stream))
-    (write-string (%integer-to-string n base) stream)
-    (when (and *print-radix* (= base 10)) (write-char #\. stream))))
+    (if *print-radix*
+        (progn
+          (when (/= base 10) (%write-radix-prefix base stream))
+          (%write-integer-digits n base stream)
+          (when (= base 10) (write-char #\. stream)))
+        (%write-integer-digits n base stream))))
 
 (defun %write-number (x stream)
   (cond ((integerp x) (%write-integer x stream))
@@ -252,29 +406,41 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
          (%write-number (%complex-imag x) stream)
          (write-char #\) stream))))
 
-(defun %float-digits-and-exponent (x)
-  "Returns (values digit-string exponent negative-p) with x = 0.d1d2.. * 10^exponent"
+(defvar *%float-digit-buffer* (%make-string 40 #\0))
+
+(defun %float-digits-into (x digits)
+  "Store the shortest digits that identify the finite float X in the simple
+string DIGITS; returns (values number-of-digits exponent negative-p) with
+|x| = 0.d1d2.. * 10^exponent."
   (let* ((single (%single-float-p x))
          (n (%float-to-chars (%to-double x) (if single 1 0)))
          (neg (and (> n 0) (char= (%host-char 0) #\-)))
-         (start (if neg 1 0))
-         (digits (%make-string n #\0)) (nd 0) (i start) (expo 0) (eneg nil))
-    (declare (fixnum n start nd i expo))
+         (nd 0) (i (if neg 1 0)) (expo 0) (eneg nil))
+    (declare (fixnum n nd i expo))
     ;; mantissa digits up to the exponent marker, skipping the point
-    (do () ((or (>= i n) (char= (%host-char i) #\e)))
+    (loop
+      (when (>= i n) (return))
       (let ((c (%host-char i)))
+        (when (char= c #\e) (return))
         (unless (char= c #\.) (%set-schar digits nd c) (setq nd (+ nd 1))))
       (setq i (+ i 1)))
     ;; the exponent: e+N or e-N
     (setq i (+ i 1))
     (when (< i n)
-      (cond ((char= (%host-char i) #\-) (setq eneg t i (+ i 1)))
-            ((char= (%host-char i) #\+) (setq i (+ i 1)))))
+      (let ((c (%host-char i)))
+        (cond ((char= c #\-) (setq eneg t i (+ i 1)))
+              ((char= c #\+) (setq i (+ i 1))))))
     (do () ((>= i n)) (setq expo (+ (* expo 10) (- (char-code (%host-char i)) 48)) i (+ i 1)))
     (when eneg (setq expo (- expo)))
     ;; strip trailing zeros (keep at least one digit)
     (do () ((or (<= nd 1) (char/= (%schar digits (- nd 1)) #\0))) (setq nd (- nd 1)))
-    (values (subseq digits 0 nd) (+ expo 1) neg)))
+    (values nd (+ expo 1) neg)))
+
+(defun %float-digits-and-exponent (x)
+  "Returns (values digit-string exponent negative-p) with x = 0.d1d2.. * 10^exponent"
+  (let ((buf (%make-string 24 #\0)))
+    (multiple-value-bind (nd e neg) (%float-digits-into x buf)
+      (values (%simple-substring buf 0 nd) e neg))))
 
 (defun %write-float (x stream)
   (let ((d (%to-double x)))
@@ -304,32 +470,48 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
         (when (= (%double-sign (%to-double x)) 1) (write-char #\- stream))
         (write-string "0.0" stream)
         (let ((m (%float-exponent-marker x))) (when m (write-string m stream) (write-char #\0 stream))))
-      (multiple-value-bind (digits e neg) (%float-digits-and-exponent x)
-        (when neg (write-char #\- stream))
-        (let ((marker (%float-exponent-marker x))
-              (nd (length digits)))
-          (if (and (> e -3) (<= e 7))
-              ;; fixed notation: value = 0.digits * 10^e
-              (progn
-                (cond ((<= e 0)
-                       (write-string "0." stream)
-                       (dotimes (i (- e)) (write-char #\0 stream))
-                       (write-string digits stream))
-                      ((>= e nd)
-                       (write-string digits stream)
-                       (dotimes (i (- e nd)) (write-char #\0 stream))
-                       (write-string ".0" stream))
-                      (t (write-string (subseq digits 0 e) stream)
-                         (write-char #\. stream)
-                         (write-string (subseq digits e) stream)))
-                (when marker (write-string marker stream) (write-char #\0 stream)))
-              ;; exponential: d.ddd e (e-1)
-              (progn
-                (write-char (char digits 0) stream)
-                (write-char #\. stream)
-                (if (> nd 1) (write-string (subseq digits 1) stream) (write-char #\0 stream))
-                (write-string (or marker "e") stream)
-                (%write-decimal (- e 1) stream)))))))
+      ;; the text is put together in a scratch buffer: digits at 40.., text at 0..
+      (let ((buf *%digit-buffer*) (o 0))
+        (declare (fixnum o))
+        (multiple-value-bind (nd e neg) (%float-digits-into x *%float-digit-buffer*)
+          (declare (fixnum nd e))
+          (let ((digits *%float-digit-buffer*)
+                (marker (%float-exponent-marker x)))
+            (macrolet ((put (c) `(progn (%set-schar buf o ,c) (setq o (+ o 1))))
+                       (put-digits (start end)
+                         `(let ((start ,start) (end ,end))
+                            (declare (fixnum start end))
+                            (%string-copy buf o digits start (- end start))
+                            (setq o (+ o (- end start))))))
+              (when neg (put #\-))
+              (if (and (> e -3) (<= e 7))
+                  ;; fixed notation: value = 0.digits * 10^e
+                  (progn
+                    (cond ((<= e 0)
+                           (put #\0) (put #\.)
+                           (dotimes (i (- e)) (put #\0))
+                           (put-digits 0 nd))
+                          ((>= e nd)
+                           (put-digits 0 nd)
+                           (dotimes (i (- e nd)) (put #\0))
+                           (put #\.) (put #\0))
+                          (t (put-digits 0 e)
+                             (put #\.)
+                             (put-digits e nd)))
+                    (when marker (put (%schar marker 0)) (put #\0)))
+                  ;; exponential: d.ddd e (e-1)
+                  (let ((ex (- e 1)))
+                    (declare (fixnum ex))
+                    (put-digits 0 1)
+                    (put #\.)
+                    (if (> nd 1) (put-digits 1 nd) (put #\0))
+                    (put (if marker (%schar marker 0) #\e))
+                    (when (< ex 0) (put #\-) (setq ex (- ex)))
+                    (let* ((end (+ o 4)) (i (%fixnum-digits ex 10 buf end)))
+                      (declare (fixnum end i))
+                      (%string-copy buf o buf i (- end i))
+                      (setq o (+ o (- end i))))))
+              (%stream-write-scratch stream buf 0 o)))))))
 
 ;;; ------------------------------------------------------------
 ;;; characters and strings
@@ -345,13 +527,26 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
 
 (defun %write-string-object (s stream)
   (if (or *print-escape* *print-readably*)
-      (progn
-        (write-char #\" stream)
-        (dotimes (i (length s))
-          (let ((c (char s i)))
-            (when (or (char= c #\") (char= c #\\)) (write-char #\\ stream))
-            (write-char c stream)))
-        (write-char #\" stream))
+      (if (%simple-string-p s)
+          ;; the parts between characters to escape are written at once
+          (let ((n (%string-length s)) (start 0))
+            (declare (fixnum n start))
+            (write-char #\" stream)
+            (dotimes (i n)
+              (let ((c (%schar s i)))
+                (when (or (eq c #\") (eq c #\\))
+                  (when (< start i) (%stream-write-simple-string stream s start i))
+                  (write-char #\\ stream)
+                  (setq start i))))
+            (when (< start n) (%stream-write-simple-string stream s start n))
+            (write-char #\" stream))
+          (progn
+            (write-char #\" stream)
+            (dotimes (i (length s))
+              (let ((c (char s i)))
+                (when (or (char= c #\") (char= c #\\)) (write-char #\\ stream))
+                (write-char c stream)))
+            (write-char #\" stream)))
       (write-string s stream)))
 
 ;;; ------------------------------------------------------------
@@ -506,23 +701,24 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
   (let ((prefix (%backquote-prefix x)))
     (if prefix
         (progn (write-string prefix stream) (output-object (cadr x) stream))
-        (%descend-into stream
-          (lambda ()
-            (write-char #\( stream)
-            (let ((n 0) (l x))
-              (loop
-                (when (%print-length-exceeded-p n)
-                  (write-string "..." stream) (return))
-                (output-object (car l) stream)
-                (setq l (cdr l))
-                (when (null l) (return))
-                (when (or (atom l) (%check-for-circularity l) (%backquote-prefix l))
-                  (write-string " . " stream)
-                  (output-object l stream)
-                  (return))
-                (write-char #\Space stream)
-                (setq n (+ n 1))))
-            (write-char #\) stream))))))
+        (if (%print-level-exceeded-p)
+            (write-char #\# stream)
+            (let ((*print-current-level* (+ *print-current-level* 1)))
+              (write-char #\( stream)
+              (let ((n 0) (l x))
+                (loop
+                  (when (%print-length-exceeded-p n)
+                    (write-string "..." stream) (return))
+                  (output-object (car l) stream)
+                  (setq l (cdr l))
+                  (when (null l) (return))
+                  (when (or (atom l) (%check-for-circularity l) (%backquote-prefix l))
+                    (write-string " . " stream)
+                    (output-object l stream)
+                    (return))
+                  (write-char #\Space stream)
+                  (setq n (+ n 1))))
+              (write-char #\) stream))))))
 
 (defun %write-list (x stream) (%output-list x stream))
 
@@ -558,15 +754,16 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
         (t (%write-array a stream))))
 
 (defun %write-vector (v stream)
-  (%descend-into stream
-    (lambda ()
-      (write-string "#(" stream)
-      (dotimes (i (length v))
-        (when (> i 0) (write-char #\Space stream))
-        (when (%print-length-exceeded-p i)
-          (write-string "..." stream) (return))
-        (output-object (aref v i) stream))
-      (write-char #\) stream))))
+  (if (%print-level-exceeded-p)
+      (write-char #\# stream)
+      (let ((*print-current-level* (+ *print-current-level* 1)))
+        (write-string "#(" stream)
+        (dotimes (i (length v))
+          (when (> i 0) (write-char #\Space stream))
+          (when (%print-length-exceeded-p i)
+            (write-string "..." stream) (return))
+          (output-object (aref v i) stream))
+        (write-char #\) stream))))
 
 (defun %print-level-exceeded-p ()
   (and *print-level* (not *print-readably*) (>= *print-current-level* *print-level*)))

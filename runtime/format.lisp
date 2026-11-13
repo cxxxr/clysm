@@ -37,7 +37,7 @@
         ((stringp destination)
          (unless (array-has-fill-pointer-p destination)
            (error 'type-error :datum destination :expected-type '(and string (satisfies array-has-fill-pointer-p))))
-         (let ((s (%make-stream :kind :string-out :buffer destination)))
+         (let ((s (%make-fill-pointer-output-stream destination)))
            (%format s control args)
            nil))
         ((or (eq destination t) (streamp destination))
@@ -952,7 +952,7 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
          (funcall fn (if (eq destination t) *standard-output* (%output-stream destination)))
          nil)
         ((and (stringp destination) (array-has-fill-pointer-p destination))
-         (funcall fn (%make-stream :kind :string-out :buffer destination))
+         (funcall fn (%make-fill-pointer-output-stream destination))
          nil)
         (t (error 'type-error :datum destination :expected-type '(or (member nil t) stream string)))))
 

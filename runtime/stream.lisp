@@ -32,7 +32,14 @@
   native            ; host file name
   created           ; the file was created by OPEN (CLOSE :ABORT T deletes it)
   (external-format :default))
-(defstruct (string-stream (:include stream) (:constructor %make-string-stream)))
+;;; String streams.  A :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM) owns a
+;;; simple string BUFFER with INDEX characters in it; its column is computed
+;;; when asked for: COLUMN is the column at buffer position END.  A :STRING-FP
+;;; stream writes to a user's string with a fill pointer (WITH-OUTPUT-TO-STRING
+;;; with a string, FORMAT to a string).  A :STRING-IN stream reads BUFFER from
+;;; INDEX to END.
+(defstruct (string-stream (:include stream) (:constructor %make-string-stream)
+                          (:constructor %make-sstream (kind buffer index end direction))))
 (defstruct (broadcast-stream (:include stream) (:constructor %make-broadcast-stream)))
 (defstruct (two-way-stream (:include stream) (:constructor %make-two-way-stream)))
 (defstruct (echo-stream (:include stream) (:constructor %make-echo-stream)))
@@ -48,7 +55,7 @@
 (defun %make-stream (&rest args &key kind &allow-other-keys)
   (apply (case kind
            ((:fd-out :fd-in :file) #'%make-file-stream)
-           ((:string-out :string-in) #'%make-string-stream)
+           ((:string-out :string-in :string-fp) #'%make-string-stream)
            (:broadcast #'%make-broadcast-stream)
            (:two-way #'%make-two-way-stream)
            (:echo #'%make-echo-stream)
@@ -78,7 +85,7 @@
   (%check-stream s)
   (case (stream-kind s)
     (:gray (output-stream-p s))
-    ((:fd-out :string-out :broadcast :two-way :echo :pp :socket) t)
+    ((:fd-out :string-out :string-fp :broadcast :two-way :echo :pp :socket) t)
     (:file (if (member (stream-direction s) '(:output :io)) t nil))
     (:synonym (output-stream-p (%synonym-target s)))
     (t nil)))
@@ -135,21 +142,94 @@
         ((%streamp designator) designator)
         (t (%type-error designator '(or stream (member nil t))))))
 
+;;; ------------------------------------------------------------
+;;; string streams
+;;; ------------------------------------------------------------
+
+(defun %make-string-out ()
+  (%make-sstream :string-out (%make-string 40 #\Space) 0 0 :output))
+
 (defun make-string-output-stream (&key (element-type 'character))
-  (%make-stream :kind :string-out :elt-type element-type
-                ;; (make-array 64 :element-type 'character :fill-pointer 0 :adjustable t)
-                :buffer (%make-mdarray (%make-string 64 (code-char 0)) 0 (list 64) 0
-                                       (cons 'character (cons t nil)))))
+  (let ((s (%make-string-out)))
+    (unless (eq element-type 'character) (setf (stream-elt-type s) element-type))
+    s))
+
+(define-compiler-macro make-string-output-stream (&whole form &rest args)
+  (if args form '(%make-string-out)))
+
+(defun %make-fill-pointer-output-stream (string)
+  "An output stream that appends to STRING, which has a fill pointer."
+  (%make-sstream :string-fp string 0 0 :output))
+
+(defun %string-out-grow (s need)
+  "Make room for NEED more characters in the :string-out stream S; returns the buffer."
+  (let* ((buf (stream-buffer s)) (fill (stream-index s)) (cap (%string-length buf)))
+    (declare (fixnum fill cap need))
+    (if (<= (+ fill need) cap)
+        buf
+        (let ((new (%make-string (max (+ fill need) (* 2 cap)) #\Space)))
+          (%string-copy new 0 buf 0 fill)
+          (setf (stream-buffer s) new)
+          new))))
+
+(defun %string-out-column (s)
+  "The column of the :string-out stream S, brought up to date."
+  (let* ((buf (stream-buffer s)) (fill (stream-index s)) (sync (stream-end s)))
+    (declare (fixnum fill sync))
+    (when (< sync fill)
+      (let ((nl (do ((i (- fill 1) (- i 1))) ((< i sync) -1)
+                  (declare (fixnum i))
+                  (when (eq (%schar buf i) #\Newline) (return i)))))
+        (declare (fixnum nl))
+        (setf (stream-column s) (if (< nl 0) (+ (stream-column s) (- fill sync)) (- fill nl 1)))
+        (setf (stream-end s) fill)))
+    (stream-column s)))
+
+(defun %string-out-reset (s fill)
+  "Set the length of the contents of the :string-out stream S."
+  (let ((buf (stream-buffer s)))
+    (setf (stream-index s) fill (stream-end s) fill)
+    (setf (stream-column s)
+          (do ((i (- fill 1) (- i 1))) ((< i 0) fill)
+            (when (eq (%schar buf i) #\Newline) (return (- fill i 1)))))))
+
+(defun %string-out-contents (s)
+  "A fresh string of the contents of the :string-out stream S, which is emptied."
+  (let* ((n (stream-index s)) (r (%make-string n #\Space)))
+    (%string-copy r 0 (stream-buffer s) 0 n)
+    (setf (stream-index s) 0 (stream-end s) 0 (stream-column s) 0)
+    r))
 
 (defun get-output-stream-string (s)
-  (unless (and (%streamp s) (eq (stream-kind s) :string-out))
-    (%type-error s 'string-stream))
-  (let* ((buf (stream-buffer s))
-         (r (if (and (null (stream-elt-type s)) (= (length buf) 0))
-                (make-array 0 :element-type nil)   ; a string of element type NIL
-                (subseq buf 0))))
-    (setf (fill-pointer buf) 0)
-    (setf (stream-column s) 0)
+  (unless (%streamp s) (%type-error s 'string-stream))
+  (case (stream-kind s)
+    (:string-out
+     (if (and (null (stream-elt-type s)) (eql (stream-index s) 0))
+         (make-array 0 :element-type nil)   ; a string of element type NIL
+         (%string-out-contents s)))
+    (:string-fp
+     (let* ((buf (stream-buffer s)) (r (subseq buf 0)))
+       (setf (fill-pointer buf) 0)
+       (setf (stream-column s) 0)
+       r))
+    (t (%type-error s 'string-stream))))
+
+;;; A string output stream for the duration of one call (FORMAT NIL,
+;;; PRINC-TO-STRING ...): one stream is kept for reuse.  When the output
+;;; function is left by a non-local exit, the stream is simply not put back.
+(defvar *%scratch-string-stream* nil)
+
+(defun %scratch-string-stream ()
+  (let ((s *%scratch-string-stream*))
+    (if s
+        (progn (setq *%scratch-string-stream* nil) s)
+        (%make-string-out))))
+
+(defun %scratch-string-result (s)
+  "The contents of the scratch stream S, which is given back."
+  (let ((r (%string-out-contents s)))
+    (when (<= (%string-length (stream-buffer s)) 4096)
+      (setq *%scratch-string-stream* s))
     r))
 
 (defun make-string-input-stream (string &optional (start 0) end)
@@ -158,8 +238,7 @@
     (unless (and (integerp start) (<= 0 start len)) (%type-error start `(integer 0 ,len)))
     (unless (or (null end) (and (integerp end) (<= start end len)))
       (%type-error end `(or null (integer ,start ,len))))
-    (%make-stream :kind :string-in :buffer string :index start :end (or end len)
-                  :direction :input)))
+    (%make-sstream :string-in string start (or end len) :input)))
 
 (defun %output-stream-object-p (x) (and (%streamp x) (output-stream-p x)))
 (defun %input-stream-object-p (x) (and (%streamp x) (input-stream-p x)))
@@ -310,11 +389,22 @@
 ;;; ------------------------------------------------------------
 
 (defun %stream-write-char (s c)
-  (when (eq (stream-kind s) :gray)
-    (return-from %stream-write-char (stream-write-char s c)))
-  (case (stream-kind s)
+  (let ((kind (stream-kind s)))
+    (if (eq kind :string-out)
+        ;; the column of a :string-out stream is computed on demand
+        (let ((buf (stream-buffer s)) (i (stream-index s)))
+          (declare (fixnum i))
+          (when (>= i (%string-length buf)) (setq buf (%string-out-grow s 1)))
+          (%set-schar buf i c)
+          (setf (stream-index s) (+ i 1))
+          c)
+        (%stream-write-char-1 s kind c))))
+
+(defun %stream-write-char-1 (s kind c)
+  (case kind
+    (:gray (return-from %stream-write-char-1 (stream-write-char s c)))
     (:fd-out (%write-char c (stream-fd s)))
-    (:string-out (vector-push-extend c (stream-buffer s)))
+    (:string-fp (vector-push-extend c (stream-buffer s)))
     (:file (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
                         (eql (file-stream-esize s) 0))
              (%not-output-stream s 'character))
@@ -347,6 +437,20 @@
   (unless (characterp c) (%type-error c 'character))
   (%stream-write-char (%output-stream stream) c))
 
+(defun %write-spaces (stream n)
+  (%write-chars stream #\Space n))
+
+(defun %write-chars (stream c n)
+  "Write the character C N times."
+  (when (> n 0)
+    (if (eq (stream-kind stream) :string-out)
+        (let* ((fill (stream-index stream)) (buf (%string-out-grow stream n)))
+          (declare (fixnum fill n))
+          (do ((i fill (+ i 1)) (e (+ fill n))) ((>= i e) (setf (stream-index stream) e))
+            (declare (fixnum i e))
+            (%set-schar buf i c)))
+        (dotimes (i n) (%stream-write-char stream c)))))
+
 (defun %check-seq-bounds (seq start end)
   (let ((len (length seq)))
     (unless (and (integerp start) (<= 0 start)) (%type-error start 'unsigned-byte))
@@ -357,45 +461,96 @@
                              :format-arguments (list start end len)))
       end)))
 
+(defun %string-out-write (s string start end)
+  "Append the characters START..END of the simple string STRING to the
+:string-out stream S."
+  (declare (fixnum start end))
+  (let* ((n (- end start)) (fill (stream-index s)) (buf (stream-buffer s)))
+    (declare (fixnum n fill))
+    (when (> (+ fill n) (%string-length buf)) (setq buf (%string-out-grow s n)))
+    (%string-copy buf fill string start n)
+    (setf (stream-index s) (+ fill n))
+    string))
+
 (defun %write-string-2 (string stream)
   (let ((s (if (or (null stream) (eq stream t)) (%output-stream stream) stream)))
-    (if (and (%simple-string-p string) (%streamp s) (eq (stream-kind s) :string-out)
-             (%string-buffer-append (stream-buffer s) string 0 (length string)))
-        (let* ((end (length string))
-               (nl (do ((i (- end 1) (- i 1))) ((< i 0) nil)
-                     (when (eql (%schar string i) #\Newline) (return i)))))
-          (setf (stream-column s) (if nl (- end nl 1) (+ (stream-column s) end)))
-          string)
+    (if (and (%simple-string-p string) (%streamp s))
+        (if (eq (stream-kind s) :string-out)
+            (%string-out-write s string 0 (%string-length string))
+            (progn (%stream-write-simple-string s string 0 (%string-length string)) string))
         (write-string string stream))))
 
 (define-compiler-macro write-string (&whole form string &optional (stream nil streamp) &rest keys)
   (if keys form `(%write-string-2 ,string ,(if streamp stream nil))))
 
+(defun %stream-note-string-column (s string start end)
+  "Update the column of S after the characters START..END of STRING were written."
+  (declare (fixnum start end))
+  (let ((nl (do ((i (- end 1) (- i 1))) ((< i start) -1)
+              (declare (fixnum i))
+              (when (eq (%schar string i) #\Newline) (return i)))))
+    (declare (fixnum nl))
+    (setf (stream-column s) (if (< nl 0) (+ (stream-column s) (- end start)) (- end nl 1)))))
+
+(defun %stream-write-simple-string (s string start end)
+  "Write the characters START..END of the simple string STRING to the stream S."
+  (declare (fixnum start end))
+  (when (< start end)
+    (case (stream-kind s)
+      (:string-out (%string-out-write s string start end))
+      (:gray (stream-write-string s string start end))
+      (:string-fp
+       (if (%string-buffer-append (stream-buffer s) string start end)
+           (%stream-note-string-column s string start end)
+           (do ((i start (+ i 1))) ((>= i end))
+             (declare (fixnum i))
+             (%stream-write-char s (%schar string i)))))
+      (:fd-out
+       (let ((fd (stream-fd s)))
+         (do ((i start (+ i 1))) ((>= i end))
+           (declare (fixnum i))
+           (%write-char (%schar string i) fd)))
+       (%stream-note-string-column s string start end))
+      (:file
+       (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
+                    (eql (file-stream-esize s) 0))
+         (%not-output-stream s 'character))
+       (%fs-ensure s (+ (file-stream-pos s) (- end start)))
+       (do ((i start (+ i 1))) ((>= i end))
+         (declare (fixnum i))
+         (%fs-encode-char s (%schar string i)))
+       (%stream-note-string-column s string start end))
+      ;; each component stream gets the whole string
+      (:broadcast (dolist (x (stream-streams s)) (%stream-write-simple-string x string start end)))
+      ((:two-way :echo)
+       (%stream-write-simple-string (cadr (stream-streams s)) string start end)
+       (%stream-note-string-column s string start end))
+      (:synonym
+       (%stream-write-simple-string (%synonym-target s) string start end)
+       (%stream-note-string-column s string start end))
+      (:pp
+       (if (do ((i start (+ i 1))) ((>= i end) t)
+             (declare (fixnum i))
+             (when (eq (%schar string i) #\Newline) (return nil)))
+           (progn (%pp-capture-write-string (stream-buffer s) string start end)
+                  (setf (stream-column s) (+ (stream-column s) (- end start))))
+           (do ((i start (+ i 1))) ((>= i end))
+             (declare (fixnum i))
+             (%stream-write-char s (%schar string i)))))
+      (t (do ((i start (+ i 1))) ((>= i end))
+           (declare (fixnum i))
+           (%stream-write-char s (%schar string i))))))
+  nil)
+
 (defun write-string (string &optional stream &key (start 0) end)
   (unless (stringp string) (%type-error string 'string))
   (let ((s (%output-stream stream)) (end (%check-seq-bounds string start end)))
-    (case (stream-kind s)
-      (:gray (stream-write-string s string start end)
-       (return-from write-string string))
-      ;; each component stream gets the whole string
-      (:broadcast (dolist (x (stream-streams s)) (write-string string x :start start :end end))
-       (return-from write-string string)))
-    (when (and (eq (stream-kind s) :string-out) (< start end)
-               (%string-buffer-append (stream-buffer s) string start end))
-      (let ((nl (do ((i (- end 1) (- i 1))) ((< i start) nil)
-                  (when (eql (%schar string i) #\Newline) (return i)))))
-        (setf (stream-column s) (if nl (- end nl 1) (+ (stream-column s) (- end start)))))
-      (return-from write-string string))
-    (when (and (eq (stream-kind s) :pp) (%simple-string-p string) (< start end)
-               (not (position #\Newline string :start start :end end)))
-      (%pp-capture-write-string (stream-buffer s) string start end)
-      (setf (stream-column s) (+ (stream-column s) (- end start)))
-      (return-from write-string string))
-    (if (and (%simple-string-p string) (eq (stream-kind s) :fd-out))
-        (do ((i start (+ i 1))) ((>= i end))
-          (%stream-write-char s (%schar string i)))
-        (do ((i start (+ i 1))) ((>= i end))
-          (%stream-write-char s (char string i))))
+    (cond ((%simple-string-p string) (%stream-write-simple-string s string start end))
+          ((eq (stream-kind s) :gray) (stream-write-string s string start end))
+          ((eq (stream-kind s) :broadcast)
+           (dolist (x (stream-streams s)) (write-string string x :start start :end end)))
+          (t (do ((i start (+ i 1))) ((>= i end))
+               (%stream-write-char s (char string i)))))
     string))
 
 (defun write-line (string &optional stream &key (start 0) end)
@@ -414,6 +569,7 @@
     (:synonym (%stream-column (%synonym-target s)))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
     (:pp (%pp-stream-column s))
+    (:string-out (%string-out-column s))
     (t (stream-column s))))
 
 (defun fresh-line (&optional stream)
@@ -481,10 +637,10 @@
     (if u
         (progn (setf (stream-unread s) nil) u)
         (case (stream-kind s)
-          (:string-in (let ((i (stream-index s)))
+          (:string-in (let ((i (stream-index s)) (buf (stream-buffer s)))
                         (if (>= i (stream-end s)) :eof
                             (progn (setf (stream-index s) (+ i 1))
-                                   (char (stream-buffer s) i)))))
+                                   (if (%simple-string-p buf) (%schar buf i) (char buf i))))))
           (:file (unless (and (eql (file-stream-esize s) 0) (stream-open s)
                               (member (stream-direction s) '(:input :io)))
                    (%not-input-stream s 'character))
@@ -511,8 +667,9 @@
     (if u
         u
         (case (stream-kind s)
-          (:string-in (let ((i (stream-index s)))
-                        (if (>= i (stream-end s)) :eof (char (stream-buffer s) i))))
+          (:string-in (let ((i (stream-index s)) (buf (stream-buffer s)))
+                        (if (>= i (stream-end s)) :eof
+                            (if (%simple-string-p buf) (%schar buf i) (char buf i)))))
           (:file (unless (and (eql (file-stream-esize s) 0) (stream-open s)
                               (member (stream-direction s) '(:input :io)))
                    (%not-input-stream s 'character))
@@ -530,10 +687,18 @@
 
 (defun read-char (&optional stream (eof-error-p t) eof-value recursive-p)
   (declare (ignore recursive-p))
-  (let* ((s (%input-stream stream)) (c (%stream-read-char s)))
-    (if (eq c :eof)
-        (if eof-error-p (error 'end-of-file :stream s) eof-value)
-        c)))
+  (let ((s (%input-stream stream)))
+    (if (and (eq (stream-kind s) :string-in) (null (stream-unread s)))
+        (let ((i (stream-index s)) (buf (stream-buffer s)))
+          (declare (fixnum i))
+          (if (< i (the fixnum (stream-end s)))
+              (progn (setf (stream-index s) (+ i 1))
+                     (if (%simple-string-p buf) (%schar buf i) (char buf i)))
+              (if eof-error-p (error 'end-of-file :stream s) eof-value)))
+        (let ((c (%stream-read-char s)))
+          (if (eq c :eof)
+              (if eof-error-p (error 'end-of-file :stream s) eof-value)
+              c)))))
 
 (defun %stream-unread-char (s c)
   (case (stream-kind s)
@@ -560,7 +725,13 @@
 (defun peek-char (&optional peek-type stream (eof-error-p t) eof-value recursive-p)
   (declare (ignore recursive-p))
   (let ((s (%input-stream stream)))
-    (unless (or (null peek-type) (eq peek-type t) (characterp peek-type))
+    (when (null peek-type)
+      (let ((c (%stream-peek-char s)))
+        (return-from peek-char
+          (if (eq c :eof)
+              (if eof-error-p (error 'end-of-file :stream s) eof-value)
+              c))))
+    (unless (or (eq peek-type t) (characterp peek-type))
       (%type-error peek-type '(or character boolean)))
     (loop
       (let ((c (%stream-peek-char s)))
@@ -611,24 +782,84 @@
       (:gray (stream-clear-input s)))
     nil))
 
+(defun %simple-substring (string start end)
+  "A fresh simple string of the characters START..END of the simple string STRING."
+  (declare (fixnum start end))
+  (let ((r (%make-string (- end start) #\Space)))
+    (%string-copy r 0 string start (- end start))
+    r))
+
+(defun %file-read-line (s)
+  "READ-LINE for a character file stream at a character boundary: the line
+and whether the newline was missing, or :eof."
+  (let* ((v (file-stream-octets s)) (fill (file-stream-fill s)) (p (file-stream-pos s))
+         (e p) (ascii t))
+    (declare (fixnum fill p e))
+    (if (>= p fill)
+        :eof
+        (progn
+          ;; the end of the line; UTF-8 has no octet 10 inside a character
+          (do () ((>= e fill))
+            (let ((b (aref v e)))
+              (declare (fixnum b))
+              (when (eql b 10) (return))
+              (when (>= b #x80) (setq ascii nil))
+              (setq e (+ e 1))))
+          (let ((line (if ascii
+                          (let ((r (%make-string (- e p) #\Space)))
+                            (do ((i p (+ i 1)) (k 0 (+ k 1))) ((>= i e) r)
+                              (declare (fixnum i k))
+                              (%set-schar r k (code-char (aref v i)))))
+                          (let ((r (%make-string (- e p) #\Space)) (k 0))
+                            (declare (fixnum k))
+                            (do () ((>= (the fixnum (file-stream-pos s)) e))
+                              (%set-schar r k (%fs-decode-char s t))
+                              (setq k (+ k 1)))
+                            (%simple-substring r 0 k)))))
+            (setf (file-stream-pos s) (if (< e fill) (+ e 1) e))
+            (values line (>= e fill)))))))
+
 (defun read-line (&optional stream (eof-error-p t) eof-value recursive-p)
   (declare (ignore recursive-p))
-  (let ((s (%input-stream stream))
-        (buf (make-array 80 :element-type 'character :fill-pointer 0 :adjustable t)))
-    (when (eq (stream-kind s) :gray)
-      (multiple-value-bind (line missing-newline-p) (stream-read-line s)
-        (return-from read-line
-          (if (and missing-newline-p (or (eq line :eof) (= (length line) 0)))
-              (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
-              (values line missing-newline-p)))))
-    (loop
-      (let ((c (%stream-read-char s)))
-        (cond ((eq c :eof)
-               (return (if (= (length buf) 0)
-                           (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
-                           (values (subseq buf 0) t))))
-              ((char= c #\Newline) (return (values (subseq buf 0) nil)))
-              (t (vector-push-extend c buf)))))))
+  (let* ((s (%input-stream stream)) (kind (stream-kind s)))
+    (cond
+      ((eq kind :gray)
+       (multiple-value-bind (line missing-newline-p) (stream-read-line s)
+         (if (and missing-newline-p (or (eq line :eof) (= (length line) 0)))
+             (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
+             (values line missing-newline-p))))
+      ;; a string stream: the line is a part of the string
+      ((and (eq kind :string-in) (null (stream-unread s)) (%simple-string-p (stream-buffer s)))
+       (let* ((buf (stream-buffer s)) (i (stream-index s)) (end (stream-end s)) (e i))
+         (declare (fixnum i end e))
+         (if (>= i end)
+             (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
+             (progn
+               (do () ((or (>= e end) (eq (%schar buf e) #\Newline))) (setq e (+ e 1)))
+               (setf (stream-index s) (if (< e end) (+ e 1) e))
+               (values (%simple-substring buf i e) (>= e end))))))
+      ((and (eq kind :file) (null (stream-unread s)) (eql (file-stream-esize s) 0) (stream-open s)
+            (member (stream-direction s) '(:input :io)))
+       (multiple-value-bind (line missing-newline-p) (%file-read-line s)
+         (if (eq line :eof)
+             (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
+             (values line missing-newline-p))))
+      (t
+       (let ((buf (%make-string 80 #\Space)) (n 0))
+         (declare (fixnum n))
+         (loop
+           (let ((c (%stream-read-char s)))
+             (cond ((eq c :eof)
+                    (return (if (= n 0)
+                                (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
+                                (values (%simple-substring buf 0 n) t))))
+                   ((char= c #\Newline) (return (values (%simple-substring buf 0 n) nil)))
+                   (t (when (>= n (%string-length buf))
+                        (let ((new (%make-string (* 2 n) #\Space)))
+                          (%string-copy new 0 buf 0 n)
+                          (setq buf new)))
+                      (%set-schar buf n c)
+                      (setq n (+ n 1)))))))))))
 
 (defun %stream-read-byte (s)
   "An integer or :eof."
@@ -928,9 +1159,11 @@ domain socket PATH."
           (:string-in (let ((p (case pos (:start 0) (:end (stream-end s)) (t pos))))
                         (setf (stream-unread s) nil)
                         (if (<= p (stream-end s)) (progn (setf (stream-index s) p) t) nil)))
-          (:string-out (let* ((buf (stream-buffer s))
-                              (p (case pos (:start 0) (:end (fill-pointer buf)) (t pos))))
-                         (if (<= p (fill-pointer buf)) (progn (setf (fill-pointer buf) p) t) nil)))
+          (:string-out (let ((p (case pos (:start 0) (:end (stream-index s)) (t pos))))
+                         (if (<= p (stream-index s)) (progn (%string-out-reset s p) t) nil)))
+          (:string-fp (let* ((buf (stream-buffer s))
+                             (p (case pos (:start 0) (:end (fill-pointer buf)) (t pos))))
+                        (if (<= p (fill-pointer buf)) (progn (setf (fill-pointer buf) p) t) nil)))
           (:synonym (file-position (%synonym-target s) pos))
           (:broadcast (let ((l (last (stream-streams s)))) (if l (file-position (car l) pos) nil)))
           (t nil)))
@@ -940,7 +1173,8 @@ domain socket PATH."
                      (if (stream-unread s) (max 0 (- p 1)) p)
                      (floor p n))))
         (:string-in (- (stream-index s) (if (stream-unread s) 1 0)))
-        (:string-out (fill-pointer (stream-buffer s)))
+        (:string-out (stream-index s))
+        (:string-fp (fill-pointer (stream-buffer s)))
         (:synonym (file-position (%synonym-target s)))
         (:broadcast (let ((l (last (stream-streams s)))) (if l (file-position (car l)) 0)))
         (t nil))))
@@ -991,7 +1225,7 @@ domain socket PATH."
       (if string
           `(let ((,et ,element-type))
              (declare (ignore ,et))
-             (let ((,var (%make-stream :kind :string-out :buffer ,string)))
+             (let ((,var (%make-fill-pointer-output-stream ,string)))
                ,@decls
                ,@forms))
           `(let ((,et ,element-type))
