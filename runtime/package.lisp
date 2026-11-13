@@ -26,11 +26,15 @@
 (defvar *package-local-nicknames* nil) ; package -> ((nickname . package) ...)
 
 (defun find-package (name)
-  (if (%packagep name) name
-      (let ((s (string name)))
-        (or (and *package-local-nicknames* *package*
-                 (cdr (assoc s (gethash *package* *package-local-nicknames*) :test #'string=)))
-            (values (gethash s *package-table*))))))
+  (cond ((%packagep name) name)
+        ((and (symbolp name) (null *package-local-nicknames*))
+         ;; a symbol's hash is the hash of its name: no need to hash the name again
+         (values (%gethash-hashed (symbol-name name) *package-table* (%symbol-hash name))))
+        (t
+         (let ((s (string name)))
+           (or (and *package-local-nicknames* *package*
+                    (cdr (assoc s (gethash *package* *package-local-nicknames*) :test #'string=)))
+               (values (gethash s *package-table*)))))))
 
 ;;; package-local nicknames (as in SBCL, CCL, ECL...)
 (defun package-local-nicknames (package)

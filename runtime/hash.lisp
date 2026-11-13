@@ -2,6 +2,12 @@
 ;;;;
 ;;;; Open hashing with index chains; entries are kept in insertion order
 ;;;; (as SBCL does), so MAPHASH iterates in insertion order.
+;;;;
+;;;; The entry I has its key and value in two simple vectors, and its hash and
+;;;; the next entry of its chain in two vectors of 32-bit integers (the kind
+;;;; bignums keep their digits in: they are made zeroed and the collector does
+;;;; not scan them).  BUCKETS, of the same kind, has a power of two of chain
+;;;; heads.  A chain link is the entry's index + 1, and 0 ends the chain.
 
 ;;; slots of the hash-table instance
 (defconstant +ht-test+ 0)
@@ -16,7 +22,7 @@
 (defconstant +ht-rehash-threshold+ 9)
 (defconstant +ht-kind+ 10)
 (defconstant +ht-weakness+ 11)
-(defconstant +ht-size+ 12)
+(defconstant +ht-shift+ 12)           ; log2 of the number of buckets
 
 (defvar *hash-table-class* (find-class 'hash-table))
 
@@ -40,7 +46,7 @@
   (declare (ignore synchronized))
   (let* ((kind (%ht-kind-of test))
          (cap (max 8 size))
-         (h (%make-instance *hash-table-class* (%make-simple-vector 12 nil))))
+         (h (%make-instance *hash-table-class* (%make-simple-vector 13 nil))))
     (%ht-set h +ht-test+ (svref #(eq eql equal equalp) kind))
     (%ht-set h +ht-kind+ kind)
     (%ht-set h +ht-rehash-size+ rehash-size)
@@ -50,17 +56,30 @@
     h))
 
 (defun %ht-init-storage (h cap)
-  (let ((nb (%ht-bucket-count cap)))
+  ;; twice as many chains as entries, a power of two
+  (let ((nb 16) (bits 4) (want (* cap 2)))
+    (do () ((or (>= nb want) (eql bits 28))) (setq nb (* nb 2) bits (+ bits 1)))
     (%ht-set h +ht-count+ 0)
     (%ht-set h +ht-fill+ 0)
     (%ht-set h +ht-keys+ (%make-simple-vector cap nil))
     (%ht-set h +ht-vals+ (%make-simple-vector cap nil))
-    (%ht-set h +ht-next+ (%make-simple-vector cap -1))
-    (%ht-set h +ht-hashes+ (%make-simple-vector cap 0))
-    (%ht-set h +ht-buckets+ (%make-simple-vector nb -1))))
+    (%ht-set h +ht-next+ (%make-limbs cap))
+    (%ht-set h +ht-hashes+ (%make-limbs cap))
+    (%ht-set h +ht-buckets+ (%make-limbs nb))
+    (%ht-set h +ht-shift+ bits)))
 
-(defun %ht-bucket-count (cap)
-  (let ((n 7)) (do () ((>= n cap) n) (setq n (+ (* n 2) 1)))))
+(defmacro %ht-bucket (hash bits)
+  "The index of the chain of HASH among 2^BITS chains: the low BITS bits of
+the hash plus odd multiples of its two higher pieces of BITS bits.
+Consecutive hashes (fixnum keys) get consecutive chains, one each, so a table
+of them is read in order; hashes that differ only above the low bits
+(multiples of a power of two) are spread by the higher pieces; and since the
+pieces are multiplied and added, not combined with XOR, keys with a repeated
+bit pattern do not cancel."
+  (let ((x (gensym)) (y (gensym)) (b (gensym)))
+    `(let* ((,x ,hash) (,b ,bits) (,y (%fxash-right ,x ,b)))
+       (%fxlogand (%fx+ (%fx+ ,x (%fx* ,y 40503)) (%fx* (%fxash-right ,y ,b) 31153))
+                  (%fx- (%fxash-left 1 ,b) 1)))))
 
 (defmacro %check-ht (h) `(unless (hash-table-p ,h) (%type-error ,h 'hash-table)))
 (defun hash-table-count (h) (%check-ht h) (%ht h +ht-count+))
@@ -77,6 +96,14 @@
         ((symbolp x) (%symbol-hash x))
         (t (%identity-hash x))))
 
+(defun %scramble (x)
+  "A hash of 28 bits in which every bit of the fixnum X counts: two rounds of
+multiplying by 2^28 / the golden ratio.  The result ends with a product (not
+with a shift and XOR, which the folding of %HT-BUCKET could undo)."
+  (let* ((y (%fxlogand (%fx* x 165902235) #xFFFFFFF))
+         (z (%fxlogxor y (%fxash-right y 14))))
+    (%fxlogand (%fx* z 165902235) #xFFFFFFF)))
+
 (defun %number-hash (x)
   (cond ((fixnump x) (%fxlogand x 536870911))
         ((%bignump x)
@@ -84,7 +111,10 @@
            (dotimes (i (%llen m) h) (setq h (%fxlogand (%fx+ (%fx* h 31) (%lref m i)) 268435455)))))
         ((%ratiop x) (%fxlogxor (%number-hash (%ratio-num x)) (%number-hash (%ratio-den x))))
         ((%double-float-p x)
-         (%fxlogxor (%fxlogxor (%double-mant-lo x) (%double-mant-hi x)) (%double-exponent x)))
+         ;; the bits that differ between doubles of the same magnitude are
+         ;; the high bits of the mantissa: scramble them over the hash
+         (%scramble (%fxlogxor (%double-mant-hi x)
+                               (%scramble (%fxlogxor (%double-mant-lo x) (%double-exponent x))))))
         ((%single-float-p x) (%number-hash (%single-to-double x)))
         ((%complexp x) (%fxlogxor (%number-hash (%complex-real x)) (%number-hash (%complex-imag x))))
         (t 0)))
@@ -95,27 +125,67 @@
         ((numberp x) (%number-hash x))
         (t (%eq-hash x))))
 
-(defun %mix (h v) (%fxlogand (%fx+ (%fx* (%fxlogand h 4194303) 31) v) 268435455))
+;;; The hash so far H combined with the hash V of a part, in 28 bits: both
+;;; are multiplied (by the FNV prime), so that small integers as parts do not
+;;; cancel each other.
+(defun %mix (h v)
+  (%fxlogand (%fx* (%fxlogxor (%fxlogand (%fx* h 16777619) #xFFFFFFF) v) 16777619) #xFFFFFFF))
 
 (defun sxhash (x) (%sxhash x 4))
 (defun %sxhash (x depth)
-  (cond ((stringp x) (%string-hash x))
+  (cond ((fixnump x) (%fxlogand x 536870911))
         ((symbolp x) (%symbol-hash x))
+        ((%simple-string-p x) (%string-hash x))
+        ((stringp x) (%string-hash x))
         ((numberp x) (%number-hash x))
         ((characterp x) (%char-code x))
         ((consp x) (if (<= depth 0) 17
-                       (%mix (%sxhash (car x) (- depth 1)) (%sxhash (cdr x) (- depth 1)))))
+                       ;; the hash of the tail is multiplied again at each cons
+                       (%mix (%sxhash (cdr x) (- depth 1)) (%sxhash (car x) (- depth 1)))))
         ((bit-vector-p x) (let ((h 7)) (dotimes (i (length x) h) (setq h (%mix h (bit x i))))))
         ((pathnamep x) (%sxhash (namestring x) depth))
         (t (%eq-hash x))))
 
+;;; Numbers that are = hash alike: an integral value as the integer, another
+;;; value as the double it is equal to (a ratio or a float that no double
+;;; equals is equal to nothing else).
+(defun %equalp-double-hash (d)
+  (cond ((and (%d< -5d8 d) (%d< d 5d8))
+         (let ((f (%double-to-fixnum d)))
+           (if (%d= (%fixnum-to-double f) d) (%fxlogand f 536870911) (%number-hash d))))
+        ((or (%double-nan-p d) (%float-infinite-p d)) 13)
+        ((= d (truncate d)) (%number-hash (truncate d)))
+        (t (%number-hash d))))
+
+(defun %equalp-number-hash (x)
+  (cond ((fixnump x) (%fxlogand x 536870911))
+        ((%double-float-p x) (%equalp-double-hash x))
+        ((%single-float-p x) (%equalp-double-hash (%single-to-double x)))
+        ((%bignump x) (%number-hash x))
+        ((%ratiop x)
+         (if (and (fixnump (%ratio-num x)) (fixnump (%ratio-den x)))
+             (%equalp-double-hash (%to-double x))
+             13))
+        ((and (%complexp x) (zerop (imagpart x))) (%equalp-number-hash (realpart x)))
+        (t 13)))
+
 (defun %equalp-hash (x depth)
-  (cond ((characterp x) (%char-code (char-upcase x)))
-        ((and (complexp x) (zerop (imagpart x))) (%equalp-hash (realpart x) depth))
-        ((numberp x) (if (and (realp x) (= x (truncate x))) (%number-hash (truncate x)) 13))
-        ((stringp x) (let ((h 5)) (dotimes (i (length x) h) (setq h (%mix h (%char-code (char-upcase (char x i))))))))
+  (cond ((fixnump x) (%fxlogand x 536870911))
+        ((symbolp x) (%symbol-hash x))
+        ((characterp x) (%char-code (char-upcase x)))
+        ((numberp x) (%equalp-number-hash x))
+        ((stringp x)
+         (let ((h 5) (d (%array-storage x)) (off (%array-total-offset x)))
+           (declare (fixnum h off))
+           (dotimes (i (length x) h)
+             (let ((c (%char-code (%schar d (+ i off)))))
+               (declare (fixnum c))
+               (setq h (%mix h (cond ((< c 97) c)
+                                     ((<= c 122) (- c 32))
+                                     ((< c 128) c)
+                                     (t (%char-code (char-upcase (%schar d (+ i off))))))))))))
         ((consp x) (if (<= depth 0) 17
-                       (%mix (%equalp-hash (car x) (- depth 1)) (%equalp-hash (cdr x) (- depth 1)))))
+                       (%mix (%equalp-hash (cdr x) (- depth 1)) (%equalp-hash (car x) (- depth 1)))))
         ((vectorp x) (let ((h (length x)))
                        (if (<= depth 0) h
                            (dotimes (i (min 4 (length x)) h)
@@ -124,46 +194,82 @@
         ((%instancep x) 29)
         (t (%sxhash x depth))))
 
-(defun %ht-hash (h key)
-  (let ((k (%ht h +ht-kind+)))
-    (cond ((%fx= k 0) (%eq-hash key))
-          ((%fx= k 1) (%eql-hash key))
-          ((%fx= k 2) (%sxhash key 4))
-          (t (%equalp-hash key 4)))))
+(defmacro %ht-hash (h key)
+  "The hash of KEY in the table H.  Fixnums and symbols hash the same way for
+every test, without a call."
+  (let ((k (gensym)) (x (gensym)))
+    `(let ((,x ,key))
+       (cond ((fixnump ,x) (%fxlogand ,x 536870911))
+             ((symbolp ,x) (%symbol-hash ,x))
+             (t (let ((,k (%ht ,h +ht-kind+)))
+                  (cond ((%fx= ,k 0) (%eq-hash ,x))
+                        ((%fx= ,k 1) (%eql-hash ,x))
+                        ((%fx= ,k 2) (%sxhash ,x 4))
+                        (t (%equalp-hash ,x 4)))))))))
 
-(defun %ht-key-equal (h a b)
-  (let ((k (%ht h +ht-kind+)))
-    (cond ((%fx= k 0) (eq a b))
-          ((%fx= k 1) (eql a b))
-          ((%fx= k 2) (equal a b))
-          (t (equalp a b)))))
+(defun %ht-find-general (sv key hash kind)
+  "Index of KEY or -1 in the table whose slots are SV, comparing with its test."
+  (let* ((buckets (%svref sv +ht-buckets+))
+         (keys (%svref sv +ht-keys+))
+         (next (%svref sv +ht-next+))
+         (hashes (%svref sv +ht-hashes+))
+         (i (%lref buckets (%ht-bucket hash (%svref sv +ht-shift+)))))
+    (do () ((%fx= i 0) -1)
+      (let ((j (%fx- i 1)))
+        (when (and (%fx= (%lref hashes j) hash)
+                   (let ((k (%svref keys j)))
+                     (or (eq k key)
+                         (cond ((%fx= kind 0) nil)
+                               ((%fx= kind 1) (eql k key))
+                               ((%fx= kind 2)
+                                ;; strings, the usual keys, are compared here
+                                (if (and (%simple-string-p k) (%simple-string-p key))
+                                    (%simple-string= k key)
+                                    (equal k key)))
+                               (t (equalp k key))))))
+          (return j))
+        (setq i (%lref next j))))))
+
+(defmacro %ht-lookup (sv key hash)
+  "Index of KEY (whose hash is HASH) or -1 in the table whose slots are SV.
+A key that only an EQ key can match (any key of an EQ table, a symbol, a
+fixnum or a non-number in an EQL table, a fixnum in an EQUAL table) is looked
+for here, without a call."
+  (let ((kind (gensym)) (buckets (gensym)) (keys (gensym)) (next (gensym)) (i (gensym)) (j (gensym)))
+    `(let ((,kind (%svref ,sv +ht-kind+)))
+       (if (or (%fx= ,kind 0)
+               (symbolp ,key)
+               (if (fixnump ,key) (not (%fx= ,kind 3)) (and (%fx= ,kind 1) (not (numberp ,key)))))
+           (let* ((,buckets (%svref ,sv +ht-buckets+))
+                  (,keys (%svref ,sv +ht-keys+))
+                  (,next (%svref ,sv +ht-next+))
+                  (,i (%lref ,buckets (%ht-bucket ,hash (%svref ,sv +ht-shift+)))))
+             (do () ((%fx= ,i 0) -1)
+               (let ((,j (%fx- ,i 1)))
+                 (when (eq (%svref ,keys ,j) ,key) (return ,j))
+                 (setq ,i (%lref ,next ,j)))))
+           (%ht-find-general ,sv ,key ,hash ,kind)))))
 
 (defun %ht-find (h key hash)
   "Index of KEY or -1."
-  (let* ((buckets (%ht h +ht-buckets+))
-         (keys (%ht h +ht-keys+))
-         (next (%ht h +ht-next+))
-         (hashes (%ht h +ht-hashes+))
-         (i (%svref buckets (%fxrem hash (%svlength buckets))))
-         (kind (%ht h +ht-kind+)))
-    (do () ((%fx< i 0) -1)
-      (when (and (%fx= (%svref hashes i) hash)
-                 (let ((k (%svref keys i)))
-                   (or (eq k key) (and (not (%fx= kind 0)) (%ht-key-equal h k key)))))
-        (return i))
-      (setq i (%svref next i)))))
+  (let ((sv (%instance-slots h)))
+    (%ht-lookup sv key hash)))
 
 (defun gethash (key h &optional default)
   (%check-ht h)
-  (let ((i (%ht-find h key (%ht-hash h key))))
+  (let* ((sv (%instance-slots h))
+         (hash (%ht-hash h key))
+         (i (%ht-lookup sv key hash)))
     (if (%fx< i 0)
         (values default nil)
-        (values (%svref (%ht h +ht-vals+) i) t))))
+        (values (%svref (%svref sv +ht-vals+) i) t))))
 
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
-  (let ((i (%ht-find h key hash)))
-    (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t))))
+  (if (eql (%ht h +ht-count+) 0)
+      (values nil nil)                  ; e.g. the external symbols of a package without any
+      (let ((i (%ht-find-general (%instance-slots h) key hash 2)))
+        (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t)))))
 
 (defun %puthash (key h &rest rest)
   ;; (setf (gethash key h [default]) value): value is the last argument
@@ -173,21 +279,22 @@
 
 (defun %ht-put (h key value)
   (%check-ht h)
-  (let* ((hash (%ht-hash h key))
-         (i (%ht-find h key hash)))
+  (let* ((sv (%instance-slots h))
+         (hash (%ht-hash h key))
+         (i (%ht-lookup sv key hash)))
     (if (%fx>= i 0)
-        (%set-svref (%ht h +ht-vals+) i value)
+        (%set-svref (%svref sv +ht-vals+) i value)
         (progn
           (when (%fx>= (%ht h +ht-fill+) (%svlength (%ht h +ht-keys+)))
             (%ht-grow h))
           (let* ((n (%ht h +ht-fill+))
                  (buckets (%ht h +ht-buckets+))
-                 (b (%fxrem hash (%svlength buckets))))
+                 (b (%ht-bucket hash (%ht h +ht-shift+))))
             (%set-svref (%ht h +ht-keys+) n key)
             (%set-svref (%ht h +ht-vals+) n value)
-            (%set-svref (%ht h +ht-hashes+) n hash)
-            (%set-svref (%ht h +ht-next+) n (%svref buckets b))
-            (%set-svref buckets b n)
+            (%lset (%ht h +ht-hashes+) n hash)
+            (%lset (%ht h +ht-next+) n (%lref buckets b))
+            (%lset buckets b (%fx+ n 1))
             (%ht-set h +ht-fill+ (%fx+ n 1))
             (%ht-set h +ht-count+ (%fx+ (%ht h +ht-count+) 1)))))
     value))
@@ -200,17 +307,18 @@
     (%ht-init-storage h new-cap)
     ;; reinsert with the stored hashes (the keys are distinct)
     (let* ((nk (%ht h +ht-keys+)) (nv (%ht h +ht-vals+)) (nh (%ht h +ht-hashes+))
-           (nn (%ht h +ht-next+)) (nb (%ht h +ht-buckets+)) (nbl (%svlength nb)) (j 0))
+           (nn (%ht h +ht-next+)) (nb (%ht h +ht-buckets+)) (bits (%ht h +ht-shift+)) (j 0))
+      (declare (fixnum j))
       (dotimes (i fill)
         (let ((k (%svref keys i)))
           (unless (eq k +deleted+)
-            (let* ((hash (%svref old-hashes i)) (b (%fxrem hash nbl)))
+            (let* ((hash (%lref old-hashes i)) (b (%ht-bucket hash bits)))
               (%set-svref nk j k)
               (%set-svref nv j (%svref vals i))
-              (%set-svref nh j hash)
-              (%set-svref nn j (%svref nb b))
-              (%set-svref nb b j)
-              (setq j (%fx+ j 1))))))
+              (%lset nh j hash)
+              (%lset nn j (%lref nb b))
+              (setq j (%fx+ j 1))
+              (%lset nb b j)))))
       (%ht-set h +ht-fill+ j)
       (%ht-set h +ht-count+ j))))
 
@@ -218,21 +326,30 @@
   (%check-ht h)
   (let* ((hash (%ht-hash h key))
          (buckets (%ht h +ht-buckets+))
-         (b (%fxrem hash (%svlength buckets)))
+         (b (%ht-bucket hash (%ht h +ht-shift+)))
          (next (%ht h +ht-next+))
-         (i (%svref buckets b))
-         (prev -1))
-    (do () ((%fx< i 0) nil)
-      (when (and (%fx= (%svref (%ht h +ht-hashes+) i) hash)
-                 (%ht-key-equal h (%svref (%ht h +ht-keys+) i) key))
-        (if (%fx< prev 0)
-            (%set-svref buckets b (%svref next i))
-            (%set-svref next prev (%svref next i)))
-        (%set-svref (%ht h +ht-keys+) i +deleted+)
-        (%set-svref (%ht h +ht-vals+) i nil)
-        (%ht-set h +ht-count+ (%fx- (%ht h +ht-count+) 1))
-        (return t))
-      (setq prev i i (%svref next i)))))
+         (hashes (%ht h +ht-hashes+))
+         (keys (%ht h +ht-keys+))
+         (kind (%ht h +ht-kind+))
+         (i (%lref buckets b))
+         (prev 0))
+    (do () ((%fx= i 0) nil)
+      (let ((j (%fx- i 1)))
+        (when (and (%fx= (%lref hashes j) hash)
+                   (let ((k (%svref keys j)))
+                     (or (eq k key)
+                         (cond ((%fx= kind 0) nil)
+                               ((%fx= kind 1) (eql k key))
+                               ((%fx= kind 2) (equal k key))
+                               (t (equalp k key))))))
+          (if (%fx= prev 0)
+              (%lset buckets b (%lref next j))
+              (%lset next (%fx- prev 1) (%lref next j)))
+          (%set-svref keys j +deleted+)
+          (%set-svref (%ht h +ht-vals+) j nil)
+          (%ht-set h +ht-count+ (%fx- (%ht h +ht-count+) 1))
+          (return t))
+        (setq prev i i (%lref next j))))))
 
 (defun clrhash (h)
   (%check-ht h)
@@ -247,15 +364,25 @@
         (unless (eq k +deleted+)
           (funcall fn k (%svref vals i)))))))
 
-(defun %hash-table-pairs (h)
-  (let ((r nil))
-    (maphash (lambda (k v) (push (cons k v) r)) h)
-    (nreverse-list r)))
+(defun %ht-next-index (h i)
+  "The index of the first entry of H at I or after it, or -1."
+  (let ((keys (%ht h +ht-keys+)) (fill (%ht h +ht-fill+)))
+    (declare (fixnum i fill))
+    (do ((j i (+ j 1))) ((>= j fill) -1)
+      (declare (fixnum j))
+      (unless (eq (%svref keys j) +deleted+) (return j)))))
+
+(defun %ht-checked (h) (%check-ht h) h)
+(defun %ht-key-at (h i) (%svref (%ht h +ht-keys+) i))
+(defun %ht-value-at (h i) (%svref (%ht h +ht-vals+) i))
 
 (defmacro with-hash-table-iterator ((name table) &body body)
-  (let ((pairs (gensym)))
-    `(let ((,pairs (%hash-table-pairs ,table)))
-       (macrolet ((,name () '(if ,pairs
-                                (let ((p (pop ,pairs))) (values t (car p) (cdr p)))
-                                nil)))
+  (let ((h (gensym)) (i (gensym)) (j (gensym)))
+    `(let ((,h ,table) (,i 0))
+       (unless (hash-table-p ,h) (%type-error ,h 'hash-table))
+       (macrolet ((,name () '(let ((,j (%ht-next-index ,h ,i)))
+                               (if (< ,j 0)
+                                   nil
+                                   (progn (setq ,i (+ ,j 1))
+                                          (values t (%ht-key-at ,h ,j) (%ht-value-at ,h ,j)))))))
          ,@body))))
