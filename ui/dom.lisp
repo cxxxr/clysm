@@ -45,6 +45,8 @@
                                  ((eq key :readonly) (cons nil (js:to-js "readOnly")))
                                  ((eq key :colspan) (cons nil (js:to-js "colSpan")))
                                  ((eq key :role) (cons t (js:to-js "role")))
+                                 ;; (the property is read-only)
+                                 ((eq key :list) (cons t (js:to-js "list")))
                                  ((or (eq key :style) (find #\- name)) (cons t (js:to-js name)))
                                  (t (cons nil (js:to-js name)))))))))
     (values (car entry) (cdr entry))))
@@ -59,7 +61,7 @@
 ;;; its namespace, and all their properties are attributes
 
 (defvar *svg-tags* '("svg" "g" "line" "rect" "circle" "ellipse" "polygon" "polyline" "path"
-                     "text" "tspan"))
+                     "text" "tspan" "image"))
 (defvar +svg-namespace+ (js:to-js "http://www.w3.org/2000/svg"))
 (defvar *svg-element-p* (js:eval "(node) => node instanceof SVGElement"))
 
@@ -174,6 +176,52 @@
 
 (defmethod set-title ((backend dom-backend) string)
   (js:set (backend-document backend) "title" string))
+
+(defmethod begin-drag ((backend dom-backend) event text)
+  ;; (without data, some browsers do not start the drag)
+  (let ((transfer (js:get event "dataTransfer")))
+    (when transfer
+      (js:call transfer "setData" "text/plain" text)
+      (js:set transfer "effectAllowed" "move"))))
+
+;;; files and the clipboard
+
+(defvar *choose-file*
+  (js:eval "(accept, done) => { const input = document.createElement('input');
+     input.type = 'file'; if (accept) input.accept = accept;
+     input.addEventListener('cancel', () => done(null, null));
+     input.addEventListener('change', () => { const file = input.files[0];
+       if (!file) done(null, null); else file.text().then((text) => done(file.name, text), () => done(null, null)); });
+     input.click(); }"))
+
+(defmethod choose-file ((backend dom-backend) continuation &key accept)
+  (js:funcall *choose-file* accept
+              (js:async-function
+               (lambda (name text)
+                 (let ((*backend* backend))
+                   (with-error-dialog (funcall continuation name text))
+                   (flush))
+                 nil)))
+  nil)
+
+(defmethod write-clipboard ((backend dom-backend) text)
+  (let ((clipboard (js:get (js:global "navigator") "clipboard")))
+    (when clipboard (js:call clipboard "writeText" text))
+    text))
+
+(defvar *read-clipboard*
+  (js:eval "(done) => { const c = navigator.clipboard;
+     if (!c || !c.readText) done(null); else c.readText().then((text) => done(text), () => done(null)); }"))
+
+(defmethod read-clipboard ((backend dom-backend) continuation)
+  (js:funcall *read-clipboard*
+              (js:async-function
+               (lambda (text)
+                 (let ((*backend* backend))
+                   (with-error-dialog (funcall continuation text))
+                   (flush))
+                 nil)))
+  nil)
 
 (defvar *reveal-selection*
   (js:eval "(event) => { const node = event.currentTarget || event.target;

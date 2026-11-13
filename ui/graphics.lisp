@@ -195,6 +195,18 @@ goes on for SWEEP-ANGLE (radians, from the x axis towards the y axis); with
          options
          (text-of string)))
 
+(defun draw-image (pane url x y width height &rest options)
+  "Draw the image at URL in the rectangle X, Y, WIDTH, HEIGHT."
+  (declare (ignore pane))
+  (unless *drawing*
+    (error "UI: a drawing function was called outside the DISPLAY-CALLBACK of an OUTPUT-PANE"))
+  (let ((node (element "image" (list :href url :x (number-text x) :y (number-text y)
+                                     :width (number-text width) :height (number-text height)
+                                     :opacity (and (getf options :opacity) (number-text (getf options :opacity)))
+                                     :class (getf options :class)))))
+    (push node *shapes*)
+    node))
+
 ;;; ------------------------------------------------------------------
 ;;; Groups and transformations
 
@@ -233,3 +245,147 @@ makes a presentation of several shapes."
           (call-with-drawing-group
            (list :transform (format nil "scale(~A ~A)" (number-text ,sx) (number-text ,sy)))
            (lambda () ,@body))))
+
+;;; ------------------------------------------------------------------
+;;; Graphs (the graph pane of CAPI, FORMAT-GRAPH-FROM-ROOTS of CLIM)
+
+(defmodel graph-pane (choice)
+  (;; a function of an item that returns the items its edges lead to
+   (children-function :initarg :children-function :initform (constantly nil)
+                      :accessor graph-pane-children-function)
+   ;; :LEFT-RIGHT or :TOP-DOWN
+   (direction :initarg :direction :initform :left-right :accessor graph-pane-direction))
+  (:default-initargs :stretch t)
+  (:documentation "The items :ROOTS and what CHILDREN-FUNCTION returns for them, as
+boxes joined by edges.  An item that is reached several times is shown once.
+The items are selected and activated as in a list, and are presentations if
+the pane has a :PRESENTATION-TYPE."))
+
+(defmethod initialize-instance :after ((pane graph-pane) &key (roots nil rootsp))
+  (when rootsp (setf (collection-items pane) roots)))
+
+(defun graph-pane-roots (pane) (collection-items pane))
+(defun (setf graph-pane-roots) (roots pane) (setf (collection-items pane) roots))
+
+(defun text-width (string)
+  "About how wide STRING is, in pixels of the font of the panes."
+  (let ((width 0))
+    (dotimes (i (length string) width)
+      (incf width (if (< (char-code (char string i)) 768) 7.2 13)))))
+
+(defun layout-graph (pane)
+  "The nodes of the graph as (item label depth position) and its edges as
+(from . to), the positions being rows of leaves."
+  (let* ((test (collection-test pane))
+         (nodes '()) (edges '()) (next 0)
+         ;; depth -> the position of the lowest node of that depth so far
+         (lowest (make-hash-table)))
+    (labels ((visit (item depth)
+               (let ((node (find item nodes :key #'first :test test)))
+                 (or node
+                     (let ((node (list item (item-text pane item) depth 0)))
+                       (push node nodes)
+                       (let ((children (mapcar (lambda (child)
+                                                 (let ((child-node (visit child (1+ depth))))
+                                                   (push (cons node child-node) edges)
+                                                   child-node))
+                                               (funcall (graph-pane-children-function pane) item))))
+                         ;; a node is in the middle of the nodes it leads to (that are deeper)
+                         (let* ((below (remove-if-not (lambda (child) (> (third child) depth)) children))
+                                (position (if below
+                                              (/ (+ (reduce #'min below :key #'fourth)
+                                                    (reduce #'max below :key #'fourth))
+                                                 2)
+                                              next))
+                                ;; not on top of a node of the same depth
+                                (last (gethash depth lowest)))
+                           (when (and last (< position (1+ last)))
+                             (setf position (1+ last)))
+                           (setf (gethash depth lowest) position
+                                 (fourth node) position
+                                 next (max next (1+ (floor position))))))
+                       node)))))
+      (dolist (root (collection-items pane)) (visit root 0)))
+    (values (reverse nodes) (reverse edges))))
+
+(defmethod choice-visible-items ((pane graph-pane))
+  (mapcar #'first (layout-graph pane)))
+
+(defmethod render-pane ((pane graph-pane))
+  (multiple-value-bind (nodes edges) (layout-graph pane)
+    (let* ((horizontal (not (eq (graph-pane-direction pane) :top-down)))
+           (height 26) (gap 12) (level-gap 44)
+           (depths (1+ (reduce #'max nodes :key #'third :initial-value 0)))
+           ;; the width of the boxes of every depth (top-down: of all)
+           (widths (loop for depth below depths
+                         collect (+ 20 (reduce #'max (remove depth nodes :key #'third :test-not #'eql)
+                                               :key (lambda (node) (text-width (second node)))
+                                               :initial-value 20))))
+           (widest (reduce #'max widths :initial-value 0))
+           (shapes '()))
+      (labels ((box (node)
+                 ;; x y width height
+                 (let ((depth (third node)) (position (fourth node)))
+                   (if horizontal
+                       (list (+ 8 (loop for i below depth sum (+ (nth i widths) level-gap)))
+                             (+ 8 (* position (+ height gap)))
+                             (nth depth widths) height)
+                       (list (+ 8 (* position (+ widest gap)))
+                             (+ 8 (* depth (+ height level-gap)))
+                             widest height))))
+               (edge (from to)
+                 (destructuring-bind (x1 y1 w1 h1) (box from)
+                   (destructuring-bind (x2 y2 w2 h2) (box to)
+                     (multiple-value-bind (ax ay bx by)
+                         (if horizontal
+                             (values (+ x1 w1) (+ y1 (/ h1 2)) x2 (+ y2 (/ h2 2)))
+                             (values (+ x1 (/ w1 2)) (+ y1 h1) (+ x2 (/ w2 2)) y2))
+                       (let ((mx (/ (+ ax bx) 2)) (my (/ (+ ay by) 2)))
+                         (element "path"
+                                  (list :class "ui-graph-edge" :fill "none"
+                                        :d (if horizontal
+                                               (format nil "M~A ~A C~A ~A ~A ~A ~A ~A"
+                                                       (number-text ax) (number-text ay)
+                                                       (number-text mx) (number-text ay)
+                                                       (number-text mx) (number-text by)
+                                                       (number-text bx) (number-text by))
+                                               (format nil "M~A ~A C~A ~A ~A ~A ~A ~A"
+                                                       (number-text ax) (number-text ay)
+                                                       (number-text ax) (number-text my)
+                                                       (number-text bx) (number-text my)
+                                                       (number-text bx) (number-text by)))))))))))
+        (dolist (edge edges) (push (edge (car edge) (cdr edge)) shapes))
+        (dolist (node nodes)
+          (destructuring-bind (x y width height) (box node)
+            (let* ((item (first node))
+                   (selected (item-selected-p pane item)))
+              (push (item-element
+                     pane item
+                     (element "g"
+                              (list :class (if selected "ui-graph-node selected" "ui-graph-node")
+                                    :on-click (lambda (&optional event) (click-item pane item event))
+                                    :on-dblclick (lambda (&optional event)
+                                                   (declare (ignore event))
+                                                   (activate-item pane item)))
+                              (element "rect" (list :x (number-text x) :y (number-text y)
+                                                    :width (number-text width) :height (number-text height)
+                                                    :rx "5"))
+                              (element "text" (list :x (number-text (+ x (/ width 2)))
+                                                    :y (number-text (+ y (/ height 2)))
+                                                    :text-anchor "middle" :dominant-baseline "central")
+                                       (second node))))
+                    shapes))))
+        (let ((total-width (+ 16 (if horizontal
+                                     (+ (reduce #'+ widths) (* level-gap (1- depths)))
+                                     (reduce #'max (mapcar (lambda (node) (+ (first (box node)) widest)) nodes)
+                                             :initial-value 0))))
+              (total-height (+ 16 (reduce #'max (mapcar (lambda (node)
+                                                          (+ (second (box node)) height))
+                                                        nodes)
+                                          :initial-value 0))))
+          (html
+            (:div :class "ui-graph-pane" :tabindex (if (pane-enabled pane) 0 -1)
+                  :on-keydown (lambda (&optional event)
+                                (move-selection pane (event-get *backend* event "key") event))
+              (element "svg" (list :width (number-text total-width) :height (number-text total-height))
+                       (reverse shapes)))))))))

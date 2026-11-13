@@ -41,6 +41,7 @@
    "DEFINE-PRESENTATION-TYPE" "PRESENTATION-TYPE-OF" "PRESENTATION-SUBTYPEP"
    "DEFINE-PRESENTATION-TO-COMMAND-TRANSLATOR" "ACCEPT" "ACCEPT-PRESENTATION-TYPE"
    "CANCEL-ACCEPT" "ACCEPTING-P" "POPUP-MENU" "MAKE-MENU-ITEM" "*ACCEPT-PROMPT*"
+   "DEFINE-DRAG-AND-DROP-TRANSLATOR" "*POINTER-DOCUMENTATION-LABELS*"
    ;; panes and layouts (pane.lisp)
    "PANE" "RENDER-PANE" "PANE-NODE" "PANE-NAME" "PANE-INTERFACE" "PANE-TITLE" "PANE-ENABLED"
    "PANE-VISIBLE" "PANE-CLASS" "PANE-WIDTH" "PANE-HEIGHT" "PANE-STRETCH" "PANE-HELP"
@@ -58,7 +59,11 @@
    "TAB-LAYOUT" "SWITCHABLE-LAYOUT" "SWITCHABLE-LAYOUT-VISIBLE-CHILD"
    "INTERFACE" "DEFINE-INTERFACE" "INTERFACE-TITLE" "INTERFACE-LAYOUT" "INTERFACE-MENU-BAR"
    "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE" "INTERFACE-COMMAND-TABLE"
-   "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING"
+   "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING" "LIST-PANEL-FILTER"
+   "PASSWORD-PANE" "EDITOR-PANE" "RADIO-BUTTON" "PUSH-BUTTON-PANEL" "TEXT-INPUT-CHOICE"
+   "BROWSER-PANE" "BROWSER-PANE-URL" "IMAGE-PANE" "IMAGE-PANE-URL" "COLOR-PANE" "COLOR-PANE-COLOR"
+   "SIMPLE-LAYOUT" "PINBOARD-LAYOUT" "INTERFACE-POINTER-DOCUMENTATION"
+   "GRAPH-PANE" "GRAPH-PANE-ROOTS" "GRAPH-PANE-DIRECTION" "DRAW-IMAGE"
    ;; drawing (graphics.lisp)
    "OUTPUT-PANE" "OUTPUT-PANE-DISPLAY-CALLBACK" "DRAW-LINE" "DRAW-LINES" "DRAW-RECTANGLE"
    "DRAW-CIRCLE" "DRAW-ELLIPSE" "DRAW-POLYGON" "DRAW-STRING" "DRAW-PATH" "DRAW-ARC"
@@ -68,6 +73,8 @@
    "DISPLAY-DIALOG" "EXIT-DIALOG" "ABORT-DIALOG" "DISPLAY-MESSAGE" "PROMPT-FOR-STRING"
    "PROMPT-FOR-CONFIRMATION" "PROMPT-WITH-LIST" "PROMPT-FOR-NUMBER"
    "COMMAND-PALETTE" "*COMMAND-PALETTE-PROMPT*"
+   "PROMPT-FOR-VALUES" "PROMPT-FOR-COLOR" "PROMPT-FOR-FILE" "POPUP-CONFIRMER"
+   "SET-CLIPBOARD" "CLIPBOARD" "CHOOSE-FILE" "WRITE-CLIPBOARD" "READ-CLIPBOARD"
    "*OK-LABEL*" "*YES-LABEL*" "*NO-LABEL*"
    ;; development
    "REFRESH"
@@ -77,12 +84,12 @@
    "NODE-FOLLOWS-P" "REQUEST-FLUSH" "RESOLVE-CONTAINER"
    "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
    "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
-   "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
+   "BEGIN-DRAG" "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
    "CAN-WAIT-P" "WAIT-FOR" "WAIT-FOR-ANSWER" "*RESTART-CHOOSER*" "BACKEND-WAITER"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
-   "FIRE-GLOBAL" "NODE-TEXT"
+   "FIRE-GLOBAL" "NODE-TEXT" "BACKEND-FILE"
    "BACKEND-CHOOSER"
    ;; the desktop application (desktop.lisp)
    "DESKTOP-BACKEND" "DESKTOP-P" "READ-FILE" "WRITE-FILE" "DESKTOP-FILE-ERROR"
@@ -157,6 +164,17 @@ drawing (an OUTPUT-PANE) it happened on."))
   (:documentation "Call FUNCTION with a function of one argument, the answer, and
 return the answer once that has been called — later, when the user has
 done something; meanwhile the display works.  Only if CAN-WAIT-P."))
+(defgeneric begin-drag (backend event text)
+  (:documentation "The drag that EVENT starts carries TEXT (for other applications).")
+  (:method (backend event text) nil))
+(defgeneric choose-file (backend continuation &key accept)
+  (:documentation "Let the user choose a file to read (ACCEPT: what kinds, like
+\".json,.txt\") and call CONTINUATION with its name and its text, or with NIL
+and NIL if none was chosen."))
+(defgeneric write-clipboard (backend text)
+  (:documentation "Put TEXT on the clipboard."))
+(defgeneric read-clipboard (backend continuation)
+  (:documentation "Call CONTINUATION with the text on the clipboard (NIL if it cannot be read)."))
 (defgeneric previous-sibling-size (backend event)
   (:documentation "The width and height of the node in front of the one the pointer
 EVENT happened on, which gets the following events of that pointer."))

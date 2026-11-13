@@ -20,6 +20,9 @@
    ;; NIL, or a function called by WAIT-FOR in place of the user: it
    ;; does what gives the answer (FIRE of a button of the dialog)
    (waiter :initform nil :initarg :waiter :accessor backend-waiter)
+   ;; (name text) of the file the "user" chooses, and the clipboard
+   (file :initform nil :initarg :file :accessor backend-file)
+   (clipboard :initform nil :accessor backend-clipboard)
    (overlay :initform nil)
    (global-listeners :initform nil :accessor backend-global-listeners)))
 
@@ -122,6 +125,16 @@
 
 (defmethod set-title ((backend sexp-backend) string)
   (note backend :title string))
+
+(defmethod choose-file ((backend sexp-backend) continuation &key accept)
+  (note backend :choose-file accept)
+  (funcall continuation (first (backend-file backend)) (second (backend-file backend))))
+
+(defmethod write-clipboard ((backend sexp-backend) text)
+  (setf (backend-clipboard backend) text))
+
+(defmethod read-clipboard ((backend sexp-backend) continuation)
+  (funcall continuation (backend-clipboard backend)))
 
 (defmethod can-wait-p ((backend sexp-backend))
   (and (backend-waiter backend) t))

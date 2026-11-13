@@ -51,6 +51,13 @@
 
 ;;; dialogs
 
+(defmethod choose-file ((backend desktop-backend) continuation &key accept)
+  (declare (ignore accept))
+  (let ((path (choose-file-to-open)))
+    (if path
+        (funcall continuation path (read-file path))
+        (funcall continuation nil nil))))
+
 (defun file-filters (filters)
   ;; ((name extension...)...)
   (mapcar (lambda (filter) (js:object "name" (car filter) "extensions" (cdr filter)))

@@ -495,3 +495,151 @@ lines" :rows 3))
   (setf (backend-waiter *backend*) (lambda () (fire (find-node (overlay) "dialog") "cancel")))
   (format t "cancelled: ~S, log: ~S~%" (invoke-command 'save-it) (first *log*))
   (setf (backend-waiter *backend*) nil))
+
+;;; ---- more panes and layouts
+
+(let* ((radios (list (make-instance 'radio-button :text "one" :selected t :group :n)
+                     (make-instance 'radio-button :text "two" :group :n)
+                     (make-instance 'radio-button :text "other" :group :m)))
+       (buttons (make-instance 'push-button-panel :items '(:yes :no) :print-function #'string-capitalize
+                                                  :callback-type :data
+                                                  :selection-callback (lambda (item) (format t "pressed ~S~%" item))))
+       (combo (make-instance 'text-input-choice :items '("red" "green") :text "blue"))
+       (root (make-root)))
+  (contain (make-instance
+            'column-layout
+            :description (append radios
+                                 (list buttons combo
+                                       (make-instance 'password-pane :text "secret")
+                                       (make-instance 'editor-pane :text "(defun f ())" :rows 2)
+                                       (make-instance 'color-pane :color "#ff0000")
+                                       (make-instance 'image-pane :url "logo.png" :description "logo")
+                                       (make-instance 'browser-pane :url "https://example.org/" :height 100)
+                                       (make-instance 'simple-layout :title "Box" :title-position :frame
+                                                                     :description '("inside"))
+                                       (make-instance 'pinboard-layout
+                                                      :description (list (list (make-instance 'title-pane :text "pinned")
+                                                                               10 20 80))))))
+           :container root)
+  (show "more panes" root)
+  (fire (find-node root "input" :index 1) "change")
+  (format t "radios: ~S~%" (mapcar #'button-selected radios))
+  (fire (find-node root "button" :index 1) "click")
+  (fire (find-node root "input" :index 3) "input" '(:value "green"))
+  (format t "combo: ~S~%" (text-input-pane-text combo)))
+
+;;; a list with a filter
+
+(let* ((list (make-instance 'list-panel :items '("apple" "banana" "apricot") :filter "Filter"))
+       (root (choice-test "a list with a filter" list)))
+  (fire (find-node root "input") "input" '(:value "AP"))
+  (format t "filtered: ~S~%" (mapcar #'node-text (find-nodes root "li")))
+  (fire (find-node root "input") "keydown" '(:key "ArrowDown"))
+  (fire (find-node root "input") "keydown" '(:key "ArrowDown"))
+  (format t "selected: ~S~%" (choice-selected-item list)))
+
+;;; ---- a graph
+
+(let* ((graph (make-instance 'graph-pane :roots '(a)
+                                         :children-function (lambda (node)
+                                                              (case node (a '(b c)) (b '(d)) (c '(d))))
+                                         :print-function #'string-downcase
+                                         :callback-type :data
+                                         :action-callback (lambda (item) (format t "action ~S~%" item))))
+       (root (choice-test "graph" graph)))
+  (fire (find-node root "g" :index 3) "click")
+  (format t "selected: ~S, nodes: ~S, edges: ~D~%" (choice-selected-item graph)
+          (mapcar #'node-text (find-nodes root "g")) (length (find-nodes root "path")))
+  (fire (find-node root "g" :index 0) "dblclick")
+  (setf (graph-pane-direction graph) :top-down)
+  (flush)
+  (format t "top-down: ~S~%" (second (to-sexp (find-node root "rect" :index 1)))))
+
+;;; ---- drag and drop, pointer documentation
+
+(defmodel folder ()
+  ((name :initarg :name :accessor folder-name)
+   (people :initform nil :accessor folder-people)))
+
+(define-command (file-person :label "File") ((person 'person) (folder 'folder))
+  (push (person-name person) (folder-people folder)))
+
+(define-drag-and-drop-translator drop-person (person folder file-person
+                                                     :tester (lambda (person folder)
+                                                               (not (member (person-name person)
+                                                                            (folder-people folder)
+                                                                            :test #'equal))))
+    (object destination)
+  (list object destination))
+
+(let* ((root (make-root))
+       (folder (make-instance 'folder :name "Inbox"))
+       (eve (make-instance 'person :name "Eve")))
+  (contain (make-instance 'application-pane
+                          :display-function (lambda (pane)
+                                              (declare (ignore pane))
+                                              (html (:div (with-output-as-presentation (eve 'person)
+                                                            (:b (person-name eve)))
+                                                          (with-output-as-presentation (folder 'folder)
+                                                            (:i (folder-name folder) " "
+                                                                (length (folder-people folder))))))))
+           :pointer-documentation t :container root)
+  (show "drag and drop" root)
+  (fire (find-node root "b") "mouseenter")
+  (format t "documentation: ~S~%" (node-text (find-node root "div" :class "ui-pointer-documentation")))
+  (fire (find-node root "b") "mouseleave")
+  (fire (find-node root "i") "drop")                 ; nothing is dragged
+  (fire (find-node root "b") "dragstart")
+  (fire (find-node root "i") "dragover")
+  (fire (find-node root "i") "drop")
+  (format t "filed: ~S ~S~%" (folder-people folder) (node-text (find-node root "i")))
+  (fire (find-node root "b") "dragstart")
+  (fire (find-node root "i") "drop")                 ; the tester says no
+  (format t "filed: ~S~%" (folder-people folder)))
+
+;;; ---- more dialogs
+
+(let ((answers '()))
+  (flet ((note (&rest values) (push values answers)))
+    (prompt-for-values '(("Name" string :default "Ada") ("Age" integer) ("Admin" boolean)
+                         ("Colour" (member :red :green) :default :green))
+                       :title "New user" :continuation #'note)
+    (flush)
+    (show "several values" (overlay))
+    (format t "OK disabled: ~S~%" (getf (second (to-sexp (find-node (overlay) "button" :index 1))) :disabled))
+    (fire (find-node (overlay) "input" :index 1) "input" '(:value "36"))
+    (fire (find-node (overlay) "input" :index 2) "change")
+    (fire (find-node (overlay) "button" :index 1) "click")
+    (prompt-for-color "Colour:" :color "#00ff00" :continuation #'note)
+    (flush)
+    (fire (find-node (overlay) "input") "input" '(:value "#0000ff"))
+    (fire (find-node (overlay) "button" :index 1) "click")
+    (let ((slider (make-instance 'slider :value 5)))
+      (popup-confirmer slider "How many?" :value-function #'range-value :ok-check #'plusp
+                                          :continuation #'note)
+      (flush)
+      (fire (find-node (overlay) "input") "input" '(:value 0))
+      (format t "OK disabled: ~S~%" (getf (second (to-sexp (find-node (overlay) "button" :index 1))) :disabled))
+      (fire (find-node (overlay) "input") "input" '(:value 8))
+      (fire (find-node (overlay) "button" :index 1) "click"))
+    (setf (backend-file *backend*) '("notes.txt" "hello"))
+    (prompt-for-file :accept ".txt" :continuation #'note)
+    (set-clipboard "copied")
+    (clipboard #'note)
+    (format t "answers: ~S~%" (reverse answers))))
+
+;;; a window: a dialog that is not modal
+
+(let ((login (make-instance 'login)))
+  (display-dialog login :modal nil :continuation (lambda (value okp) (format t "window: ~S ~S~%" value okp)))
+  (flush)
+  (backend-log *backend*)
+  (display-message "above the window")
+  (flush)
+  (format t "~&~%== a window~%~S~%" (remove :call (backend-log *backend*) :key #'car :test-not #'eq))
+  (format t "dialogs: ~S~%" (mapcar (lambda (node) (getf (second (to-sexp node)) :class))
+                                    (find-nodes (overlay) "dialog")))
+  ;; EXIT-DIALOG answers the modal one
+  (exit-dialog t)
+  (fire (find-node (overlay) "button" :class "ui-window-close") "click")
+  (format t "dialogs left: ~D~%" (length (find-nodes (overlay) "dialog"))))

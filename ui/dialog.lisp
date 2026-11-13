@@ -27,23 +27,34 @@
 (defvar *no-label* "No")
 
 (defcomponent dialog-view (dialog)
-  (let ((interface (dialog-interface dialog)))
-    (:dialog :class "ui-dialog" :aria-label (pane-title interface)
-             :on-mount (lambda (node) (node-call *backend* node "showModal"))
+  (let ((interface (dialog-interface dialog))
+        (modal (dialog-modal dialog)))
+    (:dialog :class (if modal "ui-dialog" "ui-dialog ui-window") :aria-label (pane-title interface)
+             :on-mount (lambda (node) (node-call *backend* node (if modal "showModal" "show")))
              ;; Escape
              :on-cancel (lambda (&optional event)
                           (when event (stop-event *backend* event))
                           (abort-dialog dialog))
-      (when (pane-title interface)
-        (:header :class "ui-dialog-title" (pane-title interface)))
+      (when (or (pane-title interface) (not modal))
+        (:header :class "ui-dialog-title"
+          (:span (or (pane-title interface) ""))
+          (unless modal
+            (:button :type "button" :class "ui-window-close" :aria-label *abort-label*
+                     :on-click (lambda (&optional event)
+                                 (declare (ignore event))
+                                 (abort-dialog dialog))
+              "×"))))
       (pane-node interface))))
 
-(defun display-dialog (interface &key continuation)
+(defun display-dialog (interface &key continuation (modal t))
   "Show INTERFACE as a dialog.  When it is answered with EXIT-DIALOG,
 CONTINUATION is called with the value and T; when it is cancelled
-(ABORT-DIALOG, the Escape key), with NIL and NIL."
+(ABORT-DIALOG, the Escape key), with NIL and NIL.  With MODAL false it is a
+window above the application, which can be used meanwhile, with a button
+that closes it (QUIT-INTERFACE does too)."
   (ensure-overlay)
-  (setf *dialogs* (append *dialogs* (list (make-dialog :interface interface :continuation continuation))))
+  (setf *dialogs* (append *dialogs* (list (make-dialog :interface interface :continuation continuation
+                                                       :modal modal))))
   interface)
 
 (defun close-dialog (dialog value okp)
@@ -53,7 +64,9 @@ CONTINUATION is called with the value and T; when it is cancelled
       (funcall (dialog-continuation dialog) value okp))))
 
 (defun top-dialog ()
-  (first (last *dialogs*)))
+  "The topmost modal dialog (if there is none, the last window)."
+  (or (find-if #'dialog-modal *dialogs* :from-end t)
+      (first (last *dialogs*))))
 
 (defun exit-dialog (value &optional (dialog (top-dialog)))
   "Answer the dialog (the topmost one) with VALUE."
@@ -143,6 +156,96 @@ the string, returns true."
                                           :callback (lambda () (exit-dialog (choice-selected-item list)))
                                           :enabled (computed (and (choice-selected-item list) t)))))
                     :continuation continuation)))
+
+;;; several values in one dialog (as ACCEPTING-VALUES of CLIM)
+
+(defun make-value-pane (type default)
+  "A pane in which the user gives a value of the presentation type TYPE, and
+a function that returns the value and whether it is one."
+  (let ((name (if (consp type) (car type) type)))
+    (case name
+      (boolean
+       (let ((pane (make-instance 'check-button :selected default)))
+         (values pane (lambda () (values (and (button-selected pane) t) t)))))
+      (member
+       (let ((pane (make-instance 'option-pane :items (cdr type)
+                                               :selected-item (or default (second type)))))
+         (values pane (lambda () (values (choice-selected-item pane) t)))))
+      ((integer number)
+       (let ((pane (make-instance 'text-input-pane :text (if default (text-of default) ""))))
+         (values pane (lambda ()
+                        (let ((number (parse-number (text-input-pane-text pane))))
+                          (if (and number (or (eq name 'number) (integerp number)))
+                              (values number t)
+                              (values nil nil)))))))
+      (t
+       (let ((pane (make-instance 'text-input-pane :text (or default ""))))
+         (values pane (lambda () (values (text-input-pane-text pane) t))))))))
+
+(defun prompt-for-values (fields &key continuation title message)
+  "Ask for several values in one dialog.  FIELDS is a list of
+(label type &key default), TYPE being STRING, INTEGER, NUMBER, BOOLEAN or
+(MEMBER ...).  CONTINUATION is called with the list of the values and T, or
+with NIL and NIL; the dialog can be answered when every value is one of its type."
+  (let ((panes '()) (readers '()))
+    (dolist (field fields)
+      (destructuring-bind (label type &key default) field
+        (multiple-value-bind (pane reader) (make-value-pane type default)
+          (push label panes)
+          (push pane panes)
+          (push reader readers))))
+    (setf readers (nreverse readers))
+    (flet ((valid () (every (lambda (reader) (nth-value 1 (funcall reader))) readers))
+           (answer () (exit-dialog (mapcar (lambda (reader) (values (funcall reader))) readers))))
+      (display-dialog (make-dialog-interface
+                       title message
+                       (list (make-instance 'grid-layout :stretch nil :description (nreverse panes)))
+                       (list (dialog-button *abort-label* #'abort-dialog)
+                             (make-instance 'push-button :text *ok-label* :default-p t :callback-type :none
+                                                         :callback #'answer
+                                                         :enabled (computed (valid)))))
+                      :continuation continuation))))
+
+(defun prompt-for-color (message &key (color "#000000") continuation title)
+  "Ask for a colour (like \"#3366cc\"); CONTINUATION is called with it and T, or with NIL and NIL."
+  (let ((pane (make-instance 'color-pane :color color)))
+    (display-dialog (make-dialog-interface
+                     title message (list pane)
+                     (list (dialog-button *abort-label* #'abort-dialog)
+                           (dialog-button *ok-label* (lambda () (exit-dialog (color-pane-color pane))) t)))
+                    :continuation continuation)))
+
+(defun popup-confirmer (pane message &key title continuation (value-function #'identity)
+                                       (ok-check (constantly t)))
+  "Show PANE in a dialog with the buttons OK and Cancel.  CONTINUATION is
+called with what VALUE-FUNCTION returns for the pane and T, or with NIL and
+NIL; OK is enabled while OK-CHECK, a function of that value, returns true."
+  (display-dialog (make-dialog-interface
+                   title message (list pane)
+                   (list (dialog-button *abort-label* #'abort-dialog)
+                         (make-instance 'push-button
+                                        :text *ok-label* :default-p t :callback-type :none
+                                        :callback (lambda () (exit-dialog (funcall value-function pane)))
+                                        :enabled (computed (and (funcall ok-check (funcall value-function pane))
+                                                                t)))))
+                  :continuation continuation))
+
+;;; files and the clipboard
+
+(defun prompt-for-file (&key continuation accept)
+  "Let the user choose a file to read (ACCEPT: the kinds of files, like
+\".json,.txt\"); CONTINUATION is called with its name and its text, or with
+NIL and NIL."
+  (choose-file *backend* (or continuation (constantly nil)) :accept accept))
+
+(defun set-clipboard (text)
+  "Put the string TEXT on the clipboard."
+  (write-clipboard *backend* text))
+
+(defun clipboard (continuation)
+  "Call CONTINUATION with the text on the clipboard (NIL if there is none
+or the user does not allow reading it)."
+  (read-clipboard *backend* continuation))
 
 ;;; ACCEPT of the types that are typed or chosen rather than clicked
 

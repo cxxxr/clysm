@@ -89,7 +89,7 @@ before the function of the chosen item."
   (and *input-context* t))
 
 (defstruct input-context type prompt continuation)
-(defstruct dialog interface continuation)
+(defstruct dialog interface continuation (modal t))
 
 (defcomponent overlay ()
   (:div :class "ui-overlay"
@@ -273,6 +273,72 @@ commands whose first parameter is of that type."
 ;;; ------------------------------------------------------------------
 ;;; Presentations
 
+;;; drag and drop
+
+(defstruct (drop-translator (:include translator)) to-type)
+
+(defvar *drop-translators* nil)
+(defvar *dragged* nil "(object type) of the presentation that is dragged, or NIL.")
+
+(defmacro define-drag-and-drop-translator
+    (name (from-type to-type command &key tester) (object destination) &body body)
+  "When a presentation whose type is a subtype of FROM-TYPE is dragged onto
+one whose type is a subtype of TO-TYPE, call COMMAND with the arguments that
+BODY returns as a list, OBJECT and DESTINATION being the two objects.  It
+applies when the command is enabled and TESTER, a function of the two
+objects, returns true."
+  `(progn
+     (setf *drop-translators*
+           (append (remove ',name *drop-translators* :key #'translator-name)
+                   (list (make-drop-translator
+                          :name ',name :type ',from-type :to-type ',to-type :command ',command
+                          :tester ,tester
+                          :function (lambda (,object ,destination)
+                                      (declare (ignorable ,object ,destination))
+                                      ,@body)))))
+     ',name))
+
+(defun drop-translator-for (object type destination destination-type)
+  (find-if (lambda (translator)
+             (and (presentation-subtypep type (translator-type translator))
+                  (presentation-subtypep destination-type (drop-translator-to-type translator))
+                  (command-enabled-p (translator-command translator))
+                  (or (null (translator-tester translator))
+                      (funcall (translator-tester translator) object destination))))
+           *drop-translators*))
+
+;;; pointer documentation: what the pointer can do where it is
+
+(defstate *pointer-documentation* nil "The text for the presentation under the pointer, or NIL.")
+
+(defvar *pointer-documentation-labels* '("Click: ~A" "Right click: menu" "Drag to drop")
+  "The format controls of the pointer documentation: for the command of a
+click (its label), for the menu and for dragging.")
+
+(defun pointer-documentation-for (object type)
+  (let ((context *input-context*)
+        (parts '()))
+    (cond ((and context (presentation-matches-p object type (input-context-type context)))
+           (push (format nil (first *pointer-documentation-labels*) (input-context-prompt context)) parts))
+          (t
+           (let ((translator (find :select (applicable-translators object type) :key #'translator-gesture)))
+             (when translator
+               (push (format nil (first *pointer-documentation-labels*)
+                             (or (translator-label translator)
+                                 (command-label (find-command (translator-command translator)))))
+                     parts)))
+           (when (presentation-menu object type)
+             (push (second *pointer-documentation-labels*) parts))
+           (when (find type *drop-translators* :key #'translator-type :test #'presentation-subtypep)
+             (push (third *pointer-documentation-labels*) parts))))
+    (and parts (format nil "~{~A~^ ・ ~}" (nreverse parts)))))
+
+(defcomponent pointer-documentation-view ()
+  "The line that says what the pointer can do (see the initarg
+:POINTER-DOCUMENTATION of interfaces)."
+  (:div :class "ui-pointer-documentation" :role "status"
+    (or *pointer-documentation* " ")))
+
 (defun add-class (node class)
   "Add CLASS to the classes of the element NODE (a description)."
   (let ((old (getf (element-props node) :class)))
@@ -290,6 +356,45 @@ the presentation type TYPE (NIL: PRESENTATION-TYPE-OF); return NODE."
     (add-class node (if (and context (presentation-matches-p object type (input-context-type context)))
                         "ui-presentation ui-acceptable"
                         "ui-presentation"))
+    ;; the pointer documentation
+    (setf (getf (element-props node) :on-mouseenter)
+          (lambda (&optional event)
+            (declare (ignore event))
+            (setf *pointer-documentation* (pointer-documentation-for object type)))
+          (getf (element-props node) :on-mouseleave)
+          (lambda (&optional event)
+            (declare (ignore event))
+            (setf *pointer-documentation* nil)))
+    ;; drag and drop
+    (when (find type *drop-translators* :key #'translator-type :test #'presentation-subtypep)
+      (setf (getf (element-props node) :draggable) t
+            (getf (element-props node) :on-dragstart)
+            (lambda (&optional event)
+              (when event
+                (begin-drag *backend* event (let ((text (present-object object type)))
+                                              (if (stringp text) text (princ-to-string object)))))
+              (setf *dragged* (list object type)))
+            (getf (element-props node) :on-dragend)
+            (lambda (&optional event)
+              (declare (ignore event))
+              (setf *dragged* nil))))
+    (when (find type *drop-translators* :key #'drop-translator-to-type :test #'presentation-subtypep)
+      (flet ((translator ()
+               (and *dragged*
+                    (drop-translator-for (first *dragged*) (second *dragged*) object type))))
+        (setf (getf (element-props node) :on-dragover)
+              (lambda (&optional event)
+                ;; a drop is possible here
+                (when (and event (translator)) (stop-event *backend* event)))
+              (getf (element-props node) :on-drop)
+              (lambda (&optional event)
+                (let ((translator (translator))
+                      (dragged *dragged*))
+                  (setf *dragged* nil)
+                  (when translator
+                    (when event (stop-event *backend* event))
+                    (apply #'invoke-command (translator-command translator)
+                           (funcall (translator-function translator) (first dragged) object))))))))
     (setf (getf (element-props node) :on-click)
           (lambda (&optional event)
             (let ((context *input-context*))

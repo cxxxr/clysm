@@ -358,11 +358,15 @@ layouts, without markup.
   `ui:choice-selected-item`; the arrow keys select, and a click on the title
   of a table column with `:sort` sorts by it), `slider`, `progress-bar`, `toolbar` (buttons
   for commands) and `application-pane`, whose `:display-function` returns
-  markup. Callbacks get what `:callback-type` says, by default the data and
+  markup; also `password-pane`, `editor-pane`, `radio-button`,
+  `push-button-panel`, `text-input-choice` (a field with texts to choose
+  from), `color-pane`, `image-pane` and `browser-pane`. A `list-panel` with
+  `:filter` has a field that narrows it. Callbacks get what `:callback-type` says, by default the data and
   the interface.
 * **The layouts**: `column-layout`, `row-layout` (with `:ratios`, and
   `:divider` in the description for a border the user drags), `grid-layout`,
-  `tab-layout` and `switchable-layout`. A description names panes of the
+  `tab-layout`, `switchable-layout`, `simple-layout` and `pinboard-layout`
+  (panes at given positions). A description names panes of the
   interface, or contains panes and strings.
 * **`define-interface`** is `defmodel` plus `:panes` and `:layouts`; the
   initarg forms see `ui:interface` and the panes made before them.
@@ -397,6 +401,11 @@ draws with `ui:draw-line`, `draw-lines`, `draw-rectangle`, `draw-circle`,
       (ui:with-output-as-presentation (city 'city) ; a shape that is a city
         (ui:draw-circle pane (city-x city) (city-y city) 4 :filled t)))))
 ```
+
+`ui:graph-pane` draws items and what its `:children-function` returns for
+them as boxes joined by edges (`:direction :left-right` or `:top-down`),
+selected and activated like the items of a list, and `ui:draw-image` draws an
+image.
 
 The graphics state is keyword arguments (`:foreground`, `:filled`, `:fill`,
 `:thickness`, `:dashes`, `:opacity`, `:class`) with the defaults of
@@ -439,6 +448,12 @@ presentation type, and a command says what its arguments are.
   `ui:define-presentation-type` gives one supertypes and a description, and
   methods of `ui:present-object` say how objects are shown.
 
+* `ui:define-drag-and-drop-translator` says what dragging a presentation of
+  one type onto one of another does: `(contact group move-to-group)` moves a
+  contact that is dropped on a group.
+* An interface with `:pointer-documentation t` has a line that says what the
+  pointer can do where it is (the command of a click, the menu, dragging).
+
 `ui:command-palette` (Ctrl+Shift+P) is a dialog in which a command is chosen
 by typing part of its name — every command of the application, which then
 asks for its arguments.
@@ -449,14 +464,58 @@ asks for its arguments.
 `ui:prompt-for-number`, `ui:prompt-for-confirmation` and
 `ui:prompt-with-list` show a modal dialog, and `(ui:display-dialog interface)`
 makes any interface one, answered by its callbacks with
-`(ui:exit-dialog value)` or `(ui:abort-dialog)`. A page cannot wait inside a
-function, so these return at once and call their `:continuation` with the
-answer and whether there is one:
+`(ui:exit-dialog value)` or `(ui:abort-dialog)`. `ui:prompt-for-values` asks for several typed values in one form,
+`ui:prompt-for-color` for a colour, `ui:popup-confirmer` shows any pane with
+OK and Cancel, and `ui:prompt-for-file` lets the user choose a file and gives
+its name and text (in the desktop application with the native dialog);
+`ui:set-clipboard` and `ui:clipboard` write and read the clipboard. With
+`:modal nil`, `display-dialog` shows a window above the application that can
+be used meanwhile. A page cannot wait inside a function, so these return at
+once and call their `:continuation` with the answer and whether there is one:
 
 ```lisp
 (ui:prompt-for-confirmation "Delete it?"
                             :continuation (lambda (yes okp) (when yes (delete-it))))
 ```
+
+### What of CAPI and CLIM is here
+
+| CAPI | here |
+|---|---|
+| `define-interface`, `display`, `contain`, `quit-interface` | the same names; a window is an element of the page, or (`display-dialog … :modal nil`) a window above it |
+| `title-pane`, `display-pane`, `text-input-pane`, `password-pane`, `multi-line-text-input-pane`, `editor-pane`, `text-input-choice` | the same names (`editor-pane` is plain text in a fixed-width font) |
+| `push-button`, `check-button`, `radio-button`, `push-button-panel`, `radio-button-panel`, `check-button-panel` | the same names |
+| `list-panel` (`:filter`), `multi-column-list-panel` (sorted by its headers), `tree-view`, `option-pane`, `graph-pane` | the same names |
+| `slider`, `progress-bar`, `toolbar`, `browser-pane`, `output-pane` | the same names |
+| `column-layout`, `row-layout` (`:ratios`, `:divider`, `:separator`), `grid-layout`, `tab-layout`, `switchable-layout`, `simple-layout`, `pinboard-layout` | the same names |
+| collections and choices: `:items`, `:print-function`, `:interaction`, `:selection-callback`, `:action-callback`, `:callback-type`, `choice-selected-item(s)` | the same |
+| menus, the menu bar, accelerators | commands with `:menu` and `:key`; `:menu-bar t`, `popup-menu` |
+| `display-dialog`, `exit-dialog`, `abort-dialog`, `popup-confirmer`, `display-message`, `prompt-for-string` / `-number` / `-confirmation` / `-file` / `-color`, `prompt-with-list` | the same names, with `:continuation` (as CAPI has for window-modal dialogs) |
+| graphics ports: `gp:draw-line`…, `with-graphics-state`, translation, rotation, scale, `draw-image` | `ui:draw-line`…, the same macros; shapes instead of pixels |
+| `:input-model` of output panes | `:press-callback`, `:motion-callback`, `:release-callback` |
+| `set-clipboard`, `clipboard` | the same names |
+| geometry hints (`:visible-min-width`…) | `:width`, `:height`, `:min-`, `:max-` and `:stretch`, in CSS |
+
+| CLIM | here |
+|---|---|
+| `define-application-frame`, panes, layouts | `define-interface` |
+| `define-command` with typed arguments, command tables | `define-command`, `:table` |
+| `present`, `with-output-as-presentation`, `define-presentation-type`, presentation methods | the same names; `present-object` is the `present` method |
+| `accept`, input contexts, highlighting of acceptable presentations | `accept`; a click, or a dialog for strings, numbers and members |
+| `accepting-values` | `prompt-for-values` |
+| `define-presentation-to-command-translator`, the presentation menu, `define-drag-and-drop-translator` | the same names |
+| the interactor (commands by name) | `command-palette` |
+| the pointer documentation pane | `:pointer-documentation t` |
+| application panes with a display function, incremental redisplay, `updating-output` | `application-pane`; every pane is redisplayed incrementally, from the state it read |
+| `formatting-table`, `formatting-item-list`, output records | markup (`(:table …)`), which is what is recorded and compared |
+| `draw-line*`…, `with-drawing-options`, transformations | `draw-line`…, `with-graphics-state` |
+| `format-graph-from-roots` | `graph-pane` |
+| `menu-choose`, `notify-user` | `popup-menu` / `prompt-with-list`, `display-message` |
+| the debugger with restarts | the dialog of restarts |
+
+Not here, because the page or the browser does it: fonts, colours and cursors
+(CSS), scrolling, printing, text editing commands, and processes (a page has
+one thread; `js:await` is how a computation waits).
 
 ### Commands
 

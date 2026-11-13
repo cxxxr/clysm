@@ -287,7 +287,8 @@ says: by default the data and the interface."))
    (selection-callback :initarg :selection-callback :initform nil :accessor choice-selection-callback)
    ;; called with the item that was double-clicked (or Enter pressed on)
    (action-callback :initarg :action-callback :initform nil :accessor choice-action-callback)
-   ;; if true, the items are presentations of this type (T: PRESENTATION-TYPE-OF)
+   ;; if true, the items are presentations of this type (T: PRESENTATION-TYPE-OF;
+   ;; a function: of what it returns for the item)
    (presentation-type :initarg :presentation-type :initform nil :accessor choice-presentation-type)))
 
 (defun multiple-selection-p (choice)
@@ -381,16 +382,50 @@ True if KEY was one of them."
   "NODE, the element of ITEM, as a presentation if the items of CHOICE are."
   (let ((type (choice-presentation-type choice)))
     (if type
-        (presenting item (if (eq type t) nil type) node)
+        (presenting item (cond ((eq type t) nil)
+                               ((functionp type) (funcall type item))
+                               (t type))
+                    node)
         node)))
 
 ;;; a list
 
-(defmodel list-panel (choice) ()
+(defmodel list-panel (choice)
+  (;; true to show a field above the list: only the items whose text contains
+   ;; what the user typed there are shown
+   (filter :initarg :filter :initform nil :accessor list-panel-filter)
+   (filter-text :initform "" :accessor list-panel-filter-text))
   (:default-initargs :stretch t)
   (:documentation "A list of items."))
 
+(defun item-text (pane item)
+  (let ((printed (print-item pane item)))
+    (if (stringp printed) printed (text-of item))))
+
+(defmethod choice-visible-items ((pane list-panel))
+  (let ((text (list-panel-filter-text pane)))
+    (if (and (list-panel-filter pane) (plusp (length text)))
+        (remove-if-not (lambda (item) (search text (item-text pane item) :test #'char-equal))
+                       (collection-items pane))
+        (collection-items pane))))
+
 (defmethod render-pane ((pane list-panel))
+  (let ((list (render-list pane)))
+    (if (list-panel-filter pane)
+        (html
+          (:div :class "ui-filtered-list"
+            (:input :type "search" :class "ui-text-input-pane ui-list-filter"
+                    :value (list-panel-filter-text pane)
+                    :placeholder (if (stringp (list-panel-filter pane)) (list-panel-filter pane) nil)
+                    :on-input (lambda (&optional event)
+                                (setf (list-panel-filter-text pane)
+                                      (event-target-get *backend* event "value")))
+                    :on-keydown (lambda (&optional event)
+                                  (move-selection pane (event-get *backend* event "key") event)))
+            list))
+        list)))
+
+(defun render-list (pane)
   (html
     (:ul :class "ui-list-panel" :role "listbox" :tabindex (if (pane-enabled pane) 0 -1)
          :aria-multiselectable (if (multiple-selection-p pane) "true" nil)
@@ -407,7 +442,7 @@ True if KEY was one of them."
                                        (declare (ignore event))
                                        (activate-item pane item))
                      (print-item pane item)))))
-              (collection-items pane)))))
+              (choice-visible-items pane)))))
 
 ;;; a table
 
@@ -434,7 +469,7 @@ returns for an item — numbers by size, everything else as text."))
       (and (string-lessp (text-of a) (text-of b)) t)))
 
 (defmethod choice-visible-items ((pane multi-column-list-panel))
-  (let* ((items (collection-items pane))
+  (let* ((items (call-next-method))
          (index (list-panel-sort-column pane))
          (sort (and index (getf (nth index (list-panel-columns pane)) :sort))))
     (if (null sort)
@@ -928,6 +963,127 @@ pane of the selected one."))
                            "flex:1 1 0")))))))
 
 ;;; ------------------------------------------------------------------
+;;; More panes
+
+(defmodel password-pane (text-input-pane) ()
+  (:default-initargs :password t)
+  (:documentation "A text input pane that hides what is typed."))
+
+(defmodel editor-pane (multi-line-text-input-pane) ()
+  (:default-initargs :rows 12 :class "ui-editor-pane" :stretch t)
+  (:documentation "Text of many lines that the user edits, in a fixed-width font."))
+
+(defmodel radio-button (check-button)
+  (;; the buttons with the same GROUP (any object) exclude each other
+   (group :initarg :group :initform nil :accessor radio-button-group))
+  (:documentation "A button that is selected instead of the others of its GROUP in the
+same interface.  Its callback is called with its data when it is selected."))
+
+(defvar *radio-buttons* nil "Every radio button that was shown.")
+
+(defmethod render-pane ((pane radio-button))
+  (pushnew pane *radio-buttons*)
+  (html (:label :class "ui-check-button ui-radio-button"
+          (:input :type "radio" :checked (and (button-selected pane) t)
+                  :disabled (not (pane-enabled pane))
+                  :on-change (lambda (&optional event)
+                               (declare (ignore event))
+                               (dolist (other *radio-buttons*)
+                                 (when (and (not (eq other pane))
+                                            (eq (pane-interface other) (pane-interface pane))
+                                            (equal (radio-button-group other) (radio-button-group pane)))
+                                   (setf (button-selected other) nil)))
+                               (setf (button-selected pane) t)
+                               (call-callback pane (button-callback pane) :data (button-text pane))))
+          (:span (text-of (button-text pane))))))
+
+(defmodel push-button-panel (choice)
+  ((orientation :initarg :orientation :initform :row :accessor button-panel-orientation))
+  (:documentation "A push button for every item; the selection callback is called with
+the item whose button was pressed."))
+
+(defmethod render-pane ((pane push-button-panel))
+  (html
+    (:div :class (format nil "ui-button-panel ui-~(~A~)" (button-panel-orientation pane)) :role "group"
+      (mapcar (lambda (item)
+                (:button :type "button" :class "ui-push-button"
+                         :disabled (not (pane-enabled pane))
+                         :on-click (lambda (&optional event)
+                                     (declare (ignore event))
+                                     (call-callback pane (choice-selection-callback pane) :data item))
+                  (print-item pane item)))
+              (collection-items pane)))))
+
+(defvar *text-input-choices* 0)
+
+(defmodel text-input-choice (text-input-pane)
+  (;; what the user can choose instead of typing
+   (items :initarg :items :initform nil :accessor collection-items)
+   (id :initform (incf *text-input-choices*) :reader text-input-choice-id))
+  (:documentation "A text input pane with a list of texts to choose from."))
+
+(defmethod render-pane ((pane text-input-choice))
+  (let ((input (call-next-method))
+        (id (format nil "ui-choices-~D" (text-input-choice-id pane))))
+    (setf (getf (element-props input) :list) id)
+    (html (:span :class "ui-text-input-choice"
+            input
+            (:datalist :id id
+              (mapcar (lambda (item) (:option :value (text-of item))) (collection-items pane)))))))
+
+(defmodel browser-pane (pane)
+  ((url :initarg :url :initform "about:blank" :accessor browser-pane-url))
+  (:default-initargs :stretch t)
+  (:documentation "A pane that shows the page at URL."))
+
+(defmethod render-pane ((pane browser-pane))
+  (html (:iframe :class "ui-browser-pane" :src (browser-pane-url pane))))
+
+(defmodel image-pane (pane)
+  ((url :initarg :url :initform nil :accessor image-pane-url)
+   (description :initarg :description :initform "" :accessor image-pane-description))
+  (:documentation "A pane that shows the image at URL."))
+
+(defmethod render-pane ((pane image-pane))
+  (html (:img :class "ui-image-pane" :src (image-pane-url pane) :alt (image-pane-description pane))))
+
+(defmodel color-pane (pane callbacks)
+  (;; like "#3366cc"
+   (color :initarg :color :initform "#000000" :accessor color-pane-color)
+   (callback :initarg :callback :initform nil :accessor color-pane-callback))
+  (:documentation "A colour that the user chooses."))
+
+(defmethod render-pane ((pane color-pane))
+  (html (:input :type "color" :class "ui-color-pane" :value (color-pane-color pane)
+                :disabled (not (pane-enabled pane))
+                :on-input (lambda (&optional event)
+                            (let ((color (event-target-get *backend* event "value")))
+                              (setf (color-pane-color pane) color)
+                              (call-callback pane (color-pane-callback pane) :data color))))))
+
+(defmodel simple-layout (layout) ()
+  (:documentation "A layout of one pane (with :TITLE and :TITLE-POSITION :FRAME, a box around it)."))
+
+(defmethod render-pane ((pane simple-layout))
+  (html (:div :class (layout-class pane "ui-simple-layout")
+          (let ((child (first (layout-description pane))))
+            (and child (child-node pane child "flex:1 1 0"))))))
+
+(defmodel pinboard-layout (layout) ()
+  (:documentation "Its panes are where they say: an element of the description is
+(pane x y) or (pane x y width height), in pixels."))
+
+(defmethod render-pane ((pane pinboard-layout))
+  (html
+    (:div :class "ui-pinboard-layout"
+      (mapcar (lambda (item)
+                (destructuring-bind (child x y &optional width height) (if (consp item) item (list item 0 0))
+                  (child-node pane child
+                              (format nil "position:absolute;left:~Dpx;top:~Dpx~@[;width:~Dpx~]~@[;height:~Dpx~]"
+                                      x y width height))))
+              (layout-description pane)))))
+
+;;; ------------------------------------------------------------------
 ;;; Interfaces
 
 (defmodel interface (pane)
@@ -940,7 +1096,10 @@ pane of the selected one."))
    ;; while the interface is on the screen
    (command-table :initarg :command-table :initform nil :accessor interface-command-table)
    (root :initform nil :accessor interface-root)
-   (title-reaction :initform nil :accessor interface-title-reaction))
+   (title-reaction :initform nil :accessor interface-title-reaction)
+   ;; true to show, below the layout, what the pointer can do where it is
+   (pointer-documentation :initarg :pointer-documentation :initform nil
+                          :accessor interface-pointer-documentation))
   (:default-initargs :stretch t)
   (:documentation "A window: panes in a layout, with a title.  See DEFINE-INTERFACE."))
 
@@ -971,7 +1130,8 @@ pane of the selected one."))
       (:div :class "ui-interface"
         (when (and (interface-menu-bar interface) (not (native-menus-p *backend*)))
           (menu-bar-view))
-        (and layout (child-node interface layout "flex:1 1 0"))))))
+        (and layout (child-node interface layout "flex:1 1 0"))
+        (when (interface-pointer-documentation interface) (pointer-documentation-view))))))
 
 (defmacro define-interface (name superclasses slots &rest options)
   "Define the class NAME of interfaces, like DEFMODEL with the options
@@ -992,7 +1152,8 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
     (dolist (pane (append panes layouts))
       (when (member (car pane) '(name interface title title-position enabled visible help class
                                  width height min-width min-height max-width max-height stretch
-                                 layout menu-bar command-table root title-reaction))
+                                 layout menu-bar command-table root title-reaction
+                                 pointer-documentation))
         (error "DEFINE-INTERFACE ~S: a pane cannot be named ~S, which is a slot of every interface"
                name (car pane))))
     (flet ((slot-options (initargs)

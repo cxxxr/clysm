@@ -470,7 +470,7 @@ answers: ((T T) (NIL T) (NIL NIL) (C T))
 (:OVERLAY NIL
  (:DIV (:CLASS "ui-overlay")
   (:DIALOG (:ARIA-LABEL "Log in" :CLASS "ui-dialog")
-   (:HEADER (:CLASS "ui-dialog-title") "Log in")
+   (:HEADER (:CLASS "ui-dialog-title") (:SPAN NIL "Log in"))
    (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
     (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
      (:DIV (:CLASS "ui-pane ui-titled") (:LABEL (:CLASS "ui-title") "User")
@@ -648,3 +648,145 @@ dialogs: 0, accepting: T
 chosen: :ELSEWHERE, dialogs left: 0
 aborted: NIL, log: :ELSEWHERE
 cancelled: NIL, log: :ELSEWHERE
+
+== more panes
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+   (:LABEL (:CLASS "ui-pane ui-check-button ui-radio-button")
+    (:INPUT (:CHECKED T :TYPE "radio")) (:SPAN NIL "one"))
+   (:LABEL (:CLASS "ui-pane ui-check-button ui-radio-button")
+    (:INPUT (:TYPE "radio")) (:SPAN NIL "two"))
+   (:LABEL (:CLASS "ui-pane ui-check-button ui-radio-button")
+    (:INPUT (:TYPE "radio")) (:SPAN NIL "other"))
+   (:DIV (:ROLE "group" :CLASS "ui-pane ui-button-panel ui-row")
+    (:BUTTON (:CLASS "ui-push-button" :TYPE "button") "Yes")
+    (:BUTTON (:CLASS "ui-push-button" :TYPE "button") "No"))
+   (:SPAN (:CLASS "ui-pane ui-text-input-choice")
+    (:INPUT
+     (:VALUE "blue" :CLASS "ui-text-input-pane" :TYPE "text" :LIST
+      "ui-choices-1"))
+    (:DATALIST (:ID "ui-choices-1") (:OPTION (:VALUE "red"))
+     (:OPTION (:VALUE "green"))))
+   (:INPUT
+    (:VALUE "secret" :CLASS "ui-pane ui-text-input-pane" :TYPE "password"))
+   (:TEXTAREA
+    (:ROWS 2 :VALUE "(defun f ())" :CLASS
+     "ui-pane ui-multi-line-text-input-pane ui-editor-pane" :STYLE
+     "flex:1 1 0;"))
+   (:INPUT (:VALUE "#ff0000" :CLASS "ui-pane ui-color-pane" :TYPE "color"))
+   (:IMG (:ALT "logo" :SRC "logo.png" :CLASS "ui-pane ui-image-pane"))
+   (:IFRAME
+    (:SRC "https://example.org/" :CLASS "ui-pane ui-browser-pane" :STYLE
+     "flex:1 1 0;height:100px;"))
+   (:FIELDSET (:CLASS "ui-pane ui-frame" :STYLE "flex:1 1 0;")
+    (:LEGEND NIL "Box")
+    (:DIV (:CLASS "ui-simple-layout" :ARIA-LABEL "Box")
+     (:SPAN (:CLASS "ui-pane ui-title-pane") "inside")))
+   (:DIV (:CLASS "ui-pane ui-pinboard-layout" :STYLE "flex:1 1 0;")
+    (:SPAN
+     (:CLASS "ui-pane ui-title-pane" :STYLE
+      "position:absolute;left:10px;top:20px;width:80px;")
+     "pinned")))))
+radios: (NIL T NIL)
+pressed :NO
+combo: "green"
+
+== a list with a filter
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-filtered-list" :STYLE "flex:1 1 0;")
+   (:INPUT
+    (:PLACEHOLDER "Filter" :VALUE "" :CLASS "ui-text-input-pane ui-list-filter"
+     :TYPE "search"))
+   (:UL (:TABINDEX 0 :ROLE "listbox" :CLASS "ui-list-panel")
+    (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "apple")
+    (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "banana")
+    (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "apricot")))))
+filtered: ("apple" "apricot")
+selected: "apricot"
+
+== graph
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:TABINDEX 0 :CLASS "ui-pane ui-graph-pane" :STYLE "flex:1 1 0;")
+   (:SVG (:HEIGHT "88" :WIDTH "224")
+    (:PATH
+     (:D "M132 21 C154 21 154 21 176 21" :FILL "none" :CLASS "ui-graph-edge"))
+    (:PATH
+     (:D "M48 40 C70 40 70 21 92 21" :FILL "none" :CLASS "ui-graph-edge"))
+    (:PATH
+     (:D "M132 59 C154 59 154 21 176 21" :FILL "none" :CLASS "ui-graph-edge"))
+    (:PATH
+     (:D "M48 40 C70 40 70 59 92 59" :FILL "none" :CLASS "ui-graph-edge"))
+    (:G (:CLASS "ui-graph-node")
+     (:RECT (:RX "5" :HEIGHT "26" :WIDTH "40" :Y "27" :X "8"))
+     (:TEXT
+      (:DOMINANT-BASELINE "central" :TEXT-ANCHOR "middle" :Y "40" :X "28")
+      "a"))
+    (:G (:CLASS "ui-graph-node")
+     (:RECT (:RX "5" :HEIGHT "26" :WIDTH "40" :Y "8" :X "92"))
+     (:TEXT
+      (:DOMINANT-BASELINE "central" :TEXT-ANCHOR "middle" :Y "21" :X "112")
+      "b"))
+    (:G (:CLASS "ui-graph-node")
+     (:RECT (:RX "5" :HEIGHT "26" :WIDTH "40" :Y "8" :X "176"))
+     (:TEXT
+      (:DOMINANT-BASELINE "central" :TEXT-ANCHOR "middle" :Y "21" :X "196")
+      "d"))
+    (:G (:CLASS "ui-graph-node")
+     (:RECT (:RX "5" :HEIGHT "26" :WIDTH "40" :Y "46" :X "92"))
+     (:TEXT
+      (:DOMINANT-BASELINE "central" :TEXT-ANCHOR "middle" :Y "59" :X "112")
+      "c"))))))
+selected: C, nodes: ("a" "b" "d" "c"), edges: 4
+action A
+top-down: (:RX "5" :HEIGHT "26" :WIDTH "40" :Y "78" :X "8")
+
+== drag and drop
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-application-pane" :STYLE "flex:1 1 0;")
+   (:DIV NIL (:B (:CLASS "ui-presentation" :DRAGGABLE T) "Eve")
+    (:I (:CLASS "ui-presentation") "Inbox" " " "0")))
+  (:DIV (:ROLE "status" :CLASS "ui-pointer-documentation") " ")))
+documentation: "Click: Show ・ Right click: menu ・ Drag to drop"
+filed: ("Eve") "Inbox 1"
+filed: ("Eve")
+
+== several values
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:ARIA-LABEL "New user" :CLASS "ui-dialog")
+   (:HEADER (:CLASS "ui-dialog-title") (:SPAN NIL "New user"))
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV
+     (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout ui-dialog-body")
+     (:DIV
+      (:STYLE "grid-template-columns:auto minmax(0,1fr)" :CLASS
+       "ui-pane ui-grid-layout")
+      (:SPAN (:CLASS "ui-pane ui-title-pane") "Name")
+      (:INPUT (:VALUE "Ada" :CLASS "ui-pane ui-text-input-pane" :TYPE "text"))
+      (:SPAN (:CLASS "ui-pane ui-title-pane") "Age")
+      (:INPUT (:VALUE "" :CLASS "ui-pane ui-text-input-pane" :TYPE "text"))
+      (:SPAN (:CLASS "ui-pane ui-title-pane") "Admin")
+      (:LABEL (:CLASS "ui-pane ui-check-button") (:INPUT (:TYPE "checkbox"))
+       (:SPAN NIL ""))
+      (:SPAN (:CLASS "ui-pane ui-title-pane") "Colour")
+      (:SELECT (:CLASS "ui-pane ui-option-pane") (:OPTION NIL "RED")
+       (:OPTION (:SELECTED T) "GREEN")))
+     (:DIV (:CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+      (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button") "Cancel")
+      (:BUTTON
+       (:DISABLED T :CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+       "OK")))))))
+OK disabled: T
+OK disabled: T
+answers: ((("Ada" 36 T :GREEN) T) ("#0000ff" T) (8 T) ("notes.txt" "hello")
+          ("copied"))
+
+== a window
+((:CALL :DIALOG "showModal"))
+dialogs: ("ui-dialog ui-window" "ui-dialog")
+window: NIL NIL
+dialogs left: 0
