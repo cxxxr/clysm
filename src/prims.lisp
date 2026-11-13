@@ -1574,6 +1574,15 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
        (:br again)))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%no-catch-error)) '(:call (:callsym 1)) :drop)
 
+;;; the pending non-local exit (codegen.lisp, "Non-local exits of local
+;;; functions as returns") is thrown
+(defhelper :throw-pending-exit :v-v ((tag :eqref) (val :eqref))
+  `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) `(:struct.get :symbol ,+sym-value+) '(:local.set tag)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-value)) `(:struct.get :symbol ,+sym-value+) '(:local.set val)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) '(:ref.null :eq) `(:struct.set :symbol ,+sym-value+)
+  `(:global.get ,(sym-global 'clysm-sys::%exit-value)) '(:ref.null :eq) `(:struct.set :symbol ,+sym-value+)
+  '(:local.get tag) '(:local.get val) '(:throw :lisp-throw))
+
 ;;; multiple values
 (defhelper :mv-save :e-e ((v (:ref :null :vector)) (n :i32))
   ;; returns vector [primary, count, v1 ... v(n-1)]

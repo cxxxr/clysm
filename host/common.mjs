@@ -51,7 +51,7 @@ export function makeCommonEnv(state) {
         const m = f.match(/at (.+?) \(wasm:/);
         if (!m) continue;
         let name = m[1].replace(/#\d+(\/generic)?$/, '');
-        if (name.startsWith(':') || name.startsWith('(') || /^(BACKTRACE|%BACKTRACE|ERROR|%REPORT-AND-EXIT|INVOKE-DEBUGGER|SIGNAL|%TYPE-ERROR|%COERCE-TO-CONDITION)$/.test(name)) continue;
+        if (name.startsWith(':') || name.startsWith('(') || /^(BACKTRACE|%BACKTRACE|ERROR|%ERROR\*|%REPORT-AND-EXIT|INVOKE-DEBUGGER|SIGNAL|%SIGNAL\*|%TYPE-ERROR|%COERCE-TO-CONDITION)$/.test(name)) continue;
         if (name === 'toplevel') { names.push('<toplevel>'); break; }
         names.push(name);
       }

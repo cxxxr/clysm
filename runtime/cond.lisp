@@ -487,7 +487,7 @@ the restarts are associated with the condition being signaled."
 
 ;;; the body of SIGNAL, also expanded in ERROR and WARN: the frames between
 ;;; the signalling function and the handler make a transfer of control slower
-(defmacro %signal-condition (condition)
+(defmacro %signal-condition (condition &optional (transfer '%throw))
   `(let ((cluster *handler-clusters*))
     (do () ((null cluster))
       (let* ((next (%svref cluster 0)) (types (%svref cluster 1)) (n (length types)))
@@ -499,18 +499,37 @@ the restarts are associated with the condition being signaled."
             (do ((i 0 (+ i 1))) ((>= i n))
               (when (%condition-of-type-p ,condition (%svref types i))
                 (%set-svref cluster 2 i)
-                (%throw cluster ,condition))))
+                (,transfer cluster ,condition))))
         (setq cluster next)))))
-
-(defun %signal (condition)
-  (%signal-condition condition)
-  nil)
 
 (defun %throw (tag value) (%throw tag value))
 
-(defun signal (datum &rest args)
+;;; The pending non-local exit (src/codegen.lisp, "Non-local exits of local
+;;; functions as returns"): unbound when there is none.
+(defvar %exit-tag)
+(defvar %exit-value)
+
+;;; SIGNAL, ERROR, WARN and CERROR exist twice.  The functions of these names
+;;; throw the condition to the HANDLER-CASE that handles it.  Compiled direct
+;;; calls go to %SIGNAL*, %ERROR*, %WARN* and %CERROR*, which leave that exit
+;;; pending and return instead: the code after such a call takes it up (a
+;;; HANDLER-CASE in the same function without a Wasm exception, otherwise
+;;; by throwing).  Only the compiler calls them.
+(defmacro %define-signaller (name variant lambda-list &body body)
+  "BODY uses (%TRANSFER cluster condition) to leave for a HANDLER-CASE clause."
+  `(progn
+     (defun ,name ,lambda-list
+       (macrolet ((%transfer (cluster condition) `(%throw ,cluster ,condition)))
+         ,@body))
+     (defun ,variant ,lambda-list
+       (macrolet ((%transfer (cluster condition)
+                    `(progn (setq %exit-value ,condition %exit-tag ,cluster)
+                            (return-from ,',variant nil))))
+         ,@body))))
+
+(%define-signaller signal %signal* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-condition)))
-    (%signal-condition condition)
+    (%signal-condition condition %transfer)
     nil))
 
 (defvar *error-depth* 0)
@@ -529,26 +548,31 @@ the restarts are associated with the condition being signaled."
   ;; trap so that the host prints a stack trace
   (%wasm nil () :unreachable))
 
-(defun error (datum &rest args)
+(%define-signaller error %error* (datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let* ((*error-depth* (+ *error-depth* 1))
          (condition (%coerce-to-condition datum args 'simple-error)))
-    (%signal-condition condition)
+    (%signal-condition condition %transfer)
     (invoke-debugger condition)))
 
-(defun cerror (continue-format datum &rest args)
+(%define-signaller cerror %cerror* (continue-format datum &rest args)
+  (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
-    (restart-case (error c)
+    (restart-case (progn
+                    (%associate-restarts c (car *restart-clusters*))
+                    (let ((*error-depth* (+ *error-depth* 1)))
+                      (%signal-condition c %transfer))
+                    (invoke-debugger c))
       (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
   nil)
 
-(defun warn (datum &rest args)
+(%define-signaller warn %warn* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-warning)))
     (unless (typep condition 'warning)
       (error 'simple-type-error :datum condition :expected-type 'warning
                                 :format-control "~S is not a warning" :format-arguments (list condition)))
     (restart-case (progn
-                    (%signal condition)
+                    (%signal-condition condition %transfer)
                     (format *error-output* "~&WARNING: ~A~%" condition))
       (muffle-warning () :report "Skip warning." nil))
     nil))

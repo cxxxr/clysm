@@ -689,7 +689,28 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         (:br_on_non_null ,l)
         (:global.get ,(sym-global sym)) (:call :undefined-function)))))
 
+;;; ERROR, SIGNAL, WARN and CERROR called directly: the call goes to a variant
+;;; that, when the handler is a clause of a HANDLER-CASE, leaves the exit to
+;;; it pending and returns (see "Non-local exits of local functions as
+;;; returns"), so that a HANDLER-CASE in the calling function takes it without
+;;; a Wasm exception.  The functions themselves (FUNCALL, APPLY, and calls
+;;; with no CATCH or HANDLER-CASE around them in a function that is not
+;;; flagging) throw.
+(defparameter *flag-returning-calls*
+  '((error . clysm-sys::%error*) (signal . clysm-sys::%signal*)
+    (warn . clysm-sys::%warn*) (cerror . clysm-sys::%cerror*)))
+
 (defun cg-global-call (sym args mv tail)
+  (let ((variant (and (or *fexit* (some (lambda (c) (eq (car c) :catch)) *catchers*))
+                      (not (gethash sym *notinline*))
+                      (cdr (assoc sym *flag-returning-calls*)))))
+    (if variant
+        (let ((tail (and tail *fexit*)))
+          `(,@(cg-global-call-1 variant args mv tail)
+            ,@(unless tail (pending-exit-check-code))))
+        (cg-global-call-1 sym args mv tail))))
+
+(defun cg-global-call-1 (sym args mv tail)
   (let ((lam (known-global-lam sym))
         (arg-codes (mapcar #'cg args)))
     ;; in a catch clone, a tail call under no CATCH or UNWIND-PROTECT may call
@@ -697,7 +718,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
     (when (and lam tail *tail-ok* *catching-tag* (null *uwp-frames*) (lam-simple-p lam)
                (null (lam-free-vars lam)) (= (length args) (length (lam-req lam))))
       (ensure-lam-compiled lam)
-      (return-from cg-global-call
+      (return-from cg-global-call-1
         `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
           (:return_call ,(ensure-catch-clone lam *catching-tag*)))))
     (if (and lam (lam-accepts-p lam (length args)))
@@ -742,7 +763,8 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
             (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
             (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
                    (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))
-      ,@(when (and flagging (not tail)) (pending-exit-check-code)))))
+      ,@(when (and flagging (not tail))
+          (if (or *fexit* *catchers*) (pending-exit-check-code) (pending-exit-throw-code))))))
 
 (defun cg-defun (node mv)
   (destructuring-bind (sym fnode) (cdr node)
@@ -1067,6 +1089,12 @@ the exit it may have left pending."
                   (flagged-exit-code `((:local.get ,tag)) `((:local.get ,val)))
                   `((:local.get ,tag) (:local.get ,val) (:throw :lisp-throw)))))
       (:local.get ,res))))
+
+(defun pending-exit-throw-code ()
+  "After a call of a flagging function where no catcher is around and the
+caller is not flagging: throw the exit it may have left pending."
+  `(,@(pending-tag-code) :ref.is_null :i32.eqz
+    (:if nil nil ((:call :throw-pending-exit)))))
 
 ;;; ------------------------------------------------------------
 ;;; TAGBODY / GO
