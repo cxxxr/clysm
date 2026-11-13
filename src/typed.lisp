@@ -228,6 +228,7 @@ comparisons need)."
                    (typed-ref-code node))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
+                  ((eq name 'clysm-sys::%aref2) (typed-aref2-code node))
                   ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
                                   clysm-sys::%svref clysm-sys::%set-svref))
                    (typed-access-code node))
@@ -319,6 +320,33 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
          (let ((tmp (new-local)))
            `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args))
              ,@(cg (third args)) (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp))))))))
+
+(defun typed-aref2-code (node)
+  "2-D AREF with fixnum indices: the helper's fast path inline."
+  (destructuring-bind (a i j) (cddr node)
+    (when (and (fx-arg-p i) (fx-arg-p j))
+      (let ((av (new-local)) (x (new-local :i32)) (y (new-local :i32)) (m (new-local '(:ref :null :mdarray)))
+            (dims (new-local)) (rest (new-local)) (d1 (new-local :i32)) (v (new-local '(:ref :null :vector)))
+            (fail (gensym "SLOW")) (done (gensym "AREF2")))
+        `(,@(cg a) (:local.set ,av) ,@(cg-rep i :i32) (:local.set ,x) ,@(cg-rep j :i32) (:local.set ,y)
+          (:block ,done :eqref
+            (:block ,fail nil
+              (:local.get ,av) (:ref.test :mdarray) :i32.eqz (:br_if ,fail)
+              (:local.get ,av) (:ref.cast! :mdarray) (:local.tee ,m) (:struct.get :mdarray 2) (:local.tee ,dims)
+              (:ref.test :cons) :i32.eqz (:br_if ,fail)
+              (:local.get ,dims) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee ,rest) (:ref.test :cons)
+              :i32.eqz (:br_if ,fail)
+              (:local.get ,x) (:local.get ,dims) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31)
+              :i31.get_s :i32.ge_u (:br_if ,fail)
+              (:local.get ,y) (:local.get ,rest) (:ref.cast! :cons) (:struct.get :cons 0) (:ref.cast :i31)
+              :i31.get_s (:local.tee ,d1) :i32.ge_u (:br_if ,fail)
+              (:local.get ,rest) (:ref.cast! :cons) (:struct.get :cons 1) ,@(nil-code) :ref.eq :i32.eqz (:br_if ,fail)
+              (:local.get ,m) (:struct.get :mdarray 0) (:ref.test :vector) :i32.eqz (:br_if ,fail)
+              (:local.get ,m) (:struct.get :mdarray 0) (:ref.cast! :vector)
+              (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+              (:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add
+              (:array.get :vector) (:br ,done))
+            (:local.get ,av) (:local.get ,x) :ref.i31 (:local.get ,y) :ref.i31 (:call :aref2)))))))
 
 (defun typed-struct-code (node)
   "Slot access of an object known to be of the structure class: no check."

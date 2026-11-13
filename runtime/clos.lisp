@@ -445,22 +445,25 @@
       (unless (eq (svref v i) (class-of (car a))) (return nil))
       (setq a (cdr a)))))
 
+(defmacro %fast-class-of (x)
+  `(let ((x ,x)) (if (%instancep x) (%instance-layout x) (class-of x))))
+
 (defun %gf-call1 (info a)
   (when (eql (%gf-slot info +gf-nreq+) 1)
-    (let ((c (class-of a)))
+    (let ((c (%fast-class-of a)))
       (dolist (v (car (%gf-slot info +gf-cache+)))
-        (when (eq (svref v 0) c)
-          (let ((f (svref v 2)))
-            (if f (return-from %gf-call1 (funcall f a)) (return)))))))
+        (when (eq (%svref v 0) c)
+          (let ((f (%svref v 2)))
+            (if f (return-from %gf-call1 (funcall (the function f) a)) (return)))))))
   (%gf-invoke info (list a)))
 
 (defun %gf-call2 (info a b)
   (when (eql (%gf-slot info +gf-nreq+) 2)
-    (let ((c (class-of a)) (d (class-of b)))
+    (let ((c (%fast-class-of a)) (d (%fast-class-of b)))
       (dolist (v (car (%gf-slot info +gf-cache+)))
-        (when (and (eq (svref v 0) c) (eq (svref v 1) d))
-          (let ((f (svref v 3)))
-            (if f (return-from %gf-call2 (funcall f a b)) (return)))))))
+        (when (and (eq (%svref v 0) c) (eq (%svref v 1) d))
+          (let ((f (%svref v 3)))
+            (if f (return-from %gf-call2 (funcall (the function f) a b)) (return)))))))
   (%gf-invoke info (list a b)))
 
 ;;; methods of only required parameters that do not use CALL-NEXT-METHOD or

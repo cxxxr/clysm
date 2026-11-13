@@ -898,8 +898,7 @@ the type is fully described by the other values (otherwise the result is checked
                   (%string-copy v 0 seq start (- end start)))
                  ((and (%mdarray-p seq) (%simple-string-p v) (eql (%mdarray-offset seq) 0)
                        (%simple-string-p (%mdarray-data seq)))
-                  (let ((d (%mdarray-data seq)))
-                    (dotimes (i (- end start) v) (%set-schar v i (%schar d (+ start i))))))
+                  (%string-copy v 0 (%mdarray-data seq) start (- end start)))
                  (t
                (dotimes (i (- end start) v) (%simple-set v i (row-major-aref seq (+ start i))))))))
         (t (%type-error seq 'sequence))))
