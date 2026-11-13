@@ -287,10 +287,14 @@ when VALUE is NIL."
           (js:funcall (js:eval "(o, k) => { delete o[k]; }") (js:get process "env") name))))
   value)
 
+(defvar *%cwd* nil
+  "The working directory set by %CHDIR where the host cannot change its own
+(a worker thread of Node.js), or NIL.")
+
 (defun %getcwd ()
   "The host's working directory, as a string ending in a slash."
   (let* ((process (%node-process))
-         (cwd (and process (ignore-errors (js:call process "cwd")))))
+         (cwd (or *%cwd* (and process (ignore-errors (js:call process "cwd"))))))
     (if (stringp cwd)
         (if (and (> (length cwd) 0) (char= (char cwd (1- (length cwd))) #\/))
             cwd
@@ -298,8 +302,12 @@ when VALUE is NIL."
         (namestring *default-pathname-defaults*))))
 
 (defun %chdir (directory)
-  (let ((process (%node-process)))
-    (when process (js:call process "chdir" (namestring directory)))
+  (let ((process (%node-process))
+        (name (namestring directory)))
+    (when process
+      ;; process.chdir() throws in a worker: the directory is remembered
+      (handler-case (progn (js:call process "chdir" name) (setq *%cwd* nil))
+        (error () (setq *%cwd* name))))
     t))
 
 (defun %delete-directory (directory)

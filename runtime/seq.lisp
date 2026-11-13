@@ -161,7 +161,10 @@
 (defparameter *char-name-aliases*
   '(("Linefeed" . 10) ("Null" . 0) ("Del" . 127) ("Escape" . 27) ("Bell" . 7)
     ("Backspace" . 8) ("Tab" . 9) ("Page" . 12) ("Return" . 13) ("Space" . 32)
-    ("Rubout" . 127) ("Newline" . 10)))
+    ("Rubout" . 127) ("Newline" . 10)
+    ;; SBCL's other names of control characters
+    ("Bs" . 8) ("Ht" . 9) ("Lf" . 10) ("Nl" . 10) ("Ff" . 12) ("Form" . 12) ("Formfeed" . 12)
+    ("Cr" . 13) ("Altmode" . 27) ("Alt" . 27) ("Delete" . 127)))
 
 (defvar *%name-char-table* nil)
 
