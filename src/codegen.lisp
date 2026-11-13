@@ -904,17 +904,27 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
 ;;; ------------------------------------------------------------
 ;;; Non-local exits of local functions as returns
 ;;;
-;;; A Wasm exception costs about 100 ns in V8 plus 30 ns per frame it
+;;; A Wasm exception costs about 85 ns in V8 plus 33 ns per frame it
 ;;; unwinds, so a non-local exit is not thrown where the frames it leaves
-;;; are known.  A "flagging" function is a local function (FLET/LABELS)
-;;; that is only called (never used as a value) and that contains a
-;;; RETURN-FROM / GO to an enclosing function or a THROW, or calls a
-;;; flagging function.  Its exits store the tag and the value in the two
-;;; variables below and return; the code after every call of a flagging
-;;; function looks at the tag: the catchers around the call in the calling
-;;; function (non-local blocks and tagbodies, CATCH forms) take the exit if
-;;; the tag is theirs, a flagging caller returns in turn, and any other
-;;; caller throws the exit as before.
+;;; are known.  The exits of a "flagging" function store the tag and the
+;;; value in the symbols SYS::%EXIT-TAG and SYS::%EXIT-VALUE (the pending
+;;; exit; unbound when there is none) and return; the code after every call
+;;; of a flagging function looks at the tag: the catchers around the call in
+;;; the calling function (non-local blocks and tagbodies, CATCH and %CATCH
+;;; forms) take the exit if the tag is theirs, a flagging caller returns in
+;;; turn, and any other caller throws the exit as before.  The pending exit
+;;; is in the two symbols only between the return and that test; while the
+;;; cleanups of a function run it is kept in locals.
+;;;
+;;; Every caller of a flagging function must test, so they are:
+;;; - local functions (FLET/LABELS) that are only called (never used as a
+;;;   value) and that contain a RETURN-FROM / GO to an enclosing function
+;;;   or a THROW, or call a flagging function (ANALYZE-FLAGGING);
+;;; - flag clones of global functions (below, "A flag clone ...");
+;;; - the twins of the signalling and restart functions
+;;;   (*FLAG-RETURNING-CALLS*);
+;;; - lambdas written as handlers in HANDLER-BIND (SYS:%HANDLER-FUNCTION),
+;;;   whose callers are the signalling functions (SYS:%TAKE-PENDING-EXIT).
 ;;; ------------------------------------------------------------
 
 (defun pending-tag-code () `((:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:struct.get :symbol ,+sym-value+)))
@@ -1478,12 +1488,11 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 ;;; the exits that leave F - the handler-case exits of the ERROR, SIGNAL, WARN
 ;;; and CERROR calls in it, its throws, the exits of its local functions -
 ;;; return to F's caller pending.  It is called where that is of use: from a
-;;; call of F with a CATCH or HANDLER-CASE around it in the calling function
-;;; (which then takes the exit with a branch), and from a flag clone, by the
-;;; calls of the function itself and the tail calls of other functions.
-;;; (A non-local block counts as a catcher here: the handler functions of
-;;; HANDLER-BIND return their exits to the signalling function, which
-;;; returns them in turn.)
+;;; call of F with a catcher around it in the calling function (which then
+;;; takes the exit with a branch), and from a flag clone, by the calls of the
+;;; function itself and the tail calls of other functions.  (Other calls in
+;;; a flag clone are ordinary, or every function reachable from a catcher
+;;; would be compiled twice: an exit from further down is thrown.)
 
 (defparameter *flag-clone-max-nodes* 600 "larger functions get no flag clone")
 
