@@ -614,7 +614,8 @@
                    ((eq sym 'make-array) (make-array-ty (cddr node)))
                    ((gethash sym *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash sym *ti-rules*) tys)))
-                   (t *ty-top*))))
+                   (t (let ((lam (known-global-lam sym)))
+                        (if lam (lam-return-ty lam) *ty-top*))))))
     (:prim (let ((tys (ti-args (cddr node))) (name (prim-name (second node))))
              ;; after a structure slot access, the object is of that structure class
              (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
@@ -628,6 +629,8 @@
                             (when (and x (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
                               (setf *env* (refine-env *env* (ti-slot (second x)) ty)))))))
              (cond ((eq (prim-kind (second node)) :test) *ty-bool*)
+                   ((and (eq name 'clysm-sys::%make-instance) (struct-class-node-name (third node)))
+                    (mkty +k-other+ nil nil (struct-class-node-name (third node))))
                    ((gethash name *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash name *ti-rules*) tys)))
                    (t *ty-top*))))
@@ -695,6 +698,17 @@ dimensional with no other options than the initial element or contents."
                 ((member (car et) '(character base-char standard-char)) (mkty +k-string+))
                 (t (mkty +k-other+))))
         (mkty (logior +k-svec+ +k-string+ +k-other+)))))
+
+(defvar *ti-in-progress* nil "the lambdas being analyzed")
+
+(defun lam-return-ty (lam)
+  "The type of the values LAM returns (its body analyzed first if needed)."
+  (cond ((or (eq lam *ti-lam*) (member lam *ti-in-progress*)) *ty-top*)
+        (t (unless (gethash lam *ti-analyzed*)
+             (let ((*ti-in-progress* (cons *ti-lam* *ti-in-progress*)))
+               (inline-calls lam)
+               (infer-lam lam)))
+           (or (gethash (lam-body lam) *node-types*) *ty-top*))))
 
 (defun mv-types (node)
   "Types of the values of NODE when known (a list), else NIL."
