@@ -41,6 +41,7 @@
    "DEFINE-PRESENTATION-TYPE" "PRESENTATION-TYPE-OF" "PRESENTATION-SUBTYPEP"
    "DEFINE-PRESENTATION-TO-COMMAND-TRANSLATOR" "ACCEPT" "ACCEPT-PRESENTATION-TYPE"
    "CANCEL-ACCEPT" "ACCEPTING-P" "POPUP-MENU" "MAKE-MENU-ITEM" "*ACCEPT-PROMPT*"
+   "DEFINE-DRAG-AND-DROP-TRANSLATOR" "*POINTER-DOCUMENTATION-LABELS*"
    ;; panes and layouts (pane.lisp)
    "PANE" "RENDER-PANE" "PANE-NODE" "PANE-NAME" "PANE-INTERFACE" "PANE-TITLE" "PANE-ENABLED"
    "PANE-VISIBLE" "PANE-CLASS" "PANE-WIDTH" "PANE-HEIGHT" "PANE-STRETCH" "PANE-HELP"
@@ -58,7 +59,11 @@
    "TAB-LAYOUT" "SWITCHABLE-LAYOUT" "SWITCHABLE-LAYOUT-VISIBLE-CHILD"
    "INTERFACE" "DEFINE-INTERFACE" "INTERFACE-TITLE" "INTERFACE-LAYOUT" "INTERFACE-MENU-BAR"
    "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE" "INTERFACE-COMMAND-TABLE"
-   "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING"
+   "LIST-PANEL-SORT-COLUMN" "LIST-PANEL-SORT-DESCENDING" "LIST-PANEL-FILTER"
+   "PASSWORD-PANE" "EDITOR-PANE" "RADIO-BUTTON" "PUSH-BUTTON-PANEL" "TEXT-INPUT-CHOICE"
+   "BROWSER-PANE" "BROWSER-PANE-URL" "IMAGE-PANE" "IMAGE-PANE-URL" "COLOR-PANE" "COLOR-PANE-COLOR"
+   "SIMPLE-LAYOUT" "PINBOARD-LAYOUT" "INTERFACE-POINTER-DOCUMENTATION"
+   "GRAPH-PANE" "GRAPH-PANE-ROOTS" "GRAPH-PANE-DIRECTION" "DRAW-IMAGE"
    ;; drawing (graphics.lisp)
    "OUTPUT-PANE" "OUTPUT-PANE-DISPLAY-CALLBACK" "DRAW-LINE" "DRAW-LINES" "DRAW-RECTANGLE"
    "DRAW-CIRCLE" "DRAW-ELLIPSE" "DRAW-POLYGON" "DRAW-STRING" "DRAW-PATH" "DRAW-ARC"
@@ -68,6 +73,8 @@
    "DISPLAY-DIALOG" "EXIT-DIALOG" "ABORT-DIALOG" "DISPLAY-MESSAGE" "PROMPT-FOR-STRING"
    "PROMPT-FOR-CONFIRMATION" "PROMPT-WITH-LIST" "PROMPT-FOR-NUMBER"
    "COMMAND-PALETTE" "*COMMAND-PALETTE-PROMPT*"
+   "PROMPT-FOR-VALUES" "PROMPT-FOR-COLOR" "PROMPT-FOR-FILE" "POPUP-CONFIRMER"
+   "SET-CLIPBOARD" "CLIPBOARD" "CHOOSE-FILE" "WRITE-CLIPBOARD" "READ-CLIPBOARD"
    "*OK-LABEL*" "*YES-LABEL*" "*NO-LABEL*"
    ;; development
    "REFRESH"
@@ -77,11 +84,12 @@
    "NODE-FOLLOWS-P" "REQUEST-FLUSH" "RESOLVE-CONTAINER"
    "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
    "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
-   "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
+   "BEGIN-DRAG" "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
+   "CAN-WAIT-P" "WAIT-FOR" "WAIT-FOR-ANSWER" "*RESTART-CHOOSER*" "BACKEND-WAITER"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
-   "FIRE-GLOBAL" "NODE-TEXT"
+   "FIRE-GLOBAL" "NODE-TEXT" "BACKEND-FILE"
    "BACKEND-CHOOSER"
    ;; the desktop application (desktop.lisp)
    "DESKTOP-BACKEND" "DESKTOP-P" "READ-FILE" "WRITE-FILE" "DESKTOP-FILE-ERROR"
@@ -149,6 +157,24 @@ drawing (an OUTPUT-PANE) it happened on."))
 (defgeneric native-menus-p (backend)
   (:documentation "True if the menus of the commands are shown outside the page.")
   (:method (backend) nil))
+(defgeneric can-wait-p (backend)
+  (:documentation "True if WAIT-FOR can wait now.")
+  (:method (backend) nil))
+(defgeneric wait-for (backend function)
+  (:documentation "Call FUNCTION with a function of one argument, the answer, and
+return the answer once that has been called — later, when the user has
+done something; meanwhile the display works.  Only if CAN-WAIT-P."))
+(defgeneric begin-drag (backend event text)
+  (:documentation "The drag that EVENT starts carries TEXT (for other applications).")
+  (:method (backend event text) nil))
+(defgeneric choose-file (backend continuation &key accept)
+  (:documentation "Let the user choose a file to read (ACCEPT: what kinds, like
+\".json,.txt\") and call CONTINUATION with its name and its text, or with NIL
+and NIL if none was chosen."))
+(defgeneric write-clipboard (backend text)
+  (:documentation "Put TEXT on the clipboard."))
+(defgeneric read-clipboard (backend continuation)
+  (:documentation "Call CONTINUATION with the text on the clipboard (NIL if it cannot be read)."))
 (defgeneric previous-sibling-size (backend event)
   (:documentation "The width and height of the node in front of the one the pointer
 EVENT happened on, which gets the following events of that pointer."))
@@ -169,6 +195,11 @@ empty, the last is ABORT) to invoke; return it, or NIL for ABORT."))
 (defvar *error-message-function* nil
   "NIL, or a function of a string that shows the message of an error that
 has no restart to choose (dialog.lisp sets it).")
+
+(defvar *restart-chooser* nil
+  "NIL, or a function of an error and its restarts (more than one) that asks
+the user in the page which to invoke and returns it (dialog.lisp sets it).
+It is called where the backend can wait (CAN-WAIT-P).")
 
 (defvar *abort-label* "Cancel" "How the ABORT restart of WITH-ERROR-DIALOG is described to the user.")
 
@@ -753,3 +784,20 @@ Return the node, for UNMOUNT."
   (setf *roots* (remove node *roots*))
   (remove-node backend (dom-of node))
   (destroy node))
+
+;;; ------------------------------------------------------------------
+;;; Waiting for the user inside a computation
+
+(defun wait-for-answer (function)
+  "Call FUNCTION with a function of one argument, the answer; return the
+answer once that has been called.  FUNCTION shows something (a dialog) whose
+listeners give the answer; until then this computation waits while the
+display works, as if it were not running: listeners, rendering and FLUSH
+start afresh.  Only where (can-wait-p *backend*)."
+  (let ((backend *backend*))
+    (let ((*error-dialog* nil)
+          (*observer* nil)
+          (*parent* nil)
+          (*pending-mounts* nil)
+          (*flush-requested* nil))
+      (wait-for backend function))))

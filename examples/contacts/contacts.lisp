@@ -43,6 +43,11 @@
 
 ;;; a contact on the screen is a presentation of the type CONTACT
 (define-presentation-type contact () :description "連絡先")
+;; and the name of a group one of the type GROUP
+(define-presentation-type group () :description "グループ")
+
+(defun item-type (item)
+  (if (stringp item) 'group 'contact))
 
 (defmethod present-object ((contact contact) type)
   (contact-name contact))
@@ -114,7 +119,7 @@ circles that are presentations (click, right click) like their names."
            :children-function (lambda (item) (and (stringp item) (contacts-in item)))
            :expandp-function #'stringp
            :print-function (lambda (item) (if (stringp item) item (contact-label item)))
-           :presentation-type t
+           :presentation-type #'item-type
            :callback-type :data
            :selection-callback (lambda (item)
                                  (when (typep item 'contact)
@@ -141,19 +146,29 @@ circles that are presentations (click, right click) like their names."
           :presentation-type 'contact)
    (overview application-pane :display-function #'summary)
    (chart output-pane :view-width 360 :view-height 200 :display-callback #'draw-chart
-                      :max-width 720))
+                      :max-width 720)
+   (graph graph-pane
+          :roots '(:all)
+          :children-function (lambda (item)
+                               (cond ((eq item :all) +groups+)
+                                     ((stringp item) (contacts-in item))))
+          :print-function (lambda (item)
+                            (cond ((eq item :all) "アドレス帳")
+                                  ((stringp item) item)
+                                  (t (contact-name item))))
+          :presentation-type (lambda (item) (if (eq item :all) 'symbol (item-type item)))))
   (:layouts
    (main column-layout '(tools body))
    (body row-layout '(sidebar :divider content) :gap 12)
    (sidebar column-layout '(search lists) :width 250 :stretch nil)
    (lists tab-layout '(("一覧" people) ("グループ" groups)))
-   (content tab-layout '(("詳細" detail) ("表" table) ("概要" overview) ("グラフ" chart)))
+   (content tab-layout '(("詳細" detail) ("表" table) ("概要" overview) ("グラフ" chart) ("関係" graph)))
    (detail switchable-layout '(nobody form)
            :visible-child (computed (if (selected-contact interface) 'form 'nobody)))
    (form grid-layout '("名前" name-field "メール" email-field "グループ" group-field
                        nil favorite-field "メモ" notes-field)
          :stretch nil))
-  (:default-initargs :title "アドレス帳" :menu-bar t))
+  (:default-initargs :title "アドレス帳" :menu-bar t :pointer-documentation t))
 
 ;;; ------------------------------------------------------------------
 ;;; Commands.  A parameter with a type is asked for when the command is
@@ -186,6 +201,41 @@ circles that are presentations (click, right click) like their names."
      (group `(member ,@+groups+) :prompt "移動先のグループ"))
   (setf (contact-group contact) group))
 
+(define-command (copy-email :menu "連絡先" :label "メールアドレスをコピー" :enabled (and *contacts* t))
+    ((contact 'contact :prompt "メールアドレスをコピーする連絡先をクリックしてください"))
+  (set-clipboard (contact-email contact)))
+
+(define-command (import-contacts :menu "連絡先" :label "CSV を読み込む…" :separator t) ()
+  ;; a file of lines  name,email,group
+  (prompt-for-file
+   :accept ".csv,.txt"
+   :continuation
+   (lambda (name text)
+     (when name
+       (let ((new '()))
+         (with-input-from-string (stream text)
+           (loop for line = (read-line stream nil)
+                 while line
+                 do (let* ((line (string-trim '(#\Return #\Space) line))
+                           (c1 (position #\, line))
+                           (c2 (and c1 (position #\, line :start (1+ c1)))))
+                      (when (plusp (length line))
+                        (push (make-instance 'contact
+                                             :name (subseq line 0 c1)
+                                             :email (if c1 (subseq line (1+ c1) c2) "")
+                                             :group (let ((group (and c2 (subseq line (1+ c2)))))
+                                                      (if (member group +groups+ :test #'equal) group "友人")))
+                              new)))))
+         (setf *contacts* (append *contacts* (reverse new)))
+         (display-message "~A から ~D 件読み込みました。" name (length new)))))))
+
+;; a contact dragged onto a group moves there
+(define-drag-and-drop-translator drop-on-group (contact group move-to-group
+                                                        :tester (lambda (contact group)
+                                                                  (not (equal (contact-group contact) group))))
+    (object destination)
+  (list object destination))
+
 (define-command (show-contact :label "詳細を表示") ((contact 'contact))
   (setf (selected-contact *app*) contact
         (choice-selected-item (find-pane *app* 'content)) (first (collection-items (find-pane *app* 'content)))))
@@ -202,7 +252,8 @@ circles that are presentations (click, right click) like their names."
 ;;; Startup
 
 (setf *abort-label* "キャンセル" *yes-label* "はい" *no-label* "いいえ"
-      *accept-prompt* "~Aをクリックしてください")
+      *accept-prompt* "~Aをクリックしてください"
+      *pointer-documentation-labels* '("クリック: ~A" "右クリック: メニュー" "ドラッグ: グループへ移動"))
 (setf *app* (display (make-instance 'address-book)))
 ;; the keys of the commands; in the desktop application (ui/electron) also
 ;; its menu bar, and the interface then has none in the page

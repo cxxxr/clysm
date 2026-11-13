@@ -8,7 +8,13 @@ function boxError(e) {
   return new JsError(e);
 }
 
+// JavaScript Promise Integration: a Lisp function called through
+// wrap_async_fn runs on a stack that `await` can suspend until a promise is
+// settled.  Without it, wrap_async_fn is wrap_fn and `await` fails.
+const jspi = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+
 export function makeJsImports(state) {
+  let promisingApply = null;
   let strCache = null, strCacheArr = null;
   const codePoints = (x) => {
     if (strCache !== x) { strCache = x; strCacheArr = Array.from(x); }
@@ -49,6 +55,18 @@ export function makeJsImports(state) {
       bool: (b) => b !== 0,
       special: (k) => (k === 0 ? null : undefined),
       wrap_fn: (closure) => (...args) => state.instance.exports.lisp_apply(closure, args),
+      // (the Lisp side calls it only inside a function of wrap_async_fn)
+      await: jspi
+        ? new WebAssembly.Suspending(async (promise) => {
+            try { return await promise; } catch (e) { return boxError(e); }
+          })
+        : () => new JsError('this JavaScript engine cannot suspend WebAssembly (JSPI)'),
+      wrap_async_fn: (closure) => (...args) => {
+        if (!jspi) return state.instance.exports.lisp_apply(closure, args);
+        if (!promisingApply) promisingApply = WebAssembly.promising(state.instance.exports.lisp_apply);
+        // a promise; an exit that leaves the function is reported like an uncaught exception
+        return promisingApply(closure, args).catch((e) => { console.error(e); });
+      },
       truthy: (x) => (x ? 1 : 0),
       is_lisp: (x) => (isLisp(x) ? 1 : 0),
     };

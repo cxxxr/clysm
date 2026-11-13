@@ -664,6 +664,8 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:js-wrap-fn :x-x "js" "wrap_fn")
     (:js-truthy :x-i "js" "truthy")
     (:js-is-lisp :x-i "js" "is_lisp")
+    (:js-await :x-x "js" "await")
+    (:js-wrap-async-fn :x-x "js" "wrap_async_fn")
     (:host-arg-len :i-i "env" "arg_len")
     (:host-arg-char :ii-i "env" "arg_char")))
 
@@ -2090,6 +2092,9 @@ f64s in locals DA and DB (it may branch to SLOW)."
 (defprim clysm-sys::%js-bool (b) :value `(,@(idx-code b) (:call :js-bool) ,@(wrap-ext)))
 (defprim clysm-sys::%js-special (k) :value `(,@(idx-code k) (:call :js-special) ,@(wrap-ext)))
 (defprim clysm-sys::%js-wrap-fn (f) :value `(,@f (:ref.cast :closure) :extern.convert_any (:call :js-wrap-fn) ,@(wrap-ext)))
+(defprim clysm-sys::%js-wrap-async-fn (f) :value
+  `(,@f (:ref.cast :closure) :extern.convert_any (:call :js-wrap-async-fn) ,@(wrap-ext)))
+(defprim clysm-sys::%js-await (o) :value `(,@(ext-code o) (:call :js-await) ,@(wrap-ext)))
 (defprim clysm-sys::%js-truthy (o) :test `(,@(ext-code o) (:call :js-truthy)))
 (defprim clysm-sys::%js-lisp-object-p (o) :test `(,@(ext-code o) (:call :js-is-lisp)))
 (defprim clysm-sys::%js-wrap-lisp (x) :value `(,@x :extern.convert_any ,@(wrap-ext)))

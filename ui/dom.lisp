@@ -15,7 +15,7 @@
 
 (defclass dom-backend ()
   ((document :initform (js:global "document") :reader backend-document)
-   (flush :initform (js:to-js #'flush))))
+   (flush :initform (js:async-function #'flush))))
 
 ;;; the JavaScript strings of names are made once (a string is converted
 ;;; character by character)
@@ -45,6 +45,8 @@
                                  ((eq key :readonly) (cons nil (js:to-js "readOnly")))
                                  ((eq key :colspan) (cons nil (js:to-js "colSpan")))
                                  ((eq key :role) (cons t (js:to-js "role")))
+                                 ;; (the property is read-only)
+                                 ((eq key :list) (cons t (js:to-js "list")))
                                  ((or (eq key :style) (find #\- name)) (cons t (js:to-js name)))
                                  (t (cons nil (js:to-js name)))))))))
     (values (car entry) (cdr entry))))
@@ -59,7 +61,7 @@
 ;;; its namespace, and all their properties are attributes
 
 (defvar *svg-tags* '("svg" "g" "line" "rect" "circle" "ellipse" "polygon" "polyline" "path"
-                     "text" "tspan"))
+                     "text" "tspan" "image"))
 (defvar +svg-namespace+ (js:to-js "http://www.w3.org/2000/svg"))
 (defvar *svg-element-p* (js:eval "(node) => node instanceof SVGElement"))
 
@@ -101,8 +103,29 @@
           ((or (eq name :checked) (eq old-value t)) (js:set node js-name :false))
           (t (js:call node +remove-attribute+ (attribute-name name))))))
 
+;;; Listeners are functions of JS:ASYNC-FUNCTION: where the JavaScript
+;;; engine can suspend WebAssembly, a listener can wait for the user in the
+;;; middle of its work (WAIT-FOR), which is how an error asks which restart
+;;; to invoke in a dialog of the page.
+
 (defmethod set-listener ((backend dom-backend) node event function)
-  (js:call node +add-event-listener+ event function))
+  (js:call node +add-event-listener+ event (js:async-function function)))
+
+(defmethod can-wait-p ((backend dom-backend))
+  (js:can-await-p))
+
+(defmethod wait-for ((backend dom-backend) function)
+  (let* ((answer nil)
+         (promise (js:new (js:global "Promise")
+                          (lambda (resolve &rest more)
+                            (declare (ignore more))
+                            (funcall function (lambda (value)
+                                                (setf answer value)
+                                                (js:funcall resolve nil)
+                                                nil))
+                            nil))))
+    (js:await promise)
+    answer))
 
 (defmethod insert-node ((backend dom-backend) parent node before)
   (js:call parent +insert-before+ node before))
@@ -149,10 +172,56 @@
 
 (defmethod set-global-listener ((backend dom-backend) event function)
   (js:call (backend-document backend) +add-event-listener+ event
-           (lambda (event) (funcall function event) nil)))
+           (js:async-function (lambda (event) (funcall function event) nil))))
 
 (defmethod set-title ((backend dom-backend) string)
   (js:set (backend-document backend) "title" string))
+
+(defmethod begin-drag ((backend dom-backend) event text)
+  ;; (without data, some browsers do not start the drag)
+  (let ((transfer (js:get event "dataTransfer")))
+    (when transfer
+      (js:call transfer "setData" "text/plain" text)
+      (js:set transfer "effectAllowed" "move"))))
+
+;;; files and the clipboard
+
+(defvar *choose-file*
+  (js:eval "(accept, done) => { const input = document.createElement('input');
+     input.type = 'file'; if (accept) input.accept = accept;
+     input.addEventListener('cancel', () => done(null, null));
+     input.addEventListener('change', () => { const file = input.files[0];
+       if (!file) done(null, null); else file.text().then((text) => done(file.name, text), () => done(null, null)); });
+     input.click(); }"))
+
+(defmethod choose-file ((backend dom-backend) continuation &key accept)
+  (js:funcall *choose-file* accept
+              (js:async-function
+               (lambda (name text)
+                 (let ((*backend* backend))
+                   (with-error-dialog (funcall continuation name text))
+                   (flush))
+                 nil)))
+  nil)
+
+(defmethod write-clipboard ((backend dom-backend) text)
+  (let ((clipboard (js:get (js:global "navigator") "clipboard")))
+    (when clipboard (js:call clipboard "writeText" text))
+    text))
+
+(defvar *read-clipboard*
+  (js:eval "(done) => { const c = navigator.clipboard;
+     if (!c || !c.readText) done(null); else c.readText().then((text) => done(text), () => done(null)); }"))
+
+(defmethod read-clipboard ((backend dom-backend) continuation)
+  (js:funcall *read-clipboard*
+              (js:async-function
+               (lambda (text)
+                 (let ((*backend* backend))
+                   (with-error-dialog (funcall continuation text))
+                   (flush))
+                 nil)))
+  nil)
 
 (defvar *reveal-selection*
   (js:eval "(event) => { const node = event.currentTarget || event.target;
@@ -186,11 +255,16 @@
   (let ((message (princ-to-string condition))
         (window (js:global)))
     (js:call (js:global "console") "error" message)
-    (if (null (cdr restarts))
-        (progn (if *error-message-function*
-                   (funcall *error-message-function* message)
-                   (js:call window "alert" message))
-               nil)
+    (cond
+      ((null (cdr restarts))
+       (if *error-message-function*
+           (funcall *error-message-function* message)
+           (js:call window "alert" message))
+       nil)
+      ;; in a dialog of the page, if this computation can wait for the answer
+      ((and *restart-chooser* (can-wait-p backend))
+       (funcall *restart-chooser* condition restarts))
+      (t
         (let ((answer (js:call window "prompt"
                                (format nil "~A~%~%~{~D: ~A~%~}" message
                                        (loop for restart in restarts for i from 1
@@ -198,7 +272,7 @@
                                "1")))
           (and (stringp answer)
                (let ((n (parse-integer answer :junk-allowed t)))
-                 (and n (<= 1 n (length restarts)) (nth (1- n) restarts))))))))
+                 (and n (<= 1 n (length restarts)) (nth (1- n) restarts)))))))))
 
 ;;; commands: their keys
 
@@ -214,15 +288,20 @@
 BACKEND: in a browser by their keys, in the desktop application also in the
 menu bar."))
 
-(defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
+(defun install-command-keys (backend &optional (predicate (constantly t)))
+  "Invoke the commands that satisfy PREDICATE when their keys are pressed."
   (js:call (backend-document backend) +add-event-listener+ "keydown"
-           (lambda (event)
-             (let ((command (and (stringp (js:get event "key"))
-                                 (let ((*backend* backend))
-                                   (command-for-key (event-key event))))))
-               (when command
-                 (js:call event "preventDefault")
-                 (invoke-command (command-name command))))
-             nil)))
+           (js:async-function
+            (lambda (event)
+              (let ((command (and (stringp (js:get event "key"))
+                                  (let ((*backend* backend))
+                                    (command-for-key (event-key event))))))
+                (when (and command (funcall predicate command))
+                  (js:call event "preventDefault")
+                  (invoke-command (command-name command))))
+              nil))))
+
+(defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
+  (install-command-keys backend))
 
 (setf *backend* (make-instance 'dom-backend))

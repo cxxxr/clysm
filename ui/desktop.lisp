@@ -51,6 +51,13 @@
 
 ;;; dialogs
 
+(defmethod choose-file ((backend desktop-backend) continuation &key accept)
+  (declare (ignore accept))
+  (let ((path (choose-file-to-open)))
+    (if path
+        (funcall continuation path (read-file path))
+        (funcall continuation nil nil))))
+
 (defun file-filters (filters)
   ;; ((name extension...)...)
   (mapcar (lambda (filter) (js:object "name" (car filter) "extensions" (cdr filter)))
@@ -105,6 +112,8 @@ button (CANCEL, by default the last, if the box is closed).  TYPE is
 standard Edit and View menus (titled EDIT-LABEL and VIEW-LABEL; the first
 menu ends with Quit, QUIT-LABEL).  The menu bar follows the commands: their
 definitions and whether they are enabled."
+  ;; the keys of the commands in menus are those of the menu items
+  (install-command-keys backend (lambda (command) (null (command-menu command))))
   (let ((*backend* backend))
     (js:call (desktop-api backend) "onMenu"
              (lambda (id)

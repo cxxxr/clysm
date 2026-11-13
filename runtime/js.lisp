@@ -7,7 +7,8 @@
 (defpackage "JS"
   (:use)
   (:export "GLOBAL" "GET" "SET" "CALL" "NEW" "FUNCALL" "EVAL" "TYPEOF" "LOG"
-           "TO-LISP" "TO-JS" "ARRAY" "OBJECT" "JS-VALUE-P"))
+           "TO-LISP" "TO-JS" "ARRAY" "OBJECT" "JS-VALUE-P"
+           "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -101,6 +102,29 @@
   (apply #'js:call (js:global "console") "log" args)
   nil)
 
+;;; Waiting for promises (JavaScript Promise Integration).  A function made
+;;; by JS:ASYNC-FUNCTION, when JavaScript calls it, runs on a stack of its
+;;; own and returns a promise; inside it, JS:AWAIT suspends that stack until
+;;; a promise is settled, while the page goes on (and may call other Lisp
+;;; functions).  Only one computation waits at a time, and only one that
+;;; JavaScript called from its event loop: a stack that is suspended must
+;;; not have another Lisp computation below it, whose dynamic bindings
+;;; would be undone in the wrong order.
+
+(defvar *js-running* nil "True while Lisp code called from JavaScript runs.")
+(defvar *js-top* nil "True in a callback that JavaScript called from its event loop.")
+;; the program itself (its toplevel forms) runs until the first task of the
+;; event loop
+(defvar *js-starting* (list t))
+(let ((set-timeout (js:global "setTimeout")))
+  (if (%foreignp set-timeout)
+      (js:funcall set-timeout (lambda () (setf (car *js-starting*) nil) nil) 0)
+      (setf (car *js-starting*) nil)))
+
+(defvar *js-can-await* nil "True in a function of JS:ASYNC-FUNCTION, unless JavaScript is in between.")
+(defvar *js-awaiting* nil "True while a computation waits in JS:AWAIT.")
+(defvar *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
+
 ;;; called from JavaScript (exported as lisp_apply) when a Lisp function
 ;;; wrapped by TO-JS is invoked
 (defun %js-callback (closure args)
@@ -108,8 +132,43 @@
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
-                        (push (js:to-lisp (%js-get args (%js-number (%to-double i)))) r)))))
+                        (push (js:to-lisp (%js-get args (%js-number (%to-double i)))) r))))
+         ;; whether no other Lisp computation is below this call (then a
+         ;; function of JS:ASYNC-FUNCTION may wait)
+         (*js-top* (not (or *js-running* (car *js-starting*))))
+         (*js-running* t)
+         (*js-can-await* nil))
     (js:to-js (apply f lisp-args))))
+
+(defun %js-suspending-p ()
+  (when (eq *js-suspending* :unknown)
+    (setq *js-suspending*
+          (let ((wasm (js:global "WebAssembly")))
+            (and (%foreignp (js:get wasm "Suspending"))
+                 (%foreignp (js:get wasm "promising"))
+                 t))))
+  *js-suspending*)
+
+(defun js:async-function (function)
+  "A JavaScript function that calls FUNCTION and returns a promise;
+FUNCTION may wait with JS:AWAIT.  (Where the JavaScript engine cannot
+suspend WebAssembly, it is an ordinary function, and JS:CAN-AWAIT-P false.)"
+  (%js-wrap-async-fn (lambda (&rest args)
+                       (let ((*js-can-await* *js-top*))
+                         (apply function args)))))
+
+(defun js:can-await-p ()
+  "True if JS:AWAIT can be called here."
+  (and *js-can-await* (not *js-awaiting*) (%js-suspending-p)))
+
+(defun js:await (promise)
+  "Wait until the JavaScript PROMISE is settled; return its value, or
+signal an error if it is rejected.  Meanwhile JavaScript runs, and may call
+Lisp functions, which see the dynamic bindings of the waiting computation."
+  (unless (js:can-await-p)
+    (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION called from the event loop, or already waiting"))
+  (%js-result (let ((*js-awaiting* t))
+                (%js-await (js:to-js promise)))))
 
 (defun %foreign-type-name (x) (js:typeof x))
 
@@ -166,7 +225,8 @@ for every instance, so it is meant for development."
 ;;; called by hosts (exported as eval_string): read and evaluate all forms in
 ;;; a JS string, return the printed values as a JS string
 (defun %host-eval-string (src)
-  (let ((text (js:to-lisp src)) (out (make-string-output-stream)))
+  (let ((text (js:to-lisp src)) (out (make-string-output-stream))
+        (*js-running* t))
     (with-input-from-string (s text)
       (handler-case
           (loop
