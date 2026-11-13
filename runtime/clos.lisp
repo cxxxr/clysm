@@ -1293,7 +1293,17 @@ CALL-NEXT-METHOD in place of OLD, has the same cache key."
                                (unless (eq (svref memo i) (car a)) (return nil)))
                              (do ((i (+ nreq 1) (+ i 1)) (b new (cdr b))) ((null b) t)
                                (unless (eq (svref memo i) (car b)) (return nil)))))
-              (if (equal (%gf-lookup info args nreq 1) (%gf-lookup info cnm-args nreq 1))
+              (if (let ((old-methods (%gf-lookup info args nreq 1))
+                        (new-methods (%gf-lookup info cnm-args nreq 1)))
+                    (or (equal old-methods new-methods)
+                        ;; CLHS asks for the same applicable methods; like
+                        ;; SBCL, it is enough that the methods still to be
+                        ;; called are applicable (an :AROUND method that
+                        ;; unwraps an argument, as Lem does)
+                        (and (listp old-methods) (listp new-methods)
+                             (member method old-methods)
+                             (every (lambda (m) (member m new-methods))
+                                    (cdr (member method old-methods))))))
                   (setf (cdr cell) (apply #'vector (%gf-slot info +gf-cache+) (append old new)))
                   (error 'simple-error
                          :format-control "CALL-NEXT-METHOD: the arguments ~S change the set of applicable methods of ~S"

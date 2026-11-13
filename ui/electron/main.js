@@ -8,6 +8,12 @@
 // name and the window come from package.json,
 //   "window": { "width": 640, "height": 720, "minWidth": 380, "minHeight": 400,
 //               "backgroundColor": { "light": "#ffffff", "dark": "#151618" } }
+// With "node": true, the page can use Node.js (require, process): a Lisp
+// program that has the files of the computer (host/web/clysm.mjs with fs).
+// "jsFlags" are flags of the JavaScript engine (e.g. a larger stack).
+// The environment variable CLYSM_ELECTRON_TEST names a module whose function
+// is called with the window (tests drive the page with sendInputEvent and
+// look at it with capturePage); the window is then not shown.
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,6 +29,10 @@ protocol.registerSchemesAsPrivileged([
 
 // CLYSM_USER_DATA replaces the directory of the application's data (for tests)
 if (process.env.CLYSM_USER_DATA) app.setPath('userData', process.env.CLYSM_USER_DATA);
+
+if (options.jsFlags) app.commandLine.appendSwitch('js-flags', options.jsFlags);
+
+const testModule = process.env.CLYSM_ELECTRON_TEST;
 
 let win = null;
 
@@ -114,10 +124,16 @@ function createWindow() {
     minWidth: options.minWidth,
     minHeight: options.minHeight,
     backgroundColor: (nativeTheme.shouldUseDarkColors ? background.dark : background.light) || undefined,
-    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    show: !testModule,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      ...(options.node ? { nodeIntegration: true, contextIsolation: false, sandbox: false } : {}),
+      ...(testModule ? { offscreen: true } : {}),
+    },
   });
   win.on('closed', () => { win = null; });
   win.loadURL('app://app/index.html');
+  if (testModule) require(path.resolve(testModule))(win, app);
 }
 
 app.whenReady().then(() => {

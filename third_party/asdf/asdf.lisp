@@ -4820,6 +4820,8 @@ This is designed to abstract away the implementation specific quit forms."
       (sys.int::backtrace count))
     #+sbcl
     (sb-debug:print-backtrace :stream stream :count (or count most-positive-fixnum))
+    #+clysm
+    (sys::%print-backtrace stream count)
     #+xcl
     (loop :for i :from 0 :below (or count most-positive-fixnum)
           :for frame :in (extensions:backtrace-as-list) :do

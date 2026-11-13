@@ -17,3 +17,5 @@
 (in-package :cl-user)
 (print (mylib:twice 21))
 (terpri)
+(print (read-from-string "(#A((3) BASE-CHAR . \"abc\") #A((2 2) T . ((1 2) (3 4))) #2A((1 2) (3 4)))"))
+(print (stringp (car (read-from-string "(#A((3) BASE-CHAR . \"abc\"))"))))

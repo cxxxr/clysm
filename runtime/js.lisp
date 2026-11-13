@@ -365,3 +365,45 @@ START at end of file."
 (defun %tcp-close (id)
   (js:call (%host-net) "close" id)
   t)
+
+;;; ------------------------------------------------------------
+;;; Backtraces as Lisp data: the Lisp frames appear in the JavaScript
+;;; stack with the names of the wasm name section (as in the host's
+;;; backtrace import, host/common.mjs).
+;;; ------------------------------------------------------------
+
+(defun %backtrace-names (&optional (count 60))
+  "The names of the functions on the stack, innermost first."
+  (let* ((error-class (ignore-errors (js:global "Error")))
+         (stack (and (js:js-value-p error-class)
+                     (let ((old (js:get error-class "stackTraceLimit")))
+                       (js:set error-class "stackTraceLimit" (+ count 10))
+                       (unwind-protect (js:get (js:new error-class) "stack")
+                         (js:set error-class "stackTraceLimit" old)))))
+         (names nil))
+    (when (stringp stack)
+      (with-input-from-string (in stack)
+        (loop for line = (read-line in nil nil)
+              while line
+              do (let* ((at (search "at " line))
+                        (wasm (search " (wasm:" line)))
+                   (when (and at wasm (< at wasm))
+                     (let* ((name (subseq line (+ at 3) wasm))
+                            (hash (position #\# name :from-end t)))
+                       (when hash (setq name (subseq name 0 hash)))
+                       (cond ((string= name "toplevel") (push "<toplevel>" names) (loop-finish))
+                             ((or (zerop (length name)) (char= (char name 0) #\:) (char= (char name 0) #\()
+                                  (member name '("NEW" "%BACKTRACE-NAMES" "%PRINT-BACKTRACE" "PRINT-BACKTRACE"
+                                                 "RAW-PRINT-BACKTRACE" "ERROR" "%ERROR*" "SIGNAL" "%SIGNAL*"
+                                                 "%TYPE-ERROR" "%COERCE-TO-CONDITION" "INVOKE-DEBUGGER")
+                                          :test #'string=)))
+                             (t (push name names)))))))))
+    (let ((names (nreverse names)))
+      (if (> (length names) count) (subseq names 0 count) names))))
+
+(defun %print-backtrace (stream &optional count)
+  "Print the functions on the stack to STREAM (for UIOP:PRINT-BACKTRACE)."
+  (let ((i 0))
+    (dolist (name (%backtrace-names (or count 60)))
+      (format stream "~&~D: ~A~%" i name)
+      (incf i))))
