@@ -11,6 +11,10 @@
 
 (destructuring-bind (lem-dir mailbox-dir out-dir) (cddr (uiop:raw-command-line-arguments))
   (push (uiop:ensure-directory-pathname lem-dir) asdf:*central-registry*)
+  ;; Lem's extensions (each in a directory of its own)
+  (dolist (directory (uiop:subdirectories (merge-pathnames "extensions/"
+                                                           (uiop:ensure-directory-pathname lem-dir))))
+    (push directory asdf:*central-registry*))
   (push (uiop:ensure-directory-pathname mailbox-dir) asdf:*central-registry*)
   (load (merge-pathnames "setup.lisp" *load-truename*))
   (ql:quickload "lem-clysm")
