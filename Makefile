@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-ui test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -29,6 +29,10 @@ test-mcclim:
 
 test-ui:
 	tools/test-ui.sh
+
+# Lem (contrib/lem) in Electron, typed into without a display
+test-lem:
+	tests/lem/run.sh
 
 test-asdf:
 	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \

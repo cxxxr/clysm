@@ -19,7 +19,9 @@ $ bin/clysm eval '(expt 2 100)'
   `format` and the pretty printer. Extensions: the metaobject protocol, Gray
   streams, package-local nicknames.
 * ASDF and Quicklisp work. McCLIM builds from Quicklisp and runs with its CLX
-  backend.
+  backend. [Lem](https://github.com/lem-project/lem), the Common Lisp
+  editor, runs as a desktop application whose frontend is written with the
+  GUI framework below (`contrib/lem/`).
 * The compiler compiles itself; the second and third generations are
   identical.
 
@@ -84,6 +86,22 @@ shows a dialog of its restarts.
 `examples/todo/` and `examples/contacts/` build for the browser (`build.sh`)
 and for Electron (`build-desktop.sh`). With `--dev` the application has a
 REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
+
+## Lem
+
+`contrib/lem/` runs Lem's core in an Electron window. The frontend is written
+with the GUI framework: Lem's windows are components whose lines follow what
+Lem draws, keys are read from a text field at the cursor (input methods
+work), and the editor waits for events with `js:await`, since a page has one
+thread. Lisp buffers are highlighted and indented as in Lem, and are
+evaluated in the editor's own image (`C-M-x`, `M-x lisp-repl`).
+
+```
+$ contrib/lem/build.sh                     # build/lem-desktop/; Lem and its libraries from GitHub and Quicklisp
+$ (cd build/lem-desktop && npm start)
+```
+
+See [contrib/lem/README.md](contrib/lem/README.md).
 
 ## Performance
 
@@ -205,4 +223,5 @@ $ make test-all      # also interpreted, compiled at run time, and self-hosted
 $ make fixpoint      # self-compilation reaches a fixed point
 $ make ansi          # the ANSI test suite (third_party/ansi-test submodule)
 $ make test-ui
+$ make test-lem      # Lem in Electron without a display (built first if needed)
 ```
