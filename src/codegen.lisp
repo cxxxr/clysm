@@ -450,11 +450,22 @@ representation) or :effect (no value)."
 ;;; Closures
 ;;; ------------------------------------------------------------
 
+(defun lam-rest-only-p (lam)
+  "Required parameters and &REST, nothing else."
+  (and (lam-rest lam) (null (lam-opt lam)) (not (lam-keyp lam))))
+
+(defun lam-opt-only-p (lam)
+  "Required and &OPTIONAL parameters only."
+  (and (lam-keyed-p lam) (not (lam-keyp lam))))
+
 (defun lam-entry-names (lam)
   (let ((simple (lam-simple-p lam)) (n (length (lam-req lam))) (id (lam-id lam)))
     (append
      (loop for k from 0 to +max-fixed-args+
-           collect (cond ((not simple) (list :pack k))
+           collect (cond ((lam-rest-only-p lam) (if (< k n) (list :argerr k) (list :rentry id k)))
+                         ((lam-opt-only-p lam)
+                          (if (<= n k (+ n (length (lam-opt lam)))) (list :oentry id k) (list :argerr k)))
+                         ((not simple) (list :pack k))
                          ((= k n) (list :main id))
                          (t (list :argerr k))))
      (list (if simple (list :entn id) (list :main id))))))
@@ -549,6 +560,12 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
   (let ((call (if tail :return_call :call)))
     (cond ((lam-simple-p lam)
            `(,@closure-code ,@(apply #'append arg-codes) (,call (:main ,(lam-id lam)))))
+          ((lam-rest-only-p lam)
+           ;; the rest list is made by the caller
+           (let ((n (length (lam-req lam))))
+             `(,@closure-code ,@(apply #'append arg-codes) ,@(nil-code)
+               ,@(loop repeat (- (length arg-codes) n) collect '(:struct.new :cons))
+               (,call (:rmain ,(lam-id lam))))))
           ((and arg-nodes (lam-keyed-p lam) (keyed-call-layout lam arg-nodes))
            (let* ((layout (keyed-call-layout lam arg-nodes))
                   (temps (loop for nil in arg-codes collect (new-local))))
@@ -1146,6 +1163,7 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
   (infer-lam lam)
   (cond ((lam-simple-p lam) (compile-simple-lam lam))
         ((lam-keyed-p lam) (compile-keyed-lam lam))
+        ((lam-rest-only-p lam) (compile-rest-lam lam))
         (t (compile-complex-lam lam))))
 
 (defun compile-simple-lam (lam)
@@ -1246,6 +1264,37 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                                         (mapcar (lambda (c) (or c "t")) sig))))
       (loop for lv in lvars for (ty . rep) in saved
             do (setf (lvar-type lv) ty (lvar-rep lv) rep)))))
+
+(defun compile-rest-lam (lam)
+  "Required parameters and &REST: the body (:RMAIN) takes the rest list as
+its last parameter; the entries for few arguments make the list."
+  (let ((n (length (lam-req lam))) (id (lam-id lam)))
+    (let* ((*fs* (make-fstate :lam lam :nparams (+ n 2)))
+           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+           (prologue (setup-free-vars lam))
+           (any-special nil))
+      (loop for lv in (append (lam-req lam) (list (lam-rest lam))) for i from 1
+            do (multiple-value-bind (code sp) (param-setup-code lv i)
+                 (setf prologue (append prologue code))
+                 (when sp (setf any-special t))))
+      (let ((body (finish-body lam prologue any-special)))
+        (add-func *m* (list :rmain id) (main-type (1+ n))
+                  :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam))))
+    (add-func *m* (list :main id) :fN
+              :body `((:local.get 1) :array.len (:i32.const ,n) :i32.lt_s
+                      (:if nil nil ((:local.get 0) (:local.get 1) (:return_call :argerr-n)))
+                      (:local.get 0)
+                      ,@(loop for i below n append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
+                      (:local.get 1) (:i32.const ,n) (:call :vector-tail-to-list)
+                      (:return_call (:rmain ,id)))
+              :display (format nil "~A/generic" (lam-display-name lam)))
+    (loop for k from n to +max-fixed-args+
+          do (add-func *m* (list :rentry id k) (fixed-entry-type k)
+                       :body `((:local.get 0)
+                               ,@(loop for i from 1 to k collect `(:local.get ,i))
+                               ,@(nil-code)
+                               ,@(loop repeat (- k n) collect '(:struct.new :cons))
+                               (:return_call (:rmain ,id)))))))
 
 (defun compile-complex-lam (lam)
   (let* ((*fs* (make-fstate :lam lam :nparams 2))
@@ -1378,4 +1427,12 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                         (:local.get ,res)))
                     `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
           (add-func *m* (list :kmain (lam-id lam)) (main-type size)
-                    :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))))))
+                    :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))))
+    ;; entries for a fixed number of arguments: the missing optionals are null
+    (when (lam-opt-only-p lam)
+      (loop for k from nreq to (min +max-fixed-args+ npos)
+            do (add-func *m* (list :oentry (lam-id lam) k) (fixed-entry-type k)
+                         :body `((:local.get 0)
+                                 ,@(loop for i from 1 to k collect `(:local.get ,i))
+                                 ,@(loop repeat (- size k) collect '(:ref.null :eq))
+                                 (:return_call (:kmain ,(lam-id lam)))))))))
