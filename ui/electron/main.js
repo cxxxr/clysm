@@ -79,18 +79,20 @@ ipcMain.on('desktop', (event, name, args) => {
 
 function buildMenu({ menus, labels }) {
   const mac = process.platform === 'darwin';
-  const template = menus.map((menu) => ({
-    label: menu.label,
-    submenu: menu.items.flatMap((item) => [
-      ...(item.separator ? [{ type: 'separator' }] : []),
-      {
-        label: item.label,
-        accelerator: item.key || undefined,
-        enabled: item.enabled,
-        click: () => win && win.webContents.send('menu', item.id),
-      },
-    ]),
-  }));
+  // an item is a separator, an item with a menu of its own, or one that is
+  // chosen (with a check mark if `checked` is a boolean)
+  const itemTemplate = (item) => {
+    if (item.separator) return { type: 'separator' };
+    if (item.items) return { label: item.label, enabled: item.enabled, submenu: item.items.map(itemTemplate) };
+    return {
+      label: item.label,
+      accelerator: item.key || undefined,
+      enabled: item.enabled,
+      ...(typeof item.checked === 'boolean' ? { type: 'checkbox', checked: item.checked } : {}),
+      click: () => win && win.webContents.send('menu', item.id),
+    };
+  };
+  const template = menus.map((menu) => ({ label: menu.label, submenu: menu.items.map(itemTemplate) }));
   const quit = mac ? { role: 'close' } : { role: 'quit', ...(labels.quit ? { label: labels.quit } : {}) };
   if (template.length > 0) template[0].submenu.push({ type: 'separator' }, quit);
   else template.push({ role: 'fileMenu' });

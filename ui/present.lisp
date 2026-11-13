@@ -35,47 +35,66 @@
 ;;; The overlay
 
 (defstate *dialogs* nil "The dialogs on the screen, the topmost last (dialog.lisp).")
+(defstate *windows* nil "The windows on the screen (pane.lisp), in the order they were made.")
 (defstate *popup* nil "The popup menu: NIL or (x y item...).")
 (defstate *input-context* nil "What ACCEPT is waiting for, or NIL.")
+(defstate *interactors* nil "The interactor panes on the screen (stream.lisp).")
+
+(defun active-interactors ()
+  "The interactor panes that the user sees."
+  (remove-if-not (lambda (pane) (funcall 'pane-visible pane)) *interactors*))
 
 (defvar *accept-prompt* "Select ~A"
   "The format control of the prompt of ACCEPT for a presentation type (its description).")
 
-(defstruct (menu-item (:constructor make-menu-item (label function &key (enabled t) key)))
-  label function enabled key)
-
-(defun key-label (key)
-  "The key of a command as shown in a menu."
-  (and key
-       (let ((position (search "CmdOrCtrl" key)))
-         (if position
-             (concatenate 'string (subseq key 0 position) "Ctrl" (subseq key (+ position 9)))
-             key))))
-
-(defun command-menu-item (command &rest arguments)
-  (make-menu-item (command-label command)
-                  (lambda () (apply #'invoke-command (command-name command) arguments))
-                  :enabled (command-enabled-p (command-name command))
-                  :key (key-label (command-key command))))
+(defun label-children (label)
+  "The children of an element that shows LABEL, its mnemonic underlined."
+  (multiple-value-bind (text position) (parse-mnemonic label)
+    (if position
+        (remove "" (list (subseq text 0 position)
+                         (html (:u (string (char text position))))
+                         (subseq text (1+ position)))
+                :test #'equal)
+        (list text))))
 
 (defun menu-list (items close)
   "The node of a menu of ITEMS (menu items, :SEPARATOR); CLOSE is called
-before the function of the chosen item."
+before the function of the chosen item.  An item with items has a menu of
+its own, shown while the pointer is on it."
   (html
     (:ul :class "ui-menu" :role "menu"
       (mapcar (lambda (item)
-                (if (eq item :separator)
-                    (:li :class "ui-menu-separator" :role "separator")
-                    (:li :class (if (menu-item-enabled item) "ui-menu-item" "ui-menu-item disabled")
-                         :role "menuitem"
-                         :on-click (lambda (&optional event)
-                                     (declare (ignore event))
-                                     (when (menu-item-enabled item)
-                                       (funcall close)
-                                       (funcall (menu-item-function item))))
-                      (:span (menu-item-label item))
-                      (when (menu-item-key item)
-                        (:span :class "ui-menu-key" (menu-item-key item))))))
+                (cond ((eq item :separator)
+                       (:li :class "ui-menu-separator" :role "separator"))
+                      ((menu-item-items item)
+                       (:li :class (if (menu-item-enabled item)
+                                       "ui-menu-item ui-submenu"
+                                       "ui-menu-item ui-submenu disabled")
+                            :role "menuitem" :aria-haspopup "true"
+                         (:span :class "ui-menu-label" (label-children (menu-item-label item)))
+                         (:span :class "ui-menu-key" "▸")
+                         (when (menu-item-enabled item)
+                           (menu-list (menu-item-items item) close))))
+                      (t
+                       (:li :class (if (menu-item-enabled item) "ui-menu-item" "ui-menu-item disabled")
+                            :role (case (menu-item-checked item)
+                                    (:none "menuitem")
+                                    (t "menuitemcheckbox"))
+                            :aria-checked (case (menu-item-checked item)
+                                            (:none nil)
+                                            ((nil) "false")
+                                            (t "true"))
+                            :on-click (lambda (&optional event)
+                                        (when event (stop-event *backend* event))
+                                        (when (menu-item-enabled item)
+                                          (funcall close)
+                                          (funcall (menu-item-function item))))
+                         (:span :class "ui-menu-label"
+                           (unless (eq (menu-item-checked item) :none)
+                             (:span :class "ui-menu-check" (if (menu-item-checked item) "✓" "")))
+                           (label-children (menu-item-label item)))
+                         (when (menu-item-key item)
+                           (:span :class "ui-menu-key" (key-label (menu-item-key item))))))))
               items))))
 
 (defun close-popup () (setf *popup* nil))
@@ -93,8 +112,11 @@ before the function of the chosen item."
 
 (defcomponent overlay ()
   (:div :class "ui-overlay"
+    ;; the windows of pane.lisp
+    (mapcar (lambda (window) (keyed window (window-view window))) *windows*)
     (mapcar (lambda (dialog) (keyed dialog (dialog-view dialog))) *dialogs*)
-    (when *input-context*
+    ;; (an interactor asks in its own line)
+    (when (and *input-context* (null (active-interactors)))
       (:div :class "ui-accept-bar" :role "status"
         (:span (input-context-prompt *input-context*))
         (:button :type "button" :class "ui-push-button"
@@ -198,7 +220,9 @@ dialog.lisp has methods for strings, numbers, BOOLEAN and MEMBER."))
 (defmethod accept-presentation-type (name type prompt continuation)
   (declare (ignore name))
   (ensure-overlay)
-  (setf *input-context* (make-input-context :type type :prompt prompt :continuation continuation)))
+  (setf *input-context* (make-input-context :type type :prompt prompt :continuation continuation))
+  ;; an interactor asks in its line: the user can type at once
+  (when (active-interactors) (funcall 'focus-interactors)))
 
 (defun accept (type &key prompt continuation)
   "Ask the user for an object of the presentation type TYPE and call
@@ -214,6 +238,7 @@ once.  PROMPT is the text shown meanwhile."
   "The user has chosen OBJECT for the input context."
   (let ((context *input-context*))
     (setf *input-context* nil)
+    (when (active-interactors) (funcall 'focus-interactors))
     (funcall (input-context-continuation context) object)))
 
 ;;; ------------------------------------------------------------------

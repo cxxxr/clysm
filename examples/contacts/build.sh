@@ -12,7 +12,7 @@ if [ "$1" = "--dev" ]; then
   tools/build-ui-dev.sh $out/contacts.wasm examples/contacts/contacts.lisp 2>/dev/null
   cp host/web/repl.mjs $out/
 else
-  bin/clysm compile ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp ui/graphics.lisp ui/dom.lisp \
+  bin/clysm compile ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp ui/graphics.lisp ui/stream.lisp ui/dom.lisp \
     ui/desktop.lisp examples/contacts/contacts.lisp -o $out/contacts.wasm 2>/dev/null
 fi
 cp examples/contacts/index.html ui/ui.css host/common.mjs host/jsffi.mjs $out/

@@ -55,7 +55,11 @@
    (max-width :initarg :max-width :initform nil :accessor pane-max-width)
    (max-height :initarg :max-height :initform nil :accessor pane-max-height)
    ;; whether it takes the free space of its row or column: T, or a weight
-   (stretch :initarg :stretch :initform nil :accessor pane-stretch))
+   (stretch :initarg :stretch :initform nil :accessor pane-stretch)
+   ;; the menu of the pane (right click): a menu, the name of one of the
+   ;; interface, or a function of the pane that returns the items of a
+   ;; popup menu (see POPUP-MENU)
+   (pane-menu :initarg :pane-menu :initform nil :accessor pane-menu))
   (:documentation "Something on the screen.  TITLE is a label shown with it, HELP a
 tooltip, CLASS additional CSS classes."))
 
@@ -101,10 +105,31 @@ tooltip, CLASS additional CSS classes."))
       (setf (getf (element-props node) :hidden) t))
     (when (pane-help pane)
       (setf (getf (element-props node) :title) (pane-help pane)))
+    (when (pane-menu pane)
+      (setf (getf (element-props node) :on-contextmenu)
+            (lambda (&optional event)
+              (let ((items (pane-menu-items pane)))
+                (when items
+                  (when event (stop-event *backend* event))
+                  (popup-menu items
+                              (or (event-get *backend* event "clientX") 0)
+                              (or (event-get *backend* event "clientY") 0)))))))
     node))
 
 (defcomponent pane-view (pane flex)
   (pane-element pane flex))
+
+(defgeneric pane-mounted (pane)
+  (:documentation "Called when PANE has been put on the display.")
+  (:method (pane) nil))
+(defgeneric pane-unmounted (pane)
+  (:documentation "Called when PANE has been removed from the display.")
+  (:method (pane) nil))
+
+(defmethod mounted ((self pane-view))
+  (pane-mounted (first (component-args self))))
+(defmethod unmounted ((self pane-view))
+  (pane-unmounted (first (component-args self))))
 
 (defun pane-node (pane &optional flex)
   "The node that shows PANE, for markup: (:div (pane-node my-pane))."
@@ -769,31 +794,214 @@ HTML and PRESENT); it is called again when state it read has changed."))
                           (t (command-button-node item))))
                   (toolbar-items pane)))))
 
-(defcomponent menu-bar-view (&state (open nil))
-  "The menus of the commands (COMMAND-MENUS), in the page."
-  (flet ((close-menu () (setf open nil)))
-    (:div :class "ui-menu-bar" :role "menubar"
-      (mapcar (lambda (menu)
-                (let ((title (car menu)))
-                  (:div :class "ui-menu-bar-item"
-                    (:button :type "button" :role "menuitem"
-                             :class (if (equal open title) "ui-menu-title ui-open" "ui-menu-title")
-                             :on-click (lambda (&optional event)
-                                         (declare (ignore event))
-                                         (setf open (if (equal open title) nil title)))
-                             :on-mouseenter (lambda (&optional event)
-                                              (declare (ignore event))
-                                              (when open (setf open title)))
-                      title)
-                    (when (equal open title)
-                      (menu-list (loop for command in (cdr menu)
-                                       when (command-separator command) collect :separator
-                                       collect (command-menu-item command))
-                                 #'close-menu)))))
-              (command-menus))
-      (when open
-        (:div :class "ui-menu-backdrop"
-              :on-click (lambda (&optional event) (declare (ignore event)) (close-menu)))))))
+;;; ------------------------------------------------------------------
+;;; Menus (the :MENUS and :MENU-BAR of DEFINE-INTERFACE)
+
+(defmodel menu ()
+  ((name :initarg :name :initform nil :accessor menu-name)
+   (interface :initarg :interface :initform nil :accessor menu-interface)
+   ;; the character after & is the mnemonic: Alt and it opens the menu
+   (title :initarg :title :initform "" :accessor menu-title)
+   ;; menu entries, :SEPARATOR, menus (or their names in the interface: they
+   ;; open beside this one), names of commands and (command argument...)
+   (items :initarg :items :initform nil :accessor menu-items)
+   (enabled :initarg :enabled :initform t :accessor menu-enabled))
+  (:documentation "A menu of an interface."))
+
+(defmodel menu-entry (callbacks)
+  ((interface :initarg :interface :initform nil :accessor menu-entry-interface)
+   (title :initarg :title :initform "" :accessor menu-entry-title)
+   (data :initarg :data :initform nil :accessor menu-entry-data)
+   ;; called with the data (by default the title; for an entry with a check
+   ;; mark, whether it is checked now) and the interface
+   (callback :initarg :callback :initform nil :accessor menu-entry-callback)
+   (enabled :initarg :enabled :initform t :accessor menu-entry-enabled)
+   ;; like "CmdOrCtrl+E"
+   (key :initarg :key :initform nil :accessor menu-entry-key)
+   ;; :NONE, or whether the entry has a check mark; choosing it changes that
+   (checked :initarg :checked :initform :none :accessor menu-entry-checked))
+  (:documentation "An entry of a menu.  Like the slots of panes, ENABLED and CHECKED can
+be (COMPUTED form) or (BINDING place)."))
+
+(defun choose-menu-entry (entry)
+  (let ((checked (menu-entry-checked entry))
+        (interface (menu-entry-interface entry)))
+    (flet ((call (data)
+             (when (menu-entry-callback entry)
+               (apply (menu-entry-callback entry)
+                      (mapcar (lambda (key)
+                                (ecase key
+                                  ((:data :item) data)
+                                  (:interface interface)
+                                  (:element entry)))
+                              (callback-type-list (pane-callback-type entry)))))))
+      (cond ((eq checked :none)
+             (call (or (menu-entry-data entry) (parse-mnemonic (menu-entry-title entry)))))
+            (t (setf (menu-entry-checked entry) (not checked))
+               (call (not checked)))))))
+
+(defun resolve-menu-item (interface item)
+  "The menu item (of menus on the screen) for the element ITEM of a menu of INTERFACE."
+  (cond ((eq item :separator) item)
+        ((menu-item-p item) item)
+        ((typep item 'menu-entry)
+         (make-menu-item (menu-entry-title item)
+                         (lambda () (choose-menu-entry item))
+                         :enabled (and (menu-entry-enabled item) t)
+                         :key (menu-entry-key item)
+                         :checked (let ((checked (menu-entry-checked item)))
+                                    (if (eq checked :none) :none (and checked t)))))
+        ((typep item 'menu)
+         (make-menu-item (menu-title item) nil
+                         :enabled (and (menu-enabled item) t)
+                         :items (resolve-menu-items interface (menu-items item))))
+        ((consp item)
+         (apply #'command-menu-item (or (find-command (car item))
+                                        (error "UI: ~S is not a command" (car item)))
+                (cdr item)))
+        ((and interface (find-menu interface item))
+         (resolve-menu-item interface (find-menu interface item)))
+        ((find-command item)
+         (let ((menu-item (command-menu-item (find-command item))))
+           (setf (menu-item-key menu-item) (command-key (find-command item)))
+           menu-item))
+        (t (error "UI: ~S is neither a menu of the interface nor a command" item))))
+
+(defun resolve-menu-items (interface items)
+  (mapcar (lambda (item) (resolve-menu-item interface item)) items))
+
+(defun find-menu (interface name)
+  "The menu of INTERFACE that is named NAME, or NIL."
+  (and (symbolp name)
+       (slot-exists-p interface name)
+       (slot-boundp interface name)
+       (let ((menu (slot-value interface name)))
+         (and (typep menu 'menu) menu))))
+
+(defun interface-menus (interface)
+  "The menus of the menu bar of INTERFACE as ((title item...)...): the menus
+that its :MENU-BAR names, and for T or :COMMANDS in it those of the commands."
+  (let ((bar (interface-menu-bar interface)))
+    (cond ((null bar) nil)
+          ((eq bar t) (command-menu-items))
+          (t (loop for name in bar
+                   append (if (eq name :commands)
+                              (command-menu-items)
+                              (let ((menu (if (typep name 'menu)
+                                              name
+                                              (or (find-menu interface name)
+                                                  (error "UI: ~S is not a menu of the interface" name)))))
+                                (list (cons (menu-title menu)
+                                            (resolve-menu-items interface (menu-items menu)))))))))))
+
+(defun pane-menu-items (pane)
+  (let ((menu (pane-menu pane))
+        (interface (pane-interface pane)))
+    (cond ((functionp menu) (funcall menu pane))
+          ((typep menu 'menu) (resolve-menu-items interface (menu-items menu)))
+          (t (let ((found (and interface (find-menu interface menu))))
+               (and found (resolve-menu-items interface (menu-items found))))))))
+
+(defstate *interfaces* nil "The interfaces on the screen, the latest first.")
+(defstate *open-menu* nil "(interface . title) of the menu of a menu bar that is open, or NIL.")
+
+(defun displayed-menus ()
+  "The menus of the interfaces on the screen (for a menu bar outside the
+page), in the order of their menu bars; the menus of the commands are there
+once, where the first menu bar says :COMMANDS (or is T) — and alone if no
+interface has a menu bar."
+  (let ((menus '()) (commands nil))
+    (flet ((add-commands ()
+             (unless commands
+               (setf commands t)
+               (dolist (menu (command-menu-items)) (push menu menus)))))
+      (dolist (interface (reverse *interfaces*))
+        (let ((bar (interface-menu-bar interface)))
+          (cond ((eq bar t) (add-commands))
+                ((consp bar)
+                 (dolist (name bar)
+                   (if (eq name :commands)
+                       (add-commands)
+                       (let ((menu (if (typep name 'menu) name (find-menu interface name))))
+                         (when menu
+                           (push (cons (menu-title menu)
+                                       (resolve-menu-items interface (menu-items menu)))
+                                 menus))))))))))
+    (if menus (nreverse menus) (command-menu-items))))
+
+(setf *menu-bar-function* #'displayed-menus)
+
+;;; the keys of menu entries
+
+(defun menu-key-action (key)
+  (labels ((search-items (interface items)
+             (dolist (item items)
+               (cond ((typep item 'menu-entry)
+                      (when (and (menu-entry-key item)
+                                 (equal (parse-key (menu-entry-key item)) key)
+                                 (menu-entry-enabled item))
+                        (return (lambda () (choose-menu-entry item)))))
+                     ((or (typep item 'menu) (and (symbolp item) (find-menu interface item)))
+                      (let* ((menu (if (typep item 'menu) item (find-menu interface item)))
+                             (found (search-items interface (menu-items menu))))
+                        (when found (return found))))))))
+    (dolist (interface *interfaces*)
+      (let ((bar (interface-menu-bar interface)))
+        (when (consp bar)
+          (let ((found (search-items interface (remove :commands bar))))
+            (when found (return found))))))))
+
+(defun mnemonic-key-action (key)
+  "Alt and the mnemonic of a menu of a menu bar opens it; the mnemonic of an
+item of the open menu chooses it."
+  (flet ((mnemonic-p (label)
+           (multiple-value-bind (text position) (parse-mnemonic label)
+             (and position (= (length (car key)) 1)
+                  (char-equal (char text position) (char (car key) 0))))))
+    (cond ((native-menus-p *backend*) nil)
+          ((equal (cdr key) '(:alt))
+           (dolist (interface *interfaces*)
+             (let ((menu (find-if #'mnemonic-p (interface-menus interface) :key #'car)))
+               (when menu
+                 (return (lambda () (setf *open-menu* (cons interface (car menu)))))))))
+          ((and *open-menu* (null (cdr key)))
+           (let* ((menu (assoc (cdr *open-menu*) (interface-menus (car *open-menu*)) :test #'equal))
+                  (item (find-if (lambda (item)
+                                   (and (menu-item-p item) (menu-item-enabled item)
+                                        (null (menu-item-items item))
+                                        (mnemonic-p (menu-item-label item))))
+                                 (cdr menu))))
+             (cond (item (lambda ()
+                           (setf *open-menu* nil)
+                           (funcall (menu-item-function item))))
+                   ((equal (car key) "ESCAPE") (lambda () (setf *open-menu* nil)))))))))
+
+(push #'menu-key-action *key-handlers*)
+(push #'mnemonic-key-action *key-handlers*)
+
+(defcomponent menu-bar-view (interface)
+  "The menu bar of INTERFACE, in the page."
+  (let ((open (and *open-menu* (eq (car *open-menu*) interface) (cdr *open-menu*))))
+    (flet ((close-menu () (setf *open-menu* nil)))
+      (:div :class "ui-menu-bar" :role "menubar"
+        (mapcar (lambda (menu)
+                  (let ((title (car menu)))
+                    (:div :class "ui-menu-bar-item"
+                      (:button :type "button" :role "menuitem"
+                               :class (if (equal open title) "ui-menu-title ui-open" "ui-menu-title")
+                               :on-click (lambda (&optional event)
+                                           (declare (ignore event))
+                                           (setf *open-menu* (if (equal open title) nil (cons interface title))))
+                               :on-mouseenter (lambda (&optional event)
+                                                (declare (ignore event))
+                                                (when open (setf *open-menu* (cons interface title))))
+                        (label-children title))
+                      (when (equal open title)
+                        (menu-list (cdr menu) #'close-menu)))))
+                (interface-menus interface))
+        (when open
+          (:div :class "ui-menu-backdrop"
+                :on-click (lambda (&optional event) (declare (ignore event)) (close-menu))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Layouts
@@ -1083,6 +1291,42 @@ the item whose button was pressed."))
                                       x y width height))))
               (layout-description pane)))))
 
+(defmodel docking-layout (layout)
+  ((orientation :initarg :orientation :initform :column :accessor docking-layout-orientation)
+   ;; (item . interface) of the panes that are in windows of their own
+   (undocked :initform nil :accessor docking-layout-undocked))
+  (:documentation "Panes with a title bar each — an element of the description is
+(title pane) — that the user takes out into a window of its own (and back by
+closing that window)."))
+
+(defun undock (layout item)
+  (let* ((pane (resolve-child layout (second item)))
+         (interface (make-instance 'interface
+                                   :title (first item) :layout pane
+                                   :destroy-callback
+                                   (lambda (interface)
+                                     (declare (ignore interface))
+                                     (setf (docking-layout-undocked layout)
+                                           (remove item (docking-layout-undocked layout) :key #'car))))))
+    (setf (docking-layout-undocked layout) (acons item interface (docking-layout-undocked layout)))
+    (display interface :window t)))
+
+(defmethod render-pane ((pane docking-layout))
+  (html
+    (:div :class (format nil "ui-docking-layout ui-~(~A~)" (docking-layout-orientation pane))
+      (mapcar (lambda (item)
+                (unless (assoc item (docking-layout-undocked pane))
+                  (:section :class "ui-dock"
+                    (:header :class "ui-dock-title"
+                      (:span (first item))
+                      (:button :type "button" :class "ui-window-button" :aria-label "undock"
+                               :on-click (lambda (&optional event)
+                                           (declare (ignore event))
+                                           (undock pane item))
+                        "⇱"))
+                    (child-node pane (second item) "flex:1 1 0"))))
+              (layout-description pane)))))
+
 ;;; ------------------------------------------------------------------
 ;;; Interfaces
 
@@ -1097,6 +1341,8 @@ the item whose button was pressed."))
    (command-table :initarg :command-table :initform nil :accessor interface-command-table)
    (root :initform nil :accessor interface-root)
    (title-reaction :initform nil :accessor interface-title-reaction)
+   ;; called with the interface when it is taken off the screen
+   (destroy-callback :initarg :destroy-callback :initform nil :accessor interface-destroy-callback)
    ;; true to show, below the layout, what the pointer can do where it is
    (pointer-documentation :initarg :pointer-documentation :initform nil
                           :accessor interface-pointer-documentation))
@@ -1129,7 +1375,7 @@ the item whose button was pressed."))
     (html
       (:div :class "ui-interface"
         (when (and (interface-menu-bar interface) (not (native-menus-p *backend*)))
-          (menu-bar-view))
+          (menu-bar-view interface))
         (and layout (child-node interface layout "flex:1 1 0"))
         (when (interface-pointer-documentation interface) (pointer-documentation-view))))))
 
@@ -1137,6 +1383,12 @@ the item whose button was pressed."))
   "Define the class NAME of interfaces, like DEFMODEL with the options
   (:panes (name class initarg...)...)
   (:layouts (name class description initarg...)...)
+  (:menus (name title (item...) initarg...)...)
+  (:menu-bar menu-name...)
+An item of a menu is (\"title\" initarg...) — a MENU-ENTRY with :CALLBACK,
+:KEY, :ENABLED, :CHECKED... —, the name of another menu (which opens beside
+it) or of a command, (command argument...) or :SEPARATOR.  The menu bar
+shows the named menus, and the menus of the commands where it says :COMMANDS.
 Every instance has these panes and layouts, made with MAKE-INSTANCE from the
 initargs (:ACCESSOR and :READER name functions for the slot instead) and
 kept in the slots NAME.  The initarg forms are evaluated when the instance
@@ -1145,15 +1397,18 @@ far, as variables.  The interface shows the first layout (or the one named
 by the initarg :LAYOUT); without layouts, its panes in a column."
   (let* ((panes (cdr (assoc :panes options)))
          (layouts (cdr (assoc :layouts options)))
-         (others (remove-if (lambda (option) (member (car option) '(:panes :layouts))) options))
+         (menus (cdr (assoc :menus options)))
+         (menu-bar (assoc :menu-bar options))
+         (others (remove-if (lambda (option) (member (car option) '(:panes :layouts :menus :menu-bar)))
+                            options))
          (interface 'interface)
          (slot-names (append (mapcar (lambda (slot) (if (consp slot) (car slot) slot)) slots)
-                             (mapcar #'car panes) (mapcar #'car layouts))))
-    (dolist (pane (append panes layouts))
+                             (mapcar #'car panes) (mapcar #'car layouts) (mapcar #'car menus))))
+    (dolist (pane (append panes layouts menus))
       (when (member (car pane) '(name interface title title-position enabled visible help class
                                  width height min-width min-height max-width max-height stretch
                                  layout menu-bar command-table root title-reaction
-                                 pointer-documentation))
+                                 pointer-documentation destroy-callback))
         (error "DEFINE-INTERFACE ~S: a pane cannot be named ~S, which is a slot of every interface"
                name (car pane))))
     (flet ((slot-options (initargs)
@@ -1167,7 +1422,8 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
            (,@slots
             ,@(mapcar (lambda (pane) `(,(car pane) :initform nil ,@(slot-options (cddr pane)))) panes)
             ,@(mapcar (lambda (layout) `(,(car layout) :initform nil ,@(slot-options (cdddr layout))))
-                      layouts))
+                      layouts)
+            ,@(mapcar (lambda (menu) `(,(car menu) :initform nil)) menus))
            ,@others)
          (defmethod make-interface-panes ((,interface ,name))
            (call-next-method)
@@ -1183,7 +1439,27 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
                                                                       :interface ,interface
                                                                       :description ,description
                                                                       ,@(initargs initargs)))))
-                       layouts))
+                       layouts)
+             ;; (name title (item...) initarg...): an item is ("title" initarg...),
+             ;; the name of a menu or of a command, (command argument...) or :SEPARATOR
+             ,@(mapcar (lambda (menu)
+                         (destructuring-bind (menu-name title items &rest initargs) menu
+                           `(setf ,menu-name
+                                  (make-instance
+                                   'menu :name ',menu-name :interface ,interface :title ,title
+                                   :items (list ,@(mapcar (lambda (item)
+                                                            (if (and (consp item) (stringp (car item)))
+                                                                `(make-instance 'menu-entry
+                                                                                :interface ,interface
+                                                                                :title ,(car item)
+                                                                                ,@(cdr item))
+                                                                `',item))
+                                                          items))
+                                   ,@initargs))))
+                       menus))
+           ,@(when menu-bar
+               `((unless (interface-menu-bar ,interface)
+                   (setf (interface-menu-bar ,interface) ',(cdr menu-bar)))))
            (unless (interface-layout ,interface)
              (setf (interface-layout ,interface)
                    ,(if layouts
@@ -1191,6 +1467,137 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
                         `(make-instance 'column-layout :interface ,interface
                                                        :description ',(mapcar #'car panes))))))
          ',name))))
+
+;;; a window: an interface above the application that the user moves, resizes
+;;; and closes
+
+(defmodel window ()
+  ((interface :initarg :interface :reader window-interface)
+   (x :initarg :x :accessor window-x)
+   (y :initarg :y :accessor window-y)
+   (width :initarg :width :accessor window-width)
+   (height :initarg :height :accessor window-height)
+   (maximized :initform nil :accessor window-maximized)
+   ;; the window with the largest number is on top
+   (z :initarg :z :accessor window-z)
+   ;; (kind pointer-x pointer-y x y width height) while it is moved or resized
+   (drag :initform nil :accessor window-drag)))
+
+(defvar *top-z* 0)
+
+(defun interface-window (interface)
+  "The window of INTERFACE (see the argument :WINDOW of DISPLAY), or NIL."
+  (find (pane-interface interface) *windows* :key #'window-interface))
+
+(defun raise-interface (interface)
+  "Put the window of INTERFACE on top of the others."
+  (let ((window (interface-window interface)))
+    (when (and window (< (window-z window) *top-z*))
+      (setf (window-z window) (incf *top-z*)))
+    interface))
+
+(defun window-pointer (window kind event)
+  "The pointer was pressed to move (KIND :MOVE) or resize WINDOW."
+  (when event
+    (stop-event *backend* event)
+    (capture-pointer *backend* event))
+  (setf (window-drag window)
+        (list kind
+              (or (event-get *backend* event "clientX") 0) (or (event-get *backend* event "clientY") 0)
+              (window-x window) (window-y window) (window-width window) (window-height window))))
+
+(defun window-pointer-moved (window event)
+  (let ((drag (window-drag window)))
+    (when (and drag (not (window-maximized window)))
+      (destructuring-bind (kind px py x y width height) drag
+        (let ((dx (round (- (or (event-get *backend* event "clientX") px) px)))
+              (dy (round (- (or (event-get *backend* event "clientY") py) py))))
+          (ecase kind
+            (:move (setf (window-x window) (+ x dx)
+                         (window-y window) (max 0 (+ y dy))))
+            (:resize (setf (window-width window) (max 180 (+ width dx))
+                           (window-height window) (max 90 (+ height dy))))))))))
+
+(defcomponent window-view (window)
+  (let* ((interface (window-interface window))
+         (top (>= (window-z window) (reduce #'max *windows* :key #'window-z)))
+         (maximized (window-maximized window)))
+    (flet ((released (&optional event)
+             (declare (ignore event))
+             (setf (window-drag window) nil)))
+      (:div :class (format nil "ui-top-window~:[~; ui-active~]~:[~; ui-maximized~]" top maximized)
+            :role "dialog" :aria-label (pane-title interface)
+            :style (format nil "z-index:~D;~:[left:~Dpx;top:~Dpx;width:~Dpx;height:~Dpx~;~]"
+                           ;; above the application, in their order, below menus
+                           (+ 100 (count-if (lambda (other) (< (window-z other) (window-z window)))
+                                            *windows*))
+                           maximized
+                           (window-x window) (window-y window)
+                           (window-width window) (window-height window))
+            :on-pointerdown (lambda (&optional event)
+                              (declare (ignore event))
+                              (raise-interface interface))
+        (:header :class "ui-window-title"
+                 :on-pointerdown (lambda (&optional event)
+                                   (raise-interface interface)
+                                   (window-pointer window :move event))
+                 :on-pointermove (lambda (&optional event) (window-pointer-moved window event))
+                 :on-pointerup #'released
+                 :on-pointercancel #'released
+                 :on-dblclick (lambda (&optional event)
+                                (declare (ignore event))
+                                (setf (window-maximized window) (not maximized)))
+          (:span :class "ui-window-name" (or (pane-title interface) ""))
+          (:button :type "button" :class "ui-window-button" :aria-label "maximize"
+                   :on-pointerdown (lambda (&optional event) (when event (stop-event *backend* event)))
+                   :on-click (lambda (&optional event)
+                               (declare (ignore event))
+                               (setf (window-maximized window) (not maximized)))
+            (if maximized "❐" "□"))
+          (:button :type "button" :class "ui-window-button ui-window-close" :aria-label *abort-label*
+                   :on-pointerdown (lambda (&optional event) (when event (stop-event *backend* event)))
+                   :on-click (lambda (&optional event)
+                               (declare (ignore event))
+                               (quit-interface interface))
+            "×"))
+        (:div :class "ui-window-body" (pane-node interface "flex:1 1 0"))
+        (unless maximized
+          (:div :class "ui-window-resize"
+                :on-pointerdown (lambda (&optional event) (window-pointer window :resize event))
+                :on-pointermove (lambda (&optional event) (window-pointer-moved window event))
+                :on-pointerup #'released
+                :on-pointercancel #'released))))))
+
+(defun arrange-windows (function)
+  "Call FUNCTION with every window, its index, the number of windows and the
+size of the screen."
+  (multiple-value-bind (width height) (viewport-size *backend*)
+    (let ((windows (sort (copy-list *windows*) #'< :key #'window-z)))
+      (loop for window in windows
+            for index from 0
+            do (setf (window-maximized window) nil)
+               (funcall function window index (length windows) width height)))))
+
+(defun cascade-windows ()
+  "Put the windows one behind the other, each a little further right and down."
+  (arrange-windows (lambda (window index count width height)
+                     (declare (ignore count))
+                     (setf (window-x window) (+ 40 (* 28 index))
+                           (window-y window) (+ 40 (* 28 index))
+                           (window-width window) (max 240 (round (* width 0.5)))
+                           (window-height window) (max 160 (round (* height 0.5)))))))
+
+(defun tile-windows ()
+  "Put the windows side by side so that they cover the screen."
+  (arrange-windows (lambda (window index count width height)
+                     (let* ((columns (ceiling (sqrt count)))
+                            (rows (ceiling count columns))
+                            (w (floor width columns))
+                            (h (floor height rows)))
+                       (setf (window-x window) (* w (mod index columns))
+                             (window-y window) (* h (floor index columns))
+                             (window-width window) w
+                             (window-height window) h)))))
 
 (defvar *command-table-users* nil "The interfaces on the screen that have a command table.")
 
@@ -1201,16 +1608,31 @@ by the initarg :LAYOUT); without layouts, its panes in a column."
     (setf *command-tables*
           (remove-duplicates (mapcar #'interface-command-table *command-table-users*)))))
 
-(defun display (interface &key (container "#app"))
+(defun display (interface &key (container "#app") window x y (width 480) (height 320))
   "Show INTERFACE in CONTAINER (for the DOM, a CSS selector or a node); the
-title of the window is its title.  Return the interface."
+title of the window is its title.  With WINDOW true, show it instead in a
+window of its own above the application, at X, Y with the size WIDTH,
+HEIGHT: the user moves it by its title, resizes it at its corner, maximizes
+and closes it (see also RAISE-INTERFACE, TILE-WINDOWS, CASCADE-WINDOWS).
+Return the interface."
   (let ((backend *backend*))
     (use-command-table interface t)
-    (setf (interface-root interface) (mount (pane-node interface) container)
-          (interface-title-reaction interface)
-          (autorun (lambda ()
-                     (let ((title (pane-title interface)))
-                       (when title (set-title backend title))))))
+    (setf *interfaces* (cons interface (remove interface *interfaces*)))
+    (cond (window
+           (ensure-overlay)
+           (let ((offset (* 28 (mod (length *windows*) 8))))
+             (setf *windows*
+                   (append *windows*
+                           (list (make-instance 'window :interface interface
+                                                        :x (or x (+ 80 offset)) :y (or y (+ 60 offset))
+                                                        :width width :height height
+                                                        :z (incf *top-z*)))))))
+          (t
+           (setf (interface-root interface) (mount (pane-node interface) container)
+                 (interface-title-reaction interface)
+                 (autorun (lambda ()
+                            (let ((title (pane-title interface)))
+                              (when title (set-title backend title))))))))
     interface))
 
 (defun contain (pane &rest initargs)
@@ -1224,12 +1646,20 @@ return the interface."
 (defun quit-interface (interface)
   "Take INTERFACE (or the interface of a pane) off the screen."
   (let ((interface (pane-interface interface)))
-    (cond ((interface-root interface)
-           (unmount (interface-root interface))
-           (use-command-table interface nil)
-           (stop (interface-title-reaction interface))
-           (setf (interface-root interface) nil))
+    (flet ((gone ()
+             (use-command-table interface nil)
+             (setf *interfaces* (remove interface *interfaces*))
+             (when (interface-destroy-callback interface)
+               (funcall (interface-destroy-callback interface) interface))))
+      (cond ((interface-root interface)
+             (unmount (interface-root interface))
+             (stop (interface-title-reaction interface))
+             (setf (interface-root interface) nil)
+             (gone))
+            ((interface-window interface)
+             (setf *windows* (remove (interface-window interface) *windows*))
+             (gone))
           ;; dialog.lisp
-          (t (let ((dialog (find interface *dialogs* :key #'dialog-interface)))
-               (when dialog (abort-dialog dialog)))))
+            (t (let ((dialog (find interface *dialogs* :key #'dialog-interface)))
+                 (when dialog (abort-dialog dialog))))))
     nil))

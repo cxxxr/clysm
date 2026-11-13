@@ -88,37 +88,51 @@ button (CANCEL, by default the last, if the box is closed).  TYPE is
 
 ;;; the menu bar
 
-(defun command-id (command)
-  (let ((name (command-name command)))
-    (format nil "~A::~A" (package-name (symbol-package name)) (symbol-name name))))
+(defvar *menu-functions* nil "The functions of the items of the menu bar, by their ids.")
+
+(defun menu-item-specification (item)
+  (if (eq item :separator)
+      (js:object "separator" t)
+      (let ((id (length *menu-functions*)))
+        (setf *menu-functions* (append *menu-functions* (list (menu-item-function item))))
+        (js:object "id" id
+                   "label" (menu-item-label item)
+                   "key" (menu-item-key item)
+                   "enabled" (if (menu-item-enabled item) t :false)
+                   "checked" (case (menu-item-checked item)
+                               (:none nil)
+                               ((nil) :false)
+                               (t t))
+                   "items" (and (menu-item-items item)
+                                (mapcar #'menu-item-specification (menu-item-items item)))))))
 
 (defun menu-specification (labels)
+  (setf *menu-functions* nil)
   (js:object
    "menus" (mapcar (lambda (menu)
                      (js:object "label" (car menu)
-                                "items" (mapcar (lambda (command)
-                                                  (js:object "id" (command-id command)
-                                                             "label" (command-label command)
-                                                             "key" (command-key command)
-                                                             "separator" (and (command-separator command) t)
-                                                             "enabled" (if (command-enabled-p (command-name command))
-                                                                           t :false)))
-                                                (cdr menu))))
-                   (command-menus))
+                                "items" (mapcar #'menu-item-specification (cdr menu))))
+                   (application-menus))
    "labels" labels))
 
 (defmethod install-commands ((backend desktop-backend) &key edit-label view-label quit-label)
-  "Show the commands that have a menu in the menu bar, followed by the
-standard Edit and View menus (titled EDIT-LABEL and VIEW-LABEL; the first
-menu ends with Quit, QUIT-LABEL).  The menu bar follows the commands: their
-definitions and whether they are enabled."
-  ;; the keys of the commands in menus are those of the menu items
-  (install-command-keys backend (lambda (command) (null (command-menu command))))
+  "Show the menus of the application (APPLICATION-MENUS: those of the
+commands, or of the interfaces on the screen) in the menu bar, followed by
+the standard Edit and View menus (titled EDIT-LABEL and VIEW-LABEL; the first
+menu ends with Quit, QUIT-LABEL).  The menu bar follows the state the menus
+read: what there is and whether it is enabled or checked."
+  ;; the keys of what is in the menus are those of the menu items
+  (install-command-keys backend
+                        :command-predicate (lambda (command) (null (command-menu command)))
+                        :handlers nil)
   (let ((*backend* backend))
     (js:call (desktop-api backend) "onMenu"
              (lambda (id)
-               (let ((command (find id *commands* :key #'command-id :test #'string=)))
-                 (when command (invoke-command (command-name command))))
+               (let ((function (and (integerp id) (nth id *menu-functions*))))
+                 (when function
+                   (let ((*backend* backend))
+                     (with-error-dialog (funcall function))
+                     (flush))))
                nil))
     (autorun (lambda ()
                (desktop-call "setMenu"

@@ -177,6 +177,13 @@
 (defmethod set-title ((backend dom-backend) string)
   (js:set (backend-document backend) "title" string))
 
+(defmethod capture-pointer ((backend dom-backend) event)
+  (let ((node (js:get event "currentTarget")))
+    (when node (js:call node "setPointerCapture" (js:get event "pointerId")))))
+
+(defmethod viewport-size ((backend dom-backend))
+  (values (js:get (js:global) "innerWidth") (js:get (js:global) "innerHeight")))
+
 (defmethod begin-drag ((backend dom-backend) event text)
   ;; (without data, some browsers do not start the drag)
   (let ((transfer (js:get event "dataTransfer")))
@@ -288,17 +295,21 @@
 BACKEND: in a browser by their keys, in the desktop application also in the
 menu bar."))
 
-(defun install-command-keys (backend &optional (predicate (constantly t)))
-  "Invoke the commands that satisfy PREDICATE when their keys are pressed."
+(defun install-command-keys (backend &key (command-predicate (constantly t)) (handlers t))
+  "Invoke the commands that satisfy COMMAND-PREDICATE when their keys are
+pressed, and (if HANDLERS) what else has keys, like the items of menus."
   (js:call (backend-document backend) +add-event-listener+ "keydown"
            (js:async-function
             (lambda (event)
-              (let ((command (and (stringp (js:get event "key"))
-                                  (let ((*backend* backend))
-                                    (command-for-key (event-key event))))))
-                (when (and command (funcall predicate command))
+              (let ((action (and (stringp (js:get event "key"))
+                                 (let ((*backend* backend))
+                                   (key-action (event-key event)
+                                               :command-predicate command-predicate
+                                               :handlers handlers)))))
+                (when action
                   (js:call event "preventDefault")
-                  (invoke-command (command-name command))))
+                  (let ((*backend* backend))
+                    (with-error-dialog (funcall action)))))
               nil))))
 
 (defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
