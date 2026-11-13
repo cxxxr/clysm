@@ -183,6 +183,18 @@ functions that call back into Lisp through the exported `lisp_apply`):
 (js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
 ```
 
+### A browser application
+
+`examples/todo/` is a TODO list written entirely in Lisp: `todo.lisp` builds
+the DOM, handles events and saves to `localStorage` through the `JS` package,
+and is compiled ahead of time to `todo.wasm`, which `index.html` loads with the
+browser host (`host/web/clysm.mjs`).
+
+```
+$ examples/todo/build.sh                    # build/todo/
+$ python3 -m http.server -d build/todo      # open http://localhost:8000/
+```
+
 ## ASDF
 
 ASDF 3.3.7 (the latest release, with a small port in `third_party/asdf/`) is bundled:
