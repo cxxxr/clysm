@@ -226,16 +226,26 @@ functions that call back into Lisp through the exported `lisp_apply`):
 (js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
 ```
 
-`js:get` of `null` or `undefined` (`NIL`) is `NIL`; a JavaScript exception in
-`js:call`, `js:funcall` or `js:new` is a Lisp error.
+`js:get` of `null` or `undefined` (`NIL`) is `NIL`. A JavaScript exception in
+`js:call`, `js:funcall` or `js:new` is a Lisp error of type `js:js-error`
+(`js:js-error-value`, `js:js-error-name`, `js:js-error-message`).
+
+A Lisp function that JavaScript calls (one converted by `js:to-js`, an
+export, a listener) throws a JavaScript `Error` when it signals an error that
+it does not handle itself, unless a debugger hook is set: the error's `name`
+is `LispError`, `lispType` the type of the condition, `lispCondition` the
+condition, and its `stack` begins with the Lisp functions active where the
+condition was signalled (the frames of the Wasm name section, without the
+numbers that tell apart functions of the same name). If Lisp code further
+out called that JavaScript through `js:call`, it gets the original condition
+back, so `handler-case` around it sees the condition itself.
 
 `(js:await promise)` waits until a promise is settled and returns its value
 (a rejection is a Lisp error), suspending the WebAssembly stack with
 JavaScript Promise Integration while JavaScript goes on. It can be called in
 a function made by `(js:async-function function)` — a JavaScript function
-that returns a promise — when JavaScript calls that from its event loop (a
-listener, a timer); `(js:can-await-p)` tells. One computation waits at a
-time, and Lisp code that runs meanwhile sees its dynamic bindings.
+that returns a promise — and in `(js:async function args...)`, which starts
+such a function at once and returns its promise; `(js:can-await-p)` tells.
 
 ```lisp
 (js:call button "addEventListener" "click"
@@ -243,7 +253,85 @@ time, and Lisp code that runs meanwhile sees its dynamic bindings.
           (lambda (event)
             (let ((response (js:await (js:call (js:global) "fetch" "/data.json"))))
               (show (js:await (js:call response "text")))))))
+
+;; three requests at the same time
+(js:await-all (list (js:async #'fetch-summary a)
+                    (js:async #'fetch-summary b)
+                    (js:async #'fetch-summary c)))
 ```
+
+Each function of `js:async-function` runs as a *computation* of its own,
+like a thread: any number of them can wait at the same time, and Lisp code
+(listeners, callbacks of a stream, other computations) runs while they wait.
+The dynamic bindings are shallow (the symbol holds the current value, the
+binding stack the saved ones), so each computation has a binding stack of
+its own (`%js-async-callback` in `runtime/js.lisp`, installed through the
+exported globals `bstack` and `bsp`). When it waits, its bindings are taken
+out of the symbols: walking its stack from the top, each symbol gets back the
+value from outside the computation and the entry keeps the computation's
+value (`%swap-bindings`); when it goes on, the same exchange from the bottom
+puts them back on top of whatever values the symbols have then. So code that
+runs meanwhile sees the global values (or the bindings of its own caller),
+and a computation sees the bindings of the code that started it until it
+first waits. The catch tags, the handlers and the restarts are special
+variables, so they belong to the computation too. `js:async` and
+`js:await-all` pass Lisp values through unchanged.
+
+An exception that Wasm code cannot catch — the stack exhausted (a
+`RangeError`), a trap — leaves Lisp without running its `unwind-protect`
+cleanups. The host's wrappers then call the exported `lisp_recover`, which
+undoes the bindings that the call made (or, for a computation, all of its own
+and installs the binding stack outside it), so the instance can go on.
+
+### Libraries for JavaScript
+
+A program can be a library that JavaScript loads once and calls many times:
+
+```lisp
+;; outline.lisp
+(defun outline (source) ...)
+(js:export "outline" #'outline :type "(source: string) => string[]")
+(js:export "summarize" #'summarize :async t)        ; returns a promise, may js:await
+```
+
+```
+$ bin/clysm library outline.lisp -o dist/outline.wasm
+; wrote dist/outline.{wasm,mjs,d.ts}: 2 exports
+```
+
+```js
+import { outline, summarize } from './dist/outline.mjs';
+outline(text);                       // a Lisp function, in this thread
+await Promise.all(files.map(summarize));
+```
+
+`bin/clysm library` compiles the program, loads it once to read its exports,
+and writes `NAME.mjs` (an ES module whose named exports are the Lisp
+functions; `create(options)` makes another instance), `NAME.d.ts` (the types
+given with `:type`) and the host files in `clysm/`. `host/lib.mjs` is the
+loader: `load(path, options)` instantiates the module in the calling thread
+(Node.js, Electron's main process), runs its toplevel forms, and returns
+`{ instance, exports, eval }`; the instance lives on between calls. Options
+are `args`, `stdout`/`stderr` (functions of a string), `stdin` (a function
+returning the next line), `modules`, `import`, `require` and `fs`.
+`loadSync` does the same synchronously, for CommonJS.
+
+The thread of the caller has the stack of that thread (about 1 MB in
+Node.js, some 15000 Lisp frames; `node --stack-size=N` raises it within the
+thread's real stack, e.g. `--stack-size=7000` gives about 110000 frames on
+Linux). A deeper computation can run in a worker with the stack it asks for:
+`loadInWorker(path, { stackSizeMb })` of `host/worker.mjs` returns exports
+that take and return cloneable values and return promises. A stack overflow
+is a `RangeError` for the caller; the instance stays usable.
+
+JavaScript modules: `(js:require "typescript")` loads a module with Node.js's
+`require()` (an ES module too, when it does not wait at its toplevel),
+resolved from the working directory; `(js:import "@ruby/prism")` with
+`import()`, waiting with `js:await`; `(js:module "name")` is the module given
+to the loader as `{ modules: { name: ... } }`.
+
+`tests/lib/run.sh` builds `tests/lib/demo.lisp` as a library and calls it
+from JavaScript.
 
 ### A browser and desktop application
 

@@ -71,7 +71,7 @@ export function makeCommonEnv(state) {
       const inst = new WebAssembly.Instance(mod, {
         ...state.imports,
         clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
-                 lisp_throw: ex.lisp_throw },
+                 lisp_throw: ex.lisp_throw, memory: ex.memory },
       });
       return inst.exports.run(consts);
     },

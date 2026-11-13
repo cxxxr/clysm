@@ -5,6 +5,7 @@ import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { makeImports } from './common.mjs';
+import { nodeModuleAccess } from './lib.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
@@ -49,10 +50,16 @@ globalThis.__clysm_root = fileURLToPath(new URL('..', import.meta.url));
 
 function nodePlatform(state, args) {
   const out = { 1: [], 2: [] };
+  let flushScheduled = false;
   const flush = () => {
     for (const fd of [1, 2]) {
       if (out[fd].length) { fs.writeSync(fd, out[fd].join('')); out[fd] = []; }
     }
+  };
+  // output written by Lisp code that JavaScript calls later (a timer, a
+  // promise) is written out when that task ends
+  const scheduleFlush = () => {
+    if (!flushScheduled) { flushScheduled = true; setImmediate(() => { flushScheduled = false; flush(); }); }
   };
   state.flush = flush;
   state.writeText = (fd, text) => { flush(); fs.writeSync(fd, text); };
@@ -67,7 +74,7 @@ function nodePlatform(state, args) {
     write_char(fd, code) {
       const o = out[fd] || out[1];
       o.push(String.fromCodePoint(code));
-      if (fd === 2 || o.length > 8192) flush();
+      if (fd === 2 || o.length > 8192) flush(); else scheduleFlush();
     },
     read_char() {
       flush();
@@ -106,7 +113,7 @@ function nodePlatform(state, args) {
 }
 
 export async function runModule(bytes, args = []) {
-  const state = {};
+  const state = { ...nodeModuleAccess() };
   const imports = makeImports(state, nodePlatform(state, args));
   let instance;
   try {
@@ -246,5 +253,6 @@ if (isMainThread && process.argv[1] === selfPath) {
   const bytes = fs.readFileSync(workerData.file);
   await runModule(bytes, workerData.args);
   writeTrace();
-  process.exit(0);
+  // the worker ends when nothing is left to do: the promises and timers that
+  // the program made are settled and run first
 }

@@ -107,6 +107,8 @@
   (global-imports (make-array 0 :adjustable t :fill-pointer 0)) ; (name type mutable module field)
   (tag-imports (make-array 0 :adjustable t :fill-pointer 0))    ; (name type module field)
   (nonnull-globals (make-hash-table :test 'equal))
+  (memory nil)                                           ; initial pages of a memory of its own
+  (memory-import nil)                                    ; (module field min) of an imported memory
   (cast-rewrites nil))                                  ; heap type -> function replacing ref.cast     ; nullable globals read as non-null
 
 (defun add-type (m name def)
@@ -470,6 +472,15 @@ small module does not use), and renumber the others."
         (:global.get (emit-byte buf #x23) (emit-u32 buf (global-index m (first args)))
          (when (gethash (first args) (wasm-module-nonnull-globals m)) (emit-byte buf #xD4)))
         (:global.set (emit-byte buf #x24) (emit-u32 buf (global-index m (first args))))
+        ;; linear memory (the one memory, index 0): (:i32.load16_u offset) etc.
+        ((:i32.load :i32.load8_u :i32.load16_u :i32.store :i32.store8 :i32.store16)
+         (emit-byte buf (ecase op (:i32.load #x28) (:i32.load8_u #x2D) (:i32.load16_u #x2F)
+                          (:i32.store #x36) (:i32.store8 #x3A) (:i32.store16 #x3B)))
+         (emit-u32 buf (ecase op ((:i32.load :i32.store) 2) ((:i32.load8_u :i32.store8) 0)
+                         ((:i32.load16_u :i32.store16) 1)))
+         (emit-u32 buf (or (first args) 0)))
+        (:memory.size (emit-byte buf #x3F) (emit-byte buf 0))
+        (:memory.grow (emit-byte buf #x40) (emit-byte buf 0))
         (:i32.const (emit-byte buf #x41) (emit-sleb buf (let ((v (first args)))
                                                            (if (>= v (expt 2 31)) (- v (expt 2 32)) v))))
         (:i64.const (emit-byte buf #x42) (emit-sleb buf (let ((v (first args)))
@@ -625,10 +636,14 @@ small module does not use), and renumber the others."
         (emit-section out 1 b))
       ;; imports
       (when (plusp (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
-                      (length (wasm-module-tag-imports m))))
+                      (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)))
         (let ((b (make-buf)))
           (emit-u32 b (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
-                         (length (wasm-module-tag-imports m))))
+                         (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)))
+          (when (wasm-module-memory-import m)
+            (destructuring-bind (module field min) (wasm-module-memory-import m)
+              (emit-name b module) (emit-name b field)
+              (emit-byte b 2) (emit-byte b 0) (emit-u32 b min)))
           (loop for f across (wasm-module-imports m)
                 do (emit-name b (wasm-func-import-module f))
                    (emit-name b (wasm-func-import-name f))
@@ -647,6 +662,11 @@ small module does not use), and renumber the others."
         (loop for f across (wasm-module-funcs m)
               do (emit-u32 b (type-index m (wasm-func-type f))))
         (emit-section out 3 b))
+      ;; memory
+      (when (wasm-module-memory m)
+        (let ((b (make-buf)))
+          (emit-u32 b 1) (emit-byte b 0) (emit-u32 b (wasm-module-memory m))
+          (emit-section out 5 b)))
       ;; tag section (13) comes after memory, before global
       (when (plusp (length (wasm-module-tags m)))
         (let ((b (make-buf)))
@@ -673,6 +693,7 @@ small module does not use), and renumber the others."
               (ecase kind
                 (:func (emit-byte b 0) (emit-u32 b (func-index m ref)))
                 (:global (emit-byte b 3) (emit-u32 b (global-index m ref)))
+                (:memory (emit-byte b 2) (emit-u32 b 0))
                 (:tag (emit-byte b 4) (emit-u32 b (tag-index m ref))))))
           (emit-section out 7 b)))
       ;; start

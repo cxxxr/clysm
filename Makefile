@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -30,6 +30,10 @@ test-mcclim:
 test-ui:
 	tools/test-ui.sh
 
+# a program compiled as a library (bin/clysm library) and called from JavaScript
+test-lib:
+	tests/lib/run.sh
+
 # Lem (contrib/lem) in Electron, typed into without a display
 test-lem:
 	tests/lem/run.sh
@@ -51,7 +55,7 @@ fixpoint: selfhost
 	node host/run.mjs build/clysmc2.wasm build/clysmc3.wasm $(SRCS)
 	cmp build/clysmc2.wasm build/clysmc3.wasm && echo "fixed point reached"
 
-test-all: test test-asdf selfhost
+test-all: test test-lib test-asdf selfhost
 	INTERP=1 tools/run-tests.sh
 	NATIVE=1 tools/run-tests.sh
 	SELFHOST=1 tools/run-tests.sh

@@ -382,21 +382,31 @@
   (dotimes (i (length string)) (%put-char-buf (char-code (char string i)))))
 
 (defun %host-write-octets (name octets n)
-  (if (%bytes-p octets)
-      (dotimes (i n) (%put-char-buf (%bytes-ref octets i)))
-      (dotimes (i n) (%put-char-buf (aref octets i))))
-  (%put-char-buf -1)
-  (%host-name-buffer name)
-  (>= (%file-open 2) 0))
+  "Write the first N octets of OCTETS to the file NAME; true on success."
+  (let ((fs (%host-fs)))
+    (if fs
+        ;; at once, through the memory (runtime/js.lisp)
+        (%fs-write-octets fs name octets n)
+        (progn
+          (if (%bytes-p octets)
+              (dotimes (i n) (%put-char-buf (%bytes-ref octets i)))
+              (dotimes (i n) (%put-char-buf (aref octets i))))
+          (%put-char-buf -1)
+          (%host-name-buffer name)
+          (>= (%file-open 2) 0)))))
 
 (defun %host-read-octets (name)
   "The contents of file NAME as an octet vector, or NIL."
-  (%host-name-buffer name)
-  (let ((n (%file-open 3)))
-    (if (< n 0)
-        nil
-        (let ((v (%make-bytes n)))
-          (dotimes (i n v) (%set-bytes-ref v i (char-code (%host-char i))))))))
+  (let ((fs (%host-fs)))
+    (if fs
+        (%fs-read-octets fs name)
+        (progn
+          (%host-name-buffer name)
+          (let ((n (%file-open 3)))
+            (if (< n 0)
+                nil
+                (let ((v (%make-bytes n)))
+                  (dotimes (i n v) (%set-bytes-ref v i (char-code (%host-char i)))))))))))
 
 ;;; ------------------------------------------------------------
 ;;; output

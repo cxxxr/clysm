@@ -1,0 +1,18 @@
+
+(:TOPLEVEL :GLOBAL NIL) 
+(:AFTER-START :GLOBAL) 
+(:D :D) 
+(:C :C) 
+(:B :B) 
+(:A :A) 
+(:B :B) 
+(:A :A) 
+(:ALL ((:A :DONE) (:B :DONE) ((:C :DONE) (:D :DONE)))) 
+(:MAIN :MAIN) 
+(:REJECTED "boom 42") 
+(:CALLBACK (:MY-ERROR 7)) 
+(:CAUGHT "LispError: from Lisp") 
+(:JS-ERROR ("TypeError")) 
+(:CAN-AWAIT T) 
+
+:FINISHED 

@@ -49,12 +49,27 @@ Libraries are loaded from an existing Quicklisp installation:
 ```
 
 JavaScript is called through the `JS` package. `js:await` waits for a
-promise, using JavaScript Promise Integration:
+promise, using JavaScript Promise Integration; any number of computations
+can wait at the same time, each with its own dynamic bindings:
 
 ```lisp
 (js:call (js:global "Math") "max" 3 9 4)                              ; => 9
 (js:funcall (js:eval "(f, x) => f(x) * 2") (lambda (x) (+ x 1)) 20)   ; => 42
 (js:await (js:call (js:global) "fetch" "/data.json"))                 ; in a js:async-function
+(js:await-all (list (js:async #'fetch-page 1) (js:async #'fetch-page 2)))
+(js:call (js:require "node:path") "join" "a" "b")                     ; => "a/b"
+```
+
+A program can also be a library for JavaScript: functions exported with
+`js:export` become the named exports of an ES module, with a `.d.ts`.
+
+```
+$ bin/clysm library outline.lisp -o dist/outline.wasm     # dist/outline.{wasm,mjs,d.ts}
+```
+
+```js
+import { outline } from './dist/outline.mjs';
+outline(source);              // a Lisp error is thrown as an Error named LispError
 ```
 
 ## Implementation

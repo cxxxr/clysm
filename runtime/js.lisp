@@ -8,13 +8,39 @@
   (:use)
   (:export "GLOBAL" "GET" "SET" "CALL" "NEW" "FUNCALL" "EVAL" "TYPEOF" "LOG"
            "TO-LISP" "TO-JS" "ARRAY" "OBJECT" "JS-VALUE-P"
-           "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P"))
+           "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P" "ASYNC" "AWAIT-ALL"
+           "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
+           "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
 (defun %js-string (s)
-  (dotimes (i (length s)) (%put-char-buf (char-code (char s i))))
-  (%js-take-string))
+  "The JavaScript string of the Lisp string S (all characters at once,
+through the memory)."
+  (let ((s (if (simple-string-p s) s (coerce s 'simple-string))))
+    (%js-str-from-mem (%mem-put-string s 0 (length s)))))
+
+(defun %js-lisp-string (o)
+  "The Lisp string of the JavaScript string O."
+  (%mem-get-string (%js-str-to-mem o)))
+
+(defun js:to-octets (x)
+  "A new (unsigned-byte 8) vector of the octets of the JavaScript Uint8Array
+(or Buffer, ArrayBuffer, typed array) X."
+  (let ((n (%js-octets-to-mem (js:to-js x))))
+    (when (< n 0)
+      (error 'type-error :datum x :expected-type '(or js-uint8array js-arraybuffer)))
+    (%mem-get-octets n)))
+
+(defun js:from-octets (octets &key (start 0) end)
+  "A new JavaScript Uint8Array of the octets of the (unsigned-byte 8)
+vector OCTETS from START to END."
+  (let ((end (or end (length octets))))
+    (if (%bytes-p octets)
+        (%js-octets-from-mem (%mem-put-octets octets start end))
+        (let ((v (%make-bytes (- end start))))
+          (dotimes (i (- end start)) (%set-bytes-ref v i (aref octets (+ start i))))
+          (%js-octets-from-mem (%mem-put-octets v 0 (- end start)))))))
 
 (defun js:to-js (x)
   (cond ((%foreignp x) x)
@@ -45,8 +71,7 @@
                       (%d< (%dabs d) 9.007199254740992d15))
                  (%float-truncate-to-integer d)
                  d)))
-        (4 (let* ((n (%js-str-len o)) (s (make-string n)))
-             (dotimes (i n s) (setf (char s i) (%js-str-char o i)))))
+        (4 (%js-lisp-string o))
         (9 (%js-unwrap-lisp o))
         (t o))))
 
@@ -64,13 +89,35 @@
   (%js-set (js:to-js object) (js:to-js key) (js:to-js value))
   value)
 
+(define-condition js:js-error (error)
+  ((value :initarg :value :reader js:js-error-value)
+   (name :initarg :name :initform nil :reader js:js-error-name)
+   (message :initarg :message :initform "" :reader js:js-error-message))
+  (:report (lambda (condition stream)
+             (format stream "JavaScript error: ~@[~A: ~]~A"
+                     (js:js-error-name condition) (js:js-error-message condition))))
+  (:documentation "A JavaScript exception thrown by a function called through
+the JS package, or the rejection of a promise awaited by JS:AWAIT.  VALUE is
+what was thrown (usually an Error), NAME and MESSAGE its name and message."))
+
 (defun %js-result (r)
-  "Signal a Lisp error for a JavaScript exception boxed by the host's apply."
+  "Signal a Lisp error for a JavaScript exception boxed by the host's apply:
+the original condition if it is the Error of a Lisp error (a Lisp function
+called from JavaScript), otherwise a JS:JS-ERROR."
   (when (eql (%js-typeof r) 5)
     (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
       (when (eql (%js-typeof msg) 4)
-        (error 'simple-error :format-control "JavaScript error: ~A"
-                             :format-arguments (list (js:to-lisp msg))))))
+        (let* ((value (%js-get r (%js-string "value")))
+               (condition (and (member (%js-typeof value) '(5 6))
+                               (%js-get value (%js-string "lispCondition")))))
+          (if (and condition (eql (%js-typeof condition) 9))
+              (error (%js-unwrap-lisp condition))
+              (error 'js:js-error
+                     :value (js:to-lisp value)
+                     :name (and (member (%js-typeof value) '(5 6))
+                                (let ((name (%js-get value (%js-string "name"))))
+                                  (and (eql (%js-typeof name) 4) (js:to-lisp name))))
+                     :message (js:to-lisp msg)))))))
   (js:to-lisp r))
 
 (defun js:call (object method &rest args)
@@ -102,43 +149,126 @@
   (apply #'js:call (js:global "console") "log" args)
   nil)
 
-;;; Waiting for promises (JavaScript Promise Integration).  A function made
-;;; by JS:ASYNC-FUNCTION, when JavaScript calls it, runs on a stack of its
-;;; own and returns a promise; inside it, JS:AWAIT suspends that stack until
-;;; a promise is settled, while the page goes on (and may call other Lisp
-;;; functions).  Only one computation waits at a time, and only one that
-;;; JavaScript called from its event loop: a stack that is suspended must
-;;; not have another Lisp computation below it, whose dynamic bindings
-;;; would be undone in the wrong order.
+;;; Calls from JavaScript, and waiting for promises (JavaScript Promise
+;;; Integration).
+;;;
+;;; A Lisp function that JavaScript calls (made by TO-JS) runs in the
+;;; dynamic environment of whatever Lisp code is below it.  If it signals an
+;;; error that no handler of its own takes, the call throws a JavaScript
+;;; Error (see %JS-FAILURE), unless a debugger hook is set; a Lisp caller of
+;;; JS:CALL further out gets the original condition back.
+;;;
+;;; A function made by JS:ASYNC-FUNCTION returns a promise and is a
+;;; computation of its own, like a thread: it has a binding stack of its
+;;; own, and while it waits in JS:AWAIT its dynamic bindings are taken out of
+;;; the symbols (they get the values from outside it) and put back when it
+;;; goes on.  So any number of computations can wait at the same time, and
+;;; code that runs meanwhile sees the global values.  A computation sees the
+;;; bindings of the code that called it until it first waits.
 
 (defvar *js-running* nil "True while Lisp code called from JavaScript runs.")
-(defvar *js-top* nil "True in a callback that JavaScript called from its event loop.")
-;; the program itself (its toplevel forms) runs until the first task of the
-;; event loop
-(defvar *js-starting* (list t))
-(let ((set-timeout (js:global "setTimeout")))
-  (if (%foreignp set-timeout)
-      (js:funcall set-timeout (lambda () (setf (car *js-starting*) nil) nil) 0)
-      (setf (car *js-starting*) nil)))
-
 (defvar *js-can-await* nil "True in a function of JS:ASYNC-FUNCTION, unless JavaScript is in between.")
-(defvar *js-awaiting* nil "True while a computation waits in JS:AWAIT.")
+(defvar *js-computation* nil
+  "The computation (of JS:ASYNC-FUNCTION) that runs: a vector of its binding
+stack, the binding stack and depth outside it, and its own depth while it waits.")
 (defvar *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
 
-;;; called from JavaScript (exported as lisp_apply) when a Lisp function
-;;; wrapped by TO-JS is invoked
-(defun %js-callback (closure args)
+(defvar *js-make-failure*
+  (js:eval "(message, type, condition) => {
+  const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
+  const error = new Error(message);
+  Error.stackTraceLimit = old;
+  // the frames from the function that signalled the condition: without the
+  // ones of this function, SIGNAL or ERROR and the handler; the Lisp frames
+  // are named after their functions (without the numbers that tell apart
+  // functions of the same name)
+  const lines = String(error.stack).split('\\n');
+  let first = 1;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^\\s*at (ERROR|%ERROR\\*|CERROR|SIGNAL|%SIGNAL\\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
+  }
+  if (first === 1) {
+    while (first < lines.length && !/\\(wasm:/.test(lines[first])) first++;
+  }
+  error.stack = ['LispError: ' + message]
+    .concat(lines.slice(first).map((l) => l.replace(/at ([^ ]+?)#\\d+((?:\\/[a-z]+)?) \\(/, 'at $1$2 (')))
+    .join('\\n');
+  error.name = 'LispError';
+  error.lispType = type;
+  error.lispCondition = condition;
+  return { __clysm_failure__: error };
+}")
+  "Makes the JavaScript Error for a Lisp condition (its stack has the Lisp frames
+of the place where it was signalled), in the object that tells the host to throw it.")
+
+(defun %js-failure (condition)
+  (js:funcall *js-make-failure*
+              (handler-case (princ-to-string condition)
+                (error () "<error while printing the condition>"))
+              (handler-case (prin1-to-string (type-of condition))
+                (error () "ERROR"))
+              (%js-wrap-lisp condition)))
+
+(defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
                         (push (js:to-lisp (%js-get args (%js-number (%to-double i)))) r))))
-         ;; whether no other Lisp computation is below this call (then a
-         ;; function of JS:ASYNC-FUNCTION may wait)
-         (*js-top* (not (or *js-running* (car *js-starting*))))
          (*js-running* t)
-         (*js-can-await* nil))
-    (js:to-js (apply f lisp-args))))
+         (*js-can-await* async))
+    (block run
+      (handler-bind ((error (lambda (c)
+                              (unless (or *debugger-hook* *invoke-debugger-hook*)
+                                (return-from run (%js-failure c))))))
+        (js:to-js (apply f lisp-args))))))
+
+;;; called from JavaScript (exported as lisp_apply) when a Lisp function
+;;; wrapped by TO-JS is invoked
+(defun %js-callback (closure args)
+  (%js-run closure args nil))
+
+;;; called from JavaScript (exported as lisp_apply_async, through
+;;; WebAssembly.promising) for a function of JS:ASYNC-FUNCTION: the
+;;; computation gets a binding stack of its own
+(defun %js-async-callback (closure args)
+  (let ((computation (vector nil (%bstack) (%bsp) 0)))
+    (%set-bstack (make-array 64))
+    (%set-bsp 0)
+    (unwind-protect
+         (let ((*js-computation* computation))
+           (%js-run closure args t))
+      (%unbind-to 0)
+      (%set-bstack (svref computation 1))
+      (%set-bsp (svref computation 2)))))
+
+(defun %js-recover (bsp)
+  "Called by the host after an exception that Lisp code cannot catch (the
+stack exhausted, a trap) went out of a call from JavaScript, which skipped
+the code that undoes dynamic bindings.  BSP is the depth of the binding stack
+before a synchronous call, or -1 after a computation of JS:ASYNC-FUNCTION
+died: its bindings are undone and the binding stack outside it installed."
+  (if (>= bsp 0)
+      (%unbind-to bsp)
+      (let ((computation *js-computation*))
+        (%unbind-to 0)
+        (when computation
+          (%set-bstack (svref computation 1))
+          (%set-bsp (svref computation 2)))))
+  nil)
+
+(defun %suspend-computation (computation)
+  (let ((stack (%bstack)) (top (%bsp)))
+    (setf (svref computation 0) stack (svref computation 3) top)
+    (%swap-bindings stack top nil)
+    (%set-bstack (svref computation 1))
+    (%set-bsp (svref computation 2))))
+
+(defun %resume-computation (computation)
+  (setf (svref computation 1) (%bstack) (svref computation 2) (%bsp))
+  (%swap-bindings (svref computation 0) (svref computation 3) t)
+  (%set-bstack (svref computation 0))
+  (%set-bsp (svref computation 3)))
 
 (defun %js-suspending-p ()
   (when (eq *js-suspending* :unknown)
@@ -150,25 +280,115 @@
   *js-suspending*)
 
 (defun js:async-function (function)
-  "A JavaScript function that calls FUNCTION and returns a promise;
-FUNCTION may wait with JS:AWAIT.  (Where the JavaScript engine cannot
-suspend WebAssembly, it is an ordinary function, and JS:CAN-AWAIT-P false.)"
-  (%js-wrap-async-fn (lambda (&rest args)
-                       (let ((*js-can-await* *js-top*))
-                         (apply function args)))))
+  "A JavaScript function that calls FUNCTION and returns a promise of its
+value (rejected with a JavaScript Error if FUNCTION signals an error it does
+not handle).  FUNCTION runs as a computation of its own and may wait with
+JS:AWAIT.  (Where the JavaScript engine cannot suspend WebAssembly, it
+cannot wait: JS:CAN-AWAIT-P is false.)"
+  (%js-wrap-async-fn function))
 
 (defun js:can-await-p ()
   "True if JS:AWAIT can be called here."
-  (and *js-can-await* (not *js-awaiting*) (%js-suspending-p)))
+  (and *js-can-await* *js-computation* (%js-suspending-p) t))
+
+(defvar *js-async-value* (list '%async-value)
+  "The marker of the value of a computation of JS:ASYNC: (marker . value).")
+
+(defun %js-async-value (x)
+  (if (and (consp x) (eq (car x) *js-async-value*)) (cdr x) x))
 
 (defun js:await (promise)
   "Wait until the JavaScript PROMISE is settled; return its value, or
 signal an error if it is rejected.  Meanwhile JavaScript runs, and may call
-Lisp functions, which see the dynamic bindings of the waiting computation."
+Lisp functions or start or resume other computations."
   (unless (js:can-await-p)
-    (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION called from the event loop, or already waiting"))
-  (%js-result (let ((*js-awaiting* t))
-                (%js-await (js:to-js promise)))))
+    (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION (or JavaScript is in between)"))
+  (let ((computation *js-computation*)
+        (promise (js:to-js promise)))
+    (%suspend-computation computation)
+    (let ((result (%js-await promise)))
+      (%resume-computation computation)
+      (%js-async-value (%js-result result)))))
+
+(defun js:async (function &rest args)
+  "Start FUNCTION (applied to ARGS) as a computation of its own that may
+wait with JS:AWAIT, and return the promise of its value at once.  JS:AWAIT
+and JS:AWAIT-ALL of the promise return the Lisp value itself (not converted
+to JavaScript)."
+  (js:funcall (js:async-function
+               (lambda () (%js-wrap-lisp (cons *js-async-value* (apply function args)))))))
+
+(defun js:await-all (promises)
+  "Wait for every promise of the list PROMISES; return the list of their values.
+Signals an error if one is rejected."
+  (let ((all (js:call (js:global "Promise") "all" (coerce promises 'vector))))
+    (let ((array (js:await all)))
+      (loop for i below (js:get array "length")
+            collect (%js-async-value (js:get array i))))))
+
+;;; Files through the host's file system (node:fs), at once (runtime/stream.lisp)
+
+(defun %fs-write-octets (fs name octets n)
+  (handler-case (progn (js:call fs "writeFileSync" name (js:from-octets octets :end n)) t)
+    (error () nil)))
+
+(defun %fs-read-octets (fs name)
+  (handler-case (js:to-octets (js:call fs "readFileSync" name))
+    (error () nil)))
+
+;;; JavaScript modules
+
+(defun js:module (name)
+  "The JavaScript module that the host was given as NAME (the modules option
+of host/lib.mjs).  Signals an error if there is none."
+  (let ((m (%js-get (%js-host 0) (js:to-js name))))
+    (when (member (%js-typeof m) '(0 1))
+      (error "No JavaScript module ~S was given to the host" name))
+    m))
+
+(defun js:require (specifier)
+  "The JavaScript module SPECIFIER loaded with Node.js's require(), found
+from the working directory (an ES module too, if it does not wait at its
+toplevel).  Not available in a browser."
+  (let ((require (%js-host 2)))
+    (unless (eql (%js-typeof require) 6)
+      (error "JS:REQUIRE is not available on this host"))
+    (js:funcall require specifier)))
+
+(defun js:import (specifier)
+  "The JavaScript module SPECIFIER loaded with import(): waits for it with
+JS:AWAIT (so it is called where JS:CAN-AWAIT-P is true)."
+  (js:await (js:funcall (%js-host 1) specifier)))
+
+;;; Libraries: a module loaded by host/lib.mjs exports Lisp functions to
+;;; JavaScript by name.  The host puts the object of the exports in
+;;; globalThis.__clysm_exports while the module's toplevel forms run.
+
+(defvar *js-exports* nil "The JavaScript object of the functions exported by JS:EXPORT.")
+
+(defun %js-exports ()
+  (or *js-exports*
+      (let ((o (%js-get (%js-global) (%js-string "__clysm_exports"))))
+        (setq *js-exports*
+              (if (eql (%js-typeof o) 5)
+                  o
+                  ;; not loaded as a library: exports go to an object of their own
+                  (let ((o (js:new (js:global "Object"))))
+                    (js:set (js:global) "__clysm_exports" o)
+                    o))))))
+
+(defun js:export (name function &key async type)
+  "Export FUNCTION to JavaScript as NAME (a string) in the exports of the
+library (host/lib.mjs).  JavaScript calls it with its arguments converted by
+JS:TO-LISP and gets its value converted by JS:TO-JS; an error that it does
+not handle is thrown as a JavaScript Error.  With ASYNC, it returns a promise
+and may wait with JS:AWAIT.  TYPE is its TypeScript type for the generated
+.d.ts (by default (...args: any[]) => any, or a Promise of any)."
+  (let ((f (if async (js:async-function function) (js:to-js function))))
+    (when type (js:set f "clysmType" type))
+    (when async (js:set f "clysmAsync" t))
+    (js:set (%js-exports) name f)
+    name))
 
 (defun %foreign-type-name (x) (js:typeof x))
 

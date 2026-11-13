@@ -677,6 +677,39 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
 (defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
 (defprim clysm-sys::%unbind-to (sp) :value `(,@sp (:ref.cast :i31) :i31.get_s (:call :unbind-to) ,@(nil-code)))
+;; the binding stack itself, for computations that wait (runtime/js.lisp):
+;; each has a stack of its own, installed while it runs
+(defprim clysm-sys::%bstack () :value `((:global.get :bstack)))
+(defprim clysm-sys::%set-bstack (v) :value `(,@v (:ref.cast :vector) (:global.set :bstack) ,@(nil-code)))
+(defprim clysm-sys::%set-bsp (n) :value `(,@(idx-code n) (:global.set :bsp) ,@(nil-code)))
+;; exchange the value of the symbol of each entry of STACK below TOP with the
+;; value saved in the entry: from the top down (UP false) when a computation
+;; stops running, so that the symbols get their values from outside it and
+;; the entries the computation's values; from the bottom up (UP true) when
+;; it runs again
+(defprim clysm-sys::%swap-bindings (stack top up) :value
+  (let ((st (new-local '(:ref :null :vector))) (i (new-local :i32)) (n (new-local :i32))
+        (step (new-local :i32)) (sym (new-local '(:ref :null :symbol))) (tmp (new-local :eqref))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@stack (:ref.cast :vector) (:local.set ,st)
+      ,@(idx-code top) (:local.set ,n)
+      ,@up ,@(nil-code) :ref.eq
+      (:if nil nil
+           ((:local.get ,n) (:i32.const 2) :i32.sub (:local.set ,i) (:i32.const -2) (:local.set ,step))
+           ((:i32.const 0) (:local.set ,i) (:i32.const 2) (:local.set ,step)))
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,i) (:i32.const 0) :i32.lt_s (:br_if ,done)
+          (:local.get ,i) (:local.get ,n) :i32.ge_s (:br_if ,done)
+          (:local.get ,st) (:local.get ,i) (:array.get :vector) (:ref.cast :symbol) (:local.set ,sym)
+          (:local.get ,sym) (:struct.get :symbol ,+sym-value+) (:local.set ,tmp)
+          (:local.get ,sym)
+          (:local.get ,st) (:local.get ,i) (:i32.const 1) :i32.add (:array.get :vector)
+          (:struct.set :symbol ,+sym-value+)
+          (:local.get ,st) (:local.get ,i) (:i32.const 1) :i32.add (:local.get ,tmp) (:array.set :vector)
+          (:local.get ,i) (:local.get ,step) :i32.add (:local.set ,i)
+          (:br ,again)))
+      ,@(nil-code))))
 ;; throw to a SYS:%CATCH (the tag is known to be active); in a flagging
 ;; function, a return with the exit pending
 (defprim clysm-sys::%throw (tag value) :value
@@ -816,6 +849,11 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:js-is-lisp :x-i "js" "is_lisp")
     (:js-await :x-x "js" "await")
     (:js-wrap-async-fn :x-x "js" "wrap_async_fn")
+    (:js-host :i-x "js" "host")
+    (:js-str-from-mem :i-x "js" "str_from_mem")
+    (:js-str-to-mem :x-i "js" "str_to_mem")
+    (:js-octets-from-mem :i-x "js" "octets_from_mem")
+    (:js-octets-to-mem :x-i "js" "octets_to_mem")
     (:host-arg-len :i-i "env" "arg_len")
     (:host-arg-char :ii-i "env" "arg_char")
     ;; the host's Math functions, imported one by one (a direct call each)
@@ -3198,16 +3236,156 @@ division and the product are the identity)."
 (defprim clysm-sys::%js-wrap-fn (f) :value `(,@f (:ref.cast :closure) :extern.convert_any (:call :js-wrap-fn) ,@(wrap-ext)))
 (defprim clysm-sys::%js-wrap-async-fn (f) :value
   `(,@f (:ref.cast :closure) :extern.convert_any (:call :js-wrap-async-fn) ,@(wrap-ext)))
+(defprim clysm-sys::%js-host (k) :value `(,@(idx-code k) (:call :js-host) ,@(wrap-ext)))
 (defprim clysm-sys::%js-await (o) :value `(,@(ext-code o) (:call :js-await) ,@(wrap-ext)))
 (defprim clysm-sys::%js-truthy (o) :test `(,@(ext-code o) (:call :js-truthy)))
 (defprim clysm-sys::%js-lisp-object-p (o) :test `(,@(ext-code o) (:call :js-is-lisp)))
 (defprim clysm-sys::%js-wrap-lisp (x) :value `(,@x :extern.convert_any ,@(wrap-ext)))
 (defprim clysm-sys::%js-unwrap-lisp (o) :value `(,@(ext-code o) :any.convert_extern (:ref.cast :null :eq)))
 
+;;; Strings and octets cross to the host at once, through the linear
+;;; memory that the image exports (from offset 0): a string as UTF-16 code
+;;; units, octets as they are.
+
+(defun mem-ensure-code (bytes-local)
+  "Grow the memory to hold the number of bytes in BYTES-LOCAL (an i32 local)."
+  `((:local.get ,bytes-local) :memory.size (:i32.const 16) :i32.shl :i32.gt_u
+    (:if nil nil
+         ((:local.get ,bytes-local) (:i32.const 65535) :i32.add (:i32.const 16) :i32.shr_u
+          :memory.size :i32.sub :memory.grow :drop))))
+
+;; the characters of the simple string S from START to END as UTF-16 code
+;; units; the value is the number of bytes written, plus 1 if a code unit is
+;; a surrogate of its own (not a pair)
+(defprim clysm-sys::%mem-put-string (s start end) :value
+  (let ((str (new-local '(:ref :null :string))) (i (new-local :i32)) (e (new-local :i32))
+        (p (new-local :i32)) (c (new-local :i32)) (flag (new-local :i32)) (n (new-local :i32))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@s (:ref.cast :string) (:local.set ,str)
+      ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
+      (:local.get ,e) (:local.get ,i) :i32.sub (:i32.const 2) :i32.shl (:local.set ,n)
+      ,@(mem-ensure-code n)
+      (:i32.const 0) (:local.set ,p) (:i32.const 0) (:local.set ,flag)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,i) (:local.get ,e) :i32.ge_s (:br_if ,done)
+          (:local.get ,str) (:local.get ,i) (:array.get :string) (:local.set ,c)
+          (:local.get ,c) (:i32.const #x10000) :i32.ge_u
+          (:if nil nil
+               ((:local.get ,c) (:i32.const #x10000) :i32.sub (:local.set ,c)
+                (:local.get ,p) (:local.get ,c) (:i32.const 10) :i32.shr_u (:i32.const #xD800) :i32.or
+                (:i32.store16 0)
+                (:local.get ,p) (:local.get ,c) (:i32.const #x3FF) :i32.and (:i32.const #xDC00) :i32.or
+                (:i32.store16 2)
+                (:local.get ,p) (:i32.const 4) :i32.add (:local.set ,p))
+               ((:local.get ,c) (:i32.const #xF800) :i32.and (:i32.const #xD800) :i32.eq
+                (:if nil nil ((:i32.const 1) (:local.set ,flag)))
+                (:local.get ,p) (:local.get ,c) (:i32.store16 0)
+                (:local.get ,p) (:i32.const 2) :i32.add (:local.set ,p)))
+          (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+          (:br ,again)))
+      (:local.get ,p) (:local.get ,flag) :i32.or :ref.i31)))
+
+;; a new simple string of the N UTF-16 code units at the start of the memory
+(defprim clysm-sys::%mem-get-string (n) :value
+  (let ((units (new-local :i32)) (k (new-local :i32)) (cnt (new-local :i32)) (u (new-local :i32))
+        (str (new-local '(:ref :null :string))) (done (gensym "DONE")) (again (gensym "AGAIN"))
+        (done2 (gensym "DONE")) (again2 (gensym "AGAIN")))
+    (flet ((pair-test ()
+             ;; u is a high surrogate and the next unit a low one
+             `((:local.get ,u) (:i32.const #xFC00) :i32.and (:i32.const #xD800) :i32.eq
+               (:if nil :i32
+                    ((:local.get ,k) (:i32.const 1) :i32.add (:local.get ,units) :i32.lt_u
+                     (:if nil :i32
+                          ((:local.get ,k) (:i32.const 1) :i32.shl (:i32.load16_u 2)
+                           (:i32.const #xFC00) :i32.and (:i32.const #xDC00) :i32.eq)
+                          ((:i32.const 0))))
+                    ((:i32.const 0))))))
+      `(,@(idx-code n) (:local.set ,units)
+        (:i32.const 0) (:local.set ,k) (:i32.const 0) (:local.set ,cnt)
+        (:block ,done nil
+          (:loop ,again nil
+            (:local.get ,k) (:local.get ,units) :i32.ge_u (:br_if ,done)
+            (:local.get ,k) (:i32.const 1) :i32.shl (:i32.load16_u 0) (:local.set ,u)
+            ,@(pair-test)
+            (:if nil nil
+                 ((:local.get ,k) (:i32.const 2) :i32.add (:local.set ,k))
+                 ((:local.get ,k) (:i32.const 1) :i32.add (:local.set ,k)))
+            (:local.get ,cnt) (:i32.const 1) :i32.add (:local.set ,cnt)
+            (:br ,again)))
+        (:local.get ,cnt) (:array.new_default :string) (:local.set ,str)
+        (:i32.const 0) (:local.set ,k) (:i32.const 0) (:local.set ,cnt)
+        (:block ,done2 nil
+          (:loop ,again2 nil
+            (:local.get ,k) (:local.get ,units) :i32.ge_u (:br_if ,done2)
+            (:local.get ,k) (:i32.const 1) :i32.shl (:i32.load16_u 0) (:local.set ,u)
+            (:local.get ,str) (:local.get ,cnt)
+            ,@(pair-test)
+            (:if nil :i32
+                 ((:local.get ,u) (:i32.const #x3FF) :i32.and (:i32.const 10) :i32.shl
+                  (:local.get ,k) (:i32.const 1) :i32.shl (:i32.load16_u 2) (:i32.const #x3FF) :i32.and
+                  :i32.or (:i32.const #x10000) :i32.add
+                  (:local.get ,k) (:i32.const 2) :i32.add (:local.set ,k))
+                 ((:local.get ,u)
+                  (:local.get ,k) (:i32.const 1) :i32.add (:local.set ,k)))
+            (:array.set :string)
+            (:local.get ,cnt) (:i32.const 1) :i32.add (:local.set ,cnt)
+            (:br ,again2)))
+        (:local.get ,str) (:ref.as_non_null)))))
+
+;; the octets of the simple (unsigned-byte 8) vector V from START to END;
+;; the value is their number
+(defprim clysm-sys::%mem-put-octets (v start end) :value
+  (let ((b (new-local '(:ref :null :bytes))) (i (new-local :i32)) (e (new-local :i32)) (n (new-local :i32))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@v (:ref.cast :bytes) (:local.set ,b)
+      ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
+      (:local.get ,e) (:local.get ,i) :i32.sub (:local.set ,n)
+      ,@(mem-ensure-code n)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,i) (:local.get ,e) :i32.ge_s (:br_if ,done)
+          (:local.get ,i) (:local.get ,e) :i32.sub (:local.get ,n) :i32.add
+          (:local.get ,b) (:local.get ,i) (:array.get_u :bytes)
+          (:i32.store8 0)
+          (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+          (:br ,again)))
+      (:local.get ,n) :ref.i31)))
+
+;; a new simple (unsigned-byte 8) vector of the N octets at the start of the memory
+(defprim clysm-sys::%mem-get-octets (n) :value
+  (let ((len (new-local :i32)) (k (new-local :i32)) (b (new-local '(:ref :null :bytes)))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@(idx-code n) (:local.set ,len)
+      (:local.get ,len) (:array.new_default :bytes) (:local.set ,b)
+      (:i32.const 0) (:local.set ,k)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,k) (:local.get ,len) :i32.ge_u (:br_if ,done)
+          (:local.get ,b) (:local.get ,k) (:local.get ,k) (:i32.load8_u 0) (:array.set :bytes)
+          (:local.get ,k) (:i32.const 1) :i32.add (:local.set ,k)
+          (:br ,again)))
+      (:local.get ,b) (:ref.as_non_null))))
+
+(defprim clysm-sys::%js-str-from-mem (info) :value `(,@(idx-code info) (:call :js-str-from-mem) ,@(wrap-ext)))
+(defprim clysm-sys::%js-str-to-mem (o) :value `(,@(ext-code o) (:call :js-str-to-mem) :ref.i31))
+(defprim clysm-sys::%js-octets-from-mem (n) :value `(,@(idx-code n) (:call :js-octets-from-mem) ,@(wrap-ext)))
+(defprim clysm-sys::%js-octets-to-mem (o) :value `(,@(ext-code o) (:call :js-octets-to-mem) :ref.i31))
+
 ;; exported entry used by JS to call Lisp closures
 (defhelper :lisp-apply :xx-x ()
   '(:local.get 0) '(:struct.new :foreign) '(:local.get 1) '(:struct.new :foreign)
   `(:global.get ,(sym-global 'clysm-sys::%js-callback)) '(:call (:callsym 2))
+  '(:ref.cast :foreign) '(:struct.get :foreign 0))
+;; after an exception that Lisp cannot catch (the stack exhausted, a trap)
+;; went out of a call from JavaScript: undo what it skipped
+(defhelper :lisp-recover :i-v ()
+  '(:local.get 0) :ref.i31
+  `(:global.get ,(sym-global 'clysm-sys::%js-recover)) '(:call (:callsym 1)) :drop)
+;; the same for a function of JS:ASYNC-FUNCTION (called through WebAssembly.promising)
+(defhelper :lisp-apply-async :xx-x ()
+  '(:local.get 0) '(:struct.new :foreign) '(:local.get 1) '(:struct.new :foreign)
+  `(:global.get ,(sym-global 'clysm-sys::%js-async-callback)) '(:call (:callsym 2))
   '(:ref.cast :foreign) '(:struct.get :foreign 0))
 
 (defnative vector (form env)

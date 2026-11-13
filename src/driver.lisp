@@ -445,11 +445,16 @@ loaded before the next one, so that later files' macros can call them.")
                         :body (remove nil body))))))
       (compile-pending-lams)
       (add-export *m* "lisp_apply" :func :lisp-apply)
+      (add-export *m* "lisp_apply_async" :func :lisp-apply-async)
+      (add-export *m* "lisp_recover" :func :lisp-recover)
       (add-export *m* "mv_count" :global :mv-count)
       (add-export *m* "mv_buf" :global :mv-buf)
       (add-export *m* "bstack" :global :bstack)
       (add-export *m* "bsp" :global :bsp)
       (add-export *m* "lisp_throw" :tag :lisp-throw)
+      ;; the memory through which strings and octets cross to the host at once
+      (setf (wasm-module-memory *m*) 1)
+      (add-export *m* "memory" :memory nil)
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry
