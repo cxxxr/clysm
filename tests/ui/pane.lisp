@@ -1,0 +1,366 @@
+;;;; Tests of the panes, presentations and dialogs on the S-expression
+;;;; backend.  tools/test-ui.sh compares the output with pane.expected.
+
+(defpackage "PANE-TEST" (:use "CL" "UI"))
+(in-package "PANE-TEST")
+
+(setf *backend* (make-instance 'sexp-backend))
+
+(defun show (title root)
+  (format t "~&~%== ~A~%~S~%" title (to-sexp root)))
+
+(defun show-log (title)
+  (format t "~&-- ~A~%~{   ~S~%~}" title (backend-log *backend*)))
+
+(defun overlay () (overlay-container *backend*))
+
+;;; ---- an interface: panes, layouts, callbacks, COMPUTED
+
+(define-interface greeter ()
+  ((count :initform 0 :accessor greeter-count))
+  (:panes
+   (name-input text-input-pane :placeholder "Your name" :accessor greeter-name-input
+               :callback (lambda (data interface)
+                           (format t "enter: ~S ~S~%" data (type-of interface))))
+   (greet push-button :text "Greet" :accessor greeter-button
+          :callback (lambda (data interface)
+                      (format t "callback: ~S~%" data)
+                      (incf (greeter-count interface))))
+   (message title-pane
+            :text (computed (format nil "Hello, ~A! (~D)"
+                                    (text-input-pane-text name-input)
+                                    (greeter-count interface)))))
+  (:layouts
+   (main column-layout '(top :separator message "plain text"))
+   (top row-layout '(name-input greet) :gap 8))
+  (:default-initargs :title "Greeter"))
+
+(let* ((root (make-root))
+       (greeter (display (make-instance 'greeter) :container root)))
+  (show "interface" root)
+  (show-log "displayed")
+  (fire (find-node root "input") "input" '(:value "Lisp"))
+  (show-log "typed")
+  (fire (find-node root "input") "keydown" '(:key "a"))
+  (fire (find-node root "input") "keydown" '(:key "Enter"))
+  (fire (find-node root "button") "click")
+  (show-log "clicked")
+  ;; the accessors change the screen
+  (setf (button-text (greeter-button greeter)) "Again"
+        (pane-enabled (greeter-button greeter)) nil
+        (interface-title greeter) "Greeter 2"
+        (pane-visible (greeter-name-input greeter)) nil)
+  (flush)
+  (show-log "setf")
+  (format t "find-pane: ~S ~S ~S~%" (pane-name (find-pane greeter 'top))
+          (find-pane greeter 'count) (eq (pane-interface (find-pane greeter 'greet)) greeter))
+  (quit-interface greeter)
+  (show "quit" root))
+
+;;; ---- BINDING: a slot that is another place
+
+(defstate *filter* "")
+
+(let* ((root (make-root))
+       (input (make-instance 'text-input-pane :text (binding *filter*) :title "Filter"
+                                              :title-position :left :width 200)))
+  (contain input :container root)
+  (show "binding" root)
+  (backend-log *backend*)
+  (fire (find-node root "input") "input" '(:value "abc"))
+  (format t "*filter* = ~S~%" *filter*)
+  (setf *filter* "xyz")
+  (flush)
+  (show-log "the place was set"))
+
+;;; ---- choices
+
+(defun choice-test (title pane)
+  (let ((root (make-root)))
+    (contain pane :container root)
+    (show title root)
+    (backend-log *backend*)
+    root))
+
+(let* ((list (make-instance 'list-panel :items '(apple banana cherry)
+                                        :print-function #'string-capitalize
+                                        :callback-type :data
+                                        :selection-callback (lambda (item) (format t "selected ~S~%" item))
+                                        :action-callback (lambda (item) (format t "action ~S~%" item))))
+       (root (choice-test "list-panel" list)))
+  (fire (find-node root "li" :index 1) "click")
+  (show-log "banana clicked")
+  (fire (find-node root "ul") "keydown" '(:key "ArrowDown"))
+  (fire (find-node root "ul") "keydown" '(:key "ArrowDown"))
+  (fire (find-node root "ul") "keydown" '(:key "Enter"))
+  (fire (find-node root "ul") "keydown" '(:key "Home"))
+  (fire (find-node root "li" :index 2) "dblclick")
+  (format t "selected-item: ~S~%" (choice-selected-item list))
+  (setf (collection-items list) '(banana date))
+  (flush)
+  (show "other items" root))
+
+(let* ((list (make-instance 'list-panel :items '(1 2 3 4 5) :interaction :multiple-selection
+                                        :selected-items '(2)))
+       (root (choice-test "multiple selection" list)))
+  (fire (find-node root "li" :index 3) "click" '(:shiftkey t))
+  (format t "extended: ~S~%" (choice-selected-items list))
+  (fire (find-node root "li" :index 2) "click" '(:ctrlkey t))
+  (format t "toggled: ~S~%" (choice-selected-items list))
+  (fire (find-node root "li" :index 0) "click")
+  (format t "clicked: ~S~%" (choice-selected-items list)))
+
+(let* ((option (make-instance 'option-pane :items '(:red :green :blue) :print-function #'string-downcase
+                                           :callback-type :item-element
+                                           :selection-callback (lambda (item pane)
+                                                                 (format t "option ~S ~S~%" item (type-of pane)))))
+       (root (choice-test "option-pane" option)))
+  (format t "selected-item: ~S~%" (choice-selected-item option))
+  (fire (find-node root "select") "change" '(:selectedindex 2))
+  (show-log "blue"))
+
+(let* ((radio (make-instance 'radio-button-panel :items '("S" "M" "L") :selected-item "M" :test #'equal))
+       (checks (make-instance 'check-button-panel :items '(a b) :orientation :column))
+       (root (choice-test "button panels"
+                          (make-instance 'column-layout :description (list radio checks)))))
+  (fire (find-node root "input" :index 2) "change")
+  (fire (find-node root "input" :index 3) "change")
+  (fire (find-node root "input" :index 4) "change")
+  (fire (find-node root "input" :index 3) "change")
+  (format t "radio ~S checks ~S~%" (choice-selected-item radio) (choice-selected-items checks)))
+
+(let* ((table (make-instance 'multi-column-list-panel
+                             :items '(("Ada" 36) ("Grace" 85))
+                             :columns '((:title "Name" :width 120) (:title "Age" :adjust :right))
+                             :column-function #'identity))
+       (root (choice-test "multi-column-list-panel" table)))
+  (fire (find-node root "tr" :index 2) "click")
+  (format t "selected: ~S~%" (choice-selected-item table)))
+
+(let* ((tree (make-instance 'tree-view :roots '(1)
+                                       :children-function (lambda (n) (and (< n 4) (list (* 2 n) (1+ (* 2 n)))))
+                                       :expandp-function (lambda (n) (= n 1))
+                                       :print-function (lambda (n) (format nil "node ~D" n))))
+       (root (choice-test "tree-view" tree)))
+  (fire (find-node root "span" :class "ui-twisty" :index 0) "click")   ; node 2
+  (show-log "node 2 opened")
+  (format t "visible: ~S~%" (mapcar #'node-text (find-nodes root "span" :class "ui-item-text")))
+  (fire (find-node root "div" :index 1) "click")
+  (fire (find-node root "ul") "keydown" '(:key "ArrowDown"))
+  (fire (find-node root "ul") "keydown" '(:key "ArrowLeft"))
+  (format t "selected ~S, 2 open: ~S~%" (choice-selected-item tree) (tree-view-expanded-p tree 2))
+  (format t "visible: ~S~%" (mapcar #'node-text (find-nodes root "span" :class "ui-item-text"))))
+
+;;; ---- other panes
+
+(let* ((check (make-instance 'check-button :text "Bold" :callback-type :data
+                                           :callback (lambda (on) (format t "bold: ~S~%" on))))
+       (slider (make-instance 'slider :start 0 :end 10 :value 3 :title "Size" :title-position :frame))
+       (progress (make-instance 'progress-bar :start 0 :end 10 :value (computed (range-value slider))))
+       (text (make-instance 'multi-line-text-input-pane :text "two
+lines" :rows 3))
+       (output (make-instance 'application-pane
+                              :display-function (lambda (pane)
+                                                  (declare (ignore pane))
+                                                  (html (:p "size " (:b (round (range-value slider))))))))
+       (root (make-root)))
+  (contain (make-instance 'grid-layout :columns 2
+                                       :description (list "Style" check "Size" slider nil progress
+                                                          "Text" text "Output" output))
+           :container root)
+  (show "other panes" root)
+  (backend-log *backend*)
+  (fire (find-node root "input" :index 0) "change")
+  (fire (find-node root "input" :index 1) "input" '(:value "7.5"))
+  (show-log "slider moved")
+  (format t "value: ~S, text ~S~%" (range-value slider) (text-input-pane-text text)))
+
+;;; ---- layouts: tabs, switching, ratios and dividers
+
+(let* ((a (make-instance 'title-pane :text "A"))
+       (b (make-instance 'title-pane :text "B"))
+       (tabs (make-instance 'tab-layout :items (list (list "First" a) (list "Second" b))))
+       (switch (make-instance 'switchable-layout :description (list "one" (make-instance 'title-pane :text "two"))))
+       (row (make-instance 'row-layout :description (list tabs :divider switch) :ratios '(1 nil 2)))
+       (root (make-root)))
+  (contain row :container root)
+  (show "layouts" root)
+  (backend-log *backend*)
+  (fire (find-node root "button" :index 1) "click")
+  (show-log "second tab")
+  (setf (switchable-layout-visible-child switch) (second (layout-description switch)))
+  (flush)
+  (show-log "switched")
+  (let ((divider (find-node root "div" :class "ui-divider")))
+    (fire divider "pointerdown" '(:clientx 100 :width 240 :height 50))
+    (fire divider "pointermove" '(:clientx 130))
+    (fire divider "pointerup")
+    (fire divider "pointermove" '(:clientx 500)))
+  (show-log "divider dragged"))
+
+;;; ---- commands with typed parameters, presentations, ACCEPT
+
+(defmodel person ()
+  ((name :initarg :name :accessor person-name)))
+
+(define-presentation-type person () :description "a person")
+
+(defmethod present-object ((person person) type)
+  (person-name person))
+
+(defstate *people* nil)
+(defstate *log* nil)
+
+(define-command (remove-person :menu "People" :label "Remove…") ((person 'person))
+  (setf *people* (remove person *people*)))
+
+(define-command (show-person :label "Show") ((person 'person))
+  (push (list :show (person-name person)) *log*))
+
+(define-command (rename-person :menu "People" :label "Rename…" :enabled (and *people* t))
+    ((person 'person :prompt "Rename whom?") (name 'string :prompt "New name:"))
+  (setf (person-name person) name))
+
+(define-command (add-person :menu "People" :label "Add…" :key "CmdOrCtrl+N") ((name 'string) (age 'integer))
+  (push (list :add name age) *log*)
+  (setf *people* (append *people* (list (make-instance 'person :name name)))))
+
+(define-command (paint :label "Paint") ((color '(member :red :green)))
+  (push (list :paint color) *log*))
+
+(define-presentation-to-command-translator select-person (person show-person) (object)
+  (list object))
+
+(defcomponent people ()
+  (:div
+    (:ul (mapcar (lambda (person)
+                   (with-output-as-presentation (person 'person)
+                     (:li (person-name person))))
+                 *people*))
+    (:p "first: " (and *people* (present (first *people*))) " and " (present 42))))
+
+(let* ((root (make-root))
+       (ada (make-instance 'person :name "Ada"))
+       (bob (make-instance 'person :name "Bob")))
+  (setf *people* (list ada bob))
+  (mount (people) root)
+  (show "presentations" root)
+  (format t "parameters: ~S~%" (command-parameters (find-command 'rename-person)))
+  ;; a click: the :select translator
+  (fire (find-node root "li" :index 1) "click")
+  (format t "log: ~S~%" *log*)
+  ;; the menu of a presentation
+  (fire (find-node root "li" :index 0) "contextmenu" '(:clientx 10 :clienty 20))
+  (show "menu of Ada" (overlay))
+  (fire (find-node (overlay) "li" :index 1) "click")        ; Remove…
+  (format t "people: ~S~%" (mapcar #'person-name *people*))
+  (show "after the menu" (overlay))
+  ;; a command without its argument asks for it
+  (backend-log *backend*)
+  (invoke-command 'rename-person)
+  (flush)
+  (format t "accepting: ~S~%" (accepting-p))
+  (show "accepting a person" root)
+  (show "the prompt" (overlay))
+  (fire (find-node root "span" :index 1) "click")           ; 42 is not a person
+  (format t "accepting: ~S~%" (accepting-p))
+  (fire (find-node root "li" :index 0) "click")             ; Bob
+  (show "then a string" (overlay))
+  (show-log "dialog")
+  (fire (find-node (overlay) "input") "input" '(:value "Robert"))
+  (fire (find-node (overlay) "input") "keydown" '(:key "Enter"))
+  (format t "people: ~S, accepting: ~S~%" (mapcar #'person-name *people*) (accepting-p))
+  (show "renamed" root)
+  (show "no dialog" (overlay))
+  ;; Escape cancels
+  (invoke-command 'remove-person)
+  (flush)
+  (fire-global *backend* "keydown" '(:key "Escape"))
+  (format t "accepting: ~S, people: ~S~%" (accepting-p) (mapcar #'person-name *people*))
+  ;; two dialogs in a row; a number must be one
+  (invoke-command 'add-person)
+  (flush)
+  (fire (find-node (overlay) "input") "input" '(:value "Cy"))
+  (fire (find-node (overlay) "button" :index 1) "click")
+  (fire (find-node (overlay) "input") "input" '(:value "old"))
+  (format t "OK disabled: ~S~%" (getf (second (to-sexp (find-node (overlay) "button" :index 1))) :disabled))
+  (fire (find-node (overlay) "input") "keydown" '(:key "Enter"))
+  (fire (find-node (overlay) "input") "input" '(:value "41"))
+  (fire (find-node (overlay) "button" :index 1) "click")
+  (format t "log: ~S~%" *log*)
+  ;; MEMBER: a list
+  (invoke-command 'paint)
+  (flush)
+  (show "member" (overlay))
+  (fire (find-node (overlay) "li" :index 1) "click")
+  (fire (find-node (overlay) "button" :index 1) "click")
+  (format t "log: ~S~%" (first *log*))
+  ;; cancelled dialogs call nothing
+  (invoke-command 'paint)
+  (flush)
+  (fire (find-node (overlay) "dialog") "cancel")
+  (format t "log: ~S, dialogs left: ~D~%" (first *log*) (length (find-nodes (overlay) "dialog"))))
+
+;;; ---- dialogs
+
+(let ((answers '()))
+  (flet ((note (&rest values) (push values answers)))
+    (display-message "~D files copied" 3)
+    (flush)
+    (show "message" (overlay))
+    (fire (find-node (overlay) "button") "click")
+    (prompt-for-confirmation "Delete?" :continuation #'note)
+    (flush)
+    (fire (find-node (overlay) "button" :index 1) "click")
+    (prompt-for-confirmation "Delete?" :continuation #'note)
+    (flush)
+    (fire (find-node (overlay) "button" :index 0) "click")
+    (prompt-for-string "Name:" :text "x" :continuation #'note)
+    (flush)
+    (abort-dialog)
+    (flush)
+    (prompt-with-list '(a b c) "Which?" :continuation #'note)
+    (flush)
+    (fire (find-node (overlay) "li" :index 2) "dblclick")
+    (format t "answers: ~S~%" (reverse answers))))
+
+;;; an interface as a dialog
+
+(define-interface login ()
+  ()
+  (:panes
+   (user text-input-pane :title "User")
+   (password text-input-pane :title "Password" :password t)
+   (ok push-button :text "Log in" :default-p t
+       :enabled (computed (plusp (length (text-input-pane-text user))))
+       :callback (lambda (data interface)
+                   (declare (ignore data interface))
+                   (exit-dialog (list (text-input-pane-text user) (text-input-pane-text password))))))
+  (:default-initargs :title "Log in"))
+
+(let ((login (make-instance 'login)))
+  (display-dialog login :continuation (lambda (value okp) (format t "login: ~S ~S~%" value okp)))
+  (flush)
+  (show "an interface as a dialog" (overlay))
+  (fire (find-node (overlay) "input" :index 0) "input" '(:value "ada"))
+  (fire (find-node (overlay) "input" :index 1) "input" '(:value "secret"))
+  (fire (find-node (overlay) "button") "click")
+  (display-dialog login :continuation (lambda (value okp) (format t "login: ~S ~S~%" value okp)))
+  (flush)
+  (quit-interface login))
+
+;;; ---- the menu bar and a toolbar
+
+(let ((root (make-root)))
+  (setf *people* nil)
+  (contain (make-instance 'toolbar :items '(add-person :separator rename-person (paint :red)))
+           :menu-bar t :container root)
+  (show "menu bar and toolbar" root)
+  (fire (find-node root "button" :class "ui-menu-title") "click")
+  (show "the menu is open" (find-node root "div" :class "ui-menu-bar"))
+  (fire (find-node root "li" :index 2) "click")
+  (format t "open menus: ~D, dialogs: ~D~%" (length (find-nodes root "ul"))
+          (length (find-nodes (overlay) "dialog")))
+  (abort-dialog)
+  (fire (find-node root "button" :index 3) "click")
+  (format t "log: ~S~%" (first *log*)))

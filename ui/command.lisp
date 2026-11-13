@@ -23,22 +23,41 @@
    (menu :initarg :menu :reader command-menu)
    (key :initarg :key :reader command-key)
    (separator :initarg :separator :reader command-separator)
-   (enabled :initarg :enabled :reader command-enabled)))
+   (enabled :initarg :enabled :reader command-enabled)
+   ;; the required parameters: (name type prompt), TYPE NIL if it has none
+   (parameters :initarg :parameters :initform nil :reader command-parameters)))
 
 (defstate *commands* nil "The commands, in the order of their definition.")
 
 (defun find-command (name)
   (find name *commands* :key #'command-name))
 
-(defun register-command (name &key label menu key separator enabled)
+(defun register-command (name &key label menu key separator enabled parameters)
   (let ((command (make-instance 'command :name name
                                          :label (or label (string-capitalize (substitute #\Space #\- (symbol-name name))))
-                                         :menu menu :key key :separator separator :enabled enabled))
+                                         :menu menu :key key :separator separator :enabled enabled
+                                         :parameters parameters))
         (old (find-command name)))
     (setf *commands* (if old
                          (substitute command old *commands*)
                          (append *commands* (list command))))
     command))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun parse-command-parameters (lambda-list)
+    "The ordinary lambda list for LAMBDA-LIST, whose required parameters may
+be (NAME TYPE &key PROMPT), and the forms for their (name type prompt)."
+    (let ((required (loop for item in lambda-list
+                          until (member item lambda-list-keywords)
+                          collect item)))
+      (values (append (mapcar (lambda (item) (if (consp item) (car item) item)) required)
+                      (nthcdr (length required) lambda-list))
+              (mapcar (lambda (item)
+                        (if (consp item)
+                            (destructuring-bind (name type &key prompt) item
+                              `(list ',name ,type ,prompt))
+                            `(list ',item nil nil)))
+                      required)))))
 
 (defmacro define-command (name-and-options lambda-list &body body)
   "Define the function NAME as a command.  NAME-AND-OPTIONS is NAME or
@@ -46,14 +65,22 @@
 LABEL is the text of its menu item or button, MENU the title of the menu it
 is in, KEY its key (like \"CmdOrCtrl+Shift+S\"), SEPARATOR true to draw a line
 above it in the menu.  The command can be invoked while ENABLED, a form
-evaluated when needed (reading state in it is observed), is true."
+evaluated when needed (reading state in it is observed), is true.
+
+A required parameter of LAMBDA-LIST may be (NAME TYPE &key PROMPT), where
+TYPE is evaluated: when the command is invoked without that argument, the
+user is asked for it (see ACCEPT in present.lisp) — by clicking an object
+presented with that type or, for strings, numbers and (MEMBER ...), in a
+dialog."
   (destructuring-bind (name &key label menu key separator (enabled nil enabledp))
       (if (consp name-and-options) name-and-options (list name-and-options))
-    `(progn
-       (defun ,name ,lambda-list ,@body)
-       (register-command ',name :label ,label :menu ,menu :key ,key :separator ,separator
-                                :enabled ,(and enabledp `(lambda () ,enabled)))
-       ',name)))
+    (multiple-value-bind (lambda-list parameters) (parse-command-parameters lambda-list)
+      `(progn
+         (defun ,name ,lambda-list ,@body)
+         (register-command ',name :label ,label :menu ,menu :key ,key :separator ,separator
+                                  :enabled ,(and enabledp `(lambda () ,enabled))
+                                  :parameters (list ,@parameters))
+         ',name))))
 
 (defun command-enabled-p (name)
   (let ((command (find-command name)))
@@ -63,9 +90,22 @@ evaluated when needed (reading state in it is observed), is true."
 
 (defun invoke-command (name &rest arguments)
   "Call the command NAME with ARGUMENTS if it is enabled, as the user does:
-an error is shown with the restarts to choose from."
+an error is shown with the restarts to choose from, and the user is asked
+for the missing arguments that have a type (the command is then called
+later, when they are known)."
   (when (command-enabled-p name)
-    (with-error-dialog (apply name arguments))))
+    (let* ((command (find-command name))
+           (missing (car (nthcdr (length arguments) (command-parameters command)))))
+      (if (and missing (second missing))
+          (with-error-dialog
+            ;; present.lisp
+            (funcall 'accept (second missing)
+                     :prompt (or (third missing)
+                                 (format nil "~A: ~(~A~)" (command-label command) (first missing)))
+                     :continuation (lambda (value)
+                                     (apply #'invoke-command name (append arguments (list value)))))
+            nil)
+          (with-error-dialog (apply name arguments))))))
 
 (defmacro command (name &rest arguments)
   "A function (for an :ON-<EVENT> property) that invokes the command NAME

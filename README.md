@@ -211,7 +211,20 @@ $ examples/todo/build-desktop.sh            # build/todo-desktop/, installs Elec
 $ (cd build/todo-desktop && npm start)
 ```
 
-With `--dev`, both scripts build the [development version](#development-with-a-repl),
+`examples/contacts/` is an address book written with the
+[panes](#panes-layouts-and-interfaces) of the framework: its window is an
+interface of lists, a tree, a table, tabs and a form whose fields are the
+slots of the selected contact, and its contacts are
+[presentations](#presentations-and-commands-with-typed-arguments) — "Delete…"
+in the menu asks the user to click a contact, and a right click on a contact
+offers the commands for it.
+
+```
+$ examples/contacts/build.sh                # build/contacts/
+$ python3 -m http.server -d build/contacts
+```
+
+With `--dev`, these scripts build the [development version](#development-with-a-repl),
 which has a REPL in its window:
 
 ```
@@ -278,13 +291,121 @@ code tells the screen to update.
   functions (`ui:make-element-node`, `ui:set-property`, `ui:insert-node`…).
   `ui/dom.lisp` implements them for the browser's DOM; `ui/sexp.lisp` builds
   S-expressions and records every change, so components are tested without a
-  browser (`make test-ui`, `tests/ui/ui.lisp`).
+  browser (`make test-ui`, `tests/ui/`).
 
 An application is compiled together with the framework (`ui/desktop.lisp`
 only if it is also a desktop application):
 
 ```
 $ bin/clysm compile ui/ui.lisp ui/command.lisp ui/dom.lisp ui/desktop.lisp app.lisp -o app.wasm
+```
+
+### Panes, layouts and interfaces
+
+On top of the components, `ui/pane.lisp` has ready-made panes in the manner
+of CAPI: an application describes its window as an interface of panes in
+layouts, without markup.
+
+```lisp
+(ui:define-interface greeter ()
+  ((count :initform 0 :accessor greeter-count))             ; observed slots
+  (:panes
+   (name-input ui:text-input-pane :placeholder "Your name")
+   (greet ui:push-button :text "Greet"
+          :callback (lambda (data interface) (incf (greeter-count interface))))
+   (message ui:title-pane
+            :text (ui:computed (format nil "Hello, ~A! (~D)"
+                                       (ui:text-input-pane-text name-input)
+                                       (greeter-count ui:interface)))))
+  (:layouts
+   (main ui:column-layout '(top message))
+   (top ui:row-layout '(name-input greet)))
+  (:default-initargs :title "Greeter"))
+
+(ui:display (make-instance 'greeter))                       ; in "#app"
+```
+
+* **Panes are models**: what a pane shows is in its slots, and the screen
+  follows `setf` of an accessor — `(setf (ui:button-text button) "Again")`,
+  `(setf (ui:collection-items list) items)`, `(setf (ui:pane-enabled pane) nil)`.
+  A slot of any model can be given `(ui:computed form)`, a value that follows
+  the state `form` reads, or `(ui:binding place)`, which makes the slot that
+  place in both directions: `:text (ui:binding (contact-name contact))` is a
+  field that edits the name.
+* **The panes**: `title-pane`, `display-pane`, `text-input-pane`,
+  `multi-line-text-input-pane`, `push-button` (with `:callback`, or
+  `:command` for a [command](#commands)), `check-button`, the choices
+  `list-panel`, `multi-column-list-panel`, `option-pane`, `radio-button-panel`,
+  `check-button-panel` and `tree-view` (`:items`, `:print-function`,
+  `:interaction`, `:selection-callback`, `:action-callback`;
+  `ui:choice-selected-item`), `slider`, `progress-bar`, `toolbar` (buttons
+  for commands) and `application-pane`, whose `:display-function` returns
+  markup. Callbacks get what `:callback-type` says, by default the data and
+  the interface.
+* **The layouts**: `column-layout`, `row-layout` (with `:ratios`, and
+  `:divider` in the description for a border the user drags), `grid-layout`,
+  `tab-layout` and `switchable-layout`. A description names panes of the
+  interface, or contains panes and strings.
+* **`define-interface`** is `defmodel` plus `:panes` and `:layouts`; the
+  initarg forms see `ui:interface` and the panes made before them.
+  `ui:display` shows an interface in an element of the page (`ui:contain` a
+  single pane), with `:menu-bar t` under the menus of the commands.
+* **A new kind of pane** is a class and a method of `ui:render-pane` that
+  returns markup; `(ui:pane-node pane)` puts a pane into markup.
+* **The look** is `ui/ui.css`, linked from the page: light and dark, and
+  custom properties (`--ui-accent`, `--ui-radius`, `--ui-font`…) to change it.
+
+```
+$ bin/clysm compile ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp \
+    ui/dom.lisp app.lisp -o app.wasm
+```
+
+### Presentations and commands with typed arguments
+
+After CLIM (`ui/present.lisp`): what is shown with `ui:present` or
+`ui:with-output-as-presentation` remembers the object it stands for and its
+presentation type, and a command says what its arguments are.
+
+```lisp
+(ui:define-command (delete-contact :menu "Contact" :label "Delete…")
+    ((contact 'contact :prompt "Click the contact to delete"))
+  ...)
+(ui:define-command (rename-contact :menu "Contact") ((contact 'contact) (name 'string))
+  (setf (contact-name contact) name))
+
+(ui:defcomponent favourites ()
+  (:p (mapcar #'ui:present *favourites*)))                  ; contacts on the screen
+(make-instance 'ui:list-panel :items *contacts* :presentation-type 'contact ...)
+
+(ui:define-presentation-to-command-translator click-contact (contact show-contact) (object)
+  (list object))                                            ; a click calls SHOW-CONTACT
+```
+
+* Invoked without its arguments (from a menu, a button, its key),
+  a command asks for them one after the other (`ui:accept`): for a
+  contact, the presentations of contacts anywhere on the screen are
+  highlighted and a click on one supplies it (Escape cancels); a `string`,
+  `integer`, `number`, `boolean` or `(member ...)` is asked for in a dialog.
+  `ui:accept-presentation-type` has a method for each way of asking.
+* A right click on a presentation shows the commands that apply to it: its
+  translators, and the commands whose first parameter has its type.
+* A presentation type is the name of a class or another type specifier;
+  `ui:define-presentation-type` gives one supertypes and a description, and
+  methods of `ui:present-object` say how objects are shown.
+
+### Dialogs
+
+`ui/dialog.lisp`: `ui:display-message`, `ui:prompt-for-string`,
+`ui:prompt-for-number`, `ui:prompt-for-confirmation` and
+`ui:prompt-with-list` show a modal dialog, and `(ui:display-dialog interface)`
+makes any interface one, answered by its callbacks with
+`(ui:exit-dialog value)` or `(ui:abort-dialog)`. A page cannot wait inside a
+function, so these return at once and call their `:continuation` with the
+answer and whether there is one:
+
+```lisp
+(ui:prompt-for-confirmation "Delete it?"
+                            :continuation (lambda (yes okp) (when yes (delete-it))))
 ```
 
 ### Commands
@@ -638,7 +759,8 @@ functions (by name), which helps to see what a form compiles to.
 ## Tests
 
 `make test-ui` tests the GUI framework on its S-expression backend
-(`tests/ui/ui.lisp`), compiled ahead of time and in the REPL image.
+(`tests/ui/ui.lisp`, and `tests/ui/pane.lisp` for the panes, presentations
+and dialogs), compiled ahead of time and in the REPL image.
 
 `tools/run-tests.sh` compiles every `tests/cases/*.lisp`, runs it, and compares
 standard output with SBCL running the same file. `INTERP=1` runs the files with

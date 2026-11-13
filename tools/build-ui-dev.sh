@@ -8,5 +8,6 @@ set -e
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$1"; shift
 CLYSM_REDEFINABLE=1 exec sbcl --script "$root/tools/build-repl.lisp" "$out" \
-  "$root/lib/web-main.lisp" "$root/ui/ui.lisp" "$root/ui/command.lisp" "$root/ui/dom.lisp" \
+  "$root/lib/web-main.lisp" "$root/ui/ui.lisp" "$root/ui/command.lisp" "$root/ui/present.lisp" \
+  "$root/ui/pane.lisp" "$root/ui/dialog.lisp" "$root/ui/dom.lisp" \
   "$root/ui/desktop.lisp" "$root/ui/dev.lisp" "$@"

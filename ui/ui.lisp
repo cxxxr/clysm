@@ -28,22 +28,52 @@
    "HTML" "DEFCOMPONENT" "&STATE" "SELF" "KEYED" "RENDER" "MOUNTED" "UNMOUNTED" "COMPONENT"
    "MOUNT" "UNMOUNT"
    ;; state
-   "DEFMODEL" "MODEL" "MODEL-CLASS" "DEFSTATE" "AUTORUN" "STOP" "FLUSH"
+   "DEFMODEL" "MODEL" "MODEL-CLASS" "DEFSTATE" "AUTORUN" "STOP" "FLUSH" "COMPUTED" "BINDING"
    ;; errors
    "WITH-ERROR-DIALOG" "CALL-WITH-ERROR-DIALOG" "*ABORT-LABEL*" "CHOOSE-RESTART"
    ;; commands (command.lisp)
    "DEFINE-COMMAND" "COMMAND" "INVOKE-COMMAND" "FIND-COMMAND" "COMMAND-ENABLED-P"
    "COMMAND-NAME" "COMMAND-LABEL" "COMMAND-MENU" "COMMAND-KEY" "COMMAND-SEPARATOR"
    "COMMAND-BUTTON" "COMMAND-MENUS" "COMMAND-FOR-KEY" "PARSE-KEY" "*COMMANDS*"
+   "COMMAND-PARAMETERS"
+   ;; presentations (present.lisp)
+   "PRESENT" "PRESENT-OBJECT" "WITH-OUTPUT-AS-PRESENTATION" "PRESENTING"
+   "DEFINE-PRESENTATION-TYPE" "PRESENTATION-TYPE-OF" "PRESENTATION-SUBTYPEP"
+   "DEFINE-PRESENTATION-TO-COMMAND-TRANSLATOR" "ACCEPT" "ACCEPT-PRESENTATION-TYPE"
+   "CANCEL-ACCEPT" "ACCEPTING-P" "POPUP-MENU" "MAKE-MENU-ITEM" "*ACCEPT-PROMPT*"
+   ;; panes and layouts (pane.lisp)
+   "PANE" "RENDER-PANE" "PANE-NODE" "PANE-NAME" "PANE-INTERFACE" "PANE-TITLE" "PANE-ENABLED"
+   "PANE-VISIBLE" "PANE-CLASS" "PANE-WIDTH" "PANE-HEIGHT" "PANE-STRETCH" "PANE-HELP"
+   "TITLE-PANE" "TITLE-PANE-TEXT" "DISPLAY-PANE" "DISPLAY-PANE-TEXT"
+   "PUSH-BUTTON" "CHECK-BUTTON" "BUTTON-TEXT" "BUTTON-SELECTED" "BUTTON-DATA" "BUTTON-COMMAND"
+   "TEXT-INPUT-PANE" "TEXT-INPUT-PANE-TEXT" "MULTI-LINE-TEXT-INPUT-PANE"
+   "CHOICE" "COLLECTION-ITEMS" "COLLECTION-PRINT-FUNCTION" "CHOICE-SELECTION"
+   "CHOICE-SELECTED-ITEM" "CHOICE-SELECTED-ITEMS" "CHOICE-INTERACTION"
+   "LIST-PANEL" "OPTION-PANE" "RADIO-BUTTON-PANEL" "CHECK-BUTTON-PANEL"
+   "MULTI-COLUMN-LIST-PANEL" "LIST-PANEL-COLUMNS"
+   "TREE-VIEW" "TREE-VIEW-ROOTS" "TREE-VIEW-EXPANDED-P"
+   "SLIDER" "PROGRESS-BAR" "RANGE-VALUE" "RANGE-START" "RANGE-END"
+   "APPLICATION-PANE" "APPLICATION-PANE-DISPLAY-FUNCTION" "TOOLBAR" "TOOLBAR-ITEMS"
+   "LAYOUT" "LAYOUT-DESCRIPTION" "LAYOUT-RATIOS" "COLUMN-LAYOUT" "ROW-LAYOUT" "GRID-LAYOUT"
+   "TAB-LAYOUT" "SWITCHABLE-LAYOUT" "SWITCHABLE-LAYOUT-VISIBLE-CHILD"
+   "INTERFACE" "DEFINE-INTERFACE" "INTERFACE-TITLE" "INTERFACE-LAYOUT" "INTERFACE-MENU-BAR"
+   "DISPLAY" "CONTAIN" "QUIT-INTERFACE" "FIND-PANE"
+   ;; dialogs (dialog.lisp)
+   "DISPLAY-DIALOG" "EXIT-DIALOG" "ABORT-DIALOG" "DISPLAY-MESSAGE" "PROMPT-FOR-STRING"
+   "PROMPT-FOR-CONFIRMATION" "PROMPT-WITH-LIST" "PROMPT-FOR-NUMBER"
+   "*OK-LABEL*" "*YES-LABEL*" "*NO-LABEL*"
    ;; development
    "REFRESH"
    ;; the backend protocol
    "*BACKEND*" "MAKE-ELEMENT-NODE" "MAKE-TEXT-NODE" "SET-NODE-TEXT" "SET-PROPERTY"
    "REMOVE-PROPERTY" "SET-LISTENER" "INSERT-NODE" "REMOVE-NODE" "REPLACE-NODE"
    "NODE-FOLLOWS-P" "REQUEST-FLUSH" "RESOLVE-CONTAINER"
+   "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
+   "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
+   "FIRE-GLOBAL" "NODE-TEXT"
    "BACKEND-CHOOSER"
    ;; the desktop application (desktop.lisp)
    "DESKTOP-BACKEND" "DESKTOP-P" "READ-FILE" "WRITE-FILE" "DESKTOP-FILE-ERROR"
@@ -83,6 +113,27 @@ happens on NODE.  Called once for every event of a node."))
 (defgeneric resolve-container (backend container)
   (:documentation "The node for the CONTAINER argument of MOUNT.")
   (:method (backend container) container))
+
+;;; What the panes, presentations and dialogs (pane.lisp, present.lisp,
+;;; dialog.lisp) need in addition; EVENT is what a listener was called with.
+
+(defgeneric event-get (backend event name)
+  (:documentation "The property NAME (a string: \"key\", \"clientX\", \"shiftKey\"...) of EVENT."))
+(defgeneric event-target-get (backend event name)
+  (:documentation "The property NAME (\"value\", \"checked\", \"selectedIndex\") of the node EVENT happened on."))
+(defgeneric stop-event (backend event)
+  (:documentation "EVENT has been handled: no default action, and no other listener."))
+(defgeneric node-call (backend node method &rest arguments)
+  (:documentation "Call METHOD (a string: \"focus\", \"showModal\"...) of the backend's NODE."))
+(defgeneric overlay-container (backend)
+  (:documentation "The node above everything else: for dialogs and popup menus."))
+(defgeneric set-global-listener (backend event function)
+  (:documentation "Call FUNCTION with the event when EVENT happens anywhere."))
+(defgeneric set-title (backend string)
+  (:documentation "Set the title of the window."))
+(defgeneric previous-sibling-size (backend event)
+  (:documentation "The width and height of the node in front of the one the pointer
+EVENT happened on, which gets the following events of that pointer."))
 
 ;;; ------------------------------------------------------------------
 ;;; Errors: the user chooses a restart
@@ -235,16 +286,48 @@ running observer, and writing it invalidates the observers that read it."))
           (dolist (observer (shiftf (cdr entry) nil))
             (invalidate observer)))))))
 
+;;; A slot may hold a COMPUTED value: reading the slot calls its function
+;;; (and the reader observes what the function read), so the slot follows
+;;; other state.  With a setter (BINDING), writing the slot writes the place.
+
+(defstruct (computed (:constructor make-computed (function &optional setter)))
+  function setter)
+
+(defmacro computed (form)
+  "A value for a slot of a model: the slot then has the value of FORM,
+evaluated whenever the slot is read.  Setting the slot replaces it."
+  `(make-computed (lambda () ,form)))
+
+(defmacro binding (place)
+  "A value for a slot of a model: the slot then is PLACE; reading it reads
+PLACE and setting it sets PLACE."
+  (let ((value (gensym "VALUE")))
+    `(make-computed (lambda () ,place) (lambda (,value) (setf ,place ,value)))))
+
+(defvar *raw-slots* nil "True to read the COMPUTED object of a slot itself.")
+
 (defmethod clysm-mop:slot-value-using-class ((class model-class) object slot)
   (when *observer*
     (let ((name (clysm-mop:slot-definition-name slot)))
       (unless (eq name '%observers) (observe object name))))
-  (call-next-method))
+  (let ((value (call-next-method)))
+    (if (and (computed-p value) (not *raw-slots*))
+        (funcall (computed-function value))
+        value)))
 
 (defmethod (setf clysm-mop:slot-value-using-class) (value (class model-class) object slot)
-  (prog1 (call-next-method)
-    (let ((name (clysm-mop:slot-definition-name slot)))
-      (unless (eq name '%observers) (notify object name)))))
+  (let ((name (clysm-mop:slot-definition-name slot)))
+    (if (eq name '%observers)
+        (call-next-method)
+        (let ((old (and (not (computed-p value))
+                        (slot-boundp object name)
+                        (let ((*raw-slots* t) (*observer* nil))
+                          (slot-value object name)))))
+          (cond ((and (computed-p old) (computed-setter old))
+                 (funcall (computed-setter old) value)
+                 value)
+                (t (prog1 (call-next-method)
+                     (notify object name))))))))
 
 (defmacro defmodel (name superclasses slots &rest options)
   "Like DEFCLASS, for a class whose slots are observed: components that read

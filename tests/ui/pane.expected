@@ -1,0 +1,516 @@
+
+== interface
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+   (:DIV (:STYLE "flex:1 1 0;gap:8px;" :CLASS "ui-pane ui-row-layout")
+    (:INPUT
+     (:PLACEHOLDER "Your name" :VALUE "" :CLASS "ui-pane ui-text-input-pane"
+      :TYPE "text"))
+    (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button") "Greet"))
+   (:DIV (:ROLE "separator" :CLASS "ui-separator"))
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "Hello, ! (0)")
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "plain text"))))
+-- displayed
+   (:CREATE "div")
+   (:SET :DIV :STYLE "flex:1 1 0;")
+   (:SET :DIV :CLASS "ui-pane ui-interface")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-pane ui-column-layout")
+   (:SET :DIV :STYLE "flex:1 1 0;")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-pane ui-row-layout")
+   (:SET :DIV :STYLE "flex:1 1 0;gap:8px;")
+   (:CREATE "input")
+   (:SET :INPUT :TYPE "text")
+   (:SET :INPUT :CLASS "ui-pane ui-text-input-pane")
+   (:SET :INPUT :VALUE "")
+   (:SET :INPUT :PLACEHOLDER "Your name")
+   (:INSERT :INPUT :IN :DIV)
+   (:CREATE "button")
+   (:SET :BUTTON :TYPE "button")
+   (:SET :BUTTON :CLASS "ui-pane ui-push-button")
+   (:CREATE-TEXT "Greet")
+   (:INSERT "Greet" :IN :BUTTON)
+   (:INSERT :BUTTON :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-separator")
+   (:SET :DIV :ROLE "separator")
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-pane ui-title-pane")
+   (:CREATE-TEXT "Hello, ! (0)")
+   (:INSERT "Hello, ! (0)" :IN :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-pane ui-title-pane")
+   (:CREATE-TEXT "plain text")
+   (:INSERT "plain text" :IN :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:INSERT :DIV :IN :ROOT)
+   (:TITLE "Greeter")
+-- typed
+   (:TEXT "Hello, ! (0)" "Hello, Lisp! (0)")
+   (:SET :INPUT :VALUE "Lisp")
+enter: "Lisp" GREETER
+callback: "Greet"
+-- clicked
+   (:TEXT "Hello, Lisp! (0)" "Hello, Lisp! (1)")
+-- setf
+   (:SET :INPUT :HIDDEN T)
+   (:SET :BUTTON :DISABLED T)
+   (:TEXT "Greet" "Again")
+   (:TITLE "Greeter 2")
+find-pane: TOP NIL T
+
+== quit
+(:ROOT NIL)
+
+== binding
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV
+   (:CLASS "ui-pane ui-titled ui-title-left" :STYLE "flex:1 1 0;width:200px;")
+   (:LABEL (:CLASS "ui-title") "Filter")
+   (:INPUT
+    (:VALUE "" :CLASS "ui-text-input-pane" :TYPE "text" :ARIA-LABEL
+     "Filter")))))
+*filter* = "abc"
+-- the place was set
+   (:SET :INPUT :VALUE "abc")
+   (:SET :INPUT :VALUE "xyz")
+
+== list-panel
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:UL
+   (:TABINDEX 0 :ROLE "listbox" :CLASS "ui-pane ui-list-panel" :STYLE
+    "flex:1 1 0;")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "Apple")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "Banana")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "Cherry"))))
+selected BANANA
+-- banana clicked
+   (:SET :LI :CLASS "ui-item selected")
+   (:SET :LI :ARIA-SELECTED "true")
+selected CHERRY
+action CHERRY
+selected APPLE
+action CHERRY
+selected-item: APPLE
+
+== other items
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:UL
+   (:TABINDEX 0 :ROLE "listbox" :CLASS "ui-pane ui-list-panel" :STYLE
+    "flex:1 1 0;")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "Banana")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "Date"))))
+
+== multiple selection
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:UL
+   (:ARIA-MULTISELECTABLE "true" :TABINDEX 0 :ROLE "listbox" :CLASS
+    "ui-pane ui-list-panel" :STYLE "flex:1 1 0;")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "1")
+   (:LI (:ARIA-SELECTED "true" :ROLE "option" :CLASS "ui-item selected") "2")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "3")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "4")
+   (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "5"))))
+extended: (2 3 4)
+toggled: (2 4)
+clicked: (1)
+
+== option-pane
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:SELECT (:CLASS "ui-pane ui-option-pane" :STYLE "flex:1 1 0;")
+   (:OPTION (:SELECTED T) "red") (:OPTION NIL "green") (:OPTION NIL "blue"))))
+selected-item: :RED
+option :BLUE OPTION-PANE
+-- blue
+   (:UNSET :OPTION :SELECTED)
+   (:SET :OPTION :SELECTED T)
+
+== button panels
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+   (:DIV (:ROLE "radiogroup" :CLASS "ui-pane ui-button-panel ui-row")
+    (:LABEL (:CLASS "ui-check-button")
+     (:INPUT (:NAME "ui-button-panel-1" :TYPE "radio")) (:SPAN NIL "S"))
+    (:LABEL (:CLASS "ui-check-button")
+     (:INPUT (:CHECKED T :NAME "ui-button-panel-1" :TYPE "radio"))
+     (:SPAN NIL "M"))
+    (:LABEL (:CLASS "ui-check-button")
+     (:INPUT (:NAME "ui-button-panel-1" :TYPE "radio")) (:SPAN NIL "L")))
+   (:DIV (:ROLE "group" :CLASS "ui-pane ui-button-panel ui-column")
+    (:LABEL (:CLASS "ui-check-button")
+     (:INPUT (:NAME "ui-button-panel-2" :TYPE "checkbox")) (:SPAN NIL "A"))
+    (:LABEL (:CLASS "ui-check-button")
+     (:INPUT (:NAME "ui-button-panel-2" :TYPE "checkbox")) (:SPAN NIL "B"))))))
+radio "L" checks (B)
+
+== multi-column-list-panel
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV
+   (:TABINDEX 0 :CLASS "ui-pane ui-multi-column-list-panel" :STYLE
+    "flex:1 1 0;")
+   (:TABLE (:ROLE "grid")
+    (:THEAD NIL
+     (:TR NIL (:TH (:CLASS "ui-adjust-left" :STYLE "width:120px") "Name")
+      (:TH (:CLASS "ui-adjust-right") "Age")))
+    (:TBODY NIL
+     (:TR (:ARIA-SELECTED "false" :CLASS "ui-item")
+      (:TD (:CLASS "ui-adjust-left") "Ada")
+      (:TD (:CLASS "ui-adjust-right") "36"))
+     (:TR (:ARIA-SELECTED "false" :CLASS "ui-item")
+      (:TD (:CLASS "ui-adjust-left") "Grace")
+      (:TD (:CLASS "ui-adjust-right") "85")))))))
+selected: ("Grace" 85)
+
+== tree-view
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:UL
+   (:TABINDEX 0 :ROLE "tree" :CLASS "ui-pane ui-tree-view" :STYLE
+    "flex:1 1 0;")
+   (:LI (:ARIA-SELECTED "false" :ARIA-EXPANDED "true" :ROLE "treeitem")
+    (:DIV (:STYLE "padding-left:6px" :CLASS "ui-item")
+     (:SPAN (:CLASS "ui-twisty ui-open"))
+     (:SPAN (:CLASS "ui-item-text") "node 1"))
+    (:UL (:ROLE "group")
+     (:LI (:ARIA-SELECTED "false" :ARIA-EXPANDED "false" :ROLE "treeitem")
+      (:DIV (:STYLE "padding-left:22px" :CLASS "ui-item")
+       (:SPAN (:CLASS "ui-twisty")) (:SPAN (:CLASS "ui-item-text") "node 2")))
+     (:LI (:ARIA-SELECTED "false" :ARIA-EXPANDED "false" :ROLE "treeitem")
+      (:DIV (:STYLE "padding-left:22px" :CLASS "ui-item")
+       (:SPAN (:CLASS "ui-twisty"))
+       (:SPAN (:CLASS "ui-item-text") "node 3"))))))))
+-- node 2 opened
+   (:SET :LI :ARIA-EXPANDED "true")
+   (:SET :SPAN :CLASS "ui-twisty ui-open")
+   (:CREATE "ul")
+   (:SET :UL :ROLE "group")
+   (:CREATE "li")
+   (:SET :LI :ROLE "treeitem")
+   (:SET :LI :ARIA-SELECTED "false")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-item")
+   (:SET :DIV :STYLE "padding-left:38px")
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-twisty ui-leaf")
+   (:INSERT :SPAN :IN :DIV)
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-item-text")
+   (:CREATE-TEXT "node 4")
+   (:INSERT "node 4" :IN :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT :DIV :IN :LI)
+   (:INSERT :LI :IN :UL)
+   (:CREATE "li")
+   (:SET :LI :ROLE "treeitem")
+   (:SET :LI :ARIA-SELECTED "false")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-item")
+   (:SET :DIV :STYLE "padding-left:38px")
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-twisty ui-leaf")
+   (:INSERT :SPAN :IN :DIV)
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-item-text")
+   (:CREATE-TEXT "node 5")
+   (:INSERT "node 5" :IN :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT :DIV :IN :LI)
+   (:INSERT :LI :IN :UL)
+   (:INSERT :UL :IN :LI)
+visible: ("node 1" "node 2" "node 4" "node 5" "node 3")
+selected 2, 2 open: NIL
+visible: ("node 1" "node 2" "node 3")
+
+== other panes
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV
+   (:STYLE "flex:1 1 0;grid-template-columns:auto minmax(0,1fr)" :CLASS
+    "ui-pane ui-grid-layout")
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "Style")
+   (:LABEL (:CLASS "ui-pane ui-check-button") (:INPUT (:TYPE "checkbox"))
+    (:SPAN NIL "Bold"))
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "Size")
+   (:FIELDSET (:CLASS "ui-pane ui-frame") (:LEGEND NIL "Size")
+    (:INPUT
+     (:VALUE "3" :STEP 1 :MAX 10 :MIN 0 :CLASS "ui-slider" :TYPE "range"
+      :ARIA-LABEL "Size")))
+   (:SPAN NIL) (:PROGRESS (:VALUE 3 :MAX 10 :CLASS "ui-pane ui-progress-bar"))
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "Text")
+   (:TEXTAREA
+    (:ROWS 3 :VALUE "two
+lines"
+     :CLASS "ui-pane ui-multi-line-text-input-pane"))
+   (:SPAN (:CLASS "ui-pane ui-title-pane") "Output")
+   (:DIV (:CLASS "ui-pane ui-application-pane" :STYLE "flex:1 1 0;")
+    (:P NIL "size " (:B NIL "3"))))))
+bold: T
+-- slider moved
+   (:SET :INPUT :CHECKED T)
+   (:SET :INPUT :VALUE "7.5")
+   (:SET :PROGRESS :VALUE 7.5d0)
+   (:TEXT "3" "8")
+value: 7.5d0, text "two
+lines"
+
+== layouts
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-row-layout")
+   (:DIV (:CLASS "ui-pane ui-tab-layout" :STYLE "flex:1 1 0;")
+    (:DIV (:ROLE "tablist" :CLASS "ui-tabs")
+     (:BUTTON
+      (:ARIA-SELECTED "true" :CLASS "ui-tab selected" :ROLE "tab" :TYPE
+       "button")
+      "First")
+     (:BUTTON
+      (:ARIA-SELECTED "false" :CLASS "ui-tab" :ROLE "tab" :TYPE "button")
+      "Second"))
+    (:DIV (:ROLE "tabpanel" :CLASS "ui-tab-body")
+     (:SPAN (:CLASS "ui-pane ui-title-pane" :STYLE "flex:1 1 0;") "A")))
+   (:DIV (:ARIA-ORIENTATION "vertical" :ROLE "separator" :CLASS "ui-divider"))
+   (:DIV (:CLASS "ui-pane ui-switchable-layout" :STYLE "flex:2 1 0;")
+    (:SPAN (:CLASS "ui-pane ui-title-pane") "one")))))
+-- second tab
+   (:SET :BUTTON :CLASS "ui-tab")
+   (:SET :BUTTON :ARIA-SELECTED "false")
+   (:SET :BUTTON :CLASS "ui-tab selected")
+   (:SET :BUTTON :ARIA-SELECTED "true")
+   (:CREATE "span")
+   (:SET :SPAN :STYLE "flex:1 1 0;")
+   (:SET :SPAN :CLASS "ui-pane ui-title-pane")
+   (:CREATE-TEXT "B")
+   (:INSERT "B" :IN :SPAN)
+   (:REMOVE :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+-- switched
+   (:CREATE "span")
+   (:SET :SPAN :STYLE "flex:1 1 0;")
+   (:SET :SPAN :CLASS "ui-pane ui-title-pane")
+   (:CREATE-TEXT "two")
+   (:INSERT "two" :IN :SPAN)
+   (:REMOVE :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+-- divider dragged
+   (:SET :DIV :STYLE "flex:0 0 270px;")
+
+== presentations
+(:ROOT NIL
+ (:DIV NIL
+  (:UL NIL (:LI (:CLASS "ui-presentation") "Ada")
+   (:LI (:CLASS "ui-presentation") "Bob"))
+  (:P NIL "first: " (:SPAN (:CLASS "ui-presentation") "Ada") " and "
+   (:SPAN (:CLASS "ui-presentation") "42"))))
+parameters: ((PERSON PERSON "Rename whom?") (NAME STRING "New name:"))
+log: ((:SHOW "Bob"))
+
+== menu of Ada
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIV (:CLASS "ui-popup") (:DIV (:CLASS "ui-menu-backdrop"))
+   (:DIV
+    (:STYLE
+     "left:min(10px, calc(100vw - 15rem));top:min(20px, calc(100vh - 106px))"
+     :CLASS "ui-popup-menu")
+    (:UL (:ROLE "menu" :CLASS "ui-menu")
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Show"))
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Remove…"))
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Rename…")))))))
+people: ("Bob")
+
+== after the menu
+(:OVERLAY NIL (:DIV (:CLASS "ui-overlay")))
+accepting: T
+
+== accepting a person
+(:ROOT NIL
+ (:DIV NIL (:UL NIL (:LI (:CLASS "ui-presentation ui-acceptable") "Bob"))
+  (:P NIL "first: " (:SPAN (:CLASS "ui-presentation ui-acceptable") "Bob")
+   " and " (:SPAN (:CLASS "ui-presentation") "42"))))
+
+== the prompt
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIV (:ROLE "status" :CLASS "ui-accept-bar") (:SPAN NIL "Rename whom?")
+   (:BUTTON (:CLASS "ui-push-button" :TYPE "button") "Cancel"))))
+accepting: T
+
+== then a string
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:CLASS "ui-dialog")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV
+     (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout ui-dialog-body")
+     (:DIV (:CLASS "ui-pane ui-display-pane") "New name:")
+     (:INPUT (:VALUE "" :CLASS "ui-pane ui-text-input-pane" :TYPE "text"))
+     (:DIV (:CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+      (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button") "Cancel")
+      (:BUTTON (:CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+       "OK")))))))
+-- dialog
+   (:SET :LI :CLASS "ui-presentation ui-acceptable")
+   (:SET :SPAN :CLASS "ui-presentation ui-acceptable")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-accept-bar")
+   (:SET :DIV :ROLE "status")
+   (:CREATE "span")
+   (:CREATE-TEXT "Rename whom?")
+   (:INSERT "Rename whom?" :IN :SPAN)
+   (:INSERT :SPAN :IN :DIV)
+   (:CREATE "button")
+   (:SET :BUTTON :TYPE "button")
+   (:SET :BUTTON :CLASS "ui-push-button")
+   (:CREATE-TEXT "Cancel")
+   (:INSERT "Cancel" :IN :BUTTON)
+   (:INSERT :BUTTON :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:SET :LI :CLASS "ui-presentation")
+   (:SET :SPAN :CLASS "ui-presentation")
+   (:CREATE "dialog")
+   (:SET :DIALOG :CLASS "ui-dialog")
+   (:CREATE "div")
+   (:SET :DIV :STYLE "flex:1 1 0;")
+   (:SET :DIV :CLASS "ui-pane ui-interface")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-pane ui-column-layout ui-dialog-body")
+   (:SET :DIV :STYLE "flex:1 1 0;")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-pane ui-display-pane")
+   (:CREATE-TEXT "New name:")
+   (:INSERT "New name:" :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "input")
+   (:SET :INPUT :TYPE "text")
+   (:SET :INPUT :CLASS "ui-pane ui-text-input-pane")
+   (:SET :INPUT :VALUE "")
+   (:INSERT :INPUT :IN :DIV)
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+   (:CREATE "button")
+   (:SET :BUTTON :TYPE "button")
+   (:SET :BUTTON :CLASS "ui-pane ui-push-button")
+   (:CREATE-TEXT "Cancel")
+   (:INSERT "Cancel" :IN :BUTTON)
+   (:INSERT :BUTTON :IN :DIV)
+   (:CREATE "button")
+   (:SET :BUTTON :TYPE "button")
+   (:SET :BUTTON :CLASS "ui-pane ui-push-button ui-default")
+   (:CREATE-TEXT "OK")
+   (:INSERT "OK" :IN :BUTTON)
+   (:INSERT :BUTTON :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:INSERT :DIV :IN :DIALOG)
+   (:REMOVE :DIV)
+   (:INSERT :DIALOG :IN :DIV)
+   (:CALL :DIALOG "showModal")
+people: ("Robert"), accepting: NIL
+
+== renamed
+(:ROOT NIL
+ (:DIV NIL (:UL NIL (:LI (:CLASS "ui-presentation") "Robert"))
+  (:P NIL "first: " (:SPAN (:CLASS "ui-presentation") "Robert") " and "
+   (:SPAN (:CLASS "ui-presentation") "42"))))
+
+== no dialog
+(:OVERLAY NIL (:DIV (:CLASS "ui-overlay")))
+accepting: NIL, people: ("Robert")
+OK disabled: T
+log: ((:ADD "Cy" 41) (:SHOW "Bob"))
+
+== member
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:CLASS "ui-dialog")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV
+     (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout ui-dialog-body")
+     (:DIV (:CLASS "ui-pane ui-display-pane") "Paint: color")
+     (:UL
+      (:TABINDEX 0 :ROLE "listbox" :CLASS "ui-pane ui-list-panel" :STYLE
+       "flex:1 1 0;min-height:120px;max-height:320px;")
+      (:LI (:ARIA-SELECTED "true" :ROLE "option" :CLASS "ui-item selected")
+       "RED")
+      (:LI (:ARIA-SELECTED "false" :ROLE "option" :CLASS "ui-item") "GREEN"))
+     (:DIV (:CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+      (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button") "Cancel")
+      (:BUTTON (:CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+       "OK")))))))
+log: (:PAINT :GREEN)
+log: (:PAINT :GREEN), dialogs left: 0
+
+== message
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:CLASS "ui-dialog")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV
+     (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout ui-dialog-body")
+     (:DIV (:CLASS "ui-pane ui-display-pane") "3 files copied")
+     (:DIV (:CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+      (:BUTTON (:CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+       "OK")))))))
+answers: ((T T) (NIL T) (NIL NIL) (C T))
+
+== an interface as a dialog
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:ARIA-LABEL "Log in" :CLASS "ui-dialog")
+   (:HEADER (:CLASS "ui-dialog-title") "Log in")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+     (:DIV (:CLASS "ui-pane ui-titled") (:LABEL (:CLASS "ui-title") "User")
+      (:INPUT
+       (:VALUE "" :CLASS "ui-text-input-pane" :TYPE "text" :ARIA-LABEL
+        "User")))
+     (:DIV (:CLASS "ui-pane ui-titled") (:LABEL (:CLASS "ui-title") "Password")
+      (:INPUT
+       (:VALUE "" :CLASS "ui-text-input-pane" :TYPE "password" :ARIA-LABEL
+        "Password")))
+     (:BUTTON
+      (:DISABLED T :CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+      "Log in"))))))
+login: ("ada" "secret") T
+login: NIL NIL
+
+== menu bar and toolbar
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:ROLE "menubar" :CLASS "ui-menu-bar")
+   (:DIV (:CLASS "ui-menu-bar-item")
+    (:BUTTON (:CLASS "ui-menu-title" :ROLE "menuitem" :TYPE "button")
+     "People")))
+  (:DIV (:ROLE "toolbar" :CLASS "ui-pane ui-toolbar" :STYLE "flex:1 1 0;")
+   (:BUTTON (:TITLE "Ctrl+N" :CLASS "ui-push-button" :TYPE "button") "Add…")
+   (:SPAN (:CLASS "ui-toolbar-separator"))
+   (:BUTTON (:DISABLED T :CLASS "ui-push-button" :TYPE "button") "Rename…")
+   (:BUTTON (:CLASS "ui-push-button" :TYPE "button") "Paint"))))
+
+== the menu is open
+(:DIV (:ROLE "menubar" :CLASS "ui-menu-bar")
+ (:DIV (:CLASS "ui-menu-bar-item")
+  (:BUTTON (:CLASS "ui-menu-title ui-open" :ROLE "menuitem" :TYPE "button")
+   "People")
+  (:UL (:ROLE "menu" :CLASS "ui-menu")
+   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Remove…"))
+   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item disabled")
+    (:SPAN NIL "Rename…"))
+   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Add…")
+    (:SPAN (:CLASS "ui-menu-key") "Ctrl+N"))))
+ (:DIV (:CLASS "ui-menu-backdrop")))
+open menus: 0, dialogs: 1
+log: (:PAINT :RED)

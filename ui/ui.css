@@ -1,0 +1,220 @@
+/* ui.css — the look of the panes of ui/pane.lisp, ui/present.lisp and ui/dialog.lisp.
+ *
+ * Link it from the page of the application.  The colours and sizes are the
+ * custom properties of :root below; a page changes the look by setting them
+ * (after this file), e.g.  :root { --ui-accent: #b4532a; --ui-radius: 2px; }
+ * Light and dark follow the system; set color-scheme on :root to fix one.
+ */
+
+:root {
+  color-scheme: light dark;
+  --ui-font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --ui-bg: light-dark(#f4f4f2, #1b1c1e);            /* the window */
+  --ui-surface: light-dark(#ffffff, #242528);       /* lists, fields, menus */
+  --ui-fg: light-dark(#1f2023, #e6e6e3);
+  --ui-muted: light-dark(#6b6d72, #9a9ca1);
+  --ui-line: light-dark(#d9d9d5, #3a3c40);
+  --ui-hover: light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08));
+  --ui-accent: light-dark(#2f62c9, #7aa5f5);
+  --ui-accent-fg: light-dark(#ffffff, #10151f);
+  --ui-selected: light-dark(#dbe6fb, #2c3f63);      /* a selected item */
+  --ui-radius: 6px;
+  --ui-gap: 8px;
+  --ui-control-height: 28px;
+  --ui-shadow: 0 8px 28px rgba(0, 0, 0, .22), 0 1px 3px rgba(0, 0, 0, .18);
+}
+
+/* ---- interfaces and layouts ---- */
+
+.ui-interface {
+  display: flex; flex-direction: column; height: 100%;
+  background: var(--ui-bg); color: var(--ui-fg); font: var(--ui-font);
+}
+.ui-interface *, .ui-overlay * { box-sizing: border-box; }
+.ui-pane { min-width: 0; min-height: 0; }
+.ui-pane[hidden] { display: none !important; }
+
+.ui-column-layout { display: flex; flex-direction: column; gap: var(--ui-gap); }
+.ui-row-layout { display: flex; flex-direction: row; gap: var(--ui-gap); }
+.ui-interface > .ui-column-layout, .ui-interface > .ui-row-layout,
+.ui-interface > .ui-grid-layout { padding: var(--ui-gap); }
+
+/* across the direction of a layout, controls keep their size; lists fill it */
+.ui-row-layout > :is(.ui-push-button, .ui-check-button, .ui-title-pane, .ui-option-pane,
+                     .ui-text-input-pane, .ui-button-panel, .ui-slider, .ui-progress-bar) { align-self: center; }
+.ui-column-layout > :is(.ui-push-button, .ui-check-button, .ui-option-pane, .ui-button-panel) { align-self: flex-start; }
+.ui-row-layout > :is(.ui-text-input-pane, .ui-titled, .ui-slider, .ui-progress-bar) { flex: 1 1 8em; }
+.ui-row-layout.ui-adjust-start > *, .ui-column-layout.ui-adjust-start > * { align-self: flex-start; }
+.ui-row-layout.ui-adjust-center > *, .ui-column-layout.ui-adjust-center > * { align-self: center; }
+.ui-row-layout.ui-adjust-end > *, .ui-column-layout.ui-adjust-end > * { align-self: flex-end; }
+.ui-row-layout.ui-adjust-stretch > *, .ui-column-layout.ui-adjust-stretch > * { align-self: stretch; }
+
+.ui-grid-layout { display: grid; gap: var(--ui-gap) 12px; align-items: center; align-content: start; }
+.ui-grid-layout > .ui-title-pane { color: var(--ui-muted); }
+.ui-grid-layout > :is(.ui-push-button, .ui-check-button, .ui-option-pane) { justify-self: start; }
+
+.ui-switchable-layout, .ui-tab-body { display: flex; flex-direction: column; }
+.ui-tab-layout { display: flex; flex-direction: column; }
+.ui-tab-body { flex: 1 1 0; min-height: 0; padding-top: var(--ui-gap); }
+.ui-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--ui-line); flex: none; }
+.ui-tab {
+  font: inherit; color: var(--ui-muted); background: none; border: 0; cursor: pointer;
+  padding: 6px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.ui-tab:hover { color: var(--ui-fg); }
+.ui-tab.selected { color: var(--ui-fg); border-bottom-color: var(--ui-accent); font-weight: 600; }
+
+.ui-separator { flex: none; background: var(--ui-line); }
+.ui-column-layout > .ui-separator { height: 1px; }
+.ui-row-layout > .ui-separator { width: 1px; }
+
+/* a divider: a thin line with a wider area to grab */
+.ui-divider { flex: none; position: relative; background: var(--ui-line); touch-action: none; }
+.ui-divider::after { content: ""; position: absolute; inset: 0; z-index: 1; }
+.ui-divider:hover, .ui-divider:active { background: var(--ui-accent); }
+.ui-row-layout > .ui-divider { width: 1px; cursor: col-resize; }
+.ui-row-layout > .ui-divider::after { inset: 0 -4px; }
+.ui-column-layout > .ui-divider { height: 1px; cursor: row-resize; }
+.ui-column-layout > .ui-divider::after { inset: -4px 0; }
+
+/* ---- titles ---- */
+
+.ui-titled { display: flex; flex-direction: column; gap: 3px; }
+.ui-titled.ui-title-left { flex-direction: row; align-items: center; gap: var(--ui-gap); }
+.ui-titled > :last-child { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.ui-title { color: var(--ui-muted); font-size: 12px; flex: none; }
+.ui-frame {
+  display: flex; flex-direction: column; margin: 0; padding: 6px 10px 10px;
+  border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
+}
+.ui-frame > legend { color: var(--ui-muted); font-size: 12px; padding: 0 4px; }
+.ui-display-pane { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---- controls ---- */
+
+.ui-push-button, .ui-text-input-pane, .ui-multi-line-text-input-pane, .ui-option-pane {
+  font: inherit; color: var(--ui-fg); background: var(--ui-surface);
+  border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
+}
+.ui-push-button, .ui-text-input-pane, .ui-option-pane { height: var(--ui-control-height); }
+.ui-push-button { padding: 0 12px; cursor: pointer; white-space: nowrap; flex: none; }
+.ui-push-button:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-surface), var(--ui-fg) 7%); }
+.ui-push-button:active:not(:disabled) { background: color-mix(in srgb, var(--ui-surface), var(--ui-fg) 14%); }
+.ui-push-button.ui-default { background: var(--ui-accent); border-color: var(--ui-accent); color: var(--ui-accent-fg); }
+.ui-push-button.ui-default:hover:not(:disabled) { background: color-mix(in srgb, var(--ui-accent), var(--ui-fg) 12%); }
+:is(.ui-push-button, .ui-text-input-pane, .ui-multi-line-text-input-pane, .ui-option-pane):disabled { opacity: .5; cursor: default; }
+.ui-text-input-pane { padding: 0 8px; width: 100%; }
+.ui-multi-line-text-input-pane { padding: 6px 8px; width: 100%; resize: vertical; line-height: inherit; }
+:is(.ui-text-input-pane, .ui-multi-line-text-input-pane)::placeholder { color: var(--ui-muted); }
+.ui-option-pane { padding: 0 6px; }
+.ui-interface :focus-visible, .ui-overlay :focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+
+.ui-check-button { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.ui-check-button > input { margin: 0; width: 15px; height: 15px; accent-color: var(--ui-accent); }
+.ui-button-panel { display: flex; gap: 4px 14px; }
+.ui-button-panel.ui-column { flex-direction: column; }
+.ui-slider { accent-color: var(--ui-accent); margin: 0; }
+.ui-progress-bar { accent-color: var(--ui-accent); height: 8px; }
+
+/* ---- lists, tables and trees ---- */
+
+.ui-list-panel, .ui-tree-view, .ui-multi-column-list-panel {
+  margin: 0; padding: 3px; list-style: none; overflow: auto;
+  background: var(--ui-surface); border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
+}
+.ui-tree-view ul { margin: 0; padding: 0; list-style: none; }
+.ui-item { padding: 4px 8px; border-radius: calc(var(--ui-radius) - 2px); cursor: default; user-select: none; }
+.ui-list-panel > .ui-item, .ui-tree-view .ui-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-item:hover { background: var(--ui-hover); }
+.ui-item.selected { background: var(--ui-selected); }
+:is(.ui-list-panel, .ui-tree-view, .ui-multi-column-list-panel):focus-visible .ui-item.selected {
+  background: var(--ui-accent); color: var(--ui-accent-fg);
+}
+
+.ui-tree-view .ui-item { display: flex; align-items: center; gap: 2px; }
+.ui-twisty { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ui-muted); }
+.ui-twisty::before { content: ""; border: 4px solid transparent; border-left: 6px solid currentColor; margin-left: 4px; transition: transform .12s; }
+.ui-twisty.ui-open::before { transform: rotate(90deg) translate(2px, 2px); }
+.ui-twisty.ui-leaf::before { display: none; }
+.ui-item-text { overflow: hidden; text-overflow: ellipsis; }
+
+.ui-multi-column-list-panel { padding: 0; }
+.ui-multi-column-list-panel table { border-collapse: collapse; width: 100%; }
+.ui-multi-column-list-panel th {
+  position: sticky; top: 0; background: var(--ui-surface); color: var(--ui-muted);
+  font-weight: 500; font-size: 12px; padding: 6px 10px; border-bottom: 1px solid var(--ui-line);
+}
+.ui-multi-column-list-panel td { padding: 5px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ui-line), transparent 55%); }
+.ui-multi-column-list-panel .ui-item { border-radius: 0; }
+.ui-adjust-left { text-align: left; }
+.ui-adjust-right { text-align: right; font-variant-numeric: tabular-nums; }
+.ui-adjust-center { text-align: center; }
+
+.ui-application-pane { overflow: auto; }
+
+/* ---- commands: tool bars and menus ---- */
+
+.ui-toolbar { display: flex; align-items: center; gap: 4px; flex: none !important; }
+.ui-toolbar > .ui-push-button { border-color: transparent; background: none; }
+.ui-toolbar > .ui-push-button:hover:not(:disabled) { background: var(--ui-hover); }
+.ui-toolbar-separator { width: 1px; height: 18px; margin: 0 4px; background: var(--ui-line); }
+
+.ui-menu-bar { display: flex; flex: none; padding: 2px 4px; border-bottom: 1px solid var(--ui-line); }
+.ui-menu-bar-item { position: relative; }
+.ui-menu-bar-item > .ui-menu { position: absolute; left: 0; top: 100%; z-index: 30; }
+.ui-menu-title {
+  font: inherit; color: inherit; background: none; border: 0; padding: 3px 9px; cursor: default;
+  border-radius: calc(var(--ui-radius) - 2px); position: relative; z-index: 30;
+}
+.ui-menu-title:hover, .ui-menu-title.ui-open { background: var(--ui-hover); }
+.ui-menu-backdrop { position: fixed; inset: 0; z-index: 20; }
+.ui-menu {
+  margin: 0; padding: 4px; list-style: none; min-width: 12rem; width: max-content; max-width: 22rem;
+  background: var(--ui-surface); color: var(--ui-fg); font: var(--ui-font);
+  border: 1px solid var(--ui-line); border-radius: var(--ui-radius); box-shadow: var(--ui-shadow);
+}
+.ui-menu-item {
+  display: flex; justify-content: space-between; gap: 24px; padding: 5px 10px;
+  border-radius: calc(var(--ui-radius) - 2px); cursor: default; user-select: none; white-space: nowrap;
+}
+.ui-menu-item:hover:not(.disabled) { background: var(--ui-accent); color: var(--ui-accent-fg); }
+.ui-menu-item.disabled { color: var(--ui-muted); opacity: .6; }
+.ui-menu-key { opacity: .65; font-size: 12px; }
+.ui-menu-separator { height: 1px; margin: 4px 6px; background: var(--ui-line); }
+
+/* ---- the overlay: popup menus, the prompt of ACCEPT, dialogs ---- */
+
+.ui-overlay { font: var(--ui-font); color: var(--ui-fg); }
+.ui-popup-menu { position: fixed; z-index: 40; }
+.ui-popup > .ui-menu-backdrop { z-index: 39; }
+
+.ui-accept-bar {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 35;
+  display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; max-width: calc(100vw - 32px);
+  background: var(--ui-surface); border: 1px solid var(--ui-accent); border-radius: 999px;
+  box-shadow: var(--ui-shadow);
+}
+.ui-accept-bar > .ui-push-button { border-radius: 999px; }
+
+.ui-presentation.ui-acceptable {
+  outline: 2px solid var(--ui-accent); outline-offset: -2px; cursor: pointer;
+  background: color-mix(in srgb, var(--ui-accent), transparent 86%);
+}
+.ui-presentation.ui-acceptable:hover { background: color-mix(in srgb, var(--ui-accent), transparent 68%); }
+span.ui-presentation { border-radius: 4px; }
+
+.ui-dialog {
+  padding: 0; border: 1px solid var(--ui-line); border-radius: calc(var(--ui-radius) + 4px);
+  background: var(--ui-bg); color: var(--ui-fg); box-shadow: var(--ui-shadow);
+  min-width: min(340px, calc(100vw - 32px)); max-width: min(560px, calc(100vw - 32px));
+}
+.ui-dialog::backdrop { background: rgba(0, 0, 0, .32); }
+.ui-dialog-title { padding: 14px 18px 0; font-weight: 600; font-size: 14px; }
+.ui-dialog > .ui-interface { background: none; height: auto; }
+/* a dialog is as large as what it shows */
+.ui-dialog .ui-pane { flex-basis: auto !important; }
+.ui-dialog > .ui-interface > .ui-pane { padding: 16px 18px; gap: 12px; }
+.ui-dialog-buttons { justify-content: flex-end; flex: none; margin-top: 4px; }
+.ui-dialog-buttons > .ui-push-button { min-width: 76px; }
+
+@media (prefers-reduced-motion: reduce) { .ui-twisty::before { transition: none; } }

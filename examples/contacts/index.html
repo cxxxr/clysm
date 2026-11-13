@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>アドレス帳</title>
+<!-- the look of the panes; the custom properties below adapt it -->
+<link rel="stylesheet" href="ui.css">
+<style>
+  :root { --ui-accent: light-dark(#0f766e, #5eead4); --ui-accent-fg: light-dark(#ffffff, #06231f);
+          --ui-selected: light-dark(#d5efec, #17403c); }
+  html, body, #app { height: 100%; margin: 0; }
+  body { background: var(--ui-bg); }
+  #status { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ui-muted);
+            font: var(--ui-font); }
+  /* what is specific to this application */
+  .nobody { color: var(--ui-muted); margin: auto; }
+  .summary { padding: 4px 8px; }
+  .summary h3 { font-size: 13px; margin: 14px 0 6px; }
+  .summary p, .summary ul { margin: 0; }
+  .summary span.ui-presentation { display: inline-block; padding: 2px 10px; margin: 0 4px 4px 0; cursor: pointer;
+                                  border: 1px solid var(--ui-line); border-radius: 999px; background: var(--ui-surface); }
+  .summary .hint { color: var(--ui-muted); margin-top: 18px; max-width: 46em; }
+</style>
+</head>
+<body>
+<div id="status">読み込み中…</div>
+<!-- contacts.lisp puts the interface here -->
+<div id="app"></div>
+<script type="module">
+  import { loadClysm } from './clysm.mjs';
+  const status = document.getElementById('status');
+  try {
+    const bytes = await (await fetch('contacts.wasm')).arrayBuffer();
+    // Lisp output (PRINT, errors) goes to the console
+    let io = { write: (text) => console.log(text), readLine: () => null };
+    const lisp = await loadClysm(bytes, (text, fd) => io.write(text, fd), { readLine: () => io.readLine() });
+    status.remove();
+    // the development build (build.sh --dev) has a REPL
+    if (globalThis.clysmUiRefresh) {
+      const { dockRepl } = await import('./repl.mjs');
+      io = dockRepl({ afterEval: globalThis.clysmUiRefresh });
+      io.info('The application runs in this image: (in-package :contacts), then try\n' +
+              '  (setf (button-text (find-pane *app* \'favorite-field)) "Favorite")\n');
+      io.start(lisp, { focus: false });
+    }
+  } catch (e) {
+    status.textContent = 'エラー: ' + e.message;
+    throw e;
+  }
+</script>
+</body>
+</html>

@@ -16,7 +16,9 @@
   ((log :initform nil :accessor %backend-log)
    ;; NIL, or a function of an error and its restarts that returns the
    ;; restart the "user" chooses (NIL: abort)
-   (chooser :initform nil :initarg :chooser :accessor backend-chooser)))
+   (chooser :initform nil :initarg :chooser :accessor backend-chooser)
+   (overlay :initform nil)
+   (global-listeners :initform nil :accessor backend-global-listeners)))
 
 (defstruct snode tag text props listeners children parent)
 
@@ -90,6 +92,48 @@
 (defmethod request-flush ((backend sexp-backend))
   ;; tests call FLUSH (FIRE does)
   nil)
+
+;;; for the panes: an event is a property list, like (:key "Enter" :value "text")
+
+(defun event-keyword (name)
+  (intern (string-upcase name) "KEYWORD"))
+
+(defmethod event-get ((backend sexp-backend) event name)
+  (and (listp event) (getf event (event-keyword name))))
+
+(defmethod event-target-get ((backend sexp-backend) event name)
+  (and (listp event) (getf event (event-keyword name))))
+
+(defmethod stop-event ((backend sexp-backend) event)
+  nil)
+
+(defmethod node-call ((backend sexp-backend) node method &rest arguments)
+  (apply #'note backend :call (label node) method arguments))
+
+(defmethod overlay-container ((backend sexp-backend))
+  (or (slot-value backend 'overlay)
+      (setf (slot-value backend 'overlay) (make-snode :tag "overlay"))))
+
+(defmethod set-global-listener ((backend sexp-backend) event function)
+  (push (cons event function) (backend-global-listeners backend)))
+
+(defmethod set-title ((backend sexp-backend) string)
+  (note backend :title string))
+
+(defmethod previous-sibling-size ((backend sexp-backend) event)
+  (values (getf event :width) (getf event :height)))
+
+(defun fire-global (backend event &rest arguments)
+  "Call the global listeners of BACKEND for EVENT, then bring the display up to date."
+  (loop for (name . function) in (backend-global-listeners backend)
+        do (when (string= name event) (apply function arguments)))
+  (flush))
+
+(defun node-text (node)
+  "The text under NODE of the display."
+  (if (snode-text node)
+      (snode-text node)
+      (apply #'concatenate 'string (mapcar #'node-text (snode-children node)))))
 
 (defmethod choose-restart ((backend sexp-backend) condition restarts)
   (note backend :error (princ-to-string condition) (mapcar #'princ-to-string restarts))

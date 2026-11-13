@@ -41,6 +41,10 @@
                          (let ((name (string-downcase (symbol-name key))))
                            (cond ((eq key :class) (cons nil (js:to-js "className")))
                                  ((eq key :for) (cons nil (js:to-js "htmlFor")))
+                                 ((eq key :tabindex) (cons nil (js:to-js "tabIndex")))
+                                 ((eq key :readonly) (cons nil (js:to-js "readOnly")))
+                                 ((eq key :colspan) (cons nil (js:to-js "colSpan")))
+                                 ((eq key :role) (cons t (js:to-js "role")))
                                  ((or (eq key :style) (find #\- name)) (cons t (js:to-js name)))
                                  (t (cons nil (js:to-js name)))))))))
     (values (car entry) (cdr entry))))
@@ -106,6 +110,37 @@
       (or (js:call (backend-document backend) +query-selector+ container)
           (error "UI: no element matches ~S" container))
       container))
+
+;;; events and nodes, for the panes
+
+(defmethod event-get ((backend dom-backend) event name)
+  (js:get event name))
+
+(defmethod event-target-get ((backend dom-backend) event name)
+  (js:get (js:get event "target") name))
+
+(defmethod stop-event ((backend dom-backend) event)
+  (js:call event "preventDefault")
+  (js:call event "stopPropagation"))
+
+(defmethod node-call ((backend dom-backend) node method &rest arguments)
+  (apply #'js:call node method arguments))
+
+(defmethod overlay-container ((backend dom-backend))
+  (js:get (backend-document backend) "body"))
+
+(defmethod set-global-listener ((backend dom-backend) event function)
+  (js:call (backend-document backend) +add-event-listener+ event
+           (lambda (event) (funcall function event) nil)))
+
+(defmethod set-title ((backend dom-backend) string)
+  (js:set (backend-document backend) "title" string))
+
+(defmethod previous-sibling-size ((backend dom-backend) event)
+  (let* ((target (js:get event "target"))
+         (previous (js:get target "previousElementSibling")))
+    (js:call target "setPointerCapture" (js:get event "pointerId"))
+    (values (js:get previous "offsetWidth") (js:get previous "offsetHeight"))))
 
 ;;; errors: the browser's dialogs
 
