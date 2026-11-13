@@ -168,7 +168,8 @@
     (declare (fixnum fill cap need))
     (if (<= (+ fill need) cap)
         buf
-        (let ((new (%make-string (max (+ fill need) (* 2 cap)) #\Space)))
+        ;; four times the size while the buffer is small: fewer copies
+        (let ((new (%make-string (max (+ fill need) (if (< cap 65536) (* 4 cap) (* 2 cap))) #\Space)))
           (%string-copy new 0 buf 0 fill)
           (setf (stream-buffer s) new)
           new))))
@@ -493,8 +494,33 @@
             (progn (%stream-write-simple-string s string 0 (%string-length string)) string))
         (write-string string stream))))
 
+(defun %write-string-4 (string stream start end)
+  "WRITE-STRING with its keyword arguments as positional ones."
+  (unless (stringp string) (%type-error string 'string))
+  (let ((s (%output-stream stream)) (end (%check-seq-bounds string start end)))
+    (cond ((%simple-string-p string) (%stream-write-simple-string s string start end))
+          ((eq (stream-kind s) :gray) (stream-write-string s string start end))
+          ((eq (stream-kind s) :broadcast)
+           (dolist (x (stream-streams s)) (%write-string-4 string x start end)))
+          (t (do ((i start (+ i 1))) ((>= i end))
+               (%stream-write-char s (char string i)))))
+    string))
+
 (define-compiler-macro write-string (&whole form string &optional (stream nil streamp) &rest keys)
-  (if keys form `(%write-string-2 ,string ,(if streamp stream nil))))
+  (cond ((null keys) `(%write-string-2 ,string ,(if streamp stream nil)))
+        ;; literal :START and :END: no keyword list
+        ((and (member (length keys) '(2 4))
+              (member (car keys) '(:start :end))
+              (or (null (cddr keys))
+                  (and (member (caddr keys) '(:start :end)) (not (eq (car keys) (caddr keys))))))
+         (let* ((str (gensym "STRING")) (st (gensym "STREAM")) (a (gensym "A")) (b (gensym "B"))
+                (first-start (eq (car keys) :start)))
+           `(let* ((,str ,string) (,st ,stream) (,a ,(cadr keys))
+                   ,@(when (cddr keys) `((,b ,(cadddr keys)))))
+              (%write-string-4 ,str ,st
+                               ,(if first-start a (if (cddr keys) b 0))
+                               ,(if first-start (if (cddr keys) b nil) a)))))
+        (t form)))
 
 (defun %stream-note-string-column (s string start end)
   "Update the column of S after the characters START..END of STRING were written."
@@ -556,15 +582,7 @@
   nil)
 
 (defun write-string (string &optional stream &key (start 0) end)
-  (unless (stringp string) (%type-error string 'string))
-  (let ((s (%output-stream stream)) (end (%check-seq-bounds string start end)))
-    (cond ((%simple-string-p string) (%stream-write-simple-string s string start end))
-          ((eq (stream-kind s) :gray) (stream-write-string s string start end))
-          ((eq (stream-kind s) :broadcast)
-           (dolist (x (stream-streams s)) (write-string string x :start start :end end)))
-          (t (do ((i start (+ i 1))) ((>= i end))
-               (%stream-write-char s (char string i)))))
-    string))
+  (%write-string-4 string stream start end))
 
 (defun write-line (string &optional stream &key (start 0) end)
   (write-string string stream :start start :end end)

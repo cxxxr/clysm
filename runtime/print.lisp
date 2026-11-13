@@ -103,15 +103,25 @@ temporaries-bindings special-bindings stream-form), else NIL."
                (output-object ,o (%output-stream ,stream)))
              ,o)))))
 
+;;; Fixnums print the same with and without escapes, and are not subject to
+;;; *print-circle*; they go straight to the integer printer unless the user
+;;; has put entries in the pprint dispatch table.  So do simple strings with
+;;; PRINC, when *print-circle* is off.
 (defun prin1 (object &optional stream)
-  (if *print-escape*
-      (output-object object (%output-stream stream))
-      (let ((*print-escape* t)) (output-object object (%output-stream stream))))
+  (cond ((and (fixnump object) (not (and *print-pretty* (%ppd-user-entries-p))))
+         (%write-integer object (%output-stream stream)))
+        (*print-escape* (output-object object (%output-stream stream)))
+        (t (let ((*print-escape* t)) (output-object object (%output-stream stream)))))
   object)
 (defun princ (object &optional stream)
-  (if (or *print-escape* *print-readably*)
-      (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream)))
-      (output-object object (%output-stream stream)))
+  (cond ((and (fixnump object) (not (and *print-pretty* (%ppd-user-entries-p))))
+         (%write-integer object (%output-stream stream)))
+        ((and (%simple-string-p object) (not *print-circle*)
+              (not (and *print-pretty* (%ppd-user-entries-p))))
+         (%stream-write-simple-string-whole (%output-stream stream) object))
+        ((or *print-escape* *print-readably*)
+         (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream))))
+        (t (output-object object (%output-stream stream))))
   object)
 (defun print (object &optional stream)
   (let ((s (%output-stream stream)))
@@ -319,13 +329,26 @@ string BUF, ending before index I; returns the index of the first digit."
           (%set-schar buf i (code-char (+ 48 (- n (* q 10)))))
           (when (eql q 0) (return i))
           (setq n q)))
-      (loop
-        (let* ((q (%fxtruncate n base)) (d (- n (* q base))))
-          (declare (fixnum q d))
-          (setq i (- i 1))
-          (%set-schar buf i (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
-          (when (eql q 0) (return i))
-          (setq n q)))))
+      (macrolet ((bits-loop (shift)
+                   ;; a power of two: the digits are groups of SHIFT bits
+                   `(loop
+                      (let ((d (logand n ,(- (ash 1 shift) 1))))
+                        (declare (fixnum d))
+                        (setq i (- i 1))
+                        (%set-schar buf i (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
+                        (setq n (ash n ,(- shift)))
+                        (when (eql n 0) (return i))))))
+        (case base
+          (2 (bits-loop 1))
+          (8 (bits-loop 3))
+          (16 (bits-loop 4))
+          (t (loop
+               (let* ((q (%fxtruncate n base)) (d (- n (* q base))))
+                 (declare (fixnum q d))
+                 (setq i (- i 1))
+                 (%set-schar buf i (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
+                 (when (eql q 0) (return i))
+                 (setq n q))))))))
 
 (defun %fixnum-digits-padded (n buf i width)
   "Like %FIXNUM-DIGITS in base 10, with leading zeros up to WIDTH digits."
