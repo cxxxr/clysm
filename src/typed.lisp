@@ -120,7 +120,7 @@ comparisons need)."
                      (let ((tmp (new-local :f64)))
                        `(,@(f64-arg-code x) (:local.set ,tmp) ,@(cg-effect proto) (:local.get ,tmp)))
                      (f64-arg-code x)))))
-      (t nil))))
+      (t (numeric-f64-op-code node)))))
 
 ;;; ------------------------------------------------------------
 ;;; i32 (fixnums)
@@ -190,7 +190,7 @@ comparisons need)."
                               (:local.get ,r) (:local.get ,y) :i32.xor (:i32.const 0) :i32.lt_s
                               (:local.get ,r) (:i32.const 0) :i32.ne :i32.and
                               :i32.sub)))))))))   ; q - 1 when the remainder has the wrong sign
-        (t nil)))))
+        (t (numeric-i32-op-code node))))))
 
 ;;; ------------------------------------------------------------
 ;;; eqref results and tests
@@ -219,7 +219,7 @@ comparisons need)."
                  (if (>= c 0)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,c) :i64.shl)
                      `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,(min 63 (- c))) :i64.shr_s)))))
-        (t nil)))))
+        (t (numeric-i64-op-code node))))))
 
 (defun typed-cg (node mv)
   "Code for a :PRIM or :CALL node using its types, or NIL."
@@ -229,6 +229,7 @@ comparisons need)."
     (let ((code
             (cond ((and (eq (car node) :prim) (eq (prim-kind (second node)) :test))
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
+                  ((numeric-typed-code node mv))
                   ((member name '(clysm-sys::%aref1 svref clysm-sys::%aset1 clysm-sys::%svset char schar))
                    (typed-ref-code node))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
@@ -423,3 +424,133 @@ fixnum) whose remainder is left in an eqref local; returns (values code local)."
 
 (defun lvar-rep-of (node)
   (and (eq (car node) :lref) (unboxed-local-p (second node)) (lvar-rep (second node))))
+
+;;; ------------------------------------------------------------
+;;; Numeric library: typed code for the division functions and the bit
+;;; operations (called from F64-OP-CODE, I32-OP-CODE, I64-OP-CODE, TYPED-CG and
+;;; CG-MVBIND; the result types are in the "Numeric library" part of types.lisp)
+;;; ------------------------------------------------------------
+
+(defparameter *divmod-modes*
+  '((truncate . 0) (floor . 1) (ceiling . 2) (round . 3)
+    (ftruncate . 0) (ffloor . 1) (fceiling . 2) (fround . 3) (rem . 0) (mod . 1)))
+
+(defun float-divmod-node-p (node)
+  (and (member (car node) '(:call :prim))
+       (assoc (node-op-name node) *divmod-modes*)
+       (float-divmod-types-p (mapcar #'node-ty (cddr node)))))
+
+(defun typed-float-divmod (node want &optional need-rem)
+  "Division of doubles (or a double and a 32-bit integer) inline, by the
+algorithm of the helper :divmod, which is called when a value is not finite
+or the divisor is zero.  WANT: :quotient (the integer quotient is left on the
+stack), :fquotient (the quotient as an f64) or :remainder (nothing is left).
+Returns the code and the f64 local that holds the remainder (it is not
+computed for a division by 1 unless NEED-REM)."
+  (let* ((args (cddr node)) (mode (cdr (assoc (node-op-name node) *divmod-modes*)))
+         (da (new-local :f64)) (db (new-local :f64)) (q (new-local :f64)) (r (new-local :f64))
+         (tmp (new-local :f64)) (adj (new-local :i32)) (w (new-local :i64))
+         (slow (gensym "SLOW")) (done (gensym "DIV"))
+         (unit (null (second args))))
+    (if (and unit (not need-rem) (not (eq want :remainder)))
+        ;; one argument, the quotient only: the rounding instruction (the
+        ;; remainder of a division by 1 is exact, so truncating and
+        ;; adjusting by it gives the same integer)
+        (let ((op (ecase mode (0 :f64.trunc) (1 :f64.floor) (2 :f64.ceil) (3 :f64.nearest))))
+          (ecase want
+            (:quotient
+             `(,@(f64-arg-code (first args)) ,op (:local.tee ,q) :f64.abs (:f64.const 536870912d0) :f64.lt
+               (:if nil :eqref
+                    ((:local.get ,q) :i32.trunc_sat_f64_s :ref.i31)
+                    ;; (signals when it is not finite)
+                    ((:local.get ,q) (:call :f64-int)))))
+            (:fquotient
+             `(,@(f64-arg-code (first args)) (:local.tee ,da) ,op (:f64.const 0) :f64.add (:local.tee ,q)
+               (:local.get ,q) :f64.sub (:f64.const 0) :f64.ne
+               (:if nil :f64
+                    ((:local.get ,da) (:struct.new :double) ,@(fixnum-code 1) (:i32.const ,mode) (:call :divmod)
+                     (:call :to-f64))
+                    ((:local.get ,q)))))))
+        (values
+         `(,@(f64-arg-code (first args)) (:local.set ,da)
+           ,@(if unit '((:f64.const 1d0)) (f64-arg-code (second args))) (:local.set ,db)
+           (:block ,done ,(ecase want (:quotient :eqref) (:fquotient :f64) (:remainder nil))
+             (:block ,slow nil
+               ,@(float-divmod-code mode slow da db q r adj nil tmp unit)
+               ,@(ecase want
+                   (:quotient
+                    `((:local.get ,q) :f64.abs (:f64.const 536870910d0) :f64.lt
+                      (:if nil :eqref
+                           ((:local.get ,q) :i32.trunc_sat_f64_s (:local.get ,adj) :i32.add :ref.i31)
+                           ((:local.get ,q) :f64.abs (:f64.const 4.611686018427388d18) :f64.lt :i32.eqz (:br_if ,slow)
+                            (:local.get ,q) :i64.trunc_sat_f64_s (:local.get ,adj) :i64.extend_i32_s :i64.add
+                            (:call :i64-int)))))
+                   (:fquotient `((:local.get ,q) (:local.get ,adj) :f64.convert_i32_s :f64.add))
+                   (:remainder nil))
+               (:br ,done))
+             ;; the helper decides (and signals)
+             (:local.get ,da) (:struct.new :double) (:local.get ,db) (:struct.new :double)
+             (:i32.const ,mode) (:call :divmod)
+             ,@(ecase want
+                 (:quotient nil)
+                 (:fquotient '((:call :to-f64)))
+                 (:remainder '(:drop)))
+             (:global.get :mv-buf) (:i32.const 0) (:array.get :vector) (:ref.cast :double) (:struct.get :double 0)
+             (:local.set ,r)))
+         r))))
+
+(defun numeric-typed-code (node mv)
+  "Code for a :PRIM or :CALL node of a numeric function (an eqref), or NIL."
+  (let ((name (node-op-name node)))
+    (cond ((and (not mv) (member name '(floor truncate ceiling round)) (float-divmod-node-p node))
+           (values (typed-float-divmod node :quotient)))
+          (t nil))))
+
+(defun numeric-f64-op-code (node)
+  "f64 code for a numeric function whose result is a double, or NIL."
+  (let ((name (node-op-name node)))
+    (cond ((and (member name '(mod rem)) (float-divmod-node-p node))
+           (multiple-value-bind (code r) (typed-float-divmod node :remainder)
+             `(,@code (:local.get ,r))))
+          ((and (member name '(ffloor fceiling ftruncate fround)) (float-divmod-node-p node))
+           (values (typed-float-divmod node :fquotient)))
+          (t nil))))
+
+(defun numeric-i32-op-code (node)
+  "i32 code for a numeric function whose result is within 32 bits, or NIL."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)))
+    (case name
+      ((integer-length logcount)
+       ;; of X when it is not negative, else of (LOGNOT X)
+       (cond ((i32-arg-p a)
+              (let ((x (new-local :i32)))
+                `(,@(cg-rep a :i32) (:local.tee ,x) (:local.get ,x) (:i32.const 31) :i32.shr_s :i32.xor
+                  ,@(if (eq name 'logcount)
+                        '(:i32.popcnt)
+                        (let ((n (new-local :i32)))
+                          `(:i32.clz (:local.set ,n) (:i32.const 32) (:local.get ,n) :i32.sub))))))
+             ((i64-arg-p a)
+              (let ((x (new-local :i64)))
+                `(,@(cg-rep a :i64) (:local.tee ,x) (:local.get ,x) (:i64.const 63) :i64.shr_s :i64.xor
+                  ,@(if (eq name 'logcount)
+                        '(:i64.popcnt :i32.wrap_i64)
+                        (let ((n (new-local :i32)))
+                          `(:i64.clz :i32.wrap_i64 (:local.set ,n) (:i32.const 64) (:local.get ,n) :i32.sub))))))))
+      (t nil))))
+
+(defun numeric-i64-op-code (node)
+  "i64 code for a numeric function whose result is within 64 bits, or NIL."
+  (declare (ignorable node))
+  nil)
+
+(defun numeric-divmod-code (vnode)
+  "For MULTIPLE-VALUE-BIND of a division: code leaving the quotient (an
+eqref), the local of the remainder and its representation; or NIL."
+  (when (float-divmod-node-p vnode)
+    (let ((name (node-op-name vnode)))
+      (cond ((member name '(floor truncate ceiling round))
+             (multiple-value-bind (code r) (typed-float-divmod vnode :quotient t)
+               (values code r :f64)))
+            ((member name '(ffloor fceiling ftruncate fround))
+             (multiple-value-bind (code r) (typed-float-divmod vnode :fquotient t)
+               (values `(,@code (:struct.new :double)) r :f64)))))))

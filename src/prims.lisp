@@ -2212,12 +2212,191 @@ anything else branches to SLOW.  Uses the i32 local V."
          (:local.get h) :return))
   '(:local.get 0) :extern.convert_any '(:call :host-identity-hash))
 
-(defhelper :to-f64 :e-d ()
+(defhelper :to-f64 :e-d ((v :i32) (w :i64))
   `(:block notd :eqref
      (:local.get 0) (:br_on_cast_fail notd :eqref (:ref :double)) (:struct.get :double 0) :return)
   :drop
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
+                 (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                 (:if nil nil ((:local.get v) :f64.convert_i32_s :return))))
+  '(:local.get 0) '(:ref.test :single)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 :return))
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz :i32.eqz
+                 (:if nil nil ((:local.get w) :f64.convert_i64_s :return))))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%to-double)) '(:call (:callsym 1))
   '(:ref.cast :double) '(:struct.get :double 0))
+
+;;; FLOAT: (float x) of a float or a fixnum, (float x prototype)
+(defhelper :float1 :e-e ((v :i32))
+  '(:local.get 0) '(:ref.test :double) '(:local.get 0) '(:ref.test :single) :i32.or
+  '(:if nil nil ((:local.get 0) :return))
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
+                 (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                 (:if nil nil ((:local.get v) :f32.convert_i32_s (:struct.new :single) :return))))
+  '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%to-single)) '(:call (:callsym 1)))
+(defhelper :float2 :ee-e ((v :i32))
+  '(:local.get 1) '(:ref.test :double)
+  '(:if nil nil ((:local.get 0) (:ref.test :double) (:if nil nil ((:local.get 0) :return))
+                 (:local.get 0) (:call :to-f64) (:struct.new :double) :return))
+  '(:local.get 1) '(:ref.test :single)
+  `(:if nil nil ((:local.get 0) (:ref.test :single) (:if nil nil ((:local.get 0) :return))
+                 (:local.get 0) (:ref.test :i31)
+                 (:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
+                               (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                               (:if nil nil ((:local.get v) :f32.convert_i32_s (:struct.new :single) :return))))))
+  '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%float2)) '(:call (:callsym 2)))
+(defprim float (x) :value `(,@x (:call :float1)))
+(defprim float (x proto) :value `(,@x ,@proto (:call :float2)))
+
+;;; an integral f64 as an integer
+(defhelper :f64-int :d-e ()
+  '(:local.get 0) :f64.abs '(:f64.const 9.223372036854775d18) :f64.lt
+  '(:if nil nil ((:local.get 0) :i64.trunc_sat_f64_s (:call :i64-int) :return))
+  '(:local.get 0) '(:struct.new :double)
+  `(:global.get ,(sym-global 'clysm-sys::%float-to-integer-big)) '(:call (:callsym 1)))
+(defprim clysm-sys::%double-to-integer (d) :value `(,@(f64-code d) :f64.trunc (:call :f64-int)))
+
+;;; ------------------------------------------------------------
+;;; TRUNCATE / FLOOR / CEILING / ROUND
+;;; ------------------------------------------------------------
+;;; Modes: 0 truncate, 1 floor, 2 ceiling, 3 round.  The helper :divmod
+;;; returns the quotient and leaves the remainder as the second value.  It
+;;; computes fixnums, integers within 64 bits, and single / double floats
+;;; (with integers up to 2^53) itself, by the algorithm of the Lisp
+;;; functions (truncate, then adjust by the remainder); everything else, and
+;;; whatever would signal, goes to %DIVMOD-SLOW.
+
+(defun ity (ty name)
+  (intern (concatenate 'string (symbol-name ty) "." (symbol-name name)) :keyword))
+
+(defun int-divmod-adjust-code (ty mode x y q r tmp tmp2)
+  "Adjust the truncated quotient Q and remainder R of X / Y (locals of type TY, :i32 or :i64) for MODE."
+  (flet ((o (n) (ity ty n)) (c (n) `(,(ity ty :const) ,n)))
+    (let ((up `((:local.get ,q) ,(c 1) ,(o :add) (:local.set ,q)
+                (:local.get ,r) (:local.get ,y) ,(o :sub) (:local.set ,r)))
+          (down `((:local.get ,q) ,(c 1) ,(o :sub) (:local.set ,q)
+                  (:local.get ,r) (:local.get ,y) ,(o :add) (:local.set ,r))))
+      (ecase mode
+        (0 nil)
+        (1 `((:local.get ,r) ,(o :eqz) :i32.eqz
+             (:local.get ,r) (:local.get ,y) ,(o :xor) ,(c 0) ,(o :lt_s) :i32.and (:if nil nil ,down)))
+        (2 `((:local.get ,r) ,(o :eqz) :i32.eqz
+             (:local.get ,r) (:local.get ,y) ,(o :xor) ,(c 0) ,(o :ge_s) :i32.and (:if nil nil ,up)))
+        (3 `(;; |r| against |y| - |r| (unsigned): twice the remainder against the divisor
+             (:local.get ,r) ,(c 0) ,(o :lt_s)
+             (:if nil ,ty (,(c 0) (:local.get ,r) ,(o :sub)) ((:local.get ,r))) (:local.set ,tmp)
+             (:local.get ,y) ,(c 0) ,(o :lt_s)
+             (:if nil ,ty (,(c 0) (:local.get ,y) ,(o :sub)) ((:local.get ,y)))
+             (:local.get ,tmp) ,(o :sub) (:local.set ,tmp2)
+             (:local.get ,tmp) (:local.get ,tmp2) ,(o :gt_u)
+             (:local.get ,tmp) (:local.get ,tmp2) ,(o :eq)
+             (:local.get ,q) ,@(when (eq ty :i64) '(:i32.wrap_i64)) (:i32.const 1) :i32.and :i32.and :i32.or
+             (:if nil nil ((:local.get ,x) (:local.get ,y) ,(o :xor) ,(c 0) ,(o :ge_s) (:if nil nil ,up ,down)))))))))
+
+(defun float-divmod-code (mode slow da db q r adj single tmp &optional unit)
+  "From the f64 locals DA and DB: the truncated quotient in Q (integral), the
+adjustment of the quotient for MODE in the i32 local ADJ (-1, 0 or 1) and the
+remainder in R.  SINGLE (an i32 local, or NIL when the result is a double):
+when set, every step is rounded to single precision.  Branches to SLOW when
+the divisor is zero or a value is not finite.  UNIT: DB is known to be 1 (the
+division and the product are the identity)."
+  (flet ((rnd (l) (when single
+                    `((:local.get ,single)
+                      (:if nil nil ((:local.get ,l) :f32.demote_f64 :f64.promote_f32 (:local.set ,l)))))))
+    (let ((up `((:i32.const 1) (:local.set ,adj)
+                (:local.get ,r) (:local.get ,db) :f64.sub (:local.set ,r) ,@(rnd r)))
+          (down `((:i32.const -1) (:local.set ,adj)
+                  (:local.get ,r) (:local.get ,db) :f64.add (:local.set ,r) ,@(rnd r))))
+      `(;; (+ 0: the quotient -0.0 is the integer 0)
+        (:local.get ,da) ,@(unless unit `((:local.get ,db) :f64.div)) :f64.trunc (:f64.const 0) :f64.add (:local.set ,q)
+        ;; remainder: number - quotient * divisor (not finite when the
+        ;; quotient is not: a zero divisor, an infinity, a NaN)
+        (:local.get ,q) (:local.set ,tmp) ,@(rnd tmp)
+        ,@(unless unit `((:local.get ,tmp) (:local.get ,db) :f64.mul (:local.set ,tmp) ,@(rnd tmp)))
+        (:local.get ,da) (:local.get ,tmp) :f64.sub (:local.set ,r) ,@(rnd r)
+        (:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,slow)
+        (:i32.const 0) (:local.set ,adj)
+        ,@(ecase mode
+            (0 nil)
+            (1 `((:local.get ,r) (:f64.const 0) :f64.ne
+                 (:local.get ,r) (:f64.const 0) :f64.gt (:local.get ,r) (:f64.const 0) :f64.lt
+                 (:local.get ,db) (:f64.const 0) :f64.lt :select :i32.and
+                 (:if nil nil ,down)))
+            (2 `((:local.get ,r) (:f64.const 0) :f64.ne
+                 (:local.get ,r) (:f64.const 0) :f64.lt (:local.get ,r) (:f64.const 0) :f64.gt
+                 (:local.get ,db) (:f64.const 0) :f64.lt :select :i32.and
+                 (:if nil nil ,up)))
+            (3 `((:local.get ,r) (:f64.const 2d0) :f64.mul (:local.set ,tmp) ,@(rnd tmp)
+                 (:local.get ,tmp) :f64.abs (:local.tee ,tmp) (:local.get ,tmp) :f64.sub (:f64.const 0) :f64.ne
+                 (:br_if ,slow)
+                 (:local.get ,tmp) (:local.get ,db) :f64.abs :f64.gt
+                 (:local.get ,tmp) (:local.get ,db) :f64.abs :f64.eq
+                 (:local.get ,q) :f64.abs (:f64.const 9007199254740992d0) :f64.lt :i32.and
+                 (:local.get ,q) :i64.trunc_sat_f64_s :i32.wrap_i64 (:i32.const 1) :i32.and :i32.and :i32.or
+                 (:if nil nil ((:local.get ,da) (:f64.const 0) :f64.lt (:local.get ,db) (:f64.const 0) :f64.lt :i32.eq
+                               (:if nil nil ,up ,down))))))))))
+
+(defhelper :divmod :eei-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32)
+                           (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64)
+                           (w :i64) (wr :i64) (wt :i64) (wt2 :i64)
+                           (q :f64) (r :f64) (tmp :f64) (adj :i32) (single :i32))
+  ;; two fixnums
+  (fixnum-pair-code
+   `((:local.get y) :i32.eqz :i32.eqz
+     (:if nil nil
+          ((:local.get x) (:local.get y) :i32.div_s (:local.set qi)
+           (:local.get x) (:local.get y) :i32.rem_s (:local.set ri)
+           ,@(loop for mode from 1 to 3
+                   collect `(:local.get 2) collect `(:i32.const ,mode) collect :i32.eq
+                   collect `(:if nil nil ,(int-divmod-adjust-code :i32 mode 'x 'y 'qi 'ri 'ti 'ti2)))
+           (:global.get :mv-buf) (:i32.const 0) (:local.get ri) :ref.i31 (:array.set :vector)
+           (:i32.const 2) (:global.set :mv-count)
+           (:local.get qi) (:call :box-i32) :return))))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa 'da 'ka 'slow)
+     ,@(num-decode-code 1 'xb 'db 'kb 'slow)
+     (:local.get ka) (:local.get kb) :i32.or :i32.eqz
+     (:if nil nil
+          (;; integers within 64 bits
+           (:local.get xb) :i64.eqz (:br_if slow)
+           (:local.get xa) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if slow)
+           (:local.get xa) (:local.get xb) :i64.div_s (:local.set w)
+           (:local.get xa) (:local.get xb) :i64.rem_s (:local.set wr)
+           ,@(loop for mode from 1 to 3
+                   collect `(:local.get 2) collect `(:i32.const ,mode) collect :i32.eq
+                   collect `(:if nil nil ,(int-divmod-adjust-code :i64 mode 'xa 'xb 'w 'wr 'wt 'wt2)))
+           (:global.get :mv-buf) (:i32.const 0) (:local.get wr) (:call :i64-int) (:array.set :vector)
+           (:i32.const 2) (:global.set :mv-count)
+           (:local.get w) (:call :i64-int) :return))
+     ;; floats; an integer operand must convert exactly
+     ,@(loop for (k xx d) in '((ka xa da) (kb xb db))
+             append `((:local.get ,k) :i32.eqz
+                      (:if nil nil
+                           ((:local.get ,xx) (:i64.const ,(expt 2 53)) :i64.add (:i64.const ,(expt 2 54)) :i64.gt_u
+                            (:br_if slow)
+                            (:local.get ,xx) :f64.convert_i64_s (:local.set ,d)))))
+     (:local.get ka) (:local.get kb) :i32.or (:i32.const 2) :i32.and :i32.eqz (:local.set single)
+     ,@(loop for mode from 0 to 3
+             collect `(:local.get 2) collect `(:i32.const ,mode) collect :i32.eq
+             collect `(:if nil nil ,(float-divmod-code mode 'slow 'da 'db 'q 'r 'adj 'single 'tmp)))
+     (:local.get q) :f64.abs (:f64.const 4.611686018427388d18) :f64.lt :i32.eqz (:br_if slow)
+     (:global.get :mv-buf) (:i32.const 0)
+     (:local.get single)
+     (:if nil :eqref ((:local.get r) :f32.demote_f64 (:struct.new :single)) ((:local.get r) (:struct.new :double)))
+     (:array.set :vector)
+     (:i32.const 2) (:global.set :mv-count)
+     (:local.get q) :i64.trunc_sat_f64_s (:local.get adj) :i64.extend_i32_s :i64.add (:call :i64-int) :return)
+  '(:local.get 0) '(:local.get 1) '(:local.get 2) :ref.i31
+  `(:global.get ,(sym-global 'clysm-sys::%divmod-slow)) '(:call (:callsym 3)))
+
+(macrolet ((div (name mode)
+             `(progn
+                (defprim ,name (a b) :mv `(,@a ,@b (:i32.const ,,mode) (:call :divmod)))
+                (defprim ,name (a) :mv `(,@a ,@(fixnum-code 1) (:i32.const ,,mode) (:call :divmod))))))
+  (div truncate 0) (div floor 1) (div ceiling 2) (div round 3))
 
 ;;; ------------------------------------------------------------
 ;;; Bignum, ratio, complex, float primitives

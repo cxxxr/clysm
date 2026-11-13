@@ -343,6 +343,38 @@
 (def-ti-rule (integer-length) (a) (int-ty 0 nil))
 (def-ti-rule (logcount) (a) (int-ty 0 nil))
 
+;;; ------------------------------------------------------------
+;;; Numeric library: result types (the code is in the "Numeric library" part
+;;; of typed.lisp and in the helpers of prims.lisp)
+;;; ------------------------------------------------------------
+
+(defun float-divmod-types-p (tys)
+  "One or two argument types: doubles, or 32-bit integers with a double."
+  (and (<= 1 (length tys) 2)
+       (some #'ty-double-p tys)
+       (every (lambda (ty) (or (ty-double-p ty) (ty-int32-p ty))) tys)))
+
+;; MOD / REM with a double: a double
+(let ((old-mod (gethash 'mod *ti-rules*)) (old-rem (gethash 'rem *ti-rules*)))
+  (def-ti-rule (mod) (a) (if (float-divmod-types-p a) (mkty +k-double+) (funcall old-mod a)))
+  (def-ti-rule (rem) (a) (if (float-divmod-types-p a) (mkty +k-double+) (funcall old-rem a))))
+(def-ti-rule (ffloor fceiling ftruncate fround) (a)
+  (if (float-divmod-types-p a) (mkty +k-double+) (mkty +k-float+)))
+;; (the number of bits of an integer is a fixnum)
+(def-ti-rule (integer-length logcount) (a)
+  (let ((x (first a)))
+    (if (and (ty-only-p x +k-int+) (ty-lo x) (ty-hi x))
+        (int-ty 0 (max (integer-length (ty-lo x)) (integer-length (ty-hi x))))
+        (int-ty 0 +most-positive-fixnum+))))
+
+(defun numeric-mv-types (name node)
+  "Types of the values of a call of a numeric function, or NIL."
+  (let ((tys (mapcar #'node-ty (cddr node))))
+    (cond ((and (member name '(floor truncate ceiling round)) (float-divmod-types-p tys))
+           (list (node-ty node) (mkty +k-double+)))
+          ((and (member name '(ffloor fceiling ftruncate fround)) (float-divmod-types-p tys))
+           (list (mkty +k-double+) (mkty +k-double+))))))
+
 
 ;;; Tests: each rule returns a list of (argument-index true-type false-type);
 ;;; the argument (when it is a variable) is intersected with the type in that branch.
@@ -510,7 +542,9 @@
                (case (car n)
                  (:let (dolist (b (second n)) (add (car b)) (push (car b) *ti-let-vars*) (walk (cdr b)))
                   (walk (third n)))
-                 (:mvbind (mapc #'add (second n)) (walk (third n)) (walk (fourth n)))
+                 ;; (the variables of MULTIPLE-VALUE-BIND get a representation like those of LET)
+                 (:mvbind (dolist (lv (second n)) (add lv) (push lv *ti-let-vars*))
+                  (walk (third n)) (walk (fourth n)))
                  (t (map-subnodes #'walk n))))))
     (walk node)))
 
@@ -722,6 +756,7 @@ dimensional with no other options than the initial element or contents."
     (:values (mapcar #'node-ty (cdr node)))
     ((:call :prim)
      (let ((name (if (eq (car node) :call) (second node) (prim-name (second node)))))
+       (when (numeric-mv-types name node) (return-from mv-types (numeric-mv-types name node)))
        (when (member name '(floor truncate ceiling round))
          (let ((tys (mapcar #'node-ty (cddr node))))
            (when (and (every (lambda (x) (ty-only-p x +k-int+)) tys) (<= 1 (length tys) 2))

@@ -419,58 +419,62 @@ SORT and the like make no argument list)."
           (setq acc (if (or (zerop acc) (zerop n)) 0 (truncate (abs (* acc n)) (gcd acc n))))))))
 
 ;;; division family
+;;;
+;;; TRUNCATE, FLOOR, CEILING and ROUND are primitives: the helper :divmod
+;;; (src/prims.lisp) computes fixnums, integers within 64 bits and floats, and
+;;; calls %DIVMOD-SLOW for bignums, ratios, mixed rational / float arguments
+;;; and whatever signals.  MODE: 0 truncate, 1 floor, 2 ceiling, 3 round.
+(defun %float-to-integer-big (d)
+  "D is an integral double of magnitude 2^63 or more (or not finite)."
+  (let* ((expo (%double-exponent d))
+         (mant (+ (* (+ (%double-mant-hi d) 67108864) 67108864) (%double-mant-lo d)))
+         (shift (- expo 1075))
+         (v (ash mant shift)))
+    (when (= expo 2047) (error "Cannot convert ~S to an integer" d))
+    (if (= (%double-sign d) 1) (- v) v)))
+
 (defun %float-truncate-to-integer (d)
   "D is a double; returns the integer obtained by truncating it."
-  (if (and (%d< d 536870912.0d0) (%d< -536870913.0d0 d))
-      (%double-to-fixnum d)
-      (let* ((expo (%double-exponent d))
-             (mant (+ (* (+ (%double-mant-hi d) 67108864) 67108864) (%double-mant-lo d)))
-             (shift (- expo 1075))
-             (v (ash mant shift)))
-        (when (= expo 2047) (error "Cannot convert ~S to an integer" d))
-        (if (= (%double-sign d) 1) (- v) v))))
+  (%double-to-integer d))
 
-(defun truncate (number &optional (divisor 1))
-  (cond ((and (fixnump number) (fixnump divisor) (not (eql divisor 0))
-              (not (and (eql divisor -1) (eql number most-negative-fixnum))))
-         (values (%fxtruncate number divisor) (%fxrem number divisor)))
-        ((and (integerp number) (integerp divisor)) (%int-truncate number divisor))
+(defun %truncate-slow (number divisor)
+  (cond ((and (integerp number) (integerp divisor)) (%int-truncate number divisor))
         ((and (rationalp number) (rationalp divisor))
-         (let* ((q (/ number divisor))
-                (iq (if (integerp q) q (%int-truncate (numerator q) (denominator q)))))
+         (when (eql divisor 0) (error 'division-by-zero :operation 'truncate :operands (list number divisor)))
+         ;; n1/d1 / n2/d2: the integer quotient of n1*d2 by d1*n2
+         (let ((iq (values (%int-truncate (* (numerator number) (denominator divisor))
+                                          (* (denominator number) (numerator divisor))))))
            (values iq (- number (* iq divisor)))))
         (t (let* ((r (%contagion number divisor))
-                  (q (%dtrunc (%d/ (%to-double number) (%to-double divisor))))
-                  (iq (%float-truncate-to-integer q)))
-             (values iq (- number (* (float iq (%float-result (%fixnum-to-double 0) r)) divisor)))))))
+                  (dn (%to-double number)) (dd (%to-double divisor)))
+             (when (%d= dd 0.0d0)
+               (error 'division-by-zero :operation 'truncate :operands (list number divisor)))
+             (let ((iq (%float-truncate-to-integer (%dtrunc (%d/ dn dd)))))
+               (values iq (- number (* (float iq (%float-result (%fixnum-to-double 0) r)) divisor))))))))
 
-(defun floor (number &optional (divisor 1))
-  (when (and (fixnump number) (fixnump divisor) (not (eql divisor 0))
-             (not (and (eql divisor -1) (eql number most-negative-fixnum))))
-    (let ((q (%fxtruncate number divisor)) (r (%fxrem number divisor)))
-      (return-from floor
-        (if (and (not (eql r 0)) (%fx< (%fxlogxor r divisor) 0))
-            (values (%fx- q 1) (%fx+ r divisor))
-            (values q r)))))
-  (multiple-value-bind (q r) (truncate number divisor)
-    (if (and (not (zerop r)) (if (minusp divisor) (plusp r) (minusp r)))
-        (values (- q 1) (+ r divisor))
-        (values q r))))
+(defun %divmod-slow (number divisor mode)
+  (multiple-value-bind (q r) (%truncate-slow number divisor)
+    (cond ((eql mode 0) (values q r))
+          ((eql mode 1)
+           (if (and (not (zerop r)) (if (minusp divisor) (plusp r) (minusp r)))
+               (values (- q 1) (+ r divisor))
+               (values q r)))
+          ((eql mode 2)
+           (if (and (not (zerop r)) (if (minusp divisor) (minusp r) (plusp r)))
+               (values (+ q 1) (- r divisor))
+               (values q r)))
+          (t
+           (let* ((twice (abs (* 2 r))) (ad (abs divisor)))
+             (cond ((or (> twice ad) (and (= twice ad) (oddp q)))
+                    (if (eq (minusp number) (minusp divisor))
+                        (values (+ q 1) (- r divisor))
+                        (values (- q 1) (+ r divisor))))
+                   (t (values q r))))))))
 
-(defun ceiling (number &optional (divisor 1))
-  (multiple-value-bind (q r) (truncate number divisor)
-    (if (and (not (zerop r)) (if (minusp divisor) (minusp r) (plusp r)))
-        (values (+ q 1) (- r divisor))
-        (values q r))))
-
-(defun round (number &optional (divisor 1))
-  (multiple-value-bind (q r) (truncate number divisor)
-    (let* ((twice (abs (* 2 r))) (ad (abs divisor)))
-      (cond ((or (> twice ad) (and (= twice ad) (oddp q)))
-             (if (eq (minusp number) (minusp divisor))
-                 (values (+ q 1) (- r divisor))
-                 (values (- q 1) (+ r divisor))))
-            (t (values q r))))))
+(defun truncate (number &optional (divisor 1)) (truncate number divisor))
+(defun floor (number &optional (divisor 1)) (floor number divisor))
+(defun ceiling (number &optional (divisor 1)) (ceiling number divisor))
+(defun round (number &optional (divisor 1)) (round number divisor))
 
 (defun %mod-slow (n d) (nth-value 1 (floor n d)))
 (defun %rem-slow (n d) (nth-value 1 (truncate n d)))
@@ -478,10 +482,13 @@ SORT and the like make no argument list)."
 (defun rem (n d) (rem n d))
 
 (defun %float-of (x proto) (if (and proto (%single-float-p proto)) (%to-single x) (%to-double x)))
-(defun ffloor (n &optional (d 1)) (multiple-value-bind (q r) (floor n d) (values (float q (if (floatp n) n 1.0)) r)))
-(defun fceiling (n &optional (d 1)) (multiple-value-bind (q r) (ceiling n d) (values (float q (if (floatp n) n 1.0)) r)))
-(defun ftruncate (n &optional (d 1)) (multiple-value-bind (q r) (truncate n d) (values (float q (if (floatp n) n 1.0)) r)))
-(defun fround (n &optional (d 1)) (multiple-value-bind (q r) (round n d) (values (float q (if (floatp n) n 1.0)) r)))
+;;; the quotient as a float of the format of the remainder (a single-float
+;;; when both arguments are rational)
+(defun %fquotient (q r) (if (%double-float-p r) (float q 1d0) (float q 1.0)))
+(defun ffloor (n &optional (d 1)) (multiple-value-bind (q r) (floor n d) (values (%fquotient q r) r)))
+(defun fceiling (n &optional (d 1)) (multiple-value-bind (q r) (ceiling n d) (values (%fquotient q r) r)))
+(defun ftruncate (n &optional (d 1)) (multiple-value-bind (q r) (truncate n d) (values (%fquotient q r) r)))
+(defun fround (n &optional (d 1)) (multiple-value-bind (q r) (round n d) (values (%fquotient q r) r)))
 
 ;;; logical
 (defun logand (&rest ns) (let ((a -1)) (dolist (n ns a) (setq a (logand a (%check-integer n))))))
@@ -555,10 +562,11 @@ SORT and the like make no argument list)."
 ;;; floats
 ;;; ------------------------------------------------------------
 
-(defun float (x &optional proto)
-  (cond ((and (null proto) (floatp x)) x)
-        ((and proto (%double-float-p proto)) (%to-double x))
-        (t (%to-single x))))
+(defun float (x &optional (proto nil protop)) (if protop (float x proto) (float x)))
+(defun %float2 (x proto)
+  (cond ((%double-float-p proto) (%to-double x))
+        ((%single-float-p proto) (%to-single x))
+        (t (%type-error proto 'float))))
 
 (defun coerce-to-double (x) (%to-double x))
 
