@@ -291,20 +291,28 @@
 ;;; file stream octet buffer
 ;;; ------------------------------------------------------------
 
+;;; The octets of a file stream are a simple (unsigned-byte 8) vector made by
+;;; the stream functions, accessed with the %BYTES- primitives.
+
 (defun %fs-ensure (s n)
   "Make room for N octets."
-  (let ((v (file-stream-octets s)))
-    (when (> n (length v))
-      (let ((new (make-array (max n (* 2 (length v)) 64) :element-type '(unsigned-byte 8))))
-        (replace new v :end2 (file-stream-fill s))
+  (let* ((v (file-stream-octets s)) (len (%bytes-length v)))
+    (declare (fixnum len))
+    (when (> n len)
+      (let ((new (%make-bytes (max n (* 2 len) 64))) (fill (file-stream-fill s)))
+        (declare (fixnum fill))
+        (do ((i 0 (+ i 1))) ((>= i fill))
+          (declare (fixnum i))
+          (%set-bytes-ref new i (%bytes-ref v i)))
         (setf (file-stream-octets s) new)))))
 
 (defun %fs-put-octet (s b)
   (let ((p (file-stream-pos s)))
-    (when (>= p (length (file-stream-octets s))) (%fs-ensure s (+ p 1)))
-    (setf (aref (file-stream-octets s) p) b)
+    (declare (fixnum p))
+    (when (>= p (%bytes-length (file-stream-octets s))) (%fs-ensure s (+ p 1)))
+    (%set-bytes-ref (file-stream-octets s) p (logand b 255))
     (setf (file-stream-pos s) (+ p 1))
-    (when (> (+ p 1) (file-stream-fill s)) (setf (file-stream-fill s) (+ p 1)))
+    (when (> (+ p 1) (the fixnum (file-stream-fill s))) (setf (file-stream-fill s) (+ p 1)))
     (setf (file-stream-dirty s) t)))
 
 (defun %fs-get-octet (s)
@@ -313,14 +321,16 @@
     (if (>= p (file-stream-fill s))
         nil
         (progn (setf (file-stream-pos s) (+ p 1))
-               (aref (file-stream-octets s) p)))))
+               (%bytes-ref (file-stream-octets s) p)))))
 
 (defun %fs-decode-char (s advance)
   "Decode the UTF-8 character at the current position (:eof at end)."
   (let* ((v (file-stream-octets s)) (fill (file-stream-fill s)) (p (file-stream-pos s)))
+    (declare (fixnum fill p))
     (if (>= p fill)
         :eof
-        (let ((b (aref v p)))
+        (let ((b (%bytes-ref v p)))
+          (declare (fixnum b))
           (if (< b #x80)
               (progn (when advance (setf (file-stream-pos s) (+ p 1))) (code-char b))
               (let* ((n (cond ((>= b #xF0) 3) ((>= b #xE0) 2) ((>= b #xC0) 1) (t 0)))
@@ -328,7 +338,7 @@
                 (dotimes (i n)
                   (let ((q (+ p 1 i)))
                     (setq code (logior (ash code 6)
-                                       (if (< q fill) (logand (aref v q) #x3F) 0)))))
+                                       (if (< q fill) (logand (%bytes-ref v q) #x3F) 0)))))
                 (when advance (setf (file-stream-pos s) (min fill (+ p 1 n))))
                 (or (code-char code) (code-char #xFFFD))))))))
 
@@ -351,7 +361,7 @@
     (if (> (+ p n) (file-stream-fill s))
         nil
         (let ((v (file-stream-octets s)) (x 0))
-          (dotimes (i n) (setq x (logior x (ash (aref v (+ p i)) (* 8 i)))))
+          (dotimes (i n) (setq x (logior x (ash (%bytes-ref v (+ p i)) (* 8 i)))))
           (setf (file-stream-pos s) (+ p n))
           (if (and (file-stream-signed s) (logbitp (- (* 8 n) 1) x))
               (- x (ash 1 (* 8 n)))
@@ -371,7 +381,9 @@
   (dotimes (i (length string)) (%put-char-buf (char-code (char string i)))))
 
 (defun %host-write-octets (name octets n)
-  (dotimes (i n) (%put-char-buf (aref octets i)))
+  (if (%bytes-p octets)
+      (dotimes (i n) (%put-char-buf (%bytes-ref octets i)))
+      (dotimes (i n) (%put-char-buf (aref octets i))))
   (%put-char-buf -1)
   (%host-name-buffer name)
   (>= (%file-open 2) 0))
@@ -382,8 +394,8 @@
   (let ((n (%file-open 3)))
     (if (< n 0)
         nil
-        (let ((v (make-array n :element-type '(unsigned-byte 8))))
-          (dotimes (i n v) (setf (aref v i) (char-code (%host-char i))))))))
+        (let ((v (%make-bytes n)))
+          (dotimes (i n v) (%set-bytes-ref v i (char-code (%host-char i))))))))
 
 ;;; ------------------------------------------------------------
 ;;; output
@@ -571,6 +583,9 @@
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
     (:pp (%pp-stream-column s))
     (:string-out (%string-out-column s))
+    ;; the column of the last component stream, as the values of the other
+    ;; operations on a broadcast stream
+    (:broadcast (let ((l (last (stream-streams s)))) (if l (%stream-column (car l)) 0)))
     (t (stream-column s))))
 
 (defun fresh-line (&optional stream)
@@ -630,6 +645,11 @@
 ;;; input
 ;;; ------------------------------------------------------------
 
+(defmacro %character-input-file-p (s)
+  "True when the file stream S is open for character input."
+  `(and (eql (file-stream-esize ,s) 0) (stream-open ,s)
+        (let ((d (stream-direction ,s))) (or (eq d :input) (eq d :io)))))
+
 (defun %stream-read-char (s)
   "Returns a character or :eof."
   (when (eq (stream-kind s) :gray)
@@ -642,9 +662,7 @@
                         (if (>= i (stream-end s)) :eof
                             (progn (setf (stream-index s) (+ i 1))
                                    (if (%simple-string-p buf) (%schar buf i) (char buf i))))))
-          (:file (unless (and (eql (file-stream-esize s) 0) (stream-open s)
-                              (member (stream-direction s) '(:input :io)))
-                   (%not-input-stream s 'character))
+          (:file (unless (%character-input-file-p s) (%not-input-stream s 'character))
            (%fs-decode-char s t))
           (:fd-in (let ((code (%read-char)))
                     (if (< code 0) :eof (code-char code))))
@@ -671,9 +689,7 @@
           (:string-in (let ((i (stream-index s)) (buf (stream-buffer s)))
                         (if (>= i (stream-end s)) :eof
                             (if (%simple-string-p buf) (%schar buf i) (char buf i)))))
-          (:file (unless (and (eql (file-stream-esize s) 0) (stream-open s)
-                              (member (stream-direction s) '(:input :io)))
-                   (%not-input-stream s 'character))
+          (:file (unless (%character-input-file-p s) (%not-input-stream s 'character))
            (%fs-decode-char s nil))
           ((:two-way :echo) (%stream-peek-char (car (stream-streams s))))
           (:concatenated
@@ -696,7 +712,19 @@
               (progn (setf (stream-index s) (+ i 1))
                      (if (%simple-string-p buf) (%schar buf i) (char buf i)))
               (if eof-error-p (error 'end-of-file :stream s) eof-value)))
-        (let ((c (%stream-read-char s)))
+        (let ((c (if (and (eq (stream-kind s) :file) (null (stream-unread s))
+                          (%character-input-file-p s))
+                     ;; a character file: ASCII is taken straight from the octets
+                     (let ((p (file-stream-pos s)))
+                       (declare (fixnum p))
+                       (if (< p (the fixnum (file-stream-fill s)))
+                           (let ((b (%bytes-ref (file-stream-octets s) p)))
+                             (declare (fixnum b))
+                             (if (< b #x80)
+                                 (progn (setf (file-stream-pos s) (+ p 1)) (code-char b))
+                                 (%fs-decode-char s t)))
+                           :eof))
+                     (%stream-read-char s))))
           (if (eq c :eof)
               (if eof-error-p (error 'end-of-file :stream s) eof-value)
               c)))))
@@ -801,7 +829,7 @@ and whether the newline was missing, or :eof."
         (progn
           ;; the end of the line; UTF-8 has no octet 10 inside a character
           (do () ((>= e fill))
-            (let ((b (aref v e)))
+            (let ((b (%bytes-ref v e)))
               (declare (fixnum b))
               (when (eql b 10) (return))
               (when (>= b #x80) (setq ascii nil))
@@ -810,7 +838,7 @@ and whether the newline was missing, or :eof."
                           (let ((r (%make-string (- e p) #\Space)))
                             (do ((i p (+ i 1)) (k 0 (+ k 1))) ((>= i e) r)
                               (declare (fixnum i k))
-                              (%set-schar r k (code-char (aref v i)))))
+                              (%set-schar r k (code-char (%bytes-ref v i)))))
                           (let ((r (%make-string (- e p) #\Space)) (k 0))
                             (declare (fixnum k))
                             (do () ((>= (the fixnum (file-stream-pos s)) e))
@@ -913,6 +941,32 @@ and whether the newline was missing, or :eof."
   (let ((end (%check-seq-bounds seq start end))
         (binary (%binary-stream-p stream t))
         (i start))
+    ;; a simple string from a string stream or a character file, octets from
+    ;; a file of octets: without a dispatch per element
+    (when (and (null (stream-unread stream)) (fixnump start))
+      (let ((kind (stream-kind stream)))
+        (cond ((and (%simple-string-p seq) (eq kind :string-in) (%simple-string-p (stream-buffer stream)))
+               (let* ((pos (stream-index stream))
+                      (n (min (- end start) (- (stream-end stream) pos))))
+                 (%string-copy seq start (stream-buffer stream) pos n)
+                 (setf (stream-index stream) (+ pos n))
+                 (return-from read-sequence (+ start n))))
+              ((and (%simple-string-p seq) (eq kind :file) (%character-input-file-p stream))
+               (loop
+                 (when (>= i end) (return-from read-sequence i))
+                 (let ((c (%fs-decode-char stream t)))
+                   (when (eq c :eof) (return-from read-sequence i))
+                   (%set-schar seq i c)
+                   (setq i (+ i 1)))))
+              ((and (%bytes-p seq) (eq kind :file) (eql (file-stream-esize stream) 1)
+                    (not (file-stream-signed stream)) (stream-open stream)
+                    (member (stream-direction stream) '(:input :io)))
+               (let* ((pos (file-stream-pos stream)) (octets (file-stream-octets stream))
+                      (n (min (- end start) (- (file-stream-fill stream) pos))))
+                 (declare (fixnum pos n))
+                 (dotimes (k n) (%set-bytes-ref seq (+ start k) (%bytes-ref octets (+ pos k))))
+                 (setf (file-stream-pos stream) (+ pos n))
+                 (return-from read-sequence (+ start n)))))))
     (if (listp seq)
         (let ((tail (nthcdr start seq)))
           (loop
@@ -943,6 +997,16 @@ and whether the newline was missing, or :eof."
           (vector-push-extend (logand (aref seq i) 255) out))
         (when (>= (length out) 65536) (%socket-flush s)))
       (return-from write-sequence seq))
+    ;; a string to a character stream is WRITE-STRING; octets to a file of octets
+    (cond ((and (stringp seq) (not binary))
+           (write-string seq s :start start :end end)
+           (return-from write-sequence seq))
+          ((and (%bytes-p seq) (eq (stream-kind s) :file) (eql (file-stream-esize s) 1)
+                (stream-open s) (member (stream-direction s) '(:output :io)))
+           (%fs-ensure s (+ (file-stream-pos s) (- end start)))
+           (do ((i start (+ i 1))) ((>= i end))
+             (%fs-put-octet s (%bytes-ref seq i)))
+           (return-from write-sequence seq)))
     (if (listp seq)
         (let ((tail (nthcdr start seq)))
           (do ((i start (+ i 1))) ((>= i end))
