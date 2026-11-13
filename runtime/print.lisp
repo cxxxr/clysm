@@ -408,12 +408,148 @@ run other code while they take the characters get a copy."
 
 (defvar *%float-digit-buffer* (%make-string 40 #\0))
 
+;;; The shortest digits of a float.  The host makes them (JavaScript's
+;;; Number.prototype.toExponential), but the usual cases are computed here
+;;; with double arithmetic that is exact:
+;;;
+;;; * An integer below 2^53 and a power of ten up to 10^22 are exact doubles,
+;;;   so one multiplication or division of them is the correctly rounded
+;;;   double of a decimal number: that is how a candidate is checked to read
+;;;   back as the float.
+;;; * A double: decimals of 15 significant digits are farther apart than the
+;;;   width of the interval of numbers that round to a double, so at most one
+;;;   of them reads back as the double.  If there is one, it is the shortest
+;;;   representation (with zeros at the end); if not, the double needs 16 or
+;;;   17 digits and the host is asked.
+;;; * A single: as the host does, the float is rounded to 1, 2 ... 9 digits
+;;;   (halves up) until the decimal reads back as the float.  The product of
+;;;   the float (24 bits) and a power of ten up to 10^12 is exact.  A
+;;;   quotient is not, so when it is close to a half the float is compared
+;;;   with the exact product of the half and the power of ten (up to 10^9);
+;;;   with larger powers of ten, close to a half, the host is asked.
+
+(defvar *%powers-of-ten*
+  (vector 1d0 1d1 1d2 1d3 1d4 1d5 1d6 1d7 1d8 1d9 1d10 1d11 1d12 1d13 1d14 1d15 1d16 1d17 1d18 1d19
+          1d20 1d21 1d22))
+
+(defmacro %scale-by-power-of-ten (d j)
+  "D * 10^J for |J| <= 22 (the variable TABLE holds the powers of ten)."
+  `(if (>= ,j 0)
+       (%d* ,d (%svref table ,j))
+       (%d/ ,d (%svref table (- ,j)))))
+
+(defun %decimal-exponent-estimate (d)
+  "About floor(log10(D)) for the positive normal double D (it may be one too small)."
+  (let ((e2 (- (%double-exponent d) 1023)))
+    (declare (fixnum e2))
+    (ash (* e2 1233) -12)))
+
+(defun %integer-double-digits (c digits chunk chunk-digits)
+  "Store the digits of the double C, a positive integer below CHUNK^2, in
+DIGITS from index 0, without the zeros at the end; CHUNK is 10^CHUNK-DIGITS.
+Returns (values number-of-digits-stored number-of-digits-of-c)."
+  (declare (fixnum chunk chunk-digits) (double-float c))
+  (let* ((dchunk (%fixnum-to-double chunk))
+         (dhi (%dfloor (%d/ c dchunk)))
+         (dlo (%d- c (%d* dhi dchunk))))
+    ;; the quotient may be off by one
+    (cond ((%d< dlo 0d0) (setq dhi (%d- dhi 1d0) dlo (%d+ dlo dchunk)))
+          ((not (%d< dlo dchunk)) (setq dhi (%d+ dhi 1d0) dlo (%d- dlo dchunk))))
+    (let* ((hi (%double-to-fixnum dhi)) (lo (%double-to-fixnum dlo))
+           (buf *%digit-buffer*) (end (%string-length buf))
+           (i (if (eql hi 0)
+                  (%fixnum-digits lo 10 buf end)
+                  (%fixnum-digits hi 10 buf (%fixnum-digits-padded lo buf end chunk-digits))))
+           (n (- end i)) (nd n))
+      (declare (fixnum hi lo end i n nd))
+      (do () ((or (<= nd 1) (not (eq (%schar buf (+ i nd -1)) #\0)))) (setq nd (- nd 1)))
+      (%string-copy digits 0 buf i nd)
+      (values nd n))))
+
+(defun %short-double-digits (d digits)
+  "The shortest digits of the positive double D when they are at most 15:
+(values number-of-digits exponent), else NIL."
+  (declare (double-float d))
+  (let ((raw (%double-exponent d)) (table *%powers-of-ten*))
+    (declare (fixnum raw))
+    (when (and (> raw 0) (< raw 2047))
+      (let ((j (- 14 (%decimal-exponent-estimate d))))
+        (declare (fixnum j))
+        (when (<= -21 j 21)
+          (let ((y (%scale-by-power-of-ten d j)))
+            (declare (double-float y))
+            (cond ((%d< y 1d14) (setq j (+ j 1) y (%scale-by-power-of-ten d j)))
+                  ((not (%d< y 1d15)) (setq j (- j 1) y (%scale-by-power-of-ten d j))))
+            (let ((c (%dround y)))
+              (declare (double-float c))
+              (macrolet ((try (c)
+                           `(let ((c ,c))
+                              (declare (double-float c))
+                              (when (and (%d< c 1d15) (%d<= 1d0 c)
+                                         (%d= (%scale-by-power-of-ten c (- j)) d))
+                                (multiple-value-bind (nd n) (%integer-double-digits c digits 100000000 8)
+                                  (declare (fixnum nd n))
+                                  (return-from %short-double-digits (values nd (- n j))))))))
+                ;; a decimal that reads back as D is within 0.12 of the true
+                ;; product, and so is Y: it can only be the integer nearest to Y
+                (try c)
+                nil))))))))
+
+(defun %short-single-digits (d digits)
+  "The shortest digits of the single float whose value is the positive double
+D: (values number-of-digits exponent), or NIL when the host must be asked."
+  (declare (double-float d))
+  (let ((raw (%double-exponent d)) (table *%powers-of-ten*))
+    (declare (fixnum raw))
+    (when (and (> raw 0) (< raw 2047))
+      (let ((e10 (%decimal-exponent-estimate d)))
+        (declare (fixnum e10))
+        (unless (<= -13 e10 20) (return-from %short-single-digits nil))
+        ;; 10^e10 <= d < 10^(e10+1) must hold
+        (let ((y (%scale-by-power-of-ten d (- e10))))
+          (declare (double-float y))
+          (cond ((not (%d< y 10d0)) (setq e10 (+ e10 1) y (%scale-by-power-of-ten d (- e10))))
+                ((%d< y 1d0) (setq e10 (- e10 1) y (%scale-by-power-of-ten d (- e10)))))
+          (when (or (%d< y 1d0) (not (%d< y 10d0))) (return-from %short-single-digits nil))
+          ;; a product that is very close to 1 or 10 may be on the wrong side
+          (when (and (< e10 0)
+                     (or (%d< y 1.000000001d0) (%d< 9.99999999d0 y)))
+            (return-from %short-single-digits nil)))
+        (do ((p 1 (+ p 1))) ((> p 9) nil)
+          (declare (fixnum p))
+          (let* ((j (- p 1 e10))
+                 (y (%scale-by-power-of-ten d j))
+                 (f (%dfloor y))
+                 (frac (%d- y f))
+                 (c (cond ((or (%d< frac 0.499999d0) (%d< 0.500001d0 frac))
+                           (if (%d< 0.5d0 frac) (%d+ f 1d0) f))
+                          ;; close to a half
+                          ((<= 0 j 12) (if (%d< frac 0.5d0) f (%d+ f 1d0)))     ; the product is exact
+                          ((<= -9 j -1)
+                           (if (%d< d (%d* (%d+ f 0.5d0) (%svref table (- j)))) f (%d+ f 1d0)))
+                          (t (return-from %short-single-digits nil)))))
+            (declare (fixnum j) (double-float y f frac c))
+            (when (%d= (%single-to-double (%double-to-single (%scale-by-power-of-ten c (- j)))) d)
+              (multiple-value-bind (nd n) (%integer-double-digits c digits 100000 5)
+                (declare (fixnum nd n))
+                (return (values nd (- n j)))))))))))
+
 (defun %float-digits-into (x digits)
   "Store the shortest digits that identify the finite float X in the simple
 string DIGITS; returns (values number-of-digits exponent negative-p) with
 |x| = 0.d1d2.. * 10^exponent."
   (let* ((single (%single-float-p x))
-         (n (%float-to-chars (%to-double x) (if single 1 0)))
+         (d (%to-double x)))
+    (multiple-value-bind (nd expo)
+        (if single
+            (%short-single-digits (%dabs d) digits)
+            (%short-double-digits (%dabs d) digits))
+      (if nd
+          (values nd expo (eql (%double-sign d) 1))
+          (%host-float-digits-into d single digits)))))
+
+(defun %host-float-digits-into (d single digits)
+  (let* ((n (%float-to-chars d (if single 1 0)))
          (neg (and (> n 0) (char= (%host-char 0) #\-)))
          (nd 0) (i (if neg 1 0)) (expo 0) (eneg nil))
     (declare (fixnum n nd i expo))
