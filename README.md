@@ -393,15 +393,16 @@ Limitations:
 `tools/bench.sh [FILE]` runs a benchmark file (`bench/suite.lisp` by default,
 or `bench/gabriel.lisp`) on SBCL and on Clysm (Node.js) and prints the time
 ratio of each benchmark and their geometric mean. On an x86-64 machine with
-SBCL 2.6 and Node.js 24, Clysm takes about 1.4 times as long as SBCL on
+SBCL 2.6 and Node.js 24, Clysm takes about 1.2 times as long as SBCL on
 `bench/suite.lisp` (function calls, arrays, floats, lists, sorting, hash tables,
 strings, FORMAT, the printer and reader, bignums and ratios, structures, CLOS,
-special variables, non-local exits) and about 1.4 times as long on the
-Gabriel-style `bench/gabriel.lisp`. Float code, function calls (`fib`, `tak`),
-sorting and simple-vector loops run as fast as with SBCL or faster; the
-slowest relative to SBCL are the reader (4 times), CLOS dispatch and
-`make-instance`, the printer and FORMAT, hash tables, bignums and integers
-between 2^29 and 2^62 (fixnums in SBCL, boxed here), at 2-3 times.
+special variables, non-local exits) and about 1.1 times as long on the
+Gabriel-style `bench/gabriel.lisp`. Float code, function calls (`fib`, `tak`,
+`takl`), catch/throw (`ctak`), sorting, strings and simple-vector loops run as
+fast as with SBCL or faster; the slowest relative to SBCL, at 2-3 times, are
+CLOS dispatch and `make-instance`, two-dimensional arrays of type T, the
+reader, FORMAT to streams, hash tables (allocation of their storage), bignums
+and integers between 2^29 and 2^62 (fixnums in SBCL, boxed here).
 
 What makes the generated code fast:
 
