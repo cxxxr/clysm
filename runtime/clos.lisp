@@ -182,12 +182,24 @@
     (%set-gf-slot info +gf-keyp+ keyp)
     (%set-gf-slot info +gf-keys+ keys)))
 
+;;; A function of the info making the function of a generic function, given
+;;; by the expansions of DEFGENERIC and DEFMETHOD so that each generic
+;;; function has its own dispatch code (whose calls of the methods the
+;;; engine can then specialize).
+(defvar *gf-function-maker* nil)
+
+(defmacro %gf-function-maker ()
+  '(lambda (info)
+     ;; one or two arguments: a dispatch without an argument list
+     (%make-gf-closure (lambda (&rest args) (%gf-invoke info args))
+                       (lambda (a) (%gf-call1 info a))
+                       (lambda (a b) (%gf-call2 info a b)))))
+
 (defun %make-generic-function (name lambda-list combination class)
   (let* ((info (%allocate-instance (or class (find-class 'standard-generic-function))))
-         ;; one or two arguments: a dispatch without an argument list
-         (f (%make-gf-closure (lambda (&rest args) (%gf-invoke info args))
-                              (lambda (a) (%gf-call1 info a))
-                              (lambda (a b) (%gf-call2 info a b)))))
+         (f (if *gf-function-maker*
+                (funcall *gf-function-maker* info)
+                (funcall (%gf-function-maker) info))))
     (dotimes (i (length *gf-slot-names*)) (%set-gf-slot info i nil))
     (%set-gf-slot info +gf-name+ name)
     (%set-gf-slot info +gf-combination+ (%find-method-combination combination))
@@ -875,6 +887,7 @@ ARGS does, or NIL."
                 (declare (ignore doc2))
                 (let ((args-var (gensym "ARGS")) (next (gensym "NEXT")))
                   `(let ((,cell (list nil))
+                         (*gf-function-maker* (%gf-function-maker))
                          (,fast (lambda ,plain-ll
                                   ,@decls
                                   (declare (ignorable ,@plain-ll))
@@ -884,7 +897,7 @@ ARGS does, or NIL."
                                   (lambda (,args-var ,next) (declare (ignore ,next)) (apply ,fast ,args-var))
                                   ,doc ,cell)
                       ,fast))))
-              `(let ((,cell (list nil)))
+              `(let ((,cell (list nil)) (*gf-function-maker* (%gf-function-maker)))
                  (%defmethod ',name ',quals ,specs-form ',plain-ll (function ,lam) ,doc ,cell))))))))
 
 (defmacro defgeneric (name lambda-list &rest options)
@@ -918,7 +931,8 @@ ARGS does, or NIL."
                        (= (length (remove-duplicates (car apo))) nreq))
             (%program-error "DEFGENERIC ~S: invalid argument precedence order ~S" name (car apo))))))
     (let ((gf (gensym "GF")))
-      `(let ((,gf (%defgeneric ',name ',lambda-list ',combination ,doc ',apo ',gfclass ',mclass ',decls)))
+      `(let* ((*gf-function-maker* (%gf-function-maker))
+              (,gf (%defgeneric ',name ',lambda-list ',combination ,doc ',apo ',gfclass ',mclass ',decls)))
          (%set-gf-initial-methods ,gf (list ,@(reverse methods)))
          ,gf))))
 
