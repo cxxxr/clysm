@@ -90,6 +90,9 @@ REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
 
 ## Lem
 
+**[Try Lem in your browser](https://cxxxr.github.io/clysm/)** (Chrome or Edge
+137 or later; the page is about 15 MB and starts in a few seconds).
+
 `contrib/lem/` runs Lem's core in an Electron window, or in a browser page
 opened from a file. The frontend is written with the GUI framework: Lem's
 windows are components whose lines follow what

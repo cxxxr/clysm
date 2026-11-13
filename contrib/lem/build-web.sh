@@ -10,9 +10,9 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 desktop=build/lem-desktop
 out=build/lem-web
-[ -s $desktop/lem.wasm ] && [ -s $desktop/config.lisp ] || contrib/lem/build.sh
+[ -s $desktop/lem.wasm ] && [ -s $desktop/config.lisp ] || LEM_NO_ELECTRON=1 contrib/lem/build.sh
 mkdir -p $out
-cp contrib/lem/web/boot.lisp $desktop/config.lisp $out/
+cp contrib/lem/web/boot.lisp contrib/lem/web/welcome.lisp $desktop/config.lisp $out/
 # load Lem on Node.js as the page will, and note the files that it reads
 echo "(defvar cl-user::*lem-load-only* t) (load \"$root/$out/boot.lisp\")" > $out/trace.lisp
 echo "loading Lem to see which files it reads"

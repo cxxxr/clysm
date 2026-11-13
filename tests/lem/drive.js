@@ -58,8 +58,15 @@ module.exports = (win, app) => {
   wc.once('did-finish-load', async () => {
     try {
       const started = await until(async () => (await js("document.querySelectorAll('.lem-line').length")) > 0, 60000);
-      check('start', started && (await screen()).includes('*tmp*'));
-      if (web) work = JSON.parse(await lisp('(namestring (user-homedir-pathname))')) + 'lem-test';
+      if (web) {
+        // the page starts with welcome.lisp; the test types into a new buffer
+        check('start', started && (await screen()).includes('welcome.lisp'));
+        work = JSON.parse(await lisp('(namestring (user-homedir-pathname))')) + 'lem-test';
+        await key('x', ['control']); await key('b'); await sleep(200);
+        await type('test'); await key('Return'); await sleep(200); await key('y'); await sleep(300);
+      } else {
+        check('start', started && (await screen()).includes('*tmp*'));
+      }
 
       await type('(hello world)'); await key('Return');
       wc.insertText('日本語');       // what an input method commits

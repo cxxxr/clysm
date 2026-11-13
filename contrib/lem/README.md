@@ -80,6 +80,11 @@ and indentation are Lem's (`lem-lisp-syntax`, the grammar of `lem-lisp-mode`).
 
 ## In a browser
 
+The demo at https://cxxxr.github.io/clysm/ is this page, built by the
+workflow `.github/workflows/lem-demo.yml` when `main` changes. It opens
+`web/welcome.lisp` (copied into the home directory the first time), which
+tells what to try.
+
 `build-web.sh` makes one HTML file (`web/index.html` is its template) that
 contains the host (`host/*.mjs`, put into the page: a page opened from a file
 cannot import modules), the image and a pack of files, both compressed and in

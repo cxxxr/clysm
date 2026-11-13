@@ -4,7 +4,8 @@
 #   contrib/lem/build.sh && (cd build/lem-desktop && npm start)
 # Lem's source is cloned into build/lem-deps/ (or LEM_DIR names a checkout
 # of https://github.com/lem-project/lem); the libraries come from Quicklisp
-# (QUICKLISP_HOME, by default ~/quicklisp/).
+# (QUICKLISP_HOME, by default ~/quicklisp/).  With LEM_NO_ELECTRON set,
+# Electron is not installed (for build-web.sh).
 set -e
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
@@ -44,6 +45,7 @@ sed -e "s#@CLYSM_ROOT@#$root#" -e "s#@APP_DIR@#$root/$out#" contrib/lem/desktop/
 sed "s#'../common.mjs'#'./common.mjs'#" host/web/clysm.mjs > $out/clysm.mjs
 cp host/common.mjs host/jsffi.mjs contrib/lem/lem.css contrib/lem/desktop/boot.lisp contrib/lem/desktop/package.json \
    ui/electron/main.js ui/electron/preload.js $out/
+if [ -n "$LEM_NO_ELECTRON" ]; then echo "built $out (without Electron)"; exit 0; fi
 [ -d $out/node_modules/electron ] || (cd $out && npm install --no-audit --no-fund)
 # (npm may have left the download of Electron itself to its first start)
 [ -d $out/node_modules/electron/dist ] || (cd $out && node node_modules/electron/install.js)
