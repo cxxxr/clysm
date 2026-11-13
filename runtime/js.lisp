@@ -113,6 +113,56 @@
 
 (defun %foreign-type-name (x) (js:typeof x))
 
+;;; Tracking instances, so that the instances of a redefined class can be
+;;; updated (see %UPDATE-OBSOLETE-INSTANCES in class0.lisp).  The instances
+;;; are held by JavaScript WeakRefs: tracking does not keep them alive.
+(defvar *instance-tracker* nil)
+
+(defun %instance-tracker ()
+  (or *instance-tracker*
+      (setq *instance-tracker*
+            (js:eval "({
+  refs: new WeakMap(),
+  add(cls, obj) {
+    let e = this.refs.get(cls);
+    if (!e) this.refs.set(cls, e = { list: [], limit: 64 });
+    e.list.push(new WeakRef(obj));
+    if (e.list.length > e.limit) {
+      e.list = e.list.filter((r) => r.deref() !== undefined);
+      e.limit = Math.max(64, e.list.length * 2);
+    }
+  },
+  live(cls) {
+    const e = this.refs.get(cls);
+    return e ? e.list.map((r) => r.deref()).filter((o) => o !== undefined) : [];
+  },
+})"))))
+
+(defun track-instances (&optional (on t))
+  "While ON, the instances made by ALLOCATE-INSTANCE are tracked: when a class
+is redefined with different slots, its living instances get the new slots
+and UPDATE-INSTANCE-FOR-REDEFINED-CLASS is called for them (at the
+redefinition, not when they are next accessed).  Instances made while
+tracking is off keep their old slot vectors.  It costs a call of JavaScript
+for every instance, so it is meant for development."
+  (if on
+      (let* ((tracker (js:to-js (%instance-tracker)))
+             (add (%js-get tracker (%js-string "add"))))
+        (setq *track-instance-hook*
+              (lambda (class instance)
+                (let ((args (%js-array)))
+                  (%js-push args (%js-wrap-lisp class))
+                  (%js-push args (%js-wrap-lisp instance))
+                  (%js-apply add tracker args)))
+              *live-instances-hook*
+              (lambda (class)
+                (let* ((array (js:call tracker "live" class))
+                       (result nil))
+                  (dotimes (i (js:get array "length") result)
+                    (push (js:get array i) result))))))
+      (setq *track-instance-hook* nil))
+  on)
+
 ;;; called by hosts (exported as eval_string): read and evaluate all forms in
 ;;; a JS string, return the printed values as a JS string
 (defun %host-eval-string (src)

@@ -246,9 +246,49 @@ grows when CLASS has more instance slots)."
 
 (defvar *class-finalization-hook* nil)
 
+;;; Instances of redefined classes (CLHS 4.3.6).  An instance does not record
+;;; the layout of its slot vector, so obsolete instances cannot be detected
+;;; when they are accessed; instead, while instances are tracked (see
+;;; TRACK-INSTANCES in js.lisp) the living instances of a class whose slot
+;;; layout changes are updated when the class is redefined.
+(defvar *track-instance-hook* nil "NIL, or a function called with the class and each new instance.")
+(defvar *live-instances-hook* nil "NIL, or a function that returns the tracked instances of a class.")
+
+(defun %update-instance-layout (instance old-index class)
+  "Give INSTANCE, whose slots are laid out as OLD-INDEX says, the slot vector of CLASS."
+  (let ((old (%instance-slots instance))
+        (new (%make-simple-vector (%instance-slot-count class) (%unbound-marker)))
+        (new-index (%class-slot class +class-slot-index+))
+        (added nil) (discarded nil) (plist nil))
+    (dolist (e new-index)
+      (when (fixnump (cdr e))
+        (let ((o (assoc (car e) old-index)))
+          (cond ((null o) (push (car e) added))
+                ((fixnump (cdr o))
+                 (when (< (cdr o) (length old)) (setf (svref new (cdr e)) (svref old (cdr o)))))
+                ;; a shared slot that is now local keeps its value
+                (t (setf (svref new (cdr e)) (cddr o)))))))
+    (dolist (o old-index)
+      (when (and (fixnump (cdr o)) (< (cdr o) (length old)) (not (assoc (car o) new-index)))
+        (push (car o) discarded)
+        (unless (%unboundp (svref old (cdr o)))
+          (setq plist (cons (car o) (cons (svref old (cdr o)) plist))))))
+    (%set-instance-slots instance new)
+    (when (fboundp 'update-instance-for-redefined-class)
+      (funcall 'update-instance-for-redefined-class instance added discarded plist))
+    instance))
+
+(defun %update-obsolete-instances (class old-index)
+  (when (and *live-instances-hook* old-index
+             (not (equal old-index (%class-slot class +class-slot-index+))))
+    (dolist (instance (funcall *live-instances-hook* class))
+      (when (eq (%instance-layout instance) class)
+        (%update-instance-layout instance old-index class)))))
+
 (defun %finalize-class (class)
   (let ((cpl (if (eq (%class-name class) t) (list class)
-                 (%compute-cpl class (%class-slot class +class-supers+)))))
+                 (%compute-cpl class (%class-slot class +class-supers+))))
+        (old-index (%class-slot class +class-slot-index+)))
     (%set-class-slot class +class-cpl+ cpl)
     ;; shared slots allocated by this class: keep the cells (and values) of
     ;; slots that stay shared, initialize new ones from their initforms
@@ -277,6 +317,7 @@ grows when CLASS has more instance slots)."
                      (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
     (%set-class-slot class +class-prototype+ nil)
     (when *class-finalization-hook* (funcall *class-finalization-hook* class))
+    (when *live-instances-hook* (%update-obsolete-instances class old-index))
     ;; refinalize subclasses
     (dolist (sub (%class-slot class +class-subclasses+))
       (%finalize-class sub))
@@ -327,7 +368,11 @@ grows when CLASS has more instance slots)."
 (defun %allocate-instance (class)
   (let* ((n (%instance-slot-count class))
          (v (%make-simple-vector n (%unbound-marker))))
-    (%make-instance class v)))
+    (if *track-instance-hook*
+        (let ((instance (%make-instance class v)))
+          (funcall *track-instance-hook* class instance)
+          instance)
+        (%make-instance class v))))
 
 (defun %initialize-slots-from-initargs (instance initargs)
   (let ((class (%instance-layout instance)))

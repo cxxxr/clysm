@@ -453,6 +453,12 @@ Limitations:
   compile-time definers, `make-load-form` externalization) and writes the
   processed forms to a `.fasl` text file that `load` compiles form by form
   (whole programs are compiled ahead of time with `bin/clysm compile`/`run`).
+* Instances of a redefined class are updated only while instances are tracked:
+  after `(sys::track-instances)`, redefining a class with different slots
+  gives its living instances (found through JavaScript `WeakRef`s) the new
+  slots at once and calls `update-instance-for-redefined-class`. Tracking
+  costs a JavaScript call per instance, so it is off by default; without it,
+  instances made before the redefinition keep their old slot vectors.
 * No threads and no first-class continuations (not required by the standard).
 * Character names are SBCL's; names above Latin-1 are read on first use from
   `data/unicode-names.txt` (`tools/gen-unicode-names.sh`).
