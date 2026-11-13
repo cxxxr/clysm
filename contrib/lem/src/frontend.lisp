@@ -66,9 +66,15 @@
                                                       nil))
   (measure))
 
+(defvar *show-exited*
+  (js:eval "(container) => { window.close();
+     /* a page that the browser does not let close */
+     const element = document.querySelector(container);
+     if (element) element.innerHTML = '<div id=\"status\">Lem has exited.  Reload the page to start it again.</div>'; }"))
+
 (defun exit-application (report)
   (when report (format *error-output* "~&~A~%" report))
-  (js:call (js:global) "close"))
+  (js:funcall *show-exited* *container*))
 
 (defmethod lem-if:invoke ((implementation clysm) function)
   (start-screen)

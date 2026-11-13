@@ -16,6 +16,7 @@
                (:file "display")
                (:file "input")
                (:file "frontend")
+               (:file "browser")
                ;; the grammar of Lem's Lisp mode (the rest of that mode needs
                ;; a Lisp process and native libraries)
                (:file "grammar" :pathname #.(asdf:system-relative-pathname

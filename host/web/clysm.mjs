@@ -8,7 +8,8 @@
 // pass { fs: require('node:fs'), root: '/path/to/clysm/', args: [...] }: Lisp
 // then has the files of the computer, as on the Node.js host (OPEN,
 // DIRECTORY, LOAD, ASDF...), REQUIRE finds the modules of the Clysm
-// installation ROOT, and ARGS are the command line arguments.
+// installation ROOT, and ARGS are the command line arguments.  In a page
+// without Node.js, `fs` can be the file system in memory of vfs.mjs.
 import { makeImports } from '../common.mjs';
 
 export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root, args = [] } = {}) {
@@ -50,7 +51,7 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
           return data.length;
         }
         const content = state.writeBuf || ''; state.writeBuf = '';
-        fs.writeFileSync(name, mode === 2 ? Buffer.from(content, 'latin1') : content);
+        fs.writeFileSync(name, content, mode === 2 ? 'latin1' : 'utf8');
         return 0;
       } catch (e) { return -1; }
     },

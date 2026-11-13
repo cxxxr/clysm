@@ -7,8 +7,18 @@ framework (`ui/`).
 ```
 $ contrib/lem/build.sh                     # builds build/lem-desktop/
 $ (cd build/lem-desktop && npm start)
-$ make test-lem                            # types into it without a display
+$ make test-lem                            # types into it (and into the page below) without a display
 ```
+
+For a browser, without a server:
+
+```
+$ contrib/lem/build-web.sh                 # build/lem-web/lem.html, one file of 15 MB
+```
+
+Open `build/lem-web/lem.html` in Chrome or Edge 137 or later (it needs
+JavaScript Promise Integration, which Firefox and Safari do not have yet),
+from the disk or from any web server. See [In a browser](#in-a-browser).
 
 `build.sh` needs SBCL, Node.js, git, npm and Quicklisp (`~/quicklisp/`, or
 `QUICKLISP_HOME`). It clones Lem (the commit it was written for, or the
@@ -68,6 +78,30 @@ and indentation are Lem's (`lem-lisp-syntax`, the grammar of `lem-lisp-mode`).
 | `M-:` | evaluate a form read from the prompt |
 | `C-c C-z`, `M-x lisp-repl` | a REPL of the image: what it evaluates changes the running editor |
 
+## In a browser
+
+`build-web.sh` makes one HTML file (`web/index.html` is its template) that
+contains the host (`host/*.mjs`, put into the page: a page opened from a file
+cannot import modules), the image and a pack of files, both compressed and in
+base64:
+
+* `build-web.sh` loads Lem on Node.js as the page will (`web/boot.lisp`),
+  with `CLYSM_TRACE_FILES` (`host/run.mjs`) noting the files it reads and
+  looks at; `web/pack.mjs` packs those it reads (the fasls, the `.asd`
+  files...) and the names and times of the others (ASDF compares the times
+  of sources and fasls). About 67 MB, 9 MB compressed.
+* The page makes a file system in memory from the pack (`host/web/vfs.mjs`,
+  the part of Node.js's `fs` that Clysm uses), and a `process` with the home
+  directory of the build, then runs the image as the desktop application
+  does. Files written in the home directory are kept in the browser's
+  `localStorage`.
+* `M-x open-local-file` copies a file of the computer into the home
+  directory (the browser's file chooser) and opens it; `M-x download-file`
+  saves the buffer to the computer (a download).
+* The browser's clipboard cannot be read without waiting: Command-V,
+  Control-Shift-V and Shift-Insert paste with the browser's paste event,
+  and `C-y` yanks Lem's own kill ring.
+
 ## What Lem on Clysm does without
 
 Lem's core (`lem/core`), Paredit and the Lisp mode above are loaded; the
@@ -79,7 +113,8 @@ the DeepL commands fail), deploy (only named by `lem.asd`).
 
 * No subprocesses (`uiop:run-program`): `grep`, shells, language servers,
   `git` and `find` do not work.
-* Files are read and written as UTF-8.
+* Files are read and written as UTF-8. In a browser, the files are those of
+  the pack and what was written in the home directory.
 * One thread: a long computation stops the editor until it ends, and `C-g`
   cannot interrupt it.
 
@@ -87,9 +122,11 @@ the DeepL commands fail), deploy (only named by `lem.asd`).
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `lisp-mode` |
+| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `lisp-mode` |
 | `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js) |
 | `desktop/` | the page, `boot.lisp` and `package.json` of the application |
-| `build.sh` | builds `build/lem-desktop/` |
+| `web/` | the page for a browser (`index.html`, `boot.lisp`), `pack.mjs`, `make-html.mjs` |
+| `lem.css` | the look of both pages |
+| `build.sh`, `build-web.sh` | build `build/lem-desktop/`, `build/lem-web/lem.html` |
 | `../../tests/lem/` | `make test-lem` |

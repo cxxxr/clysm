@@ -50,8 +50,12 @@
                 (not (stringp key))
                 (member key *modifier-keys* :test #'string=))
       (multiple-value-bind (ctrl alt meta shift) (event-modifiers event)
-        ;; a character typed without a modifier comes as an input event
-        (unless (and (not ctrl) (not alt) (not meta) (= (length key) 1))
+        ;; a character typed without a modifier comes as an input event, and
+        ;; the keys that paste (Command-V, Control-Shift-V, Shift-Insert) are
+        ;; left to the browser, which sends a paste event
+        (unless (or (and (not ctrl) (not alt) (not meta) (= (length key) 1))
+                    (and (string-equal key "v") (not alt) (or (and meta (not ctrl)) (and ctrl shift)))
+                    (and (string= key "Insert") shift (not ctrl) (not alt) (not meta)))
           (js:call event "preventDefault")
           (send-key (make-lem-key key :ctrl ctrl :meta alt :super meta :shift shift)))))))
 

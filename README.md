@@ -20,8 +20,9 @@ $ bin/clysm eval '(expt 2 100)'
   streams, package-local nicknames.
 * ASDF and Quicklisp work. McCLIM builds from Quicklisp and runs with its CLX
   backend. [Lem](https://github.com/lem-project/lem), the Common Lisp
-  editor, runs as a desktop application whose frontend is written with the
-  GUI framework below (`contrib/lem/`).
+  editor, runs as a desktop application and in a browser page without a
+  server, with a frontend written with the GUI framework below
+  (`contrib/lem/`).
 * The compiler compiles itself; the second and third generations are
   identical.
 
@@ -89,8 +90,9 @@ REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
 
 ## Lem
 
-`contrib/lem/` runs Lem's core in an Electron window. The frontend is written
-with the GUI framework: Lem's windows are components whose lines follow what
+`contrib/lem/` runs Lem's core in an Electron window, or in a browser page
+opened from a file. The frontend is written with the GUI framework: Lem's
+windows are components whose lines follow what
 Lem draws, keys are read from a text field at the cursor (input methods
 work), and the editor waits for events with `js:await`, since a page has one
 thread. Lisp buffers are highlighted and indented as in Lem, and are
@@ -99,8 +101,11 @@ evaluated in the editor's own image (`C-M-x`, `M-x lisp-repl`).
 ```
 $ contrib/lem/build.sh                     # build/lem-desktop/; Lem and its libraries from GitHub and Quicklisp
 $ (cd build/lem-desktop && npm start)
+$ contrib/lem/build-web.sh                 # build/lem-web/lem.html: one file for a browser, no server needed
 ```
 
+In a browser, Lem's files are in memory (what Lem loads is packed into the
+page) and what is written in the home directory is kept in `localStorage`.
 See [contrib/lem/README.md](contrib/lem/README.md).
 
 ## Performance
@@ -223,5 +228,5 @@ $ make test-all      # also interpreted, compiled at run time, and self-hosted
 $ make fixpoint      # self-compilation reaches a fixed point
 $ make ansi          # the ANSI test suite (third_party/ansi-test submodule)
 $ make test-ui
-$ make test-lem      # Lem in Electron without a display (built first if needed)
+$ make test-lem      # Lem, desktop and browser page, without a display (built first if needed)
 ```

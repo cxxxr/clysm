@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lem</title>
+<!-- Lem on Clysm in one file: open it in a browser, no server is needed.
+     Made by contrib/lem/build-web.sh from contrib/lem/web/index.html. -->
+<style>
+@CSS@
+</style>
+</head>
+<body>
+<div id="status">Loading Lem…</div>
+<div id="lem"></div>
+<!-- the image (WebAssembly) and the files that loading Lem reads, gzip in base64 -->
+<script type="application/octet-stream" id="lem-image">@IMAGE@</script>
+<script type="application/octet-stream" id="lem-files">@FILES@</script>
+<script type="module">
+// ---- host/jsffi.mjs, host/common.mjs, host/web/clysm.mjs, host/web/vfs.mjs
+@HOST@
+// ---- the page
+const status = document.getElementById('status');
+const home = @HOME@;
+const pending = { 1: '', 2: '' };
+const output = (text, fd) => {
+  const lines = (pending[fd] + text).split('\n');
+  pending[fd] = lines.pop();
+  for (const line of lines) (fd === 2 ? console.error : console.log)(line);
+};
+const inline = async (id) => {
+  const base64 = document.getElementById(id).textContent.trim();
+  const response = await fetch('data:application/octet-stream;base64,' + base64);
+  const stream = response.body.pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+};
+try {
+  if (typeof WebAssembly.Suspending !== 'function')
+    throw new Error('this browser cannot suspend WebAssembly (JavaScript Promise Integration); use Chrome or Edge 137 or later');
+  const [bytes, pack] = await Promise.all([inline('lem-image'), inline('lem-files')]);
+  // the files: those of the pack, and what is written in the home directory
+  // (kept in the browser's localStorage)
+  const fs = makeVfs(pack, { persist: [home + '/'], storageKey: 'lem-clysm:' });
+  if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true });
+  let cwd = home + '/';
+  globalThis.process = {
+    platform: 'linux', env: { HOME: home, LANG: 'en_US.UTF-8' },
+    cwd: () => cwd, chdir: (directory) => { cwd = directory; },
+  };
+  // (lisp.eval(string) evaluates Lisp forms, e.g. from the developer tools)
+  window.lisp = await loadClysm(bytes, output, { fs, root: @ROOT@, args: [@BOOT@] });
+  status.remove();
+} catch (e) {
+  status.textContent = 'Lem could not start:\n' + (e && e.message);
+  throw e;
+}
+</script>
+</body>
+</html>

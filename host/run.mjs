@@ -8,6 +8,30 @@ import { makeImports } from './common.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
+
+// With CLYSM_TRACE_FILES=FILE, the files the program reads and the paths it
+// looks at are written to FILE as JSON { read: [...], seen: [...] } when it
+// exits (contrib/lem packs those files for a page without a server).
+const traceFile = process.env.CLYSM_TRACE_FILES;
+const traced = { read: new Set(), seen: new Set() };
+const traceRead = (path) => { if (traceFile && typeof path === 'string') traced.read.add(path); };
+function writeTrace() {
+  if (traceFile) {
+    fs.writeFileSync(traceFile, JSON.stringify({ read: [...traced.read], seen: [...traced.seen] }));
+  }
+}
+if (traceFile) {
+  globalThis.__clysm_fs = new Proxy(fs, {
+    get(target, name) {
+      const value = target[name];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        if (typeof args[0] === 'string') (name === 'readFileSync' ? traced.read : traced.seen).add(args[0]);
+        return value.apply(target, args);
+      };
+    },
+  });
+}
 // octets of a file (compiled modules in fasls); the last file read is cached
 {
   let cachedPath = null, cachedBuf = null, cachedMtime = 0;
@@ -16,6 +40,7 @@ globalThis.__clysm_fs = fs;
     if (path !== cachedPath || mtime !== cachedMtime) {
       cachedBuf = fs.readFileSync(path); cachedPath = path; cachedMtime = mtime;
     }
+    traceRead(path);
     return new Uint8Array(cachedBuf.buffer, cachedBuf.byteOffset + offset, length);
   };
 }
@@ -54,7 +79,7 @@ function nodePlatform(state, args) {
       for (let i = 0; i < n; i++) cp = (cp << 6) | (readByte() & 0x3F);
       return cp;
     },
-    exit(code) { flush(); process.exit(code); },
+    exit(code) { flush(); writeTrace(); process.exit(code); },
     flush() { flush(); },
     file_open(mode) {
       // the file name was accumulated by put_char_buf
@@ -62,6 +87,7 @@ function nodePlatform(state, args) {
       try {
         if (mode === 0 || mode === 3) {
           // 0: text (UTF-8), 3: binary (one char per octet)
+          traceRead(name);
           const data = fs.readFileSync(name, mode === 3 ? 'latin1' : 'utf8');
           state.setCharBuf(data);
           return data.length;
@@ -219,5 +245,6 @@ if (isMainThread && process.argv[1] === selfPath) {
   }
   const bytes = fs.readFileSync(workerData.file);
   await runModule(bytes, workerData.args);
+  writeTrace();
   process.exit(0);
 }

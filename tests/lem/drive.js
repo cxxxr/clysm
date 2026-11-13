@@ -2,10 +2,14 @@
 // it types into the page with sendInputEvent, and checks what Lem has (with
 // lisp.eval in the page) and what the page shows.  Prints "ok NAME" or
 // "FAIL NAME: ..." for each check, then quits.
+// With LEM_WEB_PAGE, the page is the one for a browser (web-shell.js), whose
+// files are in memory: the test writes and reads them through Lisp.
 const fs = require('node:fs');
 const path = require('node:path');
 
-const work = process.env.LEM_TEST_DIR;
+const web = !!process.env.LEM_WEB_PAGE;
+const label = web ? 'lem (browser)' : 'lem';
+let work = process.env.LEM_TEST_DIR;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 module.exports = (win, app) => {
@@ -39,11 +43,23 @@ module.exports = (win, app) => {
     for (let t = 0; t < ms; t += 100) { if (await predicate()) return true; await sleep(100); }
     return false;
   };
+  const lispString = (string) => '"' + string.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  const writeFile = async (file, text) => {
+    if (!web) return fs.writeFileSync(file, text);
+    await lisp(`(with-open-file (out (ensure-directories-exist ${lispString(file)}) :direction :output :if-exists :supersede) (write-string ${lispString(text)} out))`);
+  };
+  const readFile = async (file) => {
+    if (!web) return fs.readFileSync(file, 'utf8');
+    // a string as Lisp prints it: in double quotes, \ before " and \
+    const printed = await lisp(`(uiop:read-file-string ${lispString(file)})`);
+    return printed.slice(1, -1).replace(/\\(.)/g, '$1');
+  };
 
   wc.once('did-finish-load', async () => {
     try {
       const started = await until(async () => (await js("document.querySelectorAll('.lem-line').length")) > 0, 60000);
       check('start', started && (await screen()).includes('*tmp*'));
+      if (web) work = JSON.parse(await lisp('(namestring (user-homedir-pathname))')) + 'lem-test';
 
       await type('(hello world)'); await key('Return');
       wc.insertText('日本語');       // what an input method commits
@@ -58,7 +74,7 @@ module.exports = (win, app) => {
       await key('g', ['control']); await sleep(200);
 
       const file = path.join(work, 'sample.lisp');
-      fs.writeFileSync(file, '(defun fact (n)\n  (if (<= n 1) 1 (* n (fact (1- n)))))\n');
+      await writeFile(file, '(defun fact (n)\n  (if (<= n 1) 1 (* n (fact (1- n)))))\n');
       await key('x', ['control']); await key('f', ['control']); await sleep(300);
       await key('a', ['control']); await key('k', ['control']);
       await type(file); await key('Return'); await sleep(800);
@@ -74,7 +90,8 @@ module.exports = (win, app) => {
             await lisp('(cl-user::fact 10)'));
 
       await key('>', ['alt', 'shift']); await type('; saved'); await key('x', ['control']); await key('s', ['control']); await sleep(800);
-      check('save', fs.readFileSync(file, 'utf8').endsWith('; saved'));
+      check('save', (await readFile(file)).endsWith('; saved'));
+      if (web) check('kept by the browser', await js(`localStorage.getItem('lem-clysm:' + ${JSON.stringify(file)}) !== null`));
 
       // a click moves the cursor: line 2, column 4 (below the line of tabs)
       const [cw, ch] = JSON.parse(await js("JSON.stringify((() => { const s = document.querySelector('.lem-line span'); const l = s.parentElement; return [parseFloat(s.style.width) / s.innerText.length, l.offsetHeight]; })())"));
@@ -95,7 +112,7 @@ module.exports = (win, app) => {
 
       // the wheel scrolls
       const long = path.join(work, 'long.txt');
-      fs.writeFileSync(long, Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n'));
+      await writeFile(long, Array.from({ length: 300 }, (_, i) => `line ${i + 1}`).join('\n'));
       await key('x', ['control']); await key('f', ['control']); await sleep(300);
       await key('a', ['control']); await key('k', ['control']);
       await type(long); await key('Return'); await sleep(800);
@@ -114,10 +131,13 @@ module.exports = (win, app) => {
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));
 
       check('no errors on the console', errors.length === 0, errors.join(' | '));
-      win.on('closed', () => { console.log(failed ? `lem: ${failed} failed` : 'lem: ok'); app.exit(failed ? 1 : 0); });
+      const finish = () => { console.log(failed ? `${label}: ${failed} failed` : `${label}: ok`); app.exit(failed ? 1 : 0); };
+      win.on('closed', finish);
       await key('x', ['control']); await key('c', ['control']);
-      await sleep(3000);
-      check('exit', false, 'C-x C-c did not close the window');
+      // (a browser may not let the page close: then it says that Lem has exited)
+      const exited = await until(async () => win.isDestroyed() || (await js("document.body.innerText")).includes('Lem has exited'), 3000);
+      check('exit', exited, 'C-x C-c did not close the window');
+      finish();
     } catch (e) {
       console.log('FAIL', e && e.stack || e);
     }
