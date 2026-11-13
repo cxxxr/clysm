@@ -305,10 +305,13 @@
         `(,pred ,x)
         `(and (,pred ,x) (eql (length ,x) ,(car args)))))
 
-  (defun %typep-expansion (x type)
+  (defun %typep-expansion (x type &optional (depth 0))
     "A form testing the variable X for the constant type specifier TYPE; a
-(typep X 'TYPE) form when the test is left to TYPEP."
-    (let ((default `(typep ,x ',type)))
+(%typep X 'TYPE) form when the test is left to TYPEP.  DEPTH counts the DEFTYPE
+expansions on the way: a type defined in terms of itself, such as
+ (deftype tree () '(or null (cons tree tree))), is left to TYPEP after a few."
+    ;; what is left to TYPEP calls %TYPEP, so that the form is not expanded again
+    (let ((default `(%typep ,x ',type)))
       (cond ((eq type t) `(progn ,x t))
             ((null type) `(progn ,x nil))
             ((symbolp type)
@@ -320,8 +323,9 @@
                    ((eq type 'extended-char) `(progn ,x nil))
                    ((member type *typep-special-names*) default)
                    ((get type '%deftype)
-                    (let ((exp (handler-case (list (funcall (get type '%deftype) nil)) (error () nil))))
-                      (if exp (%typep-expansion x (car exp)) default)))
+                    (let ((exp (and (< depth 6)
+                                    (handler-case (list (funcall (get type '%deftype) nil)) (error () nil)))))
+                      (if exp (%typep-expansion x (car exp) (+ depth 1)) default)))
                    ((or (keywordp type) (null (symbol-package type))) default)
                    (t `(%typep-cell ,x (load-time-value (%type-cell ',type))))))
             ((not (and (consp type) (symbolp (car type)) (listp (cdr type)) (null (cdr (last type)))))
@@ -329,8 +333,8 @@
             (t
              (let ((head (car type)) (args (cdr type)))
                (case head
-                 ((or and) `(,head ,@(mapcar (lambda (ty) (%typep-expansion x ty)) args)))
-                 (not (if (and args (null (cdr args))) `(not ,(%typep-expansion x (car args))) default))
+                 ((or and) `(,head ,@(mapcar (lambda (ty) (%typep-expansion x ty depth)) args)))
+                 (not (if (and args (null (cdr args))) `(not ,(%typep-expansion x (car args) depth)) default))
                  (member (cond ((null args) `(progn ,x nil))
                                ((null (cdr args)) `(eql ,x ',(car args)))
                                (t `(if (member ,x ',args) t nil))))
@@ -362,8 +366,8 @@
                   (if (null (cddr args))
                       (let ((a (if args (car args) '*)) (d (if (cdr args) (cadr args) '*)) (g (gensym)))
                         `(and (consp ,x)
-                              ,@(if (member a '(* t)) nil `((let ((,g (car ,x))) ,(%typep-expansion g a))))
-                              ,@(if (member d '(* t)) nil `((let ((,g (cdr ,x))) ,(%typep-expansion g d))))))
+                              ,@(if (member a '(* t)) nil `((let ((,g (car ,x))) ,(%typep-expansion g a depth))))
+                              ,@(if (member d '(* t)) nil `((let ((,g (cdr ,x))) ,(%typep-expansion g d depth))))))
                       default))
                  (simple-vector (if (%typep-size-ok args) (%typep-sized-expansion x 'simple-vector-p args) default))
                  (string (if (%typep-size-ok args) (%typep-sized-expansion x 'stringp args) default))
@@ -385,20 +389,22 @@
                       default))
                  ((complex function values base-string simple-base-string) default)
                  (otherwise
-                  (let ((exp (and (get head '%deftype)
+                  (let ((exp (and (get head '%deftype) (< depth 6)
                                   (handler-case (list (funcall (get head '%deftype) args)) (error () nil)))))
-                    (if exp (%typep-expansion x (car exp)) default))))))))))
+                    (if exp (%typep-expansion x (car exp) (+ depth 1)) default))))))))))
 
 (define-compiler-macro typep (&whole form x type &optional env)
   (if (and (null env) (consp type) (eq (car type) 'quote) (consp (cdr type)) (null (cddr type)))
       (let ((ty (cadr type)))
         (if (symbolp x)
             (let ((e (%typep-expansion x ty)))
-              (if (and (consp e) (eq (car e) 'typep)) form e))
+              (if (and (consp e) (eq (car e) '%typep)) form e))
             (let ((g (gensym)))
               (let ((e (%typep-expansion g ty)))
-                (if (and (consp e) (eq (car e) 'typep)) form `(let ((,g ,x)) ,e))))))
+                (if (and (consp e) (eq (car e) '%typep)) form `(let ((,g ,x)) ,e))))))
       form))
+
+(defun %typep (x type) (typep x type))
 
 ;;; The type cell of a symbol: (class-or-nil . name).  %SET-FIND-CLASS keeps
 ;;; the class in it up to date, so a compiled test of a class or structure

@@ -207,13 +207,6 @@ every test, without a call."
                         ((%fx= ,k 2) (%sxhash ,x 4))
                         (t (%equalp-hash ,x 4)))))))))
 
-(defun %ht-key-equal (h a b)
-  (let ((k (%ht h +ht-kind+)))
-    (cond ((%fx= k 0) (eq a b))
-          ((%fx= k 1) (eql a b))
-          ((%fx= k 2) (equal a b))
-          (t (equalp a b)))))
-
 (defun %ht-find-general (sv key hash kind)
   "Index of KEY or -1 in the table whose slots are SV, comparing with its test."
   (let* ((buckets (%svref sv +ht-buckets+))
@@ -370,11 +363,6 @@ for here, without a call."
       (let ((k (%svref keys i)))
         (unless (eq k +deleted+)
           (funcall fn k (%svref vals i)))))))
-
-(defun %hash-table-pairs (h)
-  (let ((r nil))
-    (maphash (lambda (k v) (push (cons k v) r)) h)
-    (nreverse-list r)))
 
 (defun %ht-next-index (h i)
   "The index of the first entry of H at I or after it, or -1."

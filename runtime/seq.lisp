@@ -680,12 +680,6 @@
 (defun %keyfn (key)
   (cond ((null key) nil) ((functionp key) key) ((symbolp key) (symbol-function key))
         (t (%type-error key '(or function symbol)))))
-(defun %seq-test (test test-not)
-  (cond ((and test test-not) (error "Both :TEST and :TEST-NOT were supplied"))
-        (test (%fn test))
-        (test-not (let ((tn (%fn test-not))) (lambda (a b) (not (funcall tn a b)))))
-        (t #'eql)))
-
 (defun %list-length-checked (l)
   (let ((n (list-length l)))
     (or n (%type-error l '(and list (satisfies list-length))))))
@@ -707,12 +701,6 @@
   (cond ((null count) nil)
         ((integerp count) (if (< count 0) 0 count))
         (t (%type-error count '(or null integer)))))
-
-(defun %list-region (list start end)
-  "A fresh list of the elements of LIST in [START, END)."
-  (let ((l (nthcdr start list)) (r nil))
-    (dotimes (i (- end start) (nreverse-list r))
-      (push (car l) r) (setq l (cdr l)))))
 
 (defun %list-region-vector (list start end)
   "A simple vector of the elements of LIST in [START, END)."
@@ -1027,6 +1015,10 @@ the type is fully described by the other values (otherwise the result is checked
                    (unless (consp l) (%type-error end `(or null (integer ,start ,(+ start i)))))
                    (push (car l) r) (setq l (cdr l))))
                (copy-list l))))
+        ((%simple-string-p seq)
+         (let* ((end (%check-bounds start end (%string-length seq))) (n (- end start)))
+           (declare (fixnum n))
+           (%string-copy (%make-string n (code-char 0)) 0 seq start n)))
         ((vectorp seq)
          (let* ((len (length seq)) (end (%check-bounds start end len)))
            (%copy-elements (%vector-like seq (- end start)) 0
