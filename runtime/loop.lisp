@@ -22,9 +22,10 @@
   ;; parser state is kept in a simple vector:
   ;; 0 tokens, 1 bindings(rev), 2 pre(rev), 3 body(rev), 4 steps(rev), 5 initially(rev),
   ;; 6 finally(rev), 7 result-form, 8 name, 9 accumulators alist, 10 default-acc,
-  ;; 11 end-tag, 12 first-flag var, 13 post-pre (rev), 14 ALWAYS/NEVER/THEREIS seen
+  ;; 11 end-tag, 12 first-flag var, 13 post-pre (rev), 14 ALWAYS/NEVER/THEREIS seen,
+  ;; 15 variable types, 16 a FOR = clause seen
   (defun %loop-new-state (tokens)
-    (let ((s (make-array 16 :initial-element nil)))
+    (let ((s (make-array 17 :initial-element nil)))
       (setf (svref s 0) tokens)
       (setf (svref s 11) (gensym "LOOP-END"))
       s))
@@ -125,6 +126,16 @@ the default value of its type (and no declaration when there is none)."
     (setf (%ls s 2) (cons `(when ,form (go ,(%ls s 11))) (%ls s 2))))
 
   (defun %loop-pre (s form) (setf (%ls s 2) (cons form (%ls s 2))))
+
+  ;; The termination test of a clause over a list or a vector is also made
+  ;; right after its step, so that the clauses after it are not stepped when
+  ;; it ends the loop; but not after a FOR = clause, which is stepped with
+  ;; the PRE forms: there the test in the PRE forms comes after that
+  ;; clause's step, in the order of the clauses (FOR A = 0 THEN B FOR (C B)
+  ;; IN LIST: A is the last B when the loop ends, as in SBCL).
+  (defun %loop-step-test (s form)
+    (unless (%ls s 16)
+      (%loop-step s `(when ,form (go ,(%ls s 11))))))
   (defun %loop-step (s form) (setf (%ls s 4) (cons form (%ls s 4))))
 
   (defun %loop-parse-for (s &optional group-steps later)
@@ -152,7 +163,7 @@ the default value of its type (and no declaration when there is none)."
              ;; each clause is stepped and then tested (the clauses after
              ;; it are not stepped when it terminates the loop)
              (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))
-             (%loop-step s `(when ,(if (%lkw kw "IN") `(endp ,g) `(atom ,g)) (go ,(%ls s 11))))))
+             (%loop-step-test s (if (%lkw kw "IN") `(endp ,g) `(atom ,g)))))
           ((%lkw kw "ACROSS")
            (let ((vec (gensym "VEC")) (i (gensym "I")))
              (%loop-add-binding s vec (%loop-pop s))
@@ -161,8 +172,9 @@ the default value of its type (and no declaration when there is none)."
              (%loop-end-test s `(>= ,i (length ,vec)))
              (dolist (f (%loop-destructure-setq var `(aref ,vec ,i))) (%loop-pre s f))
              (%loop-step s `(setq ,i (+ ,i 1)))
-             (%loop-step s `(when (>= ,i (length ,vec)) (go ,(%ls s 11))))))
+             (%loop-step-test s `(>= ,i (length ,vec)))))
           ((%lkw kw "=")
+           (setf (%ls s 16) t)
            (let ((init (%loop-pop s)))
              (%loop-bind-pattern s var)
              (if (%lkw (%loop-peek s) "THEN")
@@ -283,7 +295,9 @@ the default value of its type (and no declaration when there is none)."
       (unless (assoc var (%ls s 9))
         (let ((tail (gensym "TAIL")))
           (setf (%ls s 9) (cons (list var kind tail) (%ls s 9)))
-          (%loop-add-binding s var (cond ((member kind '(:sum :count))
+          ;; MAXIMIZE and MINIMIZE never executed give zero, as in SBCL;
+          ;; their TAIL variable tells whether a value was accumulated
+          (%loop-add-binding s var (cond ((member kind '(:sum :count :max :min))
                                           (if (and type (%lkw-in type '("FLOAT" "SINGLE-FLOAT" "DOUBLE-FLOAT"
                                                                         "SHORT-FLOAT" "LONG-FLOAT")))
                                               (if (%lkw-in type '("DOUBLE-FLOAT" "LONG-FLOAT")) 0.0d0 0.0)
@@ -318,8 +332,8 @@ the default value of its type (and no declaration when there is none)."
                   (setq ,tail (last c)))))
             ((eq kind :count) `(when ,form (setq ,var (+ ,var 1))))
             ((eq kind :sum) `(setq ,var (+ ,var ,form)))
-            ((eq kind :max) `(let ((v ,form)) (when (or (null ,var) (> v ,var)) (setq ,var v))))
-            (t `(let ((v ,form)) (when (or (null ,var) (< v ,var)) (setq ,var v)))))))
+            ((eq kind :max) `(let ((v ,form)) (when (or (null ,tail) (> v ,var)) (setq ,var v ,tail t))))
+            (t `(let ((v ,form)) (when (or (null ,tail) (< v ,var)) (setq ,var v ,tail t)))))))
 
   (defun %loop-parse-compound-forms (s)
     (let ((forms nil))

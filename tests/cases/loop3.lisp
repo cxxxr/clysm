@@ -16,3 +16,18 @@
 (print (loop for i below 5 while (< i 3) for j = (* i i) collect j))
 (print (loop for x in '(1 2 3) until (> x 2) for y = x then (+ y 10) collect y))
 (print (list (char-code #\cr) (char-code #\lf) (char-code #\ht) (char-code #\ff) (char-code #\bs)))
+;; MAXIMIZE / MINIMIZE never executed give 0 (as SBCL; Lem relies on it)
+(print (list (loop for x in nil maximize x) (loop for x in nil minimize x)
+             (loop for x in '(3 -1 2) maximize x) (loop for x in '(-3 -1) maximize x)
+             (loop for x in '(1 5) minimize x into m finally (return m))))
+(print (let ((attrs '((0 3 a) (5 7 b))))
+  (loop :for last-pos := 0 :then end
+        :for (start end attribute) :in attrs
+        :collect (list last-pos start end)
+        :finally (return (list :last last-pos)))))
+(print (loop for x in '(1 2 3) for y = x then (* 2 x) collect (list x y)))
+(print (loop for x in '(a b) for i from 0 finally (return i)))
+(print (loop for i from 0 for x in '(a b) finally (return i)))
+(print (loop for y = 0 then (1+ y) for x in '(a b c) finally (return y)))
+(print (loop for x across "abc" for k = 1 then (* k 2) collect k))
+(print (loop for y = 10 then x for x from 0 below 3 finally (return (list x y))))
