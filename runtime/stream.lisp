@@ -137,7 +137,9 @@
 
 (defun make-string-output-stream (&key (element-type 'character))
   (%make-stream :kind :string-out :elt-type element-type
-                :buffer (make-array 64 :element-type 'character :fill-pointer 0 :adjustable t)))
+                ;; (make-array 64 :element-type 'character :fill-pointer 0 :adjustable t)
+                :buffer (%make-mdarray (%make-string 64 (code-char 0)) 0 (list 64) 0
+                                       (cons 'character (cons t nil)))))
 
 (defun get-output-stream-string (s)
   (unless (and (%streamp s) (eq (stream-kind s) :string-out))
