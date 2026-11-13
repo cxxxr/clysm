@@ -690,19 +690,24 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         (:br_on_non_null ,l)
         (:global.get ,(sym-global sym)) (:call :undefined-function)))))
 
-;;; ERROR, SIGNAL, WARN and CERROR called directly: the call goes to a variant
-;;; that, when the handler is a clause of a HANDLER-CASE, leaves the exit to
-;;; it pending and returns (see "Non-local exits of local functions as
-;;; returns"), so that a HANDLER-CASE in the calling function takes it without
-;;; a Wasm exception.  The functions themselves (FUNCALL, APPLY, and calls
-;;; with no CATCH or HANDLER-CASE around them in a function that is not
-;;; flagging) throw.
+;;; The signalling functions and the functions that invoke restarts exist
+;;; twice (runtime/cond.lisp): the function itself throws its non-local exit
+;;; (to the HANDLER-CASE clause, the RESTART-CASE clause); its twin, compiled
+;;; from the same source as a flagging function, returns with the exit pending
+;;; (see "Non-local exits of local functions as returns").  A direct call with
+;;; a catcher around it in the calling function, or in a flagging function,
+;;; calls the twin, so that a HANDLER-CASE or RESTART-CASE of the function
+;;; takes the exit without a Wasm exception.
 (defparameter *flag-returning-calls*
   '((error . clysm-sys::%error*) (signal . clysm-sys::%signal*)
-    (warn . clysm-sys::%warn*) (cerror . clysm-sys::%cerror*)))
+    (warn . clysm-sys::%warn*) (cerror . clysm-sys::%cerror*)
+    (invoke-restart . clysm-sys::%invoke-restart*)
+    (abort . clysm-sys::%abort*) (continue . clysm-sys::%continue*)
+    (muffle-warning . clysm-sys::%muffle-warning*)
+    (use-value . clysm-sys::%use-value*) (store-value . clysm-sys::%store-value*)))
 
 (defun cg-global-call (sym args mv tail)
-  (let ((variant (and (or *fexit* (some (lambda (c) (eq (car c) :catch)) *catchers*))
+  (let ((variant (and (or *fexit* *catchers*)
                       (not (gethash sym *notinline*))
                       (cdr (assoc sym *flag-returning-calls*)))))
     (if variant
@@ -997,6 +1002,9 @@ no other function exits any more (the lambdas that did were inlined) is local."
             (if (blk-p b) (setf (blk-nonlocal b) nil) (setf (tb-nonlocal b) nil))))))))
 
 (defun ensure-flag-analysis (lam)
+  ;; the twins of the signalling functions are flagging
+  (when (and (lam-name lam) (symbolp (lam-name lam)) (rassoc (lam-name lam) *flag-returning-calls*))
+    (setf (lam-flagging lam) t))
   (let ((root lam))
     (loop while (lam-parent root) do (setf root (lam-parent root)))
     (unless (lam-flag-analyzed root)
@@ -1473,6 +1481,9 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 ;;; call of F with a CATCH or HANDLER-CASE around it in the calling function
 ;;; (which then takes the exit with a branch), and from a flag clone, by the
 ;;; calls of the function itself and the tail calls of other functions.
+;;; (A non-local block counts as a catcher here: the handler functions of
+;;; HANDLER-BIND return their exits to the signalling function, which
+;;; returns them in turn.)
 
 (defparameter *flag-clone-max-nodes* 600 "larger functions get no flag clone")
 
@@ -1502,7 +1513,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (and (lam-simple-p lam) (null (lam-free-vars lam))
        (if *fexit*
            (and *flag-clone* (or tail (eq lam *flag-clone*)))
-           (some (lambda (c) (eq (car c) :catch)) *catchers*))
+           *catchers*)
        (may-flag-p lam)))
 
 (defun flag-clone-name (lam) (list :flag-main (lam-id lam)))

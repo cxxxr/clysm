@@ -310,3 +310,97 @@
 (print (let ((n 0))
          (dotimes (i 3000) (incf n (handler-case (signal-if (- (mod i 5) 2)) (e1 (c) (e1-v c)))))
          (list n (signal-if 1))))
+
+;;; exits of handler functions: to blocks, tags, catches and restarts, with
+;;; the signal in the same function, in a called one, or made by FUNCALL/APPLY
+(defun deep-signal (n x) (if (= n 0) (signal-if x) (unwind-protect (+ 1 (deep-signal (1- n) x)) (tr n))))
+(defun handler-exits (how x)
+  (let ((*v* :handler-exits))
+    (block b
+      (catch 'c
+        (tagbody
+           (return-from b
+             (list :normal
+                   (restart-case
+                       (handler-bind ((e1 (lambda (c)
+                                            (tr (list :handler *v*))
+                                            (ecase how
+                                              (:block (return-from b (list :block (e1-v c))))
+                                              (:catch (throw 'c (list :catch (e1-v c))))
+                                              (:go (go out))
+                                              (:restart (invoke-restart 'r (e1-v c)))
+                                              (:use-value (use-value (list :use (e1-v c)) c))
+                                              (:decline nil)
+                                              (:error (error 'type-error :datum (e1-v c) :expected-type 'null))))))
+                         (handler-case
+                             (let ((*v* :inner))
+                               (ecase x
+                                 (0 :no-signal)
+                                 (1 (error 'e1 :v :same-function))
+                                 (2 (signal-if -2))
+                                 (3 (deep-signal 3 -3))
+                                 (4 (funcall 'error 'e1 :v :funcall))
+                                 (5 (apply #'signal 'e1 '(:v :apply)) :signal-returned)
+                                 (6 (signal 'e1 :v :signal) :signal-returned)))
+                           (type-error (c) (list :type-error (type-error-datum c)))))
+                     (r (v) (list :restart v *v*))
+                     (use-value (v) (list v *v*)))
+                   *v*))
+         out
+           (return-from b (list :went-out *v*)))))))
+(dolist (how '(:block :catch :go :restart :use-value :error))
+  (print (traced (loop for x from 0 to 6
+                       collect (handler-case (handler-exits how x)
+                                 (type-error (c) (list :outer-type-error (type-error-datum c) *v*)))))))
+(print (traced (list (handler-exits :decline 0)
+                     (handler-case (handler-exits :decline 3) (e1 (c) (list :outer (e1-v c) *v*))))))
+;; handlers of several clusters, an inner one declines
+(defun two-levels (x)
+  (block b
+    (handler-bind ((e1 (lambda (c) (return-from b (list :outer (e1-v c))))))
+      (handler-bind ((e2 (lambda (c) (return-from b (list :inner (e1-v c)))))
+                     (warning (lambda (w) (tr :warned) (muffle-warning w))))
+        (list (warn "w") (signal-if x) (if (zerop x) (error 'e2 :v :zero) :end))))))
+(print (traced (list (two-levels 1) (two-levels -1) (two-levels 0))))
+;; a handler that signals itself: only the handlers further out are in force
+(defun handler-signals ()
+  (block b
+    (handler-bind ((e1 (lambda (c) (return-from b (list :outermost (e1-v c))))))
+      (handler-bind ((e2 (lambda (c) (declare (ignore c)) (error 'e1 :v :from-handler))))
+        (handler-bind ((e1 (lambda (c) (declare (ignore c)) (tr :innermost-declines))))
+          (error 'e2 :v 1))))))
+(print (traced (handler-signals)))
+;; continue / abort / store-value / muffle-warning from handlers, cerror in the same function
+(defun standard-restarts (which)
+  (handler-bind ((e1 (lambda (c)
+                       (ecase which
+                         (:continue (continue c))
+                         (:abort (abort c))
+                         (:store (store-value 9 c))
+                         (:none nil))))
+                 (warning #'muffle-warning))
+    (restart-case (list (cerror "continue ~A" 'e1 :v 1) (warn "x") :after)
+      (abort () :aborted)
+      (store-value (v) (list :stored v)))))
+(print (list (standard-restarts :continue) (standard-restarts :abort) (standard-restarts :store)))
+(print (handler-case (standard-restarts :none) (e1 () :not-handled-by-bind)))
+;; restarts invoked where no handler is involved
+(defun plain-restarts (k)
+  (restart-case (case k
+                  (0 (invoke-restart 'a 1 2))
+                  (1 (use-value :uv))
+                  (2 (funcall #'invoke-restart 'a 3 4))
+                  (3 (invoke-restart (find-restart 'b)))
+                  (4 (flet ((f () (invoke-restart 'a 5 6))) (unwind-protect (f) (tr :plain-cleanup))))
+                  (t (store-value 1) :no-store-value-restart))
+    (a (x y) (list :a x y))
+    (b () :b)
+    (use-value (v) (list :use-value v))))
+(print (traced (loop for k from 0 to 5 collect (plain-restarts k))))
+;; many times
+(print (let ((n 0))
+         (dotimes (i 2000)
+           (incf n (block b (handler-bind ((e1 (lambda (c) (return-from b (e1-v c))))) (deep-signal (mod i 3) (- (mod i 4) 2)))))
+           (incf n (handler-bind ((e1 (lambda (c) (use-value (- (e1-v c))))))
+                     (restart-case (signal-if (- (mod i 3) 1)) (use-value (v) v)))))
+         n))

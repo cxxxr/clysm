@@ -721,6 +721,15 @@ leaving quoted data alone."
 (defnative clysm-sys::%catch (form env)
   `(:catch ,(convert (second form) env) ,(convert-body (cddr form) env) t))
 
+;;; (sys:%handler-function form) — FORM is a handler of HANDLER-BIND.  A lambda
+;;; written there is only called by the signalling functions, which look at
+;;; the pending exit after the call: it is compiled as a flagging function
+;;; (codegen.lisp, "Non-local exits of local functions as returns").
+(defnative clysm-sys::%handler-function (form env)
+  (let ((node (convert (second form) env)))
+    (when (eq (car node) :lambda) (setf (lam-flagging (second node)) t))
+    node))
+
 ;;; (sys:%wasm-test (args...) instrs...) — inline wasm producing an i32 boolean
 (defnative clysm-sys::%wasm-test (form env)
   (destructuring-bind (args &rest instrs) (cdr form)

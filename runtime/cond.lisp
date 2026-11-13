@@ -307,20 +307,27 @@
                                    :format-arguments (list restart)))
     r))
 
-(defun %invoke-restart (r args)
-  (let ((f (restart-function r)))
+;;; Functions that leave by a non-local exit to a HANDLER-CASE or RESTART-CASE
+;;; exist twice: the function itself, where %THROW throws, and a twin that
+;;; the compiler calls (src/codegen.lisp, *FLAG-RETURNING-CALLS*) and
+;;; compiles as a flagging function, where %THROW and the calls of other
+;;; such functions return with the exit pending.
+(defmacro %define-twin (name twin lambda-list &body body)
+  `(progn (defun ,name ,lambda-list ,@body)
+          (defun ,twin ,lambda-list ,@body)))
+
+(%define-twin invoke-restart %invoke-restart* (restart &rest args)
+  (let* ((r (%find-active-restart restart)) (f (restart-function r)))
     (if f
         (apply f args)
         (let ((tag (or (restart-tag r) r)))
           (setf (restart-chosen tag) (restart-index r))
           (%throw tag args)))))
 
-(defun invoke-restart (restart &rest args)
-  (%invoke-restart (%find-active-restart restart) args))
-
 (defun invoke-restart-interactively (restart)
   (let ((r (%find-active-restart restart)))
-    (%invoke-restart r (if (restart-interactive-function r) (funcall (restart-interactive-function r)) nil))))
+    (apply #'invoke-restart r
+           (if (restart-interactive-function r) (funcall (restart-interactive-function r)) nil))))
 
 (defmacro restart-bind (bindings &body body)
   `(let ((*restart-clusters*
@@ -427,19 +434,19 @@ the restarts are associated with the condition being signaled."
        (unwind-protect (progn ,@body)
          (dolist (r ,rs) (setf (restart-conditions r) (remove ,c (restart-conditions r) :count 1)))))))
 
-(defun abort (&optional condition)
+(%define-twin abort %abort* (&optional condition)
   (let ((r (find-restart 'abort condition)))
     (if r (invoke-restart r)
         (error 'simple-control-error :format-control "There is no active ABORT restart."
                                      :format-arguments nil))))
-(defun continue (&optional condition)
+(%define-twin continue %continue* (&optional condition)
   (let ((r (find-restart 'continue condition))) (when r (invoke-restart r))))
-(defun muffle-warning (&optional condition)
+(%define-twin muffle-warning %muffle-warning* (&optional condition)
   (let ((r (find-restart 'muffle-warning condition)))
     (if r (invoke-restart r) (error 'control-error))))
-(defun use-value (value &optional condition)
+(%define-twin use-value %use-value* (value &optional condition)
   (let ((r (find-restart 'use-value condition))) (when r (invoke-restart r value))))
-(defun store-value (value &optional condition)
+(%define-twin store-value %store-value* (value &optional condition)
   (let ((r (find-restart 'store-value condition))) (when r (invoke-restart r value))))
 
 ;;; ------------------------------------------------------------
@@ -487,7 +494,7 @@ the restarts are associated with the condition being signaled."
 
 ;;; the body of SIGNAL, also expanded in ERROR and WARN: the frames between
 ;;; the signalling function and the handler make a transfer of control slower
-(defmacro %signal-condition (condition &optional (transfer '%throw))
+(defmacro %signal-condition (condition)
   `(let ((cluster *handler-clusters*))
     (do () ((null cluster))
       (let* ((next (%svref cluster 0)) (types (%svref cluster 1)) (n (length types)))
@@ -495,41 +502,27 @@ the restarts are associated with the condition being signaled."
             (do ((i 0 (+ i 1))) ((>= i n))
               (when (%condition-of-type-p ,condition (%svref types i))
                 (let ((*handler-clusters* next))
-                  (funcall (%svref cluster (+ i 3)) ,condition))))
+                  (funcall (%svref cluster (+ i 3)) ,condition))
+                ;; a handler written in the HANDLER-BIND form returns with
+                ;; its non-local exit pending
+                (%take-pending-exit)))
             (do ((i 0 (+ i 1))) ((>= i n))
               (when (%condition-of-type-p ,condition (%svref types i))
                 (%set-svref cluster 2 i)
-                (,transfer cluster ,condition))))
+                (%throw cluster ,condition))))
         (setq cluster next)))))
 
 (defun %throw (tag value) (%throw tag value))
+(defun %take-pending-exit () (%take-pending-exit))
 
 ;;; The pending non-local exit (src/codegen.lisp, "Non-local exits of local
 ;;; functions as returns"): unbound when there is none.
 (defvar %exit-tag)
 (defvar %exit-value)
 
-;;; SIGNAL, ERROR, WARN and CERROR exist twice.  The functions of these names
-;;; throw the condition to the HANDLER-CASE that handles it.  Compiled direct
-;;; calls go to %SIGNAL*, %ERROR*, %WARN* and %CERROR*, which leave that exit
-;;; pending and return instead: the code after such a call takes it up (a
-;;; HANDLER-CASE in the same function without a Wasm exception, otherwise
-;;; by throwing).  Only the compiler calls them.
-(defmacro %define-signaller (name variant lambda-list &body body)
-  "BODY uses (%TRANSFER cluster condition) to leave for a HANDLER-CASE clause."
-  `(progn
-     (defun ,name ,lambda-list
-       (macrolet ((%transfer (cluster condition) `(%throw ,cluster ,condition)))
-         ,@body))
-     (defun ,variant ,lambda-list
-       (macrolet ((%transfer (cluster condition)
-                    `(progn (setq %exit-value ,condition %exit-tag ,cluster)
-                            (return-from ,',variant nil))))
-         ,@body))))
-
-(%define-signaller signal %signal* (datum &rest args)
+(%define-twin signal %signal* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-condition)))
-    (%signal-condition condition %transfer)
+    (%signal-condition condition)
     nil))
 
 (defvar *error-depth* 0)
@@ -548,31 +541,31 @@ the restarts are associated with the condition being signaled."
   ;; trap so that the host prints a stack trace
   (%wasm nil () :unreachable))
 
-(%define-signaller error %error* (datum &rest args)
+(%define-twin error %error* (datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let* ((*error-depth* (+ *error-depth* 1))
          (condition (%coerce-to-condition datum args 'simple-error)))
-    (%signal-condition condition %transfer)
+    (%signal-condition condition)
     (invoke-debugger condition)))
 
-(%define-signaller cerror %cerror* (continue-format datum &rest args)
+(%define-twin cerror %cerror* (continue-format datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
     (restart-case (progn
                     (%associate-restarts c (car *restart-clusters*))
                     (let ((*error-depth* (+ *error-depth* 1)))
-                      (%signal-condition c %transfer))
+                      (%signal-condition c))
                     (invoke-debugger c))
       (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
   nil)
 
-(%define-signaller warn %warn* (datum &rest args)
+(%define-twin warn %warn* (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-warning)))
     (unless (typep condition 'warning)
       (error 'simple-type-error :datum condition :expected-type 'warning
                                 :format-control "~S is not a warning" :format-arguments (list condition)))
     (restart-case (progn
-                    (%signal-condition condition %transfer)
+                    (%signal-condition condition)
                     (format *error-output* "~&WARNING: ~A~%" condition))
       (muffle-warning () :report "Skip warning." nil))
     nil))
@@ -591,10 +584,14 @@ the restarts are associated with the condition being signaled."
   nil)
 
 ;;; handler macros
+;;; (the compiler compiles a lambda written as a handler so that its
+;;; non-local exits are returns to the signalling function: frontend.lisp)
+(defmacro %handler-function (function) function)
+
 (defmacro handler-bind (bindings &body body)
   `(let ((*handler-clusters*
            (vector *handler-clusters* ',(apply #'vector (mapcar #'car bindings)) t
-                   ,@(mapcar #'cadr bindings))))
+                   ,@(mapcar (lambda (b) `(%handler-function ,(cadr b))) bindings))))
      ,@body))
 
 (defmacro handler-case (form &rest clauses)

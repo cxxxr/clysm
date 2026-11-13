@@ -513,9 +513,18 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
 (defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
 (defprim clysm-sys::%unbind-to (sp) :value `(,@sp (:ref.cast :i31) :i31.get_s (:call :unbind-to) ,@(nil-code)))
-;; throw to a SYS:%CATCH (the tag is known to be active)
+;; throw to a SYS:%CATCH (the tag is known to be active); in a flagging
+;; function, a return with the exit pending
 (defprim clysm-sys::%throw (tag value) :value
-  `(,@tag ,@value (:i32.const 1) (:global.set :mv-count) (:throw :lisp-throw)))
+  (if *fexit*
+      `((:i32.const 1) (:global.set :mv-count) ,@(flagged-exit-code tag value) :unreachable)
+      `(,@tag ,@value (:i32.const 1) (:global.set :mv-count) (:throw :lisp-throw))))
+;; after a call of a function that may have returned with an exit pending
+;; (a handler written in the HANDLER-BIND form): take it up
+(defprim clysm-sys::%take-pending-exit () :value
+  (if (or *fexit* *catchers*)
+      `(,@(nil-code) ,@(pending-exit-check-code))
+      `(,@(pending-exit-throw-code) ,@(nil-code))))
 (defprim clysm-sys::%write-char (c fd) :value
   (let ((tmp (new-local)))
     `(,@fd (:ref.cast :i31) :i31.get_s ,@c (:local.tee ,tmp) (:call :check-char) (:i32.const ,+char-tag+) :i32.sub (:call :host-write-char)
