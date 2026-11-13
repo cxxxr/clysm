@@ -902,21 +902,33 @@ SORT and the like make no argument list)."
           (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"
                                          :format-arguments (list string))))))
 
+;;; For each radix: the number of digits that always make a fixnum, and RADIX
+;;; to that power.  The tables are made when first needed.
+(defvar *%fixnum-digit-capacities* nil)
+(defvar *%fixnum-digit-powers* nil)
+
+(defun %make-fixnum-digit-tables ()
+  (let ((capacities (%make-simple-vector 37 0)) (powers (%make-simple-vector 37 1)))
+    (do ((r 2 (+ r 1))) ((> r 36))
+      (let ((limit (truncate most-positive-fixnum r)) (p 1) (k 0))
+        (do () ((> p limit)) (setq p (* p r) k (+ k 1)))
+        (%set-svref capacities r k)
+        (%set-svref powers r p)))
+    (setq *%fixnum-digit-powers* powers
+          *%fixnum-digit-capacities* capacities)))
+
 (defun %fixnum-digit-capacity (radix)
-  "The number of digits in RADIX that always make a fixnum."
-  (declare (fixnum radix))
-  (cond ((eql radix 10) 8)
-        ((eql radix 16) 7)
-        (t (let ((limit (%fxtruncate most-positive-fixnum radix)) (p 1) (k 0))
-             (declare (fixnum limit p k))
-             (do () ((> p limit) k) (setq p (* p radix) k (+ k 1)))))))
+  "The number of digits in RADIX (2 to 36) that always make a fixnum."
+  (%svref (or *%fixnum-digit-capacities* (%make-fixnum-digit-tables)) radix))
 
 (defun %fixnum-power (radix k)
-  "RADIX^K, a fixnum."
+  "RADIX^K, a fixnum (K is at most the digit capacity of RADIX)."
   (declare (fixnum radix k))
-  (let ((p 1))
-    (declare (fixnum p))
-    (dotimes (i k p) (setq p (* p radix)))))
+  (if (eql k (the fixnum (%fixnum-digit-capacity radix)))
+      (%svref *%fixnum-digit-powers* radix)
+      (let ((p 1))
+        (declare (fixnum p))
+        (dotimes (i k p) (setq p (* p radix))))))
 
 (defun %parse-integer-simple (string start end radix junk-allowed)
   "PARSE-INTEGER for a simple string and valid bounds."
