@@ -159,8 +159,9 @@ macro character returned no values), :dot or :eof."
           (cond ((eq syn :whitespace))
                 ((and (or (eq syn :terminating) (eq syn :non-terminating))
                       (gethash c (%rt-macros rt)))
-                 (let ((vals (multiple-value-list (funcall (gethash c (%rt-macros rt)) s c))))
-                   (return (if vals (values (car vals) :object) (values nil :none)))))
+                 ;; the macro function returns zero values or one
+                 (let ((v (funcall (gethash c (%rt-macros rt)) s c)))
+                   (return (if (eql (%mv-count) 0) (values nil :none) (values v :object)))))
                 (t
                  (multiple-value-bind (found sym) (%read-plain-symbol s c rt)
                    (when found (return (values sym :object))))
@@ -177,6 +178,19 @@ read it and return T and the symbol, else return NIL with nothing consumed."
              ;; in bases above ten letters are digits
              (<= *read-base* 10))
     (let ((code0 (char-code c)))
+      ;; a decimal fixnum: digits only
+      (when (and (<= 48 code0 57) (eql *read-base* 10) (eq (svref (%rt-ascii rt) code0) :constituent))
+        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s)) (v (- code0 48)))
+          (declare (fixnum i0 i end v))
+          (do () ((or (>= i end) (> (- i i0) 6)))   ; at most 8 digits: a fixnum
+            (let ((code (char-code (%schar buf i))))
+              (if (and (<= 48 code 57) (eq (svref (%rt-ascii rt) code) :constituent))
+                  (setq v (+ (* v 10) (- code 48)) i (+ i 1))
+                  (return))))
+          (when (or (>= i end) (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
+            (setf (stream-index s) i)
+            (return-from %read-plain-symbol (values t v))))
+        (return-from %read-plain-symbol nil))
       (when (and (or (<= 65 code0 90) (<= 97 code0 122))
                  (eq (svref (%rt-ascii rt) code0) :constituent))
         (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
