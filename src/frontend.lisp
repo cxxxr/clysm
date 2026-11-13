@@ -14,9 +14,14 @@
   (decl nil)    ; a declared type specifier (trusted)
   (rep nil))    ; :f64 / :i32 when held unboxed in a local of that type
 
+(defvar *current-source* nil
+  "(FILE . LINE) of the toplevel form being compiled, or NIL: where the
+functions made from it are, for the clysm.sources section (stack traces).")
+
 (defstruct (lam (:print-function (lambda (l s d) (declare (ignore d))
                                    (format s "#<LAM ~S ~D>" (lam-name l) (lam-id l)))))
   id name parent
+  (source *current-source*)
   req opt rest keyp keys allow-other-keys
   body free-vars
   (toplevel nil)          ; global defun with no free vars

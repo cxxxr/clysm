@@ -20,7 +20,7 @@ assert.throws(() => deep(100000000), RangeError);
 assert.equal(deep(10), 10);
 
 assert.throws(() => fails(42), (e) => e.name === 'LispError' && /cannot handle 42/.test(e.message)
-                                  && /^LispError: cannot handle 42\n\s+at (CHECK|FAILS) \(wasm:/.test(e.stack));
+                                  && /^LispError: cannot handle 42\n\s+at (CHECK|FAILS) \(tests\/lib\/demo\.lisp:1[67]\)/.test(e.stack));
 const sleep = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));
 assert.equal(await fetchTwice((k) => sleep(k === 'a' ? 20 : 5, k.toUpperCase())), 'A+B');
 // several calls wait at the same time

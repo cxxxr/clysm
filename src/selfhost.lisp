@@ -1,6 +1,6 @@
 ;;;; selfhost.lisp — entry point of the compiler when it is itself compiled
 ;;;; to WebAssembly by Clysm.
-;;;;   node host/run.mjs build/clysmc.wasm OUT.wasm FILE... [--runtime DIR]
+;;;;   node host/run.mjs build/clysmc.wasm [--shake] OUT.wasm FILE... [--runtime DIR]
 
 (in-package :clysm)
 
@@ -11,17 +11,20 @@
 (defun selfhost-main ()
   (let* ((args (sys::%command-line-arguments))
          (runtime-dir "runtime")
+         (shake nil)
          (files nil))
     (loop while args
           do (let ((a (pop args)))
-               (if (string= a "--runtime")
-                   (setf runtime-dir (pop args))
-                   (push a files))))
+               (cond ((string= a "--runtime") (setf runtime-dir (pop args)))
+                     ((string= a "--shake") (setf shake t))
+                     (t (push a files)))))
     (setf files (nreverse files))
     (when (< (length files) 1)
-      (format *error-output* "usage: clysmc OUT.wasm FILE... [--runtime DIR]~%")
+      (format *error-output* "usage: clysmc [--shake] OUT.wasm FILE... [--runtime DIR]~%")
       (sys::%exit 2))
-    (let ((out (first files)) (sources (rest files)))
+    (let ((out (first files)) (sources (rest files))
+          (*shake* shake)
+          (*source-root* (ignore-errors (truename (concatenate 'string runtime-dir "/../")))))
       ;; macro expanders run by the image's evaluator receive the compiler's
       ;; environment objects (e.g. GET-SETF-EXPANSION inside a SETF expander)
       (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)

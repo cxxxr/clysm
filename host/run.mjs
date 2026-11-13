@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { makeImports } from './common.mjs';
+import { makeImports, installSourceMap } from './common.mjs';
 import { nodeModuleAccess } from './lib.mjs';
 import { makeProcessManager } from './process.mjs';
 
@@ -118,7 +118,9 @@ export async function runModule(bytes, args = []) {
   const imports = makeImports(state, nodePlatform(state, args));
   let instance;
   try {
-    ({ instance } = await WebAssembly.instantiate(bytes, imports));
+    let module;
+    ({ module, instance } = await WebAssembly.instantiate(bytes, imports));
+    installSourceMap(state, module);
     state.instance = instance;
   } catch (e) {
     console.error('instantiate failed:', e.message);
@@ -131,7 +133,7 @@ export async function runModule(bytes, args = []) {
     if (e instanceof WebAssembly.Exception) {
       console.error(';; uncaught Lisp non-local exit (throw/return-from to an exited extent)');
     } else {
-      console.error(';; runtime trap:', e.stack || e);
+      console.error(';; runtime trap:', e.stack ? state.mapStack(e.stack) : e);
     }
     process.exit(2);
   }
@@ -278,6 +280,24 @@ if (isMainThread && process.argv[1] === selfPath) {
   if (workerData.netBuffer) {
     const { parentPort } = await import('node:worker_threads');
     installNetClient(parentPort, workerData.netBuffer);
+  }
+  // CLYSM_DOM=1 (bin/clysm.mjs test --dom): a document of happy-dom, found
+  // from the working directory, as in a page
+  if (process.env.CLYSM_DOM) {
+    try {
+      const { Window } = nodeModuleAccess().require('happy-dom');
+      const window = new Window({ url: 'http://localhost/' });
+      for (const k of ['window', 'document', 'navigator', 'location', 'HTMLElement', 'Node', 'Event',
+                       'KeyboardEvent', 'MouseEvent', 'CustomEvent', 'requestAnimationFrame', 'getComputedStyle']) {
+        if (window[k] !== undefined && globalThis[k] === undefined) {
+          globalThis[k] = typeof window[k] === 'function' && /^[a-z]/.test(k) ? window[k].bind(window) : window[k];
+        }
+      }
+      globalThis.window = window;
+    } catch (e) {
+      console.error(';; CLYSM_DOM: happy-dom is not installed here (npm install happy-dom)');
+      process.exit(2);
+    }
   }
   const bytes = fs.readFileSync(workerData.file);
   await runModule(bytes, workerData.args);

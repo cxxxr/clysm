@@ -1587,7 +1587,11 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 
 (defun compile-pending-lams ()
   (loop while *pending-lams*
-        do (let ((lam (pop *pending-lams*)) (*catchers* nil))
+        do (let* ((lam (pop *pending-lams*)) (*catchers* nil)
+                  (*func-source* (let ((l (cond ((not (consp lam)) lam)
+                                                ((member (car lam) '(:spec :flag)) (second lam))
+                                                (t (car lam)))))
+                                   (and (lam-p l) (lam-source l)))))
              (cond ((and (consp lam) (eq (car lam) :spec))
                     (compile-spec-clone (second lam) (third lam) (fourth lam)))
                    ((and (consp lam) (eq (car lam) :flag))

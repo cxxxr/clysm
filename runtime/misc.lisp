@@ -103,7 +103,8 @@
 ;;; ------------------------------------------------------------
 
 (defun lisp-implementation-type () "Clysm")
-(defun lisp-implementation-version () "0.1.0")
+(defvar *clysm-version* nil "The version and commit of the compiler that built this program, or NIL.")
+(defun lisp-implementation-version () (or *clysm-version* "0.1.0"))
 (defun machine-type () "WebAssembly")
 (defun machine-version () "WasmGC")
 (defun machine-instance () "wasm")

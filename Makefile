@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-system npm test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -33,6 +33,14 @@ test-ui:
 # a program compiled as a library (bin/clysm library) and called from JavaScript
 test-lib:
 	tests/lib/run.sh
+
+# bin/clysm test with an ASDF system and its dependencies (from Quicklisp)
+test-system:
+	tests/system/run.sh
+
+# the npm package (Node.js only, no SBCL): build/npm/
+npm:
+	tools/build-npm.sh
 
 # Lem (contrib/lem) in Electron, typed into without a display
 test-lem:

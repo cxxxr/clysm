@@ -80,7 +80,12 @@ export function makeJsImports(state) {
         const bsp = ex.bsp.value;
         let r;
         try { r = ex.lisp_apply(closure, args); } catch (e) {
-          if (!(e instanceof WebAssembly.Exception)) ex.lisp_recover(bsp);
+          if (!(e instanceof WebAssembly.Exception)) {
+            ex.lisp_recover(bsp);
+            if (e instanceof Error && state.mapStack && !e.__clysm_mapped) {
+              try { e.stack = state.mapStack(e.stack); e.__clysm_mapped = true; } catch (_) {}
+            }
+          }
           throw e;
         }
         return lispResult(r);
@@ -122,6 +127,7 @@ export function makeJsImports(state) {
         if (k === 0) return (state.modules ??= {});
         if (k === 1) return state.importer || ((specifier) => import(specifier));
         if (k === 2) return state.require;
+        if (k === 3) return state.mapStack;
         return undefined;
       },
       // a string of the code units at the start of the memory: INFO is their

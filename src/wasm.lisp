@@ -84,8 +84,11 @@
 ;;; Module model
 ;;; ------------------------------------------------------------
 
+(defvar *func-source* nil "(FILE . LINE) of the functions added now (ADD-FUNC), or NIL.")
+
 (defstruct (wasm-func (:constructor %make-wasm-func))
-  name type params-names locals local-names body export import-module import-name display)
+  name type params-names locals local-names body export import-module import-name display
+  (source *func-source*))
 
 (defstruct wasm-module
   (types (make-array 0 :adjustable t :fill-pointer 0))   ; vector of (name . def)
@@ -866,5 +869,24 @@ functions).  Calls of the installs that are not reached are removed."
                                                       (prin1-to-string n))))))
         (emit-byte b 1)
         (emit-vec-buf b sub)
-        (emit-section out 0 b)))
+        (emit-section out 0 b))
+      ;; clysm.sources: where the functions are defined, for stack traces
+      ;; (host/common.mjs): the files, then (function index, file, line)
+      (let* ((all (concatenate 'list (wasm-module-imports m) (wasm-module-funcs m)))
+             (files nil)
+             (entries (loop for f in all for i from 0
+                            for src = (wasm-func-source f)
+                            when (and (consp src) (stringp (car src)) (integerp (cdr src)))
+                              collect (list i (or (position (car src) files :test #'string=)
+                                                  (progn (setf files (append files (list (car src))))
+                                                         (1- (length files))))
+                                            (cdr src)))))
+        (when entries
+          (let ((b (make-buf)))
+            (emit-name b "clysm.sources")
+            (emit-u32 b (length files))
+            (dolist (f files) (emit-name b f))
+            (emit-u32 b (length entries))
+            (loop for (i file line) in entries do (emit-u32 b i) (emit-u32 b file) (emit-u32 b line))
+            (emit-section out 0 b)))))
     (coerce out '(simple-array (unsigned-byte 8) (*)))))

@@ -10,6 +10,8 @@
 #                                         ~/.clysmrc is loaded first unless --no-userinit
 #   clysm script FILE                     load FILE in the REPL image
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
+#   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE]] FILE...
+#                                         run test programs (see docs/INTERNALS.md)
 #   clysm library [--shake] FILE... -o DIR/NAME.wasm
 #                                         compile a library for JavaScript: NAME.wasm,
 #                                         NAME.mjs (the functions of JS:EXPORT), NAME.d.ts
@@ -66,7 +68,8 @@ case "$cmd" in
   script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   eval)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
   exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+  test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

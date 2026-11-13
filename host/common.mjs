@@ -1,6 +1,34 @@
 // Host imports shared by the Node.js and browser hosts.
 import { makeJsImports } from './jsffi.mjs';
 
+// Where the functions of a module are defined (its clysm.sources section,
+// written by the compiler): state.sourceOf(index) is "file:line" or
+// undefined, and state.mapStack(stack) rewrites the Wasm frames of a stack
+// trace, "at NAME#12 (wasm://wasm/…:wasm-function[INDEX]:0x…)", as
+// "at NAME (file:line)".
+export function installSourceMap(state, module) {
+  const sources = new Map();
+  try {
+    for (const section of WebAssembly.Module.customSections(module, 'clysm.sources')) {
+      const b = new Uint8Array(section);
+      let p = 0;
+      const u32 = () => { let x = 0, s = 0, c; do { c = b[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return x >>> 0; };
+      const dec = new TextDecoder();
+      const files = [];
+      for (let n = u32(); n > 0; n--) { const len = u32(); files.push(dec.decode(b.subarray(p, p + len))); p += len; }
+      for (let n = u32(); n > 0; n--) { const i = u32(), f = u32(), line = u32(); sources.set(i, `${files[f]}:${line}`); }
+    }
+  } catch (e) { /* no section */ }
+  state.sourceOf = (index) => sources.get(index);
+  state.mapStack = (stack) => String(stack).replace(
+    /at ([^\n]*?) \(wasm:\/\/[^\n]*?:wasm-function\[(\d+)\]:0x[0-9a-f]+\)/g,
+    (all, name, index) => {
+      const where = sources.get(Number(index));
+      const clean = name.replace(/#\d+((?:\/[a-z,]+)*)$/, '$1');
+      return where ? `at ${clean} (${where})` : `at ${clean} ${all.slice(all.indexOf('('))}`;
+    });
+}
+
 export function makeCommonEnv(state) {
   const ids = new WeakMap();
   let nextId = 1;
@@ -48,12 +76,13 @@ export function makeCommonEnv(state) {
       Error.stackTraceLimit = old;
       const names = [];
       for (const f of frames) {
-        const m = f.match(/at (.+?) \(wasm:/);
+        const m = f.match(/at (.+?) \(wasm:.*?wasm-function\[(\d+)\]/);
         if (!m) continue;
         let name = m[1].replace(/#\d+(\/generic)?$/, '');
+        const where = state.sourceOf && state.sourceOf(Number(m[2]));
         if (name.startsWith(':') || name.startsWith('(') || /^(BACKTRACE|%BACKTRACE|ERROR|%ERROR\*|%REPORT-AND-EXIT|INVOKE-DEBUGGER|SIGNAL|%SIGNAL\*|%TYPE-ERROR|%COERCE-TO-CONDITION)$/.test(name)) continue;
         if (name === 'toplevel') { names.push('<toplevel>'); break; }
-        names.push(name);
+        names.push(where ? `${name} (${where})` : name);
       }
       const text = 'Backtrace:\n' + names.map((n, i) => `  ${i}: ${n}`).join('\n') + '\n';
       if (state.writeText) state.writeText(fd, text);
@@ -91,6 +120,8 @@ const mathImports = {
 };
 
 export function makeImports(state, platform) {
+  state.sourceOf ??= () => undefined;
+  state.mapStack ??= (stack) => stack;
   const imports = {
     js: makeJsImports(state),
     env: { ...makeCommonEnv(state), ...platform },

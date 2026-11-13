@@ -367,15 +367,56 @@ loaded before the next one, so that later files' macros can call them.")
           (let ((*read-package* (cdr d)))
             (ignore-errors (host-eval (car d)))))))))
 
+(defun source-line-finder (path)
+  "A function of a file position of the file PATH (an octet offset) that
+returns the line of the first form at or after it (whitespace and comments
+skipped)."
+  (let* ((octets (with-open-file (in path :element-type '(unsigned-byte 8))
+                   (let ((v (make-array (file-length in) :element-type '(unsigned-byte 8))))
+                     (read-sequence v in) v)))
+         (n (length octets)))
+    (lambda (pos)
+      (let ((p (or pos 0)))
+        (loop
+          (cond ((>= p n) (return))
+                ((member (aref octets p) '(32 9 10 13 12)) (incf p))
+                ((= (aref octets p) 59)          ; ;
+                 (loop while (and (< p n) (/= (aref octets p) 10)) do (incf p)))
+                ((and (= (aref octets p) 35) (< (1+ p) n) (= (aref octets (1+ p)) 124))   ; #|
+                 (let ((e (search #(124 35) octets :start2 (+ p 2))))
+                   (setf p (if e (+ e 2) n))))
+                (t (return))))
+        (1+ (count 10 octets :end (min p n)))))))
+
+(defvar *source-root* nil
+  "A directory: the source files under it are named in stack traces by their
+path relative to it (the Clysm installation, or the working directory).")
+
+(defun source-file-name (path)
+  (let* ((true (ignore-errors (namestring (truename path))))
+         (roots (remove nil (list *source-root* (namestring *default-pathname-defaults*)))))
+    (or (and true
+             (loop for r in roots
+                   for rs = (namestring r)
+                   when (and (> (length true) (length rs)) (string= rs true :end2 (length rs)))
+                     return (subseq true (length rs))))
+        (namestring path))))
+
 (defun compile-source-forms (s path env note)
-  (loop
-    (let ((form (target-read s nil s)))
-      (when (eq form s) (return))
-      (funcall note form)
-      (handler-bind ((error (lambda (c)
-                              (format *error-output* "~&;; error while compiling ~A~%;;   form: ~S~%;;   ~A~%"
-                                      path (if (consp form) (list (car form) (if (consp (cdr form)) (cadr form))) form) c))))
-        (process-toplevel form env)))))
+  (let ((line-of (or (ignore-errors (source-line-finder path)) (constantly nil)))
+        (file (source-file-name path))
+        (*current-source* nil))
+    (loop
+      (let* ((pos (ignore-errors (file-position s)))
+             (line (ignore-errors (funcall line-of pos)))
+             (form (target-read s nil s)))
+        (when (eq form s) (return))
+        (setf *current-source* (and line (cons file line)))
+        (funcall note form)
+        (handler-bind ((error (lambda (c)
+                                (format *error-output* "~&;; error while compiling ~A~%;;   form: ~S~%;;   ~A~%"
+                                        path (if (consp form) (list (car form) (if (consp (cdr form)) (cadr form))) form) c))))
+          (process-toplevel form env))))))
 
 ;;; ------------------------------------------------------------
 ;;; Module assembly
@@ -548,7 +589,31 @@ loaded before the next one, so that later files' macros can call them.")
     (mapcar (lambda (f) (namestring (merge-pathnames (concatenate 'string f ".lisp") runtime-dir)))
             (read s))))
 
-(defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*))
+(defun clysm-version (runtime-dir)
+  "\"0.1.N (COMMIT)\" of the git checkout of RUNTIME-DIR's Clysm, or NIL."
+  (ignore-errors
+   (let* ((dir (truename (make-pathname :name nil :type nil :version nil :defaults runtime-dir)))
+          (root (namestring (make-pathname :name nil :type nil :version nil
+                                           :directory (butlast (pathname-directory dir))
+                                           :defaults dir)))
+          (git (lambda (&rest args)
+                 (string-trim '(#\Newline #\Space)
+                              (with-output-to-string (s)
+                                #+sbcl (sb-ext:run-program "git" (list* "-C" root args) :search t :output s)
+                                #-sbcl (progn s args nil))))))
+     (let ((count (funcall git "rev-list" "--count" "HEAD")) (commit (funcall git "rev-parse" "--short" "HEAD")))
+       (and (plusp (length count)) (plusp (length commit))
+            (format nil "0.1.~A (~A)" count commit))))))
+
+(defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
+                                   ((:source-root *source-root*)
+                                    (and runtime-dir
+                                         (ignore-errors
+                                          (let ((dir (truename (make-pathname :name nil :type nil :version nil
+                                                                              :defaults runtime-dir))))
+                                            (make-pathname :name nil :type nil :version nil
+                                                           :directory (butlast (pathname-directory dir))
+                                                           :defaults dir))))))
   "Compile the runtime and FILES into the WebAssembly module OUTPUT.  With
 SHAKE, the global functions that nothing refers to by name are left out
 (SHAKE-MODULE): the program must not call functions by names it makes at
@@ -556,6 +621,8 @@ run time (INTERN, READ, EVAL of new code).  Returns the number of bytes written.
   (reset-compiler)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
+    (let ((version (clysm-version runtime-dir)))
+      (when version (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv))))
     (finish-runtime))
   (let ((*host-load-defuns* t))
     (dolist (f files) (compile-source-file f)))

@@ -1151,6 +1151,64 @@ caches for every page that uses it.
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions.
 
+## Building and distributing
+
+`bin/clysm` needs SBCL, which hosts the cross compiler. `tools/build-npm.sh`
+makes an npm package (`build/npm/`, packed as `build/clysm-VERSION.tgz`)
+that needs only Node.js: the compiler compiled by itself (`clysmc.wasm`)
+and the REPL image are prebuilt, and its command `clysm` (`bin/clysm.mjs`)
+runs the compiler on Node.js (`clysm compile`, `library`, `run`, `test`,
+`repl`). Its `version` is 0.1.N, N the number of commits, and the commit is
+in `package.json`; a project pins Clysm by depending on one such package.
+The compiler in Wasm takes about twice as long as on SBCL (hello: 4.9 s, 2.7 s).
+
+A program is fastest compiled as a whole (calls between its functions are
+direct and small functions are copied into their callers); files compiled
+one by one (`compile-file`, ASDF in the image) are 1.8 to 2.9 times slower.
+`--system NAME` (`bin/clysm.mjs test`, and `tools/system-files.lisp`, which
+prints the files) compiles an ASDF system with the systems it depends on as
+one program: ASDF on SBCL finds the files in their load order, reading the
+system definitions with the feature `:clysm` (and without `:sbcl`), and
+looks in `contrib/` before the source registry and Quicklisp. Compiling
+takes about 2 seconds for the runtime plus the program's own code.
+
+### Where functions are, in stack traces
+
+The compiler records the file and line of each toplevel form, and the
+module's custom section `clysm.sources` maps each function to the place of
+the form that defines it. The hosts read it (`installSourceMap` in
+`host/common.mjs`): the stack of a `LispError`, the backtrace printed for an
+unhandled error, and JavaScript errors that pass through Lisp name the Lisp
+frames `at NAME (file.lisp:LINE)`, the format of JavaScript's own frames,
+which error trackers such as Sentry read. Files under the Clysm installation
+or the working directory are named relative to it. `lib.mapStack(stack)`
+(host/lib.mjs) does the same for any stack. Functions copied into their
+callers and tail calls leave no frame of their own.
+
+### Tests of programs
+
+`contrib/clysm-test` is a small test library (`deftest`, `is`, `is-equal`,
+`signals`, `skip`, `run-tests`, `run-tests-and-exit`), and `bin/clysm.mjs
+test` a runner: each file is a test program, compiled as a whole after the
+files of `--system`, run, and passed when it exits with status 0. Files run
+in parallel (`-j N`), `--watch` runs them again when a `.lisp` or `.asd`
+file of theirs changes, and `--dom` gives the programs `window` and
+`document` from the project's `happy-dom`, for code that works on the DOM.
+The GUI framework has a backend without a DOM for its own tests
+(`tests/ui`). Code compiled as a library can also be tested from JavaScript
+(vitest, `node:test`) through its exports.
+
+```
+$ node bin/clysm.mjs test --system my-app-tests tests/*.lisp
+ok   tests/outline.lisp
+FAIL tests/layout.lisp (exit 1)
+  FAIL wide-rows
+    (LAYOUT-WIDTH ROWS) is 120, expected 100
+1 passed, 1 failed (3.1 s)
+```
+
+`tests/system/run.sh` tests the runner with a small system.
+
 ## Tests
 
 `make test-ui` tests the GUI framework on its S-expression backend

@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { makeImports } from './common.mjs';
+import { makeImports, installSourceMap } from './common.mjs';
 import { makeProcessManager } from './process.mjs';
 
 export class LispExit extends Error {
@@ -133,6 +133,7 @@ function instantiate(module, options) {
     require: options.require || access.require,
   };
   const imports = makeImports(state, makePlatform(state, options));
+  installSourceMap(state, module);
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};
@@ -153,6 +154,8 @@ function instantiate(module, options) {
   return {
     instance,
     exports: exportsObject,
+    // a stack trace with the Lisp frames named by file and line
+    mapStack: state.mapStack,
     // read and evaluate Lisp forms (in an image that has the evaluator)
     eval(source) { return instance.exports.eval_string(source); },
   };

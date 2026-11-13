@@ -174,7 +174,7 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
 (defvar *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
 
 (defvar *js-make-failure*
-  (js:eval "(message, type, condition) => {
+  (js:eval "(message, type, condition, mapStack) => {
   const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
   const error = new Error(message);
   Error.stackTraceLimit = old;
@@ -190,8 +190,10 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
   if (first === 1) {
     while (first < lines.length && !/\\(wasm:/.test(lines[first])) first++;
   }
+  // (the host names the places of the Lisp frames: file and line)
   error.stack = ['LispError: ' + message]
-    .concat(lines.slice(first).map((l) => l.replace(/at ([^ ]+?)#\\d+((?:\\/[a-z]+)?) \\(/, 'at $1$2 (')))
+    .concat(lines.slice(first).map((l) => (typeof mapStack === 'function' ? mapStack(l)
+                                         : l.replace(/at ([^ ]+?)#\\d+((?:\\/[a-z,]+)*) \\(/, 'at $1$2 ('))))
     .join('\\n');
   error.name = 'LispError';
   error.lispType = type;
@@ -207,7 +209,8 @@ of the place where it was signalled), in the object that tells the host to throw
                 (error () "<error while printing the condition>"))
               (handler-case (prin1-to-string (type-of condition))
                 (error () "ERROR"))
-              (%js-wrap-lisp condition)))
+              (%js-wrap-lisp condition)
+              (%js-host 3)))
 
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
