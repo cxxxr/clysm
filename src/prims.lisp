@@ -1503,8 +1503,7 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
        (:global.get :bstack) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
        (:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
        (:struct.set :symbol 2)
-       (:global.get :bstack) (:local.get sp) (:ref.null :eq) (:array.set :vector)
-       (:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:ref.null :eq) (:array.set :vector)
+       ;; (the popped entries are not cleared: the next bindings overwrite them)
        (:br again))))
 
 (defhelper :progv-bind :ee-v ((syms :eqref) (vals :eqref))
