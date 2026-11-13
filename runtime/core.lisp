@@ -96,13 +96,18 @@
     (if (null x) n (progn (%endp x) n))))
 
 (defun list-length (l)
-  (do ((n 0 (+ n 2))
-       (fast l (cddr fast))
-       (slow l (cdr slow)))
-      (nil)
-    (when (endp fast) (return n))
-    (when (endp (cdr fast)) (return (+ n 1)))
-    (when (and (eq fast slow) (> n 0)) (return nil))))
+  ;; Brent's cycle detection: one CDR and one comparison for each cons.  MARK
+  ;; stays behind and is moved up to the current cons after 2, 4, 8, ...
+  ;; steps; in a circular list the walk comes back to it.
+  (let ((n 0) (x l) (mark l) (limit 2))
+    (declare (fixnum n limit))
+    (loop
+      (cond ((consp x)
+             (setq x (cdr x) n (%fx+ n 1))
+             (when (eq x mark) (return nil))
+             (when (eql n limit) (setq mark x limit (%fx* limit 2))))
+            ((null x) (return n))
+            (t (%endp x) (return n))))))
 
 (defun nth (n list)
   (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) (car l))))
