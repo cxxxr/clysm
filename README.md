@@ -459,19 +459,50 @@ Limitations:
 
 ## Performance
 
-`tools/bench.sh [FILE]` runs a benchmark file (`bench/suite.lisp` by default,
-or `bench/gabriel.lisp`) on SBCL and on Clysm (Node.js) and prints the time
-ratio of each benchmark and their geometric mean. On an x86-64 machine with
-SBCL 2.6 and Node.js 24, Clysm takes about 1.2 times as long as SBCL on
-`bench/suite.lisp` (function calls, arrays, floats, lists, sorting, hash tables,
-strings, FORMAT, the printer and reader, bignums and ratios, structures, CLOS,
-special variables, non-local exits) and about 1.1 times as long on the
-Gabriel-style `bench/gabriel.lisp`. Float code, function calls (`fib`, `tak`,
-`takl`), catch/throw (`ctak`), sorting, strings and simple-vector loops run as
-fast as with SBCL or faster; the slowest relative to SBCL, at 2-3 times, are
-CLOS dispatch and `make-instance`, two-dimensional arrays of type T, the
-reader, FORMAT to streams, hash tables (allocation of their storage), bignums
-and integers between 2^29 and 2^62 (fixnums in SBCL, boxed here).
+`tools/bench.sh [FILE]` runs a benchmark file on SBCL and on Clysm (Node.js)
+and prints the time ratio of each benchmark and their geometric mean. How fast
+a program is relative to SBCL depends on what it uses; one figure does not
+describe it. On an x86-64 machine with SBCL 2.6 and Node.js 24, compiling whole
+programs ahead of time (`bin/clysm run`), Clysm takes this many times as long
+as SBCL:
+
+| File | Programs | Geometric mean | Range |
+|---|---|---|---|
+| `bench/suite.lisp` | 24 benchmarks the compiler was tuned on | 1.2 | 0.1 – 2.8 |
+| `bench/gabriel.lisp` | 10 Gabriel-style benchmarks, also tuned on | 1.1 | 0.8 – 1.7 |
+| `bench/holdout.lisp` | 17 programs written afterwards and not tuned on | 4.5 | 1.0 – 39 |
+
+The first two files guided the optimization work, so their figures are the
+best case, not what an arbitrary program gets. `bench/holdout.lisp` mixes
+programs in ordinary style with ones that use features the first two files
+do not.
+
+* **About as fast as SBCL (1-2 times), sometimes faster**: fixnum and
+  double-float arithmetic, function calls and closures (direct, through
+  `funcall`, `labels`), lists, strings, simple vectors of type T, sorting,
+  `equal` and `eql` hash tables, structures, special variables, catch/throw.
+  The holdout programs made of these (an n-body simulation, a small Lisp
+  interpreter, word counting, Dijkstra with a heap in an adjustable vector, a
+  symbolic simplifier) take 1.2-2.0 times as long as with SBCL.
+* **2-3 times**: generic function dispatch and `make-instance`, two-dimensional
+  arrays of type T, the reader and printer, `format` to streams, hash table
+  allocation, bignums, and integers between 2^29 and 2^62 (fixnums in SBCL,
+  boxed here).
+* **5-40 times**: what has not been optimized yet —
+  specialized arrays (bit vectors 39, `double-float` two-dimensional arrays
+  26, `(unsigned-byte 8)` and `fixnum` vectors 5-14); single floats and
+  complex numbers, which are always boxed (8-30); `call-next-method` with
+  arguments, which recomputes the applicable methods to check them (40; 5
+  without arguments), and `:before`/`:around` methods (4-6); sequence
+  functions outside the fast paths, such as `remove-duplicates`, which is
+  quadratic; `format` directives other than `~A ~S ~D ~%`, such as `~F` and
+  `~{~}` (5-10); signalling an error to a `handler-case` (8).
+
+Code loaded at the REPL or by `load` (and so libraries loaded with ASDF or
+Quicklisp) is compiled form by form, without the whole-program knowledge of
+`bin/clysm run`: `bench/suite.lisp` run with `bin/clysm script` takes about
+twice as long as with `bin/clysm run` (geometric mean; up to 12 times for
+two-dimensional arrays, catch/throw, structures and `make-instance`).
 
 What makes the generated code fast:
 
