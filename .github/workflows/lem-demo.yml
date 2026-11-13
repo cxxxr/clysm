@@ -2,20 +2,9 @@
 # GitHub Pages: https://cxxxr.github.io/clysm/
 name: Lem demo
 
+# Run by hand only (Actions > Lem demo > Run workflow): the build is too
+# costly to repeat on every push.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'contrib/**'
-      - 'runtime/**'
-      - 'src/**'
-      - 'ui/**'
-      - 'host/**'
-      - 'lib/**'
-      - 'tools/build-repl.lisp'
-      - 'tools/runtime-files.lisp'
-      - 'third_party/asdf/**'
-      - '.github/workflows/lem-demo.yml'
   workflow_dispatch:
 
 permissions:
