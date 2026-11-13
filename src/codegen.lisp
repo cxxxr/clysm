@@ -1257,14 +1257,14 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
     (let ((tag (new-local)) (v (new-local)))
       `(,@(cg tag-node) (:local.tee ,tag) (:call :check-catch-tag)
         ,@(cg value t) (:local.set ,v)
+        ;; the CATCH forms around the throw in this function take it with a branch
+        ,@(loop for c in *catchers*
+                when (eq (car c) :catch)
+                  append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
+                           (:if nil nil ,(catcher-exit-code c v))))
         ,@(if *fexit*
-              ;; in a flagging function: the CATCH forms around the throw in
-              ;; this function first, then a return with the exit pending
-              `(,@(loop for c in *catchers*
-                        when (eq (car c) :catch)
-                          append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
-                                   (:if nil nil ,(catcher-exit-code c v))))
-                ,@(flagged-exit-code `((:local.get ,tag)) `((:local.get ,v)))
+              ;; in a flagging function: a return with the exit pending
+              `(,@(flagged-exit-code `((:local.get ,tag)) `((:local.get ,v)))
                 :unreachable)
               `((:local.get ,tag) (:local.get ,v)
                 (:throw :lisp-throw)))))))
