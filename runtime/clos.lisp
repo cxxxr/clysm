@@ -2041,6 +2041,7 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
     (svref ctor 3)))
 
 (defun %ctor-make-instance (ctor &rest args)
+  (declare (simple-vector ctor))
   (let ((class (if (eql (svref ctor 0) *ctor-generation*) (svref ctor 3) (%ctor-update ctor))))
     (if (null class)
         (apply #'make-instance (svref ctor 1)
