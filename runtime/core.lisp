@@ -116,8 +116,9 @@
   (do ((i n (1- i)) (l list (cdr l))) ((or (<= i 0) (%endp l)) l)))
 (defun %setnth (n list value) (%setcar (nthcdr n list) value))
 
-(defun fifth (l) (nth 4 l)) (defun sixth (l) (nth 5 l)) (defun seventh (l) (nth 6 l))
-(defun eighth (l) (nth 7 l)) (defun ninth (l) (nth 8 l)) (defun tenth (l) (nth 9 l))
+(defun fifth (l) (car (cddddr l))) (defun sixth (l) (cadr (cddddr l))) (defun seventh (l) (caddr (cddddr l)))
+(defun eighth (l) (cadddr (cddddr l))) (defun ninth (l) (car (cddddr (cddddr l))))
+(defun tenth (l) (cadr (cddddr (cddddr l))))
 (defsetf fifth (l) (v) `(%setnth 4 ,l ,v))
 (defsetf sixth (l) (v) `(%setnth 5 ,l ,v))
 (defsetf seventh (l) (v) `(%setnth 6 ,l ,v))
