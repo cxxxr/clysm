@@ -112,9 +112,10 @@
           (fresh (make-hash-table :test 'eq)))   ; the variables made by copying
       (labels ((register (bindings)
                  (dolist (b bindings)
-                   (when (and (eq (car (cdr b)) :lambda) (not (lvar-mutated (car b)))
+                   (when (and (member (car (cdr b)) '(:lambda :fref)) (not (lvar-mutated (car b)))
                               (not (lvar-special (car b))))
-                     (setf (gethash (car b) lvar-lams) (second (cdr b))))))
+                     (setf (gethash (car b) lvar-lams)
+                           (if (eq (car (cdr b)) :lambda) (second (cdr b)) (cdr b))))))
                (expand (node callee args depth)
                  (let* ((map (make-hash-table :test 'eq))
                         (bindings (loop for p in (lam-req callee) for a in args
@@ -131,11 +132,17 @@
                    ;; a variable always bound to a lambda of this function
                    (when (eq (car node) :let) (register (second node)))
                    (map-subnodes (lambda (n) (walk n depth)) node)
+                   ;; FUNCALL of a variable bound to #'name: a call of NAME
+                   (when (and (eq (car node) :funcall) (eq (car (second node)) :lref)
+                              (consp (gethash (second (second node)) lvar-lams)))
+                     (let ((sym (second (gethash (second (second node)) lvar-lams))))
+                       (setf (cdr node) (cons sym (cddr node)) (car node) :call)))
                    ;; calls of local functions and FUNCALLs of such variables
                    (when (< depth *inline-max-depth*)
                      (let ((callee (case (car node)
                                      (:lcall (fun-lam (second node)))
                                      (:funcall (and (eq (car (second node)) :lref)
+                                                    (lam-p (gethash (second (second node)) lvar-lams))
                                                     (gethash (second (second node)) lvar-lams))))))
                        (when (and callee (= (length (lam-req callee)) (length (cddr node)))
                                   (local-inlinable-p callee lam))

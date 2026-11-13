@@ -288,7 +288,13 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                 (cg-let node mv tail)))
       (:mvbind (cg-mvbind node mv tail))
       (:lambda (append (cg-closure (second node)) (when mv (mv-one))))
-      (:fref `((:global.get ,(sym-global (second node))) (:call :fdefinition) ,@(when mv (mv-one))))
+      (:fref (let ((lam (known-global-lam (second node))))
+               (if lam
+                   ;; a known function: its closure (as with direct calls, the
+                   ;; definition is assumed not to change)
+                   (progn (ensure-lam-compiled lam)
+                          `((:global.get ,(static-closure-global lam)) ,@(when mv (mv-one))))
+                   `((:global.get ,(sym-global (second node))) (:call :fdefinition) ,@(when mv (mv-one))))))
       (:call (or (typed-cg node mv) (cg-global-call (second node) (cddr node) mv tail)))
       (:funcall (cg-funcall (second node) (cddr node) mv tail))
       (:lcall (cg-local-call (second node) (cddr node) mv tail))
