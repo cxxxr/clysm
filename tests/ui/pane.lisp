@@ -467,3 +467,31 @@ lines" :rows 3))
     (cancel-accept)
     (abort-dialog)
     (flush)))
+
+;;; ---- an error asks for a restart in a dialog, and the computation goes on
+
+(define-command (save-it :label "Save") ()
+  (push (restart-case (error "The disk is full")
+          (retry () :report "Try again" :retried)
+          (elsewhere () :report "Save elsewhere…" :elsewhere))
+        *log*))
+
+(flet ((answer-with (index)
+         (setf (backend-waiter *backend*)
+               (lambda ()
+                 (show "the restarts" (overlay))
+                 (fire (find-node (overlay) "button" :index index) "click")))))
+  (format t "~&~%== restarts in a dialog~%")
+  (backend-log *backend*)
+  (answer-with 1)
+  (invoke-command 'save-it)
+  (flush)
+  (format t "chosen: ~S, dialogs left: ~D~%" (first *log*) (length (find-nodes (overlay) "dialog")))
+  ;; the last button is ABORT: the command is given up
+  (setf (backend-waiter *backend*)
+        (lambda () (fire (find-node (overlay) "button" :index 2) "click")))
+  (format t "aborted: ~S, log: ~S~%" (invoke-command 'save-it) (first *log*))
+  ;; Escape too
+  (setf (backend-waiter *backend*) (lambda () (fire (find-node (overlay) "dialog") "cancel")))
+  (format t "cancelled: ~S, log: ~S~%" (invoke-command 'save-it) (first *log*))
+  (setf (backend-waiter *backend*) nil))

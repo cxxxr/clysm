@@ -199,8 +199,12 @@ says: by default the data and the interface."))
                                     (list (text-input-pane-navigates pane)))
                                 (cond ((event-get *backend* event "isComposing"))   ; IME input
                                       ((equal key "Enter")
-                                       (call-callback pane (text-input-pane-callback pane)
-                                                      :data (text-input-pane-text pane)))
+                                       (when (text-input-pane-callback pane)
+                                         ;; the key is used up: it must not also press
+                                         ;; a button that the callback gives the focus
+                                         (when event (stop-event *backend* event))
+                                         (call-callback pane (text-input-pane-callback pane)
+                                                        :data (text-input-pane-text pane))))
                                       ((and list (member key '("ArrowDown" "ArrowUp") :test #'equal))
                                        (move-selection list key event))))))))
 

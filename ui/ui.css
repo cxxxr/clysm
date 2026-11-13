@@ -228,7 +228,7 @@ span.ui-presentation { border-radius: 4px; }
 /* a dialog is as large as what it shows */
 .ui-dialog .ui-pane { flex-basis: auto !important; }
 .ui-dialog > .ui-interface > .ui-pane { padding: 16px 18px; gap: 12px; }
-.ui-dialog-buttons { justify-content: flex-end; flex: none; margin-top: 4px; }
+.ui-dialog-buttons { justify-content: flex-end; flex: none; flex-wrap: wrap; margin-top: 4px; }
 .ui-dialog-buttons > .ui-push-button { min-width: 76px; }
 
 @media (prefers-reduced-motion: reduce) { .ui-twisty::before { transition: none; } }

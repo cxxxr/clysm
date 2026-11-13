@@ -628,3 +628,23 @@ commands: ("Remove…" "Show" "Rename…" "Add…Ctrl+N" "Paint")
 matching "re": ("Remove…" "Rename…")
 selected: ("Rename…")
 dialogs: 0, accepting: T
+
+== restarts in a dialog
+
+== the restarts
+(:OVERLAY NIL
+ (:DIV (:CLASS "ui-overlay")
+  (:DIALOG (:CLASS "ui-dialog")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV
+     (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout ui-dialog-body")
+     (:DIV (:CLASS "ui-pane ui-display-pane") "The disk is full")
+     (:DIV (:CLASS "ui-pane ui-row-layout ui-dialog-buttons")
+      (:BUTTON (:CLASS "ui-pane ui-push-button ui-default" :TYPE "button")
+       "Try again")
+      (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button")
+       "Save elsewhere…")
+      (:BUTTON (:CLASS "ui-pane ui-push-button" :TYPE "button") "Cancel")))))))
+chosen: :ELSEWHERE, dialogs left: 0
+aborted: NIL, log: :ELSEWHERE
+cancelled: NIL, log: :ELSEWHERE

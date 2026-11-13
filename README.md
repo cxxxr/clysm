@@ -187,6 +187,22 @@ functions that call back into Lisp through the exported `lisp_apply`):
 `js:get` of `null` or `undefined` (`NIL`) is `NIL`; a JavaScript exception in
 `js:call`, `js:funcall` or `js:new` is a Lisp error.
 
+`(js:await promise)` waits until a promise is settled and returns its value
+(a rejection is a Lisp error), suspending the WebAssembly stack with
+JavaScript Promise Integration while JavaScript goes on. It can be called in
+a function made by `(js:async-function function)` — a JavaScript function
+that returns a promise — when JavaScript calls that from its event loop (a
+listener, a timer); `(js:can-await-p)` tells. One computation waits at a
+time, and Lisp code that runs meanwhile sees its dynamic bindings.
+
+```lisp
+(js:call button "addEventListener" "click"
+         (js:async-function
+          (lambda (event)
+            (let ((response (js:await (js:call (js:global) "fetch" "/data.json"))))
+              (show (js:await (js:call response "text")))))))
+```
+
 ### A browser and desktop application
 
 `examples/todo/` is a TODO list written entirely in Lisp with the
@@ -482,8 +498,14 @@ failing operation, and `abort` — and the one they choose is invoked.
 ```
 
 The desktop application asks with a native message box whose buttons are the
-restarts, a browser with `prompt` (with `ui/dialog.lisp`, an error that has
-no restart to choose is shown in a dialog of the page), and the S-expression backend calls
+restarts. A browser asks, with `ui/dialog.lisp`, in a dialog of the page that
+has a button for every restart: the failing computation — a listener, a
+command, even rendering — waits there until the user has chosen, while the
+page goes on, and then continues with the restart. This suspends the
+WebAssembly stack with [`js:await`](#javascript-interoperability-spec-externref-ラッパー構造体);
+a browser that cannot do that asks with `prompt`. (`ui:wait-for-answer` is
+how a program of its own waits for the user in the middle of a function.)
+An error that has no restart to choose is shown in a dialog of the page, and the S-expression backend calls
 `(ui:backend-chooser backend)`. A component that fails to render keeps what
 it showed.
 

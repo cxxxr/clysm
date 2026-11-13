@@ -17,6 +17,9 @@
    ;; NIL, or a function of an error and its restarts that returns the
    ;; restart the "user" chooses (NIL: abort)
    (chooser :initform nil :initarg :chooser :accessor backend-chooser)
+   ;; NIL, or a function called by WAIT-FOR in place of the user: it
+   ;; does what gives the answer (FIRE of a button of the dialog)
+   (waiter :initform nil :initarg :waiter :accessor backend-waiter)
    (overlay :initform nil)
    (global-listeners :initform nil :accessor backend-global-listeners)))
 
@@ -120,6 +123,17 @@
 (defmethod set-title ((backend sexp-backend) string)
   (note backend :title string))
 
+(defmethod can-wait-p ((backend sexp-backend))
+  (and (backend-waiter backend) t))
+
+(defmethod wait-for ((backend sexp-backend) function)
+  (let ((answer nil) (answered nil))
+    (funcall function (lambda (value) (setf answer value answered t)))
+    (flush)
+    (funcall (backend-waiter backend))
+    (unless answered (error "the waiter of the backend did not give an answer"))
+    answer))
+
 (defmethod reveal-selection ((backend sexp-backend) event)
   (note backend :reveal-selection))
 
@@ -143,8 +157,10 @@
 
 (defmethod choose-restart ((backend sexp-backend) condition restarts)
   (note backend :error (princ-to-string condition) (mapcar #'princ-to-string restarts))
-  (and (backend-chooser backend)
-       (funcall (backend-chooser backend) condition restarts)))
+  (cond ((backend-chooser backend)
+         (funcall (backend-chooser backend) condition restarts))
+        ((and *restart-chooser* (cdr restarts) (can-wait-p backend))
+         (funcall *restart-chooser* condition restarts))))
 
 (defun to-sexp (node)
   "NODE of the display as (:tag (property value...) child...), text as strings."

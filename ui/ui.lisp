@@ -78,6 +78,7 @@
    "EVENT-GET" "EVENT-TARGET-GET" "STOP-EVENT" "NODE-CALL" "OVERLAY-CONTAINER"
    "SET-GLOBAL-LISTENER" "SET-TITLE" "PREVIOUS-SIBLING-SIZE"
    "REVEAL-SELECTION" "EVENT-POSITION" "NATIVE-MENUS-P" "*ERROR-MESSAGE-FUNCTION*"
+   "CAN-WAIT-P" "WAIT-FOR" "WAIT-FOR-ANSWER" "*RESTART-CHOOSER*" "BACKEND-WAITER"
    ;; the backends: dom.lisp, sexp.lisp
    "DOM-BACKEND" "INSTALL-COMMANDS"
    "SEXP-BACKEND" "MAKE-ROOT" "TO-SEXP" "FIRE" "FIND-NODE" "FIND-NODES" "BACKEND-LOG"
@@ -149,6 +150,13 @@ drawing (an OUTPUT-PANE) it happened on."))
 (defgeneric native-menus-p (backend)
   (:documentation "True if the menus of the commands are shown outside the page.")
   (:method (backend) nil))
+(defgeneric can-wait-p (backend)
+  (:documentation "True if WAIT-FOR can wait now.")
+  (:method (backend) nil))
+(defgeneric wait-for (backend function)
+  (:documentation "Call FUNCTION with a function of one argument, the answer, and
+return the answer once that has been called — later, when the user has
+done something; meanwhile the display works.  Only if CAN-WAIT-P."))
 (defgeneric previous-sibling-size (backend event)
   (:documentation "The width and height of the node in front of the one the pointer
 EVENT happened on, which gets the following events of that pointer."))
@@ -169,6 +177,11 @@ empty, the last is ABORT) to invoke; return it, or NIL for ABORT."))
 (defvar *error-message-function* nil
   "NIL, or a function of a string that shows the message of an error that
 has no restart to choose (dialog.lisp sets it).")
+
+(defvar *restart-chooser* nil
+  "NIL, or a function of an error and its restarts (more than one) that asks
+the user in the page which to invoke and returns it (dialog.lisp sets it).
+It is called where the backend can wait (CAN-WAIT-P).")
 
 (defvar *abort-label* "Cancel" "How the ABORT restart of WITH-ERROR-DIALOG is described to the user.")
 
@@ -753,3 +766,20 @@ Return the node, for UNMOUNT."
   (setf *roots* (remove node *roots*))
   (remove-node backend (dom-of node))
   (destroy node))
+
+;;; ------------------------------------------------------------------
+;;; Waiting for the user inside a computation
+
+(defun wait-for-answer (function)
+  "Call FUNCTION with a function of one argument, the answer; return the
+answer once that has been called.  FUNCTION shows something (a dialog) whose
+listeners give the answer; until then this computation waits while the
+display works, as if it were not running: listeners, rendering and FLUSH
+start afresh.  Only where (can-wait-p *backend*)."
+  (let ((backend *backend*))
+    (let ((*error-dialog* nil)
+          (*observer* nil)
+          (*parent* nil)
+          (*pending-mounts* nil)
+          (*flush-requested* nil))
+      (wait-for backend function))))

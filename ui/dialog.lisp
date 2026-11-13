@@ -174,6 +174,29 @@ the string, returns true."
         (when (< (length *dialogs*) 3)
           (display-message "~A" message))))
 
+;;; An error with restarts asks which to invoke in a dialog, where the
+;;; failing computation can wait for the answer (see WAIT-FOR-ANSWER;
+;;; otherwise the backend asks in its own way)
+
+(defun choose-restart-in-dialog (condition restarts)
+  "Show the message of CONDITION with a button for each of RESTARTS (the last
+is ABORT); return the chosen one, or NIL if the dialog was cancelled."
+  (wait-for-answer
+   (lambda (answer)
+     (display-dialog
+      (make-dialog-interface
+       nil (princ-to-string condition) nil
+       (loop for (restart . more) on restarts
+             collect (let ((restart restart))
+                       (dialog-button (princ-to-string restart)
+                                      (lambda () (exit-dialog restart))
+                                      ;; the first is what the program suggests
+                                      (and more (eq restart (first restarts)))))))
+      :continuation (lambda (restart okp)
+                      (funcall answer (and okp restart)))))))
+
+(setf *restart-chooser* #'choose-restart-in-dialog)
+
 ;;; ------------------------------------------------------------------
 ;;; The command palette: every command by its name (as in the interactor
 ;;; of CLIM, a command is typed, and asks for its arguments)

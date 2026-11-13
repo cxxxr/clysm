@@ -15,7 +15,7 @@
 
 (defclass dom-backend ()
   ((document :initform (js:global "document") :reader backend-document)
-   (flush :initform (js:to-js #'flush))))
+   (flush :initform (js:async-function #'flush))))
 
 ;;; the JavaScript strings of names are made once (a string is converted
 ;;; character by character)
@@ -101,8 +101,29 @@
           ((or (eq name :checked) (eq old-value t)) (js:set node js-name :false))
           (t (js:call node +remove-attribute+ (attribute-name name))))))
 
+;;; Listeners are functions of JS:ASYNC-FUNCTION: where the JavaScript
+;;; engine can suspend WebAssembly, a listener can wait for the user in the
+;;; middle of its work (WAIT-FOR), which is how an error asks which restart
+;;; to invoke in a dialog of the page.
+
 (defmethod set-listener ((backend dom-backend) node event function)
-  (js:call node +add-event-listener+ event function))
+  (js:call node +add-event-listener+ event (js:async-function function)))
+
+(defmethod can-wait-p ((backend dom-backend))
+  (js:can-await-p))
+
+(defmethod wait-for ((backend dom-backend) function)
+  (let* ((answer nil)
+         (promise (js:new (js:global "Promise")
+                          (lambda (resolve &rest more)
+                            (declare (ignore more))
+                            (funcall function (lambda (value)
+                                                (setf answer value)
+                                                (js:funcall resolve nil)
+                                                nil))
+                            nil))))
+    (js:await promise)
+    answer))
 
 (defmethod insert-node ((backend dom-backend) parent node before)
   (js:call parent +insert-before+ node before))
@@ -149,7 +170,7 @@
 
 (defmethod set-global-listener ((backend dom-backend) event function)
   (js:call (backend-document backend) +add-event-listener+ event
-           (lambda (event) (funcall function event) nil)))
+           (js:async-function (lambda (event) (funcall function event) nil))))
 
 (defmethod set-title ((backend dom-backend) string)
   (js:set (backend-document backend) "title" string))
@@ -186,11 +207,16 @@
   (let ((message (princ-to-string condition))
         (window (js:global)))
     (js:call (js:global "console") "error" message)
-    (if (null (cdr restarts))
-        (progn (if *error-message-function*
-                   (funcall *error-message-function* message)
-                   (js:call window "alert" message))
-               nil)
+    (cond
+      ((null (cdr restarts))
+       (if *error-message-function*
+           (funcall *error-message-function* message)
+           (js:call window "alert" message))
+       nil)
+      ;; in a dialog of the page, if this computation can wait for the answer
+      ((and *restart-chooser* (can-wait-p backend))
+       (funcall *restart-chooser* condition restarts))
+      (t
         (let ((answer (js:call window "prompt"
                                (format nil "~A~%~%~{~D: ~A~%~}" message
                                        (loop for restart in restarts for i from 1
@@ -198,7 +224,7 @@
                                "1")))
           (and (stringp answer)
                (let ((n (parse-integer answer :junk-allowed t)))
-                 (and n (<= 1 n (length restarts)) (nth (1- n) restarts))))))))
+                 (and n (<= 1 n (length restarts)) (nth (1- n) restarts)))))))))
 
 ;;; commands: their keys
 
@@ -214,15 +240,20 @@
 BACKEND: in a browser by their keys, in the desktop application also in the
 menu bar."))
 
-(defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
+(defun install-command-keys (backend &optional (predicate (constantly t)))
+  "Invoke the commands that satisfy PREDICATE when their keys are pressed."
   (js:call (backend-document backend) +add-event-listener+ "keydown"
-           (lambda (event)
-             (let ((command (and (stringp (js:get event "key"))
-                                 (let ((*backend* backend))
-                                   (command-for-key (event-key event))))))
-               (when command
-                 (js:call event "preventDefault")
-                 (invoke-command (command-name command))))
-             nil)))
+           (js:async-function
+            (lambda (event)
+              (let ((command (and (stringp (js:get event "key"))
+                                  (let ((*backend* backend))
+                                    (command-for-key (event-key event))))))
+                (when (and command (funcall predicate command))
+                  (js:call event "preventDefault")
+                  (invoke-command (command-name command))))
+              nil))))
+
+(defmethod install-commands ((backend dom-backend) &key &allow-other-keys)
+  (install-command-keys backend))
 
 (setf *backend* (make-instance 'dom-backend))
