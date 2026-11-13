@@ -17,6 +17,9 @@
       (format t "~(~A~) ~D ~A~%" name ms
               (let ((s (prin1-to-string r))) (if (> (length s) 40) (subseq s 0 40) s))))))
 
+;; the file benchmarks write build/io-bench.tmp
+(ensure-directories-exist "build/")
+
 ;;; ------------------------------------------------------------ FORMAT
 
 ;; integer directives with parameters, in a table
