@@ -942,6 +942,7 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
 ;;; parameters or modifiers) compile to direct output calls
 ;;; ------------------------------------------------------------
 
+(declaim (inline %format-call))
 (defun %format-call (destination fn)
   (cond ((null destination)
          (let ((s (make-string-output-stream)))

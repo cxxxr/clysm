@@ -392,7 +392,10 @@ representation) or :effect (no value)."
       ;; evaluate inits in order
       (dolist (b bindings)
         (let ((lv (car b)) (init (cdr b)))
-          (cond ((lvar-special lv)
+          (cond ((and (eq (car init) :lambda) (zerop (lvar-refs lv)) (not (lvar-special lv)))
+                 ;; a lambda whose variable is never referenced (its calls were inlined)
+                 nil)
+                ((lvar-special lv)
                  (let ((tmp (new-local)))
                    (setf code (append code (cg init) `((:local.set ,tmp))))
                    (push (cons lv tmp) specials)))

@@ -11,6 +11,7 @@
 
 (defparameter *inline-max-nodes* 30)
 (defparameter *inline-max-depth* 3)
+(defparameter *inline-max-local-nodes* 30 "for local functions and lambdas of the function")
 (defvar *inline-candidates* (make-hash-table :test 'eq) "lam -> inlinable-p")
 (defvar *inlined-into* (make-hash-table :test 'eq) "lams whose bodies were processed")
 (defvar *inline-caller* nil "the lam receiving the copies")
@@ -79,6 +80,9 @@
       (:wasm-test `(:wasm-test ,(mapcar #'c (second node)) ,(third node)))
       (t (error "inline: cannot copy ~S" (car node))))))
 
+(defun hash-table-alist* (table)
+  (let ((r nil)) (maphash (lambda (k v) (push (cons k v) r)) table) r))
+
 (defun inline-candidate (node)
   (let* ((sym (second node)) (lam (known-global-lam sym)))
     (and lam (= (length (cddr node)) (length (lam-req lam)))
@@ -91,7 +95,7 @@
        (notany #'lvar-special (lam-req callee))
        (let ((n 0))
          (labels ((walk (node)
-                    (when (or (> (incf n) *inline-max-nodes*)
+                    (when (or (> (incf n) *inline-max-local-nodes*)
                               (member (car node) '(:lambda :flet :labels :ltv :defun :symtab
                                                    :catch :unwind-protect :progv))
                               (and (eq (car node) :lcall) (eq (fun-lam (second node)) callee)))
@@ -104,23 +108,28 @@
   "Replace (in place) the calls in LAM's body to inlinable functions."
   (unless (gethash lam *inlined-into*)
     (setf (gethash lam *inlined-into*) t)
-    (let ((*inline-caller* lam) (lvar-lams (make-hash-table :test 'eq)))
-      (labels ((expand (node callee args depth)
+    (let ((*inline-caller* lam) (lvar-lams (make-hash-table :test 'eq))
+          (fresh (make-hash-table :test 'eq)))   ; the variables made by copying
+      (labels ((register (bindings)
+                 (dolist (b bindings)
+                   (when (and (eq (car (cdr b)) :lambda) (not (lvar-mutated (car b)))
+                              (not (lvar-special (car b))))
+                     (setf (gethash (car b) lvar-lams) (second (cdr b))))))
+               (expand (node callee args depth)
                  (let* ((map (make-hash-table :test 'eq))
                         (bindings (loop for p in (lam-req callee) for a in args
                                         collect (cons (copy-lvar-for-inline p map) a)))
                         (body (copy-node-for-inline (lam-body callee) map)))
+                   (loop for (nil . new) in (hash-table-alist* map)
+                         do (when (lvar-p new) (setf (gethash new fresh) t)))
+                   (register bindings)
                    (walk body (1+ depth))
                    (setf (car node) :let
                          (cdr node) (list bindings body))))
                (walk (node depth)
                  (when (consp node)
                    ;; a variable always bound to a lambda of this function
-                   (when (eq (car node) :let)
-                     (dolist (b (second node))
-                       (when (and (eq (car (cdr b)) :lambda) (not (lvar-mutated (car b)))
-                                  (not (lvar-special (car b))))
-                         (setf (gethash (car b) lvar-lams) (second (cdr b))))))
+                   (when (eq (car node) :let) (register (second node)))
                    (map-subnodes (lambda (n) (walk n depth)) node)
                    ;; calls of local functions and FUNCALLs of such variables
                    (when (< depth *inline-max-depth*)
@@ -132,7 +141,9 @@
                                   (local-inlinable-p callee lam))
                          ;; the reference replaced (references in copies still exist
                          ;; in their originals)
-                         (when (= depth 0)
+                         (when (or (= depth 0)
+                                   (gethash (if (eq (car node) :lcall) (fun-lvar (second node)) (second (second node)))
+                                            fresh))
                            (if (eq (car node) :lcall)
                                (decf (lvar-refs (fun-lvar (second node))))
                                (decf (lvar-refs (second (second node))))))
