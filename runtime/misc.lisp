@@ -52,7 +52,6 @@
 ;;; ------------------------------------------------------------
 
 (defconstant internal-time-units-per-second 1000)
-(defconstant +unix-epoch-offset+ 2208988800)
 
 (defun %now-ms () (%host-time 0))
 (defun get-universal-time ()

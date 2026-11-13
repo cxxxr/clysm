@@ -24,6 +24,9 @@
 
 (defvar *logical-pathname-translations* (make-hash-table :test 'equalp))
 
+;; universal time of 1970-01-01 (FILE-WRITE-DATE here, GET-UNIVERSAL-TIME in misc.lisp)
+(defconstant +unix-epoch-offset+ 2208988800)
+
 (defun %host-fs ()
   (ignore-errors
    (let ((fs (js:global "__clysm_fs")))
@@ -46,13 +49,6 @@
         (setq start (+ i 1))))
     (push (subseq s start) parts)
     (nreverse parts)))
-
-(defvar *windows-paths*
-  (let ((process (ignore-errors (js:global "process"))))
-    (and (js:js-value-p process) (equal (ignore-errors (js:get process "platform")) "win32")))
-  "True on a Windows host (Node.js's process.platform is win32): in
-namestrings a backslash is a slash, \"C:\" is the device \"C\", and
-\"//server/share\" (or \"\\\\server\\share\") the device of a UNC name.")
 
 (defun %windows-device (s)
   "On a Windows host, the device at the start of the namestring S (whose

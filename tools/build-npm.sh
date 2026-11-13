@@ -26,6 +26,7 @@ cp tools/runtime-files.lisp tools/gen-library.mjs "$out/tools/"
 cp README.md "$out/"
 version="0.1.$(git rev-list --count HEAD)"
 commit=$(git rev-parse --short HEAD)
+echo "$version ($commit)" > "$out/VERSION"
 cat > "$out/package.json" <<EOF
 {
   "name": "clysm",
@@ -41,7 +42,7 @@ cat > "$out/package.json" <<EOF
   },
   "engines": { "node": ">=24" },
   "files": ["bin", "host", "runtime", "data", "lib", "ui", "contrib", "third_party", "tools",
-            "clysmc.wasm", "clysm-native.wasm", "README.md"],
+            "clysmc.wasm", "clysm-native.wasm", "README.md", "VERSION"],
   "clysm": { "commit": "$commit" }
 }
 EOF

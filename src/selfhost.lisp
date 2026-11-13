@@ -31,6 +31,12 @@
       (reset-compiler)
       (let ((*read-package* (find-target-package "SYSTEM")))
         (dolist (f (selfhost-runtime-files runtime-dir)) (compile-source-file f))
+        ;; the version of the package (VERSION, written by tools/build-npm.sh)
+        (let ((version (ignore-errors
+                        (with-open-file (in (concatenate 'string runtime-dir "/../VERSION"))
+                          (read-line in)))))
+          (when version
+            (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv))))
         (finish-runtime))
       (let ((*host-load-defuns* t))
         (dolist (f sources) (compile-source-file f)))

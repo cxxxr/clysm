@@ -37,7 +37,9 @@ $ bin/clysm repl                          # the REPL image is built on first use
 $ bin/clysm run tests/hello.lisp          # compile with the runtime and run on Node.js
 $ bin/clysm compile prog.lisp -o prog.wasm
 $ bin/clysm script file.lisp              # LOAD a file in the REPL image
+$ bin/clysm test --system my-tests t/*.lisp   # test programs, in parallel (--watch)
 $ make web                                # the REPL in a browser page, in build/web/
+$ make npm                                # an npm package that needs only Node.js
 ```
 
 Libraries are loaded from an existing Quicklisp installation:
@@ -71,6 +73,12 @@ $ bin/clysm library outline.lisp -o dist/outline.wasm     # dist/outline.{wasm,m
 import { outline } from './dist/outline.mjs';
 outline(source);              // a Lisp error is thrown as an Error named LispError
 ```
+
+The module loads in the caller's thread (Node.js, Electron's main process)
+or, for deep recursion, in a worker (`host/worker.mjs`). Stack traces name
+Lisp functions by file and line. `--shake` leaves out the functions the
+program does not refer to. Subprocesses are run with `uiop:run-program` and
+`uiop:launch-program`.
 
 ## Implementation
 
