@@ -21,7 +21,10 @@
   (syntax (make-hash-table))          ; syntax types of other characters (absent = constituent)
   (macros (make-hash-table))          ; char -> reader macro function
   (dispatch (make-hash-table))        ; dispatching char -> hash table sub-char -> function
-  (case :upcase))
+  (case :upcase)
+  ;; the entries of MACROS for char codes < 128, filled in when looked up:
+  ;; NIL (not looked up yet), :NONE (no reader macro) or the function
+  (mcache (make-array 128 :initial-element nil)))
 
 (defvar *readtable* nil)
 (defvar *standard-readtable* nil)
@@ -51,6 +54,36 @@
             (remhash c (%rt-syntax rt))
             (setf (gethash c (%rt-syntax rt)) type)))))
 
+(defun %rt-macro (c rt)
+  "The reader macro function of the character C in the readtable RT, or NIL."
+  (let ((code (char-code c)))
+    (if (< code 128)
+        (let* ((cache (%rt-mcache rt)) (e (svref cache code)))
+          (cond ((null e)
+                 (let ((f (gethash c (%rt-macros rt))))
+                   (setf (svref cache code) (or f :none))
+                   f))
+                ((eq e :none) nil)
+                (t e)))
+        (values (gethash c (%rt-macros rt))))))
+
+(defun %rt-flush-macro-cache (rt)
+  "To be called when the reader macros of RT change."
+  (fill (%rt-mcache rt) nil))
+
+;;; The next character of the stream S or :eof: a string stream is read in line.
+(defmacro %rd-char (s)
+  (let ((st (gensym "S")) (i (gensym "I")) (buf (gensym "BUF")))
+    `(let ((,st ,s))
+       (if (and (eq (stream-kind ,st) :string-in) (null (stream-unread ,st)))
+           (let ((,i (stream-index ,st)) (,buf (stream-buffer ,st)))
+             (declare (fixnum ,i))
+             (if (< ,i (the fixnum (stream-end ,st)))
+                 (progn (setf (stream-index ,st) (+ ,i 1))
+                        (if (%simple-string-p ,buf) (%schar ,buf ,i) (char ,buf ,i)))
+                 :eof))
+           (%stream-read-char ,st)))))
+
 (defun %rt-whitespace-p (c)
   (eq (%syntax c (or *readtable* *standard-readtable*)) :whitespace))
 
@@ -70,6 +103,7 @@
       (setf (%rt-ascii to) (copy-seq (%rt-ascii from)))
       (setf (%rt-syntax to) (%copy-hash (%rt-syntax from)))
       (setf (%rt-macros to) (%copy-hash (%rt-macros from)))
+      (%rt-flush-macro-cache to)
       (let ((d (make-hash-table)))
         (maphash (lambda (k v) (setf (gethash k d) (%copy-hash v))) (%rt-dispatch from))
         (setf (%rt-dispatch to) d))
@@ -81,6 +115,7 @@
   (let ((rt (%check-readtable rt)))
     (%set-syntax char rt (if non-terminating-p :non-terminating :terminating))
     (setf (gethash char (%rt-macros rt)) function)
+    (%rt-flush-macro-cache rt)
     (remhash char (%rt-dispatch rt))
     t))
 
@@ -123,6 +158,7 @@
       (if fn
           (setf (gethash to-char (%rt-macros to-rt)) fn)
           (remhash to-char (%rt-macros to-rt)))
+      (%rt-flush-macro-cache to-rt)
       (if table
           (setf (gethash to-char (%rt-dispatch to-rt)) (%copy-hash table))
           (remhash to-char (%rt-dispatch to-rt))))
@@ -151,22 +187,28 @@
 (defun %read-object1 (s allow-dot)
   "Read one object.  Returns (values object kind), kind being :object, :none (a
 macro character returned no values), :dot or :eof."
-  (let ((rt *readtable*))
-    (loop
-      (let ((c (%stream-read-char s)))
-        (when (eq c :eof) (return (values nil :eof)))
-        (let ((syn (%syntax c rt)))
-          (cond ((eq syn :whitespace))
-                ((and (or (eq syn :terminating) (eq syn :non-terminating))
-                      (gethash c (%rt-macros rt)))
-                 ;; the macro function returns zero values or one
-                 (let ((v (funcall (gethash c (%rt-macros rt)) s c)))
-                   (return (if (eql (%mv-count) 0) (values nil :none) (values v :object)))))
-                (t
-                 (multiple-value-bind (found sym) (%read-plain-symbol s c rt)
-                   (when found (return (values sym :object))))
-                 (let ((x (%read-token-object s c allow-dot)))
-                   (return (values x (if (eq x %dot-marker) :dot :object)))))))))))
+  (loop
+    (let ((c (%rd-char s)))
+      (when (eq c :eof) (return (values nil :eof)))
+      (let ((rt *readtable*))
+        (unless (eq (%syntax c rt) :whitespace)
+          (return (%read-object-at s c rt allow-dot)))))))
+
+(defun %read-object-at (s c rt allow-dot)
+  "Read the object that starts with the character C, which was read from S and
+is not whitespace in the readtable RT.  Returns the values of %READ-OBJECT1."
+  (let ((fn (let ((syn (%syntax c rt)))
+              (and (or (eq syn :terminating) (eq syn :non-terminating))
+                   (%rt-macro c rt)))))
+    (if fn
+        ;; the macro function returns zero values or one
+        (let ((v (funcall fn s c)))
+          (if (eql (%mv-count) 0) (values nil :none) (values v :object)))
+        (multiple-value-bind (found sym) (%read-plain-symbol s c rt)
+          (if found
+              (values sym :object)
+              (let ((x (%read-token-object s c allow-dot)))
+                (values x (if (eq x %dot-marker) :dot :object))))))))
 
 (defun %read-plain-symbol (s c rt)
   "When the token starting with C (just read from S) is an ordinary symbol
@@ -261,15 +303,21 @@ read it and return T and the symbol, else return NIL with nothing consumed."
 (defun %read-delimited (s close)
   (let ((items nil))
     (loop
-      (let ((c (%skip-whitespace s)))
+      (let ((c (%read-char-after-whitespace s)))
         (when (eq c :eof) (%reader-eof s))
         (when (char= c close)
-          (%stream-read-char s)
           (return (if *read-suppress* nil (nreverse items))))
-        (multiple-value-bind (x kind) (%read-object1 s nil)
+        (multiple-value-bind (x kind) (%read-object-at s c *readtable* nil)
           (case kind
             (:eof (%reader-eof s))
             (:object (push x items))))))))
+
+(defun %read-char-after-whitespace (s)
+  "Skip whitespace; returns the next character, which is consumed, or :eof."
+  (loop
+    (let ((c (%rd-char s)))
+      (when (or (eq c :eof) (not (eq (%syntax c *readtable*) :whitespace)))
+        (return c)))))
 
 (defun %skip-whitespace (s)
   "Skip whitespace; returns the next character (not consumed) or :eof."
@@ -459,15 +507,15 @@ token is empty when the next character ends a token."
     (when (>= i len) (return-from %parse-number-token nil))
     ;; integer in *read-base*, optional trailing dot (decimal)
     (let ((end (if (char= (char str (- len 1)) #\.) (- len 1) len)))
-      (when (and (> end i) (every-index (lambda (c) (digit-char-p c (if (< end len) 10 base))) str i end))
+      (when (and (> end i) (%digits-p str i end (if (< end len) 10 base)))
         (return-from %parse-number-token
           (list (* sign (%digits-value str i end (if (< end len) 10 base)))))))
     ;; ratio
     (let ((slash (position #\/ str)))
       (when slash
         (if (and (> slash i) (< (+ slash 1) len)
-                 (every-index (lambda (c) (digit-char-p c base)) str i slash)
-                 (every-index (lambda (c) (digit-char-p c base)) str (+ slash 1) len))
+                 (%digits-p str i slash base)
+                 (%digits-p str (+ slash 1) len base))
             (let ((d (%digits-value str (+ slash 1) len base)))
               (when (zerop d)
                 (if s
@@ -496,25 +544,64 @@ token is empty when the next character ends a token."
             (setq j len)))
         (unless (= j len) (return-from %parse-number-token nil))
         (when (and (= frac-digits 0) (null marker)) (return-from %parse-number-token nil))
-        (let* ((digits (remove #\. (subseq str i mant-end)))
-               (exact (* sign (%digits-value digits 0 (length digits) 10)
-                         (expt 10 (- expo frac-digits))))
-               (type (case marker
+        (let* ((type (case marker
                        ((#\D #\L) 'double-float)
                        ((#\F #\S) 'single-float)
-                       (t *read-default-float-format*))))
-          (list (if (and (zerop exact) (= sign -1))
-                    (if (member type '(double-float long-float)) -0.0d0 -0.0)
-                    (if (member type '(double-float long-float)) (%to-double exact) (%to-single exact)))))))))
+                       (t *read-default-float-format*)))
+               (e10 (- expo frac-digits))
+               ;; up to 15 digits and a power of ten up to 10^22 are exact
+               ;; doubles: one multiplication or division gives the
+               ;; correctly rounded double
+               (fast (and (<= (+ int-digits frac-digits) 15) (fixnump e10) (<= -22 e10 22)
+                          (%simple-string-p str)
+                          (%decimal-to-double str i mant-end e10))))
+          (if fast
+              (let ((d (if (= sign -1) (%dneg fast) fast)))
+                (list (if (member type '(double-float long-float)) d (%double-to-single d))))
+              (let* ((digits (remove #\. (subseq str i mant-end)))
+                     (exact (* sign (%digits-value digits 0 (length digits) 10)
+                               (expt 10 e10))))
+                (list (if (and (zerop exact) (= sign -1))
+                          (if (member type '(double-float long-float)) -0.0d0 -0.0)
+                          (if (member type '(double-float long-float)) (%to-double exact) (%to-single exact)))))))))))
+
+(defun %decimal-to-double (str start end e10)
+  "The double nearest to the decimal digits (and possibly a point) in
+STR[START,END) times 10^E10, for at most 15 digits and |E10| <= 22."
+  (declare (fixnum start end e10))
+  (let ((acc 0d0))
+    (declare (double-float acc))
+    (do ((i start (+ i 1))) ((>= i end))
+      (declare (fixnum i))
+      (let ((code (char-code (%schar str i))))
+        (declare (fixnum code))
+        (unless (eql code 46)
+          (setq acc (%d+ (%d* acc 10d0) (%fixnum-to-double (- code 48)))))))
+    (if (>= e10 0)
+        (%d* acc (svref *%powers-of-ten* e10))
+        (%d/ acc (svref *%powers-of-ten* (- e10))))))
+
+(defun %digits-p (str start end base)
+  "True when the characters START..END of STR are all digits in BASE."
+  (do ((i start (+ i 1))) ((>= i end) t)
+    (unless (digit-char-p (char str i) base) (return nil))))
 
 (defun every-index (pred str start end)
   (do ((i start (+ i 1))) ((>= i end) t)
     (unless (funcall pred (char str i)) (return nil))))
 
 (defun %digits-value (str start end base)
-  (let ((v 0))
-    (do ((i start (+ i 1))) ((>= i end) v)
-      (setq v (+ (* v base) (digit-char-p (char str i) base))))))
+  (let ((i start) (small 0))
+    (declare (fixnum small))
+    ;; as long as the value is a fixnum
+    (when (and (fixnump base) (<= 2 base 36))
+      (let ((limit (%fxtruncate (- most-positive-fixnum 36) base)))
+        (declare (fixnum limit))
+        (do () ((or (>= i end) (> small limit)))
+          (setq small (+ (* small base) (digit-char-p (char str i) base)) i (+ i 1)))))
+    (let ((v small))
+      (do () ((>= i end) v)
+        (setq v (+ (* v base) (digit-char-p (char str i) base)) i (+ i 1))))))
 
 ;;; ------------------------------------------------------------
 ;;; standard macro characters
@@ -524,10 +611,9 @@ token is empty when the next character ends a token."
   "Read objects up to the character CLOSE; a list (NIL when reading is suppressed)."
   (let ((items nil) (tail nil) (after-dot nil))
     (loop
-      (let ((c (%skip-whitespace s)))
+      (let ((c (%read-char-after-whitespace s)))
         (when (eq c :eof) (%reader-eof s))
         (when (char= c close)
-          (%stream-read-char s)
           (when (and after-dot (null tail) (not *read-suppress*))
             (%reader-error s "nothing after . in list"))
           (return (if *read-suppress*
@@ -535,7 +621,7 @@ token is empty when the next character ends a token."
                       (let ((l (nreverse items)))
                         (when tail (setf (cdr (last l)) (car tail)))
                         l))))
-        (multiple-value-bind (x kind) (%read-object1 s allow-dot)
+        (multiple-value-bind (x kind) (%read-object-at s c *readtable* allow-dot)
           (case kind
             (:eof (%reader-eof s))
             (:none)
@@ -550,17 +636,42 @@ token is empty when the next character ends a token."
                    (t (setq tail (list x)))))))))))
 
 (defun %read-string-literal (s close)
-  (let ((buf (make-array 16 :element-type 'character :fill-pointer 0 :adjustable t))
-        (rt *readtable*))
-    (loop
-      (let ((c (%stream-read-char s)))
-        (cond ((eq c :eof) (%reader-eof s))
-              ((char= c close) (return (if *read-suppress* nil (subseq buf 0))))
-              ((eq (%syntax c rt) :single-escape)
-               (let ((n (%stream-read-char s)))
-                 (when (eq n :eof) (%reader-eof s))
-                 (vector-push-extend n buf)))
-              (t (vector-push-extend c buf)))))))
+  (let ((rt *readtable*))
+    ;; in a string stream: the characters up to CLOSE, when no escape is among them
+    (when (and (eq (stream-kind s) :string-in) (null (stream-unread s))
+               (%simple-string-p (stream-buffer s)))
+      (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (end (stream-end s)) (i i0)
+             (ascii (%rt-ascii rt)))
+        (declare (fixnum i0 end i))
+        (loop
+          (when (>= i end) (return))
+          (let* ((c (%schar buf i)) (code (char-code c)))
+            (cond ((eq c close)
+                   (setf (stream-index s) (+ i 1))
+                   (return-from %read-string-literal
+                     (if *read-suppress* nil (%simple-substring buf i0 i))))
+                  ((eq (if (< code 128) (svref ascii code) (%syntax c rt)) :single-escape)
+                   (return))
+                  (t (setq i (+ i 1))))))))
+    (let ((buf (%make-string 32 #\Space)) (n 0))
+      (declare (fixnum n))
+      (macrolet ((add (c)
+                   `(progn
+                      (when (>= n (%string-length buf))
+                        (let ((new (%make-string (* 2 n) #\Space)))
+                          (%string-copy new 0 buf 0 n)
+                          (setq buf new)))
+                      (%set-schar buf n ,c)
+                      (setq n (+ n 1)))))
+        (loop
+          (let ((c (%stream-read-char s)))
+            (cond ((eq c :eof) (%reader-eof s))
+                  ((char= c close) (return (if *read-suppress* nil (%simple-substring buf 0 n))))
+                  ((eq (%syntax c rt) :single-escape)
+                   (let ((m (%stream-read-char s)))
+                     (when (eq m :eof) (%reader-eof s))
+                     (add m)))
+                  (t (add c)))))))))
 
 (defun %read-dispatch-macro (s disp)
   (let ((n nil) (c nil))
