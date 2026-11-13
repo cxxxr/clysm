@@ -790,3 +790,6 @@ answers: ((("Ada" 36 T :GREEN) T) ("#0000ff" T) (8 T) ("notes.txt" "hello")
 dialogs: ("ui-dialog ui-window" "ui-dialog")
 window: NIL NIL
 dialogs left: 0
+
+== the names of the README
+34 classes shown, 42 functions, 15 macros; missing: NIL

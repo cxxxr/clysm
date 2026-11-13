@@ -643,3 +643,51 @@ lines" :rows 3))
   (exit-dialog t)
   (fire (find-node (overlay) "button" :class "ui-window-close") "click")
   (format t "dialogs left: ~D~%" (length (find-nodes (overlay) "dialog"))))
+
+;;; ---- everything the table "What of CAPI and CLIM is here" of the README
+;;; names is there: classes that can be instantiated and shown, functions
+;;; and macros
+
+(let ((classes '(interface title-pane display-pane text-input-pane password-pane
+                 multi-line-text-input-pane editor-pane text-input-choice
+                 push-button check-button radio-button push-button-panel radio-button-panel
+                 check-button-panel list-panel multi-column-list-panel tree-view option-pane
+                 graph-pane slider progress-bar toolbar browser-pane output-pane application-pane
+                 color-pane image-pane
+                 column-layout row-layout grid-layout tab-layout switchable-layout simple-layout
+                 pinboard-layout))
+      (functions '(display contain quit-interface find-pane
+                   display-dialog exit-dialog abort-dialog popup-confirmer display-message
+                   prompt-for-string prompt-for-number prompt-for-confirmation prompt-for-file
+                   prompt-for-color prompt-with-list prompt-for-values
+                   choice-selected-item choice-selected-items collection-items popup-menu
+                   draw-line draw-lines draw-rectangle draw-circle draw-ellipse draw-arc draw-polygon
+                   draw-path draw-string draw-image
+                   set-clipboard clipboard
+                   present present-object presenting accept cancel-accept
+                   invoke-command command-palette command-menus render-pane pane-node))
+      (macros '(define-interface define-command define-presentation-type with-output-as-presentation
+                define-presentation-to-command-translator define-drag-and-drop-translator
+                with-graphics-state with-graphics-translation with-graphics-rotation
+                with-graphics-scale with-drawing-group computed binding html defcomponent))
+      (root (make-root))
+      (missing '()))
+    (flet ((exported-p (symbol)
+             (eq (nth-value 1 (find-symbol (symbol-name symbol) "UI")) :external)))
+      ;; every class makes an instance that is put on the display
+      (dolist (class classes)
+        (handler-case
+            (let ((pane (make-instance class)))
+              (unless (exported-p class) (push (list :not-exported class) missing))
+              (contain pane :container root)
+              (quit-interface pane))
+          (error (e) (push (list class (princ-to-string e)) missing))))
+      (dolist (function functions)
+        (unless (and (exported-p function) (fboundp function) (not (macro-function function)))
+          (push (list :function function) missing)))
+      (dolist (macro macros)
+        (unless (and (exported-p macro) (macro-function macro))
+          (push (list :macro macro) missing))))
+    (backend-log *backend*)
+    (format t "~&~%== the names of the README~%~D classes shown, ~D functions, ~D macros; missing: ~S~%"
+            (length classes) (length functions) (length macros) missing))
