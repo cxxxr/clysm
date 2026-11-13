@@ -551,6 +551,11 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
                                   (declare ,@decls)
                                   ,@forms))
                              env))))))))
+      ;; (apply f a (list b c)) is (funcall f a b c)
+      (let ((last (car (last args))))
+        (when (and (cdr args) (consp last) (eq (car last) 'list) (not (env-lookup-fun env 'list)))
+          (return-from apply-native
+            (convert `(funcall ,@(butlast args) ,@(cdr last)) env))))
       (if (null (cddr args))
           `(:apply ,@(convert-args args env))
           `(:apply ,@(convert-args (list (first args) `(list* ,@(rest args))) env))))))
@@ -1601,6 +1606,13 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
 ;;; ------------------------------------------------------------
 
 (defprim clysm-sys::%make-limbs (n) :value `(,@(idx-code n) (:array.new_default :limbs)))
+(defprim clysm-sys::%limbs-prefix (v n) :value
+  ;; a fresh limbs array of the first N elements of V
+  (let ((src (new-local '(:ref :null :limbs))) (k (new-local :i32)) (r (new-local '(:ref :null :limbs))))
+    `(,@v (:ref.cast :limbs) (:local.set ,src) ,@(idx-code n) (:local.tee ,k)
+      (:array.new_default :limbs) (:local.tee ,r)
+      (:i32.const 0) (:local.get ,src) (:i32.const 0) (:local.get ,k) (:array.copy :limbs :limbs)
+      (:local.get ,r))))
 (defprim clysm-sys::%llen (v) :value `(,@v (:ref.cast :limbs) :array.len :ref.i31))
 (defprim clysm-sys::%lref (v i) :value `(,@v (:ref.cast :limbs) ,@(idx-code i) (:array.get :limbs) :ref.i31))
 (defprim clysm-sys::%lset (v i x) :value

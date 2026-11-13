@@ -40,9 +40,7 @@
 
 (defun %mag-trim (m)
   (let ((n (%mag-length m)))
-    (if (%fx= n (%llen m)) m
-        (let ((r (%make-limbs n)))
-          (dotimes (i n r) (%lset r i (%lref m i)))))))
+    (if (%fx= n (%llen m)) m (%limbs-prefix m n))))
 
 (defun %fixnum-mag (n)
   ;; magnitude of a fixnum's absolute value (|n| <= 2^29)

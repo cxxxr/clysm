@@ -29,7 +29,8 @@
 (defconstant +k-svec+ 2048)             ; simple vectors ($vector)
 (defconstant +k-func+ 4096)
 (defconstant +k-other+ 8192)
-(defconstant +k-all+ 16383)
+(defconstant +k-limbs+ 16384)           ; bignum digit arrays ($limbs)
+(defconstant +k-all+ 32767)
 (defconstant +k-double+ 24)
 (defconstant +k-float+ 28)
 (defconstant +k-rational+ 3)
@@ -38,14 +39,15 @@
 (defconstant +k-bool+ 384)
 (defconstant +k-list+ 640)
 
-(defstruct (ty (:constructor %ty (bits lo hi))) (bits 0) (lo nil) (hi nil))
+(defstruct (ty (:constructor %ty (bits lo hi &optional cls))) (bits 0) (lo nil) (hi nil)
+  (cls nil))   ; for instances only: the name of a structure class they belong to
 
-(defun mkty (bits &optional lo hi)
+(defun mkty (bits &optional lo hi cls)
   (if (logtest bits +k-int+)
       (if (and lo hi (> lo hi))
           (%ty (logandc2 bits +k-int+) nil nil)
           (%ty bits lo hi))
-      (%ty bits nil nil)))
+      (%ty bits nil nil (and (= bits +k-other+) cls))))
 
 (defvar *ty-top* (%ty +k-all+ nil nil))
 (defvar *ty-bottom* (%ty 0 nil nil))
@@ -68,17 +70,19 @@
         (t (let ((ia (ty-int-p a)) (ib (ty-int-p b)))
              (mkty (logior (ty-bits a) (ty-bits b))
                    (cond ((and ia ib) (bound-min (ty-lo a) (ty-lo b))) (ia (ty-lo a)) (t (ty-lo b)))
-                   (cond ((and ia ib) (bound-max (ty-hi a) (ty-hi b))) (ia (ty-hi a)) (t (ty-hi b))))))))
+                   (cond ((and ia ib) (bound-max (ty-hi a) (ty-hi b))) (ia (ty-hi a)) (t (ty-hi b)))
+                   (and (eq (ty-cls a) (ty-cls b)) (ty-cls a)))))))
 
 (defun ty-intersect (a b)
   (mkty (logand (ty-bits a) (ty-bits b))
         (cond ((null (ty-lo a)) (ty-lo b)) ((null (ty-lo b)) (ty-lo a)) (t (max (ty-lo a) (ty-lo b))))
-        (cond ((null (ty-hi a)) (ty-hi b)) ((null (ty-hi b)) (ty-hi a)) (t (min (ty-hi a) (ty-hi b))))))
+        (cond ((null (ty-hi a)) (ty-hi b)) ((null (ty-hi b)) (ty-hi a)) (t (min (ty-hi a) (ty-hi b))))
+        (or (ty-cls b) (ty-cls a))))
 
 (defun ty-remove (ty mask) (mkty (logandc2 (ty-bits ty) mask) (ty-lo ty) (ty-hi ty)))
 
 (defun ty-equal (a b)
-  (and (= (ty-bits a) (ty-bits b))
+  (and (= (ty-bits a) (ty-bits b)) (eq (ty-cls a) (ty-cls b))
        (or (not (ty-int-p a)) (and (eql (ty-lo a) (ty-lo b)) (eql (ty-hi a) (ty-hi b))))))
 
 (defun ty-in-range-p (ty lo hi)
@@ -269,6 +273,19 @@
               clysm-sys::%bits-length clysm-sys::%f64vec-length array-total-size)
     (a) (int-ty 0 (1- +most-positive-fixnum+)))
 (def-ti-rule cons (a) (mkty +k-cons+))
+(def-ti-rule (clysm-sys::%make-limbs clysm-sys::%bignum-mag clysm-sys::%limbs-prefix) (a) (mkty +k-limbs+))
+(def-ti-rule clysm-sys::%lref (a) *ty-fixnum*)
+(def-ti-rule clysm-sys::%llen (a) (int-ty 0 (1- +most-positive-fixnum+)))
+(def-ti-rule clysm-sys::%lset (a) (third a))
+
+;;; After a call of these that returns, the argument is of that type (they
+;;; signal an error otherwise): name -> list of (argument-index . type)
+(defvar *ti-asserts* (make-hash-table :test 'eq))
+(dolist (e (list (list '(clysm-sys::%lref clysm-sys::%lset clysm-sys::%llen) (mkty +k-limbs+))
+                 (list '(car cdr first rest) (mkty +k-list+))
+                 (list '(rplaca rplacd clysm-sys::%setcar clysm-sys::%setcdr) (mkty +k-cons+))
+                 (list '(clysm-sys::%svref clysm-sys::%set-svref clysm-sys::%svlength) (mkty +k-svec+))))
+  (dolist (name (first e)) (setf (gethash name *ti-asserts*) (list (cons 0 (second e))))))
 (def-ti-rule (list list*) (a) (mkty +k-list+))
 (def-ti-rule (make-string clysm-sys::%make-string string-upcase string-downcase) (a) (mkty +k-string+))
 (def-ti-rule clysm-sys::%make-simple-vector (a) (mkty +k-svec+))
@@ -365,6 +382,7 @@
 (def-ti-test minusp (a) (list (list 0 (ty-remove (mkty +k-real+ nil -1) +k-dpos+)
                                     (ty-remove (mkty +k-real+ 0 nil) +k-dneg+))))
 (def-ti-test (evenp oddp) (a) (list (list 0 (int-ty nil nil) (int-ty nil nil))))
+(def-ti-test clysm-sys::%structure-typep (a) nil)
 (def-ti-test (null not) (a) (list (list 0 (mkty +k-null+) (ty-remove *ty-top* +k-null+))))
 (macrolet ((pred (names mask &optional exact)
              `(def-ti-test ,names (a) (list (list 0 (mkty ,mask)
@@ -597,6 +615,17 @@
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash sym *ti-rules*) tys)))
                    (t *ty-top*))))
     (:prim (let ((tys (ti-args (cddr node))) (name (prim-name (second node))))
+             ;; after a structure slot access, the object is of that structure class
+             (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
+               (let ((x (third node)) (cls (struct-class-node-name (fourth node))))
+                 (when (and cls (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
+                   (setf *env* (refine-env *env* (ti-slot (second x)) (mkty +k-other+ nil nil cls))))))
+             (let ((asserts (gethash name *ti-asserts*)))
+               (when asserts
+                 (loop for (i . ty) in asserts
+                       do (let ((x (nth i (cddr node))))
+                            (when (and x (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
+                              (setf *env* (refine-env *env* (ti-slot (second x)) ty)))))))
              (cond ((eq (prim-kind (second node)) :test) *ty-bool*)
                    ((gethash name *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash name *ti-rules*) tys)))
@@ -808,6 +837,10 @@ dimensional with no other options than the initial element or contents."
                                     (setf et (refine-env et (ti-slot (second a)) (const-ty (second other))))
                                     (when (null (second other))
                                       (setf ef (refine-env ef (ti-slot (second a)) (ty-remove *ty-top* +k-null+)))))))
+                       (when (and (eq name 'clysm-sys::%structure-typep) (eq (car (first args)) :lref)
+                                  (ti-slot (second (first args))) (struct-class-node-name (second args)))
+                         (setf et (refine-env et (ti-slot (second (first args)))
+                                              (mkty +k-other+ nil nil (struct-class-node-name (second args))))))
                        (dolist (r (funcall rule tys))
                          (let ((a (nth (first r) args)))
                            (when (and a (eq (car a) :lref) (ti-slot (second a)))
@@ -816,6 +849,14 @@ dimensional with no other options than the initial element or contents."
                                      ef (refine-env ef k (third r)))))))
                        (values et ef)))))))
         (t (ti node) (values (env-copy *env*) (env-copy *env*))))))
+
+(defun struct-class-node-name (node)
+  "NODE is (LOAD-TIME-VALUE (FIND-CLASS 'NAME)): NAME."
+  (and (eq (car node) :ltv)
+       (let ((f (second node)))
+         (and (eq (car f) :call) (eq (second f) 'find-class) (= (length f) 3)
+              (eq (car (third f)) :const) (symbolp (second (third f)))
+              (second (third f))))))
 
 (defun refine-env (env k ty)
   (if (eq env :bottom) :bottom

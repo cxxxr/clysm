@@ -380,7 +380,10 @@ representation) or :effect (no value)."
                    ;; the init is compiled before the variable has a location
                    (setf code (append code (cg-rep init (lvar-rep lv)) `((:local.set ,idx))))
                    (set-loc lv (cons :local idx))))
-                (t (setf code (append code (bind-new-var-code lv (cg init))))))))
+                (t (setf code (append code (bind-new-var-code lv (cg init))))))
+          ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
+          (when (and (eq (car init) :lambda) (not (lvar-mutated lv)) (not (lvar-special lv)))
+            (setf (gethash lv *lvar-lams*) (second init)))))
       (flet ((body-code (tail)
                (case rep
                  (:eqref (cg body mv tail))
@@ -401,20 +404,23 @@ representation) or :effect (no value)."
 
 (defun cg-mvbind (node mv tail)
   (destructuring-bind (lvars vnode body) (cdr node)
-    (let* ((code (cg vnode t))
-           (tmps (loop for nil in lvars collect (new-local)))
-           (specials nil))
-      (when (null lvars) (setf code (append code '(:drop))))
-      ;; primary
-      (when lvars
-        (setf code (append code `((:local.set ,(first tmps))))))
-      (loop for i from 1 for tmp in (rest tmps)
-            do (setf code (append code
-                                  `((:global.get :mv-count) (:i32.const ,i) :i32.gt_s
-                                    (:if nil :eqref
-                                         ((:global.get :mv-buf) (:i32.const ,(1- i)) (:array.get :vector))
-                                         ,(nil-code))
-                                    (:local.set ,tmp)))))
+    (multiple-value-bind (divmod rem-local) (and lvars (typed-divmod-code vnode))
+      (let* ((code (or divmod (cg vnode t)))
+             (tmps (loop for nil in lvars collect (new-local)))
+             (specials nil))
+        (when (null lvars) (setf code (append code '(:drop))))
+        ;; primary
+        (when lvars
+          (setf code (append code `((:local.set ,(first tmps))))))
+        (loop for i from 1 for tmp in (rest tmps)
+              do (setf code (append code
+                                    (cond ((and divmod (= i 1)) `((:local.get ,rem-local) (:local.set ,tmp)))
+                                          (divmod `(,@(nil-code) (:local.set ,tmp)))
+                                          (t `((:global.get :mv-count) (:i32.const ,i) :i32.gt_s
+                                               (:if nil :eqref
+                                                    ((:global.get :mv-buf) (:i32.const ,(1- i)) (:array.get :vector))
+                                                    ,(nil-code))
+                                               (:local.set ,tmp)))))))
       (loop for lv in lvars for tmp in tmps
             do (if (lvar-special lv)
                    (push (cons lv tmp) specials)
@@ -428,7 +434,7 @@ representation) or :effect (no value)."
                     (with-dynamic-scope () (cg body mv nil))
                     `((:local.set ,res))
                     (restore-bsp-code saved)
-                    `((:local.get ,res))))))))
+                    `((:local.get ,res)))))))))
 
 ;;; ------------------------------------------------------------
 ;;; Closures
@@ -588,13 +594,23 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
             (cwarn "~S called with ~D arguments" sym (length args)))
           (call-closure-code (fdef-code sym) arg-codes mv tail)))))
 
+(defvar *lvar-lams* (make-hash-table :test 'eq) "lvar -> the lam it is always bound to")
+
 (defun cg-funcall (fnode args mv tail)
+  (let ((lam (and (eq (car fnode) :lref) (gethash (second fnode) *lvar-lams*))))
+    (when (and lam (lam-accepts-p lam (length args)))
+      (return-from cg-funcall
+        (direct-call-code lam `(,@(var-get-code (second fnode)) (:ref.cast! :closure))
+                          (mapcar #'cg args) tail args))))
   (if (eq (car fnode) :lambda)
       (let ((lam (second fnode)))
         (if (lam-accepts-p lam (length args))
             (direct-call-code lam (cg-closure lam) (mapcar #'cg args) tail args)
             (call-closure-code (cg-closure lam) (mapcar #'cg args) mv tail)))
-      (call-closure-code `(,@(cg fnode) (:call :coerce-function)) (mapcar #'cg args) mv tail)))
+      (call-closure-code (if (ty-only-p (node-ty fnode) +k-func+)
+                             `(,@(cg fnode) (:ref.cast! :closure))
+                             `(,@(cg fnode) (:call :coerce-function)))
+                         (mapcar #'cg args) mv tail)))
 
 (defun cg-local-call (fun args mv tail)
   (let* ((lam (fun-lam fun))
@@ -827,6 +843,10 @@ loop with a BR_TABLE."
 ;;; CATCH / THROW / UNWIND-PROTECT
 ;;; ------------------------------------------------------------
 
+(defvar *local-catches* nil
+  "The CATCH forms around the code being compiled in the current function,
+innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
+
 (defun cg-catch (node mv)
   (destructuring-bind (tag-node body) (cdr node)
     (let ((tag (new-local)) (saved (new-local :i32))
@@ -843,8 +863,13 @@ loop with a BR_TABLE."
         (:block ,done :eqref
           (:block ,h (:type :bt-catch)
             (:try_table nil :eqref ((:catch_ref :lisp-throw ,h))
-              ,@(let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)) (*dyn-depth* (1+ *dyn-depth*))
-                      (*uwp-frames* (cons :catch *uwp-frames*)))
+              ,@(let* ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)) (*dyn-depth* (1+ *dyn-depth*))
+                       (*uwp-frames* (cons :catch *uwp-frames*))
+                       (*local-catches*
+                         (cons (list (if (and (eq (car tag-node) :const) (symbolp (second tag-node)))
+                                         (second tag-node) :unknown)
+                                     done saved *uwp-frames*)
+                               *local-catches*)))
                   (or (catch-clone-call tag-node body) (cg body mv))))
             ,@(restore-bsp-code saved)
             (:br ,done))
@@ -860,6 +885,15 @@ loop with a BR_TABLE."
     (when (and *catching-tag* (null *uwp-frames*) (eq (car tag-node) :const)
                (eq (second tag-node) *catching-tag*))
       (return-from cg-throw `(,@(cg value t) :return)))
+    ;; a throw to a CATCH of the same constant tag around it in this function
+    ;; (with no UNWIND-PROTECT in between) is a branch
+    (when (and (eq (car tag-node) :const) (symbolp (second tag-node)))
+      (let ((entry (dolist (e *local-catches*)
+                     (cond ((eq (first e) (second tag-node)) (return e))
+                           ((eq (first e) :unknown) (return nil))))))
+        (when (and entry (null (innermost-uwpf-between *uwp-frames* (fourth entry))))
+          (return-from cg-throw
+            `(,@(cg value t) ,@(restore-bsp-code (third entry)) (:br ,(second entry)))))))
     (let ((tag (new-local)) (v (new-local)))
       `(,@(cg tag-node) (:local.tee ,tag) (:call :check-catch-tag)
         ,@(cg value t) (:local.set ,v)
@@ -1001,7 +1035,7 @@ loop with a BR_TABLE."
 
 (defun compile-pending-lams ()
   (loop while *pending-lams*
-        do (let ((lam (pop *pending-lams*)))
+        do (let ((lam (pop *pending-lams*)) (*local-catches* nil))
              (cond ((and (consp lam) (eq (car lam) :spec))
                     (compile-spec-clone (second lam) (third lam)))
                    ((consp lam)
@@ -1027,6 +1061,7 @@ loop with a BR_TABLE."
     (catch-clone-name lam tag)))
 
 (defun compile-catch-clone (lam tag)
+  (inline-calls lam)
   (infer-lam lam)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
@@ -1090,6 +1125,7 @@ loop with a BR_TABLE."
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
 (defun compile-lam (lam &aux (*catching-tag* nil))
+  (inline-calls lam)
   (infer-lam lam)
   (cond ((lam-simple-p lam) (compile-simple-lam lam))
         ((lam-keyed-p lam) (compile-keyed-lam lam))
@@ -1179,6 +1215,7 @@ loop with a BR_TABLE."
     r))
 
 (defun compile-spec-clone (lam sig)
+  (inline-calls lam)
   (let* ((lvars (lam-all-lvars lam))
          (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars)))
     (dolist (lv lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))

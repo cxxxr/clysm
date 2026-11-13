@@ -149,6 +149,9 @@ comparisons need)."
         ((char-code clysm-sys::%char-code)
          (when (ty-only-p (node-ty a) +k-char+)
            `(,@(cg a) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub)))
+        (clysm-sys::%lref (when (ty-only-p (node-ty a) +k-limbs+)
+                            `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code b) (:array.get :limbs))))
+        (clysm-sys::%llen (when (ty-only-p (node-ty a) +k-limbs+) `(,@(cg a) (:ref.cast! :limbs) :array.len)))
         ((length clysm-sys::%svlength clysm-sys::%string-length)
          (let ((ty (node-ty a)))
            (cond ((ty-only-p ty +k-svec+) `(,@(cg a) (:ref.cast! :vector) :array.len))
@@ -191,6 +194,11 @@ comparisons need)."
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
                   ((member name '(clysm-sys::%aref1 svref clysm-sys::%aset1 clysm-sys::%svset char schar))
                    (typed-ref-code node))
+                  ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
+                   (typed-struct-code node))
+                  ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
+                                  clysm-sys::%svref clysm-sys::%set-svref))
+                   (typed-access-code node))
                   ((ty-double-p ty)
                    (let ((c (f64-op-code node))) (when c `(,@c (:struct.new :double)))))
                   ((ty-fixnum-p ty)
@@ -244,6 +252,52 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
                           (:i32.const ,+char-tag+) :i32.add :ref.i31)
                         `((:local.get ,v) (:local.get ,k) :ref.i31 (:call :schar-ref)))))))))))
 
+(defun index-i32-code (node)
+  "An index known to be a fixnum (unchecked) as an i32."
+  (if (fx-arg-p node) (cg-rep node :i32) `(,@(cg node) (:ref.cast! :i31) :i31.get_s)))
+
+(defun typed-access-code (node)
+  "CAR / CDR of a list or cons, limb and simple-vector access with the type known."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (aty (node-ty a)))
+    (case name
+      ((car cdr first rest)
+       (let ((field (if (member name '(car first)) 0 1)))
+         (cond ((ty-only-p aty +k-cons+) `(,@(cg a) (:ref.cast! :cons) (:struct.get :cons ,field)))
+               ((ty-only-p aty +k-list+)
+                (let ((tmp (new-local)))
+                  `(,@(cg a) (:local.tee ,tmp) (:ref.test :cons)
+                    (:if nil :eqref ((:local.get ,tmp) (:ref.cast! :cons) (:struct.get :cons ,field))
+                         ,(nil-code))))))))
+      (clysm-sys::%lref
+       (when (ty-only-p aty +k-limbs+)
+         `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code (second args)) (:array.get :limbs) :ref.i31)))
+      (clysm-sys::%lset
+       (when (ty-only-p aty +k-limbs+)
+         (let ((tmp (new-local :i32)))
+           `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code (second args))
+             ,@(index-i32-code (third args)) (:local.tee ,tmp) (:array.set :limbs)
+             (:local.get ,tmp) :ref.i31))))
+      (clysm-sys::%svref
+       (when (ty-only-p aty +k-svec+)
+         `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args)) (:array.get :vector))))
+      (clysm-sys::%set-svref
+       (when (ty-only-p aty +k-svec+)
+         (let ((tmp (new-local)))
+           `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args))
+             ,@(cg (third args)) (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp))))))))
+
+(defun typed-struct-code (node)
+  "Slot access of an object known to be of the structure class: no check."
+  (destructuring-bind (x cls i &optional (v nil vp)) (cddr node)
+    (let ((name (struct-class-node-name cls)))
+      (when (and name (eq (ty-cls (node-ty x)) name) (fx-arg-p i))
+        (if vp
+            (let ((tmp (new-local)))
+              `(,@(cg x) (:ref.cast! :instance) (:struct.get :instance 1) ,@(cg-rep i :i32)
+                ,@(cg v) (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp)))
+            `(,@(cg x) (:ref.cast! :instance) (:struct.get :instance 1) ,@(cg-rep i :i32)
+              (:array.get :vector)))))))
+
 (defun typed-test-code (node)
   "i32 code for a numeric comparison or predicate using the argument types, or NIL."
   (let* ((name (node-op-name node)) (args (cddr node))
@@ -272,6 +326,30 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
          `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq)))
       (t nil))))
+
+(defun typed-divmod-code (node)
+  "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a
+fixnum) whose remainder is left in an eqref local; returns (values code local)."
+  (when (and (member (car node) '(:call :prim)) (member (node-op-name node) '(floor truncate))
+             (= (length (cddr node)) 2) (ty-fixnum-p (node-ty node)))
+    (destructuring-bind (a b) (cddr node)
+      (let ((bt (node-ty b)))
+        (when (and (fx-arg-p a) (fx-arg-p b) (or (> (ty-lo bt) 0) (< (ty-hi bt) 0)))
+          (let ((x (new-local :i32)) (y (new-local :i32)) (q (new-local :i32)) (r (new-local :i32))
+                (rem (new-local)))
+            (values
+             `(,@(cg-rep a :i32) (:local.set ,x) ,@(cg-rep b :i32) (:local.set ,y)
+               (:local.get ,x) (:local.get ,y) :i32.div_s (:local.set ,q)
+               (:local.get ,x) (:local.get ,y) :i32.rem_s (:local.set ,r)
+               ,@(when (eq (node-op-name node) 'floor)
+                   ;; a nonzero remainder of the other sign than the divisor
+                   `((:local.get ,r) (:i32.const 0) :i32.ne
+                     (:local.get ,r) (:local.get ,y) :i32.xor (:i32.const 0) :i32.lt_s :i32.and
+                     (:if nil nil ((:local.get ,q) (:i32.const 1) :i32.sub (:local.set ,q)
+                                   (:local.get ,r) (:local.get ,y) :i32.add (:local.set ,r)))))
+               (:local.get ,r) :ref.i31 (:local.set ,rem)
+               (:local.get ,q) :ref.i31 (:i32.const 2) (:global.set :mv-count))
+             rem)))))))
 
 (defun lvar-rep-of (node)
   (and (eq (car node) :lref) (unboxed-local-p (second node)) (lvar-rep (second node))))

@@ -3,7 +3,7 @@
 (in-package :clysm-build)
 (defparameter *root* (make-pathname :name nil :type nil :defaults *load-truename*))
 (defparameter *files* '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend"
-                        "src/types" "src/codegen" "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live"))
+                        "src/types" "src/inline" "src/codegen" "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live"))
 (ensure-directories-exist (merge-pathnames "build/fasl/" *root*))
 (let ((*compile-verbose* nil) (*compile-print* nil))
   (handler-bind ((warning #'muffle-warning))
