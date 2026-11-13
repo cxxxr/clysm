@@ -1178,8 +1178,9 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
 ;;; the compiler: a constant control string becomes Lisp code
 ;;;
 ;;; %FMTC-EXPAND returns the forms that perform the output of a control
-;;; string, or NIL when the string has to be interpreted: it has a syntax
-;;; error (which is signalled when the FORMAT call runs), or uses ~<...~>.
+;;; string, or :FAIL when the string has to be interpreted: it has a syntax
+;;; error (which is signalled when the FORMAT call runs), or uses a logical
+;;; block ~<...~:>.
 ;;;
 ;;; The arguments of a FORMAT call are variables.  As long as the position
 ;;; in the argument list is known at compile time ("static" mode,
@@ -1417,6 +1418,7 @@ position.  In static mode they must all take the same number of arguments."
                     (%fmt-case-flush ,s ,tmp ,colon ,at))))))
       (#\[ (%fmtc-conditional dir colon at))
       (#\{ (%fmtc-iteration dir colon at))
+      (#\< (if (%fmt-logical-block-p dir) (%fmtc-fail) (%fmtc-justify dir colon at)))
       (#\^
        (when at (%fmtc-fail))
        (when (and colon (null *fmtc-up-up*)) (%fmtc-fail))
@@ -1596,6 +1598,51 @@ position.  In static mode they must all take the same number of arguments."
                             ,@(when max `((,count ,max))))
                        ,@(unless (or at colon) `((declare (ignorable ,orig))))
                        ,loop-form))))))))
+
+(defun %fmtc-up-p (nodes)
+  "True when NODES contain a ~^ that leaves the construct around NODES."
+  (dolist (n nodes nil)
+    (unless (stringp n)
+      (when (or (eql (%fdir-char n) #\^)
+                (and (not (member (%fdir-char n) '(#\{ #\<)))
+                     (dolist (c (%fdir-clauses n) nil)
+                       (when (%fmtc-up-p c) (return t)))))
+        (return t)))))
+
+(defun %fmtc-justify (dir colon at)
+  "~<...~>: every clause is written to a string, then the strings are justified."
+  (when (%fdir-at (%fdir-close dir)) (%fmtc-fail))
+  (let* ((s *fmtc-stream*) (clauses (%fdir-clauses dir))
+         (first-sep (car (%fdir-seps dir)))
+         (special (and first-sep (%fdir-colon first-sep))))
+    ;; after a ~^ the position in the arguments is not known at compile time
+    (when (and *fmtc-pos* (dolist (c clauses nil) (when (%fmtc-up-p c) (return t))))
+      (%fmtc-dynamic))
+    (multiple-value-bind (b v) (%fmtc-params dir '((:int 0) (:int 1) (:int 0) (:char #\Space)))
+      (let ((strs (gensym "STRINGS")) (nl (gensym "NEWLINE")) (extra (gensym "EXTRA"))
+            (len (gensym "LENGTH")) (blk (gensym "JUSTIFY")) (forms nil))
+        (when special
+          ;; ~:; after the first clause: it is written when the line is too long
+          (multiple-value-bind (sb sv) (%fmtc-params first-sep '((:any nil) (:any nil)))
+            (let* ((tmp (gensym "TMP"))
+                   (body (let ((*fmtc-stream* tmp) (*fmtc-up* blk)) (%fmtc-seq (car clauses)))))
+              (push `(let* (,@sb (,tmp (%scratch-string-stream)))
+                       ,@body
+                       (setq ,nl (%scratch-string-result ,tmp)
+                             ,extra (or ,(car sv) 0)
+                             ,len (or ,(cadr sv) *print-right-margin* 72)))
+                    forms)))
+          (setq clauses (cdr clauses)))
+        (dolist (clause clauses)
+          (let* ((tmp (gensym "TMP"))
+                 (body (let ((*fmtc-stream* tmp) (*fmtc-up* blk)) (%fmtc-seq clause))))
+            (push `(let ((,tmp (%scratch-string-stream)))
+                     ,@body
+                     (push (%scratch-string-result ,tmp) ,strs))
+                  forms)))
+        (list `(let* (,@b (,strs nil) (,nl nil) (,extra 0) (,len 0))
+                 (block ,blk ,@(nreverse forms))
+                 (%fmt-justification ,s ,nl ,extra ,len (nreverse ,strs) ,colon ,at ,@v)))))))
 
 (defun %fmtc-expand (control vars stream top dynamic)
   "The forms that write the control string CONTROL to the stream in the
