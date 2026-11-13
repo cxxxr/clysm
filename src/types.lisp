@@ -379,6 +379,9 @@
         (int-ty 0 (max (abs (ty-lo x)) (abs (ty-hi x)) (abs (ty-lo y)) (abs (ty-hi y))))
         (int-ty 0 nil))))
 (def-ti-rule (clysm-sys::%lcm2) (a) (int-ty 0 nil))
+;; (the parts of a rational are integers: sums of them can be integer accumulators)
+(def-ti-rule (numerator clysm-sys::%ratio-num) (a) (int-ty nil nil))
+(def-ti-rule (denominator clysm-sys::%ratio-den) (a) (int-ty 1 nil))
 
 (def-ti-rule (atan) (a)
   (cond ((and (= (length a) 1) (ty-double-p (first a))) (mkty +k-double+))
