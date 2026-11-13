@@ -91,8 +91,9 @@
         (t (%type-error x 'list))))
 
 (defun length-of-list (l)
-  (let ((n 0))
-    (do ((x l (cdr x))) ((%endp x) n) (setq n (+ n 1)))))
+  (let ((n 0) (x l))
+    (loop (if (consp x) (setq x (cdr x) n (%fx+ n 1)) (return)))
+    (if (null x) n (progn (%endp x) n))))
 
 (defun list-length (l)
   (do ((n 0 (+ n 2))
