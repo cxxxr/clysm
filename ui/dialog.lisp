@@ -254,19 +254,29 @@ or the user does not allow reading it)."
     (when okp (funcall continuation value))))
 
 (defmethod accept-presentation-type ((name (eql 'string)) type prompt continuation)
-  (prompt-for-string prompt :continuation (when-answered continuation)))
+  (if (active-interactors)
+      (call-next-method)                 ; the interactor asks in its line
+      (prompt-for-string prompt :continuation (when-answered continuation))))
 
 (defmethod accept-presentation-type ((name (eql 'integer)) type prompt continuation)
-  (prompt-for-number prompt :integer t :continuation (when-answered continuation)))
+  (if (active-interactors)
+      (call-next-method)                 ; the interactor asks in its line
+      (prompt-for-number prompt :integer t :continuation (when-answered continuation))))
 
 (defmethod accept-presentation-type ((name (eql 'number)) type prompt continuation)
-  (prompt-for-number prompt :continuation (when-answered continuation)))
+  (if (active-interactors)
+      (call-next-method)                 ; the interactor asks in its line
+      (prompt-for-number prompt :continuation (when-answered continuation))))
 
 (defmethod accept-presentation-type ((name (eql 'boolean)) type prompt continuation)
-  (prompt-for-confirmation prompt :continuation (when-answered continuation)))
+  (if (active-interactors)
+      (call-next-method)                 ; the interactor asks in its line
+      (prompt-for-confirmation prompt :continuation (when-answered continuation))))
 
 (defmethod accept-presentation-type ((name (eql 'member)) type prompt continuation)
-  (prompt-with-list (cdr type) prompt :continuation (when-answered continuation)))
+  (if (active-interactors)
+      (call-next-method)                 ; the interactor asks in its line
+      (prompt-with-list (cdr type) prompt :continuation (when-answered continuation))))
 
 ;;; ------------------------------------------------------------------
 ;;; An error without restarts to choose is shown in a dialog of the page

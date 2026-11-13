@@ -653,9 +653,9 @@ lines" :rows 3))
                  push-button check-button radio-button push-button-panel radio-button-panel
                  check-button-panel list-panel multi-column-list-panel tree-view option-pane
                  graph-pane slider progress-bar toolbar browser-pane output-pane application-pane
-                 color-pane image-pane
+                 color-pane image-pane stream-pane interactor-pane
                  column-layout row-layout grid-layout tab-layout switchable-layout simple-layout
-                 pinboard-layout))
+                 pinboard-layout docking-layout))
       (functions '(display contain quit-interface find-pane
                    display-dialog exit-dialog abort-dialog popup-confirmer display-message
                    prompt-for-string prompt-for-number prompt-for-confirmation prompt-for-file
@@ -665,11 +665,15 @@ lines" :rows 3))
                    draw-path draw-string draw-image
                    set-clipboard clipboard
                    present present-object presenting accept cancel-accept
-                   invoke-command command-palette command-menus render-pane pane-node))
+                   invoke-command command-palette command-menus render-pane pane-node
+                   window-clear write-markup accept-from-string presentation-type-choices
+                   interface-window raise-interface tile-windows cascade-windows
+                   interface-menus application-menus key-action make-menu-item))
       (macros '(define-interface define-command define-presentation-type with-output-as-presentation
                 define-presentation-to-command-translator define-drag-and-drop-translator
                 with-graphics-state with-graphics-translation with-graphics-rotation
-                with-graphics-scale with-drawing-group computed binding html defcomponent))
+                with-graphics-scale with-drawing-group computed binding html defcomponent
+                with-text-style formatting-table formatting-row formatting-cell formatting-item-list))
       (root (make-root))
       (missing '()))
     (flet ((exported-p (symbol)
@@ -691,3 +695,293 @@ lines" :rows 3))
     (backend-log *backend*)
     (format t "~&~%== the names of the README~%~D classes shown, ~D functions, ~D macros; missing: ~S~%"
             (length classes) (length functions) (length macros) missing))
+
+;;; ---- the menus of an interface
+
+(define-command (zoom-out :label "Zoom out") () (push :zoom-out *log*))
+
+(define-interface editor-window ()
+  ((wrap :initform nil :accessor editor-wrap)
+   (dirty :initform nil :accessor editor-dirty))
+  (:panes
+   (text multi-line-text-input-pane :text "hello" :pane-menu 'edit-menu)
+   (status title-pane :text (computed (format nil "wrap ~S" (editor-wrap interface)))
+           :pane-menu (lambda (pane) (declare (ignore pane)) '(zoom-out))))
+  (:menus
+   (file-menu "&File"
+              (("&Save" :key "CmdOrCtrl+S" :enabled (computed (editor-dirty interface))
+                        :callback (lambda (data interface)
+                                    (push (list :save data) *log*)
+                                    (setf (editor-dirty interface) nil)))
+               export-menu
+               :separator
+               zoom-out))
+   (export-menu "&Export" (("as &Text" :data :text :callback-type :data
+                                       :callback (lambda (data) (push (list :export data) *log*)))
+                           (paint :red)))
+   (edit-menu "&Edit" (("&Wrap lines" :checked (binding (editor-wrap interface)) :key "Alt+W"
+                                      :callback (lambda (data interface)
+                                                  (declare (ignore interface))
+                                                  (push (list :wrap data) *log*))))))
+  (:menu-bar file-menu edit-menu :commands)
+  (:default-initargs :title "Editor"))
+
+(let* ((root (make-root))
+       (editor (display (make-instance 'editor-window) :container root)))
+  (flet ((titles () (mapcar #'node-text (find-nodes root "button" :class "ui-menu-title")))
+         (items () (mapcar (lambda (node) (list (node-text node) (getf (second (to-sexp node)) :class)))
+                           (find-nodes root "li")))
+         (key (string) (let ((action (key-action (parse-key string)))) (and action (progn (funcall action) t)))))
+    (format t "~&~%== the menus of an interface~%menu bar: ~S~%" (titles))
+    (fire (find-node root "button" :class "ui-menu-title") "click")
+    (show "the File menu" (find-node root "div" :class "ui-menu-bar-item"))
+    ;; Save is disabled
+    (fire (find-node root "li" :index 0) "click")
+    (setf (editor-dirty editor) t)
+    (flush)
+    (fire (find-node root "li" :index 0) "click")
+    (format t "log: ~S, open menus: ~D~%" (first *log*) (length (find-nodes root "ul")))
+    ;; a menu in a menu, an item with arguments, a command
+    (fire (find-node root "button" :class "ui-menu-title") "click")
+    (fire (find-node root "li" :index 2) "click")
+    (format t "log: ~S~%" (first *log*))
+    ;; a check mark is a slot of the interface
+    (fire (find-node root "button" :class "ui-menu-title" :index 1) "click")
+    (format t "Edit: ~S~%" (items))
+    (fire (find-node root "li") "click")
+    (format t "log: ~S, wrap: ~S, status: ~S~%" (first *log*) (editor-wrap editor)
+            (node-text (find-node root "span" :class "ui-pane ui-title-pane")))
+    (fire (find-node root "button" :class "ui-menu-title" :index 1) "click")
+    (format t "Edit: ~S~%" (items))
+    (fire (find-node root "button" :class "ui-menu-title" :index 1) "click")
+    ;; keys: of entries, mnemonics
+    (setf (editor-dirty editor) t)
+    (format t "keys: ~S ~S ~S" (key "Ctrl+S") (key "Ctrl+S") (key "Alt+W"))
+    (format t ", log: ~S, wrap: ~S~%" (subseq *log* 0 2) (editor-wrap editor))
+    (key "Alt+F")
+    (flush)
+    (format t "Alt+F opens: ~S~%" (mapcar #'first (items)))
+    (setf (editor-dirty editor) t)
+    (key "s")
+    (flush)
+    (format t "then S: ~S, open menus: ~D~%" (first *log*) (length (find-nodes root "ul")))
+    ;; the menus of panes
+    (fire (find-node root "textarea") "contextmenu" '(:clientx 5 :clienty 6))
+    (format t "menu of the text: ~S~%" (mapcar #'node-text (find-nodes (overlay) "li")))
+    (fire (find-node (overlay) "li") "click")
+    (fire (find-node root "span" :class "ui-pane ui-title-pane") "contextmenu")
+    (format t "menu of the status: ~S, wrap: ~S~%" (mapcar #'node-text (find-nodes (overlay) "li"))
+            (editor-wrap editor))
+    (fire (find-node (overlay) "li") "click")
+    ;; what a menu bar outside the page shows
+    (format t "application menus: ~S~%"
+            (mapcar (lambda (menu)
+                      (cons (car menu)
+                            (mapcar (lambda (item)
+                                      (if (menu-item-p item)
+                                          (list (menu-item-label item) (menu-item-enabled item)
+                                                (menu-item-checked item)
+                                                (length (menu-item-items item)))
+                                          item))
+                                    (cdr menu))))
+                    (application-menus)))
+    (quit-interface editor)
+    (format t "after quit: ~S~%" (mapcar #'car (application-menus)))))
+
+;;; ---- windows: interfaces above the application
+
+(define-interface note-window ()
+  ()
+  (:panes (text title-pane :text "a note"))
+  (:default-initargs :title "Note"))
+
+(flet ((frames ()
+         (mapcar (lambda (node) (getf (second (to-sexp node)) :style))
+                 (remove-if-not (lambda (node)
+                                  (search "ui-top-window" (getf (second (to-sexp node)) :class "")))
+                                (find-nodes (overlay) "div"))))
+       (classes ()
+         (mapcar (lambda (node) (getf (second (to-sexp node)) :class))
+                 (remove-if-not (lambda (node)
+                                  (search "ui-top-window" (getf (second (to-sexp node)) :class "")))
+                                (find-nodes (overlay) "div")))))
+  (let ((a (display (make-instance 'note-window) :window t :x 10 :y 20 :width 300 :height 200))
+        (b (display (make-instance 'note-window :title "Second"
+                                                :destroy-callback (lambda (interface)
+                                                                    (format t "closed ~A~%" (interface-title interface))))
+                    :window t)))
+    (flush)
+    (format t "~&~%== windows~%")
+    (show "a window" (find-node (overlay) "div"))
+    (format t "frames: ~S~%classes: ~S~%" (frames) (classes))
+    ;; moving by the title, resizing at the corner
+    (let ((title (find-node (overlay) "header")))
+      (fire title "pointerdown" '(:clientx 100 :clienty 100))
+      (fire title "pointermove" '(:clientx 150 :clienty 90))
+      (fire title "pointerup")
+      (fire title "pointermove" '(:clientx 500 :clienty 500)))
+    (let ((corner (find-node (overlay) "div" :class "ui-window-resize")))
+      (fire corner "pointerdown" '(:clientx 0 :clienty 0))
+      (fire corner "pointermove" '(:clientx 40 :clienty -500))
+      (fire corner "pointerup"))
+    (format t "moved and resized: ~S, on top: ~S~%" (first (frames)) (classes))
+    (format t "window: ~S~%" (let ((window (interface-window a)))
+                               (list (window-x window) (window-y window) (window-width window)
+                                     (window-height window))))
+    ;; maximizing, arranging
+    (fire (find-node (overlay) "header") "dblclick")
+    (format t "maximized: ~S ~S~%" (first (classes)) (first (frames)))
+    (tile-windows)
+    (flush)
+    (format t "tiled: ~S~%" (frames))
+    (cascade-windows)
+    (raise-interface b)
+    (flush)
+    (format t "cascaded: ~S~%" (frames))
+    (format t "on the screen: ~S~%" (mapcar #'interface-title (subseq *interfaces* 0 2)))
+    ;; closing
+    (fire (find-node (overlay) "button" :class "ui-window-button ui-window-close" :index 1) "click")
+    (quit-interface a)
+    (flush)
+    (format t "windows left: ~D, on the screen: ~S~%" (length (frames))
+            (and (or (member a *interfaces*) (member b *interfaces*)) t))))
+
+;;; a docking layout
+
+(let* ((root (make-root))
+       (layout (make-instance 'docking-layout
+                              :description (list (list "Files" (make-instance 'title-pane :text "the files"))
+                                                 (list "Notes" (make-instance 'title-pane :text "the notes"))))))
+  (contain layout :container root)
+  (show "docking" root)
+  (fire (find-node root "button") "click")
+  (format t "docked: ~S, in windows: ~S~%"
+          (mapcar #'node-text (find-nodes root "section"))
+          (mapcar #'node-text (find-nodes (overlay) "span" :class "ui-window-name")))
+  (fire (find-node (overlay) "button" :class "ui-window-button ui-window-close") "click")
+  (format t "docked again: ~S~%" (mapcar #'node-text (find-nodes root "section"))))
+
+;;; ---- stream panes
+
+(let* ((pane (make-instance 'stream-pane))
+       (root (make-root))
+       (ada (make-instance 'person :name "Ada")))
+  (contain pane :container root)
+  (format pane "Hello, ~A!~%" "stream")
+  (format pane "~D + ~D = ~D" 1 2 3)
+  (flush)
+  (show "a stream pane" root)
+  (backend-log *backend*)
+  (terpri pane)
+  (write-string "first: " pane)
+  (present ada 'person :stream pane)
+  (with-output-as-presentation (pane 42 'integer)
+    (format pane " and ~R" 42))
+  (with-text-style (pane :bold t :color "red")
+    (princ " !" pane))
+  (fresh-line pane)
+  (formatting-table (pane)
+    (dolist (row '(("Ada" 36) ("Grace" 85)))
+      (formatting-row (pane)
+        (formatting-cell (pane) (princ (first row) pane))
+        (formatting-cell (pane :align :right) (princ (second row) pane)))))
+  (formatting-item-list (pane :columns 2)
+    (dolist (item '(a b c))
+      (formatting-cell (pane) (prin1 item pane))))
+  (write-markup pane (lambda () (html (:hr))))
+  (flush)
+  (show-log "more output: only what is new")
+  (show "a stream pane with records" root)
+  ;; the presentations are presentations
+  (fire (find-node root "span" :class "ui-presentation") "click")
+  (format t "log: ~S~%" (first *log*))
+  (window-clear pane)
+  (flush)
+  (show "cleared" root))
+
+;;; a display function: the pane follows the state
+
+(let* ((pane (make-instance 'stream-pane
+                            :display-function (lambda (pane)
+                                                (format pane "~D people:" (length *people*))
+                                                (dolist (person *people*)
+                                                  (write-char #\Space pane)
+                                                  (present person 'person :stream pane)))))
+       (root (make-root)))
+  (contain pane :container root)
+  (format t "~&~%== a display function~%~S~%" (node-text root))
+  (setf *people* (append *people* (list (make-instance 'person :name "Zed"))))
+  (flush)
+  (format t "~S~%" (node-text root)))
+
+;;; ---- the interactor
+
+(defmethod accept-from-string ((name (eql 'person)) type string)
+  (let ((person (find string *people* :key #'person-name :test #'string-equal)))
+    (values person (and person t))))
+
+(defmethod presentation-type-choices ((name (eql 'person)) type)
+  (mapcar #'person-name *people*))
+
+(define-command (greet :label "Greet…") ((person 'person) (times 'integer :prompt "How often?"))
+  (dotimes (i times) (format t "Hello, ~A! " (person-name person)))
+  (terpri))
+
+(let* ((pane (make-instance 'interactor-pane))
+       (root (make-root)))
+  (contain pane :container root)
+  (flet ((line () (find-node root "input"))
+         (typed (text) (fire (find-node root "input") "input" (list :value text)))
+         (key (key) (fire (find-node root "input") "keydown" (list :key key)))
+         (output () (node-text (find-node root "div" :class "ui-stream-output")))
+         (prompt () (node-text (find-node root "span" :class "ui-interactor-prompt")))
+         (completions () (mapcar #'node-text (find-nodes root "li"))))
+    (declare (ignorable #'line))
+    (format t "~&~%== the interactor~%")
+    (show "empty" root)
+    ;; completion of the name of a command
+    (typed "re")
+    (format t "completions: ~S~%" (completions))
+    (key "Tab")
+    (format t "after Tab: ~S~%" (getf (second (to-sexp (find-node root "input"))) :value))
+    ;; a command with all its arguments: what it prints is in the pane
+    (typed "greet eve 2")
+    (key "Enter")
+    (format t "output: ~S~%" (output))
+    ;; completion of an argument
+    (typed "Greet z")
+    (format t "completions: ~S~%" (completions))
+    (key "Tab")
+    (format t "after Tab: ~S~%" (getf (second (to-sexp (find-node root "input"))) :value))
+    ;; a missing argument is asked for in the line (and the bar of ACCEPT is not shown)
+    (key "Enter")
+    (format t "prompt: ~S, accepting: ~S, bar: ~D~%" (prompt) (accepting-p)
+            (length (find-nodes (overlay) "div" :class "ui-accept-bar")))
+    (typed "many")
+    (key "Enter")
+    (typed "1")
+    (key "Enter")
+    (format t "prompt: ~S~%output: ~S~%" (prompt) (output))
+    ;; an argument can also be clicked: the presentations of the output
+    (typed "Remove")
+    (key "Enter")
+    (format t "prompt: ~S~%" (prompt))
+    (window-clear pane)
+    (present (find "Zed" *people* :key #'person-name :test #'equal) 'person :stream pane)
+    (flush)
+    (fire (find-node root "span" :class "ui-presentation ui-acceptable") "click")
+    (format t "people: ~S~%" (mapcar #'person-name *people*))
+    ;; errors of the line, the history
+    (typed "frobnicate")
+    (key "Enter")
+    (typed "greet nobody")
+    (key "Enter")
+    (typed "paint \"red\"")
+    (key "Enter")
+    (format t "output: ~S~%log: ~S~%" (output) (first *log*))
+    (key "ArrowUp")
+    (key "ArrowUp")
+    (format t "history: ~S~%" (getf (second (to-sexp (find-node root "input"))) :value))
+    (key "Escape"))
+  (quit-interface pane)
+  (format t "interactors left: ~D, command output: ~S~%" (length ui::*interactors*) *command-output*))

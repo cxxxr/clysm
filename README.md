@@ -422,7 +422,85 @@ layouts, without markup.
 
 ```
 $ bin/clysm compile ui/ui.lisp ui/command.lisp ui/present.lisp ui/pane.lisp ui/dialog.lisp \
-    ui/graphics.lisp ui/dom.lisp app.lisp -o app.wasm
+    ui/graphics.lisp ui/stream.lisp ui/dom.lisp app.lisp -o app.wasm
+```
+
+### Menus
+
+An interface has menus of its own, besides those of the [commands](#commands):
+
+```lisp
+(ui:define-interface editor ()
+  ((wrap :initform nil :accessor editor-wrap))
+  (:panes (text ui:editor-pane :pane-menu 'edit-menu))     ; the menu of a right click
+  (:menus
+   (file-menu "&File" (("&Save" :key "CmdOrCtrl+S" :enabled (ui:computed (dirty-p ui:interface))
+                                :callback (lambda (data interface) (save interface)))
+                       export-menu                          ; a menu in the menu
+                       :separator
+                       quit))                               ; a command
+   (export-menu "&Export" (("as &Text" :data :text :callback 'export) ("as &HTML" :data :html :callback 'export)))
+   (edit-menu "&Edit" (("&Wrap lines" :checked (ui:binding (editor-wrap ui:interface))))))
+  (:menu-bar file-menu edit-menu :commands))               ; then the menus of the commands
+```
+
+An entry has a title (the character after `&` is its mnemonic: Alt and the
+mnemonic of a menu opens it, the mnemonic of an entry chooses it), a
+`:callback`, a `:key`, `:enabled`, and with `:checked` a check mark that is
+a slot — all of which may be `computed` or `binding`. In the desktop
+application the same menus, with their check marks and menus in menus, are
+in the menu bar of the application. `:pane-menu` of a pane is a menu, the
+name of one or a function that returns the items for `ui:popup-menu`.
+
+### Windows
+
+`(ui:display interface :window t)` shows an interface in a window above the
+application: the user moves it by its title, resizes it at its corner,
+maximizes it (a double click on the title) and closes it; a click brings it
+to the top. `ui:raise-interface`, `ui:tile-windows` and `ui:cascade-windows`
+arrange the windows, `(ui:interface-window interface)` is the window with
+its `window-x`, `-y`, `-width`, `-height`, and the `:destroy-callback` of an
+interface is called when it is closed. A `ui:docking-layout` shows panes
+with a title bar each, `(title pane)`, that the user takes out into windows
+of their own and back.
+
+### Stream panes and the interactor
+
+A `ui:stream-pane` (`ui/stream.lisp`) is a character output stream, as the
+panes of CLIM are: what is written to it is what it shows.
+
+```lisp
+(format pane "~D contacts, the first is " (length *contacts*))
+(ui:present (first *contacts*) 'contact :stream pane)       ; a presentation in the text
+(ui:with-text-style (pane :bold t) (princ "Total" pane))
+(ui:formatting-table (pane)
+  (dolist (contact *contacts*)
+    (ui:formatting-row (pane)
+      (ui:formatting-cell (pane) (ui:present contact 'contact :stream pane))
+      (ui:formatting-cell (pane :align :right) (princ (contact-age contact) pane)))))
+```
+
+`(ui:with-output-as-presentation (pane object type) ...)` makes what is
+written a presentation, `ui:formatting-item-list` lays cells out in columns,
+`ui:write-markup` writes markup and `ui:window-clear` forgets everything.
+With a `:display-function`, the pane shows what that function writes and
+calls it again when state it read has changed.
+
+A `ui:interactor-pane` also has a line for commands, typed by their names
+with their arguments (`Rename contact Ada "Ada Lovelace"`): Tab completes the
+name of a command and what an argument can be, the arrows recall earlier
+lines, and what the command prints is in the pane (`*standard-output*` is
+the interactor while a command runs). An argument that is missing is asked
+for in that line — whoever invoked the command, a menu too — and the user
+types it or clicks a presentation, also one in the output of the interactor.
+For the objects of an application to be typed, it defines how they are read:
+
+```lisp
+(defmethod ui:accept-from-string ((name (eql 'contact)) type string)
+  (let ((contact (find string *contacts* :key #'contact-name :test #'string-equal)))
+    (values contact (and contact t))))
+(defmethod ui:presentation-type-choices ((name (eql 'contact)) type)   ; for completion
+  (mapcar #'contact-name *contacts*))
 ```
 
 ### Drawing
@@ -531,7 +609,8 @@ once and call their `:continuation` with the answer and whether there is one:
 | `slider`, `progress-bar`, `toolbar`, `browser-pane`, `output-pane` | the same names |
 | `column-layout`, `row-layout` (`:ratios`, `:divider`, `:separator`), `grid-layout`, `tab-layout`, `switchable-layout`, `simple-layout`, `pinboard-layout` | the same names |
 | collections and choices: `:items`, `:print-function`, `:interaction`, `:selection-callback`, `:action-callback`, `:callback-type`, `choice-selected-item(s)` | the same |
-| menus, the menu bar, accelerators | commands with `:menu` and `:key`; `:menu-bar t`, `popup-menu` |
+| `:menus` and `:menu-bar` of `define-interface`, menus in menus, check items, mnemonics, accelerators, `:pane-menu` | the same; also commands with `:menu` and `:key`, and `popup-menu` |
+| several top-level windows, `docking-layout` | `display … :window t` (moved, resized, raised, maximized, tiled), `docking-layout` |
 | `display-dialog`, `exit-dialog`, `abort-dialog`, `popup-confirmer`, `display-message`, `prompt-for-string` / `-number` / `-confirmation` / `-file` / `-color`, `prompt-with-list` | the same names, with `:continuation` (as CAPI has for window-modal dialogs) |
 | graphics ports: `gp:draw-line`…, `with-graphics-state`, translation, rotation, scale, `draw-image` | `ui:draw-line`…, the same macros; shapes instead of pixels |
 | `:input-model` of output panes | `:press-callback`, `:motion-callback`, `:release-callback` |
@@ -546,10 +625,11 @@ once and call their `:continuation` with the answer and whether there is one:
 | `accept`, input contexts, highlighting of acceptable presentations | `accept`; a click, or a dialog for strings, numbers and members |
 | `accepting-values` | `prompt-for-values` |
 | `define-presentation-to-command-translator`, the presentation menu, `define-drag-and-drop-translator` | the same names |
-| the interactor (commands by name) | `command-palette` |
+| stream panes: `format`, `present … :stream`, `with-output-as-presentation (stream …)`, `with-text-style`, `window-clear` | `stream-pane`, the same names |
+| the interactor: commands typed by name, arguments typed (with completion) or clicked | `interactor-pane`, `accept-from-string`; also `command-palette` |
 | the pointer documentation pane | `:pointer-documentation t` |
 | application panes with a display function, incremental redisplay, `updating-output` | `application-pane`; every pane is redisplayed incrementally, from the state it read |
-| `formatting-table`, `formatting-item-list`, output records | markup (`(:table …)`), which is what is recorded and compared |
+| `formatting-table`, `formatting-row`, `formatting-cell`, `formatting-item-list`, output records | the same names on stream panes; elsewhere markup (`(:table …)`) |
 | `draw-line*`…, `with-drawing-options`, transformations | `draw-line`…, `with-graphics-state` |
 | `format-graph-from-roots` | `graph-pane` |
 | `menu-choose`, `notify-user` | `popup-menu` / `prompt-with-list`, `display-message` |

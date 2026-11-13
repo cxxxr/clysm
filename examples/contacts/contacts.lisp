@@ -103,14 +103,20 @@ circles that are presentations (click, right click) like their names."
 
 (define-interface address-book ()
   ((selected :initform nil :accessor selected-contact)
-   (filter :initform "" :accessor filter))
+   (filter :initform "" :accessor filter)
+   (favorites-only :initform nil :accessor favorites-only)
+   (console-shown :initform t :accessor console-shown))
   (:panes
    (tools toolbar :items '(new-contact delete-contact :separator toggle-favorite move-to-group))
    (search text-input-pane :placeholder "検索" :text (binding (filter interface)))
    (people list-panel
            :items (computed (remove-if-not (lambda (contact)
-                                             (search (filter interface) (contact-name contact)))
+                                             (and (search (filter interface) (contact-name contact))
+                                                  (or (not (favorites-only interface))
+                                                      (contact-favorite contact))))
                                            *contacts*))
+           ;; (a right click on a contact shows its commands; elsewhere in the list, this menu)
+           :pane-menu 'view-menu
            :print-function #'contact-label
            :selected-item (binding (selected-contact interface))
            :presentation-type 'contact)
@@ -156,9 +162,27 @@ circles that are presentations (click, right click) like their names."
                             (cond ((eq item :all) "アドレス帳")
                                   ((stringp item) item)
                                   (t (contact-name item))))
-          :presentation-type (lambda (item) (if (eq item :all) 'symbol (item-type item)))))
+          :presentation-type (lambda (item) (if (eq item :all) 'symbol (item-type item))))
+   ;; commands are typed here by their names, and print here
+   (console interactor-pane :prompt "コマンド:" :height 150 :stretch nil
+                            :visible (computed (console-shown interface))))
+  ;; the menus of this window: entries with check marks that are slots of the
+  ;; interface, a menu in a menu, and commands
+  (:menus
+   (view-menu "表示(&V)"
+              (("お気に入りのみ(&F)" :checked (binding (favorites-only interface)) :key "Alt+F")
+               ("コマンド行(&C)" :checked (binding (console-shown interface)))
+               :separator
+               tab-menu))
+   (tab-menu "タブ(&T)"
+             (("詳細" :data 0 :callback 'show-tab) ("表" :data 1 :callback 'show-tab)
+              ("概要" :data 2 :callback 'show-tab) ("グラフ" :data 3 :callback 'show-tab)
+              ("関係" :data 4 :callback 'show-tab)))
+   (window-menu "ウィンドウ(&W)"
+                (open-overview-window open-chart-window :separator tile cascade)))
+  (:menu-bar :commands view-menu window-menu)
   (:layouts
-   (main column-layout '(tools body))
+   (main column-layout '(tools body console))
    (body row-layout '(sidebar :divider content) :gap 12)
    (sidebar column-layout '(search lists) :width 250 :stretch nil)
    (lists tab-layout '(("一覧" people) ("グループ" groups)))
@@ -168,7 +192,43 @@ circles that are presentations (click, right click) like their names."
    (form grid-layout '("名前" name-field "メール" email-field "グループ" group-field
                        nil favorite-field "メモ" notes-field)
          :stretch nil))
-  (:default-initargs :title "アドレス帳" :menu-bar t :pointer-documentation t))
+  (:default-initargs :title "アドレス帳" :pointer-documentation t))
+
+(defun show-tab (index interface)
+  (let ((tabs (find-pane interface 'content)))
+    (setf (choice-selected-item tabs) (nth index (collection-items tabs)))))
+
+;;; what the interactor needs to read a contact that is typed: its name
+(defmethod accept-from-string ((name (eql 'contact)) type string)
+  (let ((contact (find string *contacts* :key #'contact-name :test #'string-equal)))
+    (values contact (and contact t))))
+
+(defmethod presentation-type-choices ((name (eql 'contact)) type)
+  (mapcar #'contact-name *contacts*))
+
+;;; windows: the same panes as in the tabs, in windows of their own
+(define-command (open-overview-window :label "概要をウィンドウで開く") ()
+  (display (make-instance 'interface :title "概要"
+                                     :layout (make-instance 'application-pane :display-function #'summary))
+           :window t :width 420 :height 300))
+
+(define-command (open-chart-window :label "グラフをウィンドウで開く") ()
+  (display (make-instance 'interface :title "グラフ"
+                                     :layout (make-instance 'output-pane :view-width 360 :view-height 200
+                                                                         :display-callback #'draw-chart))
+           :window t :width 460 :height 300))
+
+(define-command (tile :label "並べて表示" :enabled (and *windows* t)) () (tile-windows))
+(define-command (cascade :label "重ねて表示" :enabled (and *windows* t)) () (cascade-windows))
+
+(define-command (list-contacts :label "一覧") ()
+  ;; written to the interactor: a table whose names are presentations
+  (formatting-table (*standard-output*)
+    (dolist (contact *contacts*)
+      (formatting-row (*standard-output*)
+        (formatting-cell (*standard-output*) (present contact 'contact :stream *standard-output*))
+        (formatting-cell (*standard-output*) (write-string (contact-email contact)))
+        (formatting-cell (*standard-output*) (write-string (contact-group contact)))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Commands.  A parameter with a type is asked for when the command is
@@ -194,12 +254,15 @@ circles that are presentations (click, right click) like their names."
 (define-command (toggle-favorite :menu "連絡先" :label "お気に入りの切り替え" :separator t
                                  :enabled (and *contacts* t))
     ((contact 'contact :prompt "お気に入りを切り替える連絡先をクリックしてください"))
-  (setf (contact-favorite contact) (not (contact-favorite contact))))
+  (setf (contact-favorite contact) (not (contact-favorite contact)))
+  (format t "~A: お気に入り~:[ではなくなりました~;になりました~]~%"
+          (contact-name contact) (contact-favorite contact)))
 
 (define-command (move-to-group :menu "連絡先" :label "グループを変更…" :enabled (and *contacts* t))
     ((contact 'contact :prompt "グループを変更する連絡先をクリックしてください")
      (group `(member ,@+groups+) :prompt "移動先のグループ"))
-  (setf (contact-group contact) group))
+  (setf (contact-group contact) group)
+  (format t "~A を「~A」へ移動しました~%" (contact-name contact) group))
 
 (define-command (copy-email :menu "連絡先" :label "メールアドレスをコピー" :enabled (and *contacts* t))
     ((contact 'contact :prompt "メールアドレスをコピーする連絡先をクリックしてください"))

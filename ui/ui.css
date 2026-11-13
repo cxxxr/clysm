@@ -202,13 +202,15 @@
 
 .ui-menu-bar { display: flex; flex: none; padding: 2px 4px; border-bottom: 1px solid var(--ui-line); }
 .ui-menu-bar-item { position: relative; }
-.ui-menu-bar-item > .ui-menu { position: absolute; left: 0; top: 100%; z-index: 30; }
+.ui-menu-bar-item > .ui-menu { position: absolute; left: 0; top: 100%; z-index: 995; }
 .ui-menu-title {
   font: inherit; color: inherit; background: none; border: 0; padding: 3px 9px; cursor: default;
-  border-radius: calc(var(--ui-radius) - 2px); position: relative; z-index: 30;
+  border-radius: calc(var(--ui-radius) - 2px);
 }
+.ui-menu-title.ui-open { position: relative; z-index: 995; }
 .ui-menu-title:hover, .ui-menu-title.ui-open { background: var(--ui-hover); }
-.ui-menu-backdrop { position: fixed; inset: 0; z-index: 20; }
+/* (windows of interfaces are from 100, menus above them) */
+.ui-menu-backdrop { position: fixed; inset: 0; z-index: 990; }
 .ui-menu {
   margin: 0; padding: 4px; list-style: none; min-width: 12rem; width: max-content; max-width: 22rem;
   background: var(--ui-surface); color: var(--ui-fg); font: var(--ui-font);
@@ -221,16 +223,25 @@
 .ui-menu-item:hover:not(.disabled) { background: var(--ui-accent); color: var(--ui-accent-fg); }
 .ui-menu-item.disabled { color: var(--ui-muted); opacity: .6; }
 .ui-menu-key { opacity: .65; font-size: 12px; }
+.ui-menu-label u { text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.ui-menu-title u { text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.ui-menu-check { display: inline-block; width: 1.4em; }
+/* an item with a menu of its own: it opens beside the item */
+.ui-menu-item.ui-submenu { position: relative; }
+.ui-menu-item.ui-submenu > .ui-menu { display: none; position: absolute; left: calc(100% - 2px); top: -5px; z-index: 1; }
+.ui-menu-item.ui-submenu:hover > .ui-menu, .ui-menu-item.ui-submenu:focus-within > .ui-menu { display: block; }
+.ui-menu-item.ui-submenu > .ui-menu .ui-menu-item { color: var(--ui-fg); }
+.ui-menu-item.ui-submenu > .ui-menu .ui-menu-item:hover:not(.disabled) { color: var(--ui-accent-fg); }
 .ui-menu-separator { height: 1px; margin: 4px 6px; background: var(--ui-line); }
 
 /* ---- the overlay: popup menus, the prompt of ACCEPT, dialogs ---- */
 
 .ui-overlay { font: var(--ui-font); color: var(--ui-fg); }
-.ui-popup-menu { position: fixed; z-index: 40; }
-.ui-popup > .ui-menu-backdrop { z-index: 39; }
+.ui-popup-menu { position: fixed; z-index: 1000; }
+.ui-popup > .ui-menu-backdrop { z-index: 999; }
 
 .ui-accept-bar {
-  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 35;
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 980;
   display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; max-width: calc(100vw - 32px);
   background: var(--ui-surface); border: 1px solid var(--ui-accent); border-radius: 999px;
   box-shadow: var(--ui-shadow);
@@ -252,8 +263,64 @@ span.ui-presentation { border-radius: 4px; }
 .ui-dialog::backdrop { background: rgba(0, 0, 0, .32); }
 .ui-dialog-title { padding: 14px 18px 0; font-weight: 600; font-size: 14px;
                    display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+/* a window of an interface: moved by its title, resized at its corner */
+.ui-top-window {
+  position: fixed; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--ui-bg); color: var(--ui-fg); border: 1px solid var(--ui-line);
+  border-radius: calc(var(--ui-radius) + 2px); box-shadow: 0 4px 14px rgba(0, 0, 0, .16);
+}
+.ui-top-window.ui-active { box-shadow: var(--ui-shadow); border-color: color-mix(in srgb, var(--ui-line), var(--ui-fg) 22%); }
+.ui-top-window.ui-maximized { inset: 0; border-radius: 0; }
+.ui-window-title {
+  flex: none; display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 12px;
+  background: color-mix(in srgb, var(--ui-bg), var(--ui-fg) 5%); border-bottom: 1px solid var(--ui-line);
+  cursor: grab; user-select: none; touch-action: none; color: var(--ui-muted);
+}
+.ui-top-window.ui-active > .ui-window-title { color: var(--ui-fg); }
+.ui-window-title:active { cursor: grabbing; }
+.ui-window-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-window-button {
+  font: inherit; line-height: 1; width: 24px; height: 22px; color: var(--ui-muted); background: none;
+  border: 0; border-radius: 4px; cursor: pointer;
+}
+.ui-window-button:hover { color: var(--ui-fg); background: var(--ui-hover); }
+.ui-window-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+.ui-window-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 55%, var(--ui-muted) 55%, var(--ui-muted) 62%, transparent 62%,
+                              transparent 75%, var(--ui-muted) 75%, var(--ui-muted) 82%, transparent 82%); opacity: .6; }
+
+.ui-docking-layout { display: flex; flex-direction: column; gap: var(--ui-gap); }
+.ui-docking-layout.ui-row { flex-direction: row; }
+.ui-dock { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+           border: 1px solid var(--ui-line); border-radius: var(--ui-radius); overflow: hidden; }
+.ui-dock-title { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 2px 10px;
+                 font-size: 12px; color: var(--ui-muted); background: color-mix(in srgb, var(--ui-bg), var(--ui-fg) 5%);
+                 border-bottom: 1px solid var(--ui-line); }
+.ui-dock > .ui-pane { border: 0; border-radius: 0; }
+
+/* stream panes and the interactor */
+.ui-stream-pane { display: flex; flex-direction: column; background: var(--ui-surface);
+                  border: 1px solid var(--ui-line); border-radius: var(--ui-radius); overflow: hidden; }
+/* (turned upside down, the box stays at its end when more is written) */
+.ui-stream-output { flex: 1 1 0; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; }
+.ui-stream-text { padding: 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui-stream-text .ui-presentation { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.ui-formatted-table { border-collapse: collapse; margin: 2px 0; white-space: normal; }
+.ui-formatted-table td { padding: 1px 16px 1px 0; }
+.ui-item-list { display: grid; gap: 1px 20px; justify-content: start; white-space: normal; }
+.ui-interactor-note { color: var(--ui-muted); font-style: italic; }
+.ui-interactor-echo { color: var(--ui-muted); }
+.ui-interactor-line { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+                      border-top: 1px solid var(--ui-line); }
+.ui-interactor-prompt { color: var(--ui-accent); font-weight: 600; white-space: nowrap; }
+.ui-interactor-input { flex: 1; min-width: 0; font: inherit; color: var(--ui-fg); background: none; border: 0; outline: 0 !important; height: 22px; }
+.ui-completions { flex: none; margin: 0; padding: 3px; list-style: none; display: flex; flex-wrap: wrap; gap: 2px;
+                  border-top: 1px solid var(--ui-line); }
+.ui-completions[hidden] { display: none; }
+.ui-completions > .ui-item { background: var(--ui-hover); cursor: pointer; padding: 1px 8px; }
+
 /* a window: a dialog that is not modal */
-.ui-dialog.ui-window { position: fixed; inset: 72px 24px auto auto; margin: 0; z-index: 25; }
+.ui-dialog.ui-window { position: fixed; inset: 72px 24px auto auto; margin: 0; z-index: 970; }
 .ui-window-close { font: inherit; font-size: 18px; line-height: 1; color: var(--ui-muted); background: none;
                    border: 0; padding: 0 4px; cursor: pointer; border-radius: 4px; }
 .ui-window-close:hover { color: var(--ui-fg); background: var(--ui-hover); }

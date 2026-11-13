@@ -102,6 +102,16 @@ dialog."
          (or (null (command-enabled command))
              (and (funcall (command-enabled command)) t)))))
 
+(defvar *command-output* nil
+  "NIL, or the stream that is *STANDARD-OUTPUT* while a command runs (the
+interactor pane of stream.lisp, if there is one on the screen).")
+
+(defun call-command (name arguments)
+  (if *command-output*
+      (let ((*standard-output* *command-output*))
+        (apply name arguments))
+      (apply name arguments)))
+
 (defun invoke-command (name &rest arguments)
   "Call the command NAME with ARGUMENTS if it is enabled, as the user does:
 an error is shown with the restarts to choose from, and the user is asked
@@ -119,7 +129,7 @@ later, when they are known)."
                      :continuation (lambda (value)
                                      (apply #'invoke-command name (append arguments (list value)))))
             nil)
-          (with-error-dialog (apply name arguments))))))
+          (with-error-dialog (call-command name arguments))))))
 
 (defmacro command (name &rest arguments)
   "A function (for an :ON-<EVENT> property) that invokes the command NAME
@@ -176,3 +186,75 @@ in upper case and the modifiers among :CTRL (also Cmd), :ALT and :SHIFT, sorted.
                                  (equal (parse-key (command-key command)) key)))
                           *commands*)))
     (and command (command-enabled-p (command-name command)) command)))
+
+;;; ------------------------------------------------------------------
+;;; Menu items: what a menu shows, for the menu bar of the page (pane.lisp),
+;;; popup menus (present.lisp) and the menu bar of the desktop application
+
+(defstruct (menu-item (:constructor make-menu-item (label function &key (enabled t) key (checked :none) items)))
+  label                 ; a string; the character after & is its mnemonic
+  function              ; called without arguments when the item is chosen
+  enabled
+  key                   ; the text of its key
+  checked               ; :NONE, or whether the item has a check mark
+  items)                ; NIL, or the items of the menu that it opens
+
+(defun parse-mnemonic (label)
+  "LABEL without the & that marks its mnemonic, and the position of the mnemonic or NIL."
+  (let ((position (position #\& label)))
+    (if (and position (< (1+ position) (length label)))
+        (values (concatenate 'string (subseq label 0 position) (subseq label (1+ position)))
+                position)
+        (values label nil))))
+
+(defun key-label (key)
+  "The key of a command as shown in a menu."
+  (and key
+       (let ((position (search "CmdOrCtrl" key)))
+         (if position
+             (concatenate 'string (subseq key 0 position) "Ctrl" (subseq key (+ position 9)))
+             key))))
+
+(defun command-menu-item (command &rest arguments)
+  (make-menu-item (command-label command)
+                  (lambda () (apply #'invoke-command (command-name command) arguments))
+                  :enabled (command-enabled-p (command-name command))
+                  :key (command-key command)))
+
+(defun command-menu-items ()
+  "The menus of the commands as ((title item...)...)."
+  (mapcar (lambda (menu)
+            (cons (car menu)
+                  (loop for command in (cdr menu)
+                        when (command-separator command) collect :separator
+                        collect (let ((item (command-menu-item command)))
+                                  ;; (for the desktop: its accelerator)
+                                  (setf (menu-item-key item) (command-key command))
+                                  item))))
+          (command-menus)))
+
+(defvar *menu-bar-function* nil
+  "NIL, or a function that returns the menus of the application as
+((title item...)...): pane.lisp sets it to the menus of the interfaces on
+the screen.  Without it, they are the menus of the commands.")
+
+(defun application-menus ()
+  "The menus of the application as ((title item...)...), the items being menu
+items and :SEPARATOR."
+  (if *menu-bar-function*
+      (funcall *menu-bar-function*)
+      (command-menu-items)))
+
+(defvar *key-handlers* nil
+  "Functions of a key (as of PARSE-KEY) that return NIL or a function to call
+for it: what has keys besides the commands (the items of menus).")
+
+(defun key-action (key &key (command-predicate (constantly t)) (handlers t))
+  "What the key KEY does: NIL or a function without arguments.  It invokes
+the enabled command with that key if it satisfies COMMAND-PREDICATE; otherwise
+(if HANDLERS) it is what one of *KEY-HANDLERS* returns."
+  (let ((command (command-for-key key)))
+    (cond ((and command (funcall command-predicate command))
+           (lambda () (invoke-command (command-name command))))
+          (command nil)
+          (handlers (some (lambda (handler) (funcall handler key)) *key-handlers*)))))

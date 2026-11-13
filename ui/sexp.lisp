@@ -126,6 +126,9 @@
 (defmethod set-title ((backend sexp-backend) string)
   (note backend :title string))
 
+(defmethod viewport-size ((backend sexp-backend))
+  (values 1000 600))
+
 (defmethod choose-file ((backend sexp-backend) continuation &key accept)
   (note backend :choose-file accept)
   (funcall continuation (first (backend-file backend)) (second (backend-file backend))))

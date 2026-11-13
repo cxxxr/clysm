@@ -326,9 +326,12 @@ log: ((:SHOW "Bob"))
      "left:min(10px, calc(100vw - 15rem));top:min(20px, calc(100vh - 106px))"
      :CLASS "ui-popup-menu")
     (:UL (:ROLE "menu" :CLASS "ui-menu")
-     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Show"))
-     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Remove…"))
-     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Rename…")))))))
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+      (:SPAN (:CLASS "ui-menu-label") "Show"))
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+      (:SPAN (:CLASS "ui-menu-label") "Remove…"))
+     (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+      (:SPAN (:CLASS "ui-menu-label") "Rename…")))))))
 people: ("Bob")
 
 == after the menu
@@ -506,10 +509,12 @@ login: NIL NIL
   (:BUTTON (:CLASS "ui-menu-title ui-open" :ROLE "menuitem" :TYPE "button")
    "People")
   (:UL (:ROLE "menu" :CLASS "ui-menu")
-   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Remove…"))
+   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+    (:SPAN (:CLASS "ui-menu-label") "Remove…"))
    (:LI (:ROLE "menuitem" :CLASS "ui-menu-item disabled")
-    (:SPAN NIL "Rename…"))
-   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item") (:SPAN NIL "Add…")
+    (:SPAN (:CLASS "ui-menu-label") "Rename…"))
+   (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+    (:SPAN (:CLASS "ui-menu-label") "Add…")
     (:SPAN (:CLASS "ui-menu-key") "Ctrl+N"))))
  (:DIV (:CLASS "ui-menu-backdrop")))
 open menus: 0, dialogs: 1
@@ -792,4 +797,254 @@ window: NIL NIL
 dialogs left: 0
 
 == the names of the README
-34 classes shown, 42 functions, 15 macros; missing: NIL
+37 classes shown, 54 functions, 20 macros; missing: NIL
+
+== the menus of an interface
+menu bar: ("File" "Edit" "People")
+
+== the File menu
+(:DIV (:CLASS "ui-menu-bar-item")
+ (:BUTTON (:CLASS "ui-menu-title ui-open" :ROLE "menuitem" :TYPE "button")
+  (:U NIL "F") "ile")
+ (:UL (:ROLE "menu" :CLASS "ui-menu")
+  (:LI (:ROLE "menuitem" :CLASS "ui-menu-item disabled")
+   (:SPAN (:CLASS "ui-menu-label") (:U NIL "S") "ave")
+   (:SPAN (:CLASS "ui-menu-key") "Ctrl+S"))
+  (:LI
+   (:ARIA-HASPOPUP "true" :ROLE "menuitem" :CLASS "ui-menu-item ui-submenu")
+   (:SPAN (:CLASS "ui-menu-label") (:U NIL "E") "xport")
+   (:SPAN (:CLASS "ui-menu-key") "▸")
+   (:UL (:ROLE "menu" :CLASS "ui-menu")
+    (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+     (:SPAN (:CLASS "ui-menu-label") "as " (:U NIL "T") "ext"))
+    (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+     (:SPAN (:CLASS "ui-menu-label") "Paint"))))
+  (:LI (:ROLE "separator" :CLASS "ui-menu-separator"))
+  (:LI (:ROLE "menuitem" :CLASS "ui-menu-item")
+   (:SPAN (:CLASS "ui-menu-label") "Zoom out"))))
+log: (:SAVE "Save"), open menus: 0
+log: (:EXPORT :TEXT)
+Edit: (("Wrap linesAlt+W" "ui-menu-item"))
+log: (:WRAP T), wrap: T, status: "wrap T"
+Edit: (("✓Wrap linesAlt+W" "ui-menu-item"))
+keys: T NIL T, log: ((:WRAP NIL) (:SAVE "Save")), wrap: NIL
+Alt+F opens: ("SaveCtrl+S" "Export▸as TextPaint" "as Text" "Paint" ""
+              "Zoom out")
+then S: (:SAVE "Save"), open menus: 0
+menu of the text: ("Wrap linesAlt+W")
+menu of the status: ("Zoom out"), wrap: T
+application menus: (("People" ("Remove…" T :NONE 0) ("Rename…" T :NONE 0)
+                     ("Add…" T :NONE 0))
+                    ("&File" ("&Save" NIL :NONE 0) ("&Export" T :NONE 2)
+                     :SEPARATOR ("Zoom out" T :NONE 0))
+                    ("&Edit" ("&Wrap lines" T T 0)))
+after quit: ("People")
+
+== windows
+
+== a window
+(:DIV (:CLASS "ui-overlay")
+ (:DIV
+  (:STYLE "z-index:100;left:10px;top:20px;width:300px;height:200px" :ARIA-LABEL
+   "Note" :ROLE "dialog" :CLASS "ui-top-window")
+  (:HEADER (:CLASS "ui-window-title") (:SPAN (:CLASS "ui-window-name") "Note")
+   (:BUTTON (:ARIA-LABEL "maximize" :CLASS "ui-window-button" :TYPE "button")
+    "□")
+   (:BUTTON
+    (:ARIA-LABEL "Cancel" :CLASS "ui-window-button ui-window-close" :TYPE
+     "button")
+    "×"))
+  (:DIV (:CLASS "ui-window-body")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+     (:SPAN (:CLASS "ui-pane ui-title-pane") "a note"))))
+  (:DIV (:CLASS "ui-window-resize")))
+ (:DIV
+  (:STYLE "z-index:101;left:108px;top:88px;width:480px;height:320px"
+   :ARIA-LABEL "Second" :ROLE "dialog" :CLASS "ui-top-window ui-active")
+  (:HEADER (:CLASS "ui-window-title")
+   (:SPAN (:CLASS "ui-window-name") "Second")
+   (:BUTTON (:ARIA-LABEL "maximize" :CLASS "ui-window-button" :TYPE "button")
+    "□")
+   (:BUTTON
+    (:ARIA-LABEL "Cancel" :CLASS "ui-window-button ui-window-close" :TYPE
+     "button")
+    "×"))
+  (:DIV (:CLASS "ui-window-body")
+   (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+    (:DIV (:STYLE "flex:1 1 0;" :CLASS "ui-pane ui-column-layout")
+     (:SPAN (:CLASS "ui-pane ui-title-pane") "a note"))))
+  (:DIV (:CLASS "ui-window-resize"))))
+frames: ("z-index:100;left:10px;top:20px;width:300px;height:200px"
+         "z-index:101;left:108px;top:88px;width:480px;height:320px")
+classes: ("ui-top-window" "ui-top-window ui-active")
+moved and resized: "z-index:101;left:60px;top:10px;width:340px;height:90px", on top: ("ui-top-window ui-active"
+                                                                                      "ui-top-window")
+window: (60 10 340 90)
+maximized: "ui-top-window ui-active ui-maximized" "z-index:101;"
+tiled: ("z-index:101;left:500px;top:0px;width:500px;height:600px"
+        "z-index:100;left:0px;top:0px;width:500px;height:600px")
+cascaded: ("z-index:100;left:68px;top:68px;width:500px;height:300px"
+           "z-index:101;left:40px;top:40px;width:500px;height:300px")
+on the screen: ("Second" "Note")
+closed Second
+windows left: 0, on the screen: NIL
+
+== docking
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-docking-layout ui-column" :STYLE "flex:1 1 0;")
+   (:SECTION (:CLASS "ui-dock")
+    (:HEADER (:CLASS "ui-dock-title") (:SPAN NIL "Files")
+     (:BUTTON (:ARIA-LABEL "undock" :CLASS "ui-window-button" :TYPE "button")
+      "⇱"))
+    (:SPAN (:CLASS "ui-pane ui-title-pane" :STYLE "flex:1 1 0;") "the files"))
+   (:SECTION (:CLASS "ui-dock")
+    (:HEADER (:CLASS "ui-dock-title") (:SPAN NIL "Notes")
+     (:BUTTON (:ARIA-LABEL "undock" :CLASS "ui-window-button" :TYPE "button")
+      "⇱"))
+    (:SPAN (:CLASS "ui-pane ui-title-pane" :STYLE "flex:1 1 0;")
+     "the notes")))))
+docked: ("Notes⇱the notes"), in windows: ("Files")
+docked again: ("Files⇱the files" "Notes⇱the notes")
+
+== a stream pane
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-stream-pane" :STYLE "flex:1 1 0;")
+   (:DIV (:CLASS "ui-stream-output")
+    (:DIV (:CLASS "ui-stream-text") "Hello, stream!" (:BR NIL) "1 + 2 = 3")))))
+-- more output: only what is new
+   (:CREATE "br")
+   (:CREATE-TEXT "first: ")
+   (:CREATE "span")
+   (:SET :SPAN :DRAGGABLE T)
+   (:SET :SPAN :CLASS "ui-presentation")
+   (:CREATE-TEXT "Ada")
+   (:INSERT "Ada" :IN :SPAN)
+   (:CREATE "span")
+   (:SET :SPAN :CLASS "ui-presentation")
+   (:CREATE-TEXT " and forty-two")
+   (:INSERT " and forty-two" :IN :SPAN)
+   (:CREATE "span")
+   (:SET :SPAN :STYLE "font-weight:600;color:red;")
+   (:CREATE-TEXT " !")
+   (:INSERT " !" :IN :SPAN)
+   (:CREATE "br")
+   (:CREATE "table")
+   (:SET :TABLE :CLASS "ui-formatted-table")
+   (:CREATE "tbody")
+   (:CREATE "tr")
+   (:CREATE "td")
+   (:SET :TD :CLASS "ui-adjust-left")
+   (:CREATE-TEXT "Ada")
+   (:INSERT "Ada" :IN :TD)
+   (:INSERT :TD :IN :TR)
+   (:CREATE "td")
+   (:SET :TD :CLASS "ui-adjust-right")
+   (:CREATE-TEXT "36")
+   (:INSERT "36" :IN :TD)
+   (:INSERT :TD :IN :TR)
+   (:INSERT :TR :IN :TBODY)
+   (:CREATE "tr")
+   (:CREATE "td")
+   (:SET :TD :CLASS "ui-adjust-left")
+   (:CREATE-TEXT "Grace")
+   (:INSERT "Grace" :IN :TD)
+   (:INSERT :TD :IN :TR)
+   (:CREATE "td")
+   (:SET :TD :CLASS "ui-adjust-right")
+   (:CREATE-TEXT "85")
+   (:INSERT "85" :IN :TD)
+   (:INSERT :TD :IN :TR)
+   (:INSERT :TR :IN :TBODY)
+   (:INSERT :TBODY :IN :TABLE)
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-item-list")
+   (:SET :DIV :STYLE "grid-template-columns:repeat(2,auto)")
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-adjust-left")
+   (:CREATE-TEXT "A")
+   (:INSERT "A" :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-adjust-left")
+   (:CREATE-TEXT "B")
+   (:INSERT "B" :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "div")
+   (:SET :DIV :CLASS "ui-adjust-left")
+   (:CREATE-TEXT "C")
+   (:INSERT "C" :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:CREATE "hr")
+   (:INSERT :HR :IN :DIV)
+   (:INSERT :DIV :IN :DIV)
+   (:INSERT :TABLE :IN :DIV)
+   (:INSERT :BR :IN :DIV)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT :SPAN :IN :DIV)
+   (:INSERT "first: " :IN :DIV)
+   (:INSERT :BR :IN :DIV)
+
+== a stream pane with records
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-stream-pane" :STYLE "flex:1 1 0;")
+   (:DIV (:CLASS "ui-stream-output")
+    (:DIV (:CLASS "ui-stream-text") "Hello, stream!" (:BR NIL) "1 + 2 = 3"
+     (:BR NIL) "first: " (:SPAN (:CLASS "ui-presentation" :DRAGGABLE T) "Ada")
+     (:SPAN (:CLASS "ui-presentation") " and forty-two")
+     (:SPAN (:STYLE "font-weight:600;color:red;") " !") (:BR NIL)
+     (:TABLE (:CLASS "ui-formatted-table")
+      (:TBODY NIL
+       (:TR NIL (:TD (:CLASS "ui-adjust-left") "Ada")
+        (:TD (:CLASS "ui-adjust-right") "36"))
+       (:TR NIL (:TD (:CLASS "ui-adjust-left") "Grace")
+        (:TD (:CLASS "ui-adjust-right") "85"))))
+     (:DIV
+      (:STYLE "grid-template-columns:repeat(2,auto)" :CLASS "ui-item-list")
+      (:DIV (:CLASS "ui-adjust-left") "A") (:DIV (:CLASS "ui-adjust-left") "B")
+      (:DIV (:CLASS "ui-adjust-left") "C"))
+     (:HR NIL))))))
+log: (:SHOW "Ada")
+
+== cleared
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV (:CLASS "ui-pane ui-stream-pane" :STYLE "flex:1 1 0;")
+   (:DIV (:CLASS "ui-stream-output") (:DIV (:CLASS "ui-stream-text"))))))
+
+== a display function
+"1 people: Eve"
+"2 people: Eve Zed"
+
+== the interactor
+
+== empty
+(:ROOT NIL
+ (:DIV (:CLASS "ui-pane ui-interface" :STYLE "flex:1 1 0;")
+  (:DIV
+   (:CLASS "ui-pane ui-stream-pane ui-interactor-pane" :STYLE "flex:1 1 0;")
+   (:DIV (:CLASS "ui-stream-output") (:DIV (:CLASS "ui-stream-text")))
+   (:UL (:HIDDEN T :ROLE "listbox" :CLASS "ui-completions"))
+   (:LABEL (:CLASS "ui-interactor-line")
+    (:SPAN (:CLASS "ui-interactor-prompt") "Command:")
+    (:INPUT
+     (:AUTOCOMPLETE "off" :VALUE "" :CLASS "ui-interactor-input" :TYPE
+      "text"))))))
+completions: ("Remove" "Rename")
+after Tab: "Remove "
+output: "Command: greet eve 2Hello, Eve! Hello, Eve! "
+completions: ("Zed")
+after Tab: "Greet Zed"
+prompt: "How often?", accepting: T, bar: 0
+prompt: "Command:"
+output: "Command: greet eve 2Hello, Eve! Hello, Eve! Command: Greet Zed\"many\" is not integerHow often? 1Hello, Zed! "
+prompt: "Remove…: person"
+people: ("Eve")
+output: "ZedCommand: frobnicateNo command: frobnicateCommand: greet nobody\"nobody\" is not a personCommand: paint \"red\""
+log: (:PAINT :RED)
+history: "greet nobody"
+interactors left: 0, command output: NIL
