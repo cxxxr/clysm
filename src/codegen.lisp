@@ -921,7 +921,9 @@ loop with a BR_TABLE."
 innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
 
 (defun cg-catch (node mv)
-  (destructuring-bind (tag-node body) (cdr node)
+  "(:catch tag body [unchecked]): UNCHECKED (SYS:%CATCH) does not record the
+tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
+  (destructuring-bind (tag-node body &optional unchecked) (cdr node)
     (let ((tag (new-local)) (saved (new-local :i32))
           (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref))
           (done (gensym "CATCH")) (h (gensym "H")))
@@ -929,21 +931,23 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
         ,@(save-bsp-code saved)
         ;; bind *catch-tags* to the tag: the active tags are its value and the
         ;; values saved by its bindings on the binding stack
-        (:global.get ,(sym-global 'clysm-sys::*catch-tags*))
-        (:local.get ,tag)
-        (:call :bind)
+        ,@(unless unchecked
+            `((:global.get ,(sym-global 'clysm-sys::*catch-tags*))
+              (:local.get ,tag)
+              (:call :bind)))
         (:block ,done :eqref
           (:block ,h (:type :bt-catch)
             (:try_table nil :eqref ((:catch_ref :lisp-throw ,h))
-              ,@(let* ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*)) (*dyn-depth* (1+ *dyn-depth*))
+              ,@(let* ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
+                       (*dyn-depth* (if unchecked *dyn-depth* (1+ *dyn-depth*)))
                        (*uwp-frames* (cons :catch *uwp-frames*))
                        (*local-catches*
-                         (cons (list (if (and (eq (car tag-node) :const) (symbolp (second tag-node)))
+                         (cons (list (if (and (not unchecked) (eq (car tag-node) :const) (symbolp (second tag-node)))
                                          (second tag-node) :unknown)
                                      done saved *uwp-frames*)
                                *local-catches*)))
-                  (or (catch-clone-call tag-node body) (cg body mv))))
-            ,@(restore-bsp-code saved)
+                  (or (and (not unchecked) (catch-clone-call tag-node body)) (cg body mv))))
+            ,@(unless unchecked (restore-bsp-code saved))
             (:br ,done))
           (:local.set ,etmp) (:local.set ,vtmp) (:local.set ,ttmp)
           (:local.get ,ttmp) (:local.get ,tag) :ref.eq

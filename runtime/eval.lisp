@@ -263,7 +263,7 @@ affect references in BODY."
     (go (let ((e (dolist (x env nil) (when (and (eq (car x) :tag) (eql (cadr x) (cadr form))) (return x)))))
           (unless e (error "GO: unknown tag ~S" (cadr form)))
           (throw (caddr e) (cdddr e))))
-    (catch (catch (%eval (cadr form) env) (%eval-body (cddr form) env)))
+    ((catch %catch) (catch (%eval (cadr form) env) (%eval-body (cddr form) env)))
     (throw (throw (%eval (cadr form) env) (%eval (caddr form) env)))
     (unwind-protect (unwind-protect (%eval (cadr form) env) (%eval-body (cddr form) env)))
     (multiple-value-call

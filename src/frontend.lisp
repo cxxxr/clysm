@@ -711,6 +711,12 @@ leaving quoted data alone."
   (destructuring-bind (rtype args &rest instrs) (cdr form)
     `(:wasm ,rtype ,(convert-args args env) ,instrs)))
 
+;;; (sys:%catch tag-form body...) — CATCH for tags that only SYS:%THROW throws
+;;; to while the %CATCH is active (fresh objects, as in HANDLER-CASE): the tag
+;;; is not recorded in the list of active catch tags
+(defnative clysm-sys::%catch (form env)
+  `(:catch ,(convert (second form) env) ,(convert-body (cddr form) env) t))
+
 ;;; (sys:%wasm-test (args...) instrs...) — inline wasm producing an i32 boolean
 (defnative clysm-sys::%wasm-test (form env)
   (destructuring-bind (args &rest instrs) (cdr form)
