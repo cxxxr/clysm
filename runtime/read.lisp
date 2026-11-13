@@ -251,7 +251,7 @@ macro character returned no values), :dot or :eof."
   "Accumulate a token whose first character FIRST has been read already.
 Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
   (let ((rt *readtable*) (escaped nil) (c first) (firstp t))
-    (setf (fill-pointer *token-buf*) 0 (fill-pointer *token-esc*) 0)
+    (%set-mdarray-fill *token-buf* 0) (%set-mdarray-fill *token-esc* 0)
     (setq %token-last-escape -1)
     (loop
       (when (eq c :eof) (return))
@@ -294,7 +294,11 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
                   (return))))
           (when (> i i0)
             (%string-buffer-append *token-buf* buf i0 i)
-            (dotimes (k (- i i0)) (vector-push-extend nil *token-esc*))
+            (let* ((esc *token-esc*) (fp (%mdarray-fill esc)) (data (%mdarray-data esc)) (k (- i i0)))
+              (if (and (%simple-vector-p data) (<= (+ fp k) (%svlength data)))
+                  (progn (dotimes (j k) (%set-svref data (+ fp j) nil))
+                         (%set-mdarray-fill esc (+ fp k)))
+                  (dotimes (j k) (vector-push-extend nil esc))))
             (setf (stream-index s) i))))
       (setq c (%stream-read-char s)))
     escaped))
@@ -305,12 +309,12 @@ token is empty when the next character ends a token."
   (let ((c (%stream-peek-char s)))
     (if (or (eq c :eof)
             (member (%syntax c *readtable*) '(:whitespace :terminating)))
-        (progn (setf (fill-pointer *token-buf*) 0 (fill-pointer *token-esc*) 0) nil)
+        (progn (%set-mdarray-fill *token-buf* 0) (%set-mdarray-fill *token-esc* 0) nil)
         (%read-token s (%stream-read-char s)))))
 
 (defun %token-case-converted ()
   "The current token as a string, converted by the readtable case."
-  (let* ((buf *token-buf*) (esc *token-esc*) (n (fill-pointer buf))
+  (let* ((buf *token-buf*) (esc *token-esc*) (n (%mdarray-fill buf))
          (r (make-string n)) (mode (%rt-case *readtable*)))
     (if (and (%mdarray-p buf) (eql (%mdarray-offset buf) 0) (%simple-string-p (%mdarray-data buf)))
         (%string-copy r 0 (%mdarray-data buf) 0 n)
@@ -345,13 +349,17 @@ token is empty when the next character ends a token."
         (%interpret-token s escaped allow-dot))))
 
 (defun %interpret-token (s escaped allow-dot)
-  (let* ((n (fill-pointer *token-buf*)))
-    (when (and (not escaped) (> n 0) (every (lambda (c) (char= c #\.)) *token-buf*))
+  (let* ((n (%mdarray-fill *token-buf*)))
+    (when (and (not escaped) (> n 0) (char= (char *token-buf* 0) #\.)
+               (every (lambda (c) (char= c #\.)) *token-buf*))
       (if (and (= n 1) allow-dot)
           (return-from %interpret-token %dot-marker)
           (%reader-error s "a token consisting only of dots cannot be read")))
     (let ((str (%token-case-converted)))
-      (unless escaped
+      (unless (or escaped
+                  ;; a number cannot begin with a letter that is not a digit
+                  (let ((c (char-code (char str 0))))
+                    (and (<= *read-base* 10) (or (<= 65 c 90) (<= 97 c 122)))))
         (let ((num (%parse-number-token str *read-base* s)))
           (when num (return-from %interpret-token (car num)))))
       (%intern-token str *token-esc* s))))

@@ -102,11 +102,11 @@
 
 ;; %correctable-package-error: see cond.lisp
 
-(defun %present (name p)
+(defun %present (name p &optional (hash (%sxhash name 4)))
   "The symbol named NAME present in P, and :INTERNAL or :EXTERNAL."
-  (multiple-value-bind (s found) (gethash name (%package-externals p))
+  (multiple-value-bind (s found) (%gethash-hashed name (%package-externals p) hash)
     (if found (values s :external)
-        (multiple-value-bind (s found) (gethash name (%package-internals p))
+        (multiple-value-bind (s found) (%gethash-hashed name (%package-internals p) hash)
           (if found (values s :internal) (values nil nil))))))
 
 (defun %inherited-candidates (name p)
@@ -154,11 +154,11 @@
   (if (stringp name) name (%type-error name 'string)))
 
 (defun find-symbol (name &optional (package *package*))
-  (let ((p (%find-package-or-die package)) (name (%symbol-name-arg name)))
-    (multiple-value-bind (s status) (%present name p)
+  (let* ((p (%find-package-or-die package)) (name (%symbol-name-arg name)) (hash (%sxhash name 4)))
+    (multiple-value-bind (s status) (%present name p hash)
       (if status (values s status)
           (dolist (u (%pkg p 2) (values nil nil))
-            (multiple-value-bind (s found) (gethash name (%package-externals u))
+            (multiple-value-bind (s found) (%gethash-hashed name (%package-externals u) hash)
               (when found (return (values s :inherited)))))))))
 
 (defun intern (name &optional (package *package*))

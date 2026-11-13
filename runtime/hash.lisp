@@ -160,6 +160,11 @@
         (values default nil)
         (values (%svref (%ht h +ht-vals+) i) t))))
 
+(defun %gethash-hashed (key h hash)
+  "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
+  (let ((i (%ht-find h key hash)))
+    (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t))))
+
 (defun %puthash (key h &rest rest)
   ;; (setf (gethash key h [default]) value): value is the last argument
   (let ((value (car (last rest))))
