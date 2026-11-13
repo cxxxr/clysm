@@ -510,7 +510,13 @@ small module does not use), and renumber the others."
          (let ((fn (and (eq op :ref.cast) (not (eq (first args) :null))
                         (cdr (assoc (first args) (wasm-module-cast-rewrites m))))))
            (when (and fn (not (equal fn (wasm-func-name *current-func*))))
+             ;; block (param eqref) (result (ref T)); br_on_cast 0 eqref (ref T); call FN; end
+             ;; (the call only when the cast fails)
+             (emit-byte buf #x02) (emit-sleb buf (type-index m (list :cast-bt (first args))))
+             (emit-byte buf #xFB) (emit-u32 buf 24) (emit-byte buf 1) (emit-u32 buf 0)
+             (emit-heap-type m buf :eq) (emit-heap-type m buf (first args))
              (emit-byte buf #x10) (emit-u32 buf (func-index m fn))
+             (emit-byte buf #x0B)
              (return-from emit-instr)))
          (emit-byte buf #xFB)
          (let ((nullable (eq (first args) :null)))

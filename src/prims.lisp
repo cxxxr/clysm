@@ -1477,8 +1477,8 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
          (:local.get new) (:global.set :bstack)))
   '(:global.get :bstack) '(:global.get :bsp) '(:local.get 0) '(:array.set :vector)
   '(:global.get :bstack) '(:global.get :bsp) '(:i32.const 1) :i32.add
-  '(:local.get 0) '(:ref.cast :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)
-  '(:local.get 0) '(:ref.cast :symbol) '(:local.get 1) `(:struct.set :symbol ,+sym-value+)
+  '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)
+  '(:local.get 0) '(:ref.cast! :symbol) '(:local.get 1) `(:struct.set :symbol ,+sym-value+)
   '(:global.get :bsp) '(:i32.const 2) :i32.add '(:global.set :bsp))
 
 (defhelper :unbind-to :i-v ((sp :i32))
@@ -1487,7 +1487,7 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
        (:global.get :bsp) (:local.get 0) :i32.le_s (:br_if done)
        (:global.get :bsp) (:i32.const 2) :i32.sub (:local.tee sp) (:global.set :bsp)
        ;; sym.value = old
-       (:global.get :bstack) (:local.get sp) (:array.get :vector) (:ref.cast :symbol)
+       (:global.get :bstack) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
        (:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
        (:struct.set :symbol 2)
        (:global.get :bstack) (:local.get sp) (:ref.null :eq) (:array.set :vector)
@@ -1499,7 +1499,7 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
   `(:block done nil
      (:loop again nil
        (:local.get syms) (:ref.test :cons) :i32.eqz (:br_if done)
-       (:local.get syms) (:ref.cast :cons) (:struct.get :cons 0)
+       (:local.get syms) (:ref.cast :cons) (:struct.get :cons 0) (:ref.cast :symbol)
        (:local.get vals) (:ref.test :cons)
        (:if nil :eqref ((:local.get vals) (:ref.cast :cons) (:struct.get :cons 0)) ((:ref.null :eq)))
        (:call :bind)
@@ -2061,7 +2061,9 @@ in local V and the index in local K; else branch to FAIL."
            (tname (list :cast-type type)))
       (unless (gethash tname *extra-types*)
         (setf (gethash tname *extra-types*) t)
-        (add-type *m* tname `(:func (:eqref) ((:ref ,type)))))
+        (add-type *m* tname `(:func (:eqref) ((:ref ,type))))
+        ;; the block type of the inline cast (wasm.lisp)
+        (add-type *m* (list :cast-bt type) `(:func (:eqref) ((:ref ,type)))))
       (add-func *m* fname tname
                 :body `((:block fail :eqref
                           (:local.get 0) (:br_on_cast_fail fail :eqref (:ref ,type)) :return)
