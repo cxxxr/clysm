@@ -139,7 +139,7 @@ ahead of time (`tools/bench.sh FILE`, best of three runs):
 | `bench/suite.lisp` | 24, used for tuning | 0.94 | 1.91 | 0.08 |
 | `bench/gabriel.lisp` | 10 Gabriel benchmarks | 1.01 | 1.54 | 0.71 |
 | `bench/holdout.lisp` | 17 programs written after the tuning | 1.06 | 1.68 | 0.08 |
-| `bench/programs.lisp` | 63 more programs | 1.20 | 3.29 | 0.03 |
+| `bench/programs.lisp` | 63 more programs | 1.19 | 3.15 | 0.03 |
 | `bench/libs.lisp` | libraries from Quicklisp | 1.79 | 2.92 | 0.32 |
 
 Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole

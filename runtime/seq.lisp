@@ -678,6 +678,20 @@
     (%set-mdarray-fill v (+ fp 1))
     fp))
 
+;; the common case inline: a vector of elements of type T with room left
+(define-compiler-macro vector-push-extend (&whole form x v &optional (extension nil extp))
+  (declare (ignore extension))
+  (if extp
+      form
+      (let ((xv (gensym "X")) (vv (gensym "V")) (fp (gensym "FP")) (d (gensym "D")) (data (gensym "DATA")))
+        `(let* ((,xv ,x) (,vv ,v)
+                (,fp (and (%mdarray-p ,vv) (%mdarray-fill ,vv))))
+           (let ((,d (and ,fp (%mdarray-dims ,vv))) (,data (and ,fp (%mdarray-data ,vv))))
+             (if (and (fixnump ,fp) (consp ,d) (null (cdr ,d)) (%fx< ,fp (car ,d))
+                      (%simple-vector-p ,data) (eql (%mdarray-offset ,vv) 0))
+                 (progn (%set-svref ,data ,fp ,xv) (%set-mdarray-fill ,vv (%fx+ ,fp 1)) ,fp)
+                 (vector-push-extend ,xv ,vv 16)))))))   ; (with EXTENSION: not expanded again)
+
 ;;; append STRING[START,END) to the string BUF with a fill pointer; returns
 ;;; NIL (doing nothing) unless both are of the usual simple kind
 (defun %string-buffer-append (buf string start end)
@@ -1099,7 +1113,8 @@ the type is fully described by the other values (otherwise the result is checked
 (defun %copy-elements (to to-start from from-start n)
   "Copies N elements between simple storage vectors (forwards)."
   (declare (fixnum to-start from-start n))
-  (cond ((and (%simple-vector-p to) (%simple-vector-p from))
+  (cond ((%storage-copy to to-start from from-start n))   ; same kind: array.copy
+        ((and (%simple-vector-p to) (%simple-vector-p from))
          (dotimes (i n) (%set-svref to (+ to-start i) (%svref from (+ from-start i)))))
         ((and (%simple-string-p to) (%simple-string-p from))
          (%string-copy to to-start from from-start n))

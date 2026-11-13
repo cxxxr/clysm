@@ -1037,7 +1037,7 @@ time unless noted):
 | `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.79 | `l-babel` 2.92 | `l-alexandria-tests` 0.32 |
-| `bench/programs.lisp` | 63 more programs | 1.20 | `p-vector-push` 3.29 | `p-remove-duplicates` 0.03 |
+| `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -1076,8 +1076,10 @@ What is not as fast as intended, and why:
   constant (5), generic functions with `&optional`/`&key` (3).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
   structures or passed between functions (fixnums in SBCL); **bignums** have
-  28-bit digits (2–2.7 times); adjustable vectors grow by allocation of new
-  storage (`p-vector-push` 3.3); `equal` hash tables with string keys (2.4).
+  28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
+  site and grows by `array.copy` into new storage, whose allocation is the
+  remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
+  string keys hash in a Wasm helper (`h-wordfreq` 1.34).
 * **Files**: octets cross to the host one call each (`i-file-roundtrip` 13).
 
 What makes the code fast:
