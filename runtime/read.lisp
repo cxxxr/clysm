@@ -591,17 +591,18 @@ STR[START,END) times 10^E10, for at most 15 digits and |E10| <= 22."
     (unless (funcall pred (char str i)) (return nil))))
 
 (defun %digits-value (str start end base)
-  (let ((i start) (small 0))
-    (declare (fixnum small))
-    ;; as long as the value is a fixnum
-    (when (and (fixnump base) (<= 2 base 36))
-      (let ((limit (%fxtruncate (- most-positive-fixnum 36) base)))
-        (declare (fixnum limit))
-        (do () ((or (>= i end) (> small limit)))
-          (setq small (+ (* small base) (digit-char-p (char str i) base)) i (+ i 1)))))
-    (let ((v small))
-      (do () ((>= i end) v)
-        (setq v (+ (* v base) (digit-char-p (char str i) base)) i (+ i 1))))))
+  (if (and (fixnump base) (<= 2 base 36))
+      ;; groups of digits that fit in a fixnum (SMALL, of K digits)
+      (let ((value nil) (small 0) (k 0) (kmax (%fixnum-digit-capacity base)))
+        (declare (fixnum small k kmax))
+        (do ((i start (+ i 1)))
+            ((>= i end) (if value (+ (* value (%fixnum-power base k)) small) small))
+          (when (eql k kmax)
+            (setq value (if value (+ (* value (%fixnum-power base k)) small) small) small 0 k 0))
+          (setq small (+ (* small base) (digit-char-p (char str i) base)) k (+ k 1))))
+      (let ((v 0))
+        (do ((i start (+ i 1))) ((>= i end) v)
+          (setq v (+ (* v base) (digit-char-p (char str i) base)))))))
 
 ;;; ------------------------------------------------------------
 ;;; standard macro characters
