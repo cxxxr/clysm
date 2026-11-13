@@ -6,7 +6,8 @@
 ;;;; size.  Character files are UTF-8; binary elements of N bits take
 ;;;; ceiling(N/8) octets, little endian.
 
-(defstruct (stream (:constructor %make-plain-stream) (:predicate %streamp))
+(defstruct (stream (:constructor %make-plain-stream) (:constructor %make-pp-stream (kind buffer))
+                   (:predicate %streamp))
   kind              ; :fd-out :fd-in :file :string-out :string-in :broadcast :two-way :echo :concatenated :synonym :pp
   fd
   buffer            ; output: adjustable string ; string-in: the string

@@ -27,7 +27,9 @@
   (queue-head nil)
   (pending-blocks nil))
 
-(defstruct (%lblock (:constructor %make-lblock))
+(defstruct (%lblock (:constructor %make-lblock)
+                    (:constructor %make-lblock-at (start-column section-column per-line-prefix-end
+                                                   prefix-length suffix-length section-start-line)))
   (start-column 0)
   (section-column 0)
   (per-line-prefix-end 0)
@@ -36,7 +38,12 @@
   (section-start-line 0))
 
 ;;; queued operations; TYPE is :newline :indent :block-start :block-end :tab
-(defstruct (%qop (:constructor %make-qop))
+(defstruct (%qop (:constructor %make-qop)
+                 (:constructor %make-newline-op (type kind depth))
+                 (:constructor %make-indent-op (type kind amount))
+                 (:constructor %make-block-start-op (type prefix suffix depth))
+                 (:constructor %make-block-end-op (type suffix))
+                 (:constructor %make-tab-op (type sectionp relativep colnum colinc)))
   type
   (posn 0)
   (depth 0) section-end          ; :newline, :block-start
@@ -48,13 +55,42 @@
 (defun %pretty-stream-p (s) (and (%streamp s) (eq (stream-kind s) :pp)))
 (defun %pp-capture-p (s) (%pretty-stream-p s))
 
+;;; One pretty stream that is not in use is kept (with its buffers) for the
+;;; next call of %WITH-PRETTY-STREAM.
+(defvar *%free-pretty-stream* nil)
+
 (defun %make-pretty-stream (target)
-  (let ((pps (%make-pps :target target
-                        :line-length (or *print-right-margin* 80)
-                        :start-column (or (%stream-column target) 0)
-                        :print-lines *print-lines*
-                        :blocks (list (%make-lblock)))))
-    (%make-stream :kind :pp :buffer pps)))
+  (let ((s *%free-pretty-stream*)
+        (line-length (or *print-right-margin* 80))
+        (start-column (or (%stream-column target) 0)))
+    (if s
+        (let ((pps (stream-buffer s)))
+          (setq *%free-pretty-stream* nil)
+          (setf (%pps-target pps) target
+                (%pps-line-length pps) line-length
+                (%pps-fill pps) 0
+                (%pps-offset pps) 0
+                (%pps-start-column pps) start-column
+                (%pps-line-number pps) 0
+                (%pps-print-lines pps) *print-lines*
+                (%pps-blocks pps) (list (%make-lblock))
+                (%pps-queue-tail pps) nil
+                (%pps-queue-head pps) nil
+                (%pps-pending-blocks pps) nil)
+          (setf (stream-column s) 0)
+          s)
+        (%make-pp-stream :pp (%make-pps :target target
+                                        :line-length line-length
+                                        :start-column start-column
+                                        :print-lines *print-lines*
+                                        :blocks (list (%make-lblock)))))))
+
+(defun %release-pretty-stream (s)
+  "The pretty stream S is no longer in use."
+  (let ((pps (stream-buffer s)))
+    (setf (%pps-target pps) nil)
+    (when (<= (%string-length (%pps-buffer pps)) 4096)
+      (setq *%free-pretty-stream* s))))
 
 (defun %string-grow (old new-length keep)
   (let ((new (%make-string new-length #\Space)))
@@ -104,10 +140,12 @@
 (defun %pp-capture-write-string (pps string start end)
   "Like %PP-CAPTURE-WRITE-CHAR for the characters of a simple string, which
 are not newlines."
+  (declare (fixnum start end))
   (do () ((>= start end))
     (let* ((avail (%ensure-space-in-buffer pps (- end start)))
-           (k (min avail (- end start)))
+           (k (if (< avail (- end start)) avail (- end start)))
            (fill (%pps-fill pps)))
+      (declare (fixnum avail k fill))
       (%string-copy (%pps-buffer pps) fill string start k)
       (setf (%pps-fill pps) (+ fill k))
       (setq start (+ start k)))))
@@ -115,9 +153,10 @@ are not newlines."
 (defun %ensure-space-in-buffer (pps want)
   (loop
     (let* ((buffer (%pps-buffer pps))
-           (length (length buffer))
+           (length (%string-length buffer))
            (fill (%pps-fill pps))
            (available (- length fill)))
+      (declare (fixnum length fill available))
       (cond ((> available 0) (return available))
             ((> fill (%pps-line-length pps))
              (unless (%maybe-output pps nil)
@@ -128,7 +167,7 @@ are not newlines."
 
 (defun %enqueue-newline (pps kind)
   (let* ((depth (length (%pps-pending-blocks pps)))
-         (newline (%enqueue pps (%make-qop :type :newline :kind kind :depth depth))))
+         (newline (%enqueue pps (%make-newline-op :newline kind depth))))
     (dolist (entry (%pps-queue-tail pps))
       (when (and (not (eq newline entry))
                  (member (%qop-type entry) '(:newline :block-start))
@@ -142,17 +181,15 @@ are not newlines."
     (when (and prefix (> (length prefix) 0))
       (write-string prefix stream))
     (let* ((pending (%pps-pending-blocks pps))
-           (start (%enqueue pps (%make-qop :type :block-start
-                                           :prefix (and per-line-p prefix)
-                                           :suffix suffix
-                                           :depth (length pending)))))
+           (start (%enqueue pps (%make-block-start-op :block-start (and per-line-p prefix) suffix
+                                                      (length pending)))))
       (setf (%pps-pending-blocks pps) (cons start pending)))))
 
 (defun %end-logical-block (stream)
   (let* ((pps (stream-buffer stream))
          (start (pop (%pps-pending-blocks pps)))
          (suffix (%qop-suffix start))
-         (end (%enqueue pps (%make-qop :type :block-end :suffix suffix))))
+         (end (%enqueue pps (%make-block-end-op :block-end suffix))))
     (when (and suffix (> (length suffix) 0))
       (write-string suffix stream))
     (setf (%qop-block-end start) end)))
@@ -324,11 +361,8 @@ are not newlines."
          (per-line-end (%lblock-per-line-prefix-end prev))
          (prefix-length (%lblock-prefix-length prev))
          (suffix-length (%lblock-suffix-length prev))
-         (block (%make-lblock :start-column column :section-column column
-                              :per-line-prefix-end per-line-end
-                              :prefix-length prefix-length
-                              :suffix-length suffix-length
-                              :section-start-line (%pps-line-number pps))))
+         (block (%make-lblock-at column column per-line-end prefix-length suffix-length
+                                 (%pps-line-number pps))))
     (setf (%pps-blocks pps) (cons block blocks))
     (%set-indentation pps column)
     (when prefix
@@ -431,7 +465,8 @@ are not newlines."
       (let ((ps (%make-pretty-stream stream)))
         (catch '%line-limit-abbreviation-happened
           (funcall fn ps)
-          (%force-pretty-output (stream-buffer ps)))))
+          (%force-pretty-output (stream-buffer ps)))
+        (%release-pretty-stream ps)))
   nil)
 
 ;;; ------------------------------------------------------------
@@ -530,7 +565,7 @@ are not newlines."
   (unless (realp n) (error 'type-error :datum n :expected-type 'real))
   (let ((s (%output-stream stream)))
     (when (and *print-pretty* (%pretty-stream-p s))
-      (%enqueue (stream-buffer s) (%make-qop :type :indent :kind relative-to :amount (values (round n))))))
+      (%enqueue (stream-buffer s) (%make-indent-op :indent relative-to (values (round n))))))
   nil)
 
 (defun pprint-tab (kind colnum colinc &optional stream)
@@ -543,10 +578,10 @@ are not newlines."
   (let ((s (%output-stream stream)))
     (when (and *print-pretty* (%pretty-stream-p s))
       (%enqueue (stream-buffer s)
-                (%make-qop :type :tab
-                           :sectionp (member kind '(:section :section-relative))
-                           :relativep (member kind '(:line-relative :section-relative))
-                           :colnum colnum :colinc colinc))))
+                (%make-tab-op :tab
+                              (member kind '(:section :section-relative))
+                              (member kind '(:line-relative :section-relative))
+                              colnum colinc))))
   nil)
 
 (defun pprint-fill (stream list &optional (colon t) at)
@@ -591,16 +626,16 @@ are not newlines."
     (flet ((description (s)
              (when type
                (write (type-of object) :stream s :circle nil :level nil :length nil)
-               (write-char #\Space s)
-               (when body-fn (pprint-newline :fill s)))
+               (write-char #\Space s))
              (when body-fn (funcall body-fn s))
              (when identity
                (when (or body-fn (not type)) (write-char #\Space s))
-               (pprint-newline :fill s)
                (write-char #\{ s)
-               (write-string (%integer-to-string (%object-id object) 16) s)
+               (%write-integer-digits (%object-id object) 16 s)
                (write-char #\} s))))
-      (if *print-pretty*
+      ;; as in SBCL: a logical block only when the output is already being
+      ;; pretty printed; there are no conditional newlines in the description
+      (if (and *print-pretty* (%pretty-stream-p stream))
           (pprint-logical-block (stream nil :prefix "#<" :suffix ">")
             (description stream))
           (progn
