@@ -388,10 +388,18 @@ small module does not use), and renumber the others."
   (if (integerp x) x
       (or (gethash x *locals-map*) (error "wasm: unknown local ~S" x))))
 
+(defvar *branch-hints* nil
+  "The branch hints of the function being encoded: (offset . value), latest first.")
+
 (defun emit-instr (buf ins)
   (let ((m *module*))
     (when (keywordp ins) (setf ins (list ins)))
     (let ((op (first ins)) (args (rest ins)))
+      ;; (:hint 0) / (:hint 1): the IF or BR_IF that follows is unlikely / likely
+      ;; to be taken (the branch hinting section)
+      (when (eq op :hint)
+        (push (cons (length buf) (first args)) *branch-hints*)
+        (return-from emit-instr))
       (multiple-value-bind (code found) (gethash op *simple-ops*)
         (when found
           (emit-byte buf code)
@@ -561,6 +569,7 @@ small module does not use), and renumber the others."
 
 (defun encode-function-body (m f)
   (let* ((*current-func* f)
+         (*branch-hints* nil)
          (buf (make-buf))
          (*locals-map* (make-hash-table :test 'equal))
          (def (func-type-def m f))
@@ -585,14 +594,22 @@ small module does not use), and renumber the others."
                             (format *error-output* "~&;; wasm encode error in function ~S: ~A~%"
                                     (wasm-func-name f) c))))
       (emit-expr buf (wasm-func-body f)))
-    buf))
+    (values buf (nreverse *branch-hints*))))
 
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
     (emit-bytes out #(#x00 #x61 #x73 #x6D #x01 #x00 #x00 #x00))
     ;; Encode function bodies first, so that ref.func declarations are collected.
-    (let ((bodies (map 'list (lambda (f) (encode-function-body m f)) (wasm-module-funcs m))))
+    (let* ((hints nil)
+           (bodies (let ((i (length (wasm-module-imports m))) (r nil))
+                     (loop for f across (wasm-module-funcs m)
+                           do (multiple-value-bind (body h) (encode-function-body m f)
+                                (push body r)
+                                (when h (push (cons i h) hints))
+                                (incf i)))
+                     (setf hints (nreverse hints))
+                     (nreverse r))))
       ;; type section: the base types form one rec group (identical in every
       ;; module, so that types are shared across modules); types added later
       ;; are singleton groups
@@ -677,6 +694,17 @@ small module does not use), and renumber the others."
         (let ((b (make-buf)))
           (emit-u32 b (length (wasm-module-data m)))
           (emit-section out 12 b)))
+      ;; branch hints (a custom section before the code)
+      (when hints
+        (let ((b (make-buf)))
+          (emit-name b "metadata.code.branch_hint")
+          (emit-u32 b (length hints))
+          (loop for (index . h) in hints
+                do (emit-u32 b index)
+                   (emit-u32 b (length h))
+                   (loop for (offset . value) in h
+                         do (emit-u32 b offset) (emit-u32 b 1) (emit-u32 b value)))
+          (emit-section out 0 b)))
       ;; code
       (let ((b (make-buf)))
         (emit-u32 b (length bodies))

@@ -166,7 +166,8 @@
 ;;; Function state
 ;;; ------------------------------------------------------------
 
-(defstruct fstate lam nparams (locals nil) (nlocals 0) (locs (make-hash-table :test 'eq)) env-local)
+(defstruct fstate lam nparams (locals nil) (nlocals 0) (locs (make-hash-table :test 'eq)) env-local
+  (shadows (make-hash-table :test 'eq)))   ; lvar -> the locals of an (:MD2 kind) variable's storage, dimensions, offset
 
 (defvar *fs* nil)
 (defvar *tail-ok* nil "true when a call in tail position may become return_call")
@@ -192,15 +193,42 @@ to the innermost one's cleanup, which then continues the exit.")
       (error "codegen: no location for ~S in ~S" lv (fstate-lam *fs*))))
 
 (defun lvar-rep* (lv) (or (lvar-rep lv) :eqref))
-(defun rep-wasm-type (rep) (ecase rep (:eqref :eqref) (:f64 :f64) (:i32 :i32) (:i64 :i64)))
+(defun rep-wasm-type (rep)
+  (if (consp rep)
+      (if (eq (first rep) :md2)
+          '(:ref :null :mdarray)        ; (:md2 kind): an array header
+          `(:ref :null ,(second rep)))  ; (:ref kind): a reference to a storage type
+      (ecase rep (:eqref :eqref) (:f64 :f64) (:i32 :i32) (:i64 :i64))))
+
+(defun md2-shadows (lv)
+  "The locals (data dim0 dim1 offset) of the (:MD2 kind) variable LV."
+  (or (gethash lv (fstate-shadows *fs*))
+      (setf (gethash lv (fstate-shadows *fs*))
+            (list (new-local `(:ref :null ,(second (lvar-rep lv)))) (new-local :i32) (new-local :i32) (new-local :i32)))))
+
+(defun rep-local-set-code (lv idx &optional tee)
+  "Store the value on the stack (in LV's representation) in LV's local IDX
+(with TEE the value stays on the stack)."
+  (if (and (consp (lvar-rep lv)) (eq (first (lvar-rep lv)) :md2))
+      (destructuring-bind (data d0 d1 off) (md2-shadows lv)
+        `((:local.set ,idx)
+          (:local.get ,idx) (:struct.get :mdarray 0) (:ref.cast ,(second (lvar-rep lv))) (:local.set ,data)
+          (:local.get ,idx) (:struct.get :mdarray 5) (:local.set ,d0)
+          (:local.get ,idx) (:struct.get :mdarray 6) (:local.set ,d1)
+          (:local.get ,idx) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s (:local.set ,off)
+          ,@(when tee `((:local.get ,idx)))))
+      `((,(if tee :local.tee :local.set) ,idx))))
 (defun box-rep-code (rep &optional ty)
   "Box a value of REP; for :i32, TY tells whether it is a fixnum (else it may be a bignum)."
+  (when (consp rep) (return-from box-rep-code nil))
   (ecase rep
     (:eqref nil)
     (:f64 '((:struct.new :double)))
     (:i32 (if (or (null ty) (ty-fixnum-p ty)) '(:ref.i31) '((:call :box-i32))))
     (:i64 '((:call :i64-int)))))
 (defun unbox-rep-code (rep &optional ty)
+  (when (consp rep)
+    (return-from unbox-rep-code `((:ref.cast ,(if (eq (first rep) :md2) :mdarray (second rep))))))
   (ecase rep
     (:eqref nil)
     (:f64 '((:ref.cast! :double) (:struct.get :double 0)))
@@ -232,7 +260,8 @@ to the innermost one's cleanup, which then continues the exit.")
   (let ((loc (get-loc lv)))
     (cond ((boxed-p lv)
            `(,@(var-raw-code lv) (:ref.cast :cell) ,@value-code (:struct.set :cell 0)))
-          ((eq (car loc) :local) `(,@value-code ,@(unbox-rep-code (lvar-rep* lv) (lvar-type lv)) (:local.set ,(cdr loc))))
+          ((eq (car loc) :local) `(,@value-code ,@(unbox-rep-code (lvar-rep* lv) (lvar-type lv))
+                                    ,@(rep-local-set-code lv (cdr loc))))
           (t `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) ,@value-code
                (:array.set :vector))))))
 
@@ -241,7 +270,8 @@ to the innermost one's cleanup, which then continues the exit.")
   (when (and (lvar-rep lv) (not (boxed-p lv)))
     (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
       (set-loc lv (cons :local idx))
-      (return-from bind-new-var-code `(,@value-code ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv)) (:local.set ,idx)))))
+      (return-from bind-new-var-code `(,@value-code ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv))
+                                       ,@(rep-local-set-code lv idx)))))
   (let ((idx (new-local)))
     (set-loc lv (cons :local idx))
     (if (boxed-p lv)
@@ -263,7 +293,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:lref (append (var-get-code (second node)) (when mv (mv-one))))
       (:lset (if (unboxed-local-p (second node))
                  (let ((rep (lvar-rep (second node))))
-                   `(,@(cg-rep (third node) rep) (:local.tee ,(cdr (get-loc (second node))))
+                   `(,@(cg-rep (third node) rep) ,@(rep-local-set-code (second node) (cdr (get-loc (second node))) t)
                      ,@(box-rep-code rep (lvar-type (second node))) ,@(when mv (mv-one))))
                (let ((tmp (new-local)))
                `(,@(var-set-code (second node) `(,@(cg (third node)) (:local.tee ,tmp)))
@@ -388,11 +418,16 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
     ((:const :lref) nil)
     (:lset (let ((lv (second node)))
              (if (unboxed-local-p lv)
-                 `(,@(cg-rep (third node) (lvar-rep lv)) (:local.set ,(cdr (get-loc lv))))
+                 `(,@(cg-rep (third node) (lvar-rep lv)) ,@(rep-local-set-code lv (cdr (get-loc lv))))
                  (var-set-code lv (cg (third node))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
     (:if `(,@(cg-test (second node)) (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node)))))
     (:let (cg-let node nil nil :effect))
+    ((:prim :call)
+     (or (and (member (node-op-name node) '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
+                                            clysm-sys::%aset2))
+              (typed-store-code node t))
+         `(,@(cg node) :drop)))
     (t `(,@(cg node) :drop))))
 
 ;;; ------------------------------------------------------------
@@ -427,7 +462,7 @@ representation) or :effect (no value)."
                 ((and (lvar-rep lv) (not (boxed-p lv)))
                  (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
                    ;; the init is compiled before the variable has a location
-                   (setf code (append code (cg-rep init (lvar-rep lv)) `((:local.set ,idx))))
+                   (setf code (append code (cg-rep init (lvar-rep lv)) (rep-local-set-code lv idx)))
                    (set-loc lv (cons :local idx))))
                 (t (setf code (append code (bind-new-var-code lv (cg init))))))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
@@ -1180,7 +1215,9 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
          ;; known to be a fixnum / double (in a specialized clone): unboxed copy
          (let ((idx (new-local (rep-wasm-type (lvar-rep lv)))))
            (set-loc lv (cons :local idx))
-           (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv)) (:local.set ,idx)) nil)))
+           (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv))
+                     ,@(rep-local-set-code lv idx))
+                   nil)))
         (t (set-loc lv (cons :local local-idx)) (values nil nil))))
 
 (defun finish-body (lam prologue any-special)

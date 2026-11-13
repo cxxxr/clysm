@@ -167,7 +167,7 @@ runtime definition is kept."
 (defparameter *decl-type-names*
   '(fixnum integer float double-float single-float short-float long-float character base-char
     string simple-string simple-vector cons list symbol number real rational bit function
-    unsigned-byte signed-byte null))
+    unsigned-byte signed-byte null simple-bit-vector simple-base-string))
 
 (defun apply-type-decls (decls lvars)
   "Record the types declared in DECLS for the variables LVARS."
@@ -176,7 +176,8 @@ runtime definition is kept."
       (multiple-value-bind (spec vars)
           (cond ((eq (car d) 'type) (values (second d) (cddr d)))
                 ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
-                ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte)))
+                ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte simple-array simple-vector simple-string
+                                                    simple-bit-vector)))
                  (values (car d) (cdr d))))
         (when spec
           (dolist (v vars)
@@ -675,6 +676,9 @@ leaving quoted data alone."
 
 (defnative multiple-value-bind (form env)
   (destructuring-bind (vars value-form &rest body) (cdr form)
+   ;; one variable (as SETF expands): a LET
+   (if (and (consp vars) (null (cdr vars)))
+    (convert `(let ((,(car vars) ,value-form)) ,@body) env)
     (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
       (let* ((dspecials (declared-specials decls))
              (vnode (convert value-form env))
@@ -686,7 +690,7 @@ leaving quoted data alone."
                                            collect (if (lvar-special lv) (list :special v) (list :var v lv)))
                                      (loop for s in dspecials unless (member s vars)
                                            collect (list :special s))))))
-        `(:mvbind ,lvars ,vnode ,(convert-body forms new-env))))))
+        `(:mvbind ,lvars ,vnode ,(convert-body forms new-env)))))))
 
 (defnative clysm-sys::named-lambda (form env)
   (convert-function-designator form env))

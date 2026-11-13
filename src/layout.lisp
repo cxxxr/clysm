@@ -27,6 +27,68 @@
 (defconstant +flag-special+ 1)
 (defconstant +flag-constant+ 2)
 
+;;; Simple one-dimensional arrays are bare Wasm arrays ("storage").  Each kind
+;;; of storage has a code (the index in this list), known to the runtime
+;;; (runtime/seq.lisp *storage-element-types*):
+;;;   (wasm-type element-type wasm-element-type lo hi)
+;;; LO and HI bound the integer elements.
+;;; The integer kinds are closed under intersection ((unsigned-byte 7) is
+;;; what (unsigned-byte 8) and (signed-byte 8) share, and so on), so that the
+;;; upgraded element type of a type is the smallest kind containing it.  They
+;;; are listed smallest first.
+(defparameter *storage-kinds*
+  `((:vector t :eqref nil nil)
+    (:string character :i32 nil nil)
+    (:bits bit :i8 0 1)
+    (:u7vec (unsigned-byte 7) :i8 0 127)
+    (:bytes (unsigned-byte 8) :i8 0 255)
+    (:s8vec (signed-byte 8) :i8 -128 127)
+    (:u15vec (unsigned-byte 15) :i16 0 32767)
+    (:u16vec (unsigned-byte 16) :i16 0 65535)
+    (:s16vec (signed-byte 16) :i16 -32768 32767)
+    (:u31vec (unsigned-byte 31) :i32 0 ,(1- (expt 2 31)))
+    (:u32vec (unsigned-byte 32) :i32 0 ,(1- (expt 2 32)))
+    (:s32vec (signed-byte 32) :i32 ,(- (expt 2 31)) ,(1- (expt 2 31)))
+    (:u63vec (unsigned-byte 63) :i64 0 ,(1- (expt 2 63)))
+    (:u64vec (unsigned-byte 64) :i64 0 ,(1- (expt 2 64)))
+    (:s64vec (signed-byte 64) :i64 ,(- (expt 2 63)) ,(1- (expt 2 63)))
+    (:f32vec single-float :f32 nil nil)
+    (:f64vec double-float :f64 nil nil)))
+
+(defun storage-kind-code (wasm-type) (position wasm-type *storage-kinds* :key #'first))
+(defun storage-kind-info (wasm-type) (assoc wasm-type *storage-kinds*))
+
+(defun storage-kind-of-element-type (et)
+  "The storage (wasm type name) of arrays whose element type is the type
+specifier ET, as UPGRADED-ARRAY-ELEMENT-TYPE (runtime/seq.lisp) decides; NIL
+when ET is not one of the specifiers recognized at compile time."
+  (flet ((int-kind (lo hi)
+           (cond ((not (and (integerp lo) (integerp hi))) :vector)
+                 ((< hi lo) nil)
+                 (t (or (loop for (name nil nil klo khi) in *storage-kinds*
+                              when (and klo (<= klo lo) (<= hi khi)) return name)
+                        :vector)))))
+    (cond ((eq et t) :vector)
+          ((member et '(character base-char standard-char)) :string)
+          ((eq et 'bit) :bits)
+          ((member et '(double-float long-float)) :f64vec)
+          ((member et '(single-float short-float)) :f32vec)
+          ((eq et 'fixnum) (int-kind +most-negative-fixnum+ +most-positive-fixnum+))
+          ((member et '(integer symbol number real float rational ratio complex cons list atom
+                        sequence function unsigned-byte signed-byte))
+           :vector)
+          ((and (consp et) (eq (car et) 'unsigned-byte) (integerp (cadr et)) (plusp (cadr et)) (null (cddr et)))
+           (int-kind 0 (1- (expt 2 (cadr et)))))
+          ((and (consp et) (eq (car et) 'signed-byte) (integerp (cadr et)) (plusp (cadr et)) (null (cddr et)))
+           (int-kind (- (expt 2 (1- (cadr et)))) (1- (expt 2 (1- (cadr et))))))
+          ((and (consp et) (eq (car et) 'integer) (consp (cdr et)) (consp (cddr et)) (null (cdddr et)))
+           (let ((lo (cadr et)) (hi (caddr et)))
+             (int-kind (if (and (consp lo) (integerp (car lo))) (1+ (car lo)) lo)
+                       (if (and (consp hi) (integerp (car hi))) (1- (car hi)) hi))))
+          ((and (consp et) (eq (car et) 'mod) (integerp (cadr et)) (plusp (cadr et)) (null (cddr et)))
+           (int-kind 0 (1- (cadr et))))
+          (t nil))))
+
 (defparameter *type-defs*
   '((:string    (:array (:i32 t)))
     (:vector    (:array (:eqref t)))
@@ -34,6 +96,18 @@
     (:bytes     (:array (:i8 t)))
     (:bits      (:array (:i8 t)))
     (:f64vec    (:array (:f64 t)))
+    (:s8vec     (:array (:i8 t)))
+    (:u7vec     (:array (:i8 t)))
+    (:u15vec    (:array (:i16 t)))
+    (:u31vec    (:array (:i32 t)))
+    (:u63vec    (:array (:i64 t)))
+    (:u16vec    (:array (:i16 t)))
+    (:s16vec    (:array (:i16 t)))
+    (:u32vec    (:array (:i32 t)))
+    (:s32vec    (:array (:i32 t)))
+    (:u64vec    (:array (:i64 t)))
+    (:s64vec    (:array (:i64 t)))
+    (:f32vec    (:array (:f32 t)))
     (:cons      (:struct ((:eqref t) (:eqref t))))
     (:package   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
     (:symbol    (:struct (((:ref :string) nil) ((:ref :null :package) t) (:eqref t)
@@ -109,6 +183,11 @@
     (:e-l       (:func (:eqref) (:i64)))
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))
-    (:ei-e      (:func (:eqref :i32) (:eqref)))))
+    (:ei-e      (:func (:eqref :i32) (:eqref)))
+    (:eie-i     (:func (:eqref :i32 :eqref) (:i32)))
+    (:eie-e     (:func (:eqref :i32 :eqref) (:eqref)))
+    (:ii-e      (:func (:i32 :i32) (:eqref)))
+    (:eeii-i    (:func (:eqref :eqref :i32 :i32) (:i32)))
+    (:eieii-i   (:func (:eqref :i32 :eqref :i32 :i32) (:i32)))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))

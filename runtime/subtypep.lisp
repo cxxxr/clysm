@@ -16,7 +16,11 @@
                                  complex-rational complex-single-float complex-double-float
                                  ;; -0.0 is kept apart from the intervals (= 0 but not EQL to 0.0)
                                  single-float-negzero double-float-negzero))
-(defparameter *array-element-categories* '(t character bit (unsigned-byte 8) double-float nil))
+(defparameter *array-element-categories*
+  '(t character bit (unsigned-byte 7) (unsigned-byte 8) (signed-byte 8)
+    (unsigned-byte 15) (unsigned-byte 16) (signed-byte 16)
+    (unsigned-byte 31) (unsigned-byte 32) (signed-byte 32)
+    (unsigned-byte 63) (unsigned-byte 64) (signed-byte 64) single-float double-float nil))
 (defparameter *array-categories*
   (let ((r nil))
     (dolist (e *array-element-categories* (nreverse r))

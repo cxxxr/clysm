@@ -23,6 +23,9 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
           `(,@(cg node) ,@(unbox-rep-code rep (node-ty node))))))
 
 (defun cg-rep-1 (node rep)
+  ;; a reference representation: only variables are held in one
+  (when (and (consp rep) (not (member (car node) '(:lref :lset :the))))
+    (return-from cg-rep-1 nil))
   (case (car node)
     (:const (let ((v (second node)))
               (ecase rep
@@ -37,7 +40,7 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
                        ((and (eq (lvar-rep lv) :i32) (eq rep :i64)) (list get :i64.extend_i32_s)))))))
     (:lset (let ((lv (second node)))
              (when (and (eq (lvar-rep lv) rep) (unboxed-local-p lv))
-               `(,@(cg-rep (third node) rep) (:local.tee ,(cdr (get-loc lv)))))))
+               `(,@(cg-rep (third node) rep) ,@(rep-local-set-code lv (cdr (get-loc lv)) t)))))
     (:the (cg-rep (third node) rep))
     (:progn (when (cdr node)
               `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
@@ -45,13 +48,18 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     (:if `(,@(cg-test (second node))
            (:if nil ,(rep-wasm-type rep) ,(cg-rep (third node) rep) ,(cg-rep (fourth node) rep))))
     (:let (cg-let node nil nil rep))
-    ((:prim :call) (ecase rep
+    ((:prim :call)
+     (or (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
+              (typed-elt-code node rep))
+      (ecase rep
                      (:i64 (cond ((ty-int32-p (node-ty node)) `(,@(cg-rep node :i32) :i64.extend_i32_s))
                                  ((ty-int64-p (node-ty node)) (i64-op-code node))))
                      (:f64 (when (ty-double-p (node-ty node)) (f64-op-code node)))
                      (:i32 (when (ty-int32-p (node-ty node))
                              (or (i32-op-code node)
-                                 (when (fused-tree-node-p node) (fused-code node :i32)))))))
+                                 ;; operands beyond 32 bits: in i64 (exact, as the result is within 32 bits)
+                                 (let ((c (i64-op-code node))) (when c `(,@c :i32.wrap_i64)))
+                                 (when (fused-tree-node-p node) (fused-code node :i32))))))))
     (t nil)))
 
 ;;; ------------------------------------------------------------
@@ -76,24 +84,31 @@ comparisons need)."
     (* . clysm-sys::%generic-mul) (/ . clysm-sys::%generic-div)))
 
 (defun f64-binop-code (name a-code b-code)
-  "A-CODE and B-CODE leave f64s."
-  (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64))
-        (op (ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div))))
+  "A-CODE and B-CODE leave f64s.  A result that is infinite or NaN, or a zero
+that may be an underflow, is redone by the generic function, which decides."
+  (let* ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64))
+         (op (ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div)))
+         (generic `((:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double)
+                   ,@(lisp-call-instrs (cdr (assoc name *f64-generic*)) 2)
+                   (:ref.cast :double) (:struct.get :double 0))))
     `(,@a-code (:local.set ,x) ,@b-code (:local.set ,y)
-      (:local.get ,x) (:local.get ,y) ,op (:local.tee ,r)
-      ;; not finite (or zero for * and /): the generic function decides
-      (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-      ;; (a zero result of nonzero operands may be an underflow)
-      ,@(when (eq name '*) `((:local.get ,r) (:f64.const 0) :f64.eq
-                             (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
-                             (:local.get ,y) (:f64.const 0) :f64.ne :i32.and :i32.or))
-      ,@(when (eq name '/) `((:local.get ,r) (:f64.const 0) :f64.eq
-                             (:local.get ,x) (:f64.const 0) :f64.ne :i32.and :i32.or))
-      (:if nil :f64
-           ((:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double)
-            ,@(lisp-call-instrs (cdr (assoc name *f64-generic*)) 2)
-            (:ref.cast :double) (:struct.get :double 0))
-           ((:local.get ,r))))))
+      (:local.get ,x) (:local.get ,y) ,op (:local.set ,r)
+      ,@(if (member name '(+ -))
+            ;; not finite
+            `((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+              (:hint 0) (:if nil :f64 ,generic ((:local.get ,r))))
+            ;; one test of the exponent for zero, subnormal, infinite and NaN
+            ;; results; then a zero result of nonzero operands may be an underflow
+            `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
+              (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
+              (:hint 0)
+              (:if nil :f64
+                   ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+                    (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
+                    ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
+                    :i32.or
+                    (:if nil :f64 ,generic ((:local.get ,r))))
+                   ((:local.get ,r))))))))
 
 (defun f64-op-code (node)
   "f64 code for an operation whose result is a double, or NIL."
@@ -167,7 +182,9 @@ comparisons need)."
         ((length clysm-sys::%svlength clysm-sys::%string-length)
          (let ((ty (node-ty a)))
            (cond ((ty-only-p ty +k-svec+) `(,@(cg a) (:ref.cast! :vector) :array.len))
-                 ((ty-only-p ty +k-string+) `(,@(cg a) (:ref.cast! :string) :array.len)))))
+                 ((ty-only-p ty +k-string+) `(,@(cg a) (:ref.cast! :string) :array.len))
+                 ((and (eq name 'length) (ty-vec-kind ty))
+                  `(,@(cg a) (:ref.cast ,(ty-vec-kind ty)) :array.len)))))
         ((mod rem truncate floor)
          (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b))
            (let* ((bt (node-ty b)) (nonzero (or (> (ty-lo bt) 0) (< (ty-hi bt) 0)))
@@ -229,18 +246,21 @@ comparisons need)."
     (let ((code
             (cond ((and (eq (car node) :prim) (eq (prim-kind (second node)) :test))
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
-                  ((member name '(clysm-sys::%aref1 svref clysm-sys::%aset1 clysm-sys::%svset char schar))
-                   (typed-ref-code node))
+                  ((member name '(clysm-sys::%aref1 svref char schar row-major-aref clysm-sys::%aref2))
+                   (typed-elt-code node :eqref))
+                  ((member name '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
+                                  clysm-sys::%aset2))
+                   (typed-store-code node nil))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
-                  ((eq name 'clysm-sys::%aref2) (typed-aref2-code node))
                   ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
                                   clysm-sys::%svref clysm-sys::%set-svref))
                    (typed-access-code node))
                   ((ty-double-p ty)
                    (let ((c (f64-op-code node))) (when c `(,@c (:struct.new :double)))))
-                  ((ty-int32-p ty)
-                   (let ((c (i32-op-code node))) (when c `(,@c ,@(box-rep-code :i32 ty)))))
+                  ((and (ty-int32-p ty) (or (i32-op-code node) (i64-op-code node)))
+                   (let ((c (or (i32-op-code node) `(,@(i64-op-code node) :i32.wrap_i64))))
+                     `(,@c ,@(box-rep-code :i32 ty))))
                   ((and (ty-int64-p ty) (not (every #'i32-arg-p args)))
                    (let ((c (i64-op-code node))) (when c `(,@c ,@(box-rep-code :i64 ty)))))
                   ((and (member name '(+ - * 1+ 1-)) (ty-only-p ty +k-int+)
@@ -259,38 +279,179 @@ comparisons need)."
                   (t nil))))
       (when code (append code (when mv (mv-one)))))))
 
-(defun typed-ref-code (node)
-  "Element access of a simple vector / string known to be one, with a
-fixnum index: inline with a bounds check (else the generic code, which signals)."
-  (let* ((name (node-op-name node)) (args (cddr node))
-         (a (first args)) (i (second args)) (val (third args))
-         (aty (and a (node-ty a))))
-    (when (and a i (fx-arg-p i))
-      (let ((v (new-local)) (k (new-local :i32)) (x (new-local)))
-        (flet ((guarded (cast len-type fast slow)
-                 `(,@(cg a) (:local.set ,v) ,@(cg-rep i :i32) (:local.set ,k)
-                   ,@(when val `(,@(cg val) (:local.set ,x)))
-                   (:local.get ,k) (:local.get ,v) (:ref.cast! ,cast) :array.len :i32.lt_u
-                   (:if nil :eqref ,fast ,slow)
-                   ,@(progn len-type nil))))
-          (case name
-            ((clysm-sys::%aref1 svref)
-             (when (ty-only-p aty +k-svec+)
-               (guarded :vector :vector
-                        `((:local.get ,v) (:ref.cast! :vector) (:local.get ,k) (:array.get :vector))
-                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:call :aref1)))))
-            ((clysm-sys::%aset1 clysm-sys::%svset)
-             (when (and val (ty-only-p aty +k-svec+))
-               (guarded :vector :vector
-                        `((:local.get ,v) (:ref.cast! :vector) (:local.get ,k) (:local.get ,x) (:array.set :vector)
-                          (:local.get ,x))
-                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:local.get ,x) (:call :aset1)))))
-            ((char schar)
-             (when (ty-only-p aty +k-string+)
-               (guarded :string :string
-                        `((:local.get ,v) (:ref.cast! :string) (:local.get ,k) (:array.get :string)
-                          (:i32.const ,+char-tag+) :i32.add :ref.i31)
-                        `((:local.get ,v) (:local.get ,k) :ref.i31 (:call :schar-ref)))))))))))
+(defun storage-raw-rep-code (kind rep)
+  "Instructions converting a raw element of a storage of KIND to REP, or :NO
+when REP cannot hold every element."
+  (destructuring-bind (name et wt lo hi) (storage-kind-info kind)
+    (declare (ignore name et))
+    (let ((raw (storage-raw-type kind)))
+      (case rep
+        (:eqref (storage-box-code kind))
+        (:i32 (if (and (eq raw :i32) lo (>= lo (- (expt 2 31))) (< hi (expt 2 31))) nil :no))
+        (:i64 (cond ((and (eq raw :i32) lo) (if (minusp lo) '(:i64.extend_i32_s) '(:i64.extend_i32_u)))
+                    ((member kind '(:s64vec :u63vec)) nil)
+                    (t :no)))
+        (:f64 (if (eq wt :f64) nil :no))
+        (t :no)))))
+
+(defun array-locate-code (name args slow)
+  "For an element access NAME of ARGS (the array and its subscripts, the nodes):
+returns (values setup locate kind data index slow-args) or NIL when the types
+are not known.  SETUP evaluates the arguments into locals; LOCATE branches to
+SLOW unless the array is a simple array over a storage of KIND with the
+subscripts within its dimensions, and otherwise leaves the storage in the
+local DATA (a reference to the storage type of KIND) and the row-major index
+in the local INDEX; SLOW-ARGS pushes the array and the subscripts for the
+generic function."
+  (let* ((a (first args)) (aty (node-ty a)) (subs (rest args))
+         (two (member name '(clysm-sys::%aref2 clysm-sys::%aset2)))
+         (row-major (member name '(row-major-aref clysm-sys::%row-major-aset))))
+    (multiple-value-bind (kind shape) (ty-array-kind aty)
+      (when (and kind (every #'fx-arg-p subs)
+                 (or (not (member name '(char schar))) (eq kind :string))
+                 (cond (two (member shape '(:md2 :any)))
+                       (row-major t)
+                       (t (member shape '(:vec :any)))))
+        (let ((e (new-local)) (d (new-local `(:ref :null ,kind))) (k (new-local :i32)))
+          (cond
+            ((and (not two) (eq shape :vec) (eq (lvar-rep-of a) (ref-rep kind)))
+             ;; a variable held as a reference to the storage: no test
+             (values `(,@(cg-rep a (ref-rep kind)) (:local.set ,d) ,@(cg-rep (first subs) :i32) (:local.set ,k))
+                     `((:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
+                     kind d k
+                     `((:local.get ,d) (:local.get ,k) :ref.i31)))
+            ((and (eq shape :md2) (eq (lvar-rep-of a) (md2-rep kind)))
+             ;; a variable held with its storage, dimensions and offset in locals
+             (destructuring-bind (data d0 d1 off) (md2-shadows (second a))
+               (let ((x (new-local :i32)) (y (new-local :i32)))
+                 (values
+                  `(,@(cg-rep (first subs) :i32) (:local.set ,x)
+                    ,@(when two `(,@(cg-rep (second subs) :i32) (:local.set ,y))))
+                  `(,@(if two
+                          `((:local.get ,x) (:local.get ,d0) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
+                            (:local.get ,y) (:local.get ,d1) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
+                            (:local.get ,off) (:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add)
+                          `((:local.get ,x) (:local.get ,d0) (:local.get ,d1) :i32.mul :i32.lt_u :i32.eqz
+                            (:hint 0) (:br_if ,slow)
+                            (:local.get ,off) (:local.get ,x) :i32.add))
+                    (:local.set ,k) (:local.get ,data) (:local.set ,d))
+                  kind d k
+                  `(,@(cg a) (:local.get ,x) :ref.i31 ,@(when two `((:local.get ,y) :ref.i31)))))))
+            ((and (not two) (member shape '(:vec :any)) (not (and row-major (eq shape :any))))
+              ;; the array is the storage
+              (values `(,@(cg a) (:local.set ,e) ,@(cg-rep (first subs) :i32) (:local.set ,k))
+                      `((:local.get ,e) (:ref.test ,kind) :i32.eqz (:hint 0) (:br_if ,slow)
+                        (:local.get ,e) (:ref.cast! ,kind) (:local.set ,d)
+                        (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
+                      kind d k
+                      `((:local.get ,e) (:local.get ,k) :ref.i31)))
+            (t
+              ;; a header (with ROW-MAJOR-AREF of an array of any rank: only two-dimensional ones inline)
+              (let ((m (new-local '(:ref :null :mdarray))) (s (new-local))
+                    (x (new-local :i32)) (y (new-local :i32)) (d1 (new-local :i32)))
+                (values
+                 `(,@(cg a) (:local.set ,e)
+                   ,@(cg-rep (first subs) :i32) (:local.set ,x)
+                   ,@(when two `(,@(cg-rep (second subs) :i32) (:local.set ,y))))
+                 `((:local.get ,e) (:ref.test :mdarray) :i32.eqz (:br_if ,slow)
+                   (:local.get ,e) (:ref.cast! :mdarray) (:local.set ,m)
+                   ,@(if two
+                         `((:local.get ,x) (:local.get ,m) (:struct.get :mdarray 5) :i32.ge_u (:br_if ,slow)
+                           (:local.get ,y) (:local.get ,m) (:struct.get :mdarray 6) (:local.tee ,d1) :i32.ge_u
+                           (:br_if ,slow))
+                         `((:local.get ,x) (:local.get ,m) (:struct.get :mdarray 5)
+                           (:local.get ,m) (:struct.get :mdarray 6) :i32.mul :i32.ge_u (:br_if ,slow)))
+                   (:local.get ,m) (:struct.get :mdarray 0) (:local.tee ,s) (:ref.test ,kind) :i32.eqz (:br_if ,slow)
+                   (:local.get ,s) (:ref.cast! ,kind) (:local.set ,d)
+                   (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+                   ,@(if two
+                         `((:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add)
+                         `((:local.get ,x) :i32.add))
+                   (:local.set ,k))
+                 kind d k
+                 `((:local.get ,e) (:local.get ,x) :ref.i31 ,@(when two `((:local.get ,y) :ref.i31))))))))))))
+
+(defun array-slow-returns-p (name args)
+  "The generic function may return when the inline access does not apply:
+ROW-MAJOR-AREF of an array of unknown rank (inline for two dimensions only)."
+  (and (member name '(row-major-aref clysm-sys::%row-major-aset))
+       (eq (nth-value 1 (ty-array-kind (node-ty (first args)))) :any)))
+
+(defun array-slow-call (name)
+  (ecase name
+    ((clysm-sys::%aref1 svref char schar) '((:call :aref1)))
+    ((clysm-sys::%aset1 clysm-sys::%svset) '((:call :aset1)))
+    (clysm-sys::%aref2 '((:call :aref2)))
+    (clysm-sys::%aset2 '((:call :aset2)))
+    (row-major-aref (lisp-call-instrs 'row-major-aref 2))
+    (clysm-sys::%row-major-aset (lisp-call-instrs 'clysm-sys::%row-major-aset 3))))
+
+(defun typed-elt-code (node rep)
+  "An element read (AREF of one or two subscripts, SVREF, CHAR, SCHAR,
+ROW-MAJOR-AREF) of a simple array whose storage kind is known, with fixnum
+subscripts: the element is read inline when the subscripts are within the
+bounds (else the generic function, which signals the error) and left in REP.
+NIL when the types are not known or REP cannot hold the elements."
+  (let ((name (node-op-name node)) (slow (gensym "SLOW")) (done (gensym "ELT")))
+    (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code name (cddr node) slow)
+      (when setup
+        (let ((conv (storage-raw-rep-code kind rep)))
+          (unless (eq conv :no)
+            `(,@setup
+              (:block ,done ,(rep-wasm-type rep)
+                (:block ,slow nil
+                  ,@locate
+                  (:local.get ,d) (:local.get ,k) ,@(storage-get-code kind) ,@conv
+                  (:br ,done))
+                ;; (the generic function signals the error: a simple array
+                ;; of this kind with the subscripts in bounds is read above)
+                ,@slow-args ,@(array-slow-call name)
+                ,@(if (array-slow-returns-p name (cddr node))
+                      (unbox-rep-code rep (node-ty node))
+                      '(:unreachable))))))))))
+
+(defun typed-store-code (node effect)
+  "An element store ((SETF AREF) of one or two subscripts, (SETF SVREF),
+(SETF ROW-MAJOR-AREF)) into a simple array whose storage kind is known, with
+fixnum subscripts: inline when the subscripts are within the bounds and the
+value is of the element type (else the generic function).  With EFFECT the
+code leaves nothing, else the value."
+  (let* ((name (node-op-name node)) (slow (gensym "SLOW")) (done (gensym "STORE"))
+         (val (car (last (cddr node)))) (vty (node-ty val)))
+    (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code name (butlast (cddr node)) slow)
+      (when setup
+        (destructuring-bind (kname et wt lo hi) (storage-kind-info kind)
+          (declare (ignore kname et wt))
+          (let* ((raw-type (storage-raw-type kind))
+                 (raw (new-local raw-type))
+                 ;; the value's type proves it is an element: no test, no box
+                 (proven (case kind
+                           (:vector :eqref)
+                           (:string nil)
+                           (:f32vec nil)
+                           (:f64vec (and (ty-double-p vty) :f64))
+                           ((:u64vec :u63vec) (and (ty-in-range-p vty 0 (1- (expt 2 63))) :i64))
+                           ((:s64vec) (and (ty-int64-p vty) :i64))
+                           ((:u32vec) (and (ty-in-range-p vty lo hi) :i64))
+                           (t (and (ty-in-range-p vty lo hi) :i32))))
+                 (x (unless proven (new-local))))
+            (when (or proven (member kind '(:string :bits :u7vec :bytes :s8vec :u15vec :u16vec :s16vec :f32vec :f64vec)))
+              `(,@setup
+                ,@(if proven
+                      `(,@(cg-rep val proven) ,@(when (eq kind :u32vec) '(:i32.wrap_i64)) (:local.set ,raw))
+                      `(,@(cg val) (:local.set ,x)))
+                (:block ,done nil
+                  (:block ,slow nil
+                    ,@locate
+                    ,@(unless proven (storage-unbox-code kind x raw `((:br ,slow))))
+                    (:local.get ,d) (:local.get ,k) (:local.get ,raw) (:array.set ,kind)
+                    (:br ,done))
+                  ,@slow-args
+                  ,@(if proven `((:local.get ,raw) ,@(storage-box-code kind)) `((:local.get ,x)))
+                  ,@(array-slow-call name)
+                  ,@(if (array-slow-returns-p name (cddr node)) '(:drop) '(:unreachable)))
+                ,@(unless effect
+                    (if proven `((:local.get ,raw) ,@(storage-box-code kind)) `((:local.get ,x))))))))))))
 
 (defun index-i32-code (node)
   "An index known to be a fixnum (unchecked) as an i32."
@@ -331,27 +492,6 @@ fixnum index: inline with a bounds check (else the generic code, which signals).
          (let ((tmp (new-local)))
            `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args))
              ,@(cg (third args)) (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp))))))))
-
-(defun typed-aref2-code (node)
-  "2-D AREF with fixnum indices: the helper's fast path inline."
-  (destructuring-bind (a i j) (cddr node)
-    (when (and (fx-arg-p i) (fx-arg-p j))
-      (let ((av (new-local)) (x (new-local :i32)) (y (new-local :i32)) (m (new-local '(:ref :null :mdarray)))
-            (dims (new-local)) (rest (new-local)) (d1 (new-local :i32)) (v (new-local '(:ref :null :vector)))
-            (fail (gensym "SLOW")) (done (gensym "AREF2")))
-        `(,@(cg a) (:local.set ,av) ,@(cg-rep i :i32) (:local.set ,x) ,@(cg-rep j :i32) (:local.set ,y)
-          (:block ,done :eqref
-            (:block ,fail nil
-              (:local.get ,av) (:ref.test :mdarray) :i32.eqz (:br_if ,fail)
-              (:local.get ,av) (:ref.cast! :mdarray) (:local.set ,m)
-              (:local.get ,x) (:local.get ,m) (:struct.get :mdarray 5) :i32.ge_u (:br_if ,fail)
-              (:local.get ,y) (:local.get ,m) (:struct.get :mdarray 6) (:local.tee ,d1) :i32.ge_u (:br_if ,fail)
-              (:local.get ,m) (:struct.get :mdarray 0) (:ref.test :vector) :i32.eqz (:br_if ,fail)
-              (:local.get ,m) (:struct.get :mdarray 0) (:ref.cast! :vector)
-              (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
-              (:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add
-              (:array.get :vector) (:br ,done))
-            (:local.get ,av) (:local.get ,x) :ref.i31 (:local.get ,y) :ref.i31 (:call :aref2)))))))
 
 (defun typed-struct-code (node)
   "Slot access of an object known to be of the structure class: no check."

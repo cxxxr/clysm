@@ -47,7 +47,12 @@
       (if (and lo hi (> lo hi))
           (%ty (logandc2 bits +k-int+) nil nil)
           (%ty bits lo hi))
-      (%ty bits nil nil (and (= bits +k-other+) cls))))
+      ;; a class describes the +k-other+ part (with simple vectors or strings
+      ;; for the class of arrays of any rank, see VEC-TY)
+      (%ty bits nil nil (and cls (logtest bits +k-other+)
+                             (zerop (logandc2 bits (logior +k-other+ +k-svec+ +k-string+)))
+                             (or (= bits +k-other+) (anyrank-class-p cls))
+                             cls))))
 
 (defvar *ty-top* (%ty +k-all+ nil nil))
 (defvar *ty-bottom* (%ty 0 nil nil))
@@ -112,7 +117,73 @@
         ((consp x) (mkty +k-cons+))
         ((simple-string-p x) (mkty +k-string+))
         ((simple-vector-p x) (mkty +k-svec+))
+        ((simple-bit-vector-p x) (vec-ty :bits))
         (t (mkty +k-other+))))
+
+;;; Simple arrays of a known storage kind (layout.lisp *storage-kinds*): a
+;;; simple vector is +k-svec+, a simple string +k-string+; the specialized
+;;; vectors and the two-dimensional simple arrays are +k-other+ with a class:
+;;; the storage's Wasm type name (:f64vec ...) for a vector, a keyword naming
+;;; the kind (:md2-f64vec ...) for a two-dimensional array.
+(defparameter *md2-classes*
+  (loop for k in *storage-kinds*
+        collect (cons (first k) (intern (concatenate 'string "MD2-" (symbol-name (first k))) :keyword))))
+
+(defparameter *anyrank-classes*
+  (loop for k in *storage-kinds*
+        collect (cons (first k) (intern (concatenate 'string "ARR-" (symbol-name (first k))) :keyword))))
+(defun anyrank-class-p (cls) (and (rassoc cls *anyrank-classes*) t))
+
+(defun anyrank-ty (kind)
+  "Simple arrays over a storage of KIND, of any rank (the vectors are the storage itself)."
+  (mkty (logior +k-other+ (case kind (:vector +k-svec+) (:string +k-string+) (t 0)))
+        nil nil (cdr (assoc kind *anyrank-classes*))))
+
+(defun ty-array-kind (ty)
+  "When TY is only simple arrays over one kind of storage: the kind, and :VEC
+(vectors), :MD2 (two-dimensional arrays) or :ANY (any rank)."
+  (let ((cls (ty-cls ty)))
+    (cond ((ty-bottom-p ty) nil)
+          ((ty-vec-kind ty) (values (ty-vec-kind ty) :vec))
+          ((ty-md2-kind ty) (values (ty-md2-kind ty) :md2))
+          ((and cls (rassoc cls *anyrank-classes*)) (values (car (rassoc cls *anyrank-classes*)) :any)))))
+
+(defun vec-ty (kind)
+  (case kind
+    (:vector (mkty +k-svec+))
+    (:string (mkty +k-string+))
+    (t (mkty +k-other+ nil nil kind))))
+(defun md2-ty (kind) (mkty +k-other+ nil nil (cdr (assoc kind *md2-classes*))))
+
+(defun ty-vec-kind (ty)
+  "The storage kind when TY is only simple vectors of one kind, else NIL."
+  (cond ((ty-only-p ty +k-svec+) :vector)
+        ((ty-only-p ty +k-string+) :string)
+        ((and (ty-only-p ty +k-other+) (ty-cls ty) (storage-kind-info (ty-cls ty))) (ty-cls ty))))
+(defun ty-md2-kind (ty)
+  "The storage kind when TY is only two-dimensional simple arrays over one kind of storage."
+  (and (ty-only-p ty +k-other+) (ty-cls ty) (car (rassoc (ty-cls ty) *md2-classes*))))
+
+(defun storage-elt-ty (kind)
+  "The type of the elements of a storage of KIND."
+  (destructuring-bind (name et wt lo hi) (storage-kind-info kind)
+    (declare (ignore name et wt))
+    (case kind
+      (:vector *ty-top*)
+      (:string (mkty +k-char+))
+      (:f32vec (mkty +k-single+))
+      (:f64vec (mkty +k-double+))
+      (t (int-ty lo hi)))))
+
+(defun array-spec-ty (et dims)
+  "The type of (SIMPLE-ARRAY ET DIMS)."
+  (let ((kind (storage-kind-of-element-type et))
+        (rank (cond ((integerp dims) dims) ((listp dims) (length dims)))))
+    (cond ((or (null kind) (eq et '*)) *ty-top*)
+          ((eql rank 1) (vec-ty kind))
+          ((eql rank 2) (md2-ty kind))
+          ((eq dims '*) (anyrank-ty kind))
+          (t (mkty +k-other+)))))
 
 (defun declared-ty (spec)
   "The type of the Lisp type specifier SPEC (an over-approximation)."
@@ -139,8 +210,14 @@
         (list (mkty +k-list+))
         (null (mkty +k-null+))
         (symbol (mkty (logior +k-null+ +k-sym+)))
-        (simple-string (mkty +k-string+))
+        ((simple-string simple-base-string) (mkty +k-string+))
         (simple-vector (mkty +k-svec+))
+        (simple-bit-vector (vec-ty :bits))
+        (simple-array (cond ((and (consp spec) (consp (cdr spec)) (consp (cddr spec)) (null (cdddr spec)))
+                             (array-spec-ty (second spec) (third spec)))
+                            ((and (consp spec) (consp (cdr spec)) (null (cddr spec)))
+                             (array-spec-ty (second spec) '*))
+                            (t *ty-top*)))
         (function (mkty +k-func+))
         (t *ty-top*)))))
 
@@ -272,6 +349,15 @@
 (def-ti-rule (length clysm-sys::%svlength clysm-sys::%string-length clysm-sys::%bytes-length
               clysm-sys::%bits-length clysm-sys::%f64vec-length array-total-size)
     (a) (int-ty 0 (1- +most-positive-fixnum+)))
+(def-ti-rule (clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2) (a)
+  (let ((k (ty-array-kind (first a)))) (if k (storage-elt-ty k) *ty-top*)))
+;; a store returns the value (and returns only when it is of the element type)
+(def-ti-rule (clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset) (a)
+  (let ((k (ty-array-kind (first a))))
+    (if k (ty-intersect (third a) (storage-elt-ty k)) (third a))))
+(def-ti-rule clysm-sys::%aset2 (a)
+  (let ((k (ty-array-kind (first a))))
+    (if k (ty-intersect (fourth a) (storage-elt-ty k)) (fourth a))))
 (def-ti-rule cons (a) (mkty +k-cons+))
 (def-ti-rule (clysm-sys::%make-limbs clysm-sys::%bignum-mag clysm-sys::%limbs-prefix) (a) (mkty +k-limbs+))
 (def-ti-rule clysm-sys::%lref (a) *ty-fixnum*)
@@ -469,8 +555,35 @@
 (defun lvar-static-ty (lv)
   (if (or (lvar-special lv) (boxed-p lv)) *ty-top* (or (lvar-type lv) *ty-top*)))
 
+(defvar *ti-lvar-log* nil
+  "The variables whose type was noted, with their type before: (lvar . type), latest first.")
+
 (defun note-lvar-ty (lv ty)
+  (push (cons lv (lvar-type lv)) *ti-lvar-log*)
   (setf (lvar-type lv) (if (lvar-type lv) (ty-union (lvar-type lv) ty) ty)))
+
+;;; A loop is analyzed several times, the last time with the types that hold;
+;;; what the earlier passes recorded outside of the loop (the environments of
+;;; exits to enclosing blocks and tags, the types assigned in enclosing
+;;; regions, the types of variables) is undone before each pass.
+(defun ti-save-outer-state (own)
+  (list *ti-lvar-log*
+        (let ((r nil))
+          (maphash (lambda (target rec)
+                     (declare (ignore target))
+                     (unless (eq rec own)
+                       (push (list rec (texit-env rec) (texit-ty rec) (copy-alist (texit-tags rec))) r)))
+                   *ti-exits*)
+          r)
+        (mapcar (lambda (region) (cons region (copy-seq region))) *ti-regions*)))
+
+(defun ti-restore-outer-state (saved)
+  (destructuring-bind (log exits regions) saved
+    (loop until (eq *ti-lvar-log* log)
+          do (let ((e (pop *ti-lvar-log*))) (setf (lvar-type (car e)) (cdr e))))
+    (loop for (rec env ty tags) in exits
+          do (setf (texit-env rec) env (texit-ty rec) ty (texit-tags rec) (copy-alist tags)))
+    (loop for (region . copy) in regions do (replace region copy))))
 
 (defun decl-ty (lv ty)
   "TY restricted to the type declared for LV."
@@ -510,7 +623,8 @@
                (case (car n)
                  (:let (dolist (b (second n)) (add (car b)) (push (car b) *ti-let-vars*) (walk (cdr b)))
                   (walk (third n)))
-                 (:mvbind (mapc #'add (second n)) (walk (third n)) (walk (fourth n)))
+                 (:mvbind (dolist (lv (second n)) (add lv) (push lv *ti-let-vars*))
+                  (walk (third n)) (walk (fourth n)))
                  (t (map-subnodes #'walk n))))))
     (walk node)))
 
@@ -550,6 +664,7 @@
   (unless (gethash lam *ti-analyzed*)
     (setf (gethash lam *ti-analyzed*) t)
     (let ((*ti-lam* lam) (*ti-slots* (make-hash-table :test 'eq)) (*ti-nslots* 0) (*ti-let-vars* nil)
+          (*ti-lvar-log* nil)
           (*ti-regions* nil) (*ti-exits* (make-hash-table :test 'eq)) (*ti-uwps* nil) (*ti-depth* 0))
       (let ((params (append (lam-req lam)
                             (loop for (lv nil sv) in (lam-opt lam) collect lv when sv collect sv)
@@ -568,9 +683,23 @@
         (dolist (lv (lam-req lam)) (setf (lvar-rep lv) (choose-rep lv)))
         (dolist (lv *ti-let-vars*) (setf (lvar-rep lv) (choose-rep lv)))))))
 
+;;; A variable that only holds simple vectors of one storage kind lives in a
+;;; local of that reference type: the representation (:REF kind), one object
+;;; per kind so that representations compare with EQ.
+(defparameter *ref-reps* (loop for k in *storage-kinds* collect (cons (first k) (list :ref (first k)))))
+(defun ref-rep (kind) (cdr (assoc kind *ref-reps*)))
+;;; A variable that only holds two-dimensional simple arrays over one storage
+;;; kind lives in a local for the header, with its storage, dimensions and
+;;; offset in further locals (the header of a simple array does not change):
+;;; the representation (:MD2 kind).
+(defparameter *md2-reps* (loop for k in *storage-kinds* collect (cons (first k) (list :md2 (first k)))))
+(defun md2-rep (kind) (cdr (assoc kind *md2-reps*)))
+
 (defun choose-rep (lv)
   (let ((ty (lvar-type lv)))
     (cond ((or (null ty) (ty-bottom-p ty) (lvar-special lv) (boxed-p lv)) nil)
+          ((ty-vec-kind ty) (ref-rep (ty-vec-kind ty)))
+          ((ty-md2-kind ty) (md2-rep (ty-md2-kind ty)))
           ((ty-double-p ty) :f64)
           ((ty-int32-p ty) :i32)
           ((ty-int64-p ty) :i64)
@@ -690,18 +819,31 @@
     (t *ty-top*)))
 
 (defun make-array-ty (args)
-  "The type of (MAKE-ARRAY . ARGS): a simple vector or string when it is one
-dimensional with no other options than the initial element or contents."
-  (let ((dims (first args)) (keys (rest args)))
-    (if (and (ty-only-p (node-ty dims) +k-int+) (evenp (length keys))
+  "The type of (MAKE-ARRAY . ARGS): a simple array of a known storage kind
+when there are no other options than the element type and the initial element
+or contents; a vector or a two-dimensional array when the dimensions tell."
+  (let* ((dims (first args)) (keys (rest args))
+         (rank (cond ((ty-only-p (node-ty dims) +k-int+) 1)
+                     ((and (eq (car dims) :const) (listp (second dims))) (length (second dims)))
+                     ((and (member (car dims) '(:call :prim)) (eq (node-op-name dims) 'list))
+                      (length (cddr dims)))
+                     ;; (LIST a b ...) as the compiler converts it
+                     ((and (eq (car dims) :wasm) (equal (car (fourth dims)) '(:nil))
+                           (= (length (cdr (fourth dims))) (length (third dims)))
+                           (every (lambda (i) (equal i '(:struct.new :cons))) (cdr (fourth dims))))
+                      (length (third dims))))))
+    (if (and (evenp (length keys))
              (loop for (k v) on keys by #'cddr
                    always (and (eq (car k) :const)
                                (or (member (second k) '(:initial-element :initial-contents))
                                    (and (eq (second k) :element-type) (eq (car v) :const))))))
-        (let ((et (loop for (k v) on keys by #'cddr
-                        when (eq (second k) :element-type) return (list (second v)))))
-          (cond ((or (null et) (eq (car et) t)) (mkty +k-svec+))
-                ((member (car et) '(character base-char standard-char)) (mkty +k-string+))
+        (let* ((et (loop for (k v) on keys by #'cddr
+                         when (eq (second k) :element-type) return (list (second v))))
+               (kind (if et (storage-kind-of-element-type (car et)) :vector)))
+          (cond ((null kind) (mkty (logior +k-svec+ +k-string+ +k-other+)))
+                ((null rank) (anyrank-ty kind))
+                ((= rank 1) (vec-ty kind))
+                ((= rank 2) (md2-ty kind))
                 (t (mkty +k-other+))))
         (mkty (logior +k-svec+ +k-string+ +k-other+)))))
 
@@ -772,11 +914,13 @@ dimensional with no other options than the initial element or contents."
     (let* ((rec (make-texit :depth *ti-depth*))
            (entry (env-copy *env*))
            (region (and (tb-nonlocal tb) (new-region)))
-           (heads (make-array (length segments) :initial-element :bottom)))
+           (heads (make-array (length segments) :initial-element :bottom))
+           (saved (ti-save-outer-state rec)))
       (setf (gethash tb *ti-exits*) rec)
       (let ((*ti-regions* (if region (cons region *ti-regions*) *ti-regions*)))
         (loop for iter from 0
               do (let ((changed nil))
+                   (ti-restore-outer-state saved)
                    (setf *env* (env-copy entry))
                    (loop for (idx . forms) in segments for k from 0
                          do (when (> k 0)
@@ -788,13 +932,14 @@ dimensional with no other options than the initial element or contents."
                                 (setf *env* (env-copy new))))
                             (dolist (f forms) (ti f)))
                    (when (not changed)
-                     (when (> iter 1) (ti-tagbody-narrow node rec entry region heads))
+                     (when (> iter 1) (ti-tagbody-narrow node rec entry region heads saved))
                      (return))
                    (when (> iter 30)
                      ;; no fixed point: forget what is known about every variable in the loop
                      (dotimes (k (length heads))
                        (unless (eq (svref heads k) :bottom)
                          (setf (svref heads k) (make-array *ti-nslots* :initial-element *ty-top*))))
+                     (ti-restore-outer-state saved)
                      (setf *env* (env-copy entry))
                      (loop for (nil . forms) in segments for k from 0
                            do (when (> k 0)
@@ -808,12 +953,13 @@ dimensional with no other options than the initial element or contents."
     (remhash node *node-types*)
     (map-subnodes #'clear-node-types node)))
 
-(defun ti-tagbody-narrow (node rec entry region heads)
+(defun ti-tagbody-narrow (node rec entry region heads saved)
   "HEADS is a fixed point reached by widening.  Recompute the loop heads once
 from it (still a fixed point, and narrower), then analyze the body again
 with them, replacing the node types of the widened iterations."
   (let* ((segments (third node)) (n (length segments))
          (new (make-array n :initial-element :bottom)))
+    (ti-restore-outer-state saved)
     (setf (texit-tags rec) nil)
     (setf *env* (env-copy entry))
     (loop for (nil . forms) in segments for k from 0
@@ -826,6 +972,7 @@ with them, replacing the node types of the widened iterations."
             do (let ((in (env-join (svref new k) (or (cdr (assoc idx (texit-tags rec))) :bottom))))
                  (setf (svref new k) (if region (env-join in (region-env entry region)) in))))
     (dolist (s segments) (mapc #'clear-node-types (cdr s)))
+    (ti-restore-outer-state saved)
     (setf (texit-tags rec) nil)
     (setf *env* (env-copy entry))
     (loop for (nil . forms) in segments for k from 0

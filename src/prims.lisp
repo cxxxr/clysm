@@ -50,6 +50,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
          `(,@(cg-rep node :i32) :i64.extend_i32_s))
         ((and (ty-int32-p (node-ty node)) (i32-op-code node))
          `(,@(i32-op-code node) :i64.extend_i32_s))
+        ;; a variable held as an i64
+        ((and (eq (car node) :lref) (eq (lvar-rep-of node) :i64)) (cg-rep node :i64))
         ((eq (car node) :lref)
          (let ((e (new-local)) (v (new-local :i32)))
            `(,@(cg node) (:local.tee ,e) (:ref.test :i31)
@@ -184,60 +186,52 @@ its type is a fixnum), the generic code when that fails."
 ;;; Fixnum / numbers
 ;;; ------------------------------------------------------------
 
+(defun fixnum-pair-code (ta tb x y slow)
+  "Code branching to SLOW unless the eqref locals TA and TB hold fixnums,
+leaving them in the i32 locals X and Y."
+  `((:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and :i32.eqz (:hint 0) (:br_if ,slow)
+    ;; (characters are i31s outside the fixnum range)
+    (:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x) (:i32.const ,+char-tag+) :i32.add
+    (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y) (:i32.const ,+char-tag+) :i32.add :i32.or
+    (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:hint 0) (:br_if ,slow)))
+
 (defun inline-fixnum-op (a b op helper)
   "Inline fixnum fast path; falls back to HELPER."
-  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32))
+        (slow (gensym "SLOW")) (done (gensym "FX")))
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
-      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
-      (:if nil :eqref
-           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
-            (:i32.const ,+char-tag+) :i32.add
-            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y)
-            (:i32.const ,+char-tag+) :i32.add :i32.or
-            (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
-            (:if nil :eqref
-                 ((:local.get ,x) (:local.get ,y) ,op (:local.tee ,x)
-                  (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
-                  (:if nil :eqref ((:local.get ,x) :ref.i31)
-                       ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))
-                 ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))
-           ((:local.get ,ta) (:local.get ,tb) (:call ,helper))))))
+      (:block ,done :eqref
+        (:block ,slow nil
+          ,@(fixnum-pair-code ta tb x y slow)
+          (:local.get ,x) (:local.get ,y) ,op (:local.tee ,x)
+          (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:hint 0) (:br_if ,slow)
+          (:local.get ,x) :ref.i31 (:br ,done))
+        (:local.get ,ta) (:local.get ,tb) (:call ,helper)))))
 
 (defun inline-fixnum-mul (a b)
   "Inline fixnum product (in i64); falls back to the :mul helper."
-  (let ((ta (new-local)) (tb (new-local)) (r (new-local :i64)))
+  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)) (r (new-local :i64))
+        (slow (gensym "SLOW")) (done (gensym "FX")))
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
-      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
-      (:if nil :eqref
-           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s
-            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s :i64.mul (:local.tee ,r)
-            ;; characters are i31s outside the fixnum range: their products are too
-            (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-            (:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :i32.and
-            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :i32.and
-            (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31)
-                 ((:local.get ,ta) (:local.get ,tb) (:call :mul))))
-           ((:local.get ,ta) (:local.get ,tb) (:call :mul))))))
+      (:block ,done :eqref
+        (:block ,slow nil
+          ,@(fixnum-pair-code ta tb x y slow)
+          (:local.get ,x) :i64.extend_i32_s (:local.get ,y) :i64.extend_i32_s :i64.mul (:local.tee ,r)
+          (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.ge_u (:hint 0) (:br_if ,slow)
+          (:local.get ,r) :i32.wrap_i64 :ref.i31 (:br ,done))
+        (:local.get ,ta) (:local.get ,tb) (:call :mul)))))
 
 (defun inline-fixnum-cmp (a b op helper-code &optional swap)
-  "Inline comparison when both arguments are i31 (characters never reach here
-as the generic helper is used for anything that is not a fixnum pair... the
-i31 order is the fixnum order); falls back to HELPER-CODE."
-  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+  "Inline comparison of two fixnums; falls back to HELPER-CODE."
+  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32))
+        (slow (gensym "SLOW")) (done (gensym "FX")))
     `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
-      (:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and
-      (:if nil :i32
-           ((:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
-            (:i32.const ,+char-tag+) :i32.add
-            (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y)
-            (:i32.const ,+char-tag+) :i32.add :i32.or
-            (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
-            (:if nil :i32
-                 ((:local.get ,x) (:local.get ,y) ,op)
-                 (,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
-                  ,@helper-code)))
-           (,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
-            ,@helper-code)))))
+      (:block ,done :i32
+        (:block ,slow nil
+          ,@(fixnum-pair-code ta tb x y slow)
+          (:local.get ,x) (:local.get ,y) ,op (:br ,done))
+        ,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
+        ,@helper-code))))
 
 (defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
 (defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
@@ -587,6 +581,16 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
      (setf *helpers* (remove ',name *helpers* :key #'first :test #'equal))
      (push (list ',name ',type ',locals
                  ;; an element that is a list of instructions is spliced
+                 (lambda () (loop for x in (list ,@body)
+                                  if (and (consp x) (consp (car x))) append x else collect x)))
+           *helpers*)
+     ',name))
+
+(defmacro defhelper* (name type locals &body body)
+  "Like DEFHELPER, with LOCALS evaluated."
+  `(progn
+     (setf *helpers* (remove ',name *helpers* :key #'first :test #'equal))
+     (push (list ',name ',type ,locals
                  (lambda () (loop for x in (list ,@body)
                                   if (and (consp x) (consp (car x))) append x else collect x)))
            *helpers*)
@@ -1313,7 +1317,11 @@ element (local I) of it.  D is a scratch eqref local."
                 (:local.get ,d)))
           (:ref.test :string)
           (:if nil nil ((:local.get ,d) (:ref.cast! :string) (:local.get ,i) (:array.get :string)
-                        (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))))))
+                        (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))
+          ,@(unless strings-only
+              `((:local.get ,d) :ref.is_null :i32.eqz
+                (:if nil nil ((:local.get ,d) (:local.get ,i) (:call :typed-ref) (:local.tee ,d) :ref.is_null :i32.eqz
+                              (:if nil nil ((:local.get ,d) :return))))))))))
 
 (defun md1-set-code (d i c strings-only)
   "Like MD1-REF-CODE for setting element (local I) to local 2."
@@ -1332,7 +1340,11 @@ element (local I) of it.  D is a scratch eqref local."
                ((:local.get 2) (:ref.cast! :i31) :i31.get_s (:local.tee ,c) (:i32.const ,+char-tag+) :i32.ge_s
                 (:if nil nil ((:local.get ,d) (:ref.cast! :string) (:local.get ,i)
                               (:local.get ,c) (:i32.const ,+char-tag+) :i32.sub (:array.set :string)
-                              (:local.get 2) :return))))))))
+                              (:local.get 2) :return))))
+          ,@(unless strings-only
+              `((:local.get ,d) :ref.is_null :i32.eqz
+                (:if nil nil ((:local.get ,d) (:local.get ,i) (:local.get 2) (:call :typed-set)
+                              (:if nil nil ((:local.get 2) :return))))))))))
 
 ;;; CHAR / SCHAR on simple strings inline, else the Lisp functions
 (macrolet ((charref (name fallback)
@@ -1975,6 +1987,229 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
   `(:global.get ,(sym-global 'clysm-sys::%host-eval-string)) '(:call (:callsym 1))
   '(:ref.cast :foreign) '(:struct.get :foreign 0))
 
+;;; ------------------------------------------------------------
+;;; Specialized storage (layout.lisp *storage-kinds*): every kind of simple
+;;; one-dimensional array is handled by the same helpers.
+;;; ------------------------------------------------------------
+
+(defun typed-storage-kinds () (cddr *storage-kinds*))   ; all but :vector and :string
+(defun storage-local (kind) (intern (format nil "S-~A" kind) :clysm))
+(defun storage-locals (kinds)
+  (loop for k in kinds collect (list (storage-local (first k)) `(:ref :null ,(first k)))))
+
+(defun storage-get-code (kind)
+  "Instructions (after the array and an i32 index) leaving the element raw."
+  (destructuring-bind (name et wt lo hi) (storage-kind-info kind)
+    (declare (ignore et hi))
+    (list (list (cond ((member wt '(:i8 :i16)) (if (minusp lo) :array.get_s :array.get_u))
+                      (t :array.get))
+                name))))
+
+(defun storage-raw-type (kind)
+  "The Wasm type of a raw element."
+  (let ((wt (third (storage-kind-info kind))))
+    (if (member wt '(:i8 :i16)) :i32 wt)))
+
+(defun storage-box-code (kind)
+  "Instructions boxing a raw element of KIND."
+  (ecase kind
+    (:vector nil)
+    (:string `((:i32.const ,+char-tag+) :i32.add :ref.i31))
+    ((:bits :u7vec :bytes :s8vec :u15vec :u16vec :s16vec) '(:ref.i31))
+    (:u32vec '(:i64.extend_i32_u (:call :i64-int)))
+    ((:u31vec :s32vec) '((:call :box-i32)))
+    (:u64vec '((:call :u64-int)))
+    ((:u63vec :s64vec) '((:call :i64-int)))
+    (:f32vec '((:struct.new :single)))
+    (:f64vec '((:struct.new :double)))))
+
+(defun storage-unbox-code (kind x raw fail)
+  "Helper-body code leaving in local RAW the raw element for the eqref in
+local X, doing FAIL (instructions) when X is not of the element type."
+  (destructuring-bind (name et wt lo hi) (storage-kind-info kind)
+    (declare (ignore name et))
+    (ecase kind
+      (:vector `((:local.get ,x) (:local.set ,raw)))
+      (:string `((:local.get ,x) (:ref.test :i31) :i32.eqz (:if nil nil ,fail)
+                 (:local.get ,x) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub (:local.tee ,raw)
+                 (:i32.const 0) :i32.lt_s (:if nil nil ,fail)))
+      ((:bits :u7vec :bytes :s8vec :u15vec :u16vec :s16vec)
+       `((:local.get ,x) (:ref.test :i31) :i32.eqz (:if nil nil ,fail)
+         (:local.get ,x) (:ref.cast! :i31) :i31.get_s (:local.tee ,raw)
+         (:i32.const ,lo) :i32.sub (:i32.const ,(- hi lo)) :i32.gt_u (:if nil nil ,fail)))
+      ((:u31vec :u32vec :s32vec)
+       `((:local.get ,x) (:call :small-int-p) :i32.eqz (:if nil nil ,fail)
+         (:local.get ,x) (:call :int-i64) (:local.tee w)
+         (:i64.const ,lo) :i64.sub (:i64.const ,(- hi lo)) :i64.gt_u (:if nil nil ,fail)
+         (:local.get w) :i32.wrap_i64 (:local.set ,raw)))
+      ((:u63vec :u64vec :s64vec)
+       ;; (integers of more than 56 bits with digits go through the Lisp function)
+       `((:local.get ,x) (:call :small-int-p) :i32.eqz (:if nil nil ,fail)
+         (:local.get ,x) (:call :int-i64) (:local.set ,raw)
+         ,@(unless (eq kind :s64vec) `((:local.get ,raw) (:i64.const 0) :i64.lt_s (:if nil nil ,fail)))))
+      (:f32vec (progn wt `((:local.get ,x) (:ref.test :single) :i32.eqz (:if nil nil ,fail)
+                           (:local.get ,x) (:ref.cast! :single) (:struct.get :single 0) (:local.set ,raw))))
+      (:f64vec `((:local.get ,x) (:ref.test :double) :i32.eqz (:if nil nil ,fail)
+                 (:local.get ,x) (:ref.cast! :double) (:struct.get :double 0) (:local.set ,raw))))))
+
+(defun storage-raw-local (kind)
+  (ecase (storage-raw-type kind) (:eqref 'raw-e) (:i32 'raw-i) (:i64 'raw-l) (:f32 'raw-f) (:f64 'raw-d)))
+(defparameter *storage-raw-locals* '((raw-e :eqref) (raw-i :i32) (raw-l :i64) (raw-f :f32) (raw-d :f64) (w :i64)))
+
+(defhelper :u64-int :l-e ()
+  '(:local.get 0) '(:i64.const 0) :i64.ge_s '(:if nil nil ((:local.get 0) (:call :i64-int) :return))
+  '(:local.get 0) '(:i64.const 32) :i64.shr_u '(:call :i64-int)
+  '(:local.get 0) '(:i64.const #xFFFFFFFF) :i64.and '(:call :i64-int)
+  (lisp-call-instrs 'clysm-sys::%u64-from-halves 2))
+
+(defun storage-dispatch-code (kinds arg fn &optional (result :eqref))
+  "Helper-body code: for each of KINDS, when local ARG is such a storage, the
+instructions (FN kind typed-local), which must return or leave nothing."
+  (declare (ignorable result))
+  (loop for k in kinds
+        for kind = (first k)
+        for next = (gensym "NEXT")
+        collect `(:block ,next :eqref
+                   (:local.get ,arg) (:br_on_cast_fail ,next :eqref (:ref ,kind)) (:local.set ,(storage-local kind))
+                   ,@(funcall fn kind (storage-local kind))
+                   (:local.get ,arg))
+        collect :drop))
+
+;; element I of a specialized storage; null when local 0 is not one or I is
+;; out of bounds
+(defhelper* :typed-ref :ei-e (storage-locals (typed-storage-kinds))
+  (storage-dispatch-code
+   (typed-storage-kinds) 0
+   (lambda (kind l)
+     `((:local.get ,l) :array.len (:local.get 1) :i32.gt_u :i32.eqz (:if nil nil ((:ref.null :eq) :return))
+       (:local.get ,l) (:local.get 1) ,@(storage-get-code kind) ,@(storage-box-code kind) :return)))
+  '(:ref.null :eq))
+
+;; store local 2 in element I of a specialized storage; 0 when local 0 is not
+;; one, I is out of bounds or the value is not of the element type
+(defhelper* :typed-set :eie-i (append (storage-locals (typed-storage-kinds)) *storage-raw-locals*)
+  (storage-dispatch-code
+   (typed-storage-kinds) 0
+   (lambda (kind l)
+     (let ((raw (storage-raw-local kind)))
+       `((:local.get ,l) :array.len (:local.get 1) :i32.gt_u :i32.eqz (:if nil nil ((:i32.const 0) :return))
+         ,@(storage-unbox-code kind 2 raw '((:i32.const 0) :return))
+         (:local.get ,l) (:local.get 1) (:local.get ,raw) (:array.set ,kind) (:i32.const 1) :return))))
+  '(:i32.const 0))
+
+;; element I of any storage (the Lisp function signals the errors)
+(defhelper :storage-ref :ei-e ((v (:ref :null :vector)) (s (:ref :null :string)) (r :eqref))
+  `(:block notvec :eqref
+     (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
+     :array.len (:local.get 1) :i32.gt_u
+     (:if nil nil ((:local.get v) (:local.get 1) (:array.get :vector) :return))
+     (:local.get 0))
+  :drop
+  `(:block notstr :eqref
+     (:local.get 0) (:br_on_cast_fail notstr :eqref (:ref :string)) (:local.tee s)
+     :array.len (:local.get 1) :i32.gt_u
+     (:if nil nil ((:local.get s) (:local.get 1) (:array.get :string)
+                   (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))
+     (:local.get 0))
+  :drop
+  '(:local.get 0) '(:local.get 1) '(:call :typed-ref) '(:local.tee r) :ref.is_null :i32.eqz
+  '(:if nil nil ((:local.get r) :return))
+  '(:local.get 0) '(:local.get 1) :ref.i31
+  (lisp-call-instrs 'clysm-sys::%simple-ref-error 2))
+
+(defhelper :storage-set :eie-e ((v (:ref :null :vector)) (s (:ref :null :string)) (c :i32))
+  `(:block notvec :eqref
+     (:local.get 0) (:br_on_cast_fail notvec :eqref (:ref :vector)) (:local.tee v)
+     :array.len (:local.get 1) :i32.gt_u
+     (:if nil nil ((:local.get v) (:local.get 1) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
+     (:local.get 0))
+  :drop
+  `(:block notstr :eqref
+     (:local.get 0) (:br_on_cast_fail notstr :eqref (:ref :string)) (:local.tee s)
+     :array.len (:local.get 1) :i32.gt_u
+     (:local.get 2) (:ref.test :i31) :i32.and
+     (:if nil nil
+          ((:local.get 2) (:ref.cast! :i31) :i31.get_s (:local.tee c) (:i32.const ,+char-tag+) :i32.ge_s
+           (:if nil nil ((:local.get s) (:local.get 1) (:local.get c) (:i32.const ,+char-tag+) :i32.sub
+                         (:array.set :string) (:local.get 2) :return))))
+     (:local.get 0))
+  :drop
+  '(:local.get 0) '(:local.get 1) '(:local.get 2) '(:call :typed-set)
+  '(:if nil nil ((:local.get 2) :return))
+  '(:local.get 0) '(:local.get 1) :ref.i31 '(:local.get 2)
+  (lisp-call-instrs 'clysm-sys::%simple-set-error 3))
+
+;; the length of a storage, -1 for other objects
+(defhelper* :storage-len :e-i (storage-locals *storage-kinds*)
+  (storage-dispatch-code *storage-kinds* 0 (lambda (kind l) (declare (ignore kind)) `((:local.get ,l) :array.len :return)))
+  '(:i32.const -1))
+
+;; the kind (index in *storage-kinds*) of a storage, -1 for other objects
+(defhelper :storage-kind :e-i ()
+  (loop for k in *storage-kinds* for code from 0
+        append `((:local.get 0) (:ref.test ,(first k)) (:if nil nil ((:i32.const ,code) :return))))
+  '(:i32.const -1))
+
+;; a fresh specialized storage of kind (code) local 0 with local 1 elements (zeros)
+(defhelper :make-storage :ii-e ()
+  (loop for k in (typed-storage-kinds)
+        append `((:local.get 0) (:i32.const ,(storage-kind-code (first k))) :i32.eq
+                 (:if nil nil ((:local.get 1) (:array.new_default ,(first k)) :return))))
+  :unreachable)
+
+;; fill elements [local 2, local 3) of storage local 0 with local 1; 0 when
+;; that is not possible (not a storage, bad bounds, value not of the element type)
+(defhelper* :storage-fill :eeii-i (append (storage-locals *storage-kinds*) *storage-raw-locals*)
+  '(:local.get 2) '(:local.get 3) :i32.gt_u '(:if nil nil ((:i32.const 0) :return))
+  (storage-dispatch-code
+   *storage-kinds* 0
+   (lambda (kind l)
+     (let ((raw (storage-raw-local kind)))
+       `((:local.get ,l) :array.len (:local.get 3) :i32.lt_u (:if nil nil ((:i32.const 0) :return))
+         ,@(storage-unbox-code kind 1 raw '((:i32.const 0) :return))
+         (:local.get ,l) (:local.get 2) (:local.get ,raw) (:local.get 3) (:local.get 2) :i32.sub
+         (:array.fill ,kind) (:i32.const 1) :return))))
+  '(:i32.const 0))
+
+;; copy local 4 elements from storage local 2 at local 3 to storage local 0 at
+;; local 1 (the regions may overlap); 0 when the storages are not of the same
+;; kind or a region is out of bounds
+(defhelper* :storage-copy :eieii-i (append (storage-locals *storage-kinds*) '((n :i32)))
+  (storage-dispatch-code
+   *storage-kinds* 0
+   (lambda (kind l)
+     `((:local.get 2) (:ref.test ,kind) :i32.eqz (:if nil nil ((:i32.const 0) :return))
+       (:local.get 1) (:i32.const 0) :i32.lt_s (:local.get 3) (:i32.const 0) :i32.lt_s :i32.or
+       (:local.get 4) (:i32.const 0) :i32.lt_s :i32.or (:if nil nil ((:i32.const 0) :return))
+       (:local.get ,l) :array.len (:local.get 1) :i32.sub (:local.get 4) :i32.lt_s (:if nil nil ((:i32.const 0) :return))
+       (:local.get 2) (:ref.cast! ,kind) :array.len (:local.get 3) :i32.sub (:local.get 4) :i32.lt_s
+       (:if nil nil ((:i32.const 0) :return))
+       (:local.get ,l) (:local.get 1) (:local.get 2) (:ref.cast! ,kind) (:local.get 3) (:local.get 4)
+       (:array.copy ,kind ,kind) (:i32.const 1) :return)))
+  '(:i32.const 0))
+
+(defprim clysm-sys::%simple-ref (v i) :value `(,@v ,@(idx-code i) (:call :storage-ref)))
+(defprim clysm-sys::%simple-set (v i x) :value `(,@v ,@(idx-code i) ,@x (:call :storage-set)))
+(defprim clysm-sys::%storage-length (v) :value `(,@v (:call :storage-len) :ref.i31))
+(defprim clysm-sys::%storage-kind (v) :value `(,@v (:call :storage-kind) :ref.i31))
+(defprim clysm-sys::%make-typed-storage (code n) :value `(,@(idx-code code) ,@(idx-code n) (:call :make-storage)))
+(defprim clysm-sys::%typed-set (v i x) :test `(,@v ,@(idx-code i) ,@x (:call :typed-set)))
+(defprim clysm-sys::%storage-fill (v x start end) :test
+  `(,@v ,@x ,@(idx-code start) ,@(idx-code end) (:call :storage-fill)))
+(defprim clysm-sys::%storage-copy (dst di src si n) :test
+  `(,@dst ,@(idx-code di) ,@src ,@(idx-code si) ,@(idx-code n) (:call :storage-copy)))
+;; the two 32-bit halves of a 64-bit element (for integers with digits)
+(defprim clysm-sys::%set-64vec-halves (v i hi lo) :value
+  (let ((a (new-local)) (k (new-local :i32)) (w (new-local :i64)))
+    `(,@v (:local.set ,a) ,@(idx-code i) (:local.set ,k)
+      ,@hi (:call :int-i64) (:i64.const 32) :i64.shl ,@lo (:call :int-i64) :i64.or (:local.set ,w)
+      (:local.get ,a) (:ref.test :u64vec)
+      (:if nil nil ((:local.get ,a) (:ref.cast! :u64vec) (:local.get ,k) (:local.get ,w) (:array.set :u64vec))
+           ((:local.get ,a) (:ref.test :u63vec)
+            (:if nil nil ((:local.get ,a) (:ref.cast! :u63vec) (:local.get ,k) (:local.get ,w) (:array.set :u63vec))
+                 ((:local.get ,a) (:ref.cast :s64vec) (:local.get ,k) (:local.get ,w) (:array.set :s64vec)))))
+      ,@(nil-code))))
+
 ;;; fast paths for 1-D AREF / (SETF AREF) on simple vectors and strings
 (defhelper :aref1 :ee-e ((v (:ref :null :vector)) (s (:ref :null :string)) (i :i32) (d :eqref))
   '(:local.get 1) '(:ref.test :i31)
@@ -1992,7 +2227,9 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
            (:if nil nil ((:local.get s) (:local.get i) (:array.get :string)
                          (:i32.const ,+char-tag+) :i32.add :ref.i31 :return))
            (:local.get 0))
-         :drop))
+         :drop
+         (:local.get 0) (:local.get i) (:call :typed-ref) (:local.tee d) :ref.is_null :i32.eqz
+         (:if nil nil ((:local.get d) :return))))
   (md1-ref-code 'd 'i nil)
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%aref1-slow)) '(:call (:callsym 2)))
@@ -2007,7 +2244,10 @@ with the arguments as f64s in locals DA and DB (it may branch to SLOW)."
            (:if nil nil ((:local.get v) (:local.get i) (:local.get 2) (:array.set :vector)
                          (:local.get 2) :return))
            (:local.get 0))
-         :drop))
+         :drop
+         (:local.get 0) (:ref.test :string) :i32.eqz
+         (:if nil nil ((:local.get 0) (:local.get i) (:local.get 2) (:call :typed-set)
+                       (:if nil nil ((:local.get 2) :return))))))
   (md1-set-code 'd 'i 'c nil)
   '(:local.get 0) '(:local.get 1) '(:local.get 2)
   `(:global.get ,(sym-global 'clysm-sys::%aset1-slow)) '(:call (:callsym 3)))
