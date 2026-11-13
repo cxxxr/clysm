@@ -1,5 +1,5 @@
---- asdf-3.3.7.orig.lisp	2026-11-13 02:48:35.919690568 +0900
-+++ asdf.lisp	2026-11-13 02:48:35.921820651 +0900
+--- asdf-3.3.7.orig.lisp	2026-11-14 04:40:58.146607400 +0900
++++ asdf.lisp	2026-11-14 04:40:41.359566476 +0900
 @@ -138,7 +138,8 @@
     #+(or clasp abcl ecl) #:ext
     #+ccl #:ccl
@@ -143,7 +143,7 @@
      (not-implemented-error 'quit "(called with exit code ~S)" code))
  
    (defun die (code format &rest arguments)
-@@ -4899,7 +4911,8 @@
+@@ -4901,7 +4913,8 @@
      #+mkcl (loop :for i :from 0 :below (mkcl:argc) :collect (mkcl:argv i))
      #+sbcl sb-ext:*posix-argv*
      #+xcl system:*argv*
@@ -153,7 +153,143 @@
      (not-implemented-error 'raw-command-line-arguments))
  
    (defun command-line-arguments (&optional (arguments (raw-command-line-arguments)))
-@@ -14035,8 +14048,8 @@
+@@ -6302,7 +6315,8 @@
+       #+(and lispworks (not lispworks7+)) process
+       #+mkcl (mkcl:process-id process)
+       #+sbcl (sb-ext:process-pid process)
+-      #-(or abcl allegro clasp clozure cmucl ecl mkcl lispworks sbcl scl)
++      #+clysm (sys::%process-pid process)
++      #-(or clysm abcl allegro clasp clozure cmucl ecl mkcl lispworks sbcl scl)
+       (not-implemented-error 'process-info-pid)))
+ 
+   (defun %process-status (process-info)
+@@ -6311,7 +6325,8 @@
+         (if-let (signal-code (slot-value process-info 'signal-code))
+           (values :signaled signal-code)
+           (values :exited exit-code))))
+-    #-(or allegro clasp clozure cmucl ecl lispworks mkcl sbcl scl)
++    #+clysm (return-from %process-status (let ((code (sys::%process-status (slot-value process-info 'process)))) (if code (values :exited (setf (slot-value process-info 'exit-code) code)) :running)))
++    #-(or clysm allegro clasp clozure cmucl ecl lispworks mkcl sbcl scl)
+     (not-implemented-error '%process-status)
+     (if-let (process (slot-value process-info 'process))
+       (multiple-value-bind (status code)
+@@ -6389,7 +6404,8 @@
+         (values exit-code signal-code)
+         exit-code)
+       (let ((process (slot-value process-info 'process)))
+-        #-(or abcl allegro clasp clozure cmucl ecl lispworks mkcl sbcl scl)
++        #+clysm (return-from wait-process (setf (slot-value process-info 'exit-code) (sys::%process-wait (slot-value process-info 'process))))
++        #-(or clysm abcl allegro clasp clozure cmucl ecl lispworks mkcl sbcl scl)
+         (not-implemented-error 'wait-process)
+         (when process
+           ;; 1- wait
+@@ -6477,6 +6493,7 @@
+ to ignore if URGENT is T. On some platforms, it may also be subject to
+ race conditions."
+     (declare (ignorable urgent))
++    #+clysm (return-from terminate-process (sys::%process-kill (slot-value process-info 'process) urgent))
+     #+abcl (sys:process-kill (slot-value process-info 'process))
+     ;; On ECL, this will only work on versions later than 2016-09-06,
+     ;; but we still want to compile on earlier versions, so we use symbol-call
+@@ -6505,6 +6522,31 @@
+                             (slot-value process-info 'output-stream)))))
+       (when stream (close stream))))
+ 
++  #+clysm
++  (defun %clysm-launch-program (command &key input (if-input-does-not-exist :error)
++                                          output (if-output-exists :supersede)
++                                          error-output (if-error-output-exists :supersede)
++                                          directory environment (element-type 'character)
++                                        &allow-other-keys)
++    ;; (T, this Lisp's standard streams, is the process's: :INTERACTIVE)
++    (flet ((spec (x) (if (eq x t) :interactive x)))
++      (%handle-if-does-not-exist input if-input-does-not-exist)
++      (%handle-if-exists output if-output-exists)
++      (unless (eq error-output :output) (%handle-if-exists error-output if-error-output-exists))
++      (multiple-value-bind (process in out err)
++          (sys::%launch-program command :input (spec input) :output (spec output)
++                                        :error-output (spec error-output)
++                                        :if-output-exists if-output-exists
++                                        :if-error-output-exists if-error-output-exists
++                                        :directory directory :environment environment
++                                        :element-type element-type)
++        (let ((info (make-instance 'process-info)))
++          (setf (slot-value info 'process) process
++                (slot-value info 'input-stream) in
++                (slot-value info 'output-stream) out
++                (slot-value info 'error-output-stream) err)
++          info))))
++
+   (defun launch-program (command &rest keys
+                          &key
+                            input (if-input-does-not-exist :error)
+@@ -6568,6 +6610,7 @@
+ differing behavior on how those streams are filled with data. If data is not
+ periodically read from the child process and sent to the stream, the child
+ could block because its output buffers are full."
++    #+clysm (return-from launch-program (apply '%clysm-launch-program command keys))
+     #-(or abcl allegro clasp clozure cmucl ecl (and lispworks os-unix) mkcl sbcl scl)
+     (progn command keys input output error-output directory element-type external-format
+            if-input-does-not-exist if-output-exists if-error-output-exists ;; ignore
+@@ -7239,6 +7282,49 @@
+                      :ignore-error-status ignore-error-status)
+       (values output-result error-output-result exit-code)))
+ 
++  #+clysm
++  (defun %clysm-deliver (text spec if-exists default-stream)
++    ;; the output TEXT of a process, as SPEC of RUN-PROGRAM asks
++    (cond ((null spec) nil)
++          ((eq spec :interactive) nil)
++          ((eq spec t) (write-string text default-stream) nil)
++          ((or (stringp spec) (pathnamep spec))
++           (with-output-to-file (s spec :if-exists if-exists :if-does-not-exist :create)
++             (write-string text s))
++           nil)
++          ((streamp spec) (write-string text spec) nil)
++          (t (slurp-input-stream spec (make-string-input-stream text)))))
++
++  #+clysm
++  (defun %clysm-run-program (command &key ignore-error-status force-shell
++                                       input (if-input-does-not-exist :error)
++                                       output (if-output-exists :supersede)
++                                       error-output (if-error-output-exists :supersede)
++                                       directory environment &allow-other-keys)
++    (let* ((command (if (and force-shell (listp command)) (escape-shell-command command) command))
++           (input-text (cond ((null input) nil)
++                             ((eq input :interactive) :interactive)
++                             ((eq input t) (slurp-stream-string *standard-input*))
++                             ((or (stringp input) (pathnamep input))
++                              (%handle-if-does-not-exist input if-input-does-not-exist)
++                              (read-file-string input))
++                             ((streamp input) (slurp-stream-string input))
++                             (t (parameter-error "~S: ~S is not a valid input for ~S" 'run-program input 'run-program))))
++           (merge (eq error-output :output))
++           (output-mode (cond ((null output) nil) ((eq output :interactive) :interactive) (t :pipe)))
++           (error-mode (cond (merge output-mode) ((null error-output) nil)
++                             ((eq error-output :interactive) :interactive) (t :pipe))))
++      (multiple-value-bind (out err code)
++          (sys::%run-program-sync command :input input-text :directory directory :environment environment
++                                          :output output-mode :error-output error-mode)
++        (when merge (setf out (concatenate 'string (or out "") (or err "")) err nil))
++        (let ((output-result (and out (%clysm-deliver out output if-output-exists *standard-output*)))
++              (error-result (and err (not merge)
++                                 (%clysm-deliver err error-output if-error-output-exists *error-output*))))
++          (unless (or ignore-error-status (eql code 0))
++            (cerror "IGNORE-ERROR-STATUS" 'subprocess-error :command command :code code :process nil))
++          (values output-result error-result code)))))
++
+   (defun run-program (command &rest keys
+                        &key ignore-error-status (force-shell nil force-shell-suppliedp)
+                          input (if-input-does-not-exist :error)
+@@ -7316,6 +7402,7 @@
+ or an indication of failure via the EXIT-CODE of the process"
+     (declare (ignorable input output error-output if-input-does-not-exist if-output-exists
+                         if-error-output-exists element-type external-format ignore-error-status))
++    #+clysm (return-from run-program (apply '%clysm-run-program command keys))
+     #-(or abcl allegro clasp clisp clozure cmucl cormanlisp ecl gcl lispworks mcl mkcl sbcl scl xcl)
+     (not-implemented-error 'run-program)
+     (apply (if (or force-shell
+@@ -14037,8 +14124,8 @@
          :asdf/system ;; used by ECL
          :asdf/upgrade :asdf/system-registry :asdf/operate :asdf/bundle)
    ;; Happily, all those implementations all have the same module-provider hook interface.
@@ -164,7 +300,7 @@
                  #:*module-provider-functions*
                  #+ecl #:*load-hooks*)
    #+(or clasp mkcl) (:import-from :si #:*load-hooks*))
-@@ -14067,7 +14080,7 @@
+@@ -14069,7 +14156,7 @@
      (clear-system "uiop")))
  
  ;;;; Hook ASDF into the implementation's REQUIRE and other entry points.

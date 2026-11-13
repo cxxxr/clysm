@@ -28,6 +28,12 @@ const all = await Promise.all([1, 2, 3].map((i) => fetchTwice((k) => sleep(10 * 
 assert.deepEqual(all, ['a1+b1', 'a2+b2', 'a3+b3']);
 // the instance lives on
 assert.equal(calls(), 2);
+// subprocesses
+assert.equal(lib.default.exports.echo('hi'), 'hi\n');
+assert.deepEqual(await lib.default.exports.catLines(['x', 'y z']), ['x', 'y z']);
+// two at the same time
+assert.deepEqual(await Promise.all([lib.default.exports.catLines(['a']), lib.default.exports.catLines(['b'])]),
+                 [['a'], ['b']]);
 // another instance has its own state
 const other = await lib.create();
 assert.equal(other.exports.countWords('x'), 1);

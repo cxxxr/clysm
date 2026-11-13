@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { makeImports } from './common.mjs';
 import { nodeModuleAccess } from './lib.mjs';
+import { makeProcessManager } from './process.mjs';
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
@@ -170,7 +171,19 @@ function makeNetServer(worker, sab) {
     if (s.ended) { ok(); return true; }
     return false;
   };
+  const processes = makeProcessManager();
   worker.on('message', (m) => {
+    if (m && m.clysmProc !== undefined) {
+      // a call of the process manager (host/process.mjs): the value is sent
+      // as octets (status 0), JSON (2), null (3) or text (4)
+      Promise.resolve().then(() => processes[m.op](...m.args)).then((v) => {
+        if (v instanceof Uint8Array) reply(0, v);
+        else if (v === null || v === undefined) reply(3, new Uint8Array(0));
+        else if (typeof v === 'string') reply(4, Buffer.from(v, 'utf8'));
+        else reply(2, Buffer.from(JSON.stringify(v), 'utf8'));
+      }, fail);
+      return;
+    }
     if (!m || m.clysmNet === undefined) return;
     const { op, args } = m;
     try {
@@ -219,6 +232,22 @@ function installNetClient(port, sab) {
     if (ctrl[1] !== 0) throw new Error(bytes.toString('utf8'));
     return bytes;
   };
+  // the process manager of the main thread, called synchronously
+  const callProc = (op, args) => {
+    Atomics.store(ctrl, 0, 0);
+    port.postMessage({ clysmProc: 1, op, args });
+    Atomics.wait(ctrl, 0, 0);
+    const status = ctrl[1];
+    const bytes = Buffer.from(data.subarray(0, ctrl[2]));
+    if (status === 1) throw new Error(bytes.toString('utf8'));
+    if (status === 0) return new Uint8Array(bytes);
+    if (status === 3) return null;
+    if (status === 4) return bytes.toString('utf8');
+    return JSON.parse(bytes.toString('utf8'));
+  };
+  globalThis.__clysm_proc_sync = new Proxy({}, {
+    get: (target, op) => (...args) => callProc(op, args.map((a) => (a instanceof Uint8Array ? a : a))),
+  });
   // strings carry octets (latin1), one character per octet
   globalThis.__clysm_net = {
     connect: (host, port) => Number(call('connect', host, port).toString()),

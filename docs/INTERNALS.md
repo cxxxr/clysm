@@ -333,6 +333,31 @@ to the loader as `{ modules: { name: ... } }`.
 `tests/lib/run.sh` builds `tests/lib/demo.lisp` as a library and calls it
 from JavaScript.
 
+### Subprocesses
+
+`runtime/process.lisp` runs programs with Node.js's `node:child_process`:
+`sys::%run-program-sync` waits for the program (`spawnSync`), and
+`sys::%launch-program` starts one and gives Lisp streams for its standard
+input, output and error output (characters, decoded as UTF-8, or octets).
+The processes are kept by the manager of `host/process.mjs`, which holds
+what they write until Lisp reads it. In the Node.js host the Lisp program
+runs in a worker: a call of the manager, which is in the main thread,
+blocks the worker until the answer is in a shared buffer (as for TCP
+sockets). In a library (`host/lib.mjs`) the manager is in the same thread,
+and a read that has to wait waits with `js:await` — so it is done in a
+function of `js:async-function`, and several processes can be read at the
+same time. UIOP's `run-program`, `launch-program`, `wait-process`,
+`process-alive-p` and `terminate-process` are built on these
+(`third_party/asdf/port.py`).
+
+```lisp
+(uiop:run-program '("git" "rev-parse" "HEAD") :output :string)
+(let ((p (uiop:launch-program '("git" "cat-file" "--batch") :input :stream :output :stream)))
+  (write-line "HEAD:README.md" (uiop:process-info-input p))
+  (finish-output (uiop:process-info-input p))
+  (read-line (uiop:process-info-output p)))
+```
+
 ### A browser and desktop application
 
 `examples/todo/` is a TODO list written entirely in Lisp with the
@@ -994,7 +1019,9 @@ Limitations:
   slots at once and calls `update-instance-for-redefined-class`. Tracking
   costs a JavaScript call per instance, so it is off by default; without it,
   instances made before the redefinition keep their old slot vectors.
-* No threads and no first-class continuations (not required by the standard).
+* No threads and no first-class continuations (not required by the standard);
+  computations of `js:async-function` wait concurrently, each with its own
+  dynamic bindings.
 * Character names are SBCL's; names above Latin-1 are read on first use from
   `data/unicode-names.txt` (`tools/gen-unicode-names.sh`).
 

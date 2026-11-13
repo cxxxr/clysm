@@ -149,7 +149,6 @@ program. The slow cases and their causes are in
 ## Limitations
 
 * No threads. McCLIM runs in its single-process mode.
-* No `uiop:run-program`.
 * `short-float` and `long-float` are `single-float` and `double-float`.
 * Instances of a redefined class are updated only after
   `(sys::track-instances)`.

@@ -28,6 +28,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { makeImports } from './common.mjs';
+import { makeProcessManager } from './process.mjs';
 
 export class LispExit extends Error {
   constructor(code) { super(`Lisp exited with code ${code}`); this.name = 'LispExit'; this.code = code; }
@@ -91,6 +92,8 @@ function makePlatform(state, { args = [], stdout, stderr, stdin, fs: fsys = fs }
 
 function installGlobals(options) {
   const fsys = options.fs || fs;
+  // subprocesses with streams (runtime/process.lisp), in this thread
+  globalThis.__clysm_proc ??= makeProcessManager();
   globalThis.__clysm_fs ??= fsys;
   globalThis.__clysm_root ??= clysmRoot;
   if (!globalThis.__clysm_read_bytes) {

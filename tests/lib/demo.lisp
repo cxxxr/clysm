@@ -33,3 +33,17 @@
 (js:export "upcaseAll" #'upcase-all :type "(items: string[]) => string[]")
 (js:export "fetchTwice" #'fetch-twice :async t :type "(f: (k: string) => Promise<string>) => Promise<string>")
 (js:export "path" (lambda () (js:call (js:require "node:path") "join" "a" "b")))
+
+;; subprocesses: run and wait, and a long-lived process read while waiting
+(js:export "echo" (lambda (x) (nth-value 0 (sys::%run-program-sync (list "echo" x)))))
+(js:export "catLines" (lambda (lines)
+                        (multiple-value-bind (process in out)
+                            (sys::%launch-program '("cat") :input :stream :output :stream)
+                          (let ((result (loop for i below (js:get lines "length")
+                                              collect (progn (write-line (js:get lines i) in)
+                                                             (finish-output in)
+                                                             (read-line out)))))
+                            (close in)
+                            (sys::%process-wait process)
+                            (coerce result 'vector))))
+           :async t)

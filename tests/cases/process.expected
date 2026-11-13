@@ -1,0 +1,15 @@
+
+("out
+"
+ "err
+"
+ 3) 
+"from env" 
+"given to cat" 
+"/tmp
+" 
+:CANNOT-RUN 
+"got one" 
+("got two" "got 日本") 
+:EOF 
+0 

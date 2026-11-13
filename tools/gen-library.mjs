@@ -59,7 +59,7 @@ fs.writeFileSync(path.join(dir, `${name}.mjs`), mjs);
 fs.writeFileSync(path.join(dir, `${name}.d.ts`), dts);
 const hostDir = fileURLToPath(new URL('../host/', import.meta.url));
 fs.mkdirSync(path.join(dir, 'clysm'), { recursive: true });
-for (const f of ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'strings.mjs']) {
+for (const f of ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'process.mjs']) {
   if (fs.existsSync(path.join(hostDir, f))) fs.copyFileSync(path.join(hostDir, f), path.join(dir, 'clysm', f));
 }
 console.log(`; wrote ${path.join(dir, name)}.{wasm,mjs,d.ts}: ${entries.length} exports`);

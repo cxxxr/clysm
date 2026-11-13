@@ -24,6 +24,9 @@ The port adds `#+clysm` branches where UIOP dispatches on the implementation:
 * ASDF's module provider is added to `sys:*module-provider-functions*`, so
   `(require :some-system)` loads systems through ASDF.
 
-Not available: `run-program` / `launch-program` (no subprocesses), image
-dumping and fasl concatenation. Compiled files go to
+* `run-program` (node:child_process `spawnSync`) and `launch-program` with
+  streams, `wait-process`, `process-alive-p`, `terminate-process` — built on
+  `runtime/process.lisp`.
+
+Not available: image dumping and fasl concatenation. Compiled files go to
 `~/.cache/common-lisp/clysm-<version>-<os>-wasm/` as usual.
