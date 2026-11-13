@@ -87,17 +87,96 @@ REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
 
 ## Performance
 
-Time relative to SBCL 2.6 (Node.js 24, whole programs compiled ahead of time):
+Time relative to SBCL 2.6 on Node.js 24 (x86-64), measured by `tools/bench.sh
+FILE` (best of three runs per benchmark; whole programs compiled ahead of
+time unless noted):
 
-| File | Geometric mean | Range |
-|---|---|---|
-| `bench/suite.lisp` (24 programs, used for tuning) | 1.2 | 0.1 – 2.8 |
-| `bench/gabriel.lisp` (10 programs, used for tuning) | 1.1 | 0.8 – 1.7 |
-| `bench/holdout.lisp` (17 programs, not used for tuning) | 4.5 | 1.0 – 39 |
+| File | Programs | Geometric mean | Slowest | Fastest |
+|---|---|---|---|---|
+| `bench/suite.lisp` | 24, used for tuning | 0.94 | `b-bignum` 1.91 | `b-mandel` 0.08 |
+| `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
+| `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.79 | `l-babel` 2.92 | `l-alexandria-tests` 0.32 |
+| `bench/programs.lisp` | 63 more programs | 1.20 | `p-vector-push` 3.29 | `p-remove-duplicates` 0.03 |
 
-Specialized arrays, single floats, complex numbers and `call-next-method` are
-slow. Code loaded form by form (the REPL, `load`, ASDF) takes about twice as
-long as a whole program. `tools/bench.sh` runs the benchmarks.
+Code loaded form by form into the image (`clysm script`, the REPL, `load`)
+against the same file compiled as a whole program (`MODE=script tools/bench.sh
+bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
+
+The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
+fixed as whole features, and each fix was measured on programs written for
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
+5.2), `bench/control.lisp` (1.6; `v-go-closure` 66), `bench/io.lisp` (1.8;
+`i-file-roundtrip` 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
+
+What is not as fast as intended, and why:
+
+* **Code loaded into the image, single items.** The geometric mean is within
+  1.3, but `b-special` (2.7), `b-call` (1.9), `b-struct` (1.35) and `b-catch`
+  (1.3) are not. A call of a function with `&key` or `&rest` parameters
+  defined in another form goes through the function cell and a comparison of
+  the layout; `b-special` runs at 1.6 times the whole-program speed once the
+  form that defines it has returned but at 2.7 while that form is still
+  running (it also runs the benchmark), which is not understood yet.
+* **Libraries** are within 3 but close to it (`l-babel` 2.9, `l-ppcre-replace`
+  2.9, `l-split-sequence` 2.8): they are compiled to fasls file by file, where
+  calls between global functions are ordinary calls and small functions are
+  not copied into their callers.
+* **Exits from closures called by code the compiler does not see** (a
+  `return-from` or `go` out of a lambda passed to `maphash`, `map` or a user
+  function) are Wasm exceptions: about 90 ns plus 30 ns per frame, against
+  about 7 ns on SBCL (`v-go-closure`, `t-return-maphash`: 50–70 times).
+* **Generic functions**: dispatch on EQL specializers or on many classes at
+  one call site (4–5 times), `make-instance` with a class that is not a
+  constant (5), generic functions with `&optional`/`&key` (3).
+* **Integers between 2^29 and 2^63** are boxed when they are stored in data
+  structures or passed between functions (fixnums in SBCL); **bignums** have
+  28-bit digits (2–2.7 times); adjustable vectors grow by allocation of new
+  storage (`p-vector-push` 3.3); `equal` hash tables with string keys (2.4).
+* **Files**: octets cross to the host one call each (`i-file-roundtrip` 13).
+
+What makes the code fast:
+
+* **Type inference** (`src/types.lisp`) per function, flow-sensitive, with
+  integer ranges; loops are iterated to a fixed point and what the earlier
+  passes recorded outside a loop is undone. **Unboxed representations**
+  (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
+  floats, complex numbers of floats (two locals), references to specialized
+  vectors, two-dimensional arrays with their storage and dimensions in locals.
+* **Specialized arrays**: every upgraded element type (bit, the integer types
+  of 7 to 64 bits, single and double floats, characters) has its own Wasm
+  array type; `aref` on an array whose element type is known (from
+  `make-array` or a declaration) is inline with a bounds check, and the
+  generic function is only called to signal the error.
+* **Versions of a function**: a function with a loop or a recursive call
+  whose parameters are used as numbers tests its arguments on entry and
+  continues in a copy compiled for fixnums (or doubles). Small functions are
+  copied into their callers — in the image with a test that the function has
+  not been redefined.
+* **Calls**: direct calls between the functions of a program; keyword
+  arguments passed in fixed slots (in the image too, checked against the
+  layout of the function's current definition); structure accessors inline.
+* **CLOS**: generic functions of one to four required arguments dispatch and
+  combine methods without argument lists; `call-next-method` is a direct
+  call; call sites cache the functions for the classes of their arguments
+  and read slots of readers inline; `slot-value` with a constant name and
+  `make-instance` with a constant class use caches at the call site.
+* **Non-local exits** that stay within the functions the compiler sees
+  (`handler-case`, `restart-case`, `catch`/`throw`, `return-from` out of
+  local functions, `error` under a handler one call away) are returns with a
+  pending exit, not Wasm exceptions; special bindings are inline.
+* **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
+  in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
+  irrational functions as primitives; bignum kernels in Wasm.
+* **Library**: sequence functions with one implementation per family and
+  direct loops over lists, simple vectors and strings; hash tables for
+  `remove-duplicates` and the set functions; `typep` with a constant type,
+  `format` with a constant control string (all directives), `coerce` and
+  `parse-integer` compiled at the call site; string streams as buffers.
+
+`tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
+image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
+NAME...` prints the Wasm generated for functions.
 
 ## Limitations
 
