@@ -20,7 +20,9 @@
   req opt rest keyp keys allow-other-keys
   body free-vars
   (toplevel nil)          ; global defun with no free vars
-  (static-p nil))         ; closure object is a module constant
+  (static-p nil)          ; closure object is a module constant
+  (flagging nil)          ; a local function whose non-local exits are returns (codegen.lisp)
+  (flag-analyzed nil))    ; (of an outermost lambda) FLAGGING is set in its tree
 
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))

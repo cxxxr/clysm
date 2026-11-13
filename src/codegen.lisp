@@ -177,6 +177,12 @@
 function, innermost first.  A local exit through unwind-protect regions jumps
 to the innermost one's cleanup, which then continues the exit.")
 (defstruct uwpf code res landing (exits nil) (nexits 0) dyn-depth uwp-depth parent mv-used)
+(defvar *fexit* nil
+  "In a flagging function: (blk tag-local value-local); BLK is around the whole body.")
+(defvar *catchers* nil
+  "The constructs around the code being compiled in the current function that
+catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
+(:catch tag-local done-label saved-bsp-local frames tag-symbol-or-:unknown).")
 
 (defun new-local (&optional (type :eqref))
   (let ((idx (+ (fstate-nparams *fs*) (fstate-nlocals *fs*))))
@@ -727,11 +733,16 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun cg-local-call (fun args mv tail)
   (let* ((lam (fun-lam fun))
-         (closure-code (var-get-code (fun-lvar fun))))
-    (if (lam-accepts-p lam (length args))
-        (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
-        (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
-               (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))))
+         (closure-code (var-get-code (fun-lvar fun)))
+         (flagging (lam-flagging lam))
+         ;; a flagging caller in tail position has no catchers around the
+         ;; call: its own caller takes up the exit
+         (tail (and tail (or (not flagging) *fexit*))))
+    `(,@(if (lam-accepts-p lam (length args))
+            (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
+            (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
+                   (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))
+      ,@(when (and flagging (not tail)) (pending-exit-check-code)))))
 
 (defun cg-defun (node mv)
   (destructuring-bind (sym fnode) (cdr node)
@@ -792,7 +803,8 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
             (blk-uwp-frames blk) *uwp-frames*
             (blk-saved-bsp blk) (new-local :i32))
       (set-loc (blk-tag-var blk) (cons :local (new-local)))
-      (let ((body-code (let ((*tail-ok* (and *tail-ok* (not (blk-nonlocal blk)))))
+      (let ((body-code (let ((*tail-ok* (and *tail-ok* (not (blk-nonlocal blk))))
+                             (*catchers* (if (blk-nonlocal blk) (cons (list :block blk) *catchers*) *catchers*)))
                          (cg body mv tail))))
         (if (not (blk-nonlocal blk))
             `(,@(save-bsp-code (blk-saved-bsp blk))
@@ -846,14 +858,175 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
 (defun cg-return-from (node)
   (destructuring-bind (blk value) (cdr node)
     (let ((local-p (eq (blk-lam blk) (fstate-lam *fs*))))
-      (if local-p
-          (local-exit-to-block blk (cg value (blk-mv blk)))
+      (cond (local-p
+             (local-exit-to-block blk (cg value (blk-mv blk))))
+            (*fexit*
+             (flagged-exit-code (var-get-code (blk-tag-var blk)) (cg value t)))
+            (t
+             (let ((tmp (new-local)))
+               `(,@(cg value t) (:local.set ,tmp)
+                 ,@(var-get-code (blk-tag-var blk))
+                 (:local.get ,tmp)
+                 (:throw :lisp-throw))))))))
+
+;;; ------------------------------------------------------------
+;;; Non-local exits of local functions as returns
+;;;
+;;; A Wasm exception costs about 100 ns in V8 plus 30 ns per frame it
+;;; unwinds, so a non-local exit is not thrown where the frames it leaves
+;;; are known.  A "flagging" function is a local function (FLET/LABELS)
+;;; that is only called (never used as a value) and that contains a
+;;; RETURN-FROM / GO to an enclosing function or a THROW, or calls a
+;;; flagging function.  Its exits store the tag and the value in the two
+;;; variables below and return; the code after every call of a flagging
+;;; function looks at the tag: the catchers around the call in the calling
+;;; function (non-local blocks and tagbodies, CATCH forms) take the exit if
+;;; the tag is theirs, a flagging caller returns in turn, and any other
+;;; caller throws the exit as before.
+;;; ------------------------------------------------------------
+
+(defun pending-tag-code () `((:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:struct.get :symbol ,+sym-value+)))
+
+(defun analyze-flagging (root)
+  "Set LAM-FLAGGING in the tree of lambdas of ROOT."
+  (let ((funs nil)                                ; the lams of local functions
+        (fun-lvars (make-hash-table :test 'eq))   ; lvar of a local function -> t
+        (value-used (make-hash-table :test 'eq))  ; lvar of a local function used as a value
+        (lvar-of (make-hash-table :test 'eq))     ; lam -> lvar
+        (direct (make-hash-table :test 'eq))      ; lam with an exit of its own
+        (calls (make-hash-table :test 'eq)))      ; lam -> lams it calls as local functions
+    (labels ((walk-lam (lam)
+               (loop for (nil init) in (lam-opt lam) do (walk init lam))
+               (loop for (nil nil init) in (lam-keys lam) do (walk init lam))
+               (walk (lam-body lam) lam))
+             (walk (n lam)
+               (case (car n)
+                 (:lref (when (gethash (second n) fun-lvars) (setf (gethash (second n) value-used) t)))
+                 (:lambda (walk-lam (second n)))
+                 ((:flet :labels)
+                  (dolist (f (second n))
+                    (setf (gethash (fun-lvar f) fun-lvars) t
+                          (gethash (fun-lam f) lvar-of) (fun-lvar f))
+                    (push (fun-lam f) funs))
+                  (dolist (f (second n)) (walk-lam (fun-lam f)))
+                  (walk (third n) lam))
+                 (:go (unless (eq (tb-lam (second n)) lam) (setf (gethash lam direct) t)))
+                 (t
+                  (case (car n)
+                    (:return-from (unless (eq (blk-lam (second n)) lam) (setf (gethash lam direct) t)))
+                    (:throw (setf (gethash lam direct) t))
+                    (:lcall (push (fun-lam (second n)) (gethash lam calls))))
+                  (map-subnodes (lambda (x) (walk x lam)) n)))))
+      (walk-lam root))
+    (setf funs (nreverse funs))
+    (dolist (lam funs) (setf (lam-flagging lam) nil))
+    (loop
+      (let ((changed nil))
+        (dolist (lam funs)
+          (when (and (not (lam-flagging lam))
+                     (not (gethash (gethash lam lvar-of) value-used))
+                     (or (gethash lam direct) (some #'lam-flagging (gethash lam calls))))
+            (setf (lam-flagging lam) t changed t)))
+        (unless changed (return))))))
+
+(defun ensure-flag-analysis (lam)
+  (let ((root lam))
+    (loop while (lam-parent root) do (setf root (lam-parent root)))
+    (unless (lam-flag-analyzed root)
+      (setf (lam-flag-analyzed root) t)
+      (analyze-flagging root))))
+
+(defun make-fexit (lam)
+  "The exit of the function being compiled if it is flagging, else NIL.  Call
+when *FS* is set up, before any code of the function is generated."
+  (when (lam-flagging lam)
+    (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
+                    :uwp-frames nil :saved-bsp (new-local :i32))
+          (new-local) (new-local))))
+
+(defun wrap-fexit (body)
+  "BODY: the whole code of the function being compiled.  In a flagging
+function, exits branch out of it with the tag and the value in locals,
+which are made the pending exit here."
+  (if (null *fexit*)
+      body
+      (destructuring-bind (blk tag val) *fexit*
+        (let ((res (new-local)))
+          `(,@(when (tree-member `(:local.get ,(blk-saved-bsp blk)) body) (save-bsp-code (blk-saved-bsp blk)))
+            (:block ,(blk-label blk) :eqref ,@body)
+            (:local.set ,res)
+            (:local.get ,tag) :ref.is_null :i32.eqz
+            (:if nil nil
+                 ((:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:local.get ,tag)
+                  (:struct.set :symbol ,+sym-value+)
+                  (:global.get ,(sym-global 'clysm-sys::%exit-value)) (:local.get ,val)
+                  (:struct.set :symbol ,+sym-value+)))
+            (:local.get ,res))))))
+
+(defun tree-member (x tree)
+  (cond ((equal x tree) t)
+        ((consp tree) (or (tree-member x (car tree)) (tree-member x (cdr tree))))))
+
+(defun flagged-exit-code (tag-code value-code)
+  "Leave the flagging function being compiled with a pending exit."
+  (destructuring-bind (blk tag val) *fexit*
+    `(,@value-code (:local.set ,val)
+      ,@tag-code (:local.set ,tag)
+      ,@(local-exit-to-block blk (nil-code)))))
+
+(defun local-exit-to-catch (entry value-code)
+  "Code for a throw to the CATCH form ENTRY (of *CATCHERS*) of the current
+function, VALUE-CODE pushing the value."
+  (destructuring-bind (tag done saved frames &rest r) (cdr entry)
+    (declare (ignore tag r))
+    (let ((frame (innermost-uwpf-between *uwp-frames* frames)))
+      (if (null frame)
+          `(,@value-code ,@(restore-bsp-code saved) (:br ,done))
           (progn
-            (let ((tmp (new-local)))
-              `(,@(cg value t) (:local.set ,tmp)
-                ,@(var-get-code (blk-tag-var blk))
-                (:local.get ,tmp)
-                (:throw :lisp-throw))))))))
+            (setf (uwpf-mv-used frame) t)
+            `(,@value-code (:local.set ,(uwpf-res frame))
+              ,@(register-uwp-exit
+                 frame (lambda () (local-exit-to-catch entry `((:local.get ,(uwpf-res frame))))))))))))
+
+(defun local-go-pc (tb)
+  "Code for a GO to the segment whose number is in TB's pc local."
+  (let ((frame (innermost-uwpf-between *uwp-frames* (tb-uwp-frames tb))))
+    (if (null frame)
+        `(,@(when (> *dyn-depth* (tb-dyn-depth tb)) (restore-bsp-code (tb-saved-bsp tb)))
+          (:br ,(tb-dispatch tb)))
+        (register-uwp-exit frame (lambda () (local-go-pc tb))))))
+
+(defun catcher-tag-code (c)
+  (ecase (car c)
+    (:block (var-get-code (blk-tag-var (second c))))
+    (:tagbody (var-get-code (tb-tag-var (second c))))
+    (:catch `((:local.get ,(second c))))))
+
+(defun catcher-exit-code (c value-local)
+  "Code for the exit, whose value is in VALUE-LOCAL, to the catcher C."
+  (ecase (car c)
+    (:block (local-exit-to-block (second c) `((:local.get ,value-local))))
+    (:tagbody `((:local.get ,value-local) (:ref.cast :i31) :i31.get_s (:local.set ,(tb-pc (second c)))
+                ,@(local-go-pc (second c))))
+    (:catch (local-exit-to-catch c `((:local.get ,value-local))))))
+
+(defun pending-exit-check-code ()
+  "After a call of a flagging function (its value is on the stack): take up
+the exit it may have left pending."
+  (let ((res (new-local)) (tag (new-local)) (val (new-local)))
+    `((:local.set ,res)
+      ,@(pending-tag-code) (:local.tee ,tag) :ref.is_null :i32.eqz
+      (:if nil nil
+           ((:global.get ,(sym-global 'clysm-sys::%exit-value)) (:struct.get :symbol ,+sym-value+) (:local.set ,val)
+            (:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)
+            (:global.get ,(sym-global 'clysm-sys::%exit-value)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)
+            ,@(loop for c in *catchers*
+                    append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
+                             (:if nil nil ,(catcher-exit-code c val))))
+            ,@(if *fexit*
+                  (flagged-exit-code `((:local.get ,tag)) `((:local.get ,val)))
+                  `((:local.get ,tag) (:local.get ,val) (:throw :lisp-throw)))))
+      (:local.get ,res))))
 
 ;;; ------------------------------------------------------------
 ;;; TAGBODY / GO
@@ -893,7 +1066,8 @@ loop with a BR_TABLE."
             (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth* (tb-uwp-frames tb) *uwp-frames*
             (tb-saved-bsp tb) (new-local :i32))
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
-      (let* ((seg-codes (let ((*tail-ok* nil))
+      (let* ((seg-codes (let ((*tail-ok* nil)
+                              (*catchers* (if (tb-nonlocal tb) (cons (list :tagbody tb) *catchers*) *catchers*)))
                           (loop for (k . forms) in segments for ll in loop-labels
                                 collect (progn
                                           (setf (tb-cur tb) k)
@@ -947,18 +1121,15 @@ loop with a BR_TABLE."
     (let ((local-p (eq (tb-lam tb) (fstate-lam *fs*))))
       (if local-p
           (local-go tb index)
-          (progn
-            `(,@(var-get-code (tb-tag-var tb))
-              (:i32.const ,index) :ref.i31
-              (:throw :lisp-throw)))))))
+          (if *fexit*
+              (flagged-exit-code (var-get-code (tb-tag-var tb)) `((:i32.const ,index) :ref.i31))
+              `(,@(var-get-code (tb-tag-var tb))
+                (:i32.const ,index) :ref.i31
+                (:throw :lisp-throw)))))))
 
 ;;; ------------------------------------------------------------
 ;;; CATCH / THROW / UNWIND-PROTECT
 ;;; ------------------------------------------------------------
-
-(defvar *local-catches* nil
-  "The CATCH forms around the code being compiled in the current function,
-innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
 
 (defun cg-catch (node mv)
   "(:catch tag body [unchecked]): UNCHECKED (SYS:%CATCH) does not record the
@@ -981,11 +1152,11 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
               ,@(let* ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
                        (*dyn-depth* (if unchecked *dyn-depth* (1+ *dyn-depth*)))
                        (*uwp-frames* (cons :catch *uwp-frames*))
-                       (*local-catches*
-                         (cons (list (if (and (not unchecked) (eq (car tag-node) :const) (symbolp (second tag-node)))
-                                         (second tag-node) :unknown)
-                                     done saved *uwp-frames*)
-                               *local-catches*)))
+                       (*catchers*
+                         (cons (list :catch tag done saved *uwp-frames*
+                                     (if (and (not unchecked) (eq (car tag-node) :const) (symbolp (second tag-node)))
+                                         (second tag-node) :unknown))
+                               *catchers*)))
                   (or (and (not unchecked) (catch-clone-call tag-node body)) (cg body mv))))
             ,@(unless unchecked (restore-bsp-code saved))
             (:br ,done))
@@ -1002,19 +1173,28 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                (eq (second tag-node) *catching-tag*))
       (return-from cg-throw `(,@(cg value t) :return)))
     ;; a throw to a CATCH of the same constant tag around it in this function
-    ;; (with no UNWIND-PROTECT in between) is a branch
+    ;; is a branch (through the cleanups of the UNWIND-PROTECTs in between)
     (when (and (eq (car tag-node) :const) (symbolp (second tag-node)))
-      (let ((entry (dolist (e *local-catches*)
-                     (cond ((eq (first e) (second tag-node)) (return e))
-                           ((eq (first e) :unknown) (return nil))))))
-        (when (and entry (null (innermost-uwpf-between *uwp-frames* (fourth entry))))
-          (return-from cg-throw
-            `(,@(cg value t) ,@(restore-bsp-code (third entry)) (:br ,(second entry)))))))
+      (let ((entry (dolist (c *catchers*)
+                     (when (eq (car c) :catch)
+                       (cond ((eq (sixth c) (second tag-node)) (return c))
+                             ((eq (sixth c) :unknown) (return nil)))))))
+        (when entry
+          (return-from cg-throw (local-exit-to-catch entry (cg value t))))))
     (let ((tag (new-local)) (v (new-local)))
       `(,@(cg tag-node) (:local.tee ,tag) (:call :check-catch-tag)
         ,@(cg value t) (:local.set ,v)
-        (:local.get ,tag) (:local.get ,v)
-        (:throw :lisp-throw)))))
+        ,@(if *fexit*
+              ;; in a flagging function: the CATCH forms around the throw in
+              ;; this function first, then a return with the exit pending
+              `(,@(loop for c in *catchers*
+                        when (eq (car c) :catch)
+                          append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
+                                   (:if nil nil ,(catcher-exit-code c v))))
+                ,@(flagged-exit-code `((:local.get ,tag)) `((:local.get ,v)))
+                :unreachable)
+              `((:local.get ,tag) (:local.get ,v)
+                (:throw :lisp-throw)))))))
 
 (defun cg-unwind-protect (node mv)
   (destructuring-bind (form cleanup) (cdr node)
@@ -1151,7 +1331,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 
 (defun compile-pending-lams ()
   (loop while *pending-lams*
-        do (let ((lam (pop *pending-lams*)) (*local-catches* nil))
+        do (let ((lam (pop *pending-lams*)) (*catchers* nil))
              (cond ((and (consp lam) (eq (car lam) :spec))
                     (compile-spec-clone (second lam) (third lam)))
                    ((consp lam)
@@ -1177,11 +1357,12 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
     (catch-clone-name lam tag)))
 
 (defun compile-catch-clone (lam tag)
+  (ensure-flag-analysis lam)
   (inline-calls lam)
   (infer-lam lam)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* nil) (*catchers* nil)
          (prologue (setup-free-vars lam))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
@@ -1242,6 +1423,7 @@ list of (symbol . local), which are bound around the body."
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
 (defun compile-lam (lam &aux (*catching-tag* nil))
+  (ensure-flag-analysis lam)
   (inline-calls lam)
   (infer-lam lam)
   (cond ((lam-simple-p lam) (compile-simple-lam lam))
@@ -1264,14 +1446,14 @@ list of (symbol . local), which are bound around the body."
 (defun compile-simple-main (lam name display)
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam)) (*catchers* nil)
          (prologue (setup-free-vars lam))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
           do (multiple-value-bind (code sp) (param-setup-code lv i)
                (setf prologue (append prologue code))
                (when sp (setf any-special (append any-special (list sp))))))
-    (let ((body (finish-body lam prologue any-special)))
+    (let ((body (wrap-fexit (finish-body lam prologue any-special))))
       (add-func *m* name (main-type n)
                 :locals (reverse (fstate-locals *fs*)) :body body :display display))))
 
@@ -1333,6 +1515,7 @@ list of (symbol . local), which are bound around the body."
     r))
 
 (defun compile-spec-clone (lam sig)
+  (ensure-flag-analysis lam)
   (inline-calls lam)
   (let* ((lvars (lam-all-lvars lam))
          (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars)))
@@ -1353,14 +1536,14 @@ list of (symbol . local), which are bound around the body."
 its last parameter; the entries for few arguments make the list."
   (let ((n (length (lam-req lam))) (id (lam-id lam)))
     (let* ((*fs* (make-fstate :lam lam :nparams (+ n 2)))
-           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam)) (*catchers* nil)
            (prologue (setup-free-vars lam))
            (any-special nil))
       (loop for lv in (append (lam-req lam) (list (lam-rest lam))) for i from 1
             do (multiple-value-bind (code sp) (param-setup-code lv i)
                  (setf prologue (append prologue code))
                  (when sp (setf any-special (append any-special (list sp))))))
-      (let ((body (finish-body lam prologue any-special)))
+      (let ((body (wrap-fexit (finish-body lam prologue any-special))))
         (add-func *m* (list :rmain id) (main-type (1+ n))
                   :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam))))
     (add-func *m* (list :main id) :fN
@@ -1381,7 +1564,7 @@ its last parameter; the entries for few arguments make the list."
 
 (defun compile-complex-lam (lam)
   (let* ((*fs* (make-fstate :lam lam :nparams 2))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam)) (*catchers* nil)
          (prologue (setup-free-vars lam))
          (nargs (new-local :i32))
          (nreq (length (lam-req lam)))
@@ -1439,7 +1622,7 @@ its last parameter; the entries for few arguments make the list."
                       (:local.get ,res)))
                   `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
         (add-func *m* (list :main (lam-id lam)) :fN
-                  :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam))))))
+                  :body (wrap-fexit body) :locals (reverse (fstate-locals *fs*)) :display (lam-display-name lam))))))
 
 (defun lam-display-name (lam)
   (let ((*package* (find-package :keyword)))
@@ -1477,7 +1660,7 @@ its last parameter; the entries for few arguments make the list."
                 :display (format nil "~A/generic" (lam-display-name lam))))
     ;; the body
     (let* ((*fs* (make-fstate :lam lam :nparams (1+ size)))
-           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
+           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam)) (*catchers* nil)
            (prologue (setup-free-vars lam))
            (specials nil)
            (saved (new-local :i32))
@@ -1510,7 +1693,7 @@ its last parameter; the entries for few arguments make the list."
                         (:local.get ,res)))
                     `(,@code ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t))))))
           (add-func *m* (list :kmain (lam-id lam)) (main-type size)
-                    :locals (reverse (fstate-locals *fs*)) :body body :display (lam-display-name lam)))))
+                    :body (wrap-fexit body) :locals (reverse (fstate-locals *fs*)) :display (lam-display-name lam)))))
     ;; entries for a fixed number of arguments: the missing optionals are null
     (when (lam-opt-only-p lam)
       (loop for k from nreq to (min +max-fixed-args+ npos)
