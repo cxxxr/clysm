@@ -1271,7 +1271,7 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
         (t (compile-complex-lam lam))))
 
 (defun compile-simple-lam (lam)
-  (compile-simple-main lam (list :main (lam-id lam)) (lam-display-name lam))
+  (compile-simple-main lam (list :main (lam-id lam)) (lam-display-name lam) (entry-version-code lam))
   (let ((n (length (lam-req lam))))
     ;; entryN adapter
     (add-func *m* (list :entn (lam-id lam)) :fN
@@ -1282,11 +1282,12 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
                               append `((:local.get 1) (:i32.const ,i) (:array.get :vector)))
                       (:return_call (:main ,(lam-id lam)))))))
 
-(defun compile-simple-main (lam name display)
+(defun compile-simple-main (lam name display &optional entry-code)
+  "ENTRY-CODE: instructions run first (they may leave by a tail call)."
   (let* ((n (length (lam-req lam)))
          (*fs* (make-fstate :lam lam :nparams (1+ n)))
          (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil)
-         (prologue (setup-free-vars lam))
+         (prologue (append entry-code (setup-free-vars lam)))
          (any-special nil))
     (loop for lv in (lam-req lam) for i from 1
           do (multiple-value-bind (code sp) (param-setup-code lv i)
@@ -1330,6 +1331,84 @@ innermost first: (tag-symbol-or-:UNKNOWN done-label saved-bsp-local frames).")
     (:fixnum *ty-fixnum*)
     (:double (mkty +k-double+))
     ((nil) *ty-top*)))
+
+;;; A function with a loop or a recursive call whose parameters are used as
+;;; numbers is compiled twice: the general version tests the arguments on entry
+;;; and, when they are fixnums (or doubles, where the parameter is used with
+;;; double constants), continues in a copy compiled for those types.  This
+;;; gives the specialized code to callers that do not know the types (calls
+;;; through FUNCALL, from code compiled separately at the REPL or by LOAD).
+(defparameter *numeric-ops*
+  '(+ - * / 1+ 1- < > <= >= = /= zerop plusp minusp evenp oddp logand logior logxor ash mod rem floor
+    truncate ceiling round min max abs sqrt float
+    clysm-sys::%fx+ clysm-sys::%fx- clysm-sys::%fx* clysm-sys::%fx< clysm-sys::%fx> clysm-sys::%fx<=
+    clysm-sys::%fx>= clysm-sys::%fx=))
+(defparameter *integer-only-ops* '(evenp oddp logand logior logxor ash mod rem))
+(defparameter *index-ops*
+  ;; (operator . positions of its subscript arguments)
+  '((clysm-sys::%aref1 1) (clysm-sys::%aset1 1) (svref 1) (clysm-sys::%svset 1) (char 1) (schar 1)
+    (clysm-sys::%charset 1) (clysm-sys::%scharset 1) (clysm-sys::%aref2 1 2) (clysm-sys::%aset2 1 2)
+    (clysm-sys::%svref 1) (clysm-sys::%set-svref 1) (row-major-aref 1) (nth 0) (nthcdr 0) (elt 1)))
+
+(defun entry-version-signature (lam)
+  "The classes (:FIXNUM, :DOUBLE or NIL per required parameter) of the
+specialized version of LAM that its general version tries on entry, or NIL."
+  (when (and (spec-cloneable-p lam) (lam-name lam))
+    (let* ((params (lam-req lam))
+           (alias (make-hash-table :test 'eq))       ; variable -> the parameter it is a copy of
+           (ints (make-hash-table :test 'eq)) (doubles (make-hash-table :test 'eq))
+           (nums (make-hash-table :test 'eq))
+           (self (lam-name lam)) (loop-p nil) (self-call nil))
+      (dolist (p params) (setf (gethash p alias) p))
+      (labels ((param-of (node) (and (eq (car node) :lref) (gethash (second node) alias)))
+               (walk (node)
+                 (case (car node)
+                   (:let (dolist (b (second node))
+                           (let ((p (param-of (cdr b))))
+                             (when (and p (not (lvar-mutated (car b))) (not (lvar-special (car b))))
+                               (setf (gethash (car b) alias) p)))))
+                   (:tagbody (setf loop-p t))
+                   ((:prim :call)
+                    (let ((name (node-op-name node)) (args (cddr node)))
+                      (when (and (eq (car node) :call) (eq name self)) (setf self-call t))
+                      (when (member name *numeric-ops*)
+                        (let ((double-const (some (lambda (a) (and (eq (car a) :const) (typep (second a) 'double-float)))
+                                                  args)))
+                          (dolist (a args)
+                            (let ((p (param-of a)))
+                              (when p
+                                (setf (gethash p nums) t)
+                                (when (member name *integer-only-ops*) (setf (gethash p ints) t))
+                                (when double-const (setf (gethash p doubles) t)))))))
+                      (let ((positions (cdr (assoc name *index-ops*))))
+                        (dolist (i positions)
+                          (let ((p (and (nth i args) (param-of (nth i args)))))
+                            (when p (setf (gethash p nums) t (gethash p ints) t))))))))
+                 (map-subnodes #'walk node)))
+        (walk (lam-body lam)))
+      (when (or loop-p self-call)
+        (let ((sig (mapcar (lambda (p)
+                             (cond ((lvar-decl p) nil)        ; declared: already typed
+                                   ((not (gethash p nums)) nil)
+                                   ((and (gethash p doubles) (not (gethash p ints))) :double)
+                                   (t :fixnum)))
+                           params)))
+          (when (some #'identity sig) sig))))))
+
+(defun entry-version-code (lam)
+  "Instructions for the entry of LAM's general version: when the arguments
+are of the classes of its specialized version, a tail call of that version."
+  (let ((sig (entry-version-signature lam)))
+    (when sig
+      (let ((skip (gensym "GENERAL")))
+        `((:block ,skip nil
+            ,@(loop for class in sig for i from 1
+                    append (ecase class
+                             (:fixnum `((:local.get ,i) (:call :fixnump) :i32.eqz (:br_if ,skip)))
+                             (:double `((:local.get ,i) (:ref.test :double) :i32.eqz (:br_if ,skip)))
+                             ((nil) nil)))
+            ,@(loop for i from 0 to (length sig) collect `(:local.get ,i))
+            (:return_call ,(spec-clone-name lam sig))))))))
 
 (defun spec-signature (lam args)
   (when (and (spec-cloneable-p lam) (= (length args) (length (lam-req lam))))

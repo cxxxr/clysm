@@ -57,6 +57,7 @@ image: they are all NOTINLINE, so their callers go through the function cell.")
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
 (defvar *live-symbol-macro-hook* nil "symbol -> (values expansion foundp)")
+(defvar *live-compiler-macro-hook* nil "symbol -> the compiler macro function defined in the image, or NIL")
 (defun global-symbol-macro (sym)
   "The expansion of the global symbol macro SYM, and whether there is one."
   (multiple-value-bind (exp found) (gethash sym *symbol-macros*)
@@ -184,6 +185,15 @@ runtime definition is kept."
             (let ((lv (find v lvars :key #'lvar-name :from-end t)))
               (when (and lv (symbolp v)) (setf (lvar-decl lv) spec)))))))))
 
+(defvar *local-notinline* nil "function names declared NOTINLINE in the forms being converted")
+(defun declared-notinline (decls)
+  (loop for d in decls
+        when (and (consp d) (eq (car d) 'notinline)) append (cdr d)))
+(defmacro with-notinline-decls ((decls) &body body)
+  `(let ((*local-notinline* (let ((n (declared-notinline ,decls)))
+                              (if n (append n *local-notinline*) *local-notinline*))))
+     ,@body))
+
 (defun declared-specials (decls)
   (loop for d in decls
         when (and (consp d) (eq (car d) 'special)) append (cdr d)))
@@ -262,8 +272,9 @@ runtime definition is kept."
         (return-from convert-compound
           (convert (let ((*package* *read-package*)) (funcall m form env)) env))))
     ;; compiler macros
-    (let ((cm (gethash op *compiler-macros*)))
-      (when (and cm (not (gethash op *notinline*)))
+    (let ((cm (or (gethash op *compiler-macros*)
+                  (and *live-compiler-macro-hook* (symbolp op) (funcall *live-compiler-macro-hook* op)))))
+      (when (and cm (not (gethash op *notinline*)) (not (member op *local-notinline*)))
         (let ((new (let ((*package* *read-package*)) (funcall cm form env))))
           (unless (eq new form)
             (return-from convert-compound (convert new env))))))
@@ -331,6 +342,7 @@ runtime definition is kept."
            (dspecials (declared-specials decls))
            (lam (make-lam :id (incf *lam-counter*) :name name :parent *current-lam*))
            (*current-lam* lam)
+           (*local-notinline* (append (declared-notinline decls) *local-notinline*))
            (env (if dspecials
                     (apply #'env-extend env
                            (loop for s in dspecials
@@ -441,8 +453,9 @@ runtime definition is kept."
 
 (defun convert-locally (decls forms env)
   (let ((sp (declared-specials decls)))
-    (convert-body forms (if sp (apply #'env-extend env (mapcar (lambda (s) (list :special s)) sp))
-                            env))))
+    (with-notinline-decls (decls)
+      (convert-body forms (if sp (apply #'env-extend env (mapcar (lambda (s) (list :special s)) sp))
+                              env)))))
 
 (defun convert-let (bindings body env)
   (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
@@ -461,7 +474,8 @@ runtime definition is kept."
       (let ((free-specials (loop for s in dspecials
                                  unless (find s bindings :key (lambda (b) (if (consp b) (car b) b)))
                                    collect (list :special s))))
-        (let ((new-env (apply #'env-extend env (append (reverse entries) free-specials))))
+        (let ((new-env (apply #'env-extend env (append (reverse entries) free-specials)))
+              (*local-notinline* (append (declared-notinline decls) *local-notinline*)))
           (if (null bindings)
               (convert-body forms new-env)
               `(:let ,(mapcar #'cons lvars inits) ,(convert-body forms new-env))))))))

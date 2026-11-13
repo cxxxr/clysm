@@ -169,6 +169,8 @@
                          ,(make-form keyvars)))))
               constructors)
            ;; predicate
+           ,@(when (and predicate (null seq-kind))
+               `((%note-struct-inline :predicate ',predicate ',name nil nil)))
            ,@(when predicate
                `((defun ,predicate (,x)
                    ,(cond ((null seq-kind) `(%structure-typep ,x (load-time-value (find-class ',name))))
@@ -186,7 +188,9 @@
                    (when (null seq-kind)
                      (push `(eval-when (:compile-toplevel)
                               (%host-inline-struct-accessor ,acc ,name ,idx ,(not (cadddr s))))
-                           forms))
+                           forms)
+                     ;; (for code compiled later in the running image)
+                     (push `(%note-struct-inline :accessor ',acc ',name ,idx ,(not (cadddr s))) forms))
                    (push (cond ((null seq-kind)
                                 `(defun ,acc (,x) (%struct-ref ,x (load-time-value (find-class ',name)) ,idx)))
                                ((eq seq-kind 'list) `(defun ,acc (,x) (nth ,idx ,x)))
@@ -201,6 +205,14 @@
                            forms)))))
            ,@(when doc `((%put ',name '%structure-documentation ,doc)))
            ',name)))))
+
+;;; In an image with the compiler, the accessors and the predicate of a
+;;; structure are compiled inline at call sites compiled after the DEFSTRUCT
+;;; (the hook registers them with the compiler).
+(defvar *struct-inline-hook* nil)
+(defun %note-struct-inline (kind function-name name index writable)
+  (when *struct-inline-hook* (funcall *struct-inline-hook* kind function-name name index writable))
+  function-name)
 
 (defun %make-struct-vector (element-type cells)
   (let ((v (make-array (length cells) :element-type element-type)) (i 0))

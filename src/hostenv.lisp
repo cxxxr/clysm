@@ -70,6 +70,15 @@
                   form))))
     acc))
 
+(defun register-struct-predicate-inline (predicate name)
+  (setf (gethash predicate *compiler-macros*)
+        (lambda (form env)
+          (declare (ignore env))
+          (if (and (consp (cdr form)) (null (cddr form)))
+              `(clysm-sys::%structure-typep ,(second form) (load-time-value (find-class ',name)))
+              form)))
+  predicate)
+
 #-clysm
 (defmacro clysm-sys::%host-inline-struct-accessor (acc name idx writable)
   `(register-struct-accessor-inline ',acc ',name ',idx ',writable))

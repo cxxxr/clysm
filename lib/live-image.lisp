@@ -16,6 +16,15 @@
         (lambda (s)
           (let ((e (get s 'sys::%symbol-macro)))
             (if e (values (car e) t) (values nil nil)))))
+  ;; compiler macros defined by the runtime (AREF, FORMAT, MAKE-INSTANCE ...) and by loaded code
+  (setf *live-compiler-macro-hook* (lambda (s) (compiler-macro-function s)))
+  ;; structure accessors and predicates are inline in code compiled after the DEFSTRUCT
+  (setq sys::*struct-inline-hook*
+        (lambda (kind function-name name index writable)
+          (let ((*live-mode* t) (*live-packages* t))
+            (if (eq kind :accessor)
+                (register-struct-accessor-inline function-name name index writable)
+                (register-struct-predicate-inline function-name name)))))
   ;; macro expanders called by the compiler receive its environment objects
   (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
   (setf *macros-ready* t))
