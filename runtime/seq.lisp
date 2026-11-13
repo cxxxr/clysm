@@ -1263,6 +1263,12 @@ F on the elements I; with more sequences runs GENERAL."
 (defun %find-position (item mode fn neg seq key from-end start end posp)
   "The first (last when FROM-END) selected element of SEQ in [START, END), or
 its index when POSP."
+  ;; the plainest call first: a predicate on the elements of a whole list
+  (when (and (eql mode 2) (listp seq) (null key) (not neg) (not from-end) (eql start 0) (null end))
+    (return-from %find-position
+      (do ((l seq (cdr l)) (i 0 (+ i 1))) ((%endp l) nil)
+        (declare (fixnum i))
+        (when (funcall fn (car l)) (return (if posp i (car l)))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)))
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (return (if posp i x))))))
@@ -1315,6 +1321,13 @@ general way)."
     (%find-position item mode fn neg seq key from-end start end t)))
 
 (defun %count-matches (item mode fn neg seq key from-end start end)
+  ;; the plainest call first: a predicate on the elements of a whole list
+  (when (and (eql mode 2) (listp seq) (null key) (not neg) (not from-end) (eql start 0) (null end))
+    (return-from %count-matches
+      (let ((n 0))
+        (declare (fixnum n))
+        (do ((l seq (cdr l))) ((%endp l) n)
+          (when (funcall fn (car l)) (setq n (+ n 1)))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)) (n 0))
     (declare (fixnum n))
     (%do-region (x i seq start end from-end)
@@ -1388,6 +1401,16 @@ list result shares the tail after END."
         (t (%remove-marked seq start end marks n))))
 
 (defun %remove (item mode fn neg seq key from-end start end count destructive)
+  ;; the plainest call first: a predicate on the elements of a whole list
+  (when (and (eql mode 2) (listp seq) (null key) (not neg) (not from-end) (eql start 0) (null end)
+             (null count) (not destructive))
+    (return-from %remove
+      (let* ((head (cons nil nil)) (tail head) (removed nil))
+        (do ((l seq (cdr l))) ((%endp l) (if removed (cdr head) seq))
+          (let ((x (car l)))
+            (if (funcall fn x)
+                (setq removed t)
+                (let ((c (cons x nil))) (%setcdr tail c) (setq tail c))))))))
   (let* ((key (%keyfn key)) (count (%check-count count))
          (direct (and (listp seq) (null count) (not from-end)))
          ;; NIL for a list processed to its end in one pass
