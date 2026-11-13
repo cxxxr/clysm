@@ -243,9 +243,21 @@ NIL and NIL."
   (write-clipboard *backend* text))
 
 (defun clipboard (continuation)
-  "Call CONTINUATION with the text on the clipboard (NIL if there is none
-or the user does not allow reading it)."
+  "Call CONTINUATION with the text on the clipboard.  Where the browser does
+not let a page read the clipboard, the user is asked to paste it into a
+dialog (and CONTINUATION gets NIL if that is cancelled)."
   (read-clipboard *backend* continuation))
+
+(defvar *paste-prompt* "Paste the text here (Ctrl+V), then press OK"
+  "What the dialog says that asks the user to paste the clipboard.")
+
+(defun prompt-for-paste (continuation)
+  "Ask the user to paste the text of the clipboard into a field; call
+CONTINUATION with it, or with NIL if the dialog was cancelled."
+  (prompt-for-string *paste-prompt*
+                     :continuation (lambda (text okp) (funcall continuation (and okp text)))))
+
+(setf *paste-function* #'prompt-for-paste)
 
 ;;; ACCEPT of the types that are typed or chosen rather than clicked
 

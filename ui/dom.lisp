@@ -225,7 +225,12 @@
               (js:async-function
                (lambda (text)
                  (let ((*backend* backend))
-                   (with-error-dialog (funcall continuation text))
+                   (with-error-dialog
+                     ;; a browser that does not let a page read the clipboard:
+                     ;; the user pastes it
+                     (if (and (null text) *paste-function*)
+                         (funcall *paste-function* continuation)
+                         (funcall continuation text)))
                    (flush))
                  nil)))
   nil)

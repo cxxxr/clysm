@@ -588,7 +588,8 @@ makes any interface one, answered by its callbacks with
 `ui:prompt-for-color` for a colour, `ui:popup-confirmer` shows any pane with
 OK and Cancel, and `ui:prompt-for-file` lets the user choose a file and gives
 its name and text (in the desktop application with the native dialog);
-`ui:set-clipboard` and `ui:clipboard` write and read the clipboard. With
+`ui:set-clipboard` and `ui:clipboard` write and read the clipboard (in a
+browser that does not let a page read it, the user pastes it into a dialog). With
 `:modal nil`, `display-dialog` shows a window above the application that can
 be used meanwhile. A page cannot wait inside a function, so these return at
 once and call their `:continuation` with the answer and whether there is one:
