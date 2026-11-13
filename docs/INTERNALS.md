@@ -1209,6 +1209,18 @@ FAIL tests/layout.lisp (exit 1)
 
 `tests/system/run.sh` tests the runner with a small system.
 
+### Programs that depend on Clysm
+
+Clysm changes every day, so a program written in it pins a commit (the npm
+package of that commit; `lisp-implementation-version` names it) and moves
+the pin when its tests pass with a newer one. The other way round,
+`tests/downstream/projects.txt` lists such programs with a commit and a
+test command, and `tools/test-downstream.sh` (`make test-downstream`) clones
+each at its commit and runs the command with this checkout of Clysm
+(`$CLYSM`), so that a change that breaks one of them is found in Clysm. A
+failure there is told apart from one of the program by running the same
+command with the pinned Clysm.
+
 ## Tests
 
 `make test-ui` tests the GUI framework on its S-expression backend

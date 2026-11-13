@@ -1,0 +1,11 @@
+# Programs written in Clysm that are tested with each change of Clysm
+# (tools/test-downstream.sh).  One project a line:
+#   NAME  GIT-URL  COMMIT  COMMAND
+# The command runs in the project's checkout at COMMIT, with CLYSM set to
+# the bin/clysm of this checkout and CLYSM_ROOT to its directory; it passes
+# when it exits with status 0.  A project that pins its own Clysm commit
+# (the clysm npm package of that commit) adds itself here, so that a change
+# of Clysm that breaks it is found before the project moves its pin.
+#
+# example (this repository's own small system, run from a clone of it):
+self-wordcount  .  HEAD  "$CLYSM" test --system wordcount-tests --asd tests/system/wordcount-tests.asd tests/system/test-count.lisp

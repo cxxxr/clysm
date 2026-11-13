@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-system npm test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -37,6 +37,10 @@ test-lib:
 # bin/clysm test with an ASDF system and its dependencies (from Quicklisp)
 test-system:
 	tests/system/run.sh
+
+# the programs of tests/downstream/projects.txt, with this Clysm
+test-downstream:
+	tools/test-downstream.sh
 
 # the npm package (Node.js only, no SBCL): build/npm/
 npm:
