@@ -1046,7 +1046,7 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
-5.2), `bench/control.lisp` (1.6; `v-go-closure` 66), `bench/io.lisp` (1.8;
+5.2), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
 `i-file-roundtrip` 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
 What is not as fast as intended, and why:
@@ -1063,9 +1063,14 @@ What is not as fast as intended, and why:
   calls between global functions are ordinary calls and small functions are
   not copied into their callers.
 * **Exits from closures called by code the compiler does not see** (a
-  `return-from` or `go` out of a lambda passed to `maphash`, `map` or a user
-  function) are Wasm exceptions: about 90 ns plus 30 ns per frame, against
-  about 7 ns on SBCL (`v-go-closure`, `t-return-maphash`: 50–70 times).
+  `return-from`, `go` or `throw` out of a function kept in a variable and
+  called by another function) are Wasm exceptions: about 85 ns plus 30 ns per
+  frame, against about 7 ns on SBCL (`t-throw-closure` 14 times). A lambda
+  written in place as the argument of `mapcar`, `mapc`, `maphash`, `map` (to
+  `nil` or `'list`, one sequence), `every`, `some`, `notany` or `notevery` is
+  not one of these: those calls are loops at the call site (compiler macros
+  in `runtime/core.lisp`, `hash.lisp`, `seq.lisp`), where the lambda is a
+  local function and the exit a branch (`v-go-closure` 1.0, was 66).
 * **Generic functions**: dispatch on EQL specializers or on many classes at
   one call site (4–5 times), `make-instance` with a class that is not a
   constant (5), generic functions with `&optional`/`&key` (3).

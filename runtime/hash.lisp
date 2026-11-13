@@ -363,6 +363,20 @@ for here, without a call."
         (unless (eq k +deleted+)
           (funcall fn k (%svref vals i)))))))
 
+;; with a function written in place: a loop, so that the function is a local
+;; one and an exit out of it (RETURN-FROM, GO) is a branch, not an exception
+(define-compiler-macro maphash (&whole form fn table)
+  (if (not (and (consp fn) (member (car fn) '(lambda function))))
+      form
+      (let ((f (gensym "F")) (h (gensym "H")) (keys (gensym "KEYS")) (vals (gensym "VALS"))
+            (i (gensym "I")) (k (gensym "K")))
+        `(let ((,f ,fn) (,h ,table))
+           (%check-ht ,h)
+           (let ((,keys (%ht ,h +ht-keys+)) (,vals (%ht ,h +ht-vals+)))
+             (dotimes (,i (%ht ,h +ht-fill+) nil)
+               (let ((,k (%svref ,keys ,i)))
+                 (unless (eq ,k +deleted+) (funcall ,f ,k (%svref ,vals ,i))))))))))
+
 (defun %ht-next-index (h i)
   "The index of the first entry of H at I or after it, or -1."
   (let ((keys (%ht h +ht-keys+)) (fill (%ht h +ht-fill+)))

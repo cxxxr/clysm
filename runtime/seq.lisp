@@ -1845,6 +1845,62 @@ list result shares the tail after END."
 (defun notany (pred seq &rest more) (not (%quantify 1 pred seq more)))
 (defun notevery (pred seq &rest more) (not (%quantify 0 pred seq more)))
 
+;;; With a function written in place and one sequence, MAP (to NIL or a
+;;; list) and the quantifiers are loops at the call site: the function is a
+;;; local one, so that an exit out of it (RETURN-FROM, GO) is a branch, not
+;;; a Wasm exception.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %literal-function-form-p (f)
+    (and (consp f) (member (car f) '(lambda function))))
+  (defun %seq-loop-expansion (seq element-var body)
+    "A loop over the elements of SEQ (a variable) with ELEMENT-VAR bound to each."
+    (let ((l (gensym "L")) (d (gensym "D")) (i (gensym "I")) (e (gensym "E")))
+      `(if (listp ,seq)
+           (do ((,l ,seq (cdr ,l))) ((%endp ,l))
+             (let ((,element-var (car ,l))) ,body))
+           (progn
+             (unless (vectorp ,seq) (%type-error ,seq 'sequence))
+             (let ((,d (%array-storage ,seq)))
+               (do ((,i (%array-total-offset ,seq) (+ ,i 1))
+                    (,e (+ (%array-total-offset ,seq) (length ,seq))))
+                   ((>= ,i ,e))
+                 (declare (fixnum ,i ,e))
+                 (let ((,element-var (%vref ,d ,i))) ,body)))))))
+  (defun %quantifier-expansion (form mode negate pred seq more)
+    ;; MODE 0: EVERY, 1: SOME
+    (if (or more (not (%literal-function-form-p pred)))
+        form
+        (let ((f (gensym "F")) (s (gensym "S")) (x (gensym "X")) (v (gensym "V")) (b (gensym "B")))
+          (let ((loop `(let ((,f ,pred) (,s ,seq))
+                         (block ,b
+                           ,(%seq-loop-expansion
+                             s x (if (eql mode 0)
+                                     `(unless (funcall ,f ,x) (return-from ,b nil))
+                                     `(let ((,v (funcall ,f ,x))) (when ,v (return-from ,b ,v)))))
+                           ,(eql mode 0)))))
+            (if negate `(not ,loop) loop))))))
+
+(define-compiler-macro every (&whole form pred seq &rest more) (%quantifier-expansion form 0 nil pred seq more))
+(define-compiler-macro some (&whole form pred seq &rest more) (%quantifier-expansion form 1 nil pred seq more))
+(define-compiler-macro notany (&whole form pred seq &rest more) (%quantifier-expansion form 1 t pred seq more))
+(define-compiler-macro notevery (&whole form pred seq &rest more) (%quantifier-expansion form 0 t pred seq more))
+
+(define-compiler-macro map (&whole form result-type f seq &rest more)
+  (let ((collect (equal result-type ''list)))
+    (if (or more (not (%literal-function-form-p f))
+            (not (or collect (null result-type) (equal result-type ''nil))))
+        form
+        (let ((fn (gensym "F")) (s (gensym "S")) (x (gensym "X")) (head (gensym "HEAD")) (tail (gensym "TAIL"))
+              (c (gensym "C")))
+          (if collect
+              `(let* ((,fn ,f) (,s ,seq) (,head (cons nil nil)) (,tail ,head))
+                 ,(%seq-loop-expansion s x `(let ((,c (cons (funcall ,fn ,x) nil)))
+                                              (%setcdr ,tail ,c) (setq ,tail ,c)))
+                 (cdr ,head))
+              `(let ((,fn ,f) (,s ,seq))
+                 ,(%seq-loop-expansion s x `(funcall ,fn ,x))
+                 nil))))))
+
 ;;; sorting: a stable merge sort, of the conses of a list and of the storage
 ;;; of a vector.  The key of an element is computed once for each merge step
 ;;; it takes part in (lists) or once in all (vectors).
