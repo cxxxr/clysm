@@ -54,6 +54,7 @@
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
 (defvar *live-symbol-macro-hook* nil "symbol -> (values expansion foundp)")
+(defvar *live-compiler-macro-hook* nil "symbol -> compiler macro function or NIL")
 (defun global-symbol-macro (sym)
   "The expansion of the global symbol macro SYM, and whether there is one."
   (multiple-value-bind (exp found) (gethash sym *symbol-macros*)
@@ -258,7 +259,9 @@ runtime definition is kept."
         (return-from convert-compound
           (convert (let ((*package* *read-package*)) (funcall m form env)) env))))
     ;; compiler macros
-    (let ((cm (gethash op *compiler-macros*)))
+    (let ((cm (or (gethash op *compiler-macros*)
+                  (and *live-compiler-macro-hook* (symbolp op)
+                       (funcall *live-compiler-macro-hook* op)))))
       (when (and cm (not (gethash op *notinline*)))
         (let ((new (let ((*package* *read-package*)) (funcall cm form env))))
           (unless (eq new form)

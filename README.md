@@ -540,8 +540,16 @@ What makes the generated code fast:
   readers and writers made by `defclass` access the slot at its location;
   `make-instance` with a constant class and initarg keys uses a per-call-site
   constructor;
-* `format` with a constant control string of `~A ~S ~D ~% ~& ~~` compiles to
-  direct output calls; other control strings are parsed once and cached;
+* `format` with a constant control string compiles to Lisp code (and so does
+  `formatter`): every directive with its parameters, `~{...~}` as a loop,
+  `~[...~]` as a `case`, `~^` as a local exit; only `~<...~>` and strings
+  with errors are interpreted. Other control strings are parsed once and
+  cached; interpreter and compiled code call the same directive functions.
+  Integers are printed from a digit buffer; the shortest digits of single
+  floats, and of doubles that need at most 15, are computed with exact
+  double arithmetic (others by the host); a string output stream is a plain
+  buffer with a fill index, and `format nil`, `princ-to-string` and
+  `prin1-to-string` reuse one;
 * exits through `unwind-protect` within a function branch to the cleanup
   instead of throwing; a `throw` to a `catch` of the same constant tag in the
   same function is a branch; `(catch 'tag (f ...))` calls a copy of the known

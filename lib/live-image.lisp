@@ -3,7 +3,15 @@
 
 (in-package :clysm)
 
+;;; The compiler macros of these functions (defined in the runtime, where
+;;; they are used when a program is compiled ahead of time) are also used for
+;;; code compiled in the image.
+(defparameter *live-compiler-macros*
+  '(format write write-to-string write-string make-string-output-stream parse-integer))
+
 (defun install-live-hooks ()
+  (setf *live-compiler-macro-hook*
+        (lambda (s) (and (member s *live-compiler-macros*) (compiler-macro-function s))))
   (setf *live-macro-hook* (lambda (s) (macro-function s))
         *live-special-hook* (lambda (s) (sys::%special-p s))
         *live-constant-hook*
