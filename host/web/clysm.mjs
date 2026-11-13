@@ -16,9 +16,14 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
   let input = [];   // code points of the current input line
   if (fs) {
     globalThis.__clysm_fs = fs;
+    // octets of a file (compiled modules in fasls); the last file read is cached
+    let cachedPath = null, cachedBuffer = null, cachedMtime = 0;
     globalThis.__clysm_read_bytes = (path, offset, length) => {
-      const buffer = fs.readFileSync(path);
-      return new Uint8Array(buffer.buffer, buffer.byteOffset + offset, length);
+      const mtime = fs.statSync(path).mtimeMs;
+      if (path !== cachedPath || mtime !== cachedMtime) {
+        cachedBuffer = fs.readFileSync(path); cachedPath = path; cachedMtime = mtime;
+      }
+      return new Uint8Array(cachedBuffer.buffer, cachedBuffer.byteOffset + offset, length);
     };
   }
   if (root) globalThis.__clysm_root = root;
