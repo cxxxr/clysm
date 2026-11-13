@@ -272,6 +272,10 @@
 (defun make-array (dimensions &key (element-type t) (initial-element nil initp)
                                    (initial-contents nil contentsp) adjustable fill-pointer
                                    displaced-to (displaced-index-offset 0))
+  ;; the common case: a simple vector of a fixnum size
+  (when (and (fixnump dimensions) (>= dimensions 0) (eq element-type t) (not contentsp)
+             (null adjustable) (null fill-pointer) (null displaced-to))
+    (return-from make-array (%make-simple-vector dimensions initial-element)))
   (let* ((dims (if (listp dimensions) dimensions (list dimensions)))
          (total (let ((p 1))
                   (dolist (d dims p)
