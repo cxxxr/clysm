@@ -34,7 +34,7 @@ Lisp ソース ──(src/reader.lisp)──▶ フォーム
 | string | `(array (mut i32))`（コードポイント列） | 同上 |
 | simple-vector | `(array (mut eqref))` | 同上 |
 | 調整可能・多次元配列 | ヘッダ構造体（フィルポインタ・次元・変位）＋単純配列 | `runtime/seq.lisp` |
-| bignum | `struct { sign: i32, digits: (array i32) }`（基数 2^14） | `runtime/numbers.lisp` |
+| bignum | `struct { sign: i32, digits: (array i32) }`（基数 2^28） | `runtime/numbers.lisp` |
 | ratio / complex / single-float / double-float | それぞれ専用 struct | 同上 |
 | package | `$package` struct（シンボル表はハッシュテーブル） | `runtime/package.lisp` |
 | closure | `struct { entry0..entry4, entryN, env, name }` | `src/codegen.lisp` |

@@ -57,7 +57,7 @@ The universal value type is `(ref null eq)`.
   also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
   multi-dimensional, displaced) use a header struct around a simple array.
 * **bignum** — `struct { sign: i32, digits: mut (ref null (array i32)), value: i64 }`
-  (base 2^14 digits). Integers beyond the fixnum range that fit in 64 bits are
+  (base 2^28 digits). Integers beyond the fixnum range that fit in 64 bits are
   computed with i64 arithmetic and made without digits (the `value` field holds
   them); the digits are made when the general bignum code asks for them.
   **ratio**, **complex**, **single-float** (`f32`), **double-float** (`f64`) structs.

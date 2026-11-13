@@ -56,9 +56,9 @@
           `((:array.new_fixed :string ,(length s)))))
 
 (defun bignum-digits (n)
-  "Base 2^14 little-endian digits of a non-negative integer."
+  "Base 2^28 little-endian digits of a non-negative integer."
   (let ((digits nil))
-    (loop while (plusp n) do (push (ldb (byte 14 0) n) digits) (setf n (ash n -14)))
+    (loop while (plusp n) do (push (ldb (byte +limb-bits+ 0) n) digits) (setf n (ash n (- +limb-bits+))))
     (nreverse digits)))
 
 (defun new-const-global (init &optional (type :eqref))

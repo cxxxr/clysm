@@ -12,6 +12,9 @@
 (defconstant +most-negative-fixnum+ (- (expt 2 29)))
 (defconstant +char-tag+ (expt 2 29))
 (defconstant +max-fixed-args+ 4)
+;; bignum magnitudes: little-endian arrays of base 2^28 digits
+(defconstant +limb-bits+ 28)
+(defconstant +limb-mask+ (1- (expt 2 28)))
 (defconstant +mv-limit+ 1024)
 
 ;; struct field indices

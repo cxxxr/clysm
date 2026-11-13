@@ -1,13 +1,13 @@
 ;;;; numbers.lisp — the numeric tower
 ;;;;
-;;;; fixnum (i31), bignum (sign + base 2^14 magnitude digits), ratio,
+;;;; fixnum (i31), bignum (sign + base 2^28 magnitude digits), ratio,
 ;;;; single-float (f32), double-float (f64), complex.
 
 (defconstant most-positive-fixnum 536870911)
 (defconstant most-negative-fixnum -536870912)
-(defconstant +digit-bits+ 14)
-(defconstant +digit-base+ 16384)
-(defconstant +digit-mask+ 16383)
+(defconstant +digit-bits+ 28)
+(defconstant +digit-base+ 268435456)
+(defconstant +digit-mask+ 268435455)
 
 ;;; ------------------------------------------------------------
 ;;; type predicates
@@ -29,7 +29,7 @@
 (defun %check-integer (x) (if (integerp x) x (%type-error x 'integer)))
 
 ;;; ------------------------------------------------------------
-;;; magnitudes: limbs arrays of base 2^14 digits, little endian
+;;; magnitudes: limbs arrays of base 2^28 digits, little endian
 ;;; ------------------------------------------------------------
 
 (defun %mag-length (m)
@@ -46,22 +46,12 @@
   ;; magnitude of a fixnum's absolute value (|n| <= 2^29)
   (let ((a (if (%fx< n 0) (%fx- 0 n) n)))
     (cond ((%fx= n most-negative-fixnum)
-           (let ((m (%make-limbs 3))) (%lset m 0 0) (%lset m 1 0) (%lset m 2 2) m))
-          ((< a +digit-base+) (let ((m (%make-limbs 1))) (%lset m 0 a) m))
-          ((< a 268435456)
-           (let ((m (%make-limbs 2)))
-             (%lset m 0 (%fxlogand a +digit-mask+))
-             (%lset m 1 (%fxash-right a 14))
-             m))
-          (t
-           ;; a may be 2^29 (bignum!) when n = most-negative-fixnum
-           (let ((m (%make-limbs 3)))
-             (if (fixnump a)
-                 (progn (%lset m 0 (%fxlogand a +digit-mask+))
-                        (%lset m 1 (%fxlogand (%fxash-right a 14) +digit-mask+))
-                        (%lset m 2 (%fxash-right a 28)))
-                 (progn (%lset m 0 0) (%lset m 1 0) (%lset m 2 2)))
-             m)))))
+           (let ((m (%make-limbs 2))) (%lset m 0 0) (%lset m 1 2) m))
+          ((%fx< a +digit-base+) (let ((m (%make-limbs 1))) (%lset m 0 a) m))
+          (t (let ((m (%make-limbs 2)))
+               (%lset m 0 (%fxlogand a +digit-mask+))
+               (%lset m 1 (%fxash-right a +digit-bits+))
+               m)))))
 
 (defun %int-sign (x) (if (fixnump x) (if (%fx< x 0) 1 0) (%bignum-sign x)))
 (defun %int-mag (x) (if (fixnump x) (%fixnum-mag x) (%bignum-mag x)))
@@ -71,14 +61,10 @@
   (let ((n (%mag-length mag)))
     (cond ((%fx= n 0) 0)
           ((%fx= n 1) (if (%fx= sign 1) (%fx- 0 (%lref mag 0)) (%lref mag 0)))
-          ((%fx= n 2)
-           (let ((v (%fx+ (%lref mag 0) (%fxash-left (%lref mag 1) 14))))
+          ((and (%fx= n 2) (%fx< (%lref mag 1) 2))
+           (let ((v (%fx+ (%lref mag 0) (%fxash-left (%lref mag 1) +digit-bits+))))
              (if (%fx= sign 1) (%fx- 0 v) v)))
-          ((and (%fx= n 3) (%fx< (%lref mag 2) 2))
-           (let ((v (%fx+ (%fx+ (%lref mag 0) (%fxash-left (%lref mag 1) 14))
-                          (%fxash-left (%lref mag 2) 28))))
-             (if (%fx= sign 1) (%fx- 0 v) v)))
-          ((and (%fx= n 3) (%fx= sign 1) (%fx= (%lref mag 2) 2) (%fx= (%lref mag 1) 0) (%fx= (%lref mag 0) 0))
+          ((and (%fx= n 2) (%fx= sign 1) (%fx= (%lref mag 1) 2) (%fx= (%lref mag 0) 0))
            most-negative-fixnum)
           (t (%make-bignum sign (%mag-trim mag))))))
 
@@ -98,88 +84,15 @@
 
 (defun %mag-mul (a b) (%mag-mul-fast a b))
 
-(defun %mag-divmod-small (a d)
-  "Divide magnitude A by fixnum 0 < d < 2^14.  Returns (values q-mag remainder)."
-  (let* ((n (%mag-length a)) (q (%make-limbs n)) (rem 0))
-    (do ((i (%fx- n 1) (%fx- i 1))) ((%fx< i 0) (values q rem))
-      (let ((cur (%fx+ (%fxash-left rem 14) (%lref a i))))
-        (%lset q i (%fxtruncate cur d))
-        (setq rem (%fxrem cur d))))))
-
-(defun %mag-shift-left-bits (a s)
-  ;; 0 <= s < 14, returns new magnitude with one extra digit
-  (let* ((n (%llen a)) (r (%make-limbs (%fx+ n 1))) (carry 0))
-    (dotimes (i n)
-      (let ((v (%fxlogior (%fxash-left (%lref a i) s) carry)))
-        (%lset r i (%fxlogand v +digit-mask+))
-        (setq carry (%fxash-right v 14))))
-    (%lset r n carry)
-    r))
-
-(defun %mag-shift-right-bits (a s)
-  (let* ((n (%llen a)) (r (%make-limbs n)))
-    (dotimes (i n r)
-      (let ((lo (%fxash-right (%lref a i) s))
-            (hi (if (%fx< (%fx+ i 1) n)
-                    (%fxlogand (%fxash-left (%lref a (%fx+ i 1)) (%fx- 14 s)) +digit-mask+)
-                    0)))
-        (%lset r i (%fxlogior lo hi))))))
-
 (defun %mag-divmod (u v)
-  "Knuth algorithm D.  Returns (values quotient-mag remainder-mag)."
+  "Returns (values quotient-mag remainder-mag)."
   (let ((n (%mag-length v)) (m0 (%mag-length u)))
     (cond ((%fx= n 0) (error 'division-by-zero :operation 'truncate :operands nil))
           ((%fx< m0 n) (values (%make-limbs 0) u))
           ((%fx= n 1)
            (multiple-value-bind (q r) (%mag-divmod-small u (%lref v 0))
              (let ((rm (%make-limbs 1))) (%lset rm 0 r) (values q rm))))
-          (t
-           ;; normalize so that the top digit of v is >= base/2
-           (let ((s 0) (top (%lref v (%fx- n 1))))
-             (do () ((%fx>= top 8192)) (setq top (%fxash-left top 1)) (setq s (%fx+ s 1)))
-             (let* ((vn (%mag-shift-left-bits (%mag-trim v) s))
-                    (un (%mag-shift-left-bits (%mag-trim u) s))
-                    (m (%fx- m0 n))
-                    (q (%make-limbs (%fx+ m 1)))
-                    (vtop (%lref vn (%fx- n 1)))
-                    (vnext (%lref vn (%fx- n 2))))
-               (do ((j m (%fx- j 1))) ((%fx< j 0))
-                 (let* ((num (%fx+ (%fxash-left (%lref un (%fx+ j n)) 14) (%lref un (%fx+ j (%fx- n 1)))))
-                        (qhat (%fxtruncate num vtop))
-                        (rhat (%fxrem num vtop)))
-                   (do () ((not (and (%fx< rhat +digit-base+)
-                                     (or (%fx>= qhat +digit-base+)
-                                         (%fx> (%fx* qhat vnext)
-                                               (%fx+ (%fxash-left rhat 14) (%lref un (%fx+ j (%fx- n 2)))))))))
-                     (setq qhat (%fx- qhat 1))
-                     (setq rhat (%fx+ rhat vtop)))
-                   ;; multiply and subtract
-                   (let ((borrow 0) (carry 0))
-                     (dotimes (i n)
-                       (let* ((p (%fx+ (%fx* qhat (%lref vn i)) carry))
-                              (sub (%fx- (%fx- (%lref un (%fx+ i j)) (%fxlogand p +digit-mask+)) borrow)))
-                         (setq carry (%fxash-right p 14))
-                         (if (%fx< sub 0)
-                             (progn (%lset un (%fx+ i j) (%fx+ sub +digit-base+)) (setq borrow 1))
-                             (progn (%lset un (%fx+ i j) sub) (setq borrow 0)))))
-                     (let ((sub (%fx- (%fx- (%lref un (%fx+ j n)) carry) borrow)))
-                       (if (%fx< sub 0)
-                           (progn
-                             ;; add back
-                             (%lset un (%fx+ j n) (%fx+ sub +digit-base+))
-                             (setq qhat (%fx- qhat 1))
-                             (let ((c 0))
-                               (dotimes (i n)
-                                 (let ((s2 (%fx+ (%fx+ (%lref un (%fx+ i j)) (%lref vn i)) c)))
-                                   (%lset un (%fx+ i j) (%fxlogand s2 +digit-mask+))
-                                   (setq c (%fxash-right s2 14))))
-                               (%lset un (%fx+ j n) (%fxlogand (%fx+ (%lref un (%fx+ j n)) c) +digit-mask+))))
-                           (%lset un (%fx+ j n) sub))))
-                   (%lset q j qhat)))
-               ;; remainder = un >> s (low n digits)
-               (let ((r (%make-limbs n)))
-                 (dotimes (i n) (%lset r i (%lref un i)))
-                 (values q (%mag-shift-right-bits r s)))))))))
+          (t (%mag-divmod-knuth u v)))))
 
 ;;; ------------------------------------------------------------
 ;;; integer arithmetic
@@ -243,7 +156,7 @@
                   (let ((y (%fxash-left x count)))
                     (and (fixnump y) (%fx= (%fxash-right y count) x))))
              (%fxash-left x count)
-             (let* ((digits (truncate count 14)) (bits (- count (* digits 14)))
+             (let* ((digits (truncate count +digit-bits+)) (bits (- count (* digits +digit-bits+)))
                     (m (%mag-shift-left-bits (%int-mag x) bits))
                     (r (%make-limbs (+ (%llen m) digits))))
                (dotimes (i (%llen m)) (%lset r (+ i digits) (%lref m i)))
@@ -255,7 +168,7 @@
                (if (%int-minusp x)
                    ;; floor semantics: -((|x|-1) >> n) - 1
                    (%int-sub (%int-negate (%int-ash (%int-sub (%int-negate x) 1) count)) 1)
-                   (let* ((digits (truncate n 14)) (bits (- n (* digits 14)))
+                   (let* ((digits (truncate n +digit-bits+)) (bits (- n (* digits +digit-bits+)))
                           (m (%bignum-mag x)) (len (%llen m)))
                      (if (>= digits len) 0
                          (let ((r (%make-limbs (- len digits))))
@@ -660,7 +573,7 @@ converts to a double exactly, so only bignums and ratios need it."
   (let ((x (if (%int-minusp n) (lognot n) n)))
     (if (fixnump x)
         (let ((len 0)) (do () ((eql x 0) len) (setq x (%fxash-right x 1)) (setq len (%fx+ len 1))))
-        (let* ((m (%bignum-mag x)) (top (- (%mag-length m) 1)) (d (%lref m top)) (len (* top 14)))
+        (let* ((m (%bignum-mag x)) (top (- (%mag-length m) 1)) (d (%lref m top)) (len (* top +digit-bits+)))
           (do () ((eql d 0) len) (setq d (%fxash-right d 1)) (setq len (+ len 1)))))))
 
 (defun logcount (n)
