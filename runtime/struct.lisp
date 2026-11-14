@@ -19,16 +19,26 @@
         (cond ((and (consp o) (eq (car o) key)) (push o r))
               ((eq o key) (push (list o) r))))))
 
+  ;; A slot is matched with a BOA variable by name, not by symbol: an
+  ;; included structure's slots may come from another package.
+  (defun %slot-named (var slots)
+    (dolist (s slots nil)
+      (when (string= (symbol-name (car s)) (symbol-name var)) (return s))))
+
+  (defun %boa-var-named (slot-name vars)
+    (dolist (v vars nil)
+      (when (string= (symbol-name v) (symbol-name slot-name)) (return v))))
+
   (defun %boa-lambda-list (ll slots)
     ;; supply slot initforms as defaults for optional/key params
     (let ((state nil) (r nil))
       (dolist (x ll (reverse r))
         (cond ((member x lambda-list-keywords) (setq state x) (push x r))
               ((and (member state '(&optional &key)) (symbolp x))
-               (let ((sl (assoc x slots)))
+               (let ((sl (%slot-named x slots)))
                  (push (if sl (list x (cadr sl)) x) r)))
               ((and (member state '(&optional &key)) (consp x) (null (cdr x)))
-               (let* ((var (if (consp (car x)) (cadr (car x)) (car x))) (sl (assoc var slots)))
+               (let* ((var (if (consp (car x)) (cadr (car x)) (car x))) (sl (%slot-named var slots)))
                  (push (if sl (list (car x) (cadr sl)) x) r)))
               ((and (eq state '&aux) (symbolp x)) (push x r))
               (t (push x r))))))
@@ -156,11 +166,11 @@
               (lambda (c)
                 (let ((cname (car c)))
                   (if (cdr c)
-                      (let ((ll (%boa-lambda-list (cadr c) all-slots)))
+                      (let ((ll (%boa-lambda-list (cadr c) all-slots))
+                            (vars (%ll-bound-vars (cadr c))))
                         `(defun ,cname ,ll
                            ,(make-form (mapcar (lambda (s)
-                                                 (if (member (car s) (%ll-bound-vars (cadr c)))
-                                                     (car s) (cadr s)))
+                                                 (or (%boa-var-named (car s) vars) (cadr s)))
                                                all-slots))))
                       `(defun ,cname (&key ,@(mapcar (lambda (s k)
                                                        (list (list (intern (symbol-name (car s)) "KEYWORD") k)

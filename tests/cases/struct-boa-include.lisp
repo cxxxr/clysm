@@ -1,0 +1,11 @@
+;; A BOA constructor fills the slots of a structure included from another package.
+(defpackage :boa-a (:use :cl) (:export #:link #:link-from #:link-to))
+(in-package :boa-a)
+(defstruct link from (to 7))
+(defpackage :boa-b (:use :cl :boa-a))
+(in-package :boa-b)
+(defstruct (edge (:include link) (:constructor make-edge (from &optional to kind))) kind)
+(let ((e (make-edge 1)))
+  (print (list (link-from e) (link-to e) (edge-kind e))))
+(let ((e (make-edge 1 2 3)))
+  (print (list (link-from e) (link-to e) (edge-kind e))))
