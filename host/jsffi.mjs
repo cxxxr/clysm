@@ -38,8 +38,12 @@ export function makeJsImports(state) {
     if (strCache !== x) { strCache = x; strCacheArr = Array.from(x); }
     return strCacheArr;
   };
+  // A Lisp object (a WebAssembly GC object) has no prototype, is not
+  // extensible and has no property of its own: a module namespace object
+  // (`import * as`) or a frozen `Object.create(null)` with properties is a
+  // JavaScript object.
   const isLisp = (x) => x !== null && typeof x === 'object' && Object.getPrototypeOf(x) === null
-                         && !Object.isExtensible(x);
+                         && !Object.isExtensible(x) && Reflect.ownKeys(x).length === 0;
   return {
       global: () => globalThis,
       // a property of null or undefined is undefined (NIL in Lisp), not a

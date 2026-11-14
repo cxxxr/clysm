@@ -13,3 +13,7 @@
 (print (js:call (js:new (js:global "Date") 0) "getTime"))
 (print (mapcar #'js:to-lisp (list (js:to-js "abc") (js:to-js 12) (js:to-js t))))
 (print (js:global "Math"))
+;; a frozen JavaScript object without a prototype (as a module namespace object is) is not a Lisp object
+(let ((o (js:call (js:global "Object") "create" nil)))
+  (js:set o "a" 5)
+  (print (js:get (js:call (js:global "Object") "freeze" o) "a")))
