@@ -3524,8 +3524,18 @@ division and the product are the identity)."
 (defprim clysm-sys::%fs-fast-char (s advance) :value
   ;; a file: its FAST slot holds its $fsbuf (a type that only file streams
   ;; hold); a string input stream: its layout and FAST :STRING
-  (let ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
-        (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (gensym "NO")) (out (gensym "OUT")))
+  (let* ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
+         (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (gensym "NO")) (out (gensym "OUT"))
+         ;; ADVANCE is T or NIL at the call site: decided here
+         (adv (cond ((equal advance (nil-code)) :no) ((equal advance (t-code)) :yes) (t :test)))
+         (step-file `((:local.get ,fb) (:local.get ,p) (:i32.const 1) :i32.add (:struct.set :fsbuf 1)))
+         (step-string `((:local.get ,sl) (:i32.const 3) (:local.get ,p) (:i32.const 1) :i32.add :ref.i31
+                        (:array.set :vector))))
+    (flet ((maybe (step)
+             (ecase adv
+               (:no nil)
+               (:yes step)
+               (:test `(,@advance ,@(nil-code) :ref.eq (:if nil nil nil ,step))))))
     `((:block ,out :eqref
         (:block ,no nil
           ,@s (:local.tee ,o) (:ref.test :instance) :i32.eqz (:br_if ,no)
@@ -3538,9 +3548,7 @@ division and the product are the identity)."
                 (:local.get ,fb) (:struct.get :fsbuf 2) :i32.ge_s (:br_if ,no)
                 (:local.get ,fb) (:struct.get :fsbuf 0) (:local.get ,p) (:array.get_u :bytes)
                 (:local.tee ,b) (:i32.const 128) :i32.ge_u (:br_if ,no)
-                ,@advance ,@(nil-code) :ref.eq
-                (:if nil nil nil
-                     ((:local.get ,fb) (:local.get ,p) (:i32.const 1) :i32.add (:struct.set :fsbuf 1)))
+                ,@(maybe step-file)
                 (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out)))
           ;; a string input stream of a simple string (FAST is :STRING)
           (:local.get ,f) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz (:br_if ,no)
@@ -3550,13 +3558,10 @@ division and the product are the identity)."
           (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
           (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
           :i32.ge_s (:br_if ,no)
-          ,@advance ,@(nil-code) :ref.eq
-          (:if nil nil nil
-               ((:local.get ,sl) (:i32.const 3) (:local.get ,p) (:i32.const 1) :i32.add :ref.i31
-                (:array.set :vector)))
+          ,@(maybe step-string)
           (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
           (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
-        ,@(nil-code)))))
+        ,@(nil-code))))))
 
 ;; the index of the first octet BYTE of the simple (unsigned-byte 8) vector
 ;; BYTES between START and END, or END
