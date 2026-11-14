@@ -47,10 +47,10 @@
   created           ; the file was created by OPEN (CLOSE :ABORT T deletes it)
   (external-format :default))
 (defmacro %fs-cursor (s) `(the (simple-array (signed-byte 32) (2)) (file-stream-cursor ,s)))
-(defun file-stream-pos (s) (aref (%fs-cursor s) 0))
-(defun (setf file-stream-pos) (v s) (setf (aref (%fs-cursor s) 0) v))
-(defun file-stream-fill (s) (aref (%fs-cursor s) 1))
-(defun (setf file-stream-fill) (v s) (setf (aref (%fs-cursor s) 1) v))
+(defun file-stream-pos (s) (%cursor-ref (file-stream-cursor s) 0))
+(defun (setf file-stream-pos) (v s) (%cursor-set (file-stream-cursor s) 0 v))
+(defun file-stream-fill (s) (%cursor-ref (file-stream-cursor s) 1))
+(defun (setf file-stream-fill) (v s) (%cursor-set (file-stream-cursor s) 1 v))
 ;;; String streams.  A :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM) owns a
 ;;; simple string BUFFER with INDEX characters in it; its column is computed
 ;;; when asked for: COLUMN is the column at buffer position END.  A :STRING-FP
@@ -494,14 +494,14 @@ character file stream S, encoded in UTF-8, at once."
 (defun %stream-write-char (s c)
   ;; an ASCII character to a character output file: one octet
   (when (and (%fast-out-file-p s) (%fx< (char-code c) 128))
-    (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (aref cur 0))
+    (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (%cursor-ref cur 0))
            (octets (%svref sl +fs-octets-slot+)))
       (when (%fx>= pos (%bytes-length octets))
         (%fs-ensure s (%fx+ pos 1))
         (setq octets (%svref sl +fs-octets-slot+)))
       (%set-bytes-ref octets pos (char-code c))
-      (setf (aref cur 0) (%fx+ pos 1))
-      (when (%fx> (%fx+ pos 1) (aref cur 1)) (setf (aref cur 1) (%fx+ pos 1)))
+      (%cursor-set cur 0 (%fx+ pos 1))
+      (when (%fx> (%fx+ pos 1) (%cursor-ref cur 1)) (%cursor-set cur 1 (%fx+ pos 1)))
       (%set-svref sl +fs-dirty-slot+ t)
       (%set-svref sl +stream-column-slot+
                   (if (eql c #\Newline) 0 (%fx+ (%svref sl +stream-column-slot+) 1)))
@@ -592,12 +592,12 @@ character file stream S, encoded in UTF-8, at once."
 (defun %fs-fast-write-string (s string start end)
   "Write the characters START..END of the simple string STRING to S, an open
 character output file (its FAST-OUT slot is :FILE), and update its column."
-  (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (aref cur 0)) (n (%fx- end start)))
+  (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (%cursor-ref cur 0)) (n (%fx- end start)))
     (when (%fx> (%fx+ pos (%fx* 4 n)) (%bytes-length (%svref sl +fs-octets-slot+)))
       (%fs-ensure s (%fx+ pos (%fx* 4 n))))
     (let ((new (%utf8-encode-into string start end (%svref sl +fs-octets-slot+) pos)))
-      (setf (aref cur 0) new)
-      (when (%fx> new (aref cur 1)) (setf (aref cur 1) new))
+      (%cursor-set cur 0 new)
+      (when (%fx> new (%cursor-ref cur 1)) (%cursor-set cur 1 new))
       (%set-svref sl +fs-dirty-slot+ t))
     (let ((nl (%string-last-newline string start end)))
       (%set-svref sl +stream-column-slot+
@@ -973,11 +973,11 @@ octet of a character input file when it is ASCII, else the call FALLBACK."
   (let ((s (cond ((null stream) *standard-input*) ((eq stream t) *terminal-io*) (t stream))))
     (if (and (%instancep s) (eq (%instance-layout s) *file-stream-layout*)
              (eq (%instance-ref s +stream-fast-slot+) :file))
-        (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (p (aref cur 0)) (fill (aref cur 1)))
+        (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (p (%cursor-ref cur 0)) (fill (%cursor-ref cur 1)))
           (if (%fx>= p fill)
               (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
               (let* ((v (%svref sl +fs-octets-slot+)) (e (%bytes-find v 10 p fill)))
-                (setf (aref cur 0) (if (%fx< e fill) (%fx+ e 1) e))
+                (%cursor-set cur 0 (if (%fx< e fill) (%fx+ e 1) e))
                 (values (%utf8-decode v p e) (%fx>= e fill)))))
         (read-line s eof-error-p eof-value))))
 

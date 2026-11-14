@@ -3580,6 +3580,15 @@ division and the product are the identity)."
           (:br ,again)))
       (:local.get ,i) :ref.i31)))
 
+;; the elements of a file stream's cursor, a (signed-byte 32) vector
+;; (runtime/stream.lisp), as fixnums
+(defprim clysm-sys::%cursor-ref (c i) :value
+  `(,@c (:ref.cast :s32vec) ,@(idx-code i) (:array.get :s32vec) :ref.i31))
+(defprim clysm-sys::%cursor-set (c i v) :value
+  (let ((tmp (new-local)))
+    `(,@c (:ref.cast :s32vec) ,@(idx-code i) ,@v (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s
+      (:array.set :s32vec) (:local.get ,tmp))))
+
 ;; exported entry used by JS to call Lisp closures
 (defhelper :lisp-apply :xx-x ()
   '(:local.get 0) '(:struct.new :foreign) '(:local.get 1) '(:struct.new :foreign)

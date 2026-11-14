@@ -1053,7 +1053,7 @@ The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
 5.2), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
-`i-file-roundtrip` 1.9–2.4, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
+`i-file-roundtrip` 1.7, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
 What is not as fast as intended, and why:
 
@@ -1095,9 +1095,9 @@ What is not as fast as intended, and why:
   (an ASCII character) and a string input stream of a simple string: one
   primitive, `%fs-fast-char`, tests the instance's layout and the stream's
   `fast` slot and reads the octets or the string; the position and length
-  of a file are unboxed in a `(signed-byte 32)` cursor. `read-line`,
+  of a file are unboxed in a `(signed-byte 32)` cursor (`%cursor-ref`, `%cursor-set`). `read-line`,
   `write-string`, `write-line` and `write-char` have fixed-argument paths
-  for files. `i-file-roundtrip` is 1.9–2.4 times SBCL (13 before);
+  for files. `i-file-roundtrip` is 1.7 times SBCL (13 before);
   `i-read-lines` 1.05. In Clysm a `read-char` loop over a file is as fast as
   over a string (about 2.6 ns a character; SBCL's file streams are twice as
   fast as its string streams, so the ratio is 2.8 for files and 1.7 for
