@@ -1,0 +1,7 @@
+;; SCALE-FLOAT to and from denormalized floats (2^k alone is no float there)
+(print (= (scale-float 1d0 -1074) least-positive-double-float))
+(print (= 1d0 (scale-float (scale-float 1d0 -1074) 1074)))
+(print (scale-float 1d0 1023))
+(print (handler-case (scale-float 1d0 1024) (floating-point-overflow () :overflow)))
+(print (scale-float 1.5f0 10))
+(print (scale-float 0d0 5000))

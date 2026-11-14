@@ -11,6 +11,7 @@
 (defparameter *toplevel-batch* 40)
 
 (defun reset-compiler ()
+  (setf *check-declared-integers* nil)  ; until FINISH-RUNTIME
   (setf *macros* (make-hash-table :test 'eq)
         *symbol-macros* (make-hash-table :test 'eq)
         *specials* (make-hash-table :test 'eq)
@@ -327,7 +328,8 @@ S names a statically known function."
 
 (defun finish-runtime ()
   "Called after the runtime sources have been processed."
-  (let ((*read-package* (find-target-package "SYSTEM"))) (emit-primitive-wrappers)))
+  (let ((*read-package* (find-target-package "SYSTEM"))) (emit-primitive-wrappers))
+  (setf *check-declared-integers* t))
 
 (defun emit-primitive-wrappers ()
   "Define functions for primitives that have no function definition, so that

@@ -194,6 +194,59 @@ runtime definition is kept."
             (let ((lv (find v lvars :key #'lvar-name :from-end t)))
               (when (and lv (symbolp v)) (setf (lvar-decl lv) spec)))))))))
 
+(defun integer-decl-p (spec)
+  (or (eq spec 'fixnum)
+      (and (consp spec) (member (car spec) '(integer unsigned-byte signed-byte)))))
+
+(defun declared-spec (sym decls)
+  "The type DECLS declare for the variable SYM (the last one), or NIL."
+  (let ((found nil))
+    (dolist (d decls found)
+      (when (consp d)
+        (multiple-value-bind (spec vars)
+            (cond ((eq (car d) 'type) (values (second d) (cddr d)))
+                  ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
+                  ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte)))
+                   (values (car d) (cdr d))))
+          (when (and spec (member sym vars)) (setf found spec)))))))
+
+(defun integer-decl-test (v spec)
+  "A form that is true when the value of the variable V is of the integer type SPEC."
+  (flet ((range (lo hi)
+           (let ((tests (append (and (integerp lo) (list `(<= ,lo ,v)))
+                                (and (integerp hi) (list `(<= ,v ,hi))))))
+             (if (and (integerp lo) (integerp hi)
+                      (<= +most-negative-fixnum+ lo) (<= hi +most-positive-fixnum+))
+                 `(and (clysm-sys::fixnump ,v) ,@tests)
+                 `(and (integerp ,v) ,@tests)))))
+    (cond ((eq spec 'fixnum) `(clysm-sys::fixnump ,v))
+          ((and (eq (car spec) 'integer) (listp (cdr spec)))
+           (range (second spec) (third spec)))
+          ((and (eq (car spec) 'unsigned-byte) (integerp (second spec)))
+           (range 0 (1- (expt 2 (second spec)))))
+          ((and (eq (car spec) 'signed-byte) (integerp (second spec)))
+           (range (- (expt 2 (1- (second spec)))) (1- (expt 2 (1- (second spec))))))
+          ((eq (car spec) 'unsigned-byte) (range 0 nil))
+          (t `(integerp ,v)))))
+
+(defvar *check-declared-integers* t
+  "True when the value given to a variable of a declared integer type is
+checked (CHECKED-VALUE).  False while the runtime is compiled: its
+declarations are kept by how it is written, and it must not pay for the checks.")
+
+(defun checked-value (form spec)
+  "FORM as the value of a variable declared to be of the integer type SPEC:
+checked, since the code after it computes with the variable as a machine
+integer (a value past the type would become another number, or a character).
+The check is left out by the compiler where the type of FORM shows it holds."
+  (if (or (not *check-declared-integers*) (not (integer-decl-p spec)) (integerp form))
+      form
+      (let ((v (gensym "V")))
+        `(let ((,v ,form))
+           (if ,(integer-decl-test v spec)
+               ,v
+               (clysm-sys::%type-error ,v ',spec))))))
+
 (defvar *local-notinline* nil "function names declared NOTINLINE in the forms being converted")
 (defun declared-notinline (decls)
   (loop for d in decls
@@ -560,7 +613,10 @@ copy of X made later could expand it differently than the function did."
   (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
     (let* ((dspecials (declared-specials decls))
            (inits (loop for b in bindings
-                        collect (convert (if (consp b) (second b) nil) env)))
+                        collect (convert (if (consp b)
+                                             (checked-value (second b) (declared-spec (first b) decls))
+                                             nil)
+                                         env)))
            (lvars nil) (entries nil))
       (dolist (b bindings)
         (let* ((sym (if (consp b) (first b) b))
@@ -596,7 +652,10 @@ copy of X made later could expand it differently than the function did."
                                                          collect (list :special s))))
                          (let* ((b (car bs))
                                 (sym (if (consp b) (first b) b))
-                                (init (convert (if (consp b) (second b) nil) env))
+                                (init (convert (if (consp b)
+                                                   (checked-value (second b) (declared-spec sym decls))
+                                                   nil)
+                                               env))
                                 (sp (binding-special-p sym dspecials))
                                 (lv (new-lvar sym sp))
                                 (new-env (env-extend env (if sp (list :special sym) (list :var sym lv)))))
@@ -614,7 +673,7 @@ copy of X made later could expand it differently than the function did."
                          (let ((lv (third e)))
                            (note-ref lv)
                            (setf (lvar-mutated lv) t)
-                           `(:lset ,lv ,(convert val env))))
+                           `(:lset ,lv ,(convert (checked-value val (lvar-decl lv)) env))))
                         ((and e (eq (first e) :smacro))
                          (convert `(setf ,(third e) ,val) env))
                         ((and (null e) (nth-value 1 (global-symbol-macro var)))

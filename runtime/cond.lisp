@@ -354,9 +354,12 @@
 the restarts are associated with the condition being signaled."
   ;; the compiler's %MACROEXPAND understands its environments (when the
   ;; compiler is in the image or on the host)
-  (let ((exp (if (or (listp env) (not (fboundp '%macroexpand)))
-                 (macroexpand form env)
-                 (funcall '%macroexpand form env))))
+  ;; (named through a variable: a program without the compiler has no such
+  ;; function, and a call of it by name would be reported as undefined)
+  (let* ((expander '%macroexpand)
+         (exp (if (or (listp env) (not (fboundp expander)))
+                  (macroexpand form env)
+                  (funcall expander form env))))
     (if (and (consp exp) (member (car exp) '(signal error cerror warn)))
         (let ((c (gensym "C")))
           (multiple-value-bind (datum args fmt)

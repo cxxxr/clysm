@@ -919,9 +919,19 @@ SORT and the like make no argument list)."
               (values mant e sign))))))
 
 (defun scale-float (f k)
-  (if (and (%double-float-p f) (fixnump k) (%fx<= -1022 k) (%fx<= k 1022))
-      (* f (%dexpt2 k))
-      (* f (expt (float 2 f) k))))
+  (cond ((and (%double-float-p f) (fixnump k) (%fx<= -1022 k) (%fx<= k 1022))
+         (* f (%dexpt2 k)))
+        ((and (floatp f) (integerp k))
+         ;; In steps: 2^K alone is no float when K is past the exponents of
+         ;; normalized floats (a denormalized result, or a denormalized F).
+         (let ((r f)
+               (k (max -4400 (min 4400 k)))
+               (up (expt (float 2 f) 100))
+               (down (expt (float 2 f) -100)))
+           (loop while (> k 100) do (setq r (* r up) k (- k 100)))
+           (loop while (< k -100) do (setq r (* r down) k (+ k 100)))
+           (* r (expt (float 2 f) k))))
+        (t (* f (expt (float 2 f) k)))))
 (defun float-radix (f) (declare (ignore f)) 2)
 (defun float-sign (f &optional (g (float 1 f)))
   (if (= (%double-sign (%to-double f)) 1) (- (abs g)) (abs g)))
