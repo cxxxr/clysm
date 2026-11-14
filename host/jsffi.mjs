@@ -21,7 +21,7 @@ function lispResult(r) {
   return r;
 }
 
-const utf16 = new TextDecoder('utf-16le');
+const utf16 = new TextDecoder('utf-16le', { ignoreBOM: true });
 
 export function makeJsImports(state) {
   let promisingApply = null;

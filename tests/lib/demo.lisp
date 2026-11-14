@@ -47,3 +47,6 @@
                             (sys::%process-wait process)
                             (coerce result 'vector))))
            :async t)
+
+;; a string as it is (a byte order mark at its start is a character like the others)
+(js:export "same" (lambda (s) s))

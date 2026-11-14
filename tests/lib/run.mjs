@@ -28,6 +28,8 @@ const all = await Promise.all([1, 2, 3].map((i) => fetchTwice((k) => sleep(10 * 
 assert.deepEqual(all, ['a1+b1', 'a2+b2', 'a3+b3']);
 // the instance lives on
 assert.equal(calls(), 2);
+// a long string that starts with U+FEFF keeps it
+assert.equal(lib.default.exports.same('\uFEFF' + 'a'.repeat(100)).length, 101);
 // subprocesses
 assert.equal(lib.default.exports.echo('hi'), 'hi\n');
 assert.deepEqual(await lib.default.exports.catLines(['x', 'y z']), ['x', 'y z']);
