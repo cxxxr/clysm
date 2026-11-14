@@ -1114,18 +1114,6 @@ What is not as fast as intended, and why:
   site and grows by `array.copy` into new storage, whose allocation is the
   remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
   string keys hash in a Wasm helper (`h-wordfreq` 1.34).
-* **Files** cost what the stream layer costs in memory: a file is read with
-  one `readFileSync` and written with one `writeFileSync`, its octets
-  crossing through the linear memory at once; its text is encoded and
-  decoded in UTF-8 by Wasm loops (`%utf8-decode`, `%utf8-encode-into`), and
-  `read-char` and `peek-char` of an ASCII character of an open character
-  input file are inline at the call site (the stream's `fast` slot; other
-  streams and characters call `%read-char-3`). Per pass of
-  `i-file-roundtrip` (2000 lines): writing to the file 1.4 times SBCL,
-  `read-line`, `read-char` and `peek-char` about 3 (the same as the same
-  operations on string streams), opening a file about 30 µs; the whole
-  benchmark 2.7–3.3 (13 before). A `read-char` loop over a 4 MB file is 1.4
-  times SBCL.
 
 What makes the code fast:
 
