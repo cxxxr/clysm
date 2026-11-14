@@ -3521,48 +3521,41 @@ division and the product are the identity)."
 ;; true it is read (READ-CHAR), otherwise only looked at (PEEK-CHAR).  The
 ;; slot indices are those checked by stream.lisp when it is loaded.
 (defparameter *fs-slot-fast* 14)
-(defparameter *fs-slot-octets* 16)
-(defparameter *fs-slot-cursor* 17)
 (defprim clysm-sys::%fs-fast-char (s advance) :value
+  ;; a file: its FAST slot holds its $fsbuf (a type that only file streams
+  ;; hold); a string input stream: its layout and FAST :STRING
   (let ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
-        (cur (new-local '(:ref :null :s32vec))) (no (gensym "NO")) (out (gensym "OUT")))
+        (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (gensym "NO")) (out (gensym "OUT")))
     `((:block ,out :eqref
         (:block ,no nil
           ,@s (:local.tee ,o) (:ref.test :instance) :i32.eqz (:br_if ,no)
-          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
-          (:global.get ,(sym-global 'clysm-sys::*file-stream-layout*)) (:struct.get :symbol ,+sym-value+)
-          :ref.eq :i32.eqz
+          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
+          :array.len (:i32.const ,*fs-slot-fast*) :i32.le_u (:br_if ,no)
+          (:local.get ,sl) (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:local.tee ,f)
+          (:ref.test :fsbuf)
           (:if nil nil
-               (;; a string input stream of a simple string (FAST is :STRING)
-                (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
-                (:global.get ,(sym-global 'clysm-sys::*string-stream-layout*)) (:struct.get :symbol ,+sym-value+)
-                :ref.eq :i32.eqz (:br_if ,no)
-                (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
-                (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz
-                (:br_if ,no)
-                (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
-                (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
-                :i32.ge_s (:br_if ,no)
+               ((:local.get ,f) (:ref.cast! :fsbuf) (:local.tee ,fb) (:struct.get :fsbuf 1) (:local.tee ,p)
+                (:local.get ,fb) (:struct.get :fsbuf 2) :i32.ge_s (:br_if ,no)
+                (:local.get ,fb) (:struct.get :fsbuf 0) (:local.get ,p) (:array.get_u :bytes)
+                (:local.tee ,b) (:i32.const 128) :i32.ge_u (:br_if ,no)
                 ,@advance ,@(nil-code) :ref.eq
                 (:if nil nil nil
-                     ((:local.get ,sl) (:i32.const 3) (:local.get ,p) (:i32.const 1) :i32.add :ref.i31
-                      (:array.set :vector)))
-                (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
-                (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out)))
-          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
-          (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:global.get ,(sym-global :file)) :ref.eq :i32.eqz
-          (:br_if ,no)
-          (:local.get ,sl) (:i32.const ,*fs-slot-cursor*) (:array.get :vector) (:ref.cast :s32vec) (:local.tee ,cur)
-          (:i32.const 0) (:array.get :s32vec) (:local.tee ,p)
-          (:local.get ,cur) (:i32.const 1) (:array.get :s32vec)
+                     ((:local.get ,fb) (:local.get ,p) (:i32.const 1) :i32.add (:struct.set :fsbuf 1)))
+                (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out)))
+          ;; a string input stream of a simple string (FAST is :STRING)
+          (:local.get ,f) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz (:br_if ,no)
+          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
+          (:global.get ,(sym-global 'clysm-sys::*string-stream-layout*)) (:struct.get :symbol ,+sym-value+)
+          :ref.eq :i32.eqz (:br_if ,no)
+          (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
+          (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
           :i32.ge_s (:br_if ,no)
-          (:local.get ,sl) (:i32.const ,*fs-slot-octets*) (:array.get :vector) (:ref.cast :bytes)
-          (:local.get ,p) (:array.get_u :bytes) (:local.tee ,b) (:i32.const 128) :i32.ge_u (:br_if ,no)
           ,@advance ,@(nil-code) :ref.eq
           (:if nil nil nil
-               ((:local.get ,cur) (:i32.const 0) (:local.get ,p) (:i32.const 1) :i32.add
-                (:array.set :s32vec)))
-          (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
+               ((:local.get ,sl) (:i32.const 3) (:local.get ,p) (:i32.const 1) :i32.add :ref.i31
+                (:array.set :vector)))
+          (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
+          (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
         ,@(nil-code)))))
 
 ;; the index of the first octet BYTE of the simple (unsigned-byte 8) vector
@@ -3580,14 +3573,22 @@ division and the product are the identity)."
           (:br ,again)))
       (:local.get ,i) :ref.i31)))
 
-;; the elements of a file stream's cursor, a (signed-byte 32) vector
-;; (runtime/stream.lisp), as fixnums
-(defprim clysm-sys::%cursor-ref (c i) :value
-  `(,@c (:ref.cast :s32vec) ,@(idx-code i) (:array.get :s32vec) :ref.i31))
-(defprim clysm-sys::%cursor-set (c i v) :value
+;; a file stream's buffer ($fsbuf: octets, position, number of valid octets)
+(defprim clysm-sys::%make-fsbuf (octets pos fill) :value
+  `(,@octets (:ref.cast :bytes) ,@(idx-code pos) ,@(idx-code fill) (:struct.new :fsbuf)))
+(defprim clysm-sys::%fsbuf-octets (b) :value `(,@b (:ref.cast :fsbuf) (:struct.get :fsbuf 0) (:ref.as_non_null)))
+(defprim clysm-sys::%fsbuf-pos (b) :value `(,@b (:ref.cast :fsbuf) (:struct.get :fsbuf 1) :ref.i31))
+(defprim clysm-sys::%fsbuf-fill (b) :value `(,@b (:ref.cast :fsbuf) (:struct.get :fsbuf 2) :ref.i31))
+(defprim clysm-sys::%set-fsbuf-octets (b v) :value
   (let ((tmp (new-local)))
-    `(,@c (:ref.cast :s32vec) ,@(idx-code i) ,@v (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s
-      (:array.set :s32vec) (:local.get ,tmp))))
+    `(,@b (:ref.cast :fsbuf) ,@v (:local.tee ,tmp) (:ref.cast :bytes) (:struct.set :fsbuf 0) (:local.get ,tmp))))
+(defprim clysm-sys::%set-fsbuf-pos (b v) :value
+  (let ((tmp (new-local)))
+    `(,@b (:ref.cast :fsbuf) ,@v (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s (:struct.set :fsbuf 1) (:local.get ,tmp))))
+(defprim clysm-sys::%set-fsbuf-fill (b v) :value
+  (let ((tmp (new-local)))
+    `(,@b (:ref.cast :fsbuf) ,@v (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s (:struct.set :fsbuf 2) (:local.get ,tmp))))
+(defprim clysm-sys::%fsbufp (x) :test `(,@x (:ref.test :fsbuf)))
 
 ;; exported entry used by JS to call Lisp closures
 (defhelper :lisp-apply :xx-x ()

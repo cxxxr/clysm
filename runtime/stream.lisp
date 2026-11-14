@@ -29,28 +29,23 @@
   ;; write into its octets at once)
   (fast-out nil))
 
-(defun %make-fs-cursor (pos fill)
-  (let ((c (make-array 2 :element-type '(signed-byte 32))))
-    (setf (aref c 0) pos (aref c 1) fill)
-    c))
-
 (defstruct (file-stream (:include stream) (:constructor %make-file-stream))
-  octets            ; simple (unsigned-byte 8) vector holding the file contents
-  ;; a (signed-byte 32) vector: the current position in OCTETS and the number
-  ;; of valid octets (FILE-STREAM-POS, FILE-STREAM-FILL): integers that the
-  ;; inline READ-CHAR reads and writes without boxes
-  (cursor (%make-fs-cursor 0 0))
+  ;; a Wasm struct ($fsbuf) of the octets of the file (a simple
+  ;; (unsigned-byte 8) vector), the current position in them and the number
+  ;; of valid octets: FILE-STREAM-OCTETS, -POS, -FILL
+  (buf (%make-fsbuf (make-array 0 :element-type '(unsigned-byte 8)) 0 0))
   (esize 0)         ; octets per element: 0 for character streams
   signed            ; binary elements are signed
   dirty             ; contents changed since the last write to the host
   native            ; host file name
   created           ; the file was created by OPEN (CLOSE :ABORT T deletes it)
   (external-format :default))
-(defmacro %fs-cursor (s) `(the (simple-array (signed-byte 32) (2)) (file-stream-cursor ,s)))
-(defun file-stream-pos (s) (%cursor-ref (file-stream-cursor s) 0))
-(defun (setf file-stream-pos) (v s) (%cursor-set (file-stream-cursor s) 0 v))
-(defun file-stream-fill (s) (%cursor-ref (file-stream-cursor s) 1))
-(defun (setf file-stream-fill) (v s) (%cursor-set (file-stream-cursor s) 1 v))
+(defun file-stream-octets (s) (%fsbuf-octets (file-stream-buf s)))
+(defun (setf file-stream-octets) (v s) (%set-fsbuf-octets (file-stream-buf s) v))
+(defun file-stream-pos (s) (%fsbuf-pos (file-stream-buf s)))
+(defun (setf file-stream-pos) (v s) (%set-fsbuf-pos (file-stream-buf s) v))
+(defun file-stream-fill (s) (%fsbuf-fill (file-stream-buf s)))
+(defun (setf file-stream-fill) (v s) (%set-fsbuf-fill (file-stream-buf s) v))
 ;;; String streams.  A :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM) owns a
 ;;; simple string BUFFER with INDEX characters in it; its column is computed
 ;;; when asked for: COLUMN is the column at buffer position END.  A :STRING-FP
@@ -82,15 +77,13 @@
 (defconstant +stream-column-slot+ 5)
 (defconstant +stream-fast-slot+ 14)
 (defconstant +stream-fast-out-slot+ 15)
-(defconstant +fs-octets-slot+ 16)
-(defconstant +fs-cursor-slot+ 17)
-(defconstant +fs-esize-slot+ 18)
-(defconstant +fs-dirty-slot+ 20)
-(defmacro %sl-cursor (sl) `(the (simple-array (signed-byte 32) (2)) (%svref ,sl +fs-cursor-slot+)))
+(defconstant +fs-buf-slot+ 16)
+(defconstant +fs-esize-slot+ 17)
+(defconstant +fs-dirty-slot+ 19)
 
 (defvar *file-stream-layout*
   (let ((s (%make-file-stream :kind :file :buffer 'b :index 'i :end 'e :unread 'u :open 'o
-                              :direction 'd :octets 'oc :cursor 'cu :esize 'es :fast 'fa
+                              :direction 'd :buf 'bu :esize 'es :fast 'fa
                               :column 'co :fast-out 'fo :dirty 'di)))
     (unless (and (eq (%instance-ref s +stream-kind-slot+) :file)
                  (eq (%instance-ref s +stream-buffer-slot+) 'b)
@@ -103,8 +96,7 @@
                  (eq (%instance-ref s +stream-column-slot+) 'co)
                  (eq (%instance-ref s +stream-fast-out-slot+) 'fo)
                  (eq (%instance-ref s +fs-dirty-slot+) 'di)
-                 (eq (%instance-ref s +fs-octets-slot+) 'oc)
-                 (eq (%instance-ref s +fs-cursor-slot+) 'cu)
+                 (eq (%instance-ref s +fs-buf-slot+) 'bu)
                  (eq (%instance-ref s +fs-esize-slot+) 'es))
       (error "stream.lisp: the slot indices of FILE-STREAM changed"))
     (%instance-layout s)))
@@ -494,14 +486,14 @@ character file stream S, encoded in UTF-8, at once."
 (defun %stream-write-char (s c)
   ;; an ASCII character to a character output file: one octet
   (when (and (%fast-out-file-p s) (%fx< (char-code c) 128))
-    (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (%cursor-ref cur 0))
-           (octets (%svref sl +fs-octets-slot+)))
+    (let* ((sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf))
+           (octets (%fsbuf-octets buf)))
       (when (%fx>= pos (%bytes-length octets))
         (%fs-ensure s (%fx+ pos 1))
-        (setq octets (%svref sl +fs-octets-slot+)))
+        (setq octets (%fsbuf-octets buf)))
       (%set-bytes-ref octets pos (char-code c))
-      (%cursor-set cur 0 (%fx+ pos 1))
-      (when (%fx> (%fx+ pos 1) (%cursor-ref cur 1)) (%cursor-set cur 1 (%fx+ pos 1)))
+      (%set-fsbuf-pos buf (%fx+ pos 1))
+      (when (%fx> (%fx+ pos 1) (%fsbuf-fill buf)) (%set-fsbuf-fill buf (%fx+ pos 1)))
       (%set-svref sl +fs-dirty-slot+ t)
       (%set-svref sl +stream-column-slot+
                   (if (eql c #\Newline) 0 (%fx+ (%svref sl +stream-column-slot+) 1)))
@@ -592,12 +584,12 @@ character file stream S, encoded in UTF-8, at once."
 (defun %fs-fast-write-string (s string start end)
   "Write the characters START..END of the simple string STRING to S, an open
 character output file (its FAST-OUT slot is :FILE), and update its column."
-  (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (pos (%cursor-ref cur 0)) (n (%fx- end start)))
-    (when (%fx> (%fx+ pos (%fx* 4 n)) (%bytes-length (%svref sl +fs-octets-slot+)))
+  (let* ((sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf)) (n (%fx- end start)))
+    (when (%fx> (%fx+ pos (%fx* 4 n)) (%bytes-length (%fsbuf-octets buf)))
       (%fs-ensure s (%fx+ pos (%fx* 4 n))))
-    (let ((new (%utf8-encode-into string start end (%svref sl +fs-octets-slot+) pos)))
-      (%cursor-set cur 0 new)
-      (when (%fx> new (%cursor-ref cur 1)) (%cursor-set cur 1 new))
+    (let ((new (%utf8-encode-into string start end (%fsbuf-octets buf) pos)))
+      (%set-fsbuf-pos buf new)
+      (when (%fx> new (%fsbuf-fill buf)) (%set-fsbuf-fill buf new))
       (%set-svref sl +fs-dirty-slot+ t))
     (let ((nl (%string-last-newline string start end)))
       (%set-svref sl +stream-column-slot+
@@ -794,7 +786,7 @@ input file without an unread character."
   (setf (stream-fast s)
         (and (null (stream-unread s)) (stream-open s) (eql (file-stream-esize s) 0)
              (member (stream-direction s) '(:input :io))
-             :file)))
+             (file-stream-buf s))))
 
 (defmacro %character-input-file-p (s)
   "True when the file stream S is open for character input."
@@ -913,7 +905,7 @@ STRING when it is a string input stream without one, else OTHER."
       (let ((p (file-stream-pos s)))
         (declare (fixnum p))
         (if (< p (the fixnum (file-stream-fill s)))
-            (let ((b (%bytes-ref (%instance-ref s +fs-octets-slot+) p)))
+            (let ((b (%bytes-ref (file-stream-octets s) p)))
               (declare (fixnum b))
               (if (< b #x80)
                   (progn (setf (file-stream-pos s) (+ p 1)) (code-char b))
@@ -934,7 +926,7 @@ STRING when it is a string input stream without one, else OTHER."
       (let ((p (file-stream-pos s)))
         (declare (fixnum p))
         (if (< p (the fixnum (file-stream-fill s)))
-            (let ((b (%bytes-ref (%instance-ref s +fs-octets-slot+) p)))
+            (let ((b (%bytes-ref (file-stream-octets s) p)))
               (declare (fixnum b))
               (if (< b #x80) (code-char b) (peek-char nil s eof-error-p eof-value)))
             (if eof-error-p (error 'end-of-file :stream s) eof-value)))
@@ -972,12 +964,12 @@ octet of a character input file when it is ASCII, else the call FALLBACK."
   "READ-LINE of up to three arguments; a character input file is read here."
   (let ((s (cond ((null stream) *standard-input*) ((eq stream t) *terminal-io*) (t stream))))
     (if (and (%instancep s) (eq (%instance-layout s) *file-stream-layout*)
-             (eq (%instance-ref s +stream-fast-slot+) :file))
-        (let* ((sl (%instance-slots s)) (cur (%sl-cursor sl)) (p (%cursor-ref cur 0)) (fill (%cursor-ref cur 1)))
+             (%fsbufp (%instance-ref s +stream-fast-slot+)))
+        (let* ((buf (%instance-ref s +stream-fast-slot+)) (p (%fsbuf-pos buf)) (fill (%fsbuf-fill buf)))
           (if (%fx>= p fill)
               (if eof-error-p (error 'end-of-file :stream s) (values eof-value t))
-              (let* ((v (%svref sl +fs-octets-slot+)) (e (%bytes-find v 10 p fill)))
-                (%cursor-set cur 0 (if (%fx< e fill) (%fx+ e 1) e))
+              (let* ((v (%fsbuf-octets buf)) (e (%bytes-find v 10 p fill)))
+                (%set-fsbuf-pos buf (if (%fx< e fill) (%fx+ e 1) e))
                 (values (%utf8-decode v p e) (%fx>= e fill)))))
         (read-line s eof-error-p eof-value))))
 
@@ -1348,15 +1340,17 @@ and whether the newline was missing, or :eof."
                                  :elt-type (if bits
                                                    (list (if signed 'signed-byte 'unsigned-byte) bits)
                                                    'character)
-                                 :octets octets :cursor (%make-fs-cursor pos (length octets))
+                                 :buf (%make-fsbuf octets pos (length octets))
                                  :esize (if bits (ceiling bits 8) 0) :signed signed
                                  :native native :external-format external-format
                                  :created created
-                                 :fast (and (not bits) (member direction '(:input :io)) :file)
+                                 :fast (and (not bits) (member direction '(:input :io)) :file)   ; (the buffer, below)
                                  :fast-out (and (not bits) (member direction '(:output :io)) :file)
                                  :dirty (and (member direction '(:output :io))
                                              (not (member if-exists '(:overwrite :append)))
                                              t))))
+            ;; FAST holds the buffer of a character input file (%FS-FAST-CHAR)
+            (when (stream-fast s) (setf (stream-fast s) (file-stream-buf s)))
             (when (eq direction :probe) (setf (stream-open s) nil (stream-fast s) nil (stream-fast-out s) nil))
             s))))))
 

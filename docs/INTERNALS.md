@@ -1053,7 +1053,7 @@ The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
 5.2), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
-`i-file-roundtrip` 1.7, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
+`i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
 What is not as fast as intended, and why:
 
@@ -1077,6 +1077,34 @@ What is not as fast as intended, and why:
   not one of these: those calls are loops at the call site (compiler macros
   in `runtime/core.lisp`, `hash.lisp`, `seq.lisp`), where the lambda is a
   local function and the exit a branch (`v-go-closure` 1.0, was 66).
+* **Generic functions**: dispatch on EQL specializers or on many classes at
+  one call site (4–5 times), `make-instance` with a class that is not a
+  constant (5), generic functions with `&optional`/`&key` (3).
+* **Integers between 2^29 and 2^63** are boxed when they are stored in data
+  structures or passed between functions (fixnums in SBCL); **bignums** have
+  28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
+  site and grows by `array.copy` into new storage, whose allocation is the
+  remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
+  string keys hash in a Wasm helper (`h-wordfreq` 1.34).
+* **Files** are no slower than data in memory. A file is read with one
+  `readSync` straight into the linear memory (`read_file_mem` in
+  `host/jsffi.mjs`; its existence is not asked first) and written with one
+  `writeFileSync`, its octets crossing at once (`js:to-octets`,
+  `js:from-octets`); text is encoded and decoded in UTF-8 by Wasm loops
+  (`%utf8-encode-into`, `%utf8-decode`, `%bytes-find` for `read-line`). A
+  file stream keeps its octets, position and length in a Wasm struct of
+  its own (`$fsbuf`, `src/layout.lisp`), which its `fast` slot holds while
+  it is an open character input file: `read-char` and `peek-char` are
+  inline at the call site (`%fs-fast-char`: an instance whose `fast` slot
+  holds an `$fsbuf`, then three fields and an octet), as for a string input
+  stream (`fast` is `:string`). `read-line`, `write-string`, `write-line`
+  and `write-char` have fixed-argument paths for files. `i-file-roundtrip`
+  is 1.6–2.0 times SBCL (13 before; SBCL's own time varies between 20 and
+  26 ms from run to run); `i-read-lines` 1.05. A `read-char` loop over a
+  4 MB file takes 1.6 ns a character, twice SBCL's time, while scanning the
+  same text as a simple string with `schar` is itself three times SBCL's
+  time: the remaining factor is the cost of Lisp code in Wasm, not of the
+  file. Opening and closing a 55 KB file costs about 10–18 µs.
 * **Generic functions**: dispatch on EQL specializers or on many classes at
   one call site (4–5 times), `make-instance` with a class that is not a
   constant (5), generic functions with `&optional`/`&key` (3).
