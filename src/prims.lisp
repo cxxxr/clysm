@@ -415,7 +415,27 @@ leaving them in the i32 locals X and Y."
 (defprim char-code (c) :value `(,@c (:call :check-char) (:i32.const ,+char-tag+) :i32.sub :ref.i31))
 (defprim code-char (n) :value `(,@n (:ref.cast :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%char-code (c) :value `(,@c (:ref.cast :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub :ref.i31))
-(defprim char= (a b) :test `(,@a (:call :check-char) ,@b (:call :check-char) :i32.eq))
+(defun constant-char-payload (code)
+  "The i31 payload of CODE when it pushes a constant character, else NIL."
+  (and (= (length code) 2) (consp (first code)) (eq (car (first code)) :i32.const)
+       (eq (second code) :ref.i31) (integerp (second (first code)))
+       (>= (second (first code)) +char-tag+)
+       (second (first code))))
+;; a constant operand needs no check
+(defun inline-char-payload (code)
+  "CODE pushes a value: push its character payload, checked inline (the
+helper signals the type error)."
+  (let ((tmp (new-local)) (v (new-local :i32)))
+    `(,@code (:local.tee ,tmp) (:ref.test :i31)
+      (:if nil :i32
+           ((:local.get ,tmp) (:ref.cast! :i31) :i31.get_s (:local.tee ,v) (:i32.const ,+char-tag+) :i32.ge_s
+            (:if nil :i32 ((:local.get ,v)) ((:local.get ,tmp) (:call :check-char))))
+           ((:local.get ,tmp) (:call :check-char))))))
+(defprim char= (a b) :test
+  (let ((ka (constant-char-payload a)) (kb (constant-char-payload b)))
+    (cond (kb `(,@(inline-char-payload a) (:i32.const ,kb) :i32.eq))
+          (ka `(,@(inline-char-payload b) (:i32.const ,ka) :i32.eq))
+          (t `(,@a (:call :check-char) ,@b (:call :check-char) :i32.eq)))))
 
 ;;; ------------------------------------------------------------
 ;;; Symbols
@@ -3492,6 +3512,71 @@ division and the product are the identity)."
           (:br ,again)))
       (:local.get ,i) (:local.get ,s0) :i32.lt_s
       (:if nil :i32 ((:i32.const -1)) ((:local.get ,i))) :ref.i31)))
+
+;; the next character of the stream S when it is an open character input
+;; file (runtime/stream.lisp: its layout is that of FILE-STREAM and its
+;; FAST slot is :FILE) and that character is ASCII, else NIL; with ADVANCE
+;; true it is read (READ-CHAR), otherwise only looked at (PEEK-CHAR).  The
+;; slot indices are those checked by stream.lisp when it is loaded.
+(defparameter *fs-slot-fast* 14)
+(defparameter *fs-slot-octets* 16)
+(defparameter *fs-slot-cursor* 17)
+(defprim clysm-sys::%fs-fast-char (s advance) :value
+  (let ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
+        (cur (new-local '(:ref :null :s32vec))) (no (gensym "NO")) (out (gensym "OUT")))
+    `((:block ,out :eqref
+        (:block ,no nil
+          ,@s (:local.tee ,o) (:ref.test :instance) :i32.eqz (:br_if ,no)
+          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
+          (:global.get ,(sym-global 'clysm-sys::*file-stream-layout*)) (:struct.get :symbol ,+sym-value+)
+          :ref.eq :i32.eqz
+          (:if nil nil
+               (;; a string input stream of a simple string (FAST is :STRING)
+                (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
+                (:global.get ,(sym-global 'clysm-sys::*string-stream-layout*)) (:struct.get :symbol ,+sym-value+)
+                :ref.eq :i32.eqz (:br_if ,no)
+                (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
+                (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz
+                (:br_if ,no)
+                (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
+                (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
+                :i32.ge_s (:br_if ,no)
+                ,@advance ,@(nil-code) :ref.eq
+                (:if nil nil nil
+                     ((:local.get ,sl) (:i32.const 3) (:local.get ,p) (:i32.const 1) :i32.add :ref.i31
+                      (:array.set :vector)))
+                (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
+                (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out)))
+          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
+          (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:global.get ,(sym-global :file)) :ref.eq :i32.eqz
+          (:br_if ,no)
+          (:local.get ,sl) (:i32.const ,*fs-slot-cursor*) (:array.get :vector) (:ref.cast :s32vec) (:local.tee ,cur)
+          (:i32.const 0) (:array.get :s32vec) (:local.tee ,p)
+          (:local.get ,cur) (:i32.const 1) (:array.get :s32vec)
+          :i32.ge_s (:br_if ,no)
+          (:local.get ,sl) (:i32.const ,*fs-slot-octets*) (:array.get :vector) (:ref.cast :bytes)
+          (:local.get ,p) (:array.get_u :bytes) (:local.tee ,b) (:i32.const 128) :i32.ge_u (:br_if ,no)
+          ,@advance ,@(nil-code) :ref.eq
+          (:if nil nil nil
+               ((:local.get ,cur) (:i32.const 0) (:local.get ,p) (:i32.const 1) :i32.add
+                (:array.set :s32vec)))
+          (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
+        ,@(nil-code)))))
+
+;; the index of the first octet BYTE of the simple (unsigned-byte 8) vector
+;; BYTES between START and END, or END
+(defprim clysm-sys::%bytes-find (bytes byte start end) :value
+  (let ((b (new-local '(:ref :null :bytes))) (x (new-local :i32)) (i (new-local :i32)) (e (new-local :i32))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@bytes (:ref.cast :bytes) (:local.set ,b) ,@(idx-code byte) (:local.set ,x)
+      ,@(idx-code start) (:local.set ,i) ,@(idx-code end) (:local.set ,e)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,i) (:local.get ,e) :i32.ge_s (:br_if ,done)
+          (:local.get ,b) (:local.get ,i) (:array.get_u :bytes) (:local.get ,x) :i32.eq (:br_if ,done)
+          (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+          (:br ,again)))
+      (:local.get ,i) :ref.i31)))
 
 ;; exported entry used by JS to call Lisp closures
 (defhelper :lisp-apply :xx-x ()

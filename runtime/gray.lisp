@@ -62,7 +62,7 @@
 (defmethod open-stream-p ((stream fundamental-stream)) (stream-open stream))
 (defmethod close ((stream fundamental-stream) &key abort)
   (declare (ignore abort))
-  (prog1 (stream-open stream) (setf (stream-open stream) nil)))
+  (prog1 (stream-open stream) (setf (stream-open stream) nil (stream-fast stream) nil (stream-fast-out stream) nil)))
 (defmethod input-stream-p ((stream fundamental-stream)) nil)
 (defmethod input-stream-p ((stream fundamental-input-stream)) t)
 (defmethod output-stream-p ((stream fundamental-stream)) nil)

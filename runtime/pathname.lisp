@@ -452,7 +452,7 @@ FILE-ERROR for wild pathnames."
       (error (c)
         (error 'file-error :pathname x :format-control "cannot delete ~A: ~A"
                            :format-arguments (list name c))))
-    (when (%streamp x) (setf (stream-open x) nil))
+    (when (%streamp x) (setf (stream-open x) nil (stream-fast x) nil (stream-fast-out x) nil))
     t))
 
 (defun rename-file (from to)
