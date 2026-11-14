@@ -28,7 +28,11 @@ if (traceFile) {
       const value = target[name];
       if (typeof value !== 'function') return value;
       return (...args) => {
-        if (typeof args[0] === 'string') (name === 'readFileSync' ? traced.read : traced.seen).add(args[0]);
+        // (file streams read with openSync and readSync)
+        if (typeof args[0] === 'string') {
+          const read = name === 'readFileSync' || (name === 'openSync' && (args[1] === undefined || args[1] === 'r'));
+          (read ? traced.read : traced.seen).add(args[0]);
+        }
         return value.apply(target, args);
       };
     },

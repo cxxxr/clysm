@@ -874,6 +874,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:js-str-to-mem :x-i "js" "str_to_mem")
     (:js-octets-from-mem :i-x "js" "octets_from_mem")
     (:js-octets-to-mem :x-i "js" "octets_to_mem")
+    (:js-read-file-mem :x-i "js" "read_file_mem")
     (:host-arg-len :i-i "env" "arg_len")
     (:host-arg-char :ii-i "env" "arg_char")
     ;; the host's Math functions, imported one by one (a direct call each)
@@ -3391,6 +3392,7 @@ division and the product are the identity)."
 (defprim clysm-sys::%js-str-to-mem (o) :value `(,@(ext-code o) (:call :js-str-to-mem) :ref.i31))
 (defprim clysm-sys::%js-octets-from-mem (n) :value `(,@(idx-code n) (:call :js-octets-from-mem) ,@(wrap-ext)))
 (defprim clysm-sys::%js-octets-to-mem (o) :value `(,@(ext-code o) (:call :js-octets-to-mem) :ref.i31))
+(defprim clysm-sys::%js-read-file-mem (o) :value `(,@(ext-code o) (:call :js-read-file-mem) :ref.i31))
 
 ;;; UTF-8 between simple strings and simple (unsigned-byte 8) vectors, in
 ;;; one Wasm loop (file streams, runtime/stream.lisp)

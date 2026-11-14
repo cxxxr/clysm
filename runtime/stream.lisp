@@ -1302,7 +1302,9 @@ and whether the newline was missing, or :eof."
     (when (wild-pathname-p path)
       (%file-error path "can't open the wild pathname ~A" path))
     (let* ((native (%native-name path))
-           (exists (%file-exists-p native))
+           ;; an input file is read at once: reading it tells whether it exists
+           (input-octets (and (eq direction :input) (%host-read-octets native)))
+           (exists (or input-octets (%file-exists-p native)))
            (if-exists (if iep if-exists :new-version))
            (if-does-not-exist
              (if idnep if-does-not-exist
@@ -1339,10 +1341,10 @@ and whether the newline was missing, or :eof."
                (t (%type-error if-exists '(member :error :new-version :rename :rename-and-delete
                                            :overwrite :append :supersede nil)))))
             ((eq direction :input)
-             (setq octets (%host-read-octets native))
+             (setq octets input-octets)
              (unless octets (%file-error path "can't open ~A" native)))
             (t (setq octets (make-array 0 :element-type '(unsigned-byte 8)))))
-          (let ((s (%make-stream :kind :file :pathname path :direction direction
+          (let ((s (%make-file-stream :kind :file :pathname path :direction direction
                                  :elt-type (if bits
                                                    (list (if signed 'signed-byte 'unsigned-byte) bits)
                                                    'character)

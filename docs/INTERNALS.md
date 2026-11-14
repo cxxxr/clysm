@@ -1102,9 +1102,12 @@ What is not as fast as intended, and why:
   over a string (about 2.6 ns a character; SBCL's file streams are twice as
   fast as its string streams, so the ratio is 2.8 for files and 1.7 for
   strings), and `peek-char` with `read-char` over a string is faster than
-  SBCL's. Opening a 55 KB file costs about 30 µs, most of it copying the
-  octets into a Lisp vector (Wasm cannot fill a GC array from linear memory
-  at once).
+  SBCL's. Opening and closing a 55 KB file costs about 18 µs: an input
+  file is read once (its existence is not asked first), by `openSync` and
+  `readSync` straight into the linear memory (`read_file_mem` in
+  `host/jsffi.mjs`), then copied into a Lisp vector by a Wasm loop. A
+  `read-char` loop over a 4 MB file is 1.8 times SBCL (about 2 ns a
+  character).
 * **Generic functions**: dispatch on EQL specializers or on many classes at
   one call site (4–5 times), `make-instance` with a class that is not a
   constant (5), generic functions with `&optional`/`&key` (3).

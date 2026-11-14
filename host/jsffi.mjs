@@ -161,6 +161,31 @@ export function makeJsImports(state) {
         new Uint8Array(ensure(bytes.length), 0, bytes.length).set(bytes);
         return bytes.length;
       },
+      // the contents of the file NAME into the memory at once (file
+      // streams): the number of octets, or -1 if it cannot be read
+      read_file_mem: (name) => {
+        const fsys = globalThis.__clysm_fs;
+        if (!fsys) return -1;
+        try {
+          if (typeof fsys.openSync === 'function' && typeof fsys.readSync === 'function') {
+            const fd = fsys.openSync(name, 'r');
+            try {
+              const size = fsys.fstatSync(fd).size;
+              const buffer = ensure(size);
+              let done = 0;
+              while (done < size) {
+                const n = fsys.readSync(fd, new Uint8Array(buffer, done, size - done), 0, size - done, done);
+                if (n <= 0) break;
+                done += n;
+              }
+              return done;
+            } finally { fsys.closeSync(fd); }
+          }
+          const bytes = fsys.readFileSync(name);
+          new Uint8Array(ensure(bytes.length), 0, bytes.length).set(bytes);
+          return bytes.length;
+        } catch (e) { return -1; }
+      },
       truthy: (x) => (x ? 1 : 0),
       is_lisp: (x) => (isLisp(x) ? 1 : 0),
     };

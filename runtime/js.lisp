@@ -336,8 +336,10 @@ Signals an error if one is rejected."
     (error () nil)))
 
 (defun %fs-read-octets (fs name)
-  (handler-case (js:to-octets (js:call fs "readFileSync" name))
-    (error () nil)))
+  (declare (ignore fs))
+  ;; read by the host into the memory, then copied into a Lisp vector
+  (let ((n (%js-read-file-mem (%js-string name))))
+    (and (>= n 0) (%mem-get-octets n))))
 
 ;;; JavaScript modules
 
