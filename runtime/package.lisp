@@ -557,6 +557,20 @@
               (when (eq p *keyword-package*)
                 (%set-symbol-value sym sym)
                 (%set-symbol-flags sym 3))))))))
+      ;; the shadowing symbols of each package (name home-package): present
+      ;; in it and on its list, as its DEFPACKAGE form will make them
+      (dotimes (i (%svlength pkgtab))
+        (dolist (entry (cadddr (%svref pkgtab i)))
+          (let* ((p (%svref pkgs i)) (name (car entry))
+                 (home (gethash (cadr entry) *package-table*))
+                 (sym (and home
+                           (multiple-value-bind (s found) (gethash name (%package-internals home))
+                             (if found s (gethash name (%package-externals home)))))))
+            (when (and sym (string= (symbol-name sym) name))
+              (unless (or (nth-value 1 (gethash name (%package-internals p)))
+                          (nth-value 1 (gethash name (%package-externals p))))
+                (setf (gethash name (%package-internals p)) sym))
+              (%pkg-set p 6 (cons sym (%pkg p 6)))))))
       (%set-symbol-value t t)
       (%set-symbol-value nil nil)
       (%set-symbol-plist nil nil)

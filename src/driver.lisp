@@ -555,8 +555,15 @@ path relative to it (the Clysm installation, or the working directory).")
                                      (uses (loop for u in (package-use-list hp)
                                                  for n = (gethash u *host->target-name*)
                                                  when n collect n))
-                                     (nicks (gethash pn *target-nicknames*)))
-                                (list pn nicks uses)))))
+                                     (nicks (gethash pn *target-nicknames*))
+                                     ;; its shadowing symbols, as (name home-package):
+                                     ;; known before its DEFPACKAGE form runs, since
+                                     ;; the packages it uses are (an EXPORT from one
+                                     ;; of them must not see a conflict)
+                                     (shadows (loop for s in (package-shadowing-symbols hp)
+                                                    for home = (symbol-target-package-name s)
+                                                    when home collect (list (symbol-name s) home))))
+                                (list pn nicks uses shadows)))))
           (let ((*const-globals* nil))
             ;; build init code directly (strings/lists) as constant expressions
             (labels ((lst (items)
@@ -564,10 +571,12 @@ path relative to it (the Clysm installation, or the working directory).")
                            `(,@(car items) ,@(lst (cdr items)) (:struct.new :cons))))
                      (str (s) (string-array-code s)))
               (add-global *m* :pkgtab '(:ref :vector) nil
-                          `(,@(loop for (pn nicks uses) in pkg-inits
+                          `(,@(loop for (pn nicks uses shadows) in pkg-inits
                                     append (lst (list (str pn)
                                                       (lst (mapcar #'str nicks))
-                                                      (lst (mapcar #'str uses)))))
+                                                      (lst (mapcar #'str uses))
+                                                      (lst (loop for (name home) in shadows
+                                                                 collect (lst (list (str name) (str home))))))))
                             (:array.new_fixed :vector ,(length pkg-inits)))))))))
     (report-undefined-functions)
     (when *shake* (shake-module *m*))
