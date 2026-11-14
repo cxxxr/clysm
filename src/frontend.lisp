@@ -239,7 +239,9 @@ declarations are kept by how it is written, and it must not pay for the checks."
 checked, since the code after it computes with the variable as a machine
 integer (a value past the type would become another number, or a character).
 The check is left out by the compiler where the type of FORM shows it holds."
-  (if (or (not *check-declared-integers*) (not (integer-decl-p spec)) (integerp form))
+  ;; (a literal NIL is how macros bind a variable before its first value,
+  ;; under the declarations of their body: DOLIST's variable for its result form)
+  (if (or (not *check-declared-integers*) (not (integer-decl-p spec)) (integerp form) (null form))
       form
       (let ((v (gensym "V")))
         `(let ((,v ,form))

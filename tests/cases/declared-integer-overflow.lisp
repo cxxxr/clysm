@@ -15,3 +15,5 @@
 (defun g (x) (let* ((d (* x x x x x x x x))) (declare (fixnum d)) (< d 10)))
 (print (g 1))
 (print (and (member (handler-case (g 1000000000) (type-error () :type-error)) '(:type-error nil)) t))
+;; the variable of DOLIST may be declared: it is NIL only for the result form
+(print (let ((n 0)) (dolist (x '(1 2 3) n) (declare (fixnum x)) (incf n x))))
