@@ -21,7 +21,10 @@
   pathname
   (direction :output)
   (elt-type 'character)
-  (line 1))
+  (line 1)
+  ;; :FILE for an open character input file (READ-CHAR reads its ASCII
+  ;; characters inline at the call site); NIL once it is closed
+  (fast nil))
 
 (defstruct (file-stream (:include stream) (:constructor %make-file-stream))
   octets            ; simple (unsigned-byte 8) vector holding the file contents
@@ -302,9 +305,10 @@
     (when (> n len)
       (let ((new (%make-bytes (max n (* 2 len) 64))) (fill (file-stream-fill s)))
         (declare (fixnum fill))
-        (do ((i 0 (+ i 1))) ((>= i fill))
-          (declare (fixnum i))
-          (%set-bytes-ref new i (%bytes-ref v i)))
+        (unless (%storage-copy new 0 v 0 fill)     ; array.copy
+          (do ((i 0 (+ i 1))) ((>= i fill))
+            (declare (fixnum i))
+            (%set-bytes-ref new i (%bytes-ref v i))))
         (setf (file-stream-octets s) new)))))
 
 (defun %fs-put-octet (s b)
@@ -355,6 +359,18 @@
                                    (ash code (* -6 (- n 1)))))
           (do ((k (- n 2) (- k 1))) ((< k 0))
             (%fs-put-octet s (logior #x80 (logand (ash code (* -6 k)) #x3F))))))))
+
+(defun %fs-write-chars (s string start end)
+  "Write the characters START..END of the simple string STRING to the
+character file stream S, encoded in UTF-8, at once."
+  (declare (fixnum start end))
+  (let ((pos (file-stream-pos s)))
+    (declare (fixnum pos))
+    (%fs-ensure s (+ pos (* 4 (- end start))))
+    (setq pos (%utf8-encode-into string start end (file-stream-octets s) pos))
+    (setf (file-stream-pos s) pos)
+    (when (> pos (the fixnum (file-stream-fill s))) (setf (file-stream-fill s) pos))
+    (setf (file-stream-dirty s) t)))
 
 (defun %fs-read-element (s)
   "Read one binary element (an integer) or NIL at end of file."
@@ -535,9 +551,7 @@
 (defun %stream-note-string-column (s string start end)
   "Update the column of S after the characters START..END of STRING were written."
   (declare (fixnum start end))
-  (let ((nl (do ((i (- end 1) (- i 1))) ((< i start) -1)
-              (declare (fixnum i))
-              (when (eq (%schar string i) #\Newline) (return i)))))
+  (let ((nl (%string-last-newline string start end)))
     (declare (fixnum nl))
     (setf (stream-column s) (if (< nl 0) (+ (stream-column s) (- end start)) (- end nl 1)))))
 
@@ -564,10 +578,7 @@
        (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
                     (eql (file-stream-esize s) 0))
          (%not-output-stream s 'character))
-       (%fs-ensure s (+ (file-stream-pos s) (- end start)))
-       (do ((i start (+ i 1))) ((>= i end))
-         (declare (fixnum i))
-         (%fs-encode-char s (%schar string i)))
+       (%fs-write-chars s string start end)
        (%stream-note-string-column s string start end))
       ;; each component stream gets the whole string
       (:broadcast (dolist (x (stream-streams s)) (%stream-write-simple-string x string start end)))
@@ -593,6 +604,16 @@
 
 (defun write-string (string &optional stream &key (start 0) end)
   (%write-string-4 string stream start end))
+
+;; without keyword arguments: no keyword list to parse
+(define-compiler-macro write-line (&whole form string &optional (stream nil) &rest keys)
+  (if keys
+      form
+      (let ((str (gensym "STRING")) (st (gensym "STREAM")))
+        `(let ((,str ,string) (,st ,stream))
+           (%write-string-2 ,str ,st)
+           (write-char #\Newline ,st)
+           ,str))))
 
 (defun write-line (string &optional stream &key (start 0) end)
   (write-string string stream :start start :end end)
@@ -673,6 +694,14 @@
 ;;; input
 ;;; ------------------------------------------------------------
 
+(defun %fs-refresh-fast (s)
+  "Mark the file stream S for READ-CHAR inline if it is an open character
+input file without an unread character."
+  (setf (stream-fast s)
+        (and (null (stream-unread s)) (stream-open s) (eql (file-stream-esize s) 0)
+             (member (stream-direction s) '(:input :io))
+             :file)))
+
 (defmacro %character-input-file-p (s)
   "True when the file stream S is open for character input."
   `(and (eql (file-stream-esize ,s) 0) (stream-open ,s)
@@ -684,7 +713,9 @@
     (return-from %stream-read-char (stream-read-char s)))
   (let ((u (stream-unread s)))
     (if u
-        (progn (setf (stream-unread s) nil) u)
+        (progn (setf (stream-unread s) nil)
+               (when (eq (stream-kind s) :file) (%fs-refresh-fast s))
+               u)
         (case (stream-kind s)
           (:string-in (let ((i (stream-index s)) (buf (stream-buffer s)))
                         (if (>= i (stream-end s)) :eof
@@ -757,6 +788,133 @@
               (if eof-error-p (error 'end-of-file :stream s) eof-value)
               c)))))
 
+;;; READ-CHAR and PEEK-CHAR with up to three arguments call these functions
+;;; of fixed arguments (compiler macros below).  A character input file and
+;;; a string input stream are read here without the accessors' type checks:
+;;; one test of the instance's layout, then its slots by their indices
+;;; (checked against the accessors when this file is loaded).
+
+(defconstant +stream-kind-slot+ 0)
+(defconstant +stream-buffer-slot+ 2)
+(defconstant +stream-index-slot+ 3)
+(defconstant +stream-end-slot+ 4)
+(defconstant +stream-unread-slot+ 6)
+(defconstant +stream-open-slot+ 9)
+(defconstant +stream-direction-slot+ 11)
+(defconstant +stream-fast-slot+ 14)
+(defconstant +fs-octets-slot+ 15)
+(defconstant +fs-fill-slot+ 16)
+(defconstant +fs-pos-slot+ 17)
+(defconstant +fs-esize-slot+ 18)
+
+(defvar *file-stream-layout*
+  (let ((s (%make-file-stream :kind :file :buffer 'b :index 'i :end 'e :unread 'u :open 'o
+                              :direction 'd :octets 'oc :fill 'f :pos 'p :esize 'es :fast 'fa)))
+    (unless (and (eq (%instance-ref s +stream-kind-slot+) :file)
+                 (eq (%instance-ref s +stream-buffer-slot+) 'b)
+                 (eq (%instance-ref s +stream-index-slot+) 'i)
+                 (eq (%instance-ref s +stream-end-slot+) 'e)
+                 (eq (%instance-ref s +stream-unread-slot+) 'u)
+                 (eq (%instance-ref s +stream-open-slot+) 'o)
+                 (eq (%instance-ref s +stream-direction-slot+) 'd)
+                 (eq (%instance-ref s +stream-fast-slot+) 'fa)
+                 (eq (%instance-ref s +fs-octets-slot+) 'oc)
+                 (eq (%instance-ref s +fs-fill-slot+) 'f)
+                 (eq (%instance-ref s +fs-pos-slot+) 'p)
+                 (eq (%instance-ref s +fs-esize-slot+) 'es))
+      (error "stream.lisp: the slot indices of FILE-STREAM changed"))
+    (%instance-layout s)))
+
+(defvar *string-stream-layout*
+  (%instance-layout (%make-sstream :string-in "" 0 0 :input)))
+
+(defmacro %fast-input-case (s file string other)
+  "FILE when S is an open character input file without an unread character,
+STRING when it is a string input stream without one, else OTHER."
+  `(if (and (%instancep ,s) (null (%instance-ref ,s +stream-unread-slot+)))
+       (let ((layout (%instance-layout ,s)))
+         (cond ((and (eq layout *file-stream-layout*)
+                     (%instance-ref ,s +stream-open-slot+)
+                     (eql (%instance-ref ,s +fs-esize-slot+) 0)
+                     (let ((d (%instance-ref ,s +stream-direction-slot+))) (or (eq d :input) (eq d :io))))
+                ,file)
+               ((and (eq layout *string-stream-layout*)
+                     (eq (%instance-ref ,s +stream-kind-slot+) :string-in))
+                ,string)
+               (t ,other)))
+       ,other))
+
+(defun %read-char-3 (stream eof-error-p eof-value)
+  (let ((s (cond ((null stream) *standard-input*) ((eq stream t) *terminal-io*) (t stream))))
+    (%fast-input-case s
+      (let ((p (%instance-ref s +fs-pos-slot+)))
+        (declare (fixnum p))
+        (if (< p (the fixnum (%instance-ref s +fs-fill-slot+)))
+            (let ((b (%bytes-ref (%instance-ref s +fs-octets-slot+) p)))
+              (declare (fixnum b))
+              (if (< b #x80)
+                  (progn (%set-instance-ref s +fs-pos-slot+ (+ p 1)) (code-char b))
+                  (read-char s eof-error-p eof-value)))
+            (if eof-error-p (error 'end-of-file :stream s) eof-value)))
+      (let ((i (%instance-ref s +stream-index-slot+)) (buf (%instance-ref s +stream-buffer-slot+)))
+        (declare (fixnum i))
+        (if (< i (the fixnum (%instance-ref s +stream-end-slot+)))
+            (progn (%set-instance-ref s +stream-index-slot+ (+ i 1))
+                   (if (%simple-string-p buf) (%schar buf i) (char buf i)))
+            (if eof-error-p (error 'end-of-file :stream s) eof-value)))
+      (read-char s eof-error-p eof-value))))
+
+(defun %peek-char-3 (stream eof-error-p eof-value)
+  "PEEK-CHAR with PEEK-TYPE NIL."
+  (let ((s (cond ((null stream) *standard-input*) ((eq stream t) *terminal-io*) (t stream))))
+    (%fast-input-case s
+      (let ((p (%instance-ref s +fs-pos-slot+)))
+        (declare (fixnum p))
+        (if (< p (the fixnum (%instance-ref s +fs-fill-slot+)))
+            (let ((b (%bytes-ref (%instance-ref s +fs-octets-slot+) p)))
+              (declare (fixnum b))
+              (if (< b #x80) (code-char b) (peek-char nil s eof-error-p eof-value)))
+            (if eof-error-p (error 'end-of-file :stream s) eof-value)))
+      (let ((i (%instance-ref s +stream-index-slot+)) (buf (%instance-ref s +stream-buffer-slot+)))
+        (declare (fixnum i))
+        (if (< i (the fixnum (%instance-ref s +stream-end-slot+)))
+            (if (%simple-string-p buf) (%schar buf i) (char buf i))
+            (if eof-error-p (error 'end-of-file :stream s) eof-value)))
+      (peek-char nil s eof-error-p eof-value))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %inline-file-char-expansion (stream eof-error-p eof-value advance fallback)
+    "READ-CHAR (ADVANCE) or PEEK-CHAR of STREAM at the call site: the next
+octet of a character input file when it is ASCII, else the call FALLBACK."
+    (let ((s (gensym "S")) (e (gensym "E")) (v (gensym "V")) (p (gensym "P")) (b (gensym "B"))
+          (sl (gensym "SLOTS")))
+      `(let ((,s ,stream) (,e ,eof-error-p) (,v ,eof-value))
+         (if (and (%instancep ,s) (eq (%instance-layout ,s) (load-time-value *file-stream-layout*)))
+             (let ((,sl (%instance-slots ,s)))
+               (if (eq (%svref ,sl +stream-fast-slot+) :file)
+                   (let ((,p (%svref ,sl +fs-pos-slot+)))
+                     (if (%fx< ,p (%svref ,sl +fs-fill-slot+))
+                         (let ((,b (%bytes-ref (%svref ,sl +fs-octets-slot+) ,p)))
+                           (if (%fx< ,b 128)
+                               (progn ,@(when advance `((%set-svref ,sl +fs-pos-slot+ (%fx+ ,p 1))))
+                                      (code-char ,b))
+                               (,fallback ,s ,e ,v)))
+                         (,fallback ,s ,e ,v)))
+                   (,fallback ,s ,e ,v)))
+             (,fallback ,s ,e ,v))))))
+
+(define-compiler-macro read-char (&whole form &optional (stream nil) (eof-error-p t) eof-value
+                                         (recursive-p nil recursive-p-p))
+  (if (and recursive-p-p (not (constantp recursive-p)))
+      form
+      (%inline-file-char-expansion stream eof-error-p eof-value t '%read-char-3)))
+
+(define-compiler-macro peek-char (&whole form &optional (peek-type nil) (stream nil) (eof-error-p t) eof-value
+                                         (recursive-p nil recursive-p-p))
+  (if (or (not (null peek-type)) (and recursive-p-p (not (constantp recursive-p))))
+      form
+      (%inline-file-char-expansion stream eof-error-p eof-value nil '%peek-char-3)))
+
 (defun %stream-unread-char (s c)
   (case (stream-kind s)
     (:gray (stream-unread-char s c))
@@ -772,7 +930,8 @@
     (:file (let ((n (%utf8-length (char-code c))))
              (if (>= (file-stream-pos s) n)
                  (setf (file-stream-pos s) (- (file-stream-pos s) n))
-                 (setf (stream-unread s) c))))
+                 ;; (READ-CHAR inline reads the octets only without one)
+                 (setf (stream-unread s) c (stream-fast s) nil))))
     (t (setf (stream-unread s) c))))
 
 (defun unread-char (c &optional stream)
@@ -850,7 +1009,7 @@
   "READ-LINE for a character file stream at a character boundary: the line
 and whether the newline was missing, or :eof."
   (let* ((v (file-stream-octets s)) (fill (file-stream-fill s)) (p (file-stream-pos s))
-         (e p) (ascii t))
+         (e p))
     (declare (fixnum fill p e))
     (if (>= p fill)
         :eof
@@ -860,19 +1019,8 @@ and whether the newline was missing, or :eof."
             (let ((b (%bytes-ref v e)))
               (declare (fixnum b))
               (when (eql b 10) (return))
-              (when (>= b #x80) (setq ascii nil))
               (setq e (+ e 1))))
-          (let ((line (if ascii
-                          (let ((r (%make-string (- e p) #\Space)))
-                            (do ((i p (+ i 1)) (k 0 (+ k 1))) ((>= i e) r)
-                              (declare (fixnum i k))
-                              (%set-schar r k (code-char (%bytes-ref v i)))))
-                          (let ((r (%make-string (- e p) #\Space)) (k 0))
-                            (declare (fixnum k))
-                            (do () ((>= (the fixnum (file-stream-pos s)) e))
-                              (%set-schar r k (%fs-decode-char s t))
-                              (setq k (+ k 1)))
-                            (%simple-substring r 0 k)))))
+          (let ((line (%utf8-decode v p e)))
             (setf (file-stream-pos s) (if (< e fill) (+ e 1) e))
             (values line (>= e fill)))))))
 
@@ -1130,10 +1278,11 @@ and whether the newline was missing, or :eof."
                                  :esize (if bits (ceiling bits 8) 0) :signed signed
                                  :native native :external-format external-format
                                  :created created
+                                 :fast (and (not bits) (member direction '(:input :io)) :file)
                                  :dirty (and (member direction '(:output :io))
                                              (not (member if-exists '(:overwrite :append)))
                                              t))))
-            (when (eq direction :probe) (setf (stream-open s) nil))
+            (when (eq direction :probe) (setf (stream-open s) nil (stream-fast s) nil))
             s))))))
 
 (defun %native-close (stream &key abort)
@@ -1147,7 +1296,7 @@ and whether the newline was missing, or :eof."
     (when (eq (stream-kind stream) :socket)
       (unless abort (ignore-errors (%socket-flush stream)))
       (ignore-errors (%tcp-close (socket-stream-id stream))))
-    (setf (stream-open stream) nil))
+    (setf (stream-open stream) nil (stream-fast stream) nil))
   t)
 
 ;;; ------------------------------------------------------------
@@ -1246,6 +1395,7 @@ domain socket PATH."
                         (len (floor (file-stream-fill s) n))
                         (p (case pos (:start 0) (:end len) (t pos))))
                    (setf (stream-unread s) nil)
+                   (%fs-refresh-fast s)
                    (if (<= p len)
                        (progn (setf (file-stream-pos s) (* p n)) t)
                        nil)))

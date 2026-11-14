@@ -3372,6 +3372,127 @@ division and the product are the identity)."
 (defprim clysm-sys::%js-octets-from-mem (n) :value `(,@(idx-code n) (:call :js-octets-from-mem) ,@(wrap-ext)))
 (defprim clysm-sys::%js-octets-to-mem (o) :value `(,@(ext-code o) (:call :js-octets-to-mem) :ref.i31))
 
+;;; UTF-8 between simple strings and simple (unsigned-byte 8) vectors, in
+;;; one Wasm loop (file streams, runtime/stream.lisp)
+
+;; a new simple string of the UTF-8 octets of BYTES from START to END (a
+;; malformed sequence is U+FFFD)
+;; (the decoder: pass 0 counts the characters, pass 1 stores them)
+(defprim clysm-sys::%utf8-decode (bytes start end) :value
+  (let* ((b (new-local '(:ref :null :bytes))) (i (new-local :i32)) (e (new-local :i32)) (n (new-local :i32))
+         (c (new-local :i32)) (k (new-local :i32)) (more (new-local :i32))
+         (str (new-local '(:ref :null :string))) (pass (new-local :i32)) (j (new-local :i32)) (s0 (new-local :i32))
+         (done (gensym "DONE")) (again (gensym "AGAIN")) (inner (gensym "INNER")) (inner-done (gensym "IDONE"))
+         (passes (gensym "PASSES")) (passes-done (gensym "PDONE")))
+    (labels ((lead (limit count mask else)
+               ;; a first octet of COUNT continuations: keep its MASK bits
+               `((:local.get ,c) (:i32.const ,limit) :i32.ge_u
+                 (:if nil nil
+                      ((:i32.const ,count) (:local.set ,more)
+                       (:local.get ,c) (:i32.const ,mask) :i32.and (:local.set ,c))
+                      ,else)))
+             (bad () `((:i32.const #xFFFD) (:local.set ,c) (:br ,inner-done))))
+      (let* ((classify (lead #xF0 3 7
+                             (lead #xE0 2 15
+                                   (lead #xC0 1 31
+                                         `((:i32.const 0) (:local.set ,more) (:i32.const #xFFFD) (:local.set ,c))))))
+             (continuations
+               `((:i32.const 0) (:local.set ,j)
+                 (:block ,inner-done nil
+                   (:loop ,inner nil
+                     (:local.get ,j) (:local.get ,more) :i32.ge_u (:br_if ,inner-done)
+                     (:local.get ,i) (:local.get ,e) :i32.ge_u
+                     (:if nil nil ,(bad))
+                     (:local.get ,b) (:local.get ,i) (:array.get_u :bytes) (:local.set ,k)
+                     (:local.get ,k) (:i32.const #xC0) :i32.and (:i32.const #x80) :i32.ne
+                     (:if nil nil ,(bad))
+                     (:local.get ,c) (:i32.const 6) :i32.shl
+                     (:local.get ,k) (:i32.const #x3F) :i32.and :i32.or (:local.set ,c)
+                     (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+                     (:local.get ,j) (:i32.const 1) :i32.add (:local.set ,j)
+                     (:br ,inner)))
+                 (:local.get ,c) (:i32.const #x10FFFF) :i32.gt_u
+                 (:if nil nil ((:i32.const #xFFFD) (:local.set ,c)))))
+             (one-character
+               `((:local.get ,b) (:local.get ,i) (:array.get_u :bytes) (:local.set ,c)
+                 (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+                 (:local.get ,c) (:i32.const #x80) :i32.ge_u
+                 (:if nil nil (,@classify ,@continuations))
+                 (:local.get ,pass)
+                 (:if nil nil ((:local.get ,str) (:local.get ,n) (:local.get ,c) (:array.set :string)))
+                 (:local.get ,n) (:i32.const 1) :i32.add (:local.set ,n))))
+        `(,@bytes (:ref.cast :bytes) (:local.set ,b)
+          ,@(idx-code start) (:local.set ,s0) ,@(idx-code end) (:local.set ,e)
+          (:i32.const 0) (:local.set ,pass)
+          (:block ,passes-done nil
+            (:loop ,passes nil
+              (:local.get ,s0) (:local.set ,i) (:i32.const 0) (:local.set ,n)
+              (:block ,done nil
+                (:loop ,again nil
+                  (:local.get ,i) (:local.get ,e) :i32.ge_u (:br_if ,done)
+                  ,@one-character
+                  (:br ,again)))
+              (:local.get ,pass) (:br_if ,passes-done)
+              (:local.get ,n) (:array.new_default :string) (:local.set ,str)
+              (:i32.const 1) (:local.set ,pass)
+              (:br ,passes)))
+          (:local.get ,str) (:ref.as_non_null))))))
+
+;; encode the characters of the simple string STRING from START to END in
+;; UTF-8 into BYTES at POS (which has room for them); the value is the
+;; position after them
+(defprim clysm-sys::%utf8-encode-into (string start end bytes pos) :value
+  (let* ((str (new-local '(:ref :null :string))) (b (new-local '(:ref :null :bytes)))
+         (i (new-local :i32)) (e (new-local :i32)) (p (new-local :i32)) (c (new-local :i32))
+         (done (gensym "DONE")) (again (gensym "AGAIN")))
+    (labels ((put (value-code offset)
+               (append `((:local.get ,b) (:local.get ,p))
+                       (if (zerop offset) nil `((:i32.const ,offset) :i32.add))
+                       value-code
+                       '((:array.set :bytes))))
+             (lead (shift tag)
+               `((:local.get ,c) (:i32.const ,shift) :i32.shr_u (:i32.const ,tag) :i32.or))
+             (cont (shift)
+               `((:local.get ,c) ,@(if (zerop shift) nil `((:i32.const ,shift) :i32.shr_u))
+                 (:i32.const #x3F) :i32.and (:i32.const #x80) :i32.or))
+             (advance (n) `((:local.get ,p) (:i32.const ,n) :i32.add (:local.set ,p))))
+      (let ((one (append (put `((:local.get ,c)) 0) (advance 1)))
+            (two (append (put (lead 6 #xC0) 0) (put (cont 0) 1) (advance 2)))
+            (three (append (put (lead 12 #xE0) 0) (put (cont 6) 1) (put (cont 0) 2) (advance 3)))
+            (four (append (put (lead 18 #xF0) 0) (put (cont 12) 1) (put (cont 6) 2) (put (cont 0) 3) (advance 4))))
+        `(,@string (:ref.cast :string) (:local.set ,str) ,@(idx-code start) (:local.set ,i)
+          ,@(idx-code end) (:local.set ,e)
+          ,@bytes (:ref.cast :bytes) (:local.set ,b) ,@(idx-code pos) (:local.set ,p)
+          (:block ,done nil
+            (:loop ,again nil
+              (:local.get ,i) (:local.get ,e) :i32.ge_s (:br_if ,done)
+              (:local.get ,str) (:local.get ,i) (:array.get :string) (:local.set ,c)
+              (:local.get ,c) (:i32.const #x80) :i32.lt_u
+              (:if nil nil ,one
+                   ((:local.get ,c) (:i32.const #x800) :i32.lt_u
+                    (:if nil nil ,two
+                         ((:local.get ,c) (:i32.const #x10000) :i32.lt_u
+                          (:if nil nil ,three ,four)))))
+              (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+              (:br ,again)))
+          (:local.get ,p) :ref.i31)))))
+
+;; the index of the last newline of the simple string STRING between START
+;; and END, or -1
+(defprim clysm-sys::%string-last-newline (string start end) :value
+  (let ((str (new-local '(:ref :null :string))) (i (new-local :i32)) (s0 (new-local :i32))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@string (:ref.cast :string) (:local.set ,str) ,@(idx-code start) (:local.set ,s0)
+      ,@(idx-code end) (:i32.const 1) :i32.sub (:local.set ,i)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,i) (:local.get ,s0) :i32.lt_s (:br_if ,done)
+          (:local.get ,str) (:local.get ,i) (:array.get :string) (:i32.const 10) :i32.eq (:br_if ,done)
+          (:local.get ,i) (:i32.const 1) :i32.sub (:local.set ,i)
+          (:br ,again)))
+      (:local.get ,i) (:local.get ,s0) :i32.lt_s
+      (:if nil :i32 ((:i32.const -1)) ((:local.get ,i))) :ref.i31)))
+
 ;; exported entry used by JS to call Lisp closures
 (defhelper :lisp-apply :xx-x ()
   '(:local.get 0) '(:struct.new :foreign) '(:local.get 1) '(:struct.new :foreign)
