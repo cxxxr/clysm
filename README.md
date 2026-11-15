@@ -187,10 +187,11 @@ program. The slow cases and their causes are in
 
 * Threads are green threads: they take turns in one thread of the host
   (no parallelism). They switch when one waits (for a lock, a condition
-  variable, another thread, `sleep`, input from a socket or the terminal)
-  and, in code compiled with interrupt checks, when another can run. They
-  need JavaScript Promise Integration. McCLIM runs in its single-process
-  mode.
+  variable, another thread, `sleep`, input from a socket or the terminal),
+  and code compiled with interrupt checks (`(setq sys::*interrupt-checks*
+  t)`, on in SLIME sessions) is preempted every 10 ms; other code runs
+  until it waits. They need JavaScript Promise Integration. McCLIM runs in
+  its single-process mode.
 * `short-float` and `long-float` are `single-float` and `double-float`.
 * Instances of a redefined class are updated only after
   `(sys::track-instances)`.

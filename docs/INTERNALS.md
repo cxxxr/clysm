@@ -964,12 +964,20 @@ is made nothing changes: they block as before.
 * A new thread starts when its creator waits, with none of its dynamic
   bindings: it sees the global values and has no handlers or restarts of
   the creator.
+* Preemption: code compiled while `sys::*interrupt-checks*` is true (see
+  SWANK; on in SLIME sessions) checks for interrupts on function entry and
+  at the head of loops. While threads run, every 10000 checks
+  (`sys::*poll-interval*`, set into the counter by `sys::%set-poll-count`)
+  `sys::%thread-poll` gives the others their turn (`thread-yield`, a
+  `setImmediate`, so that the host's events are processed too) when the
+  thread has run for `sys::*time-slice*` (10 ms) since it last got its turn,
+  or at once when one was woken, a socket received data or a `sleep` is
+  over. A thread is not preempted while it compiles
+  (`sys::*preemption-inhibited*`, bound around the compiler, whose state the
+  threads share). With one thread nothing of this runs.
 * `sys::interrupt-thread` runs a function in the thread when it waits, or
-  at its next interrupt check (code compiled with `sys::*interrupt-checks*`,
-  see SWANK). An interrupt check also lets other threads run when one was
-  woken, a socket received data or a `sleep` is over, so a thread that
-  computes does not keep the others from the input they wait for.
-  `sys::destroy-thread` is an interrupt that unwinds the thread.
+  at its next interrupt check. `sys::destroy-thread` is an interrupt that
+  unwinds the thread.
 * An error that the thread does not handle ends it (with a message on
   `*error-output*`), unless `*debugger-hook*` is set; `sys::join-thread`
   then signals an error.
@@ -978,8 +986,10 @@ is made nothing changes: they block as before.
   (Lem runs its threads from the event loop of its page that way).
 
 There is no parallelism, and a thread that computes in code without
-interrupt checks (the runtime, code compiled before) keeps the others
-waiting until it waits. `make test-threads` runs `tests/threads/run.lisp`.
+interrupt checks (the runtime, code compiled without them) keeps the others
+waiting until it waits or calls code with checks. A thread that a
+JavaScript callback runs in (`js:funcall` of a function that calls Lisp)
+cannot wait or be preempted there. `make test-threads` runs `tests/threads/run.lisp`.
 
 ## Metaobject protocol
 

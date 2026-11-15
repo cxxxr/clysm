@@ -42,6 +42,19 @@ blocking the other threads.")
 (defvar *earliest-wakeup* nil "The internal real time when a SLEEP is over first, or NIL.")
 (defvar *last-io-seq* nil)
 (defvar *wakeups* 0 "Incremented when a waiting thread is woken by another (%WAKE).")
+(defvar *slice-start* 0 "The internal real time when the running thread last got its turn.")
+(defparameter *time-slice* 10
+  "Milliseconds a thread runs in code with interrupt checks before the others
+get their turn (preemption).")
+(defparameter *poll-interval* 10000
+  "The number of interrupt checks between two calls of %INTERRUPT-POLL while
+threads run.")
+(defvar *preemption-inhibited* nil
+  "True while the thread must not be preempted (it compiles: the compiler's
+state is shared); it still waits where it waits.")
+
+(defun %resumed ()
+  (setq *slice-start* (get-internal-real-time)))
 (defvar *last-wakeups* 0)
 
 (defun %main-thread ()
@@ -103,6 +116,7 @@ run first."
             (thread-state th) :waiting
             (thread-waiting-for th) what)
       (let ((r (unwind-protect (js:await (js:get pair 0))
+                 (%resumed)
                  (when (eq (thread-wake th) end) (setf (thread-wake th) nil))
                  (setf (thread-state th) :running
                        (thread-waiting-for th) nil))))
@@ -124,6 +138,7 @@ its value."
     (setf (thread-state th) :waiting (thread-waiting-for th) what)
     (incf *io-waiters*)
     (unwind-protect (js:await promise)
+      (%resumed)
       (decf *io-waiters*)
       (setf (thread-state th) :running (thread-waiting-for th) nil))))
 
@@ -136,6 +151,7 @@ its value."
       (js:await (js:funcall (or *js-yield*
                                 (setq *js-yield*
                                       (js:eval "() => new Promise((resolve) => (globalThis.setImmediate || setTimeout)(resolve))")))))
+      (%resumed)
       (%run-interrupts th)))
   nil)
 
@@ -152,15 +168,22 @@ its value."
           (setq *earliest-wakeup* nil))))))
 
 ;;; Interrupt checks (%INTERRUPT-POLL): an interrupt of this thread runs;
-;;; a thread waiting for input whose input arrived, whose SLEEP is over, or
-;;; that was woken (by a lock released, a notification...), gets its turn.
+;;; the others get their turn when the thread's time slice is over
+;;; (preemption), or when one waiting for input got input, one's SLEEP is
+;;; over or one was woken (by a lock released, a notification...).
 (defun %thread-poll ()
   (when *threads-started*
+    ;; checked more often while threads run
+    (%set-poll-count *poll-interval*)
     (let ((th (current-thread)))
       (when (thread-interrupts th)
         (%run-interrupts th))
-      (when (js:can-await-p)
+      (when (and (js:can-await-p) (not *preemption-inhibited*))
         (let ((yield nil))
+          ;; preemption: its time slice is over and another thread may run
+          (when (and (cdr *all-threads*)
+                     (>= (- (get-internal-real-time) *slice-start*) *time-slice*))
+            (setq yield t))
           (when (> *io-waiters* 0)
             (let ((seq (ignore-errors (%tcp-data-seq))))
               (unless (eql seq *last-io-seq*)
@@ -206,6 +229,7 @@ its value."
                  (js:await (js:funcall (or *js-yield*
                                            (setq *js-yield*
                                                  (js:eval "() => new Promise((resolve) => (globalThis.setImmediate || setTimeout)(resolve))")))))
+                 (%resumed)
                  (setf (thread-state th) :running)
                  (%run-thread th))
                nil))))

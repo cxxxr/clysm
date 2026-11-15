@@ -126,6 +126,34 @@
        200000)
 (check "only the main thread is left" (length (sys::all-threads)) 1)
 
+;;; preemption: code compiled with interrupt checks gets its turn taken
+(setq sys::*interrupt-checks* t)
+(defvar *turns* nil)
+(defun busy (name ms)
+  ;; computes for MS milliseconds without waiting; notes when another ran in between
+  (let ((end (+ (get-internal-real-time) ms)) (n 0))
+    (loop while (< (get-internal-real-time) end)
+          do (incf n)
+             (unless (eq (car *turns*) name) (push name *turns*)))
+    n))
+(setq sys::*interrupt-checks* nil)
+(check "threads that compute take turns"
+       (let ((a (sys::make-thread (lambda () (busy :a 150))))
+             (b (sys::make-thread (lambda () (busy :b 150)))))
+         (sys::join-thread a) (sys::join-thread b)
+         ;; each had several turns
+         (list (> (count :a *turns*) 2) (> (count :b *turns*) 2)))
+       '(t t))
+(check "a computing thread does not keep a sleeping one from waking"
+       (let* ((woke nil)
+              (start (get-internal-real-time))
+              (sleeper (sys::make-thread (lambda () (sleep 0.02) (setq woke (get-internal-real-time)))))
+              (worker (sys::make-thread (lambda () (busy :w 300)))))
+         (sys::join-thread sleeper)
+         (prog1 (< (- woke start) 150)
+           (sys::join-thread worker)))
+       t)
+
 ;;; Bordeaux Threads
 (require :quicklisp)
 (funcall (read-from-string "ql:quickload") :bordeaux-threads :silent t)

@@ -14,6 +14,8 @@ ok   join-thread with a timeout
 ok   sleep lets the others run
 ok   deep recursion in a thread
 ok   only the main thread is left
+ok   threads that compute take turns
+ok   a computing thread does not keep a sleeping one from waking
 ok   bt: supports threads
 ok   bt: make-thread, join-thread, locks, condition variables
 ok   bt2: with-timeout

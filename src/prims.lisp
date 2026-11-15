@@ -1026,6 +1026,9 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 ;;; The slow path of an interrupt check (POLL-CODE): every
 ;;; +POLL-INTERVAL+ checks, SYSTEM::%INTERRUPT-POLL is called.
 (defconstant +poll-interval+ 100000)
+;; the number of checks until the next call (fewer while threads run)
+(defprim clysm-sys::%set-poll-count (n) :value
+  `(,@(idx-code n) (:global.set :poll-count) ,@(nil-code)))
 (defhelper :poll-slow :v-v ()
   `(:i32.const ,+poll-interval+) '(:global.set :poll-count)
   `(:global.get ,(sym-global 'clysm-sys::%interrupt-poll)) '(:call (:callsym 0)) :drop)
