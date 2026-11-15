@@ -91,7 +91,8 @@ fs.writeFileSync(file, `;; a file compiled with C-c C-k
 (defun outer (x)
   (list (inner x)))
 (defun inner (x)
-  (list (error "inner failed with ~A" x)))
+  (let ((doubled (* 2 x)))
+    (list (error "inner failed with ~A" x) doubled)))
 `);
 
 const c = connect();
@@ -162,12 +163,19 @@ check('macroexpand', /\(IF A/.test(r.result), r.text);
 r = await c.rex(`(swank-repl:listener-eval ${lisp('(swank-test::outer 3)\n')})`);
 check('an error enters the debugger', /\(:debug \d+ 1 \("inner failed with 3"/.test(r.text), r.text);
 r = await c.rex('(swank:backtrace 0 20)', '1');
-// (INNER is copied into OUTER, its caller: it has no frame)
-const frame = /\((\d+) "OUTER"\)/.exec(r.result);
-check('backtrace', frame && /"EVAL-FOR-EMACS"/.test(r.result), r.text);
+// frames print as calls, with the values of the arguments
+const frame = /\((\d+) "\(OUTER 3\)"\)/.exec(r.result);
+const innerFrame = /\((\d+) "\(INNER 3\)"\)/.exec(r.result);
+check('backtrace', frame && innerFrame && /"EVAL-FOR-EMACS"/.test(r.result), r.text);
 if (frame) {
   r = await c.rex(`(swank:frame-source-location ${frame[1]})`, '1');
   check('source of a frame (v in sldb)', /defs\.lisp"\) \(:position \d+\) \(:snippet "\(defun outer/.test(r.result), r.text);
+}
+if (innerFrame) {
+  r = await c.rex(`(swank:frame-locals-and-catch-tags ${innerFrame[1]})`, '1');
+  check('locals of a frame', /\(:name "SWANK-TEST::X" :id 0 :value "3"\) \(:name "SWANK-TEST::DOUBLED" :id 0 :value "6"\)/.test(r.result), r.text);
+  r = await c.rex(`(swank:eval-string-in-frame ${lisp('(* x doubled)')} ${innerFrame[1]} "SWANK-TEST" 1 80)`, '1');
+  check('evaluation in a frame (e in sldb)', /"=> 18 /.test(r.result), r.text);
 }
 r = await c.rex('(swank:sldb-abort)', '1');
 r = await c.rex(`(swank-repl:listener-eval ${lisp('(fact 10)\n')})`);
@@ -181,7 +189,7 @@ await sleep(1500);
 c.send('(:emacs-interrupt t)');
 try {
   r = await c.until(/^\(:debug-activate/, 20000);
-  check('C-c C-c interrupts a loop', /\(:debug 0 1 \("Interrupt from Emacs"/.test(r.text) && /"SPIN-FOREVER"/.test(r.text), r.text);
+  check('C-c C-c interrupts a loop', /\(:debug 0 1 \("Interrupt from Emacs"/.test(r.text) && /\(0 "\(SPIN-FOREVER\)"\)/.test(r.text), r.text);
   // continue, and interrupt again
   c.sendRex('(swank:sldb-continue)', '0');
   await sleep(1000);

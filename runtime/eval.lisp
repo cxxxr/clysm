@@ -434,6 +434,15 @@ entry and at the head of loops: %INTERRUPT-POLL is called every so often.")
     (when f (funcall f)))
   nil)
 
+(defvar *record-frames* nil
+  "When true, functions compiled in the image record their variables for the
+debugger (see *DEBUG-FRAME-STACK*).")
+(defvar *debug-frame-stack* nil
+  "The innermost frame of the functions compiled with *RECORD-FRAMES* that
+are active: #(name variable-names nparams parent value...), PARENT the
+frame of the caller or NIL.")
+(defvar %no-value (make-symbol "NO-VALUE") "The value of a variable of a frame not bound yet.")
+
 (defvar *native-eval-hook* nil "when set, the REPL compiles each form natively")
 (defvar *native-compile-form-hook* nil
   "When the compiler is part of the image: a function compiling a toplevel form

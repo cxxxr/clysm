@@ -908,8 +908,18 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
   offsets; a fasl has `%note-source` entries at its end); the REPL image has
   those of `COMMON-LISP` in `runtime/`. The backend converts offsets to
   character positions.
-* Backtraces are the names of the Lisp frames on the JavaScript stack;
-  frames have no locals.
+* Backtraces are the names of the Lisp frames on the JavaScript stack.
+  Wasm locals cannot be read from outside, so with `sys::*record-frames*`
+  (set when Emacs connects) a function compiled in the image keeps its
+  variables in a frame record, `#(name names nparams parent value...)`
+  (`add-debug-frame` in `src/frontend.lisp`): made on entry, it is the
+  value of the special variable `sys::*debug-frame-stack*` during the
+  function (so non-local exits restore it), and the values of the
+  parameters and of the variables of `let`, `let*` and
+  `multiple-value-bind` are stored into it when they are bound or
+  assigned. The backend matches the records with the frames of the stack
+  by name; frames are printed as calls, `(F 1 2)`. Copies of small
+  functions into their callers are not made then.
 * Interrupts (`C-c C-c`): Wasm code cannot be interrupted from outside, so
   code compiled in the image while `sys::*interrupt-checks*` is true (set
   when Emacs connects) decrements a counter shared by the modules

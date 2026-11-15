@@ -153,11 +153,16 @@ WebAssembly like at Clysm's REPL. To start Clysm from Emacs with `M-x slime`:
                          port-file)))))
 ```
 
-Without threads, the server serves one connection at a time. `C-c C-c`
-interrupts an evaluation in code compiled after Emacs connected (and in
-`sleep`): that code checks for interrupts on function entry and in loops,
-which makes it slower (up to about a third for small recursive functions);
-`(setq sys::*interrupt-checks* nil)` compiles code without the checks.
+Without threads, the server serves one connection at a time.
+
+Code compiled after Emacs connected is compiled for debugging: `C-c C-c`
+interrupts it (and `sleep`), and the debugger shows the arguments and local
+variables of its frames (`e` evaluates in a frame). This makes it much
+slower (more than ten times for a small recursive function like fib), and calls in
+tail position use stack. A function declared `(optimize (debug 0))` (or
+`(debug 1)`, or `(speed 3)`) is compiled without the frame's variables;
+`(setq sys::*record-frames* nil)` and `(setq sys::*interrupt-checks* nil)`
+turn both off for the code compiled afterwards.
 
 ## Performance
 

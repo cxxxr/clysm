@@ -141,7 +141,9 @@
 
 (defimplementation emacs-connected ()
   (setq sys::*interrupt-poll-function* 'poll-for-interrupt
-        sys::*interrupt-checks* t))
+        sys::*interrupt-checks* t
+        ;; frame locals in the debugger
+        sys::*record-frames* t))
 
 ;;;; Unix
 
@@ -406,42 +408,98 @@ line comments skipped)."
         (list :error (format nil "No source location for ~S" object)))))
 
 ;;;; Debugging
+;;;
+;;; A frame is (NAME . RECORD): NAME the name of a Lisp function on the
+;;; JavaScript stack, RECORD the frame record of a function compiled with
+;;; sys::*record-frames* (its variables, see add-debug-frame in
+;;; src/frontend.lisp) or NIL.  The records (sys::*debug-frame-stack* and
+;;; its parents) are
+;;; matched with the frames of the stack by name, in order; a record without
+;;; a frame (of a function whose code was copied into its caller) is a frame
+;;; of its own.
 
-(defvar *backtrace* '()
-  "The frames of the debugger: the names of the functions on the stack,
-innermost first.")
+(defvar *backtrace* '() "The frames of the debugger, innermost first.")
 
 (defparameter *debugger-frames*
   '("CALL-WITH-DEBUGGING-ENVIRONMENT" "DEBUG-IN-EMACS" "INVOKE-SLIME-DEBUGGER"
     "SWANK-DEBUGGER-HOOK" "INVOKE-DEBUGGER" "%INVOKE-DEBUGGER" "ERROR" "CERROR" "SIGNAL"
-    "WARN" "BREAK" "%BREAK" "%SIGNAL*" "%ERROR*")
+    "WARN" "BREAK" "%BREAK" "%SIGNAL*" "%ERROR*"
+    ;; an interrupt from Emacs (POLL-FOR-INTERRUPT)
+    "%INTERRUPT-POLL")
   "Functions of the debugger itself, left out at the top of backtraces.")
 
 (defun frame-name-matches (name candidates)
   (let ((short (subseq name (1+ (or (position #\: name :from-end t) -1)))))
     (member short candidates :test #'string-equal)))
 
+(defun record-name (record)
+  (let ((name (svref record 0)))
+    (cond ((null name) "lambda")
+          ((symbolp name) (symbol-name name))
+          ((and (consp name) (eq (car name) 'setf)) (format nil "(SETF ~A)" (symbol-name (second name))))
+          (t (princ-to-string name)))))
+
+(defun frame-matches-record-p (name record)
+  (let ((rname (record-name record)))
+    (or (string-equal name rname)
+        ;; "(SETF X)", "lambda"
+        (and (null (svref record 0)) (string-equal name "lambda")))))
+
+(defun merge-frames (names records)
+  "The frames: NAMES (innermost first) with the RECORDS (innermost first)."
+  (let ((frames '()))
+    (dolist (record records)
+      (let ((k (position-if (lambda (n) (frame-matches-record-p n record)) names)))
+        (cond (k (loop repeat k do (push (cons (pop names) nil) frames))
+                 (push (cons (pop names) record) frames))
+              ;; no frame of its own: before the remaining frames
+              (t (push (cons (record-name record) record) frames)))))
+    (dolist (n names) (push (cons n nil) frames))
+    (nreverse frames)))
+
 (defimplementation call-with-debugging-environment (debugger-loop-fn)
-  (let* ((names (sys::%backtrace-names 200))
+  (let* ((records (loop for r = sys::*debug-frame-stack* then (svref r 3)
+                        while r collect r))
+         (names (sys::%backtrace-names 200))
          (last-debugger (position-if (lambda (n) (frame-name-matches n *debugger-frames*))
-                                     names :from-end t)))
-    (let ((*backtrace* (if last-debugger (nthcdr (1+ last-debugger) names) names)))
+                                     names :from-end t))
+         (names (if last-debugger (nthcdr (1+ last-debugger) names) names)))
+    (let ((*backtrace* (merge-frames names records)))
       (funcall debugger-loop-fn))))
 
 (defimplementation compute-backtrace (start end)
   (subseq *backtrace* (min start (length *backtrace*))
           (and end (min end (length *backtrace*)))))
 
+(defun frame-variables (frame)
+  "((name . value) ...) of the variables of FRAME that are bound."
+  (let ((record (cdr frame)))
+    (when record
+      (loop with names = (svref record 1)
+            for i from 0 below (length names)
+            for value = (svref record (+ i 4))
+            unless (eq value sys::%no-value)
+              collect (cons (svref names i) value)))))
+
 (defimplementation print-frame (frame stream)
-  (write-string frame stream))
+  (let ((record (cdr frame)))
+    (if (null record)
+        (write-string (car frame) stream)
+        ;; (NAME argument...), as SBCL prints frames
+        (let ((args (loop for i from 0 below (svref record 2)
+                          for v = (svref record (+ i 4))
+                          collect (if (eq v sys::%no-value) '#:<unbound> v))))
+          (format stream "(~A~{ ~S~})" (car frame) args)))))
+
+(defun nth-frame (index)
+  (or (nth index *backtrace*) (error "No frame ~D" index)))
 
 (defimplementation frame-locals (index)
-  (declare (ignore index))
-  '())
+  (loop for (name . value) in (frame-variables (nth-frame index))
+        collect (list :name name :id 0 :value value)))
 
-(defimplementation frame-var-value (frame var)
-  (declare (ignore frame var))
-  nil)
+(defimplementation frame-var-value (index var)
+  (cdr (nth var (frame-variables (nth-frame index)))))
 
 (defimplementation frame-catch-tags (index)
   (declare (ignore index))
@@ -450,16 +508,22 @@ innermost first.")
 (defimplementation frame-source-location (index)
   ;; a frame is named by the name of its function's symbol, without the
   ;; package: the definition of a symbol of that name
-  (let ((frame (nth index *backtrace*)))
-    (or (and frame
-             (loop for symbol in (find-all-symbols frame)
+  (let* ((frame (nth index *backtrace*))
+         (record (cdr frame))
+         (name (and record (svref record 0))))
+    (or (and name (second (first (find-definitions name))))
+        (and frame
+             (loop for symbol in (find-all-symbols (car frame))
                    for location = (second (first (find-definitions symbol)))
                    when location return location))
         (list :error (format nil "No source location for frame ~D" index)))))
 
-(defimplementation eval-in-frame (form frame-number)
-  (declare (ignore frame-number))
-  (swank::eval form))
+(defimplementation eval-in-frame (form index)
+  ;; with the frame's variables bound to their values
+  (let ((vars (remove-duplicates (frame-variables (nth-frame index)) :key #'car :from-end t)))
+    (swank::eval `(let ,(loop for (name . value) in vars collect `(,name ',value))
+                    (declare (ignorable ,@(mapcar #'car vars)))
+                    ,form))))
 
 (defimplementation frame-restartable-p (frame)
   (declare (ignore frame))

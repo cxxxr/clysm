@@ -381,6 +381,7 @@ copy of X made later could expand it differently than the function did."
   "FORM with a guarded copy of the body of the function it calls, or NIL."
   (let* ((op (car form))
          (rec (and *live-inline-ok* *live-inline-closure-hook* (< *live-inline-depth* 2)
+                   (not clysm-sys::*record-frames*)
                    ;; (not into the code of a toplevel form, which runs once)
                    *current-lam* (lam-parent *current-lam*)
                    (gethash op *live-inline-sources*))))
@@ -532,8 +533,89 @@ copy of X made later could expand it differently than the function did."
         (let ((body-forms (if block-name `((block ,block-name ,@forms)) forms)))
           (when (getf pl :aux)
             (setf body-forms `((let* ,(getf pl :aux) (declare ,@decls) ,@body-forms))))
-          (setf (lam-body lam) (convert-body body-forms env))))
+          (setf (lam-body lam) (convert-body body-forms env))
+          (when (and *live-mode* clysm-sys::*record-frames* (debug-frames-wanted-p decls))
+            (setf (lam-body lam) (add-debug-frame lam (lam-body lam))))))
       lam)))
+
+;;; Frames for the debugger (SWANK's frame locals): with
+;;; SYSTEM::*RECORD-FRAMES*, a function compiled in the image makes a frame
+;;; record, #(name variable-names nparams parent value...), on entry and
+;;; binds SYSTEM::*DEBUG-FRAME-STACK* to it (PARENT is the frame of the
+;;; caller, the previous value); the values of its
+;;; parameters and of the variables it binds (LET, LET*,
+;;; MULTIPLE-VALUE-BIND) are stored into it when they are bound or assigned
+;;; (not by closures).  The binding makes calls in tail position ordinary calls.
+;;; A function declared (OPTIMIZE (DEBUG 0)) or (DEBUG 1), or (SPEED 3)
+;;; without DEBUG, has no frame record.
+(defvar clysm-sys::*record-frames* nil)
+
+(defun debug-frames-wanted-p (decls)
+  (let ((debug nil) (speed nil))
+    (dolist (d decls)
+      (when (and (consp d) (eq (car d) 'optimize))
+        (dolist (q (cdr d))
+          (let ((name (if (consp q) (car q) q))
+                (value (if (consp q) (second q) 3)))
+            (case name (debug (setq debug value)) (speed (setq speed value)))))))
+    (cond (debug (>= debug 2))
+          (t (not (eql speed 3))))))
+
+(defun add-debug-frame (lam body)
+  (let* ((frame-sym (gensym "FRAME")) (var-sym (gensym "VAR"))
+         (frame-lv (new-lvar frame-sym))
+         (slots (make-hash-table :test 'eq)) (names nil) (n 0))
+    (labels ((slot (lv)
+               (when (and (lvar-p lv) (not (lvar-special lv)) (symbolp (lvar-name lv))
+                          (symbol-package (lvar-name lv)))
+                 (or (gethash lv slots)
+                     (progn (push (lvar-name lv) names)
+                            (setf (gethash lv slots) (prog1 (+ n 4) (incf n)))))))
+             (store (lv)
+               ;; (%set-svref frame slot lv), converted where FRAME and the variable are visible
+               (let ((idx (slot lv)))
+                 (when idx
+                   (convert `(clysm-sys::%set-svref ,frame-sym ,idx ,var-sym)
+                            (env-extend (make-cenv nil) (list :var frame-sym frame-lv)
+                                        (list :var var-sym lv))))))
+             (stores (lvs) (remove nil (mapcar #'store lvs)))
+             (walk (x)
+               (cond ((atom x) x)
+                     ((keywordp (car x)) (node x))
+                     (t (cons (walk (car x)) (walk (cdr x))))))
+             (node (x)
+               (case (car x)
+                 ((:const :wasm :wasm-test :symtab :sref :go) x)
+                 (t (let ((x (cons (car x) (walk (cdr x)))))
+                      (case (car x)
+                        (:let (destructuring-bind (bindings body) (cdr x)
+                                (let ((s (stores (mapcar #'car bindings))))
+                                  (if s `(:let ,bindings (:progn ,@s ,body)) x))))
+                        (:mvbind (destructuring-bind (lvars v body) (cdr x)
+                                   (let ((s (stores lvars)))
+                                     (if s `(:mvbind ,lvars ,v (:progn ,@s ,body)) x))))
+                        (:lset (let ((s (store (second x))))
+                                 (if s `(:progn ,x ,s) x)))
+                        (t x)))))))
+      (let* ((params (append (lam-req lam)
+                             (loop for (lv nil sv) in (lam-opt lam) collect lv when sv collect sv)
+                             (when (lam-rest lam) (list (lam-rest lam)))
+                             (loop for (nil lv nil sv) in (lam-keys lam) collect lv when sv collect sv)))
+             (param-stores (stores params))
+             (nparams n)
+             (body (walk body))
+             (env (env-extend (make-cenv nil) (list :var frame-sym frame-lv)))
+             (stack-lv (new-lvar 'clysm-sys::*debug-frame-stack* t)))
+        `(:let ((,frame-lv . ,(convert `(clysm-sys::%make-simple-vector ,(+ n 4) ',(symbol-value 'clysm-sys::%no-value))
+                                       env)))
+           (:progn
+             ,(convert `(progn (clysm-sys::%set-svref ,frame-sym 0 ',(lam-name lam))
+                               (clysm-sys::%set-svref ,frame-sym 1 ',(coerce (reverse names) 'simple-vector))
+                               (clysm-sys::%set-svref ,frame-sym 2 ,nparams)
+                               (clysm-sys::%set-svref ,frame-sym 3 clysm-sys::*debug-frame-stack*))
+                       env)
+             (:let ((,stack-lv . (:lref ,(note-ref frame-lv))))
+               (:progn ,@param-stores ,body))))))))
 
 (defun lambda-form-p (x) (and (consp x) (eq (car x) 'lambda)))
 
