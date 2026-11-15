@@ -190,6 +190,8 @@ when ET is not one of the specifiers recognized at compile time."
     (:xi-i      (:func (:externref :i32) (:i32)))
     (:i-x       (:func (:i32) (:externref)))
     (:x-e       (:func (:externref) (:eqref)))
+    ;; the RUN function of a module compiled in the image (host instantiate_module)
+    (:x-run     (:func (:externref) ((:ref :null :x-e))))
     (:e-l       (:func (:eqref) (:i64)))
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))

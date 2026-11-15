@@ -69,7 +69,24 @@ function nodePlatform(state, args) {
   state.flush = flush;
   state.writeText = (fd, text) => { flush(); fs.writeSync(fd, text); };
   const stdinBuf = Buffer.alloc(1);
+  // octets read ahead by stdinWait (a thread that waits for input without
+  // blocking the others, runtime/thread.lisp)
+  let stdinAhead = null, stdinAheadPos = 0, stdinEof = false;
+  globalThis.__clysm_stdin = {
+    ready: () => stdinEof || (stdinAhead !== null && stdinAheadPos < stdinAhead.length),
+    wait: () => new Promise((resolve) => {
+      const buf = Buffer.alloc(65536);
+      fs.read(0, buf, 0, buf.length, null, (err, n) => {
+        if (err && err.code === 'EAGAIN') { setTimeout(() => resolve(false), 10); return; }
+        if (err || n === 0) stdinEof = true;
+        else { stdinAhead = buf.subarray(0, n); stdinAheadPos = 0; }
+        resolve(true);
+      });
+    }),
+  };
   const readByte = () => {
+    if (stdinAhead !== null && stdinAheadPos < stdinAhead.length) return stdinAhead[stdinAheadPos++];
+    if (stdinEof) return -1;
     try {
       const n = fs.readSync(0, stdinBuf, 0, 1, null);
       return n === 0 ? -1 : stdinBuf[0];
@@ -154,115 +171,139 @@ const NET_DATA_BYTES = 1 << 20;
 
 // [3]: incremented when data arrives on any socket (read without a call:
 // a program can tell cheaply whether a socket may have input, see dataSeq)
+//
+// A worker with threads (runtime/thread.lisp) waits for a read, a connection
+// or an accept without blocking: the request has an id (reqId) and the reply
+// is a message, { clysmNetReply: id, status, bytes }, while the other
+// threads run.
 function makeNetServer(worker, sab) {
   const ctrl = new Int32Array(sab, 0, 3);
   const seq = new Int32Array(sab, 12, 1);
   const data = new Uint8Array(sab, 16);
   const sockets = new Map();
   let nextId = 1;
-  const reply = (status, bytes) => {
+  const syncReply = (status, bytes) => {
     const n = Math.min(bytes.length, data.length);
     data.set(bytes.subarray(0, n));
     ctrl[1] = status; ctrl[2] = n;
     Atomics.store(ctrl, 0, 1);
     Atomics.notify(ctrl, 0);
   };
-  const ok = (bytes = new Uint8Array(0)) => reply(0, bytes);
-  const fail = (e) => reply(1, Buffer.from(String((e && e.message) || e), 'utf8'));
-  const tryRead = (s, max) => {
+  // a reply: { ok(bytes), fail(error) }
+  const replier = (send) => ({
+    ok: (bytes = new Uint8Array(0)) => send(0, bytes),
+    fail: (e) => send(1, Buffer.from(String((e && e.message) || e), 'utf8')),
+  });
+  const syncR = replier(syncReply);
+  const asyncR = (id) => replier((status, bytes) =>
+    worker.postMessage({ clysmNetReply: id, status, bytes: Buffer.from(bytes).toString('latin1') }));
+  const tryRead = (s, max, r) => {
     if (s.chunks.length) {
       let chunk = s.chunks[0];
       if (chunk.length > max) { s.chunks[0] = chunk.subarray(max); chunk = chunk.subarray(0, max); }
       else s.chunks.shift();
-      ok(chunk); return true;
+      r.ok(chunk); return true;
     }
-    if (s.error) { fail(s.error); return true; }
-    if (s.ended) { ok(); return true; }
+    if (s.error) { r.fail(s.error); return true; }
+    if (s.ended) { r.ok(); return true; }
     return false;
   };
   const servers = new Map();
-  const wake = (s) => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
+  // the reads waiting for data: [{ max, r }]
+  const wake = (s) => { while (s.waiting.length && tryRead(s, s.waiting[0].max, s.waiting[0].r)) s.waiting.shift(); };
   const track = (sock) => {
-    const s = { sock, chunks: [], ended: false, error: null, waiting: null };
+    const s = { sock, chunks: [], ended: false, error: null, waiting: [] };
     sock.on('data', (b) => { s.chunks.push(b); Atomics.add(seq, 0, 1); wake(s); });
-    sock.on('end', () => { s.ended = true; wake(s); });
-    sock.on('close', () => { s.ended = true; wake(s); });
+    sock.on('end', () => { s.ended = true; Atomics.add(seq, 0, 1); wake(s); });
+    sock.on('close', () => { s.ended = true; Atomics.add(seq, 0, 1); wake(s); });
     return s;
   };
+  // the accepts waiting for a connection: [r]
   const wakeServer = (sv) => {
-    if (!sv.waiting) return;
-    if (sv.pending.length) {
-      sv.waiting = false;
-      const s = sv.pending.shift(); const id = nextId++; sockets.set(id, s);
-      ok(Buffer.from(String(id)));
-    } else if (sv.error) { sv.waiting = false; fail(sv.error); }
+    while (sv.waiting.length && (sv.pending.length || sv.error)) {
+      const r = sv.waiting.shift();
+      if (sv.pending.length) {
+        const s = sv.pending.shift(); const id = nextId++; sockets.set(id, s);
+        r.ok(Buffer.from(String(id)));
+      } else r.fail(sv.error);
+    }
   };
   const processes = makeProcessManager();
+  const netOp = (op, args, r) => {
+    if (op === 'connect') {
+      const [host, port] = args;
+      // a null port: HOST is the path of a Unix domain socket
+      const sock = (port === null || port === undefined) ? net.connect({ path: host }) : net.connect({ host, port });
+      const s = track(sock);
+      sock.once('connect', () => {
+        const id = nextId++; sockets.set(id, s);
+        sock.on('error', (e) => { s.error = e; wake(s); });
+        r.ok(Buffer.from(String(id)));
+      });
+      sock.once('error', (e) => { if (![...sockets.values()].includes(s)) r.fail(e); });
+    } else if (op === 'listen') {
+      // a server: connections that arrive are queued until accepted
+      const [host, port] = args;
+      const server = net.createServer();
+      const sv = { server, pending: [], waiting: [], error: null };
+      server.on('connection', (sock) => {
+        const s = track(sock);
+        sock.on('error', (e) => { s.error = e; wake(s); });
+        sv.pending.push(s); Atomics.add(seq, 0, 1); wakeServer(sv);
+      });
+      server.once('error', (e) => { if (!servers.has(sv.id)) r.fail(e); else { sv.error = e; wakeServer(sv); } });
+      server.listen({ host: host || undefined, port }, () => {
+        sv.id = nextId++; servers.set(sv.id, sv);
+        r.ok(Buffer.from(sv.id + ' ' + server.address().port));
+      });
+    } else if (op === 'accept') {
+      const sv = servers.get(args[0]);
+      if (!sv) r.fail('the server is closed');
+      else { sv.waiting.push(r); wakeServer(sv); }
+    } else if (op === 'close-server') {
+      const sv = servers.get(args[0]);
+      if (sv) {
+        sv.server.close(); servers.delete(args[0]);
+        for (const w of sv.waiting) w.fail('the server is closed');
+        sv.waiting = [];
+      }
+      r.ok();
+    } else if (op === 'write') {
+      const s = sockets.get(args[0]);
+      s.sock.write(Buffer.from(args[1], 'latin1'), (e) => (e ? r.fail(e) : r.ok()));
+    } else if (op === 'read') {
+      const s = sockets.get(args[0]);
+      const max = Math.min(args[1], NET_DATA_BYTES);
+      if (!s) r.ok();
+      else if (s.waiting.length || !tryRead(s, max, r)) s.waiting.push({ max, r });
+    } else if (op === 'available') {
+      // is a read possible without waiting?
+      const s = sockets.get(args[0]);
+      r.ok(Buffer.from(s && (s.chunks.length || s.ended || s.error) ? '1' : '0'));
+    } else if (op === 'close') {
+      const s = sockets.get(args[0]);
+      if (s) {
+        s.sock.destroy(); sockets.delete(args[0]);
+        s.ended = true; wake(s);
+      }
+      r.ok();
+    } else r.fail('unknown socket operation ' + op);
+  };
   worker.on('message', (m) => {
     if (m && m.clysmProc !== undefined) {
       // a call of the process manager (host/process.mjs): the value is sent
       // as octets (status 0), JSON (2), null (3) or text (4)
       Promise.resolve().then(() => processes[m.op](...m.args)).then((v) => {
-        if (v instanceof Uint8Array) reply(0, v);
-        else if (v === null || v === undefined) reply(3, new Uint8Array(0));
-        else if (typeof v === 'string') reply(4, Buffer.from(v, 'utf8'));
-        else reply(2, Buffer.from(JSON.stringify(v), 'utf8'));
-      }, fail);
+        if (v instanceof Uint8Array) syncReply(0, v);
+        else if (v === null || v === undefined) syncReply(3, new Uint8Array(0));
+        else if (typeof v === 'string') syncReply(4, Buffer.from(v, 'utf8'));
+        else syncReply(2, Buffer.from(JSON.stringify(v), 'utf8'));
+      }, syncR.fail);
       return;
     }
     if (!m || m.clysmNet === undefined) return;
-    const { op, args } = m;
-    try {
-      if (op === 'connect') {
-        const [host, port] = args;
-        // a null port: HOST is the path of a Unix domain socket
-        const sock = (port === null || port === undefined) ? net.connect({ path: host }) : net.connect({ host, port });
-        const s = track(sock);
-        sock.once('connect', () => {
-          const id = nextId++; sockets.set(id, s);
-          sock.on('error', (e) => { s.error = e; wake(s); });
-          ok(Buffer.from(String(id)));
-        });
-        sock.once('error', (e) => { if (![...sockets.values()].includes(s)) fail(e); });
-      } else if (op === 'listen') {
-        // a server: connections that arrive are queued until accepted
-        const [host, port] = args;
-        const server = net.createServer();
-        const sv = { server, pending: [], waiting: false, error: null };
-        server.on('connection', (sock) => {
-          const s = track(sock);
-          sock.on('error', (e) => { s.error = e; wake(s); });
-          sv.pending.push(s); wakeServer(sv);
-        });
-        server.once('error', (e) => { if (!servers.has(sv.id)) fail(e); else { sv.error = e; wakeServer(sv); } });
-        server.listen({ host: host || undefined, port }, () => {
-          sv.id = nextId++; servers.set(sv.id, sv);
-          ok(Buffer.from(sv.id + ' ' + server.address().port));
-        });
-      } else if (op === 'accept') {
-        const sv = servers.get(args[0]);
-        if (!sv) fail('the server is closed');
-        else { sv.waiting = true; wakeServer(sv); }
-      } else if (op === 'close-server') {
-        const sv = servers.get(args[0]);
-        if (sv) { sv.server.close(); servers.delete(args[0]); }
-        ok();
-      } else if (op === 'write') {
-        const s = sockets.get(args[0]);
-        s.sock.write(Buffer.from(args[1], 'latin1'), (e) => (e ? fail(e) : ok()));
-      } else if (op === 'read') {
-        const s = sockets.get(args[0]);
-        if (!tryRead(s, Math.min(args[1], NET_DATA_BYTES))) s.waiting = Math.min(args[1], NET_DATA_BYTES);
-      } else if (op === 'available') {
-        // is a read possible without waiting?
-        const s = sockets.get(args[0]);
-        ok(Buffer.from(s && (s.chunks.length || s.ended || s.error) ? '1' : '0'));
-      } else if (op === 'close') {
-        const s = sockets.get(args[0]);
-        if (s) { s.sock.destroy(); sockets.delete(args[0]); }
-        ok();
-      } else fail('unknown socket operation ' + op);
-    } catch (e) { fail(e); }
+    const r = m.reqId === undefined ? syncR : asyncR(m.reqId);
+    try { netOp(m.op, m.args, r); } catch (e) { r.fail(e); }
   });
 }
 
@@ -278,6 +319,25 @@ function installNetClient(port, sab) {
     if (ctrl[1] !== 0) throw new Error(bytes.toString('utf8'));
     return bytes;
   };
+  // requests answered by a message (the port keeps the worker alive only
+  // while one is pending)
+  const pending = new Map();
+  let nextReq = 1;
+  port.on('message', (m) => {
+    if (!m || m.clysmNetReply === undefined) return;
+    const p = pending.get(m.clysmNetReply);
+    if (!p) return;
+    pending.delete(m.clysmNetReply);
+    if (pending.size === 0) port.unref();
+    if (m.status === 0) p.resolve(m.bytes); else p.reject(new Error(Buffer.from(m.bytes, 'latin1').toString('utf8')));
+  });
+  port.unref();
+  const callAsync = (op, ...args) => new Promise((resolve, reject) => {
+    const id = nextReq++;
+    pending.set(id, { resolve, reject });
+    if (pending.size === 1) port.ref();
+    port.postMessage({ clysmNet: 1, op, args, reqId: id });
+  });
   // the process manager of the main thread, called synchronously
   const callProc = (op, args) => {
     Atomics.store(ctrl, 0, 0);
@@ -307,6 +367,10 @@ function installNetClient(port, sab) {
     accept: (id) => Number(call('accept', id).toString()),
     closeServer: (id) => { call('close-server', id); },
     dataSeq: () => Atomics.load(seq, 0),
+    // the same, waiting without blocking the worker (promises)
+    readAsync: (id, max) => callAsync('read', id, max),
+    acceptAsync: (id) => callAsync('accept', id).then(Number),
+    connectAsync: (host, port) => callAsync('connect', host, port).then(Number),
   };
 }
 
@@ -316,6 +380,15 @@ const selfPath = fileURLToPath(import.meta.url);
 if (isMainThread && process.argv[1] === selfPath) {
   // the compiler marks unlikely branches (the branch hinting section of the modules)
   try { (await import('node:v8')).setFlagsFromString('--experimental-wasm-branch-hinting'); } catch (e) {}
+  // the stacks of computations that can wait (JSPI, the threads of
+  // runtime/thread.lisp) as deep as the worker's own (they are limited by
+  // --stack-size too; the main thread itself recurses little)
+  try {
+    const v8 = await import('node:v8');
+    const kb = Number(process.env.CLYSM_STACK_MB || 1024) * 1024;
+    v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
+    v8.setFlagsFromString('--stack-size=' + kb);
+  } catch (e) {}
   const stackMb = Number(process.env.CLYSM_STACK_MB || 1024);
   const netBuffer = new SharedArrayBuffer(16 + NET_DATA_BYTES);
   const worker = new Worker(selfPath, {
@@ -327,6 +400,8 @@ if (isMainThread && process.argv[1] === selfPath) {
   worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
   worker.on('exit', (code) => process.exit(code));
 } else if (!isMainThread && workerData && workerData.file) {
+  // the program may run as a computation that can wait (sys::main, threads)
+  globalThis.__clysm_deep_async_stacks = true;
   if (workerData.netBuffer) {
     const { parentPort } = await import('node:worker_threads');
     installNetClient(parentPort, workerData.netBuffer);

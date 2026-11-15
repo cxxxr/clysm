@@ -849,6 +849,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:host-is-tty :v-i "env" "is_tty")
     (:host-flush :v-v "env" "flush")
     (:host-compile-module :xx-x "env" "compile_module")
+    (:host-instantiate-module :x-run "env" "instantiate_module")
     (:js-global :v-x "js" "global")
     (:js-get :xx-x "js" "get")
     (:js-set :xxx-v "js" "set")
@@ -4374,9 +4375,11 @@ in local V and the index in local K; else branch to FAIL."
 (defprim clysm-sys::%is-tty () :value `((:call :host-is-tty) :ref.i31))
 
 ;; instantiate a module compiled in the image and run it (see src/live.lisp)
+;; (RUN is called from WebAssembly, without a JavaScript frame in between,
+;; so that the code of the module can wait: JS:AWAIT, threads)
 (defprim clysm-sys::%compile-module (bytes consts) :mv
-  `(,@(ext-code bytes) ,@(ext-code consts) (:call :host-compile-module)
-    :any.convert_extern (:ref.cast :null :eq)))
+  `(,@(ext-code consts) ,@(ext-code bytes) (:call :host-instantiate-module)
+    (:call_ref :x-e)))
 (defprim clysm-sys::%flush () :value `((:call :host-flush) ,@(nil-code)))
 
 ;;; ------------------------------------------------------------

@@ -87,8 +87,11 @@
 (defun sleep (seconds)
   (let ((end (+ (get-internal-real-time) (* seconds 1000))))
     ;; (an interrupt from a development environment can stop it, see %INTERRUPT-POLL)
-    (loop (when (>= (get-internal-real-time) end) (return nil))
-          (%interrupt-poll))))
+    (if (%can-wait-p)
+        ;; the other threads run meanwhile
+        (%thread-sleep seconds)
+        (loop (when (>= (get-internal-real-time) end) (return nil))
+              (%interrupt-poll)))))
 
 (defmacro time (form)
   (let ((start (gensym)))

@@ -1,5 +1,5 @@
 
-(:TOPLEVEL :GLOBAL NIL) 
+(:TOPLEVEL :GLOBAL) 
 (:AFTER-START :GLOBAL) 
 (:D :D) 
 (:C :C) 

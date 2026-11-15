@@ -45,8 +45,14 @@
 
 ;;;; TCP server
 
+;;; With green threads (runtime/thread.lisp) the server has threads of its
+;;; own (:SPAWN): Emacs gets answers while an evaluation runs.  Without
+;;; them, one thread serves the connection (NIL).
+(defun threads-p ()
+  (and (sys::%threads-supported-p) (sys::%deep-async-stacks-p) (js:can-await-p)))
+
 (defimplementation preferred-communication-style ()
-  nil)
+  (if (threads-p) :spawn nil))
 
 (defimplementation create-socket (host port &key backlog)
   (declare (ignore backlog))
@@ -532,6 +538,121 @@ line comments skipped)."
 (defimplementation condition-extras (condition)
   (declare (ignore condition))
   '())
+
+;;;; Threads (communication style :SPAWN)
+
+(defvar *thread-ids* (make-hash-table :test 'eq))
+(defvar *threads-by-id* (make-hash-table))
+(defvar *next-thread-id* 0)
+
+(defimplementation spawn (fn &key name)
+  (sys::make-thread fn :name name))
+
+(defimplementation thread-id (thread)
+  (or (gethash thread *thread-ids*)
+      (let ((id (incf *next-thread-id*)))
+        (setf (gethash thread *thread-ids*) id
+              (gethash id *threads-by-id*) thread)
+        id)))
+
+(defimplementation find-thread (id)
+  (let ((thread (gethash id *threads-by-id*)))
+    (when (and thread (not (sys::thread-alive-p thread)))
+      (remhash id *threads-by-id*)
+      (remhash thread *thread-ids*)
+      (setq thread nil))
+    thread))
+
+(defimplementation thread-name (thread)
+  (sys::thread-name thread))
+
+(defimplementation thread-status (thread)
+  (let ((what (sys::thread-waiting-for thread)))
+    (case (sys::thread-state thread)
+      (:waiting (cond ((sys::mutexp what)
+                       (format nil "Waiting on a mutex~@[ (~A)~]~@[ held by ~A~]"
+                               (sys::mutex-name what)
+                               (let ((owner (sys::mutex-owner what)))
+                                 (and owner (sys::thread-name owner)))))
+                      ((eq what :input) "Waiting for input")
+                      ((eq what :connection) "Waiting for a connection")
+                      ((eq what :sleep) "Sleeping")
+                      (t "Waiting")))
+      ((:running :new) "Running")
+      (t "Stopped"))))
+
+(defimplementation current-thread ()
+  (sys::current-thread))
+
+(defimplementation all-threads ()
+  (sys::all-threads))
+
+(defimplementation thread-alive-p (thread)
+  (sys::thread-alive-p thread))
+
+(defimplementation interrupt-thread (thread fn)
+  (sys::interrupt-thread thread fn))
+
+(defimplementation kill-thread (thread)
+  (sys::destroy-thread thread))
+
+(defimplementation make-lock (&key name)
+  (sys::make-mutex :name name))
+
+(defimplementation call-with-lock-held (lock function)
+  (sys::with-mutex (lock :recursive t)
+    (funcall function)))
+
+;;; mailboxes
+(defstruct (mailbox (:conc-name mailbox.))
+  thread
+  (mutex (sys::make-mutex :name "mailbox"))
+  (waitqueue (sys::make-waitqueue))
+  (queue '()))
+
+(defvar *mailboxes* (make-hash-table :test 'eq))
+
+(defun mailbox (thread)
+  (or (gethash thread *mailboxes*)
+      (setf (gethash thread *mailboxes*) (make-mailbox :thread thread))))
+
+(defimplementation wake-thread (thread)
+  (let ((mbox (mailbox thread)))
+    (sys::with-mutex ((mailbox.mutex mbox) :recursive t)
+      (sys::condition-broadcast (mailbox.waitqueue mbox)))))
+
+(defimplementation send (thread message)
+  (let ((mbox (mailbox thread)))
+    (sys::with-mutex ((mailbox.mutex mbox) :recursive t)
+      (setf (mailbox.queue mbox) (nconc (mailbox.queue mbox) (list message)))
+      (sys::condition-broadcast (mailbox.waitqueue mbox)))))
+
+(defimplementation receive-if (test &optional timeout)
+  (let* ((mbox (mailbox (current-thread)))
+         (mutex (mailbox.mutex mbox)))
+    (assert (or (not timeout) (eq timeout t)))
+    (loop
+      (funcall 'swank::check-slime-interrupts)
+      (sys::with-mutex (mutex :recursive t)
+        (let* ((q (mailbox.queue mbox))
+               (tail (member-if test q)))
+          (when tail
+            (setf (mailbox.queue mbox) (nconc (ldiff q tail) (cdr tail)))
+            (return (car tail)))
+          (when (eq timeout t) (return (values nil t))))
+        (let ((*slime-interrupts-enabled* t))
+          (sys::condition-wait (mailbox.waitqueue mbox) mutex))))))
+
+(defvar *registered-threads* '())
+
+(defimplementation register-thread (name thread)
+  (setq *registered-threads* (remove name *registered-threads* :key #'car))
+  (when thread (push (cons name thread) *registered-threads*))
+  nil)
+
+(defimplementation find-registered (name)
+  (let ((thread (cdr (assoc name *registered-threads*))))
+    (and thread (sys::thread-alive-p thread) thread)))
 
 ;;;; Inspector, hash tables
 

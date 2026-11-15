@@ -812,7 +812,7 @@ input file without an unread character."
                                    (if (%simple-string-p buf) (%schar buf i) (char buf i))))))
           (:file (unless (%character-input-file-p s) (%not-input-stream s 'character))
            (%fs-decode-char s t))
-          (:fd-in (let ((code (%read-char)))
+          (:fd-in (let ((code (progn (%fd-wait-input) (%read-char))))
                     (if (< code 0) :eof (code-char code))))
           (:two-way (%stream-read-char (car (stream-streams s))))
           (:echo (let ((c (%stream-read-char (car (stream-streams s)))))

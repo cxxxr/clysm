@@ -53,6 +53,8 @@
     (terpri)
     :finished))
 
-(note :toplevel *x* (js:can-await-p))
+;; (the toplevel can wait where the program runs as a thread: the REPL image
+;; on Node.js, runtime/thread.lisp; a whole program compiled ahead of time not)
+(note :toplevel *x*)
 (js:async (lambda () (print (js:await (js:async #'main))) (terpri)))
 (note :after-start *x*)

@@ -890,7 +890,10 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 * Sockets: the Node.js host listens and accepts (`sys::open-tcp-server`,
   `sys::accept-tcp-stream`, synchronous like the client sockets).
-* Clysm has no threads: the communication style is `NIL`. `wait-for-input`
+* With green threads (below) the communication style is `:spawn`: the
+  backend's threads, mailboxes and locks are those of `runtime/thread.lisp`.
+  Without them (no JavaScript Promise Integration, a browser) it is `NIL`:
+  `wait-for-input`
   blocks on the connection's socket (`sys::socket-wait-input`), not on the
   terminal. A request that SWANK read and queued while another was waited
   for (by the debugger) counts as input. Each request is processed with the
@@ -935,6 +938,48 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 `make test-swank` runs the server and a client that speaks SLIME's protocol
 (`tests/swank/client.mjs`).
+
+## Threads
+
+`runtime/thread.lisp` has green threads: a thread is a computation of
+`js:async-function` (its own stack, which JavaScript Promise Integration
+suspends, and its own dynamic bindings), and the threads take turns in the
+one thread of the host, JavaScript's event loop resuming the one whose wait
+is over. A thread runs until it waits: `sys::grab-mutex` of a mutex another
+holds, `sys::condition-wait`, `sys::wait-on-semaphore`, `sys::join-thread`,
+`sleep`, `sys::thread-yield`, or input from a socket or the terminal. Those
+then do not block the host: socket reads, accepts and connections are
+messages to the host's main thread answered by messages (`readAsync` in
+`host/run.mjs`), the terminal is read with `fs.read`. Until a second thread
+is made nothing changes: they block as before.
+
+* The program (`sys::main`, the REPL and scripts) runs as a computation, the
+  main thread, so it can wait too. The host gives computations stacks as
+  deep as the worker's (`--wasm-stack-switching-stack-size` and
+  `--stack-size`, set before the worker starts); elsewhere (a browser,
+  where they are about 1 MB) the program does not run as one.
+* A module compiled in the image is run from WebAssembly (`call_ref` of its
+  `run` function, which the host's `instantiate_module` returns), not
+  through JavaScript, so that its code can wait.
+* A new thread starts when its creator waits, with none of its dynamic
+  bindings: it sees the global values and has no handlers or restarts of
+  the creator.
+* `sys::interrupt-thread` runs a function in the thread when it waits, or
+  at its next interrupt check (code compiled with `sys::*interrupt-checks*`,
+  see SWANK). An interrupt check also lets other threads run when one was
+  woken, a socket received data or a `sleep` is over, so a thread that
+  computes does not keep the others from the input they wait for.
+  `sys::destroy-thread` is an interrupt that unwinds the thread.
+* An error that the thread does not handle ends it (with a message on
+  `*error-output*`), unless `*debugger-hook*` is set; `sys::join-thread`
+  then signals an error.
+* `contrib/bordeaux-threads` (Bordeaux Threads 1 and 2) uses them where
+  JavaScript can suspend WebAssembly, unless `bt2:*thread-starter*` is set
+  (Lem runs its threads from the event loop of its page that way).
+
+There is no parallelism, and a thread that computes in code without
+interrupt checks (the runtime, code compiled before) keeps the others
+waiting until it waits. `make test-threads` runs `tests/threads/run.lisp`.
 
 ## Metaobject protocol
 
@@ -1074,9 +1119,8 @@ Limitations:
   slots at once and calls `update-instance-for-redefined-class`. Tracking
   costs a JavaScript call per instance, so it is off by default; without it,
   instances made before the redefinition keep their old slot vectors.
-* No threads and no first-class continuations (not required by the standard);
-  computations of `js:async-function` wait concurrently, each with its own
-  dynamic bindings.
+* Threads are green threads (see [Threads](#threads)); no first-class
+  continuations (not required by the standard).
 * Pathnames are Unix namestrings; on a Windows host (Node.js's
   `process.platform` is `win32`, `sys::*windows-paths*`) a backslash in a
   namestring is a slash, `C:` is the device `"C"` and `\\server\share` the
