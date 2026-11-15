@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim test-swank repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -26,6 +26,10 @@ test-quicklisp:
 # McCLIM (from an existing Quicklisp installation) on a virtual X server
 test-mcclim:
 	tests/mcclim/run.sh
+
+# SLIME's SWANK server (from an existing Quicklisp installation) and a client
+test-swank:
+	tests/swank/run.sh
 
 test-ui:
 	tools/test-ui.sh

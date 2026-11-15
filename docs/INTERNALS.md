@@ -881,6 +881,39 @@ the main thread performs the socket operation.
 libraries downloaded from quicklisp.org (split-sequence, and `str` with its
 dependencies cl-ppcre, cl-unicode, flexi-streams and cl-change-case).
 
+## SWANK (SLIME)
+
+`(ql:quickload :swank)` loads SLIME's server from Quicklisp: a fixup of the
+system (`contrib/fixups.lisp`) adds Clysm to `swank-loader`'s lists and the
+backend `contrib/swank/clysm.lisp` to the system. `bin/clysm swank [--port
+N]` loads it and serves connections (`contrib/swank/start.lisp`).
+
+* Sockets: the Node.js host listens and accepts (`sys::open-tcp-server`,
+  `sys::accept-tcp-stream`, synchronous like the client sockets).
+* Clysm has no threads: the communication style is `NIL`. `wait-for-input`
+  blocks on the connection's socket (`sys::socket-wait-input`), not on the
+  terminal. A request that SWANK read and queued while another was waited
+  for (by the debugger) counts as input. Each request is processed with the
+  connection's current I/O redirection (a patch of `process-requests`): with
+  style `NIL` the requests that follow `create-repl` in the same batch would
+  otherwise write to the process's streams.
+* Evaluation: SWANK's `EVAL` (shadowed in the package `SWANK`) compiles to
+  Wasm like the REPL; `CL:EVAL` is the interpreter.
+* Argument lists: functions compiled in the image keep their lambda list
+  (`sys::%arglist`, emitted by `process-defun` in live mode); the REPL image
+  has those of the functions and macros of `COMMON-LISP`
+  (`*record-definitions*` in `tools/build-repl.lisp`).
+* Definitions (`M-.`): `load` of a source file and `compile-file` record
+  where each toplevel `DEF...` form begins (`sys::%definition-sources`, octet
+  offsets; a fasl has `%note-source` entries at its end); the REPL image has
+  those of `COMMON-LISP` in `runtime/`. The backend converts offsets to
+  character positions.
+* Backtraces are the names of the Lisp frames on the JavaScript stack;
+  frames have no locals.
+
+`make test-swank` runs the server and a client that speaks SLIME's protocol
+(`tests/swank/client.mjs`).
+
 ## Metaobject protocol
 
 The package `CLYSM-MOP` (like SBCL's `SB-MOP`) exports the AMOP's metaobject

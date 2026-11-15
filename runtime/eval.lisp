@@ -518,18 +518,84 @@ is read and compiled again."
           (cons (namestring (truename stream)) start))
         (progn (file-position stream pos) nil))))
 
+;;; Where definitions are, for development environments (SWANK's M-.): of
+;;; the toplevel forms of a file loaded as source or compiled by
+;;; COMPILE-FILE, those whose operator's name begins with DEF are recorded on
+;;; the property list of the name defined as (DSPEC FILE POSITION), where
+;;; DSPEC is (OPERATOR NAME) or, for DEFMETHOD, (DEFMETHOD NAME QUALIFIER...
+;;; (SPECIALIZER...)), and POSITION the octet where the form begins.  A
+;;; compiled file has (%NOTE-SOURCE DSPEC FILE POSITION) entries for them.
+
+(defun %definition-spec (form)
+  (when (and (consp form) (symbolp (car form)) (consp (cdr form)))
+    (let ((op (car form)) (name (second form)))
+      (when (and (> (length (symbol-name op)) 3) (string= "DEF" (symbol-name op) :end2 3)
+                 (or (and (symbolp name) name (not (keywordp name)))
+                     (and (consp name) (eq (car name) 'setf) (consp (cdr name))
+                          (symbolp (cadr name)) (null (cddr name)))))
+        (if (eq op 'defmethod)
+            (let ((qualifiers nil) (rest (cddr form)))
+              (loop (when (or (null rest) (listp (car rest))) (return))
+                    (push (pop rest) qualifiers))
+              (list* op name (append (nreverse qualifiers)
+                                     (list (let ((specs nil))
+                                             (dolist (p (car rest) (nreverse specs))
+                                               (when (member p lambda-list-keywords) (return (nreverse specs)))
+                                               (push (if (consp p) (cadr p) t) specs)))))))
+            (list op name))))))
+
+(defun %note-source (dspec file position)
+  (let ((sym (ignore-errors (%function-name-symbol (second dspec)))))
+    (when sym
+      (%put sym '%sources
+            (cons (list dspec file position)
+                  (remove dspec (get sym '%sources) :key #'car :test #'equal))))
+    nil))
+
+(defun %install-definitions (definitions)
+  "Definitions of the image's own functions and macros, ((NAME ARGLIST-OR-NIL
+DSPEC FILE POSITION) ...); an argument list is a list of the lambda list."
+  (dolist (d definitions)
+    (destructuring-bind (name arglist dspec file position) d
+      (when arglist (%put (%function-name-symbol name) '%arglist (car arglist)))
+      (when file (%note-source dspec file position)))))
+
+(defun %definition-sources (name)
+  "The places where NAME is defined: ((DSPEC FILE POSITION) ...)."
+  (let ((sym (ignore-errors (%function-name-symbol name))))
+    (and sym (get sym '%sources))))
+
+(defun %form-start (stream)
+  "Skip the whitespace and line comments before the next form of STREAM, a
+file stream; its position."
+  (loop
+    (let ((c (peek-char nil stream nil nil)))
+      (cond ((null c) (return))
+            ((member c '(#\Space #\Tab #\Newline #\Return #\Page)) (read-char stream))
+            ((char= c #\;) (read-line stream nil nil))
+            (t (return)))))
+  (file-position stream))
+
 (defun %load-stream (stream print)
   (let* ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream)))
-         (*fasl-modules* (and fasl (%skip-fasl-modules stream))))
+         (*fasl-modules* (and fasl (%skip-fasl-modules stream)))
+         (file (and (not fasl) *load-truename* (typep stream 'file-stream)
+                    (namestring *load-truename*))))
     (loop
-      (let ((form (if fasl
-                      (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
-                      (read stream nil %eof-marker))))
+      (let* ((start (and file (%form-start stream)))
+             (form (if fasl
+                       (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
+                       (read stream nil %eof-marker))))
         (when (eq form %eof-marker) (return t))
+        (when start
+          (let ((dspec (%definition-spec form)))
+            (when dspec (%note-source dspec file start))))
         (let ((vals (multiple-value-list
-                     (if (and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
-                         (%load-fasl-entry form stream)
-                         (%eval-toplevel form)))))
+                     (cond ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
+                            (%load-fasl-entry form stream))
+                           ((and fasl (consp form) (eq (car form) '%note-source))
+                            (apply #'%note-source (cdr form)))
+                           (t (%eval-toplevel form))))))
           (when print (format t "~&~{~S~^ ~}~%" vals)))))))
 
 (defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
@@ -739,12 +805,18 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
               (lt (or (member :load-toplevel sits) (member 'load sits)))
               (ex (or (member :execute sits) (member 'eval sits))))
          (cond ((and lt (or ct (and ex compile-time-too)))
-                (dolist (f (cddr x)) (%cf-process f out t)))
+                (dolist (f (cddr x)) (%cf-process f out t))
+                ;; the forms may change how the following ones are read (by
+                ;; SHADOW, IMPORT ...): the constants of a module are read
+                ;; together when it is loaded
+                (%cf-flush out))
                (lt (dolist (f (cddr x)) (%cf-process f out nil)))
                ((or ct (and ex compile-time-too))
                 (%eval-toplevel (%cf-wrap `(progn ,@(cddr x))))))))
       (t (%eval-toplevel (%cf-wrap x))
-         (%cf-emit (%cf-wrap x) out)))))
+         (%cf-emit (%cf-wrap x) out)
+         ;; the symbols of the package are read after it is made
+         (when (eq (car x) 'defpackage) (%cf-flush out))))))
 
 (defun compile-file-pathname (input-file &key output-file &allow-other-keys)
   (let* ((in (if (typep input-file 'file-stream) (pathname input-file) (pathname input-file)))
@@ -775,13 +847,24 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
                        (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
           (let* ((*cf-modules* (list nil 0))
                  (*cf-pending* nil)
+                 (notes nil)
                  (text (with-output-to-string (out)
                          (loop
-                           (let ((form (read in nil %eof-marker)))
+                           (let* ((start (%form-start in))
+                                  (form (read in nil %eof-marker)))
                              (when (eq form %eof-marker) (return))
                              (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+                             (let ((dspec (%definition-spec form)))
+                               (when dspec
+                                 (push (list '%note-source dspec (namestring *compile-file-truename*) start)
+                                       notes)))
                              (%cf-process form out nil)))
-                         (%cf-flush out))))
+                         (%cf-flush out)
+                         ;; at the end, where the packages of the names exist
+                         (dolist (note (nreverse notes))
+                           (when (%call-with-fasl-syntax
+                                  (lambda () (ignore-errors (prin1-to-string note))))
+                             (%cf-write note out))))))
             (%write-fasl out-path text (reverse (first *cf-modules*)) (second *cf-modules*))))
         (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
     (values (truename out-path) warnings-p failure-p)))
@@ -854,10 +937,13 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
         (unless (eq form %read-error-marker)
           (restart-case
               (handler-bind ((error (lambda (c)
-                                      (if (interactive-stream-p *standard-input*)
-                                          (%repl-debugger c)
-                                          (progn (format t "~&; Error: ~A~%" c)
-                                                 (invoke-restart 'abort-to-toplevel))))))
+                                      ;; a debugger of the program's own (SWANK's)
+                                      ;; is called by INVOKE-DEBUGGER
+                                      (unless *debugger-hook*
+                                        (if (interactive-stream-p *standard-input*)
+                                            (%repl-debugger c)
+                                            (progn (format t "~&; Error: ~A~%" c)
+                                                   (invoke-restart 'abort-to-toplevel)))))))
                 (%repl-eval-print form))
             (abort-to-toplevel () :report "Return to the top level." nil)))))))
 
@@ -873,10 +959,11 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
 
 (defun %script-main (path)
   (handler-bind ((error (lambda (c)
-                          (format *error-output* "~&Unhandled ~S: ~A~%" (type-of c) c)
-                          (finish-output *error-output*)
-                          (%backtrace 2)
-                          (%exit 1))))
+                          (unless *debugger-hook*
+                            (format *error-output* "~&Unhandled ~S: ~A~%" (type-of c) c)
+                            (finish-output *error-output*)
+                            (%backtrace 2)
+                            (%exit 1)))))
     (load path)))
 
 (defun %command-line-arguments ()

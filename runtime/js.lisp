@@ -600,6 +600,23 @@ START at end of file."
     (error (e) (error 'simple-error :format-control "cannot connect to ~A: ~A"
                                     :format-arguments (list path e)))))
 
+(defun %tcp-listen (host port)
+  "Listen for TCP connections on HOST (a string, or NIL for all interfaces)
+and PORT (0 for any free port); returns the server id and the port."
+  (let ((reply (handler-case (js:call (%host-net) "listen" (and host (string host)) port)
+                 (error (e) (error 'simple-error :format-control "cannot listen on ~A:~D: ~A"
+                                                 :format-arguments (list (or host "*") port e))))))
+    (let ((space (position #\Space reply)))
+      (values (parse-integer reply :end space) (parse-integer reply :start (1+ space))))))
+
+(defun %tcp-accept (server)
+  "Wait for a connection to the server SERVER; returns a connection id."
+  (js:call (%host-net) "accept" server))
+
+(defun %tcp-close-server (server)
+  (js:call (%host-net) "closeServer" server)
+  t)
+
 (defun %tcp-close (id)
   (js:call (%host-net) "close" id)
   t)

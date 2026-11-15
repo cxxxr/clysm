@@ -13,9 +13,14 @@
   (handler-case
       (progn
         (reset-compiler)
+        (setq *record-definitions* t)
         (let ((*read-package* (find-target-package "SYSTEM")))
           (dolist (f (with-open-file (s (rpath "tools/runtime-files.lisp")) (read s)))
             (compile-source-file (rpath (format nil "runtime/~A.lisp" f))))
+          ;; argument lists and source locations of the functions and
+          ;; macros of COMMON-LISP (for SWANK)
+          (setq *record-definitions* nil)
+          (process-toplevel (recorded-definitions-form) (make-cenv))
           (finish-runtime))
         ;; the compiler's own CLYSM-SYS package is the image's SYSTEM package
         (setf (gethash "CLYSM-SYS" *target-packages*) (find-package :clysm-sys))

@@ -2,6 +2,8 @@
 
 (in-package :asdf)
 
+(defvar *clysm-contrib-directory* (uiop:pathname-directory-pathname *load-truename*))
+
 ;;; 3bz reads files with mmap through CFFI except on Mezzano and ABCL; Clysm
 ;;; uses the portable stubs like those.
 (define-clysm-fixup "3bz" (s)
@@ -105,3 +107,29 @@
 "
     "(funcall (or #-(or abcl clasp ecl mezzano clisp cmu clysm
 "))
+;;; SWANK (SLIME's server): the backend for Clysm (contrib/swank/clysm.lisp),
+;;; and Clysm in the loader's lists of implementations.
+(define-clysm-fixup "swank" (s)
+  (clysm-patch-component s '("swank-loader")
+    "  #+mezzano '((swank mezzano) (swank gray))"
+    "  #+mezzano '((swank mezzano) (swank gray))
+  #+clysm '((swank clysm) (swank gray))"
+    ":armedbear :gcl :ecl :scl :mkcl :clasp :mezzano))"
+    ":armedbear :gcl :ecl :scl :mkcl :clasp :mezzano :clysm))"
+    ":java-1.4 :java-1.5 :java-1.6 :java-1.7))"
+    ":java-1.4 :java-1.5 :java-1.6 :java-1.7 :wasm))"
+    "  #+armedbear (lisp-implementation-version)"
+    "  #+armedbear (lisp-implementation-version)
+  #+clysm (lisp-implementation-version)")
+  ;; With communication style NIL, the requests that arrive while requests
+  ;; are processed are processed with the I/O redirection of the connection
+  ;; of the time the processing began: those that follow SWANK-REPL:CREATE-REPL
+  ;; would write to the process's own streams.
+  (clysm-patch-component s '("swank")
+    "         ((:emacs-rex &rest args) (apply #'eval-for-emacs args))"
+    "         ((:emacs-rex &rest args)
+          (with-io-redirection (*emacs-connection*)
+            (apply #'eval-for-emacs args)))")
+  (clysm-add-source-file s '("backend") "clysm"
+                         (merge-pathnames "swank/clysm.lisp" *clysm-contrib-directory*)
+                         :before "gray"))

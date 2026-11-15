@@ -243,6 +243,12 @@ destructuring-bind (defined by the runtime)."
         (push (second fnode) (gethash sym *global-defuns*))
         ;; in a development image the function may be redefined at run time
         (when *redefinable-functions* (setf (gethash sym *notinline*) t)))
+      ;; in the image, the lambda list is kept for the development
+      ;; environment (SWANK's argument lists)
+      (when (and *live-mode* (consp fn-form) (eq (car fn-form) 'function)
+                 (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
+                 (consp (cdr (second fn-form))) (consp (cddr (second fn-form))))
+        (emit-toplevel-form `(clysm-sys::%put ',sym 'clysm-sys::%arglist ',(third (second fn-form))) env))
       (push `(:defun ,sym ,fnode) *toplevel-nodes*)
       ;; a small function defined at top level in the image: later calls may
       ;; contain a copy of its body (LIVE-INLINE-CALL)
@@ -404,6 +410,33 @@ path relative to it (the Clysm installation, or the working directory).")
                      return (subseq true (length rs))))
         (namestring path))))
 
+(defvar *record-definitions* nil
+  "When true, the definitions of functions and macros named by symbols of
+COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
+(for the REPL image: argument lists and source locations for SWANK).")
+(defvar *recorded-definitions* nil "((symbol arglist dspec file position) ...), last first")
+
+(defun record-definition (form path pos)
+  (when (and (consp form) (symbolp (car form)) (consp (cdr form)) (consp (cddr form))
+             (string= "DEF" (symbol-name (car form)) :end2 (min 3 (length (symbol-name (car form))))))
+    (let* ((op (car form)) (name (second form))
+           (sym (cond ((symbolp name) name)
+                      ((and (consp name) (eq (car name) 'setf) (symbolp (second name))) (second name)))))
+      (when (and sym (eq (symbol-package sym) (find-package :common-lisp))
+                 (not (eq op 'defmethod)))
+        (let ((arglist (and (member (symbol-name op) '("DEFUN" "DEFMACRO") :test #'string=)
+                            (symbolp name) (listp (third form))
+                            (list (third form)))))
+          (push (list (if (symbolp name) name (list 'setf sym))
+                      arglist (list op name)
+                      (ignore-errors (namestring (truename path))) pos)
+                *recorded-definitions*))))))
+
+(defun recorded-definitions-form ()
+  "A form that gives the image the definitions collected (see
+*RECORD-DEFINITIONS*)."
+  `(clysm-sys::%install-definitions ',(reverse *recorded-definitions*)))
+
 (defun compile-source-forms (s path env note)
   (let ((line-of (or (ignore-errors (source-line-finder path)) (constantly nil)))
         (file (source-file-name path))
@@ -414,6 +447,7 @@ path relative to it (the Clysm installation, or the working directory).")
              (form (target-read s nil s)))
         (when (eq form s) (return))
         (setf *current-source* (and line (cons file line)))
+        (when (and *record-definitions* pos) (record-definition form path pos))
         (funcall note form)
         (handler-bind ((error (lambda (c)
                                 (format *error-output* "~&;; error while compiling ~A~%;;   form: ~S~%;;   ~A~%"

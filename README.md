@@ -137,6 +137,25 @@ $ contrib/lem/build-web.sh                # build/lem-web/lem.html, one file for
 
 See [contrib/lem/README.md](contrib/lem/README.md).
 
+## SLIME
+
+`clysm swank` starts a SWANK server (SLIME's, from an existing Quicklisp
+installation) that Emacs connects to with `M-x slime-connect` (port 4005,
+or `--port N`). The REPL, `C-c C-c`, `C-c C-k`, `M-.`, argument lists,
+completion, the inspector and the debugger work; code is compiled to
+WebAssembly like at Clysm's REPL. To start Clysm from Emacs with `M-x slime`:
+
+```elisp
+(setq slime-lisp-implementations
+      '((clysm ("/path/to/clysm/bin/clysm" "repl")
+         :init (lambda (port-file _)
+                 (format "(progn (require :quicklisp) (funcall (read-from-string \"ql:quickload\") :swank :silent t) (funcall (read-from-string \"swank:start-server\") %S))\n"
+                         port-file)))))
+```
+
+Without threads, the server serves one connection at a time and a running
+evaluation cannot be interrupted from Emacs.
+
 ## Performance
 
 Time relative to SBCL 2.6 on Node.js 24 (x86-64), whole programs compiled

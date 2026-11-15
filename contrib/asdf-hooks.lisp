@@ -89,4 +89,20 @@ so that the fasl stays valid)."
           (write-string text o)))
       (setf (slot-value c 'absolute-pathname) out))))
 
+(defun clysm-add-source-file (system path name pathname &key before)
+  "Add the Lisp file PATHNAME as component NAME to the module of SYSTEM at
+PATH (a list of names, NIL for the system itself), before the component
+named BEFORE (at the end without it)."
+  (let* ((module (clysm-find-component system path))
+         (c (make-instance 'cl-source-file :name name :parent module))
+         (children (remove name (component-children module) :key #'component-name :test #'equal))
+         (pos (and before (position before children :key #'component-name :test #'equal))))
+    (setf (slot-value c 'absolute-pathname) pathname)
+    (setf (component-children module)
+          (if pos
+              (append (subseq children 0 pos) (list c) (nthcdr pos children))
+              (append children (list c))))
+    (compute-children-by-name module)
+    c))
+
 (load (merge-pathnames "fixups.lisp" (uiop:pathname-directory-pathname *load-truename*)))

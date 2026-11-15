@@ -8,6 +8,7 @@
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
 //   clysm repl | clysm script FILE | clysm eval FORM
+//   clysm swank [--port N]   (a SWANK server for SLIME; needs Quicklisp)
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -188,8 +189,20 @@ switch (cmd) {
     process.exit(run([runHost, replImage, ...(cmd === 'eval' ? ['--eval'] : []), ...args]));
     break;
   }
+  case 'swank': {
+    if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
+    let port = 4005;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--port') port = Number(args[++i]);
+      else { console.error(`clysm swank: unknown option ${args[i]}`); process.exit(1); }
+    }
+    if (!Number.isInteger(port)) { console.error('clysm swank: --port needs a number'); process.exit(1); }
+    process.exit(run([runHost, replImage, path.join(root, 'contrib', 'swank', 'start.lisp')],
+                     { env: { ...process.env, CLYSM_SWANK_PORT: String(port) } }));
+    break;
+  }
   default:
-    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 11)
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 12)
       .map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(cmd ? 1 : 0);
 }

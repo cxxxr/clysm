@@ -9,6 +9,8 @@
 #                                         to a new Wasm module, or interpreted with --interp);
 #                                         ~/.clysmrc is loaded first unless --no-userinit
 #   clysm script FILE                     load FILE in the REPL image
+#   clysm swank [--port N]                start a SWANK server for SLIME (M-x slime-connect),
+#                                         port 4005 by default; needs Quicklisp
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
 #   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE]] FILE...
 #                                         run test programs (see docs/INTERNALS.md)
@@ -67,9 +69,14 @@ case "$cmd" in
           exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   eval)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
+  swank)  port=4005
+          while [ $# -gt 0 ]; do
+            case "$1" in --port) port="$2"; shift 2;; *) echo "clysm swank: unknown option $1" >&2; exit 1;; esac
+          done
+          CLYSM_SWANK_PORT="$port" exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$ROOT/contrib/swank/start.lisp" ;;
   exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

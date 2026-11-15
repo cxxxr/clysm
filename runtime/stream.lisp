@@ -1378,11 +1378,12 @@ and whether the newline was missing, or :eof."
       (%tcp-write (socket-stream-id s) out)
       (setf (fill-pointer out) 0))))
 
-(defun %socket-read-byte (s)
-  (unless (stream-open s) (%not-input-stream s 'binary))
+(defun %socket-fill (s)
+  "Wait until an octet can be read from the socket stream S without waiting;
+false at end of file."
   (when (>= (socket-stream-in-pos s) (socket-stream-in-fill s))
     (if (socket-stream-in-eof s)
-        (return-from %socket-read-byte :eof)
+        (return-from %socket-fill nil)
         (progn
           ;; send what was written before waiting for the answer
           (%socket-flush s)
@@ -1390,7 +1391,19 @@ and whether the newline was missing, or :eof."
             (setf (socket-stream-in-pos s) 0 (socket-stream-in-fill s) n)
             (when (= n 0)
               (setf (socket-stream-in-eof s) t)
-              (return-from %socket-read-byte :eof))))))
+              (return-from %socket-fill nil))))))
+  t)
+
+(defun socket-wait-input (s)
+  "Wait until input is available on the socket stream S, or its end of file
+is reached; false at end of file."
+  (unless (stream-open s) (%not-input-stream s 'binary))
+  (%socket-fill s))
+
+(defun %socket-read-byte (s)
+  (unless (stream-open s) (%not-input-stream s 'binary))
+  (unless (%socket-fill s)
+    (return-from %socket-read-byte :eof))
   (prog1 (aref (socket-stream-in s) (socket-stream-in-pos s))
     (setf (socket-stream-in-pos s) (+ (socket-stream-in-pos s) 1))))
 
@@ -1398,6 +1411,29 @@ and whether the newline was missing, or :eof."
   "A bidirectional binary stream of (UNSIGNED-BYTE 8) connected to HOST:PORT."
   (%make-stream :kind :socket :id (%tcp-connect host port) :direction :io
                 :elt-type '(unsigned-byte 8)))
+
+(defstruct (tcp-server (:constructor %make-tcp-server (id port host)))
+  "A listening TCP socket of the host (OPEN-TCP-SERVER)."
+  id port host)
+
+(defun open-tcp-server (host port)
+  "Listen for TCP connections on HOST (NIL: all interfaces) and PORT (0: a
+free port, see TCP-SERVER-PORT)."
+  (multiple-value-bind (id port) (%tcp-listen host port)
+    (%make-tcp-server id port host)))
+
+(defun accept-tcp-stream (server)
+  "Wait for a connection to SERVER; a bidirectional binary stream of
+(UNSIGNED-BYTE 8)."
+  (unless (tcp-server-id server) (error "~S is closed" server))
+  (%make-stream :kind :socket :id (%tcp-accept (tcp-server-id server)) :direction :io
+                :elt-type '(unsigned-byte 8)))
+
+(defun close-tcp-server (server)
+  (when (tcp-server-id server)
+    (%tcp-close-server (tcp-server-id server))
+    (setf (tcp-server-id server) nil))
+  t)
 
 (defun open-local-stream (path)
   "A bidirectional binary stream of (UNSIGNED-BYTE 8) connected to the Unix

@@ -177,6 +177,23 @@ function makeNetServer(worker, sab) {
     if (s.ended) { ok(); return true; }
     return false;
   };
+  const servers = new Map();
+  const wake = (s) => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
+  const track = (sock) => {
+    const s = { sock, chunks: [], ended: false, error: null, waiting: null };
+    sock.on('data', (b) => { s.chunks.push(b); wake(s); });
+    sock.on('end', () => { s.ended = true; wake(s); });
+    sock.on('close', () => { s.ended = true; wake(s); });
+    return s;
+  };
+  const wakeServer = (sv) => {
+    if (!sv.waiting) return;
+    if (sv.pending.length) {
+      sv.waiting = false;
+      const s = sv.pending.shift(); const id = nextId++; sockets.set(id, s);
+      ok(Buffer.from(String(id)));
+    } else if (sv.error) { sv.waiting = false; fail(sv.error); }
+  };
   const processes = makeProcessManager();
   worker.on('message', (m) => {
     if (m && m.clysmProc !== undefined) {
@@ -197,17 +214,36 @@ function makeNetServer(worker, sab) {
         const [host, port] = args;
         // a null port: HOST is the path of a Unix domain socket
         const sock = (port === null || port === undefined) ? net.connect({ path: host }) : net.connect({ host, port });
-        const s = { sock, chunks: [], ended: false, error: null, waiting: null };
-        const wake = () => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
-        sock.on('data', (b) => { s.chunks.push(b); wake(); });
-        sock.on('end', () => { s.ended = true; wake(); });
-        sock.on('close', () => { s.ended = true; wake(); });
+        const s = track(sock);
         sock.once('connect', () => {
           const id = nextId++; sockets.set(id, s);
-          sock.on('error', (e) => { s.error = e; wake(); });
+          sock.on('error', (e) => { s.error = e; wake(s); });
           ok(Buffer.from(String(id)));
         });
         sock.once('error', (e) => { if (![...sockets.values()].includes(s)) fail(e); });
+      } else if (op === 'listen') {
+        // a server: connections that arrive are queued until accepted
+        const [host, port] = args;
+        const server = net.createServer();
+        const sv = { server, pending: [], waiting: false, error: null };
+        server.on('connection', (sock) => {
+          const s = track(sock);
+          sock.on('error', (e) => { s.error = e; wake(s); });
+          sv.pending.push(s); wakeServer(sv);
+        });
+        server.once('error', (e) => { if (!servers.has(sv.id)) fail(e); else { sv.error = e; wakeServer(sv); } });
+        server.listen({ host: host || undefined, port }, () => {
+          sv.id = nextId++; servers.set(sv.id, sv);
+          ok(Buffer.from(sv.id + ' ' + server.address().port));
+        });
+      } else if (op === 'accept') {
+        const sv = servers.get(args[0]);
+        if (!sv) fail('the server is closed');
+        else { sv.waiting = true; wakeServer(sv); }
+      } else if (op === 'close-server') {
+        const sv = servers.get(args[0]);
+        if (sv) { sv.server.close(); servers.delete(args[0]); }
+        ok();
       } else if (op === 'write') {
         const s = sockets.get(args[0]);
         s.sock.write(Buffer.from(args[1], 'latin1'), (e) => (e ? fail(e) : ok()));
@@ -261,6 +297,11 @@ function installNetClient(port, sab) {
     read: (id, max) => call('read', id, max).toString('latin1'),
     close: (id) => { call('close', id); },
     available: (id) => call('available', id).toString() === '1',
+    // a server on HOST (null: all interfaces) and PORT (0: any free port):
+    // "ID PORT"
+    listen: (host, port) => call('listen', host, port).toString(),
+    accept: (id) => Number(call('accept', id).toString()),
+    closeServer: (id) => { call('close-server', id); },
   };
 }
 
