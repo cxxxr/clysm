@@ -12,8 +12,12 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (shadow '#:eval :swank))
 
+(defvar *polling* nil "True while a request is processed by an interrupt check.")
+
 (defun swank::eval (form)
-  (sys::%eval-toplevel form))
+  ;; (an evaluation in the debugger of an interrupt can be interrupted too)
+  (let ((*polling* nil))
+    (sys::%eval-toplevel form)))
 
 ;;;; MOP
 
@@ -100,7 +104,44 @@
              (return sockets))
             (t (sleep 0.05))))))
 
-(defimplementation emacs-connected ())
+;;;; Interrupts (C-c C-c in Emacs)
+;;;
+;;; Code compiled in the image after a connection is made checks for
+;;; interrupts (sys::*interrupt-checks*): every so often POLL-FOR-INTERRUPT
+;;; looks whether Emacs sent something during an evaluation and processes
+;;; the requests, as with communication style :SIGIO, so :EMACS-INTERRUPT
+;;; enters the debugger (SIMPLE-BREAK) where the computation was.
+
+(defvar *last-data-seq* nil)
+
+(defun current-connection ()
+  (and (boundp 'swank::*emacs-connection*)
+       (symbol-value 'swank::*emacs-connection*)))
+
+(defun poll-for-interrupt ()
+  (unless *polling*
+    (let ((c (current-connection)))
+      (when (and c
+                 (boundp 'swank::*slime-interrupts-enabled*)
+                 (symbol-value 'swank::*slime-interrupts-enabled*)
+                 (typep c 'swank::singlethreaded-connection))
+        (let ((socket (funcall 'swank::connection.socket-io c))
+              (seq (sys::%tcp-data-seq)))
+          ;; a call of the host only when data arrived since the last
+          ;; check, or input is buffered
+          (when (and (sys::socket-stream-p socket)
+                     (open-stream-p socket)
+                     (or (not (eql seq *last-data-seq*))
+                         (< (sys::socket-stream-in-pos socket) (sys::socket-stream-in-fill socket))))
+            (setq *last-data-seq* seq)
+            (when (listen socket)
+              (let ((*polling* t))
+                (funcall 'swank::invoke-or-queue-interrupt
+                         (lambda () (funcall 'swank::handle-requests c t)))))))))))
+
+(defimplementation emacs-connected ()
+  (setq sys::*interrupt-poll-function* 'poll-for-interrupt
+        sys::*interrupt-checks* t))
 
 ;;;; Unix
 

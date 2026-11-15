@@ -613,6 +613,11 @@ and PORT (0 for any free port); returns the server id and the port."
   "Wait for a connection to the server SERVER; returns a connection id."
   (js:call (%host-net) "accept" server))
 
+(defun %tcp-data-seq ()
+  "A number that changes when data arrives on any connection (without a
+call of the host's main thread)."
+  (js:call (%host-net) "dataSeq"))
+
 (defun %tcp-close-server (server)
   (js:call (%host-net) "closeServer" server)
   t)

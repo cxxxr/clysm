@@ -1328,7 +1328,7 @@ loop with a BR_TABLE."
                                 collect (progn
                                           (setf (tb-cur tb) k)
                                           (let ((code (loop for f in forms append (cg-effect f))))
-                                            (if ll `((:loop ,ll nil ,@code)) code))))))
+                                            (if ll `((:loop ,ll nil ,@(poll-code) ,@code)) code))))))
              ;; build nested blocks: innermost has br_table
              (inner (when need-dispatch `((:local.get ,pc) (:br_table ,@labels ,(car (last labels))))))
              (blocks (let ((acc inner))
@@ -1356,7 +1356,7 @@ loop with a BR_TABLE."
           ,@(when (tb-nonlocal tb)
               (var-set-code (tb-tag-var tb) `(,@(nil-code) (:struct.new :cell))))
           (:block ,end nil
-            ,@(if need-dispatch `((:loop ,dispatch nil ,@loop-body)) loop-body))
+            ,@(if need-dispatch `((:loop ,dispatch nil ,@(poll-code) ,@loop-body)) loop-body))
           ,@(nil-code)
           ,@(when mv (mv-one)))))))
 
@@ -1748,9 +1748,24 @@ parameter has no code here: FINISH-BODY binds it."
                    nil)))
         (t (set-loc lv (cons :local local-idx)) (values nil nil))))
 
+(defvar clysm-sys::*interrupt-checks* nil
+  "When true, code compiled in the image (live mode) checks for interrupts
+on function entry and at the head of loops (POLL-CODE).")
+
+(defun poll-code ()
+  "An interrupt check: a counter shared by the modules of the image is
+decremented, and when it is negative, :POLL-SLOW calls
+SYSTEM::%INTERRUPT-POLL (a development environment's chance to interrupt the
+computation, e.g. SWANK's)."
+  (when (and *live-mode* clysm-sys::*interrupt-checks*)
+    '((:global.get :poll-count) (:i32.const 1) :i32.sub (:global.set :poll-count)
+      (:global.get :poll-count) (:i32.const 0) :i32.lt_s
+      (:if nil nil ((:call :poll-slow))))))
+
 (defun finish-body (lam prologue specials)
   "Compile LAM's body after PROLOGUE.  SPECIALS: the special parameters, a
 list of (symbol . local), which are bound around the body."
+  (setq prologue (append (poll-code) prologue))
   (if specials
       (let ((saved (new-local :i32)) (res (new-local)))
         (values `(,@prologue

@@ -64,6 +64,7 @@ Returns (values bytes constants-vector)."
     (add-import-global *m* :mv-buf '(:ref :vector) nil "clysm" "mv_buf")
     (add-import-global *m* :bstack '(:ref :vector) t "clysm" "bstack")
     (add-import-global *m* :bsp :i32 t "clysm" "bsp")
+    (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")
     (add-import-tag *m* :lisp-throw :exn "clysm" "lisp_throw")
     (setf (wasm-module-memory-import *m*) (list "clysm" "memory" 1))
     (sym-global nil) (sym-global t)

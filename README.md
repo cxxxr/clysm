@@ -153,8 +153,11 @@ WebAssembly like at Clysm's REPL. To start Clysm from Emacs with `M-x slime`:
                          port-file)))))
 ```
 
-Without threads, the server serves one connection at a time and a running
-evaluation cannot be interrupted from Emacs.
+Without threads, the server serves one connection at a time. `C-c C-c`
+interrupts an evaluation in code compiled after Emacs connected (and in
+`sleep`): that code checks for interrupts on function entry and in loops,
+which makes it slower (up to about a third for small recursive functions);
+`(setq sys::*interrupt-checks* nil)` compiles code without the checks.
 
 ## Performance
 

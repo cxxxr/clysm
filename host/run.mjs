@@ -152,8 +152,11 @@ export async function runModule(bytes, args = []) {
 //   control: [state, status, length]  (state 0 = waiting, 1 = done)
 const NET_DATA_BYTES = 1 << 20;
 
+// [3]: incremented when data arrives on any socket (read without a call:
+// a program can tell cheaply whether a socket may have input, see dataSeq)
 function makeNetServer(worker, sab) {
   const ctrl = new Int32Array(sab, 0, 3);
+  const seq = new Int32Array(sab, 12, 1);
   const data = new Uint8Array(sab, 16);
   const sockets = new Map();
   let nextId = 1;
@@ -181,7 +184,7 @@ function makeNetServer(worker, sab) {
   const wake = (s) => { if (s.waiting !== null && tryRead(s, s.waiting)) s.waiting = null; };
   const track = (sock) => {
     const s = { sock, chunks: [], ended: false, error: null, waiting: null };
-    sock.on('data', (b) => { s.chunks.push(b); wake(s); });
+    sock.on('data', (b) => { s.chunks.push(b); Atomics.add(seq, 0, 1); wake(s); });
     sock.on('end', () => { s.ended = true; wake(s); });
     sock.on('close', () => { s.ended = true; wake(s); });
     return s;
@@ -265,6 +268,7 @@ function makeNetServer(worker, sab) {
 
 function installNetClient(port, sab) {
   const ctrl = new Int32Array(sab, 0, 3);
+  const seq = new Int32Array(sab, 12, 1);
   const data = new Uint8Array(sab, 16);
   const call = (op, ...args) => {
     Atomics.store(ctrl, 0, 0);
@@ -302,6 +306,7 @@ function installNetClient(port, sab) {
     listen: (host, port) => call('listen', host, port).toString(),
     accept: (id) => Number(call('accept', id).toString()),
     closeServer: (id) => { call('close-server', id); },
+    dataSeq: () => Atomics.load(seq, 0),
   };
 }
 

@@ -528,6 +528,7 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
       (add-export *m* "mv_buf" :global :mv-buf)
       (add-export *m* "bstack" :global :bstack)
       (add-export *m* "bsp" :global :bsp)
+      (add-export *m* "poll_count" :global :poll-count)
       (add-export *m* "lisp_throw" :tag :lisp-throw)
       ;; the memory through which strings and octets cross to the host at once
       (setf (wasm-module-memory *m*) 1)
@@ -560,6 +561,7 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
       (add-global *m* :mv-buf '(:ref :vector) nil `((:i32.const ,+mv-limit+) (:array.new_default :vector)))
       (add-global *m* :bstack '(:ref :vector) t '((:i32.const 1024) (:array.new_default :vector)))
       (add-global *m* :bsp :i32 t '((:i32.const 0)))
+      (add-global *m* :poll-count :i32 t '((:i32.const 0)))
       (dolist (g (reverse *misc-globals*))
         (destructuring-bind (name type mutable init) g
           (add-global *m* name type mutable init)))

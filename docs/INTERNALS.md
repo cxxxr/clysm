@@ -910,6 +910,18 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
   character positions.
 * Backtraces are the names of the Lisp frames on the JavaScript stack;
   frames have no locals.
+* Interrupts (`C-c C-c`): Wasm code cannot be interrupted from outside, so
+  code compiled in the image while `sys::*interrupt-checks*` is true (set
+  when Emacs connects) decrements a counter shared by the modules
+  (`poll_count`, exported by the image) on function entry and at the head
+  of loops (`poll-code` in `src/codegen.lisp`). Every 100000 checks
+  `sys::%interrupt-poll` calls `sys::*interrupt-poll-function*`. SWANK's looks
+  whether data arrived on a socket (a counter in the shared buffer of the
+  host's sockets, read without a call of the main thread) and, if the
+  connection has input, processes the requests as with communication style
+  `:SIGIO`: `:emacs-interrupt` enters the debugger where the computation
+  was. Code of the runtime and code compiled before has no checks (`sleep`
+  polls).
 
 `make test-swank` runs the server and a client that speaks SLIME's protocol
 (`tests/swank/client.mjs`).

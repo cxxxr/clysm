@@ -423,6 +423,17 @@ documentation string may appear among the declarations."
 ;;; ------------------------------------------------------------
 
 (defvar *native-compile-hook* nil "set when the compiler is part of the image")
+(defvar *interrupt-checks* nil
+  "When true, code compiled in the image checks for interrupts on function
+entry and at the head of loops: %INTERRUPT-POLL is called every so often.")
+(defvar *interrupt-poll-function* nil
+  "A function of no arguments called by %INTERRUPT-POLL, or NIL.")
+
+(defun %interrupt-poll ()
+  (let ((f *interrupt-poll-function*))
+    (when f (funcall f)))
+  nil)
+
 (defvar *native-eval-hook* nil "when set, the REPL compiles each form natively")
 (defvar *native-compile-form-hook* nil
   "When the compiler is part of the image: a function compiling a toplevel form
