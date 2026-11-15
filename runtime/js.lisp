@@ -305,7 +305,10 @@ cannot wait: JS:CAN-AWAIT-P is false.)"
 signal an error if it is rejected.  Meanwhile JavaScript runs, and may call
 Lisp functions or start or resume other computations."
   (unless (js:can-await-p)
-    (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION (or JavaScript is in between)"))
+    (if (%js-suspending-p)
+        (error "JS:AWAIT cannot wait here: not in a function of JS:ASYNC-FUNCTION (or JavaScript is in between)")
+        ;; (Node.js 22 comes here: the module loads and runs, and nothing can wait)
+        (error "JS:AWAIT cannot wait: this JavaScript engine cannot suspend WebAssembly (it has no JavaScript Promise Integration: Node.js 24, Chrome 137 or later)")))
   (let ((computation *js-computation*)
         (promise (js:to-js promise)))
     (%suspend-computation computation)
