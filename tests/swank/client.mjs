@@ -14,6 +14,7 @@ const check = (what, ok, detail = '') => {
 };
 
 // one connection: messages are a 6-digit hex length and UTF-8 text
+let debugThread = 't';
 function connect() {
   const socket = net.connect({ host: '127.0.0.1', port });
   let buf = Buffer.alloc(0);
@@ -28,6 +29,9 @@ function connect() {
       buf = buf.subarray(6 + n);
       // output to Emacs waits for :write-done
       const w = /^\(:write-string .* (\d+)\)$/s.exec(msg);
+      // the thread of the debugger (an id of a thread with style :SPAWN)
+      const d = /^\(:debug-activate (\S+) /.exec(msg);
+      if (d) debugThread = d[1];
       if (w) send(`(:write-done ${w[1]})`);
       if (waiting.length) waiting.shift()(msg); else queue.push(msg);
     }
@@ -44,7 +48,9 @@ function connect() {
   });
   let id = 0;
   // a request: the messages up to its :return (or a :debug-activate)
-  const rex = async (form, thread = 't') => {
+  // the REPL's requests go to the REPL thread, as SLIME sends them
+  const defaultThread = (form) => (form.startsWith('(swank-repl:listener-eval') ? ':repl-thread' : 't');
+  const rex = async (form, thread = defaultThread(form)) => {
     const n = ++id;
     send(`(:emacs-rex ${form} "COMMON-LISP-USER" ${thread} ${n})`);
     const msgs = [];
@@ -65,7 +71,7 @@ function connect() {
       if (re.test(m)) return { msgs, result: m, text: msgs.join('\n') };
     }
   };
-  const sendRex = (form, thread = 't') => {
+  const sendRex = (form, thread = defaultThread(form)) => {
     const n = ++id;
     send(`(:emacs-rex ${form} "COMMON-LISP-USER" ${thread} ${n})`);
     return n;
@@ -97,7 +103,7 @@ fs.writeFileSync(file, `;; a file compiled with C-c C-k
 
 const c = connect();
 let r = await c.rex('(swank:connection-info)');
-check('connection-info', /:lisp-implementation \(:type "Clysm" :name "clysm"/.test(r.result) && /:style nil/.test(r.result), r.text);
+check('connection-info', /:lisp-implementation \(:type "Clysm" :name "clysm"/.test(r.result) && /:style (nil|:spawn)/.test(r.result), r.text);
 
 r = await c.rex("(swank:swank-require '(swank-repl swank-arglists swank-fuzzy swank-fancy-inspector swank-c-p-c swank-package-fu swank-presentations swank-trace-dialog swank-macrostep))");
 check('swank-require of the contribs of slime-fancy', /"SWANK-REPL"/.test(r.result) && /"SWANK-FANCY-INSPECTOR"/.test(r.result), r.text);
@@ -162,22 +168,22 @@ check('macroexpand', /\(IF A/.test(r.result), r.text);
 // the debugger
 r = await c.rex(`(swank-repl:listener-eval ${lisp('(swank-test::outer 3)\n')})`);
 check('an error enters the debugger', /\(:debug \d+ 1 \("inner failed with 3"/.test(r.text), r.text);
-r = await c.rex('(swank:backtrace 0 20)', '1');
+r = await c.rex('(swank:backtrace 0 20)', debugThread);
 // frames print as calls, with the values of the arguments
 const frame = /\((\d+) "\(OUTER 3\)"\)/.exec(r.result);
 const innerFrame = /\((\d+) "\(INNER 3\)"\)/.exec(r.result);
 check('backtrace', frame && innerFrame && /"EVAL-FOR-EMACS"/.test(r.result), r.text);
 if (frame) {
-  r = await c.rex(`(swank:frame-source-location ${frame[1]})`, '1');
+  r = await c.rex(`(swank:frame-source-location ${frame[1]})`, debugThread);
   check('source of a frame (v in sldb)', /defs\.lisp"\) \(:position \d+\) \(:snippet "\(defun outer/.test(r.result), r.text);
 }
 if (innerFrame) {
-  r = await c.rex(`(swank:frame-locals-and-catch-tags ${innerFrame[1]})`, '1');
+  r = await c.rex(`(swank:frame-locals-and-catch-tags ${innerFrame[1]})`, debugThread);
   check('locals of a frame', /\(:name "SWANK-TEST::X" :id 0 :value "3"\) \(:name "SWANK-TEST::DOUBLED" :id 0 :value "6"\)/.test(r.result), r.text);
-  r = await c.rex(`(swank:eval-string-in-frame ${lisp('(* x doubled)')} ${innerFrame[1]} "SWANK-TEST" 1 80)`, '1');
+  r = await c.rex(`(swank:eval-string-in-frame ${lisp('(* x doubled)')} ${innerFrame[1]} "SWANK-TEST" 1 80)`, debugThread);
   check('evaluation in a frame (e in sldb)', /"=> 18 /.test(r.result), r.text);
 }
-r = await c.rex('(swank:sldb-abort)', '1');
+r = await c.rex('(swank:sldb-abort)', debugThread);
 r = await c.rex(`(swank-repl:listener-eval ${lisp('(fact 10)\n')})`);
 check('the REPL after the debugger', /"3628800\n" :repl-result/.test(r.text), r.text);
 
@@ -186,19 +192,19 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 r = await c.rex(`(swank-repl:listener-eval ${lisp('(defvar *spins* 0)\n(defun spin-forever () (loop (incf *spins*)))\n')})`);
 let n = c.sendRex(`(swank-repl:listener-eval ${lisp('(spin-forever)\n')})`);
 await sleep(1500);
-c.send('(:emacs-interrupt t)');
+c.send('(:emacs-interrupt :repl-thread)');
 try {
   r = await c.until(/^\(:debug-activate/, 20000);
-  check('C-c C-c interrupts a loop', /\(:debug 0 1 \("Interrupt from Emacs"/.test(r.text) && /\(0 "\(SPIN-FOREVER\)"\)/.test(r.text), r.text);
+  check('C-c C-c interrupts a loop', /\(:debug \S+ 1 \("Interrupt from Emacs"/.test(r.text) && /\(0 "\(SPIN-FOREVER\)"\)/.test(r.text), r.text);
   // continue, and interrupt again
-  c.sendRex('(swank:sldb-continue)', '0');
+  c.sendRex('(swank:sldb-continue)', debugThread);
   await sleep(1000);
   r = await c.rex(`(swank:interactive-eval ${lisp('(plusp *spins*)')} 1 80)`);
   check('a request is answered during an evaluation', /"=> T"/.test(r.result), r.text);
-  c.send('(:emacs-interrupt t)');
+  c.send('(:emacs-interrupt :repl-thread)');
   r = await c.until(/^\(:debug-activate/, 20000);
   check('the computation continues after the interrupt', /"Interrupt from Emacs"/.test(r.text), r.text);
-  c.sendRex('(swank:sldb-abort)', '0');
+  c.sendRex('(swank:sldb-abort)', debugThread);
   r = await c.until(new RegExp(`^\\(:return \\(:abort .*\\) ${n}\\)$`), 20000);
   check('the interrupted evaluation is aborted', true);
   r = await c.rex(`(swank-repl:listener-eval ${lisp('(fact 7)\n')})`);
@@ -206,10 +212,10 @@ try {
   // SLEEP of the runtime
   n = c.sendRex(`(swank-repl:listener-eval ${lisp('(sleep 600)\n')})`);
   await sleep(1000);
-  c.send('(:emacs-interrupt t)');
+  c.send('(:emacs-interrupt :repl-thread)');
   r = await c.until(/^\(:debug-activate/, 20000);
   check('C-c C-c interrupts SLEEP', /"Interrupt from Emacs"/.test(r.text), r.text);
-  c.sendRex('(swank:sldb-abort)', '0');
+  c.sendRex('(swank:sldb-abort)', debugThread);
   r = await c.until(new RegExp(`^\\(:return \\(:abort .*\\) ${n}\\)$`), 20000);
 } catch (e) {
   check('C-c C-c interrupts a loop', false, String(e));

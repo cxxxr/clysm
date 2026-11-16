@@ -566,7 +566,9 @@ when VALUE is NIL."
 
 (defun %tcp-connect (host port)
   "Open a TCP connection to HOST (a string) and PORT; returns a connection id."
-  (handler-case (js:call (%host-net) "connect" (string host) port)
+  (handler-case (if (%can-wait-p)
+                    (%await-promise (js:call (%host-net) "connectAsync" (string host) port) :connection)
+                    (js:call (%host-net) "connect" (string host) port))
     (error (e) (error 'simple-error :format-control "cannot connect to ~A:~D: ~A"
                                     :format-arguments (list host port e)))))
 
@@ -584,7 +586,10 @@ when VALUE is NIL."
 least one arrives); returns the index after the last octet stored, which is
 START at end of file."
   (let* ((end (or end (length buffer)))
-         (s (js:call (%host-net) "read" id (- end start)))
+         (s (if (%can-wait-p)
+                ;; the other threads run while it waits
+                (%await-promise (js:call (%host-net) "readAsync" id (- end start)) :input)
+                (js:call (%host-net) "read" id (- end start))))
          (n (length s)))
     (dotimes (i n)
       (setf (aref buffer (+ start i)) (char-code (char s i))))
@@ -611,7 +616,9 @@ and PORT (0 for any free port); returns the server id and the port."
 
 (defun %tcp-accept (server)
   "Wait for a connection to the server SERVER; returns a connection id."
-  (js:call (%host-net) "accept" server))
+  (if (%can-wait-p)
+      (%await-promise (js:call (%host-net) "acceptAsync" server) :connection)
+      (js:call (%host-net) "accept" server)))
 
 (defun %tcp-data-seq ()
   "A number that changes when data arrives on any connection (without a

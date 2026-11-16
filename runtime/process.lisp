@@ -54,6 +54,10 @@ input, :INTERACTIVE (this process's) or NIL (none).  OUTPUT and
 ERROR-OUTPUT are :PIPE (returned as strings), :INTERACTIVE or NIL.
 Returns the output, the error output and the exit code (128 plus the signal
 number if a signal ended it)."
+  (when (and (%can-wait-p) (not (eq input :interactive)) (ignore-errors (js:global "__clysm_proc_sync")))
+    ;; with threads, the others run meanwhile
+    (return-from %run-program-sync
+      (%run-program-waiting command input directory environment output error-output)))
   (let* ((cp (%child-process-module))
          (options (js:object "maxBuffer" 1073741824
                              "encoding" "utf8"
@@ -92,7 +96,11 @@ number if a signal ended it)."
 (defun %process-manager-call (op &rest args)
   (let ((sync (%js-get (%js-global) (%js-string "__clysm_proc_sync"))))
     (if (eql (%js-typeof sync) 5)
-        (apply #'js:call sync op args)
+        (if (and (member op '("read" "readText" "wait") :test #'string=) (%can-wait-p))
+            ;; with threads: the others run while it waits
+            (%await-promise (apply #'js:call (%js-get (%js-global) (%js-string "__clysm_proc_async")) op args)
+                            :process)
+            (apply #'js:call sync op args))
         (let ((manager (%js-get (%js-global) (%js-string "__clysm_proc"))))
           (unless (eql (%js-typeof manager) 5)
             (error "Subprocesses with streams are not available on this host"))
@@ -252,6 +260,24 @@ streams (or NIL)."
               (and (eq input :stream) (make-instance '%process-output :process process))
               (and (eq output :stream) (make-instance input-class :process process :fd 1))
               (and (eq error-output :stream) (make-instance input-class :process process :fd 2))))))
+
+(defun %run-program-waiting (command input directory environment output error-output)
+  "%RUN-PROGRAM-SYNC in a thread: the process is started and waited for
+without blocking the other threads."
+  (multiple-value-bind (process in out err)
+      (%launch-program command :input (if (stringp input) :stream nil)
+                               :output (if (eq output :pipe) :stream (if (eq output :interactive) :interactive nil))
+                               :error-output (if (eq error-output :pipe) :stream
+                                                 (if (eq error-output :interactive) :interactive nil))
+                               :directory directory :environment environment)
+    (when in
+      (write-string input in)
+      (close in))
+    (flet ((slurp (s)
+             (and s (with-output-to-string (o)
+                      (loop for c = (read-char s nil nil) while c do (write-char c o))))))
+      (let ((stdout (slurp out)) (stderr (slurp err)))
+        (values stdout stderr (%process-wait process))))))
 
 (defun %process-wait (process)
   "Wait until PROCESS exits; return its exit code (128 plus the number of the

@@ -430,6 +430,7 @@ entry and at the head of loops: %INTERRUPT-POLL is called every so often.")
   "A function of no arguments called by %INTERRUPT-POLL, or NIL.")
 
 (defun %interrupt-poll ()
+  (%thread-poll)
   (let ((f *interrupt-poll-function*))
     (when f (funcall f)))
   nil)
@@ -1000,6 +1001,10 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
   (setq *posix-argv* (%command-line-arguments))
   (%init-default-pathname)
   (%init-host-features)
+  ;; as a thread that can wait (runtime/thread.lisp)
+  (%call-as-main-thread #'%main-1))
+
+(defun %main-1 ()
   (let* ((args *posix-argv*)
          (userinit (not (and args (string= (car args) "--no-userinit")))))
     (unless userinit (setq args (cdr args) *posix-argv* args))

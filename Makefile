@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim test-swank repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -26,6 +26,12 @@ test-quicklisp:
 # McCLIM (from an existing Quicklisp installation) on a virtual X server
 test-mcclim:
 	tests/mcclim/run.sh
+
+# green threads (runtime/thread.lisp) and Bordeaux Threads (needs Quicklisp)
+test-threads:
+	bin/clysm script tests/threads/run.lisp > build/threads-test.out 2> build/threads-test.err; \
+	if cmp -s build/threads-test.out tests/threads/run.expected; then echo "threads: ok"; \
+	else diff tests/threads/run.expected build/threads-test.out; exit 1; fi
 
 # SLIME's SWANK server (from an existing Quicklisp installation) and a client
 test-swank:

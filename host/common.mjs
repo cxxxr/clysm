@@ -87,6 +87,23 @@ export function makeCommonEnv(state) {
       const text = 'Backtrace:\n' + names.map((n, i) => `  ${i}: ${n}`).join('\n') + '\n';
       if (state.writeText) state.writeText(fd, text);
     },
+    // the same, returning the module's RUN function, which the image calls
+    instantiate_module(bytes) {
+      let u8 = bytes;
+      if (!(bytes instanceof Uint8Array)) {
+        u8 = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
+      }
+      const mod = new WebAssembly.Module(u8);
+      const ex = state.instance.exports;
+      const inst = new WebAssembly.Instance(mod, {
+        ...state.imports,
+        clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
+                 poll_count: ex.poll_count,
+                 lisp_throw: ex.lisp_throw, memory: ex.memory },
+      });
+      return inst.exports.run;
+    },
     compile_module(bytes, consts) {
       // instantiate a module compiled inside the image and link it with it
       // BYTES is a string of octets, or a Uint8Array (e.g. read from a fasl)

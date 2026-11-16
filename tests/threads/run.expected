@@ -1,0 +1,27 @@
+ok   join returns the values
+ok   the threads ran interleaved
+ok   a new thread starts when its creator waits
+ok   bindings per thread
+ok   handlers of the creator are not those of the thread
+ok   mutual exclusion
+ok   grab-mutex without waiting
+ok   condition variable
+ok   condition-wait times out
+ok   semaphore
+ok   interrupt-thread runs in the thread when it waits
+ok   destroy-thread unwinds the thread
+ok   join-thread with a timeout
+ok   sleep lets the others run
+ok   deep recursion in a thread
+ok   only the main thread is left
+ok   threads that compute take turns
+ok   a computing thread does not keep a sleeping one from waking
+ok   sockets: a server and a client in two threads
+ok   a subprocess: the others run while it is waited for
+ok   run-program: the others run while it runs
+ok   threads compile at the same time (the world lock)
+ok   threads define classes and methods at the same time
+ok   bt: supports threads
+ok   bt: make-thread, join-thread, locks, condition variables
+ok   bt2: with-timeout
+ok   bt2: semaphores and atomic integers

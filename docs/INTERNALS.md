@@ -890,7 +890,10 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 * Sockets: the Node.js host listens and accepts (`sys::open-tcp-server`,
   `sys::accept-tcp-stream`, synchronous like the client sockets).
-* Clysm has no threads: the communication style is `NIL`. `wait-for-input`
+* With green threads (below) the communication style is `:spawn`: the
+  backend's threads, mailboxes and locks are those of `runtime/thread.lisp`.
+  Without them (no JavaScript Promise Integration, a browser) it is `NIL`:
+  `wait-for-input`
   blocks on the connection's socket (`sys::socket-wait-input`), not on the
   terminal. A request that SWANK read and queued while another was waited
   for (by the debugger) counts as input. Each request is processed with the
@@ -935,6 +938,90 @@ N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 `make test-swank` runs the server and a client that speaks SLIME's protocol
 (`tests/swank/client.mjs`).
+
+## Threads
+
+`runtime/thread.lisp` has green threads: a thread is a computation of
+`js:async-function` (its own stack, which JavaScript Promise Integration
+suspends, and its own dynamic bindings), and the threads take turns in the
+one thread of the host, JavaScript's event loop resuming the one whose wait
+is over. A thread runs until it waits: `sys::grab-mutex` of a mutex another
+holds, `sys::condition-wait`, `sys::wait-on-semaphore`, `sys::join-thread`,
+`sleep`, `sys::thread-yield`, or input from a socket or the terminal. Those
+then do not block the host: socket reads, accepts and connections are
+messages to the host's main thread answered by messages (`readAsync` in
+`host/run.mjs`), the terminal is read with `fs.read`. Until a second thread
+is made nothing changes: they block as before.
+
+* The program (`sys::main`, the REPL and scripts) runs as a computation, the
+  main thread, so it can wait too. The host gives computations stacks as
+  deep as the worker's (`--wasm-stack-switching-stack-size` and
+  `--stack-size`, set before the worker starts); elsewhere (a browser,
+  where they are about 1 MB) the program does not run as one.
+* A module compiled in the image is run from WebAssembly (`call_ref` of its
+  `run` function, which the host's `instantiate_module` returns), not
+  through JavaScript, so that its code can wait.
+* A new thread starts when its creator waits, with none of its dynamic
+  bindings: it sees the global values and has no handlers or restarts of
+  the creator.
+* Preemption: code compiled while `sys::*interrupt-checks*` is true (see
+  SWANK; on in SLIME sessions) checks for interrupts on function entry and
+  at the head of loops. While threads run, every 10000 checks
+  (`sys::*poll-interval*`, set into the counter by `sys::%set-poll-count`)
+  `sys::%thread-poll` gives the others their turn (`thread-yield`, a
+  `setImmediate`, so that the host's events are processed too) when the
+  thread has run for `sys::*time-slice*` (10 ms) since it last got its turn,
+  or at once when one was woken, a socket received data or a `sleep` is
+  over. A thread is not preempted while it compiles
+  (`sys::*preemption-inhibited*`, bound around the compiler, whose state the
+  threads share). With one thread nothing of this runs.
+* `sys::interrupt-thread` runs a function in the thread when it waits, or
+  at its next interrupt check. `sys::destroy-thread` is an interrupt that
+  unwinds the thread.
+* An error that the thread does not handle ends it (with a message on
+  `*error-output*`), unless `*debugger-hook*` is set; `sys::join-thread`
+  then signals an error.
+* `contrib/bordeaux-threads` (Bordeaux Threads 1 and 2) uses them where
+  JavaScript can suspend WebAssembly, unless `bt2:*thread-starter*` is set
+  (Lem runs its threads from the event loop of its page that way).
+
+What the threads share:
+
+* The world lock (`sys::%call-with-world-lock`, a recursive mutex): one
+  thread at a time compiles (the compiler's tables are global) or changes
+  the class system (`ensure-class`, `finalize-inheritance`, `defgeneric`,
+  `defmethod`, `add-method`, `remove-method`), and it is not preempted
+  meanwhile; it may still wait (in a macro expander, a method of the
+  metaobject protocol), and a thread that waits there for one that compiles
+  waits for ever, as with SBCL's world lock. `load` and `compile-file` take
+  it for each form they compile, not for the whole file, so loaded code may
+  start threads and wait for them.
+* The runtime's own operations do not wait and have no interrupt checks, so
+  a thread is never switched in the middle of one: hash tables (whose tests
+  are the standard ones), packages, symbols' properties, streams' buffers
+  are consistent for every thread (`:synchronized` of `make-hash-table` is
+  accepted and changes nothing). The caches of generic functions are
+  replaced, not changed, so a thread that computes an entry while another
+  changes the function stores nothing stale. What is not protected is what
+  user code does between switches: changing a hash table that another
+  thread iterates over (`maphash` with a function that waits), as with
+  native threads.
+* A socket stream's input is filled by one thread at a time (a mutex of the
+  stream); a thread that reads a stream another is filling waits for it.
+* Subprocesses: with threads, `uiop:run-program` (`sys::%run-program-sync`)
+  starts the process and reads its output and waits for it without
+  blocking the others; reads of a process's output and waits for its end
+  (`uiop:launch-program`) are messages to the host's process manager.
+
+There is no parallelism, and a thread that computes in code without
+interrupt checks (the runtime, code compiled without them) keeps the others
+waiting until it waits or calls code with checks. A thread that a
+JavaScript callback runs in (`js:funcall` of a function that calls Lisp)
+cannot wait or be preempted there. `make test-threads` runs `tests/threads/run.lisp`.
+
+What still blocks every thread: file operations (synchronous and short),
+writes to sockets (until the host accepted them), `run-program` with
+`:input :interactive`, and JavaScript the program calls synchronously.
 
 ## Metaobject protocol
 
@@ -1074,9 +1161,8 @@ Limitations:
   slots at once and calls `update-instance-for-redefined-class`. Tracking
   costs a JavaScript call per instance, so it is off by default; without it,
   instances made before the redefinition keep their old slot vectors.
-* No threads and no first-class continuations (not required by the standard);
-  computations of `js:async-function` wait concurrently, each with its own
-  dynamic bindings.
+* Threads are green threads (see [Threads](#threads)); no first-class
+  continuations (not required by the standard).
 * Pathnames are Unix namestrings; on a Windows host (Node.js's
   `process.platform` is `win32`, `sys::*windows-paths*`) a backslash in a
   namestring is a slash, `C:` is the device `"C"` and `\\server\share` the
