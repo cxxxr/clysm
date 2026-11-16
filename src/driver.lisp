@@ -101,6 +101,10 @@ that may not be done twice.")
   (if (and (consp form) (member (car form) *host-definers*))
       (handler-case (sb-ext:with-timeout *host-definition-seconds* (eval form))
         (sb-ext:timeout ()
+          ;; said, so that a build that became slow can be told why
+          (format *error-output*
+                  "~&; note: the host did not compile ~(~A~) ~S in ~D seconds; compiled again without its optimizations~%"
+                  (car form) (if (consp (cdr form)) (second form) nil) *host-definition-seconds*)
           (with-compilation-unit (:policy '(optimize (debug 2) (speed 0)))
             (eval form))))
       (eval form))
