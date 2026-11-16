@@ -30,7 +30,8 @@ for f in ${@:-tests/cases/*.lisp}; do
     else
       compile="sbcl --script tools/build.lisp${SHAKE:+ --shake}"
     fi
-    if ! $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1; then
+    # (a time limit: a compiler that does not finish is a failure, not a wait)
+    if ! timeout 600 $compile "build/tests/$name.wasm" "$f" > "build/tests/$name.build" 2>&1; then
       echo "FAIL $name (compile)"; fail=$((fail+1)); failed="$failed $name"; continue
     fi
     timeout 20 node host/run.mjs "build/tests/$name.wasm" > "build/tests/$name.out" 2> "build/tests/$name.err"

@@ -77,11 +77,41 @@
          (node (convert form env)))
     (push node *toplevel-nodes*)))
 
+;;; The definitions of a program are evaluated here for its macros to call,
+;;; and SBCL compiles what it evaluates.  Its compiler does not finish
+;;; (minutes for one function, where it takes a moment) with some functions
+;;; that are large only in how deep their forms nest: a loop in a loop in a
+;;; LET, several times over, with a call of a function inside
+;;; (tests/cases/deep-forms.lisp; the time goes to its propagation of
+;;; constraints).  With DEBUG above SPEED it compiles them at once, but
+;;; everything else many times slower, so that is not how all is compiled: a
+;;; definition is given a while, and only one that takes longer is compiled
+;;; again that way.
+
+(defvar *host-definition-seconds* 20
+  "How long the host may take to compile one definition of a program before
+it is compiled again in the way that always ends.")
+
+(defparameter *host-definers* '(defun defmacro defmethod define-compiler-macro)
+  "The operators whose evaluation is the compiling of a function and nothing
+that may not be done twice.")
+
+(defun host-eval-form (form)
+  #+sbcl
+  (if (and (consp form) (member (car form) *host-definers*))
+      (handler-case (sb-ext:with-timeout *host-definition-seconds* (eval form))
+        (sb-ext:timeout ()
+          (with-compilation-unit (:policy '(optimize (debug 2) (speed 0)))
+            (eval form))))
+      (eval form))
+  #-sbcl
+  (eval form))
+
 (defun host-eval (form)
   (setf form (substitute-host-functions form))
   (let ((*package* *read-package*))
     (handler-bind ((warning #'muffle-warning))
-      (eval form))))
+      (host-eval-form form))))
 
 (defparameter *toplevel-operators*
   '(progn eval-when locally macrolet symbol-macrolet defmacro in-package defpackage declaim))
