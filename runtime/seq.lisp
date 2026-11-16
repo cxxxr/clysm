@@ -9,20 +9,20 @@
 (defun %check-char (c) (if (characterp c) c (%type-error c 'character)))
 
 (defun char-int (c) (char-code c))
+;;; The other case of a character that is not ASCII is in the tables of
+;;; char-case.lisp (Unicode's simple mappings, as SBCL has them).
 (defun char-upcase (c)
   (let ((n (char-code c)))
-    (when (< n 128)                     ; ASCII
-      (return-from char-upcase (if (and (>= n 97) (<= n 122)) (code-char (- n 32)) c)))
-    (if (or (<= 97 n 122) (<= 224 n 254 ) (<= 945 n 969) (<= 1072 n 1103))
-        (if (or (= n 247)) c (code-char (- n (if (<= 1072 n 1103) 32 32))))
-        c)))
+    (if (< n 128)
+        (if (and (>= n 97) (<= n 122)) (code-char (- n 32)) c)
+        (let ((m (%upcase-code n)))
+          (if (= m n) c (code-char m))))))
 (defun char-downcase (c)
   (let ((n (char-code c)))
-    (when (< n 128)                     ; ASCII
-      (return-from char-downcase (if (and (>= n 65) (<= n 90)) (code-char (+ n 32)) c)))
-    (if (or (<= 65 n 90) (<= 192 n 222) (<= 913 n 937) (<= 1040 n 1071))
-        (if (= n 215) c (code-char (+ n 32)))
-        c)))
+    (if (< n 128)
+        (if (and (>= n 65) (<= n 90)) (code-char (+ n 32)) c)
+        (let ((m (%downcase-code n)))
+          (if (= m n) c (code-char m))))))
 (defun upper-case-p (c)
   (let ((n (char-code c)))
     (if (< n 128) (and (>= n 65) (<= n 90)) (not (eql (char-downcase c) c)))))
