@@ -32,12 +32,12 @@
   (joiners nil)                         ; threads waiting for it to end
   (waiting-for nil))                    ; what it waits for (for display)
 
+(defconstant +ms-per-second+ 1000 "INTERNAL-TIME-UNITS-PER-SECOND (defined later, runtime/misc.lisp).")
+
 (defvar *main-thread* nil "The thread of the program itself.")
 (defvar *current-thread* nil "The current thread (bound in each thread).")
 (defvar *all-threads* nil "The threads that have not ended, newest first.")
-(defvar *threads-started* nil
-  "True once a thread has been made: then blocking operations wait without
-blocking the other threads.")
+(defvar *threads-started* nil)          ; (defined in runtime/clos.lisp)
 (defvar *io-waiters* 0 "The number of threads waiting for input.")
 (defvar *earliest-wakeup* nil "The internal real time when a SLEEP is over first, or NIL.")
 (defvar *last-io-seq* nil)
@@ -49,9 +49,7 @@ get their turn (preemption).")
 (defparameter *poll-interval* 10000
   "The number of interrupt checks between two calls of %INTERRUPT-POLL while
 threads run.")
-(defvar *preemption-inhibited* nil
-  "True while the thread must not be preempted (it compiles: the compiler's
-state is shared); it still waits where it waits.")
+(defvar *preemption-inhibited* nil)     ; (defined in runtime/clos.lisp)
 
 (defun %resumed ()
   (setq *slice-start* (get-internal-real-time)))
@@ -157,13 +155,13 @@ its value."
 
 (defun %thread-sleep (seconds)
   "SLEEP in a program with threads: the others run meanwhile."
-  (let ((end (+ (get-internal-real-time) (* seconds internal-time-units-per-second))))
+  (let ((end (+ (get-internal-real-time) (* seconds +ms-per-second+))))
     (loop
       (let ((left (- end (get-internal-real-time))))
         (when (<= left 0) (return nil))
         (when (or (null *earliest-wakeup*) (< end *earliest-wakeup*))
           (setq *earliest-wakeup* end))
-        (%wait (/ left internal-time-units-per-second) :sleep)
+        (%wait (/ left +ms-per-second+) :sleep)
         (when (and *earliest-wakeup* (<= *earliest-wakeup* (get-internal-real-time)))
           (setq *earliest-wakeup* nil))))))
 
@@ -269,7 +267,7 @@ its value."
   "Wait until THREAD ends; its values, or (values NIL :TIMEOUT).  Signals an
 error if it was ended by an error or by DESTROY-THREAD."
   (when (eq thread (current-thread)) (error "~S cannot join itself" thread))
-  (let ((deadline (and timeout (+ (get-internal-real-time) (* timeout internal-time-units-per-second)))))
+  (let ((deadline (and timeout (+ (get-internal-real-time) (* timeout +ms-per-second+)))))
     (loop
       (case (thread-state thread)
         (:finished (return (values-list (thread-values thread))))
@@ -278,7 +276,7 @@ error if it was ended by an error or by DESTROY-THREAD."
         (pushnew self (thread-joiners thread))
         (let ((r (unwind-protect
                       (%wait (and deadline (max 0 (/ (- deadline (get-internal-real-time))
-                                                     internal-time-units-per-second)))
+                                                     +ms-per-second+)))
                              thread)
                    (setf (thread-joiners thread) (remove self (thread-joiners thread))))))
           (when (and (eq r :timeout) (thread-alive-p thread))
@@ -316,7 +314,7 @@ error if it was ended by an error or by DESTROY-THREAD."
   "Take MUTEX, waiting while another thread holds it (unless WAIT is false).
 False if it was not taken (TIMEOUT seconds passed)."
   (let ((self (current-thread))
-        (deadline (and timeout (+ (get-internal-real-time) (* timeout internal-time-units-per-second)))))
+        (deadline (and timeout (+ (get-internal-real-time) (* timeout +ms-per-second+)))))
     (loop
       (let ((owner (mutex-owner mutex)))
         (cond ((null owner)
@@ -334,7 +332,7 @@ False if it was not taken (TIMEOUT seconds passed)."
                (setf (mutex-waiters mutex) (append (mutex-waiters mutex) (list self)))
                (let ((r (unwind-protect
                              (%wait (and deadline (max 0 (/ (- deadline (get-internal-real-time))
-                                                            internal-time-units-per-second)))
+                                                            +ms-per-second+)))
                                     mutex)
                           (setf (mutex-waiters mutex) (remove self (mutex-waiters mutex))))))
                  (when (and (eq r :timeout) (not (null (mutex-owner mutex))))
@@ -400,7 +398,7 @@ again.  False if the time was over."
   "Decrement the count of SEMAPHORE, waiting while it is zero; the new
 count, or NIL if TIMEOUT seconds passed."
   (let ((self (current-thread))
-        (deadline (and timeout (+ (get-internal-real-time) (* timeout internal-time-units-per-second)))))
+        (deadline (and timeout (+ (get-internal-real-time) (* timeout +ms-per-second+)))))
     (loop
       (when (> (semaphore-count semaphore) 0)
         (return (decf (semaphore-count semaphore))))
@@ -409,7 +407,7 @@ count, or NIL if TIMEOUT seconds passed."
       (setf (semaphore-waiters semaphore) (append (semaphore-waiters semaphore) (list self)))
       (let ((r (unwind-protect
                     (%wait (and deadline (max 0 (/ (- deadline (get-internal-real-time))
-                                                   internal-time-units-per-second)))
+                                                   +ms-per-second+)))
                            semaphore)
                  (setf (semaphore-waiters semaphore) (remove self (semaphore-waiters semaphore))))))
         (when (and (eq r :timeout) (<= (semaphore-count semaphore) 0))

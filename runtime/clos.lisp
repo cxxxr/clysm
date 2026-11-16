@@ -6,6 +6,29 @@
 ;;; A generic function is a closure whose name field holds its metaobject, an
 ;;; instance of (a subclass of) GENERIC-FUNCTION with the slots below.
 
+;;; The world lock (runtime/thread.lisp): with green threads, one thread at
+;;; a time compiles or changes the class system, and is not preempted
+;;; meanwhile (it may still wait, e.g. in a macro expander or a method of the
+;;; metaobject protocol).  Before a thread is made it costs a binding.
+(defvar *threads-started* nil
+  "True once a thread has been made: then blocking operations wait without
+blocking the other threads (runtime/thread.lisp).")
+(defvar *preemption-inhibited* nil
+  "True while the thread must not be preempted (it holds the world lock);
+it still waits where it waits.")
+(defvar *world-lock* nil)
+
+(defun %call-with-world-lock (function)
+  (let ((*preemption-inhibited* t))
+    (if (and *threads-started* (%can-wait-p))
+        (let ((lock (or *world-lock* (setq *world-lock* (make-mutex :name "world lock"))))
+              (got nil))
+          (unwind-protect
+               (progn (setq got (grab-mutex lock :recursive t))
+                      (funcall function))
+            (when got (release-mutex lock))))
+        (funcall function))))
+
 (defconstant +gf-name+ 0) (defconstant +gf-ll+ 1) (defconstant +gf-methods+ 2)
 (defconstant +gf-combination+ 3) (defconstant +gf-cache+ 4) (defconstant +gf-nreq+ 5)
 (defconstant +gf-eql+ 6) (defconstant +gf-doc+ 7) (defconstant +gf-function+ 8)
@@ -421,7 +444,7 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
 
 (defvar *add-method-hook* nil)
 
-(defun %add-method (gf method)
+(defun %add-method-unlocked (gf method)
   (let* ((info (%gf-info gf))
          (specs (%method-specializers method))
          (quals (%method-qualifiers method)))
@@ -447,7 +470,12 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
     (%gf-invalidate info)
     gf))
 
-(defun %remove-method (gf method)
+
+(defun %add-method (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'%add-method-unlocked args))))
+
+(defun %remove-method-unlocked (gf method)
   (let ((info (%gf-info gf)))
     (when (member method (%gf-slot info +gf-methods+))
       (%set-gf-slot info +gf-methods+ (remove method (%gf-slot info +gf-methods+)))
@@ -456,6 +484,11 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
       (%update-dispatch-info info)
       (%gf-invalidate info))
     gf))
+
+
+(defun %remove-method (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'%remove-method-unlocked args))))
 
 (defun %find-method (gf qualifiers specializers errorp)
   (let ((info (%gf-info gf)))
@@ -475,7 +508,7 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
           (error 'simple-error :format-control "No method of ~S with qualifiers ~S and specializers ~S"
                                :format-arguments (list gf qualifiers specializers))))))
 
-(defun %defmethod (name qualifiers specializers lambda-list function doc cell)
+(defun %defmethod-unlocked (name qualifiers specializers lambda-list function doc cell)
   (let* ((gf (%ensure-gf-for-method name lambda-list))
          (info (%gf-info gf))
          (m (%make-method-object (%gf-slot info +gf-method-class+) qualifiers
@@ -487,6 +520,11 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
 ;;; ------------------------------------------------------------
 ;;; dispatch
 ;;; ------------------------------------------------------------
+
+
+(defun %defmethod (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'%defmethod-unlocked args))))
 
 (defun %specializer-applicable-p (spec arg)
   (if (consp spec)
@@ -1672,7 +1710,7 @@ keeps missing (more classes than entries) stops caching."
          (%set-gf-initial-methods ,gf (list ,@(reverse methods)))
          ,gf))))
 
-(defun %defgeneric (name ll combination doc apo gfclass mclass decls)
+(defun %defgeneric-unlocked (name ll combination doc apo gfclass mclass decls)
   ;; methods defined by a previous DEFGENERIC form are removed
   (when (and (fboundp name) (%generic-function-p (fdefinition name)))
     (let* ((f (fdefinition name)) (info (%gf-info f)))
@@ -1684,6 +1722,11 @@ keeps missing (more classes than entries) stops caching."
                           (if gfclass (list :generic-function-class gfclass) nil)
                           (if mclass (list :method-class mclass) nil)))))
     f))
+
+
+(defun %defgeneric (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'%defgeneric-unlocked args))))
 
 (defun %set-gf-initial-methods (gf methods)
   (%set-gf-slot (%gf-info gf) +gf-initial-methods+ methods))
@@ -1955,7 +1998,7 @@ specification (or a slot definition)."
       spec
       (apply #'make-instance (apply #'direct-slot-definition-class class spec) spec)))
 
-(defun %ensure-class (name supers direct-slots default-initargs metaclass &optional doc extra direct-default-initargs)
+(defun %ensure-class-unlocked (name supers direct-slots default-initargs metaclass &optional doc extra direct-default-initargs)
   (let ((names (mapcar #'%canonical-slot-name direct-slots)))
     (unless (= (length names) (length (remove-duplicates names)))
       (%program-error "DEFCLASS ~S: duplicate slot names" name)))
@@ -2008,7 +2051,12 @@ specification (or a slot definition)."
                extra))
       class)))
 
-(defun ensure-class (name &rest initargs &key direct-superclasses direct-slots metaclass direct-default-initargs
+
+(defun %ensure-class (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'%ensure-class-unlocked args))))
+
+(defun ensure-class-unlocked (name &rest initargs &key direct-superclasses direct-slots metaclass direct-default-initargs
                             documentation &allow-other-keys)
   (let ((extra (let ((r nil))
                  (do ((l initargs (cddr l))) ((null l) (nreverse r))
@@ -2026,6 +2074,11 @@ specification (or a slot definition)."
 ;;; a class finalization invalidates the initarg caches; when it changes the
 ;;; class precedence list or the slot locations of a class, the caches of the
 ;;; generic functions too (their keys are the classes)
+
+(defun ensure-class (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'ensure-class-unlocked args))))
+
 (setq *class-finalization-hook*
       (lambda (class changedp)
         (declare (ignore class))
@@ -2728,12 +2781,17 @@ whose make-info is MI."
 (defun class-slots (c) (%class-effective-slots c))
 (defun class-direct-slots (c) (%class-slot c +class-direct-slots+))
 (defun class-finalized-p (c) (%class-slot c +class-finalized+))
-(defun finalize-inheritance (c)
+(defun finalize-inheritance-unlocked (c)
   (let ((fwd (find-if (lambda (k) (eq (%class-kind k) :forward)) (%compute-cpl c (%class-slot c +class-supers+)))))
     (when fwd
       (error 'simple-error :format-control "Cannot finalize ~S: its superclass ~S is not defined"
                            :format-arguments (list c (%class-name fwd))))
     (%finalize-class c)))
+
+(defun finalize-inheritance (&rest args)
+  ;; the class system is shared by the threads (runtime/thread.lisp)
+  (%call-with-world-lock (lambda () (apply #'finalize-inheritance-unlocked args))))
+
 (defun class-direct-default-initargs (c) (%class-slot c +class-direct-default-initargs+))
 (defun class-default-initargs (c)
   (let ((r nil))

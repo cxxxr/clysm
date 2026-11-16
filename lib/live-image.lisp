@@ -48,10 +48,9 @@
 If the compiler signals an error, the form is evaluated by the interpreter
 instead (so the error, if any, happens at run time)."
   (multiple-value-bind (bytes consts)
-      (handler-case (let ((*live-inline-ok* t)
-                          ;; (the compiler's state is shared by the threads)
-                          (sys::*preemption-inhibited* t))
-                      (live-compile-forms (list form)))
+      (handler-case (let ((*live-inline-ok* t))
+                      ;; (the compiler's state is shared by the threads)
+                      (sys::%call-with-world-lock (lambda () (live-compile-forms (list form)))))
         (error (e)
           (setq *native-eval-failure* e)
           (return-from native-eval (eval form))))
@@ -87,8 +86,8 @@ instead (so the error, if any, happens at run time)."
 
 (defun native-compile-form (form)
   "Compile FORM to a module (without running it): (values octets constants)."
-  (multiple-value-bind (bytes consts) (let ((sys::*preemption-inhibited* t))
-                                        (live-compile-forms (list form)))
+  (multiple-value-bind (bytes consts) (sys::%call-with-world-lock
+                                       (lambda () (live-compile-forms (list form))))
     (values (coerce bytes '(simple-array (unsigned-byte 8) (*))) consts)))
 
 (defun native-run-module (file offset length consts)

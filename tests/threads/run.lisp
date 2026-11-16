@@ -154,6 +154,78 @@
            (sys::join-thread worker)))
        t)
 
+;;; what threads wait for without blocking the others
+(check "sockets: a server and a client in two threads"
+       (let* ((server (sys::open-tcp-server "127.0.0.1" 0))
+              (port (sys::tcp-server-port server))
+              (ticks 0)
+              (ticker (sys::make-thread (lambda () (loop (incf ticks) (sleep 0.005)))))
+              (srv (sys::make-thread
+                    (lambda ()
+                      (let* ((s (sys::accept-tcp-stream server))
+                             (buf (make-array 5 :element-type '(unsigned-byte 8))))
+                        (read-sequence buf s)
+                        (write-sequence (reverse buf) s) (finish-output s) (close s)
+                        (coerce buf 'list)))))
+              (cli (sys::make-thread
+                    (lambda ()
+                      (sleep 0.05)
+                      (let ((s (sys::open-tcp-stream "127.0.0.1" port))
+                            (buf (make-array 5 :element-type '(unsigned-byte 8))))
+                        (write-sequence #(1 2 3 4 5) s) (finish-output s)
+                        (read-sequence buf s) (close s)
+                        (coerce buf 'list))))))
+         (prog1 (list (sys::join-thread srv) (sys::join-thread cli) (> ticks 5))
+           (sys::destroy-thread ticker)
+           (sys::close-tcp-server server)))
+       '((1 2 3 4 5) (5 4 3 2 1) t))
+(check "a subprocess: the others run while it is waited for"
+       (let* ((ticks 0)
+              (ticker (sys::make-thread (lambda () (loop (incf ticks) (sleep 0.005)))))
+              (out (sys::make-thread
+                    (lambda ()
+                      (multiple-value-bind (p in out) (sys::%launch-program "sleep 0.2; echo done" :output :stream)
+                        (declare (ignore in))
+                        (list (read-line out) (sys::%process-wait p)))))))
+         (prog1 (list (sys::join-thread out) (> ticks 10))
+           (sys::destroy-thread ticker)))
+       '(("done" 0) t))
+(check "run-program: the others run while it runs"
+       (let* ((ticks 0)
+              (ticker (sys::make-thread (lambda () (loop (incf ticks) (sleep 0.005)))))
+              (out (sys::make-thread
+                    (lambda () (multiple-value-list (sys::%run-program-sync "sleep 0.2; cat; echo err >&2" :input "in"))))))
+         (prog1 (list (sys::join-thread out) (> ticks 10))
+           (sys::destroy-thread ticker)))
+       '(("in" "err
+" 0) t))
+(check "threads compile at the same time (the world lock)"
+       (let ((ths (loop for i below 4
+                        collect (let ((i i))
+                                  (sys::make-thread
+                                   (lambda ()
+                                     (loop for k below 5
+                                           collect (let ((name (intern (format nil "F-~D-~D" i k))))
+                                                     (eval `(defun ,name (x) (+ x ,(* 100 i) ,k)))
+                                                     (sys::%eval-toplevel `(,name 1))))))))))
+         (mapcar #'sys::join-thread ths))
+       '((1 2 3 4 5) (101 102 103 104 105) (201 202 203 204 205) (301 302 303 304 305)))
+
+(defgeneric area-of (shape))
+(check "threads define classes and methods at the same time"
+       (let ((ths (loop for i below 4
+                        collect (let ((i i))
+                                  (sys::make-thread
+                                   (lambda ()
+                                     (let ((class (intern (format nil "SHAPE-~D" i))))
+                                       (eval `(defclass ,class () ((n :initarg :n :reader shape-n))))
+                                       (sleep 0.001)
+                                       (eval `(defmethod area-of ((s ,class)) (* (shape-n s) ,i)))
+                                       (sleep 0.001)
+                                       (area-of (make-instance class :n 10)))))))))
+         (mapcar #'sys::join-thread ths))
+       '(0 10 20 30))
+
 ;;; Bordeaux Threads
 (require :quicklisp)
 (funcall (read-from-string "ql:quickload") :bordeaux-threads :silent t)

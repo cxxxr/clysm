@@ -64,7 +64,10 @@
   id
   (in (make-array 65536 :element-type '(unsigned-byte 8)))
   (in-pos 0) (in-fill 0) in-eof
-  (out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+  (out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+  ;; with threads: held while the buffer is filled (one thread waits for
+  ;; the input of the connection, runtime/thread.lisp)
+  (lock nil))
 
 ;;; Slots of streams read without the accessors (fast paths below)
 (defconstant +stream-kind-slot+ 0)
@@ -1381,9 +1384,21 @@ and whether the newline was missing, or :eof."
 (defun %socket-fill (s)
   "Wait until an octet can be read from the socket stream S without waiting;
 false at end of file."
+  (if (< (socket-stream-in-pos s) (socket-stream-in-fill s))
+      t
+      (if (%can-wait-p)
+          ;; another thread may be filling it: one at a time
+          (let ((lock (or (socket-stream-lock s)
+                          (setf (socket-stream-lock s) (make-mutex :name "socket input")))))
+            (grab-mutex lock :recursive t)
+            (unwind-protect (%socket-fill-1 s)
+              (release-mutex lock)))
+          (%socket-fill-1 s))))
+
+(defun %socket-fill-1 (s)
   (when (>= (socket-stream-in-pos s) (socket-stream-in-fill s))
     (if (socket-stream-in-eof s)
-        (return-from %socket-fill nil)
+        (return-from %socket-fill-1 nil)
         (progn
           ;; send what was written before waiting for the answer
           (%socket-flush s)
@@ -1391,7 +1406,7 @@ false at end of file."
             (setf (socket-stream-in-pos s) 0 (socket-stream-in-fill s) n)
             (when (= n 0)
               (setf (socket-stream-in-eof s) t)
-              (return-from %socket-fill nil))))))
+              (return-from %socket-fill-1 nil))))))
   t)
 
 (defun socket-wait-input (s)

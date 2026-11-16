@@ -985,11 +985,43 @@ is made nothing changes: they block as before.
   JavaScript can suspend WebAssembly, unless `bt2:*thread-starter*` is set
   (Lem runs its threads from the event loop of its page that way).
 
+What the threads share:
+
+* The world lock (`sys::%call-with-world-lock`, a recursive mutex): one
+  thread at a time compiles (the compiler's tables are global) or changes
+  the class system (`ensure-class`, `finalize-inheritance`, `defgeneric`,
+  `defmethod`, `add-method`, `remove-method`), and it is not preempted
+  meanwhile; it may still wait (in a macro expander, a method of the
+  metaobject protocol), and a thread that waits there for one that compiles
+  waits for ever, as with SBCL's world lock. `load` and `compile-file` take
+  it for each form they compile, not for the whole file, so loaded code may
+  start threads and wait for them.
+* The runtime's own operations do not wait and have no interrupt checks, so
+  a thread is never switched in the middle of one: hash tables (whose tests
+  are the standard ones), packages, symbols' properties, streams' buffers
+  are consistent for every thread (`:synchronized` of `make-hash-table` is
+  accepted and changes nothing). The caches of generic functions are
+  replaced, not changed, so a thread that computes an entry while another
+  changes the function stores nothing stale. What is not protected is what
+  user code does between switches: changing a hash table that another
+  thread iterates over (`maphash` with a function that waits), as with
+  native threads.
+* A socket stream's input is filled by one thread at a time (a mutex of the
+  stream); a thread that reads a stream another is filling waits for it.
+* Subprocesses: with threads, `uiop:run-program` (`sys::%run-program-sync`)
+  starts the process and reads its output and waits for it without
+  blocking the others; reads of a process's output and waits for its end
+  (`uiop:launch-program`) are messages to the host's process manager.
+
 There is no parallelism, and a thread that computes in code without
 interrupt checks (the runtime, code compiled without them) keeps the others
 waiting until it waits or calls code with checks. A thread that a
 JavaScript callback runs in (`js:funcall` of a function that calls Lisp)
 cannot wait or be preempted there. `make test-threads` runs `tests/threads/run.lisp`.
+
+What still blocks every thread: file operations (synchronous and short),
+writes to sockets (until the host accepted them), `run-program` with
+`:input :interactive`, and JavaScript the program calls synchronously.
 
 ## Metaobject protocol
 

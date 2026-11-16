@@ -290,6 +290,13 @@ function makeNetServer(worker, sab) {
     } else r.fail('unknown socket operation ' + op);
   };
   worker.on('message', (m) => {
+    if (m && m.clysmProc !== undefined && m.reqId !== undefined) {
+      // the same, answered by a message (a thread waits for it)
+      Promise.resolve().then(() => processes[m.op](...m.args)).then(
+        (v) => worker.postMessage({ clysmProcReply: m.reqId, status: 0, value: v === undefined ? null : v }),
+        (e) => worker.postMessage({ clysmProcReply: m.reqId, status: 1, value: String((e && e.message) || e) }));
+      return;
+    }
     if (m && m.clysmProc !== undefined) {
       // a call of the process manager (host/process.mjs): the value is sent
       // as octets (status 0), JSON (2), null (3) or text (4)
@@ -324,12 +331,17 @@ function installNetClient(port, sab) {
   const pending = new Map();
   let nextReq = 1;
   port.on('message', (m) => {
-    if (!m || m.clysmNetReply === undefined) return;
-    const p = pending.get(m.clysmNetReply);
+    if (!m) return;
+    const id = m.clysmNetReply !== undefined ? m.clysmNetReply : m.clysmProcReply;
+    if (id === undefined) return;
+    const p = pending.get(id);
     if (!p) return;
-    pending.delete(m.clysmNetReply);
+    pending.delete(id);
     if (pending.size === 0) port.unref();
-    if (m.status === 0) p.resolve(m.bytes); else p.reject(new Error(Buffer.from(m.bytes, 'latin1').toString('utf8')));
+    if (m.clysmProcReply !== undefined) {
+      if (m.status === 0) p.resolve(m.value); else p.reject(new Error(m.value));
+    } else if (m.status === 0) p.resolve(m.bytes);
+    else p.reject(new Error(Buffer.from(m.bytes, 'latin1').toString('utf8')));
   });
   port.unref();
   const callAsync = (op, ...args) => new Promise((resolve, reject) => {
@@ -353,6 +365,15 @@ function installNetClient(port, sab) {
   };
   globalThis.__clysm_proc_sync = new Proxy({}, {
     get: (target, op) => (...args) => callProc(op, args.map((a) => (a instanceof Uint8Array ? a : a))),
+  });
+  // the calls that may wait (a read, the end of a process), for threads
+  globalThis.__clysm_proc_async = new Proxy({}, {
+    get: (target, op) => (...args) => new Promise((resolve, reject) => {
+      const id = nextReq++;
+      pending.set(id, { resolve, reject });
+      if (pending.size === 1) port.ref();
+      port.postMessage({ clysmProc: 1, op, args, reqId: id });
+    }),
   });
   // strings carry octets (latin1), one character per octet
   globalThis.__clysm_net = {
