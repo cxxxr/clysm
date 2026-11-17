@@ -29,7 +29,7 @@ test-mcclim:
 
 # green threads (runtime/thread.lisp) and Bordeaux Threads (needs Quicklisp)
 test-threads:
-	bin/clysm script tests/threads/run.lisp > build/threads-test.out 2> build/threads-test.err; \
+	mkdir -p build; bin/clysm script tests/threads/run.lisp > build/threads-test.out 2> build/threads-test.err; \
 	if cmp -s build/threads-test.out tests/threads/run.expected; then echo "threads: ok"; \
 	else diff tests/threads/run.expected build/threads-test.out; exit 1; fi
 
@@ -61,7 +61,7 @@ test-lem:
 	tests/lem/run.sh
 
 test-asdf:
-	bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \
+	mkdir -p build; bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \
 	if cmp -s build/asdf-test.out tests/asdf/run.expected; then echo "asdf: ok"; \
 	else diff tests/asdf/run.expected build/asdf-test.out; exit 1; fi
 

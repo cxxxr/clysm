@@ -41,8 +41,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Install SBCL
-        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - uses: ./.github/actions/sbcl
       - name: Run
         run: ${{ matrix.run }}
       - name: Show the differences

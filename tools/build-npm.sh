@@ -9,6 +9,7 @@
 set -e
 cd "$(dirname "$0")/.."
 root=$(pwd)
+mkdir -p build
 tools/build-selfhost.sh > build/selfhost.log 2>&1 || { cat build/selfhost.log; exit 1; }
 image=$(bin/clysm image-native)
 out=build/npm
