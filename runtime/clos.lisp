@@ -581,6 +581,10 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
   `(let ((x ,x))
      (cond ((%instancep x) (%instance-layout x))
            ((fixnump x) (or (%svref *builtin-classes* 0) (class-of x)))
+           ;; (the indexes of CLASS-OF's cache)
+           ((and x (symbolp x))
+            (or (%svref *builtin-classes* (if (eq (%symbol-package x) *keyword-package*) 3 4))
+                (class-of x)))
            (t (class-of x)))))
 
 (defun %eql-key (markers x)
@@ -737,24 +741,72 @@ own, which the dispatch on classes does not find."
         (setq value (%eql-guarded-value info keys value nreq)))
       ;; computing the effective method may have invalidated the cache
       (when (eq pic (%gf-slot info +gf-cache+))
-        (let ((len (length pic)) (stride (+ nreq 2)))
-          (cond ((%gf-slot info +gf-table+) (%gf-table-put info keys nreq value methods))
-                ((< (- len +gf-cache-header+) (* +gf-cache-entries+ stride))
-                 (let ((new (make-array (+ len stride))) (j len))
-                   (dotimes (i len) (setf (svref new i) (svref pic i)))
-                   (dolist (k keys) (setf (svref new j) k) (setq j (+ j 1)))
-                   (setf (svref new j) value (svref new (+ j 1)) methods)
-                   (%set-gf-slot info +gf-cache+ new)))
-                (t
-                 (let ((new (vector 0 (svref pic 1) (svref pic 2) (svref pic 3) nil)))
-                   (%set-gf-slot info +gf-cache+ new)
-                   (do ((b +gf-cache-header+ (+ b stride))) ((>= b len))
-                     (%gf-table-put info (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref pic (+ b j)) r)))
-                                    nreq (svref pic (+ b nreq)) (svref pic (+ b nreq 1))))
-                   (%gf-table-put info keys nreq value methods))))))
+        (%gf-store info keys nreq value methods)
+        (when (and (functionp value) (eql (%gf-slot info +gf-fast+) nreq))
+          (%gf-add-eql-class-entry info keys args nreq)))
       (if (eql which 0) value methods))))
 
-(defun %gf-lookup (info args nreq which)
+(defun %gf-store (info keys nreq value methods)
+  "Add the entry of KEYS to the cache (or to its table)."
+  (let* ((pic (%gf-slot info +gf-cache+)) (len (length pic)) (stride (+ nreq 2)))
+    (cond ((%gf-slot info +gf-table+) (%gf-table-put info keys nreq value methods))
+          ((< (- len +gf-cache-header+) (* +gf-cache-entries+ stride))
+           ;; the dispatch inlined in the function of the generic function
+           ;; searches from the first entry and never finds those of EQL
+           ;; markers: the others go first
+           (let* ((new (make-array (+ len stride)))
+                  (front (notany #'consp keys))
+                  (j (if front +gf-cache-header+ len)))
+             (dotimes (i +gf-cache-header+) (setf (svref new i) (svref pic i)))
+             (do ((i +gf-cache-header+ (+ i 1))) ((>= i len))
+               (setf (svref new (if front (+ i stride) i)) (svref pic i)))
+             (dolist (k keys) (setf (svref new j) k) (setq j (+ j 1)))
+             (setf (svref new j) value (svref new (+ j 1)) methods)
+             (%set-gf-slot info +gf-cache+ new)))
+          (t
+           (let ((new (vector 0 (svref pic 1) (svref pic 2) (svref pic 3) nil)))
+             (%set-gf-slot info +gf-cache+ new)
+             (do ((b +gf-cache-header+ (+ b stride))) ((>= b len))
+               (%gf-table-put info (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref pic (+ b j)) r)))
+                              nreq (svref pic (+ b nreq)) (svref pic (+ b nreq 1))))
+             (%gf-table-put info keys nreq value methods))))))
+
+(defun %gf-has-entry-p (info keys nreq)
+  (let* ((pic (%gf-slot info +gf-cache+)) (len (length pic)) (stride (+ nreq 2))
+         (table (%gf-slot info +gf-table+)))
+    (or (do ((i +gf-cache-header+ (+ i stride))) ((>= i len) nil)
+          (when (do ((j i (+ j 1)) (l keys (cdr l))) ((null l) t)
+                  (unless (eq (svref pic j) (car l)) (return nil)))
+            (return t)))
+        (and table (%gf-table-find (cdr table) keys nreq) t))))
+
+;;; The dispatch inlined in the function of a generic function looks for the
+;;; classes of the arguments only: an argument that is an EQL specializer
+;;; object would always miss it (its entry is keyed by its marker) until an
+;;; argument of the same class that is not such an object made the guarded
+;;; entry of the class.  So the entry of a marker also makes that entry, with
+;;; the value for the other objects of the class computed when one first comes
+;;; (and the applicable methods, which only CALL-NEXT-METHOD's check of its
+;;; arguments asks for, computed each time: +GF-METHODS-UNKNOWN+).
+(defconstant +gf-methods-unknown+ '%methods-unknown)
+
+(defun %gf-add-eql-class-entry (info keys args nreq)
+  (when (and (<= 1 nreq 4) (some #'consp keys))
+    (let ((class-keys (mapcar (lambda (k a) (if (consp k) (%fast-class-of a) k)) keys args)))
+      (unless (%gf-has-entry-p info class-keys nreq)
+        (let* ((memo nil)
+               (pic (%gf-slot info +gf-cache+))
+               (other (%arity-case nreq
+                        (lambda (%args)
+                          (funcall (the function
+                                        (or memo
+                                            (setq memo (values (%gf-compute-value info (list %args))))))
+                                   %args)))))
+          (when (eq pic (%gf-slot info +gf-cache+))
+            (%gf-store info class-keys nreq (%eql-guarded-value info class-keys other nreq)
+                       +gf-methods-unknown+)))))))
+
+(defun %gf-lookup-entry (info args nreq which)
   "The cache entry for ARGS: its value (WHICH = 0) or the applicable methods (1)."
   (declare (fixnum nreq which))
   (let* ((pic (%gf-slot info +gf-cache+)) (len (%svlength pic)) (stride (%fx+ nreq 2)))
@@ -772,20 +824,28 @@ own, which the dispatch on classes does not find."
                       (unless (eq (%svref pic j)
                                   (if (eq (%fxlogand unspec bit) 0) (%fast-class-of (car a)) 0))
                         (return nil)))
-                (return-from %gf-lookup (%svref pic (%fx+ i (%fx+ nreq which))))))
+                (return-from %gf-lookup-entry (%svref pic (%fx+ i (%fx+ nreq which))))))
             (let ((keys (%gf-keys info args nreq)))
               (do ((i +gf-cache-header+ (%fx+ i stride))) ((%fx>= i len))
                 (declare (fixnum i))
                 (when (do ((j i (%fx+ j 1)) (l keys (cdr l))) ((null l) t)
                         (declare (fixnum j))
                         (unless (eq (%svref pic j) (car l)) (return nil)))
-                  (return-from %gf-lookup (%svref pic (%fx+ i (%fx+ nreq which))))))))))
+                  (return-from %gf-lookup-entry (%svref pic (%fx+ i (%fx+ nreq which))))))))))
     (let* ((keys (%gf-keys info args nreq))
            (table (%gf-slot info +gf-table+))
            (pos (and table (%gf-table-find (cdr table) keys nreq))))
       (if pos
           (svref (cdr table) (+ pos which))
           (%gf-fill info keys args nreq which)))))
+
+(defun %gf-lookup (info args nreq which)
+  "The cache entry for ARGS: its value (WHICH = 0) or the applicable methods (1)."
+  (declare (fixnum nreq which))
+  (let ((v (%gf-lookup-entry info args nreq which)))
+    (if (and (eq which 1) (eq v +gf-methods-unknown+))
+        (%gf-applicable-methods (%gf-slot info +gf-function+) info args)
+        v)))
 
 (defun %gf-compute-value (info args)
   "Returns the value of the cache entry for ARGS and the applicable methods."
