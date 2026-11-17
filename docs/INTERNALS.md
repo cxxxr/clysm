@@ -1130,7 +1130,9 @@ tests pass (99.99%), with no crashes. The five tests with the note
 inactive, as on SBCL: like the MIT LOOP, an arithmetic `for` variable is
 stepped past its limit before the loop ends, and libraries rely on it. The one failure, SUBTYPEP-COMPLEX.8,
 assumes that `(complex single-float)` is not a subtype of
-`(complex (float 0.0 1.0))`; Clysm reads `(complex X)` as a set of numbers.
+`(complex (float 0.0 1.0))`; like SBCL (which fails it the same way), Clysm
+reads `(complex X)` as the complexes whose parts are of
+`(upgraded-complex-part-type X)`, here `float`.
 
 ## Status and limitations
 
