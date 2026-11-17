@@ -209,11 +209,15 @@ is not whitespace in the readtable RT.  Returns the values of %READ-OBJECT1."
               (let ((x (%read-token-object s c allow-dot)))
                 (values x (if (eq x %dot-marker) :dot :object))))))))
 
+(defvar %no-symbol (make-symbol "NO-SYMBOL"))
+
 (defun %read-plain-symbol (s c rt)
   "When the token starting with C (just read from S) is an ordinary symbol
 name in a string stream — a letter followed by constituent letters, digits
-and the characters of ASCII that are plain constituents, no package marker —
-read it and return T and the symbol, else return NIL with nothing consumed."
+and the characters of ASCII that are plain constituents, with one package
+marker or none (PKG:NAME, PKG::NAME, :NAME: compiled files are mostly such
+symbols) — read it and return T and the symbol, else return NIL with nothing
+consumed."
   (when (and (eq (stream-kind s) :string-in) (null (stream-unread s)) (not *read-suppress*)
              (eq (%rt-case rt) :upcase) (%simple-string-p (stream-buffer s))
              ;; in bases above ten letters are digits
@@ -235,28 +239,67 @@ read it and return T and the symbol, else return NIL with nothing consumed."
       (when (and (or (<= 48 code0 57) (eql code0 43) (eql code0 45) (eql code0 46))
                  (eql *read-base* 10))
         (return-from %read-plain-symbol (%read-plain-number s rt)))
-      (when (and (or (<= 65 code0 90) (<= 97 code0 122))
+      (when (and (or (<= 65 code0 90) (<= 97 code0 122) (eql code0 58))
                  (eq (svref (%rt-ascii rt) code0) :constituent))
         (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
-               (ascii (%rt-ascii rt)))
-          (declare (fixnum i0 i end))
+               (ascii (%rt-ascii rt))
+               ;; the package marker: the index after it of the name (as
+               ;; that of the buffer), and whether it was doubled
+               (colon (if (eql code0 58) -1 nil)) (name-start i0) (double nil))
+          (declare (fixnum i0 i end name-start))
           (do () ((>= i end))
             (let ((code (char-code (%schar buf i))))
-              (if (and (<= 33 code 126) (/= code 58) (eq (svref ascii code) :constituent))
-                  (setq i (+ i 1))
-                  (return))))
-          ;; the token must end at a character that ends tokens (not an escape)
-          (when (or (>= i end)
-                    (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
-            (let* ((n (+ 1 (- i i0))) (name (%make-string n #\0)))
-              (declare (fixnum n))
-              (%set-schar name 0 (char-upcase c))
-              (do ((k i0 (+ k 1)) (j 1 (+ j 1))) ((>= k i))
-                (declare (fixnum k j))
-                (let ((code (char-code (%schar buf k))))
-                  (%set-schar name j (if (<= 97 code 122) (code-char (- code 32)) (%schar buf k)))))
-              (setf (stream-index s) i)
-              (values t (values (intern name *package*))))))))))
+              (cond ((and (eql code 58) (null colon))
+                     ;; PKG:NAME or PKG::NAME (the package name read so far)
+                     (setq colon i)
+                     (when (and (< (+ i 1) end) (eql (char-code (%schar buf (+ i 1))) 58))
+                       (setq double t i (+ i 1)))
+                     (setq i (+ i 1) name-start i))
+                    ((and (<= 33 code 126) (/= code 58) (eq (svref ascii code) :constituent))
+                     (setq i (+ i 1)))
+                    (t (return)))))
+          ;; the token must end at a character that ends tokens (not an
+          ;; escape), and a package marker must have a name after it
+          (when (and (or (>= i end)
+                         (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
+                     (or (null colon) (> i name-start))
+                     (not (and (eql colon -1) double)))
+            (flet ((upcased (from to first)
+                     ;; the characters FROM..TO of the buffer upcased, after FIRST if any
+                     (let* ((k0 (if first 1 0))
+                            (str (%make-string (+ k0 (- to from)) #\0)))
+                       (declare (fixnum k0))
+                       (when first (%set-schar str 0 (char-upcase first)))
+                       (do ((k from (+ k 1)) (j k0 (+ j 1))) ((>= k to) str)
+                         (declare (fixnum k j))
+                         (let ((code (char-code (%schar buf k))))
+                           (%set-schar str j (if (<= 97 code 122) (code-char (- code 32)) (%schar buf k))))))))
+              (cond
+                ((null colon)
+                 (let ((name (upcased i0 i c)))
+                   (setf (stream-index s) i)
+                   (values t (values (intern name *package*)))))
+                ((eql colon -1)
+                 ;; :NAME
+                 (let ((name (upcased name-start i nil)))
+                   (setf (stream-index s) i)
+                   (values t (values (intern name *keyword-package*)))))
+                (t
+                 ;; PKG:NAME, PKG::NAME; what is not found is left to the
+                 ;; reader of tokens, which signals the errors
+                 (let ((pkg (find-package (upcased i0 colon c)))
+                       (name (upcased name-start i nil)))
+                   (when pkg
+                     (multiple-value-bind (sym status) (if double (values nil nil) (find-symbol name pkg))
+                       (let ((result
+                               (cond (double (values (intern name pkg)))
+                                     ((eq status :external) sym)
+                                     ((or (eq pkg *keyword-package*) *fasl-syntax*)
+                                      (values (intern name pkg)))
+                                     (t %no-symbol))))
+                         (unless (eq result %no-symbol)
+                           (setf (stream-index s) i)
+                           (values t result)))))))))))))))
 
 (defun %read-plain-number (s rt)
   "The token whose first character was just read from the string stream S,

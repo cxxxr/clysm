@@ -5,8 +5,9 @@
 ;;; Systems that Clysm provides itself (compatibility layers for
 ;;; implementation-specific libraries) are found before others, e.g. before
 ;;; Quicklisp's releases.
-(let ((contrib (uiop:pathname-directory-pathname
-                (or *load-truename* (error "asdf-hooks.lisp must be loaded")))))
+;;; (this file is loaded from a fasl in the cache: the contrib directory is
+;;; found from the installation)
+(let ((contrib (merge-pathnames "contrib/" (sys::%clysm-root))))
   (dolist (system '("trivial-gray-streams" "closer-mop" "trivial-features" "trivial-garbage"
                     "static-vectors" "bordeaux-threads"))
     (pushnew (merge-pathnames (concatenate 'string system "/") contrib) *central-registry* :test #'equal)))
@@ -37,7 +38,9 @@
 (defun apply-clysm-fixups ()
   (dolist (e *clysm-system-fixups*)
     (let ((s (registered-system (car e))))
-      (when (and s (not (member s *clysm-fixed-systems*)))
+      ;; (an immutable system is loaded already: it has no definition to fix)
+      (when (and s (not (member s *clysm-fixed-systems*))
+                 (not (and *immutable-systems* (gethash (car e) *immutable-systems*))))
         (push s *clysm-fixed-systems*)
         (funcall (cdr e) s)))))
 
@@ -105,4 +108,4 @@ named BEFORE (at the end without it)."
     (compute-children-by-name module)
     c))
 
-(load (merge-pathnames "fixups.lisp" (uiop:pathname-directory-pathname *load-truename*)))
+(sys::%load-compiled-bundled "contrib/fixups.lisp" "asdf-fixups")

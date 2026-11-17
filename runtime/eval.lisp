@@ -727,15 +727,31 @@ file stream; its position."
             (t (return)))))
   (file-position stream))
 
+(defun %fasl-text-stream (stream)
+  "The rest of the compiled file STREAM (the text of its forms) as a string
+stream: the reader reads strings much faster than files (it reads the
+symbols of a string straight from it).  The host decodes the text when it
+can (%FASL-TEXT-FROM-HOST), which is faster still."
+  (let* ((pos (file-position stream))
+         (length (max 0 (- (file-length stream) pos)))
+         (text (and *fasl-modules* (%fasl-text-from-host (car *fasl-modules*) pos length))))
+    (if text
+        (make-string-input-stream text)
+        (let* ((text (make-string length))
+               (end (read-sequence text stream)))
+          (make-string-input-stream text 0 end)))))
+
 (defun %load-stream (stream print)
   (let* ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream)))
          (*fasl-modules* (and fasl (%skip-fasl-modules stream)))
+         ;; (the source forms of the modules are read from STREAM itself)
+         (in (if fasl (%fasl-text-stream stream) stream))
          (file (and (not fasl) *load-truename* (typep stream 'file-stream)
                     (namestring *load-truename*))))
     (loop
       (let* ((start (and file (%form-start stream)))
              (form (if fasl
-                       (%call-with-fasl-syntax (lambda () (read stream nil %eof-marker)))
+                       (%call-with-fasl-syntax (lambda () (read in nil %eof-marker)))
                        (read stream nil %eof-marker))))
         (when (eq form %eof-marker) (return t))
         (when start

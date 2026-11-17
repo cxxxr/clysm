@@ -2,7 +2,7 @@
 
 (in-package :asdf)
 
-(defvar *clysm-contrib-directory* (uiop:pathname-directory-pathname *load-truename*))
+(defvar *clysm-contrib-directory* (merge-pathnames "contrib/" (sys::%clysm-root)))
 
 ;;; 3bz reads files with mmap through CFFI except on Mezzano and ABCL; Clysm
 ;;; uses the portable stubs like those.

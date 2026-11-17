@@ -123,6 +123,22 @@
   "Functions called by REQUIRE (without pathnames) with the module name; one
 that returns true has provided the module.  ASDF adds its own provider.")
 
+(defvar %decode-host-octets nil)
+
+(defun %fasl-text-from-host (path offset length)
+  "The UTF-8 text of the LENGTH octets at OFFSET of the file PATH, read and
+decoded by the host (__clysm_read_bytes, which compiled files are read with,
+and TextDecoder), or NIL if it cannot."
+  (ignore-errors
+   (let ((read (js:get (js:global) "__clysm_read_bytes")))
+     (when (js:js-value-p read)
+       (let ((text (js:funcall (or %decode-host-octets
+                                   (setq %decode-host-octets
+                                         (js:eval "(read, path, offset, length) =>
+                                                     new TextDecoder().decode(read(path, offset, length))")))
+                               read path offset length)))
+         (and (stringp text) text))))))
+
 (defun %clysm-root ()
   "The directory of the Clysm installation, from the host (or NIL)."
   (let ((root (ignore-errors (js:get (js:global) "__clysm_root"))))
@@ -157,34 +173,50 @@ that returns true has provided the module.  ASDF adds its own provider.")
       (load file)
       t)))
 
-(defun %load-asdf ()
-  "Load the bundled ASDF; with the compiler in the image, from a fasl compiled
-once per image build and cached in ~/.cache/common-lisp/ ($XDG_CACHE_HOME)."
+(defun %load-compiled-bundled (relative name)
+  "Load the file RELATIVE of the Clysm installation; with the compiler in the
+image, from a fasl compiled once per image build and cached in
+~/.cache/common-lisp/clysm-asdf/ ($XDG_CACHE_HOME) as NAME-IMAGEID.fasl.
+True if the file was there."
   (let* ((root (%clysm-root))
-         (source (and root (probe-file (merge-pathnames "third_party/asdf/asdf.lisp" root)))))
+         (source (and root (probe-file (merge-pathnames relative root)))))
     (cond ((null source) nil)
           ((null *image-id*) (load source) t)
           (t (let* ((cache (let ((xdg (%getenv "XDG_CACHE_HOME")))
                              (if (and xdg (> (length xdg) 0))
                                  (pathname (concatenate 'string (string-right-trim "/" xdg) "/"))
                                  (merge-pathnames ".cache/" (user-homedir-pathname)))))
-                    (fasl (merge-pathnames (format nil "common-lisp/clysm-asdf/asdf-~A.fasl" *image-id*)
+                    (prefix (concatenate 'string name "-"))
+                    (fasl (merge-pathnames (format nil "common-lisp/clysm-asdf/~A~A.fasl" prefix *image-id*)
                                            cache)))
                (unless (and (probe-file fasl) (>= (file-write-date fasl) (file-write-date source)))
                  (handler-case
                      (let ((tmp (make-pathname :type "tmp" :defaults fasl)))
                        (ensure-directories-exist fasl)
-                       (format *error-output* "~&; compiling ASDF (once for this Clysm build)~%")
+                       (format *error-output* "~&; compiling ~A (once for this Clysm build)~%" relative)
                        (let ((*compile-verbose* nil) (*compile-print* nil))
                          (compile-file source :output-file tmp))
                        (rename-file tmp fasl)
-                       ;; fasls of earlier builds are of no use any more
-                       (dolist (old (directory (make-pathname :name :wild :type "fasl" :defaults fasl)))
-                         (unless (equal (pathname-name old) (pathname-name fasl))
-                           (ignore-errors (delete-file old)))))
+                       ;; fasls of earlier builds are of no use any more, but
+                       ;; other images (the REPL's, an application's) may be in
+                       ;; use with theirs: only those of a month ago go
+                       (let ((month-ago (- (get-universal-time) (* 30 24 3600))))
+                         (dolist (old (directory (make-pathname :name :wild :type "fasl" :defaults fasl)))
+                           (let ((old-name (pathname-name old)))
+                             (unless (or (equal old-name (pathname-name fasl))
+                                         (not (and (> (length old-name) (length prefix))
+                                                   (string= prefix old-name :end2 (length prefix))
+                                                   ;; (not asdf-hooks-... for asdf-)
+                                                   (not (find #\- old-name :start (length prefix)))))
+                                         (> (or (ignore-errors (file-write-date old)) 0) month-ago))
+                               (ignore-errors (delete-file old)))))))
                    (error () nil)))
                (load (if (probe-file fasl) fasl source))
                t)))))
+
+(defun %load-asdf ()
+  "Load the bundled ASDF (see %LOAD-COMPILED-BUNDLED)."
+  (%load-compiled-bundled "third_party/asdf/asdf.lisp" "asdf"))
 
 (defun %quicklisp-setup-pathname ()
   "Where Quicklisp's setup.lisp is looked for: in $QUICKLISP_HOME, by default ~/quicklisp/."
@@ -206,7 +238,7 @@ support)."
     (cond ((member name '("ASDF" "UIOP") :test #'string=)
            (when (%load-asdf)
              (provide "ASDF") (provide "UIOP")
-             (%load-bundled "contrib/asdf-hooks.lisp")
+             (%load-compiled-bundled "contrib/asdf-hooks.lisp" "asdf-hooks")
              t))
           ((string= name "QL-CLYSM")
            (when (%load-bundled "contrib/ql-clysm.lisp")

@@ -875,10 +875,26 @@ its modules; two things made it cost much more, and are avoided:
   `instantiate-concrete-mappings` into one form per encoding); reusing the
   locals of variables whose scope has ended would be the general remedy.
 
-Lem's systems (`contrib/lem/`) load in 2.9 s on Node.js instead of 6 s. ASDF itself is compiled once per image build
-(`~/.cache/common-lisp/clysm-asdf/`). `make test-asdf`
-loads a small multi-system example (`tests/asdf/`). There are no subprocesses,
-so `uiop:run-program` is not available.
+* **Reading the text of a fasl.** Its forms are mostly package-qualified
+  symbols. The fasl's text is decoded by the host at once
+  (`%fasl-text-from-host`: `__clysm_read_bytes`, which the modules are read
+  with, and `TextDecoder`) and read from a string stream, where the reader
+  reads plain symbols straight from the string, now also `PKG:NAME`,
+  `PKG::NAME` and `:NAME` (`%read-plain-symbol`; what it cannot intern is
+  left to the reader of tokens, which signals the errors). Reading the
+  13000 forms of Lem's fasls took 1.6 s, and takes 0.4 s.
+
+ASDF itself, `contrib/asdf-hooks.lisp` and `contrib/fixups.lisp` are compiled
+once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
+`%load-compiled-bundled`); the fasls of other images are deleted only when a
+month old, since several images (the REPL's, an application's) may be in
+use: deleting them made the other image compile ASDF again, ten seconds.
+`make test-asdf` loads a small multi-system example (`tests/asdf/`). There
+are no subprocesses, so `uiop:run-program` is not available.
+
+Lem (`contrib/lem/`) loads in 2.1 to 2.3 s on Node.js instead of 6 s, and
+without ASDF: `contrib/lem/load-lem.lisp` loads the fasls in the order that
+`prepare.lisp` noted, after registering the systems as immutable.
 
 ## Quicklisp
 
