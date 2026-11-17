@@ -1194,8 +1194,8 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
-it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 2.0, slowest `c-make-instance-plain`
-5.2), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.7, slowest `c-builtin-eql`
+4.0), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
 `i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
 What is not as fast as intended, and why:
@@ -1230,9 +1230,14 @@ What is not as fast as intended, and why:
   not one of these: those calls are loops at the call site (compiler macros
   in `runtime/core.lisp`, `hash.lisp`, `seq.lisp`), where the lambda is a
   local function and the exit a branch (`v-go-closure` 1.0, was 66).
-* **Generic functions**: dispatch on EQL specializers or on many classes at
-  one call site (4–5 times), `make-instance` with a class that is not a
-  constant (5), generic functions with `&optional`/`&key` (3).
+* **Generic functions**: dispatch on EQL specializers (4 times: the entry
+  of a class with EQL specializer objects calls a guard function shared by
+  all generic functions, which then calls the method) or on many classes at
+  one call site (2.3–4: the entries are searched one after the other; past
+  32 they move to a hash table, searched out of the generic function's own
+  code, which is slower still), `make-instance` with a class that is not a
+  constant (2.2: the call site keeps the constructors of the classes it
+  saw), generic functions with `&optional`/`&key` (3).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
   structures or passed between functions (fixnums in SBCL); **bignums** have
   28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
