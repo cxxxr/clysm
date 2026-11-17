@@ -15,8 +15,9 @@
 // and a client (bin/client of the application, e.g. contrib/lem/desktop/lem)
 // shows it at once through a Unix domain socket in the application's data
 // directory (resident.sock): lines "open FILE" (FILE given to the page's
-// desktop.onOpen) and "show"; the page ends the application with
-// desktop.call('quit').  "--hidden" on the command line starts it hidden.
+// desktop.onOpen), "show", "hide" and "stop" (which ends it); when the page
+// ends the application with desktop.call('quit'), it starts again hidden.
+// "--hidden" on the command line starts it hidden.
 // The environment variable CLYSM_ELECTRON_TEST names a module whose function
 // is called with the window (tests drive the page with sendInputEvent and
 // look at it with capturePage); the window is then not shown.
@@ -86,8 +87,17 @@ const api = {
     });
   },
   setMenu(spec) { buildMenu(spec); return null; },
-  // end the application (a resident one only hides its window when it is closed)
-  quit() { quitting = true; setImmediate(() => app.quit()); return null; },
+  // end the application (a resident one only hides its window when it is
+  // closed); a resident one starts again at once, hidden, so that a client
+  // shows it without waiting (a client's "stop" ends it)
+  quit() {
+    quitting = true;
+    if (resident && !testModule) {
+      app.relaunch({ args: [...process.argv.slice(1).filter((a) => a === '.' || (a.startsWith('-') && a !== '--hidden')), '--hidden'] });
+    }
+    setImmediate(() => app.quit());
+    return null;
+  },
   // (the renderer of Electron 45 has no clipboard module of its own)
   readClipboard() { return clipboard.readText(); },
   writeClipboard(text) { clipboard.writeText(String(text)); return null; },
@@ -180,7 +190,12 @@ function showWindow() {
   win.show();
   win.focus();
   // (CLYSM_RESIDENT_LOG: when, for measuring how fast a client shows it)
-  if (process.env.CLYSM_RESIDENT_LOG) console.log('shown', Date.now());
+  if (process.env.CLYSM_RESIDENT_LOG) {
+    console.log('shown', Date.now());
+    // (a hidden page draws no frames: the second frame after showing it)
+    win.webContents.executeJavaScript('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(Date.now()))))')
+      .then((t) => console.log('painted', t));
+  }
 }
 
 function serveClients() {
@@ -188,17 +203,20 @@ function serveClients() {
   try { fs.unlinkSync(socket); } catch {}
   const server = netServer.createServer((connection) => {
     let text = '';
-    connection.on('data', (data) => {
-      text += data;
-      let i;
-      while ((i = text.indexOf('\n')) >= 0) {
-        const line = text.slice(0, i);
-        text = text.slice(i + 1);
-        if (line === 'show') showWindow();
-        else if (line.startsWith('open ')) openFiles([line.slice(5)]);
-      }
+    connection.on('data', (data) => { text += data; });
+    // the client goes on at once: its lines are done after the connection
+    // is closed (showing the window takes a while on some systems)
+    connection.on('end', () => {
+      connection.end();
+      setImmediate(() => {
+        for (const line of text.split('\n')) {
+          if (line === 'show') showWindow();
+          else if (line === 'hide') { if (win) win.hide(); }
+          else if (line === 'stop') { quitting = true; app.quit(); }
+          else if (line.startsWith('open ')) openFiles([line.slice(5)]);
+        }
+      });
     });
-    connection.on('end', () => connection.end());
     connection.on('error', () => {});
   });
   server.listen(socket);

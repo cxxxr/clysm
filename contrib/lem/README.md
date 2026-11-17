@@ -29,15 +29,29 @@ in `build/lem-desktop/`.
 
 **Starting at once.** Lem takes about six seconds to start: the image is
 made again (WebAssembly GC objects cannot be saved), and Lem's 445 fasls are
-loaded. So the application stays resident, as Emacs does with `emacs
---daemon` and `emacsclient`: closing its window only hides it (`C-x C-c`
-ends Lem), and `build/lem-desktop/lem` tells it through a Unix domain socket
-to open files and show its window, which takes less than 10 ms (`make
-test-lem` measures it: 8 ms until the file is on the screen). Only the first
-`lem` waits for Lem to start; `lem --daemon` starts it with its window
-hidden (e.g. when you log in), so that every `lem` after it is instant. The
-socket is `resident.sock` in the application's data directory
-(`~/.config/Lem/`); see "resident" in `ui/electron/main.js`.
+loaded; Electron alone takes 0.1 s to show an empty window. So the
+application stays resident, as Emacs does with `emacs --daemon` and
+`emacsclient`, and `build/lem-desktop/lem` only tells it through a Unix
+domain socket to open files and show its window:
+
+```
+$ build/lem-desktop/lem --install   # start Lem hidden when you log in, and
+                                    # add Lem (through lem) to the applications menu
+$ build/lem-desktop/lem FILE        # shows Lem: its first frame in about 20 ms
+$ build/lem-desktop/lem --daemon    # start it now, hidden
+$ build/lem-desktop/lem --stop      # end it
+```
+
+* Closing the window hides it; `C-x C-c` ends the editor, and the
+  application starts again at once, hidden, so that the next `lem` is
+  instant too. Only a `lem` before Lem is resident (the first after
+  `--stop`, or before `--install`) waits for it to start.
+* Measured on a Linux desktop (Wayland): from `lem` to the window shown 6
+  to 8 ms, to its first frame 11 to 22 ms; `make test-lem` measures how long
+  a client's file takes to be on the screen (8 to 10 ms).
+* The socket is `resident.sock` in the application's data directory
+  (`~/.config/Lem/`); its lines are `open FILE`, `show`, `hide` and `stop`
+  ("resident" in `ui/electron/main.js`).
 
 ## How it works
 

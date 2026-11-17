@@ -5,14 +5,37 @@
 # and this tells it what to do through its socket, as emacsclient does.
 #   lem [FILE...]       show Lem (and open the files)
 #   lem --daemon        start Lem with its window hidden, to show it later
-# C-x C-c in Lem ends it.
+#   lem --stop          end Lem (C-x C-c ends the editor, and a new one waits,
+#                       hidden, so that the next lem shows it at once)
+#   lem --install       start Lem hidden when you log in, and add Lem to the
+#                       applications menu (through this command); Linux
+# Lem shows its window in less than 10 ms when it is running; started, it
+# takes about six seconds.
 dir=$(cd "$(dirname "$0")" && pwd)
 data=${CLYSM_USER_DATA:-${XDG_CONFIG_HOME:-$HOME/.config}/Lem}
 [ "$(uname)" = Darwin ] && data=${CLYSM_USER_DATA:-$HOME/Library/Application Support/Lem}
 socket=$data/resident.sock
 
 daemon=
-[ "$1" = --daemon ] && { daemon=1; shift; }
+case $1 in
+  --daemon) daemon=1; shift ;;
+  --stop)
+    [ -S "$socket" ] && printf 'stop\n' | nc -U -N "$socket" 2> /dev/null
+    exit 0 ;;
+  --install)
+    apps=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+    autostart=${XDG_CONFIG_HOME:-$HOME/.config}/autostart
+    mkdir -p "$apps" "$autostart"
+    entry() {   # entry NAME EXEC [EXTRA]
+      printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nTerminal=false\nCategories=Utility;TextEditor;\n%b' \
+        "$1" "Lem, the Common Lisp editor, on Clysm" "$2" "$3"
+    }
+    entry Lem "\"$dir/lem\" %F" "" > "$apps/lem-clysm.desktop"
+    entry "Lem (resident)" "\"$dir/lem\" --daemon" "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n" \
+      > "$autostart/lem-clysm.desktop"
+    echo "installed $apps/lem-clysm.desktop and $autostart/lem-clysm.desktop"
+    exit 0 ;;
+esac
 
 # the lines for the application: "open FILE" for each file, then "show"
 lines() {
