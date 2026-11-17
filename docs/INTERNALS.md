@@ -1248,46 +1248,6 @@ What is not as fast as intended, and why:
   same text as a simple string with `schar` is itself three times SBCL's
   time: the remaining factor is the cost of Lisp code in Wasm, not of the
   file. Opening and closing a 55 KB file costs about 10–18 µs.
-* **Generic functions**: dispatch on EQL specializers or on many classes at
-  one call site (4–5 times), `make-instance` with a class that is not a
-  constant (5), generic functions with `&optional`/`&key` (3).
-* **Integers between 2^29 and 2^63** are boxed when they are stored in data
-  structures or passed between functions (fixnums in SBCL); **bignums** have
-  28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
-  site and grows by `array.copy` into new storage, whose allocation is the
-  remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
-  string keys hash in a Wasm helper (`h-wordfreq` 1.34).
-* **Files** are no slower than streams in memory. A file is read with one
-  `readFileSync` and written with one `writeFileSync`, its octets crossing
-  through the linear memory at once (`js:to-octets`, `js:from-octets`); its
-  text is encoded and decoded in UTF-8 by Wasm loops (`%utf8-encode-into`,
-  `%utf8-decode`, `%bytes-find` for `read-line`). `read-char` and
-  `peek-char` are inline at the call site for an open character input file
-  (an ASCII character) and a string input stream of a simple string: one
-  primitive, `%fs-fast-char`, tests the instance's layout and the stream's
-  `fast` slot and reads the octets or the string; the position and length
-  of a file are unboxed in a `(signed-byte 32)` cursor (`%cursor-ref`, `%cursor-set`). `read-line`,
-  `write-string`, `write-line` and `write-char` have fixed-argument paths
-  for files. `i-file-roundtrip` is 1.7 times SBCL (13 before);
-  `i-read-lines` 1.05. In Clysm a `read-char` loop over a file is as fast as
-  over a string (about 2.6 ns a character; SBCL's file streams are twice as
-  fast as its string streams, so the ratio is 2.8 for files and 1.7 for
-  strings), and `peek-char` with `read-char` over a string is faster than
-  SBCL's. Opening and closing a 55 KB file costs about 18 µs: an input
-  file is read once (its existence is not asked first), by `openSync` and
-  `readSync` straight into the linear memory (`read_file_mem` in
-  `host/jsffi.mjs`), then copied into a Lisp vector by a Wasm loop. A
-  `read-char` loop over a 4 MB file is 1.8 times SBCL (about 2 ns a
-  character).
-* **Generic functions**: dispatch on EQL specializers or on many classes at
-  one call site (4–5 times), `make-instance` with a class that is not a
-  constant (5), generic functions with `&optional`/`&key` (3).
-* **Integers between 2^29 and 2^63** are boxed when they are stored in data
-  structures or passed between functions (fixnums in SBCL); **bignums** have
-  28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
-  site and grows by `array.copy` into new storage, whose allocation is the
-  remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
-  string keys hash in a Wasm helper (`h-wordfreq` 1.34).
 
 What makes the code fast:
 
