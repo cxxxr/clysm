@@ -57,3 +57,14 @@
 ;; (1 first: the entry of the class of 2 is made with its methods unknown)
 (print (list (f6 1) (f6 2) (f6 3) (f6 4) (f6 1)))
 (terpri)
+
+;; EQL specializer objects in both parameters: entries guarded twice
+(defgeneric f7 (x y))
+(defmethod f7 ((x (eql :a)) (y (eql 0))) :a-0)
+(defmethod f7 ((x (eql :a)) y) (list :a y))
+(defmethod f7 ((x (eql :b)) (y (eql 1))) :b-1)
+(defmethod f7 (x (y (eql 1))) (list x :one))
+(defmethod f7 ((x symbol) (y integer)) (list :symbol x y))
+(print (loop for (x y) in '((:c 5) (:a 0) (:a 1) (:b 1) (:b 0) (:c 1) (:a 0) (:a 7) (:b 1) (d 0) (:a 1))
+             collect (f7 x y)))
+(terpri)

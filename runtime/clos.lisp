@@ -726,12 +726,30 @@ own, which the dispatch on classes does not find."
                (if (every (lambda (o) (or (fixnump o) (symbolp o) (characterp o) (%instancep o))) (cdar guards))
                    (guard eq)
                    (guard eql)))))
-          (t (%arity-case n
+          (t
+           ;; several: the objects the arguments are make a number (0: none),
+           ;; under which the function of their entry is remembered
+           (let ((memo nil))
+             (%arity-case n
                (lambda (%args)
-                 (if (dolist (g guards nil)
-                       (when (member (%pick (car g) %args) (cdr g)) (return t)))
-                     (funcall (the function (%gf-lookup info (list %args) n 0)) %args)
-                     (funcall (the function value) %args))))))))
+                 (let ((code 0) (radix 1))
+                   (declare (fixnum code radix))
+                   (dolist (g guards)
+                     (let ((x (%pick (car g) %args)) (i 1))
+                       (declare (fixnum i))
+                       (dolist (o (cdr g)) (when (eql o x) (setq code (%fx+ code (%fx* i radix))) (return))
+                         (setq i (%fx+ i 1)))
+                       (setq radix (%fx* radix (%fx+ 1 (length (cdr g)))))))
+                   (if (eq code 0)
+                       (funcall (the function value) %args)
+                       (funcall (the function
+                                     (let ((e (assoc code memo)))
+                                       (if e
+                                           (cdr e)
+                                           (let ((f (%gf-lookup info (list %args) n 0)))
+                                             (push (cons code f) memo)
+                                             f))))
+                                %args))))))))))
 
 (defun %gf-fill (info keys args nreq which)
   "Compute the cache entry for ARGS (whose keys are KEYS) and store it."
@@ -3132,15 +3150,19 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
 (defmacro %define-ctor-entry (name &rest params)
   `(defun ,name (ctor ,@params)
      (declare (simple-vector ctor))
-     (if (and (eql (svref ctor 0) *ctor-generation*) (svref ctor 3) (null (svref ctor 5)))
-         (let ((inst (%allocate-instance (svref ctor 3))))
+     (if (and (eql (svref ctor 0) *ctor-generation*) (svref ctor 3))
+         (let* ((fns (svref ctor 5))
+                ;; the default initargs first, in order
+                (defaults (and fns (mapcar #'funcall fns)))
+                (inst (%allocate-instance (svref ctor 3))))
            (dolist (p (svref ctor 4) inst)
              (let ((src (cdr p)))
                (%set-instance-ref inst (car p)
-                                  (if (fixnump src)
-                                      (case src ,@(let ((i -1)) (mapcar (lambda (v) (setq i (+ i 1)) (list i v)) params))
-                                        (t nil))
-                                      (funcall src))))))
+                                  (cond ((fixnump src)
+                                         (case src ,@(let ((i -1)) (mapcar (lambda (v) (setq i (+ i 1)) (list i v)) params))
+                                           (t nil)))
+                                        ((consp src) (nth (car src) defaults))
+                                        (t (funcall src)))))))
          (%ctor-make-instance ctor ,@params))))
 (%define-ctor-entry %ctor-make-instance-0)
 (%define-ctor-entry %ctor-make-instance-1 a)
@@ -3148,15 +3170,71 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
 (%define-ctor-entry %ctor-make-instance-3 a b c)
 (%define-ctor-entry %ctor-make-instance-4 a b c d)
 
+;;; (MAKE-INSTANCE class :KEY value ...) with constant keys and a class known
+;;; only at run time: the call site keeps the constructors of the classes it
+;;; was called with, #(keys (class-or-name . ctor) ...) in a list, at most
+;;; +DYNAMIC-CTOR-CLASSES+.  A constructor is that of the class's name: it is
+;;; used for a class only while it makes that very class (the name may have
+;;; been given to another class); otherwise, and for the classes past the
+;;; limit, MAKE-INSTANCE is called.
+(defconstant +dynamic-ctor-classes+ 8)
+
+(defun %dynamic-ctor (site class)
+  "The constructor of CLASS (a class or a class name) at the call site SITE, or NIL."
+  (let ((e (dolist (e (cdr site) nil) (when (eq (car e) class) (return e)))))
+    (if e
+        (cdr e)
+        (let ((ctor (cond ((and (symbolp class) class) (%make-ctor class (car site)))
+                          ((and (%instancep class) (typep class 'class))
+                           (let ((name (%class-name class)))
+                             (and name (symbolp name) (eq (find-class name nil) class)
+                                  (%make-ctor name (car site)))))
+                          (t nil))))
+          (when (< (length (cdr site)) +dynamic-ctor-classes+)
+            (push (cons class ctor) (cdr site)))
+          ctor))))
+
+(defun %dynamic-ctor-usable-p (ctor class)
+  "True when the constructor CTOR, found for CLASS, makes its instances."
+  (or (symbolp class)
+      (eq class (if (eql (svref ctor 0) *ctor-generation*) (svref ctor 3) (%ctor-update ctor)))))
+
+(defmacro %define-dynamic-ctor-entry (name entry &rest params)
+  `(defun ,name (site class ,@params)
+     (let ((ctor (%dynamic-ctor site class)))
+       (if (and ctor (%dynamic-ctor-usable-p ctor class))
+           (,entry ctor ,@params)
+           (apply #'make-instance class
+                  (let ((r nil) (a (list ,@params)))
+                    (dolist (k (car site) (nreverse r)) (push k r) (push (car a) r) (setq a (cdr a)))))))))
+(%define-dynamic-ctor-entry %dynamic-make-instance-0 %ctor-make-instance-0)
+(%define-dynamic-ctor-entry %dynamic-make-instance-1 %ctor-make-instance-1 a)
+(%define-dynamic-ctor-entry %dynamic-make-instance-2 %ctor-make-instance-2 a b)
+(%define-dynamic-ctor-entry %dynamic-make-instance-3 %ctor-make-instance-3 a b c)
+(%define-dynamic-ctor-entry %dynamic-make-instance-4 %ctor-make-instance-4 a b c d)
+
 (define-compiler-macro make-instance (&whole form class &rest initargs)
-  (if (and (consp class) (eq (car class) 'quote) (consp (cdr class)) (symbolp (cadr class))
-           (evenp (length initargs))
-           (do ((l initargs (cddr l))) ((null l) t) (unless (keywordp (car l)) (return nil))))
-      (let ((keys nil) (vals nil))
-        (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
-        `(,(case (length vals)
-             (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
-             (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (t '%ctor-make-instance))
-          (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
-          ,@(reverse vals)))
-      form))
+  (cond ((not (and (evenp (length initargs))
+                   (do ((l initargs (cddr l))) ((null l) t) (unless (keywordp (car l)) (return nil)))))
+         form)
+        ((and (consp class) (eq (car class) 'quote) (consp (cdr class)) (symbolp (cadr class)))
+         (let ((keys nil) (vals nil))
+           (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
+           `(,(case (length vals)
+                (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
+                (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (t '%ctor-make-instance))
+             (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
+             ,@(reverse vals))))
+        ;; (a constant that is not a quoted symbol: a class object, an error)
+        ((or (and (atom class) (or (not (symbolp class)) (constantp class)))
+             (and (consp class) (eq (car class) 'quote))
+             (> (length initargs) 8))
+         form)
+        (t
+         (let ((keys nil) (vals nil))
+           (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
+           `(,(nth (length vals) '(%dynamic-make-instance-0 %dynamic-make-instance-1 %dynamic-make-instance-2
+                                    %dynamic-make-instance-3 %dynamic-make-instance-4))
+             (load-time-value (list ',(reverse keys)))
+             ,class
+             ,@(reverse vals))))))
