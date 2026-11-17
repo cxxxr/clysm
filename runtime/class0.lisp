@@ -367,7 +367,8 @@ grows when CLASS has more instance slots)."
             nil
             (progn (when old-cpl
                      (setq changed t)
-                     (when old-index
+                     ;; (only a class that has had instances may have obsolete ones)
+                     (when (and old-index (%class-slot class +class-make-info+))
                        (%note-obsolete-layout class (%class-slot class +class-instance-size+) old-index)))
                    (%set-class-slot class +class-slot-index+ index)))))
     (%set-class-slot class +class-instance-size+ (%instance-slot-count class))
@@ -429,6 +430,10 @@ grows when CLASS has more instance slots)."
                            :format-arguments (list name instance))))
 
 (defun %allocate-instance (class)
+  ;; (a class with instances has its make-info: one that is never current
+  ;; marks it, see %NOTE-OBSOLETE-LAYOUT)
+  (unless (%class-slot class +class-make-info+)
+    (%set-class-slot class +class-make-info+ #(-1 nil nil nil nil nil nil)))
   (let* ((n (or (%class-slot class +class-instance-size+) (%instance-slot-count class)))
          (v (%make-simple-vector n (%unbound-marker))))
     (if *track-instance-hook*

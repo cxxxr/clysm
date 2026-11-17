@@ -1168,10 +1168,12 @@ Limitations:
   them (and as no other) is updated from it. An instance whose number of
   slots matches no earlier layout, or two different ones, is an error when
   accessed; one whose layout changed without its number of slots is not
-  noticed. Every access that uses a slot location known in advance (call
-  sites of accessors, accessor functions, cached `slot-value`) compares the
-  instance's number of slots with the class's: about 20–40% of the time of
-  a slot access in `c-accessors` and `c-with-slots`.
+  noticed. Only a class redefined with other slots after it had instances
+  can have obsolete instances: the caches of slot locations (call sites of
+  accessors, cached `slot-value`) use the locations of the other classes
+  without a check (a redefinition empties them); for such a class the
+  accessor functions, and the cache of a `slot-value` out of the code it is
+  called from, compare the instance's number of slots with the class's.
 * Threads are green threads (see [Threads](#threads)); no first-class
   continuations (not required by the standard).
 * Pathnames are Unix namestrings; on a Windows host (Node.js's
@@ -1203,7 +1205,7 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
-it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.6, slowest `c-eql-dispatch`
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.5, slowest `c-eql-dispatch`
 4.0), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
 `i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
@@ -1246,12 +1248,12 @@ What is not as fast as intended, and why:
   32 they move to a hash table, searched out of the generic function's own
   code, which is slower still), `make-instance` with a class that is not a
   constant (2.2: the call site keeps the constructors of the classes it
-  saw), generic functions with `&optional`/`&key` (2.7). Slot accessors
-  (`c-accessors` 1.3, `c-with-slots` 1.8): a call site of a reader, of
-  `setf` of an accessor or of a `:writer` keeps the slot locations of four
-  classes and reads or writes the slot itself, after comparing the
-  instance's number of slots with the class's (1.0 and 1.2 without that
-  comparison; see the limitations about redefined classes).
+  saw), generic functions with `&optional`/`&key` (2.6). Slot accessors are
+  about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots` 1.2): a call
+  site of a reader, of `setf` of an accessor or of a `:writer` keeps the
+  slot locations of four classes and reads or writes the slot itself. The
+  slots of a class redefined with other slots after it had instances are
+  checked first (`c-slot-redef` 1.6; see the limitations).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
   structures or passed between functions (fixnums in SBCL); **bignums** have
   28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
