@@ -300,6 +300,9 @@ file offset) ...).")
     ((progv) '(symbols values &body body))
     (t :not-available)))
 
+(defimplementation macroexpand-all (form &optional env)
+  (sys::macroexpand-all form env))
+
 (defimplementation function-name (function)
   (nth-value 2 (function-lambda-expression function)))
 

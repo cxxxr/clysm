@@ -59,6 +59,136 @@
 
 (defun %macroexpand-1 (form &optional env) (macroexpand-1 form env))
 
+;;; MACROEXPAND-ALL: FORM with every macro form expanded, as far as a walk of
+;;; the special forms finds them (SWANK's and micros's macroexpand-all, for
+;;; C-c M-m).  The environment is the interpreter's, extended by the local
+;;; macros, symbol macros, functions and variables of the forms walked
+;;; through; an unknown special operator is left as it is.
+
+(defun macroexpand-all (form &optional env)
+  (%walk-form form env))
+
+(defun %walk-forms (forms env)
+  (if (listp forms)
+      (mapcar (lambda (f) (%walk-form f env)) forms)
+      forms))
+
+(defun %walk-body (body env)
+  "BODY (declarations kept as they are, documentation strings among them)."
+  (let ((head '()))
+    (loop while (and (consp body)
+                     (or (and (consp (car body)) (eq (caar body) 'declare))
+                         (and (stringp (car body)) (cdr body))))
+          do (push (pop body) head))
+    (append (nreverse head) (%walk-forms body env))))
+
+(defun %shadow-variables (vars env)
+  (dolist (v vars env)
+    (when (symbolp v) (push (list* :var v nil) env))))
+
+(defun %walk-lambda-list (ll env)
+  "LL with its default forms walked; the environment of the body."
+  (let ((out '()) (mode nil))
+    (loop
+      (cond ((null ll) (return))
+            ((atom ll) (push ll out) (setq env (%shadow-variables (list ll) env)) (return)))
+      (let ((p (pop ll)))
+        (cond ((member p lambda-list-keywords) (setq mode p) (push p out))
+              ((symbolp p) (push p out) (setq env (%shadow-variables (list p) env)))
+              ((member mode '(&optional &key &aux))
+               (let* ((var (if (and (eq mode '&key) (consp (car p))) (second (car p)) (car p)))
+                      (init (and (cdr p) (%walk-form (second p) env))))
+                 (push (if (cdr p) (list* (car p) init (cddr p)) p) out)
+                 (setq env (%shadow-variables (list var (third p)) env))))
+              (t (push p out)))))
+    (values (nreverse out) env)))
+
+(defun %walk-lambda (lambda env)
+  ;; (LAMBDA lambda-list . body), or a named lambda (OP name lambda-list . body)
+  (let ((named (not (eq (car lambda) 'lambda))))
+    (multiple-value-bind (ll body-env)
+        (%walk-lambda-list (if named (third lambda) (second lambda)) env)
+      (if named
+          (list* (first lambda) (second lambda) ll (%walk-body (cdddr lambda) body-env))
+          (list* 'lambda ll (%walk-body (cddr lambda) body-env))))))
+
+(defun %walk-form (form env)
+  (cond ((symbolp form)
+         (multiple-value-bind (new changed) (macroexpand-1 form env)
+           (if changed (%walk-form new env) form)))
+        ((atom form) form)
+        ((and (consp (car form)) (eq (caar form) 'lambda))
+         (cons (%walk-lambda (car form) env) (%walk-forms (cdr form) env)))
+        ((not (symbolp (car form))) form)
+        (t
+         (let ((op (car form)))
+           (case op
+             ((quote go) form)
+             (function
+              (if (and (consp (second form)) (not (eq (car (second form)) 'setf)))
+                  (list 'function (%walk-lambda (second form) env))
+                  form))
+             ((progn if catch throw unwind-protect multiple-value-call
+               multiple-value-prog1 progv)
+              (cons op (%walk-forms (cdr form) env)))
+             ((block return-from the eval-when)
+              (list* op (second form) (%walk-forms (cddr form) env)))
+             (load-time-value
+              (list* op (%walk-form (second form) env) (cddr form)))
+             (locally (cons op (%walk-body (cdr form) env)))
+             (tagbody
+              (cons op (mapcar (lambda (x) (if (consp x) (%walk-form x env) x)) (cdr form))))
+             (setq
+              ;; a symbol macro set is SETF of its expansion
+              (if (loop for (var) on (cdr form) by #'cddr
+                        thereis (let ((e (and env (%env-var env var))))
+                                  (if e (eq (car e) :smacro) (get var '%symbol-macro))))
+                  (%walk-form (cons 'setf (cdr form)) env)
+                  (cons op (loop for (var value) on (cdr form) by #'cddr
+                                 collect var collect (%walk-form value env)))))
+             ((let let*)
+              (let ((body-env env))
+                (list* op
+                       (mapcar (lambda (b)
+                                 (let ((var (if (consp b) (car b) b)))
+                                   (prog1 (if (and (consp b) (cdr b))
+                                              (list var (%walk-form (second b)
+                                                                    (if (eq op 'let*) body-env env)))
+                                              b)
+                                     (setq body-env (%shadow-variables (list var) body-env)))))
+                               (second form))
+                       (%walk-body (cddr form) body-env))))
+             ((flet labels)
+              (let ((body-env env))
+                (dolist (def (second form))
+                  (push (list* :fun (car def) nil) body-env))
+                (list* op
+                       (mapcar (lambda (def)
+                                 (let ((l (%walk-lambda (cons 'lambda (cdr def))
+                                                        (if (eq op 'labels) body-env env))))
+                                   (cons (car def) (cdr l))))
+                               (second form))
+                       (%walk-body (cddr form) body-env))))
+             (macrolet
+              (let ((body-env env))
+                (dolist (def (second form))
+                  (push (list* :macro (car def)
+                               (%eval-function (%macro-lambda (car def) (cadr def) (cddr def)) env))
+                        body-env))
+                ;; the local macros are gone once expanded
+                (cons 'locally (%walk-body (cddr form) body-env))))
+             (symbol-macrolet
+              (let ((body-env env))
+                (dolist (b (second form))
+                  (push (list* :smacro (car b) (cadr b)) body-env))
+                (cons 'locally (%walk-body (cddr form) body-env))))
+             (t
+              (cond ((special-operator-p op) form)
+                    (t (multiple-value-bind (new changed) (macroexpand-1 form env)
+                         (if changed
+                             (%walk-form new env)
+                             (cons op (%walk-forms (cdr form) env))))))))))))
+
 ;;; the target DEFMACRO (the compiler handles DEFMACRO natively)
 (defun %parse-macro-lambda-list (ll)
   "Returns (values whole-var env-var clean-ll)."

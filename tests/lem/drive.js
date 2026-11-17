@@ -96,6 +96,13 @@ module.exports = (win, app) => {
       check('eval defun', await until(async () => (await lisp('(cl-user::fact 10)')) === '3628800'),
             await lisp('(cl-user::fact 10)'));
 
+      // C-c M-m: the definition with its macros expanded (sys::macroexpand-all)
+      await key('c', ['control']); await key('m', ['alt']);
+      const expansion = () => lisp('(let ((b (lem:get-buffer "*lisp-macroexpand*"))) (and b (lem:buffer-text b)))');
+      check('macroexpand-all', await until(async () => { const t = await expansion(); return t.startsWith('"(') && !t.includes('(defun'); }),
+            await expansion());
+      await key(' '); await sleep(300);
+
       await key('>', ['alt', 'shift']); await type('; saved'); await key('x', ['control']); await key('s', ['control']); await sleep(800);
       check('save', (await readFile(file)).endsWith('; saved'));
       if (web) check('kept by the browser', await js(`localStorage.getItem('lem-clysm:' + ${JSON.stringify(file)}) !== null`));

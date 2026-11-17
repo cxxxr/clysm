@@ -1,0 +1,12 @@
+;;; sys::macroexpand-all (SWANK's and micros's macroexpand-all: C-c M-m)
+(defmacro twice (x) `(progn ,x ,x))
+(defmacro my-inc (v) `(setq ,v (1+ ,v)))
+(print (sys::macroexpand-all '(let ((a 1)) (twice (my-inc a)))))
+(print (sys::macroexpand-all '(if (twice t) (quote (twice 1)) (function (lambda (&optional (x (twice 1)) &key ((:k y) (twice 2))) (twice (list x y)))))))
+;; local macros and symbol macros, and what shadows them
+(print (sys::macroexpand-all '(macrolet ((m (x) `(list ,x ,x))) (m (twice 1)))))
+(print (sys::macroexpand-all '(symbol-macrolet ((s (twice 3))) (list s (let ((s 2)) s)))))
+(print (sys::macroexpand-all '(flet ((twice (x) x)) (twice (my-inc b)))))
+(print (sys::macroexpand-all '(labels ((f (n) (twice n))) (f 1))))
+(print (sys::macroexpand-all '(block b (tagbody top (twice (go top))) (return-from b (twice 4)))))
+(print (sys::macroexpand-all '(let* ((x (twice 1)) (y (twice x))) (declare (ignorable y)) (the fixnum (twice x)))))
