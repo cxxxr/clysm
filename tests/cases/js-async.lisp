@@ -1,6 +1,8 @@
 ;;; Computations of JS:ASYNC-FUNCTION: several wait at the same time, each
 ;;; with its own dynamic bindings; errors cross to JavaScript and back.
 ;;; (Run on the Node.js host; the expected output is in js-async.expected.)
+;;; The notes are 40 ms apart at least (D 10, C 50, B 100, A 300, B 400, A 500),
+;;; so that a slow machine keeps their order.
 
 (defvar *x* :global)
 (defvar *log* nil)
@@ -25,11 +27,11 @@
 (defun main ()
   (let ((*x* :main))
     ;; two computations wait at the same time, a third waits for both
-    (note :all (js:await-all (list (js:async #'worker :a '(30 20))
-                                   (js:async #'worker :b '(10 30))
+    (note :all (js:await-all (list (js:async #'worker :a '(300 200))
+                                   (js:async #'worker :b '(100 300))
                                    (js:async (lambda ()
-                                               (js:await-all (list (js:async #'worker :c '(5))
-                                                                   (js:async #'worker :d '(1)))))))))
+                                               (js:await-all (list (js:async #'worker :c '(50))
+                                                                   (js:async #'worker :d '(10)))))))))
     (note :main *x*)
     ;; an error in a computation rejects its promise with a JavaScript Error
     (note :rejected

@@ -1,0 +1,22 @@
+# SBCL from its binary release, the version the outputs of tests/cases are
+# compared with (Ubuntu's SBCL is older: SUBTYPEP and the printer answer
+# differently).
+name: Install SBCL
+description: Install SBCL from its binary release
+inputs:
+  version:
+    description: the SBCL version
+    default: 2.6.0
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        cd "$RUNNER_TEMP"
+        curl -sfL -o sbcl.tar.bz2 "https://downloads.sourceforge.net/project/sbcl/sbcl/$VERSION/sbcl-$VERSION-x86-64-linux-binary.tar.bz2"
+        tar xjf sbcl.tar.bz2
+        cd "sbcl-$VERSION-x86-64-linux"
+        sudo sh install.sh > /dev/null
+        sbcl --version

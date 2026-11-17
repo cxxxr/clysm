@@ -29,8 +29,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Install SBCL
-        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - uses: ./.github/actions/sbcl
       - name: Build the image
         run: make all
       - name: Run the suite
