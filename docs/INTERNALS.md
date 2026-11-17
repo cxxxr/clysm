@@ -1248,7 +1248,14 @@ What is not as fast as intended, and why:
   32 they move to a hash table, searched out of the generic function's own
   code, which is slower still), `make-instance` with a class that is not a
   constant (2.2: the call site keeps the constructors of the classes it
-  saw), generic functions with `&optional`/`&key` (2.6). Slot accessors are
+  saw), generic functions with `&optional`/`&key` (2.6: every call makes
+  the list of its arguments, goes through `%gf-invoke`, which checks them
+  against the lambda list and looks the entry up, and the effective method
+  and the method are functions of that list; SBCL calls them as fast as
+  those of required parameters only. A dispatch per number of arguments
+  that searches the entries itself made separate calls 25% faster but
+  `c-gf-lambda-lists` slower, shared by all generic functions (8%) and
+  copied into each (20%): the remedy is methods of spread arguments). Slot accessors are
   about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots` 1.2): a call
   site of a reader, of `setf` of an accessor or of a `:writer` keeps the
   slot locations of four classes and reads or writes the slot itself. The
