@@ -15,7 +15,7 @@ $ bin/clysm eval '(expt 2 100)'
 
 Demo: [Lem running in the browser](https://cxxxr.github.io/clysm/). Lem, its
 libraries and the compiler are all compiled by Clysm; the page needs no
-server. It needs Chrome or Edge 137 or later and is about 15 MB.
+server. It needs Chrome or Edge 137 or later and is about 19 MB.
 
 ## State
 

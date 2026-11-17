@@ -133,6 +133,31 @@ module.exports = (win, app) => {
       const repl = () => lisp('(lem:buffer-text (lem:get-buffer "*lisp-repl*"))');
       check('repl', await until(async () => (await repl()).includes('(120 \\"Clysm\\")')), await repl());
 
+      // Lem's extensions are loaded when first used (contrib/lem/src/extensions.lisp)
+      const python = path.join(work, 'hello.py');
+      await writeFile(python, 'def greet(name):\n    return "Hello, " + name  # a comment\n');
+      await key('x', ['control']); await key('f', ['control']); await sleep(300);
+      await key('a', ['control']); await key('k', ['control']);
+      await type(python); await key('Return');
+      const major = () => lisp('(lem:buffer-major-mode (lem:current-buffer))');
+      check('mode loaded when a file needs it', await until(async () => (await major()).includes('PYTHON-MODE'), 15000),
+            await major());
+      check('its highlighting', await until(async () => js("[...document.querySelectorAll('.lem-line span')].some((s) => s.innerText.includes('a comment') && s.style.color)")));
+
+      await command('load-theme');
+      await type('nord'); await key('Return');
+      const theme = () => lisp('(lem-core::current-theme)');
+      check('base16 themes', await until(async () => (await theme()) === '"nord"', 15000), await theme());
+
+      await command('vi-mode');
+      check('vi-mode', await until(async () => (await screen()).includes('NORMAL'), 15000));
+      await type('ggOimport sys'); await key('Escape'); await sleep(300);
+      const first = await lisp('(lem:line-string (lem:buffer-start-point (lem:current-buffer)))');
+      check('vi keys', first === '"import sys"', first);
+      await command('emacs-mode');
+      check('emacs-mode again', await until(async () => !(await screen()).includes('NORMAL')));
+      await key('x', ['control']); await key('s', ['control']); await sleep(500);
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));

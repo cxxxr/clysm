@@ -13,7 +13,7 @@ $ make test-lem                            # types into it (and into the page be
 For a browser, without a server:
 
 ```
-$ contrib/lem/build-web.sh                 # build/lem-web/lem.html, one file of 15 MB
+$ contrib/lem/build-web.sh                 # build/lem-web/lem.html, one file of 19 MB
 ```
 
 Open `build/lem-web/lem.html` in Chrome or Edge 137 or later (it needs
@@ -67,7 +67,8 @@ and scrolls in cells.
 
 **Lisp** (`src/lisp-mode.lisp`). Lem's Lisp mode talks to another Lisp
 process through micros; here Lem runs in a Lisp, so the Lisp mode evaluates
-in that image, which compiles what it evaluates to WebAssembly. Highlighting
+in that image, which compiles each form it evaluates to a WebAssembly module
+(as its REPL does). Highlighting
 and indentation are Lem's (`lem-lisp-syntax`, the grammar of `lem-lisp-mode`).
 
 | Key | Command |
@@ -78,12 +79,31 @@ and indentation are Lem's (`lem-lisp-syntax`, the grammar of `lem-lisp-mode`).
 | `M-:` | evaluate a form read from the prompt |
 | `C-c C-z`, `M-x lisp-repl` | a REPL of the image: what it evaluates changes the running editor |
 
+**Extensions** (`src/extensions.lisp`). Lem's language modes (C, CSS, Go,
+HTML, JavaScript, JSON, Makefile, Markdown, shell, Python, Rust, SQL, TOML,
+TypeScript, XML, YAML), vi-mode and the base16 color themes (about 190) are
+compiled with the rest but loaded when first used, so that they do not make
+Lem start later: the file types of a mode open their files with a function
+that loads the mode's system with ASDF and then turns the mode on, a command
+of the mode's name does the same, and `load-theme` loads the themes first
+(also before Lem starts, when the theme saved last time is one of them).
+`setup.lisp` leaves out what they cannot have here: their language servers,
+tree-sitter (`stubs/lem-tree-sitter/`), the preview of Markdown, and Lem's own
+Lisp mode where they refer to it.
+
 ## In a browser
 
 The demo at https://cxxxr.github.io/clysm/ is this page, built by the
-workflow `.github/workflows/lem-demo.yml` when `main` changes. It opens
-`web/welcome.lisp` (copied into the home directory the first time), which
-tells what to try.
+workflow `.github/workflows/lem-demo.yml` (run by hand). It opens
+`web/welcome.lisp`, a short tour, copied into the home directory (and
+replaced by a newer one as long as it was not changed there).
+
+While Lem loads (about 3 s of the 5), the page shows how far it is:
+`web/boot.lisp` loads Lem as a computation that lets the page draw itself
+between files (`js:await` of the next frame, at most every 50 ms), and calls
+`lemBoot.progress` with the number of files loaded; `build-web.sh` counts
+them when it loads Lem on Node.js. A browser without JavaScript Promise
+Integration gets a page that says so.
 
 `build-web.sh` makes one HTML file (`web/index.html` is its template) that
 contains the host (`host/*.mjs`, put into the page: a page opened from a file
@@ -109,8 +129,9 @@ base64:
 
 ## What Lem on Clysm does without
 
-Lem's core (`lem/core`), Paredit and the Lisp mode above are loaded; the
-other extensions are not. Libraries that Clysm cannot provide are replaced by
+Lem's core (`lem/core`), Paredit, the Lisp mode above and the extensions
+above are there; the others are not (those that run programs, the
+language server client, the terminal, legit...). Libraries that Clysm cannot provide are replaced by
 stubs (`stubs/`): micros (the parts Lem's core uses), log4cl (log messages go
 to the console of the page), dexador and usocket (no network client:
 the DeepL commands fail), deploy (only named by `lem.asd`).
@@ -127,11 +148,11 @@ the DeepL commands fail), deploy (only named by `lem.asd`).
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `lisp-mode` |
-| `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF |
+| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `lisp-mode`, `extensions` (loaded when first used) |
+| `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js) |
 | `desktop/` | the page, `boot.lisp` and `package.json` of the application |
-| `web/` | the page for a browser (`index.html`, `boot.lisp`), `pack.mjs`, `make-html.mjs` |
+| `web/` | the page for a browser (`index.html`, `boot.lisp`, `welcome.lisp`), `pack.mjs`, `make-html.mjs` |
 | `lem.css` | the look of both pages |
 | `build.sh`, `build-web.sh` | build `build/lem-desktop/`, `build/lem-web/lem.html` |
 | `../../tests/lem/` | `make test-lem` |

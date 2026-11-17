@@ -17,7 +17,9 @@
 
 (defun log-message (level format-control &rest args)
   (when (and *level* (<= (position level *levels*) (position *level* *levels*)))
-    (format *error-output* "~&[~A] ~?~%" level
+    ;; (the page writes *error-output* to the console as errors)
+    (format (if (member level '(:fatal :error :warn)) *error-output* *standard-output*)
+            "~&[~A] ~?~%" level
             (if (stringp format-control) format-control "~S")
             (if (stringp format-control) args (cons format-control args))))
   nil)

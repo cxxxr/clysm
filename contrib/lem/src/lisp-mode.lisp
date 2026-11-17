@@ -91,6 +91,13 @@
         (and name (find-package (string-upcase name))))
       (find-package :cl-user)))
 
+(defun eval-form (form)
+  "Evaluate FORM as the REPL of the image does: compiled to a WebAssembly
+module (or by the interpreter, if the compiler cannot compile it)."
+  (if sys::*native-eval-hook*
+      (funcall sys::*native-eval-hook* form)
+      (eval form)))
+
 (defun eval-string (string package)
   "Evaluate the forms in STRING with *PACKAGE* bound to PACKAGE.  Return
 what they printed and the printed values of the last form."
@@ -104,7 +111,7 @@ what they printed and the printed values of the last form."
                        (loop with eof = in
                              for form = (read in nil eof)
                              until (eq form eof)
-                             do (setf values (multiple-value-list (eval form)))))))))
+                             do (setf values (multiple-value-list (eval-form form)))))))))
     (values output
             (format nil "~{~S~^, ~}" values)
             *package*)))

@@ -21,4 +21,5 @@
                ;; a Lisp process and native libraries)
                (:file "grammar" :pathname #.(asdf:system-relative-pathname
                                              "lem" "extensions/lisp-mode/grammar.lisp"))
-               (:file "lisp-mode")))
+               (:file "lisp-mode")
+               (:file "extensions")))

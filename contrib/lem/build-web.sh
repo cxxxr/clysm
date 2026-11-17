@@ -20,5 +20,5 @@ CLYSM_TRACE_FILES=$out/trace.json node host/run.mjs $desktop/lem.wasm $out/trace
   { tail -20 $out/trace.log; exit 1; }
 node contrib/lem/web/pack.mjs $out/trace.json $out/files.pack.gz
 node contrib/lem/web/make-html.mjs "$root" $desktop/lem.wasm $out/files.pack.gz "$root/$out/boot.lisp" "$HOME" \
-  > $out/lem.html
+  "$(cat $out/load-count)" > $out/lem.html
 echo "built $out/lem.html ($(du -h $out/lem.html | cut -f1)) — open it in Chrome or Edge"

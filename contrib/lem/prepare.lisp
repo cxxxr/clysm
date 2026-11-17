@@ -18,6 +18,8 @@
   (push (uiop:ensure-directory-pathname mailbox-dir) asdf:*central-registry*)
   (load (merge-pathnames "setup.lisp" *load-truename*))
   (ql:quickload "lem-clysm")
+  ;; the extensions that the editor loads when they are first used
+  (ql:quickload (uiop:symbol-call :lem-clysm '#:extension-systems))
   (let ((directories
           (remove-duplicates
            (loop for name in (asdf:already-loaded-systems)

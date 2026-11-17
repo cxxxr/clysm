@@ -238,4 +238,5 @@
 
 (defun main (&rest arguments)
   "Start Lem in the page, with ARGUMENTS as on the command line (file names...)."
+  (load-saved-theme)
   (apply #'lem:lem "--interface" "clysm" arguments))
