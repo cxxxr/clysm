@@ -27,9 +27,17 @@ the image, compiles Lem and its libraries with it (Quicklisp downloads what
 is missing; the first time this takes a few minutes), and installs Electron
 in `build/lem-desktop/`.
 
-**Starting at once.** Lem takes about six seconds to start: the image is
-made again (WebAssembly GC objects cannot be saved), and Lem's 445 fasls are
-loaded; Electron alone takes 0.1 s to show an empty window. So the
+**Starting.** Lem takes about three seconds to start (Electron, on Linux,
+without other work): the image is made again (WebAssembly GC objects cannot
+be saved), and Lem's 359 fasls are loaded, while the page shows how far it
+is. They are loaded without ASDF (`load-lem.lisp`): `prepare.lisp` notes
+them in `boot-list.lisp` in their order with the systems, which are
+registered as loaded and immutable (ASDF would read 67 system definitions
+and plan 445 files, a second), and Lem's Lisp mode with micros is an
+extension (`lem-clysm-lisp.asd`) loaded when a Lisp file is first opened.
+
+**Starting at once.** Electron alone takes 0.1 to 0.3 s to show an empty
+window. So the
 application stays resident, as Emacs does with `emacs --daemon` and
 `emacsclient`, and `build/lem-desktop/lem` only tells it through a Unix
 domain socket to open files and show its window:
@@ -184,9 +192,10 @@ start another Lisp), deploy (only named by `lem.asd`).
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
-| `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js) |
+| `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js), and notes what is loaded at start (`boot-list.lisp`) |
+| `load-lem.lisp` | loads Lem without ASDF, showing how far it is in the page |
 | `desktop/` | the page, `boot.lisp` and `package.json` of the application, and `lem`, its client |
 | `web/` | the page for a browser (`index.html`, `boot.lisp`, `welcome.lisp`), `pack.mjs`, `make-html.mjs` |
 | `lem.css` | the look of both pages |

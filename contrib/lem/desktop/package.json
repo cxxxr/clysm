@@ -13,7 +13,7 @@
     "backgroundColor": { "light": "#1d1f21", "dark": "#1d1f21" },
     "node": true,
     "resident": true,
-    "jsFlags": "--stack-size=7600"
+    "jsFlags": "--stack-size=7600 --wasm-lazy-validation"
   },
   "scripts": {
     "start": "electron ."

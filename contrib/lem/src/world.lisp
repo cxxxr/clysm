@@ -12,6 +12,11 @@
 
 (in-package :lem-clysm)
 
+;;; (loaded with the Lisp mode, after boot.lisp said where the boot file of
+;;; a world is)
+(when (boundp 'cl-user::*world-boot-file*)
+  (setf clysm-world:*boot-file* (symbol-value 'cl-user::*world-boot-file*)))
+
 (defun world-of-connection (connection)
   (and connection
        (clysm-world:find-world (lem-lisp-mode/connection:connection-hostname connection))))

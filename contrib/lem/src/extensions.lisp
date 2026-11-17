@@ -14,7 +14,9 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter *extensions*
     ;; (system package mode-command file-types file-names)
-    '(("lem-c-mode" "LEM-C-MODE" "C-MODE" ("c" "h"))
+    '(;; Lem's Lisp mode, with micros (lem-clysm-lisp.asd): most of a second
+      ("lem-clysm-lisp" "LEM-LISP-MODE" "LISP-MODE" ("lisp" "asd" "cl" "lsp" "ros"))
+      ("lem-c-mode" "LEM-C-MODE" "C-MODE" ("c" "h"))
       ("lem-css-mode" "LEM-CSS-MODE" "CSS-MODE" ("css" "scss"))
       ("lem-go-mode" "LEM-GO-MODE" "GO-MODE" ("go"))
       ("lem-html-mode" "LEM-HTML-MODE" "HTML-MODE" ("html" "htm"))
@@ -31,7 +33,15 @@
       ("lem-xml-mode" "LEM-XML-MODE" "XML-MODE" ("xml" "svg"))
       ("lem-yaml-mode" "LEM-YAML-MODE" "YAML-MODE" ("yaml" "yml"))
       ("lem-vi-mode" "LEM-VI-MODE" "VI-MODE" ()))
-    "The extensions loaded when first used."))
+    "The extensions loaded when first used.")
+
+  (defparameter *extension-commands*
+    ;; (system package command key): other commands that load an extension
+    '(("lem-clysm-lisp" "LEM-LISP-MODE" "START-LISP-REPL" nil)
+      ("lem-clysm-lisp" "LEM-LISP-MODE" "LISP-EVAL-STRING" "M-:")
+      ("lem-clysm-lisp" "LEM-CLYSM" "WORLD-START" nil)
+      ("lem-clysm-lisp" "LEM-CLYSM" "WORLD-KILL" nil))
+    "Commands of the extensions, besides their modes, that load them."))
 
 (defparameter *theme-system* "lem-base16-themes"
   "The system of the color themes beyond Lem's own (base16, about 190).")
@@ -46,6 +56,9 @@
 (defun load-extension (system &key quiet)
   "Load the extension SYSTEM if it is not loaded yet; with QUIET, without
 telling it (before the editor has started)."
+  ;; (Lem was loaded without ASDF's search of systems: load-lem.lisp)
+  (when (fboundp 'cl-user::configure-lem-asdf)
+    (funcall 'cl-user::configure-lem-asdf))
   (unless (asdf:component-loaded-p system)
     (unless quiet
       (lem:message "Loading ~A..." system)
@@ -77,7 +90,15 @@ telling it (before the editor has started)."
                collect `(lem-core::associate-file-type ',types ',symbol)
              when names
                collect `(setf (lem-core::file-mode-associations ',symbol)
-                              ',(mapcar (lambda (name) (list :file-namestring name)) names)))))
+                              ',(mapcar (lambda (name) (list :file-namestring name)) names)))
+     ,@(loop for (system package command key) in *extension-commands*
+             for symbol = (intern (format nil "AUTOLOAD-~A" command) :lem-clysm)
+             collect `(lem:define-command (,symbol (:name ,(string-downcase command))) () ()
+                        ,(format nil "Load ~A and run ~(~A~)." system command)
+                        (load-extension ,system)
+                        (lem:call-command (find-symbol ,command ,package) nil))
+             when key
+               collect `(lem:define-key lem:*global-keymap* ,key ',symbol))))
 
 (define-extension-triggers)
 

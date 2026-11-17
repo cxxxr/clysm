@@ -87,9 +87,10 @@ module.exports = (win, app) => {
       await type(file); await key('Return'); await sleep(800);
       const name = await lisp('(lem:buffer-name (lem:current-buffer))');
       check('find-file', name === '"sample.lisp"', name);
-      const mode = await lisp('(lem:buffer-major-mode (lem:current-buffer))');
-      check('lisp mode', mode.includes('LISP-MODE'), mode);
-      check('highlighting', await js("[...document.querySelectorAll('.lem-line span')].some((s) => s.innerText === 'defun' && s.style.color)"));
+      const mode = () => lisp('(lem:buffer-major-mode (lem:current-buffer))');
+      check('lisp mode', await until(async () => (await mode()).includes('LISP-MODE'), 15000), await mode());
+      // (the Lisp mode is loaded when the first Lisp file is opened)
+      check('highlighting', await until(() => js("[...document.querySelectorAll('.lem-line span')].some((s) => s.innerText === 'defun' && s.style.color)"), 15000));
 
       // (the first compilation in the page takes a while)
       await key('x', ['alt', 'control']);

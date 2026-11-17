@@ -15,10 +15,15 @@
   (pushnew here *central-registry* :test #'equal))
 
 ;;; The extension manager installs packages with Quicklisp at run time; it
-;;; is not part of Lem on Clysm.
+;;; is not part of Lem on Clysm.  micros (Lem's SWANK) is loaded with the
+;;; Lisp mode, when it is first used (src/extensions.lisp): Lem's core only
+;;; asks it for the name of a function.
 (define-clysm-fixup "lem/core" (s)
-  (clysm-drop-dependencies s "lem-extension-manager")
-  (clysm-enable-component s '("ext" "extension-commands") nil))
+  (clysm-drop-dependencies s "lem-extension-manager" "micros")
+  (clysm-enable-component s '("ext" "extension-commands") nil)
+  (clysm-patch-component s '("common" "timer")
+                         "(micros::function-name function)"
+                         "(nth-value 2 (function-lambda-expression function))"))
 
 ;;; Lem's Lisp mode: micros, the server it talks to, runs in Lem's own
 ;;; image (src/micros.lisp); there are no other Lisp processes to start
@@ -50,3 +55,15 @@
   ;; (the keys of the dashboard, which is not there)
   (clysm-drop-dependencies s "lem-dashboard")
   (clysm-enable-component s '("special-binds") nil))
+
+;;; The colors of the parentheses of Lem's Lisp mode, which is loaded when
+;;; it is first used, maybe after the themes
+(define-clysm-fixup "lem-base16-themes" (s)
+  (clysm-patch-component s '("src" "macros")
+                         "(lem-lisp-mode/paren-coloring:paren-color-1 :foreground ,(color :base08))
+       (lem-lisp-mode/paren-coloring:paren-color-2 :foreground ,(color :base09))
+       (lem-lisp-mode/paren-coloring:paren-color-3 :foreground ,(color :base0A))
+       (lem-lisp-mode/paren-coloring:paren-color-4 :foreground ,(color :base0B))
+       (lem-lisp-mode/paren-coloring:paren-color-5 :foreground ,(color :base0C))
+       (lem-lisp-mode/paren-coloring:paren-color-6 :foreground ,(color :base0D))"
+                         ""))

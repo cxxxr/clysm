@@ -1,7 +1,7 @@
 ;;;; boot.lisp — what the page of Lem runs in a browser: Lem and its
-;;;; frontend are loaded with ASDF from the fasls in the pack of files
-;;;; (host/web/vfs.mjs), then Lem starts with welcome.lisp, copied into the
-;;;; home directory the first time.
+;;;; frontend are loaded from the fasls in the pack of files
+;;;; (host/web/vfs.mjs) without ASDF (load-lem.lisp), then Lem starts with
+;;;; welcome.lisp, copied into the home directory the first time.
 ;;;;
 ;;;; The loading is a computation that lets the page run between files, so
 ;;;; that the page shows how far it is (lemBoot.progress of index.html).
@@ -9,41 +9,15 @@
 ;;;; build-web.sh runs it on Node.js with CL-USER::*LEM-LOAD-ONLY* true to
 ;;;; see which files loading reads: then it loads the extensions as well
 ;;;; (src/extensions.lisp loads them in the page when they are first used),
-;;;; and writes the number of files that the page loads into load-count.
+;;;; and writes the number of files that the page loads into load-count,
+;;;; and their sources into sources.txt.
 
 (defvar cl-user::*lem-load-only* nil)
 (defvar cl-user::*welcome* (with-open-file (in (merge-pathnames "welcome.lisp" *load-truename*))
                              (let ((text (make-string (file-length in))))
                                (subseq text 0 (read-sequence text in)))))
 (defvar cl-user::*boot-directory* (make-pathname :name nil :type nil :defaults *load-truename*))
-(require :asdf)
-(load (merge-pathnames "config.lisp" *load-truename*))
-
-(defvar cl-user::*files-loaded* 0)
-
-(defvar cl-user::*show-progress*
-  (and (not cl-user::*lem-load-only*)
-       (js:eval "(n) => { const boot = globalThis.lemBoot;
-                          if (boot) boot.progress(n);
-                          /* the page is drawn before the next file */
-                          return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))); }")))
-
-(defvar cl-user::*last-shown* 0)
-
-(defmethod asdf:perform :after ((o asdf:load-op) (c asdf:cl-source-file))
-  (incf cl-user::*files-loaded*)
-  ;; the page is shown again at most every 50 ms: waiting for a frame
-  ;; costs a few milliseconds each time
-  (when (and cl-user::*show-progress*
-             (js:can-await-p)
-             (> (- (get-internal-real-time) cl-user::*last-shown*)
-                (floor internal-time-units-per-second 20)))
-    (js:await (js:funcall cl-user::*show-progress* cl-user::*files-loaded*))
-    (setf cl-user::*last-shown* (get-internal-real-time))))
-
-(defun cl-user::load-lem ()
-  (let ((*compile-verbose* nil) (*load-verbose* nil))
-    (asdf:load-system "lem-clysm")))
+(load (merge-pathnames "load-lem.lisp" *load-truename*))
 
 (defun cl-user::file-text (path)
   (and (probe-file path) (uiop:read-file-string path)))
@@ -78,20 +52,19 @@ of the first version of welcome.lisp."
        (cl-user::load-lem)
        (with-open-file (out (merge-pathnames "load-count" cl-user::*boot-directory*)
                             :direction :output :if-exists :supersede)
-         (format out "~D~%" cl-user::*files-loaded*))
+         (format out "~D~%" (cl-user::lem-boot-count)))
+       ;; their sources, which the page has for M-. (pack.mjs)
+       (with-open-file (out (merge-pathnames "sources.txt" cl-user::*boot-directory*)
+                            :direction :output :if-exists :supersede)
+         (dolist (item cl-user::*lem-boot-items*)
+           (when (eq (first item) :fasl) (write-line (third item) out))))
+       (cl-user::configure-lem-asdf)
        (let ((*compile-verbose* nil) (*load-verbose* nil))
          (dolist (system (uiop:symbol-call :lem-clysm '#:extension-systems))
            (asdf:load-system system))))
       (t
        ;; from the event loop, as a computation that can wait
-       (js:funcall (js:global "setTimeout")
-                   (js:async-function
-                    (lambda ()
-                      (handler-bind ((error (lambda (e)
-                                              (let ((boot (js:global "lemBoot")))
-                                                (when (js:js-value-p boot)
-                                                  (js:call boot "failed" (princ-to-string e)))))))
-                        (cl-user::load-lem)
-                        (cl-user::start-lem))
-                      nil))
-                   0)))
+       (cl-user::start-in-page
+        (lambda ()
+          (cl-user::load-lem #'cl-user::show-progress-in-page)
+          (cl-user::start-lem)))))
