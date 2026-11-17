@@ -1,5 +1,6 @@
 # Clysm
 
+[![Tests](https://github.com/cxxxr/clysm/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/cxxxr/clysm/actions/workflows/tests.yml)
 [![ANSI tests](https://github.com/cxxxr/clysm/actions/workflows/ansi.yml/badge.svg?branch=main)](https://github.com/cxxxr/clysm/actions/workflows/ansi.yml)
 
 Clysm is a Common Lisp implementation that compiles Lisp to WebAssembly GC.
