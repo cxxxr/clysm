@@ -1,0 +1,4 @@
+# The tests of the ANSI suite that are known to fail, one name on a line.
+# tests/ansi/check.sh fails when another test fails, and when one of these
+# passes in a run of the whole suite.
+SUBTYPEP-COMPLEX.8
