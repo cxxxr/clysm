@@ -6,7 +6,7 @@ framework (`ui/`).
 
 ```
 $ contrib/lem/build.sh                     # builds build/lem-desktop/
-$ (cd build/lem-desktop && npm start)
+$ build/lem-desktop/lem [FILE...]          # starts it, or shows it at once
 $ make test-lem                            # types into it (and into the page below) without a display
 ```
 
@@ -25,7 +25,19 @@ from the disk or from any web server. See [In a browser](#in-a-browser).
 checkout named by `LEM_DIR`), lem-mailbox and micros into `build/lem-deps/`, builds
 the image, compiles Lem and its libraries with it (Quicklisp downloads what
 is missing; the first time this takes a few minutes), and installs Electron
-in `build/lem-desktop/`. Lem then starts in about five seconds.
+in `build/lem-desktop/`.
+
+**Starting at once.** Lem takes about six seconds to start: the image is
+made again (WebAssembly GC objects cannot be saved), and Lem's 445 fasls are
+loaded. So the application stays resident, as Emacs does with `emacs
+--daemon` and `emacsclient`: closing its window only hides it (`C-x C-c`
+ends Lem), and `build/lem-desktop/lem` tells it through a Unix domain socket
+to open files and show its window, which takes less than 10 ms (`make
+test-lem` measures it: 8 ms until the file is on the screen). Only the first
+`lem` waits for Lem to start; `lem --daemon` starts it with its window
+hidden (e.g. when you log in), so that every `lem` after it is instant. The
+socket is `resident.sock` in the application's data directory
+(`~/.config/Lem/`); see "resident" in `ui/electron/main.js`.
 
 ## How it works
 
@@ -153,7 +165,7 @@ start another Lisp), deploy (only named by `lem.asd`).
 | `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js) |
-| `desktop/` | the page, `boot.lisp` and `package.json` of the application |
+| `desktop/` | the page, `boot.lisp` and `package.json` of the application, and `lem`, its client |
 | `web/` | the page for a browser (`index.html`, `boot.lisp`, `welcome.lisp`), `pack.mjs`, `make-html.mjs` |
 | `lem.css` | the look of both pages |
 | `build.sh`, `build-web.sh` | build `build/lem-desktop/`, `build/lem-web/lem.html` |

@@ -180,6 +180,28 @@ module.exports = (win, app) => {
       check('emacs-mode again', await until(async () => !(await screen()).includes('NORMAL')));
       await key('x', ['control']); await key('s', ['control']); await sleep(500);
 
+      if (!web) {
+        // a resident application: contrib/lem/desktop/lem tells it through its
+        // socket which files to open (ui/electron/main.js)
+        const other = path.join(work, 'from-client.txt');
+        fs.writeFileSync(other, 'opened by a client\n');
+        const sent = Date.now();
+        await new Promise((resolve, reject) => {
+          const s = require('node:net').connect(path.join(app.getPath('userData'), 'resident.sock'));
+          s.on('error', reject);
+          s.end(`open ${other}\nshow\n`, resolve);
+        });
+        // (the screen shows it: the name of the buffer in its line of tabs)
+        const shown = () => js("[...document.querySelectorAll('.lem-line')].some((l) => l.textContent.includes('opened by a client'))");
+        let ms = null;
+        for (let t = 0; t < 5000; t += 5) {
+          if (await shown()) { ms = Date.now() - sent; break; }
+          await sleep(5);
+        }
+        check('resident: a client opens a file', ms !== null, await lisp('(lem:buffer-name (lem:current-buffer))'));
+        console.log(`lem: the file of a client on the screen in ${ms} ms`);
+      }
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));

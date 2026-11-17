@@ -11,12 +11,19 @@
 // With "node": true, the page can use Node.js (require, process): a Lisp
 // program that has the files of the computer (host/web/clysm.mjs with fs).
 // "jsFlags" are flags of the JavaScript engine (e.g. a larger stack).
+// With "resident": true the application stays: closing its window hides it,
+// and a client (bin/client of the application, e.g. contrib/lem/desktop/lem)
+// shows it at once through a Unix domain socket in the application's data
+// directory (resident.sock): lines "open FILE" (FILE given to the page's
+// desktop.onOpen) and "show"; the page ends the application with
+// desktop.call('quit').  "--hidden" on the command line starts it hidden.
 // The environment variable CLYSM_ELECTRON_TEST names a module whose function
 // is called with the window (tests drive the page with sendInputEvent and
 // look at it with capturePage); the window is then not shown.
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, net, protocol, clipboard } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const netServer = require('node:net');
 const { pathToFileURL } = require('node:url');
 
 const options = require('./package.json').window || {};
@@ -35,6 +42,12 @@ if (options.jsFlags) app.commandLine.appendSwitch('js-flags', options.jsFlags);
 const testModule = process.env.CLYSM_ELECTRON_TEST;
 
 let win = null;
+let quitting = false;
+const resident = !!options.resident;
+const startHidden = process.argv.includes('--hidden');
+// files to open given on the command line (after the application's directory)
+const argvFiles = (argv) => argv.slice(2).filter((a) => !a.startsWith('-') && a !== '.')
+  .map((a) => path.resolve(a));
 
 // ---- the functions called from Lisp: (ui::desktop-call "name" argument...)
 
@@ -73,6 +86,8 @@ const api = {
     });
   },
   setMenu(spec) { buildMenu(spec); return null; },
+  // end the application (a resident one only hides its window when it is closed)
+  quit() { quitting = true; setImmediate(() => app.quit()); return null; },
   // (the renderer of Electron 45 has no clipboard module of its own)
   readClipboard() { return clipboard.readText(); },
   writeClipboard(text) { clipboard.writeText(String(text)); return null; },
@@ -127,17 +142,74 @@ function createWindow() {
     minWidth: options.minWidth,
     minHeight: options.minHeight,
     backgroundColor: (nativeTheme.shouldUseDarkColors ? background.dark : background.light) || undefined,
-    show: !testModule,
+    // (a resident application shows its window when it is ready, or when a
+    // client asks)
+    show: !testModule && !resident,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      // (a hidden resident application keeps running its timers)
+      backgroundThrottling: !resident,
       ...(options.node ? { nodeIntegration: true, contextIsolation: false, sandbox: false } : {}),
       ...(testModule ? { offscreen: true } : {}),
     },
   });
   win.on('closed', () => { win = null; });
+  if (resident) {
+    win.on('close', (event) => {
+      if (!quitting) { event.preventDefault(); win.hide(); }
+    });
+  }
   win.loadURL('app://app/index.html');
   if (testModule) require(path.resolve(testModule))(win, app);
 }
+
+// ---- a resident application: the socket of its clients
+
+const pendingFiles = [];
+let pageReady = false;
+
+function openFiles(files) {
+  if (files.length === 0) return;
+  if (pageReady) win.webContents.send('open', files);
+  else pendingFiles.push(...files);
+}
+
+function showWindow() {
+  if (!win) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  // (CLYSM_RESIDENT_LOG: when, for measuring how fast a client shows it)
+  if (process.env.CLYSM_RESIDENT_LOG) console.log('shown', Date.now());
+}
+
+function serveClients() {
+  const socket = path.join(app.getPath('userData'), 'resident.sock');
+  try { fs.unlinkSync(socket); } catch {}
+  const server = netServer.createServer((connection) => {
+    let text = '';
+    connection.on('data', (data) => {
+      text += data;
+      let i;
+      while ((i = text.indexOf('\n')) >= 0) {
+        const line = text.slice(0, i);
+        text = text.slice(i + 1);
+        if (line === 'show') showWindow();
+        else if (line.startsWith('open ')) openFiles([line.slice(5)]);
+      }
+    });
+    connection.on('end', () => connection.end());
+    connection.on('error', () => {});
+  });
+  server.listen(socket);
+  app.on('will-quit', () => { server.close(); try { fs.unlinkSync(socket); } catch {} });
+}
+
+// the page is ready for files when it asks for them
+ipcMain.on('open-ready', () => {
+  pageReady = true;
+  if (pendingFiles.length) win.webContents.send('open', pendingFiles.splice(0));
+});
 
 app.whenReady().then(() => {
   protocol.handle('app', (request) => {
@@ -145,8 +217,20 @@ app.whenReady().then(() => {
     if (!file.startsWith(__dirname + path.sep)) return new Response('not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
+  if (resident) {
+    // one resident application: a second start shows it (and opens its files)
+    if (!app.requestSingleInstanceLock()) { app.quit(); return; }
+    app.on('second-instance', (event, argv) => {
+      openFiles(argvFiles(argv));
+      if (!argv.includes('--hidden')) showWindow();
+    });
+    serveClients();
+  }
+  openFiles(argvFiles(process.argv));
   createWindow();
-  app.on('activate', () => { if (!win) createWindow(); });
+  if (resident && !startHidden && !testModule) win.once('ready-to-show', () => win.show());
+  app.on('activate', () => showWindow());
 });
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => { quitting = true; });
+app.on('window-all-closed', () => { if (process.platform !== 'darwin' && !resident) app.quit(); });

@@ -74,11 +74,28 @@
 
 (defun exit-application (report)
   (when report (format *error-output* "~&~A~%" report))
+  ;; (a resident desktop application only hides its window when it closes)
+  (let ((desktop (ignore-errors (let ((d (js:global "desktop"))) (and (js:js-value-p d) d)))))
+    (when desktop (js:call desktop "call" "quit")))
   (js:funcall *show-exited* *container*))
+
+;;; Files that the desktop application is asked to open (its command line,
+;;; or contrib/lem/desktop/lem while it is resident)
+
+(defun open-files-of-desktop ()
+  (let ((desktop (ignore-errors (let ((d (js:global "desktop"))) (and (js:js-value-p d) d)))))
+    (when (and desktop (js:js-value-p (js:get desktop "onOpen")))
+      (js:call desktop "onOpen"
+               (lambda (file)
+                 (lem:send-event (lambda ()
+                                   (lem-core/commands/file:find-file file)
+                                   (lem:redraw-display)))
+                 nil)))))
 
 (defmethod lem-if:invoke ((implementation clysm) function)
   (start-screen)
-  (funcall function nil #'exit-application))
+  (funcall function nil #'exit-application)
+  (open-files-of-desktop))
 
 ;;; ---- colours
 

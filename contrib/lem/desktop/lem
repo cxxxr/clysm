@@ -1,0 +1,44 @@
+#!/bin/sh
+# lem — start Lem on Clysm (the desktop application), or, when it is already
+# running, show its window at once: the application stays resident (it only
+# hides its window when the window is closed, "resident" in package.json),
+# and this tells it what to do through its socket, as emacsclient does.
+#   lem [FILE...]       show Lem (and open the files)
+#   lem --daemon        start Lem with its window hidden, to show it later
+# C-x C-c in Lem ends it.
+dir=$(cd "$(dirname "$0")" && pwd)
+data=${CLYSM_USER_DATA:-${XDG_CONFIG_HOME:-$HOME/.config}/Lem}
+[ "$(uname)" = Darwin ] && data=${CLYSM_USER_DATA:-$HOME/Library/Application Support/Lem}
+socket=$data/resident.sock
+
+daemon=
+[ "$1" = --daemon ] && { daemon=1; shift; }
+
+# the lines for the application: "open FILE" for each file, then "show"
+lines() {
+  for f in "$@"; do
+    case $f in /*) ;; *) f=$PWD/$f ;; esac
+    printf 'open %s\n' "$f"
+  done
+  [ -n "$daemon" ] || printf 'show\n'
+}
+
+if [ -S "$socket" ]; then
+  if command -v nc > /dev/null 2>&1; then
+    lines "$@" | nc -U -N "$socket" 2> /dev/null || lines "$@" | nc -U "$socket" 2> /dev/null
+  else
+    lines "$@" | node -e "const s = require('net').connect(process.argv[1]);
+      process.stdin.pipe(s); s.on('error', () => process.exit(1))" "$socket"
+  fi && exit 0
+fi
+
+# not running: start it (in the background, its window shown when it is ready)
+cd "$dir" || exit 1
+electron=$dir/node_modules/electron/dist/electron
+[ "$(uname)" = Darwin ] && electron=$dir/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
+for f in "$@"; do
+  case $f in /*) ;; *) f=$OLDPWD/$f ;; esac
+  set -- "$@" "$f"
+  shift
+done
+nohup "$electron" . ${daemon:+--hidden} "$@" > /dev/null 2>&1 &
