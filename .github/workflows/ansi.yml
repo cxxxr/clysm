@@ -12,9 +12,10 @@ on:
 permissions:
   contents: read
 
-# a newer push to the same branch or pull request replaces the run
+# a newer push to a pull request replaces its run; on main every push runs
+# to its end, since a cancelled run makes the README's badge say "failing"
 concurrency:
-  group: ansi-${{ github.ref }}
+  group: ansi-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
