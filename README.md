@@ -217,7 +217,8 @@ program. The slow cases and their causes are in
 $ make test          # tests/cases/*.lisp, compared with SBCL's output
 $ make test-all      # also interpreted, compiled at run time, and self-hosted
 $ make fixpoint      # self-compilation reaches a fixed point
-$ make ansi          # the ANSI test suite (third_party/ansi-test submodule)
+$ make ansi          # the ANSI test suite (third_party/ansi-test submodule);
+                     # tests/ansi/check.sh judges the results, as GitHub Actions does
 $ make test-ui
 $ make test-lem      # Lem in Electron and in a browser page, without a display
 ```

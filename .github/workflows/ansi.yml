@@ -1,0 +1,51 @@
+# The ANSI test suite (third_party/ansi-test) on Clysm: tests/ansi/run.sh,
+# then tests/ansi/check.sh, which fails when a test fails that is not in
+# tests/ansi/expected-failures.txt.
+name: ANSI tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push to the same branch or pull request replaces the run
+concurrency:
+  group: ansi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ansi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - name: Build the image
+        run: make all
+      - name: Run the suite
+        # as many categories at a time as the runner has processors; a slow
+        # runner gets more time before a test counts as hung
+        run: ANSI_JOBS=$(nproc) ANSI_STALL=120 tests/ansi/run.sh
+      - name: Check the results
+        run: |
+          {
+            echo '```'
+            cat build/ansi/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tests/ansi/check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ansi-results
+          path: build/ansi
