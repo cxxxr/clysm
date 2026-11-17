@@ -851,7 +851,31 @@ Systems are compiled with `compile-file` and loaded into the running image.
 A fasl holds the compiled Wasm modules (consecutive ordinary forms share one
 module) with their constants, and the source forms as a fallback; the fasl
 directory under `~/.cache/common-lisp/` names the image build, so rebuilding
-Clysm recompiles systems. ASDF itself is compiled once per image build
+Clysm recompiles systems.
+
+Loading a fasl costs reading its constants and the engine's compilation of
+its modules; two things made it cost much more, and are avoided:
+
+* **A form whose constants could not be written** was kept as source and
+  compiled again at every `load`. Literal hash tables and specialized arrays
+  (CLHS 3.2.4.2.2 counts them as externalizable) are now written in fasls as
+  `#.(sys::%fasl-hash-table 'test '(key value ...))` and
+  `#.(sys::%fasl-array 'element-type 'dimensions '(element ...))`
+  (`runtime/print.lisp`; the printer writes them so only with fasl syntax,
+  which reads with `*read-eval*`). Babel has the tables of its single-octet
+  encodings in its code: loading it took a second.
+* **Very large functions.** Consecutive toplevel forms share a function, up
+  to 40 of them (`*toplevel-batch*`, `src/driver.lisp`), but also no more
+  than about 4000 conses of converted code (`*toplevel-max-weight*`): the
+  code of each form is in that function, with locals of its own, and V8's
+  baseline compiler takes time in the number of locals at every branch. The
+  thirty `define-dfa` tables of Inquisitor were one function of 400 KB with
+  11000 locals, which took 1.5 s to compile. A single form that large is
+  still one function (`contrib/fixups.lisp` splits Babel's
+  `instantiate-concrete-mappings` into one form per encoding); reusing the
+  locals of variables whose scope has ended would be the general remedy.
+
+Lem's systems (`contrib/lem/`) load in 2.9 s on Node.js instead of 6 s. ASDF itself is compiled once per image build
 (`~/.cache/common-lisp/clysm-asdf/`). `make test-asdf`
 loads a small multi-system example (`tests/asdf/`). There are no subprocesses,
 so `uiop:run-program` is not available.

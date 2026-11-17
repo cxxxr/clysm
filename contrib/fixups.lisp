@@ -27,6 +27,44 @@
   (pushnew :clim-without-swank *features*)
   (clysm-drop-dependencies s "swank"))
 
+;;; Babel: the concrete mappings of all its encodings are made by one form
+;;; (INSTANTIATE-CONCRETE-MAPPINGS), whose code (that of the function made
+;;; for the toplevel form: 300 KB, 7000 locals) the engine took most of a
+;;; second to compile at every load.  Made encoding by encoding, each
+;;; encoding's code is in a function of its own.
+(define-clysm-fixup "babel" (s)
+  (clysm-patch-component s '("src" "strings")
+    "(defparameter *string-vector-mappings*
+  (instantiate-concrete-mappings
+   ;; :optimize ((speed 3) (safety 0) (debug 0) (compilation-speed 0))
+   :octet-seq-setter ub-set
+   :octet-seq-getter ub-get
+   :octet-seq-type (simple-array (unsigned-byte 8) (*))
+   :code-point-seq-setter string-set
+   :code-point-seq-getter string-get
+   :code-point-seq-type simple-unicode-string))"
+    "(defparameter *string-vector-mappings* (make-hash-table :test 'eq))
+
+(macrolet ((instantiate-each ()
+             (let ((encodings '()))
+               (maphash (lambda (name mapping)
+                          (declare (ignore mapping))
+                          (push name encodings))
+                        babel-encodings::*abstract-mappings*)
+               `(progn
+                  ,@(loop for encoding in (reverse encodings)
+                          collect `(maphash (lambda (name mapping)
+                                              (setf (gethash name *string-vector-mappings*) mapping))
+                                            (instantiate-concrete-mappings
+                                             :encodings (,encoding)
+                                             :octet-seq-setter ub-set
+                                             :octet-seq-getter ub-get
+                                             :octet-seq-type (simple-array (unsigned-byte 8) (*))
+                                             :code-point-seq-setter string-set
+                                             :code-point-seq-getter string-get
+                                             :code-point-seq-type simple-unicode-string)))))))
+  (instantiate-each))"))
+
 ;;; McCLIM
 (define-clysm-fixup "clim-core/system" (s)
   (clysm-patch-component s '("utilities" "utilities")

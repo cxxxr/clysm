@@ -18,6 +18,7 @@
 (defvar *print-array* t)
 (defvar *print-gensym* t)
 (defvar *print-lines* nil)
+(defvar *fasl-syntax* nil "true while reading or writing a compiled file")
 (defvar *print-right-margin* nil)
 (defvar *print-miser-width* nil)
 (defvar *print-pprint-dispatch* nil)
@@ -907,10 +908,32 @@ string DIGITS; returns (values number-of-digits exponent negative-p) with
         ((bit-vector-p a)
          (write-string "#*" stream)
          (dotimes (i (length a)) (write-char (if (eql (bit a i) 1) #\1 #\0) stream)))
+        ((and *print-readably* (not (%array-readably-printable-p a))
+              *fasl-syntax* *read-eval* (typep a 'simple-array))
+         (%write-fasl-array a stream))
         ((and *print-readably* (not (%array-readably-printable-p a)))
          (%print-not-readable a))
         ((vectorp a) (%write-vector a stream))
         (t (%write-array a stream))))
+
+(defun %write-fasl-array (a stream)
+  "A simple array of a specialized element type (or with dimensions that
+#nA cannot read back) that is a literal object in a compiled file: read back
+by #., as hash tables are (%WRITE-FASL-HASH-TABLE)."
+  (write-string "#." stream)
+  (output-object (list '%fasl-array
+                       (list 'quote (array-element-type a))
+                       (list 'quote (array-dimensions a))
+                       (list 'quote (loop for i below (array-total-size a)
+                                          collect (row-major-aref a i))))
+                 stream))
+
+(defun %fasl-array (element-type dimensions contents)
+  "The simple array of ELEMENT-TYPE and DIMENSIONS with the elements of the
+list CONTENTS in row-major order (%WRITE-FASL-ARRAY)."
+  (let ((a (make-array dimensions :element-type element-type)))
+    (loop for x in contents for i from 0 do (setf (row-major-aref a i) x))
+    a))
 
 (defun %write-vector (v stream)
   (if (%print-level-exceeded-p)
@@ -982,9 +1005,31 @@ string DIGITS; returns (values number-of-digits exponent negative-p) with
       (funcall *print-object-hook* x stream)
       (%default-print-instance x stream)))
 
+(defun %write-fasl-hash-table (table stream)
+  "A hash table that is a literal object in a compiled file (CLHS 3.2.4.2.2:
+similar tables have the same test and similar keys and values): read back by
+#. (fasl syntax has *READ-EVAL*), so that the code using it is compiled with
+the file instead of being compiled again from its source at every LOAD (Babel
+has the tables of its single-octet encodings in its code)."
+  (let ((entries '()))
+    (maphash (lambda (k v) (push v entries) (push k entries)) table)
+    (write-string "#." stream)
+    (output-object (list '%fasl-hash-table (list 'quote (hash-table-test table))
+                         (list 'quote entries))
+                   stream)))
+
+(defun %fasl-hash-table (test entries)
+  "The hash table of TEST with the keys and values of the list ENTRIES (key
+value...): a hash table in a compiled file (%WRITE-FASL-HASH-TABLE)."
+  (let ((table (make-hash-table :test test :size (max 16 (floor (length entries) 2)))))
+    (loop for (k v) on entries by #'cddr do (setf (gethash k table) v))
+    table))
+
 (defun %default-print-instance (x stream)
   (let ((class (%instance-layout x)))
-    (cond ((hash-table-p x)
+    (cond ((and (hash-table-p x) *fasl-syntax* *print-readably* *read-eval*)
+           (%write-fasl-hash-table x stream))
+          ((hash-table-p x)
            (print-unreadable-object (x stream :type t :identity t)
              (format stream ":TEST ~S :COUNT ~D" (hash-table-test x) (hash-table-count x))))
           ((%streamp x) (print-unreadable-object (x stream :type t :identity t)))

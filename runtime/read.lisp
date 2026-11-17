@@ -10,7 +10,6 @@
 (defvar *read-base* 10)
 (defvar *read-eval* t)
 (defvar *read-suppress* nil)
-(defvar *fasl-syntax* nil "true while reading or writing a compiled file")
 
 (defstruct (readtable (:constructor %make-readtable) (:predicate readtablep) (:copier nil)
                       (:conc-name %rt-)

@@ -18,6 +18,7 @@
   `(let ((*toplevel-lams* nil)
          (*current-toplevel* nil)
          (*toplevel-nodes* nil)
+         (*toplevel-weight* 0)
          (*symbol-globals* nil)
          (*symbol-global-table* (make-hash-table :test 'eq))
          (*const-globals* nil)
@@ -52,7 +53,7 @@ Returns (values bytes constants-vector)."
         ;; keep the value of the last form
         (setf (lam-body *current-toplevel*) `(:progn (:const nil) ,@(reverse *toplevel-nodes*)))
         (push *current-toplevel* *toplevel-lams*)
-        (setf *current-toplevel* nil *toplevel-nodes* nil))
+        (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0))
       (build-live-module))))
 
 (defun build-live-module ()

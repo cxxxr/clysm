@@ -9,6 +9,10 @@
 (defvar *current-toplevel* nil)
 (defvar *toplevel-nodes* nil)
 (defparameter *toplevel-batch* 40)
+(defvar *toplevel-weight* 0
+  "The size of the nodes of the current toplevel function (see TOPLEVEL-WEIGHT).")
+(defparameter *toplevel-max-weight* 4000
+  "A toplevel function gets no more forms once its nodes have this many conses.")
 
 (defun reset-compiler ()
   (setf *check-declared-integers* nil)  ; until FINISH-RUNTIME
@@ -24,6 +28,7 @@
         *toplevel-lams* nil
         *current-toplevel* nil
         *toplevel-nodes* nil
+        *toplevel-weight* 0
         *symbol-globals* nil
         *symbol-global-table* (make-hash-table :test 'eq)
         *const-globals* nil
@@ -62,10 +67,32 @@
   (when *current-toplevel*
     (setf (lam-body *current-toplevel*) `(:progn ,@(reverse *toplevel-nodes*) (:const nil)))
     (push *current-toplevel* *toplevel-lams*)
-    (setf *current-toplevel* nil *toplevel-nodes* nil)))
+    (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0)))
+
+;;; Consecutive toplevel forms share a function, up to *TOPLEVEL-BATCH* of
+;;; them, or fewer when they are large: their code (not that of the
+;;; functions they define, which have functions of their own) is in that
+;;; function, with locals of its own for each.  A function of thirty
+;;; expansions of a macro that builds tables inline (Inquisitor's
+;;; DEFINE-DFA) had 400 KB of code and 11000 locals, and the engine took
+;;; 1.5 s to compile it (V8's baseline compiler takes time in the number of
+;;; locals at every branch).
+
+(defun toplevel-weight (node limit)
+  "The number of conses of NODE, counting up to LIMIT."
+  (let ((n 0) (stack (list node)))
+    (loop while (and stack (< n limit))
+          do (let ((x (pop stack)))
+               (loop while (and (consp x) (< n limit))
+                     do (incf n)
+                        (when (consp (car x)) (push (car x) stack))
+                        (setq x (cdr x)))))
+    n))
 
 (defun ensure-toplevel-lam ()
-  (when (and *current-toplevel* (>= (length *toplevel-nodes*) *toplevel-batch*))
+  (when (and *current-toplevel*
+             (or (>= (length *toplevel-nodes*) *toplevel-batch*)
+                 (>= *toplevel-weight* *toplevel-max-weight*)))
     (flush-toplevel))
   (unless *current-toplevel*
     (setf *current-toplevel* (make-lam :id (incf *lam-counter*) :name nil :toplevel t)))
@@ -75,6 +102,7 @@
   (let* ((lam (ensure-toplevel-lam))
          (*current-lam* lam)
          (node (convert form env)))
+    (incf *toplevel-weight* (toplevel-weight node *toplevel-max-weight*))
     (push node *toplevel-nodes*)))
 
 ;;; The definitions of a program are evaluated here for its macros to call,
