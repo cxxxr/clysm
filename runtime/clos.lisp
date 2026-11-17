@@ -130,7 +130,18 @@ it still waits where it waits.")
         (cond ((and (consp (car body)) (eq (caar body) 'declare)) (push (pop body) decls))
               ((and doc-allowed (stringp (car body)) (cdr body) (null doc)) (setq doc (pop body)))
               (t (return))))
-      (values (nreverse decls) doc body))))
+      (values (nreverse decls) doc body)))
+
+  (defun %safety-3-p (decls)
+    "True when the DECLARE forms DECLS declare (OPTIMIZE (SAFETY 3))."
+    (let ((safety nil))
+      (dolist (d decls)
+        (dolist (spec (cdr d))
+          (when (and (consp spec) (eq (car spec) 'optimize))
+            (dolist (q (cdr spec))
+              (cond ((eq q 'safety) (setq safety 3))
+                    ((and (consp q) (eq (car q) 'safety)) (setq safety (cadr q))))))))
+      (eql safety 3))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
 (defun %check-gf-lambda-list (ll)
@@ -1290,6 +1301,9 @@ in the order of the option."
 
 (defun %call-next-method (args next cnm-args cell)
   (when cnm-args (%check-cnm-args cell args cnm-args))
+  (%call-next-method-unchecked args next cnm-args cell))
+
+(defun %call-next-method-unchecked (args next cnm-args cell)
   (if (null next)
       (%no-next-method cell (or cnm-args args))
       (funcall (car next) (or cnm-args args) (cdr next))))
@@ -1298,12 +1312,18 @@ in the order of the option."
   "CALL-NEXT-METHOD as a function in a method whose next method NEXT is a
 function of the arguments (or NIL)."
   (when cnm-args (%check-cnm-args cell args cnm-args))
+  (%call-next-method-fast-unchecked args next cnm-args cell))
+
+(defun %call-next-method-fast-unchecked (args next cnm-args cell)
   (if (null next)
       (%no-next-method cell (or cnm-args args))
       (apply (the function next) (or cnm-args args))))
 
 ;;; CLHS CALL-NEXT-METHOD: with arguments, the ordered set of applicable
-;;; methods must be the one of the original arguments.  It is when every
+;;; methods must be the one of the original arguments.  As in SBCL, this is
+;;; checked only in a method declared (OPTIMIZE (SAFETY 3)); in other methods
+;;; the arguments are passed on unchecked (an :AROUND method that unwraps an
+;;; argument, as Lem has, is not an error there).  The set is the same when every
 ;;; argument has the cache key (class or EQL specializer object) of the
 ;;; original one; otherwise the applicable methods of the two cache entries
 ;;; are compared.  CELL is (method . memo): the memo is #(cache old-keys
@@ -1331,17 +1351,7 @@ CALL-NEXT-METHOD in place of OLD, has the same cache key."
                                (unless (eq (svref memo i) (car a)) (return nil)))
                              (do ((i (+ nreq 1) (+ i 1)) (b new (cdr b))) ((null b) t)
                                (unless (eq (svref memo i) (car b)) (return nil)))))
-              (if (let ((old-methods (%gf-lookup info args nreq 1))
-                        (new-methods (%gf-lookup info cnm-args nreq 1)))
-                    (or (equal old-methods new-methods)
-                        ;; CLHS asks for the same applicable methods; like
-                        ;; SBCL, it is enough that the methods still to be
-                        ;; called are applicable (an :AROUND method that
-                        ;; unwraps an argument, as Lem does)
-                        (and (listp old-methods) (listp new-methods)
-                             (member method old-methods)
-                             (every (lambda (m) (member m new-methods))
-                                    (cdr (member method old-methods))))))
+              (if (equal (%gf-lookup info args nreq 1) (%gf-lookup info cnm-args nreq 1))
                   (setf (cdr cell) (apply #'vector (%gf-slot info +gf-cache+) (append old new)))
                   (error 'simple-error
                          :format-control "CALL-NEXT-METHOD: the arguments ~S change the set of applicable methods of ~S"
@@ -1424,7 +1434,9 @@ the keywords."
              ;; the parameters are bound from the argument list (no APPLY)
              `(lambda (,args ,next)
                 (declare (ignorable ,next))
-                (flet ((call-next-method (&rest cnm-args) (%call-next-method ,args ,next cnm-args ,cell))
+                (flet ((call-next-method (&rest cnm-args)
+                         (,(if (%safety-3-p decls) '%call-next-method '%call-next-method-unchecked)
+                          ,args ,next cnm-args ,cell))
                        (next-method-p () (not (null ,next))))
                   (let* ,bindings
                     (declare (ignorable ,@temps ,@req-vars))
@@ -1450,15 +1462,25 @@ of lists (so that binding them as local macros cannot change the meaning of
              (cond ((consp x) (unless (%only-operators-p x syms) (return nil)))
                    ((member x syms) (return nil)))))))
 
-  (defun %expand-fast-cnm (cnm-args vars next cell unspec)
+  (defun %expand-fast-cnm (cnm-args vars next cell unspec check)
     "The expansion of (CALL-NEXT-METHOD . CNM-ARGS) in a method whose required
 arguments are in VARS and whose next method (a function of the arguments, or
 NIL) is in NEXT.  UNSPEC holds the bits of the parameters that no method of
-the generic function specializes: any argument will do for them."
+the generic function specializes: any argument will do for them.  CHECK is
+true in a method declared (OPTIMIZE (SAFETY 3)): the arguments must then have
+the applicable methods of the original ones."
     (cond ((null cnm-args)
            `(if ,next
                 (funcall (the function ,next) ,@vars)
                 (%no-next-method ,cell (list ,@vars))))
+          ((not check)
+           (if (= (length cnm-args) (length vars))
+               (let ((new (mapcar (lambda (v) (declare (ignore v)) (gensym "ARG")) vars)))
+                 `(let ,(mapcar #'list new cnm-args)
+                    (if ,next
+                        (funcall (the function ,next) ,@new)
+                        (%no-next-method ,cell (list ,@new)))))
+               `(%call-next-method-fast-unchecked (list ,@vars) ,next (list ,@cnm-args) ,cell)))
           ((= (length cnm-args) (length vars))
            (let ((new (mapcar (lambda (v) (declare (ignore v)) (gensym "ARG")) vars)) (i -1))
              `(let ,(mapcar #'list new cnm-args)
@@ -1479,7 +1501,7 @@ arguments of a method with the required parameters PLAIN-LL whose BODY uses
 CALL-NEXT-METHOD or NEXT-METHOD-P."
     (multiple-value-bind (decls doc forms) (%parse-body body t)
       (declare (ignore doc))
-      (let* ((next (gensym "NEXT")) (unspec (gensym "UNSPEC"))
+      (let* ((next (gensym "NEXT")) (unspec (gensym "UNSPEC")) (check (%safety-3-p decls))
              (vars (mapcar (lambda (v) (declare (ignore v)) (gensym "A")) plain-ll))
              (inner `(let ,(mapcar #'list plain-ll vars)
                        ,@decls
@@ -1490,11 +1512,12 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
            (lambda ,vars
              ,(if (%only-operators-p (cons 'progn body) '(call-next-method next-method-p))
                   `(macrolet ((call-next-method (&rest cnm-args)
-                                (%expand-fast-cnm cnm-args ',vars ',next ',cell ',unspec))
+                                (%expand-fast-cnm cnm-args ',vars ',next ',cell ',unspec ',check))
                               (next-method-p () '(not (null ,next))))
                      ,inner)
                   `(flet ((call-next-method (&rest cnm-args)
-                            (%call-next-method-fast (list ,@vars) ,next cnm-args ,cell))
+                            (,(if check '%call-next-method-fast '%call-next-method-fast-unchecked)
+                             (list ,@vars) ,next cnm-args ,cell))
                           (next-method-p () (not (null ,next))))
                      ,inner))))))))
 
