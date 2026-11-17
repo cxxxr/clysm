@@ -1,0 +1,55 @@
+# The tests of `make test-all`, each way of running tests/cases at the same
+# time, and tools/check-defs.py (no function of the runtime defined twice).
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push to a pull request replaces its run; on main every push runs
+# to its end, since a cancelled run makes a badge say "failing"
+concurrency:
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: compiled
+            run: make test
+          - name: interpreted
+            run: INTERP=1 tools/run-tests.sh
+          - name: compiled at run time
+            run: NATIVE=1 tools/run-tests.sh
+          - name: self-hosted
+            run: make selfhost && SELFHOST=1 tools/run-tests.sh
+          - name: library, ASDF, definitions
+            run: tools/check-defs.py && make test-lib test-asdf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - name: Run
+        run: ${{ matrix.run }}
+      - name: Show the differences
+        if: failure()
+        run: |
+          for f in build/tests/*.out; do
+            [ -f "$f" ] || continue
+            n=${f%.out}
+            cmp -s "$n.exp" "$f" || { echo "== $(basename "$n")"; diff "$n.exp" "$f" | head -20; tail -5 "$n.err" 2>/dev/null; }
+          done
