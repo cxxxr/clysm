@@ -19,7 +19,8 @@ server. It needs Chrome or Edge 137 or later and is about 15 MB.
 ## State
 
 * 21939 of the 21940 tests of the
-  [ANSI test suite](https://gitlab.common-lisp.net/ansi-test/ansi-test) pass.
+  [ANSI test suite](https://gitlab.common-lisp.net/ansi-test/ansi-test) pass;
+  GitHub Actions runs the suite on every push and pull request.
 * CLOS with the metaobject protocol, the condition system, `loop`, `format`
   and the pretty printer are implemented, as are Gray streams and
   package-local nicknames.
@@ -27,21 +28,26 @@ server. It needs Chrome or Edge 137 or later and is about 15 MB.
   changes. McCLIM runs with its CLX backend.
   [Lem](https://github.com/lem-project/lem) runs as a desktop application and
   in a browser page (`contrib/lem/`).
+* Threads (green threads) with Bordeaux Threads, sockets and subprocesses
+  work on Node.js. SLIME connects to a SWANK server.
 * The compiler compiles itself; the second and third generations are
   identical.
 
 ## Usage
 
-Requires SBCL (the cross compiler runs on it) and Node.js 22 or later.
+Requires SBCL (the cross compiler runs on it) and Node.js 22 or later;
+`js:await`, threads and the npm package need Node.js 24.
 
 ```
 $ bin/clysm repl                          # the REPL image is built on first use
 $ bin/clysm run tests/hello.lisp          # compile with the runtime and run on Node.js
 $ bin/clysm compile prog.lisp -o prog.wasm
+$ bin/clysm exec prog.wasm                # run a compiled module
 $ bin/clysm script file.lisp              # LOAD a file in the REPL image
+$ bin/clysm eval '(expt 2 100)'           # evaluate a form in the REPL image
 $ bin/clysm test --system my-tests t/*.lisp   # test programs, in parallel (--watch)
 $ make web                                # the REPL in a browser page, in build/web/
-$ make npm                                # an npm package that needs only Node.js
+$ make npm                                # an npm package that needs only Node.js (no SBCL)
 ```
 
 Libraries are loaded from an existing Quicklisp installation:
@@ -204,13 +210,18 @@ program. The slow cases and their causes are in
 
 | Path | Contents |
 |---|---|
+| `bin/` | the `clysm` command (`clysm.mjs`: the one of the npm package) |
 | `src/` | the compiler |
 | `runtime/` | the Common Lisp library, compiled by Clysm |
+| `lib/` | the toplevels of the REPL images (Node.js, the browser) |
 | `ui/` | the GUI framework |
 | `host/` | the Node.js and browser hosts |
 | `contrib/` | portability libraries, patches for Quicklisp systems, Lem |
 | `examples/` | applications written with the GUI framework |
 | `tests/`, `bench/` | tests and benchmarks |
+| `tools/` | scripts that build, test, measure and profile |
+| `third_party/` | ASDF, the ANSI test suite (a submodule) |
+| `data/` | the names of the Unicode characters |
 | `docs/` | the implementation, the design, the GUI manual |
 
 ## Tests
@@ -221,6 +232,17 @@ $ make test-all      # also interpreted, compiled at run time, and self-hosted
 $ make fixpoint      # self-compilation reaches a fixed point
 $ make ansi          # the ANSI test suite (third_party/ansi-test submodule);
                      # tests/ansi/check.sh judges the results, as GitHub Actions does
-$ make test-ui
+$ make test-asdf     # a small system loaded with the bundled ASDF
+$ make test-lib      # a library compiled for JavaScript, called from JavaScript
+$ make test-system   # bin/clysm test with an ASDF system and its dependencies
+$ make test-threads  # green threads and Bordeaux Threads
+$ make test-swank    # the SWANK server and a client
+$ make test-mcclim   # McCLIM on a virtual X server
+$ make test-quicklisp   # installs Quicklisp from scratch (downloads) and loads libraries
+$ make test-downstream  # the programs of tests/downstream/projects.txt, with this Clysm
+$ make test-ui       # the GUI framework and the examples of its guide
 $ make test-lem      # Lem in Electron and in a browser page, without a display
 ```
+
+`test-system`, `test-threads`, `test-swank` and `test-mcclim` take their
+libraries from an existing Quicklisp installation.
