@@ -1204,9 +1204,19 @@ What is not as fast as intended, and why:
   1.3, but `b-special` (2.7), `b-call` (1.9), `b-struct` (1.35) and `b-catch`
   (1.3) are not. A call of a function with `&key` or `&rest` parameters
   defined in another form goes through the function cell and a comparison of
-  the layout; `b-special` runs at 1.6 times the whole-program speed once the
-  form that defines it has returned but at 2.7 while that form is still
-  running (it also runs the benchmark), which is not understood yet.
+  the layout. `b-special` (a `let` of a special variable around a call of
+  `use-sp`, a function of the form before) runs either at about 1.6 times
+  the whole-program speed or at about 2.8, and stays at one of the two for
+  hundreds of milliseconds; it is at 2.8 more often in the form right after
+  the definition of `use-sp`, as in `bench/suite.lisp`, but a run of the
+  same file can be at 1.6. Not understood yet; ruled out (2026-11): the code
+  differs (it is the same function object, compiled to the same octets), the
+  guarded copy of `use-sp` is not taken (no `USE-SP` frame in a profile with
+  `--liftoff-only`), the engine's tiers (the two speeds stay with
+  `--liftoff-only` and with `--no-liftoff`), incremental marking (without it
+  the slow run moves to another form), the instantiation of the module (its
+  `run` is called after it). With `(declaim (notinline use-sp))` it is
+  always at the slower speed.
 * **Libraries** are within 3 but close to it (`l-babel` 2.9, `l-ppcre-replace`
   2.9, `l-split-sequence` 2.8): they are compiled to fasls file by file, where
   calls between global functions are ordinary calls and small functions are
