@@ -194,7 +194,7 @@ that may not be done twice.")
   (when (consp d)
     (case (car d)
       (special (dolist (s (cdr d)) (setf (gethash s *specials*) t)))
-      (notinline (dolist (s (cdr d)) (setf (gethash s *notinline*) t)))
+      (notinline (dolist (s (cdr d)) (setf (gethash (notinline-name s) *notinline*) t)))
       (inline (dolist (s (cdr d)) (remhash s *notinline*) (setf (gethash s *declared-inline*) t))))))
 
 (defun clysm-sys::%compile-time-special (sym) (setf (gethash sym *specials*) t))

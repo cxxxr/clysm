@@ -46,9 +46,14 @@
   (setf (get sym 'clysm-sys::%symbol-macro) (list expansion))
   sym)
 
+;;; (a compiler macro of (SETF NAME) is that of the symbol calls of the
+;;; function (SETF NAME) become)
+(defun compiler-macro-key (name)
+  (if (and (consp name) (eq (car name) 'setf)) (setf-function-symbol (second name)) name))
+
 #-clysm
 (defmacro clysm-sys::%host-define-compiler-macro (name ll &body body)
-  `(setf (gethash ',name *compiler-macros*)
+  `(setf (gethash ',(compiler-macro-key name) *compiler-macros*)
          (host-compile ',(make-host-macro-expander name ll body))))
 
 
@@ -114,7 +119,7 @@
         (lambda (form env)
           (declare (ignore env))
           (destructuring-bind (name ll &rest body) (cdr form)
-            `(setf (gethash ',name *compiler-macros*)
+            `(setf (gethash ',(compiler-macro-key name) *compiler-macros*)
                    (host-compile ',(make-host-macro-expander name ll body))))))
   (setf (macro-function 'clysm-sys::%host-inline-struct-accessor)
         (lambda (form env)

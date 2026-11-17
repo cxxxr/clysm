@@ -250,9 +250,15 @@ The check is left out by the compiler where the type of FORM shows it holds."
                (clysm-sys::%type-error ,v ',spec))))))
 
 (defvar *local-notinline* nil "function names declared NOTINLINE in the forms being converted")
+(defun notinline-name (name)
+  "The name under which a call of the function NAME is looked up: a call of
+\(SETF X) is one of the symbol SETF-FUNCTION-SYMBOL gives."
+  (if (and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (second name)))
+      (setf-function-symbol (second name))
+      name))
 (defun declared-notinline (decls)
   (loop for d in decls
-        when (and (consp d) (eq (car d) 'notinline)) append (cdr d)))
+        when (and (consp d) (eq (car d) 'notinline)) append (mapcar #'notinline-name (cdr d))))
 (defmacro with-notinline-decls ((decls) &body body)
   `(let ((*local-notinline* (let ((n (declared-notinline ,decls)))
                               (if n (append n *local-notinline*) *local-notinline*))))
