@@ -47,6 +47,9 @@ sed -e "s#@CLYSM_ROOT@#$root#" -e "s#@APP_DIR@#$root/$out#" contrib/lem/desktop/
 sed "s#'../common.mjs'#'./common.mjs'#" host/web/clysm.mjs > $out/clysm.mjs
 cp host/common.mjs host/jsffi.mjs contrib/lem/lem.css contrib/lem/desktop/boot.lisp contrib/lem/desktop/package.json contrib/lem/desktop/lem \
    ui/electron/main.js ui/electron/preload.js $out/
+# worlds (contrib/world/): images in workers that the Lisp mode connects to
+cp contrib/world/worker.js $out/world-worker.js
+cp contrib/world/boot.lisp $out/world-boot.lisp
 if [ -n "$LEM_NO_ELECTRON" ]; then echo "built $out (without Electron)"; exit 0; fi
 [ -d $out/node_modules/electron ] || (cd $out && npm install --no-audit --no-fund)
 # (npm may have left the download of Electron itself to its first start)

@@ -107,6 +107,14 @@ interrupts a computation (the debugger) and long ones take turns with the
 editor. In a browser the page has the sources of Lem, micros, this frontend
 and Clysm's runtime, so that `M-.` opens them.
 
+**Worlds** (`src/world.lisp`, [`contrib/world/`](../world/README.md)). `M-x
+world-start` starts another image in a worker, with a micros server of its
+own, and connects the Lisp mode to it: the REPL, `C-M-x` and the rest then
+work there, the editor goes on while a computation loops, and `M-x
+world-kill` ends the world whatever it does (the Lisp mode is then back in
+the editor's image). A world starts in about a second and a half. In the
+desktop application only.
+
 **Extensions** (`src/extensions.lisp`). Lem's language modes (C, CSS, Go,
 HTML, JavaScript, JSON, Makefile, Markdown, shell, Python, Rust, SQL, TOML,
 TypeScript, XML, YAML), vi-mode and the base16 color themes (about 190) are

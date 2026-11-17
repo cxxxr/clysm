@@ -1,13 +1,10 @@
-;;;; micros.lisp — micros, the server of Lem's Lisp mode, in Lem's own image
+;;;; sockets.lisp — the sockets of micros (Lem's SWANK) in a page or a worker
 ;;;;
-;;;; Lem's Lisp mode completes symbols, shows arguments, finds definitions,
-;;;; inspects, debugs and runs its REPL by asking micros (Lem's SWANK) over
-;;;; a socket.  By default it starts a micros server in its own image and
-;;;; connects to it (self-connect), as here.  The image has no sockets in a
-;;;; page: micros listens and accepts with the sockets of stubs/usocket/,
-;;;; which connect within the image (pipes), and its threads, like Lem's,
-;;;; are Clysm's green threads.  micros's backend for Clysm is
-;;;; contrib/micros/clysm.lisp.
+;;;; An image in a page or in a worker has no sockets: micros listens and
+;;;; accepts with the sockets of contrib/lem/stubs/usocket/, which connect
+;;;; within the image (pipes) or to another image through the messages of a
+;;;; worker (world.lisp), and its threads are Clysm's green threads.
+;;;; micros's backend for Clysm is contrib/micros/clysm.lisp.
 
 (in-package :micros/backend)
 
@@ -41,8 +38,8 @@
     (when timeout (return nil))
     (sleep 0.05)))
 
-;;; micros's threads see the global values of the image, whose package is
-;;; that of the UI framework: Lem's Lisp starts in CL-USER.
+;;; micros's threads see the global values of the image, whose package may
+;;; be that of the UI framework: the Lisp mode starts in CL-USER.
 (pushnew (cons '*package* (find-package "COMMON-LISP-USER"))
          micros::*default-worker-thread-bindings*
          :key #'car)

@@ -136,7 +136,9 @@ REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
 `contrib/lem/` loads Lem's core with ASDF and gives it a frontend written
 with the GUI framework. Lem's editor thread becomes a computation that waits
 for events with `js:await`. Lisp buffers are evaluated in the editor's own
-image (`C-M-x`, `M-x lisp-repl`).
+image (`C-M-x`, `M-x lisp-repl`), or, after `M-x world-start`, in a world:
+another image in a worker ([contrib/world/](contrib/world/README.md)), which
+can loop or be killed without the editor.
 
 ```
 $ contrib/lem/build.sh                    # desktop application in build/lem-desktop/
@@ -218,7 +220,7 @@ program. The slow cases and their causes are in
 | `lib/` | the toplevels of the REPL images (Node.js, the browser) |
 | `ui/` | the GUI framework |
 | `host/` | the Node.js and browser hosts |
-| `contrib/` | portability libraries, patches for Quicklisp systems, Lem |
+| `contrib/` | portability libraries, patches for Quicklisp systems, Lem, worlds |
 | `examples/` | applications written with the GUI framework |
 | `tests/`, `bench/` | tests and benchmarks |
 | `tools/` | scripts that build, test, measure and profile |

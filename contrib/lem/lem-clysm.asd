@@ -7,7 +7,7 @@
 (defsystem "lem-clysm"
   :description "Lem with a frontend written with Clysm's UI framework"
   :licence "MIT"
-  :depends-on ("lem/core" "lem-lisp-mode" "lem-paredit-mode" "micros" "usocket")
+  :depends-on ("lem/core" "lem-lisp-mode" "lem-paredit-mode" "micros" "usocket" "clysm-world")
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -17,5 +17,5 @@
                (:file "input")
                (:file "frontend")
                (:file "browser")
-               (:file "micros")
+               (:file "world")
                (:file "extensions")))

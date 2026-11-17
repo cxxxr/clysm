@@ -9,7 +9,8 @@
 //   "window": { "width": 640, "height": 720, "minWidth": 380, "minHeight": 400,
 //               "backgroundColor": { "light": "#ffffff", "dark": "#151618" } }
 // With "node": true, the page can use Node.js (require, process): a Lisp
-// program that has the files of the computer (host/web/clysm.mjs with fs).
+// program that has the files of the computer (host/web/clysm.mjs with fs),
+// as have its workers.
 // "jsFlags" are flags of the JavaScript engine (e.g. a larger stack).
 // With "resident": true the application stays: closing its window hides it,
 // and a client (bin/client of the application, e.g. contrib/lem/desktop/lem)
@@ -159,7 +160,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       // (a hidden resident application keeps running its timers)
       backgroundThrottling: !resident,
-      ...(options.node ? { nodeIntegration: true, contextIsolation: false, sandbox: false } : {}),
+      ...(options.node ? { nodeIntegration: true, nodeIntegrationInWorker: true, contextIsolation: false, sandbox: false } : {}),
       ...(testModule ? { offscreen: true } : {}),
     },
   });

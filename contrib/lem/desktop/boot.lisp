@@ -6,6 +6,8 @@
 (load (merge-pathnames "config.lisp" *load-truename*))
 (let ((*compile-verbose* nil) (*load-verbose* nil))
   (asdf:load-system "lem-clysm"))
+;; what a world loads (M-x world-start)
+(setf clysm-world:*boot-file* (namestring (merge-pathnames "world-boot.lisp" *load-truename*)))
 ;; files are found from the home directory
 (let ((home (user-homedir-pathname)))
   (uiop:chdir home)

@@ -12,11 +12,13 @@ trap 'rm -rf "$dir"' EXIT
 mkdir -p "$dir/home" "$dir/desktop-data" "$dir/web-data"
 electron=$root/build/lem-desktop/node_modules/electron/dist/electron
 status=0
+# each run ends with the line "lem: ok" or "lem (browser): ok"
+passed() { tee "$dir/out" | grep -E '^(ok|FAIL|lem)'; grep -qE '^lem[^:]*: ok$' "$dir/out"; }
 (cd build/lem-desktop &&
    LEM_HOME="$dir/home/" LEM_TEST_DIR="$dir" CLYSM_USER_DATA="$dir/desktop-data" \
    CLYSM_ELECTRON_TEST="$root/tests/lem/drive.js" \
-   timeout 180 "$electron" . --ozone-platform=headless 2>&1) | grep -E '^(ok|FAIL|lem)' || status=1
+   timeout 180 "$electron" . --ozone-platform=headless 2>&1) | passed || status=1
 LEM_WEB_PAGE="$root/build/lem-web/lem.html" CLYSM_USER_DATA="$dir/web-data" \
   CLYSM_ELECTRON_TEST="$root/tests/lem/drive.js" \
-  timeout 180 "$electron" tests/lem/web-shell.js --ozone-platform=headless 2>&1 | grep -E '^(ok|FAIL|lem)' || status=1
+  timeout 180 "$electron" tests/lem/web-shell.js --ozone-platform=headless 2>&1 | passed || status=1
 exit $status

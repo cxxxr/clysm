@@ -6,12 +6,18 @@
 ;;;; and a connection to it is a pair of pipes: what one end writes, the
 ;;;; other reads.  A reader waits (with Clysm's green threads) until
 ;;;; something is written or the other end is closed.  micros's server
-;;;; makes its sockets with these too (src/micros.lisp).
+;;;; makes its sockets with these too (contrib/world/sockets.lisp).
+;;;;
+;;;; A connection can also lead out of the image, to a Lisp in a worker
+;;;; (contrib/world/): then the pipe that this end writes hands its octets
+;;;; to a function instead of keeping them (MAKE-REMOTE-END), and the name
+;;;; of a host says who makes such connections (REGISTER-HOST).
 
 (defpackage :usocket
   (:use :cl)
   (:export #:socket-listen #:socket-accept #:socket-connect #:socket-close #:socket-stream
            #:socket-shutdown #:wait-for-input #:get-local-port
+           #:register-host #:unregister-host #:make-remote-end #:offer-connection
            #:usocket #:stream-usocket #:stream-server-usocket #:socket
            #:socket-error #:address-in-use-error #:connection-refused-error))
 (in-package :usocket)
@@ -35,6 +41,10 @@
   (buffer (make-array 4096 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
   (start 0)
   (closed nil)
+  ;; of a pipe that leads out of the image: the function of OCTETS, START
+  ;; and END that takes what is written, and the one called when it is closed
+  (sink nil)
+  (on-close nil)
   (mutex (sys::make-mutex :name "pipe"))
   (waitqueue (sys::make-waitqueue :name "pipe")))
 
@@ -45,6 +55,9 @@
   (sys::with-mutex ((pipe-mutex pipe) :recursive t)
     (when (pipe-closed pipe)
       (error 'socket-error :operation 'write))
+    (when (pipe-sink pipe)
+      (funcall (pipe-sink pipe) octets start end)
+      (return-from pipe-write nil))
     (let ((buffer (pipe-buffer pipe)))
       ;; the octets read are dropped when the buffer is read to its end
       (when (= (pipe-start pipe) (fill-pointer buffer))
@@ -55,7 +68,10 @@
 
 (defun pipe-close (pipe)
   (sys::with-mutex ((pipe-mutex pipe) :recursive t)
-    (setf (pipe-closed pipe) t)
+    (unless (pipe-closed pipe)
+      (setf (pipe-closed pipe) t)
+      (when (pipe-on-close pipe)
+        (funcall (pipe-on-close pipe))))
     (sys::condition-broadcast (pipe-waitqueue pipe))))
 
 (defun pipe-wait (pipe timeout)
@@ -166,8 +182,52 @@ the index after the last one read (START at end of file)."
         (return (pop (server-pending server))))
       (sys::condition-wait (server-waitqueue server) (server-mutex server)))))
 
+(defvar *hosts* (make-hash-table :test 'equal)
+  "name of a host outside the image -> the function of a port that connects to it")
+
+(defun register-host (name connector)
+  "SOCKET-CONNECT to the host NAME calls CONNECTOR with the port; it returns
+the socket (of MAKE-REMOTE-END)."
+  (setf (gethash name *hosts*) connector))
+
+(defun unregister-host (name)
+  (remhash name *hosts*))
+
+(defun make-remote-end (port send close)
+  "The socket of this end of a connection whose other end is outside the
+image.  What is written to it is given to SEND (a function of OCTETS, START
+and END), and CLOSE is called when it is closed here.  The second value is
+a function of a vector of octets that arrived from the other end, the third
+a function to call when the other end has closed."
+  (let ((in (make-pipe))
+        (out (make-pipe)))
+    (setf (pipe-sink out) send
+          (pipe-on-close out) close)
+    (values (make-instance 'stream-usocket
+                           :port port
+                           :stream (make-instance 'pipe-stream :in in :out out))
+            (lambda (octets) (pipe-write in octets 0 (length octets)))
+            (lambda ()
+              ;; (closed by the other end: CLOSE is not called)
+              (setf (pipe-on-close out) nil)
+              (pipe-close out)
+              (pipe-close in)))))
+
+(defun offer-connection (port socket)
+  "Give SOCKET (of MAKE-REMOTE-END) to the server that listens on PORT, as
+the connection that its SOCKET-ACCEPT returns; false if there is none."
+  (let ((server (gethash port *servers*)))
+    (when server
+      (sys::with-mutex ((server-mutex server) :recursive t)
+        (setf (server-pending server) (append (server-pending server) (list socket)))
+        (sys::condition-broadcast (server-waitqueue server)))
+      t)))
+
 (defun socket-connect (host port &key element-type timeout nodelay protocol)
   (declare (ignore element-type timeout nodelay protocol))
+  (let ((connector (gethash host *hosts*)))
+    (when connector
+      (return-from socket-connect (funcall connector port))))
   (let ((server (gethash port *servers*)))
     (unless (and server (member host '("127.0.0.1" "localhost" :localhost) :test #'equal))
       (error 'connection-refused-error :operation 'socket-connect :port port))

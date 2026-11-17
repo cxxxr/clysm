@@ -10,6 +10,8 @@
 // DIRECTORY, LOAD, ASDF...), REQUIRE finds the modules of the Clysm
 // installation ROOT, and ARGS are the command line arguments.  In a page
 // without Node.js, `fs` can be the file system in memory of vfs.mjs.
+// BYTES can also be a compiled WebAssembly.Module; the module of the image
+// is globalThis.__clysm_module, which a page can give to a worker.
 import { makeImports, installSourceMap } from '../common.mjs';
 
 export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root, args = [] } = {}) {
@@ -62,7 +64,10 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
     is_tty() { return 0; },
     flush() {},
   };
-  const { module, instance } = await WebAssembly.instantiate(bytes, makeImports(state, platform));
+  const imports = makeImports(state, platform);
+  const module = bytes instanceof WebAssembly.Module ? bytes : await WebAssembly.compile(bytes);
+  const instance = await WebAssembly.instantiate(module, imports);
+  globalThis.__clysm_module = module;
   installSourceMap(state, module);
   state.instance = instance;
   instance.exports._start();

@@ -10,6 +10,8 @@
   (dolist (stub '("log4cl" "dexador" "usocket" "deploy" "lem-tree-sitter" "lem-process"))
     (pushnew (merge-pathnames (format nil "stubs/~A/" stub) here) *central-registry*
              :test #'equal))
+  ;; worlds (contrib/world/)
+  (pushnew (merge-pathnames "world/" (uiop:pathname-parent-directory-pathname here)) *central-registry* :test #'equal)
   (pushnew here *central-registry* :test #'equal))
 
 ;;; The extension manager installs packages with Quicklisp at run time; it

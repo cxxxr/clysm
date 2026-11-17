@@ -155,6 +155,48 @@ module.exports = (win, app) => {
       check('find definition', await until(async () => (await definition()) === '"echo.lisp"', 10000), await definition());
       await key(',', ['alt']); await sleep(300);
 
+      if (!web) {
+        // a world (contrib/world/): an image in a worker, which the Lisp mode
+        // connects to; the REPL then evaluates there
+        await command('world-start');
+        const world = () => lisp('(lem-clysm::current-world)');
+        check('world: started', await until(async () => (await world()).includes('world-1 ready'), 30000), await world());
+        console.log(`lem: a world started in ${await lisp('(clysm-world:world-seconds (lem-clysm::current-world))')} s`);
+        // (the REPL has printed its prompt after the last result)
+        const prompt = () => until(async () => (await repl()).endsWith('CL-USER> "'));
+        await until(async () => (await repl()).includes('changed connection (clysm'));
+        await prompt();
+        await type('(defun in-world (n) (* n 2))'); await key('Return');
+        await until(async () => (await repl()).includes('IN-WORLD'));
+        await prompt();
+        await type('(in-world 21)'); await key('Return');
+        check('world: the REPL evaluates in it', await until(async () => (await repl()).includes('\n42')), await repl());
+        await prompt();
+        check('world: not in the editor', (await lisp("(fboundp 'cl-user::in-world)")) === 'NIL');
+        // what it writes outside the REPL is in the buffer *worlds*
+        await type('(progn (sys::make-thread (lambda () (format t "from a thread~%"))) 7)'); await key('Return');
+        const worlds = () => lisp('(let ((b (lem:get-buffer "*worlds*"))) (and b (lem:buffer-text b)))');
+        check('world: its output', await until(async () => (await worlds()).includes('[world-1] from a thread')), await worlds());
+        await prompt();
+        // a computation that does not end leaves the editor as it is; C-c C-c
+        // interrupts it
+        await type('(loop)'); await key('Return'); await sleep(1000);
+        check('world: the editor runs while it loops', (await lisp('(+ 1 2)')) === '3');
+        await key('c', ['control']); await key('c', ['control']);
+        check('world: interrupt', await until(async () => (await sldb()).includes('sldb')), await sldb());
+        await key('q');
+        check('world: debugger left', await until(async () => !(await sldb()).includes('sldb')), await sldb());
+        // it is killed while it loops, and the Lisp mode is back in the editor
+        await prompt();
+        await type('(loop)'); await key('Return'); await sleep(500);
+        await command('world-kill');
+        check('world: killed', (await lisp('(clysm-world:worlds)')) === 'NIL' && (await world()) === 'NIL');
+        await until(async () => (await repl()).includes('changed connection (self'));
+        await prompt();
+        await type('(list (fact 4) (fboundp (quote in-world)))'); await key('Return');
+        check('world: the editor\'s image again', await until(async () => (await repl()).includes('(24 NIL)')), await repl());
+      }
+
       // Lem's extensions are loaded when first used (contrib/lem/src/extensions.lisp)
       const python = path.join(work, 'hello.py');
       await writeFile(python, 'def greet(name):\n    return "Hello, " + name  # a comment\n');
