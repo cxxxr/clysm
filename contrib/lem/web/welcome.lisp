@@ -17,8 +17,15 @@
 ;;; 1. Evaluate Lisp
 ;;;
 ;;; Put the cursor after a form and press C-x C-e, or anywhere in a
-;;; definition and press C-M-x.  Each form is compiled to a new
+;;; definition and press C-c C-c.  Each form is compiled to a new
 ;;; WebAssembly module, linked with the running image, and run.
+;;;
+;;; This is Lem's own Lisp mode, talking to micros (Lem's SWANK) in the
+;;; same image: TAB completes a symbol, the arguments of the function you
+;;; are calling are shown as you type, M-. goes to a definition (try it
+;;; on REDUCE or GETHASH to read Clysm's implementation, or on LEM:MESSAGE
+;;; for Lem's) and M-, comes back, C-c C-d d describes a symbol, C-c I
+;;; inspects an object, and an error opens the debugger (q leaves it).
 
 (defun fib (n)
   (if (< n 2)
@@ -26,6 +33,8 @@
       (+ (fib (- n 1)) (fib (- n 2)))))
 
 (time (fib 27))
+
+(car 5)                                 ; an error: the debugger
 
 (loop for i from 1 to 10 collect (expt 2 i))
 
@@ -53,8 +62,13 @@
       (loop while (lem:form-offset p 1) do (incf n)))
     (lem:message "~D top-level forms" n)))
 
-;;; M-x lisp-repl (or C-c C-z) opens a REPL of the same image, and M-:
-;;; evaluates a form read from the prompt.
+;;; C-c C-z (M-x start-lisp-repl) opens a REPL of the same image, and M-:
+;;; evaluates a form read from the prompt.  What you evaluate runs in a
+;;; thread of its own (a green thread of Clysm), so the editor goes on
+;;; meanwhile: evaluate this endless loop in the REPL, switch windows,
+;;; type, then press C-c C-c in the REPL to interrupt it.
+
+(loop for i from 0 sum i)
 
 ;;; ---------------------------------------------------------------------
 ;;; 3. More of Lem
@@ -78,5 +92,4 @@
 ;;; saves the buffer to your computer.
 ;;;
 ;;; What a page cannot do: run programs (shells, grep, git, language
-;;; servers) and reach the network.  A long computation stops the editor
-;;; until it ends.
+;;; servers, other Lisps) and reach the network.

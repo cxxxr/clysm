@@ -18,7 +18,9 @@ echo "(defvar cl-user::*lem-load-only* t) (load \"$root/$out/boot.lisp\")" > $ou
 echo "loading Lem to see which files it reads"
 CLYSM_TRACE_FILES=$out/trace.json node host/run.mjs $desktop/lem.wasm $out/trace.lisp > $out/trace.log 2>&1 ||
   { tail -20 $out/trace.log; exit 1; }
-node contrib/lem/web/pack.mjs $out/trace.json $out/files.pack.gz
+# with the sources of Lem, micros, this frontend and Clysm's runtime (M-.)
+node contrib/lem/web/pack.mjs $out/trace.json $out/files.pack.gz \
+  "${LEM_DIR:-build/lem-deps/lem}" build/lem-deps/micros contrib/lem contrib/micros TREE:runtime
 node contrib/lem/web/make-html.mjs "$root" $desktop/lem.wasm $out/files.pack.gz "$root/$out/boot.lisp" "$HOME" \
   "$(cat $out/load-count)" > $out/lem.html
 echo "built $out/lem.html ($(du -h $out/lem.html | cut -f1)) — open it in Chrome or Edge"

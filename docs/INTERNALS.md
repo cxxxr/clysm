@@ -909,7 +909,9 @@ dependencies cl-ppcre, cl-unicode, flexi-streams and cl-change-case).
 
 `(ql:quickload :swank)` loads SLIME's server from Quicklisp: a fixup of the
 system (`contrib/fixups.lisp`) adds Clysm to `swank-loader`'s lists and the
-backend `contrib/swank/clysm.lisp` to the system. `bin/clysm swank [--port
+backend `contrib/swank/clysm.lisp` to the system. micros, Lem's fork of
+SWANK, gets the same backend (`contrib/micros/clysm.lisp`); Lem on Clysm
+runs it in its own image (`contrib/lem/src/micros.lisp`). `bin/clysm swank [--port
 N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 * Sockets: the Node.js host listens and accepts (`sys::open-tcp-server`,

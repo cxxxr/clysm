@@ -60,7 +60,7 @@ module.exports = (win, app) => {
       const started = await until(async () => (await js("document.querySelectorAll('.lem-line').length")) > 0, 60000);
       if (web) {
         // the page starts with welcome.lisp; the test types into a new buffer
-        check('start', started && (await screen()).includes('welcome.lisp'));
+        check('start', started && await until(async () => (await screen()).includes('welcome.lisp'), 15000));
         work = JSON.parse(await lisp('(namestring (user-homedir-pathname))')) + 'lem-test';
         await key('x', ['control']); await key('b'); await sleep(200);
         await type('test'); await key('Return'); await sleep(200); await key('y'); await sleep(300);
@@ -128,10 +128,25 @@ module.exports = (win, app) => {
       const top = await lisp('(lem:line-number-at-point (lem:window-view-point (lem:current-window)))');
       check('wheel', Number(top) > 1, top);
 
-      await command('lisp-repl');
+      await command('start-lisp-repl');
       await type('(list (fact 5) (lisp-implementation-type))'); await key('Return');
       const repl = () => lisp('(lem:buffer-text (lem:get-buffer "*lisp-repl*"))');
       check('repl', await until(async () => (await repl()).includes('(120 \\"Clysm\\")')), await repl());
+
+      // Lem's Lisp mode asks micros, in the same image (contrib/lem/src/micros.lisp)
+      await type('(make-hash'); await key('Tab');
+      check('completion', await until(async () => (await repl()).includes('(make-hash-table')), await repl());
+      await type(')'); await key('Return');
+      check('completed form evaluated', await until(async () => (await repl()).includes('#<HASH-TABLE')));
+      await type('(car 5)'); await key('Return');
+      const sldb = () => lisp('(lem:buffer-name (lem:current-buffer))');
+      check('debugger', await until(async () => (await sldb()).includes('sldb')), await sldb());
+      await key('q'); await sleep(500);
+      check('debugger left', await until(async () => !(await sldb()).includes('sldb')), await sldb());
+      await type('lem:message'); await key('.', ['alt']);
+      const definition = () => lisp('(lem:buffer-name (lem:current-buffer))');
+      check('find definition', await until(async () => (await definition()) === '"echo.lisp"', 10000), await definition());
+      await key(',', ['alt']); await sleep(300);
 
       // Lem's extensions are loaded when first used (contrib/lem/src/extensions.lisp)
       const python = path.join(work, 'hello.py');

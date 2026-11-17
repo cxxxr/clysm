@@ -2,31 +2,22 @@
 ;;;;
 ;;;; Lem runs its editor in a thread of its own, which waits for events in
 ;;;; a queue that other threads (the input of the frontend, timers) fill.
-;;;; A page has one thread: here the editor is a computation started from
-;;;; the event loop (a function of JS:ASYNC-FUNCTION), and where it would
-;;;; wait for the queue it waits with JS:AWAIT for a promise that is
-;;;; resolved when an event is put into the queue, or when the time to wait
-;;;; is over.  Meanwhile the page runs: the listeners of the keyboard put
-;;;; the keys into the queue, the UI framework updates the screen.  Timers
-;;;; are JavaScript timers that put their functions into the queue.
+;;;; A page has one thread: Lem's threads (the editor, the one of the Lisp
+;;;; mode that waits for micros's messages) and micros's are Clysm's green
+;;;; threads, computations that take turns when they wait (with JavaScript
+;;;; Promise Integration).  Where the editor would wait for the queue it
+;;;; waits with JS:AWAIT for a promise that is resolved when an event is put
+;;;; into the queue, or when the time to wait is over.  Meanwhile the page
+;;;; runs: the listeners of the keyboard put the keys into the queue, the UI
+;;;; framework updates the screen.  Timers are JavaScript timers that put
+;;;; their functions into the queue.
 
 (in-package :lem-clysm)
-
-;;; Threads (Clysm's Bordeaux Threads) are computations started from the
-;;; event loop.  Lem makes one: the editor.
 
 (defvar *set-timeout* (js:global "setTimeout"))
 (defvar *clear-timeout* (js:global "clearTimeout"))
 (defvar *set-interval* (js:global "setInterval"))
 (defvar *clear-interval* (js:global "clearInterval"))
-
-(defun start-from-event-loop (function)
-  (js:funcall *set-timeout*
-              (js:async-function (lambda () (funcall function) nil))
-              0)
-  nil)
-
-(setf bt2:*thread-starter* #'start-from-event-loop)
 
 ;;; Waiting for an event
 

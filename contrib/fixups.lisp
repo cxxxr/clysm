@@ -131,6 +131,12 @@
 
 ;;; This overrides"))
 
+;;; micros (Lem's SWANK): the backend for Clysm (contrib/micros/clysm.lisp)
+(define-clysm-fixup "micros" (s)
+  (clysm-add-source-file s '("sbcl") "clysm"
+                         (merge-pathnames "micros/clysm.lisp" *clysm-contrib-directory*)
+                         :before "gray"))
+
 ;;; Trivia's optimizer declaration needs DEFINE-DECLARATION of CLtL2
 ;;; (trivial-cltl2), which Clysm does not have; it takes the global
 ;;; optimizer instead, as on the implementations without it.

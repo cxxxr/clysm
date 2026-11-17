@@ -1,6 +1,6 @@
 ;;;; prepare.lisp — compile Lem and its dependencies with the image of the
 ;;;; application (run by build.sh on Node.js):
-;;;;   node host/run.mjs IMAGE prepare.lisp LEM-DIR MAILBOX-DIR OUT-DIR
+;;;;   node host/run.mjs IMAGE prepare.lisp LEM-DIR MAILBOX-DIR MICROS-DIR OUT-DIR
 ;;;; Quicklisp downloads the libraries; the fasls go to the cache of ASDF,
 ;;;; where the application finds them.  OUT-DIR/config.lisp gets the
 ;;;; directories of all the systems, so that the application loads them with
@@ -9,13 +9,14 @@
 (require :asdf)
 (require :quicklisp)
 
-(destructuring-bind (lem-dir mailbox-dir out-dir) (cddr (uiop:raw-command-line-arguments))
+(destructuring-bind (lem-dir mailbox-dir micros-dir out-dir) (cddr (uiop:raw-command-line-arguments))
   (push (uiop:ensure-directory-pathname lem-dir) asdf:*central-registry*)
   ;; Lem's extensions (each in a directory of its own)
   (dolist (directory (uiop:subdirectories (merge-pathnames "extensions/"
                                                            (uiop:ensure-directory-pathname lem-dir))))
     (push directory asdf:*central-registry*))
   (push (uiop:ensure-directory-pathname mailbox-dir) asdf:*central-registry*)
+  (push (uiop:ensure-directory-pathname micros-dir) asdf:*central-registry*)
   (load (merge-pathnames "setup.lisp" *load-truename*))
   (ql:quickload "lem-clysm")
   ;; the extensions that the editor loads when they are first used

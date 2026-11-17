@@ -25,6 +25,8 @@ if [ -z "$LEM_DIR" ]; then
   LEM_DIR=$deps/lem
 fi
 clone https://github.com/lem-project/lem-mailbox.git $deps/lem-mailbox
+# micros (Lem's SWANK), the commit of Lem's qlfile.lock
+clone https://github.com/lem-project/micros.git $deps/micros 08c313476bf436d72bcd5cd8f4e494d9f9323d08
 
 # the image: the compiler (ASDF compiles and loads Lem) and the UI framework
 echo "building the image"
@@ -37,7 +39,7 @@ sbcl --script tools/build-repl.lisp $out/lem.wasm \
 # a few minutes)
 echo "compiling Lem"
 node host/run.mjs $out/lem.wasm contrib/lem/prepare.lisp \
-  "$(cd "$LEM_DIR" && pwd)" "$root/$deps/lem-mailbox" "$root/$out" > $out/prepare.log 2>&1 ||
+  "$(cd "$LEM_DIR" && pwd)" "$root/$deps/lem-mailbox" "$root/$deps/micros" "$root/$out" > $out/prepare.log 2>&1 ||
   { tail -20 $out/prepare.log; exit 1; }
 
 # the page and the shell

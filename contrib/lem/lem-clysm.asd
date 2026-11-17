@@ -7,7 +7,7 @@
 (defsystem "lem-clysm"
   :description "Lem with a frontend written with Clysm's UI framework"
   :licence "MIT"
-  :depends-on ("lem/core" "lem-lisp-syntax" "lem-paredit-mode")
+  :depends-on ("lem/core" "lem-lisp-mode" "lem-paredit-mode" "micros" "usocket")
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -17,9 +17,5 @@
                (:file "input")
                (:file "frontend")
                (:file "browser")
-               ;; the grammar of Lem's Lisp mode (the rest of that mode needs
-               ;; a Lisp process and native libraries)
-               (:file "grammar" :pathname #.(asdf:system-relative-pathname
-                                             "lem" "extensions/lisp-mode/grammar.lisp"))
-               (:file "lisp-mode")
+               (:file "micros")
                (:file "extensions")))

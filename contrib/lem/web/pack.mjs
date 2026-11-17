@@ -1,18 +1,29 @@
 // contrib/lem/web/pack.mjs — pack the files that loading Lem reads into
 // one gzip-compressed file for the page (the format is in host/web/vfs.mjs):
-//   node pack.mjs TRACE.json OUT.pack.gz
+//   node pack.mjs TRACE.json OUT.pack.gz [SOURCE-DIRECTORY...]
 // TRACE.json is what host/run.mjs wrote with CLYSM_TRACE_FILES: the files
 // read are packed with their contents, the other paths seen with their
 // names and times only (ASDF compares the times of sources and fasls).
+// Under the SOURCE-DIRECTORYs, the Lisp sources are packed with their
+// contents too, for M-. of the Lisp mode: those seen, and every one under
+// a directory given as TREE:DIRECTORY (Clysm's runtime, whose definitions
+// the image knows).
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import path from 'node:path';
 
-const [traceFile, out] = process.argv.slice(2);
+const [traceFile, out, ...sourceArgs] = process.argv.slice(2);
 const { read, seen } = JSON.parse(fs.readFileSync(traceFile, 'utf8'));
-const readSet = new Set(read);
+const sourceDirs = sourceArgs.filter((d) => !d.startsWith('TREE:')).map((d) => path.resolve(d) + '/');
+const trees = sourceArgs.filter((d) => d.startsWith('TREE:')).map((d) => path.resolve(d.slice(5)));
+const lispUnder = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? lispUnder(path.join(dir, e.name)) : e.name.endsWith('.lisp') ? [path.join(dir, e.name)] : []);
+const treeFiles = trees.flatMap(lispUnder);
+const readSet = new Set([...read, ...treeFiles,
+                         ...seen.filter((p) => p.endsWith('.lisp') && sourceDirs.some((d) => p.startsWith(d)))]);
 const header = [];
 const contents = [];
-for (const path of new Set([...read, ...seen])) {
+for (const path of new Set([...read, ...seen, ...treeFiles])) {
   if (!path.startsWith('/')) continue;
   let stat;
   try { stat = fs.statSync(path); } catch { continue; }

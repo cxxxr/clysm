@@ -13,7 +13,7 @@ $ make test-lem                            # types into it (and into the page be
 For a browser, without a server:
 
 ```
-$ contrib/lem/build-web.sh                 # build/lem-web/lem.html, one file of 19 MB
+$ contrib/lem/build-web.sh                 # build/lem-web/lem.html, one file of 22 MB
 ```
 
 Open `build/lem-web/lem.html` in Chrome or Edge 137 or later (it needs
@@ -22,7 +22,7 @@ from the disk or from any web server. See [In a browser](#in-a-browser).
 
 `build.sh` needs SBCL, Node.js, git, npm and Quicklisp (`~/quicklisp/`, or
 `QUICKLISP_HOME`). It clones Lem (the commit it was written for, or the
-checkout named by `LEM_DIR`) and lem-mailbox into `build/lem-deps/`, builds
+checkout named by `LEM_DIR`), lem-mailbox and micros into `build/lem-deps/`, builds
 the image, compiles Lem and its libraries with it (Quicklisp downloads what
 is missing; the first time this takes a few minutes), and installs Electron
 in `build/lem-desktop/`. Lem then starts in about five seconds.
@@ -38,12 +38,13 @@ gives the page Node.js when `package.json` says `"node": true`), and
 where the systems are into `config.lisp`.
 
 **One thread.** Lem runs its editor in a thread that waits for events in a
-queue, which the frontend's input thread and timer threads fill. A page has
-one thread (`src/single-thread.lisp`):
+queue, which the frontend's input thread and timer threads fill, and its
+Lisp mode has a thread that waits for micros's messages. A page has one
+thread (`src/single-thread.lisp`):
 
-* the editor is a computation started from the event loop (Clysm's
-  Bordeaux Threads, `contrib/bordeaux-threads/`, start a "thread" with
-  `bt2:*thread-starter*`, here a `js:async-function` called by `setTimeout`);
+* Lem's threads, and micros's, are Clysm's green threads
+  (`runtime/thread.lisp`): computations that take turns when they wait,
+  suspended by JavaScript Promise Integration;
 * where the editor waits for the queue, it waits with `js:await` for a
   promise that sending an event resolves (or a timeout);
 * meanwhile the page runs: the listeners of the keyboard send keys, the GUI
@@ -65,19 +66,20 @@ modifier or without a character come from `keydown`, characters from
 `input`, and a composed text from `compositionend`. The mouse clicks, drags
 and scrolls in cells.
 
-**Lisp** (`src/lisp-mode.lisp`). Lem's Lisp mode talks to another Lisp
-process through micros; here Lem runs in a Lisp, so the Lisp mode evaluates
-in that image, which compiles each form it evaluates to a WebAssembly module
-(as its REPL does). Highlighting
-and indentation are Lem's (`lem-lisp-syntax`, the grammar of `lem-lisp-mode`).
-
-| Key | Command |
-|---|---|
-| `C-M-x`, `C-c C-c` | evaluate the top-level form |
-| `C-x C-e`, `C-c C-e` | evaluate the form before the cursor |
-| `C-c C-r`, `C-c C-l` | evaluate the region, the buffer |
-| `M-:` | evaluate a form read from the prompt |
-| `C-c C-z`, `M-x lisp-repl` | a REPL of the image: what it evaluates changes the running editor |
+**Lisp** (`src/micros.lisp`). The Lisp mode is Lem's own: completion,
+argument lists as you type, `M-.`, describe, the inspector, the debugger,
+macroexpansion and the REPL are answers of micros (Lem's SWANK). Lem starts
+a micros server in its own image and connects to it (its self-connect);
+here, without sockets, the server listens and the Lisp mode connects with
+the sockets of `stubs/usocket/`, which connect within the image: a
+connection is two pipes, and a reader waits (a green thread) until the
+other end writes. micros's backend for Clysm is `contrib/micros/clysm.lisp`
+(from that of SWANK). What micros evaluates is compiled to WebAssembly, in
+a thread of its own: the editor goes on meanwhile, and code compiled once
+the connection is made checks for interrupts, so that `C-c C-c` in the REPL
+interrupts a computation (the debugger) and long ones take turns with the
+editor. In a browser the page has the sources of Lem, micros, this frontend
+and Clysm's runtime, so that `M-.` opens them.
 
 **Extensions** (`src/extensions.lisp`). Lem's language modes (C, CSS, Go,
 HTML, JavaScript, JSON, Makefile, Markdown, shell, Python, Rust, SQL, TOML,
@@ -88,8 +90,7 @@ that loads the mode's system with ASDF and then turns the mode on, a command
 of the mode's name does the same, and `load-theme` loads the themes first
 (also before Lem starts, when the theme saved last time is one of them).
 `setup.lisp` leaves out what they cannot have here: their language servers,
-tree-sitter (`stubs/lem-tree-sitter/`), the preview of Markdown, and Lem's own
-Lisp mode where they refer to it.
+tree-sitter (`stubs/lem-tree-sitter/`) and the preview of Markdown.
 
 ## In a browser
 
@@ -132,23 +133,24 @@ base64:
 Lem's core (`lem/core`), Paredit, the Lisp mode above and the extensions
 above are there; the others are not (those that run programs, the
 language server client, the terminal, legit...). Libraries that Clysm cannot provide are replaced by
-stubs (`stubs/`): micros (the parts Lem's core uses), log4cl (log messages go
-to the console of the page), dexador and usocket (no network client:
-the DeepL commands fail), deploy (only named by `lem.asd`).
+stubs (`stubs/`): log4cl (log messages go to the console of the page),
+dexador (no network client: the DeepL commands fail), usocket (sockets
+within the image, above), lem-process (no programs: `M-x slime` cannot
+start another Lisp), deploy (only named by `lem.asd`).
 `setup.lisp` drops lem-extension-manager, which installs packages at run time.
 
 * No subprocesses (`uiop:run-program`): `grep`, shells, language servers,
   `git` and `find` do not work.
 * Files are read and written as UTF-8. In a browser, the files are those of
   the pack and what was written in the home directory.
-* One thread: a long computation stops the editor until it ends, and `C-g`
-  cannot interrupt it.
+* A long computation of the editor itself (not of what the Lisp mode
+  evaluates) stops it until it ends.
 
 ## Files
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `lisp-mode`, `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js) |
 | `desktop/` | the page, `boot.lisp` and `package.json` of the application |
