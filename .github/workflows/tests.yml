@@ -36,11 +36,14 @@ jobs:
             run: make selfhost && SELFHOST=1 tools/run-tests.sh
           - name: library, ASDF, definitions
             run: tools/check-defs.py && make test-lib test-asdf
+          - name: compiled, Node.js 22
+            node: 22
+            run: make test-lib test-asdf; INTERP=1 tools/run-tests.sh; make test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node || 24 }}
       - uses: ./.github/actions/sbcl
       - name: Run
         run: ${{ matrix.run }}
