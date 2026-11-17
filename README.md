@@ -202,8 +202,9 @@ program. The slow cases and their causes are in
   until it waits. They need JavaScript Promise Integration. McCLIM runs in
   its single-process mode.
 * `short-float` and `long-float` are `single-float` and `double-float`.
-* Instances of a redefined class are updated only after
-  `(sys::track-instances)`.
+* Instances of a redefined class are updated for sure only after
+  `(sys::track-instances)`; otherwise when their slots are next accessed,
+  if the number of slots changed.
 * `js:await` needs JavaScript Promise Integration (Node.js 24; Chrome and
   Edge 137 or later).
 

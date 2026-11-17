@@ -252,10 +252,18 @@ grows when CLASS has more instance slots)."
 (defvar *class-finalization-hook* nil)
 
 ;;; Instances of redefined classes (CLHS 4.3.6).  An instance does not record
-;;; the layout of its slot vector, so obsolete instances cannot be detected
-;;; when they are accessed; instead, while instances are tracked (see
+;;; the layout of its slot vector.  While instances are tracked (see
 ;;; TRACK-INSTANCES in js.lisp) the living instances of a class whose slot
-;;; layout changes are updated when the class is redefined.
+;;; layout changes are updated when the class is redefined.  Otherwise an
+;;; instance is known to be obsolete only when its slot vector has not the
+;;; length of its class's: it is then updated when its slots are accessed,
+;;; from the layout the class had with that number of slots, when there was
+;;; one such layout (*OBSOLETE-SLOT-INDEXES*); an instance whose layout
+;;; cannot be told is an error.  (A layout with the same number of slots in
+;;; other places is not noticed.)  The accesses that use a slot location
+;;; known in advance (call sites of accessors, accessor functions, cached
+;;; SLOT-VALUE) test only that the location is within the slot vector, and
+;;; otherwise take the way that checks the instance.
 (defvar *track-instance-hook* nil "NIL, or a function called with the class and each new instance.")
 (defvar *live-instances-hook* nil "NIL, or a function that returns the tracked instances of a class.")
 
@@ -282,6 +290,37 @@ grows when CLASS has more instance slots)."
     (when (fboundp 'update-instance-for-redefined-class)
       (funcall 'update-instance-for-redefined-class instance added discarded plist))
     instance))
+
+(defvar *obsolete-slot-indexes* nil
+  "((class (slot-count . slot-index) ...) ...): the earlier layouts of redefined classes, newest first.")
+
+(defun %note-obsolete-layout (class size index)
+  (let ((e (assoc class *obsolete-slot-indexes*)))
+    (if e
+        (push (cons size index) (cdr e))
+        (push (list class (cons size index)) *obsolete-slot-indexes*))))
+
+(defun %ensure-current-instance (instance)
+  "Update INSTANCE if it is an obsolete instance of a redefined class (see above)."
+  (let ((class (%instance-layout instance)))
+    (when (%instancep class)
+      (let ((n (length (%instance-slots instance))))
+        (unless (eql n (%class-slot class +class-instance-size+))
+          (let ((layouts (cdr (assoc class *obsolete-slot-indexes*))) (found nil) (ambiguous nil))
+            (when layouts
+              (dolist (l layouts)
+                (when (eql (car l) n)
+                  (cond ((null found) (setq found (cdr l)))
+                        ((not (equal found (cdr l))) (setq ambiguous t)))))
+              (if (and found (not ambiguous))
+                  (%update-instance-layout instance found class)
+                  (error 'simple-error
+                         :format-control "~S is an instance of ~S made before the class was redefined, ~
+                                          whose slots are not known any more (instances made before a ~
+                                          redefinition are updated for sure while instances are tracked: ~
+                                          SYS::TRACK-INSTANCES)"
+                         :format-arguments (list instance (%class-name class))))))))))
+  instance)
 
 (defun %update-obsolete-instances (class old-index)
   (when (and *live-instances-hook* old-index
@@ -326,7 +365,10 @@ grows when CLASS has more instance slots)."
       (let ((index (mapcar (lambda (s) (cons (%slotd-name s) (%slotd-location s))) slots)))
         (if (and old-cpl (%same-slot-index-p index old-index))
             nil
-            (progn (when old-cpl (setq changed t))
+            (progn (when old-cpl
+                     (setq changed t)
+                     (when old-index
+                       (%note-obsolete-layout class (%class-slot class +class-instance-size+) old-index)))
                    (%set-class-slot class +class-slot-index+ index)))))
     (%set-class-slot class +class-instance-size+ (%instance-slot-count class))
     ;; a class with a forward-referenced superclass is not finalized (AMOP)
@@ -352,6 +394,7 @@ grows when CLASS has more instance slots)."
 ;;; ------------------------------------------------------------
 
 (defun %slot-location (instance name)
+  (%ensure-current-instance instance)
   (let ((e (assoc name (%class-slot (%instance-layout instance) +class-slot-index+))))
     (if e (cdr e) nil)))
 
@@ -395,6 +438,7 @@ grows when CLASS has more instance slots)."
         (%make-instance class v))))
 
 (defun %initialize-slots-from-initargs (instance initargs)
+  (%ensure-current-instance instance)
   (let ((class (%instance-layout instance)))
     (dolist (sd (%class-effective-slots class))
       (let ((loc (%slotd-location sd)) (found nil) (value nil))

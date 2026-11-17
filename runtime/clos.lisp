@@ -577,6 +577,22 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
          :format-control "~S: ~A"
          :format-arguments (list (%gf-slot info +gf-name+) (apply #'format nil control args))))
 
+;;; A slot location known in advance is used only for an instance with as
+;;; many slots as its class had then: else the instance is an obsolete
+;;; instance of a redefined class (see %ENSURE-CURRENT-INSTANCE), whose
+;;; slots are not at the class's locations.  The caches keep the location
+;;; and that number together in a fixnum, location + 65536 * count.
+(defmacro %slot-count-is-p (o n)
+  `(%fx= (%svlength (%instance-slots ,o)) ,n))
+(defun %slot-entry (loc count)
+  "LOC and COUNT in one fixnum, or NIL when they do not fit."
+  (and (fixnump loc) (fixnump count) (<= 0 loc 65535) (<= 0 count 16383)
+       (+ loc (* count 65536))))
+(defmacro %slot-entry-valid-p (o e)
+  `(%slot-count-is-p ,o (%fxash-right ,e 16)))
+(defmacro %slot-entry-location (e)
+  `(%fxlogand ,e 65535))
+
 (defmacro %fast-class-of (x)
   `(let ((x ,x))
      (cond ((%instancep x) (%instance-layout x))
@@ -1147,17 +1163,20 @@ the N arguments, or NIL when its operator is not a function."
                          (not (%class-slot class +class-protocol+))
                          (%class-slot class +class-slot-index+)))
              (loc (cdr (assoc (car acc) index)))
+             (count (and class (%class-slot class +class-instance-size+)))
              (mf (%method-function (car methods))))
         (when (fixnump loc)
           (if writerp
               (lambda (args)
                 (let ((o (cadr args)))
-                  (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index))
+                  (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index)
+                           (%slot-count-is-p o count))
                       (%set-instance-ref o loc (car args))
                       (funcall mf args nil))))
               (lambda (args)
                 (let ((o (car args)))
-                  (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index))
+                  (if (and (%instancep o) (eq (%class-slot (%instance-layout o) +class-slot-index+) index)
+                           (%slot-count-is-p o count))
                       (let ((v (%instance-ref o loc)))
                         (if (%unboundp v) (funcall mf args nil) v))
                       (funcall mf args nil))))))))))
@@ -1181,6 +1200,7 @@ the N arguments, or NIL when its operator is not a function."
                          (not (%class-slot class +class-protocol+))
                          (%class-slot class +class-slot-index+)))
              (loc (cdr (assoc (car acc) index)))
+             (count (and class (%class-slot class +class-instance-size+)))
              (mf (%method-function (car methods)))
              (nreq (%gf-slot info +gf-nreq+)))
         ;; the object is a direct instance of CLASS (the key of the cache
@@ -1188,16 +1208,18 @@ the N arguments, or NIL when its operator is not a function."
         (when (and (fixnump loc) (eql nreq (if writerp 2 1)))
           (if writerp
               (let ((writer (lambda (v o)
-                              (if (%instancep o) (%set-instance-ref o loc v) (funcall mf (list v o) nil)))))
-                (setf (gethash writer *writer-locations*) loc)
+                              (if (and (%instancep o) (%slot-count-is-p o count))
+                                  (%set-instance-ref o loc v)
+                                  (funcall mf (list v o) nil)))))
+                (let ((e (%slot-entry loc count))) (when e (setf (gethash writer *writer-locations*) e)))
                 writer)
               (let ((reader (lambda (o)
-                              (if (%instancep o)
+                              (if (and (%instancep o) (%slot-count-is-p o count))
                                   (let ((v (%instance-ref o loc)))
                                     (if (%unboundp v) (funcall mf (list o) nil) v))
                                   (funcall mf (list o) nil)))))
                 ;; (a call site caches the location instead of the function)
-                (setf (gethash reader *reader-locations*) loc)
+                (let ((e (%slot-entry loc count))) (when e (setf (gethash reader *reader-locations*) e)))
                 reader)))))))
 
 (defun %compute-emf (gf info methods args)
@@ -1676,17 +1698,16 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                      (let ((,k (%fast-class-of ,a)))
                        ;; the value of an entry: the function to call, or the
                        ;; location of the slot that a reader reads
-                       (flet ((hit (f)
-                                (if (fixnump f)
-                                    (let ((v (%instance-ref ,a f)))
-                                      (if (%unboundp v) (%gf-site-call1 ',c ,a) v))
-                                    (funcall (the function f) ,a))))
-                         (declare (inline hit))
-                         (cond ((eq (%svref ',c 1) ,k) (hit (%svref ',c 2)))
-                               ((eq (%svref ',c 3) ,k) (hit (%svref ',c 4)))
-                               ((eq (%svref ',c 5) ,k) (hit (%svref ',c 6)))
-                               ((eq (%svref ',c 7) ,k) (hit (%svref ',c 8)))
-                               (t (%gf-site-miss1 ',c ,a)))))
+                       (cond ,@(loop for i in '(1 3 5 7)
+                                     collect `((eq (%svref ',c ,i) ,k)
+                                               (let ((f (%svref ',c ,(+ i 1))))
+                                                 (if (fixnump f)
+                                                     (if (%slot-entry-valid-p ,a f)
+                                                         (let ((v (%instance-ref ,a (%slot-entry-location f))))
+                                                           (if (%unboundp v) (%gf-site-call1 ',c ,a) v))
+                                                         (%gf-site-call1 ',c ,a))
+                                                     (funcall (the function f) ,a)))))
+                             (t (%gf-site-miss1 ',c ,a))))
                      ;; a site that is not cached (-1): the usual call
                      (if (eq (%svref ',c 0) -1)
                          (locally (declare (notinline ,name)) (,name ,a))
@@ -1699,16 +1720,15 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                            (,kb (if (eq (%svref ',c 2) 0) 0 (%fast-class-of ,b))))
                        ;; the value of an entry: the function to call, or the
                        ;; location of the slot that a writer writes
-                       (flet ((hit (f)
-                                (if (fixnump f)
-                                    (progn (%set-instance-ref ,b f ,a) ,a)
-                                    (funcall (the function f) ,a ,b))))
-                         (declare (inline hit))
-                         (cond ((and (eq (%svref ',c 1) ,k) (eq (%svref ',c 2) ,kb)) (hit (%svref ',c 3)))
-                               ((and (eq (%svref ',c 4) ,k) (eq (%svref ',c 5) ,kb)) (hit (%svref ',c 6)))
-                               ((and (eq (%svref ',c 7) ,k) (eq (%svref ',c 8) ,kb)) (hit (%svref ',c 9)))
-                               ((and (eq (%svref ',c 10) ,k) (eq (%svref ',c 11) ,kb)) (hit (%svref ',c 12)))
-                               (t (%gf-site-miss2 ',c ,a ,b)))))
+                       (cond ,@(loop for i in '(1 4 7 10)
+                                     collect `((and (eq (%svref ',c ,i) ,k) (eq (%svref ',c ,(+ i 1)) ,kb))
+                                               (let ((f (%svref ',c ,(+ i 2))))
+                                                 (if (fixnump f)
+                                                     (if (%slot-entry-valid-p ,b f)
+                                                         (progn (%set-instance-ref ,b (%slot-entry-location f) ,a) ,a)
+                                                         (%gf-site-call2 ',c ,a ,b))
+                                                     (funcall (the function f) ,a ,b)))))
+                             (t (%gf-site-miss2 ',c ,a ,b))))
                      (if (eq (%svref ',c 0) -1)
                          ,(if (symbolp name)
                               `(locally (declare (notinline ,name)) (,name ,a ,b))
@@ -2316,12 +2336,13 @@ access protocol; else NIL."
         ((eq index (svref cache 6)) (svref cache 7))
         (t (let* ((class (%instance-layout object))
                   (loc (and (%instancep class) (not (%class-slot class +class-protocol+))
-                            (cdr (assoc name index)))))
-             (if (fixnump loc)
+                            (cdr (assoc name index))))
+                  (e (and (fixnump loc) (%slot-entry loc (%class-slot class +class-instance-size+)))))
+             (if e
                  (let ((i (svref cache 8)))
-                   (setf (svref cache i) index (svref cache (+ i 1)) loc
+                   (setf (svref cache i) index (svref cache (+ i 1)) e
                          (svref cache 8) (logand (+ i 2) 7))
-                   loc)
+                   e)
                  nil)))))
 
 (declaim (inline %cached-slot-location))
@@ -2333,21 +2354,21 @@ access protocol; else NIL."
 
 (defun %slot-value-cached (object name cache)
   (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
-    (if loc
-        (let ((v (%instance-ref object loc)))
+    (if (and loc (%slot-entry-valid-p object loc))
+        (let ((v (%svref (%instance-slots object) (%slot-entry-location loc))))
           (if (%unboundp v) (slot-value object name) v))
         (slot-value object name))))
 
 (defun %set-slot-value-cached (object name value cache)
   (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
-    (if loc
-        (%set-instance-ref object loc value)
+    (if (and loc (%slot-entry-valid-p object loc))
+        (%set-instance-ref object (%slot-entry-location loc) value)
         (%set-slot-value object name value))))
 
 (defun %slot-boundp-cached (object name cache)
   (let ((loc (and (%instancep object) (%cached-slot-location object name cache))))
-    (if loc
-        (not (%unboundp (%instance-ref object loc)))
+    (if (and loc (%slot-entry-valid-p object loc))
+        (not (%unboundp (%instance-ref object (%slot-entry-location loc))))
         (slot-boundp object name))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -2378,6 +2399,7 @@ access protocol; else NIL."
 ;;; the slot access protocol (AMOP): applies to instances of classes whose
 ;;; metaclass is not one of the implementation's
 (defun %slotd-raw-value (object slotd)
+  (when (%instancep object) (%ensure-current-instance object))
   (let ((loc (%slotd-location slotd)))
     (if (fixnump loc) (%instance-ref object loc) (cdr loc))))
 
@@ -2388,6 +2410,7 @@ access protocol; else NIL."
 
 (defgeneric (setf slot-value-using-class) (new-value class object slotd))
 (defmethod (setf slot-value-using-class) (new-value (class t) object slotd)
+  (when (%instancep object) (%ensure-current-instance object))
   (let ((loc (%slotd-location slotd)))
     (if (fixnump loc) (%set-instance-ref object loc new-value) (setf (cdr loc) new-value))
     new-value))
@@ -2398,6 +2421,7 @@ access protocol; else NIL."
 
 (defgeneric slot-makunbound-using-class (class object slotd))
 (defmethod slot-makunbound-using-class ((class t) object slotd)
+  (when (%instancep object) (%ensure-current-instance object))
   (let ((loc (%slotd-location slotd)))
     (if (fixnump loc) (%set-instance-ref object loc (%unbound-marker)) (setf (cdr loc) (%unbound-marker)))
     object))
@@ -2683,6 +2707,7 @@ whose make-info is MI."
     original))
 
 (defun %std-shared-initialize (instance class slot-names initargs)
+  (%ensure-current-instance instance)
   (dolist (sd (%class-effective-slots class))
     (let ((loc (%slotd-location sd)) (keys (%slotd-initargs sd)) (found nil) (value nil))
       (when keys
