@@ -23,7 +23,7 @@ instance of it the value of *BACKEND*."))
 ;;; character by character)
 (defmacro define-js-names (&rest names)
   `(progn ,@(loop for (var string) on names by #'cddr
-                  collect `(defvar ,var (js:to-js ,string)))))
+                  collect `(sys::%defvar-host ,var (js:to-js ,string)))))
 
 (define-js-names
   +create-element+ "createElement" +create-text-node+ "createTextNode"
@@ -64,8 +64,8 @@ instance of it the value of *BACKEND*."))
 
 (defvar *svg-tags* '("svg" "g" "line" "rect" "circle" "ellipse" "polygon" "polyline" "path"
                      "text" "tspan" "image"))
-(defvar +svg-namespace+ (js:to-js "http://www.w3.org/2000/svg"))
-(defvar *svg-element-p* (js:eval "(node) => node instanceof SVGElement"))
+(sys::%defvar-host +svg-namespace+ (js:to-js "http://www.w3.org/2000/svg"))
+(sys::%defvar-host *svg-element-p* (js:eval "(node) => node instanceof SVGElement"))
 
 (defun svg-node-p (node)
   (eq (js:funcall *svg-element-p* node) t))
@@ -195,7 +195,7 @@ instance of it the value of *BACKEND*."))
 
 ;;; files and the clipboard
 
-(defvar *choose-file*
+(sys::%defvar-host *choose-file*
   (js:eval "(accept, done) => { const input = document.createElement('input');
      input.type = 'file'; if (accept) input.accept = accept;
      input.addEventListener('cancel', () => done(null, null));
@@ -218,7 +218,7 @@ instance of it the value of *BACKEND*."))
     (when clipboard (js:call clipboard "writeText" text))
     text))
 
-(defvar *read-clipboard*
+(sys::%defvar-host *read-clipboard*
   (js:eval "(done) => { const c = navigator.clipboard;
      if (!c || !c.readText) done(null); else c.readText().then((text) => done(text), () => done(null)); }"))
 
@@ -237,7 +237,7 @@ instance of it the value of *BACKEND*."))
                  nil)))
   nil)
 
-(defvar *reveal-selection*
+(sys::%defvar-host *reveal-selection*
   (js:eval "(event) => { const node = event.currentTarget || event.target;
      queueMicrotask(() => { const item = node.querySelector('.selected');
                             if (item) item.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }); }"))
@@ -247,7 +247,7 @@ instance of it the value of *BACKEND*."))
   (when event (js:funcall *reveal-selection* event))
   nil)
 
-(defvar *event-position*
+(sys::%defvar-host *event-position*
   (js:eval "(event) => { let node = event.currentTarget || event.target;
      if (!(node instanceof SVGSVGElement)) node = node.ownerSVGElement || node.querySelector('svg');
      const p = new DOMPoint(event.clientX, event.clientY).matrixTransform(node.getScreenCTM().inverse());
@@ -319,3 +319,6 @@ pressed, and (if HANDLERS) what else has keys, like the items of menus."
   (install-command-keys backend))
 
 (setf *backend* (make-instance 'dom-backend))
+;; (it holds the page's document: made again in an image started from a heap
+;; image, runtime/image.lisp)
+(sys::%note-host-variable '*backend* (lambda () (make-instance 'dom-backend)))

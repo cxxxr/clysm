@@ -836,6 +836,10 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:host-read-char :v-i "env" "read_char")
     (:host-exit :i-v "env" "exit")
     (:host-identity-hash :x-i "env" "identity_hash")
+    ;; heap images (runtime/image.lisp)
+    (:host-code-index :fr-i "env" "code_index")
+    (:host-module-count :v-i "env" "module_count")
+    (:host-module-snap :i-e "env" "module_snap")
     (:host-float-to-chars :di-i "env" "float_to_chars")
     (:host-get-char :i-i "env" "get_char")
     (:host-math1 :di-d "env" "math1")
@@ -4416,3 +4420,312 @@ in local V and the index in local K; else branch to FAIL."
                         (:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2))
                         (:ref.cast ,type)))
       (push (cons type fname) (wasm-module-cast-rewrites *m*)))))
+
+;;; ------------------------------------------------------------
+;;; Heap images (runtime/image.lisp)
+;;; ------------------------------------------------------------
+;;; An image of the heap is a sequence of 32-bit words in the linear memory.
+;;; A reference is one word: an i31 (fixnum, character) is its value * 2 + 1,
+;;; NIL... are objects: 0 is null, and otherwise (index + 1) * 2 indexes the
+;;; objects (:IMG-OBJS), the image's own (the objects of its immutable
+;;; globals, see ADD-IMAGE-FUNCTIONS) then those of the heap image.  After a
+;;; header (magic, version, number of image objects, of heap objects, of
+;;; records) come the heap objects, each a kind (+IMG-KINDS+) and its
+;;; immutable contents, made in that order (an object refers only to objects
+;;; before it in its immutable fields); then the records that set the
+;;; mutable fields of objects (the object, then its fields, by its type);
+;;; then the roots (a simple vector).
+
+(defconstant +img-magic+ #x494D4C43)    ; "CLMI"
+(defconstant +img-version+ 1)
+(defparameter +img-kinds+
+  '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
+    :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf))
+(defun img-kind (k) (position k +img-kinds+))
+
+;; saving: the table index of entry I of the closure F (0-5: the entries for
+;; 0-4 and N arguments, 6: the function taking keyword arguments), or -1
+(defhelper :closure-code :ei-e ((c (:ref :null :closure)) (f (:ref :null :func)))
+  '(:local.get 0) '(:ref.cast :closure) '(:local.set c)
+  (loop for i from 0 to 5
+        append `((:local.get 1) (:i32.const ,i) :i32.eq
+                 (:if nil nil ((:local.get c) (:struct.get :closure ,i) (:call :host-code-index)
+                               :ref.i31 :return))))
+  `((:local.get c) (:struct.get :closure ,+clo-kmain+) (:local.tee f) :ref.is_null
+    (:if nil nil ((:i32.const -1) :ref.i31 :return))
+    (:local.get f) (:call :host-code-index) :ref.i31))
+(defprim clysm-sys::%closure-code (f i) :value `(,@f ,@(idx-code i) (:call :closure-code)))
+(defprim clysm-sys::%closure-env (f) :value `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-env+)))
+(defprim clysm-sys::%closure-raw-klayout (f) :value
+  `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-klayout+)))
+(defprim clysm-sys::%symbol-raw-value (s) :value `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-value+)))
+(defprim clysm-sys::%symbol-raw-plist (s) :value `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-plist+)))
+(defprim clysm-sys::%symbol-raw-function (s) :value
+  `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)))
+(defprim clysm-sys::%instance-raw-hash (x) :value `(,@x (:ref.cast :instance) (:struct.get :instance 2) :ref.i31))
+(defprim clysm-sys::%limbs-p (x) :test `(,@x (:ref.test :limbs)))
+(defprim clysm-sys::%bignum-raw-limbs (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 1)))
+(defprim clysm-sys::%bignum-raw-sign (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 0) :ref.i31))
+(defprim clysm-sys::%mdarray-field (a i) :value
+  ;; the raw field I (0-6) of the array header A (5 and 6 are integers)
+  (let ((m (new-local '(:ref :null :mdarray))) (k (new-local :i32)))
+    (labels ((field (f)
+               (if (= f 6)
+                   `((:local.get ,m) (:struct.get :mdarray 6) :ref.i31)
+                   `((:local.get ,k) (:i32.const ,f) :i32.eq
+                     (:if nil :eqref ((:local.get ,m) (:struct.get :mdarray ,f) ,@(if (= f 5) '(:ref.i31)))
+                          ,(field (1+ f)))))))
+      `(,@a (:ref.cast :mdarray) (:local.set ,m) ,@(idx-code i) (:local.set ,k) ,@(field 0)))))
+(defprim clysm-sys::%image-objects () :value '((:call :image-objects)))
+(defprim clysm-sys::%image-mutables () :value '((:call :image-mutables)))
+(defprim clysm-sys::%module-count () :value '((:call :host-module-count) :ref.i31))
+(defprim clysm-sys::%module-snap (i) :value `(,@(idx-code i) (:call :host-module-snap)))
+(defprim clysm-sys::%symbol-raw-package (s) :value
+  `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-package+)))
+(defprim clysm-sys::%fsbuf-raw-octets (b) :value `(,@b (:ref.cast :fsbuf) (:struct.get :fsbuf 0)))
+;; words that do not fit a fixnum, written into the (array i32) BUF at POS
+(defprim clysm-sys::%img-put-i31 (buf pos x) :value
+  `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@x (:ref.cast! :i31) :i31.get_s
+    (:i32.const 1) :i32.shl (:i32.const 1) :i32.or (:array.set :limbs) ,@(nil-code)))
+(defprim clysm-sys::%img-put-word (buf pos w) :value
+  `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@(idx-code w) (:array.set :limbs) ,@(nil-code)))
+(defun img-put-i64-code (buf pos value-code)
+  (let ((b (new-local '(:ref :null :limbs))) (p (new-local :i32)) (v (new-local :i64)))
+    `(,@buf (:ref.cast :limbs) (:local.set ,b) ,@(idx-code pos) (:local.set ,p)
+      ,@value-code (:local.set ,v)
+      (:local.get ,b) (:local.get ,p) (:local.get ,v) :i32.wrap_i64 (:array.set :limbs)
+      (:local.get ,b) (:local.get ,p) (:i32.const 1) :i32.add
+      (:local.get ,v) (:i64.const 32) :i64.shr_u :i32.wrap_i64 (:array.set :limbs)
+      ,@(nil-code))))
+(defprim clysm-sys::%img-put-double (buf pos x) :value
+  (img-put-i64-code buf pos `(,@x (:ref.cast :double) (:struct.get :double 0) :i64.reinterpret_f64)))
+(defprim clysm-sys::%img-put-bignum-value (buf pos x) :value
+  (img-put-i64-code buf pos `(,@x (:ref.cast :bignum) (:struct.get :bignum 2))))
+(defprim clysm-sys::%img-put-single (buf pos x) :value
+  `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@x (:ref.cast :single) (:struct.get :single 0)
+    :i32.reinterpret_f32 (:array.set :limbs) ,@(nil-code)))
+;; the word HI * 65536 + LO
+(defprim clysm-sys::%img-put-halves (buf pos hi lo) :value
+  `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@(idx-code hi) (:i32.const 16) :i32.shl ,@(idx-code lo) :i32.or
+    (:array.set :limbs) ,@(nil-code)))
+;; the elements of the (array i32) SRC (limbs) at POS
+(defprim clysm-sys::%img-put-limbs (buf pos src) :value
+  `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@src (:ref.cast :limbs) (:i32.const 0)
+    ,@src (:ref.cast :limbs) :array.len (:array.copy :limbs :limbs) ,@(nil-code)))
+;; the first N words of BUF into the linear memory from 0 (for the host)
+(defprim clysm-sys::%img-to-memory (buf n) :value
+  (let ((b (new-local '(:ref :null :limbs))) (len (new-local :i32)) (k (new-local :i32))
+        (done (gensym "DONE")) (again (gensym "AGAIN")))
+    `(,@buf (:ref.cast :limbs) (:local.set ,b) ,@(idx-code n) (:local.set ,len)
+      (:local.get ,len) (:i32.const 2) :i32.shl (:local.set ,k)
+      ,@(mem-ensure-code k)
+      (:i32.const 0) (:local.set ,k)
+      (:block ,done nil
+        (:loop ,again nil
+          (:local.get ,k) (:local.get ,len) :i32.ge_u (:br_if ,done)
+          (:local.get ,k) (:i32.const 2) :i32.shl
+          (:local.get ,b) (:local.get ,k) (:array.get :limbs) (:i32.store)
+          (:local.get ,k) (:i32.const 1) :i32.add (:local.set ,k)
+          (:br ,again)))
+      ,@(nil-code))))
+
+;; loading
+(defhelper :img-word :v-i ((w :i32))
+  '(:global.get :img-pos) '(:i32.load) '(:local.set w)
+  '(:global.get :img-pos) '(:i32.const 4) :i32.add '(:global.set :img-pos)
+  '(:local.get w))
+(defhelper :img-ref :v-e ((w :i32))
+  '(:call :img-word) '(:local.tee w) '(:i32.const 1) :i32.and
+  '(:if nil nil ((:local.get w) (:i32.const 1) :i32.shr_s :ref.i31 :return))
+  '(:local.get w) :i32.eqz
+  '(:if nil nil ((:ref.null :eq) :return))
+  '(:global.get :img-objs) '(:local.get w) '(:i32.const 1) :i32.shr_u '(:i32.const 1) :i32.sub
+  '(:array.get :vector))
+(defhelper :img-i64 :v-l ((lo :i32))
+  '(:call :img-word) '(:local.set lo)
+  '(:call :img-word) :i64.extend_i32_u '(:i64.const 32) :i64.shl
+  '(:local.get lo) :i64.extend_i32_u :i64.or)
+
+(defun img-switch-code (index-code cases)
+  "Instructions running the code of the case INDEX-CODE (an i32) selects in
+CASES, a list of instruction lists (each leaves nothing), or trapping."
+  (let ((labels (loop for nil in cases collect (gensym "CASE")))
+        (end (gensym "END")) (bad (gensym "BAD")))
+    (labels ((nest (ls cs)
+               ;; the innermost block holds the br_table; after the end of
+               ;; the block of case I comes its code
+               (if (null ls)
+                   `((:block ,bad nil
+                       ,@index-code (:br_table ,@labels ,bad))
+                     :unreachable)
+                   `((:block ,(car (last ls)) nil
+                       ,@(nest (butlast ls) (butlast cs)))
+                     ,@(car (last cs))
+                     (:br ,end)))))
+      `((:block ,end nil ,@(nest labels cases))))))
+
+(defun img-loop-code (counter limit body)
+  "Instructions running BODY while the i32 local COUNTER is below the i32
+local LIMIT, incrementing it."
+  (let ((done (gensym "DONE")) (again (gensym "AGAIN")))
+    `((:block ,done nil
+        (:loop ,again nil
+          (:local.get ,counter) (:local.get ,limit) :i32.ge_u (:br_if ,done)
+          ,@body
+          (:local.get ,counter) (:i32.const 1) :i32.add (:local.set ,counter)
+          (:br ,again))))))
+
+(defun img-code-ref (type)
+  "Instructions: the function of the next word's index in the table, as TYPE."
+  `((:call :img-word) (:table.get) (:ref.cast! ,type)))
+
+(defun img-alloc-cases ()
+  "The code making each kind of object (+IMG-KINDS+) into the local X."
+  (flet ((done (&rest code) `(,@(apply #'append code) (:local.set x))))
+    (loop for kind in +img-kinds+
+          collect
+          (ecase kind
+            (:cons (done '((:struct.new_default :cons))))
+            (:vector (done '((:call :img-word) (:array.new_default :vector))))
+            (:string8
+             `((:call :img-word) (:local.tee len) (:array.new_default :string) (:local.set s)
+               (:i32.const 0) (:local.set j)
+               ,@(img-loop-code 'j 'len
+                                '((:local.get s) (:local.get j)
+                                  (:global.get :img-pos) (:local.get j) :i32.add (:i32.load8_u)
+                                  (:array.set :string)))
+               (:global.get :img-pos) (:local.get len) (:i32.const 3) :i32.add (:i32.const -4) :i32.and
+               :i32.add (:global.set :img-pos)
+               (:local.get s) (:local.set x)))
+            ((:string32 :limbs)
+             (let ((type (if (eq kind :limbs) :limbs :string)))
+               `((:call :img-word) (:local.tee len) (:array.new_default ,type) (:local.set x)
+                 (:i32.const 0) (:local.set j)
+                 ,@(img-loop-code 'j 'len
+                                  `((:local.get x) (:ref.cast! ,type) (:local.get j) (:call :img-word)
+                                    (:array.set ,type))))))
+            (:cell (done '((:struct.new_default :cell))))
+            (:instance (done '((:ref.null :eq) (:call :img-ref) (:ref.cast! :vector) (:call :img-word)
+                               (:struct.new :instance))))
+            (:package (done '((:struct.new_default :package))))
+            (:symbol (done '((:call :img-ref) (:ref.cast! :string) (:ref.null :package) (:ref.null :eq)
+                             (:ref.null :closure) (:ref.null :eq) (:call :img-word) (:i32.const 0)
+                             (:struct.new :symbol))))
+            (:closure
+             ;; the words: the 6 entries, the environment, the function taking
+             ;; keywords (-1: none), the layout of its keywords
+             (done (loop for i from 0 to 4 append (img-code-ref (fixed-entry-type i)))
+                   (img-code-ref :fN)
+                   '((:call :img-ref) (:ref.cast :null :vector) (:ref.null :eq)
+                     (:call :img-word) (:local.tee w) (:i32.const -1) :i32.eq
+                     (:if nil (:ref :null :func) ((:ref.null :func)) ((:local.get w) (:table.get)))
+                     (:call :img-ref) (:struct.new :closure))))
+            (:mdarray (done '((:struct.new_default :mdarray))))
+            (:double (done '((:call :img-i64) :f64.reinterpret_i64 (:struct.new :double))))
+            (:single (done '((:call :img-word) :f32.reinterpret_i32 (:struct.new :single))))
+            (:bignum (done '((:call :img-word) (:call :img-ref) (:ref.cast :null :limbs) (:call :img-i64)
+                             (:struct.new :bignum))))
+            (:ratio (done '((:call :img-ref) (:call :img-ref) (:struct.new :ratio))))
+            (:complex (done '((:call :img-ref) (:call :img-ref) (:struct.new :complex))))
+            (:complex-d (done '((:call :img-i64) :f64.reinterpret_i64 (:call :img-i64) :f64.reinterpret_i64
+                                (:struct.new :complex-d))))
+            (:complex-s (done '((:call :img-word) :f32.reinterpret_i32 (:call :img-word) :f32.reinterpret_i32
+                                (:struct.new :complex-s))))
+            (:storage
+             `((:call :img-word) (:call :img-word) (:local.tee len) (:call :make-storage) (:local.set x)
+               (:i32.const 0) (:local.set j)
+               ,@(img-loop-code 'j 'len '((:local.get x) (:local.get j) (:call :img-ref) (:call :typed-set) :drop))))
+            (:fsbuf (done '((:call :img-ref) (:ref.cast :null :bytes) (:call :img-word) (:call :img-word)
+                            (:struct.new :fsbuf))))))))
+
+(defun img-fill-code ()
+  "The code setting the mutable fields of the object in the local X from the
+words that follow, by its type."
+  (let ((end (gensym "END")))
+    (flet ((fields (type n &optional cast)
+             (loop for f below n
+                   append `((:local.get x) (:ref.cast! ,type) (:call :img-ref)
+                            ,@(let ((c (if (functionp cast) (funcall cast f) cast)))
+                                (and c `((:ref.cast :null ,c))))
+                            (:struct.set ,type ,f)))))
+      `((:block ,end nil
+          (:local.get x) (:ref.test :cons)
+          (:if nil nil (,@(fields :cons 2) (:br ,end)))
+          (:local.get x) (:ref.test :vector)
+          (:if nil nil ((:i32.const 0) (:local.set j)
+                        (:local.get x) (:ref.cast! :vector) :array.len (:local.set len)
+                        ,@(img-loop-code 'j 'len '((:local.get x) (:ref.cast! :vector) (:local.get j)
+                                                   (:call :img-ref) (:array.set :vector)))
+                        (:br ,end)))
+          (:local.get x) (:ref.test :symbol)
+          (:if nil nil ((:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:ref.cast :null :package)
+                        (:struct.set :symbol ,+sym-package+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:struct.set :symbol ,+sym-value+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:ref.cast :null :closure)
+                        (:struct.set :symbol ,+sym-function+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:struct.set :symbol ,+sym-plist+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-flags+)
+                        (:br ,end)))
+          (:local.get x) (:ref.test :closure)
+          (:if nil nil ((:local.get x) (:ref.cast! :closure) (:call :img-ref) (:struct.set :closure ,+clo-name+)
+                        (:br ,end)))
+          (:local.get x) (:ref.test :instance)
+          (:if nil nil ((:local.get x) (:ref.cast! :instance) (:call :img-ref) (:struct.set :instance 0)
+                        (:local.get x) (:ref.cast! :instance) (:call :img-ref) (:ref.cast! :vector)
+                        (:struct.set :instance 1)
+                        (:br ,end)))
+          (:local.get x) (:ref.test :cell)
+          (:if nil nil (,@(fields :cell 1) (:br ,end)))
+          (:local.get x) (:ref.test :package)
+          (:if nil nil (,@(fields :package 8) (:br ,end)))
+          (:local.get x) (:ref.test :mdarray)
+          (:if nil nil (,@(fields :mdarray 5)
+                        (:local.get x) (:ref.cast! :mdarray) (:call :img-word) (:struct.set :mdarray 5)
+                        (:local.get x) (:ref.cast! :mdarray) (:call :img-word) (:struct.set :mdarray 6)
+                        (:br ,end)))
+          :unreachable)))))
+
+;; image_load(offset): make the objects of the heap image at OFFSET in the
+;; linear memory (the host has instantiated the modules compiled in the image
+;; first); the roots are then in :IMG-ROOTS
+(defhelper :image-load :i-v ((nbase :i32) (nheap :i32) (nrec :i32) (k :i32) (end :i32)
+                              (len :i32) (j :i32) (w :i32)
+                              (s (:ref :null :string)) (x :eqref) (chunks (:ref :null :vector))
+                              (c (:ref :null :vector)))
+  '(:local.get 0) '(:global.set :img-pos)
+  `(:call :img-word) `(:i32.const ,+img-magic+) :i32.ne '(:if nil nil (:unreachable))
+  `(:call :img-word) `(:i32.const ,+img-version+) :i32.ne '(:if nil nil (:unreachable))
+  '(:call :img-word) '(:local.set nbase) '(:call :img-word) '(:local.set nheap)
+  '(:call :img-word) '(:local.set nrec)
+  '(:local.get nbase) '(:local.get nheap) :i32.add '(:array.new_default :vector) '(:global.set :img-objs)
+  ;; the image's objects
+  '(:call :image-objects) '(:ref.cast! :vector) '(:local.set chunks)
+  '(:i32.const 0) '(:local.set k) '(:i32.const 0) '(:local.set j)
+  '(:local.get chunks) :array.len '(:local.set end)
+  (img-loop-code 'j 'end
+                 '((:local.get chunks) (:local.get j) (:array.get :vector) (:ref.cast! :vector) (:local.set c)
+                   (:global.get :img-objs) (:local.get k) (:local.get c) (:i32.const 0)
+                   (:local.get c) :array.len (:array.copy :vector :vector)
+                   (:local.get k) (:local.get c) :array.len :i32.add (:local.set k)))
+  '(:local.get k) '(:local.get nbase) :i32.ne '(:if nil nil (:unreachable))
+  ;; the heap objects
+  '(:local.get nbase) '(:local.get nheap) :i32.add '(:local.set end)
+  (img-loop-code 'k 'end
+                 `(,@(img-switch-code '((:call :img-word)) (img-alloc-cases))
+                   (:global.get :img-objs) (:local.get k) (:local.get x) (:array.set :vector)))
+  ;; their mutable fields
+  '(:i32.const 0) '(:local.set k)
+  (img-loop-code 'k 'nrec `((:call :img-ref) (:local.set x) ,@(img-fill-code)))
+  '(:call :img-ref) '(:global.set :img-roots))
+;; image_module_snap(i): what RESTORE of the Ith module takes
+(defhelper :image-module-snap :i-e ()
+  '(:global.get :img-roots) '(:ref.cast! :vector) '(:i32.const 1) '(:array.get :vector) '(:ref.cast! :vector)
+  '(:local.get 0) '(:array.get :vector))
+;; image_resume(): the mutable globals again, then SYS::%IMAGE-RESUME
+(defhelper :image-resume :v-v ()
+  '(:global.get :img-roots) '(:ref.cast! :vector) '(:i32.const 0) '(:array.get :vector)
+  '(:call :set-image-mutables)
+  '(:global.get :img-roots)
+  (lisp-call-instrs 'clysm-sys::%image-resume 1)
+  :drop
+  '(:ref.null :vector) '(:global.set :img-objs))

@@ -81,7 +81,7 @@ threads run.")
 ;;; ------------------------------------------------------------
 ;;; waiting
 
-(defvar *js-deferred* nil)
+(%defvar-host *js-deferred* nil)
 
 (defun %js-deferred (ms)
   "A JavaScript array [promise, end]: END ends the wait (the promise is
@@ -140,7 +140,7 @@ its value."
       (decf *io-waiters*)
       (setf (thread-state th) :running (thread-waiting-for th) nil))))
 
-(defvar *js-yield* nil)
+(%defvar-host *js-yield* nil)
 
 (defun thread-yield ()
   "Let the other threads that can run, run."

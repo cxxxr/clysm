@@ -171,9 +171,27 @@ called from JavaScript), otherwise a JS:JS-ERROR."
 (defvar *js-computation* nil
   "The computation (of JS:ASYNC-FUNCTION) that runs: a vector of its binding
 stack, the binding stack and depth outside it, and its own depth while it waits.")
-(defvar *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
 
-(defvar *js-make-failure*
+;;; Variables whose values are objects of the host: SAVE-IMAGE (image.lisp)
+;;; does not save their values, which an image started from a heap image
+;;; makes again with their forms.
+(defvar *host-variables* nil "(symbol . function making its value), latest first")
+
+(defun %note-host-variable (name fn)
+  (let ((e (assoc name *host-variables*)))
+    (if e (setf (cdr e) fn) (push (cons name fn) *host-variables*))
+    name))
+
+(defmacro %defvar-host (name form &optional (doc nil docp))
+  "DEFVAR of a variable whose value, made by FORM, is an object of the host
+(a heap image does not save it; an image started from one evaluates FORM again)."
+  `(progn (defvar ,name ,form ,@(when docp (list doc)))
+          (%note-host-variable ',name (lambda () ,form))))
+
+(%note-host-variable '*track-instance-hook* (lambda () nil))
+(%defvar-host *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
+
+(%defvar-host *js-make-failure*
   (js:eval "(message, type, condition, mapStack) => {
   const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
   const error = new Error(message);
@@ -372,7 +390,7 @@ JS:AWAIT (so it is called where JS:CAN-AWAIT-P is true)."
 ;;; JavaScript by name.  The host puts the object of the exports in
 ;;; globalThis.__clysm_exports while the module's toplevel forms run.
 
-(defvar *js-exports* nil "The JavaScript object of the functions exported by JS:EXPORT.")
+(%defvar-host *js-exports* nil "The JavaScript object of the functions exported by JS:EXPORT.")
 
 (defun %js-exports ()
   (or *js-exports*
@@ -403,7 +421,7 @@ and may wait with JS:AWAIT.  TYPE is its TypeScript type for the generated
 ;;; Tracking instances, so that the instances of a redefined class can be
 ;;; updated (see %UPDATE-OBSOLETE-INSTANCES in class0.lisp).  The instances
 ;;; are held by JavaScript WeakRefs: tracking does not keep them alive.
-(defvar *instance-tracker* nil)
+(%defvar-host *instance-tracker* nil)
 
 (defun %instance-tracker ()
   (or *instance-tracker*

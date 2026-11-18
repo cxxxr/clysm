@@ -123,7 +123,7 @@
   "Functions called by REQUIRE (without pathnames) with the module name; one
 that returns true has provided the module.  ASDF adds its own provider.")
 
-(defvar %decode-host-octets nil)
+(%defvar-host %decode-host-octets nil)
 
 (defun %fasl-text-from-host (path offset length)
   "The UTF-8 text of the LENGTH octets at OFFSET of the file PATH, read and

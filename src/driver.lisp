@@ -624,6 +624,10 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
       (add-global *m* :bstack '(:ref :vector) t '((:i32.const 1024) (:array.new_default :vector)))
       (add-global *m* :bsp :i32 t '((:i32.const 0)))
       (add-global *m* :poll-count :i32 t '((:i32.const 0)))
+      ;; loading a heap image (runtime/image.lisp)
+      (add-global *m* :img-objs '(:ref :null :vector) t '((:ref.null :vector)))
+      (add-global *m* :img-pos :i32 t '((:i32.const 0)))
+      (add-global *m* :img-roots :eqref t '((:ref.null :eq)))
       (dolist (g (reverse *misc-globals*))
         (destructuring-bind (name type mutable init) g
           (add-global *m* name type mutable init)))
@@ -678,9 +682,71 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
                                                       (lst (loop for (name home) in shadows
                                                                  collect (lst (list (str name) (str home))))))))
                             (:array.new_fixed :vector ,(length pkg-inits)))))))))
+    ;; heap images (runtime/image.lisp): the table of functions, the objects
+    ;; of the immutable globals, and the values of the mutable ones
+    (add-image-functions *m*)
     (report-undefined-functions)
     (when *shake* (shake-module *m*))
-    (encode-module *m*)))
+    (with-build-section (encode-module *m*))))
+
+(defun with-build-section (bytes)
+  "BYTES with a custom section clysm.build at the end that names the image by
+a hash of its octets: a heap image (runtime/image.lisp) is valid only for
+the image it names."
+  (let ((a 2166136261) (b 3735928559))
+    (loop for x across bytes
+          do (setf a (ldb (byte 32 0) (* (logxor a x) 16777619))
+                   b (ldb (byte 32 0) (* (logxor b x) 2246822519))))
+    (let* ((name "clysm.build")
+           (text (format nil "~8,'0X~8,'0X" a b))
+           (payload (+ 1 (length name) (length text)))
+           (out (make-array (+ (length bytes) 2 payload) :element-type '(unsigned-byte 8)))
+           (i (length bytes)))
+      (replace out bytes)
+      (flet ((put (x) (setf (aref out i) x) (incf i)))
+        (put 0) (put payload) (put (length name))
+        (loop for c across name do (put (char-code c)))
+        (loop for c across text do (put (char-code c))))
+      out)))
+
+(defun vector-of-globals-code (globals)
+  "Instructions making a simple vector of simple vectors of the values of
+GLOBALS (names), in pieces of at most 5000 (array.new_fixed is limited to
+10000 operands)."
+  (let ((chunks (loop for rest = globals then (nthcdr 5000 rest)
+                      while rest
+                      collect (subseq rest 0 (min 5000 (length rest))))))
+    `(,@(loop for chunk in chunks
+              append `(,@(loop for g in chunk collect `(:global.get ,g))
+                       (:array.new_fixed :vector ,(length chunk))))
+      (:array.new_fixed :vector ,(length chunks)))))
+
+(defun add-image-functions (m)
+  "The image's table of functions, which every function referred to by a
+closure is placed in (from 0 for the image's own, from their code base for a
+module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
+:SET-IMAGE-MUTABLES (runtime/image.lisp)."
+  (setf (wasm-module-table m) (list :define))
+  (add-export m "codes" :table nil)
+  (let ((objects nil) (mutables nil))
+    (loop for (name type mutable) across (wasm-module-globals m)
+          do (cond ((member name '(:mv-buf :bstack :img-objs :img-roots)))
+                   ((not (and (consp type) (eq (car type) :ref)))
+                    (when (and mutable (eq type :eqref)) (push name mutables)))
+                   ((not mutable) (push name objects))))
+    (setf objects (nreverse objects) mutables (nreverse mutables))
+    (add-func m :image-objects :v-e :body (vector-of-globals-code objects))
+    (add-func m :image-mutables :v-e :body (vector-of-globals-code mutables))
+    ;; (a whole program without the compiler does not load heap images)
+    (unless *shake*
+      (add-export m "image_load" :func :image-load)
+      (add-export m "image_module_snap" :func :image-module-snap)
+      (add-export m "image_resume" :func :image-resume))
+    (add-func m :set-image-mutables :e-v :locals '((:ref :null :vector)) :local-names '(v)
+              :body `((:local.get 0) (:ref.cast! :vector) (:local.set v)
+                      ,@(loop for g in mutables for i from 0
+                              append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                       (:global.set ,g)))))))
 
 (defun report-undefined-functions ()
   (let ((undefined nil))

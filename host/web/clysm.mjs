@@ -12,9 +12,15 @@
 // without Node.js, `fs` can be the file system in memory of vfs.mjs.
 // BYTES can also be a compiled WebAssembly.Module; the module of the image
 // is globalThis.__clysm_module, which a page can give to a worker.
-import { makeImports, installSourceMap } from '../common.mjs';
+import { makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
+         instrumentWasm } from '../common.mjs';
 
-export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root, args = [] } = {}) {
+// IMAGE: a heap image (runtime/image.lisp), as octets or the name of a file
+// (with FS): the image starts from it if it was saved by this build of the
+// image, instead of running its toplevel forms.  With TRAIN, the image and
+// the modules note the functions that run (instrumentWasm), which
+// globalThis.__clysm_training() returns (for compilation hints).
+export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root, args = [], image, train } = {}) {
   const state = { writeText: (fd, text) => onOutput(text, fd) };
   let input = [];   // code points of the current input line
   if (fs) {
@@ -65,12 +71,69 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
     flush() {},
   };
   const imports = makeImports(state, platform);
-  const module = bytes instanceof WebAssembly.Module ? bytes : await WebAssembly.compile(bytes);
-  const instance = await WebAssembly.instantiate(module, imports);
+  let transform;
+  if (train) {
+    // the functions of the image are numbered from 0, then those of each module
+    // (their octets in the linear memory from 192 MB, above the heap image)
+    const table = 192 << 20;
+    const bases = [];
+    const instrumented = instrumentWasm(new Uint8Array(bytes), 0, table);
+    let next = instrumented.count;
+    bytes = instrumented.bytes;
+    transform = (b, i) => { const r = instrumentWasm(b, next, table); bases[i] = next; next += r.count; return r.bytes; };
+    state.trainTable = () => next;
+    globalThis.__clysm_training = () => {
+      const ran = new Uint8Array(state.instance.exports.memory.buffer, table, next);
+      const base = [];
+      for (let f = 0; f < instrumented.count; f++) if (ran[f]) base.push(f);
+      const modules = bases.map((b, i) => {
+        const end = i + 1 < bases.length ? bases[i + 1] : next;
+        const list = [];
+        for (let f = b; f < end; f++) if (ran[f]) list.push(f - b);
+        return list;
+      });
+      return { base, modules };
+    };
+  }
+  // the modules of the heap image are compiled while the image is compiled
+  // and instantiated
+  const compiled = bytes instanceof WebAssembly.Module ? bytes : WebAssembly.compile(bytes);
+  let file = null, header = null, modules = null;
+  if (image) {
+    try {
+      file = image instanceof Uint8Array ? image : (fs && fs.existsSync(image) ? fs.readFileSync(image) : null);
+      header = imageHeader(bytes, file);
+      if (header) modules = compileImageModules(file, header, transform, (path) => fs.readFileSync(path));
+    } catch (e) {
+      console.error('the heap image could not be read:', e);
+    }
+  }
+  const module = await compiled;
+  let instance = await WebAssembly.instantiate(module, imports);
   globalThis.__clysm_module = module;
   installSourceMap(state, module);
   state.instance = instance;
-  instance.exports._start();
+  state.module = module;
+  state.build = imageBuild(module);
+  if (train) {
+    // (room for the octets of the functions)
+    const memory = instance.exports.memory;
+    const need = Math.ceil(((192 << 20) + state.trainTable()) / 65536);
+    memory.grow(need - memory.buffer.byteLength / 65536);
+  }
+  let restored = false;
+  if (modules) {
+    try {
+      loadImage(state, file, header, await modules);
+      restored = true;
+    } catch (e) {
+      console.error('the heap image could not be loaded:', e);
+      instance = await WebAssembly.instantiate(module, imports);
+      state.instance = instance;
+    }
+  }
+  file = null;
+  if (restored) instance.exports.image_resume(); else instance.exports._start();
   return {
     instance,
     eval(source) { return instance.exports.eval_string(source); },

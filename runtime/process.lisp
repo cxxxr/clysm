@@ -10,7 +10,7 @@
 ;;;; done in a function of JS:ASYNC-FUNCTION.  UIOP:RUN-PROGRAM and
 ;;;; UIOP:LAUNCH-PROGRAM are built on these (third_party/asdf).
 
-(defvar *child-process-module* nil)
+(%defvar-host *child-process-module* nil)
 
 (defun %child-process-module ()
   (or *child-process-module*

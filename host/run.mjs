@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { makeImports, installSourceMap } from './common.mjs';
+import { makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
+         byteSources } from './common.mjs';
 import { nodeModuleAccess } from './lib.mjs';
 import { makeProcessManager } from './process.mjs';
 
@@ -47,7 +48,9 @@ if (traceFile) {
       cachedBuf = fs.readFileSync(path); cachedPath = path; cachedMtime = mtime;
     }
     traceRead(path);
-    return new Uint8Array(cachedBuf.buffer, cachedBuf.byteOffset + offset, length);
+    const bytes = new Uint8Array(cachedBuf.buffer, cachedBuf.byteOffset + offset, length);
+    byteSources.set(bytes, { path, offset });
+    return bytes;
   };
 }
 // the Clysm installation directory (REQUIRE finds bundled modules there)
@@ -143,12 +146,38 @@ export async function runModule(bytes, args = []) {
     ({ module, instance } = await WebAssembly.instantiate(bytes, imports));
     installSourceMap(state, module);
     state.instance = instance;
+    state.module = module;
+    state.build = imageBuild(module);
+    // with CLYSM_SAVE_IMAGE set, the modules compiled in the image are
+    // recorded, for SAVE-IMAGE (runtime/image.lisp)
+    // (=fasls: the modules read from fasls are referred to, not saved)
+    if (process.env.CLYSM_SAVE_IMAGE) state.modules = [];
+    if (process.env.CLYSM_SAVE_IMAGE === 'fasls') state.imageFasls = true;
   } catch (e) {
     console.error('instantiate failed:', e.message);
     process.exit(3);
   }
+  // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
+  // was saved by this build of the image (otherwise as usual)
+  let restored = false;
+  const imagePath = process.env.CLYSM_IMAGE;
+  if (imagePath && fs.existsSync(imagePath)) {
+    const file = fs.readFileSync(imagePath);
+    const header = imageHeader(state.module, file);
+    if (header) {
+      try {
+        loadImage(state, file, header, await compileImageModules(file, header, undefined, (p) => fs.readFileSync(p)));
+        restored = true;
+      } catch (e) {
+        console.error(';; the heap image could not be loaded:', e.message);
+        state.codeIndex = null;
+        instance = (await WebAssembly.instantiate(bytes, imports)).instance;
+        state.instance = instance;
+      }
+    }
+  }
   try {
-    instance.exports._start();
+    if (restored) instance.exports.image_resume(); else instance.exports._start();
   } catch (e) {
     state.flush();
     if (e instanceof WebAssembly.Exception) {

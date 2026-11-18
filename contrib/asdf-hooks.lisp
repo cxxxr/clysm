@@ -108,4 +108,11 @@ named BEFORE (at the end without it)."
     (compute-children-by-name module)
     c))
 
+;;; Heap images (runtime/image.lisp): UIOP's hooks of images that are
+;;; restored (the user's cache, the temporary directory, the command line,
+;;; the standard streams).  Its hook of images that are dumped, which clears
+;;; the configuration of ASDF, is not called: an image started from a heap
+;;; image finds the systems where they were when it was saved.
+(pushnew 'uiop:call-image-restore-hook sys::*restore-image-hooks*)
+
 (sys::%load-compiled-bundled "contrib/fixups.lisp" "asdf-fixups")

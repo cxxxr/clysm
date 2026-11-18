@@ -68,6 +68,11 @@ Returns (values bytes constants-vector)."
     (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")
     (add-import-tag *m* :lisp-throw :exn "clysm" "lisp_throw")
     (setf (wasm-module-memory-import *m*) (list "clysm" "memory" 1))
+    ;; its functions are placed in the image's table of functions, from
+    ;; CODE_BASE (runtime/image.lisp)
+    (add-import-global *m* :code-base :i32 nil "clysm" "code_base")
+    (setf (wasm-module-table *m*) (list :import "clysm" "codes")
+          (wasm-module-code-base *m*) :code-base)
     (sym-global nil) (sym-global t)
     (define-standard-helpers)
     (define-argerr-helpers)
@@ -119,6 +124,32 @@ Returns (values bytes constants-vector)."
                                   append `((:global.get ,(static-closure-global l))
                                            (:call (:main ,(lam-id l))) (:local.set result)))
                           (:local.get result)))
+        ;; for heap images (runtime/image.lisp): SNAP returns the values of
+        ;; its globals, which RESTORE sets again in a new instance (whose RUN
+        ;; is not called)
+        (let ((globals (append (mapcar (lambda (s) (list :sym s)) syms)
+                               (mapcar #'car consts)
+                               (mapcar #'first closures)
+                               (loop for (name type) in (reverse *misc-globals*)
+                                     when (eq type :eqref) collect name))))
+          (add-func *m* :snap :v-e :export "snap"
+                    :locals '((:ref :null :vector)) :local-names '(v)
+                    :body `((:i32.const ,(length globals)) (:array.new_default :vector) (:local.set v)
+                            ,@(loop for g in globals for i from 0
+                                    append `((:local.get v) (:i32.const ,i) (:global.get ,g)
+                                             (:array.set :vector)))
+                            (:local.get v)))
+          (add-func *m* :restore :e-v :export "restore"
+                    :locals '((:ref :null :vector)) :local-names '(v)
+                    :body `((:local.get 0) (:ref.cast! :vector) (:local.set v)
+                            ,@(loop for g in globals for i from 0
+                                    append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                             ,@(case (car g)
+                                                 (:sym '((:ref.cast :symbol)))
+                                                 (t (if (member g closures :key #'first)
+                                                        '((:ref.cast :closure))
+                                                        nil)))
+                                             (:global.set ,g))))))
         ;; a module made at run time only needs the helpers it calls
         (remove-unreachable-functions *m*)
         (values (encode-module *m*) (coerce objects 'simple-vector))))))

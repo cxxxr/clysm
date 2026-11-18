@@ -112,6 +112,11 @@
   (nonnull-globals (make-hash-table :test 'equal))
   (memory nil)                                           ; initial pages of a memory of its own
   (memory-import nil)                                    ; (module field min) of an imported memory
+  ;; the table of functions (runtime/image.lisp): (:define) in the image, which
+  ;; exports it, or (:import module field) in a module compiled in it; the
+  ;; ref.func'd functions are placed in it from CODE-BASE (a global, or 0)
+  (table nil)
+  (code-base nil)
   (cast-rewrites nil))                                  ; heap type -> function replacing ref.cast     ; nullable globals read as non-null
 
 (defun add-type (m name def)
@@ -591,6 +596,8 @@ functions).  Calls of the installs that are not reached are removed."
         (:global.get (emit-byte buf #x23) (emit-u32 buf (global-index m (first args)))
          (when (gethash (first args) (wasm-module-nonnull-globals m)) (emit-byte buf #xD4)))
         (:global.set (emit-byte buf #x24) (emit-u32 buf (global-index m (first args))))
+        ;; the table of functions (the one table, index 0)
+        (:table.get (emit-byte buf #x25) (emit-u32 buf 0))
         ;; linear memory (the one memory, index 0): (:i32.load16_u offset) etc.
         ((:i32.load :i32.load8_u :i32.load16_u :i32.store :i32.store8 :i32.store16)
          (emit-byte buf (ecase op (:i32.load #x28) (:i32.load8_u #x2D) (:i32.load16_u #x2F)
@@ -739,7 +746,18 @@ functions).  Calls of the installs that are not reached are removed."
                                 (when h (push (cons i h) hints))
                                 (incf i)))
                      (setf hints (nreverse hints))
-                     (nreverse r))))
+                     (nreverse r)))
+           ;; the globals (before the table, whose size counts the functions
+           ;; that their initializers refer to)
+           (globals-section
+             (when (plusp (length (wasm-module-globals m)))
+               (let ((b (make-buf)))
+                 (emit-u32 b (length (wasm-module-globals m)))
+                 (loop for (nil type mutable init) across (wasm-module-globals m)
+                       do (emit-valtype m b type)
+                          (emit-byte b (if mutable 1 0))
+                          (emit-expr b init))
+                 b))))
       ;; type section: the base types form one rec group (identical in every
       ;; module, so that types are shared across modules); types added later
       ;; are singleton groups
@@ -755,14 +773,20 @@ functions).  Calls of the installs that are not reached are removed."
         (emit-section out 1 b))
       ;; imports
       (when (plusp (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
-                      (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)))
+                      (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)
+                      (if (eq (car (wasm-module-table m)) :import) 1 0)))
         (let ((b (make-buf)))
           (emit-u32 b (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
-                         (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)))
+                         (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)
+                         (if (eq (car (wasm-module-table m)) :import) 1 0)))
           (when (wasm-module-memory-import m)
             (destructuring-bind (module field min) (wasm-module-memory-import m)
               (emit-name b module) (emit-name b field)
               (emit-byte b 2) (emit-byte b 0) (emit-u32 b min)))
+          (when (eq (car (wasm-module-table m)) :import)
+            (destructuring-bind (module field) (cdr (wasm-module-table m))
+              (emit-name b module) (emit-name b field)
+              (emit-byte b 1) (emit-byte b #x70) (emit-byte b 0) (emit-u32 b 0)))
           (loop for f across (wasm-module-imports m)
                 do (emit-name b (wasm-func-import-module f))
                    (emit-name b (wasm-func-import-name f))
@@ -781,6 +805,12 @@ functions).  Calls of the installs that are not reached are removed."
         (loop for f across (wasm-module-funcs m)
               do (emit-u32 b (type-index m (wasm-func-type f))))
         (emit-section out 3 b))
+      ;; table
+      (when (eq (car (wasm-module-table m)) :define)
+        (let ((b (make-buf)))
+          (emit-u32 b 1) (emit-byte b #x70) (emit-byte b 0)
+          (emit-u32 b (hash-table-count (wasm-module-declared-refs m)))
+          (emit-section out 4 b)))
       ;; memory
       (when (wasm-module-memory m)
         (let ((b (make-buf)))
@@ -794,14 +824,7 @@ functions).  Calls of the installs that are not reached are removed."
                 do (emit-byte b 0) (emit-u32 b (type-index m type)))
           (emit-section out 13 b)))
       ;; globals
-      (when (plusp (length (wasm-module-globals m)))
-        (let ((b (make-buf)))
-          (emit-u32 b (length (wasm-module-globals m)))
-          (loop for (nil type mutable init) across (wasm-module-globals m)
-                do (emit-valtype m b type)
-                   (emit-byte b (if mutable 1 0))
-                   (emit-expr b init))
-          (emit-section out 6 b)))
+      (when globals-section (emit-section out 6 globals-section))
       ;; exports
       (when (wasm-module-exports m)
         (let ((b (make-buf)))
@@ -813,6 +836,7 @@ functions).  Calls of the installs that are not reached are removed."
                 (:func (emit-byte b 0) (emit-u32 b (func-index m ref)))
                 (:global (emit-byte b 3) (emit-u32 b (global-index m ref)))
                 (:memory (emit-byte b 2) (emit-u32 b 0))
+                (:table (emit-byte b 1) (emit-u32 b 0))
                 (:tag (emit-byte b 4) (emit-u32 b (tag-index m ref))))))
           (emit-section out 7 b)))
       ;; start
@@ -820,12 +844,18 @@ functions).  Calls of the installs that are not reached are removed."
         (let ((b (make-buf)))
           (emit-u32 b (func-index m (wasm-module-start m)))
           (emit-section out 8 b)))
-      ;; element: one declarative segment with all ref.func'd functions
+      ;; element: one segment with all ref.func'd functions, declarative, or
+      ;; active when the module has the table of functions (placed from its
+      ;; code base)
       (let ((refs (loop for k being the hash-keys of (wasm-module-declared-refs m) collect k)))
         (when refs
           (let ((b (make-buf)))
             (emit-u32 b 1)
-            (emit-byte b 3) (emit-byte b 0)
+            (if (wasm-module-table m)
+                (progn (emit-byte b 0)
+                       (emit-expr b (let ((base (wasm-module-code-base m)))
+                                      (if base `((:global.get ,base)) '((:i32.const 0))))))
+                (progn (emit-byte b 3) (emit-byte b 0)))
             (emit-u32 b (length refs))
             (dolist (r refs) (emit-u32 b (func-index m r)))
             (emit-section out 9 b))))
@@ -857,6 +887,13 @@ functions).  Calls of the installs that are not reached are removed."
           (loop for d across (wasm-module-data m)
                 do (emit-byte b 1) (emit-u32 b (length d)) (emit-bytes b d))
           (emit-section out 11 b)))
+      ;; clysm.codes: how many functions the module places in the table of
+      ;; functions (the host makes room for them before instantiating it)
+      (when (eq (car (wasm-module-table m)) :import)
+        (let ((b (make-buf)))
+          (emit-name b "clysm.codes")
+          (emit-u32 b (hash-table-count (wasm-module-declared-refs m)))
+          (emit-section out 0 b)))
       ;; name section (function names) for nicer stack traces
       (let ((b (make-buf)) (sub (make-buf))
             (all (concatenate 'list (wasm-module-imports m) (wasm-module-funcs m))))

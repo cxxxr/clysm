@@ -211,6 +211,80 @@ about 175× faster than with the interpreter (`bin/clysm repl --interp`).
 demo also embeds the compiler, so code typed in the page is compiled to Wasm in
 the browser.
 
+## Heap images
+
+An image that has loaded a large program (Lem: 360 fasls) can save its heap
+to a file and start from it again, as `save-lisp-and-die` does: the image
+and the modules compiled in it are instantiated without running their
+toplevel forms, and the objects are made again from the file
+(`runtime/image.lisp`, `image_load` in `src/prims.lisp`, `host/common.mjs`).
+The engine cannot do it for us: WebAssembly GC objects are opaque to
+JavaScript, and V8's snapshots do not hold WebAssembly.
+
+`(sys:save-image FILE FUNCTION)` writes the heap; a host started with the
+file (`CLYSM_IMAGE=FILE node host/run.mjs IMAGE.wasm`, or the option
+`image` of `loadClysm`) calls FUNCTION. The image saving it must have been
+started with `CLYSM_SAVE_IMAGE` set, so that the host records the modules
+compiled in it (their octets go into the file; with `CLYSM_SAVE_IMAGE=fasls`
+those read from fasls are named by file and position instead).
+
+* **What is saved.** The objects reachable from the roots: the objects of
+  the image's immutable globals (its symbols, constants and static closures,
+  `:image-objects`), the values of its mutable globals (constants built at
+  start, `load-time-value`s), and the globals of every module compiled in
+  it (each module exports `snap`, which returns them, and `restore`, which
+  sets them; `src/live.lisp`). Special variables are saved with their
+  global values, not the values bound around the call (the oldest entry of
+  a symbol on the binding stack). The objects of the image's globals are
+  the same objects in the image started from the file: only their mutable
+  fields are written.
+* **Functions.** A closure's entries are references to functions, which
+  cannot be written. Every function that a closure can refer to (every
+  `ref.func`) is placed in the image's table of functions: the image's own
+  from 0 (an active element segment), and each module's from its code base,
+  an imported global that the host gives it when it instantiates it (it
+  makes room for the number of functions that the custom section
+  `clysm.codes` gives). A closure is saved as the places of its functions in
+  the table; the host loads the modules in the same order, at the same code
+  bases.
+* **The format.** 32-bit words: a header (number of objects of the image, of
+  the heap, of records), then each object of the heap with its kind and its
+  immutable contents (made in an order in which an object's immutable
+  fields refer to objects made before it: strings and vectors, then
+  instances, numbers, symbols and closures), then records that set the
+  mutable fields of objects (cons, vector, symbol, closure name, instance,
+  cell, package, array header), so that cycles are made in two steps; then
+  the roots. A reference is one word: an i31 (fixnum, character) is its
+  value * 2 + 1, an object (index + 1) * 2, null 0. The heap is copied into
+  the linear memory and read there by Wasm code (`image_load`). The file
+  also has the build of the image it was saved by (the custom section
+  `clysm.build`, a hash of the image's octets): an image built otherwise
+  starts as usual, as it does when the file cannot be read or loaded (the
+  host then instantiates the image again and runs its toplevel forms).
+* **What cannot be saved.** JavaScript objects (`externref`): the variables
+  of the runtime, the UI framework and Lem that hold some (functions made
+  with `js:eval`, the page's document, caches) are defined with
+  `sys::%defvar-host`, whose form is evaluated again in the image started
+  from the file (`*host-variables*`); `save-image` sets them to NIL while it
+  saves. Another JavaScript object signals an error that names the variable
+  it is reached from, and the path to it (breadth first, so the shortest).
+  `sys:*save-image-hooks*` are called before saving, and
+  `sys:*restore-image-hooks*` after starting from the file (UIOP's
+  `*image-restore-hook*`: the standard streams, the command line, the
+  temporary directory). The hash tables whose keys are hashed by identity
+  (the host's identity hashes are not saved) are rehashed when the image
+  starts. Other threads and the bindings around the call are not saved.
+* **Compilation hints.** The image starts with code that has never run, and
+  V8 compiles each WebAssembly function the first time it is called, which
+  for Clysm's large functions costs tens to hundreds of microseconds each.
+  A run that starts from the file with every function instrumented
+  (`instrumentWasm`: before its body, a function sets its octet in a table
+  in the linear memory) learns which functions run; the modules in the file
+  and the image then get a `metadata.code.compilation_priority` section
+  naming them (`withCompilationHints`), and V8 started with
+  `--wasm-compilation-hints` compiles them with the modules, in background
+  threads.
+
 ## JavaScript interoperability (spec: externref ラッパー構造体)
 
 JavaScript values are `externref`s, which cannot be stored in Lisp data, so they

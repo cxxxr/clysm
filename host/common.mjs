@@ -29,6 +29,274 @@ export function installSourceMap(state, module) {
     });
 }
 
+// The number of functions that a module compiled in the image places in the
+// image's table of functions (its custom section clysm.codes).
+export function moduleCodeCount(mod) {
+  const sections = WebAssembly.Module.customSections(mod, 'clysm.codes');
+  if (sections.length === 0) return 0;
+  const b = new Uint8Array(sections[0]);
+  let n = 0, shift = 0, i = 0;
+  for (;;) { const c = b[i++]; n |= (c & 0x7f) << shift; if (c < 0x80) break; shift += 7; }
+  return n;
+}
+
+// Where the octets of modules read from fasls come from: Uint8Array ->
+// { path, offset } (set by the hosts' __clysm_read_bytes), so that a heap
+// image can refer to them instead of holding them.
+export const byteSources = new WeakMap();
+
+// Instantiate a module compiled inside the image (a Uint8Array or a
+// WebAssembly.Module) and link it with it: its functions go to the image's
+// table of functions from its end.  While state.modules is an array (an
+// image being prepared to be saved, runtime/image.lisp), the modules are
+// recorded there.
+export function instantiateLinked(state, bytes, codeBase) {
+  const mod = bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes);
+  const ex = state.instance.exports;
+  const codes = ex.codes;
+  const count = moduleCodeCount(mod);
+  if (codeBase === undefined) {
+    codeBase = codes.length;
+    codes.grow(count);
+  }
+  const inst = new WebAssembly.Instance(mod, {
+    ...state.imports,
+    clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
+             poll_count: ex.poll_count,
+             lisp_throw: ex.lisp_throw, memory: ex.memory,
+             codes, code_base: codeBase },
+  });
+  if (state.modules) state.modules.push({ bytes, codeBase, count, instance: inst, source: byteSources.get(bytes) });
+  return inst;
+}
+
+// ---------------------------------------------------------------------------
+// Compilation hints (V8 --wasm-compilation-hints): the functions that a
+// program runs when it starts are compiled while the module is compiled, in
+// background threads, instead of when they are first called (where each
+// costs tens of microseconds).  Which they are is learnt from a run of the
+// program with every function noting that it runs (instrumentWasm: before
+// its body, it sets the octet of its number in a table in the linear
+// memory), then given to the modules with withCompilationHints.
+
+function readLeb(b, p) {
+  let n = 0, shift = 0, c;
+  do { c = b[p++]; n += (c & 0x7f) * 2 ** shift; shift += 7; } while (c & 0x80);
+  return [n, p];
+}
+function leb(n) {
+  const out = [];
+  do { let c = n % 128; n = Math.floor(n / 128); if (n) c |= 0x80; out.push(c); } while (n);
+  return out;
+}
+function sleb(n) {
+  const out = [];
+  for (;;) {
+    const c = n & 0x7f; n >>= 7;
+    if ((n === 0 && !(c & 0x40)) || (n === -1 && (c & 0x40))) { out.push(c); return out; }
+    out.push(c | 0x80);
+  }
+}
+function wasmSections(bytes) {
+  const list = [];
+  let p = 8;
+  while (p < bytes.length) {
+    const start = p, id = bytes[p++];
+    let size; [size, p] = readLeb(bytes, p);
+    let name = null;
+    if (id === 0) { const [l, q] = readLeb(bytes, p); name = new TextDecoder().decode(bytes.subarray(q, q + l)); }
+    list.push({ id, name, start, payload: p, end: p + size });
+    p += size;
+  }
+  return list;
+}
+// the number of imported functions
+function wasmImports(bytes, sections) {
+  const s = sections.find((x) => x.id === 2);
+  let funcs = 0;
+  if (!s) return { funcs };
+  let p = s.payload, n; [n, p] = readLeb(bytes, p);
+  const text = (q) => { const [l, r] = readLeb(bytes, q); return [new TextDecoder().decode(bytes.subarray(r, r + l)), r + l]; };
+  const heapType = (q) => readLeb(bytes, q)[1];   // (an s33: the same length)
+  for (let i = 0; i < n; i++) {
+    let module, field; [module, p] = text(p); [field, p] = text(p);
+    const kind = bytes[p++];
+    if (kind === 0) {
+      funcs++; [, p] = readLeb(bytes, p);
+    } else if (kind === 1) {
+      const t = bytes[p++]; if (t === 0x63 || t === 0x64) p = heapType(p);
+      const f = bytes[p++]; [, p] = readLeb(bytes, p); if (f & 1) [, p] = readLeb(bytes, p);
+    } else if (kind === 2) {
+      const f = bytes[p++]; [, p] = readLeb(bytes, p); if (f & 1) [, p] = readLeb(bytes, p);
+    } else if (kind === 3) {
+      const t = bytes[p++]; if (t === 0x63 || t === 0x64) p = heapType(p); p++;
+    } else if (kind === 4) {
+      p++; [, p] = readLeb(bytes, p);
+    }
+  }
+  return { funcs };
+}
+function concat(parts) {
+  const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+  let p = 0;
+  for (const x of parts) { out.set(x, p); p += x.length; }
+  return out;
+}
+
+// BYTES with each function first setting the octet at TABLE + BASE + its
+// index among the defined functions to 1; { bytes, count }
+export function instrumentWasm(bytes, base, table) {
+  const sections = wasmSections(bytes);
+  const code = sections.find((x) => x.id === 10);
+  if (!code) return { bytes, count: 0 };
+  let p = code.payload, n; [n, p] = readLeb(bytes, p);
+  const bodies = [new Uint8Array(leb(n))];
+  for (let i = 0; i < n; i++) {
+    let size; [size, p] = readLeb(bytes, p);
+    const end = p + size;
+    let q = p, groups; [groups, q] = readLeb(bytes, q);
+    for (let g = 0; g < groups; g++) {
+      [, q] = readLeb(bytes, q);
+      const t = bytes[q++]; if (t === 0x63 || t === 0x64) [, q] = readLeb(bytes, q);
+    }
+    // i32.const address; i32.const 1; i32.store8
+    const call = new Uint8Array([0x41, ...sleb(table + base + i), 0x41, 1, 0x3A, 0, 0]);
+    const body = concat([bytes.subarray(p, q), call, bytes.subarray(q, end)]);
+    bodies.push(new Uint8Array(leb(body.length)), body);
+    p = end;
+  }
+  const payload = concat(bodies);
+  // (the branch hints are at offsets in the bodies, which have moved)
+  const parts = [bytes.subarray(0, 8)];
+  for (const s of sections) {
+    if (s.name === 'metadata.code.branch_hint') continue;
+    parts.push(s === code ? concat([new Uint8Array([10, ...leb(payload.length)]), payload])
+                          : bytes.subarray(s.start, s.end));
+  }
+  return { bytes: concat(parts), count: n };
+}
+
+// BYTES with a metadata.code.compilation_priority section that names
+// FUNCTIONS (indexes among the defined functions) to be compiled first
+export function withCompilationHints(bytes, functions) {
+  // (without the hints it may have)
+  let sections = wasmSections(bytes);
+  const old = sections.find((x) => x.name === 'metadata.code.compilation_priority');
+  if (old) {
+    bytes = concat([bytes.subarray(0, old.start), bytes.subarray(old.end)]);
+    sections = wasmSections(bytes);
+  }
+  if (functions.length === 0) return bytes;
+  const { funcs } = wasmImports(bytes, sections);
+  const code = sections.find((x) => x.id === 10);
+  const name = new TextEncoder().encode('metadata.code.compilation_priority');
+  const body = [...leb(functions.length)];
+  for (const f of [...functions].sort((a, b) => a - b)) body.push(...leb(funcs + f), 0, 1, 0);
+  const payload = concat([new Uint8Array(leb(name.length)), name, new Uint8Array(body)]);
+  const section = concat([new Uint8Array([0, ...leb(payload.length)]), payload]);
+  return concat([bytes.subarray(0, code.start), section, bytes.subarray(code.start)]);
+}
+
+// ---------------------------------------------------------------------------
+// Heap images (runtime/image.lisp).  A file of a heap image:
+//   "CLYSMIMG", the length of the header (u32), the header (JSON), then from
+//   an offset that is a multiple of 8 the octets of the modules compiled in
+//   the image, then the words of the heap.
+// The header: { build, tableLength, modules: [{ offset, length, codeBase }],
+//   modulesOffset, heapOffset, heapLength }; BUILD names the build of the
+//   image (its custom section clysm.build), for which the file is valid.
+//   With state.imageFasls (CLYSM_SAVE_IMAGE=fasls), a module read from a
+//   fasl is { file, offset, length, codeBase }: its octets are read there.
+
+// (MODULE: a compiled module, or its octets)
+export function imageBuild(module) {
+  if (module instanceof WebAssembly.Module) {
+    const sections = WebAssembly.Module.customSections(module, 'clysm.build');
+    return sections.length ? new TextDecoder().decode(sections[0]) : null;
+  }
+  const bytes = new Uint8Array(module);
+  const s = wasmSections(bytes).find((x) => x.name === 'clysm.build');
+  if (!s) return null;
+  const [l, p] = readLeb(bytes, s.payload);
+  return new TextDecoder().decode(bytes.subarray(p + l, s.end));
+}
+
+function saveImage(state, path, nbytes) {
+  const fs = globalThis.__clysm_fs;
+  const ex = state.instance.exports;
+  const heap = new Uint8Array(ex.memory.buffer, 0, nbytes).slice();
+  const external = (m) => state.imageFasls && m.source;
+  const blobs = state.modules.map((m) => external(m) ? null
+                                  : m.bytes instanceof Uint8Array ? m.bytes : new Uint8Array(m.bytes));
+  const align8 = (n) => (n + 7) & ~7;
+  let offset = 0;
+  const modules = state.modules.map((m, i) => {
+    if (external(m)) return { file: m.source.path, offset: m.source.offset, length: m.bytes.length, codeBase: m.codeBase };
+    const e = { offset, length: blobs[i].length, codeBase: m.codeBase };
+    offset = align8(offset + blobs[i].length);
+    return e;
+  });
+  const header = { build: state.build, tableLength: ex.codes.length, modules, modulesLength: offset,
+                   heapLength: nbytes };
+  let json = new TextEncoder().encode(JSON.stringify(header));
+  const modulesOffset = align8(12 + json.length);
+  const heapOffset = modulesOffset + offset;
+  const out = new Uint8Array(heapOffset + nbytes);
+  out.set(new TextEncoder().encode('CLYSMIMG'), 0);
+  new DataView(out.buffer).setUint32(8, json.length, true);
+  out.set(json, 12);
+  state.modules.forEach((m, i) => { if (blobs[i]) out.set(blobs[i], modulesOffset + modules[i].offset); });
+  out.set(heap, heapOffset);
+  fs.writeFileSync(path, out);
+  state.codeIndex = null;
+}
+
+// The header of the heap image FILE (octets), or null if it is not one for
+// the image MODULE.
+export function imageHeader(module, file) {
+  if (!file || file.length < 12) return null;
+  if (new TextDecoder().decode(file.subarray(0, 8)) !== 'CLYSMIMG') return null;
+  const length = new DataView(file.buffer, file.byteOffset).getUint32(8, true);
+  const header = JSON.parse(new TextDecoder().decode(file.subarray(12, 12 + length)));
+  if (!header.build || header.build !== imageBuild(module)) return null;
+  header.modulesOffset = (12 + length + 7) & ~7;
+  header.heapOffset = header.modulesOffset + header.modulesLength;
+  // (a file cut short)
+  if (header.heapOffset + header.heapLength > file.length) return null;
+  return header;
+}
+
+// Compile the modules of a heap image (the host can do this while it
+// instantiates the image); READ(path) reads the fasls it refers to.
+export function compileImageModules(file, header, transform = (bytes) => bytes, read = null) {
+  const files = new Map();
+  const octets = (e) => {
+    if (!e.file) return file.subarray(header.modulesOffset + e.offset, header.modulesOffset + e.offset + e.length);
+    if (!files.has(e.file)) files.set(e.file, read(e.file));
+    return files.get(e.file).subarray(e.offset, e.offset + e.length);
+  };
+  return Promise.all(header.modules.map((e, i) => WebAssembly.compile(transform(octets(e), i))));
+}
+
+// Start the image (state.instance, whose _start has not run) from the heap
+// image FILE: the modules, the objects, then the function given to
+// SAVE-IMAGE.  If the objects cannot be made, an exception is thrown before
+// any Lisp code has run (the host can then instantiate the image again and
+// run _start instead).
+export function loadImage(state, file, header, modules) {
+  const ex = state.instance.exports;
+  const codes = ex.codes;
+  if (codes.length > header.tableLength) throw new Error('heap image: the table of functions is longer');
+  codes.grow(header.tableLength - codes.length);
+  const instances = header.modules.map((e, i) => instantiateLinked(state, modules[i], e.codeBase));
+  const pages = Math.ceil(header.heapLength / 65536);
+  const memory = ex.memory;
+  if (memory.buffer.byteLength < pages * 65536) memory.grow(pages - memory.buffer.byteLength / 65536);
+  new Uint8Array(memory.buffer).set(file.subarray(header.heapOffset, header.heapOffset + header.heapLength), 0);
+  ex.image_load(0);
+  instances.forEach((inst, i) => inst.exports.restore(ex.image_module_snap(i)));
+}
+
 export function makeCommonEnv(state) {
   const ids = new WeakMap();
   let nextId = 1;
@@ -94,16 +362,23 @@ export function makeCommonEnv(state) {
         u8 = new Uint8Array(bytes.length);
         for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
       }
-      const mod = new WebAssembly.Module(u8);
-      const ex = state.instance.exports;
-      const inst = new WebAssembly.Instance(mod, {
-        ...state.imports,
-        clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
-                 poll_count: ex.poll_count,
-                 lisp_throw: ex.lisp_throw, memory: ex.memory },
-      });
-      return inst.exports.run;
+      return instantiateLinked(state, u8).exports.run;
     },
+    // heap images (runtime/image.lisp)
+    code_index(f) {
+      if (!state.codeIndex) {
+        const codes = state.instance.exports.codes;
+        state.codeIndex = new Map();
+        for (let i = 0; i < codes.length; i++) {
+          const g = codes.get(i);
+          if (g && !state.codeIndex.has(g)) state.codeIndex.set(g, i);
+        }
+      }
+      const i = state.codeIndex.get(f);
+      return i === undefined ? -1 : i;
+    },
+    module_count() { return state.modules ? state.modules.length : 0; },
+    module_snap(i) { return state.modules[i].instance.exports.snap(); },
     compile_module(bytes, consts) {
       // instantiate a module compiled inside the image and link it with it
       // BYTES is a string of octets, or a Uint8Array (e.g. read from a fasl)
@@ -112,15 +387,7 @@ export function makeCommonEnv(state) {
         u8 = new Uint8Array(bytes.length);
         for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i);
       }
-      const mod = new WebAssembly.Module(u8);
-      const ex = state.instance.exports;
-      const inst = new WebAssembly.Instance(mod, {
-        ...state.imports,
-        clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
-                 poll_count: ex.poll_count,
-                 lisp_throw: ex.lisp_throw, memory: ex.memory },
-      });
-      return inst.exports.run(consts);
+      return instantiateLinked(state, u8).exports.run(consts);
     },
     put_char_buf(c) {
       if (c < 0) { state.writeBuf = state.nameBuf; state.nameBuf = ''; return; }
@@ -146,5 +413,6 @@ export function makeImports(state, platform) {
     math: mathImports,
   };
   state.imports = imports;
+  globalThis.__clysm_save_image = (path, nbytes) => saveImage(state, path, nbytes);
   return imports;
 }
