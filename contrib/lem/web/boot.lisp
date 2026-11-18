@@ -10,9 +10,13 @@
 ;;;; see which files loading reads: then it loads the extensions as well
 ;;;; (src/extensions.lisp loads them in the page when they are first used),
 ;;;; and writes the number of files that the page loads into load-count,
-;;;; and their sources into sources.txt.
+;;;; and their sources into sources.txt.  With CL-USER::*LEM-SAVE-IMAGE*
+;;;; set to a file, it loads Lem and saves the heap there
+;;;; (runtime/image.lisp), from which the page starts (index.html), calling
+;;;; START-LEM; the page runs this file only when it cannot.
 
 (defvar cl-user::*lem-load-only* nil)
+(defvar cl-user::*lem-save-image* nil)
 (defvar cl-user::*welcome* (with-open-file (in (merge-pathnames "welcome.lisp" *load-truename*))
                              (let ((text (make-string (file-length in))))
                                (subseq text 0 (read-sequence text in)))))
@@ -48,7 +52,13 @@ of the first version of welcome.lisp."
           (write-string cl-user::*welcome* out))))
     (uiop:symbol-call :lem-clysm '#:main (namestring welcome))))
 
-(cond (cl-user::*lem-load-only*
+(cond (cl-user::*lem-save-image*
+       (cl-user::load-lem)
+       ;; (ASDF configured for the extensions, as when one is first loaded)
+       (cl-user::configure-lem-asdf)
+       (sys::save-image cl-user::*lem-save-image*
+                        (lambda () (cl-user::start-in-page #'cl-user::start-lem))))
+      (cl-user::*lem-load-only*
        (cl-user::load-lem)
        (with-open-file (out (merge-pathnames "load-count" cl-user::*boot-directory*)
                             :direction :output :if-exists :supersede)

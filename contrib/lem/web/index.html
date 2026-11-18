@@ -142,7 +142,9 @@ if (typeof WebAssembly.Suspending !== 'function') {
     show('start', 'Starting Lisp');
     await nextFrame();
     // (lisp.eval(string) evaluates Lisp forms, e.g. from the developer tools)
-    window.lisp = await loadClysm(bytes, output, { fs, root: @ROOT@, args: [@BOOT@] });
+    // (from the heap image with Lem loaded, build-web.sh; else boot.lisp loads it)
+    window.lisp = await loadClysm(bytes, output, { fs, root: @ROOT@, args: [@BOOT@],
+                                                   image: @BOOT@.replace(/boot\.lisp$/, 'lem.image') });
     timing.lisp = performance.now();
     if (!started) show('load', 'Loading Lem', 0, `0 / ${loadCount} files`);
   } catch (e) {

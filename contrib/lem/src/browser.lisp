@@ -7,7 +7,7 @@
 
 (in-package :lem-clysm)
 
-(defvar *choose-local-file*
+(sys::%defvar-host *choose-local-file*
   (js:eval "(done) => { const input = document.createElement('input');
      input.type = 'file';
      input.addEventListener('change', () => {
@@ -15,7 +15,7 @@
        if (file) file.text().then((text) => done(file.name, text)); });
      input.click(); }"))
 
-(defvar *download*
+(sys::%defvar-host *download*
   (js:eval "(name, text) => { const a = document.createElement('a');
      a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
      a.download = name;

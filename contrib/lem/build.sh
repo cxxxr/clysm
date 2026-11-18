@@ -46,12 +46,30 @@ node host/run.mjs $out/lem.wasm contrib/lem/prepare.lisp \
 sed -e "s#@CLYSM_ROOT@#$root#" -e "s#@APP_DIR@#$root/$out#" contrib/lem/desktop/index.html > $out/index.html
 sed "s#'../common.mjs'#'./common.mjs'#" host/web/clysm.mjs > $out/clysm.mjs
 cp host/common.mjs host/jsffi.mjs contrib/lem/lem.css contrib/lem/desktop/boot.lisp contrib/lem/load-lem.lisp contrib/lem/desktop/package.json contrib/lem/desktop/lem \
-   ui/electron/main.js ui/electron/preload.js $out/
+   contrib/lem/desktop/train.js contrib/lem/desktop/hint-image.mjs ui/electron/main.js ui/electron/preload.js $out/
 # worlds (contrib/world/): images in workers that the Lisp mode connects to
 cp contrib/world/worker.js $out/world-worker.js
 cp contrib/world/boot.lisp $out/world-boot.lisp
+# the heap with Lem loaded, from which the page starts (runtime/image.lisp)
+echo "saving the heap image"
+echo "(defvar cl-user::*lem-save-image* \"$root/$out/lem.image\") (load \"$root/$out/boot.lisp\")" > $out/save-image.lisp
+rm -f $out/lem.image
+CLYSM_SAVE_IMAGE=1 node host/run.mjs $out/lem.wasm $out/save-image.lisp > $out/save-image.log 2>&1 ||
+  { tail -20 $out/save-image.log; exit 1; }
 if [ -n "$LEM_NO_ELECTRON" ]; then echo "built $out (without Electron)"; exit 0; fi
 [ -d $out/node_modules/electron ] || (cd $out && npm install --no-audit --no-fund)
 # (npm may have left the download of Electron itself to its first start)
 [ -d $out/node_modules/electron/dist ] || (cd $out && node node_modules/electron/install.js)
+# compilation hints: the functions that run when Lem starts are compiled
+# with the modules (host/common.mjs), learnt from a start of the page
+echo "learning which functions run when Lem starts"
+tmp=$(mktemp -d)
+if (cd $out && CLYSM_IMAGE_TRAIN=$tmp/ran.json CLYSM_USER_DATA=$tmp/user-data CLYSM_ELECTRON_TEST=train.js \
+      timeout 120 node_modules/electron/dist/electron . --ozone-platform=headless) > $out/train.log 2>&1 &&
+   [ -s $tmp/ran.json ]; then
+  node $out/hint-image.mjs $out/lem.wasm $out/lem.image $tmp/ran.json
+else
+  echo "(without compilation hints: see $out/train.log)"
+fi
+rm -rf $tmp
 echo "built $out — run it with: (cd $out && npm start)"

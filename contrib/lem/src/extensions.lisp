@@ -50,7 +50,7 @@
   "The names of the systems of all the extensions (build-web.sh packs their fasls)."
   (cons *theme-system* (mapcar #'first *extensions*)))
 
-(defvar *show-before-loading*
+(sys::%defvar-host *show-before-loading*
   (js:eval "() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))"))
 
 (defun load-extension (system &key quiet)

@@ -14,17 +14,18 @@
 
 (in-package :lem-clysm)
 
-(defvar *set-timeout* (js:global "setTimeout"))
-(defvar *clear-timeout* (js:global "clearTimeout"))
-(defvar *set-interval* (js:global "setInterval"))
-(defvar *clear-interval* (js:global "clearInterval"))
+;; (functions of the page: made again in an image started from a heap image)
+(sys::%defvar-host *set-timeout* (js:global "setTimeout"))
+(sys::%defvar-host *clear-timeout* (js:global "clearTimeout"))
+(sys::%defvar-host *set-interval* (js:global "setInterval"))
+(sys::%defvar-host *clear-interval* (js:global "clearInterval"))
 
 ;;; Waiting for an event
 
 (defvar *wake-editor* nil
   "The function that resolves the promise the editor waits for, or NIL.")
 
-(defvar *make-wait-promise*
+(sys::%defvar-host *make-wait-promise*
   (js:eval "(ms, setWake) => new Promise((resolve) => {
               setWake(resolve);
               if (ms !== null) setTimeout(() => resolve(null), ms);

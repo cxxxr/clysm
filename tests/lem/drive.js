@@ -156,6 +156,17 @@ module.exports = (win, app) => {
       check('find definition', await until(async () => (await definition()) === '"echo.lisp"', 10000), await definition());
       await key(',', ['alt']); await sleep(300);
 
+      // describe (C-c C-d d asks micros for the documentation of a symbol)
+      // and the inspector (M-x lisp-inspect, in *lisp-inspector*): asked
+      // without waiting (the answer comes in the editor's loop)
+      await lisp('(progn (defvar cl-user::*described* nil) (lem-lisp-mode::lisp-eval-async (quote (micros/lsp-api:hover-symbol "mapcar")) (lambda (r) (setf cl-user::*described* r))) t)');
+      const described = () => lisp('cl-user::*described*');
+      check('describe', await until(async () => /MAPCAR/.test(await described())), await described());
+      await lisp('(progn (lem-lisp-mode:lisp-inspect "(list 1 2 3)") t)');
+      const inspector = () => lisp('(let ((b (lem:get-buffer "*lisp-inspector*"))) (and b (lem:buffer-text b)))');
+      check('inspector', await until(async () => /CONS/.test(await inspector())), await inspector());
+      await lisp('(progn (lem:delete-buffer (lem:get-buffer "*lisp-inspector*")) t)'); await sleep(300);
+
       if (!web) {
         // a world (contrib/world/): an image in a worker, which the Lisp mode
         // connects to; the REPL then evaluates there

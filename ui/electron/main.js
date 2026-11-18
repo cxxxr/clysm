@@ -172,6 +172,22 @@ function createWindow() {
   }
   win.loadURL('app://app/index.html');
   if (testModule) require(path.resolve(testModule))(win, app);
+  // (CLYSM_STARTUP_LOG=FILE: for measuring how long the application takes to
+  // start, the milliseconds from CLYSM_STARTUP_T0 (a time of Date.now()), or
+  // from the start of the process, to the page's editor on the screen are
+  // appended to FILE)
+  if (process.env.CLYSM_STARTUP_LOG) {
+    const t0 = Number(process.env.CLYSM_STARTUP_T0) || Date.now() - process.uptime() * 1000;
+    win.webContents.once('did-finish-load', async () => {
+      for (let i = 0; i < 6000; i++) {
+        if (await win.webContents.executeJavaScript("document.querySelector('.lem-line') !== null")) {
+          fs.appendFileSync(process.env.CLYSM_STARTUP_LOG, `editor shown at ${Date.now() - t0}\n`);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+  }
 }
 
 // ---- a resident application: the socket of its clients

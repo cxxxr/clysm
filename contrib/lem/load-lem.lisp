@@ -46,7 +46,7 @@ after each."
 ;;; run every 100 ms (a setTimeout: waiting for a frame would cost more) and
 ;;; calls lemBoot.progress(n, total).
 
-(defvar cl-user::*page-progress*
+(sys::%defvar-host cl-user::*page-progress*
   (ignore-errors
    (js:eval "(n, total) => { const boot = globalThis.lemBoot;
                              if (boot) boot.progress(n, total);

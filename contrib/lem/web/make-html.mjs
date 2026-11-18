@@ -10,7 +10,7 @@ import path from 'node:path';
 const [root, image, files, boot, home, count] = process.argv.slice(2);
 const here = path.dirname(new URL(import.meta.url).pathname);
 const module = (file) => fs.readFileSync(path.join(root, file), 'utf8')
-  .replace(/^import .*$/gm, '')
+  .replace(/^import [^;]*;/gm, '')
   .replace(/^export /gm, '');
 const host = ['host/jsffi.mjs', 'host/common.mjs', 'host/web/clysm.mjs', 'host/web/vfs.mjs'].map(module).join('\n');
 const values = {

@@ -24,7 +24,7 @@
     (mapcar #'view-nodes *views*)
     (input-field)))
 
-(defvar *measure-cell*
+(sys::%defvar-host *measure-cell*
   (js:eval "(element, fontSize, fontFamily) => {
      const span = document.createElement('span');
      span.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;line-height:1.25;'
@@ -66,7 +66,7 @@
                                                       nil))
   (measure))
 
-(defvar *show-exited*
+(sys::%defvar-host *show-exited*
   (js:eval "(container) => { window.close();
      /* a page that the browser does not let close */
      const element = document.querySelector(container);
@@ -234,12 +234,12 @@
 ;;; renderer itself before Electron 45, through the desktop shell's
 ;;; synchronous calls since)
 
-(defvar *clipboard*
+(sys::%defvar-host *clipboard*
   (ignore-errors
    (let ((require (js:global "require")))
      (and require (js:get (js:funcall require "electron") "clipboard")))))
 
-(defvar *desktop*
+(sys::%defvar-host *desktop*
   (ignore-errors (let ((d (js:global "desktop"))) (and (js:js-value-p d) d))))
 
 (defmethod lem-if:clipboard-copy ((implementation clysm) text)

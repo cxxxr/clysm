@@ -48,6 +48,10 @@
       fs: require('node:fs'),
       root: '@CLYSM_ROOT@/',
       args: ['@APP_DIR@/boot.lisp'],
+      // Lem loaded (build.sh), else boot.lisp loads it
+      image: '@APP_DIR@/lem.image',
+      // (build.sh: which functions run, for compilation hints)
+      train: !!process.env.CLYSM_IMAGE_TRAIN,
     });
   } catch (e) {
     status.textContent = 'Lem could not start:\n' + (e && e.message);

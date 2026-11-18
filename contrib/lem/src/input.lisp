@@ -120,7 +120,7 @@
 
 (defvar *screen-element* nil "The DOM element of the screen.")
 
-(defvar *element-position*
+(sys::%defvar-host *element-position*
   (js:eval "(element, event) => { const r = element.getBoundingClientRect();
                                  return [event.clientX - r.left, event.clientY - r.top]; }"))
 
