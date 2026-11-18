@@ -176,9 +176,66 @@ export function instrumentWasm(bytes, base, table) {
   return { bytes: concat(parts), count: n };
 }
 
+// The indexes among the defined functions of those of BYTES named NAMES
+// (in its name section)
+export function wasmFunctionsNamed(bytes, names) {
+  const sections = wasmSections(bytes);
+  const { funcs } = wasmImports(bytes, sections);
+  const s = sections.find((x) => x.name === 'name');
+  const found = [];
+  if (!s) return found;
+  let [l, p] = readLeb(bytes, s.payload); p += l;
+  while (p < s.end) {
+    const id = bytes[p++]; let size; [size, p] = readLeb(bytes, p);
+    if (id === 1) {
+      let n, q = p; [n, q] = readLeb(bytes, q);
+      for (let i = 0; i < n; i++) {
+        let index, len; [index, q] = readLeb(bytes, q); [len, q] = readLeb(bytes, q);
+        if (names.includes(new TextDecoder().decode(bytes.subarray(q, q + len)))) found.push(index - funcs);
+        q += len;
+      }
+    }
+    p += size;
+  }
+  return found;
+}
+
+// BYTES with the bodies of the functions it exports as NAMES replaced by
+// `unreachable` (the modules of a heap image: their RUN and SNAP are never called)
+export function withoutBodies(bytes, names) {
+  const sections = wasmSections(bytes);
+  const { funcs } = wasmImports(bytes, sections);
+  const exp = sections.find((x) => x.id === 7);
+  const code = sections.find((x) => x.id === 10);
+  if (!exp || !code) return bytes;
+  const drop = new Set();
+  let p = exp.payload, n; [n, p] = readLeb(bytes, p);
+  for (let i = 0; i < n; i++) {
+    let l; [l, p] = readLeb(bytes, p);
+    const name = new TextDecoder().decode(bytes.subarray(p, p + l)); p += l;
+    const kind = bytes[p++]; let index; [index, p] = readLeb(bytes, p);
+    if (kind === 0 && names.includes(name)) drop.add(index - funcs);
+  }
+  if (drop.size === 0) return bytes;
+  p = code.payload; [n, p] = readLeb(bytes, p);
+  const parts = [new Uint8Array(leb(n))];
+  for (let i = 0; i < n; i++) {
+    const start = p;
+    let size; [size, p] = readLeb(bytes, p);
+    // (no locals, unreachable, end)
+    parts.push(drop.has(i) ? new Uint8Array([3, 0, 0x00, 0x0B]) : bytes.subarray(start, p + size));
+    p += size;
+  }
+  const payload = concat(parts);
+  // (the branch hints of the bodies dropped would be wrong: all are left out)
+  return concat([bytes.subarray(0, 8), ...sections.filter((s) => s.name !== 'metadata.code.branch_hint').map((s) =>
+    s === code ? concat([new Uint8Array([10, ...leb(payload.length)]), payload]) : bytes.subarray(s.start, s.end))]);
+}
+
 // BYTES with a metadata.code.compilation_priority section that names
-// FUNCTIONS (indexes among the defined functions) to be compiled first
-export function withCompilationHints(bytes, functions) {
+// FUNCTIONS (indexes among the defined functions) to be compiled first, and
+// OPTIMIZED (among them) to be compiled at once by the optimizing compiler
+export function withCompilationHints(bytes, functions, optimized = []) {
   // (without the hints it may have)
   let sections = wasmSections(bytes);
   const old = sections.find((x) => x.name === 'metadata.code.compilation_priority');
@@ -191,7 +248,11 @@ export function withCompilationHints(bytes, functions) {
   const code = sections.find((x) => x.id === 10);
   const name = new TextEncoder().encode('metadata.code.compilation_priority');
   const body = [...leb(functions.length)];
-  for (const f of [...functions].sort((a, b) => a - b)) body.push(...leb(funcs + f), 0, 1, 0);
+  for (const f of [...new Set(functions)].sort((a, b) => a - b)) {
+    // (compilation priority 0, and optimization priority 0 for OPTIMIZED)
+    if (optimized.includes(f)) body.push(...leb(funcs + f), 0, 2, 0, 0);
+    else body.push(...leb(funcs + f), 0, 1, 0);
+  }
   const payload = concat([new Uint8Array(leb(name.length)), name, new Uint8Array(body)]);
   const section = concat([new Uint8Array([0, ...leb(payload.length)]), payload]);
   return concat([bytes.subarray(0, code.start), section, bytes.subarray(code.start)]);
@@ -226,8 +287,11 @@ function saveImage(state, path, nbytes) {
   const ex = state.instance.exports;
   const heap = new Uint8Array(ex.memory.buffer, 0, nbytes).slice();
   const external = (m) => state.imageFasls && m.source;
+  // (without the bodies of their RUN and SNAP, which an image started from
+  // the file does not call: it cannot be saved again)
   const blobs = state.modules.map((m) => external(m) ? null
-                                  : m.bytes instanceof Uint8Array ? m.bytes : new Uint8Array(m.bytes));
+                                  : withoutBodies(m.bytes instanceof Uint8Array ? m.bytes : new Uint8Array(m.bytes),
+                                                  ['run', 'snap']));
   const align8 = (n) => (n + 7) & ~7;
   let offset = 0;
   const modules = state.modules.map((m, i) => {
@@ -269,6 +333,11 @@ export function imageHeader(module, file) {
 // Compile the modules of a heap image (the host can do this while it
 // instantiates the image); READ(path) reads the fasls it refers to.
 export function compileImageModules(file, header, transform = (bytes) => bytes, read = null) {
+  // (linked into one module: host/link.mjs)
+  if (header.linked) {
+    const start = header.modulesOffset + header.linked.offset;
+    return Promise.all([WebAssembly.compile(transform(file.subarray(start, start + header.linked.length), 0))]);
+  }
   const files = new Map();
   const octets = (e) => {
     if (!e.file) return file.subarray(header.modulesOffset + e.offset, header.modulesOffset + e.offset + e.length);
@@ -283,18 +352,30 @@ export function compileImageModules(file, header, transform = (bytes) => bytes, 
 // SAVE-IMAGE.  If the objects cannot be made, an exception is thrown before
 // any Lisp code has run (the host can then instantiate the image again and
 // run _start instead).
-export function loadImage(state, file, header, modules) {
+export async function loadImage(state, file, header, modules) {
   const ex = state.instance.exports;
   const codes = ex.codes;
   if (codes.length > header.tableLength) throw new Error('heap image: the table of functions is longer');
   codes.grow(header.tableLength - codes.length);
-  const instances = header.modules.map((e, i) => instantiateLinked(state, modules[i], e.codeBase));
+  let instances, restores;
+  if (header.linked) {
+    // (asynchronously: a page may not instantiate a large module at once)
+    const inst = await WebAssembly.instantiate(modules[0], {
+      ...state.imports,
+      clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
+               poll_count: ex.poll_count, lisp_throw: ex.lisp_throw, memory: ex.memory, codes },
+    });
+    restores = header.modules.map((e, i) => inst.exports['restore' + i]);
+  } else {
+    instances = header.modules.map((e, i) => instantiateLinked(state, modules[i], e.codeBase));
+    restores = instances.map((inst) => inst.exports.restore);
+  }
   const pages = Math.ceil(header.heapLength / 65536);
   const memory = ex.memory;
   if (memory.buffer.byteLength < pages * 65536) memory.grow(pages - memory.buffer.byteLength / 65536);
   new Uint8Array(memory.buffer).set(file.subarray(header.heapOffset, header.heapOffset + header.heapLength), 0);
   ex.image_load(0);
-  instances.forEach((inst, i) => inst.exports.restore(ex.image_module_snap(i)));
+  restores.forEach((restore, i) => restore(ex.image_module_snap(i)));
 }
 
 export function makeCommonEnv(state) {

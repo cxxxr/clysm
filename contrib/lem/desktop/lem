@@ -10,7 +10,7 @@
 #   lem --install       start Lem hidden when you log in, and add Lem to the
 #                       applications menu (through this command); Linux
 # Lem shows its window in less than 10 ms when it is running; started, it
-# takes about a second (from its heap image, see contrib/lem/README.md).
+# takes under a second (from its heap image, see contrib/lem/README.md).
 dir=$(cd "$(dirname "$0")" && pwd)
 data=${CLYSM_USER_DATA:-${XDG_CONFIG_HOME:-$HOME/.config}/Lem}
 [ "$(uname)" = Darwin ] && data=${CLYSM_USER_DATA:-$HOME/Library/Application Support/Lem}

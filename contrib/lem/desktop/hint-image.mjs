@@ -18,7 +18,9 @@ const modulesOffset = (12 + length + 7) & ~7;
 const heap = file.subarray(modulesOffset + header.modulesLength, modulesOffset + header.modulesLength + header.heapLength);
 const align8 = (n) => (n + 7) & ~7;
 let offset = 0;
-const blobs = header.modules.map((e, i) => {
+// (the modules, or the one module they are linked into, link-image.mjs)
+const entries = header.linked ? [header.linked] : header.modules;
+const blobs = entries.map((e, i) => {
   const bytes = withCompilationHints(file.subarray(modulesOffset + e.offset, modulesOffset + e.offset + e.length),
                                      ran.modules[i] || []);
   e.offset = offset; e.length = bytes.length;
@@ -32,8 +34,8 @@ const out = Buffer.alloc(newModulesOffset + offset + heap.length);
 out.write('CLYSMIMG', 0, 'latin1');
 out.writeUInt32LE(json.length, 8);
 json.copy(out, 12);
-blobs.forEach((b, i) => out.set(b, newModulesOffset + header.modules[i].offset));
+blobs.forEach((b, i) => out.set(b, newModulesOffset + entries[i].offset));
 out.set(heap, newModulesOffset + offset);
 fs.writeFileSync(imagePath, out);
 const count = ran.modules.reduce((n, m) => n + m.length, 0);
-console.log(`hints: ${ran.base.length} functions of the image, ${count} of ${header.modules.length} modules`);
+console.log(`hints: ${ran.base.length} functions of the image, ${count} of the modules`);

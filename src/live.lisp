@@ -144,10 +144,12 @@ Returns (values bytes constants-vector)."
                     :body `((:local.get 0) (:ref.cast! :vector) (:local.set v)
                             ,@(loop for g in globals for i from 0
                                     append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                             ;; (plain casts: the values are
+                                                             ;; those SNAP returned)
                                              ,@(case (car g)
-                                                 (:sym '((:ref.cast :symbol)))
+                                                 (:sym '((:ref.cast! :symbol)))
                                                  (t (if (member g closures :key #'first)
-                                                        '((:ref.cast :closure))
+                                                        '((:ref.cast! :closure))
                                                         nil)))
                                              (:global.set ,g))))))
         ;; a module made at run time only needs the helpers it calls

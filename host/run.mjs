@@ -166,7 +166,7 @@ export async function runModule(bytes, args = []) {
     const header = imageHeader(state.module, file);
     if (header) {
       try {
-        loadImage(state, file, header, await compileImageModules(file, header, undefined, (p) => fs.readFileSync(p)));
+        await loadImage(state, file, header, await compileImageModules(file, header, undefined, (p) => fs.readFileSync(p)));
         restored = true;
       } catch (e) {
         console.error(';; the heap image could not be loaded:', e.message);

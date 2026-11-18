@@ -178,6 +178,10 @@ function createWindow() {
   // appended to FILE)
   if (process.env.CLYSM_STARTUP_LOG) {
     const t0 = Number(process.env.CLYSM_STARTUP_T0) || Date.now() - process.uptime() * 1000;
+    // (and why the page did not start from its heap image, if it did not)
+    win.webContents.on('console-message', (event) => {
+      if (/heap image/.test(event.message)) fs.appendFileSync(process.env.CLYSM_STARTUP_LOG, `  ${event.message}\n`);
+    });
     win.webContents.once('did-finish-load', async () => {
       for (let i = 0; i < 6000; i++) {
         if (await win.webContents.executeJavaScript("document.querySelector('.lem-line') !== null")) {

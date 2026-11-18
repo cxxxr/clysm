@@ -284,6 +284,31 @@ those read from fasls are named by file and position instead).
   naming them (`withCompilationHints`), and V8 started with
   `--wasm-compilation-hints` compiles them with the modules, in background
   threads.
+* **Size.** The modules saved in the file are without the bodies of their
+  `run` and `snap`, which are never called there (so an image started from
+  a heap image cannot be saved again); `restore` uses unchecked casts.
+* **Linking.** V8 spends most of the time of compiling thousands of small
+  modules on each module (its copy of the image's types, its imports), and
+  validates every function when it compiles a module. `host/link.mjs` links
+  the modules into one: the image's types, then those of each module; the
+  imported functions of all; the functions, globals and data of each module
+  in turn (their indexes in the code mapped); an element segment for each
+  module at its code base; and exports `restore<i>`. The host then compiles
+  and instantiates one module (`header.linked`).
+
+For Lem (`contrib/lem/`), the file holds 4655 modules linked into one (36
+MB) and 500,000 objects (35 MB of words). Starting the desktop application,
+with the machine busy with other programs (load average 3.5 to 5.8), takes
+from the `lem` command to the editor on the screen 0.76 to 1.06 s (it took
+3 s loading the fasls, 6 s before; a median of 0.87 s at load 4, 1.02 s at
+load 5.5): Electron shows the page at 0.35 s; then
+compiling the image and the module takes 0.3 s (in V8's background
+threads), instantiating the module 0.03 s, making the objects 0.06 s,
+restoring the modules' globals 0.03 s, and Lem draws its first frame 0.04 s
+after its MAIN. Without a display (the tests' offscreen window) it is 0.6
+s. Without compilation hints it was 1.85 s, the functions that ran when Lem
+started (2400 of Lem, 4655 `restore`s, 700 of the image) each compiled when
+first called (0.05 to 0.1 ms each); without linking 1.05 to 1.2 s.
 
 ## JavaScript interoperability (spec: externref ラッパー構造体)
 
@@ -968,7 +993,12 @@ are no subprocesses, so `uiop:run-program` is not available.
 
 Lem (`contrib/lem/`) loads in 2.1 to 2.3 s on Node.js instead of 6 s, and
 without ASDF: `contrib/lem/load-lem.lisp` loads the fasls in the order that
-`prepare.lisp` noted, after registering the systems as immutable.
+`prepare.lisp` noted, after registering the systems as immutable. Its
+pages start from a heap image instead (see Heap images).
+
+A heap image saved after loading systems with ASDF keeps ASDF's
+configuration (UIOP's hook of dumped images, which clears it, is not
+called; its hooks of restored images are, `contrib/asdf-hooks.lisp`).
 
 ## Quicklisp
 

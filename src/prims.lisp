@@ -4688,10 +4688,8 @@ words that follow, by its type."
 ;; image_load(offset): make the objects of the heap image at OFFSET in the
 ;; linear memory (the host has instantiated the modules compiled in the image
 ;; first); the roots are then in :IMG-ROOTS
-(defhelper :image-load :i-v ((nbase :i32) (nheap :i32) (nrec :i32) (k :i32) (end :i32)
-                              (len :i32) (j :i32) (w :i32)
-                              (s (:ref :null :string)) (x :eqref) (chunks (:ref :null :vector))
-                              (c (:ref :null :vector)))
+(defun img-load-code ()
+  (list
   '(:local.get 0) '(:global.set :img-pos)
   `(:call :img-word) `(:i32.const ,+img-magic+) :i32.ne '(:if nil nil (:unreachable))
   `(:call :img-word) `(:i32.const ,+img-version+) :i32.ne '(:if nil nil (:unreachable))
@@ -4716,7 +4714,52 @@ words that follow, by its type."
   ;; their mutable fields
   '(:i32.const 0) '(:local.set k)
   (img-loop-code 'k 'nrec `((:call :img-ref) (:local.set x) ,@(img-fill-code)))
-  '(:call :img-ref) '(:global.set :img-roots))
+  '(:call :img-ref) '(:global.set :img-roots)))
+
+(defun img-inline (code)
+  "CODE with the words and references read in place (the position in the
+local POS) instead of by calls of :IMG-WORD, :IMG-REF and :IMG-I64: the
+baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
+  (let ((word '((:local.get pos) (:i32.load) (:local.get pos) (:i32.const 4) :i32.add (:local.set pos))))
+    (labels ((ref ()
+               (let ((r (gensym "REF")))
+                 `((:block ,r :eqref
+                     ,@word (:local.tee rw) (:i32.const 1) :i32.and
+                     (:if nil nil ((:local.get rw) (:i32.const 1) :i32.shr_s :ref.i31 (:br ,r)))
+                     (:local.get rw) :i32.eqz
+                     (:if nil nil ((:ref.null :eq) (:br ,r)))
+                     (:local.get objs) (:local.get rw) (:i32.const 1) :i32.shr_u (:i32.const 1) :i32.sub
+                     (:array.get :vector)))))
+             (walk (list)
+               (loop for x in list
+                     append (cond ((equal x '(:call :img-word)) word)
+                                  ((equal x '(:call :img-ref)) (ref))
+                                  ((equal x '(:call :img-i64))
+                                   `(,@word (:local.set rw) ,@word :i64.extend_i32_u (:i64.const 32) :i64.shl
+                                     (:local.get rw) :i64.extend_i32_u :i64.or))
+                                  ((equal x '(:global.get :img-pos)) '((:local.get pos)))
+                                  ((equal x '(:global.set :img-pos)) '((:local.set pos)))
+                                  ((equal x '(:global.get :img-objs)) '((:local.get objs)))
+                                  ((and (consp x) (member (car x) '(:block :loop)))
+                                   (list (list* (first x) (second x) (third x) (walk (cdddr x)))))
+                                  ((and (consp x) (eq (car x) :if))
+                                   (list (if (cddddr x)
+                                             (list :if (second x) (third x) (walk (fourth x)) (walk (fifth x)))
+                                             (list :if (second x) (third x) (walk (fourth x))))))
+                                  (t (list x))))))
+      (walk code))))
+
+(defhelper :image-load :i-v ((nbase :i32) (nheap :i32) (nrec :i32) (k :i32) (end :i32)
+                              (len :i32) (j :i32) (w :i32)
+                              (s (:ref :null :string)) (x :eqref) (chunks (:ref :null :vector))
+                              (c (:ref :null :vector)) (pos :i32) (rw :i32) (objs (:ref :null :vector)))
+  (let ((code (loop for x in (img-load-code)
+                    if (and (consp x) (consp (car x))) append x else collect x)))
+    ;; (the objects in the local OBJS once the vector is made)
+    (img-inline (loop for x in code
+                      append (if (equal x '(:global.set :img-objs))
+                                 '((:local.tee objs) (:global.set :img-objs))
+                                 (list x))))))
 ;; image_module_snap(i): what RESTORE of the Ith module takes
 (defhelper :image-module-snap :i-e ()
   '(:global.get :img-roots) '(:ref.cast! :vector) '(:i32.const 1) '(:array.get :vector) '(:ref.cast! :vector)

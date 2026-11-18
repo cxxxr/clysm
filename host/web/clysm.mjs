@@ -124,7 +124,7 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
   let restored = false;
   if (modules) {
     try {
-      loadImage(state, file, header, await modules);
+      await loadImage(state, file, header, await modules);
       restored = true;
     } catch (e) {
       console.error('the heap image could not be loaded:', e);

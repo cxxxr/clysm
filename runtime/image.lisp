@@ -204,6 +204,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
             do (setf (symbol-value (car e)) v)))))
 
 (defun %save-image (file function)
+  (when *image-restored*
+    (error "SAVE-IMAGE: an image started from a heap image cannot be saved again (its modules are without the code that saving needs)"))
   (when (zerop (%module-count))
     (error "SAVE-IMAGE: the host does not record the modules compiled in the image (CLYSM_SAVE_IMAGE)"))
   (let* (;; (bound: their global values are saved)

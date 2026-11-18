@@ -46,7 +46,8 @@ node host/run.mjs $out/lem.wasm contrib/lem/prepare.lisp \
 sed -e "s#@CLYSM_ROOT@#$root#" -e "s#@APP_DIR@#$root/$out#" contrib/lem/desktop/index.html > $out/index.html
 sed "s#'../common.mjs'#'./common.mjs'#" host/web/clysm.mjs > $out/clysm.mjs
 cp host/common.mjs host/jsffi.mjs contrib/lem/lem.css contrib/lem/desktop/boot.lisp contrib/lem/load-lem.lisp contrib/lem/desktop/package.json contrib/lem/desktop/lem \
-   contrib/lem/desktop/train.js contrib/lem/desktop/hint-image.mjs ui/electron/main.js ui/electron/preload.js $out/
+   contrib/lem/desktop/train.js contrib/lem/desktop/hint-image.mjs contrib/lem/desktop/link-image.mjs host/link.mjs \
+   ui/electron/main.js ui/electron/preload.js $out/
 # worlds (contrib/world/): images in workers that the Lisp mode connects to
 cp contrib/world/worker.js $out/world-worker.js
 cp contrib/world/boot.lisp $out/world-boot.lisp
@@ -56,6 +57,8 @@ echo "(defvar cl-user::*lem-save-image* \"$root/$out/lem.image\") (load \"$root/
 rm -f $out/lem.image
 CLYSM_SAVE_IMAGE=1 node host/run.mjs $out/lem.wasm $out/save-image.lisp > $out/save-image.log 2>&1 ||
   { tail -20 $out/save-image.log; exit 1; }
+# its modules linked into one (host/link.mjs)
+node $out/link-image.mjs $out/lem.image
 if [ -n "$LEM_NO_ELECTRON" ]; then echo "built $out (without Electron)"; exit 0; fi
 [ -d $out/node_modules/electron ] || (cd $out && npm install --no-audit --no-fund)
 # (npm may have left the download of Electron itself to its first start)

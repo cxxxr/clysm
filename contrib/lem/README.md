@@ -27,14 +27,26 @@ the image, compiles Lem and its libraries with it (Quicklisp downloads what
 is missing; the first time this takes a few minutes), and installs Electron
 in `build/lem-desktop/`.
 
-**Starting.** Lem takes about three seconds to start (Electron, on Linux,
-without other work): the image is made again (WebAssembly GC objects cannot
-be saved), and Lem's 359 fasls are loaded, while the page shows how far it
-is. They are loaded without ASDF (`load-lem.lisp`): `prepare.lisp` notes
-them in `boot-list.lisp` in their order with the systems, which are
-registered as loaded and immutable (ASDF would read 67 system definitions
-and plan 445 files, a second), and Lem's Lisp mode with micros is an
-extension (`lem-clysm-lisp.asd`) loaded when a Lisp file is first opened.
+**Starting.** Lem starts in under a second (from the `lem` command to the
+editor on the screen, on Linux, while other programs keep the machine busy:
+0.76 to 1.06 s; 0.6 s without a display): `build.sh` loads Lem on Node.js
+and saves the heap in `lem.image` (heap images, `docs/INTERNALS.md`), links
+the 4655 modules compiled in it into one (`desktop/link-image.mjs`), and the
+page starts from it instead of loading Lem: the image and that module are
+instantiated without running their toplevel forms, and the 500,000 objects
+are made again from the file. What remains is Electron (0.35 s to load the
+page), V8 compiling the module (0.3 s: the functions that run when Lem
+starts are compiled with it, in background threads, by compilation hints
+that `build.sh` learns from a start, `desktop/train.js`), making the
+objects (0.06 s) and Lem's first frame. `lem.image` is valid only for the image that saved it; otherwise,
+or if it cannot be loaded, `boot.lisp` loads Lem as before: Lem's 359
+fasls, while the page shows how far it is (about three seconds). They are
+loaded without ASDF (`load-lem.lisp`): `prepare.lisp` notes them in
+`boot-list.lisp` in their order with the systems, which are registered as
+loaded and immutable, and Lem's Lisp mode with micros is an extension
+(`lem-clysm-lisp.asd`) loaded when a Lisp file is first opened.
+`CLYSM_STARTUP_LOG=FILE` makes the application append how long it took
+(from `CLYSM_STARTUP_T0`, a time of `Date.now()`) to FILE.
 
 **Starting at once.** Electron alone takes 0.1 to 0.3 s to show an empty
 window. So the
@@ -141,52 +153,20 @@ workflow `.github/workflows/lem-demo.yml` (run by hand). It opens
 `web/welcome.lisp`, a short tour, copied into the home directory (and
 replaced by a newer one as long as it was not changed there).
 
-While Lem loads (about 3 s of the 5), the page shows how far it is:
-`web/boot.lisp` loads Lem as a computation that lets the page draw itself
-between files (`js:await` of the next frame, at most every 50 ms), and calls
+The page starts from a heap image too (`build-web.sh` saves it, with
+`CLYSM_SAVE_IMAGE=fasls`: its modules are those of the fasls in the pack,
+where it refers to them, so that the page holds them once): opened from the
+disk, the editor is there 1.2 to 1.4 s after the page is opened (0.4 s of
+it unpacking the files). Browsers do not have V8's compilation hints, so
+the code compiles as it is first run, and the modules are not linked (the
+pack holds them once, in the fasls). Without the heap image (if it cannot
+be loaded), `web/boot.lisp` loads Lem while the page shows how far it is:
+it loads Lem as a computation that lets the page draw itself between files
+(`js:await` of the next frame, at most every 50 ms), and calls
 `lemBoot.progress` with the number of files loaded; `build-web.sh` counts
 them when it loads Lem on Node.js. A browser without JavaScript Promise
 Integration gets a page that says so.
 
-`build-web.sh` makes one HTML file (`web/index.html` is its template) that
-contains the host (`host/*.mjs`, put into the page: a page opened from a file
-cannot import modules), the image and a pack of files, both compressed and in
-base64:
-
-* `build-web.sh` loads Lem on Node.js as the page will (`web/boot.lisp`),
-  with `CLYSM_TRACE_FILES` (`host/run.mjs`) noting the files it reads and
-  looks at; `web/pack.mjs` packs those it reads (the fasls, the `.asd`
-  files...) and the names and times of the others (ASDF compares the times
-  of sources and fasls). About 67 MB, 9 MB compressed.
-* The page makes a file system in memory from the pack (`host/web/vfs.mjs`,
-  the part of Node.js's `fs` that Clysm uses), and a `process` with the home
-  directory of the build, then runs the image as the desktop application
-  does. Files written in the home directory are kept in the browser's
-  `localStorage`.
-* `M-x open-local-file` copies a file of the computer into the home
-  directory (the browser's file chooser) and opens it; `M-x download-file`
-  saves the buffer to the computer (a download).
-* The browser's clipboard cannot be read without waiting: Command-V,
-  Control-Shift-V and Shift-Insert paste with the browser's paste event,
-  and `C-y` yanks Lem's own kill ring.
-
-## What Lem on Clysm does without
-
-Lem's core (`lem/core`), Paredit, the Lisp mode above and the extensions
-above are there; the others are not (those that run programs, the
-language server client, the terminal, legit...). Libraries that Clysm cannot provide are replaced by
-stubs (`stubs/`): log4cl (log messages go to the console of the page),
-dexador (no network client: the DeepL commands fail), usocket (sockets
-within the image, above), lem-process (no programs: `M-x slime` cannot
-start another Lisp), deploy (only named by `lem.asd`).
-`setup.lisp` drops lem-extension-manager, which installs packages at run time.
-
-* No subprocesses (`uiop:run-program`): `grep`, shells, language servers,
-  `git` and `find` do not work.
-* Files are read and written as UTF-8. In a browser, the files are those of
-  the pack and what was written in the home directory.
-* A long computation of the editor itself (not of what the Lisp mode
-  evaluates) stops it until it ends.
 
 ## Files
 
@@ -196,7 +176,7 @@ start another Lisp), deploy (only named by `lem.asd`).
 | `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js), and notes what is loaded at start (`boot-list.lisp`) |
 | `load-lem.lisp` | loads Lem without ASDF, showing how far it is in the page |
-| `desktop/` | the page, `boot.lisp` and `package.json` of the application, and `lem`, its client |
+| `desktop/` | the page, `boot.lisp` (which also saves the heap image) and `package.json` of the application, `lem`, its client, `link-image.mjs` (one module), and `train.js` and `hint-image.mjs` (compilation hints) |
 | `web/` | the page for a browser (`index.html`, `boot.lisp`, `welcome.lisp`), `pack.mjs`, `make-html.mjs` |
 | `lem.css` | the look of both pages |
 | `build.sh`, `build-web.sh` | build `build/lem-desktop/`, `build/lem-web/lem.html` |
