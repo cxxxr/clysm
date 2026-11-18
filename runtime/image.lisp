@@ -51,6 +51,15 @@
   (%img-put-halves *img-buf* *img-fill* hi lo)
   (setq *img-fill* (+ *img-fill* 1)))
 
+;;; The tables of SAVE-IMAGE are hash tables keyed by objects; the marker of
+;;; removed entries of hash tables (+DELETED+), which is an object of the
+;;; heap too, would be dropped from them when they grow: it is keyed by
+;;; another object.
+(defvar *img-deleted-key* (list 'deleted-entry))
+(defmacro %img-key (x)
+  (let ((k (gensym)))
+    `(let ((,k ,x)) (if (eq ,k +deleted+) *img-deleted-key* ,k))))
+
 (defvar *img-ids* nil "object -> its index")
 (defvar *img-current* nil "the object being written")
 
@@ -60,7 +69,7 @@
          (%img-room 1)
          (%img-put-i31 *img-buf* *img-fill* x)
          (setq *img-fill* (+ *img-fill* 1)))
-        (t (let ((id (gethash x *img-ids*)))
+        (t (let ((id (gethash (%img-key x) *img-ids*)))
              (unless id
                (error "SAVE-IMAGE: an object (~A) made or reached while saving, from ~A"
                       (%img-kind x) (if *img-current* (%img-short *img-current*) "?")))
@@ -147,7 +156,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
   "How X is reached: the chain of objects from a root (PARENTS: object ->
 (parent . field))."
   (let ((chain nil))
-    (loop (let ((p (gethash x parents)))
+    (loop (let ((p (gethash (%img-key x) parents)))
             (push (cons x (and (consp p) (cdr p))) chain)
             (unless (consp p) (return))
             (setq x (car p))))
@@ -233,8 +242,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
     (setq *img-ids* (make-hash-table :test 'eq :size 1000000))
     (labels ((visit (x parent &optional field)
                (unless (or (%unboundp x) (fixnump x) (characterp x)
-                           (nth-value 1 (gethash x parents)))
-                 (setf (gethash x parents) (if (eq parent :root) :root (cons parent field)))
+                           (nth-value 1 (gethash (%img-key x) parents)))
+                 (setf (gethash (%img-key x) parents) (if (eq parent :root) :root (cons parent field)))
                  (vector-push-extend x queue)))
              (walk ()
                ;; breadth first: the path to an object that cannot be saved is a shortest one
@@ -253,15 +262,15 @@ now (the oldest binding of a symbol on the binding stack holds it)."
                             (vector-push-extend x rehash))
                           (when (member kind '(:cons :vector :symbol :closure :instance :cell :package :mdarray))
                             (incf fillable))
-                          (unless (gethash x *img-ids*)
+                          (unless (gethash (%img-key x) *img-ids*)
                             (push x (svref ranks (%img-rank kind))))
                           (%img-children x kind (lambda (y field) (visit y x field)))))))
       ;; the image's own objects: indexes 0... (an object in two globals
       ;; keeps its first index)
       (dotimes (i (length base))
         (let ((x (svref base i)))
-          (unless (or (fixnump x) (characterp x) (gethash x *img-ids*))
-            (setf (gethash x *img-ids*) i))))
+          (unless (or (fixnump x) (characterp x) (gethash (%img-key x) *img-ids*))
+            (setf (gethash (%img-key x) *img-ids*) i))))
       (dotimes (i (length base))
         (let ((x (svref base i)))
           (visit x :root)))
@@ -282,7 +291,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
         (let ((next (length base)) (order nil))
           (dotimes (r 5)
             (dolist (x (nreverse (svref ranks r)))
-              (setf (gethash x *img-ids*) next)
+              (setf (gethash (%img-key x) *img-ids*) next)
               (incf next)
               (push x order)))
           (setq order (nreverse order))
@@ -301,8 +310,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
               (let ((seen (make-hash-table :test 'eq)))
                 (dotimes (i (length base))
                   (let ((x (svref base i)))
-                    (unless (or (fixnump x) (characterp x) (gethash x seen))
-                      (setf (gethash x seen) t)
+                    (unless (or (fixnump x) (characterp x) (gethash (%img-key x) seen))
+                      (setf (gethash (%img-key x) seen) t)
                       (record x)))))
               (dolist (x order) (record x)))
             (unless (= written fillable)
