@@ -34,7 +34,9 @@ jobs:
         run: contrib/lem/build-web.sh
       - name: Show the log of the compilation
         if: failure()
-        run: tail -100 build/lem-desktop/prepare.log build/lem-web/trace.log || true
+        run: |
+          tail -100 build/lem-desktop/prepare.log build/lem-web/trace.log || true
+          head -40 build/lem-desktop/save-image.log build/lem-web/save-image.log || true
       - name: Make the site
         run: |
           mkdir -p site
