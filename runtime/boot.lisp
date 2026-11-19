@@ -644,16 +644,28 @@ the declarations (when forms follow it)."
 ;;; misc core macros
 ;;; ------------------------------------------------------------
 
-(defmacro typecase (key &rest clauses)
-  (let ((k (gensym "KEY")))
-    `(let ((,k ,key))
-       (cond ,@(%case-cond-clauses k clauses nil t)))))
+;; a key that is a variable is tested itself (the clauses' tests only read
+;; it), so that the compiler knows its type in the clause that is taken
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %typecase-key-variable-p (key env)
+    (and (symbolp key) key (not (keywordp key)) (not (eq key t))
+         (not (nth-value 1 (%macroexpand-1 key env))))))
 
-(defmacro etypecase (key &rest clauses)
-  (let ((k (gensym "KEY")))
-    `(let ((,k ,key))
-       (cond ,@(%case-cond-clauses k clauses t t)
-             (t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
+(defmacro typecase (key &rest clauses &environment env)
+  (if (%typecase-key-variable-p key env)
+      `(cond ,@(%case-cond-clauses key clauses nil t))
+      (let ((k (gensym "KEY")))
+        `(let ((,k ,key))
+           (cond ,@(%case-cond-clauses k clauses nil t))))))
+
+(defmacro etypecase (key &rest clauses &environment env)
+  (if (%typecase-key-variable-p key env)
+      `(cond ,@(%case-cond-clauses key clauses t t)
+             (t (%etypecase-failure ,key '(or ,@(mapcar #'car clauses)))))
+      (let ((k (gensym "KEY")))
+        `(let ((,k ,key))
+           (cond ,@(%case-cond-clauses k clauses t t)
+                 (t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses)))))))))
 
 ;;; CCASE/CTYPECASE: the STORE-VALUE restart stores a new value into the
 ;;; place and the clauses are tried again

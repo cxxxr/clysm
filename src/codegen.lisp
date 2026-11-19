@@ -155,6 +155,7 @@
                           (if (= (length d) 2)
                               `((:i32.const ,(first d)) (:i32.const ,(second d)))
                               '((:i32.const 0) (:i32.const 0))))
+                      (:i32.const 0)    ; (not one-dimensional)
                       (:struct.new :mdarray))))
                  (bit-vector `(,@(loop for x across obj collect `(:i32.const ,x))
                                (:array.new_fixed :bits ,(length obj))))
@@ -490,7 +491,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
     (:let (cg-let node nil nil :effect))
     ((:prim :call)
      (or (and (member (node-op-name node) '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
-                                            clysm-sys::%aset2))
+                                            clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
               (typed-store-code node t))
          `(,@(cg node) :drop)))
     (t `(,@(cg node) :drop))))

@@ -606,7 +606,7 @@ bounds of the array either way."
 (defprim clysm-sys::%make-mdarray (data fill dims offset info) :value
   (let ((d (new-local)))
     `(,@data ,@fill ,@dims (:local.tee ,d) ,@offset ,@info
-      (:local.get ,d) (:call :dims-2d-0) (:local.get ,d) (:call :dims-2d-1)
+      (:local.get ,d) (:call :dims-2d-0) (:local.get ,d) (:call :dims-2d-1) (:local.get ,d) (:call :dims-1d)
       (:struct.new :mdarray))))
 (macrolet ((acc (name idx)
              `(progn
@@ -617,12 +617,15 @@ bounds of the array either way."
                       (:local.get ,tmp)))))))
   (acc clysm-sys::%mdarray-data 0) (acc clysm-sys::%mdarray-fill 1)
   (acc clysm-sys::%mdarray-dims 2) (acc clysm-sys::%mdarray-offset 3) (acc clysm-sys::%mdarray-info 4))
+;; the dimension of a one-dimensional array header, else 0
+(defprim clysm-sys::%mdarray-dim1 (a) :value `(,@a (:ref.cast :mdarray) (:struct.get :mdarray 7) :ref.i31))
 ;; setting the dimensions also sets the rank-2 dimension fields
 (defprim clysm-sys::%set-mdarray-dims (a v) :value
   (let ((m (new-local '(:ref :null :mdarray))) (tmp (new-local)))
     `(,@a (:ref.cast :mdarray) (:local.tee ,m) ,@v (:local.tee ,tmp) (:struct.set :mdarray 2)
       (:local.get ,m) (:local.get ,tmp) (:call :dims-2d-0) (:struct.set :mdarray 5)
       (:local.get ,m) (:local.get ,tmp) (:call :dims-2d-1) (:struct.set :mdarray 6)
+      (:local.get ,m) (:local.get ,tmp) (:call :dims-1d) (:struct.set :mdarray 7)
       (:local.get ,tmp))))
 
 (defun struct-check-code (o c)
@@ -2108,7 +2111,24 @@ sums LO (low halves) and HI (high halves)."
               ((:local.get cpl) (:ref.cast! :cons) (:struct.get :cons 0) (:local.get 1) :ref.eq
                (:if nil nil ((:i32.const 1) :return))))))
   '(:local.get 0) '(:local.get 1) '(:call :struct-typep))
-(defprim clysm-sys::%structure-typep (x c) :test `(,@x ,@c (:call :struct-typep)))
+;; the layout compared inline, the class precedence list searched by the helper
+(defprim clysm-sys::%structure-typep (x c) :test
+  (let ((o (new-local)) (cl (new-local)))
+    `(,@x (:local.set ,o) ,@c (:local.set ,cl)
+      (:local.get ,o) (:ref.test :instance)
+      (:if nil :i32
+           ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0) (:local.get ,cl) :ref.eq
+            (:if nil :i32 ((:i32.const 1)) ((:local.get ,o) (:local.get ,cl) (:call :struct-typep))))
+           ((:i32.const 0))))))
+;; COPY-STRUCTURE: the layout and a copy of the slots
+(defprim clysm-sys::%copy-instance (x) :value
+  (let ((o (new-local '(:ref :null :instance))) (v (new-local '(:ref :null :vector))) (n (new-local :i32)))
+    `(,@x (:ref.cast :instance) (:local.tee ,o) (:struct.get :instance 0)
+      (:local.get ,o) (:struct.get :instance 1) (:local.tee ,v) :array.len (:local.tee ,n)
+      (:array.new_default :vector) (:local.tee ,v)
+      (:i32.const 0) (:local.get ,o) (:struct.get :instance 1) (:i32.const 0) (:local.get ,n)
+      (:array.copy :vector :vector)
+      (:local.get ,v) :ref.as_non_null (:i32.const 0) (:struct.new :instance))))
 
 ;;; the simple storage of a one-dimensional array header at offset 0 when I is
 ;;; below its dimension, else null
@@ -4127,6 +4147,14 @@ instructions (FN kind typed-local), which must return or leave nothing."
                 '(:ref.cast! :cons) '(:struct.get :cons 0) '(:ref.cast :i31) :i31.get_s)))
   (dim-of-2d :dims-2d-0 nil)
   (dim-of-2d :dims-2d-1 t))
+;; the dimension of a rank-1 dimension list, else 0
+(defhelper :dims-1d :e-i ()
+  '(:local.get 0) '(:ref.test :cons) :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:ref.cast! :cons) '(:struct.get :cons 1) (car (nil-code)) :ref.eq :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:ref.cast! :cons) '(:struct.get :cons 0) '(:ref.test :i31) :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:ref.cast! :cons) '(:struct.get :cons 0) '(:ref.cast! :i31) :i31.get_s)
 
 ;;; two-dimensional arrays over a simple vector inline, else the Lisp functions
 (defun aref2-index-code (fail)
@@ -4177,7 +4205,8 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) '(:local.get 1) '(:local.get 2)
   `(:global.get ,(sym-global 'clysm-sys::%svset)) '(:call (:callsym 3)))
 (defprim clysm-sys::%svset (v i x) :value `(,@v ,@i ,@x (:call :svset)))
-(defprim svref (v i) :value `(,@v ,@i (:call :aref1)))
+;; (inline in typed.lisp; the function signals unless V is a simple vector)
+(defprim svref (v i) :value `(,@v ,@i ,@(lisp-call-instrs 'svref 2)))
 
 ;;; ------------------------------------------------------------
 ;;; Irrational functions
@@ -4697,7 +4726,7 @@ in local V and the index in local K; else branch to FAIL."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 1)
+(defconstant +img-version+ 2)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
     :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf))
@@ -4727,13 +4756,13 @@ in local V and the index in local K; else branch to FAIL."
 (defprim clysm-sys::%bignum-raw-limbs (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 1)))
 (defprim clysm-sys::%bignum-raw-sign (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 0) :ref.i31))
 (defprim clysm-sys::%mdarray-field (a i) :value
-  ;; the raw field I (0-6) of the array header A (5 and 6 are integers)
+  ;; the raw field I (0-7) of the array header A (5, 6 and 7 are integers)
   (let ((m (new-local '(:ref :null :mdarray))) (k (new-local :i32)))
     (labels ((field (f)
-               (if (= f 6)
-                   `((:local.get ,m) (:struct.get :mdarray 6) :ref.i31)
+               (if (= f 7)
+                   `((:local.get ,m) (:struct.get :mdarray 7) :ref.i31)
                    `((:local.get ,k) (:i32.const ,f) :i32.eq
-                     (:if nil :eqref ((:local.get ,m) (:struct.get :mdarray ,f) ,@(if (= f 5) '(:ref.i31)))
+                     (:if nil :eqref ((:local.get ,m) (:struct.get :mdarray ,f) ,@(if (>= f 5) '(:ref.i31)))
                           ,(field (1+ f)))))))
       `(,@a (:ref.cast :mdarray) (:local.set ,m) ,@(idx-code i) (:local.set ,k) ,@(field 0)))))
 (defprim clysm-sys::%image-objects () :value '((:call :image-objects)))
@@ -4942,6 +4971,7 @@ words that follow, by its type."
           (:if nil nil (,@(fields :mdarray 5)
                         (:local.get x) (:ref.cast! :mdarray) (:call :img-word) (:struct.set :mdarray 5)
                         (:local.get x) (:ref.cast! :mdarray) (:call :img-word) (:struct.set :mdarray 6)
+                        (:local.get x) (:ref.cast! :mdarray) (:call :img-word) (:struct.set :mdarray 7)
                         (:br ,end)))
           :unreachable)))))
 

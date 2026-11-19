@@ -135,8 +135,9 @@ when ET is not one of the specifiers recognized at compile time."
     (:complex-d (:struct ((:f64 nil) (:f64 nil))))
     (:complex-s (:struct ((:f32 nil) (:f32 nil))))
     (:instance  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))  ; layout slots hash
-    ;; data fill dims offset info, and the two dimensions of a rank-2 array (else 0 0)
-    (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:i32 t) (:i32 t))))
+    ;; data fill dims offset info, the two dimensions of a rank-2 array (else 0 0),
+    ;; and the dimension of a one-dimensional array (else 0)
+    (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:i32 t) (:i32 t) (:i32 t))))
     (:foreign   (:struct ((:externref nil))))
     ;; the octets of a file stream, its position and the number of valid
     ;; octets (runtime/stream.lisp); never seen by Lisp code

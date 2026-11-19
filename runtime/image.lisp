@@ -299,7 +299,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setq order (nreverse order))
           (setq *img-buf* (%make-limbs 1000000) *img-fill* 0)
           (%img-halves #x494D #x4C43)       ; magic "CLMI"
-          (%img-word 1)                     ; version
+          (%img-word 2)                     ; version (+img-version+)
           (%img-word (length base))
           (%img-word (- next (length base)))
           (%img-word fillable)
@@ -405,7 +405,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
         (:cell (%img-ref (%cell-value x)))
         (:package (dotimes (i 8) (%img-ref (%package-ref x i))))
         (:mdarray (dotimes (i 5) (%img-ref (%mdarray-field x i)))
-         (%img-word (%mdarray-field x 5)) (%img-word (%mdarray-field x 6))))
+         (%img-word (%mdarray-field x 5)) (%img-word (%mdarray-field x 6))
+         (%img-word (%mdarray-field x 7))))
       t)))
 
 (defun %image-resume (roots)
