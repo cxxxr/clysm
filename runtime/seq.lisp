@@ -1403,6 +1403,39 @@ its index when POSP."
       (do ((l seq (cdr l)) (i 0 (+ i 1))) ((%endp l) nil)
         (declare (fixnum i))
         (when (funcall (the function fn) (car l)) (return (if posp i (car l)))))))
+  ;; a simple string or simple vector read forwards: a loop for each kind
+  ;; of test and key, with the elements read directly
+  (when (and (not from-end) (or (%simple-string-p seq) (%simple-vector-p seq)))
+    (return-from %find-position
+      (let ((key (%keyfn key)))
+        (macrolet ((scan (ref len)
+                     `(let ((end (%check-bounds start end (,len seq))))
+                        (declare (fixnum end))
+                        (macrolet ((loops (test)
+                                     `(if key
+                                          (do ((i start (+ i 1))) ((>= i end) nil)
+                                            (declare (fixnum i))
+                                            (let ((x (,',ref seq i)))
+                                              (when (let ((v (funcall (the function key) x))) ,test)
+                                                (return (if posp i x)))))
+                                          (do ((i start (+ i 1))) ((>= i end) nil)
+                                            (declare (fixnum i))
+                                            (let ((x (,',ref seq i)))
+                                              (when (let ((v x)) ,test)
+                                                (return (if posp i x))))))))
+                          (cond ((eql mode 0)
+                                 (if neg (loops (not (eql item v))) (loops (eql item v))))
+                                ((eql mode 1)
+                                 (if neg
+                                     (loops (not (funcall (the function fn) item v)))
+                                     (loops (funcall (the function fn) item v))))
+                                (t
+                                 (if neg
+                                     (loops (not (funcall (the function fn) v)))
+                                     (loops (funcall (the function fn) v)))))))))
+          (if (%simple-string-p seq)
+              (scan %schar %string-length)
+              (scan %svref %svlength))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)))
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (return (if posp i x))))))
