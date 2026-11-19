@@ -24,7 +24,8 @@
 (defconstant +class-instance-size+ 18) ; the number of slots in an instance (set by the finalization)
 (defconstant +class-dispatch+ 19) ; #(info cache function ...) of generic functions dispatched by the class (clos.lisp)
 (defconstant +class-inherits+ 20)     ; of a structure class: #(root ... itself), its included structures by depth
-(defconstant +class-size+ 21)
+(defconstant +class-shape-ops+ 21)   ; of a structure with typed slots: #(getter setter maker copier)
+(defconstant +class-size+ 22)
 
 (defvar *the-standard-class* nil)
 (defvar *the-direct-slotd-class* nil)

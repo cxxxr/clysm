@@ -64,6 +64,8 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     ((:prim :call)
      (or (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
               (typed-elt-code node rep))
+         (and (eq (node-op-name node) 'clysm-sys::%struct-tref) (eq rep :f64)
+              (tstruct-ref-code node :f64))
       (ecase rep
                      (:i64 (cond ((ty-int32-p (node-ty node)) `(,@(cg-rep node :i32) :i64.extend_i32_s))
                                  ((ty-int64-p (node-ty node)) (i64-op-code node))))
@@ -500,6 +502,10 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                    (typed-store-code node nil))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
+                  ((eq name 'clysm-sys::%struct-tref) (tstruct-ref-code node :eqref))
+                  ((eq name 'clysm-sys::%struct-tset) (tstruct-set-code node nil))
+                  ((member name '(clysm-sys::%make-tstruct clysm-sys::%make-tstruct-default clysm-sys::%copy-tstruct))
+                   (tstruct-make-code node))
                   ((member name '(clysm-sys::%struct-iref clysm-sys::%struct-iset))
                    (or (typed-struct-code node)
                        ;; a constant slot index: the field read inline
@@ -840,6 +846,135 @@ or %STRUCT-ISET node, and whether it sets."
     (if (eq (node-op-name node) 'clysm-sys::%struct-iset)
         (values (first args) (second args) (third args) (fourth args) (fifth args) t)
         (values (first args) (second args) (third args) nil (fourth args) nil))))
+
+;;; ------------------------------------------------------------
+;;; Structures with typed slots (runtime/struct.lisp)
+;;; ------------------------------------------------------------
+;;; A structure some of whose slots are declared DOUBLE-FLOAT has a Wasm
+;;; type of its own: its slots of kinds KINDS (:D an f64 field, :E an eqref
+;;; one) after the $instance fields.  The type of KINDS is a subtype of the
+;;; type of KINDS but the last (of $siK when those are all :E), so a
+;;; structure including another is of a subtype of its type.  Each module
+;;; that uses the type defines it (types out of the base recursion group are
+;;; equal across modules when they are defined alike).
+
+(defun tshape-type (kinds)
+  (cond ((null kinds) :sfield)
+        ((not (member :d kinds)) (sinst-type (length kinds)))
+        (t (let ((name (intern (format nil "TS-~{~A~}" kinds) :keyword)))
+             (unless (gethash name (clysm-wasm::wasm-module-type-table *m*))
+               (let ((super (tshape-type (butlast kinds))))
+                 (add-type *m* name
+                           `(:sub (,super) nil
+                                  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t)
+                                            ,@(mapcar (lambda (k) (if (eq k :d) '(:f64 t) '(:eqref t))) kinds)))))))
+             name))))
+
+(defun tstruct-kinds (node)
+  (and (eq (car node) :const) (consp (second node)) (every (lambda (k) (member k '(:d :e))) (second node))
+       (<= (length (second node)) +struct-inline-max+)
+       (second node)))
+
+(defun tstruct-field-check-code (o c ty s l slow)
+  "Code branching to SLOW unless local O is of the type TY (left in S) and of
+the structure class (local C) or one including it."
+  (let ((hit (gensym "HIT")))
+    `((:block ,hit nil
+        (:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
+        (:local.get ,o) (:ref.cast! ,ty) (:local.tee ,s) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,c)
+        :ref.eq (:hint 1) (:br_if ,hit)
+        ,@(inherits-check-code l c '((:i32.const 0))) :i32.eqz (:br_if ,slow)))))
+
+(defun tstruct-ref-code (node rep)
+  "%STRUCT-TREF in REP (:EQREF, or :F64 for a slot of kind :D), or NIL."
+  (destructuring-bind (x cls i kinds-node) (cddr node)
+    (let ((k (const-int-node i)) (kinds (tstruct-kinds kinds-node)))
+      (when (and k kinds (< -1 k (length kinds))
+                 (or (eq rep :eqref) (and (eq rep :f64) (eq (nth k kinds) :d))))
+        (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d))
+               (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
+               (slow (gensym "SLOW")) (done (gensym "TREF")))
+          `(,@(cg x) (:local.set ,o) ,@(cg cls) (:local.set ,c) ,@(cg-effect i) ,@(cg-effect kinds-node)
+            (:block ,done ,(if (eq rep :f64) :f64 :eqref)
+              (:block ,slow nil
+                ,@(tstruct-field-check-code o c ty s l slow)
+                (:local.get ,s) (:struct.get ,ty ,(sinst-field k))
+                ,@(when (and d (eq rep :eqref)) '((:struct.new :double)))
+                (:br ,done))
+              (:local.get ,o) (:local.get ,c) (:i32.const ,k) :ref.i31
+              ,@(lisp-call-instrs 'clysm-sys::%struct-ref 3)
+              ,@(when (eq rep :f64) (unbox-rep-code :f64 (mkty +k-double+))))))))))
+
+(defun tstruct-set-code (node effect)
+  "%STRUCT-TSET; with EFFECT leaving nothing, else the value."
+  (destructuring-bind (x cls i v kinds-node) (cddr node)
+    (let ((k (const-int-node i)) (kinds (tstruct-kinds kinds-node)))
+      (when (and k kinds (< -1 k (length kinds)))
+        (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d)) (raw (and d (ty-double-p (node-ty v))))
+               (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
+               (val (new-local)) (f (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "TSET")))
+          `(,@(cg x) (:local.set ,o) ,@(cg cls) (:local.set ,c) ,@(cg-effect i)
+            ,@(if raw `(,@(cg-rep v :f64) (:local.set ,f)) `(,@(cg v) (:local.set ,val)))
+            ,@(cg-effect kinds-node)
+            (:block ,done nil
+              (:block ,slow nil
+                ,@(tstruct-field-check-code o c ty s l slow)
+                ,@(cond ((not d) `((:local.get ,s) (:local.get ,val) (:struct.set ,ty ,(sinst-field k))))
+                        (raw `((:local.get ,s) (:local.get ,f) (:struct.set ,ty ,(sinst-field k))))
+                        (t `((:local.get ,val) (:ref.test :double)
+                             (:if nil nil
+                                  ((:local.get ,s) (:local.get ,val) (:ref.cast! :double) (:struct.get :double 0)
+                                   (:struct.set ,ty ,(sinst-field k)))
+                                  ((:local.get ,val) (:global.get ,(sym-global 'double-float))
+                                   ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :drop)))))
+                (:br ,done))
+              (:local.get ,o) (:local.get ,c) (:i32.const ,k) :ref.i31
+              ,@(if raw `((:local.get ,f) (:struct.new :double)) `((:local.get ,val)))
+              ,@(lisp-call-instrs 'clysm-sys::%struct-set 4) :drop)
+            ,@(unless effect
+                (if raw `((:local.get ,f) (:struct.new :double)) `((:local.get ,val))))))))))
+
+(defun tstruct-make-code (node)
+  "%MAKE-TSTRUCT (all the slots), %MAKE-TSTRUCT-DEFAULT (none set) or
+%COPY-TSTRUCT of a structure with typed slots, or NIL."
+  (let ((name (node-op-name node)) (args (cddr node)))
+    (case name
+      (clysm-sys::%make-tstruct
+       (let ((kinds (tstruct-kinds (second args))) (vals (cddr args)))
+         (when (and kinds (= (length vals) (length kinds)))
+           (let* ((ty (tshape-type kinds)) (c (new-local))
+                  (locals (mapcar (lambda (k v) (if (and (eq k :d) (ty-double-p (node-ty v))) (new-local :f64) (new-local)))
+                                  kinds vals)))
+             `(,@(cg (first args)) (:local.set ,c) ,@(cg-effect (second args))
+               ,@(loop for k in kinds for v in vals for loc in locals
+                       append (if (and (eq k :d) (ty-double-p (node-ty v)))
+                                  `(,@(cg-rep v :f64) (:local.set ,loc))
+                                  `(,@(cg v) (:local.set ,loc))))
+               (:local.get ,c) (:global.get :empty-slots) (:i32.const 0)
+               ,@(loop for k in kinds for v in vals for loc in locals
+                       append (cond ((not (eq k :d)) `((:local.get ,loc)))
+                                    ((ty-double-p (node-ty v)) `((:local.get ,loc)))
+                                    (t `((:local.get ,loc) (:ref.test :double)
+                                         (:if nil :f64 ((:local.get ,loc) (:ref.cast! :double) (:struct.get :double 0))
+                                              ((:local.get ,loc) (:global.get ,(sym-global 'double-float))
+                                               ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :drop
+                                               (:f64.const 0d0)))))))
+               (:struct.new ,ty))))))
+      (clysm-sys::%make-tstruct-default
+       (let ((kinds (tstruct-kinds (second args))))
+         (when kinds
+           `(,@(cg (first args)) ,@(cg-effect (second args)) (:global.get :empty-slots) (:i32.const 0)
+             ,@(mapcar (lambda (k) (if (eq k :d) '(:f64.const 0d0) '(:ref.null :eq))) kinds)
+             (:struct.new ,(tshape-type kinds))))))
+      (clysm-sys::%copy-tstruct
+       (let ((kinds (tstruct-kinds (third args))))
+         (when kinds
+           (let ((ty (tshape-type kinds)) (s (new-local)))
+             `(,@(cg (first args)) (:local.set ,s) ,@(cg-effect (second args)) ,@(cg-effect (third args))
+               (:local.get ,s) (:ref.cast ,ty) (:struct.get ,ty 0) (:global.get :empty-slots) (:i32.const 0)
+               ,@(loop for i below (length kinds)
+                       append `((:local.get ,s) (:ref.cast! ,ty) (:struct.get ,ty ,(sinst-field i))))
+               (:struct.new ,ty)))))))))
 
 (defun typed-struct-code (node)
   "Slot access of an object known to be of the structure class: no check."

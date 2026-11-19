@@ -36,10 +36,10 @@
             (and c (fboundp s) (eq c (symbol-function s)) c))))
   ;; structure accessors and predicates are inline in code compiled after the DEFSTRUCT
   (setq sys::*struct-inline-hook*
-        (lambda (kind function-name name index writable &optional fields)
+        (lambda (kind function-name name index writable &optional fields kinds)
           (let ((*live-mode* t) (*live-packages* t))
             (case kind
-              (:accessor (register-struct-accessor-inline function-name name index writable fields))
+              (:accessor (register-struct-accessor-inline function-name name index writable fields kinds))
               ;; a call of the constructor is of the structure's type
               (:constructor (setf (gethash function-name *struct-constructors*) name))
               (t (register-struct-predicate-inline function-name name fields))))))

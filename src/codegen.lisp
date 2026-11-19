@@ -494,6 +494,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
      (or (and (member (node-op-name node) '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
                                             clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
               (typed-store-code node t))
+         (and (eq (node-op-name node) 'clysm-sys::%struct-tset) (tstruct-set-code node t))
          `(,@(cg node) :drop)))
     (t `(,@(cg node) :drop))))
 
@@ -1902,7 +1903,10 @@ list of (symbol . local), which are bound around the body."
                      (labels ((walk (node)
                                 (when (> (incf n) *spec-max-nodes*) (return-from spec-cloneable-p
                                                                        (setf (gethash lam *spec-cloneable*) nil)))
-                                (when (member (car node) '(:lambda :flet :labels :ltv))
+                                (when (and (member (car node) '(:lambda :flet :labels :ltv))
+                                           ;; (the class of a structure: the accessors' test; evaluated
+                                           ;; once more in the copy, with the same value)
+                                           (not (and (eq (car node) :ltv) (struct-class-node-name node))))
                                   (return-from spec-cloneable-p (setf (gethash lam *spec-cloneable*) nil)))
                                 (map-subnodes #'walk node)))
                        (walk (lam-body lam))
@@ -1949,9 +1953,23 @@ or compared with a variable known to be an integer: a count)."
            (ints (make-hash-table :test 'eq)) (doubles (make-hash-table :test 'eq))
            (counts (make-hash-table :test 'eq))
            (nums (make-hash-table :test 'eq))
-           (self (lam-name lam)) (loop-p nil) (self-call nil))
+           (self (lam-name lam)) (loop-p nil) (self-call nil)
+           (double-vars (make-hash-table :test 'eq)))  ; variables bound to a double (as DOUBLE-P sees)
       (dolist (p params) (setf (gethash p alias) p))
       (labels ((param-of (node) (and (eq (car node) :lref) (gethash (second node) alias)))
+               ;; NODE is a double: a constant, a slot of a structure declared
+               ;; DOUBLE-FLOAT, an operation on such, a variable bound to one
+               (double-p (node)
+                 (case (car node)
+                   (:const (typep (second node) 'double-float))
+                   (:lref (gethash (second node) double-vars))
+                   ((:prim :call)
+                    (let ((name (node-op-name node)) (args (cddr node)))
+                      (cond ((eq name 'clysm-sys::%struct-tref)
+                             (let ((i (third args)) (kinds (fourth args)))
+                               (and (eq (car i) :const) (eq (car kinds) :const) (integerp (second i))
+                                    (listp (second kinds)) (eq (nth (second i) (second kinds)) :d))))
+                            ((member name '(+ - * / sqrt abs 1+ 1-)) (some #'double-p args)))))))
                (walk (node)
                  (case (car node)
                    ;; a variable bound to a parameter, even one assigned later
@@ -1960,7 +1978,9 @@ or compared with a variable known to be an integer: a count)."
                    (:let (dolist (b (second node))
                            (let ((p (param-of (cdr b))))
                              (when (and p (not (lvar-special (car b))))
-                               (setf (gethash (car b) alias) p)))))
+                               (setf (gethash (car b) alias) p))
+                             (when (and (not (lvar-mutated (car b))) (double-p (cdr b)))
+                               (setf (gethash (car b) double-vars) t)))))
                    (:tagbody (setf loop-p t))
                    ((:prim :call)
                     (let ((name (node-op-name node)) (args (cddr node)))
@@ -1973,8 +1993,7 @@ or compared with a variable known to be an integer: a count)."
                                               (ty-only-p (node-ty y) +k-int+))
                                      (setf (gethash p counts) t)))))
                       (when (member name *numeric-ops*)
-                        (let ((double-const (some (lambda (a) (and (eq (car a) :const) (typep (second a) 'double-float)))
-                                                  args)))
+                        (let ((double-const (some #'double-p args)))
                           (dolist (a args)
                             (let ((p (param-of a)))
                               (when p

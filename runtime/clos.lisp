@@ -75,7 +75,7 @@ it still waits where it waits.")
                    '(%name %direct-superclasses %direct-slots %class-precedence-list %slots
                      %direct-subclasses %finalized-p %kind %slot-index %default-initargs %documentation
                      %extra %shared %prototype %direct-default-initargs %protocol %plist %make-info
-                     %instance-size %dispatch %inherits))
+                     %instance-size %dispatch %inherits %shape-ops))
 
 (setq *standard-metaclasses*
       (mapcar #'find-class '(standard-class funcallable-standard-class built-in-class structure-class

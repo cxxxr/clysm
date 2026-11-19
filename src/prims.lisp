@@ -890,6 +890,7 @@ bounds of the array either way."
       (:local.get ,tmp))))
 
 (defconstant +class-inherits-slot+ 20)   ; runtime/class0.lisp +CLASS-INHERITS+
+(defconstant +class-shape-ops-slot+ 21)  ; runtime/class0.lisp +CLASS-SHAPE-OPS+
 
 (defun inherits-check-code (l c fallback)
   "Code pushing 1 when the layout (local L, not C) has C among its included
@@ -1100,7 +1101,8 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
       (let ((mid (ceiling (+ lo hi) 2)))
         `((:local.get 0) (:ref.test ,(sinst-type mid))
           (:if nil :i32 ,(sinst-size-code mid hi) ,(sinst-size-code lo (1- mid)))))))
-(defprim clysm-sys::%sinstp (x) :test `(,@x (:ref.test :si1)))
+;; a structure whose slots are fields (with typed slots too)
+(defprim clysm-sys::%sinstp (x) :test `(,@x (:ref.test :sfield)))
 (defprim clysm-sys::%sinst-size (x) :value `(,@x (:call :sinst-size) :ref.i31))
 (defprim clysm-sys::%sinst-make (k) :value `(,@(idx-code k) (:call :sinst-make)))
 ;; a structure of class LAYOUT with the slots ARGS: its own fields for up to
@@ -2628,12 +2630,42 @@ sums LO (low halves) and HI (high halves)."
                  ;; of a structure of a slot vector including it may be
                  ((:local.get ,o) (:ref.test :si1)
                   (:if nil :i32 ((:i32.const 0)) ,(struct-check-code o cl)))))))))
+
+;; (when src/typed.lisp does not compile them: the interpreter's functions)
+(defprim clysm-sys::%make-tstruct :any :value
+  `(,@(apply #'append args) ,@(lisp-call-instrs 'clysm-sys::%make-tstruct (length args))))
+(defprim clysm-sys::%make-tstruct-default (class kinds) :value
+  `(,@class ,@kinds ,@(lisp-call-instrs 'clysm-sys::%make-tstruct-default 2)))
+(defprim clysm-sys::%copy-tstruct (x class kinds) :value
+  `(,@x ,@class ,@kinds ,@(lisp-call-instrs 'clysm-sys::%copy-tstruct-slow 3)))
+;;; Structures with typed slots (runtime/struct.lisp): the code is in
+;;; src/typed.lisp; these are what is left when it does not apply (the slot
+;;; kinds are a constant there): the generic access by index.
+(defprim clysm-sys::%struct-tref (x class i kinds) :value
+  (let ((o (new-local)) (c (new-local)) (kk (new-local)))
+    `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,kk) ,@kinds :drop
+      ,@(struct-check-code o c)
+      (:if nil :eqref
+           ((:local.get ,o) (:local.get ,kk) (:call :instance-ref))
+           ((:local.get ,o) (:local.get ,c) (:local.get ,kk) ,@(lisp-call-instrs 'clysm-sys::%struct-ref 3))))))
+(defprim clysm-sys::%struct-tset (x class i v kinds) :value
+  (let ((o (new-local)) (c (new-local)) (kk (new-local)) (val (new-local)))
+    `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,kk) ,@v (:local.set ,val) ,@kinds :drop
+      ,@(struct-check-code o c)
+      (:if nil :eqref
+           ((:local.get ,o) (:local.get ,kk) (:local.get ,val) (:call :instance-set))
+           ((:local.get ,o) (:local.get ,c) (:local.get ,kk) (:local.get ,val)
+            ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))))))
 ;; COPY-STRUCTURE: the layout and a copy of the slots
 (defprim clysm-sys::%copy-instance (x) :value
   (let ((o (new-local '(:ref :null :instance))) (v (new-local '(:ref :null :vector))) (n (new-local :i32))
         (e (new-local)))
-    `(,@x (:local.tee ,e) (:ref.test :si1)
-      (:if nil :eqref ((:local.get ,e) (:call :sinst-copy))
+    `(,@x (:local.tee ,e) (:ref.test :sfield)
+      (:if nil :eqref
+           ((:local.get ,e) (:ref.cast! :instance) (:struct.get :instance 0) (:ref.cast :instance)
+            (:struct.get :instance 1) (:i32.const ,+class-shape-ops-slot+) (:array.get :vector) ,@(nil-code) :ref.eq
+            (:if nil :eqref ((:local.get ,e) (:call :sinst-copy))
+                 ((:local.get ,e) ,@(lisp-call-instrs 'clysm-sys::%tstruct-copy 1))))
            ((:local.get ,e) (:ref.cast :instance) (:local.tee ,o) (:struct.get :instance 0)
             (:local.get ,o) (:struct.get :instance 1) (:local.tee ,v) :array.len (:local.tee ,n)
             (:array.new_default :vector) (:local.tee ,v)
@@ -5731,15 +5763,23 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   '(:if nil nil ((:local.get sv) (:local.get k) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   '(:local.get 0) '(:local.get k) '(:local.get 2) '(:call :sinst-set))
 
+;; (a structure with typed slots, src/typed.lisp, is not of the $siK types
+;; past its leading slots of type T: the Lisp function, by its class's functions)
 (defhelper :sinst-ref :ei-e ()
-  (sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:ref.cast ,(sinst-type (1+ j)))
-                                       (:struct.get ,(sinst-type (1+ j)) ,(sinst-field j)) :return))
-                       '(:unreachable)))
+  `((:block typed :eqref
+      ,@(sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:br_on_cast_fail typed :eqref (:ref ,(sinst-type (1+ j))))
+                                             (:struct.get ,(sinst-type (1+ j)) ,(sinst-field j)) :return))
+                             '((:local.get 0) (:br typed))))
+    :drop)
+  '(:local.get 0) '(:local.get 1) :ref.i31 (lisp-call-instrs 'clysm-sys::%tstruct-gref 2))
 (defhelper :sinst-set :eie-e ()
-  (sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:ref.cast ,(sinst-type (1+ j))) (:local.get 2)
-                                       (:struct.set ,(sinst-type (1+ j)) ,(sinst-field j))
-                                       (:local.get 2) :return))
-                       '(:unreachable)))
+  `((:block typed :eqref
+      ,@(sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:br_on_cast_fail typed :eqref (:ref ,(sinst-type (1+ j))))
+                                             (:local.get 2) (:struct.set ,(sinst-type (1+ j)) ,(sinst-field j))
+                                             (:local.get 2) :return))
+                             '((:local.get 0) (:br typed))))
+    :drop)
+  '(:local.get 0) '(:local.get 1) :ref.i31 '(:local.get 2) (lisp-call-instrs 'clysm-sys::%tstruct-gset 3))
 (defhelper :sinst-size :e-i () (sinst-size-code 0 +struct-inline-max+))
 ;; a new structure of local 0 field slots (from 1), its fields unset
 (defhelper :sinst-make :i-e ((k :i32))

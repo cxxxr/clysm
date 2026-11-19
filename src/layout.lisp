@@ -228,11 +228,14 @@ when ET is not one of the specifiers recognized at compile time."
 (defconstant +struct-inline-max+ 32)
 (defun sinst-type (k) (intern (format nil "SI~D" k) :keyword))
 (defun sinst-field (i) (+ 3 i))
+;; $sfield: any structure whose slots are fields (the $siK, and the types of
+;; structures with slots of a number type, below)
 (setf *type-defs*
       (append *type-defs*
+              '((:sfield (:sub (:instance) nil (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))))
               (loop for k from 1 to +struct-inline-max+
                     collect (list (sinst-type k)
-                                  `(:sub (,(if (= k 1) :instance (sinst-type (1- k)))) ,(= k +struct-inline-max+)
+                                  `(:sub (,(if (= k 1) :sfield (sinst-type (1- k)))) ,(= k +struct-inline-max+)
                                          (:struct ((:eqref t) ((:ref :vector) t) (:i32 t)
                                                    ,@(loop repeat k collect '(:eqref t)))))))))
 

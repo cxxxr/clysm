@@ -1759,9 +1759,24 @@ What makes the code fast:
   three-slot structure 1.6 times faster, reads 1.35 times. A reader loop
   compiled to a fasl and loaded into the image: 2.0 → 1.7 times SBCL.
   Still slow: `a-nbody` (1.2; doubles in slots without declarations are
-  boxed and their arithmetic generic). Declared `double-float` slots are
-  boxed too (slots of one Wasm type per number of slots); making readers
-  test the declared type, so that the compiler knew it, measured no faster.
+  boxed and their arithmetic generic).
+* **Structures with `double-float` slots** (declared `:type double-float`,
+  up to 32 slots) have a Wasm type of their own, made from the kinds of
+  their slots (an `f64` field for each such slot), a subtype of the type of
+  their slots but the last (`tshape-type`, `src/typed.lisp`), so that an
+  including structure is of a subtype. Each module using one defines it.
+  The constructor stores the numbers unboxed (signalling a `type-error` for
+  another value), a reader leaves an `f64` where the compiler wants one,
+  `setf` stores one (no allocation). Generic code (slot access by index,
+  `copy-structure`, `equalp`, printing) uses functions DEFSTRUCT puts in
+  the class (`+class-shape-ops+`); a heap image saves such a structure with
+  a slot vector, which its accessors take by their general way. With it,
+  the version of a function taken for double arguments is also made when a
+  parameter meets a double slot or an operation on one (and functions using
+  structure accessors may now have versions), and the square of a double is
+  known not to be negative (its root is a double): an n-body loop over
+  structures of declared doubles runs as fast as SBCL's (880 → 115 ms;
+  SBCL 114).
 * **Versions of a function**: a function with a loop or a recursive call
   whose parameters are used as numbers tests its arguments on entry and
   continues in a copy compiled for fixnums, or else in one compiled for
