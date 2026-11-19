@@ -1087,7 +1087,11 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
 :COMPILE-TOPLEVEL and :LOAD-TOPLEVEL): compiled once, to a module that is run
 now and written to the fasl as an entry of its own.  NIL (nothing done) when
 it cannot be done so: the form is then evaluated and compiled apart."
-  (when (and *native-run-octets-hook* *native-compile-form-hook* *image-id* *cf-modules*
+  ;; (not in a file compiled into one module: the forms compiled once would
+  ;; be modules of their own beside the file's, and loading ASDF from its
+  ;; fasl took 0.5 s instead of 0.2 for 2 s saved once when compiling it)
+  (when (and (not *cf-unit-p*)
+             *native-run-octets-hook* *native-compile-form-hook* *image-id* *cf-modules*
              ;; (no literal objects made by MAKE-LOAD-FORM)
              (or (null *cf-externalizer*) (null (%literal-objects form nil)))
              ;; nor uninterned symbols: an entry of its own would read its
