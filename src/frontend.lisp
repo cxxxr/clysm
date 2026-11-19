@@ -420,6 +420,101 @@ copy of X made later could expand it differently than the function did."
                         ,@temps))
                      (locally (declare (notinline ,op)) (,op ,@temps)))))))))))
 
+;;; In the image, a function declaimed INLINE that is defined at top level
+;;; keeps its source (the property SYS::%INLINE-EXPANSION of its name,
+;;; (LAMBDA lambda-list . body)), also in the fasl, and later calls of it in
+;;; code compiled in the image (other files, the REPL) are replaced by a copy
+;;; of its body, as SBCL does: no call is made and the types of the
+;;; arguments flow into the body.  The body sees none of the caller's lexical
+;;; bindings.  NOTINLINE (global or local) prevents it.
+(defvar *inline-expansion-depth* 0)
+(defparameter *inline-expansion-max-size* 400)
+
+(defun inline-expansion-source (fn-form)
+  "(LAMBDA lambda-list . body) for a definition #'(named-lambda name lambda-list . body)
+that may be copied into the callers, or NIL."
+  (when (and (consp fn-form) (eq (car fn-form) 'function) (consp (cdr fn-form))
+             (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
+             (consp (cdr (second fn-form))) (consp (cddr (second fn-form))))
+    (let* ((l (second fn-form)) (ll (third l)) (body (cdddr l)))
+      (and (listp ll)
+           (notany (lambda (x) (member x '(&environment &whole))) ll)
+           (<= (form-size body *inline-expansion-max-size*) *inline-expansion-max-size*)
+           (list* 'lambda ll body)))))
+
+(defun inline-key-name (form)
+  "The keyword a constant argument FORM names, or NIL."
+  (cond ((keywordp form) form)
+        ((and (consp form) (eq (car form) 'quote) (consp (cdr form)) (symbolp (second form)))
+         (second form))
+        (t nil)))
+
+(defun inline-lambda-application (name ll body args)
+  "A form binding the parameters of lambda list LL to ARGS (forms) and
+running BODY (with the block NAME) in a null lexical environment, or NIL when
+the arguments do not fit (they are then passed by a call)."
+  (let* ((pl (parse-lambda-list ll))
+         (temps (loop for nil in args collect (gensym "A")))
+         (rest-temps temps) (rest-args args)
+         (bindings nil))
+    (flet ((next () (pop rest-args) (pop rest-temps)))
+      (dolist (p (getf pl :req))
+        (unless rest-temps (return-from inline-lambda-application nil))
+        (push (list p (next)) bindings))
+      (dolist (o (getf pl :opt))
+        (destructuring-bind (var &optional init (sv nil svp)) o
+          (if rest-temps
+              (progn (push (list var (next)) bindings)
+                     (when svp (push (list sv t) bindings)))
+              (progn (push (list var init) bindings)
+                     (when svp (push (list sv nil) bindings))))))
+      (when (getf pl :rest)
+        (push (list (getf pl :rest) `(list ,@rest-temps)) bindings))
+      (cond ((getf pl :keyp)
+             (when (oddp (length rest-args)) (return-from inline-lambda-application nil))
+             (let ((pairs (loop for (k nil) on rest-args by #'cddr for (nil tv) on rest-temps by #'cddr
+                                collect (let ((kw (inline-key-name k)))
+                                          (unless kw (return-from inline-lambda-application nil))
+                                          (cons kw tv))))
+                   (keys (mapcar (lambda (k)
+                                   (destructuring-bind (spec &optional init (sv nil svp)) k
+                                     (let ((var (if (consp spec) (second spec) spec))
+                                           (kw (if (consp spec) (first spec) (intern (symbol-name spec) "KEYWORD"))))
+                                       (list kw var init sv svp))))
+                                 (getf pl :keys))))
+               (unless (or (getf pl :aok)
+                           (let ((a (assoc :allow-other-keys pairs)))
+                             (and a (let ((form (nth (position (cdr a) temps) args)))
+                                      (and (constantp form) (not (null form)) (not (eq form 'nil)))))))
+                 (dolist (p pairs)
+                   (unless (or (eq (car p) :allow-other-keys) (find (car p) keys :key #'first))
+                     (return-from inline-lambda-application nil))))
+               (dolist (k keys)
+                 (destructuring-bind (kw var init sv svp) k
+                   (let ((p (assoc kw pairs)))
+                     (push (list var (if p (cdr p) init)) bindings)
+                     (when svp (push (list sv (if p t nil)) bindings)))))))
+            ((and rest-temps (not (getf pl :rest)))
+             (return-from inline-lambda-application nil)))
+      (dolist (a (getf pl :aux))
+        (push (list (first a) (second a)) bindings)))
+    (multiple-value-bind (decls forms) (parse-body body)
+      `(let ,(mapcar #'list temps args)
+         (clysm-sys::%with-only-variables ,temps
+           (let* ,(nreverse bindings)
+             ,@(when decls `((declare ,@decls)))
+             (block ,name ,@forms)))))))
+
+(defun inline-expansion-call (form)
+  "FORM, a call of a function with an inline expansion, as a copy of its body, or NIL."
+  (let* ((op (car form))
+         (src (and *live-mode* (symbolp op) (< *inline-expansion-depth* 3)
+                   (not (gethash op *notinline*)) (not (member op *local-notinline*))
+                   (not (get op 'clysm-sys::%notinline))
+                   (get op 'clysm-sys::%inline-expansion))))
+    (when (and (consp src) (eq (car src) 'lambda) (consp (cdr src)))
+      (inline-lambda-application op (second src) (cddr src) (cdr form)))))
+
 (defun convert-compound (form env)
   (let ((op (car form)))
     ;; local functions shadow everything
@@ -452,6 +547,10 @@ copy of X made later could expand it differently than the function did."
       (when prim
         (return-from convert-compound
           `(:prim ,prim ,@(convert-args (cdr form) env)))))
+    (let ((expansion (inline-expansion-call form)))
+      (when expansion
+        (return-from convert-compound
+          (let ((*inline-expansion-depth* (1+ *inline-expansion-depth*))) (convert expansion env)))))
     (let ((inlined (and (symbolp op) (not (member op *local-notinline*)) (live-inline-call form))))
       (when inlined
         (return-from convert-compound

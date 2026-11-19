@@ -316,6 +316,21 @@ destructuring-bind (defined by the runtime)."
                  (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
                  (consp (cdr (second fn-form))) (consp (cddr (second fn-form))))
         (emit-toplevel-form `(clysm-sys::%put ',sym 'clysm-sys::%arglist ',(third (second fn-form))) env))
+      ;; in the image, a function declaimed INLINE keeps its source for the
+      ;; calls compiled later (INLINE-EXPANSION-CALL)
+      (when (and *live-mode* (symbolp name))
+        (let ((src (and (gethash sym *declared-inline*) (eq (car fnode) :lambda)
+                        (null (cenv-entries env))
+                        (inline-expansion-source fn-form))))
+          (when (and src
+                     (not (ignore-errors (clysm-sys::%call-with-fasl-syntax
+                                          (lambda () (prin1-to-string src) t)))))
+            (setq src nil))
+          (cond (src (setf (get sym 'clysm-sys::%inline-expansion) src)
+                     (emit-toplevel-form `(clysm-sys::%put ',sym 'clysm-sys::%inline-expansion ',src) env))
+                ((get sym 'clysm-sys::%inline-expansion)
+                 (remprop sym 'clysm-sys::%inline-expansion)
+                 (emit-toplevel-form `(remprop ',sym 'clysm-sys::%inline-expansion) env)))))
       (push `(:defun ,sym ,fnode) *toplevel-nodes*)
       ;; a small function defined at top level in the image: later calls may
       ;; contain a copy of its body (LIVE-INLINE-CALL)
@@ -358,9 +373,15 @@ destructuring-bind (defined by the runtime)."
                                                    ',interns)
                           env))))
 
+(defvar *unit-env* nil
+  "The environment of the toplevel forms of the compilation unit (COMPILE-FILE)
+being compiled, or NIL (src/live.lisp).")
+
 (defun directify-helper-calls (instrs)
   "Replace (global.get (:sym S)) (call (:callsym K)) by a direct call stub when
-S names a statically known function."
+S names a statically known function (not in a compilation unit of COMPILE-FILE,
+whose functions run after the segment that defines them, src/live.lisp)."
+  (when *unit-env* (return-from directify-helper-calls instrs))
   (let ((out nil))
     (loop while instrs
           do (let ((i (pop instrs)))
