@@ -1113,6 +1113,28 @@ it cannot be done so: the form is then evaluated and compiled apart."
           (funcall *native-run-octets-hook* octets (nth 4 entry))
           t)))))
 
+(defun %cf-defun-name (form)
+  "The name FORM, a DEFUN, defines, or NIL."
+  (and (consp form) (eq (car form) 'defun) (consp (cdr form))
+       (let ((name (second form)))
+         (and (or (and (symbolp name) name)
+                  (and (consp name) (eq (car name) 'setf) (consp (cdr name))
+                       (symbolp (second name)) (null (cddr name))))
+              name))))
+
+(defun %cf-define-lazily (name form)
+  "Define NAME at compile time as a function that evaluates FORM, its DEFUN,
+when it is first called, and calls the function it defines."
+  (let ((stub nil))
+    (setq stub (lambda (&rest args)
+                 (when (eq (fdefinition name) stub)
+                   (%eval-toplevel form)
+                   (when (eq (fdefinition name) stub)
+                     (error "~S was not defined by ~S" name form)))
+                 (apply (fdefinition name) args)))
+    (%set-fdefinition name stub)
+    name))
+
 (defun %cf-process (form out compile-time-too)
   (let ((x (%cf-toplevel-expansion form)))
     ;; a compile-time side effect ends the batch of pending forms
@@ -1122,6 +1144,13 @@ it cannot be done so: the form is then evaluated and compiled apart."
     (when (or x (and (consp form) (member (car form) '(defvar defparameter proclaim))))
       (%cf-flush out))
     (cond
+      ;; a DEFUN evaluated at compile time too, in a file compiled into one
+      ;; module: the function is part of the module (direct calls, copies
+      ;; into its callers), and at compile time it is compiled when it is
+      ;; first called (most are not: ASDF's WITH-UPGRADABILITY)
+      ((and (null x) compile-time-too *cf-unit-p* (%cf-defun-name form))
+       (%cf-define-lazily (%cf-defun-name form) (%cf-wrap form))
+       (%cf-emit (%cf-wrap form) out))
       ((and (null x) compile-time-too (%cf-compile-and-run (%cf-wrap form) out))
        (when (and (consp form) (member (car form) '(defvar defparameter))
                   (consp (cdr form)) (symbolp (second form)))
