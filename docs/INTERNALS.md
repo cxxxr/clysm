@@ -425,7 +425,10 @@ compiled again. A `defun` evaluated at compile time too (in `eval-when` with
 at compile time its name gets a function that compiles the `defun` when it
 is first called (`%cf-define-lazily`), since most are never called then.
 So are the functions of a `defstruct` (its constructors, predicate, copier
-and accessors); the rest of its expansion is compiled and run at once.
+and accessors); the rest of its expansion is compiled and run at once. An
+uninterned symbol is written as `#.(SYSTEM::%FASL-GENSYM n "NAME")`, one
+symbol per number for the whole file when it is loaded, so the entries of a
+fasl share it as the forms of the file did.
 Other forms evaluated at compile time are compiled once, to a module of
 their own run at once (`%cf-compile-and-run`), whose fasl entry is kept, as
 printed before it ran, among the segments. A form the compiler fails on is written as source; when the
