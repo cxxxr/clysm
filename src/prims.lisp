@@ -629,10 +629,10 @@ leaving them in the i32 locals X and Y."
 (defprim <= (a b) :test (inline-fixnum-cmp a b :i32.le_s '((:call :lt) :i32.eqz) t))
 (defprim >= (a b) :test (inline-fixnum-cmp a b :i32.ge_s '((:call :lt) :i32.eqz)))
 (defprim = (a b) :test (inline-fixnum-cmp a b :i32.eq '((:call :num-eq))))
-(defprim /= (a b) :test `(,@a ,@b (:call :num-eq) :i32.eqz))
-(defprim zerop (a) :test `(,@a ,@(fixnum-code 0) (:call :num-eq)))
-(defprim plusp (a) :test `(,@(fixnum-code 0) ,@a (:call :lt)))
-(defprim minusp (a) :test `(,@a ,@(fixnum-code 0) (:call :lt)))
+(defprim /= (a b) :test (inline-fixnum-cmp a b :i32.ne '((:call :num-eq) :i32.eqz)))
+(defprim zerop (a) :test (inline-fixnum-cmp a (fixnum-code 0) :i32.eq '((:call :num-eq))))
+(defprim plusp (a) :test (inline-fixnum-cmp (fixnum-code 0) a :i32.lt_s '((:call :lt))))
+(defprim minusp (a) :test (inline-fixnum-cmp a (fixnum-code 0) :i32.lt_s '((:call :lt))))
 
 ;; unchecked fixnum ops for the runtime: (sys:%fx+ a b) etc. operate on i31 directly
 (macrolet ((fxop (name op)
