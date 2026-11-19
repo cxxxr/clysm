@@ -509,6 +509,7 @@ functions).  Calls of the installs that are not reached are removed."
 (defvar *current-func* nil)
 (defvar *module*)
 (defvar *locals-map*)
+(defvar *local-remap* nil "During ENCODE-FUNCTION-BODY: COALESCE-LOCALS's map, or NIL.")
 
 (defun label-depth (label)
   (if (integerp label) label
@@ -522,8 +523,9 @@ functions).  Calls of the installs that are not reached are removed."
         (t (emit-valtype *module* buf bt))))
 
 (defun local-index (x)
-  (if (integerp x) x
-      (or (gethash x *locals-map*) (error "wasm: unknown local ~S" x))))
+  (let ((i (if (integerp x) x
+               (or (gethash x *locals-map*) (error "wasm: unknown local ~S" x)))))
+    (if *local-remap* (aref *local-remap* i) i)))
 
 (defvar *branch-hints* nil
   "The branch hints of the function being encoded: (offset . value), latest first.")
@@ -721,6 +723,129 @@ in one table: op -> code, or (prefix . code).")
 (defun func-type-def (m f)
   (cdr (aref (wasm-module-types m) (type-index m (wasm-func-type f)))))
 
+;;; Locals shared by variables whose lives do not overlap.  V8's baseline
+;;; compiler (Liftoff), which compiles every function the first time it is
+;;; called, spends at every branch time in the number of locals: the
+;;; compiler's EMIT-INSTR, with 2038 locals, took 31 ms.  A local is given
+;;; the range of positions (instructions numbered in order) from its first to
+;;; its last use, widened to a whole loop that the range enters or leaves (a
+;;; value may go round it); locals of the same type whose ranges do not meet
+;;; share one.  A local that may be read before it is set (its default
+;;; value), as Wasm's validation of non-nullable locals sees it (a set counts
+;;; until the end of its block), keeps a local of its own, as parameters do.
+
+(defun coalesce-locals (body nparams types names)
+  "A vector mapping the indexes of the locals of a function (parameters
+first: NPARAMS of them, then locals of TYPES, named by NAMES as in
+LOCAL-INDEX) to new indexes, and the types of the new locals; NIL when
+nothing would change."
+  (let* ((nlocals (length types))
+         (n (+ nparams nlocals))
+         (first (make-array n :initial-element nil))
+         (last (make-array n :initial-element nil))
+         (pinned (make-array n :initial-element nil))
+         (assigned (make-array n :initial-element nil))
+         (trail nil)
+         (loops nil)
+         (pos 0))
+    (when (< nlocals 2) (return-from coalesce-locals nil))
+    (dotimes (i nparams) (setf (aref assigned i) t))
+    (labels ((index (x) (if (integerp x) x (gethash x names)))
+             (note (i)
+               (unless (aref first i) (setf (aref first i) pos))
+               (setf (aref last i) pos))
+             (scoped (instrs)
+               (let ((mark trail))
+                 (walk-list instrs)
+                 (loop until (eq trail mark)
+                       do (setf (aref assigned (pop trail)) nil))))
+             (walk-list (instrs) (dolist (x instrs) (walk x)))
+             (walk (ins)
+               (incf pos)
+               (when (consp ins)
+                 (case (car ins)
+                   (:local.get
+                    (let ((i (index (second ins))))
+                      (when i
+                        (note i)
+                        (unless (aref assigned i) (setf (aref pinned i) t)))))
+                   ((:local.set :local.tee)
+                    (let ((i (index (second ins))))
+                      (when i
+                        (note i)
+                        (unless (aref assigned i)
+                          (setf (aref assigned i) t)
+                          (push i trail)))))
+                   ((:block :try_table)
+                    (scoped (if (eq (car ins) :block) (cdddr ins) (cddddr ins)))
+                    (incf pos))
+                   (:loop
+                    (let ((start pos))
+                      (scoped (cdddr ins))
+                      (incf pos)
+                      (push (cons start pos) loops)))
+                   (:if
+                    (scoped (fourth ins))
+                    (incf pos)
+                    (scoped (fifth ins))
+                    (incf pos))))))
+      (walk-list body))
+    (dotimes (i nparams) (setf (aref pinned i) t))
+    ;; ranges widened to the loops they enter or leave, inner loops first
+    (setq loops (sort loops #'< :key (lambda (l) (- (cdr l) (car l)))))
+    (dotimes (i n)
+      (let ((s (aref first i)) (e (aref last i)))
+        (when (and s (not (aref pinned i)))
+          (dolist (l loops)
+            (let ((ls (car l)) (le (cdr l)))
+              (when (and (<= s le) (>= e ls)          ; they meet
+                         (or (< s ls) (> e le)))     ; but the range is not inside
+                (setq s (min s ls) e (max e le)))))
+          (setf (aref first i) s (aref last i) e))))
+    ;; the new locals: each pinned or unused local keeps one; the others take
+    ;; the free local of their type that ended first, by start
+    (let* ((map (make-array n))
+           (new-types (make-array 0 :adjustable t :fill-pointer 0))
+           (free (make-hash-table :test 'equal))   ; type -> ((end . new-index) ...)
+           (order (sort (loop for i from nparams below n
+                              when (and (aref first i) (not (aref pinned i))) collect i)
+                        #'< :key (lambda (i) (aref first i)))))
+      (dotimes (i nparams) (setf (aref map i) i))
+      (flet ((fresh (type)
+               (vector-push-extend type new-types)
+               (+ nparams (1- (fill-pointer new-types)))))
+        (loop for i from nparams below n
+              for type in types
+              do (cond ((null (aref first i)) (setf (aref map i) -1))   ; (never used)
+                       ((aref pinned i) (setf (aref map i) (fresh type)))))
+        (let ((type-of (coerce types 'vector)))
+          (dolist (i order)
+            (let* ((type (aref type-of (- i nparams)))
+                   (pool (gethash type free))
+                   (slot (and pool (< (car (first pool)) (aref first i)) (pop pool))))
+              (let ((new (if slot (cdr slot) (fresh type))))
+                (setf (aref map i) new)
+                ;; (kept sorted by end)
+                (setf (gethash type free)
+                      (merge 'list (list (cons (aref last i) new)) pool #'< :key #'car)))))))
+      (if (= (fill-pointer new-types) nlocals)
+          nil
+          ;; the new locals grouped by type (fewer runs in the local declarations)
+          (let* ((count (fill-pointer new-types))
+                 (kinds nil))
+            (dotimes (j count) (pushnew (aref new-types j) kinds :test #'equal))
+            (let ((perm (make-array count)) (next nparams) (sorted nil))
+              (dolist (k (nreverse kinds))
+                (dotimes (j count)
+                  (when (equal (aref new-types j) k)
+                    (setf (aref perm j) next)
+                    (incf next)
+                    (push k sorted))))
+              (loop for i from nparams below n
+                    for j = (aref map i)
+                    when (>= j nparams) do (setf (aref map i) (aref perm (- j nparams))))
+              (values map (nreverse sorted))))))))
+
 (defun encode-function-body (m f)
   (let* ((*current-func* f)
          (*branch-hints* nil)
@@ -728,14 +853,19 @@ in one table: op -> code, or (prefix . code).")
          (*locals-map* (make-hash-table :test 'equal))
          (def (func-type-def m f))
          (params (second (if (eq (first def) :sub) (fourth def) def)))
-         (nparams (length params)))
+         (nparams (length params))
+         (locals (wasm-func-locals f))
+         (*local-remap* nil))
     (loop for n in (wasm-func-params-names f) for i from 0
           when n do (setf (gethash n *locals-map*) i))
     (loop for n in (wasm-func-local-names f) for i from nparams
           when n do (setf (gethash n *locals-map*) i))
+    (multiple-value-bind (map new-types)
+        (coalesce-locals (wasm-func-body f) nparams locals *locals-map*)
+      (when map (setq *local-remap* map locals new-types)))
     ;; locals: run-length encode
     (let ((groups nil))
-      (dolist (lt (wasm-func-locals f))
+      (dolist (lt locals)
         (if (and groups (equal (cdar groups) lt))
             (incf (caar groups))
             (push (cons 1 lt) groups)))

@@ -216,15 +216,21 @@ about 175× faster than with the interpreter (`bin/clysm repl --interp`).
 demo also embeds the compiler, so code typed in the page is compiled to Wasm in
 the browser.
 
-A form that is only a call of a global function with constant arguments
-(after its macros are expanded: `(swank:connection-info)`, `(micros:autodoc
-'...)`, a `defsystem` of an `.asd` file, which is `(apply
-'register-system-definition '...)`, `defpackage`, `in-package`) is called at
-once instead (`native-eval`, `lib/live-image.lisp`): compiling it took 5 to
-30 ms, for a call of microseconds, and the first compilation in an image
-started from a heap image also has V8 compile the compiler's own functions
-(a few hundred ms). Definitions (`defun`, `defmacro`, `defstruct`...) are
-always compiled, as the compiler does more with them than their expansion
+A simple form is evaluated instead of compiled (`simple-form` and
+`simple-eval`, `lib/live-image.lisp`, as SBCL's `simple-eval-in-lexenv`): a
+call of a global function whose arguments are simple, a variable, a
+constant, `quote`, `function` of a name, `setq` of a special variable, `if`,
+`progn`, `eval-when`, `declaim` (the compiler notes its proclamations too)
+and the macros that expand to these, expanded once before anything runs:
+`(swank:connection-info)`, `(micros:autodoc '...)`, a `defsystem` of an
+`.asd` file (`(apply 'register-system-definition '...)`), `defpackage`,
+`in-package`, `defvar`, `(load "file")`, `(require :asdf)`. Compiling such
+a form took 5 to 30 ms, for a call of microseconds, and the first
+compilation in an image also has V8 compile the compiler's own functions
+(0.2 s from the REPL image, a few hundred ms from a heap image). The
+definers of `%compile-time-definers` other than `defpackage` and
+`in-package` (`defmacro`, `defstruct`, `defclass`, `deftype`...) are always
+compiled, as the compiler does more with them than their expansion
 does. A constant whose value a fasl cannot write (a package, a hash table)
 is read from its symbol in compiled code instead of being a literal of the
 module: as a literal, it made `compile-file` leave the whole form as source,
@@ -1116,9 +1122,9 @@ its modules; two things made it cost much more, and are avoided:
   thirty `define-dfa` tables of Inquisitor were one function of 400 KB with
   11000 locals, which took 1.5 s to compile. A single form that large is
   still one function (`contrib/fixups.lisp` splits Babel's
-  `instantiate-concrete-mappings` into one form per encoding); reusing the
-  locals of variables whose scope has ended would be the general remedy.
-
+  `instantiate-concrete-mappings` into one form per encoding). Locals are
+  now shared by variables whose lives do not meet (see Start-up and
+  loading), which is the general remedy.
 * **Reading the text of a fasl.** Its forms are mostly package-qualified
   symbols. The fasl's text is decoded by the host at once
   (`%fasl-text-from-host`: `__clysm_read_bytes`, which the modules are read
@@ -1750,6 +1756,72 @@ caches for every page that uses it.
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions.
 
+### Start-up and loading
+
+`tools/bench-startup.sh` (through `tools/bench-slot.sh`) times whole
+processes against SBCL, best of five: starting the REPL image (`--eval t`),
+`(require :asdf)`, loading `~/quicklisp/setup.lisp`, `ql:quickload` of
+Alexandria, cl-ppcre and Babel whose fasls are already compiled, and a
+small script (`clysm script` of a `defun` and a call). Its fasls go to a
+cache of its own (`build/bench-cache/`, as `$XDG_CACHE_HOME`).
+
+Measured 2026-11 on a slot of four CPUs (`tools/bench-slot.sh`), best of
+five, milliseconds:
+
+| Item | SBCL | Clysm before | Clysm now | Now / SBCL |
+|---|---|---|---|---|
+| `s-start` (`--eval t`) | 4 | 416 | 158 | 40 |
+| `s-script` (a `defun` and a call) | 7 | 431 | 232 | 33 |
+| `s-require-asdf` | 62 | 862 | 439 | 7.1 |
+| `s-quicklisp` (`setup.lisp`) | 157 | 1301 | 715 | 4.6 |
+| `s-ql-alexandria` | 179 | 1454 | 791 | 4.4 |
+| `s-ql-cl-ppcre` | 223 | 1425 | 782 | 3.5 |
+| `s-ql-babel` | 251 | 1720 | 854 | 3.4 |
+| geometric mean | | 15.8 | 8.1 | |
+
+Where the time went, and what was done:
+
+* **Compiling a form when evaluating it would do.** The REPL compiled every
+  form, `--eval t` and `(load "file")` included: the first compilation
+  costs the module and V8's compilation of the compiler's functions as they
+  are first called, 0.2 s. Simple forms are evaluated (see Compiling inside
+  the running image); `compile-file` evaluates its compile-time forms
+  (`in-package`, `defvar`'s proclamations...) the same way.
+* **Locals.** Liftoff, which compiles each function when it is first
+  called, takes time in the number of locals at every branch. The compiler's
+  own large functions had up to 2000 locals (`emit-instr` 2038 locals took
+  31 ms, `encode-module` 16, ten functions together 85 ms of the first
+  compilation). `coalesce-locals` (`src/wasm.lisp`, when a function is
+  encoded) gives each local the range of positions from its first to its
+  last use, widened to every loop that the range enters or leaves, and
+  locals of the same type whose ranges do not meet share one; a local that
+  may be read before it is set (by Wasm's rule for non-nullable locals: a
+  set counts until the end of its block) keeps its own, as parameters do.
+  `emit-instr` has 8 locals now, and the image is 3% smaller.
+* **The worker.** A V8 flag set before the worker starts (in the main
+  thread or on the command line) changes the flags' hash, and Node.js then
+  compiles its own JavaScript again in the worker instead of taking it from
+  its code cache: 35 ms. The flags are set in the worker once it has
+  started. The main thread imports only what it needs to start the worker
+  (sockets and processes when the worker first asks for one).
+* **Validation.** `--wasm-lazy-validation`: a function is validated when it
+  is first compiled. Most of the image's functions and of a fasl's never
+  run; the image compiles in 17 ms instead of 30.
+
+What remains for `--eval t` (about 0.18 s): Node.js and the worker 45 ms,
+compiling (17 ms) and instantiating (25 ms) the image, its toplevel forms
+(`:start`, 45 ms, half of it V8 compiling the functions they call). For
+`(require :asdf)`, 0.3 s more: compiling its 1064 modules (70 ms, most of
+it each module's copy of the image's types; linked into one, `host/link.mjs`,
+they compile in 20 ms), instantiating them (18 ms), reading the fasl's text
+(37 ms), running ASDF's toplevel forms (UIOP's `define-package` 67 ms).
+
+Tried and not kept: compilation hints (`withCompilationHints`, the
+functions that run at start compiled eagerly in background threads) are
+not used by Node.js 24's V8 (13.6; `--experimental-wasm-compilation-hints`
+changed nothing). V8 has no cache of compiled WebAssembly that Node.js
+exposes (`v8.serialize` of a `WebAssembly.Module` gives 2 octets).
+
 ### Allocation, garbage collection and the engine's flags
 
 Objects are V8 heap objects. Node.js is built without pointer compression,
@@ -1801,8 +1873,7 @@ whatever the size of the young generation, and it cannot be set from
 at the first collection) nor through `NODE_OPTIONS`: every `node` command
 would need it. Startup: `--no-liftoff` makes `clysm eval t` take over 16 s
 (everything compiled by TurboFan), `--no-wasm-lazy-compilation` does not
-start the image at all. `clysm eval t` takes 0.37–0.5 s from the REPL
-image with `--no-userinit`, about 1.2 s when `~/.clysmrc` loads Quicklisp.
+start the image at all. `clysm eval --no-userinit t`: see Start-up and loading.
 
 Types and casts: every type is final (a type without `sub` in the binary
 format is final), so `ref.test` and `ref.cast` are one comparison of the
