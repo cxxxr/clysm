@@ -2236,8 +2236,30 @@ difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
   (if (and (%simple-string-p s1) (%simple-string-p s2))
       (%simple-string= s1 s2)
       (%string-eq s1 s2 0 nil 0 nil nil)))
+(defmacro %string-eq-call (s1 s2 keys ci)
+  "STRING= or STRING-EQUAL of S1 and S2 with the keyword arguments KEYS as a
+call of %STRING-EQ, the arguments evaluated in their order; NIL when KEYS
+are not distinct :START1 :END1 :START2 :END2 written as keywords (a call
+with keywords checked them and took 70% of the time of comparing the 5
+characters of a comment's start in a line, in Lem)."
+  (let ((names (loop for (k) on keys by #'cddr collect k)))
+    (when (and (evenp (length keys))
+               (every (lambda (k) (member k '(:start1 :end1 :start2 :end2))) names)
+               (= (length (remove-duplicates names)) (length names)))
+      (let* ((a (gensym "S1")) (b (gensym "S2"))
+             (vars (loop for (k v) on keys by #'cddr collect (list k (gensym (symbol-name k)) v))))
+        (flet ((arg (k default) (let ((e (assoc k vars))) (if e (second e) default))))
+          `(let* ((,a ,s1) (,b ,s2) ,@(mapcar (lambda (e) (list (second e) (third e))) vars))
+             (%string-eq ,a ,b ,(arg :start1 0) ,(arg :end1 nil) ,(arg :start2 0) ,(arg :end2 nil) ,ci)))))))
+
 (define-compiler-macro string= (&whole form s1 s2 &rest keys)
-  (if keys form `(%string=-2 ,s1 ,s2)))
+  (if keys
+      (or (macroexpand-1 `(%string-eq-call ,s1 ,s2 ,keys nil)) form)
+      `(%string=-2 ,s1 ,s2)))
+(define-compiler-macro string-equal (&whole form s1 s2 &rest keys)
+  (if keys
+      (or (macroexpand-1 `(%string-eq-call ,s1 ,s2 ,keys t)) form)
+      `(%string-equal-2 ,s1 ,s2)))
 (defun string= (s1 s2 &key (start1 0) end1 (start2 0) end2)
   (%string-eq s1 s2 start1 end1 start2 end2 nil))
 (defun string-equal (s1 s2 &key (start1 0) end1 (start2 0) end2)

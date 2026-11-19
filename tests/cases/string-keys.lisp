@@ -1,0 +1,23 @@
+;;; STRING= and STRING-EQUAL with keyword arguments (compiled as a call of
+;;; the comparison itself): bounds, order of evaluation, designators, errors
+(defvar *order* '())
+(defun note (x) (push x *order*) x)
+(defun match (str1 str2 pos)
+  (let ((end1 (+ pos (length str2))))
+    (when (and (<= end1 (length str1)) (string= str1 str2 :start1 pos :end1 end1))
+      (length str2))))
+(print (list (match "(foo ;; bar" ";;" 5) (match "(foo ;; bar" ";;" 4) (match "ab" "abc" 0)))
+(print (list (string= "abcdef" "xxcdyy" :start1 2 :end1 4 :start2 2 :end2 4)
+             (string= "abc" "ABC" :end1 2 :end2 2)
+             (string-equal "abc" "ABC" :end1 2 :end2 2)
+             (string-equal "abcd" "xBCd" :start2 1 :start1 1)
+             (string= 'foo "xFOO" :start2 1)
+             (string= #\a "ba" :start2 1)))
+(print (string= (note "abc") (note "zabc") :end2 (note 4) :start2 (note 1)))
+(print (reverse *order*))
+(print (handler-case (string= "abc" "abc" :end1 5) (error () :bounds-error)))
+(print (handler-case (string-equal "abc" "abc" :start1 2 :end1 1) (error () :bounds-error)))
+;; keywords given twice, or not written as keywords: as the function does
+(print (string= "abc" "xbc" :start1 1 :start1 0 :start2 1))
+(let ((k :start2)) (print (string= "abc" "xabc" k 1)))
+(print (funcall #'string= "ab" "zab" :start2 1))
