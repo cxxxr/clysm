@@ -6,8 +6,9 @@
 ;;;; what makes it needed: the file types of a mode, the command that turns
 ;;;; it on, LOAD-THEME for the themes.  The first use loads the system with
 ;;;; ASDF (in a second or so) and then does what was asked; the extension's
-;;;; own definitions replace these.  setup.lisp has the fixups that make
-;;;; them load on Clysm.
+;;;; own definitions replace these.  They load on Clysm as they are; what
+;;;; they would need a language server or a web browser for is in systems
+;;;; of their own (setup.lisp).
 
 (in-package :lem-clysm)
 

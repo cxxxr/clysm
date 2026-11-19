@@ -21,8 +21,9 @@ JavaScript Promise Integration, which Firefox and Safari do not have yet),
 from the disk or from any web server. See [In a browser](#in-a-browser).
 
 `build.sh` needs SBCL, Node.js, git, npm and Quicklisp (`~/quicklisp/`, or
-`QUICKLISP_HOME`). It clones Lem (the commit it was written for, or the
-checkout named by `LEM_DIR`), lem-mailbox and micros into `build/lem-deps/`, builds
+`QUICKLISP_HOME`). It clones Lem (the commit of
+[cxxxr/lem](https://github.com/cxxxr/lem)'s branch `staging` it was written
+for, or the checkout named by `LEM_DIR`), lem-mailbox and micros into `build/lem-deps/`, builds
 the image, compiles Lem and its libraries with it (Quicklisp downloads what
 is missing; the first time this takes a few minutes), and installs Electron
 in `build/lem-desktop/`.
@@ -143,8 +144,11 @@ Lem start later: the file types of a mode open their files with a function
 that loads the mode's system with ASDF and then turns the mode on, a command
 of the mode's name does the same, and `load-theme` loads the themes first
 (also before Lem starts, when the theme saved last time is one of them).
-`setup.lisp` leaves out what they cannot have here: their language servers,
-tree-sitter (`stubs/lem-tree-sitter/`) and the preview of Markdown.
+What they cannot have here is in systems of their own in Lem, which are not
+loaded: their language servers (`lem-go-mode/lsp`, ...) and the preview of
+Markdown (`lem-markdown-mode/preview`); tree-sitter is a stub
+(`stubs/lem-tree-sitter/`). Lem's system definitions are loaded as they
+are, without fixups.
 
 ## In a browser
 
@@ -173,7 +177,7 @@ Integration gets a page that says so.
 | Path | Contents |
 |---|---|
 | `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
-| `setup.lisp` | the stubs and the fixups of Lem's system definitions for ASDF (and of the extensions) |
+| `setup.lisp` | the stubs of the libraries that Lem on Clysm does without, for ASDF |
 | `prepare.lisp` | compiles Lem with the image (run by `build.sh` on Node.js), and notes what is loaded at start (`boot-list.lisp`) |
 | `load-lem.lisp` | loads Lem without ASDF, showing how far it is in the page |
 | `desktop/` | the page, `boot.lisp` (which also saves the heap image) and `package.json` of the application, `lem`, its client, `link-image.mjs` (one module), and `train.js` and `hint-image.mjs` (compilation hints) |

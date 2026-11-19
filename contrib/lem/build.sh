@@ -3,7 +3,8 @@
 # install Electron there:
 #   contrib/lem/build.sh && (cd build/lem-desktop && npm start)
 # Lem's source is cloned into build/lem-deps/ (or LEM_DIR names a checkout
-# of https://github.com/lem-project/lem); the libraries come from Quicklisp
+# of https://github.com/cxxxr/lem, branch staging, which Lem on Clysm loads
+# without fixups); the libraries come from Quicklisp
 # (QUICKLISP_HOME, by default ~/quicklisp/).  With LEM_NO_ELECTRON set,
 # Electron is not installed (for build-web.sh).
 set -e
@@ -12,8 +13,8 @@ cd "$root"
 out=build/lem-desktop
 deps=build/lem-deps
 mkdir -p $out $deps
-# the version of Lem this frontend was written for
-lem_commit=d3ff8bd07388e1fd05d82bb1412b2d0986caff36
+# the version of Lem this frontend was written for (cxxxr/lem staging)
+lem_commit=b2d1114192d3f5fc965e533847b5c29cb8e36574
 clone() {   # clone REPOSITORY DIRECTORY [COMMIT]
   # (a checkout of an earlier COMMIT is moved to COMMIT)
   if [ -d "$2" ]; then
@@ -25,7 +26,7 @@ clone() {   # clone REPOSITORY DIRECTORY [COMMIT]
   git -C "$2" checkout -q FETCH_HEAD
 }
 if [ -z "$LEM_DIR" ]; then
-  clone https://github.com/lem-project/lem.git $deps/lem $lem_commit
+  clone https://github.com/cxxxr/lem.git $deps/lem $lem_commit
   LEM_DIR=$deps/lem
 fi
 clone https://github.com/lem-project/lem-mailbox.git $deps/lem-mailbox
