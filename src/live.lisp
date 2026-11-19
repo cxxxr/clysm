@@ -25,6 +25,7 @@
          (*const-table* (make-hash-table :test 'eql))
          (*const-string-table* (make-hash-table :test 'equal))
          (*closure-globals* nil)
+         (*closure-global-names* (make-hash-table :test 'equal))
          (*misc-globals* nil)
          (*pending-lams* nil)
          (*compiled-lams* (make-hash-table :test 'eq))

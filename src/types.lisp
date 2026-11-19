@@ -975,10 +975,19 @@ or contents; a vector or a two-dimensional array when the dimensions tell."
         (mkty (logior +k-svec+ +k-string+ +k-other+)))))
 
 (defvar *ti-in-progress* nil "the lambdas being analyzed")
+(defvar *ti-shared* nil
+  "While a copy of a function is analyzed with types of its parameters (in
+tables of its own): the tables of the compilation, (node-types . analyzed),
+in which the return types of the functions it calls are found and kept.
+They do not depend on the types of the copy's parameters: each function is
+analyzed once, not again for every copy of a function that calls it.")
 
 (defun lam-return-ty (lam)
   "The type of the values LAM returns (its body analyzed first if needed)."
   (cond ((or (eq lam *ti-lam*) (member lam *ti-in-progress*)) *ty-top*)
+        (*ti-shared*
+         (let ((*node-types* (car *ti-shared*)) (*ti-analyzed* (cdr *ti-shared*)) (*ti-shared* nil))
+           (lam-return-ty lam)))
         (t (unless (gethash lam *ti-analyzed*)
              (let ((*ti-in-progress* (cons *ti-lam* *ti-in-progress*)))
                (inline-calls lam)
