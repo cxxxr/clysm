@@ -93,7 +93,7 @@ predicates compile to `ref.test`, never to pointer tag arithmetic.
 ## Calling convention (spec: ハイブリッド渡し)
 
 A closure is `struct { code, name, free variables... }`, where `code` is a
-`$code` struct `{ entry0..entry4, entryN, kmain, klayout }` made once per
+`$code` struct `{ entry0..entry4, entryN, kmain, klayout, entryA }` made once per
 lambda and shared by all its closures (`static-closure-global` in
 `src/codegen.lisp`: the closure without environment of a lambda is a global
 whose code a new closure takes). A call with k ≤ 4
@@ -105,7 +105,13 @@ argument-count-error stubs, and `entryN` is a small unpacking adapter. Functions
 with `&optional/&rest/&key` take the argument array directly (shared packing
 stubs fill the fixed entries). Calls to functions defined in the same program
 are compiled as direct `call`s (CLHS 3.2.2.3), and tail calls become
-`return_call` / `return_call_ref`. `funcall` of an object not known to be a
+`return_call` / `return_call_ref`. `apply` calls `entryA`, which takes the
+arguments as a list: for a function of required parameters and `&rest` it
+takes the required ones off the list and passes the rest of the list as the
+rest list (CLHS 3.4.1.3 lets it share structure with the last argument of
+`apply`), with no argument vector and no copy; for the others the shared
+`:apply-generic` takes up to four elements to the fixed entries. `apply` of
+a known global function calls its `entryA` directly. `funcall` of an object not known to be a
 function tests at the call site for a closure, then for a symbol whose
 function cell is set; only other objects go to the `:coerce-function` helper.
 
@@ -183,8 +189,9 @@ not thrown. It is a *return with the exit pending*: the tag and the value
 are stored in the symbols `sys::%exit-tag` and `sys::%exit-value` and the
 function returns null, which is no Lisp value. Every call of a Lisp
 function that is not a tail call is followed by a test for null
-(`checked-call` in `src/codegen.lisp`: a `br_on_non_null` out of a block
-around the call, after which comes the null case); on null, the code branches to the handler of the
+(`checked-call` in `src/codegen.lisp`: `local.tee`, `ref.is_null` and an
+`if` hinted as unlikely; a `br_on_non_null` out of a block around the call
+was 4–10% slower in recursion through `funcall` and generic functions); on null, the code branches to the handler of the
 call's context — the catchers around the call in that function (a non-local
 block or tagbody, a `catch`, a `handler-case` or `restart-case`) take the
 exit if its tag is theirs, else the function returns null in turn, through
@@ -1897,7 +1904,10 @@ What makes the code fast:
   code loaded into the image (0.82), `p-labels` 0.82, `p-closures` 0.88,
   `h-closures` 0.83; a call of an unknown function loads the code first,
   which costs calls through symbols and generic functions a little
-  (`h-fib-generic` 1.07–1.14).
+  (`h-fib-generic` 1.03–1.09, `h-fib-symbol` 1.07–1.15 of the time before;
+  the entries for one and two arguments copied into the closure as well
+  gained nothing on the first and 5% on the second, so they are not). `apply` through `entryA`:
+  `k-funcall-args` 0.77, `k-higher-order` 0.86, `p-call-conv` 0.87.
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.

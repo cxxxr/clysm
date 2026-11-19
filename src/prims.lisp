@@ -743,7 +743,7 @@ helper signals the type error)."
       (:local.get ,tg) ,@(clo-field-code 3)
       (:local.get ,tg) ,@(clo-field-code 4)
       (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
-      (:ref.null :func) (:ref.null :eq)
+      (:ref.null :func) (:ref.null :eq) (:ref.func :apply-generic)
       (:struct.new :code)
       (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; %MAKE-GF-CLOSURE4 with the keyed main function and the key layout of K
@@ -762,6 +762,7 @@ helper signals the type error)."
       (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
       (:local.get ,tk) ,@(clo-field-code +clo-kmain+)
       (:local.get ,tk) ,@(clo-field-code +clo-klayout+)
+      (:ref.func :apply-generic)
       (:struct.new :code)
       (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 (defprim clysm-sys::%make-gf-closure4 (g f1 f2 f3 f4) :value
@@ -779,7 +780,7 @@ helper signals the type error)."
       (:local.get ,t3) ,@(clo-field-code 3)
       (:local.get ,t4) ,@(clo-field-code 4)
       (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
-      (:ref.null :func) (:ref.null :eq)
+      (:ref.null :func) (:ref.null :eq) (:ref.func :apply-generic)
       (:struct.new :code)
       (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; the function of a symbol is (EQ) a given function
@@ -3682,30 +3683,33 @@ f64s in locals DA and DB (it may branch to SLOW)."
        (:br again)))
   '(:local.get v) '(:ref.as_non_null))
 
-(defhelper :apply-list :ee-e ((f (:ref :null :closure)) (v (:ref :null :vector)) (n :i32))
-  ;; (apply f list): dispatch to fixed entries when possible
-  '(:local.get 0) '(:call :coerce-function) '(:local.set f)
-  '(:local.get 1) '(:call :list-to-vector) '(:local.tee v) :array.len '(:local.set n)
-  `(:block generic nil
-     (:block a4 nil (:block a3 nil (:block a2 nil (:block a1 nil (:block a0 nil
-       (:local.get n) (:br_table a0 a1 a2 a3 a4 generic))
-       (:local.get f) :ref.as_non_null (:local.get f) ,@(clo-field-code 0) (:return_call_ref :f0))
-       (:local.get f) :ref.as_non_null (:local.get v) (:i32.const 0) (:array.get :vector)
-       (:local.get f) ,@(clo-field-code 1) (:return_call_ref :f1))
-       (:local.get f) :ref.as_non_null
-       (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
-       (:local.get f) ,@(clo-field-code 2) (:return_call_ref :f2))
-       (:local.get f) :ref.as_non_null
-       (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
-       (:local.get v) (:i32.const 2) (:array.get :vector)
-       (:local.get f) ,@(clo-field-code 3) (:return_call_ref :f3))
-     (:local.get f) :ref.as_non_null
-     (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
-     (:local.get v) (:i32.const 2) (:array.get :vector) (:local.get v) (:i32.const 3) (:array.get :vector)
-     (:local.get f) ,@(clo-field-code 4) (:return_call_ref :f4))
-  '(:local.get f) :ref.as_non_null '(:local.get v) :ref.as_non_null
-  '(:local.get f) `(:struct.get :closure ,+clo-code+) `(:struct.get :code ,+clo-entry-n+)
-  '(:return_call_ref :fN))
+(defhelper :apply-list :ee-e ((f (:ref :null :closure)))
+  ;; (apply f list): the entry of F taking a list
+  '(:local.get 0) '(:call :coerce-function) '(:local.tee f) :ref.as_non_null
+  '(:local.get 1) '(:local.get f) `(:struct.get :closure ,+clo-code+) `(:struct.get :code ,+clo-entry-a+)
+  '(:return_call_ref :fA))
+
+;; the entry taking a list of the arguments of the functions without one of
+;; their own: up to four arguments go to the fixed entries without an
+;; argument vector
+(defhelper :apply-generic :fA ((l :eqref) (a0 :eqref) (a1 :eqref) (a2 :eqref) (a3 :eqref))
+  (flet ((next (var k)
+           ;; the list in L is a cons: its car to VAR; if the rest is not a
+           ;; cons, call the entry for K + 1 arguments
+           `((:local.get l) (:ref.cast! :cons) (:struct.get :cons 0) (:local.set ,var)
+             (:local.get l) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee l)
+             (:ref.test :cons) :i32.eqz
+             (:if nil nil ((:local.get 0)
+                           ,@(loop for v in '(a0 a1 a2 a3) repeat (1+ k) collect `(:local.get ,v))
+                           (:local.get 0) ,@(clo-field-code (1+ k))
+                           (:return_call_ref ,(fixed-entry-type (1+ k))))))))
+    `((:local.get 1) (:local.tee l) (:ref.test :cons) :i32.eqz
+      (:if nil nil ((:local.get 0) (:local.get 0) ,@(clo-field-code 0) (:return_call_ref :f0)))
+      ,@(next 'a0 0) ,@(next 'a1 1) ,@(next 'a2 2) ,@(next 'a3 3)
+      ;; more than four
+      (:local.get 0) (:local.get 1) (:call :list-to-vector)
+      (:local.get 0) (:struct.get :closure ,+clo-code+) (:struct.get :code ,+clo-entry-n+)
+      (:return_call_ref :fN))))
 
 ;;; lambda-list support
 (defhelper :vector-tail-to-list :vi-e ((l :eqref) (i :i32))
@@ -5478,7 +5482,7 @@ those the code calls (modules made at run time call few of them)."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 4)
+(defconstant +img-version+ 5)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
     :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst))
@@ -5492,7 +5496,9 @@ those the code calls (modules made at run time call few of them)."
         append `((:local.get 1) (:i32.const ,i) :i32.eq
                  (:if nil nil ((:local.get c) ,@(clo-field-code i) (:call :host-code-index)
                                :ref.i31 :return))))
-  `((:local.get c) ,@(clo-field-code +clo-kmain+) (:local.tee f) :ref.is_null
+  `((:local.get 1) (:i32.const 7) :i32.eq
+    (:if nil nil ((:local.get c) ,@(clo-field-code +clo-entry-a+) (:call :host-code-index) :ref.i31 :return))
+    (:local.get c) ,@(clo-field-code +clo-kmain+) (:local.tee f) :ref.is_null
     (:if nil nil ((:i32.const -1) :ref.i31 :return))
     (:local.get f) (:call :host-code-index) :ref.i31))
 (defprim clysm-sys::%closure-code (f i) :value `(,@f ,@(idx-code i) (:call :closure-code)))
@@ -5722,13 +5728,15 @@ local LIMIT, incrementing it."
                              (:struct.new :symbol))))
             (:closure
              ;; the words: the 6 entries, the function taking keywords (-1:
-             ;; none), the layout of its keywords, the number of free
+             ;; none), the layout of its keywords, the entry taking a list, the number of free
              ;; variables (their values are mutable fields)
              (done (loop for i from 0 to 4 append (img-code-ref (fixed-entry-type i)))
                    (img-code-ref :fN)
                    '((:call :img-word) (:local.tee w) (:i32.const -1) :i32.eq
                      (:if nil (:ref :null :func) ((:ref.null :func)) ((:local.get w) (:table.get)))
-                     (:call :img-ref) (:struct.new :code)
+                     (:call :img-ref)
+                     (:call :img-word) (:table.get) (:ref.cast! :fA)
+                     (:struct.new :code)
                      (:call :img-word) (:call :make-env-closure))))
             (:mdarray (done '((:struct.new_default :mdarray))))
             (:double (done '((:call :img-i64) :f64.reinterpret_i64 (:struct.new :double))))

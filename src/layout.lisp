@@ -29,8 +29,10 @@
 (defconstant +clo-code+ 0) (defconstant +clo-name+ 1) (defconstant +clo-env+ 2)
 (defconstant +clo-env-max+ 8)
 ;; the code: the entries for 0-4 arguments (0-4), for any number (5), the
-;; function taking keyword arguments in fixed slots and its layout
+;; function taking keyword arguments in fixed slots and its layout, the
+;; entry taking a list of the arguments (APPLY)
 (defconstant +clo-entry-n+ 5) (defconstant +clo-kmain+ 6) (defconstant +clo-klayout+ 7)
+(defconstant +clo-entry-a+ 8)
 
 ;; symbol flags
 (defconstant +flag-special+ 1)
@@ -136,13 +138,16 @@ when ET is not one of the specifiers recognized at compile time."
                           ((:ref :f4) nil) ((:ref :fN) nil)
                           ;; for a function with keyword parameters: the function taking them
                           ;; in fixed slots, and its layout (required optional . keywords)
-                          ((:ref :null :func) nil) (:eqref nil))))
+                          ((:ref :null :func) nil) (:eqref nil)
+                          ;; the entry taking the arguments as a list
+                          ((:ref :fA) nil))))
     (:f0        (:func ((:ref :closure)) (:eqref)))
     (:f1        (:func ((:ref :closure) :eqref) (:eqref)))
     (:f2        (:func ((:ref :closure) :eqref :eqref) (:eqref)))
     (:f3        (:func ((:ref :closure) :eqref :eqref :eqref) (:eqref)))
     (:f4        (:func ((:ref :closure) :eqref :eqref :eqref :eqref) (:eqref)))
     (:fN        (:func ((:ref :closure) (:ref :vector)) (:eqref)))
+    (:fA        (:func ((:ref :closure) :eqref) (:eqref)))
     ,@(loop for n from 1 to +clo-env-max+
             collect `(,(envclo-type n)
                       (:sub (:closure) t (:struct (((:ref :code) nil) (:eqref t)
