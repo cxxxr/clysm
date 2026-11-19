@@ -855,6 +855,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
     (:host-module-snap :i-e "env" "module_snap")
     (:host-float-to-chars :di-i "env" "float_to_chars")
     (:host-get-char :i-i "env" "get_char")
+    (:host-float-part :i-i "env" "float_part")
     (:host-math1 :di-d "env" "math1")
     (:host-math2 :ddi-d "env" "math2")
     (:host-time :i-d "env" "time")
@@ -3515,6 +3516,7 @@ division and the product are the identity)."
     :f64.reinterpret_i64 ,@(box-f64)))
 (defprim clysm-sys::%float-to-chars (d mode) :value
   `(,@(f64-code d) ,@(idx-code mode) (:call :host-float-to-chars) :ref.i31))
+(defprim clysm-sys::%host-float-part (k) :value `(,@(idx-code k) (:call :host-float-part) :ref.i31))
 (defprim clysm-sys::%host-char (i) :value
   `(,@(idx-code i) (:call :host-get-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%math1 (d op) :value `(,@(f64-code d) ,@(idx-code op) (:call :host-math1) ,@(box-f64)))
