@@ -412,12 +412,36 @@ test is not one a hash table has."
 (defun nsublis (alist tree &key key test test-not) (sublis alist tree :key key :test test :test-not test-not))
 
 (defun tree-equal (a b &key test test-not)
-  (let ((tf (%test-fn test test-not)))
-    (labels ((walk (x y)
-               (cond ((and (consp x) (consp y)) (and (walk (car x) (car y)) (walk (cdr x) (cdr y))))
-                     ((or (consp x) (consp y)) nil)
-                     (t (if (funcall tf x y) t nil)))))
-      (walk a b))))
+  (if (or test test-not)
+      (%tree-equal-test a b (%test-fn test test-not))
+      (%tree-equal-eql a b)))
+
+(defun %tree-equal-test (x y tf)
+  ;; the CDR direction is a loop
+  (loop
+    (cond ((and (consp x) (consp y))
+           (unless (%tree-equal-test (car x) (car y) tf) (return nil))
+           (setq x (cdr x) y (cdr y)))
+          ((or (consp x) (consp y)) (return nil))
+          (t (return (if (funcall (the function tf) x y) t nil))))))
+
+(defun %tree-equal-eql (x y)
+  (loop
+    (cond ((eq x y) (return t))
+          ((and (consp x) (consp y))
+           (unless (%tree-equal-eql (car x) (car y)) (return nil))
+           (setq x (cdr x) y (cdr y)))
+          ((or (consp x) (consp y)) (return nil))
+          (t (return (eql x y))))))
+
+;; without keywords, or with :TEST alone: no keyword list
+(define-compiler-macro tree-equal (&whole form a b &rest keys)
+  (cond ((null keys) `(%tree-equal-eql ,a ,b))
+        ((and (eq (car keys) :test) (consp (cdr keys)) (null (cddr keys)))
+         (let ((x (gensym "A")) (y (gensym "B")))
+           `(let ((,x ,a) (,y ,b))
+              (%tree-equal-test ,x ,y (%test-fn ,(cadr keys) nil)))))
+        (t form)))
 
 ;;; mapping
 (defun %map1 (f list collect)
