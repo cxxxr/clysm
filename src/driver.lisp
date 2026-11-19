@@ -5,6 +5,20 @@
 (defvar *deferred-macros* nil)
 (defvar *macros-ready* nil)
 (defvar *initial-symbol-values* (make-hash-table :test 'eq))
+(defparameter *live-imported-helpers*
+  (append '(:undefined-function :argerr-n)
+          (loop for k from 0 to +max-fixed-args+ collect (list :argerr k)))
+  "Runtime helpers that a module evaluated at once imports from the image
+(which exports them, *EXPORT-LIVE-HELPERS*) instead of carrying a copy: they
+are called on errors only.  (The helpers of exits are on the path of every
+exit; importing the functions of checked casts, called only when a cast fails,
+made a THROW through 100 frames three times as slow.)")
+(defun live-helper-export-name (name)
+  (let ((*package* (find-package :keyword))) (format nil "h:~(~S~)" name)))
+
+(defvar *export-live-helpers* nil
+  "Building an image that embeds the compiler: it exports the helpers that the
+modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
 (defvar *toplevel-lams* nil "reverse list of toplevel lams")
 (defvar *current-toplevel* nil)
 (defvar *toplevel-nodes* nil)
@@ -673,6 +687,11 @@ NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
                         :local-names (mapcar #'first locals)
                         :body (remove nil body))))))
       (compile-pending-lams)
+      ;; the helpers that modules compiled in the image import (src/live.lisp)
+      (when *export-live-helpers*
+        (dolist (name *live-imported-helpers*)
+          (when (func-defined-p *m* name)
+            (add-export *m* (live-helper-export-name name) :func name))))
       (add-export *m* "lisp_apply" :func :lisp-apply)
       (add-export *m* "lisp_apply_async" :func :lisp-apply-async)
       (add-export *m* "lisp_recover" :func :lisp-recover)

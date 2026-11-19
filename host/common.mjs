@@ -69,9 +69,14 @@ export function instantiateLinked(state, bytes, codeBase) {
       codeBase = 0;
     }
   }
+  // the runtime helpers the image exports for its modules (src/live.lisp)
+  if (!state.helperImports) {
+    state.helperImports = {};
+    for (const k of Object.keys(ex)) if (k.startsWith('h:')) state.helperImports[k] = ex[k];
+  }
   const inst = new WebAssembly.Instance(mod, {
     ...state.imports,
-    clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
+    clysm: { ...state.helperImports, mv_count: ex.mv_count, mv_buf: ex.mv_buf, bstack: ex.bstack, bsp: ex.bsp,
              poll_count: ex.poll_count,
              lisp_throw: ex.lisp_throw, memory: ex.memory,
              codes, code_base: codeBase },

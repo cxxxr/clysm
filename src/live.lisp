@@ -49,6 +49,15 @@
          (*macros-ready* t))
      ,@body))
 
+(defvar *live-helper-imports* nil
+  "True in an image that exports *LIVE-IMPORTED-HELPERS* (tools/build-repl.lisp).")
+
+(defun live-helper-type (name)
+  (cond ((and (consp name) (eq (car name) :argerr)) (fixed-entry-type (second name)))
+        ((and (consp name) (eq (car name) :callsym)) (list :callsym-type (second name)))
+        ((and (consp name) (eq (car name) :castfn)) (list :cast-type (second name)))
+        (t (second (assoc name *helpers* :test #'equal)))))
+
 (defvar *live-snapshots* t
   "Whether the module being made has the functions SNAP and RESTORE of heap
 images: NIL for a form evaluated at once in an image that does not record its
@@ -132,7 +141,7 @@ DEFINE-CHECKED-CASTS)."
              (need-cast (type)
                (let* ((name (cdr (assoc type (wasm-module-cast-rewrites *m*))))
                       (add (and name (gethash name castfns))))
-                 (when add
+                 (when (and add (not (func-defined-p *m* name)))
                    (remhash name castfns)
                    (funcall add))))
              (walk (x)
@@ -176,6 +185,10 @@ DEFINE-CHECKED-CASTS)."
   (loop for (name def) in *type-defs* do (add-type *m* name def))
   (setf (wasm-module-base-types *m*) (length *type-defs*))
   (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
+  ;; (those not called are dropped with the unreachable functions)
+  (when (and *live-helper-imports* (not *live-snapshots*))
+    (dolist (name *live-imported-helpers*)
+      (add-import-func *m* name (live-helper-type name) "clysm" (live-helper-export-name name))))
   (add-import-global *m* :mv-count :i32 t "clysm" "mv_count")
   (add-import-global *m* :mv-buf '(:ref :vector) nil "clysm" "mv_buf")
   (add-import-global *m* :bstack '(:ref :vector) t "clysm" "bstack")

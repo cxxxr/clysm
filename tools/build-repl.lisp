@@ -33,7 +33,10 @@
         (let ((*redefinable-functions* (and (sb-ext:posix-getenv "CLYSM_REDEFINABLE") t)))
           (dolist (main mains)
             (compile-source-file (if (probe-file main) main (rpath main)))))
-        (let ((bytes (build-module)))
+        ;; the modules compiled in the image import some runtime helpers
+        ;; from it (src/live.lisp)
+        (setf (gethash (intern "*LIVE-HELPER-IMPORTS*" "CLYSM-T/CLYSM") *initial-symbol-values*) (list t))
+        (let ((bytes (let ((*export-live-helpers* t)) (build-module))))
           (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
             (write-sequence bytes o))
           (format *error-output* "~&; wrote ~A (~D bytes)~%" out (length bytes))))
