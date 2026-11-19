@@ -494,6 +494,13 @@ test is not one a hash table has."
   (defun %function-binding (var f)
     "The binding of VAR to the function form F, unless F is called directly."
     (if (%direct-function-form-p f) nil (list (list var f))))
+  (defun %arity-lambda (f n)
+    "For F = #'NAME, a lambda of N parameters calling NAME (a call of a
+known arity, where a primitive is inline and no &REST entry is taken); NIL
+for any other F."
+    (when (and (consp f) (eq (car f) 'function) (consp (cdr f)) (symbolp (cadr f)))
+      (let ((args (loop repeat n collect (gensym "A"))))
+        `(lambda ,args (,(cadr f) ,@args)))))
   (defun %literal-call (f var args)
     "A call of the function form F (bound to VAR unless %DIRECT-FUNCTION-FORM-P) on ARGS."
     (cond ((not (%direct-function-form-p f)) `(funcall ,var ,@args))
