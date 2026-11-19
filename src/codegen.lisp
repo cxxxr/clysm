@@ -303,9 +303,10 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
   "Push the raw content of a variable's location (cell if boxed)."
   (let ((loc (get-loc lv)))
     (ecase (car loc)
-      (:local (if (dual-local lv)
-                  (dual-get-code lv)    ; an integer accumulator (typed.lisp)
-                  `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv)))))
+      (:local (cond ((dual-local lv) (dual-get-code lv)) ; an integer accumulator (typed.lisp)
+                    ((fdual-local lv) (fdual-materialize-code (cdr loc) (fdual-local lv)))
+                    (t
+                  `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv))))))
       (:env `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) (:array.get :vector))))))
 
 (defun var-get-code (lv)
@@ -571,7 +572,16 @@ representation) or :effect (no value)."
                    ;; the init is compiled before the variable has a location
                    (setf code (append code (cg-rep init (lvar-rep lv)) (rep-local-set-code lv idx)))
                    (set-loc lv (cons :local idx))))
-                (t (setf code (append code (bind-new-var-code lv (cg init))))))
+                ((and (not (lvar-mutated lv)) (not (lvar-captured lv)) (not (boxed-p lv))
+                      (not *no-fuse*) (spec-op-node-p init) (spec-op-p init) (spec-tree-has-u-p init)
+                      (arith-operand-use-p lv body))
+                 ;; a double of unknown type kept unboxed (typed.lisp)
+                 (let ((b (new-local)) (f (new-local :f64)))
+                   (setf code (append code (spec-tree-code init (cons b f))))
+                   (set-loc lv (cons :local b))
+                   (setf (gethash lv *fdual-vars*) f)))
+                (t (remhash lv *fdual-vars*)
+                   (setf code (append code (bind-new-var-code lv (cg init))))))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
           (when (and (eq (car init) :lambda) (not (lvar-mutated lv)) (not (lvar-special lv)))
             (setf (gethash lv *lvar-lams*) (second init)))))

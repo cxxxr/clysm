@@ -1188,6 +1188,33 @@ an accumulator when its assignments are integer arithmetic."
       (setf (gethash lv *dual-vars*) (new-local :i64))
       (remhash lv *dual-vars*)))
 
+;;; Doubles of unknown type.  A LET variable bound to arithmetic that may give
+;;; a double (a speculative tree, prims.lisp) and used as an operand of
+;;; arithmetic has an f64 local beside its eqref local: when the tree took its
+;;; fast path, the eqref local is null and the value is the f64; the first use
+;;; that needs the object makes it (once) and keeps it in the eqref local.
+(defvar *fdual-vars* (make-hash-table :test 'eq) "lvar -> index of its f64 local")
+
+(defun fdual-local (lv)
+  (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *fdual-vars*)))
+
+(defun fdual-materialize-code (b f)
+  (let ((ok (gensym "FDUAL")))
+    `((:block ,ok (:ref :eq)
+        (:local.get ,b) (:br_on_non_null ,ok)
+        (:local.get ,f) (:struct.new :double) (:local.tee ,b) :ref.as_non_null))))
+
+(defun arith-operand-use-p (lv body)
+  "LV is an operand of + - * / or SQRT somewhere in BODY."
+  (labels ((walk (n)
+             (when (consp n)
+               (when (and (spec-op-node-p n)
+                          (some (lambda (a) (and (eq (car a) :lref) (eq (second a) lv))) (cddr n)))
+                 (return-from arith-operand-use-p t))
+               (map-subnodes #'walk n))))
+    (walk body)
+    nil))
+
 (defun dual-local (lv)
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
 

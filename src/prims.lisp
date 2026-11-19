@@ -322,7 +322,9 @@ of each operation), the tree is tried in f64 too, before the generic code."
           ((signed-byte 30) :i)
           (t nil)))
       (let ((ty (node-ty node)))
-        (cond ((ty-double-p ty) :d)
+        (cond ((and (eq (car node) :lref) (fdual-local (second node)) (eq (car (get-loc (second node))) :local))
+               :f)
+              ((ty-double-p ty) :d)
               ((ty-fixnum-p ty) :i)
               ((logtest (ty-bits ty) +k-double+) :u)
               (t nil)))))
@@ -332,7 +334,7 @@ of each operation), the tree is tried in f64 too, before the generic code."
 of the tree."
   (if (and (spec-op-node-p node) (not (ty-double-p (node-ty node))))
       (spec-op-p node)
-      (member (spec-leaf-class node) '(:d :u))))
+      (member (spec-leaf-class node) '(:d :u :f))))
 
 (defun spec-op-p (node)
   "NODE (an operation) belongs to a speculative tree."
@@ -344,21 +346,33 @@ of the tree."
                     args)))))
 
 (defun spec-tree-stats (node)
-  "(values number-of-operations has-a-:U-operand) of the tree NODE."
-  (let ((ops 0) (u nil))
+  "(values number-of-operations has-an-operand-of-unknown-type
+has-a-double-operand) of the tree NODE (an unboxed double variable is both)."
+  (let ((ops 0) (u nil) (d nil))
     (labels ((walk (n)
                (if (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n))
                    (progn (incf ops) (mapc #'walk (cddr n)))
-                   (when (eq (spec-leaf-class n) :u) (setq u t)))))
+                   (case (spec-leaf-class n)
+                     (:u (setq u t))
+                     (:d (setq d t))
+                     (:f (setq u t d t))))))
       (walk node))
-    (values ops u)))
+    (values ops u d)))
 
-(defun spec-tree-node-p (node)
+(defun spec-tree-has-u-p (node) (nth-value 1 (spec-tree-stats node)))
+
+(defun spec-tree-node-p (node &optional evidence)
+  "NODE is computed as a speculative tree: it has two operations or more,
+or (with EVIDENCE, or an unboxed double variable among its operands) one
+operation and a double among its operands."
   (and (not *no-fuse*) (spec-op-node-p node) (spec-op-p node)
-       (multiple-value-bind (ops u) (spec-tree-stats node) (and u (>= ops 2)))))
+       (multiple-value-bind (ops u d) (spec-tree-stats node)
+         (and u (if evidence d (or (>= ops 2) (some (lambda (a) (eq (spec-leaf-class a) :f)) (cddr node))))))))
 
-(defun spec-tree-code (node)
-  "The value (an eqref) of the speculative tree NODE."
+(defun spec-tree-code (node &optional target)
+  "The value (an eqref) of the speculative tree NODE.  With TARGET, (B . F)
+the locals of an unboxed double variable: nothing is left, the value is
+stored there (F, with B null, when the fast path gave it)."
   (let ((leaves nil) (count 0)
         (done (new-local :i32)) (bail (gensym "SPECBAIL")) (out (gensym "SPEC")))
     (labels ((op-p (n) (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n)))
@@ -395,6 +409,16 @@ of the tree."
                    (leaf n)))
              (leaf (n)
                (let ((class (spec-leaf-class n)))
+                 (when (eq class :f)
+                   ;; an unboxed double variable (no side effect: the
+                   ;; generic code reads it again)
+                   (let ((b (cdr (get-loc (second n)))) (f (fdual-local (second n))))
+                     (return-from leaf
+                       `((:local.get ,b) :ref.is_null
+                         (:if nil :f64
+                              ((:local.get ,f))
+                              ((:local.get ,b) (:ref.test :double) :i32.eqz (:br_if ,bail)
+                               (:local.get ,b) (:ref.cast! :double) (:struct.get :double 0)))))))
                  (if (eq (car n) :const)
                      (let ((v (second n)))
                        `((:f64.const ,(coerce v 'double-float))))
@@ -405,13 +429,14 @@ of the tree."
                          (:d `(,@(cg-rep n :f64) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)))
                          (:i `(,@(cg-rep n :i32) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)
                                :f64.convert_i32_s))
+                         (:f (error "unreachable"))
                          (:u `(,@(cg n) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)
                                (:ref.test :double) :i32.eqz (:if nil nil ((:br ,bail)))
                                (:local.get ,loc) (:ref.cast! :double) (:struct.get :double 0))))))))
              (generic (n)
                (if (op-p n)
                    (funcall (prim-fn (second n)) (mapcar #'generic (cddr n)))
-                   (if (eq (car n) :const)
+                   (if (or (eq (car n) :const) (eq (spec-leaf-class n) :f))
                        (cg n)
                        (destructuring-bind (i rep loc) (cdr (assoc n leaves))
                          `((:local.get ,done) (:i32.const ,i) :i32.ge_u
@@ -420,11 +445,17 @@ of the tree."
                                                        (:eqref nil)))
                                 (,@(cg n)))))))))
       (let ((fast-code (fast node)))
-        `((:i32.const 0) (:local.set ,done)
-          (:block ,out :eqref
-            (:block ,bail nil
-              ,@fast-code (:struct.new :double) (:br ,out))
-            ,@(generic node)))))))
+        (if target
+            `((:i32.const 0) (:local.set ,done)
+              (:block ,out nil
+                (:block ,bail nil
+                  ,@fast-code (:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)) (:br ,out))
+                ,@(generic node) (:local.set ,(car target))))
+            `((:i32.const 0) (:local.set ,done)
+              (:block ,out :eqref
+                (:block ,bail nil
+                  ,@fast-code (:struct.new :double) (:br ,out))
+                ,@(generic node))))))))
 
 (defun mulmod-node-args (p args)
   "For (MOD (* a b) c) / (REM (* a b) c): the nodes a, b, c; else NIL.  The
@@ -444,6 +475,10 @@ constant unless the product cannot signal."
       (return-from cg-prim
         `(,@(cg (first mm)) ,@(cg (second mm)) ,@(cg (third mm))
           (:i32.const ,(if (eq (prim-name p) 'mod) 1 0)) (:call :mulmod) ,@(when mv (mv-one))))))
+  ;; a double among the operands: f64 first
+  (when (spec-tree-node-p `(:prim ,p ,@args) t)
+    (return-from cg-prim
+      `(,@(spec-tree-code `(:prim ,p ,@args)) ,@(when mv (mv-one)))))
   (when (fused-tree-node-p `(:prim ,p ,@args))
     (return-from cg-prim
       `(,@(fused-code `(:prim ,p ,@args) :eqref) ,@(when mv (mv-one)))))
