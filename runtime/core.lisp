@@ -282,6 +282,21 @@
   (do ((l alist (cdr l))) ((%endp l) nil)
     (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (cdr e))) (return e)))))
 
+;;; MEMBER / ASSOC with :TEST #'EQUAL, #'EQUALP or #'STRING= (the frontend
+;;; calls these): the test called directly, not through FUNCALL
+(macrolet ((def (member-name assoc-name test)
+             `(progn
+                (defun ,member-name (item list)
+                  (do ((l list (cdr l))) ((%endp l) nil)
+                    (when (,test item (car l)) (return l))))
+                (defun ,assoc-name (item alist)
+                  (do ((l alist (cdr l))) ((%endp l) nil)
+                    (let ((e (car l)))
+                      (when (and (%alist-entry-p e) (,test item (car e))) (return e))))))))
+  (def %member-equal %assoc-equal equal)
+  (def %member-equalp %assoc-equalp equalp)
+  (def %member-string= %assoc-string= string=))
+
 (defun %assoc (item alist mode fn neg key by-cdr)
   "The first entry of ALIST whose CAR (CDR when BY-CDR) is selected."
   (do ((l alist (cdr l))) ((%endp l) nil)
