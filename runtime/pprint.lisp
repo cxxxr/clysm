@@ -644,6 +644,22 @@ are not newlines."
             (write-char #\> stream)))))
   nil)
 
+(defun %write-structure-flat (x stream slots)
+  "Prints the structure X with *PRINT-PRETTY* as without it when that fits
+on the line and its slots hold objects that %PP-PLAIN-TREE-P accepts: the
+logical block would then have no line breaks.  Returns true when printed."
+  (when (and (not (%pretty-stream-p stream)) (null *print-lines*) (null *print-circle*)
+             (null *print-length*) (null *print-level*) (not (%ppd-user-entries-p))
+             (dolist (sd slots t)
+               (unless (%pp-plain-tree-p (%instance-ref x (%slotd-location sd))) (return nil))))
+    (let ((str (let ((o (%scratch-string-stream)) (*print-pretty* nil))
+                 (%write-structure x o)
+                 (%scratch-string-result o))))
+      (when (and (< (+ (or (%stream-column stream) 0) (length str)) (or *print-right-margin* 80))
+                 (not (find #\Newline str)))
+        (write-string str stream)
+        t))))
+
 (defun %write-structure (x stream)
   (let* ((class (%instance-layout x))
          (slots (%class-effective-slots class)))
@@ -651,7 +667,8 @@ are not newlines."
              (write-char #\: s)
              (%output-symbol-token (symbol-name (%slotd-name sd)) s (%print-readtable))))
       (if (and *print-pretty* (not *print-readably*))
-          (pprint-logical-block (stream nil :prefix "#S(" :suffix ")")
+          (unless (%write-structure-flat x stream slots)
+           (pprint-logical-block (stream nil :prefix "#S(" :suffix ")")
             (let ((*print-escape* t)) (output-object (class-name class) stream))
             (when slots
               (write-char #\Space stream)
@@ -665,7 +682,7 @@ are not newlines."
                   (output-object (%instance-ref x (%slotd-location sd)) stream)
                   (when (null slots) (return))
                   (write-char #\Space stream)
-                  (pprint-newline :linear stream)))))
+                  (pprint-newline :linear stream))))))
           (%descend-into stream
             (lambda ()
               (write-string "#S(" stream)
