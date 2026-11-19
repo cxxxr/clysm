@@ -38,6 +38,7 @@
                 (register-struct-predicate-inline function-name name)))))
   ;; macro expanders called by the compiler receive its environment objects
   (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
+  (setq sys::*foreign-env-macro-function-hook* #'macro-function-in)
   (setf *macros-ready* t))
 
 (defvar *native-eval-failure* nil
