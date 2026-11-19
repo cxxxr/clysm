@@ -215,7 +215,11 @@ instance of it the value of *BACKEND*."))
 
 (defmethod write-clipboard ((backend dom-backend) text)
   (let ((clipboard (js:get (js:global "navigator") "clipboard")))
-    (when clipboard (js:call clipboard "writeText" text))
+    (when clipboard
+      ;; (refused when the page does not have the focus: nothing to do then)
+      (let ((promise (js:call clipboard "writeText" text)))
+        (when (js:js-value-p promise)
+          (js:call promise "catch" (lambda (&rest args) (declare (ignore args)) nil)))))
     text))
 
 (sys::%defvar-host *read-clipboard*

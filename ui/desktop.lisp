@@ -57,6 +57,13 @@ desktop.lisp makes it *BACKEND* when the program runs there."))
 application in the dock or the task bar)."
   (desktop-call "addRecentDocument" path))
 
+;;; the clipboard: the shell's, which (unlike the page's) does not need the
+;;; window to have the focus
+
+(defmethod write-clipboard ((backend desktop-backend) text)
+  (desktop-call "writeClipboard" text)
+  text)
+
 ;;; dialogs
 
 (defmethod choose-file ((backend desktop-backend) continuation &key accept)

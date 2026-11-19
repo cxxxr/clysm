@@ -181,6 +181,16 @@
     (when (and (stringp saved) (plusp (length saved)))
       (setf (editor:code-editor-text *editor*) saved))))
 
+;; the files the desktop application is asked to open: its command line
+;; (electron . FILE), or a second start
+(when (desktop-p)
+  (let ((desktop (js:global "desktop")))
+    (when (js:js-value-p (js:get desktop "onOpen"))
+      (js:call desktop "onOpen"
+               (lambda (path)
+                 (with-error-dialog (open-path path))
+                 nil)))))
+
 (setf *abort-label* "キャンセル")
 (mount (app) "#app")
 (install-commands *backend* :edit-label "編集" :view-label "表示" :quit-label "終了")

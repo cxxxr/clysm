@@ -19,7 +19,10 @@ Common Lisp だけで書いたコードエディタの部品です。CodeMirror 
 ```
 $ examples/editor/build.sh && python3 -m http.server -d build/editor     # ブラウザ
 $ examples/editor/build-desktop.sh && (cd build/editor-desktop && npm start)   # Electron
+$ (cd build/editor-desktop && npx electron . ~/foo.lisp)                       # ファイルを開いて起動
 ```
+
+テストは、モデルが `tests/editor/run.sh`（Clysm と SBCL）、デスクトップ版が `tests/editor/desktop.sh` です。後者は Electron の中で実際のキー入力とマウス操作を送り、ファイルの保存とシステムのクリップボードまで確かめます（`SCREENSHOT=file.png` で画面を保存）。
 
 ## できること
 
