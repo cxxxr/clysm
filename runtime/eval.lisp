@@ -790,8 +790,11 @@ can (%FASL-TEXT-FROM-HOST), which is faster still."
     defsetf define-setf-expander define-modify-macro define-symbol-macro
     define-compiler-macro define-method-combination))
 
+;;; (not DEFGENERIC and DEFMETHOD: the first of a generic function may expand
+;;; to a PROGN with the DEFINE-COMPILER-MACRO that gives its call sites caches,
+;;; for the rest of the file too)
 (defparameter %load-time-definers
-  '(defun defvar defparameter defconstant defgeneric defmethod))
+  '(defun defvar defparameter defconstant))
 
 (defvar *cf-externalizer* nil
   "During COMPILE-FILE, a function returning the forms that replace a form

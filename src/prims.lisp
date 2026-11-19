@@ -559,6 +559,13 @@ helper signals the type error)."
 (defprim clysm-sys::%make-simple-vector (n init) :value
   `(,@init ,@(idx-code n) (:array.new :vector)))
 (defprim clysm-sys::%svlength (v) :value `(,@v (:ref.cast :vector) :array.len :ref.i31))
+;; a new simple vector with the elements of the simple vector V
+(defprim clysm-sys::%copy-simple-vector (v) :value
+  (let ((src (new-local '(:ref :null :vector))) (dst (new-local '(:ref :null :vector))))
+    `(,@v (:ref.cast :vector) (:local.tee ,src) :array.len (:array.new_default :vector) (:local.set ,dst)
+      (:local.get ,dst) (:i32.const 0) (:local.get ,src) (:i32.const 0) (:local.get ,src) :array.len
+      (:array.copy :vector :vector)
+      (:local.get ,dst))))
 (defprim clysm-sys::%svref (v i) :value `(,@v (:ref.cast :vector) ,@(idx-code i) (:array.get :vector)))
 (defprim clysm-sys::%set-svref (v i x) :value
   (let ((tmp (new-local)))
