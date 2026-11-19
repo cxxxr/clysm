@@ -322,6 +322,9 @@ destructuring-bind (defined by the runtime)."
         ;; a file given to COMPILE-FILE) know its key layout
         (when (and *live-mode* (lam-keyp (second fnode)))
           (setf (gethash sym *compiled-key-layouts*) (key-layout-object (lam-key-layout (second fnode)))))
+        ;; and the layout of one of required parameters and &REST (APPLY)
+        (when (and *live-mode* (lam-rest-only-p (second fnode)))
+          (setf (gethash sym *compiled-key-layouts*) (rest-layout-object (length (lam-req (second fnode))))))
         ;; in a development image the function may be redefined at run time
         (when *redefinable-functions* (setf (gethash sym *notinline*) t)))
       ;; in the image, the lambda list is kept for the development
