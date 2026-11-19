@@ -879,7 +879,13 @@ compiler: in the file being compiled, or in the image), else NIL."
                    ((gethash sym *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash sym *ti-rules*) tys)))
                    (t (let ((lam (known-global-lam sym)))
-                        (if lam (lam-return-ty lam) *ty-top*))))))
+                        (cond (lam (lam-return-ty lam))
+                              ;; in the image: the constructor of a structure defined
+                              ;; before (registered by DEFSTRUCT, lib/live-image.lisp)
+                              ((and *live-mode* (gethash sym *struct-constructors*)
+                                    (not (gethash sym *notinline*)))
+                               (mkty +k-other+ nil nil (gethash sym *struct-constructors*)))
+                              (t *ty-top*)))))))
     (:prim (let ((tys (ti-args (cddr node))) (name (prim-name (second node))))
              ;; after a structure slot access, the object is of that structure class
              (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))

@@ -178,6 +178,10 @@
                                                      all-slots keyvars))
                          ,(make-form keyvars)))))
               constructors)
+           ;; (for code compiled later in the running image: the type of a call)
+           ,@(unless seq-kind
+               (mapcar (lambda (c) `(%note-struct-inline :constructor ',(car c) ',name nil nil))
+                       constructors))
            ;; predicate
            ,@(when (and predicate (null seq-kind))
                `((%note-struct-inline :predicate ',predicate ',name nil nil)))
