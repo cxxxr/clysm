@@ -115,10 +115,16 @@
           (fresh (make-hash-table :test 'eq)))   ; the variables made by copying
       (labels ((register (bindings)
                  (dolist (b bindings)
-                   (when (and (member (car (cdr b)) '(:lambda :fref)) (not (lvar-mutated (car b)))
-                              (not (lvar-special (car b))))
-                     (setf (gethash (car b) lvar-lams)
-                           (if (eq (car (cdr b)) :lambda) (second (cdr b)) (cdr b))))))
+                   (cond ((and (member (car (cdr b)) '(:lambda :fref)) (not (lvar-mutated (car b)))
+                               (not (lvar-special (car b))))
+                          (setf (gethash (car b) lvar-lams)
+                                (if (eq (car (cdr b)) :lambda) (second (cdr b)) (cdr b))))
+                         ;; a variable bound to such a variable (the parameter
+                         ;; of a copy of an inline function given a lambda)
+                         ((and (eq (car (cdr b)) :lref) (not (lvar-mutated (car b)))
+                               (not (lvar-special (car b))) (not (lvar-mutated (second (cdr b))))
+                               (gethash (second (cdr b)) lvar-lams))
+                          (setf (gethash (car b) lvar-lams) (gethash (second (cdr b)) lvar-lams))))))
                (expand (node callee args depth)
                  (let* ((map (make-hash-table :test 'eq))
                         (bindings (loop for p in (lam-req callee) for a in args
