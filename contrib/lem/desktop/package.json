@@ -13,6 +13,7 @@
     "backgroundColor": { "light": "#1d1f21", "dark": "#1d1f21" },
     "node": true,
     "resident": true,
+    "menu": false,
     "jsFlags": "--stack-size=7600 --wasm-compilation-hints"
   },
   "scripts": {
