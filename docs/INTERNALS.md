@@ -58,9 +58,11 @@ The universal value type is `(ref null eq)`.
   also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
   multi-dimensional, displaced) use a header struct around a simple array.
 * **bignum** — `struct { sign: i32, digits: mut (ref null (array i32)), value: i64 }`
-  (base 2^28 digits). Integers beyond the fixnum range that fit in 64 bits are
-  computed with i64 arithmetic and made without digits (the `value` field holds
-  them); the digits are made when the general bignum code asks for them.
+  (base 2^32 digits, unsigned in the i32 elements; the kernels compute in
+  i64, and Lisp code never reads a digit, as most are not fixnums). Integers
+  beyond the fixnum range that fit in 64 bits are computed with i64
+  arithmetic and made without digits (the `value` field holds them); the
+  digits are made when the general bignum code asks for them.
   **ratio**, **complex**, **single-float** (`f32`), **double-float** (`f64`) structs.
 * **package** — `$package` struct with hash tables of symbols.
 * **instances** (structures, conditions, CLOS objects) — `struct { layout, slots, hash: mut i32 }`
@@ -1412,8 +1414,12 @@ What is not as fast as intended, and why:
   slots of a class redefined with other slots after it had instances are
   checked first (`c-slot-redef` 1.6; see the limitations).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
-  structures or passed between functions (fixnums in SBCL); **bignums** have
-  28-bit digits (2–2.7 times). `vector-push-extend` is inline at the call
+  structures or passed between functions (fixnums in SBCL; a parameter or
+  variable updated by integer arithmetic keeps them in an i64 local).
+  **Bignums** have 32-bit digits against SBCL's 64: a pass over the digits
+  (addition, a product by a fixnum) is 1.3–1.5 times SBCL, products of two
+  large bignums and divisions 2.5–4 times (SBCL multiplies 64 by 64 bits;
+  here a column of products costs about 0.5 ns a digit pair). `vector-push-extend` is inline at the call
   site and grows by `array.copy` into new storage, whose allocation is the
   remaining cost (pushing 50000 elements: 1.5); `equal` hash tables with
   string keys hash in a Wasm helper (`h-wordfreq` 1.34).
@@ -1469,7 +1475,13 @@ What makes the code fast:
   exceptions; special bindings are inline.
 * **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
   in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
-  irrational functions as primitives; bignum kernels in Wasm.
+  irrational functions as primitives; bignum kernels in Wasm: products by
+  columns (two accumulators, no carry chain from product to product; a
+  square takes each cross product once), Knuth's division, Lehmer's gcd
+  (one pass over the digits per 30 bits of quotients, as CPython's), the
+  remainder by a divisor below 2^32 without a quotient, decimal printing by
+  10^9 a pass straight into the string; `expt` of an integer from the top
+  bit down.
 * **Library**: sequence functions with one implementation per family and
   direct loops over lists, simple vectors and strings; hash tables for
   `remove-duplicates` and the set functions; `typep` with a constant type,
