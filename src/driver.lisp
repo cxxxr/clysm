@@ -316,7 +316,7 @@ destructuring-bind (defined by the runtime)."
                  (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
                  (consp (cdr (second fn-form))) (consp (cddr (second fn-form))))
         (emit-toplevel-form `(clysm-sys::%put ',sym 'clysm-sys::%arglist ',(third (second fn-form))) env))
-      (when (and *record-definitions* (symbolp name) (eq (symbol-package sym) (find-package :common-lisp)))
+      (when (and *record-definitions* (symbolp name))
         (setf (gethash sym *runtime-inline-sources*)
               (and (eq (car fnode) :lambda) (null (cenv-entries env))
                    (runtime-inline-source sym fn-form))))
@@ -544,8 +544,7 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
 *RECORD-DEFINITIONS*), and the sources of its small functions."
   `(progn
      (clysm-sys::%install-definitions ',(reverse *recorded-definitions*))
-     (let ((l ',(loop for k being the hash-keys of *runtime-inline-sources* using (hash-value v)
-                      when v collect (cons k v))))
+     (let ((l ',(selected-runtime-inline-sources)))
        (loop (when (null l) (return))
              (clysm-sys::%put (car (car l)) 'clysm-sys::%inline-expansion (cdr (car l)))
              (setq l (cdr l))))))
@@ -556,6 +555,25 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
 (defvar *runtime-inline-sources* (make-hash-table :test 'eq)
   "While the runtime of the REPL image is compiled: symbol -> the source of its small function, or NIL.")
 (defparameter *runtime-inline-max-size* 100)
+
+(defun selected-runtime-inline-sources ()
+  "((symbol . source) ...): the small functions of COMMON-LISP, and the small
+functions of the runtime that their sources call (so that a copy of
+NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
+  (let ((selected (make-hash-table :test 'eq)) (queue nil))
+    (maphash (lambda (k v)
+               (when (and v (eq (symbol-package k) (find-package :common-lisp)))
+                 (setf (gethash k selected) v) (push v queue)))
+             *runtime-inline-sources*)
+    (labels ((walk (x)
+               (when (consp x)
+                 (let ((op (car x)))
+                   (when (and (symbolp op) (not (gethash op selected)))
+                     (let ((v (gethash op *runtime-inline-sources*)))
+                       (when v (setf (gethash op selected) v) (push v queue)))))
+                 (loop while (consp x) do (walk (car x)) (setq x (cdr x))))))
+      (loop while queue do (walk (cddr (pop queue)))))
+    (loop for k being the hash-keys of selected using (hash-value v) collect (cons k v))))
 
 (defun runtime-inline-source (sym fn-form)
   (when (and (consp fn-form) (eq (car fn-form) 'function) (consp (second fn-form))
