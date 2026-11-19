@@ -6,6 +6,7 @@
 # Each side runs BENCH_RUNS times (default 3); the best time of each benchmark
 # is used.
 set -e
+export LC_ALL=C   # sort and join must agree on the order (a Japanese locale drops items)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FILE="${1:-$ROOT/bench/suite.lisp}"
 RUNS="${BENCH_RUNS:-3}"
