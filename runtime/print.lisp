@@ -264,6 +264,56 @@ their own."
   (let ((table *print-pprint-dispatch*))
     (and (pprint-dispatch-table-p table) (pprint-dispatch-table-entries table) t)))
 
+(defvar *%pp-fast-fill* t "false to print every list with the pretty stream (for testing)")
+
+(defun %pp-fast-fill (x stream prefix)
+  "Prints X, a list (PREFIX \"(\") or a simple vector (PREFIX \"#(\") of
+objects that %PP-PLAIN-TREE-P accepts, to STREAM, which is not a pretty
+stream, in the layout of the pretty printer's fill style; returns NIL
+without printing when it cannot.  Each element is printed plainly; a fill
+newline before an element breaks the line when the element and the space
+or parenthesis after it do not fit (the section that follows the newline
+ends at the next one), as Waters' algorithm decides it when no element
+breaks inside: an element that is not an atom must fit on a line of its
+own, and no element may end with a space (the pretty printer drops the
+spaces at the end of a line) or contain a newline."
+  (let* ((line-length (or *print-right-margin* 80))
+         (start (or (%stream-column stream) 0))
+         (indent (+ start (length prefix)))
+         (strings nil))
+    (when (or *print-length* *print-level*
+              (and *print-miser-width* (<= (- line-length indent) *print-miser-width*)))
+      (return-from %pp-fast-fill nil))
+    (flet ((add (e dotted)
+             (unless (%pp-plain-tree-p e) (return-from %pp-fast-fill nil))
+             (let* ((s (let ((o (%scratch-string-stream)))
+                         (when dotted (write-string ". " o))
+                         (output-ugly-object e o)
+                         (%scratch-string-result o)))
+                    (len (length s)))
+               (when (or (eql len 0) (eql (char s (- len 1)) #\Space) (find #\Newline s)
+                         (and (or (consp e) (vectorp e)) (not (stringp e))
+                              (> (+ indent len 1) line-length)))
+                 (return-from %pp-fast-fill nil))
+               (push s strings))))
+      (if (listp x)
+          (do ((l x (cdr l))) ((null l))
+            (if (consp l) (add (car l) nil) (progn (add l t) (return))))
+          (dotimes (i (length x)) (add (svref x i) nil))))
+    (write-string prefix stream)
+    (let ((col indent) (first t))
+      (dolist (s (nreverse strings))
+        (let ((len (length s)))
+          (unless first
+            ;; the space, the element and the space or #\) after it
+            (if (> (+ col len 2) line-length)
+                (progn (terpri stream) (%write-spaces stream indent) (setq col indent))
+                (progn (write-char #\Space stream) (setq col (+ col 1)))))
+          (write-string s stream)
+          (setq col (+ col len) first nil))))
+    (write-char #\) stream)
+    t))
+
 (defun %print-dispatched (x stream)
   ;; only conses and arrays other than strings have standard pretty printing
   ;; functions
@@ -271,6 +321,12 @@ their own."
            (or (consp x) (and (arrayp x) (not (%simple-string-p x))) (%ppd-user-entries-p)))
       (let ((fn (%pprint-dispatch-function x)))
         (cond ((null fn) (output-ugly-object x stream))
+              ((and *%pp-fast-fill*
+                    (or (and (consp x) (eq fn #'pprint-fill))
+                        (and (%simple-vector-p x) (eq fn #'%pprint-array) *print-array* (not *print-readably*)))
+                    (not (%pretty-stream-p stream)) (null *print-lines*) (null *print-circle*)
+                    (not (%ppd-user-entries-p))
+                    (%pp-fast-fill x stream (if (consp x) "(" "#("))))
               ((and (or (and (consp x) (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call)))
                         (and (%simple-vector-p x) (eq fn #'%pprint-array)))
                     (not (%pretty-stream-p stream)) (null *print-lines*) (null *print-circle*)
