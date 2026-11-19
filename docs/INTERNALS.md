@@ -343,11 +343,10 @@ defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
 `&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
 defined in an earlier form runs as fast as in a whole program.
 
-The key layout of a keyed function (`(required optional . keywords)`) is a
-symbol of `SYSTEM` named by it (`|%KEY-LAYOUT 2 0 :KEY :TEST ...|`), so that
-a call compiled in a fasl compares it with `eq` to the closure's: a list
-constant of a fasl is a new list when the fasl is loaded, and every keyword
-call of code loaded from fasls took the generic way.
+A call of a structure's constructor compiled in the image is of the
+structure's type (`*struct-constructors*`, registered by `defstruct` through
+`%note-struct-inline`), so the inline accessors of the object it made do
+not check its class.
 
 ## Heap images
 
@@ -1493,19 +1492,24 @@ time unless noted):
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
-bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.8 (`b-call` 1.1, was
-1.9).
+bench/suite.lisp`): geometric mean 1.1, slowest `b-special` 2.8 (`b-call` 1.1, was
+1.9; `b-struct` 1.0, was 1.35).
 
 The libraries' own time (Clysm's milliseconds, `tools/bench-libs.sh`, the
-best of two back-to-back runs against the build before, 2026-11, on a busy
-machine whose SBCL times varied by 30%): `l-babel` 344 → 169, `l-ppcre-replace`
-426 → 328, `l-ppcre-scan` 225 → 186, `l-split-sequence` 198 → 142,
-`l-alexandria-utils` 143 → 121; 0.80 times the time before in geometric mean.
-What did it: keyword calls in fasls in fixed slots (the key layout symbols),
-a file as one module, `inline` functions and the small functions of
-`COMMON-LISP` copied into code compiled in the image, inline array access with
-32-bit subscripts and the range test of `fixnum` declarations (Babel), `find`
-in a short literal sequence.
+best of two back-to-back runs on the same 4-CPU slot against the build
+without these changes, 2026-11-20, on a busy machine whose SBCL times varied
+by 30%): `l-babel` 340 → 180, `l-ppcre-replace` 428 → 372, `l-ppcre-scan`
+270 → 224, `l-split-sequence` 180 → 125, `l-alexandria-utils` 143 → 134;
+0.80 times the time before in geometric mean. Code loaded into the image
+(`MODE=script`): `bench/suite.lisp` 0.94 times the time before (`b-call`
+294 → 162, `b-struct` 198 → 132), `bench/holdout.lisp` 0.95. What did it: a
+file as one module, `inline` functions and the small functions of
+`COMMON-LISP` copied into code compiled in the image, copies of REPL
+functions of any lambda list, inline array access with 32-bit subscripts and
+the range test of `fixnum` declarations (Babel), `find` in a short literal
+sequence, a loop for each kind of test in `find`/`position` with `:key` or
+`:test` on simple strings and vectors, and the type of a structure's
+constructor.
 
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
@@ -1517,13 +1521,13 @@ it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mea
 What is not as fast as intended, and why:
 
 * **Code loaded into the image, single items.** The geometric mean is within
-  1.3, but `b-special` (2.8), `b-catch` (1.4) and `b-struct` (1.35) are
-  not. A call of a function defined in another form goes through the function
+  1.3, but `b-special` (2.8) and `b-catch` (1.4) are not. A call of a function defined in another form goes through the function
   cell unless the function is small enough to be copied (with a guard): a
   larger function is not in the caller's module, so neither the engine nor
   the compiler inlines it, and a `throw` out of it is a Wasm exception
-  (`b-catch`). Structure accessors check the class of the object at each
-  access when its constructor is in another form (`b-struct`). `b-special` (a `let` of a special variable around a call of
+  (`b-catch`). Calls with `&rest` arguments of functions of other files or
+  forms go through the function cell and the entry that conses the list.
+  `b-special` (a `let` of a special variable around a call of
   `use-sp`, a function of the form before) runs either at about 1.6 times
   the whole-program speed or at about 2.8, and stays at one of the two for
   hundreds of milliseconds; it is at 2.8 more often in the form right after
