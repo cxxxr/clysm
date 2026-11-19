@@ -3,11 +3,24 @@
 import fs from 'node:fs';
 import { Worker, isMainThread, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import net from 'node:net';
-import { makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
-         byteSources } from './common.mjs';
-import { nodeModuleAccess } from './lib.mjs';
-import { makeProcessManager } from './process.mjs';
+
+// The modules that only one of the threads needs are imported by it (the
+// main thread starts the worker sooner): the worker's
+let makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
+  byteSources, nodeModuleAccess;
+async function importWorkerModules() {
+  if (makeImports) return;
+  ({ makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
+     byteSources } = await import('./common.mjs'));
+  ({ nodeModuleAccess } = await import('./lib.mjs'));
+}
+// and the main thread's, when the worker first asks for a socket or a process
+let net, makeProcessManager;
+async function importMainModules() {
+  if (net) return;
+  net = (await import('node:net')).default;
+  ({ makeProcessManager } = await import('./process.mjs'));
+}
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
@@ -138,6 +151,7 @@ function nodePlatform(state, args) {
 }
 
 export async function runModule(bytes, args = []) {
+  await importWorkerModules();
   const state = { ...nodeModuleAccess() };
   const imports = makeImports(state, nodePlatform(state, args));
   let instance;
@@ -257,7 +271,7 @@ function makeNetServer(worker, sab) {
       } else r.fail(sv.error);
     }
   };
-  const processes = makeProcessManager();
+  let processes = null;
   const netOp = (op, args, r) => {
     if (op === 'connect') {
       const [host, port] = args;
@@ -318,7 +332,11 @@ function makeNetServer(worker, sab) {
       r.ok();
     } else r.fail('unknown socket operation ' + op);
   };
-  worker.on('message', (m) => {
+  worker.on('message', async (m) => {
+    if (!m || (m.clysmProc === undefined && m.clysmNet === undefined)) return;
+    // (the replies keep the order of the requests: each waits for the same import)
+    await importMainModules();
+    processes ??= makeProcessManager();
     if (m && m.clysmProc !== undefined && m.reqId !== undefined) {
       // the same, answered by a message (a thread waits for it)
       Promise.resolve().then(() => processes[m.op](...m.args)).then(
@@ -428,17 +446,6 @@ function installNetClient(port, sab) {
 // (deep non-tail recursion is common in Lisp programs).
 const selfPath = fileURLToPath(import.meta.url);
 if (isMainThread && process.argv[1] === selfPath) {
-  // the compiler marks unlikely branches (the branch hinting section of the modules)
-  try { (await import('node:v8')).setFlagsFromString('--experimental-wasm-branch-hinting'); } catch (e) {}
-  // the stacks of computations that can wait (JSPI, the threads of
-  // runtime/thread.lisp) as deep as the worker's own (they are limited by
-  // --stack-size too; the main thread itself recurses little)
-  try {
-    const v8 = await import('node:v8');
-    const kb = Number(process.env.CLYSM_STACK_MB || 1024) * 1024;
-    v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
-    v8.setFlagsFromString('--stack-size=' + kb);
-  } catch (e) {}
   const stackMb = Number(process.env.CLYSM_STACK_MB || 1024);
   const netBuffer = new SharedArrayBuffer(16 + NET_DATA_BYTES);
   const worker = new Worker(selfPath, {
@@ -450,6 +457,26 @@ if (isMainThread && process.argv[1] === selfPath) {
   worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
   worker.on('exit', (code) => process.exit(code));
 } else if (!isMainThread && workerData && workerData.file) {
+  // The engine's flags are set here, once the worker has started: a flag
+  // set before (in the main thread, or on the command line) makes Node.js
+  // compile its own JavaScript again in the worker instead of taking it from
+  // its code cache, made with the default flags (35 ms).
+  try {
+    const v8 = await import('node:v8');
+    // the compiler marks unlikely branches (the branch hinting section of the modules)
+    v8.setFlagsFromString('--experimental-wasm-branch-hinting');
+    // a function is validated when it is first compiled, as it is compiled
+    // then (most of the image's functions and of a fasl's never run): the
+    // image compiles in 17 ms instead of 30
+    v8.setFlagsFromString('--wasm-lazy-validation');
+    // the stacks of computations that can wait (JSPI, the threads of
+    // runtime/thread.lisp) as deep as the worker's own (they are limited by
+    // --stack-size too; the main thread itself recurses little)
+    const kb = Number(process.env.CLYSM_STACK_MB || 1024) * 1024;
+    v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
+    v8.setFlagsFromString('--stack-size=' + kb);
+  } catch (e) {}
+  await importWorkerModules();
   // the program may run as a computation that can wait (sys::main, threads)
   globalThis.__clysm_deep_async_stacks = true;
   if (workerData.netBuffer) {

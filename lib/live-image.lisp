@@ -46,74 +46,108 @@
 (defvar *native-eval-failure* nil
   "The error the compiler signaled for the last form NATIVE-EVAL interpreted instead.")
 
-;;; A form that only calls a global function with constant arguments (a
-;;; request of micros or SWANK: (micros:autodoc '...), (swank:connection-info);
-;;; a DEFSYSTEM of an .asd file, (apply 'register-system-definition '...))
-;;; is called at once: compiling it took 5 to 30 ms (and the first time,
-;;; V8 compiling the compiler itself, hundreds of ms), for a call of
-;;; microseconds.  Calling it is what the compiled form does.
+;;; Simple forms are evaluated without the compiler (as SBCL's
+;;; SIMPLE-EVAL-IN-LEXENV does): a call of a global function whose arguments
+;;; are simple, a variable, a constant, QUOTE, FUNCTION of a name, SETQ of a
+;;; special variable, IF, PROGN, EVAL-WHEN, DECLAIM and the macros that
+;;; expand to these, but not definitions (DEFMACRO, DEFSTRUCT, DEFCLASS...).
+;;; Compiling a form costs a module and, the first time, V8's compilation of
+;;; the compiler's functions: `clysm --eval t` took 0.2 s more than starting
+;;; the REPL, and so did (load "file"), (require :asdf), (ql:quickload ...),
+;;; Lem's requests of micros ((micros:autodoc '...)) and the DEFSYSTEMs of
+;;; .asd files ((apply 'register-system-definition '...)), each 5-30 ms.  SIMPLE-FORM returns the form as a tree of (:CONST value),
+;;; (:VAR symbol), (:FUNCTION name), (:CALL name arg...), (:SETQ symbol
+;;; form), (:IF test then else), (:PROGN form...) and (:DECLAIM spec...), or NIL when it is not
+;;; simple; the macros are expanded once, before anything is evaluated.
 
-(defun simple-call-function (head)
-  "The function of HEAD for a call that is a call of it, or NIL."
-  (and (symbolp head) (fboundp head)
-       (not (special-operator-p head)) (not (macro-function head))
-       (symbol-function head)))
+(defun simple-form (form &optional (depth 0))
+  (when (> depth 40) (return-from simple-form nil))
+  (flet ((sub (x) (simple-form x (1+ depth))))
+    (cond ((symbolp form)
+           (cond ((or (null form) (eq form t) (keywordp form)) (list :const form))
+                 ((get form 'sys::%symbol-macro) (sub (macroexpand-1 form)))
+                 (t (list :var form))))
+          ((atom form) (list :const form))
+          ((not (and (symbolp (car form)) (sys::%proper-list-p form))) nil)
+          (t
+           (let ((op (car form)) (args (cdr form)))
+             (case op
+               (quote (and (= (length args) 1) (list :const (car args))))
+               (function (and (= (length args) 1)
+                              (let ((name (car args)))
+                                (and (or (and (symbolp name) name)
+                                         (and (consp name) (eq (car name) 'setf)
+                                              (consp (cdr name)) (symbolp (cadr name)) (null (cddr name))))
+                                     (not (and (symbolp name) (or (macro-function name) (special-operator-p name))))
+                                     (fboundp name)
+                                     (list :function name)))))
+               (setq (and (evenp (length args))
+                          (let ((r (list :progn)))
+                            (loop for (var value) on args by #'cddr
+                                  do (unless (and (symbolp var) var (not (constantp var))
+                                                  (sys::%special-p var) (not (get var 'sys::%symbol-macro)))
+                                       (return-from simple-form nil))
+                                     (let ((v (sub value)))
+                                       (unless v (return-from simple-form nil))
+                                       (push (list :setq var v) r)))
+                            (nreverse r))))
+               (if (and (<= 2 (length args) 3)
+                        (let ((parts (mapcar #'sub args)))
+                          (and (every #'identity parts)
+                               (list :if (first parts) (second parts) (or (third parts) '(:const nil)))))))
+               (progn (let ((parts (mapcar #'sub args)))
+                        (and (every #'identity parts) (cons :progn parts))))
+               (eval-when (and (consp args) (listp (car args))
+                               (if (or (member :execute (car args)) (member 'eval (car args)))
+                                   (sub `(progn ,@(cdr args)))
+                                   (list :const nil))))
+               ;; (the compiler also notes INLINE, NOTINLINE and SPECIAL)
+               (declaim (list :declaim args))
+               (t
+                (cond ((special-operator-p op) nil)
+                      ;; (operators the compiler has its own expansion of)
+                      ((and (get op 'clysm-native)
+                            (not (member op '(funcall apply values list list* vector))))
+                       nil)
+                      ;; (definitions: what the compiler does with them at
+                      ;; toplevel is more than their expansion does; DECLAIM,
+                      ;; DEFPACKAGE and IN-PACKAGE are calls of a function)
+                      ((and (member op sys::%compile-time-definers)
+                            (not (member op '(defpackage in-package))))
+                       nil)
+                      ((macro-function op) (sub (macroexpand-1 form)))
+                      ((fboundp op)
+                       (let ((parts (mapcar #'sub args)))
+                         (and (every #'identity parts) (list* :call op parts))))))))))))
 
-(defun simple-form-p (form depth)
-  "Whether FORM is a constant, a bound special variable, (FUNCTION name) or
-a call of a global function with such arguments (to DEPTH calls)."
-  (cond ((symbolp form)
-         (or (keywordp form) (member form '(t nil))
-             (and (boundp form) (not (get form 'sys::%symbol-macro))
-                  (or (sys::%special-p form)
-                      ;; a constant
-                      (not (zerop (logand (sys::%symbol-flags form) 2)))))))
-        ((atom form) t)
-        ((not (listp (cdr form))) nil)
-        ((eq (car form) 'quote) (and (consp (cdr form)) (null (cddr form))))
-        ((eq (car form) 'function)
-         (and (consp (cdr form)) (null (cddr form)) (simple-call-function (second form))))
-        (t (and (> depth 0)
-                (simple-call-function (car form))
-                (not (compiler-macro-function (car form)))
-                (handler-case (list-length form) (error () nil))
-                (every (lambda (arg) (simple-form-p arg (- depth 1))) (cdr form))))))
-
-(defun simple-eval (form)
-  "The value of FORM, which SIMPLE-FORM-P accepts (its values if a call)."
-  (cond ((symbolp form) (symbol-value form))
-        ((atom form) form)
-        ((eq (car form) 'quote) (second form))
-        ((eq (car form) 'function) (symbol-function (second form)))
-        (t (apply (symbol-function (car form))
-                  (mapcar #'simple-eval (cdr form))))))
+(defun simple-eval (tree)
+  (ecase (car tree)
+    (:const (cadr tree))
+    (:var (symbol-value (cadr tree)))
+    (:function (fdefinition (cadr tree)))
+    (:setq (set (cadr tree) (simple-eval (caddr tree))))
+    (:if (if (simple-eval (cadr tree)) (simple-eval (caddr tree)) (simple-eval (cadddr tree))))
+    (:progn (let ((forms (cdr tree)))
+              (if (null forms)
+                  nil
+                  (loop (if (cdr forms)
+                            (simple-eval (pop forms))
+                            (return (simple-eval (car forms))))))))
+    (:declaim (let ((specs (cadr tree)))
+                (sys::%call-with-world-lock
+                 (lambda () (let ((*live-mode* t) (*live-packages* t) (*read-package* *package*))
+                              (dolist (d specs) (compile-time-proclaim d)))))
+                (sys::%proclaim-list specs)))
+    (:call (let ((f (fdefinition (cadr tree))))
+             (apply f (mapcar #'simple-eval (cddr tree)))))))
 
 (defun native-eval (form)
-  "Compile FORM to a new Wasm module linked with this image and run it.
-If the compiler signals an error, the form is evaluated by the interpreter
-instead (so the error, if any, happens at run time).  A call of a global
-function with constant arguments, once its macros are expanded, is called
-at once (SIMPLE-EVAL)."
-  (let ((expanded form))
-    (loop repeat 20
-          do (when (simple-form-p expanded 4)
-               (return-from native-eval (simple-eval expanded)))
-             (unless (and (consp expanded) (symbolp (car expanded)) (macro-function (car expanded))
-                          ;; (definitions: what the compiler does with them
-                          ;; at toplevel is more than their expansion does)
-                          ;; (but DEFPACKAGE and IN-PACKAGE, calls of a function)
-                          (or (member (car expanded) '(defpackage in-package))
-                              (not (member (car expanded) sys::%compile-time-definers)))
-                          (not (member (car expanded) '(eval-when progn locally macrolet symbol-macrolet
-                                                        defun defgeneric defmethod defvar defparameter
-                                                        defconstant))))
-               (return))
-             ;; (an error of the expander is the compiler's to report)
-             (multiple-value-bind (expansion more)
-                 (handler-case (macroexpand-1 expanded) (error () (values nil nil)))
-               (unless more (return))
-               (setq expanded expansion))))
-  ;; (anything else is compiled as it was written)
+  "Compile FORM to a new Wasm module linked with this image and run it (or,
+if it is simple, evaluate it: SIMPLE-FORM).  If the compiler signals an
+error, the form is evaluated by the interpreter instead (so the error, if
+any, happens at run time)."
+  (let ((tree (ignore-errors (simple-form form))))
+    (when tree (return-from native-eval (simple-eval tree))))
   (multiple-value-bind (bytes consts)
       (handler-case (let ((*live-inline-ok* t))
                       ;; (the compiler's state is shared by the threads)

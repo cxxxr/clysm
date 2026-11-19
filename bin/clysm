@@ -9,6 +9,7 @@
 #                                         to a new Wasm module, or interpreted with --interp);
 #                                         ~/.clysmrc is loaded first unless --no-userinit
 #   clysm script FILE                     load FILE in the REPL image
+#   clysm eval [--no-userinit] FORM...    evaluate the FORMs in the REPL image
 #   clysm swank [--port N]                start a SWANK server for SLIME (M-x slime-connect),
 #                                         port 4005 by default; needs Quicklisp
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
@@ -68,7 +69,8 @@ case "$cmd" in
   repl)   if [ "$1" = "--interp" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(interp_image)" "$@"; fi
           exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
   script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
-  eval)   exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
+  eval)   if [ "$1" = "--no-userinit" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --no-userinit --eval "$@"; fi
+          exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
   swank)  port=4005
           while [ $# -gt 0 ]; do
             case "$1" in --port) port="$2"; shift 2;; *) echo "clysm swank: unknown option $1" >&2; exit 1;; esac
@@ -78,5 +80,5 @@ case "$cmd" in
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;
-  *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
