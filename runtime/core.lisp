@@ -657,9 +657,14 @@ test is not one a hash table has."
        t))
 
 ;;; macros at runtime
+(defvar *foreign-env-macro-function-hook* nil
+  "called with a symbol and an environment that is not an interpreter environment
+(the embedded compiler's): the macro function the symbol has there, or NIL")
 (defun macro-function (s &optional env)
-  (let ((local (and env (%env-macro env s))))
-    (if local local (get s '%macro-function))))
+  (if (and env (not (listp env)) *foreign-env-macro-function-hook*)
+      (funcall *foreign-env-macro-function-hook* s env)
+      (let ((local (and env (%env-macro env s))))
+        (if local local (get s '%macro-function)))))
 (defun %set-macro-function (s f)
   (%put s '%macro-function f)
   f)
