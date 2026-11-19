@@ -35,7 +35,7 @@
 
 (defvar *hash-table-class* (find-class 'hash-table))
 
-(defun hash-table-p (x) (and (%instancep x) (eq (%instance-layout x) *hash-table-class*)))
+(defun hash-table-p (x) (and (%instancep x) (eq (%instance-layout x) (load-time-value *hash-table-class*))))
 
 (defmacro %ht (h i) `(%instance-ref ,h ,i))
 (defmacro %ht-set (h i v) `(%set-instance-ref ,h ,i ,v))
@@ -184,6 +184,15 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 (defun %equalp-hash (x depth)
   (cond ((fixnump x) (%fxlogand x 536870911))
         ((symbolp x) (%symbol-hash x))
+        ;; (the same hash as the general string case below)
+        ((%simple-string-p x)
+         (let ((h 5) (n (%string-length x)))
+           (dotimes (i n h)
+             (let ((c (%char-code (%schar x i))))
+               (setq h (%mix h (cond ((%fx< c 97) c)
+                                     ((%fx<= c 122) (%fx- c 32))
+                                     ((%fx< c 128) c)
+                                     (t (%char-code (char-upcase (%schar x i)))))))))))
         ((characterp x) (%char-code (char-upcase x)))
         ((numberp x) (%equalp-number-hash x))
         ((stringp x)
@@ -220,6 +229,14 @@ every test, characters for every test but EQUALP, without a call."
                         ((%fx= ,k 2) (%sxhash ,x 4))
                         (t (%equalp-hash ,x 4)))))))))
 
+(defun %simple-string-ci= (a b)
+  "EQUALP of two simple strings."
+  (let ((n (%string-length a)))
+    (and (eql n (%string-length b))
+         (dotimes (i n t)
+           (let ((c1 (%schar a i)) (c2 (%schar b i)))
+             (unless (or (eq c1 c2) (%char-ci-eq c1 c2)) (return nil)))))))
+
 (defun %ht-find-general (sv key hash kind)
   "Index of KEY or -1 in the table whose slots are SV, comparing with its test."
   (let* ((buckets (%svref sv +ht-buckets+))
@@ -239,6 +256,9 @@ every test, characters for every test but EQUALP, without a call."
                                 (if (and (%simple-string-p k) (%simple-string-p key))
                                     (%simple-string= k key)
                                     (equal k key)))
+                               ;; strings, the usual keys, are compared here
+                               ((and (%simple-string-p k) (%simple-string-p key))
+                                (%simple-string-ci= k key))
                                (t (equalp k key))))))
           (return j))
         (setq i (%lref next j))))))
