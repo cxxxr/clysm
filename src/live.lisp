@@ -330,7 +330,24 @@ vectors), the vector of objects of each segment."
                                          (:global.set ,g))))))
     ;; a module made at run time only needs the helpers it calls
     (remove-unreachable-functions *m* used)
+    (when *live-dump* (dump-live-functions *m*))
     (values (encode-module *m*) (nreverse vectors))))
+
+(defvar *live-dump* nil
+  "Names (strings) of functions whose Wasm code is printed to *TRACE-OUTPUT*
+when code compiled in the image (the REPL, LOAD, COMPILE-FILE) defines them,
+as tools/dump-func.lisp prints that of a program: NAME is the function's name
+as in stack traces (FOO, or FOO#123 for one of them).")
+
+(defun dump-live-functions (module)
+  (loop for f across (clysm-wasm::wasm-module-funcs module)
+        for disp = (format nil "~A" (or (clysm-wasm::wasm-func-display f) (wasm-func-name f)))
+        when (some (lambda (n) (or (string-equal n disp)
+                                   (eql 0 (search (format nil "~A#" n) disp :test #'char-equal))))
+                   *live-dump*)
+          do (let ((*print-right-margin* 120) (*print-case* :downcase) (*print-pretty* t))
+               (format *trace-output* "~&;;; ~A  locals ~S~%" disp (wasm-func-locals f))
+               (dolist (i (wasm-func-body f)) (format *trace-output* "  ~S~%" i)))))
 
 ;;; ------------------------------------------------------------
 ;;; Compilation units: COMPILE-FILE
