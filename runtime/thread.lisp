@@ -244,14 +244,16 @@ its value."
   (let ((ok nil))
     (unwind-protect
          (catch '%thread-exit
-           (handler-bind ((error (lambda (c)
-                                   ;; a debugger (SWANK's) gets it; else the thread ends
-                                   (unless *debugger-hook*
-                                     (setf (thread-error th) c)
-                                     (format *error-output* "~&;; Thread ~A ended by an error: ~A~%"
-                                             (thread-name th) c)
-                                     (finish-output *error-output*)
-                                     (throw '%thread-exit nil)))))
+           ;; an error that would enter the debugger ends the thread (a
+           ;; debugger of the program's own, SWANK's *DEBUGGER-HOOK*, is
+           ;; called before; see %SCRIPT-MAIN)
+           (let ((*debugger-fallback*
+                   (lambda (c)
+                     (setf (thread-error th) c)
+                     (format *error-output* "~&;; Thread ~A ended by an error: ~A~%"
+                             (thread-name th) c)
+                     (finish-output *error-output*)
+                     (throw '%thread-exit nil))))
              (setf (thread-values th) (multiple-value-list (funcall (thread-function th))))
              (setq ok t)))
       (%end-thread th (if ok :finished :aborted) (thread-error th)))))

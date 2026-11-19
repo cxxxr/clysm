@@ -491,6 +491,14 @@ the restarts are associated with the condition being signaled."
 (defvar *break-on-signals* nil)
 (defvar *debugger-hook* nil)
 (defvar *invoke-debugger-hook* nil)
+(defvar *erroring* nil
+  "The condition that ERROR or CERROR is signalling (which enters the
+debugger if no handler takes it, unlike one given to SIGNAL).")
+(defvar *debugger-fallback* nil
+  "What the REPL, a script, a thread or JavaScript calling Lisp do with an
+error that would enter the debugger (the innermost binding): a function of
+the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
+*INVOKE-DEBUGGER-HOOK*.")
 
 (defun %coerce-to-condition (datum args default-type &optional allow-args)
   (cond ((conditionp datum)
@@ -584,7 +592,8 @@ the restarts are associated with the condition being signaled."
 (defun error (datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let* ((*error-depth* (+ *error-depth* 1))
-         (condition (%coerce-to-condition datum args 'simple-error)))
+         (condition (%coerce-to-condition datum args 'simple-error))
+         (*erroring* condition))
     (%signal-condition condition)
     (invoke-debugger condition)))
 
@@ -593,7 +602,7 @@ the restarts are associated with the condition being signaled."
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
     (restart-case (progn
                     (%associate-restarts c (%cluster-restarts *restart-clusters*))
-                    (let ((*error-depth* (+ *error-depth* 1)))
+                    (let ((*error-depth* (+ *error-depth* 1)) (*erroring* c))
                       (%signal-condition c))
                     (invoke-debugger c))
       (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
@@ -617,6 +626,8 @@ the restarts are associated with the condition being signaled."
         (funcall hook condition hook))))
   (when *invoke-debugger-hook*
     (funcall *invoke-debugger-hook* condition))
+  (when *debugger-fallback*
+    (funcall *debugger-fallback* condition))
   (%report-and-exit condition))
 
 (defun break (&optional (format-control "Break") &rest args)
