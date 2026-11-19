@@ -889,32 +889,44 @@ bounds of the array either way."
       (:local.get ,m) (:local.get ,tmp) (:call :dims-1d) (:struct.set :mdarray 7)
       (:local.get ,tmp))))
 
+(defconstant +class-inherits-slot+ 20)   ; runtime/class0.lisp +CLASS-INHERITS+
+
+(defun inherits-check-code (l c fallback)
+  "Code pushing 1 when the layout (local L, not C) has C among its included
+structures: the vector of included structures of each (+CLASS-INHERITS+), by
+depth, answers in constant time; FALLBACK (code pushing an i32) when either
+has none (a class that is not a structure class)."
+  (let ((li (new-local)) (ci (new-local)) (lv (new-local '(:ref :null :vector))) (d (new-local :i32)))
+    `((:local.get ,l) (:ref.test :instance) (:local.get ,c) (:ref.test :instance) :i32.and
+      (:if nil :i32
+           ((:local.get ,l) (:ref.cast! :instance) (:struct.get :instance 1) (:i32.const ,+class-inherits-slot+)
+            (:array.get :vector) (:local.tee ,li) (:ref.test :vector)
+            (:local.get ,c) (:ref.cast! :instance) (:struct.get :instance 1) (:i32.const ,+class-inherits-slot+)
+            (:array.get :vector) (:local.tee ,ci) (:ref.test :vector) :i32.and
+            (:if nil :i32
+                 ((:local.get ,ci) (:ref.cast! :vector) :array.len (:i32.const 1) :i32.sub (:local.tee ,d)
+                  (:local.get ,li) (:ref.cast! :vector) (:local.tee ,lv) :array.len :i32.lt_u
+                  (:if nil :i32 ((:local.get ,lv) (:local.get ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
+                       ((:i32.const 0))))
+                 ,fallback))
+           ,fallback))))
+
 (defun struct-check-code (o c)
-  "Push 1 when local O is a structure of class (local C): its layout is C, or C
-is the layout's direct superclass, or (out of line) C is in its precedence list."
-  (let ((l (new-local)) (cpl (new-local)))
+  "Push 1 when local O is a structure of class (local C): its layout is C, or
+C is one of the structures the layout includes (in constant time), or (out
+of line, for other classes) C is in its precedence list."
+  (let ((l (new-local)))
     `((:local.get ,o) (:ref.test :instance)
       (:if nil :i32
            ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0) (:local.tee ,l) (:local.get ,c) :ref.eq
             (:if nil :i32 ((:i32.const 1))
-                 ((:local.get ,l) (:ref.test :instance)
-                  (:if nil :i32
-                       ((:local.get ,l) (:ref.cast! :instance) (:struct.get :instance 1) (:i32.const 3)
-                        (:array.get :vector) (:local.tee ,cpl) (:ref.test :cons)
-                        (:if nil :i32
-                             ((:local.get ,cpl) (:ref.cast! :cons) (:struct.get :cons 1) (:local.tee ,cpl)
-                              (:ref.test :cons)
-                              (:if nil :i32
-                                   ((:local.get ,cpl) (:ref.cast! :cons) (:struct.get :cons 0) (:local.get ,c) :ref.eq)
-                                   ((:i32.const 0))))
-                             ((:i32.const 0))))
-                       ((:i32.const 0)))
-                  (:if nil :i32 ((:i32.const 1)) ((:local.get ,o) (:local.get ,c) (:call :struct-typep))))))
+                 ,(inherits-check-code l c `((:local.get ,o) (:local.get ,c) (:call :struct-typep)))))
            ((:i32.const 0))))))
 
-;;; structure slot access: inline when the layout is exactly CLASS, then a
-;;; search of the layout's class precedence list, else the Lisp function
-;;; (which signals the type error)
+;;; structure slot access: inline when the object is of the structure (or
+;;; includes it), else the Lisp function (which signals the type error).
+;;; %STRUCT-REF / %STRUCT-SET: slot I of a structure with a slot vector;
+;;; %STRUCT-IREF / %STRUCT-ISET: of a structure whose slots are fields
 
 (defprim clysm-sys::%struct-ref (x class i) :value
   (let ((o (new-local)) (c (new-local)) (k (new-local)))
@@ -935,6 +947,116 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
             (:local.get ,val))
            ((:local.get ,o) (:local.get ,c) (:local.get ,k) (:local.get ,val)
             ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))))))
+(defun struct-check-depth-code (o c d)
+  "STRUCT-CHECK-CODE for a structure class (local C) whose depth is the constant D."
+  (let ((l (new-local)))
+    `((:local.get ,o) (:ref.test :instance)
+      (:if nil :i32
+           ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0) (:local.tee ,l) (:local.get ,c) :ref.eq
+            (:if nil :i32 ((:i32.const 1))
+                 ,(inherits-depth-check-code l c d `((:local.get ,o) (:local.get ,c) (:call :struct-typep)))))
+           ((:i32.const 0))))))
+;; of a structure of a slot vector whose shape (runtime/struct.lisp) gives its depth
+(defprim clysm-sys::%struct-ref (x class i shape) :value
+  (let ((d (struct-depth-index shape)))
+    (if (null d)
+        `(,@(funcall (prim-fn (find-primitive 'clysm-sys::%struct-ref 3)) (list x class i)) ,@shape :drop)
+        (let ((o (new-local)) (c (new-local)) (k (new-local)))
+          `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,k)
+            ,@(struct-check-depth-code o c d)
+            (:if nil :eqref
+                 ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1)
+                  (:local.get ,k) (:ref.cast! :i31) :i31.get_s (:array.get :vector))
+                 ((:local.get ,o) (:local.get ,c) (:local.get ,k)
+                  ,@(lisp-call-instrs 'clysm-sys::%struct-ref 3))))))))
+(defprim clysm-sys::%struct-set (x class i v shape) :value
+  (let ((d (struct-depth-index shape)))
+    (if (null d)
+        `(,@(funcall (prim-fn (find-primitive 'clysm-sys::%struct-set 4)) (list x class i v)) ,@shape :drop)
+        (let ((o (new-local)) (c (new-local)) (k (new-local)) (val (new-local)))
+          `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,k) ,@v (:local.set ,val)
+            ,@(struct-check-depth-code o c d)
+            (:if nil :eqref
+                 ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1)
+                  (:local.get ,k) (:ref.cast! :i31) :i31.get_s (:local.get ,val) (:array.set :vector)
+                  (:local.get ,val))
+                 ((:local.get ,o) (:local.get ,c) (:local.get ,k) (:local.get ,val)
+                  ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))))))))
+
+(defun struct-iref-index (i)
+  "The constant slot index of the code I (a fixnum constant), or NIL."
+  (and (= (length i) 2) (consp (first i)) (eq (car (first i)) :i32.const) (eq (second i) :ref.i31)
+       (second (first i))))
+(defun struct-iref-code (x class k n d &optional (v nil vp))
+  "Code reading (or, with V, setting) field slot K (a constant) of the structure X
+of CLASS, a structure of N field slots: its own instances are $si<N> (an exact
+type test), those of structures including it of a subtype."
+  (let ((o (new-local)) (c (new-local)) (val (new-local)) (s (new-local `(:ref :null ,(sinst-type n))))
+        (l (new-local)) (slow (gensym "SLOW")) (hit (gensym "HIT")) (done (gensym "SREF")) (ty (sinst-type n)))
+    `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@(when vp `(,@v (:local.set ,val)))
+      (:block ,done :eqref
+        (:block ,slow nil
+          (:block ,hit nil
+            (:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
+            (:local.get ,o) (:ref.cast! ,ty) (:local.tee ,s) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,c)
+            :ref.eq (:hint 1) (:br_if ,hit)
+            ;; a structure that includes CLASS
+            ,@(inherits-depth-check-code l c d) :i32.eqz (:br_if ,slow))
+          (:local.get ,s)
+          ,@(if vp
+                `((:local.get ,val) (:struct.set ,ty ,(sinst-field k)) (:local.get ,val))
+                `((:struct.get ,ty ,(sinst-field k))))
+          (:br ,done))
+        (:local.get ,o) (:local.get ,c) (:i32.const ,k) :ref.i31
+        ,@(if vp
+              `((:local.get ,val) ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))
+              (lisp-call-instrs 'clysm-sys::%struct-ref 3))))))
+;; the shape of a structure of field slots (runtime/struct.lisp): its size
+;; plus 64 times its depth (the number of structures it includes)
+(defun struct-size-index (n)
+  (let ((k (struct-iref-index n))) (and k (<= 1 (mod k 64) +struct-inline-max+) (mod k 64))))
+(defun struct-depth-index (n)
+  (let ((k (struct-iref-index n))) (and k (floor k 64))))
+
+(defun inherits-depth-check-code (l c d &optional (other '((:i32.const 0))))
+  "Code pushing 1 when the layout (local L, not C) includes C, whose index in
+the included structures (+CLASS-INHERITS+) is the constant D; OTHER (code
+pushing an i32) when the layout is not a structure class (a class defined
+with DEFCLASS whose superclasses include a structure class)."
+  (let ((li (new-local)) (lv (new-local '(:ref :null :vector))))
+    `((:local.get ,l) (:ref.test :instance)
+      (:if nil :i32
+           ((:local.get ,l) (:ref.cast! :instance) (:struct.get :instance 1) (:i32.const ,+class-inherits-slot+)
+            (:array.get :vector) (:local.tee ,li) (:ref.test :vector)
+            (:if nil :i32
+                 ((:local.get ,li) (:ref.cast! :vector) (:local.tee ,lv) :array.len (:i32.const ,d) :i32.gt_u
+                  (:if nil :i32 ((:local.get ,lv) (:i32.const ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
+                       ((:i32.const 0))))
+                 ,other))
+           ,other))))
+;; (with an index that is not a constant here: the generic slot access)
+(defprim clysm-sys::%struct-iref (x class i n) :value
+  (let ((k (struct-iref-index i)) (size (struct-size-index n)))
+    (if (and k size (< -1 k size))
+        (struct-iref-code x class k size (struct-depth-index n))
+        (let ((o (new-local)) (c (new-local)) (kk (new-local)))
+          `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,kk) ,@n :drop
+            ,@(struct-check-code o c)
+            (:if nil :eqref
+                 ((:local.get ,o) (:local.get ,kk) (:call :instance-ref))
+                 ((:local.get ,o) (:local.get ,c) (:local.get ,kk)
+                  ,@(lisp-call-instrs 'clysm-sys::%struct-ref 3))))))))
+(defprim clysm-sys::%struct-iset (x class i v n) :value
+  (let ((k (struct-iref-index i)) (size (struct-size-index n)))
+    (if (and k size (< -1 k size))
+        (struct-iref-code x class k size (struct-depth-index n) v)
+        (let ((o (new-local)) (c (new-local)) (kk (new-local)) (val (new-local)))
+          `(,@x (:local.set ,o) ,@class (:local.set ,c) ,@i (:local.set ,kk) ,@v (:local.set ,val) ,@n :drop
+            ,@(struct-check-code o c)
+            (:if nil :eqref
+                 ((:local.get ,o) (:local.get ,kk) (:local.get ,val) (:call :instance-set))
+                 ((:local.get ,o) (:local.get ,c) (:local.get ,kk) (:local.get ,val)
+                  ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))))))))
 
 ;;; instances
 (defprim clysm-sys::%make-instance (layout slots) :value
@@ -947,12 +1069,49 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%set-instance-slots (x l) :value
   (let ((tmp (new-local)))
     `(,@x (:ref.cast :instance) ,@l (:local.tee ,tmp) (:ref.cast :vector) (:struct.set :instance 1) (:local.get ,tmp))))
+;; slot I of an instance with a slot vector (CLOS objects, conditions,
+;; structures with a slot vector)
 (defprim clysm-sys::%instance-ref (x i) :value
   `(,@x (:ref.cast :instance) (:struct.get :instance 1) ,@(idx-code i) (:array.get :vector)))
 (defprim clysm-sys::%set-instance-ref (x i v) :value
   (let ((tmp (new-local)))
     `(,@x (:ref.cast :instance) (:struct.get :instance 1) ,@(idx-code i) ,@v (:local.tee ,tmp)
       (:array.set :vector) (:local.get ,tmp))))
+;; slot I of any instance: in its slot vector, else (a structure whose slots
+;; are fields, src/layout.lisp) field I -- for the paths that may see structures
+(defprim clysm-sys::%instance-gref (x i) :value `(,@x ,@i (:call :instance-ref)))
+(defprim clysm-sys::%set-instance-gref (x i v) :value `(,@x ,@i ,@v (:call :instance-set)))
+
+;;; structures whose slots are fields ($si1 ... $siN, src/layout.lisp)
+(defun sinst-dispatch-code (k-local arm default)
+  "Helper-body code: a br_table on the i32 local K-LOCAL (0 .. +STRUCT-INLINE-MAX+ - 1)
+to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
+  (let* ((labels (loop for j below +struct-inline-max+ collect (gensym "SI")))
+         (dflt (gensym "SIDEFAULT"))
+         (code `((:local.get ,k-local) (:br_table ,@labels ,dflt))))
+    (loop for j from 0 for l in labels
+          do (setf code `((:block ,l nil ,@code) ,@(funcall arm j))))
+    `((:block ,dflt nil ,@code) ,@default)))
+;; the number of field slots of an instance (0: not a structure of field slots)
+(defun sinst-size-code (lo hi)
+  ;; the instance (local 0) is known to be a $si<lo> (or not a $si1 when LO is 0)
+  (if (= lo hi)
+      `((:i32.const ,lo))
+      (let ((mid (ceiling (+ lo hi) 2)))
+        `((:local.get 0) (:ref.test ,(sinst-type mid))
+          (:if nil :i32 ,(sinst-size-code mid hi) ,(sinst-size-code lo (1- mid)))))))
+(defprim clysm-sys::%sinstp (x) :test `(,@x (:ref.test :si1)))
+(defprim clysm-sys::%sinst-size (x) :value `(,@x (:call :sinst-size) :ref.i31))
+(defprim clysm-sys::%sinst-make (k) :value `(,@(idx-code k) (:call :sinst-make)))
+;; a structure of class LAYOUT with the slots ARGS: its own fields for up to
+;; +STRUCT-INLINE-MAX+ slots, else a slot vector
+(defprim clysm-sys::%make-struct :any :value
+  (let ((n (length (rest args))))
+    (if (<= 1 n +struct-inline-max+)
+        `(,@(first args) (:global.get :empty-slots) (:i32.const 0) ,@(apply #'append (rest args))
+          (:struct.new ,(sinst-type n)))
+        `(,@(first args) ,@(apply #'append (rest args)) (:array.new_fixed :vector ,n) (:i32.const 0)
+          (:struct.new :instance)))))
 
 ;;; packages
 (defprim clysm-sys::%make-package () :value
@@ -2446,24 +2605,41 @@ sums LO (low halves) and HI (high halves)."
               ((:local.get cpl) (:ref.cast! :cons) (:struct.get :cons 0) (:local.get 1) :ref.eq
                (:if nil nil ((:i32.const 1) :return))))))
   '(:local.get 0) '(:local.get 1) '(:call :struct-typep))
-;; the layout compared inline, the class precedence list searched by the helper
+;; the layout compared inline, then the included structures, the class
+;; precedence list searched by the helper for other classes
 (defprim clysm-sys::%structure-typep (x c) :test
   (let ((o (new-local)) (cl (new-local)))
-    `(,@x (:local.set ,o) ,@c (:local.set ,cl)
-      (:local.get ,o) (:ref.test :instance)
-      (:if nil :i32
-           ((:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0) (:local.get ,cl) :ref.eq
-            (:if nil :i32 ((:i32.const 1)) ((:local.get ,o) (:local.get ,cl) (:call :struct-typep))))
-           ((:i32.const 0))))))
+    `(,@x (:local.set ,o) ,@c (:local.set ,cl) ,@(struct-check-code o cl))))
+;; of a structure of N field slots: its instances (and those of the
+;; structures including it) are a $si<N> or a subtype, tested first
+(defprim clysm-sys::%structure-typep (x c n) :test
+  (let ((o (new-local)) (cl (new-local)) (size (struct-size-index n)) (l (new-local)))
+    (if (null size)
+        `(,@x (:local.set ,o) ,@c (:local.set ,cl) ,@n :drop
+          ,@(let ((d (struct-depth-index n)))
+              (if d (struct-check-depth-code o cl d) (struct-check-code o cl))))
+        (let ((ty (sinst-type size)))
+          `(,@x (:local.set ,o) ,@c (:local.set ,cl)
+            (:local.get ,o) (:ref.test ,ty)
+            (:if nil :i32
+                 ((:local.get ,o) (:ref.cast! ,ty) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,cl) :ref.eq
+                  (:if nil :i32 ((:i32.const 1)) ,(inherits-depth-check-code l cl (struct-depth-index n))))
+                 ;; a structure of fewer field slots is not one; an instance
+                 ;; of a structure of a slot vector including it may be
+                 ((:local.get ,o) (:ref.test :si1)
+                  (:if nil :i32 ((:i32.const 0)) ,(struct-check-code o cl)))))))))
 ;; COPY-STRUCTURE: the layout and a copy of the slots
 (defprim clysm-sys::%copy-instance (x) :value
-  (let ((o (new-local '(:ref :null :instance))) (v (new-local '(:ref :null :vector))) (n (new-local :i32)))
-    `(,@x (:ref.cast :instance) (:local.tee ,o) (:struct.get :instance 0)
-      (:local.get ,o) (:struct.get :instance 1) (:local.tee ,v) :array.len (:local.tee ,n)
-      (:array.new_default :vector) (:local.tee ,v)
-      (:i32.const 0) (:local.get ,o) (:struct.get :instance 1) (:i32.const 0) (:local.get ,n)
-      (:array.copy :vector :vector)
-      (:local.get ,v) :ref.as_non_null (:i32.const 0) (:struct.new :instance))))
+  (let ((o (new-local '(:ref :null :instance))) (v (new-local '(:ref :null :vector))) (n (new-local :i32))
+        (e (new-local)))
+    `(,@x (:local.tee ,e) (:ref.test :si1)
+      (:if nil :eqref ((:local.get ,e) (:call :sinst-copy))
+           ((:local.get ,e) (:ref.cast :instance) (:local.tee ,o) (:struct.get :instance 0)
+            (:local.get ,o) (:struct.get :instance 1) (:local.tee ,v) :array.len (:local.tee ,n)
+            (:array.new_default :vector) (:local.tee ,v)
+            (:i32.const 0) (:local.get ,o) (:struct.get :instance 1) (:i32.const 0) (:local.get ,n)
+            (:array.copy :vector :vector)
+            (:local.get ,v) :ref.as_non_null (:i32.const 0) (:struct.new :instance))))))
 
 ;;; the simple storage of a one-dimensional array header at offset 0 when I is
 ;;; below its dimension, else null
@@ -5196,10 +5372,10 @@ those the code calls (modules made at run time call few of them)."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 2)
+(defconstant +img-version+ 3)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
-    :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf))
+    :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst))
 (defun img-kind (k) (position k +img-kinds+))
 
 ;; saving: the table index of entry I of the closure F (0-5: the entries for
@@ -5395,7 +5571,10 @@ local LIMIT, incrementing it."
                (:i32.const 0) (:local.set j)
                ,@(img-loop-code 'j 'len '((:local.get x) (:local.get j) (:call :img-ref) (:call :typed-set) :drop))))
             (:fsbuf (done '((:call :img-ref) (:ref.cast :null :bytes) (:call :img-word) (:call :img-word)
-                            (:struct.new :fsbuf))))))))
+                            (:struct.new :fsbuf))))
+            ;; a structure whose slots are fields: their number, then its hash
+            (:sinst '((:call :img-word) (:call :sinst-make) (:local.tee x) (:ref.cast! :instance)
+                      (:call :img-word) (:struct.set :instance 2)))))))
 
 (defun img-fill-code ()
   "The code setting the mutable fields of the object in the local X from the
@@ -5427,6 +5606,13 @@ words that follow, by its type."
                         (:br ,end)))
           (:local.get x) (:ref.test :closure)
           (:if nil nil ((:local.get x) (:ref.cast! :closure) (:call :img-ref) (:struct.set :closure ,+clo-name+)
+                        (:br ,end)))
+          (:local.get x) (:ref.test :si1)
+          (:if nil nil ((:local.get x) (:ref.cast! :instance) (:call :img-ref) (:struct.set :instance 0)
+                        (:i32.const 0) (:local.set j)
+                        (:local.get x) (:call :sinst-size) (:local.set len)
+                        ,@(img-loop-code 'j 'len '((:local.get x) (:local.get j) (:call :img-ref)
+                                                   (:call :sinst-set) :drop))
                         (:br ,end)))
           (:local.get x) (:ref.test :instance)
           (:if nil nil ((:local.get x) (:ref.cast! :instance) (:call :img-ref) (:struct.set :instance 0)
@@ -5532,3 +5718,44 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   (lisp-call-instrs 'clysm-sys::%image-resume 1)
   :drop
   '(:ref.null :vector) '(:global.set :img-objs))
+
+;;; helpers of structures whose slots are fields (see %INSTANCE-REF above)
+(defhelper :instance-ref :ee-e ((sv (:ref :null :vector)) (k :i32))
+  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.set sv)
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.tee k) '(:local.get sv) :array.len :i32.lt_u
+  '(:if nil nil ((:local.get sv) (:local.get k) (:array.get :vector) :return))
+  '(:local.get 0) '(:local.get k) '(:call :sinst-ref))
+(defhelper :instance-set :eee-e ((sv (:ref :null :vector)) (k :i32))
+  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.set sv)
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.tee k) '(:local.get sv) :array.len :i32.lt_u
+  '(:if nil nil ((:local.get sv) (:local.get k) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
+  '(:local.get 0) '(:local.get k) '(:local.get 2) '(:call :sinst-set))
+
+(defhelper :sinst-ref :ei-e ()
+  (sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:ref.cast ,(sinst-type (1+ j)))
+                                       (:struct.get ,(sinst-type (1+ j)) ,(sinst-field j)) :return))
+                       '(:unreachable)))
+(defhelper :sinst-set :eie-e ()
+  (sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:ref.cast ,(sinst-type (1+ j))) (:local.get 2)
+                                       (:struct.set ,(sinst-type (1+ j)) ,(sinst-field j))
+                                       (:local.get 2) :return))
+                       '(:unreachable)))
+(defhelper :sinst-size :e-i () (sinst-size-code 0 +struct-inline-max+))
+;; a new structure of local 0 field slots (from 1), its fields unset
+(defhelper :sinst-make :i-e ((k :i32))
+  '(:local.get 0) '(:i32.const 1) :i32.sub '(:local.set k)
+  (sinst-dispatch-code 'k (lambda (j) `((:ref.null :eq) (:global.get :empty-slots) (:i32.const 0)
+                                        ,@(loop repeat (1+ j) collect '(:ref.null :eq))
+                                        (:struct.new ,(sinst-type (1+ j))) :return))
+                       '(:unreachable)))
+;; a copy of a structure of field slots
+(defhelper :sinst-copy :e-e ((k :i32))
+  '(:local.get 0) '(:call :sinst-size) '(:i32.const 1) :i32.sub '(:local.set k)
+  (sinst-dispatch-code 'k (lambda (j)
+                            (let ((ty (sinst-type (1+ j))))
+                              `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 0) (:global.get :empty-slots)
+                                (:i32.const 0)
+                                ,@(loop for f below (1+ j)
+                                        append `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field f))))
+                                (:struct.new ,ty) :return)))
+                       '(:unreachable)))

@@ -191,6 +191,7 @@ DEFINE-CHECKED-CASTS)."
       (add-import-func *m* name (live-helper-type name) "clysm" (live-helper-export-name name))))
   (add-import-global *m* :mv-count :i32 t "clysm" "mv_count")
   (add-import-global *m* :mv-buf '(:ref :vector) nil "clysm" "mv_buf")
+  (add-import-global *m* :empty-slots '(:ref :vector) nil "clysm" "empty_slots")
   (add-import-global *m* :bstack '(:ref :vector) t "clysm" "bstack")
   (add-import-global *m* :bsp :i32 t "clysm" "bsp")
   (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")

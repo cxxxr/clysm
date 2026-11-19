@@ -57,6 +57,13 @@
   ;; the names stored in a named typed structure (its own and included ones).
   (defun %struct-description (name) (get name '%struct-description))
 
+  ;; A structure class of 1 to 32 slots keeps them in
+  ;; fields of its own (the Wasm types $si1 ... in src/layout.lisp, whose
+  ;; +STRUCT-INLINE-MAX+ this is), a larger one in a slot vector.
+  (defun %struct-field-slots-p (size) (and (<= 1 size) (<= size 32)))
+  ;; the number of field slots of a structure of the shape SHAPE (0: none)
+  (defun %shape-field-slots (shape) (if (integerp shape) (mod shape 64) 0))
+
   (defun %struct-error (control &rest args)
     (error 'simple-error :format-control control :format-arguments args)))
 
@@ -128,7 +135,18 @@
            (all-slots (append inherited own))
            (size (+ first-own (length own)))
            (names (append (cadddr include-desc) (if name-index (list (cons name-index name)) nil)))
-           (desc (list seq-kind all-slots size names))
+           ;; the number of structures it includes (its index in +CLASS-INHERITS+)
+           (depth (if include-desc (+ 1 (or (nth 5 include-desc) 0)) 0))
+           ;; the slots in fields of their own (unless the structure includes
+           ;; one with a slot vector, or asks for one: (SYS::%SLOT-VECTOR)):
+           ;; then its shape, SIZE + 64 DEPTH, which the compiled accesses take
+           (field-rep (and (null seq-kind) (%struct-field-slots-p size)
+                           (not (%struct-opt options '%slot-vector))
+                           (or (null include-desc) (eql (caddr include-desc) 0)
+                               (plusp (%shape-field-slots (nth 4 include-desc))))))
+           ;; (for a structure of a slot vector: its depth only)
+           (fields (and (null seq-kind) (+ (if field-rep size 0) (* 64 depth))))
+           (desc (list seq-kind all-slots size names fields depth))
            (class-slots (mapcar (lambda (s) (subseq s 0 4)) all-slots))
            (predicate (and named predicate))
            (keyvars (mapcar (lambda (s) (declare (ignore s)) (gensym "SLOT")) all-slots)))
@@ -137,7 +155,9 @@
                                   (car slot)))
              (make-form (vals)
                (if (null seq-kind)
-                   `(%make-instance (load-time-value (find-class ',name)) (vector ,@vals))
+                   (if field-rep
+                       `(%make-struct (load-time-value (find-class ',name)) ,@vals)
+                       `(%make-instance (load-time-value (find-class ',name)) (vector ,@vals)))
                    (let ((cells (make-list size :initial-element nil)))
                      (dolist (n names) (setf (nth (car n) cells) `',(cdr n)))
                      (do ((s all-slots (cdr s)) (val vals (cdr val))) ((null s))
@@ -184,10 +204,11 @@
                        constructors))
            ;; predicate
            ,@(when (and predicate (null seq-kind))
-               `((%note-struct-inline :predicate ',predicate ',name nil nil)))
+               `((%note-struct-inline :predicate ',predicate ',name nil nil ,fields)))
            ,@(when predicate
                `((defun ,predicate (,x)
-                   ,(cond ((null seq-kind) `(%structure-typep ,x (load-time-value (find-class ',name))))
+                   ,(cond ((null seq-kind)
+                           `(%structure-typep ,x (load-time-value (find-class ',name)) ,fields))
                           ((eq seq-kind 'list) `(%typed-struct-list-p ,x ,name-index ',name))
                           (t `(%typed-struct-vector-p ,x ,name-index ',name))))))
            ;; copier
@@ -201,19 +222,24 @@
                  (let ((acc (accessor s)) (idx (nth 4 s)))
                    (when (null seq-kind)
                      (push `(eval-when (:compile-toplevel)
-                              (%host-inline-struct-accessor ,acc ,name ,idx ,(not (cadddr s))))
+                              (%host-inline-struct-accessor ,acc ,name ,idx ,(not (cadddr s)) ,fields))
                            forms)
                      ;; (for code compiled later in the running image)
-                     (push `(%note-struct-inline :accessor ',acc ',name ,idx ,(not (cadddr s))) forms))
+                     (push `(%note-struct-inline :accessor ',acc ',name ,idx ,(not (cadddr s)) ,fields)
+                           forms))
                    (push (cond ((null seq-kind)
-                                `(defun ,acc (,x) (%struct-ref ,x (load-time-value (find-class ',name)) ,idx)))
+                                `(defun ,acc (,x) ,(if field-rep
+                                                       `(%struct-iref ,x (load-time-value (find-class ',name)) ,idx ,fields)
+                                                       `(%struct-ref ,x (load-time-value (find-class ',name)) ,idx ,fields))))
                                ((eq seq-kind 'list) `(defun ,acc (,x) (nth ,idx ,x)))
                                (t `(defun ,acc (,x) (aref ,x ,idx))))
                          forms)
                    (unless (cadddr s)
                      (push (cond ((null seq-kind)
                                   `(defun (setf ,acc) (,v ,x)
-                                     (%struct-set ,x (load-time-value (find-class ',name)) ,idx ,v)))
+                                     ,(if field-rep
+                                          `(%struct-iset ,x (load-time-value (find-class ',name)) ,idx ,v ,fields)
+                                          `(%struct-set ,x (load-time-value (find-class ',name)) ,idx ,v ,fields))))
                                  ((eq seq-kind 'list) `(defun (setf ,acc) (,v ,x) (setf (nth ,idx ,x) ,v)))
                                  (t `(defun (setf ,acc) (,v ,x) (setf (aref ,x ,idx) ,v))))
                            forms)))))
@@ -224,8 +250,9 @@
 ;;; structure are compiled inline at call sites compiled after the DEFSTRUCT
 ;;; (the hook registers them with the compiler).
 (defvar *struct-inline-hook* nil)
-(defun %note-struct-inline (kind function-name name index writable)
-  (when *struct-inline-hook* (funcall *struct-inline-hook* kind function-name name index writable))
+(defun %note-struct-inline (kind function-name name index writable &optional fields)
+  (when *struct-inline-hook*
+    (funcall *struct-inline-hook* kind function-name name index writable fields))
   function-name)
 
 (defun %make-struct-vector (element-type cells)
@@ -248,6 +275,13 @@
   (%copy-instance x))
 
 (defun %define-structure-class (name include slots printer print-object-p)
+  ;; a structure redefined with another number of slots gets a new class: its
+  ;; instances are of another Wasm type (see %STRUCT-FIELD-SLOTS-P), and the
+  ;; old ones are then not taken for instances of the new
+  (let ((old (find-class name nil)))
+    (when (and old (eq (%class-slot old +class-kind+) :structure)
+               (not (eql (length (%class-effective-slots old)) (length slots))))
+      (%set-find-class name nil)))
   (let* ((super (if include (find-class include) (find-class 'structure-object)))
          (class (%ensure-class-object name (find-class 'structure-class) (list super)
                                       (mapcar (lambda (s)
@@ -259,20 +293,48 @@
                                               (nthcdr (length (if include (get include '%struct-slots) nil)) slots))
                                       :structure)))
     (%set-class-slot class +class-extra+ (cons printer print-object-p))
+    ;; the included structures by depth, itself last (for constant-time type tests)
+    (%set-class-slot class +class-inherits+
+                     (let ((up (and include (%class-slot super +class-inherits+))))
+                       (concatenate 'simple-vector (or up #()) (vector class))))
     class))
 
-(defun %structure-typep (x class)
+;; (the functions of the primitives, for FUNCALL and the interpreter)
+(defun %make-struct (layout &rest slots)
+  (let ((n (length slots)))
+    (if (%struct-field-slots-p n)
+        (let ((x (%sinst-make n)) (i 0))
+          (%set-instance-layout x layout)
+          (dolist (v slots x) (%set-instance-gref x i v) (setq i (+ i 1))))
+        (%make-instance layout (coerce slots 'simple-vector)))))
+
+(defun %structure-typep (x class &optional size)
+  (declare (ignore size))
   (and (%instancep x)
        (let ((l (%instance-layout x)))
          (or (eq l class) (and (%instancep l) (not (null (member class (%class-cpl l)))))))))
 
-(defun %struct-ref (x class i)
+(defun %struct-ref (x class i &optional shape)
+  (declare (ignore shape))
   (unless (%structure-typep x class) (%type-error x (%class-name class)))
-  (%instance-ref x i))
+  (%check-struct-slot x i)
+  (%instance-gref x i))
 
-(defun %struct-set (x class i v)
+(defun %struct-set (x class i v &optional shape)
+  (declare (ignore shape))
   (unless (%structure-typep x class) (%type-error x (%class-name class)))
-  (%set-instance-ref x i v))
+  (%check-struct-slot x i)
+  (%set-instance-gref x i v))
+
+;; an instance made before its structure was redefined with fewer slots
+(defun %check-struct-slot (x i)
+  (unless (< i (%instance-size x))
+    (error 'simple-error :format-control "~S was made before its structure was redefined"
+                         :format-arguments (list x))))
+
+;; the number of slots of an instance
+(defun %instance-size (x)
+  (if (%sinstp x) (%sinst-size x) (%svlength (%instance-slots x))))
 
 (defun copy-structure (x)
   (if (%instancep x) (%copy-instance x) (%type-error x 'structure-object)))

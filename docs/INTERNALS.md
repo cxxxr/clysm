@@ -67,6 +67,23 @@ The universal value type is `(ref null eq)`.
 * **package** — `$package` struct with hash tables of symbols.
 * **instances** (structures, conditions, CLOS objects) — `struct { layout, slots, hash: mut i32 }`
   where the layout is the class object (the hash caches the identity hash).
+  A **structure** (`defstruct` without `:type`) of 1 to 32 slots keeps them
+  in fields of its own: it is a `$siK` (K slots), the `$instance` fields (its
+  slot vector is a shared empty one) then K mutable fields, and `$siK` is a
+  subtype of `$si(K-1)`, the first of `$instance` (`src/layout.lisp`). An
+  accessor of a structure of N slots tests for `$siN` (exact for its own
+  instances, a subtype for those of the structures including it) and the
+  layout, and reads the field; a constructor is one `struct.new`. Larger
+  structures, structures that include one of a slot vector, and the streams
+  (`(sys::%slot-vector)`, read by fast paths that index the vector) keep a
+  slot vector. Generic code reads slot I of any instance with
+  `%instance-gref` (the slot vector, else field I through a `br_table` on
+  I); `%instance-ref` is for instances known to have a slot vector. A
+  structure class keeps its included structures by depth in
+  `+class-inherits+`, so `typep` and the accessors of an included structure
+  test in constant time (`inherits-depth-check-code`); a structure's
+  *shape* (slot count + 64 × depth) is a compile-time constant given to the
+  accessors and predicates.
 * **closures** — see below. **foreign objects** — `struct { externref }` wrapper.
 
 All types live in one recursive type group, so structurally identical types
@@ -1727,17 +1744,24 @@ What makes the code fast:
   loaded into the image 1.02 → 0.83 of SBCL's time): `a-heap-sim` (a binary
   heap of structures in an adjustable vector) 1.22 → 0.66, `a-fp-buffer`
   1.34 → 0.73, `a-fp-stack` 1.04 → 0.78, `a-strings` 1.04 → 0.93.
-* **Structure tests**: `typep` of a structure defined earlier, `typecase` and
-  the predicates compare the layout inline (`%structure-typep`), and the
-  class precedence list is searched only when it differs; `typecase` of a
-  variable tests the variable itself, so the accessors in the clause taken
-  need no check. `copy-structure` and the copiers copy the slot vector with
-  `array.copy` (`%copy-instance`). `a-struct-dispatch` (`etypecase` over
-  included structures) 2.08 → 1.39. Still slow: `a-struct-int` (2.3; a
-  predicate that fails searches the class precedence list out of line, and
-  every slot access goes through the separate slot vector) and `a-nbody`
-  (1.3; doubles in slots without declarations are boxed and their
-  arithmetic generic).
+* **Structures**: up to 32 slots in fields of their own (see Object
+  representation): a constructor is one allocation, an accessor an exact
+  type test, a layout comparison and a `struct.get`; `typep` of a structure,
+  `typecase` and the predicates test the type and the layout inline, and the
+  included structures in constant time (`+class-inherits+` by depth); a
+  predicate that fails on a structure of fewer field slots answers at the
+  type test. `typecase` of a variable tests the variable itself, so the
+  accessors in the clause taken need no check; `copy-structure` copies the
+  fields (`:sinst-copy`). `bench/arrays.lisp`, two rounds: `a-struct-int`
+  (predicates and accessors over included structures) 2.7 → 1.65,
+  `a-struct-points` 1.07 → 0.72, `a-struct-dispatch` 1.58 → 1.06,
+  `a-heap-sim` 0.77 → 0.58, `b-struct` 0.86 → 0.75; allocation of a
+  three-slot structure 1.6 times faster, reads 1.35 times. A reader loop
+  compiled to a fasl and loaded into the image: 2.0 → 1.7 times SBCL.
+  Still slow: `a-nbody` (1.2; doubles in slots without declarations are
+  boxed and their arithmetic generic). Declared `double-float` slots are
+  boxed too (slots of one Wasm type per number of slots); making readers
+  test the declared type, so that the compiler knew it, measured no faster.
 * **Versions of a function**: a function with a loop or a recursive call
   whose parameters are used as numbers tests its arguments on entry and
   continues in a copy compiled for fixnums, or else in one compiled for

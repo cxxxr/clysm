@@ -23,7 +23,8 @@
 (defconstant +class-make-info+ 17)  ; what MAKE-INSTANCE does for the class (clos.lisp)
 (defconstant +class-instance-size+ 18) ; the number of slots in an instance (set by the finalization)
 (defconstant +class-dispatch+ 19) ; #(info cache function ...) of generic functions dispatched by the class (clos.lisp)
-(defconstant +class-size+ 20)
+(defconstant +class-inherits+ 20)     ; of a structure class: #(root ... itself), its included structures by depth
+(defconstant +class-size+ 21)
 
 (defvar *the-standard-class* nil)
 (defvar *the-direct-slotd-class* nil)
@@ -304,7 +305,8 @@ grows when CLASS has more instance slots)."
 (defun %ensure-current-instance (instance)
   "Update INSTANCE if it is an obsolete instance of a redefined class (see above)."
   (let ((class (%instance-layout instance)))
-    (when (%instancep class)
+    ;; (a structure whose slots are fields is never obsolete)
+    (when (and (%instancep class) (not (%sinstp instance)))
       (let ((n (length (%instance-slots instance))))
         (unless (eql n (%class-slot class +class-instance-size+))
           (let ((layouts (cdr (assoc class *obsolete-slot-indexes*))) (found nil) (ambiguous nil))
@@ -403,7 +405,7 @@ grows when CLASS has more instance slots)."
 (defun %slot-value-by-name (instance name)
   (let ((loc (if (%instancep instance) (%slot-location instance name) nil)))
     (cond ((fixnump loc)
-           (let ((v (%instance-ref instance loc)))
+           (let ((v (%instance-gref instance loc)))
              (if (%unboundp v) (%slot-unbound instance name) v)))
           ((consp loc)
            (let ((v (cdr loc)))
@@ -412,7 +414,7 @@ grows when CLASS has more instance slots)."
 
 (defun %set-slot-value-by-name (instance name value)
   (let ((loc (if (%instancep instance) (%slot-location instance name) nil)))
-    (cond ((fixnump loc) (%set-instance-ref instance loc value))
+    (cond ((fixnump loc) (%set-instance-gref instance loc value))
           ((consp loc) (setf (cdr loc) value))
           (t (%slot-missing instance name 'setf value)))
     value))
@@ -436,7 +438,15 @@ grows when CLASS has more instance slots)."
   (unless (%class-slot class +class-make-info+)
     (%set-class-slot class +class-make-info+ #(-1 nil nil nil nil nil nil)))
   (let* ((n (or (%class-slot class +class-instance-size+) (%instance-slot-count class)))
-         (v (%make-simple-vector n (%unbound-marker))))
+         (v (if (and (eq (%class-slot class +class-kind+) :structure) (%struct-field-slots-p n))
+                nil
+                (%make-simple-vector n (%unbound-marker)))))
+    (when (null v)
+      ;; a structure whose slots are fields of its own (runtime/struct.lisp)
+      (let ((x (%sinst-make n)))
+        (%set-instance-layout x class)
+        (dotimes (i n) (%set-instance-gref x i (%unbound-marker)))
+        (return-from %allocate-instance x)))
     (if *track-instance-hook*
         (let ((instance (%make-instance class v)))
           (funcall *track-instance-hook* class instance)
@@ -451,10 +461,10 @@ grows when CLASS has more instance slots)."
         (do ((l initargs (cddr l))) ((or found (atom l)))
           (when (member (car l) (%slotd-initargs sd))
             (setq found t value (cadr l))))
-        (cond (found (if (fixnump loc) (%set-instance-ref instance loc value)
+        (cond (found (if (fixnump loc) (%set-instance-gref instance loc value)
                          (setf (cdr loc) value)))
-              ((and (fixnump loc) (%unboundp (%instance-ref instance loc)) (%slotd-initfunction sd))
-               (%set-instance-ref instance loc (funcall (%slotd-initfunction sd)))))))
+              ((and (fixnump loc) (%unboundp (%instance-gref instance loc)) (%slotd-initfunction sd))
+               (%set-instance-gref instance loc (funcall (%slotd-initfunction sd)))))))
     instance))
 
 ;;; default initargs (CLHS 7.1.3): the most specific class's default for a key
