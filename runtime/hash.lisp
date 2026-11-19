@@ -23,6 +23,15 @@
 (defconstant +ht-kind+ 10)
 (defconstant +ht-weakness+ 11)
 (defconstant +ht-shift+ 12)           ; log2 of the number of buckets
+;;; The entry GETHASH last found in an EQUAL or EQUALP table (for a key that
+;;; is not a fixnum, a character or a symbol):
+;;; the key asked for, the index of the entry and its key in the table, so
+;;; that (SETF GETHASH) of the same key right after (INCF (GETHASH K H)),
+;;; (PUSH X (GETHASH K H)) stores without hashing it again.  The entry is
+;;; still there when the key vector holds the same key at the index.
+(defconstant +ht-last-key+ 13)
+(defconstant +ht-last-index+ 14)
+(defconstant +ht-last-tkey+ 15)
 
 (defvar *hash-table-class* (find-class 'hash-table))
 
@@ -46,7 +55,7 @@
   (declare (ignore synchronized))
   (let* ((kind (%ht-kind-of test))
          (cap (max 8 size))
-         (h (%make-instance *hash-table-class* (%make-simple-vector 13 nil))))
+         (h (%make-instance *hash-table-class* (%make-simple-vector 16 nil))))
     (%ht-set h +ht-test+ (svref #(eq eql equal equalp) kind))
     (%ht-set h +ht-kind+ kind)
     (%ht-set h +ht-rehash-size+ rehash-size)
@@ -61,6 +70,7 @@
     (do () ((or (>= nb want) (eql bits 28))) (setq nb (* nb 2) bits (+ bits 1)))
     (%ht-set h +ht-count+ 0)
     (%ht-set h +ht-fill+ 0)
+    (%ht-set h +ht-last-index+ -1)
     (%ht-set h +ht-keys+ (%make-simple-vector cap nil))
     (%ht-set h +ht-vals+ (%make-simple-vector cap nil))
     (%ht-set h +ht-next+ (%make-limbs cap))
@@ -261,7 +271,13 @@ for here, without a call."
          (i (%ht-lookup sv key hash)))
     (if (%fx< i 0)
         (values default nil)
-        (values (%svref (%svref sv +ht-vals+) i) t))))
+        (progn
+          ;; (keys an EQUAL or EQUALP table hashes with a call)
+          (unless (or (fixnump key) (symbolp key) (characterp key) (%fx< (%svref sv +ht-kind+) 2))
+            (%set-svref sv +ht-last-key+ key)
+            (%set-svref sv +ht-last-index+ i)
+            (%set-svref sv +ht-last-tkey+ (%svref (%svref sv +ht-keys+) i)))
+          (values (%svref (%svref sv +ht-vals+) i) t)))))
 
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
@@ -278,6 +294,12 @@ for here, without a call."
 
 (defun %ht-put (h key value)
   (%check-ht h)
+  (let* ((sv (%instance-slots h)) (li (%svref sv +ht-last-index+)))
+    ;; the entry GETHASH has just found
+    (when (and (eq key (%svref sv +ht-last-key+)) (%fx>= li 0) (%fx< li (%svref sv +ht-fill+))
+               (eq (%svref (%svref sv +ht-keys+) li) (%svref sv +ht-last-tkey+)))
+      (%set-svref (%svref sv +ht-vals+) li value)
+      (return-from %ht-put value)))
   (let* ((sv (%instance-slots h))
          (hash (%ht-hash h key))
          (i (%ht-lookup sv key hash)))
@@ -355,47 +377,65 @@ for here, without a call."
   (%ht-init-storage h (%svlength (%ht h +ht-keys+)))
   h)
 
+(defmacro %ht-scan (keys fill del start)
+  "The index of the first entry at START or after it in the key vector KEYS
+filled up to FILL (DEL is +DELETED+), or -1."
+  (let ((j (gensym "J")))
+    `(do ((,j ,start (%fx+ ,j 1))) ((%fx>= ,j ,fill) -1)
+       (unless (eq (%svref ,keys ,j) ,del) (return ,j)))))
+
+(defmacro %with-ht-vectors ((h keys vals fill del) &body body)
+  "Binds the key and value vectors of the hash table H (checked), the number
+of entries filled in them and +DELETED+, which iterating over the entries in
+place needs: the vectors are only replaced when an entry is added, which is
+not allowed while iterating."
+  `(let ((,keys (the simple-vector (%ht ,h +ht-keys+))) (,vals (the simple-vector (%ht ,h +ht-vals+)))
+         (,fill (the fixnum (%ht ,h +ht-fill+))) (,del +deleted+))
+     (declare (ignorable ,vals))
+     ,@body))
+
 (defun maphash (fn h)
   (%check-ht h)
-  (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+)))
-    (dotimes (i fill nil)
-      (let ((k (%svref keys i)))
-        (unless (eq k +deleted+)
-          (funcall fn k (%svref vals i)))))))
+  (let ((fn (%fn fn)))
+    (%with-ht-vectors (h keys vals fill del)
+      (dotimes (i fill nil)
+        (let ((k (%svref keys i)))
+          (unless (eq k del)
+            (funcall (the function fn) k (%svref vals i))))))))
 
-;; with a function written in place: a loop, so that the function is a local
-;; one and an exit out of it (RETURN-FROM, GO) is a branch, not an exception
+;; with a function written in place: a loop, so that the function is called
+;; there (a lambda is inline) and an exit out of it (RETURN-FROM, GO) is a
+;; branch, not an exception
 (define-compiler-macro maphash (&whole form fn table)
-  (if (not (and (consp fn) (member (car fn) '(lambda function))))
+  (if (not (%literal-function-form-p fn))
       form
       (let ((f (gensym "F")) (h (gensym "H")) (keys (gensym "KEYS")) (vals (gensym "VALS"))
-            (i (gensym "I")) (k (gensym "K")))
-        `(let ((,f ,fn) (,h ,table))
+            (fill (gensym "FILL")) (del (gensym "DEL")) (i (gensym "I")) (k (gensym "K")))
+        `(let (,@(%function-binding f fn) (,h ,table))
            (%check-ht ,h)
-           (let ((,keys (%ht ,h +ht-keys+)) (,vals (%ht ,h +ht-vals+)))
-             (dotimes (,i (%ht ,h +ht-fill+) nil)
+           (%with-ht-vectors (,h ,keys ,vals ,fill ,del)
+             (dotimes (,i ,fill nil)
                (let ((,k (%svref ,keys ,i)))
-                 (unless (eq ,k +deleted+) (funcall ,f ,k (%svref ,vals ,i))))))))))
+                 (unless (eq ,k ,del) ,(%literal-call fn f `(,k (%svref ,vals ,i)))))))))))
 
 (defun %ht-next-index (h i)
   "The index of the first entry of H at I or after it, or -1."
-  (let ((keys (%ht h +ht-keys+)) (fill (%ht h +ht-fill+)))
-    (declare (fixnum i fill))
-    (do ((j i (+ j 1))) ((>= j fill) -1)
-      (declare (fixnum j))
-      (unless (eq (%svref keys j) +deleted+) (return j)))))
+  (%with-ht-vectors (h keys vals fill del)
+    (%ht-scan keys fill del (the fixnum i))))
 
 (defun %ht-checked (h) (%check-ht h) h)
 (defun %ht-key-at (h i) (%svref (%ht h +ht-keys+) i))
 (defun %ht-value-at (h i) (%svref (%ht h +ht-vals+) i))
 
 (defmacro with-hash-table-iterator ((name table) &body body)
-  (let ((h (gensym)) (i (gensym)) (j (gensym)))
+  (let ((h (gensym "H")) (i (gensym "I")) (j (gensym "J")) (keys (gensym "KEYS")) (vals (gensym "VALS"))
+        (fill (gensym "FILL")) (del (gensym "DEL")))
     `(let ((,h ,table) (,i 0))
        (unless (hash-table-p ,h) (%type-error ,h 'hash-table))
-       (macrolet ((,name () '(let ((,j (%ht-next-index ,h ,i)))
-                               (if (< ,j 0)
-                                   nil
-                                   (progn (setq ,i (+ ,j 1))
-                                          (values t (%ht-key-at ,h ,j) (%ht-value-at ,h ,j)))))))
-         ,@body))))
+       (%with-ht-vectors (,h ,keys ,vals ,fill ,del)
+         (macrolet ((,name () '(let ((,j (%ht-scan ,keys ,fill ,del ,i)))
+                                 (if (%fx< ,j 0)
+                                     nil
+                                     (progn (setq ,i (%fx+ ,j 1))
+                                            (values t (%svref ,keys ,j) (%svref ,vals ,j)))))))
+           ,@body)))))

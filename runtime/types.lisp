@@ -305,6 +305,18 @@
         `(,pred ,x)
         `(and (,pred ,x) (eql (length ,x) ,(car args)))))
 
+  (defun %typep-cell-expansion (x type)
+    "The test of X for a class or structure name (or a type defined later):
+an instance of exactly that class, or an object that is not an instance or
+a function when the class is not a built-in one, is answered here; the rest
+by %TYPEP-CELL."
+    (let ((cell (gensym "CELL")) (c (gensym "C")))
+      `(let* ((,cell (load-time-value (%type-cell ',type))) (,c (car ,cell)))
+         (cond ((%instancep ,x) (if (eq (%instance-layout ,x) ,c) t (%typep-cell ,x ,cell)))
+               ((or (null ,c) (functionp ,x) (eq (%instance-ref ,c +class-kind+) :built-in))
+                (%typep-cell ,x ,cell))
+               (t nil)))))
+
   (defun %typep-expansion (x type &optional (depth 0))
     "A form testing the variable X for the constant type specifier TYPE; a
 (%typep X 'TYPE) form when the test is left to TYPEP.  DEPTH counts the DEFTYPE
@@ -327,7 +339,7 @@ expansions on the way: a type defined in terms of itself, such as
                                     (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list type nil)))))
                       (if exp (%typep-expansion x (car exp) (+ depth 1)) default)))
                    ((or (keywordp type) (null (symbol-package type))) default)
-                   (t `(%typep-cell ,x (load-time-value (%type-cell ',type))))))
+                   (t (%typep-cell-expansion x type))))
             ((not (and (consp type) (symbolp (car type)) (listp (cdr type)) (null (cdr (last type)))))
              default)
             (t

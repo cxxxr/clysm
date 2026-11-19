@@ -454,20 +454,53 @@ test is not one a hash table has."
                (%setcdr tail c) (setq tail c)))))
         ((null (cdr more)) (%map2 f list (car more) t))
         (t (%mapn f (cons list more) t nil))))
-(define-compiler-macro mapcar (&whole form f list &rest more)
-  ;; one list: a loop, so that a lambda or #'name is called directly
-  (if more form
-      (let ((fn (gensym "F")) (head (gensym "HEAD")) (tail (gensym "TAIL")) (l (gensym "L")) (c (gensym "C")))
-        `(let ((,fn ,f))
-           (let* ((,head (cons nil nil)) (,tail ,head))
-             (do ((,l ,list (cdr ,l))) ((%endp ,l) (cdr ,head))
-               (let ((,c (cons (funcall ,fn (car ,l)) nil)))
-                 (%setcdr ,tail ,c) (setq ,tail ,c))))))))
-(define-compiler-macro mapc (&whole form f list &rest more)
-  (if more form
-      (let ((fn (gensym "F")) (l0 (gensym "L0")) (l (gensym "L")))
-        `(let ((,fn ,f) (,l0 ,list))
-           (do ((,l ,l0 (cdr ,l))) ((%endp ,l) ,l0) (funcall ,fn (car ,l)))))))
+;;; The mapping functions with a function and lists written at the call
+;;; site are loops there (as in SBCL), whatever the number of lists: the
+;;; function, when it is #'name or a lambda, is called directly (a primitive
+;;; such as + or CONS is inline) and no argument list is made.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %literal-function-form-p (f)
+    (and (consp f) (member (car f) '(lambda function))))
+  (defun %direct-function-form-p (f)
+    "F is #'name or a lambda: it is called where it is written, not bound."
+    (and (consp f)
+         (or (eq (car f) 'lambda)
+             (and (eq (car f) 'function) (consp (cdr f))
+                  (or (symbolp (cadr f)) (and (consp (cadr f)) (eq (car (cadr f)) 'lambda)))))))
+  (defun %function-binding (var f)
+    "The binding of VAR to the function form F, unless F is called directly."
+    (if (%direct-function-form-p f) nil (list (list var f))))
+  (defun %literal-call (f var args)
+    "A call of the function form F (bound to VAR unless %DIRECT-FUNCTION-FORM-P) on ARGS."
+    (cond ((not (%direct-function-form-p f)) `(funcall ,var ,@args))
+          ((eq (car f) 'lambda) `(,f ,@args))
+          (t `(,(cadr f) ,@args))))
+  (defun %mapfun-expansion (f lists on-tails accumulate)
+    "ACCUMULATE: :LIST (MAPCAR, MAPLIST), :NCONC (MAPCAN, MAPCON) or NIL (MAPC,
+MAPL: the value is the first list)."
+    (let ((fn (gensym "F")) (l0 (gensym "L0")) (head (gensym "HEAD")) (tail (gensym "TAIL"))
+          (v (gensym "V")) (vars (loop for nil in lists collect (gensym "L"))))
+      `(let* (,@(%function-binding fn f) (,l0 ,(car lists))
+              ,@(when accumulate `((,head (cons nil nil)) (,tail ,head))))
+         (do ((,(car vars) ,l0 (cdr ,(car vars)))
+              ,@(loop for var in (cdr vars) for l in (cdr lists) collect `(,var ,l (cdr ,var))))
+             ((or ,@(loop for var in vars collect `(%endp ,var))) ,(if accumulate `(cdr ,head) l0))
+           ,(let ((call (%literal-call f fn (loop for var in vars collect (if on-tails var `(car ,var))))))
+              (case accumulate
+                (:list `(let ((,v (cons ,call nil))) (%setcdr ,tail ,v) (setq ,tail ,v)))
+                (:nconc `(let ((,v ,call))
+                           (when ,v
+                             (%setcdr ,tail ,v)
+                             (when (consp ,v)
+                               (setq ,tail ,v)
+                               (do () ((atom (cdr ,tail))) (setq ,tail (cdr ,tail)))))))
+                (t call))))))))
+(define-compiler-macro mapcar (f list &rest more) (%mapfun-expansion f (cons list more) nil :list))
+(define-compiler-macro mapc (f list &rest more) (%mapfun-expansion f (cons list more) nil nil))
+(define-compiler-macro mapcan (f list &rest more) (%mapfun-expansion f (cons list more) nil :nconc))
+(define-compiler-macro maplist (f list &rest more) (%mapfun-expansion f (cons list more) t :list))
+(define-compiler-macro mapl (f list &rest more) (%mapfun-expansion f (cons list more) t nil))
+(define-compiler-macro mapcon (f list &rest more) (%mapfun-expansion f (cons list more) t :nconc))
 
 (defun mapc (f list &rest more)
   (cond ((null more) (do ((l list (cdr l))) ((%endp l) list) (funcall f (car l))))
