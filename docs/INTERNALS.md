@@ -1777,7 +1777,8 @@ What makes the code fast:
   the caches of the sites that have been used, `*gf-sites*`); readers and
   writers at about SBCL's time (`r-*` in scratch tests, fasl 0.7 of the
   earlier time); `slot-value` with a constant name and `make-instance` with a
-  constant class use caches at the call site. A constructor copies a
+  constant class use caches at the call site (with up to eight initargs
+  passed as arguments, not a list). A constructor copies a
   template of the instance's slots holding the values of constant
   initforms, then stores the arguments and the other initforms; the
   effective methods of `initialize-instance` and `shared-initialize` are
