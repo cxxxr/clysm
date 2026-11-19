@@ -316,6 +316,10 @@ destructuring-bind (defined by the runtime)."
                  (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
                  (consp (cdr (second fn-form))) (consp (cddr (second fn-form))))
         (emit-toplevel-form `(clysm-sys::%put ',sym 'clysm-sys::%arglist ',(third (second fn-form))) env))
+      (when (and *record-definitions* (symbolp name) (eq (symbol-package sym) (find-package :common-lisp)))
+        (setf (gethash sym *runtime-inline-sources*)
+              (and (eq (car fnode) :lambda) (null (cenv-entries env))
+                   (runtime-inline-source sym fn-form))))
       ;; in the image, a function declaimed INLINE keeps its source for the
       ;; calls compiled later (INLINE-EXPANSION-CALL)
       (when (and *live-mode* (symbolp name))
@@ -537,8 +541,35 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
 
 (defun recorded-definitions-form ()
   "A form that gives the image the definitions collected (see
-*RECORD-DEFINITIONS*)."
-  `(clysm-sys::%install-definitions ',(reverse *recorded-definitions*)))
+*RECORD-DEFINITIONS*), and the sources of its small functions."
+  `(progn
+     (clysm-sys::%install-definitions ',(reverse *recorded-definitions*))
+     (let ((l ',(loop for k being the hash-keys of *runtime-inline-sources* using (hash-value v)
+                      when v collect (cons k v))))
+       (loop (when (null l) (return))
+             (clysm-sys::%put (car (car l)) 'clysm-sys::%inline-expansion (cdr (car l)))
+             (setq l (cdr l))))))
+
+;;; The small functions of COMMON-LISP in the REPL image keep their source,
+;;; so that code compiled in the image contains a copy of them, as a whole
+;;; program does (INLINE-EXPANSION-CALL; they are not redefined).
+(defvar *runtime-inline-sources* (make-hash-table :test 'eq)
+  "While the runtime of the REPL image is compiled: symbol -> the source of its small function, or NIL.")
+(defparameter *runtime-inline-max-size* 100)
+
+(defun runtime-inline-source (sym fn-form)
+  (when (and (consp fn-form) (eq (car fn-form) 'function) (consp (second fn-form))
+             (eq (car (second fn-form)) 'clysm-sys::named-lambda))
+    (let* ((l (second fn-form)) (ll (third l)) (body (cdddr l)))
+      (and (listp ll) (every #'symbolp ll)
+           (notany (lambda (x) (member x lambda-list-keywords)) ll)
+           (not (tree-mentions-p body sym))
+           (notany (lambda (op) (tree-mentions-p body op))
+                   '(dotimes dolist do do* loop tagbody go prog prog* lambda function flet labels
+                     macrolet symbol-macrolet return-from catch throw unwind-protect handler-case
+                     handler-bind restart-case load-time-value clysm-sys::%wasm clysm-sys::%wasm-test))
+           (<= (form-size body *runtime-inline-max-size*) *runtime-inline-max-size*)
+           (list* 'lambda ll body)))))
 
 (defun compile-source-forms (s path env note)
   (let ((line-of (or (ignore-errors (source-line-finder path)) (constantly nil)))

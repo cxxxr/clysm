@@ -334,6 +334,15 @@ the body that sees none of the caller's lexical bindings, with `&optional`,
 local, prevents it; `proclaim` records `notinline` on the symbol so that it
 holds in an image that loaded the fasl.
 
+The small functions of `COMMON-LISP` in the REPL image (required parameters,
+no loop, at most 100 conses: `alphanumericp`, `char-upcase`, `fifth`...) keep
+their source the same way (`runtime-inline-source`, `src/driver.lisp`, set
+when the image starts: 60 KB), so code compiled in the image contains a copy
+of them as a whole program does. The guarded copies of small functions
+defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
+`&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
+defined in an earlier form runs as fast as in a whole program.
+
 The key layout of a keyed function (`(required optional . keywords)`) is a
 symbol of `SYSTEM` named by it (`|%KEY-LAYOUT 2 0 :KEY :TEST ...|`), so that
 a call compiled in a fasl compares it with `eq` to the closure's: a list
