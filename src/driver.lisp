@@ -389,10 +389,16 @@ S names a statically known function."
           (unless (gethash tn *extra-types*)
             (setf (gethash tn *extra-types*) t)
             (add-type *m* tn `(:func ,(make-list k :initial-element :eqref) (:eqref)))))
+        ;; (as (:CALLSYM K): an exit the function left pending is thrown)
         (add-func *m* name (list :direct-type k)
-                  :body `((:global.get ,(static-closure-global lam))
-                          ,@(loop for i below k collect `(:local.get ,i))
-                          (:return_call (:main ,(lam-id lam)))))))))
+                  :body `((:block ok :eqref
+                            (:global.get ,(static-closure-global lam))
+                            ,@(loop for i below k collect `(:local.get ,i))
+                            (:call (:main ,(lam-id lam)))
+                            (:br_on_non_null ok)
+                            (:call :exit-pending-p)
+                            (:if nil nil ((:call :throw-pending-exit)))
+                            (:ref.null :eq))))))))
 
 (defun finish-runtime ()
   "Called after the runtime sources have been processed."

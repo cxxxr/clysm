@@ -120,10 +120,16 @@ Returns (values bytes constants-vector)."
                                            (:global.set ,(car c))))
                           ,@(loop for g in closures
                                   append `(,@(third g) (:global.set ,(first g))))
-                          ,@(loop for l in tops
-                                  append `((:global.get ,(static-closure-global l))
-                                           (:call (:main ,(lam-id l))) (:local.set result)))
-                          (:local.get result)))
+                          ;; a form that leaves with an exit pending: RUN
+                          ;; returns null too (its caller, %COMPILE-MODULE, looks)
+                          (:block pend nil
+                            ,@(loop for l in tops
+                                    append `((:global.get ,(static-closure-global l))
+                                             (:call (:main ,(lam-id l))) (:local.tee result)
+                                             :ref.is_null
+                                             (:if nil nil ((:call :exit-pending-p) (:br_if pend)))))
+                            (:local.get result) :return)
+                          (:ref.null :eq)))
         ;; for heap images (runtime/image.lisp): SNAP returns the values of
         ;; its globals, which RESTORE sets again in a new instance (whose RUN
         ;; is not called)

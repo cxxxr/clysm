@@ -119,38 +119,41 @@ active catch tags so that throwing to a missing tag signals `control-error`).
 `unwind-protect` uses `catch_all_ref`, runs the cleanup (saving multiple
 values), and resumes with `throw_ref`.
 
-A Wasm exception is expensive in V8 (about 85 ns per throw plus 33 ns per
-frame it unwinds; SBCL's `throw` takes about 7 ns), so an exit is not thrown
-where the frames it leaves are known. Such an exit is a *return with the exit
-pending*: the tag and the value are stored in two internal variables, the
-function returns (through its own cleanups and bindings, like a local exit),
-and the code after the call tests for a pending exit. If its tag belongs to a
-catcher around the call in that function (a non-local block or tagbody, a
-`catch`, a `handler-case` or `restart-case`), it branches there; if the
-function itself returns its exits this way, it returns in turn; otherwise it
-throws the exit as described above. The functions that return their exits
-("flagging" functions) are:
+A Wasm exception is expensive in V8 (about 120 ns per throw plus 33 ns per
+frame it unwinds, whatever the form: `catch` or `catch_ref`, a payload or
+none, flags of the engine; SBCL's `throw` takes about 7 ns), so an exit is
+not thrown. It is a *return with the exit pending*: the tag and the value
+are stored in the symbols `sys::%exit-tag` and `sys::%exit-value` and the
+function returns null, which is no Lisp value. Every call of a Lisp
+function that is not a tail call is followed by a test for null
+(`checked-call` in `src/codegen.lisp`: `local.tee`, `ref.is_null` and an
+`if` hinted as unlikely); on null, the code branches to the handler of the
+call's context — the catchers around the call in that function (a non-local
+block or tagbody, a `catch`, a `handler-case` or `restart-case`) take the
+exit if its tag is theirs, else the function returns null in turn, through
+its `unwind-protect` cleanups (the exit is kept in locals while they run).
+A function that returns an unbound marker (null) as a value is told apart
+by `sys::%exit-tag` being unbound. Tail calls pass the null through; the
+catcher that takes the exit restores the binding stack. One handler serves
+all the calls of a context (a function's top level, the body of each
+catcher and `unwind-protect`); a direct call of a known function that
+cannot leave with an exit pending (no `throw`, no exit out of a closure,
+no call of an unknown function: `lam-may-exit-p`) is not tested.
 
-* local functions (`flet`/`labels`) that are only called, never used as
-  values, and contain a `return-from`/`go` to an enclosing function or a
-  `throw`, or call such a function;
-* *flag clones*: a direct call of a known global function with a catcher
-  around it calls a copy of the function compiled this way (when it contains
-  an exit and is not large), and the copy calls the copy of itself and of the
-  functions it tail-calls;
-* the twins of `error`, `signal`, `warn`, `cerror`, `invoke-restart` and the
-  standard restart functions (`runtime/cond.lisp`, `%define-twin`), which
-  direct calls use where a catcher is around the call or the caller is
-  flagging; the functions themselves throw;
-* the lambdas written as handlers in `handler-bind`, whose only callers are
-  the signalling functions.
-
-So `(handler-case (f x) (my-error (c) ...))` where `f` calls `error`,
-`handler-bind` with a handler that does `return-from` or `invoke-restart`,
-and a recursive tree walk that leaves by `return-from` or `throw`, run
-without a Wasm exception. An exit from a closure called by a library
-function (`(block b (maphash (lambda (k v) ... (return-from b k)) table))`),
-or from several ordinary calls below the catcher, is still thrown.
+So `(catch 'tag (funcall f))` where `f` throws, an exit from a closure
+called by a library function, and `error` many calls below a
+`handler-case` run without a Wasm exception, at about 2 ns per frame the
+exit passes. The code that does not test — the Wasm helpers that call Lisp
+functions (`(:callsym k)` and the direct stubs: type errors of primitives,
+slow paths of arithmetic, argument count errors) and JavaScript calling
+Lisp (`lisp_apply`) — throws the pending exit as the exception
+`$lisp-throw(tag, value)`; the catchers also take it there (`try_table`
+with `catch_ref`, comparing the tag, otherwise `throw_ref`), and
+`unwind-protect` runs its cleanup on `catch_all_ref`. `catch`/`throw` keep
+a dynamic list of active catch tags so that throwing to a missing tag
+signals `control-error`. A module compiled in the image returns null from
+its `run` when a form leaves with an exit pending, and `sys::%compile-module`
+tests it like a call.
 
 `handler-case` is one `sys:%catch` (a `catch` whose tag is not recorded in
 the list of active tags) whose tag is the handler cluster itself, a small
@@ -1352,7 +1355,7 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.5, slowest `c-eql-dispatch`
-4.0), `bench/control.lisp` (1.3; `t-throw-closure` 14), `bench/io.lisp` (1.8;
+4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.8;
 `i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
 What is not as fast as intended, and why:
@@ -1373,20 +1376,21 @@ What is not as fast as intended, and why:
   `--liftoff-only` and with `--no-liftoff`), incremental marking (without it
   the slow run moves to another form), the instantiation of the module (its
   `run` is called after it). With `(declaim (notinline use-sp))` it is
-  always at the slower speed.
+  always at the slower speed. The same loop without the call (the
+  binding and a read of `*sp*`) and the same loop with `setq` in place of
+  the binding (three times faster) vary between runs in the same way, so
+  neither the call nor the binding is the cause.
 * **Libraries** are within 3 but close to it (`l-babel` 2.9, `l-ppcre-replace`
   2.9, `l-split-sequence` 2.8): they are compiled to fasls file by file, where
   calls between global functions are ordinary calls and small functions are
   not copied into their callers.
-* **Exits from closures called by code the compiler does not see** (a
-  `return-from`, `go` or `throw` out of a function kept in a variable and
-  called by another function) are Wasm exceptions: about 85 ns plus 30 ns per
-  frame, against about 7 ns on SBCL (`t-throw-closure` 14 times). A lambda
-  written in place as the argument of `mapcar`, `mapc`, `maphash`, `map` (to
-  `nil` or `'list`, one sequence), `every`, `some`, `notany` or `notevery` is
-  not one of these: those calls are loops at the call site (compiler macros
-  in `runtime/core.lisp`, `hash.lisp`, `seq.lisp`), where the lambda is a
-  local function and the exit a branch (`v-go-closure` 1.0, was 66).
+* **Non-local exits** are returns with the exit pending, tested after
+  every call that is not a tail call (above, "Non-local exits"): a throw
+  from a closure one frame below its `catch` costs what SBCL's does
+  (`t-throw-closure` 1.0, was 13; 20 frames below, 0.43, was 4.4; in the
+  image 21 ms instead of 280). The test costs about 10% in recursion
+  through `funcall` (`h-fib-funcall`); direct calls of functions that
+  cannot exit are not tested.
 * **Generic functions**: dispatch on EQL specializers (4 times: the entry
   of a class with EQL specializer objects calls a guard function shared by
   all generic functions, which then calls the method) or on many classes at
@@ -1459,10 +1463,10 @@ What makes the code fast:
   call; call sites cache the functions for the classes of their arguments
   and read slots of readers inline; `slot-value` with a constant name and
   `make-instance` with a constant class use caches at the call site.
-* **Non-local exits** that stay within the functions the compiler sees
-  (`handler-case`, `restart-case`, `catch`/`throw`, `return-from` out of
-  local functions, `error` under a handler one call away) are returns with a
-  pending exit, not Wasm exceptions; special bindings are inline.
+* **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
+  `return-from` and `go` out of closures, `error` under a handler any
+  number of calls away) are returns with a pending exit, not Wasm
+  exceptions; special bindings are inline.
 * **Numbers**: fixnum, 64-bit, single and double arithmetic and comparisons
   in Wasm helpers; `floor` and friends, `isqrt`, `gcd`, `ldb`, the
   irrational functions as primitives; bignum kernels in Wasm.
@@ -1474,14 +1478,15 @@ What makes the code fast:
 
 ### Size and start-up
 
-A whole program carries the runtime: `tests/hello.lisp` is 3.5 MB (0.97 MB
-with gzip). With `--shake` (`bin/clysm compile --shake`, `bin/clysm library
+A whole program carries the runtime: `tests/hello.lisp` is 4.3 MB (1.25 MB
+with gzip; the tests after calls for a pending exit, "Non-local exits",
+account for 8% of it). With `--shake` (`bin/clysm compile --shake`, `bin/clysm library
 --shake`) the global functions that nothing refers to by name are left out
 (`shake-module` in `src/wasm.lisp`): the definition of each function is a
 small Wasm function `(:install SYMBOL N)`, kept only when the symbol is
 reached from the exports, the start function or the initializer of a reached
 global, and the functions and globals that are then unreachable are dropped.
-Hello becomes 3.0 MB (0.84 MB with gzip), and a library starts in about 50 ms
+Hello becomes 3.6 MB, and a library starts in about 50 ms
 instead of 65 (12 ms to compile the module, the rest the toplevel forms of
 the runtime). Every symbol stays, so `intern` and `read` work, but a function
 called only by a name made at run time (`(funcall (intern ...))`, `eval` of
