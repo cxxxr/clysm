@@ -18,3 +18,5 @@
 (defgeneric gg (a &optional b))
 (defmethod gg ((a integer) &optional (b 1)) (+ a b))
 (print (list (apply #'gg '(1)) (apply #'gg '(1 5)) (apply #'gg 2 nil)))
+(defun r1 (a &rest xs) (list :r1 a xs))
+(let ((n 0)) (print (list (apply #'r1 (incf n) (incf n) (list (incf n))) (apply #'r1 10 nil) (apply #'r2 1 2 3 4 '(5)) (apply #'r0 1 2 nil) n)))

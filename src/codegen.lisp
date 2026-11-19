@@ -419,20 +419,34 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
       (:values (cg-values (cdr node) mv))
-      (:apply (maybe-checked-call tail (cg-apply (second node) (third node) tail))))))
+      (:apply (maybe-checked-call tail (cg-apply (second node) (cddr node) tail))))))
 
-(defun cg-apply (fnode lnode tail)
-  "(APPLY F LIST): the entry of F taking a list, called directly when F is a
-known global function."
+(defun cg-apply (fnode args tail)
+  "(APPLY F SPREAD... LIST): the entry of F taking a list, called directly
+when F is a known global function; a known function of required parameters
+and &REST that the spread arguments fill takes them directly and only the
+others are consed onto the list for its rest list."
   (let* ((call (if tail :return_call :call))
+         (spread (butlast args))
          (lam (and (eq (car fnode) :fref)
                    (not (gethash (second fnode) *dynamic-functions*))
-                   (known-global-lam (second fnode)))))
-    (if lam
-        (progn (ensure-lam-compiled lam)
-               `((:global.get ,(static-closure-global lam)) ,@(cg lnode)
-                 (,call ,(lam-apply-entry-name lam))))
-        `(,@(cg fnode) ,@(cg lnode) (,call :apply-list)))))
+                   (known-global-lam (second fnode))))
+         (nreq (and lam (length (lam-req lam)))))
+    (flet ((list*-code (nodes)
+             ;; the values of NODES consed onto the last one
+             `(,@(loop for n in nodes append (cg n))
+               ,@(loop repeat (1- (length nodes)) collect '(:struct.new :cons)))))
+      (cond ((and lam (lam-rest-only-p lam) (<= nreq (length spread)))
+             (ensure-lam-compiled lam)
+             `((:global.get ,(static-closure-global lam))
+               ,@(loop for n in (subseq spread 0 nreq) append (cg n))
+               ,@(list*-code (nthcdr nreq args))
+               (,call (:rmain ,(lam-id lam)))))
+            (lam
+             (ensure-lam-compiled lam)
+             `((:global.get ,(static-closure-global lam)) ,@(list*-code args)
+               (,call ,(lam-apply-entry-name lam))))
+            (t `(,@(cg fnode) ,@(list*-code args) (,call :apply-list)))))))
 
 (defun cg-values (args mv)
   (cond ((null args) `(,@(nil-code) ,@(when mv '((:i32.const 0) (:global.set :mv-count)))))

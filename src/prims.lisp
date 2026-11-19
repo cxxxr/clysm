@@ -1233,9 +1233,9 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
         (when (and (cdr args) (consp last) (eq (car last) 'list) (not (env-lookup-fun env 'list)))
           (return-from apply-native
             (convert `(funcall ,@(butlast args) ,@(cdr last)) env))))
-      (if (null (cddr args))
-          `(:apply ,@(convert-args args env))
-          `(:apply ,@(convert-args (list (first args) `(list* ,@(rest args))) env))))))
+      ;; (:apply f spread... list): the spread arguments are consed onto the
+      ;; list unless the function is known (CG-APPLY)
+      `(:apply ,@(convert-args args env)))))
 
 ;;; ------------------------------------------------------------
 ;;; Hand-written wasm runtime helpers
