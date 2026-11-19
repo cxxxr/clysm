@@ -1045,6 +1045,14 @@ octet of a character input file when it is ASCII, else the call FALLBACK."
     (t (setf (stream-unread s) c))))
 
 (defun unread-char (c &optional stream)
+  ;; a string input stream of a simple string, the character the one before
+  ;; its index (what READ-CHAR gave): its index moved back
+  (when (and (%instancep stream) (eq (%instance-layout stream) *string-stream-layout*)
+             (eq (%instance-ref stream +stream-fast-slot+) :string))
+    (let ((i (%instance-ref stream +stream-index-slot+)) (buf (%instance-ref stream +stream-buffer-slot+)))
+      (when (and (fixnump i) (%fx> i 0) (%simple-string-p buf) (eq (%schar buf (%fx- i 1)) c))
+        (%set-instance-ref stream +stream-index-slot+ (%fx- i 1))
+        (return-from unread-char nil))))
   (%stream-unread-char (%input-stream stream) c)
   nil)
 
