@@ -263,7 +263,7 @@ can then pass their arguments in its slots.")
             (funcall hook name (list* (first shape) (second shape) keys) defgeneric-p)))))))
 
 (defmacro %gf-function-maker (&optional n keys)
-  (when (and (consp n) (eql (second n) 0) (eql (third n) 0))
+  (when (and (consp n) (eql (second n) 0) (eql (third n) 0) (<= (first n) 4))
     (setq n (first n)))
   (cond ((and (consp n) (eql (third n) 1) keys (<= (+ (first n) (second n) (length keys)) 4))
          ;; with keyword parameters: also a keyed main function, which calls
@@ -274,6 +274,16 @@ can then pass their arguments in its slots.")
             (%make-gf-closure4k ,(%gf-spread-entry-n n)
                                 ,@(%gf-spread-entries n)
                                 ,(%gf-keyed-entry n keys))))
+        ((and (consp n) (> (+ (first n) (second n) (third n)) 4))
+         ;; more than four spread arguments: the dispatch is in the function
+         ;; of the calls of more than four arguments (the others, which
+         ;; leave out optional arguments, make the list of theirs)
+         `(lambda (info)
+            (%make-gf-closure4 ,(%gf-spread-entry-n n t)
+                               (lambda (a) (%gf-invoke info (list a)))
+                               (lambda (a b) (%gf-invoke info (list a b)))
+                               (lambda (a b c) (%gf-invoke info (list a b c)))
+                               (lambda (a b c d) (%gf-invoke info (list a b c d))))))
         ((consp n)
          ;; (the dispatch is copied once, into the core, which the entries call)
          `(lambda (info)
@@ -329,7 +339,9 @@ them; at most four in all.  NIL otherwise."
                 ((member x lambda-list-keywords) (unless (eq x '&allow-other-keys) (return-from %fast-shape nil)))
                 ((eq state :req) (setq nreq (+ nreq 1)))
                 ((eq state :opt) (setq nopt (+ nopt 1)))))
-        (and (<= 1 nreq) (<= (+ nreq nopt more) 4) (list nreq nopt more)))))
+        ;; (up to eight: the functions of more than four arguments are
+        ;; called with a vector of them, but no list is made)
+        (and (<= 1 nreq) (<= nopt 3) (<= (+ nreq nopt more) 8) (list nreq nopt more)))))
 
   (defun %shape-code (nreq nopt more)
     "The bits of the tag of the cache (+GF-CACHE+) that tell the shape."
@@ -422,7 +434,7 @@ spread arguments that are not just its required ones, else NIL."
   (let* ((nreq (%gf-slot info +gf-nreq+))
          (nopt (%gf-slot info +gf-nopt+))
          (more (if (%gf-slot info +gf-restp+) 1 0))
-         (fast (if (and (fixnump nreq) (<= 1 nreq) (fixnump nopt) (<= (+ nreq nopt more) 4)
+         (fast (if (and (fixnump nreq) (<= 1 nreq) (fixnump nopt) (<= nopt 3) (<= (+ nreq nopt more) 8)
                         (not (eq (%gf-slot info +gf-ll+) :unspecified))
                         (or (null *the-standard-generic-function-class*)
                             (eq (%instance-layout info) *the-standard-generic-function-class*)))
@@ -751,16 +763,20 @@ objects of MARKERS: the marker of the object that X is, else the class of X."
           ((eq (car tree) '%args) (append vars (%splice-args (cdr tree) vars)))
           (t (cons (%splice-args (car tree) vars) (%splice-args (cdr tree) vars)))))
   (defun %arity-vars (n)
-    (let ((r nil)) (dotimes (i n (nreverse r)) (push (nth i '(%a0 %a1 %a2 %a3)) r)))))
+    (let ((r nil)) (dotimes (i n (nreverse r)) (push (nth i '(%a0 %a1 %a2 %a3 %a4 %a5 %a6 %a7)) r)))))
 
-;;; (%ARITY-CASE n form): FORM for N = 1..4, with %ARGS in a list of FORM
+;;; (%ARITY-CASE n form): FORM for N = 1..8, with %ARGS in a list of FORM
 ;;; standing for N variables.
 (defmacro %arity-case (n form)
   `(case ,n
      (1 ,(%splice-args form (%arity-vars 1)))
      (2 ,(%splice-args form (%arity-vars 2)))
      (3 ,(%splice-args form (%arity-vars 3)))
-     (t ,(%splice-args form (%arity-vars 4)))))
+     (4 ,(%splice-args form (%arity-vars 4)))
+     (5 ,(%splice-args form (%arity-vars 5)))
+     (6 ,(%splice-args form (%arity-vars 6)))
+     (7 ,(%splice-args form (%arity-vars 7)))
+     (t ,(%splice-args form (%arity-vars 8)))))
 
 (defun %gf-keys (info args nreq)
   (let ((eqls (%gf-slot info +gf-eql+)) (unspec (%gf-slot info +gf-unspecialized+)) (r nil) (a args))
@@ -840,7 +856,7 @@ own, which the dispatch on classes does not find."
             (dolist (m markers) (when (eq (class-of (car m)) k) (push (car m) objects)))
             (when objects (push (cons p objects) guards)))))
       (setq p (+ p 1)))
-    (cond ((or (null guards) (> n 4) (< n 1)) value)
+    (cond ((or (null guards) (> n 8) (< n 1)) value)
           ((null (cdr guards))
            ;; one such parameter: the entries of its objects are remembered
            (let ((p (caar guards)) (cache (mapcar (lambda (o) (cons o nil)) (cdar guards))))
@@ -930,6 +946,12 @@ specialized argument), or 0."
       (setf (svref v j) info (svref v (+ j 1)) pic (svref v (+ j 2)) value)))
   value)
 
+(defun %gf-find-big (info spread nkeys n)
+  "%GF-FINDn for more than four spread arguments (SPREAD, a list), of which
+the first NKEYS are the required ones."
+  (and (eq (%svref (%gf-slot info +gf-cache+) 1) n) (eql (%gf-slot info +gf-nreq+) nkeys)
+       (%gf-lookup info spread nkeys 0)))
+
 (defun %gf-fill (info keys args nreq which)
   "Compute the cache entry for ARGS (whose keys are KEYS) and store it."
   (let ((pic (%gf-slot info +gf-cache+)))
@@ -988,7 +1010,7 @@ specialized argument), or 0."
 (defconstant +gf-methods-unknown+ '%methods-unknown)
 
 (defun %gf-add-eql-class-entry (info keys args nreq)
-  (when (and (<= 1 nreq 4) (some #'consp keys))
+  (when (and (<= 1 nreq 8) (some #'consp keys))
     (let ((class-keys (mapcar (lambda (k a) (if (consp k) (%fast-class-of a) k)) keys args))
           (n (%gf-slot info +gf-fast+)))
       (unless (%gf-has-entry-p info class-keys nreq)
@@ -1170,13 +1192,15 @@ N variables holding the spread arguments, the first NKEYS of them the required
 ones; ACTUAL is the form of the list of the arguments, for the general call.
 INFO is the variable of the generic function metaobject, and the tag of the
 cache has the shape bits CODE."
-    (let* ((keys (subseq '(k0 k1 k2 k3) 0 nkeys))
+    (let* ((keys (subseq '(k0 k1 k2 k3 k4 k5 k6 k7) 0 nkeys))
            (kargs (subseq spread 0 nkeys))
            (stride (+ nkeys 2))
-           (find (if (eql n nkeys)
+           (find (if (> n 4)
+                     nil
+                     (if (eql n nkeys)
                      (nth (- n 1) '(%gf-find1 %gf-find2 %gf-find3 %gf-find4))
                      (cdr (assoc (+ (* 10 n) nkeys) '((21 . %gf-find-2-1) (31 . %gf-find-3-1) (32 . %gf-find-3-2)
-                                                     (41 . %gf-find-4-1) (42 . %gf-find-4-2) (43 . %gf-find-4-3)))))))
+                                                     (41 . %gf-find-4-1) (42 . %gf-find-4-2) (43 . %gf-find-4-3))))))))
       `(block dispatch
          (let* ((pic (%instance-ref info +gf-cache+))
                 (tag (%svref pic 0)))
@@ -1184,7 +1208,13 @@ cache has the shape bits CODE."
              (let (,@(let ((i -1))
                        (mapcar (lambda (k a)
                                  (setq i (+ i 1))
-                                 `(,k (if (eq (%fxlogand tag ,(ash 16 i)) 0) (%fast-class-of ,a) 0)))
+                                 `(,k (if (eq ,(if (< i 4)
+                                                       `(%fxlogand tag ,(ash 16 i))
+                                                       ;; (the tag has the bits of the first four)
+                                                       `(%fxlogand (%svref pic 3) ,(ash 1 i)))
+                                                  0)
+                                              (%fast-class-of ,a)
+                                              0)))
                                keys kargs))
                    (len (%svlength pic)))
                (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
@@ -1213,7 +1243,9 @@ cache has the shape bits CODE."
                (when (%svref pic 4)
                  (let ((f (%gf-class-lookup pic (%single-key ,@keys))))
                    (when f (return-from dispatch (funcall (the function f) ,@spread)))))
-               (let ((f (,find info ,@spread)))
+               (let ((f ,(if find
+                             `(,find info ,@spread)
+                             `(%gf-find-big info (list ,@spread) ,nkeys ,n))))
                  (when f (return-from dispatch (funcall (the function f) ,@spread))))))
            (%gf-invoke info ,actual))))))
 
@@ -1224,17 +1256,22 @@ cache has the shape bits CODE."
 ;;; searched by the required ones; its values are functions of the spread
 ;;; arguments.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun %gf-spread-entry-n (shape)
+  (defun %gf-spread-entry-n (shape &optional inline)
     "The function of a generic function of the shape SHAPE called with more
-than four arguments (or applied): its lambda list spreads them."
+than four arguments (or applied): its lambda list spreads them.  It calls the
+core (+GF-CORE+), or, with INLINE, has the dispatch itself."
     (destructuring-bind (nreq nopt more) shape
-      (let* ((req (subseq '(s0 s1 s2 s3) 0 nreq))
-             (opt (subseq '(s0 s1 s2 s3) nreq (+ nreq nopt)))
-             (rest (if (eql more 1) (list (nth (+ nreq nopt) '(s0 s1 s2 s3))) nil))
+      (let* ((vars '(s0 s1 s2 s3 s4 s5 s6 s7))
+             (req (subseq vars 0 nreq))
+             (opt (subseq vars nreq (+ nreq nopt)))
+             (rest (if (eql more 1) (list (nth (+ nreq nopt) vars)) nil))
              (spread (append req opt rest)))
         `(lambda (,@req ,@(when opt `(&optional ,@(mapcar (lambda (o) `(,o (%unbound-marker))) opt)))
                   ,@(when rest `(&rest ,@rest)))
-           (funcall (the function (%instance-ref info +gf-core+)) ,@spread)))))
+           ,(if inline
+                (%gf-dispatch-code (+ nreq nopt more) nreq spread `(%unspread ,nreq ,nopt ,more (list ,@spread))
+                                   (%shape-code nreq nopt more))
+                `(funcall (the function (%instance-ref info +gf-core+)) ,@spread))))))
 
   (defun %gf-spread-entries (shape &optional rest-inline)
     "The entries of one to four arguments of a generic function of the shape
@@ -1292,7 +1329,13 @@ generic function)."
                  (let (,@(let ((i -1))
                            (mapcar (lambda (k a)
                                      (setq i (+ i 1))
-                                     `(,k (if (eq (%fxlogand tag ,(ash 16 i)) 0) (%fast-class-of ,a) 0)))
+                                     `(,k (if (eq ,(if (< i 4)
+                                                       `(%fxlogand tag ,(ash 16 i))
+                                                       ;; (the tag has the bits of the first four)
+                                                       `(%fxlogand (%svref pic 3) ,(ash 1 i)))
+                                                  0)
+                                              (%fast-class-of ,a)
+                                              0)))
                                    ks req))
                        (len (%svlength pic)))
                    (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
@@ -1512,7 +1555,11 @@ by the check of those keyword arguments."
     (let ((g (case n
                (2 (lambda (a more) (when more (%check-more-keys info valid more)) (funcall f a more)))
                (3 (lambda (a b more) (when more (%check-more-keys info valid more)) (funcall f a b more)))
-               (t (lambda (a b c more) (when more (%check-more-keys info valid more)) (funcall f a b c more))))))
+               (4 (lambda (a b c more) (when more (%check-more-keys info valid more)) (funcall f a b c more)))
+               (t (lambda (&rest args)
+                    (let ((more (car (last args))))
+                      (when more (%check-more-keys info valid more))
+                      (apply f args)))))))
       ;; (the dispatch inlined in the function of the generic function
       ;; finds F and VALID here and checks the keywords itself)
       ;; (and the keyed effective method, made when first called: %GF-KEYED-ENTRY)
