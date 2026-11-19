@@ -304,6 +304,10 @@ destructuring-bind (defined by the runtime)."
       (when (and (eq (car fnode) :lambda) (null (lam-free-vars (second fnode))))
         (setf (lam-static-p (second fnode)) t)
         (push (second fnode) (gethash sym *global-defuns*))
+        ;; calls compiled before the definition is evaluated (later forms of
+        ;; a file given to COMPILE-FILE) know its key layout
+        (when (and *live-mode* (lam-keyp (second fnode)))
+          (setf (gethash sym *compiled-key-layouts*) (key-layout-object (lam-key-layout (second fnode)))))
         ;; in a development image the function may be redefined at run time
         (when *redefinable-functions* (setf (gethash sym *notinline*) t)))
       ;; in the image, the lambda list is kept for the development

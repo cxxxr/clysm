@@ -400,7 +400,8 @@ spread arguments that are not just its required ones, else NIL."
                   (vector (if (eql fast 0)
                               0
                               (+ (%shape-code nreq nopt more)
-                                 (* 16 (logand (%gf-slot info +gf-unspecialized+) 15))))
+                                 (* 16 (logand (%gf-slot info +gf-unspecialized+) 15))
+                                 (if (%gf-slot info +gf-keyp+) 4096 0)))
                           fast (%gf-slot info +gf-eql+) (%gf-slot info +gf-unspecialized+) nil))
     (%set-gf-slot info +gf-table+ nil)))
 
@@ -1102,7 +1103,21 @@ cache has the shape bits CODE."
                                           (setq i (+ i 1))
                                           `(eq (%svref pic ,(if (eql i 0) 'i `(%fx+ i ,i))) ,k))
                                         keys)))
-                   (return-from dispatch (funcall (the function (%svref pic (%fx+ i ,nkeys))) ,@spread))))
+                   (return-from dispatch
+                     ,(if (eql n nkeys)
+                          `(funcall (the function (%svref pic (%fx+ i ,nkeys))) ,@spread)
+                          ;; a generic function with &KEY (tag bit 4096): the
+                          ;; check of the keywords is called from here, and
+                          ;; only for a call with some (%KEY-CHECKED-FAST-EMF)
+                          `(let ((f (%svref pic (%fx+ i ,nkeys))))
+                             (if (eq (%fxlogand tag 4096) 0)
+                                 (funcall (the function f) ,@spread)
+                                 (let ((kn (%closure-name f)))
+                                   (if (consp kn)
+                                       (progn
+                                         (when ,(car (last spread)) (%check-more-keys info (cdr kn) ,(car (last spread))))
+                                         (funcall (the function (car kn)) ,@spread))
+                                       (funcall (the function f) ,@spread)))))))))
                (let ((f (,find info ,@spread)))
                  (when f (return-from dispatch (funcall (the function f) ,@spread))))))
            (%gf-invoke info ,actual))))))
@@ -1225,14 +1240,21 @@ function of the arguments, or NIL) being its next method; UNSPEC is
 (defun %check-more-keys (info valid more)
   "Check the keyword arguments MORE of a call of the generic function INFO
 whose applicable methods accept the keywords VALID (or :ANY)."
-  (do ((l more (cddr l))) ((null l))
-    (when (or (atom l) (atom (cdr l))) (%gf-arg-error info "odd number of keyword arguments ~S" more))
-    (unless (symbolp (car l)) (%gf-arg-error info "~S is not a keyword" (car l))))
-  (unless (or (eq valid :any)
-              (let ((aok (%plist-find more :allow-other-keys))) (and aok (cadr aok))))
-    (do ((l more (cddr l))) ((null l))
-      (unless (or (eq (car l) :allow-other-keys) (member (car l) valid))
-        (%gf-arg-error info "unknown keyword argument ~S (allowed: ~S)" (car l) valid)))))
+  ;; one pass with EQ (this runs at every call with keyword arguments); the
+  ;; errors and :ALLOW-OTHER-KEYS are looked at only when a key is not valid
+  (let ((unknown nil) (l more))
+    (loop
+      (when (null l) (return))
+      (when (or (atom l) (atom (cdr l))) (%gf-arg-error info "odd number of keyword arguments ~S" more))
+      (let ((k (%car l)))
+        (unless (symbolp k) (%gf-arg-error info "~S is not a keyword" k))
+        (unless (or (eq valid :any)
+                    (do ((v valid (%cdr v))) ((atom v) nil) (when (eq (%car v) k) (return t))))
+          (unless (or unknown (eq k :allow-other-keys)) (setq unknown k))))
+      (setq l (%cdr (%cdr l))))
+    (when unknown
+      (unless (let ((aok (%plist-find more :allow-other-keys))) (and aok (cadr aok)))
+        (%gf-arg-error info "unknown keyword argument ~S (allowed: ~S)" unknown valid)))))
 
 (defun %key-checked-fast-emf (info methods f n)
   "F, a function of the N spread arguments of a generic function with &KEY,
@@ -1241,10 +1263,14 @@ by the check of those keyword arguments."
   (let* ((gfll (%gf-slot info +gf-ll+))
          (valid (if (and (consp gfll) (member '&allow-other-keys gfll)) :any (%valid-call-keys info methods))))
     (declare (function f))
-    (case n
-      (2 (lambda (a more) (when more (%check-more-keys info valid more)) (funcall f a more)))
-      (3 (lambda (a b more) (when more (%check-more-keys info valid more)) (funcall f a b more)))
-      (t (lambda (a b c more) (when more (%check-more-keys info valid more)) (funcall f a b c more))))))
+    (let ((g (case n
+               (2 (lambda (a more) (when more (%check-more-keys info valid more)) (funcall f a more)))
+               (3 (lambda (a b more) (when more (%check-more-keys info valid more)) (funcall f a b more)))
+               (t (lambda (a b c more) (when more (%check-more-keys info valid more)) (funcall f a b c more))))))
+      ;; (the dispatch inlined in the function of the generic function
+      ;; finds F and VALID here and checks the keywords itself)
+      (%set-closure-name g (cons f valid))
+      g)))
 
 (defun %compute-fast-emf (gf info methods args n)
   (let ((shape (%gf-shape info)))
@@ -1889,7 +1915,12 @@ spread arguments in VARS (%FAST-SHAPE), and the temporary variables."
                       (default (if (consp x) (cadr x) nil))
                       (svar (if (consp x) (caddr x) nil))
                       (found (gensym "KEY")))
-                 (push (list found `(%plist-find ,(or more (setq more (pop v))) ',(%key-name x))) r)
+                 ;; (%PLIST-FIND inline: a method compiled in the image or
+                 ;; into a fasl would call the runtime's function)
+                 (push (list found `(do ((l ,(or more (setq more (pop v))) (%cdr (%cdr l))))
+                                        ((or (atom l) (atom (%cdr l))) nil)
+                                      (when (eq (%car l) ',(%key-name x)) (return l))))
+                       r)
                  (push found temps)
                  (push (list var `(if ,found (cadr ,found) ,default)) r)
                  (when svar (push (list svar `(not (null ,found))) r))))

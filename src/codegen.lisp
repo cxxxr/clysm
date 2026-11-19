@@ -670,10 +670,46 @@ representation) or :effect (no value)."
   "(required optional . keywords): how the keyed main function of LAM takes its arguments."
   (list* (length (lam-req lam)) (length (lam-opt lam)) (mapcar #'first (lam-keys lam))))
 
+(defun key-layout-object (layout)
+  "The object standing for the key layout LAYOUT in closures, which calls
+compare (EQ) with the one they were compiled for: a symbol named after it, so
+that a call read from a fasl (or compiled by another module) finds the same
+object; LAYOUT itself when a key's name would not survive in that name."
+  (if (every (lambda (k)
+               (and (symbolp k) (symbol-package k)
+                    (notany (lambda (c) (member c '(#\Space #\:))) (symbol-name k))))
+             (cddr layout))
+      (intern (format nil "%KEY-LAYOUT ~D ~D~{ ~A~}" (first layout) (second layout)
+                      (mapcar (lambda (k) (format nil "~A:~A" (target-package-name (symbol-package k)) (symbol-name k)))
+                              (cddr layout)))
+              (symbol-package 'clysm-sys::%car))
+      layout))
+
+(defun key-layout-list (object)
+  "The layout (required optional . keywords) of a key layout object, or NIL."
+  (cond ((consp object) object)
+        ((and object (symbolp object))
+         (let* ((name (symbol-name object)) (parts nil) (start 0))
+           (loop (let ((sp (position #\Space name :start start)))
+                   (push (subseq name start sp) parts)
+                   (if sp (setq start (1+ sp)) (return))))
+           (setq parts (nreverse parts))
+           (and (string= (first parts) "%KEY-LAYOUT")
+                (list* (parse-integer (second parts)) (parse-integer (third parts))
+                       (mapcar (lambda (k)
+                                 (let* ((c (position #\: k))
+                                        (pkg (find-package (subseq k 0 c))))
+                                   (if pkg
+                                       (multiple-value-bind (s found) (find-symbol (subseq k (1+ c)) pkg)
+                                         (if found s (return-from key-layout-list nil)))
+                                       (return-from key-layout-list nil))))
+                               (cdddr parts))))))
+        (t nil)))
+
 (defun lam-kmain-code (lam)
   "The last two fields of LAM's closure."
   (if (and (lam-keyed-p lam) (lam-keyp lam))
-      `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (lam-key-layout lam)))
+      `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (key-layout-object (lam-key-layout lam))))
       `((:ref.null :func) (:ref.null :eq))))
 
 (defun lam-name-code (lam)
@@ -905,10 +941,15 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 ;;; the call was compiled (the layout object in the closure is compared).
 (defvar *live-key-layout-hook* nil "symbol -> the key layout of its global function, or NIL")
 
+(defvar *compiled-key-layouts* (make-hash-table :test 'eq)
+  "symbol -> the key layout object of the global function last compiled for it in the image")
+
 (defun live-keyed-call-code (sym args arg-codes tail)
-  (let ((layout-list (and *live-key-layout-hook* (not (gethash sym *notinline*))
-                          (not (member sym *local-notinline*))
-                          (funcall *live-key-layout-hook* sym))))
+  (let* ((layout-object (and *live-key-layout-hook* (not (gethash sym *notinline*))
+                             (not (member sym *local-notinline*))
+                             (or (funcall *live-key-layout-hook* sym)
+                                 (gethash sym *compiled-key-layouts*))))
+         (layout-list (key-layout-list layout-object)))
     (when (and (consp layout-list) (cddr layout-list))
       (destructuring-bind (nreq nopt &rest keys) layout-list
         (let* ((stub (make-lam :id -1 :name sym :keyp t
@@ -926,7 +967,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                     (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) (:local.tee ,f)
                     :ref.is_null (:br_if ,slow)
                     (:local.get ,f) (:struct.get :closure ,+clo-klayout+)
-                    ,@(const-init-code layout-list) :ref.eq :i32.eqz (:br_if ,slow)
+                    ,@(const-init-code layout-object) :ref.eq :i32.eqz (:br_if ,slow)
                     ,@(maybe-checked-call
                        tail
                        `((:local.get ,f) :ref.as_non_null

@@ -543,9 +543,10 @@ grows when CLASS has more instance slots)."
     (%finalize-class class)))
 
 
+(defvar *keyword-package*)             ; (package.lisp)
 ;;; class-of: built-in classes are cached (cleared by (SETF FIND-CLASS))
 (defmacro %builtin-class (i name)
-  `(or (svref *builtin-classes* ,i) (setf (svref *builtin-classes* ,i) (find-class ',name))))
+  `(or (%svref *builtin-classes* ,i) (setf (svref *builtin-classes* ,i) (find-class ',name))))
 ;;; (the tests of one representation come first: STRINGP, VECTORP, ARRAYP and
 ;;; BIT-VECTOR-P look into array headers)
 (defun class-of (x)
@@ -553,7 +554,9 @@ grows when CLASS has more instance slots)."
         ((fixnump x) (%builtin-class 0 fixnum))
         ((consp x) (%builtin-class 1 cons))
         ((null x) (%builtin-class 2 null))
-        ((symbolp x) (if (keywordp x) (%builtin-class 3 keyword) (%builtin-class 4 symbol)))
+        ((symbolp x) (if (eq (%symbol-package x) *keyword-package*)
+                         (%builtin-class 3 keyword)
+                         (%builtin-class 4 symbol)))
         ((characterp x) (%builtin-class 5 character))
         ((%simple-string-p x) (%builtin-class 6 simple-string))
         ((%double-float-p x) (%builtin-class 15 double-float))
