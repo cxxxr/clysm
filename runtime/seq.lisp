@@ -1538,9 +1538,14 @@ its index when POSP."
                           (cond ((eql mode 0)
                                  (if neg (loops (not (eql item v))) (loops (eql item v))))
                                 ((eql mode 1)
-                                 (if neg
-                                     (loops (not (funcall (the function fn) item v)))
-                                     (loops (funcall (the function fn) item v))))
+                                 ;; (the usual tests: called directly)
+                                 (cond (neg (loops (not (funcall (the function fn) item v))))
+                                       ((eq fn #'equal) (loops (equal item v)))
+                                       ((eq fn #'%char=-2) (loops (char= item v)))
+                                       ((eq fn #'%char-equal-2) (loops (char-equal item v)))
+                                       ((eq fn #'%string=-2) (loops (%string=-2 item v)))
+                                       ((eq fn #'%string-equal-2) (loops (%string-equal-2 item v)))
+                                       (t (loops (funcall (the function fn) item v)))))
                                 (t
                                  (if neg
                                      (loops (not (funcall (the function fn) v)))
