@@ -4,6 +4,7 @@
 # (the compiler running in Wasm against the same compiler running on SBCL).
 #   tools/bench-libs.sh
 set -e
+export LC_ALL=C   # sort and join must agree on the order (a Japanese locale drops items)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS="${BENCH_RUNS:-3}"
 TMP="$(mktemp -d)"
