@@ -814,9 +814,12 @@ object; LAYOUT itself when a key's name would not survive in that name."
 
 (defun direct-call-checked (lam tail code)
   "CODE: a direct call of LAM."
-  (if (or tail (and (null (lam-parent lam)) (not (lam-may-exit-p lam))))
-      code
-      (checked-call code)))
+  ;; (a global function is a lambda of the toplevel form defining it, without
+  ;; free variables: what LAM-MAY-EXIT-P finds is all it can do)
+  (let ((global (or (null (lam-parent lam)) (and (lam-static-p lam) (null (lam-free-vars lam))))))
+    (if (or tail (and global (not (lam-may-exit-p lam))))
+        code
+        (checked-call code (and global (lam-noreturn-p lam))))))
 
 (defun lam-accepts-p (lam n)
   (let ((req (length (lam-req lam))))
@@ -1343,20 +1346,32 @@ function, VALUE-CODE pushing the value."
   (cond ((and *pend* (eq (pctx-fs *pend*) *fs*)) *pend*)
         (*fexit* (fourth *fexit*))))
 
-(defun checked-call (code)
+(defun checked-call (code &optional noreturn)
   "CODE: instructions that push the result of a call of a Lisp function (not
 a tail call).  When it returns with an exit pending, the handler of the
-context takes it up."
+context takes it up.  NORETURN: the function never returns normally (ERROR),
+so that it returns at all is an exit."
   (let ((ctx (current-pctx)))
-    (if (null ctx)
-        code
+    (cond
+      ((null ctx) code)
+      (noreturn
+       (setf (pctx-used ctx) t)
+       `(,@code (:br ,(pctx-label ctx))))
+      (t
         (let* ((fctx (fourth *fexit*))
                (tmp (or (pctx-tmp fctx) (setf (pctx-tmp fctx) (new-local)))))
           (setf (pctx-used ctx) t)
           `(,@code
             (:local.tee ,tmp) :ref.is_null (:hint 0)
             (:if nil nil ((:call :exit-pending-p) (:br_if ,(pctx-label ctx))))
-            (:local.get ,tmp))))))
+            (:local.get ,tmp)))))))
+
+(defun lam-noreturn-p (lam)
+  "LAM never returns normally: a global function the type inference found
+returns no value (every way out of it is an error or an exit), or ERROR."
+  (or (and (symbolp (lam-name lam)) (gethash (lam-name lam) *ti-noreturn*))
+      (let ((ty (gethash (lam-body lam) *node-types*)))
+        (and ty (ty-bottom-p ty)))))
 
 (defun take-pending-code (val)
   "The pending exit's value to VAL; no exit is pending any more."
