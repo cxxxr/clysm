@@ -2013,20 +2013,20 @@ the new lines; the GUI framework's update of the DOM is 1.7 ms. A space in
 Lisp mode runs Lem's `parse-for-autodoc`, which scans the rest of the
 function forward: 100-130 ms, the slowest keys of the scenario.
 `tools/bench-lem.sh` gives the same code to SBCL (a 4-CPU slot, best of
-three): geometric mean 3.00 times SBCL's time at first, 2.43 on
-perf/wave3 with `string=` with keywords made a direct call (autodoc parses
-250 against 666 ms, indenting 60 against 159, `form-offset` over every
-form 162 against 511, highlighting the whole file 152 against 395,
-`string-width` of every line 88 against 233, a search 36 against 53, 150
-pages down 49 against 124; the machine was busy, SBCL's times 10-15%
-above those of before). `tools/bench-libs.sh bench/apps.lisp`: 2.66
-(yason 2.3-2.4, cl-json 2.0-2.3, local-time 2.8, cl-ppcre's tokens 3.25,
-esrap 4.3). What remains is spread: `gethash`
-of characters in `char-width` (12% of the time; 3 times SBCL's), the call
-sites of the readers of Lem's classes `line` and `point` (each about 140
-Wasm instructions inline; `%point<`, three lines of Lisp, is 900),
-keyword and `&rest` calls (2.5 and 3 times SBCL's), untyped `=` and `<` of
-fixnums, generic functions of two methods (2 times). (On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
+three): geometric mean 3.00 times SBCL's time at first, 2.45 with
+`string=` with keywords a direct call, `gethash` of characters and fixnums
+in a Wasm helper, and inline declarations followed across fasls (autodoc
+parses 206 against 608 ms, indenting 51 against 157, `form-offset` over
+every form 154 against 441, highlighting the whole file 124 against 300,
+`string-width` of every line 86 against 130, a search 27 against 59, 150
+pages down 49 against 93). `tools/bench-libs.sh bench/apps.lisp`: 2.26
+(cl-json 1.4-1.9, yason 2.0-2.2, cl-ppcre's tokens 2.7, local-time 2.9,
+esrap 3.2). In the editor, the slowest key typed in Lisp mode now takes
+60-72 ms (184-233 at first). What remains is spread: the call sites of the
+readers of Lem's classes `line` and `point` (`line-length`,
+`%move-to-position`, `point-change-line`, `%point<`), `char-width`, the
+closures that `character-offset` passes to the function it inlines,
+untyped `=` and `<` of fixnums. (On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
 V8 needs CPUs besides the main thread's for its compilers and its GC.) The time is
 spread over Lem's buffer functions (`%character-offset`,
 `%skip-list-forward`, `line-length`: generic readers of the CLOS class
