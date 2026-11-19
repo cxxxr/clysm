@@ -42,3 +42,16 @@
   (print (list (princ-to-string b) (prin1-to-string b)
                (with-output-to-string (s) (princ b s) (prin1 b s))
                (subtypep (class-of b) (find-class 'string)))))
+;; such a buffer as a key of an EQUAL table: the same hash as a simple string
+(let ((h (make-hash-table :test 'equal)) (b (buffer)) (d (make-array 3 :element-type 'character
+                                                                      :displaced-to "xabcx" :displaced-index-offset 1)))
+  (setf (gethash "abc" h) 1)
+  (dolist (c '(#\a #\b #\c)) (vector-push-extend c b))
+  (setf (gethash (copy-seq "kéy") h) 2)
+  (print (list (gethash b h) (gethash d h) (= (sxhash b) (sxhash "abc"))
+               (= (sxhash d) (sxhash "abc")) (gethash (let ((k (buffer))) (map nil (lambda (c) (vector-push-extend c k)) "kéy") k) h))))
+;; read back with UNREAD-CHAR
+(with-input-from-string (s "abc")
+  (let ((a (read-char s)))
+    (unread-char a s)
+    (print (list (read-char s) (read-char s) (progn (unread-char #\b s) (read-char s)) (read-char s nil :eof)))))

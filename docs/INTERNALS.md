@@ -1969,7 +1969,13 @@ What makes the code fast:
   `elt` of a simple array reads it at the call site. A string with a fill
   pointer is printed by `princ` without looking at the pretty printer's
   dispatch, and `class-of` tests an array header once, before the other
-  representations.
+  representations. Such a string is hashed (`equal` tables, `sxhash`) by the
+  Wasm loop of simple strings over its storage; `unread-char` of the
+  character just read from a string input stream moves its index back at
+  once; the printer looks at `*print-pprint-dispatch*` only once some
+  table has been given an entry by `set-pprint-dispatch`. `read-char` and
+  `peek-char` of string input streams were already inline in libraries'
+  fasls: yason's string reader runs at 0.7 of SBCL's time.
 
 ### Size and start-up
 

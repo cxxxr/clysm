@@ -2845,6 +2845,22 @@ element (local I) of it.  D is a scratch eqref local."
          (:local.get h) (:i32.const ,#x1FFFFFFF) :i32.and :ref.i31 :return))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%string-hash)) '(:call (:callsym 1)))
 (defprim clysm-sys::%string-hash (s) :value `(,@s (:call :string-hash)))
+;; the same hash of the characters of the simple string STR from START to
+;; END (a string with a fill pointer, displaced: its storage)
+(defhelper :string-hash-range :eee-e ((str (:ref :null :string)) (i :i32) (n :i32) (h :i32))
+  '(:local.get 0) '(:ref.cast :string) '(:local.set str)
+  '(:local.get 1) '(:ref.cast :i31) ':i31.get_s '(:local.set i)
+  '(:local.get 2) '(:ref.cast :i31) ':i31.get_s '(:local.set n)
+  `(:i32.const ,(- #x811C9DC5 (expt 2 32))) '(:local.set h)
+  '(:block done nil
+     (:loop again nil
+       (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
+       (:local.get h) (:local.get str) (:local.get i) (:array.get :string) :i32.xor
+       (:i32.const #x01000193) :i32.mul (:local.set h)
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:br again)))
+  '(:local.get h) '(:i32.const #x1FFFFFFF) ':i32.and ':ref.i31)
+(defprim clysm-sys::%string-hash-range (s start end) :value `(,@s ,@start ,@end (:call :string-hash-range)))
 
 ;;; Hash tables (runtime/hash.lisp): the entry whose key is EQ to KEY, of
 ;;; hash HASH, in the table whose slot vector is SV; its index or -1.  The

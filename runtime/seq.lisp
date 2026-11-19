@@ -2275,6 +2275,13 @@ least half the length (KTMP is TMP when KEYS is V)."
 
 (defun %string-hash (s)
   ;; FNV-1a 32 bit, reduced to 29 bits (must match the compiler)
+  ;; a string with a fill pointer or displaced over a simple string (a
+  ;; reader's buffer, a JSON object's key): its storage hashed in Wasm
+  (when (%mdarray-p s)
+    (let ((d (%array-storage s)))
+      (when (%simple-string-p d)
+        (let ((off (%array-total-offset s)))
+          (return-from %string-hash (%string-hash-range d off (%fx+ off (length s))))))))
   (let ((h1 #x811C) (h0 #x9DC5))
     ;; represent the 32-bit hash as two 16-bit halves to stay in fixnum range
     (dotimes (i (length s))

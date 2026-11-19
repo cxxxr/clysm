@@ -270,10 +270,15 @@ their own."
                      (t nil))))
       (plain-p x))))
 
+(defvar *%ppd-entries-made* nil
+  "True once SET-PPRINT-DISPATCH has given a table an entry: until then no
+table has any, and the printer does not look at *PRINT-PPRINT-DISPATCH*.")
+
 (defun %ppd-user-entries-p ()
   "True when the current pprint dispatch table has entries made by the user."
-  (let ((table *print-pprint-dispatch*))
-    (and (pprint-dispatch-table-p table) (pprint-dispatch-table-entries table) t)))
+  (and *%ppd-entries-made*
+       (let ((table *print-pprint-dispatch*))
+         (and (pprint-dispatch-table-p table) (pprint-dispatch-table-entries table) t))))
 
 (defvar *%pp-fast-fill* t "false to print every list with the pretty stream (for testing)")
 

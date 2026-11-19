@@ -735,6 +735,7 @@ logical block would then have no line breaks.  Returns true when printed."
                   (when (or (null rest) (<= (cadr (car rest)) priority))
                     (return (append (nreverse before) (list entry) rest)))
                   (push (pop rest) before))))))
+    (when entries (setq *%ppd-entries-made* t))
     (setf (pprint-dispatch-table-entries table) entries))
   nil)
 
