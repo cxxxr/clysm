@@ -4061,6 +4061,12 @@ initfunction returning it would always return)."
 (%define-ctor-entry %ctor-make-instance-2 a b)
 (%define-ctor-entry %ctor-make-instance-3 a b c)
 (%define-ctor-entry %ctor-make-instance-4 a b c d)
+;;; (five to eight: a call of more than four arguments passes them in a
+;;; vector, but no list of them is made and they are not looked up by NTH)
+(%define-ctor-entry %ctor-make-instance-5 a b c d e)
+(%define-ctor-entry %ctor-make-instance-6 a b c d e f)
+(%define-ctor-entry %ctor-make-instance-7 a b c d e f g)
+(%define-ctor-entry %ctor-make-instance-8 a b c d e f g h)
 
 ;;; (MAKE-INSTANCE class :KEY value ...) with constant keys and a class known
 ;;; only at run time: the call site keeps the constructors of the classes it
@@ -4104,6 +4110,10 @@ initfunction returning it would always return)."
 (%define-dynamic-ctor-entry %dynamic-make-instance-2 %ctor-make-instance-2 a b)
 (%define-dynamic-ctor-entry %dynamic-make-instance-3 %ctor-make-instance-3 a b c)
 (%define-dynamic-ctor-entry %dynamic-make-instance-4 %ctor-make-instance-4 a b c d)
+(%define-dynamic-ctor-entry %dynamic-make-instance-5 %ctor-make-instance-5 a b c d e)
+(%define-dynamic-ctor-entry %dynamic-make-instance-6 %ctor-make-instance-6 a b c d e f)
+(%define-dynamic-ctor-entry %dynamic-make-instance-7 %ctor-make-instance-7 a b c d e f g)
+(%define-dynamic-ctor-entry %dynamic-make-instance-8 %ctor-make-instance-8 a b c d e f g h)
 
 (define-compiler-macro make-instance (&whole form class &rest initargs)
   (cond ((not (and (evenp (length initargs))
@@ -4114,19 +4124,22 @@ initfunction returning it would always return)."
            (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
            `(,(case (length vals)
                 (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
-                (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (t '%ctor-make-instance))
+                (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (5 '%ctor-make-instance-5)
+                (6 '%ctor-make-instance-6) (7 '%ctor-make-instance-7) (8 '%ctor-make-instance-8)
+                (t '%ctor-make-instance))
              (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
              ,@(reverse vals))))
         ;; (a constant that is not a quoted symbol: a class object, an error)
         ((or (and (atom class) (or (not (symbolp class)) (constantp class)))
              (and (consp class) (eq (car class) 'quote))
-             (> (length initargs) 8))
+             (> (length initargs) 16))
          form)
         (t
          (let ((keys nil) (vals nil))
            (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
            `(,(nth (length vals) '(%dynamic-make-instance-0 %dynamic-make-instance-1 %dynamic-make-instance-2
-                                    %dynamic-make-instance-3 %dynamic-make-instance-4))
+                                    %dynamic-make-instance-3 %dynamic-make-instance-4 %dynamic-make-instance-5
+                                    %dynamic-make-instance-6 %dynamic-make-instance-7 %dynamic-make-instance-8))
              (load-time-value (list ',(reverse keys)))
              ,class
              ,@(reverse vals))))))
