@@ -1,13 +1,10 @@
 ;;;; numbers.lisp — the numeric tower
 ;;;;
-;;;; fixnum (i31), bignum (sign + base 2^28 magnitude digits), ratio,
+;;;; fixnum (i31), bignum (sign + base 2^32 magnitude digits), ratio,
 ;;;; single-float (f32), double-float (f64), complex.
 
 (defconstant most-positive-fixnum 536870911)
 (defconstant most-negative-fixnum -536870912)
-(defconstant +digit-bits+ 28)
-(defconstant +digit-base+ 268435456)
-(defconstant +digit-mask+ 268435455)
 
 ;;; ------------------------------------------------------------
 ;;; type predicates
@@ -29,7 +26,8 @@
 (defun %check-integer (x) (if (integerp x) x (%type-error x 'integer)))
 
 ;;; ------------------------------------------------------------
-;;; magnitudes: limbs arrays of base 2^28 digits, little endian
+;;; magnitudes: limbs arrays of base 2^32 digits, little endian (Lisp code
+;;; does not read the digits: they are not all fixnums)
 ;;; ------------------------------------------------------------
 ;;;
 ;;; The kernels are Wasm helpers (src/prims.lisp): %MAKE-INTEGER (sign and
@@ -41,15 +39,7 @@
 
 (defun %mag-length (m)
   ;; length without leading zero digits
-  (let ((n (%llen m)))
-    (do () ((or (%fx= n 0) (not (%fx= (%lref m (%fx- n 1)) 0))) n)
-      (setq n (%fx- n 1)))))
-
-(defun %mag-trim (m)
-  (let ((n (%mag-length m)))
-    (if (%fx= n (%llen m)) m (%limbs-prefix m n))))
-
-(defun %fixnum-mag (n) (%int-mag n))
+  (%mag-len m))
 
 (defun %mag-add (a b) (%mag-add-fast a b))
 
@@ -63,8 +53,8 @@
     (cond ((%fx= n 0) (error 'division-by-zero :operation 'truncate :operands nil))
           ((%fx< m0 n) (values (%make-limbs 0) u))
           ((%fx= n 1)
-           (multiple-value-bind (q r) (%mag-divmod-small u (%lref v 0))
-             (let ((rm (%make-limbs 1))) (%lset rm 0 r) (values q rm))))
+           (multiple-value-bind (q r) (%mag-divmod-small u v)
+             (values q (%int-mag r))))
           (t (%mag-divmod-knuth u v)))))
 
 ;;; ------------------------------------------------------------
@@ -89,13 +79,17 @@
   (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
     (if (%fx= (%mag-length mb) 1)
         ;; a divisor of one digit: no remainder magnitude
-        (multiple-value-bind (q r) (%mag-divmod-small ma (%lref mb 0))
-          (values (%make-integer (%fxlogxor sa sb) q) (if (%fx= sa 1) (%fx- 0 r) r)))
+        (multiple-value-bind (q r) (%mag-divmod-small ma mb)
+          (values (%make-integer (%fxlogxor sa sb) q) (if (%fx= sa 1) (- r) r)))
         (multiple-value-bind (q r) (%mag-divmod ma mb)
           (values (%make-integer (%fxlogxor sa sb) q) (%make-integer sa r))))))
 
 (defun %int-cmp (a b)
   (or (%int64-op a b 8) (%int-cmp-big a b)))
+
+(defun %int-rem (a b)
+  "The remainder of truncating integer A by integer B."
+  (or (%int64-op a b 7) (%int-rem-small a b) (nth-value 1 (%int-truncate a b))))
 
 (defun %int-zerop (x) (eql x 0))
 (defun %int-minusp (x) (if (fixnump x) (%fx< x 0) (%fx= (%bignum-sign x) 1)))
@@ -175,10 +169,7 @@ converts the others): its top 62 bits with a sticky bit, scaled."
 
 (defun %small-integer-to-double (q)
   ;; exact for |q| <= 2^53
-  (if (fixnump q) (%fixnum-to-double q)
-      (let* ((m (%bignum-mag q)) (r (%fixnum-to-double 0)) (base (%fixnum-to-double +digit-base+)))
-        (do ((i (- (%llen m) 1) (- i 1))) ((< i 0) r)
-          (setq r (%d+ (%d* r base) (%fixnum-to-double (%lref m i))))))))
+  (if (fixnump q) (%fixnum-to-double q) (%int64-to-double q)))
 
 (defun %dexpt2 (k)
   "2^K as a double (an infinity or zero beyond the range)."
@@ -474,10 +465,15 @@ SORT and the like make no argument list)."
 ;;; GCD of two integers is the primitive %GCD (integers within 64 bits in Wasm)
 (defun %gcd-big (a b)
   (setq a (abs (%check-integer a)) b (abs (%check-integer b)))
-  (do () ((eql b 0) a)
-    ;; once both are within 64 bits the helper finishes
-    (when (%int64-op a b 8) (return (%gcd a b)))
-    (psetq a b b (nth-value 1 (%int-truncate a b)))))
+  (when (%fx< (%int-cmp a b) 0) (psetq a b b a))
+  (loop
+    ;; once B is within 64 bits, one remainder and the helper finish
+    (cond ((eql b 0) (return a))
+          ((%int64-op b b 8) (return (if (%int64-op a b 8) (%gcd a b) (%gcd b (%int-rem a b))))))
+    ;; Lehmer's steps while the leading digits tell the quotients, then a remainder
+    (multiple-value-setq (a b) (%lehmer a b))
+    (unless (or (eql b 0) (%int64-op b b 8))
+      (psetq a b b (%int-rem a b)))))
 (defun %gcd2 (a b) (%gcd a b))
 (defun gcd (&rest nums)
   (let ((acc 0))
@@ -580,12 +576,12 @@ SORT and the like make no argument list)."
 
 (defun %mod-slow (n d)
   (if (and (integerp n) (integerp d))
-      (let ((r (nth-value 1 (%int-truncate n d))))
+      (let ((r (%int-rem n d)))
         (if (or (eql r 0) (eq (%int-minusp r) (%int-minusp d))) r (+ r d)))
       (nth-value 1 (floor n d))))
 (defun %rem-slow (n d)
   (if (and (integerp n) (integerp d))
-      (nth-value 1 (%int-truncate n d))
+      (%int-rem n d)
       (nth-value 1 (truncate n d))))
 (defun mod (n d) (mod n d))
 (defun rem (n d) (rem n d))
@@ -872,11 +868,12 @@ SORT and the like make no argument list)."
         ((and (integerp power) (rationalp base))
          (if (minusp power)
              (/ 1 (expt base (- power)))
-             (let ((result 1) (b base) (p power))
-               (do () ((eql p 0) result)
-                 (when (oddp p) (setq result (* result b)))
-                 (setq p (ash p -1))
-                 (unless (eql p 0) (setq b (* b b)))))))
+             ;; from the top bit of POWER down: squares, and products with
+             ;; BASE (of a small base, a pass over the digits)
+             (let ((result base))
+               (do ((i (- (integer-length power) 2) (- i 1))) ((< i 0) result)
+                 (setq result (* result result))
+                 (when (logbitp i power) (setq result (* result base)))))))
         ((and (integerp power) (floatp base))
          (if (minusp power) (/ 1 (expt base (- power)))
              (let ((result (float 1 base)) (b base) (p power))
@@ -976,26 +973,21 @@ digits."
   (let* ((neg (%int-minusp n))
          (src (%int-mag n))
          (len (%mag-length src))
-         (size (%fx+ 2 (%fxtruncate (%fx* len 28) (%fx- (integer-length base) 1))))
+         (size (%fx+ 2 (%fxtruncate (%fx* len 32) (%fx- (integer-length base) 1))))
          (buf (%make-string size #\0))
          (pos size))
     (if (%fx= (%fxlogand base (%fx- base 1)) 0)
         ;; a power of two: K bits a digit
         (let ((k (%fx- (integer-length base) 1)) (nbits (%mag-bitlen src)))
           (do ((bit 0 (%fx+ bit k))) ((%fx>= bit nbits))
-            (let* ((j (%fxtruncate bit 28)) (off (%fxrem bit 28))
-                   (d (%fxash-right (%lref src j) off)))
-              (when (and (%fx> (%fx+ off k) 28) (%fx< (%fx+ j 1) len))
-                (setq d (%fxlogior d (%fxash-left (%lref src (%fx+ j 1)) (%fx- 28 off)))))
-              (setq pos (%fx- pos 1))
-              (%set-schar buf pos (%digit-char (%fxlogand d (%fx- base 1)))))))
+            (setq pos (%fx- pos 1))
+            (%set-schar buf pos (%digit-char (%mag-bit-field src bit k)))))
         (let ((m (%limbs-prefix src len)) (chunk base) (chunk-digits 1))
           (do () ((%fx> chunk (%fxtruncate 268435455 base)))
             (setq chunk (%fx* chunk base) chunk-digits (%fx+ chunk-digits 1)))
           (do () ((%fx= len 0))
             (let ((r (if (%fx= base 10) (%mag-div-1e8 m len) (%mag-div-small m len chunk))))
-              (do () ((or (%fx= len 0) (not (%fx= (%lref m (%fx- len 1)) 0))))
-                (setq len (%fx- len 1)))
+              (setq len (%mag-len m))
               (if (%fx= len 0)
                   ;; the top chunk: no leading zeros
                   (do () ((%fx= r 0))

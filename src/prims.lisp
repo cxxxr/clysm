@@ -1099,8 +1099,12 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
                  (:if nil nil ((:i32.const 1) :return))
                  (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null
                  (:if nil nil ((:i32.const 1) :return))
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :array.len
-                 (:i32.const 3) :i32.lt_u :return))
+                 ;; within 63 bits: one digit, or two with the top bit clear
+                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len)
+                 (:i32.const 2) :i32.lt_u (:if nil nil ((:i32.const 1) :return))
+                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len) (:i32.const 2) :i32.eq
+                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:ref.cast! :limbs) (:i32.const 1)
+                 (:array.get :limbs) (:i32.const 0) :i32.ge_s :i32.and :return))
   '(:i32.const 0))
 
 (defhelper :int-i64 :e-l ((m (:ref :null :limbs)) (i :i32) (r :i64))
@@ -1173,7 +1177,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
              (:br_if ok)
              (:local.get ,param) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee m) :ref.is_null
              (:br_if ok)
-             (:local.get m) :array.len (:i32.const 3) :i32.lt_u :i32.eqz (:if nil nil (,@(nil-code) :return))
+             (:local.get ,param) (:call :small-int-p) :i32.eqz (:if nil nil (,@(nil-code) :return))
              (:local.get ,param) (:call :int-i64) (:local.set ,dst)))
   `(:block fail nil
      (:block b9 nil (:block b8 nil (:block b7 nil (:block b6 nil (:block b5 nil (:block b4 nil
@@ -1324,21 +1328,16 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   '(:local.get 0) '(:call :mag-len) '(:local.tee n) :i32.eqz
   '(:if nil nil ((:i32.const 0) :ref.i31 :return))
   `(:block big nil
-     (:local.get n) (:i32.const 3) :i32.gt_u (:br_if big)
+     (:local.get n) (:i32.const 2) :i32.gt_u (:br_if big)
      (:local.get m) (:i32.const 0) (:array.get :limbs) :i64.extend_i32_u (:local.set w)
      (:local.get n) (:i32.const 1) :i32.gt_u
      (:if nil nil ((:local.get m) (:i32.const 1) (:array.get :limbs) :i64.extend_i32_u (:i64.const ,+limb-bits+) :i64.shl
                    (:local.get w) :i64.or (:local.set w)))
-     (:local.get n) (:i32.const 2) :i32.gt_u
+     (:local.get w) (:i64.const 0) :i64.lt_s
      (:if nil nil
-          ((:local.get m) (:i32.const 2) (:array.get :limbs) (:i32.const 128) :i32.ge_u
-           (:if nil nil
-                (;; -2^63 is the one more value an i64 holds
-                 (:local.get m) (:i32.const 2) (:array.get :limbs) (:i32.const 128) :i32.eq
-                 (:local.get w) :i64.eqz :i32.and (:local.get 1) :i32.and :i32.eqz (:br_if big)
-                 (:i64.const ,(- (expt 2 63))) (:call :i64-int) :return))
-           (:local.get m) (:i32.const 2) (:array.get :limbs) :i64.extend_i32_u (:i64.const ,(* 2 +limb-bits+)) :i64.shl
-           (:local.get w) :i64.or (:local.set w)))
+          (;; 2^63 or more: -2^63 is the one more value an i64 holds
+           (:local.get w) (:i64.const ,(- (expt 2 63))) :i64.eq (:local.get 1) :i32.and :i32.eqz (:br_if big)
+           (:i64.const ,(- (expt 2 63))) (:call :i64-int) :return))
      (:local.get 1) (:if nil :i64 ((:i64.const 0) (:local.get w) :i64.sub) ((:local.get w)))
      (:call :i64-int) :return)
   '(:local.get n) '(:local.get m) :array.len :i32.eq
@@ -1356,10 +1355,8 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   '(:local.get 0) '(:ref.cast! :i31) :i31.get_s '(:local.tee v) '(:i32.const 0) :i32.lt_s
   '(:if nil nil ((:i32.const 0) (:local.get v) :i32.sub (:local.set v)))
   '(:local.get v) :i32.eqz '(:if nil nil ((:i32.const 0) (:array.new_default :limbs) :return))
-  `(:local.get v) `(:i32.const ,(expt 2 +limb-bits+)) :i32.lt_u
-  '(:if nil nil ((:local.get v) (:array.new_fixed :limbs 1) :return))
-  `(:local.get v) `(:i32.const ,+limb-mask+) :i32.and '(:local.get v) `(:i32.const ,+limb-bits+) :i32.shr_u
-  '(:array.new_fixed :limbs 2))
+  ;; (a fixnum's magnitude is one digit)
+  '(:local.get v) '(:array.new_fixed :limbs 1))
 (defprim clysm-sys::%int-mag (x) :value `(,@x (:call :int-limbs)))
 
 (defhelper :int-neg :e-i ()
@@ -1417,7 +1414,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 ;;; A * B (integers of any size)
 (defhelper :big-mul :ee-e ((v :i32) (s :i32))
   '(:local.get 0) '(:call :int-neg) '(:local.get 1) '(:call :int-neg) :i32.xor '(:local.set s)
-  ;; a fixnum below the limb base: one pass
+  ;; a fixnum (below the digit base): one pass
   (loop for (p q) in '((1 0) (0 1))
         collect `(:block notfx nil
                    (:local.get ,p) (:ref.test :i31) :i32.eqz (:br_if notfx)
@@ -1425,7 +1422,6 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
                    (:if nil nil ((:i32.const 0) :ref.i31 :return))
                    (:local.get v) (:i32.const 0) :i32.lt_s
                    (:if nil nil ((:i32.const 0) (:local.get v) :i32.sub (:local.set v)))
-                   (:local.get v) (:i32.const ,(expt 2 +limb-bits+)) :i32.ge_u (:br_if notfx)
                    (:local.get ,q) (:call :int-limbs) (:local.get v) :ref.i31 (:call :mag-mul1)
                    (:local.get s) (:call :make-int) :return))
   '(:local.get 0) '(:call :int-limbs) '(:local.get 1) '(:call :int-limbs) '(:call :mag-mul)
@@ -1457,9 +1453,9 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
                         (:local.set ,dst)
                         (:local.get ,sg)
                         (:if nil nil
-                             ((:local.get ,dst) (:i32.const ,+limb-mask+) :i32.xor (:local.get ,carry) :i32.add
-                              (:local.tee ,dst) (:i32.const ,+limb-bits+) :i32.shr_u (:local.set ,carry)
-                              (:local.get ,dst) (:i32.const ,+limb-mask+) :i32.and (:local.set ,dst)))))
+                             ;; (the carry goes on past a digit that wraps to 0)
+                             ((:local.get ,dst) (:i32.const -1) :i32.xor (:local.get ,carry) :i32.add
+                              (:local.tee ,dst) :i32.eqz (:local.get ,carry) :i32.and (:local.set ,carry)))))
        (:block o2 nil (:block o1 nil (:block o0 nil
           (:local.get 2) (:br_table o0 o1 o2))
           (:local.get x) (:local.get y) :i32.and (:local.set d) (:br o2))
@@ -1467,9 +1463,8 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
        (:local.get 2) (:i32.const 2) :i32.eq (:if nil nil ((:local.get x) (:local.get y) :i32.xor (:local.set d)))
        (:local.get sr)
        (:if nil nil
-            ((:local.get d) (:i32.const ,+limb-mask+) :i32.xor (:local.get cr) :i32.add
-             (:local.tee d) (:i32.const ,+limb-bits+) :i32.shr_u (:local.set cr)
-             (:local.get d) (:i32.const ,+limb-mask+) :i32.and (:local.set d)))
+            ((:local.get d) (:i32.const -1) :i32.xor (:local.get cr) :i32.add
+             (:local.tee d) :i32.eqz (:local.get cr) :i32.and (:local.set cr)))
        (:local.get r) (:local.get i) (:local.get d) (:array.set :limbs)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
@@ -1505,6 +1500,20 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
        (:br again)))
   '(:i32.const 0))
 (defprim clysm-sys::%mag-bitlen (m) :value `(,@m (:call :mag-bitlen) :ref.i31))
+(defprim clysm-sys::%mag-len (m) :value `(,@m (:call :mag-len) :ref.i31))
+;;; K < 30 bits of magnitude M from bit START (0 beyond its digits)
+(defhelper :mag-bit-field :eii-e ((m (:ref :null :limbs)) (j :i32) (n :i32) (w :i64))
+  '(:local.get 0) '(:ref.cast! :limbs) '(:local.tee m) :array.len '(:local.set n)
+  '(:local.get 1) `(:i32.const ,+limb-bits+) :i32.div_u '(:local.tee j) '(:local.get n) :i32.lt_u
+  '(:if nil nil ((:local.get m) (:local.get j) (:array.get :limbs) :i64.extend_i32_u (:local.set w)))
+  '(:local.get j) '(:i32.const 1) :i32.add '(:local.get n) :i32.lt_u
+  `(:if nil nil ((:local.get m) (:local.get j) (:i32.const 1) :i32.add (:array.get :limbs) :i64.extend_i32_u
+                 (:i64.const ,+limb-bits+) :i64.shl (:local.get w) :i64.or (:local.set w)))
+  '(:local.get w) `(:local.get 1) `(:i32.const ,+limb-bits+) :i32.rem_u :i64.extend_i32_u :i64.shr_u :i32.wrap_i64
+  '(:i32.const 1) '(:local.get 2) :i32.shl '(:i32.const 1) :i32.sub :i32.and :ref.i31)
+(defprim clysm-sys::%mag-bit-field (m start k) :value `(,@m ,@(idx-code start) ,@(idx-code k) (:call :mag-bit-field)))
+;;; an integer within 64 bits as a double (exact below 2^53)
+(defprim clysm-sys::%int64-to-double (x) :value `(,@x (:call :int-i64) :f64.convert_i64_s (:struct.new :double)))
 (defprim clysm-sys::%mag-popcount (m) :value `(,@m (:call :mag-popcount) :ref.i31))
 (defprim clysm-sys::%mag-ctz (m) :value `(,@m (:call :mag-ctz) :ref.i31))
 
@@ -1538,45 +1547,84 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
      (:loop again nil
        (:local.get i) (:local.get k) :i32.ge_u (:br_if done)
        (:local.get r) (:local.get i)
-       (:local.get a) (:local.get i) (:local.get dg) :i32.add (:array.get :limbs) (:local.get s) :i32.shr_u
+       ;; the two digits as an i64, shifted
        (:local.get i) (:i32.const 1) :i32.add (:local.get k) :i32.lt_u
-       (:if nil :i32
+       (:if nil :i64
             ((:local.get a) (:local.get i) (:local.get dg) :i32.add (:i32.const 1) :i32.add (:array.get :limbs)
-             ;; (when S = 0 the shift by 28 leaves no bits within the mask)
-             (:i32.const ,+limb-bits+) (:local.get s) :i32.sub :i32.shl (:i32.const ,+limb-mask+) :i32.and)
-            ((:i32.const 0)))
-       :i32.or (:array.set :limbs)
+             :i64.extend_i32_u (:i64.const ,+limb-bits+) :i64.shl)
+            ((:i64.const 0)))
+       (:local.get a) (:local.get i) (:local.get dg) :i32.add (:array.get :limbs) :i64.extend_i32_u :i64.or
+       (:local.get s) :i64.extend_i32_u :i64.shr_u :i32.wrap_i64 (:array.set :limbs)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   '(:local.get r) :ref.as_non_null)
 (defprim clysm-sys::%mag-shl (a n) :value `(,@a ,@n (:call :mag-shl-n)))
 (defprim clysm-sys::%mag-shr (a n) :value `(,@a ,@n (:call :mag-shr-n)))
 
+(defun mul-acc-code (ai bi)
+  "Add the product of the digits AI and BI (i64 expressions) to the column
+sums LO (low halves) and HI (high halves)."
+  `(,@ai ,@bi :i64.mul
+    (:local.tee p) (:i64.const ,+limb-mask+) :i64.and (:local.get lo) :i64.add (:local.set lo)
+    (:local.get p) (:i64.const ,+limb-bits+) :i64.shr_u (:local.get hi) :i64.add (:local.set hi)))
+(defun limb-code (arr idx)
+  `((:local.get ,arr) ,@idx (:array.get :limbs) :i64.extend_i32_u))
 (defhelper :mag-mul :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
-                           (la :i32) (lb :i32) (i :i32) (j :i32) (ai :i64) (carry :i64) (tt :i64))
+                           (la :i32) (lb :i32) (k :i32) (i :i32) (iend :i32) (lo :i64) (hi :i64) (p :i64)
+                           (c :i64))
+  ;; column by column (product scanning): the products of a column are summed
+  ;; in two accumulators, of their low and of their high halves, without a
+  ;; carry from one product to the next; C carries into the next column.  A
+  ;; square takes each product of two different digits once, doubled.
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.set a) '(:local.get 1) '(:ref.cast! :limbs) '(:local.set b)
   '(:local.get 0) '(:call :mag-len) '(:local.set la) '(:local.get 1) '(:call :mag-len) '(:local.set lb)
+  '(:local.get la) :i32.eqz '(:local.get lb) :i32.eqz :i32.or
+  '(:if nil nil ((:i32.const 0) (:array.new_default :limbs) :return))
   '(:local.get la) '(:local.get lb) :i32.add '(:array.new_default :limbs) '(:local.set r)
   `(:block done nil
      (:loop outer nil
-       (:local.get i) (:local.get la) :i32.ge_u (:br_if done)
-       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.tee ai) :i64.eqz :i32.eqz
+       (:local.get k) (:local.get la) (:local.get lb) :i32.add (:i32.const 1) :i32.sub :i32.ge_u (:br_if done)
+       ;; i from max(0, k - lb + 1) to min(k, la - 1)
+       (:local.get k) (:local.get lb) :i32.sub (:i32.const 1) :i32.add (:local.tee i)
+       (:i32.const 0) (:local.get i) (:i32.const 0) :i32.gt_s :select (:local.set i)
+       (:local.get k) (:local.get la) (:i32.const 1) :i32.sub (:local.tee iend)
+       (:local.get k) (:local.get iend) :i32.lt_s :select (:local.set iend)
+       (:i64.const 0) (:local.set lo) (:i64.const 0) (:local.set hi)
+       (:local.get a) (:local.get b) :ref.eq
        (:if nil nil
-            ((:i64.const 0) (:local.set carry) (:i32.const 0) (:local.set j)
-             (:block idone nil
-               (:loop inner nil
-                 (:local.get j) (:local.get lb) :i32.ge_u (:br_if idone)
-                 (:local.get ai) (:local.get b) (:local.get j) (:array.get :limbs) :i64.extend_i32_u :i64.mul
-                 (:local.get r) (:local.get i) (:local.get j) :i32.add (:array.get :limbs) :i64.extend_i32_u :i64.add
-                 (:local.get carry) :i64.add (:local.set tt)
-                 (:local.get r) (:local.get i) (:local.get j) :i32.add
-                 (:local.get tt) (:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 (:array.set :limbs)
-                 (:local.get tt) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set carry)
-                 (:local.get j) (:i32.const 1) :i32.add (:local.set j)
-                 (:br inner)))
-             (:local.get r) (:local.get i) (:local.get lb) :i32.add (:local.get carry) :i32.wrap_i64 (:array.set :limbs)))
-       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+            (;; a square: the products a_i a_(k-i) for i < k - i, doubled, then a_(k/2)^2
+             (:local.get k) (:i32.const 1) :i32.sub (:i32.const 1) :i32.shr_s (:local.set iend)
+             (:block sdone nil
+               (:loop sagain nil
+                 (:local.get i) (:local.get iend) :i32.gt_s (:br_if sdone)
+                 ,@(mul-acc-code (limb-code 'a '((:local.get i)))
+                                 (limb-code 'a '((:local.get k) (:local.get i) :i32.sub)))
+                 (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+                 (:br sagain)))
+             (:local.get lo) (:i32.const 1) :i64.extend_i32_u :i64.shl (:local.set lo)
+             (:local.get hi) (:i32.const 1) :i64.extend_i32_u :i64.shl (:local.set hi)
+             (:local.get k) (:i32.const 1) :i32.and :i32.eqz
+             (:if nil nil
+                  ,(mul-acc-code (limb-code 'a '((:local.get k) (:i32.const 1) :i32.shr_u))
+                                 (limb-code 'a '((:local.get k) (:i32.const 1) :i32.shr_u))))
+             (:local.get iend) (:i32.const 2) :i32.add (:local.set i)))
+       ;; two products a step
+       (:block idone nil
+         (:loop inner nil
+           (:local.get i) (:local.get iend) :i32.ge_s (:br_if idone)
+           ,@(mul-acc-code (limb-code 'a '((:local.get i))) (limb-code 'b '((:local.get k) (:local.get i) :i32.sub)))
+           ,@(mul-acc-code (limb-code 'a '((:local.get i) (:i32.const 1) :i32.add))
+                           (limb-code 'b '((:local.get k) (:local.get i) :i32.sub (:i32.const 1) :i32.sub)))
+           (:local.get i) (:i32.const 2) :i32.add (:local.set i)
+           (:br inner)))
+       (:local.get i) (:local.get iend) :i32.eq
+       (:if nil nil ,(mul-acc-code (limb-code 'a '((:local.get i))) (limb-code 'b '((:local.get k) (:local.get i) :i32.sub))))
+       (:local.get lo) (:local.get c) :i64.add (:local.set lo)
+       (:local.get r) (:local.get k) (:local.get lo) :i32.wrap_i64 (:array.set :limbs)
+       (:local.get lo) (:i64.const ,+limb-bits+) :i64.shr_u (:local.get hi) :i64.add (:local.set c)
+       (:local.get k) (:i32.const 1) :i32.add (:local.set k)
        (:br outer)))
+  '(:local.get r) '(:local.get k) '(:local.get c) :i32.wrap_i64 '(:array.set :limbs)
   '(:local.get r) :ref.as_non_null)
 (defprim clysm-sys::%mag-mul-fast (a b) :value `(,@a ,@b (:call :mag-mul)))
 
@@ -1614,7 +1662,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 ;;; a + b (magnitudes): of the length of the longer one, one more limb only
 ;;; when the sum carries out
 (defhelper :mag-add :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
-                           (la :i32) (lb :i32) (i :i32) (s :i32) (r2 (:ref :null :limbs)))
+                           (la :i32) (lb :i32) (i :i32) (s :i64) (r2 (:ref :null :limbs)))
   '(:local.get 0) '(:call :mag-len) '(:local.set la) '(:local.get 1) '(:call :mag-len) '(:local.set lb)
   '(:local.get la) '(:local.get lb) :i32.ge_u
   '(:if nil nil
@@ -1626,27 +1674,28 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   `(:block done nil
      (:loop again nil
        (:local.get i) (:local.get lb) :i32.ge_u (:br_if done)
-       (:local.get a) (:local.get i) (:array.get :limbs) (:local.get b) (:local.get i) (:array.get :limbs) :i32.add
-       (:local.get s) :i32.add (:local.set s)
-       (:local.get r) (:local.get i) (:local.get s) (:i32.const ,+limb-mask+) :i32.and (:array.set :limbs)
-       (:local.get s) (:i32.const ,+limb-bits+) :i32.shr_u (:local.set s)
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u
+       (:local.get b) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.add
+       (:local.get s) :i64.add (:local.set s)
+       (:local.get r) (:local.get i) (:local.get s) :i32.wrap_i64 (:array.set :limbs)
+       (:local.get s) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set s)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   `(:block done2 nil
      (:loop again2 nil
        (:local.get i) (:local.get la) :i32.ge_u (:br_if done2)
-       (:local.get s) :i32.eqz
+       (:local.get s) :i64.eqz
        (:if nil nil
             (;; no carry left: the rest of A as it is
              (:local.get r) (:local.get i) (:local.get a) (:local.get i) (:local.get la) (:local.get i) :i32.sub
              (:array.copy :limbs :limbs)
              (:br done2)))
-       (:local.get a) (:local.get i) (:array.get :limbs) (:local.get s) :i32.add (:local.set s)
-       (:local.get r) (:local.get i) (:local.get s) (:i32.const ,+limb-mask+) :i32.and (:array.set :limbs)
-       (:local.get s) (:i32.const ,+limb-bits+) :i32.shr_u (:local.set s)
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.get s) :i64.add (:local.set s)
+       (:local.get r) (:local.get i) (:local.get s) :i32.wrap_i64 (:array.set :limbs)
+       (:local.get s) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set s)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again2)))
-  '(:local.get s) :i32.eqz '(:if nil nil ((:local.get r) :ref.as_non_null :return))
+  '(:local.get s) :i64.eqz '(:if nil nil ((:local.get r) :ref.as_non_null :return))
   '(:local.get la) '(:i32.const 1) :i32.add '(:array.new_default :limbs) '(:local.set r2)
   '(:local.get r2) '(:i32.const 0) '(:local.get r) '(:i32.const 0) '(:local.get la) '(:array.copy :limbs :limbs)
   '(:local.get r2) '(:local.get la) '(:i32.const 1) '(:array.set :limbs)
@@ -1655,43 +1704,43 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 
 ;;; a - b (magnitudes, a >= b)
 (defhelper :mag-sub :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
-                           (la :i32) (lb :i32) (i :i32) (d :i32) (borrow :i32))
+                           (la :i32) (lb :i32) (i :i32) (d :i64) (borrow :i64))
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.set a) '(:local.get 1) '(:ref.cast! :limbs) '(:local.set b)
   '(:local.get 0) '(:call :mag-len) '(:local.set la) '(:local.get 1) '(:call :mag-len) '(:local.set lb)
   '(:local.get la) '(:array.new_default :limbs) '(:local.set r)
   `(:block done nil
      (:loop again nil
        (:local.get i) (:local.get lb) :i32.ge_u (:br_if done)
-       (:local.get a) (:local.get i) (:array.get :limbs) (:local.get b) (:local.get i) (:array.get :limbs) :i32.sub
-       (:local.get borrow) :i32.sub (:local.tee d)
-       (:i32.const 0) :i32.lt_s (:local.set borrow)
-       (:local.get r) (:local.get i)
-       (:local.get d) (:local.get borrow) (:i32.const ,+limb-bits+) :i32.shl :i32.add (:array.set :limbs)
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u
+       (:local.get b) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.sub
+       (:local.get borrow) :i64.sub (:local.tee d)
+       (:i64.const 63) :i64.shr_u (:local.set borrow)
+       (:local.get r) (:local.get i) (:local.get d) :i32.wrap_i64 (:array.set :limbs)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   `(:block done2 nil
      (:loop again2 nil
        (:local.get i) (:local.get la) :i32.ge_u (:br_if done2)
-       (:local.get borrow) :i32.eqz
+       (:local.get borrow) :i64.eqz
        (:if nil nil
             ((:local.get r) (:local.get i) (:local.get a) (:local.get i) (:local.get la) (:local.get i) :i32.sub
              (:array.copy :limbs :limbs)
              (:br done2)))
-       (:local.get a) (:local.get i) (:array.get :limbs) (:local.get borrow) :i32.sub (:local.tee d)
-       (:i32.const 0) :i32.lt_s (:local.set borrow)
-       (:local.get r) (:local.get i)
-       (:local.get d) (:local.get borrow) (:i32.const ,+limb-bits+) :i32.shl :i32.add (:array.set :limbs)
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.get borrow) :i64.sub (:local.tee d)
+       (:i64.const 63) :i64.shr_u (:local.set borrow)
+       (:local.get r) (:local.get i) (:local.get d) :i32.wrap_i64 (:array.set :limbs)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again2)))
   '(:local.get r) :ref.as_non_null)
 (defprim clysm-sys::%mag-sub-fast (a b) :value `(,@a ,@b (:call :mag-sub)))
 
-;;; A divided by 0 < D < 2^28: the quotient, the remainder as the second value
+;;; A divided by the one digit D of the magnitude DM (not 0): the quotient
+;;; magnitude, the remainder (an integer) as the second value
 (defhelper :mag-divmod-small :ee-e ((a (:ref :null :limbs)) (q (:ref :null :limbs)) (n :i32) (d :i64)
                                     (rem :i64) (cur :i64))
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.set a)
   '(:local.get 0) '(:call :mag-len) '(:local.tee n) '(:array.new_default :limbs) '(:local.set q)
-  '(:local.get 1) '(:ref.cast! :i31) :i31.get_s :i64.extend_i32_s '(:local.set d)
+  '(:local.get 1) '(:ref.cast! :limbs) '(:i32.const 0) '(:array.get :limbs) :i64.extend_i32_u '(:local.set d)
   `(:block done nil
      (:loop again nil
        (:local.get n) :i32.eqz (:br_if done)
@@ -1701,13 +1750,13 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
        (:local.get q) (:local.get n) (:local.get cur) (:local.get d) :i64.div_u :i32.wrap_i64 (:array.set :limbs)
        (:local.get cur) (:local.get d) :i64.rem_u (:local.set rem)
        (:br again)))
-  '(:global.get :mv-buf) '(:i32.const 0) '(:local.get rem) :i32.wrap_i64 :ref.i31 '(:array.set :vector)
+  '(:global.get :mv-buf) '(:i32.const 0) '(:local.get rem) '(:call :i64-int) '(:array.set :vector)
   '(:i32.const 2) '(:global.set :mv-count)
   '(:local.get q) :ref.as_non_null)
-(defprim clysm-sys::%mag-divmod-small (a d) :mv `(,@a ,@d (:call :mag-divmod-small)))
+(defprim clysm-sys::%mag-divmod-small (a dm) :mv `(,@a ,@dm (:call :mag-divmod-small)))
 
-;;; The first N limbs of a magnitude divided in place by 10^8 / by a digit
-;;; 0 < D < 2^28: the remainder (for the conversion to a string, chunk by
+;;; The first N limbs of a magnitude divided in place by 10^8 / by a fixnum
+;;; 0 < D: the remainder (for the conversion to a string, chunk by
 ;;; chunk; a division by the constant is a multiplication for the engine)
 (defhelper :mag-div-1e8 :ei-e ((a (:ref :null :limbs)) (i :i32) (rem :i64) (cur :i64) (q :i64))
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.set a) '(:local.get 1) '(:local.set i)
@@ -1739,7 +1788,7 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%mag-div-1e8 (m n) :value `(,@m ,@(idx-code n) (:call :mag-div-1e8)))
 (defprim clysm-sys::%mag-div-small (m n d) :value `(,@m ,@(idx-code n) ,@(idx-code d) (:call :mag-div-small)))
 
-;;; magnitude shifts by 0 <= S < 28 bits (left: one more limb)
+;;; magnitude shifts by 0 <= S < 32 bits (left: one more limb)
 (defhelper :mag-shl :ee-e ((a (:ref :null :limbs)) (r (:ref :null :limbs)) (n :i32) (i :i32) (s :i64)
                            (v :i64) (carry :i64))
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.tee a) :array.len '(:local.tee n)
@@ -1766,14 +1815,13 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
      (:loop again nil
        (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
        (:local.get r) (:local.get i)
-       (:local.get a) (:local.get i) (:array.get :limbs) (:local.get s) :i32.shr_u
        (:local.get i) (:i32.const 1) :i32.add (:local.get n) :i32.lt_u
-       (:if nil :i32
+       (:if nil :i64
             ((:local.get a) (:local.get i) (:i32.const 1) :i32.add (:array.get :limbs)
-             ;; (when S = 0 the shift by 28 leaves no bits within the mask)
-             (:i32.const ,+limb-bits+) (:local.get s) :i32.sub :i32.shl (:i32.const ,+limb-mask+) :i32.and)
-            ((:i32.const 0)))
-       :i32.or (:array.set :limbs)
+             :i64.extend_i32_u (:i64.const ,+limb-bits+) :i64.shl)
+            ((:i64.const 0)))
+       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.or
+       (:local.get s) :i64.extend_i32_u :i64.shr_u :i32.wrap_i64 (:array.set :limbs)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   '(:local.get r) :ref.as_non_null)
@@ -1892,6 +1940,147 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   '(:i32.const 2) '(:global.set :mv-count)
   '(:local.get q) :ref.as_non_null)
 (defprim clysm-sys::%mag-divmod-knuth (u v) :mv `(,@u ,@v (:call :mag-divmod)))
+
+;;; The remainder of truncating integer A by integer B when |B| < 2^32 (not
+;;; 0) and A is a bignum, digit by digit without a quotient; NIL otherwise.
+(defhelper :int-rem-small :ee-e ((v :i32) (d :i64) (ka :i32) (m (:ref :null :limbs)) (n :i32) (rem :i64))
+  `(:block fail nil
+     ,@(num-decode-code 1 'd nil 'ka 'fail nil)
+     (:local.get d) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get d) :i64.sub (:local.set d)))
+     (:local.get d) :i64.eqz (:br_if fail)
+     (:local.get d) (:i64.const ,(expt 2 +limb-bits+)) :i64.ge_u (:br_if fail)
+     (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if fail)
+     (:local.get 0) (:call :int-limbs) (:ref.cast! :limbs) (:local.tee m) :array.len (:local.set n)
+     (:block done nil
+       (:loop again nil
+         (:local.get n) :i32.eqz (:br_if done)
+         (:local.get n) (:i32.const 1) :i32.sub (:local.set n)
+         (:local.get rem) (:i64.const ,+limb-bits+) :i64.shl
+         (:local.get m) (:local.get n) (:array.get :limbs) :i64.extend_i32_u :i64.or
+         (:local.get d) :i64.rem_u (:local.set rem)
+         (:br again)))
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0)
+     (:if nil :i64 ((:i64.const 0) (:local.get rem) :i64.sub) ((:local.get rem)))
+     (:call :i64-int) :return)
+  (car (nil-code)))
+(defprim clysm-sys::%int-rem-small (a b) :value `(,@a ,@b (:call :int-rem-small)))
+
+;;; Lehmer's gcd (Knuth 4.5.2, Algorithm L; the form of CPython's
+;;; _PyLong_GCD): integers A >= B >= 0 are reduced, about a digit of each at
+;;; a time, by the quotients the leading 60 bits give, while those are
+;;; certain (the cofactors stay below 2^30, their products with digits below
+;;; 2^62);
+;;; the result (values A' B') has the gcd of A and B.  It stops when A is
+;;; within two digits, B is zero or the leading bits give no quotient (the
+;;; caller then takes a remainder).  Work arrays of the length of A, the
+;;; lengths kept in LA and LB (digits above them are not looked at).
+(defun lehmer-trim-code (arr len)
+  `((:block tdone nil
+      (:loop tagain nil
+        (:local.get ,len) :i32.eqz (:br_if tdone)
+        (:local.get ,arr) (:local.get ,len) (:i32.const 1) :i32.sub (:array.get :limbs) (:br_if tdone)
+        (:local.get ,len) (:i32.const 1) :i32.sub (:local.set ,len)
+        (:br tagain)))))
+(defun lehmer-digit-code (arr idx len)
+  "The digit IDX (an i32 expression) of ARR as an i64, 0 at or above LEN."
+  `(,@idx (:local.get ,len) :i32.lt_u
+    (:if nil :i64 ((:local.get ,arr) ,@idx (:array.get :limbs) :i64.extend_i32_u) ((:i64.const 0)))))
+(defun lehmer-top-code (arr len dst)
+  "The bits of ARR (of length LEN) at the places of the leading 60 bits of A
+\(LA digits, NB bits in the top one) into DST."
+  `(,@(lehmer-digit-code arr '((:local.get la) (:i32.const 1) :i32.sub) len)
+    (:i64.const 32) :i64.shl
+    ,@(lehmer-digit-code arr '((:local.get la) (:i32.const 2) :i32.sub) len) :i64.or (:local.set w)
+    (:local.get nb) (:i64.const 28) :i64.le_u
+    (:if nil :i64
+         ((:local.get w) (:i64.const 28) (:local.get nb) :i64.sub :i64.shl
+          ,@(lehmer-digit-code arr '((:local.get la) (:i32.const 3) :i32.sub) len)
+          (:local.get nb) (:i64.const 4) :i64.add :i64.shr_u :i64.or)
+         ((:local.get w) (:local.get nb) (:i64.const 28) :i64.sub :i64.shr_u))
+    (:local.set ,dst)))
+(defhelper :lehmer :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (c (:ref :null :limbs))
+                          (d (:ref :null :limbs)) (tmp (:ref :null :limbs))
+                          (la :i32) (lb :i32) (i :i32) (k :i32) (nb :i64)
+                          (x :i64) (y :i64) (q :i64) (s :i64) (tt :i64)
+                          (ca :i64) (cb :i64) (cc :i64) (cd :i64) (ec :i64) (ed :i64) (ai :i64) (bi :i64)
+                          (w :i64))
+  (let ((l +limb-bits+))
+    (list
+     '(:local.get 0) '(:call :int-limbs) '(:ref.cast! :limbs) '(:local.tee tmp) '(:call :mag-len) '(:local.tee la)
+     '(:array.new_default :limbs) '(:local.set a)
+     '(:local.get a) '(:i32.const 0) '(:local.get tmp) '(:i32.const 0) '(:local.get la) '(:array.copy :limbs :limbs)
+     '(:local.get 1) '(:call :int-limbs) '(:ref.cast! :limbs) '(:local.tee tmp) '(:call :mag-len) '(:local.set lb)
+     '(:local.get la) '(:array.new_default :limbs) '(:local.set b)
+     '(:local.get b) '(:i32.const 0) '(:local.get tmp) '(:i32.const 0) '(:local.get lb) '(:array.copy :limbs :limbs)
+     '(:local.get la) '(:array.new_default :limbs) '(:local.set c)
+     '(:local.get la) '(:array.new_default :limbs) '(:local.set d)
+     `(:block exit nil
+        (:loop outer nil
+          (:local.get la) (:i32.const 2) :i32.le_u (:br_if exit)
+          (:local.get lb) :i32.eqz (:br_if exit)
+          ;; the leading 60 bits of A in X, the bits of B at the same places in Y
+          (:i64.const 32) (:local.get a) (:local.get la) (:i32.const 1) :i32.sub (:array.get :limbs) :i32.clz
+          :i64.extend_i32_u :i64.sub (:local.set nb)
+          ,@(lehmer-top-code 'a 'la 'x)
+          ,@(lehmer-top-code 'b 'lb 'y)
+          (:i64.const 1) (:local.set ca) (:i64.const 0) (:local.set cb)
+          (:i64.const 0) (:local.set cc) (:i64.const 1) (:local.set cd) (:i32.const 0) (:local.set k)
+          (:block idone nil
+            (:loop iagain nil
+              (:local.get y) (:local.get cc) :i64.sub :i64.eqz (:br_if idone)
+              (:local.get x) (:local.get ca) :i64.add (:i64.const 1) :i64.sub
+              (:local.get y) (:local.get cc) :i64.sub :i64.div_s (:local.set q)
+              (:local.get cb) (:local.get q) (:local.get cd) :i64.mul :i64.add (:local.set s)
+              (:local.get x) (:local.get q) (:local.get y) :i64.mul :i64.sub (:local.set tt)
+              (:local.get s) (:local.get tt) :i64.gt_s (:br_if idone)
+              (:local.get y) (:local.set x) (:local.get tt) (:local.set y)
+              (:local.get ca) (:local.get q) (:local.get cc) :i64.mul :i64.add (:local.set tt)
+              (:local.get cd) (:local.set ca) (:local.get cc) (:local.set cb)
+              (:local.get s) (:local.set cc) (:local.get tt) (:local.set cd)
+              (:local.get k) (:i32.const 1) :i32.add (:local.set k)
+              (:br iagain)))
+          (:local.get k) :i32.eqz (:br_if exit)
+          ;; A, B := A*a - B*b, D*b - C*a (for an odd number of steps: A*b - B*a, D*a - C*b)
+          (:local.get k) (:i32.const 1) :i32.and
+          (:if nil nil
+               ((:i64.const 0) (:local.get ca) :i64.sub (:local.set tt)
+                (:i64.const 0) (:local.get cb) :i64.sub (:local.set ca) (:local.get tt) (:local.set cb)
+                (:i64.const 0) (:local.get cc) :i64.sub (:local.set tt)
+                (:i64.const 0) (:local.get cd) :i64.sub (:local.set cc) (:local.get tt) (:local.set cd)))
+          (:i64.const 0) (:local.set ec) (:i64.const 0) (:local.set ed) (:i32.const 0) (:local.set i)
+          (:block adone nil
+            (:loop aagain nil
+              (:local.get i) (:local.get la) :i32.ge_u (:br_if adone)
+              (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u (:local.set ai)
+              ,@(lehmer-digit-code 'b '((:local.get i)) 'lb) (:local.set bi)
+              (:local.get ec) (:local.get ca) (:local.get ai) :i64.mul :i64.add
+              (:local.get cb) (:local.get bi) :i64.mul :i64.sub (:local.set ec)
+              (:local.get ed) (:local.get cd) (:local.get bi) :i64.mul :i64.add
+              (:local.get cc) (:local.get ai) :i64.mul :i64.sub (:local.set ed)
+              (:local.get c) (:local.get i) (:local.get ec) (:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64
+              (:array.set :limbs)
+              (:local.get d) (:local.get i) (:local.get ed) (:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64
+              (:array.set :limbs)
+              (:local.get ec) (:i64.const ,l) :i64.shr_s (:local.set ec)
+              (:local.get ed) (:i64.const ,l) :i64.shr_s (:local.set ed)
+              (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+              (:br aagain)))
+          (:local.get la) (:local.set lb)
+          ,@(lehmer-trim-code 'c 'la)
+          ,@(lehmer-trim-code 'd 'lb)
+          (:local.get a) (:local.get c) (:local.set a) (:local.set c)
+          (:local.get b) (:local.get d) (:local.set b) (:local.set d)
+          (:br outer)))
+     ;; the results, of exact lengths
+     '(:global.get :mv-buf) '(:i32.const 0)
+     '(:local.get lb) '(:array.new_default :limbs) '(:local.tee tmp)
+     '(:i32.const 0) '(:local.get b) '(:i32.const 0) '(:local.get lb) '(:array.copy :limbs :limbs)
+     '(:local.get tmp) '(:i32.const 0) '(:call :make-int) '(:array.set :vector)
+     '(:i32.const 2) '(:global.set :mv-count)
+     '(:local.get la) '(:array.new_default :limbs) '(:local.tee tmp)
+     '(:i32.const 0) '(:local.get a) '(:i32.const 0) '(:local.get la) '(:array.copy :limbs :limbs)
+     '(:local.get tmp) '(:i32.const 0) '(:call :make-int))))
+(defprim clysm-sys::%lehmer (a b) :mv `(,@a ,@b (:call :lehmer)))
 
 (defhelper :struct-typep-parent :ee-i ((cpl :eqref))
   ;; the layout's direct superclass first (included structures), then the full search
@@ -2302,20 +2491,16 @@ anything else branches to SLOW.  Uses the i32 local V."
   '(:local.get a) '(:i64.const 32) :i64.shr_u '(:local.get b) '(:i64.const 32) :i64.shr_u :i64.mul
   '(:local.get mid) '(:i64.const 32) :i64.shr_u :i64.add '(:local.get mid2) '(:i64.const 32) :i64.shr_u :i64.add
   '(:local.set hi)
-  ;; limbs: 3 (bits 56..83 are not all zero), 4 or 5
-  '(:i32.const 3) '(:i32.const 4) '(:local.get hi) '(:i64.const 20) :i64.shr_u :i64.eqz :select
-  '(:i32.const 5) '(:local.get hi) '(:i64.const 48) :i64.shr_u :i64.eqz :select
+  ;; digits: 2 (a magnitude of 2^63 or more), 3 or 4
+  '(:i32.const 3) '(:i32.const 4) '(:local.get hi) '(:i64.const 32) :i64.shr_u :i64.eqz :select
+  '(:i32.const 2) '(:local.get hi) :i64.eqz :i32.eqz :select
   '(:local.tee n) '(:array.new_default :limbs) '(:local.set m)
-  `(:local.get m) '(:i32.const 0) '(:local.get lo) `(:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 '(:array.set :limbs)
-  `(:local.get m) '(:i32.const 1) '(:local.get lo) `(:i64.const ,+limb-bits+) :i64.shr_u
-  `(:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 '(:array.set :limbs)
-  `(:local.get m) '(:i32.const 2) '(:local.get lo) '(:i64.const 56) :i64.shr_u '(:local.get hi) '(:i64.const 8) :i64.shl
-  :i64.or `(:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 '(:array.set :limbs)
+  '(:local.get m) '(:i32.const 0) '(:local.get lo) :i32.wrap_i64 '(:array.set :limbs)
+  '(:local.get m) '(:i32.const 1) '(:local.get lo) '(:i64.const 32) :i64.shr_u :i32.wrap_i64 '(:array.set :limbs)
+  '(:local.get n) '(:i32.const 2) :i32.gt_u
+  '(:if nil nil ((:local.get m) (:i32.const 2) (:local.get hi) :i32.wrap_i64 (:array.set :limbs)))
   '(:local.get n) '(:i32.const 3) :i32.gt_u
-  `(:if nil nil ((:local.get m) (:i32.const 3) (:local.get hi) (:i64.const 20) :i64.shr_u
-                 (:i64.const ,+limb-mask+) :i64.and :i32.wrap_i64 (:array.set :limbs)))
-  '(:local.get n) '(:i32.const 4) :i32.gt_u
-  `(:if nil nil ((:local.get m) (:i32.const 4) (:local.get hi) (:i64.const 48) :i64.shr_u :i32.wrap_i64
+  '(:if nil nil ((:local.get m) (:i32.const 3) (:local.get hi) (:i64.const 32) :i64.shr_u :i32.wrap_i64
                  (:array.set :limbs)))
   '(:local.get 0) '(:local.get 1) :i64.xor '(:i64.const 0) :i64.lt_s
   '(:local.get m) '(:i64.const 0) '(:struct.new :bignum))
@@ -4061,7 +4246,7 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%sqrt-slow)) '(:call (:callsym 1)))
 (defprim sqrt (x) :value `(,@x (:call :fn-sqrt)))
 
-;;; The hash of a bignum: over the base 2^28 digits of its magnitude, h := (31 h
+;;; The hash of a bignum: over the base 2^32 digits of its magnitude, h := (31 h
 ;;; + digit) mod 2^28 starting from the sign (the same value whether the
 ;;; integer holds its value or limbs; nothing is allocated)
 (defhelper :bignum-hash :e-e ((b (:ref :null :bignum)) (h :i32) (w :i64) (m (:ref :null :limbs)) (i :i32) (n :i32))
@@ -4075,7 +4260,7 @@ in local V and the index in local K; else branch to FAIL."
            (:loop again nil
              (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
              (:local.get h) (:i32.const 31) :i32.mul (:local.get m) (:local.get i) (:array.get :limbs) :i32.add
-             (:i32.const ,+limb-mask+) :i32.and (:local.set h)
+             (:i32.const #xFFFFFFF) :i32.and (:local.set h)
              (:local.get i) (:i32.const 1) :i32.add (:local.set i)
              (:br again))))
         (;; the digits of |value|
@@ -4083,8 +4268,8 @@ in local V and the index in local K; else branch to FAIL."
          (:block done2 nil
            (:loop again2 nil
              (:local.get w) :i64.eqz (:br_if done2)
-             (:local.get h) (:i32.const 31) :i32.mul (:local.get w) :i32.wrap_i64 (:i32.const ,+limb-mask+) :i32.and :i32.add
-             (:i32.const ,+limb-mask+) :i32.and (:local.set h)
+             (:local.get h) (:i32.const 31) :i32.mul (:local.get w) :i32.wrap_i64 :i32.add
+             (:i32.const #xFFFFFFF) :i32.and (:local.set h)
              (:local.get w) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set w)
              (:br again2)))))
   '(:local.get h) :ref.i31)
@@ -4299,20 +4484,17 @@ in local V and the index in local K; else branch to FAIL."
      (:local.get xb) :i64.eqz (:br_if fail)
      (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.set m)
      (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len) (:local.tee n)
-     (:i32.const 5) :i32.gt_u (:br_if fail)
-     (:local.get n) (:i32.const 3) :i32.lt_u (:br_if fail)
-     ;; the magnitude as (u1, u0)
+     (:i32.const 4) :i32.gt_u (:br_if fail)
+     (:local.get n) (:i32.const 2) :i32.lt_u (:br_if fail)
+     ;; the magnitude (below 2^127) as (u1, u0)
      (:local.get m) (:i32.const 0) (:array.get :limbs) :i64.extend_i32_u
-     (:local.get m) (:i32.const 1) (:array.get :limbs) :i64.extend_i32_u (:i64.const 28) :i64.shl :i64.or
-     (:local.get m) (:i32.const 2) (:array.get :limbs) :i64.extend_i32_u (:i64.const 56) :i64.shl :i64.or
+     (:local.get m) (:i32.const 1) (:array.get :limbs) :i64.extend_i32_u (:i64.const 32) :i64.shl :i64.or
      (:local.set u0)
-     (:local.get m) (:i32.const 2) (:array.get :limbs) :i64.extend_i32_u (:i64.const 8) :i64.shr_u (:local.set u1)
+     (:local.get n) (:i32.const 2) :i32.gt_u
+     (:if nil nil ((:local.get m) (:i32.const 2) (:array.get :limbs) :i64.extend_i32_u (:local.set u1)))
      (:local.get n) (:i32.const 3) :i32.gt_u
-     (:if nil nil ((:local.get m) (:i32.const 3) (:array.get :limbs) :i64.extend_i32_u (:i64.const 20) :i64.shl
-                   (:local.get u1) :i64.or (:local.set u1)))
-     (:local.get n) (:i32.const 4) :i32.gt_u
-     (:if nil nil ((:local.get m) (:i32.const 4) (:array.get :limbs) (:i32.const 32768) :i32.ge_u (:br_if fail)
-                   (:local.get m) (:i32.const 4) (:array.get :limbs) :i64.extend_i32_u (:i64.const 48) :i64.shl
+     (:if nil nil ((:local.get m) (:i32.const 3) (:array.get :limbs) (:i32.const 0) :i32.lt_s (:br_if fail)
+                   (:local.get m) (:i32.const 3) (:array.get :limbs) :i64.extend_i32_u (:i64.const 32) :i64.shl
                    (:local.get u1) :i64.or (:local.set u1)))
      ;; |divisor|; the quotient must fit in 64 bits
      (:local.get xb) (:i64.const 0) :i64.lt_s
