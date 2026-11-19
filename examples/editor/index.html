@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clysm Editor</title>
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="editor.css">
+<style>
+  html, body, #app { height: 100%; margin: 0; }
+  body { background: var(--ce-bg); color: var(--ui-fg); font: var(--ui-font); }
+  #status { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ui-muted); }
+  .app { display: flex; flex-direction: column; height: 100%; }
+  .app > .ce-pane { flex: 1 1 0; }
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 6px 12px; flex: none; flex-wrap: wrap;
+             background: var(--ui-bg); border-bottom: 1px solid var(--ui-line); }
+  .toolbar .title { font-weight: 600; margin-right: auto; }
+  .toolbar .dot { color: var(--ui-accent); margin-left: 6px; font-size: 10px; vertical-align: middle; }
+  .toolbar label { color: var(--ui-muted); }
+  .toolbar select, .toolbar button, .toolbar input {
+    font: inherit; color: var(--ui-fg); background: var(--ui-surface);
+    border: 1px solid var(--ui-line); border-radius: var(--ui-radius); padding: 3px 8px; }
+  .toolbar button { cursor: pointer; }
+  .toolbar .find { width: 16em; }
+  .status { display: flex; gap: 16px; padding: 3px 12px; flex: none; font-size: 12px;
+            color: var(--ui-muted); background: var(--ui-bg); border-top: 1px solid var(--ui-line); }
+  .status .message { margin-right: auto; color: var(--ui-fg); }
+</style>
+</head>
+<body>
+<div id="status">読み込み中…</div>
+<!-- editor.lisp puts the application here -->
+<div id="app"></div>
+<script type="module">
+  import { loadClysm } from './clysm.mjs';
+  const status = document.getElementById('status');
+  try {
+    const bytes = await (await fetch('editor.wasm')).arrayBuffer();
+    await loadClysm(bytes, (text) => console.log(text), { readLine: () => null });
+    status.remove();
+  } catch (e) {
+    status.textContent = 'エラー: ' + e.message;
+    throw e;
+  }
+</script>
+</body>
+</html>

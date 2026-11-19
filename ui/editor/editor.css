@@ -1,0 +1,120 @@
+/* editor.css — the look of the editor pane of ui/editor/view.lisp.
+ *
+ * Link it from the page (after ui.css).  The colours are the custom
+ * properties below; light and dark follow the system.
+ */
+
+:root {
+  --ce-font: "JetBrains Mono", "SF Mono", "Cascadia Code", "DejaVu Sans Mono",
+             "Noto Sans Mono CJK JP", ui-monospace, monospace;
+  --ce-bg: light-dark(#fbfaf7, #1c1d20);
+  --ce-fg: light-dark(#2a2b2e, #d9d8d3);
+  --ce-gutter-bg: light-dark(#f3f1ec, #212226);
+  --ce-gutter-fg: light-dark(#a3a199, #5c5e64);
+  --ce-gutter-current: light-dark(#5b5a55, #a9aab0);
+  --ce-current-line: light-dark(rgba(60, 50, 20, .045), rgba(255, 255, 255, .035));
+  --ce-selection: light-dark(#cfdcf6, #2f4466);
+  --ce-selection-blur: light-dark(#e2e5ea, #33363c);
+  --ce-cursor: light-dark(#2f62c9, #8fb3ff);
+  --ce-matching: light-dark(rgba(47, 98, 201, .16), rgba(143, 179, 255, .22));
+  --ce-comment: light-dark(#8a877d, #7a7c83);
+  --ce-string: light-dark(#4b7a2a, #a6c98a);
+  --ce-keyword: light-dark(#8a4fb0, #c9a0e6);
+  --ce-builtin: light-dark(#a3471f, #f0a77a);
+  --ce-def-name: light-dark(#1f5fa8, #82b8ef);
+  --ce-number: light-dark(#a06a00, #e6c07b);
+  --ce-char: light-dark(#a06a00, #e6c07b);
+  --ce-special: light-dark(#b0336a, #ef8fb5);
+  --ce-constant: light-dark(#a06a00, #e6c07b);
+  --ce-quote: light-dark(#a3471f, #f0a77a);
+  --ce-paren-0: light-dark(#7a776d, #8e9097);
+  --ce-paren-1: light-dark(#2f62c9, #7aa5f5);
+  --ce-paren-2: light-dark(#a3471f, #e9a27a);
+  --ce-paren-3: light-dark(#4b7a2a, #9cc47f);
+  --ce-paren-4: light-dark(#8a4fb0, #c39be0);
+  --ce-paren-5: light-dark(#0f7d82, #6fc7cb);
+}
+
+.ce-pane { display: flex; flex-direction: column; min-height: 0; }
+
+.ce-editor {
+  position: relative; flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--ce-bg); color: var(--ce-fg);
+  font-family: var(--ce-font); font-size: var(--ce-font-size, 14px);
+  font-variant-ligatures: none;
+  --ce-gutter-width: calc((var(--ce-gutter-chars, 2) + 2) * 1ch);
+}
+.ce-no-gutter { --ce-gutter-width: 0px; }
+
+.ce-scroller {
+  flex: 1 1 0; min-height: 0; overflow: auto; position: relative;
+  overflow-anchor: none; cursor: text; outline: none;
+}
+.ce-sizer { position: relative; min-width: 100%; width: max-content; }
+.ce-lines { will-change: transform; padding-right: 2ch; }
+
+.ce-line {
+  display: flex; height: var(--ce-line-height); line-height: var(--ce-line-height);
+  white-space: pre; tab-size: 2;
+}
+.ce-current { background: var(--ce-current-line); }
+
+.ce-gutter {
+  position: sticky; left: 0; z-index: 2; flex: none;
+  width: var(--ce-gutter-width); padding-right: 1ch; text-align: right;
+  background: var(--ce-gutter-bg); color: var(--ce-gutter-fg);
+  user-select: none; font-size: .9em;
+}
+.ce-current .ce-gutter { color: var(--ce-gutter-current); }
+.ce-text { padding-left: 1ch; flex: 1 0 auto; }
+
+.ce-selected { background: var(--ce-selection-blur); }
+.ce-focused .ce-selected { background: var(--ce-selection); }
+.ce-eol { display: inline-block; width: 1ch; }
+
+.ce-cursor {
+  position: relative; display: inline-block; width: 0; height: var(--ce-line-height);
+  vertical-align: top; scroll-margin-left: calc(var(--ce-gutter-width) + 4ch);
+  scroll-margin-right: 4ch;
+}
+.ce-cursor::after {
+  content: ""; position: absolute; left: -1px; top: 2px; bottom: 2px; width: 2px;
+  background: var(--ce-cursor); visibility: hidden;
+}
+.ce-focused .ce-cursor::after { visibility: visible; animation: ce-blink 1.06s steps(1) infinite; }
+.ce-read-only .ce-cursor::after { background: var(--ce-gutter-fg); }
+@keyframes ce-blink { 50% { opacity: 0; } }
+
+.ce-matching { background: var(--ce-matching); border-radius: 2px; outline: 1px solid var(--ce-matching); }
+
+/* the field the keys are typed into: invisible, except while an input
+   method composes a text there */
+.ce-input {
+  position: absolute; left: 0; top: 0; z-index: 3; width: 1px; height: var(--ce-line-height);
+  margin: 0; padding: 0; border: 0; outline: none; resize: none; overflow: hidden;
+  opacity: 0; background: transparent; color: transparent; caret-color: transparent;
+  font: inherit; line-height: var(--ce-line-height); white-space: pre;
+}
+.ce-input.ce-composing {
+  opacity: 1; width: 24em; color: var(--ce-fg); background: var(--ce-bg);
+  caret-color: var(--ce-cursor); text-decoration: underline; padding-left: 0;
+}
+
+.ce-comment { color: var(--ce-comment); font-style: italic; }
+.ce-string { color: var(--ce-string); }
+.ce-keyword { color: var(--ce-keyword); }
+.ce-builtin { color: var(--ce-builtin); font-weight: 600; }
+.ce-def-name { color: var(--ce-def-name); font-weight: 600; }
+.ce-number { color: var(--ce-number); }
+.ce-char { color: var(--ce-char); }
+.ce-special { color: var(--ce-special); }
+.ce-constant { color: var(--ce-constant); }
+.ce-quote { color: var(--ce-quote); }
+.ce-lambda-key { color: var(--ce-keyword); font-style: italic; }
+.ce-reader { color: var(--ce-quote); }
+.ce-paren-0 { color: var(--ce-paren-0); }
+.ce-paren-1 { color: var(--ce-paren-1); }
+.ce-paren-2 { color: var(--ce-paren-2); }
+.ce-paren-3 { color: var(--ce-paren-3); }
+.ce-paren-4 { color: var(--ce-paren-4); }
+.ce-paren-5 { color: var(--ce-paren-5); }

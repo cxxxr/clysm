@@ -131,6 +131,11 @@ updated when the slots of model objects are set.
 and for Electron (`build-desktop.sh`). With `--dev` the application has a
 REPL in its window. The manual is [docs/ui/README.md](docs/ui/README.md).
 
+`ui/editor/` is a code editor written in Lisp, a pane of the framework:
+highlighting, Lisp indentation, undo, the selection, input methods and Emacs
+keys, without a JavaScript editor (`examples/editor/`,
+[ui/editor/README.md](ui/editor/README.md)).
+
 ## Lem
 
 `contrib/lem/` loads Lem's core with ASDF and gives it a frontend written
