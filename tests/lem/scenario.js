@@ -213,17 +213,6 @@ module.exports = (win, app) => {
         }
       });
       await step('buffer-end', async () => { await key('>', ['alt', 'shift']); await key('<', ['alt', 'shift']); });
-      // LEM_BUFFER_BENCH: Lem's buffer code timed without the display
-      // (tests/lem/buffer-bench.lisp, which SBCL runs too), after the rest
-      if (process.env.LEM_BUFFER_BENCH) {
-        const bench = path.join(__dirname, 'buffer-bench.lisp');
-        await lisp(`(progn (load ${JSON.stringify(bench)}) t)`);
-        for (let i = 0; i < 3; i++) {
-          const r = await lisp(`(lem-buffer-bench::run ${JSON.stringify(file)})`);
-          result.bufferBench = Object.fromEntries([...r.matchAll(/\("([^"]+)" \. ([0-9.]+)\)/g)].map((m) => [m[1], Number(m[2])]));
-        }
-        console.log('buffer bench (ms):', JSON.stringify(result.bufferBench));
-      }
       await finish('lem-scenario: ok');
     } catch (e) {
       await finish(`lem-scenario: FAIL ${e && e.stack}`);
