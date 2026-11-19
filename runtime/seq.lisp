@@ -1950,6 +1950,32 @@ COUNT-VAR, when given, is set to the number of elements visited."
                                            k `(length ,r))
                     ,r))))))))
 
+;;; REDUCE of a function written in place over a whole sequence (with
+;;; :INITIAL-VALUE and a :KEY written in place or not at all): a loop at the
+;;; call site, where #'+ or #'MAX is a primitive call.
+(define-compiler-macro reduce (&whole form f seq &rest keys)
+  (let ((iv nil) (ivp nil) (key nil) (ok (%literal-function-form-p f)))
+    (do ((l keys (cddr l))) ((or (null l) (not ok)))
+      (cond ((not (consp (cdr l))) (setq ok nil))
+            ((and (eq (car l) :initial-value) (not ivp)) (setq iv (cadr l) ivp t))
+            ((and (eq (car l) :key) (null key) (%literal-function-form-p (cadr l))) (setq key (cadr l)))
+            (t (setq ok nil))))
+    (if (not ok)
+        form
+        (let ((fn (gensym "F")) (kf (gensym "KEY")) (sq (gensym "SEQ")) (acc (gensym "ACC"))
+              (first (gensym "FIRST")) (x (gensym "X")) (v (gensym "V")))
+          `(let* (,@(%function-binding fn f) (,sq ,seq)
+                  ,@(when ivp `((,acc ,iv))) ,@(unless ivp `((,acc nil) (,first t)))
+                  ,@(when key (%function-binding kf key)))
+             ,(%seq-loop-expansion
+               sq x `(let ((,v ,(if key (%literal-call key kf (list x)) x)))
+                       ,(if ivp
+                            `(setq ,acc ,(%literal-call f fn (list acc v)))
+                            `(if ,first
+                                 (setq ,acc ,v ,first nil)
+                                 (setq ,acc ,(%literal-call f fn (list acc v)))))))
+             ,(if ivp acc `(if ,first (apply ,f nil) ,acc)))))))
+
 (define-compiler-macro map-into (&whole form result f &rest seqs)
   (if (not (%literal-function-form-p f))
       form
