@@ -59,14 +59,17 @@
 
 ;;; DEFSTRUCT accessors are compiled inline (as compiler macros) at call sites
 ;;; compiled after the DEFSTRUCT, unless declared NOTINLINE.
-(defun register-struct-accessor-inline (acc name idx writable &optional fields)
+(defun register-struct-accessor-inline (acc name idx writable &optional fields kinds)
   ;; FIELDS: the shape of the structure (runtime/struct.lisp): its number of
   ;; slots when they are fields of its own (src/layout.lisp), else 0, plus 64
   ;; times its depth
-  (flet ((ref (obj) (if (and fields (plusp (mod fields 64)))
+  ;; KINDS: the kinds of the slots of a structure with typed slots
+  (flet ((ref (obj) (if kinds
+                        `(clysm-sys::%struct-tref ,obj (load-time-value (find-class ',name)) ,idx ',kinds)
+                      (if (and fields (plusp (mod fields 64)))
                         `(clysm-sys::%struct-iref ,obj (load-time-value (find-class ',name)) ,idx ,fields)
                         `(clysm-sys::%struct-ref ,obj (load-time-value (find-class ',name)) ,idx
-                                                 ,@(when fields (list fields))))))
+                                                 ,@(when fields (list fields)))))))
     (setf (gethash acc *compiler-macros*)
           (lambda (form env)
             (declare (ignore env))
@@ -76,11 +79,15 @@
             (lambda (form env)
               (declare (ignore env))
               (if (and (consp (cdr form)) (consp (cddr form)) (null (cdddr form)))
-                  (if (and fields (plusp (mod fields 64)))
+                  (cond
+                    (kinds `(clysm-sys::%struct-tset ,(third form) (load-time-value (find-class ',name)) ,idx
+                                                     ,(second form) ',kinds))
+                    ((and fields (plusp (mod fields 64)))
                       `(clysm-sys::%struct-iset ,(third form) (load-time-value (find-class ',name)) ,idx
-                                                ,(second form) ,fields)
+                                                ,(second form) ,fields))
+                    (t
                       `(clysm-sys::%struct-set ,(third form) (load-time-value (find-class ',name)) ,idx
-                                               ,(second form) ,@(when fields (list fields))))
+                                               ,(second form) ,@(when fields (list fields)))))
                   form))))
     acc))
 
@@ -95,8 +102,8 @@
   predicate)
 
 #-clysm
-(defmacro clysm-sys::%host-inline-struct-accessor (acc name idx writable &optional fields)
-  `(register-struct-accessor-inline ',acc ',name ',idx ',writable ',fields))
+(defmacro clysm-sys::%host-inline-struct-accessor (acc name idx writable &optional fields kinds)
+  `(register-struct-accessor-inline ',acc ',name ',idx ',writable ',fields ',kinds))
 
 #-clysm
 (defmacro clysm-sys::%ct-initial-value (sym form)
