@@ -965,8 +965,10 @@ forms are written instead."
             (push octets (first *cf-modules*))
             (setf (second *cf-modules*) (+ offset (length octets)))
             (dolist (e entries)
-              (if (member (car e) '(:source :entry))
-                  (%cf-write (second e) out)
+              (case (car e)
+                (:entry (write-string (second e) out))
+                (:source (%cf-write (second e) out))
+                (t
                   (let* ((k (second e))
                          (source (%string-utf8-octets
                                   (%call-with-fasl-syntax
@@ -979,11 +981,12 @@ forms are written instead."
                                    (list '%fasl-unit *image-id* offset (length octets) (nth k vectors)
                                          source-offset (length source))
                                    (list '%fasl-segment k (nth k vectors) source-offset (length source)))
-                               out)))))
+                               out))))))
           (dolist (e entries)
-            (if (member (car e) '(:source :entry))
-                (%cf-write (second e) out)
-                (dolist (f (third e)) (%cf-write f out))))))))
+            (case (car e)
+              (:entry (write-string (second e) out))
+              (:source (%cf-write (second e) out))
+              (t (dolist (f (third e)) (%cf-write f out)))))))))
 
 (defun %cf-flush (out)
   "Write the pending forms: one module for all of them if possible, else one
@@ -1079,9 +1082,10 @@ it cannot be done so: the form is then evaluated and compiled apart."
         ;; (%CF-COMPILED-FORM pushed the module's octets, then its source)
         (let ((octets (second (first *cf-modules*))))
           ;; (in a file compiled into one module, the entries are written
-          ;; at the end, in order)
+          ;; at the end, in order: this one as its text now, before running
+          ;; the module changes its constants, e.g. the caches of call sites)
           (if *cf-unit-p*
-              (push (list :entry entry) *cf-unit*)
+              (push (list :entry (with-output-to-string (o) (%cf-write entry o))) *cf-unit*)
               (%cf-write entry out))
           (funcall *native-run-octets-hook* octets (nth 4 entry))
           t)))))
