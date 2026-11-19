@@ -259,13 +259,15 @@ can then pass their arguments in its slots.")
           (shape (%fast-shape ll)))
       (when (and hook (symbolp name) shape (eql (third shape) 1))
         (let ((keys (nth-value 4 (%ll-info ll))))
-          (when (and keys (<= (+ (first shape) (second shape) (length keys)) 4))
+          (when (and keys (<= (+ (first shape) (second shape) (length keys)) 8)
+                     (<= (+ (first shape) (second shape) 1) 4))
             (funcall hook name (list* (first shape) (second shape) keys) defgeneric-p)))))))
 
 (defmacro %gf-function-maker (&optional n keys)
   (when (and (consp n) (eql (second n) 0) (eql (third n) 0) (<= (first n) 4))
     (setq n (first n)))
-  (cond ((and (consp n) (eql (third n) 1) keys (<= (+ (first n) (second n) (length keys)) 4))
+  (cond ((and (consp n) (eql (third n) 1) keys (<= (+ (first n) (second n) (length keys)) 8)
+              (<= (+ (first n) (second n) 1) 4))
          ;; with keyword parameters: also a keyed main function, which calls
          ;; with constant keywords compiled in the image call (%GF-KEYED-ENTRY)
          `(lambda (info)
@@ -450,7 +452,7 @@ spread arguments that are not just its required ones, else NIL."
                                  ;; the keyed main function applies
                                  (let ((mk (%gf-slot info +gf-kmaker+)) (gfkeys (%gf-slot info +gf-keys+)))
                                    (if (and mk (eql more 1) (%gf-slot info +gf-keyp+)
-                                            (<= (+ nreq nopt (length mk)) 4)
+                                            (<= (+ nreq nopt (length mk)) 8) (<= (+ nreq nopt 1) 4)
                                             (every (lambda (k) (member k gfkeys)) mk))
                                        8192 0))))
                           fast (%gf-slot info +gf-eql+) (%gf-slot info +gf-unspecialized+) nil))
@@ -1312,12 +1314,15 @@ list of the keyword arguments (which are valid: they are keywords of the
 generic function)."
     (destructuring-bind (nreq nopt more) shape
       (declare (ignore more))
-      (let* ((vars '(s0 s1 s2 s3))
+      (let* ((vars '(s0 s1 s2 s3 s4 s5 s6 s7))
              (npos (+ nreq nopt))
              (req (subseq vars 0 nreq))
              (opt (subseq vars nreq npos))
              (kvars (subseq vars npos (+ npos (length keys))))
-             (pad (make-list (- 4 (+ npos (length keys)))))
+             ;; (more than four in all: no keyed effective method, the
+             ;; keyword arguments are passed in their list, unchecked)
+             (keyed-emf-p (<= (+ npos (length keys)) 4))
+             (pad (make-list (max 0 (- 4 (+ npos (length keys))))))
              (ks (subseq '(k0 k1 k2 k3) 0 nreq))
              (stride (+ nreq 2))
              (code (+ (%shape-code nreq nopt 1) 8192)))
@@ -1346,11 +1351,15 @@ generic function)."
                                             ks)))
                        (let* ((f (%svref pic (%fx+ i ,nreq))) (kn (%closure-name f)))
                          (when (simple-vector-p kn)
-                           (let ((kemf (or (%svref kn 2)
-                                           (%gf-make-keyed-emf info kn (%svref pic (%fx+ i ,(+ nreq 1)))))))
+                           (let ((kemf ,(if keyed-emf-p
+                                            `(or (%svref kn 2)
+                                                 (%gf-make-keyed-emf info kn (%svref pic (%fx+ i ,(+ nreq 1)))))
+                                            :none)))
                              (return-from kd
                                (if (functionp kemf)
-                                   (funcall (the function kemf) ,@req ,@opt ,@kvars ,@pad)
+                                   ,(if keyed-emf-p
+                                        `(funcall (the function kemf) ,@req ,@opt ,@kvars ,@pad)
+                                        nil)
                                    (funcall (the function (%svref kn 0)) ,@req ,@opt
                                             (let ((r nil))
                                               ,@(reverse
