@@ -276,6 +276,7 @@ vectors), the vector of objects of each segment."
       (dolist (g (reverse *misc-globals*))
         (destructuring-bind (name type mutable init) g
           (add-global *m* name type mutable init)))
+      (add-identity-hash-cache)
       (loop for tops in segments for k from 0
             do (let* ((ssyms (remove-if-not (lambda (s) (in-segment-p (list :sym s) k)) syms))
                       (sconsts (remove-if-not (lambda (c) (in-segment-p (car c) k)) consts))

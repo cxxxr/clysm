@@ -3237,7 +3237,13 @@ modules made at run time define these helpers each time)."
          (:local.get 0) :extern.convert_any (:call :host-identity-hash) (:local.tee h)
          (:struct.set :instance 2)
          (:local.get h) :return))
-  '(:local.get 0) :extern.convert_any '(:call :host-identity-hash))
+  ;; other objects: the host's hash, the last one kept (a GETHASH then a
+  ;; PUTHASH of the same key ask once)
+  '(:local.get 0) '(:global.get :ih-key) :ref.eq
+  '(:if nil nil ((:global.get :ih-hash) :return))
+  '(:local.get 0) :extern.convert_any '(:call :host-identity-hash) '(:local.set h)
+  '(:local.get 0) '(:global.set :ih-key) '(:local.get h) '(:global.set :ih-hash)
+  '(:local.get h))
 
 (defhelper :to-f64 :e-d ((v :i32) (w :i64) (ee :eqref) (dn :f64) (dd :f64))
   `(:block notd :eqref

@@ -656,6 +656,12 @@ NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
              *initial-symbol-values*)
     code))
 
+(defun add-identity-hash-cache ()
+  "The globals of the :IDENTITY-HASH helper: the last object it hashed with the
+host's identity hash, and that hash."
+  (add-global *m* :ih-key :eqref t '((:ref.null :eq)))
+  (add-global *m* :ih-hash :i32 t '((:i32.const 0))))
+
 (defun build-module (&key (entry "_start"))
   (let ((*m* (make-wasm-module)))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
@@ -733,6 +739,7 @@ NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
       (add-global *m* :bstack '(:ref :vector) t '((:i32.const 1024) (:array.new_default :vector)))
       (add-global *m* :bsp :i32 t '((:i32.const 0)))
       (add-global *m* :poll-count :i32 t '((:i32.const 0)))
+      (add-identity-hash-cache)
       ;; loading a heap image (runtime/image.lisp)
       (add-global *m* :img-objs '(:ref :null :vector) t '((:ref.null :vector)))
       (add-global *m* :img-pos :i32 t '((:i32.const 0)))
