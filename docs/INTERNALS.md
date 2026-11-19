@@ -1614,6 +1614,60 @@ map. Running `bench/suite.lisp` with
 6% faster, `--experimental-wasm-skip-null-checks` not at all: that is the
 most that removing casts can give.
 
+### Lem: where the time goes when it is used
+
+`tools/lem-scenario.sh [LEM-DIR]` runs Lem on Clysm (cxxxr/lem's
+`frontends/clysm/`, built with `CLYSM_DIR=$PWD frontends/clysm/build.sh`)
+in its Electron shell without a display and drives it as a person would
+(`tests/lem/scenario.js`): it opens a copy of `src/prims.lisp` (7000 lines),
+scrolls it page by page, moves line by line, types 200 characters of Lisp
+in the middle of a function (Return indents, a space asks for the argument
+list), deletes, searches incrementally and types two commands after `M-x`.
+A key's latency is from its `keydown` to the last change of the page before
+the page is quiet for 50 ms. `LEM_PROFILE=1` records a CPU profile per step
+and a trace (GC, style, layout, paint, V8's compilation), which
+`node tools/lem-profile.mjs DIR` sorts by kind and function
+(`LEM_CALLERS=NAME` shows where a function is called from).
+`LEM_BUFFER_BENCH=1` also times Lem's buffer code alone
+(`tests/lem/buffer-bench.lisp`), which SBCL runs as well with Lem's
+`lem/core` and `lem-lisp-syntax` loaded.
+
+Measured (Linux, 4 CPUs of the machine, means of three runs):
+
+| Step | Before | Now |
+|---|---|---|
+| start to the first frame | 0.55-0.75 s | 0.65-0.80 s |
+| open the first Lisp file (loads the Lisp mode), until highlighted | 1.52 s | 0.94 s |
+| a page down (`C-v`), median / max | 13 ms / 1.5 s (the first, in two runs of three: the Lisp mode was still loading) | 11 / 24 ms |
+| a line down (`C-n`) | 4-5 ms | 4-5 ms |
+| a key typed in Lisp mode, median / mean | 5 / 20.5 ms | 4.5 / 18.5 ms |
+| the slowest key typed in Lisp mode (a space: autodoc) | 184-233 ms | 133-217 ms |
+| a key of `C-s`, of `M-x` | 8-10, 5 ms | 8-9, 5 ms |
+
+("Before" is the image as it was, with only `save-image` repaired.)
+
+Where the time of a key goes: Lisp code 55-85 %, the browser drawing the
+page (style, layout, paint) 15-40 % (6 ms of a page down), GC under 1 %
+(the scavenges on the main thread: 0.5 ms a key), the JavaScript of the FFI
+under 1 % (strings cross in the linear memory). Of the Lisp code of a page
+down (9 ms), half is Lem's redisplay and a third its syntax highlighting of
+the new lines; the GUI framework's update of the DOM is 1.7 ms. A space in
+Lisp mode runs Lem's `parse-for-autodoc`, which scans the rest of the
+function forward: 100-130 ms, the slowest keys of the scenario.
+`tests/lem/buffer-bench.lisp` gives the same code to SBCL: its autodoc
+parses take 233 ms in SBCL and 740 ms here, going forward over every form
+of the file 66 against 153 ms, indenting 55 against 185 ms. (On 2 CPUs the
+autodoc parses take 1270 ms, SBCL's still 234: V8 needs CPUs besides the
+main thread's for its compilers and its GC.) The time is
+spread over Lem's buffer functions (`%character-offset`,
+`%skip-list-forward`, `line-length`: generic readers of the CLOS class
+`line`, `length` of its string, `gethash` of characters in `char-width`).
+Opening the first Lisp file is loading 1800 modules of fasls: V8 compiling
+them (0.2 s) and their functions when first called (0.4 s of lazy
+compilation on the main thread), reading the fasls' forms (0.15 s).
+Compiling eagerly (`--no-wasm-lazy-compilation`) made it slower (1.2 s) and
+the start 1.5 to 2.3 s.
+
 ## Building and distributing
 
 `bin/clysm` needs SBCL, which hosts the cross compiler. `tools/build-npm.sh`
