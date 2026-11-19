@@ -232,6 +232,50 @@ compiled again at every load (micros's `(defconstant keyword-package
 (find-package :keyword))` did that for three of its functions each time Lem
 loaded its Lisp mode).
 
+A module made at run time carries only the runtime helpers that its
+functions and closures call, transitively (`add-called-helpers`,
+`src/live.lisp`), and only the globals (symbols, constants, closures) that
+the code that can run refers to (`live-used-globals`). Before, every module
+made the code of all the helpers and dropped most of them again, and kept the
+symbol globals of all of them, which `RUN`, `SNAP` and `RESTORE` then filled,
+saved and restored: three quarters of the code of ASDF's fasl.
+
+Speed of the compiler (time to compile, best of three on a benchmark slot;
+`tools/bench-libs.sh`'s `l-selfhost-compile` is the Wasm-hosted compiler
+compiling `bench/suite.lisp` with the runtime, against the same compiler on
+SBCL):
+
+| | before (2026-11) | now | SBCL |
+|---|---|---|---|
+| runtime + `bench/suite.lisp`, the compiler on SBCL | 3.4 s | 1.7 s | |
+| the same, the compiler in Wasm (`build/clysmc.wasm`) | 6.8 s | 3.1 s | |
+| ASDF (14000 lines) compiled in the image | 9.0 s | 4.0 s | 2.6 s (`compile-file`) |
+| cl-ppcre from source with ASDF, in the image | 1.95 s | 1.10 s | 0.98 s |
+| 500 small `defun`s loaded from source (`clysm script`) | 1.32 s | 0.47 s | 0.10 s |
+
+What made it slow, and what was done:
+
+* **Typed copies of functions analyzed their callees again.** A copy of a
+  function compiled for fixnum or double arguments is analyzed in type
+  tables of its own, and every function it called was analyzed again in
+  them, transitively: two thirds of the type inference. The return types of
+  called functions now come from the tables of the compilation
+  (`*ti-shared*`, `src/types.lisp`); they do not depend on the copy's
+  parameters. (The code differs only where a cycle of calls is cut in
+  another order.)
+* **Searches that grew with the program**: closure globals were found in a
+  list, and the line of each toplevel form by counting the newlines from the
+  start of the file.
+* **Modules made at run time** (above).
+
+What remains (compiler in Wasm, whole program): type inference 0.8 s (its
+node types are an EQ hash table keyed by conses, whose identity hash is a
+call to the host: 0.3 s), code generation 0.6 s, encoding 0.75 s, macro
+expansion and conversion 0.45 s. In the image, each module costs about
+0.5 ms of the compiler's time plus V8's compilation of the module; ASDF
+compiles each form of its `with-upgradability` twice (once to run it at
+compile time, once for the fasl).
+
 ## Heap images
 
 An image that has loaded a large program (Lem: 360 fasls) can save its heap
