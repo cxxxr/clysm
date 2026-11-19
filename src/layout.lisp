@@ -134,7 +134,8 @@ when ET is not one of the specifiers recognized at compile time."
     ;; complex numbers whose parts are double floats / single floats
     (:complex-d (:struct ((:f64 nil) (:f64 nil))))
     (:complex-s (:struct ((:f32 nil) (:f32 nil))))
-    (:instance  (:struct ((:eqref t) ((:ref :vector) t) (:i32 t))))  ; layout slots hash
+    ;; layout slots hash; not final: structures are its subtypes (below)
+    (:instance  (:sub () nil (:struct ((:eqref t) ((:ref :vector) t) (:i32 t)))))
     ;; data fill dims offset info, the two dimensions of a rank-2 array (else 0 0),
     ;; and the dimension of a one-dimensional array (else 0)
     (:mdarray   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:i32 t) (:i32 t) (:i32 t))))
@@ -216,5 +217,23 @@ when ET is not one of the specifiers recognized at compile time."
     ;; heap images: a function's index in the table of functions
     (:fr-i      (:func ((:ref :null :func)) (:i32)))
     (:v-l       (:func () (:i64)))))
+
+;;; Structures (DEFSTRUCT, without :TYPE) of 1 to +STRUCT-INLINE-MAX+ slots
+;;; keep their slots in fields of their own: a structure of K slots is a
+;;; $siK, which is the $instance fields (layout, an empty slot vector, hash)
+;;; then K mutable eqref fields.  Each $siK is a subtype of $si(K-1), so slot
+;;; I of any structure with more than I slots is read with a cast to $si(I+1)
+;;; and a struct.get (an included structure's slots come first).  Larger
+;;; structures keep a slot vector, as other instances.
+(defconstant +struct-inline-max+ 32)
+(defun sinst-type (k) (intern (format nil "SI~D" k) :keyword))
+(defun sinst-field (i) (+ 3 i))
+(setf *type-defs*
+      (append *type-defs*
+              (loop for k from 1 to +struct-inline-max+
+                    collect (list (sinst-type k)
+                                  `(:sub (,(if (= k 1) :instance (sinst-type (1- k)))) ,(= k +struct-inline-max+)
+                                         (:struct ((:eqref t) ((:ref :vector) t) (:i32 t)
+                                                   ,@(loop repeat k collect '(:eqref t)))))))))
 
 (defun fixed-entry-type (n) (ecase n (0 :f0) (1 :f1) (2 :f2) (3 :f3) (4 :f4)))

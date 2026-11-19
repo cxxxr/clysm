@@ -703,6 +703,7 @@ host's identity hash, and that hash."
       (add-export *m* "lisp_recover" :func :lisp-recover)
       (add-export *m* "mv_count" :global :mv-count)
       (add-export *m* "mv_buf" :global :mv-buf)
+      (add-export *m* "empty_slots" :global :empty-slots)
       (add-export *m* "bstack" :global :bstack)
       (add-export *m* "bsp" :global :bsp)
       (add-export *m* "poll_count" :global :poll-count)
@@ -736,6 +737,8 @@ host's identity hash, and that hash."
       ;; runtime state
       (add-global *m* :mv-count :i32 t '((:i32.const 1)))
       (add-global *m* :mv-buf '(:ref :vector) nil `((:i32.const ,+mv-limit+) (:array.new_default :vector)))
+      ;; the slot vector of structures whose slots are fields of their own
+      (add-global *m* :empty-slots '(:ref :vector) nil '((:array.new_fixed :vector 0)))
       (add-global *m* :bstack '(:ref :vector) t '((:i32.const 1024) (:array.new_default :vector)))
       (add-global *m* :bsp :i32 t '((:i32.const 0)))
       (add-global *m* :poll-count :i32 t '((:i32.const 0)))
@@ -849,7 +852,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
   (add-export m "codes" :table nil)
   (let ((objects nil) (mutables nil))
     (loop for (name type mutable) across (wasm-module-globals m)
-          do (cond ((member name '(:mv-buf :bstack :img-objs :img-roots)))
+          do (cond ((member name '(:mv-buf :bstack :img-objs :img-roots :empty-slots)))
                    ((not (and (consp type) (eq (car type) :ref)))
                     (when (and mutable (eq type :eqref)) (push name mutables)))
                    ((not mutable) (push name objects))))

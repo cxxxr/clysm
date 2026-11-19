@@ -75,7 +75,7 @@ it still waits where it waits.")
                    '(%name %direct-superclasses %direct-slots %class-precedence-list %slots
                      %direct-subclasses %finalized-p %kind %slot-index %default-initargs %documentation
                      %extra %shared %prototype %direct-default-initargs %protocol %plist %make-info
-                     %instance-size %dispatch))
+                     %instance-size %dispatch %inherits))
 
 (setq *standard-metaclasses*
       (mapcar #'find-class '(standard-class funcallable-standard-class built-in-class structure-class
@@ -3029,7 +3029,7 @@ whose name is that instance)."
               (not (null (slot-boundp-using-class class object sd)))
               (values (slot-missing class object slot-name 'slot-boundp))))
         (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
-          (cond ((fixnump loc) (not (%unboundp (%instance-ref object loc))))
+          (cond ((fixnump loc) (not (%unboundp (%instance-gref object loc))))
                 ((consp loc) (not (%unboundp (cdr loc))))
                 (t (values (%slot-missing object slot-name 'slot-boundp nil))))))))
 
@@ -3043,7 +3043,7 @@ whose name is that instance)."
               (slot-missing class object slot-name 'slot-makunbound))
           object)
         (let ((loc (if (%instancep object) (%slot-location object slot-name) nil)))
-          (cond ((fixnump loc) (%set-instance-ref object loc (%unbound-marker)))
+          (cond ((fixnump loc) (%set-instance-gref object loc (%unbound-marker)))
                 ((consp loc) (setf (cdr loc) (%unbound-marker)))
                 (t (%slot-missing object slot-name 'slot-makunbound nil)))
           object))))
@@ -3071,7 +3071,8 @@ access protocol; else NIL."
   (declare (simple-vector cache))
   (flet ((checked (loc count)
            (and (%slot-count-is-p object count) loc)))
-    (cond ((eq index (svref cache 4)) (svref cache 5))
+    (cond ((%sinstp object) nil)          ; (a structure of field slots: not cached)
+          ((eq index (svref cache 4)) (svref cache 5))
           ((eq index (svref cache 6)) (svref cache 7))
           ((eq index (svref cache 9)) (checked (svref cache 10) (svref cache 11)))
           (t (let* ((class (%instance-layout object))

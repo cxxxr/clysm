@@ -85,6 +85,7 @@
         ((%limbs-p x) :limbs)
         ((symbolp x) :symbol)
         ((functionp x) :closure)
+        ((%sinstp x) :sinst)
         ((%instancep x) :instance)
         ((%cellp x) :cell)
         ((%packagep x) :package)
@@ -103,14 +104,14 @@
 
 (defvar +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
-    :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf)
+    :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst)
   "The kinds of the objects of a heap image (as +IMG-KINDS+ in src/prims.lisp).")
 
 (defun %img-rank (kind)
   "Objects are made in the order of their ranks: an object refers in its
 immutable fields only to objects of a lower rank."
   (case kind
-    ((:instance :bignum :fsbuf) 1)
+    ((:instance :sinst :bignum :fsbuf) 1)
     ((:ratio :symbol) 2)
     (:complex 3)
     (:closure 4)
@@ -143,6 +144,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
     (:closure (funcall fn (%closure-env x) "environment") (funcall fn (%closure-raw-klayout x) "keywords")
      (funcall fn (%closure-name x) "name"))
     (:instance (funcall fn (%instance-layout x) "class") (funcall fn (%instance-slots x) "slots"))
+    (:sinst (funcall fn (%instance-layout x) "class")
+     (dotimes (i (%sinst-size x)) (funcall fn (%instance-gref x i) i)))
     (:cell (funcall fn (%cell-value x) "value"))
     (:package (dotimes (i 8) (funcall fn (%package-ref x i) i)))
     (:mdarray (dotimes (i 5) (funcall fn (%mdarray-field x i) i)))
@@ -263,7 +266,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
                                     (%img-describe-path x parents roots-names))))
                           (when (and (eq kind :instance) (hash-table-p x) (%ht-identity-keys-p x))
                             (vector-push-extend x rehash))
-                          (when (member kind '(:cons :vector :symbol :closure :instance :cell :package :mdarray))
+                          (when (member kind '(:cons :vector :symbol :closure :instance :sinst :cell :package :mdarray))
                             (incf fillable))
                           (unless (gethash (%img-key x) *img-ids*)
                             (push x (svref ranks (%img-rank kind))))
@@ -300,7 +303,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setq order (nreverse order))
           (setq *img-buf* (%make-limbs 1000000) *img-fill* 0)
           (%img-halves #x494D #x4C43)       ; magic "CLMI"
-          (%img-word 2)                     ; version (+img-version+)
+          (%img-word 3)                     ; version (+img-version+)
           (%img-word (length base))
           (%img-word (- next (length base)))
           (%img-word fillable)
@@ -351,6 +354,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
          (%img-put-limbs *img-buf* *img-fill* x)
          (setq *img-fill* (+ *img-fill* n))))
       (:instance (%img-ref (%instance-slots x)) (%img-word (%instance-raw-hash x)))
+      (:sinst (%img-word (%sinst-size x)) (%img-word (%instance-raw-hash x)))
       (:symbol (%img-ref (symbol-name x)) (%img-word (%symbol-hash x)))
       (:closure
        (dotimes (i 6)
@@ -392,7 +396,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
 (defun %img-write-fields (x)
   "A record of the mutable fields of X (true if X has some)."
   (let ((kind (%img-kind x)))
-    (when (member kind '(:cons :vector :symbol :closure :instance :cell :package :mdarray))
+    (when (member kind '(:cons :vector :symbol :closure :instance :sinst :cell :package :mdarray))
       (setq *img-current* x)
       (%img-ref x)
       (case kind
@@ -403,6 +407,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
          (%img-word (%symbol-flags x)))
         (:closure (%img-ref (%closure-name x)))
         (:instance (%img-ref (%instance-layout x)) (%img-ref (%instance-slots x)))
+        (:sinst (%img-ref (%instance-layout x))
+         (dotimes (i (%sinst-size x)) (%img-ref (%instance-gref x i))))
         (:cell (%img-ref (%cell-value x)))
         (:package (dotimes (i 8) (%img-ref (%package-ref x i))))
         (:mdarray (dotimes (i 5) (%img-ref (%mdarray-field x i)))

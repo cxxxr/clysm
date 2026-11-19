@@ -7,7 +7,9 @@
 ;;;; ceiling(N/8) octets, little endian.
 
 (defstruct (stream (:constructor %make-plain-stream) (:constructor %make-pp-stream (kind buffer))
-                   (:predicate %streamp))
+                   (:predicate %streamp)
+                   ;; (a slot vector: the fast paths below and in src/prims.lisp read it)
+                   (%slot-vector))
   kind              ; :fd-out :fd-in :file :string-out :string-in :broadcast :two-way :echo :concatenated :synonym :pp
   fd
   buffer            ; output: adjustable string ; string-in: the string

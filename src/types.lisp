@@ -888,7 +888,8 @@ compiler: in the file being compiled, or in the image), else NIL."
                               (t *ty-top*)))))))
     (:prim (let ((tys (ti-args (cddr node))) (name (prim-name (second node))))
              ;; after a structure slot access, the object is of that structure class
-             (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
+             (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set
+                                  clysm-sys::%struct-iref clysm-sys::%struct-iset))
                (let ((x (third node)) (cls (struct-class-node-name (fourth node))))
                  (when (and cls (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
                    (setf *env* (refine-env *env* (ti-slot (second x)) (mkty +k-other+ nil nil cls))))))
@@ -899,7 +900,8 @@ compiler: in the file being compiled, or in the image), else NIL."
                             (when (and x (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
                               (setf *env* (refine-env *env* (ti-slot (second x)) ty)))))))
              (cond ((eq (prim-kind (second node)) :test) *ty-bool*)
-                   ((and (eq name 'clysm-sys::%make-instance) (struct-class-node-name (third node)))
+                   ((and (member name '(clysm-sys::%make-instance clysm-sys::%make-struct))
+                         (struct-class-node-name (third node)))
                     (mkty +k-other+ nil nil (struct-class-node-name (third node))))
                    ((gethash name *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash name *ti-rules*) tys)))

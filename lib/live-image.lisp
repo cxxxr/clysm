@@ -36,13 +36,13 @@
             (and c (fboundp s) (eq c (symbol-function s)) c))))
   ;; structure accessors and predicates are inline in code compiled after the DEFSTRUCT
   (setq sys::*struct-inline-hook*
-        (lambda (kind function-name name index writable)
+        (lambda (kind function-name name index writable &optional fields)
           (let ((*live-mode* t) (*live-packages* t))
             (case kind
-              (:accessor (register-struct-accessor-inline function-name name index writable))
+              (:accessor (register-struct-accessor-inline function-name name index writable fields))
               ;; a call of the constructor is of the structure's type
               (:constructor (setf (gethash function-name *struct-constructors*) name))
-              (t (register-struct-predicate-inline function-name name))))))
+              (t (register-struct-predicate-inline function-name name fields))))))
   ;; macro expanders called by the compiler receive its environment objects
   (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
   (setq sys::*foreign-env-macro-function-hook* #'macro-function-in)

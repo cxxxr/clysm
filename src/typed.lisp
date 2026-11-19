@@ -500,6 +500,15 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                    (typed-store-code node nil))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
+                  ((member name '(clysm-sys::%struct-iref clysm-sys::%struct-iset))
+                   (or (typed-struct-code node)
+                       ;; a constant slot index: the field read inline
+                       (multiple-value-bind (x cls i v size vp) (struct-iref-args node)
+                         (let ((k (const-int-node i)) (n (const-int-node size)))
+                           (when (and k n (< -1 k (mod n 64)) (<= (mod n 64) +struct-inline-max+))
+                             (if vp
+                                 (struct-iref-code (cg x) (cg cls) k (mod n 64) (floor n 64) (cg v))
+                                 (struct-iref-code (cg x) (cg cls) k (mod n 64) (floor n 64))))))))
                   ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
                                   clysm-sys::%svref clysm-sys::%set-svref))
                    (typed-access-code node))
@@ -824,9 +833,33 @@ code leaves nothing, else the value."
            `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args))
              ,@(cg (third args)) (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp))))))))
 
+(defun struct-iref-args (node)
+  "The object, class, index, value (or NIL) and size nodes of a %STRUCT-IREF
+or %STRUCT-ISET node, and whether it sets."
+  (let ((args (cddr node)))
+    (if (eq (node-op-name node) 'clysm-sys::%struct-iset)
+        (values (first args) (second args) (third args) (fourth args) (fifth args) t)
+        (values (first args) (second args) (third args) nil (fourth args) nil))))
+
 (defun typed-struct-code (node)
   "Slot access of an object known to be of the structure class: no check."
-  (destructuring-bind (x cls i &optional (v nil vp)) (cddr node)
+  (when (member (node-op-name node) '(clysm-sys::%struct-iref clysm-sys::%struct-iset))
+    ;; slots in fields of their own: a cast to the structure's type
+    (return-from typed-struct-code
+      (multiple-value-bind (x cls i v size vp) (struct-iref-args node)
+        (let* ((name (struct-class-node-name cls)) (k (const-int-node i))
+               (n (let ((s (const-int-node size))) (and s (mod s 64))))
+               (ty (and k n (< -1 k n) (<= n +struct-inline-max+) (sinst-type n))))
+          (when (and ty name (eq (ty-cls (node-ty x)) name))
+            (if vp
+                (let ((tmp (new-local)))
+                  `(,@(cg x) (:ref.cast! ,ty) ,@(cg v) (:local.tee ,tmp) (:struct.set ,ty ,(sinst-field k))
+                    (:local.get ,tmp)))
+                `(,@(cg x) (:ref.cast! ,ty) (:struct.get ,ty ,(sinst-field k)))))))))
+  (destructuring-bind (x cls i &optional (v nil vp))
+      ;; (without the shape, the last argument when there is one)
+      (let ((args (cddr node)))
+        (if (= (length args) (if (eq (node-op-name node) 'clysm-sys::%struct-set) 5 4)) (butlast args) args))
     (let ((name (struct-class-node-name cls)))
       (when (and name (eq (ty-cls (node-ty x)) name) (fx-arg-p i))
         (if vp
