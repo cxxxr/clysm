@@ -17,13 +17,17 @@
 ;;; The extension manager installs packages with Quicklisp at run time; it
 ;;; is not part of Lem on Clysm.  micros (Lem's SWANK) is loaded with the
 ;;; Lisp mode, when it is first used (src/extensions.lisp): Lem's core only
-;;; asks it for the name of a function.
+;;; asks it for the name of a function (a Lem that names its timers without
+;;; micros needs no patch).
 (define-clysm-fixup "lem/core" (s)
   (clysm-drop-dependencies s "lem-extension-manager" "micros")
   (clysm-enable-component s '("ext" "extension-commands") nil)
-  (clysm-patch-component s '("common" "timer")
-                         "(micros::function-name function)"
-                         "(nth-value 2 (function-lambda-expression function))"))
+  (when (search "(micros::function-name function)"
+                (uiop:read-file-string
+                 (component-pathname (clysm-find-component s '("common" "timer")))))
+    (clysm-patch-component s '("common" "timer")
+                           "(micros::function-name function)"
+                           "(nth-value 2 (function-lambda-expression function))")))
 
 ;;; Lem's Lisp mode: micros, the server it talks to, runs in Lem's own
 ;;; image (src/micros.lisp); there are no other Lisp processes to start
