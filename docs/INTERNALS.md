@@ -1920,9 +1920,18 @@ the page is quiet for 50 ms. `LEM_PROFILE=1` records a CPU profile per step
 and a trace (GC, style, layout, paint, V8's compilation), which
 `node tools/lem-profile.mjs DIR` sorts by kind and function
 (`LEM_CALLERS=NAME` shows where a function is called from).
-`LEM_BUFFER_BENCH=1` also times Lem's buffer code alone
-(`tests/lem/buffer-bench.lisp`), which SBCL runs as well with Lem's
-`lem/core` and `lem-lisp-syntax` loaded.
+`tools/bench-lem.sh` (run under `/tmp/clysm-bench-slot.sh` or
+`taskset`) times Lem's own code without a display in SBCL and in Clysm,
+and prints the ratios as `tools/bench.sh` does
+(`tests/lem/buffer-bench.lisp`, loaded by `tests/lem/load-lem.lisp`): the
+actions that the scenario found to take the time, on `src/prims.lisp` in a
+buffer of Lem's core with the Lisp mode's syntax table and grammar and the
+fake display of Lem's tests. It needs a checkout of cxxxr/lem (`LEM_DIR`,
+by default `build/lem`) in which `frontends/clysm/build.sh` has put micros
+and lem-mailbox under `build/clysm/deps/`, and Quicklisp with Lem's
+libraries; Lem does not have to be built. Clysm loads the systems as fasls
+into the REPL image (compiled the first time for each build of the image),
+SBCL the same systems with the same stubs (`frontends/clysm/stubs/`).
 
 Measured (Linux, 4 CPUs of the machine, means of three runs):
 
@@ -1946,11 +1955,13 @@ down (9 ms), half is Lem's redisplay and a third its syntax highlighting of
 the new lines; the GUI framework's update of the DOM is 1.7 ms. A space in
 Lisp mode runs Lem's `parse-for-autodoc`, which scans the rest of the
 function forward: 100-130 ms, the slowest keys of the scenario.
-`tests/lem/buffer-bench.lisp` gives the same code to SBCL: its autodoc
-parses take 233 ms in SBCL and 740 ms here, going forward over every form
-of the file 66 against 153 ms, indenting 55 against 185 ms. (On 2 CPUs the
-autodoc parses take 1270 ms, SBCL's still 234: V8 needs CPUs besides the
-main thread's for its compilers and its GC.) The time is
+`tools/bench-lem.sh` gives the same code to SBCL (a 4-CPU slot, best of
+three): geometric mean 3.00 times SBCL's time; autodoc parses 217 against
+753 ms, indenting 50 against 191, `form-offset` over every form 143 against
+468, highlighting the whole file 124 against 406, `string-width` of every
+line 80 against 204, a search 27 against 55, 150 pages down 49 against 129.
+(On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
+V8 needs CPUs besides the main thread's for its compilers and its GC.) The time is
 spread over Lem's buffer functions (`%character-offset`,
 `%skip-list-forward`, `line-length`: generic readers of the CLOS class
 `line`, `length` of its string, `gethash` of characters in `char-width`).
