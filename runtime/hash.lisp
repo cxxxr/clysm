@@ -142,15 +142,18 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 
 (defun sxhash (x) (%sxhash x 4))
 (defun %sxhash (x depth)
+  ;; the tests that are a type test of the reference first
+  (declare (fixnum depth))
   (cond ((fixnump x) (%fxlogand x 536870911))
         ((symbolp x) (%symbol-hash x))
-        ((%simple-string-p x) (%string-hash x))
-        ((stringp x) (%string-hash x))
-        ((numberp x) (%number-hash x))
         ((characterp x) (%char-code x))
-        ((consp x) (if (<= depth 0) 17
+        ((consp x) (if (%fx<= depth 0) 17
                        ;; the hash of the tail is multiplied again at each cons
-                       (%mix (%sxhash (cdr x) (- depth 1)) (%sxhash (car x) (- depth 1)))))
+                       (%mix (%sxhash (cdr x) (%fx- depth 1)) (%sxhash (car x) (%fx- depth 1)))))
+        ((%simple-string-p x) (%string-hash x))
+        ((%double-float-p x) (%number-hash x))
+        ((numberp x) (%number-hash x))
+        ((stringp x) (%string-hash x))
         ((bit-vector-p x) (let ((h 7)) (dotimes (i (length x) h) (setq h (%mix h (bit x i))))))
         ((pathnamep x) (%sxhash (namestring x) depth))
         (t (%eq-hash x))))
@@ -321,10 +324,17 @@ for here, without a call."
     value))
 
 (defun %ht-grow (h)
+  "Make room for an entry: the entries are moved to the front of the vectors
+over the removed ones when they are less than half full, else the table
+grows to twice the size."
+  (let* ((keys (%ht h +ht-keys+)) (count (%ht h +ht-count+)) (cap (%svlength keys)))
+    (if (%fx< count (%fxash-right cap 1))
+        (%ht-compact h)
+        (%ht-rebuild h (* 2 cap)))))
+
+(defun %ht-rebuild (h new-cap)
   (let* ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+))
-         (old-hashes (%ht h +ht-hashes+))
-         (count (%ht h +ht-count+))
-         (new-cap (if (< count (floor (%svlength keys) 2)) (%svlength keys) (* 2 (%svlength keys)))))
+         (old-hashes (%ht h +ht-hashes+)))
     (%ht-init-storage h new-cap)
     ;; reinsert with the stored hashes (the keys are distinct)
     (let* ((nk (%ht h +ht-keys+)) (nv (%ht h +ht-vals+)) (nh (%ht h +ht-hashes+))
@@ -342,6 +352,31 @@ for here, without a call."
               (%lset nb b j)))))
       (%ht-set h +ht-fill+ j)
       (%ht-set h +ht-count+ j))))
+
+(defun %ht-compact (h)
+  "Move the entries of H over its removed ones, in the same vectors (no
+allocation), and chain them again."
+  (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (hashes (%ht h +ht-hashes+))
+        (next (%ht h +ht-next+)) (buckets (%ht h +ht-buckets+)) (bits (%ht h +ht-shift+))
+        (fill (%ht h +ht-fill+)) (del +deleted+) (j 0))
+    (declare (fixnum fill j))
+    (dotimes (b (%llen buckets)) (%lset buckets b 0))
+    (dotimes (i fill)
+      (let ((k (%svref keys i)))
+        (unless (eq k del)
+          (let* ((hash (%lref hashes i)) (b (%ht-bucket hash bits)))
+            (%set-svref keys j k)
+            (%set-svref vals j (%svref vals i))
+            (%lset hashes j hash)
+            (%lset next j (%lref buckets b))
+            (setq j (%fx+ j 1))
+            (%lset buckets b j)))))
+    (do ((i j (%fx+ i 1))) ((%fx>= i fill))
+      (%set-svref keys i nil)
+      (%set-svref vals i nil))
+    (%ht-set h +ht-fill+ j)
+    (%ht-set h +ht-count+ j)
+    (%ht-set h +ht-last-index+ -1)))
 
 (defun remhash (key h)
   (%check-ht h)
