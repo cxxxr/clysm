@@ -4656,8 +4656,21 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) '(:local.get 1) '(:local.get 2)
   `(:global.get ,(sym-global 'clysm-sys::%svset)) '(:call (:callsym 3)))
 (defprim clysm-sys::%svset (v i x) :value `(,@v ,@i ,@x (:call :svset)))
-;; (inline in typed.lisp; the function signals unless V is a simple vector)
-(defprim svref (v i) :value `(,@v ,@i ,@(lisp-call-instrs 'svref 2)))
+;; (inline in typed.lisp when V is known to be a simple vector; otherwise a
+;; simple vector and a fixnum index within it inline, the function, which
+;; signals, for anything else)
+(defprim svref (v i) :value
+  (let ((tv (new-local)) (ti (new-local)) (vec (new-local '(:ref :null :vector))) (k (new-local :i32))
+        (slow (gensym "SLOW")) (done (gensym "SVREF")))
+    `(,@v (:local.set ,tv) ,@i (:local.set ,ti)
+      (:block ,done :eqref
+        (:block ,slow nil
+          (:local.get ,ti) (:ref.test :i31) :i32.eqz (:br_if ,slow)
+          (:local.get ,tv) (:ref.test :vector) :i32.eqz (:br_if ,slow)
+          (:local.get ,tv) (:ref.cast! :vector) (:local.tee ,vec) :array.len
+          (:local.get ,ti) (:ref.cast! :i31) :i31.get_s (:local.tee ,k) :i32.le_u (:br_if ,slow)
+          (:local.get ,vec) (:local.get ,k) (:array.get :vector) (:br ,done))
+        (:local.get ,tv) (:local.get ,ti) ,@(lisp-call-instrs 'svref 2)))))
 
 ;;; ------------------------------------------------------------
 ;;; Irrational functions
