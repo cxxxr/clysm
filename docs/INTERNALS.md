@@ -1703,14 +1703,18 @@ What makes the code fast:
   The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
   function of each generic function, also when that is compiled in the
   image or into a fasl, where the engine does not inline the runtime's
-  functions: once for the call of the required arguments alone, and once
-  into the *core* (`+gf-core+`, `%gf-spread-core`) that the other entries
-  call (and once into the keyed main function); the readers and writers
+  functions: once for the call of the required arguments alone (without
+  keyword parameters, also for the calls with the optional arguments and
+  up to two rest arguments), and once into the *core* (`+gf-core+`,
+  `%gf-spread-core`) that the other entries call (and once into the keyed
+  main function); the readers and writers
   that `defclass` defines have none (`%define-slot-accessor`), their call
   sites keeping the slot locations. `call-next-method` is a direct call;
   call sites cache the functions for the classes of their arguments and
   read or write slots of readers and writers inline (`compile-file`
-  defines their compiler macro for the rest of the file): the class of an
+  defines their compiler macro for the rest of the file, and a loaded file
+  defines it again when the form that set its flag was expanded but not
+  evaluated, which left the call sites of `clysm script` without caches): the class of an
   instance is compared with four entries and the slot read at the cached
   location, without an epoch read at each call (`%bump-clos-epoch` empties
   the caches of the sites that have been used, `*gf-sites*`); readers and
