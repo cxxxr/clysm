@@ -266,6 +266,34 @@
       (%member-eql item list)
       (%with-test (mode fn neg) (test test-not)
         (%member item list mode fn neg (%keyfn key)))))
+;;; MEMBER with a list written as a constant, or with only :TEST: at the
+;;; call site (local-time's (member c '(#\: #\T ...)), (member c chars :test
+;;; #'char-equal)), without parsing keywords or calling the test through a
+;;; function object.
+(define-compiler-macro member (&whole form item list &rest keys)
+  (cond ((and (null keys) (consp list) (eq (car list) 'quote) (consp (cdr list))
+              (let ((l (second list)))
+                (and (consp l) (handler-case (<= (list-length l) 8) (error () nil))
+                     (every (lambda (e) (or (symbolp e) (characterp e) (typep e '(signed-byte 29)))) l))))
+         (let ((v (gensym "ITEM")) (l (second list)))
+           `(let ((,v ,item))
+              (cond ,@(loop for tail on l
+                            collect `((eq ,v ',(car tail)) ',tail))
+                    (t nil)))))
+        ((null keys) `(%member-eql ,item ,list))
+        ((and (= (length keys) 2) (eq (first keys) :test))
+         (let ((v (gensym "ITEM")) (f (gensym "TEST")) (l (gensym "LIST"))
+               (test (second keys)))
+           (if (and (consp test) (eq (car test) 'function) (symbolp (second test)) (null (cddr test)))
+               `(let ((,v ,item))
+                  (do ((,l ,list (cdr ,l))) ((endp ,l) nil)
+                    (when (,(second test) ,v (car ,l)) (return ,l))))
+               (let ((l0 (gensym "LIST")))
+                 `(let* ((,v ,item) (,l0 ,list) (,f (%fn ,test)))
+                    (do ((,l ,l0 (cdr ,l))) ((endp ,l) nil)
+                      (when (funcall ,f ,v (car ,l)) (return ,l))))))))
+        (t form)))
+
 (defun member-if (pred list &key key)
   (%member nil list 2 (%fn pred) nil (%keyfn key)))
 (defun member-if-not (pred list &key key)
