@@ -1600,10 +1600,18 @@ What makes the code fast:
   `format` with a constant control string (all directives), `coerce` and
   `parse-integer` compiled at the call site; string streams as buffers
   (`write-char` to one is a store at the call site). The mapping
-  functions (any number of lists), `map`, `map-into`, `reduce` (whole
-  sequence) and the quantifiers (any number of sequences) with a function
-  written in place are loops at the call site, where `#'name` is a direct
-  call (`(mapcar #'+ a b)` adds inline) and a lambda is inline. Hash tables are
+  functions on lists (any number of lists), and `map` (to `nil` or a list)
+  and the quantifiers over one sequence, with a function written in place
+  are loops at the call site, where `#'name` is a direct call (`(mapcar #'+
+  a b)` adds inline) and a lambda is inline. Other mapping calls stay out of
+  line with `#'name` passed as a lambda of known arity (no `&rest` entry for
+  `max`): a function holding several inline loops ran slower than with the
+  calls (`p-seq-vector` 1.3-1.45), because V8 tiers a function up as a whole
+  and inlines call targets by feedback. `concatenate` of two or three
+  strings, `string-upcase`/`-downcase` and `parse-integer` are direct;
+  `format` compiles `~<...~:>` on an argument to `pprint-logical-block`;
+  the reader reads string streams without the accessors' type tests;
+  `find-package` of a symbol remembers the last one found. Hash tables are
   iterated in place (`maphash`, `loop ... hash-keys`,
   `with-hash-table-iterator` read the key and value vectors), `(setf
   gethash)` right after `gethash` of the same key in an `equal`/`equalp`
