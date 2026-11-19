@@ -2,8 +2,9 @@
 ;;;; written in Common Lisp
 ;;;;
 ;;;; The editor is the pane EDITOR:CODE-EDITOR (ui/editor/), the screen is
-;;;; made with the UI framework (ui/), and the Lisp is the IDE's own image
-;;;; (lisp.lisp).  The parts:
+;;;; made with the UI framework (ui/), and what is evaluated runs in a world:
+;;;; the same image in a Web Worker (world.lisp), which the IDE talks to
+;;;; (client.lisp).  The parts:
 ;;;;
 ;;;;   the sidebar   the files of the project, and the definitions of the
 ;;;;                 current file
@@ -134,7 +135,6 @@
 
 (defstate *buffers* '())
 (defstate *current* nil)
-(defstate *message* nil "The message of the status line.")
 (defstate *eldoc* nil "The argument list of the function around the cursor.")
 
 (declaim (ftype function ide-keymap buffer-changed buffer-cursor-moved save-buffer
@@ -307,6 +307,8 @@
     (cond
       ((busy-p)
        (setf *message* "評価中です（■ 中断 で止められます）"))
+      ((not (world-ready-p))
+       (setf *message* "world を起動しています。少し待ってください"))
       ((not (complete-input-p source))
        (setf *message* "括弧が閉じていません"))
       (t
@@ -317,17 +319,14 @@
                            :package package
                            :label (or label (one-line source))
                            :offset (pos-offset* editor start)
-                           :on-definition (lambda (name kind offset)
-                                            (remember-definition name kind path offset))
-                           :on-done (lambda (values ok)
+                           :file path
+                           :on-done (lambda (ok values package)
+                                      (declare (ignore package))
                                       (setf *message*
                                             (if ok
                                                 (format nil "⇒ ~:[値なし~;~:*~{~A~^, ~}~]"
-                                                        (mapcar (lambda (v) (one-line (print-value v package) 80)) values))
-                                                "評価をやめました"))
-                                      (refresh-outline-names))))))))
-
-(defun busy-p () (and *busy* (null *debuggers*)))
+                                                        (mapcar (lambda (v) (one-line (first v) 80)) values))
+                                                "評価をやめました")))))))))
 
 (defun refocus ()
   "Give the keyboard back to where the last evaluation was asked."
@@ -354,26 +353,35 @@
 ;;; ------------------------------------------------------------------
 ;;; The argument list of the function around the cursor
 
+(defvar *eldoc-asked* nil "What the argument list was last asked for: (name package index).")
+
 (defun update-eldoc (buffer)
-  (setf *eldoc*
-        (ignore-errors
-         (let* ((editor (buffer-editor buffer))
-                (head (editor:editor-head editor))
-                (open (editor::enclosing-open editor head)))
-           (when (and open (< (- (editor:pos-line head) (editor:pos-line open)) 200))
-             (let* ((after (editor:make-pos (editor:pos-line open) (1+ (editor:pos-col open))))
-                    (name (symbol-at editor after))
-                    (symbol (and (plusp (length name))
-                                 (find-symbol* name (package-named (buffer-package editor))))))
-               (when (and symbol (or (fboundp symbol) (special-operator-p symbol)))
-                 ;; the argument the cursor is at: the forms that end before it
-                 (let ((index -1) (p after))
-                   (loop
-                     (let ((end (editor::forward-sexp-pos editor p)))
-                       (when (or (null end) (not (editor:pos< end head))) (return))
-                       (incf index)
-                       (setf p end)))
-                   (arglist-string symbol index)))))))))
+  "Ask the world for the argument list of the function around the cursor."
+  (let ((question
+          (ignore-errors
+           (let* ((editor (buffer-editor buffer))
+                  (head (editor:editor-head editor))
+                  (open (editor::enclosing-open editor head)))
+             (when (and open (< (- (editor:pos-line head) (editor:pos-line open)) 200))
+               (let* ((after (editor:make-pos (editor:pos-line open) (1+ (editor:pos-col open))))
+                      (name (symbol-at editor after)))
+                 (when (plusp (length name))
+                   ;; the argument the cursor is at: the forms that end before it
+                   (let ((index -1) (p after))
+                     (loop
+                       (let ((end (editor::forward-sexp-pos editor p)))
+                         (when (or (null end) (not (editor:pos< end head))) (return))
+                         (incf index)
+                         (setf p end)))
+                     (list name (buffer-package editor) index)))))))))
+    (cond ((null question) (setf *eldoc-asked* nil *eldoc* nil))
+          ((equal question *eldoc-asked*))
+          ((world-ready-p)
+           (setf *eldoc-asked* question)
+           (world-request :arglist question
+                          (lambda (text)
+                            (when (equal question *eldoc-asked*)
+                              (setf *eldoc* text))))))))
 
 (defun buffer-cursor-moved (pane)
   (let ((buffer (buffer-of pane)))
@@ -384,7 +392,7 @@
 ;;; ------------------------------------------------------------------
 ;;; Completion: a list under the cursor
 
-(defstruct completion buffer items (index 0) line start x y typed)
+(defstruct completion buffer items all (index 0) line start x y typed)
 (defstate *completion* nil)
 (defvar *completion-keymap* nil)
 
@@ -395,22 +403,33 @@
         (values (subseq name 0 (- col start)) start)))))
 
 (defun start-completion (buffer)
+  "Ask the world for the completions of the name before the cursor."
   (multiple-value-bind (prefix start) (completion-prefix buffer)
     (let* ((editor (buffer-editor buffer))
-           (items (completions prefix (package-named (buffer-package editor)))))
-      (cond ((null items) (setf *message* (format nil "「~A」の補完はありません" prefix)))
-            ((null (rest items)) (insert-completion buffer (first items)))
-            (t
-             (let ((common (common-prefix items)))
-               (when (> (length common) (length prefix))
-                 (insert-completion buffer common)
-                 (setf prefix common)))
-             (multiple-value-bind (x top bottom) (editor:code-editor-cursor-rect (buffer-pane buffer))
-               (declare (ignore top))
-               (setf *completion* (make-completion :buffer buffer :items items :typed prefix
-                                                   :line (editor:pos-line (editor:editor-head editor))
-                                                   :start start :x (or x 100) :y (or bottom 100))))
-             (setf (editor:code-editor-keymap (buffer-pane buffer)) *completion-keymap*))))))
+           (line (editor:pos-line (editor:editor-head editor))))
+      (world-request :complete (list prefix (buffer-package editor))
+                     (lambda (items)
+                       ;; (if the cursor is still where it was)
+                       (when (and (eq buffer *current*)
+                                  (= line (editor:pos-line (editor:editor-head editor)))
+                                  (equal (multiple-value-list (completion-prefix buffer)) (list prefix start)))
+                         (show-completions buffer prefix start items)))))))
+
+(defun show-completions (buffer prefix start items)
+  (let ((editor (buffer-editor buffer)))
+    (cond ((null items) (setf *message* (format nil "「~A」の補完はありません" prefix)))
+          ((null (rest items)) (insert-completion buffer (first items)))
+          (t
+           (let ((common (common-prefix items)))
+             (when (> (length common) (length prefix))
+               (insert-completion buffer common)
+               (setf prefix common)))
+           (multiple-value-bind (x top bottom) (editor:code-editor-cursor-rect (buffer-pane buffer))
+             (declare (ignore top))
+             (setf *completion* (make-completion :buffer buffer :items items :all items :typed prefix
+                                                 :line (editor:pos-line (editor:editor-head editor))
+                                                 :start start :x (or x 100) :y (or bottom 100))))
+           (setf (editor:code-editor-keymap (buffer-pane buffer)) *completion-keymap*)))))
 
 (defun common-prefix (strings)
   (reduce (lambda (a b) (subseq a 0 (or (mismatch a b :test #'char-equal) (length a)))) strings))
@@ -421,7 +440,8 @@
     (multiple-value-bind (name start) (symbol-at editor head)
       (declare (ignore name))
       (editor:with-undo-group (editor)
-        (editor:replace-range editor (editor:make-pos (editor:pos-line head) start) head text)))))
+        (editor:replace-range editor (editor:make-pos (editor:pos-line head) start) head text))
+      (editor::after-command (buffer-pane buffer)))))
 
 (defun close-completion ()
   (let ((completion *completion*))
@@ -444,9 +464,14 @@
              (close-completion))
             ((equal prefix (completion-typed completion)))
             (t
-              (let ((items (completions prefix (package-named (buffer-package (buffer-editor buffer))))))
+              ;; the items that begin with what is typed now
+              (let ((items (remove-if-not (lambda (item)
+                                            (and (>= (length item) (length prefix))
+                                                 (string-equal prefix item :end2 (length prefix))))
+                                          (completion-all completion))))
                 (if items
-                    (setf *completion* (make-completion :buffer buffer :items items :index 0 :typed prefix
+                    (setf *completion* (make-completion :buffer buffer :items items :all (completion-all completion)
+                                                        :index 0 :typed prefix
                                                         :line (completion-line completion) :start start
                                                         :x (completion-x completion) :y (completion-y completion)))
                     (close-completion))))))))))
@@ -510,28 +535,34 @@
         while end do (setf start (1+ end))))
 
 (defun find-definition (buffer)
+  "Go to the definition of the name at the cursor: those evaluated in the
+IDE, those of the world's image, or a line (def… name of the project."
   (let* ((editor (buffer-editor buffer))
-         (name (symbol-at editor (editor:editor-head editor))))
+         (name (symbol-at editor (editor:editor-head editor)))
+         (here (cons buffer (editor:editor-head editor))))
     (when (zerop (length name))
       (setf *message* "カーソルの位置に名前がありません")
       (return-from find-definition))
-    (let* ((symbol (find-symbol* name (package-named (buffer-package editor))))
-           (places (and symbol (definition-places symbol)))
-           (here (cons buffer (editor:editor-head editor))))
-      (flet ((jumped () (push here *jumps*)))
-        (cond ((loop for (kind path offset) in places
-                     when (or (member path *buffers* :key #'buffer-path :test #'equal)
-                              (member path *files* :test #'equal)
-                              (and (desktop-p) (ignore-errors (probe-file path))))
-                       do (jumped) (goto-offset path offset)
-                          (setf *message* (format nil "~A ~A" kind (string-downcase name)))
-                          (return t)))
-              ((let ((found (search-definition (string-left-trim ":" (subseq name (1+ (or (position #\: name :from-end t) -1)))))))
-                 (when found
-                   (jumped)
-                   (goto-line (first found) (second found))
-                   t)))
-              (t (setf *message* (format nil "~A の定義が見つかりません" name))))))))
+    (flet ((jump (answer)
+             (let ((places (and answer
+                                (append (gethash (first answer) *definitions*) (second answer)))))
+               (cond ((loop for (kind path offset) in places
+                            when (or (member path *buffers* :key #'buffer-path :test #'equal)
+                                     (member path *files* :test #'equal)
+                                     (and (desktop-p) (ignore-errors (probe-file path))))
+                              do (push here *jumps*)
+                                 (goto-offset path offset)
+                                 (setf *message* (format nil "~A ~A" kind (string-downcase name)))
+                                 (return t)))
+                     ((let ((found (search-definition (subseq name (1+ (or (position #\: name :from-end t) -1))))))
+                        (when found
+                          (push here *jumps*)
+                          (goto-line (first found) (second found))
+                          t)))
+                     (t (setf *message* (format nil "~A の定義が見つかりません" name)))))))
+      (if (world-ready-p)
+          (world-request :definition (list name (buffer-package editor)) #'jump)
+          (jump nil)))))
 
 (defun pop-definition ()
   (let ((jump (pop *jumps*)))
@@ -656,17 +687,15 @@
 
 ;;; Describe, macroexpand: in the REPL
 
-(defun symbol-at-cursor (buffer)
+(defun describe-at-cursor (buffer)
   (let* ((editor (buffer-editor buffer))
          (name (symbol-at editor (editor:editor-head editor))))
-    (and (plusp (length name)) (find-symbol* name (package-named (buffer-package editor))))))
-
-(defun describe-at-cursor (buffer)
-  (let ((symbol (symbol-at-cursor buffer)))
-    (if symbol
-        (progn (add-entry :eval :text (format nil "describe ~(~A~)" (symbol-name symbol)))
-               (add-entry :output :text (describe-to-string symbol)))
-        (setf *message* "カーソルの位置に知られた名前がありません"))))
+    (if (zerop (length name))
+        (setf *message* "カーソルの位置に名前がありません")
+        (world-request :describe (list name (buffer-package editor))
+                       (lambda (text)
+                         (add-entry :eval :text (format nil "describe ~(~A~)" name))
+                         (add-entry :output :text text))))))
 
 (defun macroexpand-at-cursor (buffer)
   (let* ((editor (buffer-editor buffer))
@@ -676,14 +705,11 @@
                    (editor::enclosing-open editor head))))
     (if (null open)
         (setf *message* "カーソルの位置にフォームがありません")
-        (let* ((source (text-between editor open (or (editor::forward-sexp-pos editor open) head)))
-               (*package* (package-named (buffer-package editor))))
-          (handler-case
-              (let ((form (read-from-string source)))
-                (add-entry :eval :text (format nil "macroexpand-1 ~A" (one-line source)))
-                (add-entry :output :text (let ((*print-case* :downcase) (*print-pretty* t))
-                                           (prin1-to-string (macroexpand-1 form)))))
-            (error (e) (setf *message* (princ-to-string e))))))))
+        (let ((source (text-between editor open (or (editor::forward-sexp-pos editor open) head))))
+          (world-request :macroexpand (list source (buffer-package editor))
+                         (lambda (text)
+                           (add-entry :eval :text (format nil "macroexpand-1 ~A" (one-line source)))
+                           (add-entry :output :text text)))))))
 
 ;;; ------------------------------------------------------------------
 ;;; The REPL's input: an editor too
@@ -748,17 +774,21 @@
 (editor:define-editor-command ide-repl-to-editor (editor) "Go back to the editor."
   (when *current* (editor:code-editor-focus (buffer-pane *current*))))
 (editor:define-editor-command ide-repl-complete (editor) "Complete in the REPL."
-  (let ((items (multiple-value-bind (name start) (symbol-at editor (editor:editor-head editor))
-                 (let ((prefix (subseq name 0 (- (editor:pos-col (editor:editor-head editor)) start))))
-                   (completions prefix (package-named *repl-package*))))))
-    (cond ((null items) (setf *message* "補完はありません"))
-          (t (let* ((common (if (rest items) (common-prefix items) (first items)))
-                    (head (editor:editor-head editor)))
-               (multiple-value-bind (name start) (symbol-at editor head)
-                 (declare (ignore name))
-                 (editor:replace-range editor (editor:make-pos (editor:pos-line head) start) head common))
-               (when (rest items)
-                 (setf *message* (format nil "~{~A~^  ~}" (subseq items 0 (min 12 (length items)))))))))))
+  (multiple-value-bind (name start) (symbol-at editor (editor:editor-head editor))
+    (let ((prefix (subseq name 0 (- (editor:pos-col (editor:editor-head editor)) start)))
+          (line (editor:pos-line (editor:editor-head editor))))
+      (world-request
+       :complete (list prefix *repl-package*)
+       (lambda (items)
+         (let ((head (editor:editor-head editor)))
+           (cond ((/= line (editor:pos-line head)))
+                 ((null items) (setf *message* "補完はありません"))
+                 (t (let ((common (if (rest items) (common-prefix items) (first items))))
+                      (editor:with-undo-group (editor)
+                        (editor:replace-range editor (editor:make-pos line start) head common))
+                      (editor::after-command *repl-input*)
+                      (when (rest items)
+                        (setf *message* (format nil "~{~A~^  ~}" (subseq items 0 (min 12 (length items)))))))))))))))
 
 (bind *repl-standard-keymap*
       "Return" 'ide-repl-send "Mod-Return" 'ide-repl-send-now "S-Return" 'editor::newline
@@ -800,9 +830,13 @@
 ;;; ------------------------------------------------------------------
 ;;; The inspector
 
-(defstate *inspected* '() "The objects inspected, the current first.")
+(defstate *inspected* '()
+  "The objects of the world inspected, the current first: descriptions
+(:id :title :printed :parts ((label printed id)...)).")
 
-(defun inspect-object (object) (push object *inspected*))
+(defun inspect-object (id)
+  (world-request :inspect (list id)
+                 (lambda (description) (push description *inspected*))))
 
 ;;; ------------------------------------------------------------------
 ;;; Commands of the menus and the toolbar
@@ -842,8 +876,12 @@
 
 (define-command (interrupt-command :menu "Lisp" :label "中断" :enabled *busy*) ()
   (if *debuggers*
-      (choose-restart* (first *debuggers*) (find-restart 'abort (debugger-condition (first *debuggers*))))
+      (abort-debugger (first *debuggers*))
       (interrupt-evaluation)))
+
+(define-command (restart-world-command :menu "Lisp" :label "world を再起動") ()
+  (setf *inspected* '())
+  (restart-world))
 
 (define-command (clear-repl :menu "Lisp" :label "REPL を消去") ()
   (clear-log))
@@ -853,10 +891,8 @@
     (setf *root* root
           (setting "root") root)
     (refresh-files)
-    (ignore-errors
-     (let ((process (js:global "process")))
-       (when (js:js-value-p process) (js:call process "chdir" root))))
-    (setf *default-pathname-defaults* (pathname root))))
+    ;; the files that the world opens are the project's
+    (when (world-ready-p) (world-request :chdir (list root) nil))))
 
 ;;; ------------------------------------------------------------------
 ;;; The screen
@@ -1034,10 +1070,11 @@
            (if (null objects)
                (:span :class "none" "; 値なし")
                (mapcar (lambda (object)
-                         (:div :class "value" :title "クリックで調べる"
-                               :on-click (lambda (e) (declare (ignore e)) (inspect-object object))
-                           (:span :class "arrow" "⇒ ")
-                           (:span (print-value object (entry-package entry)))))
+                         (destructuring-bind (printed id) object
+                           (:div :class "value" :title "クリックで調べる"
+                                 :on-click (lambda (e) (declare (ignore e)) (inspect-object id))
+                             (:span :class "arrow" "⇒ ")
+                             (:span printed))))
                        objects)))))
       (t (:div :class (format nil "e-~(~A~)" (entry-kind entry)) text)))))
 
@@ -1073,56 +1110,65 @@
 (defcomponent debugger-view ()
   (let ((debugger (first *debuggers*)))
     (when debugger
-      (let ((condition (debugger-condition debugger)))
+      (destructuring-bind (&key level type message restarts abort backtrace condition) debugger
         (:div :class "ide-debugger"
           (:div :class "title"
-            (:span :class "badge" (format nil "デバッガ ~D" (debugger-level debugger)))
-            (:span :class "type" (condition-type-name condition)))
-          (:pre :class "message" (or (ignore-errors (princ-to-string condition)) "（表示できない状態）"))
+            (:span :class "badge" (format nil "デバッガ ~D" level))
+            (:span :class "type" type))
+          (:pre :class "message" message)
           (:div :class "restarts"
-            (loop for restart in (debugger-restarts debugger)
+            (loop for label in restarts
                   for i from 0
-                  collect (let ((restart restart))
-                            (:button :class (if (eq (restart-name restart) 'abort) "restart abort" "restart")
+                  collect (let ((i i))
+                            (:button :class (if (eql i abort) "restart abort" "restart")
                                      :on-click (lambda (e)
                                                  (declare (ignore e))
                                                  (refocus)
-                                                 (choose-restart* debugger restart))
+                                                 (choose-restart* debugger i))
                               (:span :class "n" i)
-                              (or (ignore-errors (princ-to-string restart)) (string (restart-name restart)))))))
+                              label))))
           (:details :class "backtrace"
-            (:summary (format nil "バックトレース（~D）" (length (debugger-backtrace debugger))))
-            (:ol (mapcar (lambda (frame) (:li frame)) (debugger-backtrace debugger))))
+            (:summary (format nil "バックトレース（~D）" (length backtrace)))
+            (:ol (mapcar (lambda (frame) (:li frame)) backtrace)))
           (:div :class "inspect-condition"
             (:button :on-click (lambda (e) (declare (ignore e)) (inspect-object condition))
               "状態を調べる")))))))
 
 (defcomponent inspector-view ()
-  (let ((objects *inspected*))
-    (when objects
-      (let* ((object (first objects))
-             (parts (inspect-parts object)))
+  (let ((descriptions *inspected*))
+    (when descriptions
+      (destructuring-bind (&key id title printed parts) (first descriptions)
+        (declare (ignore id))
         (:div :class "ide-inspector"
           (:div :class "title"
-            (when (rest objects)
+            (when (rest descriptions)
               (:button :class "small" :title "戻る" :on-click (lambda (e) (declare (ignore e)) (pop *inspected*)) "←"))
-            (:span :class "type" (car parts))
+            (:span :class "type" title)
             (:button :class "small close" :title "閉じる"
                      :on-click (lambda (e) (declare (ignore e)) (setf *inspected* '())) "×"))
-          (:pre :class "printed" (one-line (print-value object) 400))
+          (:pre :class "printed" printed)
           (:table
             (mapcar (lambda (part)
-                      (let ((value (cdr part)))
-                        (:tr :on-click (lambda (e) (declare (ignore e)) (inspect-object value))
-                          (:th (car part))
-                          (:td (one-line (print-value value) 120)))))
-                    (cdr parts))))))))
+                      (destructuring-bind (label text id) part
+                        (:tr :on-click (lambda (e) (declare (ignore e)) (inspect-object id))
+                          (:th label)
+                          (:td text))))
+                    parts)))))))
 
 (defcomponent repl-view ()
   (:div :class "ide-repl"
     (:div :class "ide-section-title" "REPL"
       (:span :class "package" *repl-package*)
       (when *busy* (:span :class "busy" (format nil "評価中: ~A" *busy*)))
+      (:span :class (format nil "world ~(~A~)" *world-state*)
+             :title "評価する Lisp: このページのイメージを別のワーカーで動かしたもの"
+        (case *world-state*
+          (:ready (format nil "world~@[ (~,1F 秒で起動)~]" *world-seconds*))
+          (:starting "world を起動しています…")
+          (:failed "world が止まりました")
+          (t "")))
+      (:button :class "small" :title "world を終わらせて新しく始める（何をしていても止まります）"
+               :on-click (lambda (e) (declare (ignore e)) (restart-world-command)) "↻ world")
       (:button :class "small" :title "消去" :on-click (lambda (e) (declare (ignore e)) (clear-log)) "消去"))
     (debugger-view)
     (repl-log)
@@ -1269,7 +1315,9 @@
 
 (safe-divide 10 0)
 
-;;; 終わらない計算も、■ 中断 で止められます（IDE は動き続けます）
+;;; 評価は IDE とは別の world（Web Worker の中の Lisp）で動きます。
+;;; 終わらない計算も ■ 中断 で止められ、止まらなければ ↻ world で
+;;; world ごと新しくできます（IDE は動き続けます）
 (defun forever ()
   (loop for i from 0
         when (zerop (mod i 10000000))
@@ -1333,6 +1381,9 @@
 
 (defun start ()
   (setf *abort-label* "キャンセル")
+  ;; the world, where the IDE evaluates; when it is ready it works in the project's folder
+  (push (lambda () (when *root* (world-request :chdir (list *root*) nil))) *world-hooks*)
+  (start-world)
   (cond ((virtual-p)
          (when (null (virtual-index))
            (dolist (sample +samples+) (write-text (car sample) (cdr sample))))
@@ -1376,4 +1427,5 @@
                    nil)))))
   (when *current* (editor:code-editor-focus (buffer-pane *current*))))
 
-(start)
+;; in a page, the IDE; in a worker, a world (world.lisp)
+(if (world-p) (serve-world) (start))

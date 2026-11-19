@@ -75,6 +75,10 @@ body { background: var(--ce-bg); color: var(--ui-fg); font: var(--ui-font); over
 .ide-repl .package { text-transform: none; letter-spacing: 0; font-family: var(--ide-mono); color: var(--ui-accent); }
 .ide-repl .busy { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ide-warning);
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ide-repl .world { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: auto; }
+.ide-repl .world.starting { color: var(--ide-warning); }
+.ide-repl .world.failed { color: var(--ide-error); }
+.ide-repl .world + button { margin-left: 0; }
 .ide-log { flex: 1 1 0; overflow: auto; padding: 2px 12px 6px; font-family: var(--ide-mono); font-size: 13px; }
 .ide-log pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
 .ide-log .prompt { color: var(--ui-accent); margin-right: 8px; flex: none; }

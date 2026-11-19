@@ -59,6 +59,8 @@ module.exports = (win, app) => {
       check('starts', await until(async () => (await js("document.querySelectorAll('.ide-row.file').length")) > 0, 30000));
       const files = await js("[...document.querySelectorAll('.ide-files .ide-row')].map((e) => e.textContent.trim())");
       check('the project of the command line', (await js("document.querySelector('.ide-project').textContent")) === 'project');
+      check('a world starts', await until(async () => !!(await js("document.querySelector('.world.ready')")), 30000),
+            await js("document.querySelector('.ide-repl .world')?.textContent"));
       check('the files of the folder (not .git)', JSON.stringify(files) === JSON.stringify(['λhello.lisp', '▾ util', 'λmath.lisp']), files);
 
       // open a file from the tree, evaluate it
@@ -120,6 +122,21 @@ module.exports = (win, app) => {
       check('gives up', await until(async () => /評価をやめました/.test(await log())));
       await repl('(+ 1 2)');
       check('the REPL after', await until(async () => (await lastValue()) === '⇒ 3'), await lastValue());
+
+      // describe a name of the world
+      await repl('(describe (quote hello:greet))');
+      check('describe in the world', await until(async () => /GREET/.test(await log())));
+
+      // a world that does not answer is killed, and another started
+      await repl('(defvar *in-old-world* t)');
+      await until(async () => /IN-OLD-WORLD/.test(await lastValue() || ''));
+      await repl('(loop)');
+      await sleep(300);
+      await click('.ide-repl .world + button');
+      check('a new world', await until(async () => !!(await js("document.querySelector('.world.ready')")) &&
+                                                     !(await js("document.querySelector('.ide-repl .busy')")), 30000));
+      await repl('(list (boundp (quote *in-old-world*)) (namestring *default-pathname-defaults*))');
+      check('the new world is fresh, in the project', await until(async () => (await lastValue()) === `⇒ (NIL "${project}/")`), await lastValue());
 
       if (shot) fs.writeFileSync(shot, (await wc.capturePage()).toPNG());
       check('no errors', errors.length === 0, errors.join('\n'));
