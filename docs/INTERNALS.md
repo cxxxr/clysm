@@ -1496,6 +1496,67 @@ caches for every page that uses it.
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions.
 
+### Allocation, garbage collection and the engine's flags
+
+Objects are V8 heap objects. Node.js is built without pointer compression,
+so every Wasm struct has two 8-octet header words (map, hash): a cons takes
+32 octets (SBCL: 16; measured), a boxed double 24, an instance about 40 plus its slot
+vector (24 + 8 per slot). Nothing in the module can make these smaller.
+
+Measured in 2026-11 (Node.js 24.21, V8 13.6; four CPUs; `bench/alloc.lisp`,
+written for it: binary trees, trees of structures, lists copied over and over,
+closures, boxed doubles, small vectors, and data that survives: 3 million
+pushed conses, a hash table of 500000 lists, 300000 strings in a vector):
+
+* **Garbage that dies young is cheap**: binary trees of depth 18 take 1.1–1.4
+  times SBCL's time, the others 0.8–2.1 (small vectors 2.1, closures 1.7). Scavenges stay under
+  12 ms (2.3 ms on `bench/gabriel.lisp`), full collections under 7 ms.
+* **Data that survives is not**: building a list of 3 million conses that
+  all stay alive is 4–7 times SBCL's time, almost all of it in scavenges
+  that copy each object twice (into the other semi-space, then to the old
+  generation), 50–100 ms each once the young generation has grown to its
+  64 MB; full collections of a 400 MB heap take about 80 ms. Those are the
+  longest pauses an application (an editor) sees.
+* **Walking a large structure** (a tree of 2 million conses, 64 MB) is
+  4–6 times SBCL's time; the same walk over a tree that fits in the cache
+  is 0.9–1.5. The objects are twice as large, and probably no longer in the
+  order they were made in once the scavenger has copied them.
+* Run-to-run spread on this machine is large: the same program, with the
+  same tier-up and inlining decisions (`--trace-wasm-inlining`), runs a
+  small tree walk in 20 or in 38 ms. Flags were compared with interleaved
+  runs, the best of four to six of each.
+
+The engine's defaults were kept; each alternative was measured against them
+(ratio of geometric means, below 1 is faster):
+
+| Flag | Allocation probes | `suite` | `gabriel` | Surviving data |
+|---|---|---|---|---|
+| `--minor-ms` (young generation marked and swept, not copied) | 0.99–1.01 | 0.99–1.03 (`b-deriv` 1.25) | 0.97 | 0.82–0.93 (the list 0.67–0.9) |
+| `--max-semi-space-size=32` | 1.04–1.14 | | | |
+| `--max-semi-space-size=64` | 1.14 | | | |
+| `--max-semi-space-size=8` (or 4) | 1.35–1.5 | | | |
+| `--scavenger-max-new-space-capacity-mb=16` | | 1.00 | | 1.05 |
+| `--single-threaded-gc` | 1.4 (binary trees 2.5) | | | |
+| `--wasm-deopt`, larger `--wasm-inlining-budget` | 1.03–1.06 | | | |
+| `--no-liftoff` | 1.15 (binary trees 1.3) | | | |
+
+`--minor-ms` would help programs that build large data, but code whose
+garbage all dies young (`b-deriv`, the common case) is 25% slower with it
+whatever the size of the young generation, and it cannot be set from
+`host/run.mjs` (`v8.setFlagsFromString('--minor-ms')` crashes the process
+at the first collection) nor through `NODE_OPTIONS`: every `node` command
+would need it. Startup: `--no-liftoff` makes `clysm eval t` take over 16 s
+(everything compiled by TurboFan), `--no-wasm-lazy-compilation` does not
+start the image at all. `clysm eval t` takes 0.37–0.5 s from the REPL
+image with `--no-userinit`, about 1.2 s when `~/.clysmrc` loads Quicklisp.
+
+Types and casts: every type is final (a type without `sub` in the binary
+format is final), so `ref.test` and `ref.cast` are one comparison of the
+map. Running `bench/suite.lisp` with
+`--experimental-wasm-assume-ref-cast-succeeds` (every cast unchecked) is
+6% faster, `--experimental-wasm-skip-null-checks` not at all: that is the
+most that removing casts can give.
+
 ## Building and distributing
 
 `bin/clysm` needs SBCL, which hosts the cross compiler. `tools/build-npm.sh`
