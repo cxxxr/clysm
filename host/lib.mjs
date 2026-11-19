@@ -128,7 +128,7 @@ function instantiate(module, options) {
   installGlobals(options);
   const access = nodeModuleAccess();
   const state = {
-    modules: options.modules || {},
+    jsModules: options.modules || {},
     importer: options.import || access.importer,
     require: options.require || access.require,
   };

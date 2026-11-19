@@ -128,7 +128,7 @@ export function makeJsImports(state) {
       // what the host gives the Lisp side: 0 the modules of (js:module name),
       // 1 the function of (js:import specifier), 2 that of (js:require specifier)
       host: (k) => {
-        if (k === 0) return (state.modules ??= {});
+        if (k === 0) return (state.jsModules ??= {});
         if (k === 1) return state.importer || ((specifier) => import(specifier));
         if (k === 2) return state.require;
         if (k === 3) return state.mapStack;

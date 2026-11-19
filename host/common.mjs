@@ -46,18 +46,28 @@ export function moduleCodeCount(mod) {
 export const byteSources = new WeakMap();
 
 // Instantiate a module compiled inside the image (a Uint8Array or a
-// WebAssembly.Module) and link it with it: its functions go to the image's
-// table of functions from its end.  While state.modules is an array (an
-// image being prepared to be saved, runtime/image.lisp), the modules are
-// recorded there.
+// WebAssembly.Module) and link it with it.  While state.modules is an array
+// (an image being prepared to be saved, runtime/image.lisp), the modules are
+// recorded there and their functions go to the image's table of functions
+// from its end; so do those of a module of a heap image being loaded (at
+// CODEBASE).  Otherwise the table is only read by SAVE-IMAGE, which then
+// refuses to run, so a module gets a table of its own: in the image's, every
+// module compiled (each toplevel form of COMPILE-FILE and of the REPL) would
+// be kept for good, which made compiling ASDF run out of memory on Node.js 22.
 export function instantiateLinked(state, bytes, codeBase) {
   const mod = bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes);
   const ex = state.instance.exports;
-  const codes = ex.codes;
+  const recording = Array.isArray(state.modules);
   const count = moduleCodeCount(mod);
+  let codes = ex.codes;
   if (codeBase === undefined) {
-    codeBase = codes.length;
-    codes.grow(count);
+    if (recording) {
+      codeBase = codes.length;
+      codes.grow(count);
+    } else {
+      codes = new WebAssembly.Table({ element: 'anyfunc', initial: count });
+      codeBase = 0;
+    }
   }
   const inst = new WebAssembly.Instance(mod, {
     ...state.imports,
@@ -66,7 +76,7 @@ export function instantiateLinked(state, bytes, codeBase) {
              lisp_throw: ex.lisp_throw, memory: ex.memory,
              codes, code_base: codeBase },
   });
-  if (state.modules) state.modules.push({ bytes, codeBase, count, instance: inst, source: byteSources.get(bytes) });
+  if (recording) state.modules.push({ bytes, codeBase, count, instance: inst, source: byteSources.get(bytes) });
   return inst;
 }
 
@@ -458,7 +468,7 @@ export function makeCommonEnv(state) {
       const i = state.codeIndex.get(f);
       return i === undefined ? -1 : i;
     },
-    module_count() { return state.modules ? state.modules.length : 0; },
+    module_count() { return Array.isArray(state.modules) ? state.modules.length : 0; },
     module_snap(i) { return state.modules[i].instance.exports.snap(); },
     compile_module(bytes, consts) {
       // instantiate a module compiled inside the image and link it with it
