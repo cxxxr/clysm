@@ -218,6 +218,9 @@
 ;;;   dims   : list of dimensions
 ;;;   offset : displaced index offset
 ;;;   info   : (element-type adjustable . displaced)
+;;; and, kept by %MAKE-MDARRAY and %SET-MDARRAY-DIMS from the dimensions, the
+;;; two dimensions of a rank-2 array and the dimension of a rank-1 array
+;;; (%MDARRAY-DIM1; 0 for other ranks), which inline accesses read.
 ;;; A header that is neither adjustable, displaced nor has a fill pointer is a
 ;;; simple array (multi-dimensional arrays, 0-D arrays, vectors of element type NIL).
 
@@ -686,8 +689,8 @@
       (let ((xv (gensym "X")) (vv (gensym "V")) (fp (gensym "FP")) (d (gensym "D")) (data (gensym "DATA")))
         `(let* ((,xv ,x) (,vv ,v)
                 (,fp (and (%mdarray-p ,vv) (%mdarray-fill ,vv))))
-           (let ((,d (and ,fp (%mdarray-dims ,vv))) (,data (and ,fp (%mdarray-data ,vv))))
-             (if (and (fixnump ,fp) (consp ,d) (null (cdr ,d)) (%fx< ,fp (car ,d))
+           (let ((,d (and ,fp (%mdarray-dim1 ,vv))) (,data (and ,fp (%mdarray-data ,vv))))
+             (if (and (fixnump ,fp) (%fx< ,fp ,d)
                       (%simple-vector-p ,data) (eql (%mdarray-offset ,vv) 0))
                  (progn (%set-svref ,data ,fp ,xv) (%set-mdarray-fill ,vv (%fx+ ,fp 1)) ,fp)
                  (vector-push-extend ,xv ,vv 16)))))))   ; (with EXTENSION: not expanded again)
@@ -706,7 +709,18 @@
       (%set-mdarray-fill buf (%fx+ fp n))
       t)))
 
-(defun vector-pop (v)
+(defun vector-pop (v) (%vector-pop v))
+;; the common case inline: a vector of elements of type T
+(define-compiler-macro vector-pop (v)
+  (let ((vv (gensym "V")) (fp (gensym "FP")) (data (gensym "DATA")))
+    `(let* ((,vv ,v) (,fp (and (%mdarray-p ,vv) (%mdarray-fill ,vv))))
+       (if (and (fixnump ,fp) (%fx< 0 ,fp) (%fx<= ,fp (%mdarray-dim1 ,vv)) (eql (%mdarray-offset ,vv) 0))
+           (let ((,data (%mdarray-data ,vv)))
+             (if (%simple-vector-p ,data)
+                 (progn (%set-mdarray-fill ,vv (%fx- ,fp 1)) (%svref ,data (%fx- ,fp 1)))
+                 (%vector-pop ,vv)))
+           (%vector-pop ,vv)))))
+(defun %vector-pop (v)
   (let ((fp (fill-pointer v)))
     (declare (fixnum fp))
     (when (eql fp 0) (error "VECTOR-POP: empty vector ~S" v))

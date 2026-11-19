@@ -410,7 +410,22 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
            (cond ((ty-only-p ty +k-svec+) `(,@(cg a) (:ref.cast! :vector) :array.len))
                  ((ty-only-p ty +k-string+) `(,@(cg a) (:ref.cast! :string) :array.len))
                  ((and (eq name 'length) (ty-vec-kind ty))
-                  `(,@(cg a) (:ref.cast ,(ty-vec-kind ty)) :array.len)))))
+                  `(,@(cg a) (:ref.cast ,(ty-vec-kind ty)) :array.len))
+                 ((and (eq name 'length) (not (ty-only-p ty +k-list+)))
+                  ;; of unknown type: a simple vector or string, or a vector
+                  ;; with a fill pointer, inline; else the function
+                  (let ((e (new-local)) (f (new-local)) (done (gensym "LEN")))
+                    `(,@(cg a) (:local.set ,e)
+                      (:block ,done :i32
+                        (:local.get ,e) (:ref.test :vector)
+                        (:if nil nil ((:local.get ,e) (:ref.cast! :vector) :array.len (:br ,done)))
+                        (:local.get ,e) (:ref.test :string)
+                        (:if nil nil ((:local.get ,e) (:ref.cast! :string) :array.len (:br ,done)))
+                        (:local.get ,e) (:ref.test :mdarray)
+                        (:if nil nil ((:local.get ,e) (:ref.cast! :mdarray) (:struct.get :mdarray 1) (:local.tee ,f)
+                                      (:ref.test :i31)
+                                      (:if nil nil ((:local.get ,f) (:ref.cast! :i31) :i31.get_s (:br ,done)))))
+                        (:local.get ,e) ,@(lisp-call-instrs 'length 1) (:ref.cast :i31) :i31.get_s)))))))
         ((mod rem truncate floor)
          (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b))
            (let* ((bt (node-ty b)) (nonzero (or (> (ty-lo bt) 0) (< (ty-hi bt) 0)))
@@ -481,7 +496,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                   ((member name '(clysm-sys::%aref1 svref char schar row-major-aref clysm-sys::%aref2))
                    (typed-elt-code node :eqref))
                   ((member name '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
-                                  clysm-sys::%aset2))
+                                  clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
                    (typed-store-code node nil))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
@@ -549,7 +564,12 @@ generic function."
   (let* ((a (first args)) (aty (node-ty a)) (subs (rest args))
          (two (member name '(clysm-sys::%aref2 clysm-sys::%aset2)))
          (row-major (member name '(row-major-aref clysm-sys::%row-major-aset))))
-    (multiple-value-bind (kind shape) (ty-array-kind aty)
+    (unless (or (ty-array-kind aty) two)
+      (return-from array-locate-code (speculative-locate-code name a (first subs) slow)))
+    (multiple-value-bind (kind shape)
+        ;; a two-dimensional access to an array of unknown type: inline for
+        ;; an array of elements of type T (a header over a simple vector)
+        (if (ty-array-kind aty) (ty-array-kind aty) (values :vector :md2))
       (when (and kind (every #'fx-arg-p subs)
                  (or (not (member name '(char schar))) (eq kind :string))
                  (cond (two (member shape '(:md2 :any)))
@@ -614,16 +634,70 @@ generic function."
                  kind d k
                  `((:local.get ,e) (:local.get ,x) :ref.i31 ,@(when two `((:local.get ,y) :ref.i31))))))))))))
 
+(defun speculative-locate-code (name a sub slow)
+  "ARRAY-LOCATE-CODE for a one-dimensional access whose array is of unknown
+type: the access is inline for the usual kind (a simple vector for AREF and
+SVREF, a simple string for CHAR and SCHAR) and, for AREF and CHAR, for a
+one-dimensional array header (a fill pointer, adjustable) over storage of
+that kind; everything else goes to the helper, which handles every array."
+  (let ((kind (case name
+                ((clysm-sys::%aref1 svref clysm-sys::%aset1 clysm-sys::%svset) :vector)
+                ((char schar clysm-sys::%charset clysm-sys::%scharset) :string))))
+    (when kind
+      (speculative-locate-code-1 name kind a sub slow))))
+
+(defun speculative-locate-code-1 (name kind a sub slow)
+  (let* ((header (member name '(clysm-sys::%aref1 clysm-sys::%aset1 char clysm-sys::%charset)))
+         (e (new-local)) (d (new-local `(:ref :null ,kind))) (k (new-local :i32)) (k0 (new-local :i32))
+         (fx (fx-arg-p sub)) (ie (unless fx (new-local)))
+         (m (new-local '(:ref :null :mdarray))) (s (new-local)) (hit (gensym "HIT")))
+    (progn
+      (values `(,@(cg a) (:local.set ,e)
+                ,@(if fx
+                      `(,@(cg-rep sub :i32) (:local.set ,k0))
+                      `(,@(cg sub) (:local.set ,ie))))
+              `(,@(if fx
+                      `((:local.get ,k0) (:local.set ,k))
+                      `((:local.get ,ie) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
+                        (:local.get ,ie) (:ref.cast! :i31) :i31.get_s (:local.set ,k)))
+                (:block ,hit nil
+                  (:local.get ,e) (:ref.test ,kind)
+                  (:if nil nil ((:local.get ,e) (:ref.cast! ,kind) (:local.set ,d) (:br ,hit)))
+                  ,@(if header
+                        `((:local.get ,e) (:ref.test :mdarray) :i32.eqz (:hint 0) (:br_if ,slow)
+                          (:local.get ,e) (:ref.cast! :mdarray) (:local.tee ,m)
+                          ;; a one-dimensional header: the subscript below its dimension
+                          (:struct.get :mdarray 7) (:local.get ,k) :i32.le_u (:hint 0) (:br_if ,slow)
+                          (:local.get ,m) (:struct.get :mdarray 0) (:local.tee ,s) (:ref.test ,kind) :i32.eqz
+                          (:hint 0) (:br_if ,slow)
+                          (:local.get ,s) (:ref.cast! ,kind) (:local.set ,d)
+                          (:local.get ,m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+                          (:local.get ,k) :i32.add (:local.set ,k))
+                        `((:br ,slow))))
+                (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
+              kind d k
+              (if fx
+                  `((:local.get ,e) (:local.get ,k0) :ref.i31)
+                  `((:local.get ,e) (:local.get ,ie)))))))
+
 (defun array-slow-returns-p (name args)
   "The generic function may return when the inline access does not apply:
-ROW-MAJOR-AREF of an array of unknown rank (inline for two dimensions only)."
-  (and (member name '(row-major-aref clysm-sys::%row-major-aset))
-       (eq (nth-value 1 (ty-array-kind (node-ty (first args)))) :any)))
+ROW-MAJOR-AREF of an array of unknown rank (inline for two dimensions only),
+and any access to an array of unknown type (inline for the usual kind only)."
+  (or (null (ty-array-kind (node-ty (first args))))
+      (and (member name '(row-major-aref clysm-sys::%row-major-aset))
+           (eq (nth-value 1 (ty-array-kind (node-ty (first args)))) :any))))
 
 (defun array-slow-call (name)
   (ecase name
-    ((clysm-sys::%aref1 svref char schar) '((:call :aref1)))
-    ((clysm-sys::%aset1 clysm-sys::%svset) '((:call :aset1)))
+    (clysm-sys::%aref1 '((:call :aref1)))
+    (svref (lisp-call-instrs 'svref 2))       ; (signals unless a simple vector)
+    (char '((:call :char-ref)))
+    (schar '((:call :schar-ref)))
+    (clysm-sys::%aset1 '((:call :aset1)))
+    (clysm-sys::%svset '((:call :svset)))
+    (clysm-sys::%charset '((:call :char-set)))
+    (clysm-sys::%scharset '((:call :schar-set)))
     (clysm-sys::%aref2 '((:call :aref2)))
     (clysm-sys::%aset2 '((:call :aset2)))
     (row-major-aref (lisp-call-instrs 'row-major-aref 2))

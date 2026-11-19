@@ -345,6 +345,10 @@ expansions on the way: a type defined in terms of itself, such as
                                     (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list type nil)))))
                       (if exp (%typep-expansion x (car exp) (+ depth 1)) default)))
                    ((or (keywordp type) (null (symbol-package type))) default)
+                   ;; a structure defined before: its class (the compiler then
+                   ;; knows the type of X where the test is true)
+                   ((let ((d (get type '%struct-description))) (and (consp d) (null (car d))))
+                    `(%structure-typep ,x (load-time-value (find-class ',type))))
                    (t (%typep-cell-expansion x type))))
             ((not (and (consp type) (symbolp (car type)) (listp (cdr type)) (null (cdr (last type)))))
              default)

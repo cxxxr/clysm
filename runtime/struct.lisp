@@ -241,7 +241,7 @@
 
 (defun %copy-structure-of (x class)
   (unless (%structure-typep x class) (%type-error x (%class-name class)))
-  (copy-structure x))
+  (%copy-instance x))
 
 (defun %define-structure-class (name include slots printer print-object-p)
   (let* ((super (if include (find-class include) (find-class 'structure-object)))
@@ -271,4 +271,4 @@
   (%set-instance-ref x i v))
 
 (defun copy-structure (x)
-  (%make-instance (%instance-layout x) (copy-seq (%instance-slots x))))
+  (if (%instancep x) (%copy-instance x) (%type-error x 'structure-object)))

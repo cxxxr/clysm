@@ -1526,6 +1526,33 @@ What makes the code fast:
   array type; `aref` on an array whose element type is known (from
   `make-array` or a declaration) is inline with a bounds check, and the
   generic function is only called to signal the error.
+* **Arrays of unknown type** (a parameter without declarations) are tried
+  inline for the usual kind before the helper that handles every array
+  (`speculative-locate-code` in `src/typed.lisp`): `aref`, `svref` and
+  their `setf` test for a simple vector, `char` and `schar` for a simple
+  string, and `aref` and `char` then for a one-dimensional header (fill
+  pointer, adjustable) over such storage, whose dimension the header keeps
+  in a field of its own (`$mdarray` field 7, 0 unless the array is
+  one-dimensional), so the test is one load; a two-dimensional `aref` tests
+  for a header over a simple vector. `length` tests for a simple vector, a
+  simple string, then a fill pointer; `vector-push-extend` and `vector-pop`
+  are inline for vectors of elements of type T. After `svref` or `schar`
+  returns, the compiler knows the array's type. `bench/arrays.lisp`
+  (14 programs in undeclared style; geometric mean 1.07 before, 0.85 after;
+  loaded into the image 1.02 → 0.83 of SBCL's time): `a-heap-sim` (a binary
+  heap of structures in an adjustable vector) 1.22 → 0.66, `a-fp-buffer`
+  1.34 → 0.73, `a-fp-stack` 1.04 → 0.78, `a-strings` 1.04 → 0.93.
+* **Structure tests**: `typep` of a structure defined earlier, `typecase` and
+  the predicates compare the layout inline (`%structure-typep`), and the
+  class precedence list is searched only when it differs; `typecase` of a
+  variable tests the variable itself, so the accessors in the clause taken
+  need no check. `copy-structure` and the copiers copy the slot vector with
+  `array.copy` (`%copy-instance`). `a-struct-dispatch` (`etypecase` over
+  included structures) 2.08 → 1.39. Still slow: `a-struct-int` (2.3; a
+  predicate that fails searches the class precedence list out of line, and
+  every slot access goes through the separate slot vector) and `a-nbody`
+  (1.3; doubles in slots without declarations are boxed and their
+  arithmetic generic).
 * **Versions of a function**: a function with a loop or a recursive call
   whose parameters are used as numbers tests its arguments on entry and
   continues in a copy compiled for fixnums (or doubles). Small functions are
