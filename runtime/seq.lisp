@@ -1571,6 +1571,17 @@ POSITION when they are only a :TEST of a known function, else NIL."
   (when (and (null key) (null test) (null test-not) (null from-end)
              (or (%simple-string-p seq) (%simple-vector-p seq) (and (listp seq) (null end) (eql start 0))))
     (return-from position (%eql-scan item seq start end (return-from position i) nil)))
+  ;; from the end of a simple string or vector
+  (when (and (null key) (null test) (null test-not) from-end
+             (or (%simple-string-p seq) (%simple-vector-p seq)))
+    (let ((end (%check-bounds start end (length seq))))
+      (return-from position
+        (if (%simple-string-p seq)
+            (and (characterp item)
+                 (do ((i (%fx- end 1) (%fx- i 1))) ((%fx< i start) nil)
+                   (when (eq item (%schar seq i)) (return i))))
+            (do ((i (%fx- end 1) (%fx- i 1))) ((%fx< i start) nil)
+              (when (eql item (%svref seq i)) (return i)))))))
   (%with-test (mode fn neg) (test test-not)
     (%find-position item mode fn neg seq key from-end start end t)))
 
@@ -2196,9 +2207,36 @@ they start in it, LEN: the length of S."
        (declare (fixnum ,off ,len))
        ,@body)))
 
+(defmacro %simple-string-region-p (s start end)
+  "S is a simple string and START, END (or NIL) valid bounds in it."
+  `(and (%simple-string-p ,s) (fixnump ,start) (%fx<= 0 ,start)
+        (if ,end (and (fixnump ,end) (%fx<= ,start ,end) (%fx<= ,end (%string-length ,s)))
+            (%fx<= ,start (%string-length ,s)))))
+
+(defmacro %char-fold (c code)
+  "The code of the character C (of code CODE) downcased, as SBCL orders
+strings ignoring case (#\\_ is after the letters): ASCII in place."
+  `(cond ((%fx< ,code 65) ,code)
+         ((%fx<= ,code 90) (%fx+ ,code 32))
+         ((%fx< ,code 128) ,code)
+         (t (%char-code (char-downcase ,c)))))
+
 (defun %string-compare (s1 s2 start1 end1 start2 end2 ci)
   "Compares two string regions.  Returns 4 * the index of the first
 difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
+  ;; two simple strings: fixnum operations, ASCII case folded in place
+  (when (and (%simple-string-region-p s1 start1 end1) (%simple-string-region-p s2 start2 end2))
+    (let ((e1 (or end1 (%string-length s1))) (e2 (or end2 (%string-length s2))))
+      (do ((i start1 (%fx+ i 1)) (j start2 (%fx+ j 1)))
+          ((or (%fx>= i e1) (%fx>= j e2))
+           (return-from %string-compare
+             (%fx+ (%fx* i 4) (cond ((and (%fx>= i e1) (%fx>= j e2)) 0) ((%fx>= i e1) 1) (t 2)))))
+        (let ((c1 (%schar s1 i)) (c2 (%schar s2 j)))
+          (unless (eq c1 c2)
+            (let ((k1 (%char-code c1)) (k2 (%char-code c2)))
+              (when ci (setq k1 (%char-fold c1 k1) k2 (%char-fold c2 k2)))
+              (unless (eql k1 k2)
+                (return-from %string-compare (%fx+ (%fx* i 4) (if (%fx< k1 k2) 1 2))))))))))
   (let ((s1 (if (%simple-string-p s1) s1 (string s1)))
         (s2 (if (%simple-string-p s2) s2 (string s2))))
     (%with-string-data ((d1 o1 l1) s1)
@@ -2212,12 +2250,21 @@ difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
             (declare (fixnum i j))
             (let ((c1 (%schar d1 (+ i o1))) (c2 (%schar d2 (+ j o2))))
               (unless (eq c1 c2)
-                (when ci (setq c1 (char-upcase c1) c2 (char-upcase c2)))
+                (when ci (setq c1 (char-downcase c1) c2 (char-downcase c2)))
                 (unless (eq c1 c2)
                   (return (+ (* i 4) (if (< (char-code c1) (char-code c2)) 1 2))))))))))))
 
 (defun %string-eq (s1 s2 start1 end1 start2 end2 ci)
   "True when the two string regions have the same characters (ignoring case when CI)."
+  (when (and (%simple-string-region-p s1 start1 end1) (%simple-string-region-p s2 start2 end2))
+    (let ((e1 (or end1 (%string-length s1))) (e2 (or end2 (%string-length s2))))
+      (return-from %string-eq
+        (and (eql (%fx- e1 start1) (%fx- e2 start2))
+             (do ((i start1 (%fx+ i 1)) (j start2 (%fx+ j 1))) ((%fx>= i e1) t)
+               (let ((c1 (%schar s1 i)) (c2 (%schar s2 j)))
+                 (unless (or (eq c1 c2)
+                             (and ci (eql (%char-fold c1 (%char-code c1)) (%char-fold c2 (%char-code c2)))))
+                   (return nil))))))))
   (let ((s1 (if (%simple-string-p s1) s1 (string s1)))
         (s2 (if (%simple-string-p s2) s2 (string s2))))
     (%with-string-data ((d1 o1 l1) s1)
@@ -2260,6 +2307,25 @@ characters of a comment's start in a line, in Lem)."
   (if keys
       (or (macroexpand-1 `(%string-eq-call ,s1 ,s2 ,keys t)) form)
       `(%string-equal-2 ,s1 ,s2)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %string-keys-expansion (form s1 s2 keys make)
+    "For literal, distinct :START1 :END1 :START2 :END2: (FUNCALL MAKE s1 s2
+start1 end1 start2 end2) with the arguments in temporaries, in order; else FORM."
+    (let ((args (list :start1 0 :end1 nil :start2 0 :end2 nil)) (seen nil) (temps nil)
+          (a (gensym "S1")) (b (gensym "S2")))
+      (do ((l keys (cddr l)))
+          ((null l)
+           `(let* ((,a ,s1) (,b ,s2) ,@(nreverse temps))
+              ,(funcall make a b (getf args :start1) (getf args :end1) (getf args :start2) (getf args :end2))))
+        (let ((key (car l)))
+          (unless (and (consp (cdr l)) (member key '(:start1 :end1 :start2 :end2)) (not (member key seen)))
+            (return form))
+          (push key seen)
+          (let ((g (gensym "V")))
+            (push (list g (cadr l)) temps)
+            (setf (getf args key) g)))))))
+
 (defun string= (s1 s2 &key (start1 0) end1 (start2 0) end2)
   (%string-eq s1 s2 start1 end1 start2 end2 nil))
 (defun string-equal (s1 s2 &key (start1 0) end1 (start2 0) end2)
@@ -2284,6 +2350,20 @@ characters of a comment's start in a line, in Lem)."
   (def string-lessp %string-lessp-2 t 1) (def string-greaterp %string-greaterp-2 t 2)
   (def string-not-greaterp %string-not-greaterp-2 t 1 0)
   (def string-not-lessp %string-not-lessp-2 t 2 0) (def string-not-equal %string-not-equal-2 t 1 2))
+
+(macrolet ((def (name ci &rest codes)
+             `(define-compiler-macro ,name (&whole form s1 s2 &rest keys)
+                (%string-keys-expansion
+                 form s1 s2 keys
+                 (lambda (a b s1 e1 s2 e2)
+                   (let ((r (gensym "R")))
+                     `(let ((,r (%string-compare ,a ,b ,s1 ,e1 ,s2 ,e2 ,',ci)))
+                        (if (or ,@(mapcar (lambda (c) `(eql (%fxlogand ,r 3) ,c)) ',codes))
+                            (%fxash-right ,r 2)
+                            nil))))))))
+  (def string< nil 1) (def string> nil 2) (def string<= nil 1 0) (def string>= nil 2 0)
+  (def string/= nil 1 2) (def string-lessp t 1) (def string-greaterp t 2)
+  (def string-not-greaterp t 1 0) (def string-not-lessp t 2 0) (def string-not-equal t 1 2))
 
 (defun %string-equal-2 (s1 s2) (%string-eq s1 s2 0 nil 0 nil t))
 (defun %char=-2 (a b) (char= a b))
@@ -2410,6 +2490,14 @@ does the same: a test or predicate is called with two."
 (defun nstring-capitalize (s &key (start 0) end) (replace s (string-capitalize s :start start :end end)))
 
 (defun %string-trim (bag s left right)
+  ;; a simple string: its characters read directly, the bag searched by %FIND2
+  (when (and (%simple-string-p s) (or (listp bag) (%simple-string-p bag) (%simple-vector-p bag)))
+    (let ((n (%string-length s)) (i 0))
+      (when left
+        (do () ((or (%fx>= i n) (not (%find2 (%schar s i) bag)))) (setq i (%fx+ i 1))))
+      (when right
+        (do () ((or (%fx<= n i) (not (%find2 (%schar s (%fx- n 1)) bag)))) (setq n (%fx- n 1))))
+      (return-from %string-trim (%simple-substring s i n))))
   (let* ((s (string s)) (n (length s)) (i 0))
     (declare (fixnum n i))
     (when left
