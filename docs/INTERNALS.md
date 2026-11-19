@@ -214,7 +214,20 @@ tag of each: `v-restart-nosignal` (a `restart-case` of two restarts and a
 now. A `handler-bind` whose handlers are all `lambda` forms makes one
 closure, of the number of the type and the condition, instead of one for
 each handler (kind `:one` in the cluster): a closure is a structure of ten
-fields and its environment a vector.
+fields and its environment a vector. `assert` and `check-type` establish
+their restarts only when the assertion fails (in the expansion, after the
+test).
+
+What the REPL, a script, a thread or a Lisp function called from
+JavaScript do with an error that no handler takes is `*debugger-fallback*`,
+which `invoke-debugger` calls after `*debugger-hook*` and
+`*invoke-debugger-hook*`: a `handler-bind` of `error` around the code took
+every condition of type `error` signalled, also one given to `signal`,
+which must return when no handler of the program takes it (a script stopped
+at `p-signal-warn` of `bench/programs.lisp`). A Lisp function called from
+JavaScript still makes the error a JavaScript one before the handlers of
+the Lisp code that called the JavaScript code, but only for the condition
+that `error` or `cerror` is signalling (`*erroring*`).
 
 ## The runtime
 
