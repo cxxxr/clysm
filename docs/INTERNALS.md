@@ -429,9 +429,12 @@ and accessors); the rest of its expansion is compiled and run at once. An
 uninterned symbol is written as `#.(SYSTEM::%FASL-GENSYM n "NAME")`, one
 symbol per number for the whole file when it is loaded, so the entries of a
 fasl share it as the forms of the file did.
-Other forms evaluated at compile time are compiled once, to a module of
-their own run at once (`%cf-compile-and-run`), whose fasl entry is kept, as
-printed before it ran, among the segments. A form the compiler fails on is written as source; when the
+Other forms evaluated at compile time (`declaim`, `defmacro`, `defclass`...)
+are evaluated by the interpreter then and compiled into the file's module
+only (`*cf-unit-compile-time*` `:interpret`): a module of their own for each
+(`%cf-compile-and-run`, compiled once and run at once) made loading ASDF's
+fasl take 0.25 s instead of 0.12, and compiling them twice (run now and into
+the module) made compiling ASDF take 4.4 s instead of 2.6. A form the compiler fails on is written as source; when the
 module cannot be made or the constants of a segment cannot be written, the
 whole file is written as source.
 
