@@ -49,6 +49,11 @@
          (*macros-ready* t))
      ,@body))
 
+(defvar *live-snapshots* t
+  "Whether the module being made has the functions SNAP and RESTORE of heap
+images: NIL for a form evaluated at once in an image that does not record its
+modules for SAVE-IMAGE (a module of a fasl may be loaded into one that does).")
+
 (defun live-compile-forms (forms)
   "Compile FORMS into a module linked with the running image.
 Returns (values bytes constants-vector)."
@@ -302,8 +307,9 @@ vectors), the vector of objects of each segment."
                         (chain 1))))
     ;; for heap images (runtime/image.lisp): SNAP returns the values of
     ;; its globals, which RESTORE sets again in a new instance (whose RUN
-    ;; is not called)
-    (let ((globals (append (mapcar (lambda (s) (list :sym s)) syms)
+    ;; is not called); not in a module that cannot be saved in one
+    (when *live-snapshots*
+     (let ((globals (append (mapcar (lambda (s) (list :sym s)) syms)
                            (mapcar #'car consts)
                            (mapcar #'first closures)
                            (loop for (name type) in (reverse *misc-globals*)
@@ -327,7 +333,7 @@ vectors), the vector of objects of each segment."
                                              (t (if (member g closures :key #'first)
                                                     '((:ref.cast! :closure))
                                                     nil)))
-                                         (:global.set ,g))))))
+                                         (:global.set ,g)))))))
     ;; a module made at run time only needs the helpers it calls
     (remove-unreachable-functions *m* used)
     (when *live-dump* (dump-live-functions *m*))

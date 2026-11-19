@@ -154,7 +154,10 @@ any, happens at run time)."
   (let ((tree (ignore-errors (simple-form form))))
     (when tree (return-from native-eval (simple-eval tree))))
   (multiple-value-bind (bytes consts)
-      (handler-case (let ((*live-inline-ok* t))
+      (handler-case (let ((*live-inline-ok* t)
+                          ;; (only an image started with CLYSM_SAVE_IMAGE
+                          ;; records its modules for SAVE-IMAGE: host/run.mjs)
+                          (*live-snapshots* (and (sys::%getenv "CLYSM_SAVE_IMAGE") t)))
                       ;; (the compiler's state is shared by the threads)
                       (sys::%call-with-world-lock (lambda () (live-compile-forms (list form)))))
         (error (e)
