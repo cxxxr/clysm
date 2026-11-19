@@ -1278,7 +1278,22 @@ as %SEQ-TYPE-SPEC, with the usual names recognized at once."
         ((or (eq result-type 'string) (eq result-type 'simple-string)) (values :vector 'character nil t))
         (t (%seq-type-spec result-type))))
 
+(defun %concatenate-simple-strings (seqs)
+  "The concatenation of SEQS, a list of simple strings, or NIL if one is not."
+  (let ((total 0))
+    (dolist (s seqs)
+      (if (%simple-string-p s) (setq total (%fx+ total (%string-length s))) (return-from %concatenate-simple-strings nil)))
+    (let ((v (%make-storage total 'character)) (i 0))
+      (dolist (s seqs v)
+        (let ((n (%string-length s)))
+          (%copy-elements v i s 0 n)
+          (setq i (%fx+ i n)))))))
+
 (defun concatenate (result-type &rest seqs)
+  ;; strings into a string (APPLY of a list of parts: cl-json's names)
+  (when (or (eq result-type 'string) (eq result-type 'simple-string))
+    (let ((v (%concatenate-simple-strings seqs)))
+      (when v (return-from concatenate v))))
   (let ((total 0))
     (dolist (s seqs)
       (setq total (+ total (cond ((listp s) (length-of-list s))

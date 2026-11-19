@@ -2002,7 +2002,14 @@ What makes the code fast:
   once; the printer looks at `*print-pprint-dispatch*` only once some
   table has been given an entry by `set-pprint-dispatch`. `read-char` and
   `peek-char` of string input streams were already inline in libraries'
-  fasls: yason's string reader runs at 0.7 of SBCL's time.
+  fasls: yason's string reader runs at 0.7 of SBCL's time. `gethash` of
+  a string key in an `equal` table hashes it by that loop and, when
+  simple, looks it up by the helper that compares simple strings, without
+  the dispatch on the key's type (done in `%ht-put` too, it made puts of
+  other keys 6% slower: `v-hash-churn`); `make-hash-table` with a test written as a constant and no
+  option but `:size` makes the table without parsing keywords;
+  `concatenate` of simple strings into a string (`apply` of a list of
+  parts) copies them at once.
 
 ### Size and start-up
 

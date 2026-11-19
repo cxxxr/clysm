@@ -64,6 +64,31 @@
     (%ht-init-storage h cap)
     h))
 
+;;; MAKE-HASH-TABLE with a test written as a constant and no option but
+;;; :SIZE: the table made without parsing keywords and finding the test
+;;; (a JSON reader makes one for every object).
+(defun %make-hash-table-of-kind (kind size)
+  (let ((h (%make-instance *hash-table-class* (%make-simple-vector 16 nil))))
+    (%ht-set h +ht-test+ (svref #(eq eql equal equalp) kind))
+    (%ht-set h +ht-kind+ kind)
+    (%ht-set h +ht-rehash-size+ 1.5)
+    (%ht-set h +ht-rehash-threshold+ 1)
+    (%ht-set h +ht-weakness+ nil)
+    (%ht-init-storage h (if (fixnump size) (if (%fx> size 8) size 8) (max 8 size)))
+    h))
+
+(define-compiler-macro make-hash-table (&whole form &rest keys)
+  (unless (evenp (length keys)) (return-from make-hash-table form))
+  (let* ((names (loop for (k) on keys by #'cddr collect k))
+         (test (getf keys :test ''eql))
+         (kind (and (consp test) (member (car test) '(quote function)) (consp (cdr test))
+                    (position (second test) '(eq eql equal equalp)))))
+    (if (and kind
+             (every (lambda (k) (member k '(:test :size))) names)
+             (= (length (remove-duplicates names)) (length names)))
+        `(%make-hash-table-of-kind ,kind ,(getf keys :size 16))
+        form)))
+
 (defun %ht-init-storage (h cap)
   ;; twice as many chains as entries, a power of two
   (let ((nb 16) (bits 4) (want (* cap 2)))
@@ -293,6 +318,18 @@ for here, without a call."
            (%ht-eq-index ,sv ,key ,hash)
            (%ht-find-general ,sv ,key ,hash ,kind)))))
 
+;;; A string key of an EQUAL table: hashed by the Wasm loop of strings, and
+;;; a simple one looked up by the helper that compares simple strings (the
+;;; keys of JSON objects, of symbol tables), without the dispatch on the
+;;; key's type of %HT-HASH and %HT-FIND-GENERAL.
+(defmacro %ht-string-key-p (sv key)
+  `(and (eql (%svref ,sv +ht-kind+) 2) (stringp ,key)))
+(defmacro %ht-string-lookup (sv key hash)
+  "Index of the string KEY, of hash HASH, or -1 in the EQUAL table whose slots are SV."
+  (let ((i (gensym "I")))
+    `(let ((,i (if (%simple-string-p ,key) (%ht-string-index ,sv ,key ,hash) -2)))
+       (if (eql ,i -2) (%ht-find-general ,sv ,key ,hash 2) ,i))))
+
 (defun %ht-find (h key hash)
   "Index of KEY or -1."
   (let ((sv (%instance-slots h)))
@@ -310,8 +347,9 @@ for here, without a call."
   "GETHASH for any key (without the helper of fixnums, characters and symbols)."
   (%check-ht h)
   (let* ((sv (%instance-slots h))
-         (hash (%ht-hash h key))
-         (i (%ht-lookup sv key hash)))
+         (string-key (%ht-string-key-p sv key))
+         (hash (if string-key (%string-hash key) (%ht-hash h key)))
+         (i (if string-key (%ht-string-lookup sv key hash) (%ht-lookup sv key hash))))
     (if (%fx< i 0)
         (values default nil)
         (progn
