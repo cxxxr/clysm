@@ -709,10 +709,13 @@ COMMON-LISP in the files compiled are collected in *RECORDED-DEFINITIONS*
   "BYTES with a custom section clysm.build at the end that names the image by
 a hash of its octets: a heap image (runtime/image.lisp) is valid only for
 the image it names."
-  (let ((a 2166136261) (b 3735928559))
-    (loop for x across bytes
-          do (setf a (ldb (byte 32 0) (* (logxor a x) 16777619))
-                   b (ldb (byte 32 0) (* (logxor b x) 2246822519))))
+  (let ((a 2166136261) (b 3735928559) (n (length bytes)))
+    (declare (type (unsigned-byte 32) a b) (fixnum n)
+             (type (simple-array (unsigned-byte 8) (*)) bytes))
+    (dotimes (i n)
+      (let ((x (aref bytes i)))
+        (setf a (ldb (byte 32 0) (* (logxor a x) 16777619))
+              b (ldb (byte 32 0) (* (logxor b x) 2246822519)))))
     (let* ((name "clysm.build")
            (text (format nil "~8,'0X~8,'0X" a b))
            (payload (+ 1 (length name) (length text)))
