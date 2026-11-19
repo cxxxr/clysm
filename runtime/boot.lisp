@@ -456,10 +456,22 @@ the declarations (when forms follow it)."
              ,setter)))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %plain-arith-form-p (form env)
+    "FORM is arithmetic on variables and constants: evaluating it changes no
+variable, so it may be evaluated after a variable is read."
+    (cond ((symbolp form) (not (nth-value 1 (%macroexpand-1 form env))))
+          ((atom form) t)
+          ((eq (car form) 'quote) t)
+          ((member (car form) '(+ - * 1+ 1- logand logior logxor ash abs))
+           (every (lambda (f) (%plain-arith-form-p f env)) (cdr form)))
+          (t nil)))
   (defun %expand-incf (op place delta env)
     ;; for a variable, the delta form is evaluated before the variable is read
+    ;; (unless that cannot be told apart: arithmetic on variables, which is
+    ;; then one tree with the update, computed without boxes)
     (if (and (symbolp place) (consp delta) (not (eq (car delta) 'quote))
-             (not (nth-value 1 (%macroexpand-1 place env))))
+             (not (nth-value 1 (%macroexpand-1 place env)))
+             (not (%plain-arith-form-p delta env)))
         (let ((d (gensym)))
           `(let ((,d ,delta)) (setq ,place (,op ,place ,d))))
         (%expand-rmw place env (lambda (g) `(,op ,g ,delta))))))

@@ -206,17 +206,73 @@ branching to FAIL when that is not possible.  The leaves are taken from
 
 (defun fused-parts (node)
   "For the fusable tree NODE: the code evaluating its leaves, a function of a
-label giving the i64 code, and the generic code."
+label giving the i64 code, the generic code, and the records of the leaves."
   (let ((recs (fused-plan node t)))
     (values (loop for rec in recs append (fused-leaf-eval-code rec))
             (lambda (fail) (let ((*fused-rest* recs)) (fused-i64-code node fail nil t)))
-            (let ((*fused-rest* recs)) (fused-generic-code node t)))))
+            (let ((*fused-rest* recs)) (fused-generic-code node t))
+            recs)))
+
+(defun f64-check-code (name x y r fail)
+  "After an f64 operation NAME left its result in R (operands in X and Y):
+branch to FAIL when the result is not finite, or a zero that may be an
+underflow (what the generic operation decides)."
+  (if (member name '(+ -))
+      `((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,fail))
+      `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
+        (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
+        (:if nil nil
+             ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+              (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
+              ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
+              :i32.or (:br_if ,fail))))))
+
+(defun fused-f64-code (node fail &optional top)
+  "For a fused tree whose operations are + - * with a double among the
+operands of each: (values code double-p) leaving the f64 value of NODE from
+the leaves of *FUSED-REST* (an operand that is not a double branches to
+FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
+  (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+         (multiple-value-bind (op a b) (fused-operands node)
+           (unless (member op '(:add :sub :mul)) (return-from fused-f64-code nil))
+           (multiple-value-bind (ca da) (fused-f64-code a fail)
+             (unless ca (return-from fused-f64-code nil))
+             (multiple-value-bind (cb db) (fused-f64-code b fail)
+               (unless (and cb (or (eq da t) (eq db t))) (return-from fused-f64-code nil))
+               (let ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64))
+                     (name (ecase op (:add '+) (:sub '-) (:mul '*))))
+                 (values `(,@ca (:local.set ,x) ,@cb (:local.set ,y)
+                           (:local.get ,x) (:local.get ,y) ,(ecase op (:add :f64.add) (:sub :f64.sub) (:mul :f64.mul))
+                           (:local.set ,r)
+                           ,@(f64-check-code name x y r fail)
+                           (:local.get ,r))
+                         t))))))
+        (t
+         ;; a leaf: T when it is a double (tested), :INT when an integer
+         ;; (converted, as contagion does), NIL otherwise
+         (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
+           (ecase kind
+             (:const (let ((v (second leaf)))
+                       (typecase v
+                         (double-float (values `((:f64.const ,v)) t))
+                         (single-float (values `((:f64.const ,(coerce v 'double-float))) :int))
+                         ((signed-byte 53) (values `((:f64.const ,(coerce v 'double-float))) :int))
+                         (t nil))))
+             (:dual nil)
+             (:i64 (values `((:local.get ,(first locs)) :f64.convert_i64_s) :int))
+             (:eqref (if (logtest (ty-bits (node-ty leaf)) +k-double+)
+                         (values `((:local.get ,(first locs)) (:ref.test :double) :i32.eqz (:br_if ,fail)
+                                   (:local.get ,(first locs)) (:ref.cast! :double) (:struct.get :double 0))
+                                 t)
+                         nil)))))))
 
 (defun fused-code (node rep)
   "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
-its type is a fixnum), the generic code when that fails."
-  (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (r (new-local :i64)))
-    (multiple-value-bind (leaves i64-code generic) (fused-parts node)
+its type is a fixnum), the generic code when that fails.  When its operands
+may be doubles (operands of unknown type, with a double among the operands
+of each operation), the tree is tried in f64 too, before the generic code."
+  (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (r (new-local :i64)))
+    (multiple-value-bind (leaves i64-code generic recs) (fused-parts node)
       `(,@leaves
         (:block ,done ,rep
           (:block ,fail nil
@@ -226,8 +282,149 @@ its type is a fixnum), the generic code when that fails."
                   `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
                     (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
             (:br ,done))
+          ,@(when (eq rep :eqref)
+              (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
+                (when code
+                  `((:block ,fail2 nil ,@code (:struct.new :double) (:br ,done))))))
           ,@generic
           ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
+
+;;; Arithmetic on doubles of unknown type.  A tree of + - * / (and SQRT)
+;;; whose operands the compiler cannot type (structure slots, list elements,
+;;; parameters) but that may be doubles is computed speculatively in f64: the
+;;; operands are evaluated in order, each one that is not known to be a
+;;; double is tested, and only the root is boxed.  When an operand is not a
+;;; double, or a step gives an infinity, a NaN, a zero that may be an
+;;; underflow or (SQRT) a negative operand, the tree is computed again by the
+;;; generic operations: the operands already evaluated from their locals, the
+;;; others evaluated there, in their order (so the generic code signals what
+;;; it would have signalled, after the same evaluations).
+;;;
+;;; The operands: :D known doubles (and double constants), :U operands of
+;;; unknown type that may be doubles (tested), :I fixnums (and fixnum
+;;; constants), :S single-float constants (exact as doubles).  An operation
+;;; belongs to the tree when one of its operands is a double (:D, :U or an
+;;; operation of the tree): then, in the fast path, the other is converted
+;;; exactly as contagion does.
+
+(defun spec-op-node-p (node)
+  (and (eq (car node) :prim)
+       (let ((name (prim-name (second node))) (n (length (cddr node))))
+         (or (and (member name '(+ - * /)) (= n 2))
+             (and (eq name 'sqrt) (= n 1))))))
+
+(defun spec-leaf-class (node)
+  (if (eq (car node) :const)
+      (let ((v (second node)))
+        (typecase v
+          (double-float :d)
+          (single-float :s)
+          ((signed-byte 30) :i)
+          (t nil)))
+      (let ((ty (node-ty node)))
+        (cond ((ty-double-p ty) :d)
+              ((ty-fixnum-p ty) :i)
+              ((logtest (ty-bits ty) +k-double+) :u)
+              (t nil)))))
+
+(defun spec-double-bearing-p (node)
+  "NODE is a double in the fast path: a :D or :U operand, or an operation
+of the tree."
+  (if (and (spec-op-node-p node) (not (ty-double-p (node-ty node))))
+      (spec-op-p node)
+      (member (spec-leaf-class node) '(:d :u))))
+
+(defun spec-op-p (node)
+  "NODE (an operation) belongs to a speculative tree."
+  (let ((args (cddr node)))
+    (if (eq (prim-name (second node)) 'sqrt)
+        (spec-double-bearing-p (first args))
+        (and (some #'spec-double-bearing-p args)
+             (every (lambda (a) (or (spec-double-bearing-p a) (member (spec-leaf-class a) '(:i :s))))
+                    args)))))
+
+(defun spec-tree-stats (node)
+  "(values number-of-operations has-a-:U-operand) of the tree NODE."
+  (let ((ops 0) (u nil))
+    (labels ((walk (n)
+               (if (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n))
+                   (progn (incf ops) (mapc #'walk (cddr n)))
+                   (when (eq (spec-leaf-class n) :u) (setq u t)))))
+      (walk node))
+    (values ops u)))
+
+(defun spec-tree-node-p (node)
+  (and (not *no-fuse*) (spec-op-node-p node) (spec-op-p node)
+       (multiple-value-bind (ops u) (spec-tree-stats node) (and u (>= ops 2)))))
+
+(defun spec-tree-code (node)
+  "The value (an eqref) of the speculative tree NODE."
+  (let ((leaves nil) (count 0)
+        (done (new-local :i32)) (bail (gensym "SPECBAIL")) (out (gensym "SPEC")))
+    (labels ((op-p (n) (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n)))
+             (fast (n)
+               (if (op-p n)
+                   (let* ((name (prim-name (second n))) (args (cddr n))
+                          (x (new-local :f64)) (r (new-local :f64)))
+                     (if (eq name 'sqrt)
+                         `(,@(fast (first args)) (:local.tee ,x)
+                           ;; a negative operand (or NaN) has a complex root
+                           (:f64.const 0) :f64.ge :i32.eqz
+                           (:if nil nil ((:br ,bail)))
+                           (:local.get ,x) :f64.sqrt)
+                         (let ((y (new-local :f64)))
+                           `(,@(fast (first args)) (:local.set ,x)
+                             ,@(fast (second args)) (:local.set ,y)
+                             (:local.get ,x) (:local.get ,y)
+                             ,(ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div))
+                             (:local.tee ,r)
+                             ,@(if (member name '(+ -))
+                                   ;; not finite
+                                   `((:local.get ,r) :f64.sub (:f64.const 0) :f64.ne)
+                                   ;; zero, subnormal, infinite or NaN; then a zero of nonzero operands
+                                   `(:i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
+                                     (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
+                                     (:if nil :i32
+                                          ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
+                                           (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
+                                           ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
+                                           :i32.or)
+                                          ((:i32.const 0)))))
+                             (:if nil nil ((:br ,bail)))
+                             (:local.get ,r)))))
+                   (leaf n)))
+             (leaf (n)
+               (let ((class (spec-leaf-class n)))
+                 (if (eq (car n) :const)
+                     (let ((v (second n)))
+                       `((:f64.const ,(coerce v 'double-float))))
+                     (let* ((rep (ecase class (:d :f64) (:i :i32) (:u :eqref)))
+                            (loc (new-local rep)) (i (incf count)))
+                       (push (list n i rep loc) leaves)
+                       (ecase class
+                         (:d `(,@(cg-rep n :f64) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)))
+                         (:i `(,@(cg-rep n :i32) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)
+                               :f64.convert_i32_s))
+                         (:u `(,@(cg n) (:local.tee ,loc) (:i32.const ,i) (:local.set ,done)
+                               (:ref.test :double) :i32.eqz (:if nil nil ((:br ,bail)))
+                               (:local.get ,loc) (:ref.cast! :double) (:struct.get :double 0))))))))
+             (generic (n)
+               (if (op-p n)
+                   (funcall (prim-fn (second n)) (mapcar #'generic (cddr n)))
+                   (if (eq (car n) :const)
+                       (cg n)
+                       (destructuring-bind (i rep loc) (cdr (assoc n leaves))
+                         `((:local.get ,done) (:i32.const ,i) :i32.ge_u
+                           (:if nil :eqref
+                                ((:local.get ,loc) ,@(ecase rep (:f64 '((:struct.new :double))) (:i32 '(:ref.i31))
+                                                       (:eqref nil)))
+                                (,@(cg n)))))))))
+      (let ((fast-code (fast node)))
+        `((:i32.const 0) (:local.set ,done)
+          (:block ,out :eqref
+            (:block ,bail nil
+              ,@fast-code (:struct.new :double) (:br ,out))
+            ,@(generic node)))))))
 
 (defun mulmod-node-args (p args)
   "For (MOD (* a b) c) / (REM (* a b) c): the nodes a, b, c; else NIL.  The
@@ -250,6 +447,9 @@ constant unless the product cannot signal."
   (when (fused-tree-node-p `(:prim ,p ,@args))
     (return-from cg-prim
       `(,@(fused-code `(:prim ,p ,@args) :eqref) ,@(when mv (mv-one)))))
+  (when (spec-tree-node-p `(:prim ,p ,@args))
+    (return-from cg-prim
+      `(,@(spec-tree-code `(:prim ,p ,@args)) ,@(when mv (mv-one)))))
   (let ((codes (mapcar #'cg args)))
     (append (funcall (prim-fn p) codes)
             (when (eq (prim-kind p) :test) (bool-code))
@@ -1299,6 +1499,20 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
   '(:local.get 0) '(:local.get 1)
   `(:global.get ,(sym-global 'clysm-sys::%ash2)) '(:call (:callsym 2)))
 
+;;; EVENP of an integer: a fixnum or an integer within 64 bits inline, the
+;;; Lisp function (bignums, type errors) otherwise
+(defhelper :evenp :e-i ((v :i32) (w :i64))
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
+                 (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                 (:if nil nil ((:local.get v) (:i32.const 1) :i32.and :i32.eqz :return))))
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz :i32.eqz
+                 (:if nil nil ((:local.get w) :i32.wrap_i64 (:i32.const 1) :i32.and :i32.eqz :return))))
+  '(:local.get 0) `(:global.get ,(sym-global 'evenp)) '(:call (:callsym 1))
+  (car (nil-code)) :ref.eq :i32.eqz)
+(defprim evenp (a) :test `(,@a (:call :evenp)))
+(defprim oddp (a) :test `(,@a (:call :evenp) :i32.eqz))
 (defprim logand (a b) :value (inline-fixnum-op a b :i32.and :logand2))
 (defprim logior (a b) :value (inline-fixnum-op a b :i32.or :logior2))
 (defprim logxor (a b) :value (inline-fixnum-op a b :i32.xor :logxor2))
@@ -1436,7 +1650,66 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%int-cmp-big (a b) :value `(,@a ,@b (:call :int-cmp) :ref.i31))
 
 ;;; A + B, or A - B when the third parameter is 1 (integers of any size)
-(defhelper :big-add :eei-e ((sa :i32) (sb :i32) (ma :eqref) (mb :eqref) (c :i32))
+;;; |M| + W / |M| - W for a magnitude M and 0 <= W < 2^64 (unsigned; for the
+;;; difference |M| >= W): no limbs are made for W.  The sum has one more
+;;; digit only when it carries out.
+(defhelper :mag-addsub-u64 :eli-e ((m (:ref :null :limbs)) (r (:ref :null :limbs)) (r2 (:ref :null :limbs))
+                                   (n :i32) (i :i32) (w :i64) (tt :i64))
+  '(:local.get 0) '(:ref.cast! :limbs) '(:local.tee m) '(:call :mag-len) '(:local.tee n)
+  '(:array.new_default :limbs) '(:local.set r)
+  '(:local.get 1) '(:local.set w)
+  `(:block done nil
+     (:loop again nil
+       (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
+       (:local.get w) :i64.eqz
+       (:if nil nil
+            (;; nothing left to add: the rest of M as it is
+             (:local.get r) (:local.get i) (:local.get m) (:local.get i) (:local.get n) (:local.get i) :i32.sub
+             (:array.copy :limbs :limbs)
+             (:br done)))
+       (:local.get m) (:local.get i) (:array.get :limbs) :i64.extend_i32_u
+       (:i64.const 0) (:local.get w) (:i64.const ,+limb-mask+) :i64.and :i64.sub
+       (:local.get w) (:i64.const ,+limb-mask+) :i64.and
+       (:local.get 2) :select :i64.add (:local.set tt)
+       (:local.get r) (:local.get i) (:local.get tt) :i32.wrap_i64 (:array.set :limbs)
+       ;; the carry (0 / 1) or the borrow (the sign bit) with the rest of W
+       (:local.get w) (:i64.const ,+limb-bits+) :i64.shr_u
+       (:local.get tt) (:i64.const ,+limb-bits+) :i64.shr_u (:i64.const 1) :i64.and :i64.add
+       (:local.set w)
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+       (:br again)))
+  '(:local.get w) :i64.eqz '(:if nil nil ((:local.get r) :ref.as_non_null :return))
+  ;; a carry out of the top digit (W beyond M's digits for a sum)
+  '(:local.get n) '(:i32.const 2) :i32.add '(:array.new_default :limbs) '(:local.set r2)
+  '(:local.get r2) '(:i32.const 0) '(:local.get r) '(:i32.const 0) '(:local.get n) '(:array.copy :limbs :limbs)
+  '(:local.get r2) '(:local.get n) '(:local.get w) :i32.wrap_i64 '(:array.set :limbs)
+  '(:local.get r2) '(:local.get n) '(:i32.const 1) :i32.add '(:local.get w) '(:i64.const 32) :i64.shr_u :i32.wrap_i64
+  '(:array.set :limbs)
+  '(:local.get r2) :ref.as_non_null)
+
+(defhelper :big-add :eei-e ((sa :i32) (sb :i32) (ma :eqref) (mb :eqref) (c :i32) (w :i64) (v :i32) (k :i32))
+  ;; a bignum of digits and an integer within 64 bits (as the second
+  ;; operand, or the first in a sum): the small one is not made digits
+  `(:block general nil
+     (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.and
+     (:local.get 2) :i32.eqz :i32.and
+     (:if nil nil
+          (;; a sum with the small one first: the other way round
+           (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz
+           (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.and
+           (:if nil nil ((:local.get 1) (:local.get 0) (:i32.const 0) (:return_call :big-add)))))
+     (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if general)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz (:br_if general)
+     ,@(num-decode-code 1 'w nil 'k 'general nil)
+     ;; B's sign for the operation; |B| as an unsigned i64
+     (:local.get w) (:i64.const 0) :i64.lt_s (:local.get 2) :i32.xor (:local.set sb)
+     (:local.get w) (:i64.const 0) :i64.lt_s
+     (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:local.set w)))
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0) (:local.set sa)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1)
+     (:local.get w)
+     (:local.get sa) (:local.get sb) :i32.ne (:call :mag-addsub-u64)
+     (:local.get sa) (:call :make-int) :return)
   '(:local.get 0) '(:call :int-neg) '(:local.set sa)
   '(:local.get 1) '(:call :int-neg) '(:local.get 2) :i32.xor '(:local.set sb)
   '(:local.get 0) '(:call :int-limbs) '(:local.set ma) '(:local.get 1) '(:call :int-limbs) '(:local.set mb)
