@@ -113,6 +113,11 @@ without the accessor's check of the type)."
   (let ((x (gensym "S")))
     `(let ((,x ,s)) (if (%instancep ,x) (%instance-ref ,x +stream-kind-slot+) (stream-kind ,x)))))
 
+(defmacro %string-in-p (s)
+  "S is a :STRING-IN stream (MAKE-STRING-INPUT-STREAM)."
+  `(and (%instancep ,s) (eq (%instance-layout ,s) (load-time-value *string-stream-layout*))
+        (eq (%instance-ref ,s +stream-kind-slot+) :string-in)))
+
 (defmacro %string-out-p (s)
   "S is a :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM)."
   `(and (%instancep ,s) (eq (%instance-layout ,s) (load-time-value *string-stream-layout*))

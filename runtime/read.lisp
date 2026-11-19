@@ -73,12 +73,13 @@
 ;;; The next character of the stream S or :eof: a string stream is read in line.
 (defmacro %rd-char (s)
   (let ((st (gensym "S")) (i (gensym "I")) (buf (gensym "BUF")))
+    ;; the slots of a string input stream are read without the accessors'
+    ;; tests of the structure type (a STRING-STREAM is a subtype of STREAM)
     `(let ((,st ,s))
-       (if (and (eq (stream-kind ,st) :string-in) (null (stream-unread ,st)))
-           (let ((,i (stream-index ,st)) (,buf (stream-buffer ,st)))
-             (declare (fixnum ,i))
-             (if (< ,i (the fixnum (stream-end ,st)))
-                 (progn (setf (stream-index ,st) (+ ,i 1))
+       (if (and (%string-in-p ,st) (null (%instance-ref ,st +stream-unread-slot+)))
+           (let ((,i (%instance-ref ,st +stream-index-slot+)) (,buf (%instance-ref ,st +stream-buffer-slot+)))
+             (if (%fx< ,i (%instance-ref ,st +stream-end-slot+))
+                 (progn (%set-instance-ref ,st +stream-index-slot+ (%fx+ ,i 1))
                         (if (%simple-string-p ,buf) (%schar ,buf ,i) (char ,buf ,i)))
                  :eof))
            (%stream-read-char ,st)))))
