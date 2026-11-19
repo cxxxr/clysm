@@ -1,7 +1,7 @@
 ;;;; sockets.lisp — the sockets of micros (Lem's SWANK) in a page or a worker
 ;;;;
 ;;;; An image in a page or in a worker has no sockets: micros listens and
-;;;; accepts with the sockets of contrib/lem/stubs/usocket/, which connect
+;;;; accepts with the sockets of contrib/world/usocket/, which connect
 ;;;; within the image (pipes) or to another image through the messages of a
 ;;;; worker (world.lisp), and its threads are Clysm's green threads.
 ;;;; micros's backend for Clysm is contrib/micros/clysm.lisp.

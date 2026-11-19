@@ -16,7 +16,7 @@
 // default menus and their keys), and desktop.setMenu does nothing: for an
 // application that handles all its keys itself, as Lem does.
 // With "resident": true the application stays: closing its window hides it,
-// and a client (bin/client of the application, e.g. contrib/lem/desktop/lem)
+// and a client (bin/client of the application, e.g. Lem's frontends/clysm/desktop/lem)
 // shows it at once through a Unix domain socket in the application's data
 // directory (resident.sock): lines "open FILE" (FILE given to the page's
 // desktop.onOpen), "show", "hide" and "stop" (which ends it); when the page

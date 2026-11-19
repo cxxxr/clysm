@@ -296,7 +296,7 @@ those read from fasls are named by file and position instead).
   module at its code base; and exports `restore<i>`. The host then compiles
   and instantiates one module (`header.linked`).
 
-For Lem (`contrib/lem/`), the file holds 4655 modules linked into one (36
+For Lem (cxxxr/lem's `frontends/clysm/`), the file holds 4655 modules linked into one (36
 MB) and 500,000 objects (35 MB of words). Starting the desktop application,
 with the machine busy with other programs (load average 3.5 to 5.8), takes
 from the `lem` command to the editor on the screen 0.76 to 1.06 s (it took
@@ -991,8 +991,8 @@ use: deleting them made the other image compile ASDF again, ten seconds.
 `make test-asdf` loads a small multi-system example (`tests/asdf/`). There
 are no subprocesses, so `uiop:run-program` is not available.
 
-Lem (`contrib/lem/`) loads in 2.1 to 2.3 s on Node.js instead of 6 s, and
-without ASDF: `contrib/lem/load-lem.lisp` loads the fasls in the order that
+Lem (cxxxr/lem's `frontends/clysm/`) loads in 2.1 to 2.3 s on Node.js instead of 6 s, and
+without ASDF: its `load-lem.lisp` loads the fasls in the order that
 `prepare.lisp` noted, after registering the systems as immutable. Its
 pages start from a heap image instead (see Heap images).
 
@@ -1031,7 +1031,7 @@ dependencies cl-ppcre, cl-unicode, flexi-streams and cl-change-case).
 system (`contrib/fixups.lisp`) adds Clysm to `swank-loader`'s lists and the
 backend `contrib/swank/clysm.lisp` to the system. micros, Lem's fork of
 SWANK, gets the same backend (`contrib/micros/clysm.lisp`); Lem on Clysm
-runs it in its own image (`contrib/lem/src/micros.lisp`). `bin/clysm swank [--port
+runs it in its own image (cxxxr/lem's `frontends/clysm/src/`). `bin/clysm swank [--port
 N]` loads it and serves connections (`contrib/swank/start.lisp`).
 
 * Sockets: the Node.js host listens and accepts (`sys::open-tcp-server`,
