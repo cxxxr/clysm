@@ -234,9 +234,22 @@ it still waits where it waits.")
 ;;; N is the number of required parameters when there are one to four of them
 ;;; and no others: calls with N arguments are dispatched without an argument
 ;;; list (the other entries stay correct should the lambda list change).
+;;; N may also be the shape (nreq nopt more) of a lambda list (%FAST-SHAPE):
+;;; with optional or rest/keyword parameters, calls of one to four arguments
+;;; are dispatched without an argument list too, the effective method being a
+;;; function of the spread arguments (%GF-SCALL).
 ;;; :ALL gives every entry of one to four arguments such a dispatch.
 (defmacro %gf-function-maker (&optional n)
-  (cond ((eq n :all)
+  (when (and (consp n) (eql (second n) 0) (eql (third n) 0))
+    (setq n (first n)))
+  (cond ((consp n)
+         `(lambda (info)
+            (%make-gf-closure4 ,(%gf-spread-entry-n n)
+                               (lambda (a) (%gf-scall info ,n (a)))
+                               (lambda (a b) (%gf-scall info ,n (a b)))
+                               (lambda (a b c) (%gf-scall info ,n (a b c)))
+                               (lambda (a b c d) (%gf-scall info ,n (a b c d))))))
+        ((eq n :all)
          '(lambda (info)
            (%make-gf-closure4 (lambda (&rest args) (%gf-invoke info args))
             (lambda (a) (%gf-miss1 info a)) (lambda (a b) (%gf-miss2 info a b))
@@ -268,7 +281,62 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
     (if (and (listp ll) (<= 1 (length ll) 4)
              (notany (lambda (x) (member x lambda-list-keywords)) ll))
         (length ll)
-        nil)))
+        nil))
+
+  (defun %fast-shape (ll)
+    "(nreq nopt more) of the (generic function or method) lambda list LL when
+a generic function with it is dispatched by functions of the spread arguments:
+the NREQ required ones, the NOPT optional ones (the unbound marker for those
+not given) and, when MORE is 1 (&REST or &KEY), the list of the arguments after
+them; at most four in all.  NIL otherwise."
+    (when (and (listp ll) (null (cdr (last ll))))
+      (let ((state :req) (nreq 0) (nopt 0) (more 0))
+        (dolist (x ll)
+          (cond ((eq x '&optional) (unless (eq state :req) (return-from %fast-shape nil)) (setq state :opt))
+                ((member x '(&rest &body &key)) (setq more 1 state :more))
+                ((eq x '&aux) (setq state :aux))
+                ((member x lambda-list-keywords) (unless (eq x '&allow-other-keys) (return-from %fast-shape nil)))
+                ((eq state :req) (setq nreq (+ nreq 1)))
+                ((eq state :opt) (setq nopt (+ nopt 1)))))
+        (and (<= 1 nreq) (<= (+ nreq nopt more) 4) (list nreq nopt more)))))
+
+  (defun %shape-code (nreq nopt more)
+    "The bits of the tag of the cache (+GF-CACHE+) that tell the shape."
+    (+ nreq nopt more (* 256 nopt) (* 1024 more))))
+
+;;; the shape bits of the tag of the cache
+(defconstant +gf-shape-mask+ #x70f)
+
+(defun %spread-list (nreq nopt more args)
+  "The spread arguments (a list) of the arguments ARGS of a generic function
+or method of the shape (NREQ NOPT MORE)."
+  (let ((r nil) (a args))
+    (dotimes (i nreq)
+      (when (atom a) (error 'simple-program-error :format-control "Too few arguments: ~S"
+                                                  :format-arguments (list args)))
+      (push (car a) r) (setq a (cdr a)))
+    (dotimes (i nopt)
+      (if (consp a) (progn (push (car a) r) (setq a (cdr a))) (push (%unbound-marker) r)))
+    ;; (the rest list may share the list of the arguments, CLHS 3.4.1.3)
+    (cond ((eql more 1) (push a r))
+          (a (error 'simple-program-error :format-control "Too many arguments: ~S"
+                                          :format-arguments (list args))))
+    (nreverse r)))
+
+(defun %unspread (nreq nopt more spread)
+  "The arguments whose spread arguments are SPREAD."
+  (let ((r nil) (a spread))
+    (dotimes (i nreq) (push (car a) r) (setq a (cdr a)))
+    (dotimes (i nopt) (unless (%unboundp (car a)) (push (car a) r)) (setq a (cdr a)))
+    (nreconc r (if (eql more 1) (car a) nil))))
+
+(defun %gf-shape (info)
+  "The shape (nreq nopt more) of a generic function dispatched by functions of
+spread arguments that are not just its required ones, else NIL."
+  (let ((nreq (%gf-slot info +gf-nreq+)) (fast (%gf-slot info +gf-fast+)))
+    (if (or (eql fast 0) (eql fast nreq))
+        nil
+        (list nreq (%gf-slot info +gf-nopt+) (if (%gf-slot info +gf-restp+) 1 0)))))
 
 ;;; every generic function: their caches are emptied when a class is redefined
 (defvar *generic-function-infos* nil)
@@ -297,36 +365,42 @@ function with it is dispatched by functions of the arguments (%GF-FUNCTION-MAKER
 ;;; (+GF-EQL+: NIL or a simple-vector of the markers per parameter), or 0 for
 ;;; a parameter that no method specializes (+GF-UNSPECIALIZED+).  VALUE is a
 ;;; function of the
-;;; required arguments when +GF-FAST+ is not 0, else (effective-method-function
-;;; . valid-keys), a function of the argument list; METHODS are the applicable
-;;; methods.  TAG is +GF-FAST+ + 16 * (the first four bits of
-;;; +GF-UNSPECIALIZED+), or 0 when +GF-FAST+ is.  The dispatch inlined in the
+;;; spread arguments when +GF-FAST+ (their number) is not 0, else
+;;; (effective-method-function . valid-keys), a function of the argument list;
+;;; METHODS are the applicable methods.  TAG is (%SHAPE-CODE nreq nopt more)
+;;; + 16 * (the first four bits of +GF-UNSPECIALIZED+), or 0 when +GF-FAST+ is.  The dispatch inlined in the
 ;;; function of the generic function compares the classes of the arguments
 ;;; with the keys: it never finds the entries with EQL markers, and the value
 ;;; of an entry for a class that EQL specializer objects of that parameter
 ;;; have first tests whether the argument is one of them (%EQL-GUARDED-VALUE).
 ;;; With more than +GF-CACHE-ENTRIES+ entries they all move to +GF-TABLE+:
 ;;; (count . #(mask key... value methods ...)), an open-addressing hash table
-;;; on the keys (the cache then has no entries and the tag 0).  The search of
+;;; on the keys (the cache then has no entries).  The search of
 ;;; the entries is cheaper than a call of the function that probes the table
-;;; up to some twenty entries.
+;;; up to some twenty entries; probing the table in the function of the
+;;; generic function itself is slower than the search too until some thirty
+;;; (the address of the method then depends on a chain of loads from the
+;;; argument, which a mispredicted call waits for).
 (defconstant +gf-cache-entries+ 32)
 (defconstant +gf-cache-header+ 5)
 
 (defun %gf-reset-cache (info)
   (%bump-clos-epoch)                    ; the caches of call sites
   (let* ((nreq (%gf-slot info +gf-nreq+))
-         (fast (if (and (fixnump nreq) (<= 1 nreq 4) (eql (%gf-slot info +gf-nopt+) 0)
-                        (not (%gf-slot info +gf-restp+))
+         (nopt (%gf-slot info +gf-nopt+))
+         (more (if (%gf-slot info +gf-restp+) 1 0))
+         (fast (if (and (fixnump nreq) (<= 1 nreq) (fixnump nopt) (<= (+ nreq nopt more) 4)
+                        (not (eq (%gf-slot info +gf-ll+) :unspecified))
                         (or (null *the-standard-generic-function-class*)
                             (eq (%instance-layout info) *the-standard-generic-function-class*)))
-                   nreq 0)))
+                   (+ nreq nopt more) 0)))
     (%set-gf-slot info +gf-fast+ fast)
     (unless (%gf-slot info +gf-unspecialized+) (%set-gf-slot info +gf-unspecialized+ 0))
     (%set-gf-slot info +gf-cache+
                   (vector (if (eql fast 0)
                               0
-                              (+ fast (* 16 (logand (%gf-slot info +gf-unspecialized+) 15))))
+                              (+ (%shape-code nreq nopt more)
+                                 (* 16 (logand (%gf-slot info +gf-unspecialized+) 15))))
                           fast (%gf-slot info +gf-eql+) (%gf-slot info +gf-unspecialized+) nil))
     (%set-gf-slot info +gf-table+ nil)))
 
@@ -621,7 +695,12 @@ objects of MARKERS: the marker of the object that X is, else the class of X."
   `(let ((k ,k))
      (if (fixnump k)
          0
-         (let ((h (%fxlogand (the fixnum (if (consp k) (cdr k) (%identity-hash k))) #xFFFFF)))
+         (let ((h (%fxlogand (the fixnum (if (consp k)
+                                             (cdr k)
+                                             ;; (a class: its identity hash is cached in it)
+                                             (let ((h (%instance-raw-hash k)))
+                                               (if (eq h 0) (%identity-hash k) h))))
+                             #xFFFFF)))
            (declare (fixnum h))
            (%fxlogxor h (%fxlogxor (%fxash-right h 3) (%fxash-right h 6)))))))
 
@@ -713,7 +792,7 @@ objects of MARKERS: the marker of the object that X is, else the class of X."
 or a function that calls it unless an argument is an EQL specializer object
 whose class is the key of its parameter: such an argument has an entry of its
 own, which the dispatch on classes does not find."
-  (let ((eqls (%gf-slot info +gf-eql+)) (guards nil) (p 0))
+  (let ((eqls (%gf-slot info +gf-eql+)) (guards nil) (p 0) (nkeys (%gf-slot info +gf-nreq+)))
     (dolist (k keys)
       (let ((markers (and (< p (length eqls)) (svref eqls p))))
         (when (and markers (%instancep k))
@@ -733,7 +812,7 @@ own, which the dispatch on classes does not find."
                                    (when (,test (car e) x)
                                      (return (funcall (the function
                                                            (or (cdr e)
-                                                               (setf (cdr e) (%gf-lookup info (list %args) n 0))))
+                                                               (setf (cdr e) (%gf-lookup info (list %args) nkeys 0))))
                                                       %args)))))))))
                (if (every (lambda (o) (or (fixnump o) (symbolp o) (characterp o) (%instancep o))) (cdar guards))
                    (guard eq)
@@ -758,7 +837,7 @@ own, which the dispatch on classes does not find."
                                      (let ((e (assoc code memo)))
                                        (if e
                                            (cdr e)
-                                           (let ((f (%gf-lookup info (list %args) n 0)))
+                                           (let ((f (%gf-lookup info (list %args) nkeys 0)))
                                              (push (cons code f) memo)
                                              f))))
                                 %args))))))))))
@@ -768,11 +847,11 @@ own, which the dispatch on classes does not find."
   (let ((pic (%gf-slot info +gf-cache+)))
     (multiple-value-bind (value methods) (%gf-compute-value info args)
       (when (and (functionp value) (%gf-slot info +gf-eql+))
-        (setq value (%eql-guarded-value info keys value nreq)))
+        (setq value (%eql-guarded-value info keys value (%gf-slot info +gf-fast+))))
       ;; computing the effective method may have invalidated the cache
       (when (eq pic (%gf-slot info +gf-cache+))
         (%gf-store info keys nreq value methods)
-        (when (and (functionp value) (eql (%gf-slot info +gf-fast+) nreq))
+        (when (and (functionp value) (not (eql (%gf-slot info +gf-fast+) 0)))
           (%gf-add-eql-class-entry info keys args nreq)))
       (if (eql which 0) value methods))))
 
@@ -794,7 +873,7 @@ own, which the dispatch on classes does not find."
              (setf (svref new j) value (svref new (+ j 1)) methods)
              (%set-gf-slot info +gf-cache+ new)))
           (t
-           (let ((new (vector 0 (svref pic 1) (svref pic 2) (svref pic 3) nil)))
+           (let ((new (vector (svref pic 0) (svref pic 1) (svref pic 2) (svref pic 3) nil)))
              (%set-gf-slot info +gf-cache+ new)
              (do ((b +gf-cache-header+ (+ b stride))) ((>= b len))
                (%gf-table-put info (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref pic (+ b j)) r)))
@@ -822,18 +901,19 @@ own, which the dispatch on classes does not find."
 
 (defun %gf-add-eql-class-entry (info keys args nreq)
   (when (and (<= 1 nreq 4) (some #'consp keys))
-    (let ((class-keys (mapcar (lambda (k a) (if (consp k) (%fast-class-of a) k)) keys args)))
+    (let ((class-keys (mapcar (lambda (k a) (if (consp k) (%fast-class-of a) k)) keys args))
+          (n (%gf-slot info +gf-fast+)))
       (unless (%gf-has-entry-p info class-keys nreq)
         (let* ((memo nil)
                (pic (%gf-slot info +gf-cache+))
-               (other (%arity-case nreq
+               (other (%arity-case n
                         (lambda (%args)
                           (funcall (the function
                                         (or memo
                                             (setq memo (values (%gf-compute-value info (list %args))))))
                                    %args)))))
           (when (eq pic (%gf-slot info +gf-cache+))
-            (%gf-store info class-keys nreq (%eql-guarded-value info class-keys other nreq)
+            (%gf-store info class-keys nreq (%eql-guarded-value info class-keys other n)
                        +gf-methods-unknown+)))))))
 
 (defun %gf-lookup-entry (info args nreq which)
@@ -914,7 +994,10 @@ own, which the dispatch on classes does not find."
             (when (and rest (not (eq (cdr entry) :any)) (%gf-slot info +gf-keyp+))
               (%check-call-keys info (cdr entry) rest))
             (funcall (the function (car entry)) args))
-          (apply (the function entry) args)))))
+          (if (and (eq nopt 0) (not (%gf-slot info +gf-restp+)))
+              (apply (the function entry) args)
+              (apply (the function entry)
+                     (%spread-list nreq nopt (if (%gf-slot info +gf-restp+) 1 0) args)))))))
 
 ;;; The dispatch on one to four required arguments.  %GF-CALLn is inlined in
 ;;; the function of a generic function: it searches the first cache entries
@@ -922,13 +1005,20 @@ own, which the dispatch on classes does not find."
 ;;; EQL specializers, the table, the computation of the effective method) and
 ;;; returns the function to call, or NIL when the generic function is not
 ;;; dispatched on n arguments.  %GF-MISSn is the whole dispatch out of line.
-(defmacro %define-gf-dispatch (n)
+(defmacro %define-gf-dispatch (n &optional (nkeys n))
+  ;; N: the number of arguments of the functions; NKEYS: the number of them
+  ;; that the dispatch looks at (the required ones).  With fewer keys than
+  ;; arguments only %GF-FIND-n-k is defined (%GF-SCALL calls it).
   (let* ((args (subseq '(a b c d) 0 n))
-         (keys (subseq '(k0 k1 k2 k3) 0 n))
+         (kargs (subseq args 0 nkeys))
+         (keys (subseq '(k0 k1 k2 k3) 0 nkeys))
          (call (nth (- n 1) '(%gf-call1 %gf-call2 %gf-call3 %gf-call4)))
          (miss (nth (- n 1) '(%gf-miss1 %gf-miss2 %gf-miss3 %gf-miss4)))
-         (find (nth (- n 1) '(%gf-find1 %gf-find2 %gf-find3 %gf-find4)))
-         (stride (+ n 2)))
+         (find (if (eql n nkeys)
+                   (nth (- n 1) '(%gf-find1 %gf-find2 %gf-find3 %gf-find4))
+                   (cdr (assoc (+ (* 10 n) nkeys) '((21 . %gf-find-2-1) (31 . %gf-find-3-1) (32 . %gf-find-3-2)
+                                                     (41 . %gf-find-4-1) (42 . %gf-find-4-2) (43 . %gf-find-4-3))))))
+         (stride (+ nkeys 2)))
     (flet ((match (vec base)
              (let ((i -1))
                `(and ,@(mapcar (lambda (k)
@@ -937,16 +1027,16 @@ own, which the dispatch on classes does not find."
                                keys)))))
       `(progn
          (defun ,find (info ,@args)
-           (if (eq (%svref (%gf-slot info +gf-cache+) 1) ,n)
+           (if (and (eq (%svref (%gf-slot info +gf-cache+) 1) ,n) (eql (%gf-slot info +gf-nreq+) ,nkeys))
                (let* ((pic (%gf-slot info +gf-cache+))
                       (eqls (%svref pic 2)) (unspec (%svref pic 3))
                       ,@(let ((i -1))
                           (mapcar (lambda (k a) (setq i (+ i 1)) `(,k (%arg-key unspec eqls ,i ,a)))
-                                  keys args))
+                                  keys kargs))
                       (len (%svlength pic)))
                  (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
                    (when ,(match 'pic 'i)
-                     (return-from ,find (%svref pic (%fx+ i ,n)))))
+                     (return-from ,find (%svref pic (%fx+ i ,nkeys)))))
                  (let ((vec (%svref pic 4)))
                    (when vec
                      (let* ((mask (%svref vec 0))
@@ -960,43 +1050,108 @@ own, which the dispatch on classes does not find."
                          (let ((base (%fx+ 1 (%fx* i ,stride))))
                            (cond ((null (%svref vec base)) (return))
                                  (,(match 'vec 'base)
-                                  (return-from ,find (%svref vec (%fx+ base ,n)))))
+                                  (return-from ,find (%svref vec (%fx+ base ,nkeys)))))
                            (setq i (%fxlogand (%fx+ i 1) mask)))))))
-                 (%gf-fill info (list ,@keys) (list ,@args) ,n 0))
+                 (%gf-fill info (list ,@keys) (list ,@args) ,nkeys 0))
                nil))
-         (defun ,miss (info ,@args)
-           (let ((f (,find info ,@args)))
-             (if f
-                 (funcall (the function f) ,@args)
-                 (%gf-invoke info (list ,@args)))))
-         (declaim (inline ,call))
-         (defun ,call (info ,@args)
-           ;; The methods are called here, in the function of each generic
-           ;; function, and not in a function shared by all of them: the
-           ;; engine specializes the call per generic function (a method
-           ;; found among the first entries is called inside the loop, not in
-           ;; tail position: it is then inlined into the dispatch).
-           (let* ((pic (%gf-slot info +gf-cache+))
-                  (tag (%svref pic 0)))
-             (when (eq (%fxlogand tag 15) ,n)
-               (let (,@(let ((i -1))
-                         (mapcar (lambda (k a)
-                                   (setq i (+ i 1))
-                                   `(,k (if (eq (%fxlogand tag ,(ash 16 i)) 0) (%fast-class-of ,a) 0)))
-                                 keys args))
-                     (len (%svlength pic)))
-                 (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
-                   (when ,(match 'pic 'i)
-                     (return-from ,call (funcall (the function (%svref pic (%fx+ i ,n))) ,@args))))))
-             (let ((f (,find info ,@args)))
-               (if f
-                   (funcall (the function f) ,@args)
-                   (%gf-invoke info (list ,@args))))))))))
+         ,@(when (eql n nkeys)
+             `((defun ,miss (info ,@args)
+                 (let ((f (,find info ,@args)))
+                   (if f
+                       (funcall (the function f) ,@args)
+                       (%gf-invoke info (list ,@args)))))
+               ;; (a macro, not an inline function: the dispatch is copied into
+               ;; each generic function's function also where that is compiled
+               ;; in the image, whose compiler does not copy the runtime's functions)
+               (defmacro ,call (info ,@args)
+                 ;; The methods are called here, in the function of each generic
+                 ;; function, and not in a function shared by all of them: the
+                 ;; engine specializes the call per generic function (a method
+                 ;; found among the first entries is called inside the loop, not in
+                 ;; tail position: it is then inlined into the dispatch).
+                 (list 'let* (list (list 'info info) ,@(mapcar (lambda (a) `(list ',a ,a)) args))
+                       (%gf-dispatch-code ,n ,nkeys ',args '(list ,@args) ,(%shape-code n 0 0))))))))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %gf-dispatch-code (n nkeys spread actual code)
+    "The dispatch inlined in the function of a generic function: SPREAD are the
+N variables holding the spread arguments, the first NKEYS of them the required
+ones; ACTUAL is the form of the list of the arguments, for the general call.
+INFO is the variable of the generic function metaobject, and the tag of the
+cache has the shape bits CODE."
+    (let* ((keys (subseq '(k0 k1 k2 k3) 0 nkeys))
+           (kargs (subseq spread 0 nkeys))
+           (stride (+ nkeys 2))
+           (find (if (eql n nkeys)
+                     (nth (- n 1) '(%gf-find1 %gf-find2 %gf-find3 %gf-find4))
+                     (cdr (assoc (+ (* 10 n) nkeys) '((21 . %gf-find-2-1) (31 . %gf-find-3-1) (32 . %gf-find-3-2)
+                                                     (41 . %gf-find-4-1) (42 . %gf-find-4-2) (43 . %gf-find-4-3)))))))
+      `(block dispatch
+         (let* ((pic (%instance-ref info +gf-cache+))
+                (tag (%svref pic 0)))
+           (when (eq (%fxlogand tag #x70f) ,code)
+             (let (,@(let ((i -1))
+                       (mapcar (lambda (k a)
+                                 (setq i (+ i 1))
+                                 `(,k (if (eq (%fxlogand tag ,(ash 16 i)) 0) (%fast-class-of ,a) 0)))
+                               keys kargs))
+                   (len (%svlength pic)))
+               (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
+                 (when (and ,@(let ((i -1))
+                                (mapcar (lambda (k)
+                                          (setq i (+ i 1))
+                                          `(eq (%svref pic ,(if (eql i 0) 'i `(%fx+ i ,i))) ,k))
+                                        keys)))
+                   (return-from dispatch (funcall (the function (%svref pic (%fx+ i ,nkeys))) ,@spread))))
+               (let ((f (,find info ,@spread)))
+                 (when f (return-from dispatch (funcall (the function f) ,@spread))))))
+           (%gf-invoke info ,actual))))))
+
+;;; (%GF-SCALL info (nreq nopt more) (arg...)): the dispatch inlined in the
+;;; function of a generic function with optional or rest/keyword parameters,
+;;; for a call with the arguments ARG...: they are spread (the unbound marker
+;;; for the optional ones not given, the list of the rest) and the cache is
+;;; searched by the required ones; its values are functions of the spread
+;;; arguments.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %gf-spread-entry-n (shape)
+    "The function of a generic function of the shape SHAPE called with more
+than four arguments (or applied): its lambda list spreads them."
+    (destructuring-bind (nreq nopt more) shape
+      (let* ((req (subseq '(s0 s1 s2 s3) 0 nreq))
+             (opt (subseq '(s0 s1 s2 s3) nreq (+ nreq nopt)))
+             (rest (if (eql more 1) (list (nth (+ nreq nopt) '(s0 s1 s2 s3))) nil))
+             (spread (append req opt rest)))
+        `(lambda (,@req ,@(when opt `(&optional ,@(mapcar (lambda (o) `(,o (%unbound-marker))) opt)))
+                  ,@(when rest `(&rest ,@rest)))
+           ,(%gf-dispatch-code (+ nreq nopt more) nreq spread `(%unspread ,nreq ,nopt ,more (list ,@spread))
+                               (%shape-code nreq nopt more)))))))
+
+(defmacro %gf-scall (info shape actual)
+  (destructuring-bind (nreq nopt more) shape
+    (let ((k (length actual)) (m (+ nreq nopt more)))
+      (if (or (< k nreq) (and (> k (+ nreq nopt)) (eql more 0)))
+          `(%gf-invoke ,info (list ,@actual))
+          (let* ((spread (subseq '(s0 s1 s2 s3) 0 m))
+                 (values (append (subseq actual 0 (min k (+ nreq nopt)))
+                                 (make-list (max 0 (- (+ nreq nopt) k)) :initial-element '(%unbound-marker))
+                                 (if (eql more 1)
+                                     (list (if (> k (+ nreq nopt)) `(list ,@(nthcdr (+ nreq nopt) actual)) nil))
+                                     nil)))
+                 (code (%gf-dispatch-code m nreq spread `(list ,@actual) (%shape-code nreq nopt more))))
+            `(let* ((info ,info) ,@(mapcar #'list spread values))
+               ,code))))))
 
 (%define-gf-dispatch 1)
 (%define-gf-dispatch 2)
 (%define-gf-dispatch 3)
 (%define-gf-dispatch 4)
+(%define-gf-dispatch 2 1)
+(%define-gf-dispatch 3 1)
+(%define-gf-dispatch 3 2)
+(%define-gf-dispatch 4 1)
+(%define-gf-dispatch 4 2)
+(%define-gf-dispatch 4 3)
 
 ;;; Methods of only required parameters (at most four) are also known as
 ;;; functions of the arguments: either such a function (a method that does not
@@ -1012,6 +1167,27 @@ own, which the dispatch on classes does not find."
   (setf (gethash m *method-fast-makers*) f)
   m)
 
+(defun %spread-maker-method-function (maker nreq nopt more)
+  "The method function (of the argument list and the next method functions) of
+a method of optional or rest/keyword parameters known by MAKER."
+  (lambda (args next)
+    (apply (the function
+                (funcall maker
+                         (if next
+                             (lambda (&rest spread)
+                               (funcall (car next) (%unspread nreq nopt more spread) (cdr next)))
+                             nil)
+                         0))
+           (%spread-list nreq nopt more args))))
+
+(defun %call-next-method-spread (spread next cnm-args cell nreq nopt more check)
+  "CALL-NEXT-METHOD with the arguments CNM-ARGS (or none) in a method of the
+spread arguments SPREAD whose next method NEXT is a function of such."
+  (when (and check cnm-args) (%check-cnm-args cell (%unspread nreq nopt more spread) cnm-args))
+  (cond ((null next) (%no-next-method cell (or cnm-args (%unspread nreq nopt more spread))))
+        (cnm-args (apply (the function next) (%spread-list nreq nopt more cnm-args)))
+        (t (apply (the function next) spread))))
+
 (defun %maker-method-function (maker)
   "The method function (of the argument list and the next method functions) of
 a method known by MAKER."
@@ -1019,32 +1195,80 @@ a method known by MAKER."
     (apply (the function (funcall maker (if next (lambda (&rest a) (funcall (car next) a (cdr next))) nil) 0))
            args)))
 
-(defun %method-fast-fn (m next n unspec)
-  "A function of the N required arguments calling the method M, NEXT (a function
-of the arguments, or NIL) being its next method; UNSPEC is +GF-UNSPECIALIZED+
-of the generic function."
+(defun %method-fast-fn (m next n unspec &optional shape)
+  "A function of the N (spread) arguments calling the method M, NEXT (a
+function of the arguments, or NIL) being its next method; UNSPEC is
++GF-UNSPECIALIZED+ of the generic function, SHAPE its %GF-SHAPE."
   (let ((maker (gethash m *method-fast-makers*)))
     (if maker
         (funcall maker next unspec)
         (or (gethash m *method-fast-functions*)
-            (let ((mf (%method-function m))
-                  (nexts (if next (list (lambda (args n) (declare (ignore n)) (apply next args))) nil)))
-              (%arity-case n (lambda (%args) (funcall mf (list %args) nexts))))))))
+            (let ((mf (%method-function m)))
+              (if shape
+                  (destructuring-bind (nreq nopt more) shape
+                    (let ((nexts (if next
+                                     (list (lambda (args n)
+                                             (declare (ignore n))
+                                             (apply next (%spread-list nreq nopt more args))))
+                                     nil)))
+                      (%arity-case n (lambda (%args)
+                                       (funcall mf (%unspread nreq nopt more (list %args)) nexts)))))
+                  (let ((nexts (if next (list (lambda (args n) (declare (ignore n)) (apply next args))) nil)))
+                    (%arity-case n (lambda (%args) (funcall mf (list %args) nexts))))))))))
+
+(defun %no-applicable-fast (gf n shape)
+  (if shape
+      (destructuring-bind (nreq nopt more) shape
+        (%arity-case n (lambda (%args) (apply #'no-applicable-method gf (%unspread nreq nopt more (list %args))))))
+      (%arity-case n (lambda (%args) (no-applicable-method gf %args)))))
+
+(defun %check-more-keys (info valid more)
+  "Check the keyword arguments MORE of a call of the generic function INFO
+whose applicable methods accept the keywords VALID (or :ANY)."
+  (do ((l more (cddr l))) ((null l))
+    (when (or (atom l) (atom (cdr l))) (%gf-arg-error info "odd number of keyword arguments ~S" more))
+    (unless (symbolp (car l)) (%gf-arg-error info "~S is not a keyword" (car l))))
+  (unless (or (eq valid :any)
+              (let ((aok (%plist-find more :allow-other-keys))) (and aok (cadr aok))))
+    (do ((l more (cddr l))) ((null l))
+      (unless (or (eq (car l) :allow-other-keys) (member (car l) valid))
+        (%gf-arg-error info "unknown keyword argument ~S (allowed: ~S)" (car l) valid)))))
+
+(defun %key-checked-fast-emf (info methods f n)
+  "F, a function of the N spread arguments of a generic function with &KEY,
+the last of them the list of the arguments after the optional ones, preceded
+by the check of those keyword arguments."
+  (let* ((gfll (%gf-slot info +gf-ll+))
+         (valid (if (and (consp gfll) (member '&allow-other-keys gfll)) :any (%valid-call-keys info methods))))
+    (declare (function f))
+    (case n
+      (2 (lambda (a more) (when more (%check-more-keys info valid more)) (funcall f a more)))
+      (3 (lambda (a b more) (when more (%check-more-keys info valid more)) (funcall f a b more)))
+      (t (lambda (a b c more) (when more (%check-more-keys info valid more)) (funcall f a b c more))))))
 
 (defun %compute-fast-emf (gf info methods args n)
+  (let ((shape (%gf-shape info)))
+    (if (and shape methods (%gf-slot info +gf-keyp+))
+        (%key-checked-fast-emf info methods (%compute-fast-emf-1 gf info methods args n shape) n)
+        (%compute-fast-emf-1 gf info methods args n shape))))
+
+(defun %compute-fast-emf-1 (gf info methods args n shape)
   (let* ((mc (%gf-slot info +gf-combination+))
          (def (if (eq mc *standard-method-combination*) nil (get (%instance-ref mc 0) '%method-combination))))
-    (cond ((null methods) (%arity-case n (lambda (%args) (no-applicable-method gf %args))))
-          ((%fast-accessor-fn info methods args))
+    (cond ((null methods) (%no-applicable-fast gf n shape))
+          ((and (null shape) (%fast-accessor-fn info methods args)))
           ((eq mc *standard-method-combination*)
-           (%standard-fast-emf gf methods n (%gf-slot info +gf-unspecialized+)))
+           (%standard-fast-emf gf methods n (%gf-slot info +gf-unspecialized+) shape))
           ((and (eq (car def) :short)
                 (%short-fast-emf gf methods (%instance-ref mc 0) def (%instance-ref mc 1) n
-                                 (%gf-slot info +gf-unspecialized+))))
+                                 (%gf-slot info +gf-unspecialized+) shape)))
           (t (let ((emf (%effective-method-function gf info methods)))
-               (%arity-case n (lambda (%args) (funcall emf (list %args)))))))))
+               (if shape
+                   (destructuring-bind (nreq nopt more) shape
+                     (%arity-case n (lambda (%args) (funcall emf (%unspread nreq nopt more (list %args))))))
+                   (%arity-case n (lambda (%args) (funcall emf (list %args))))))))))
 
-(defun %short-fast-emf (gf methods name def options n unspec)
+(defun %short-fast-emf (gf methods name def options n unspec &optional shape)
   "The effective method of a short-form method combination as a function of
 the N arguments, or NIL when its operator is not a function."
   (let ((op (cadr def)) (identity (caddr def)))
@@ -1052,8 +1276,8 @@ the N arguments, or NIL when its operator is not a function."
               (and (fboundp op) (not (macro-function op)) (not (special-operator-p op))))
       (multiple-value-bind (around primary) (%short-methods gf methods name options)
         (if (null primary)
-            (%arity-case n (lambda (%args) (no-applicable-method gf %args)))
-            (let* ((pfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec)) primary))
+            (%no-applicable-fast gf n shape)
+            (let* ((pfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) primary))
                    (f (cond ((and identity (null (cdr pfns))) (car pfns))
                             ((eq op 'progn)
                              (%arity-case n (lambda (%args)
@@ -1076,15 +1300,34 @@ the N arguments, or NIL when its operator is not a function."
                              (%arity-case n (lambda (%args)
                                               (let ((r nil))
                                                 (dolist (p pfns (nreverse r)) (push (funcall (the function p) %args) r))))))
+                            ;; two or three methods of the other standard
+                            ;; operators: no list of their values
+                            ((and (member op '(append nconc max min)) (cdr pfns) (null (cdddr pfns)))
+                             (let ((p1 (first pfns)) (p2 (second pfns)) (p3 (third pfns)))
+                               (declare (function p1 p2))
+                               (macrolet ((combine (operator)
+                                            `(if p3
+                                                 (%arity-case n (lambda (%args)
+                                                                  (let* ((a (funcall p1 %args)) (b (funcall p2 %args))
+                                                                         (c (funcall (the function p3) %args)))
+                                                                    (,operator a b c))))
+                                                 (%arity-case n (lambda (%args)
+                                                                  (let* ((a (funcall p1 %args)) (b (funcall p2 %args)))
+                                                                    (,operator a b)))))))
+                                 (case op
+                                   (append (combine append))
+                                   (nconc (combine nconc))
+                                   (max (combine max))
+                                   (t (combine min))))))
                             (t
                              (%arity-case n (lambda (%args)
                                               (let ((r nil))
                                                 (dolist (p pfns) (push (funcall (the function p) %args) r))
                                                 (apply op (nreverse r)))))))))
-              (dolist (m (reverse around)) (setq f (%method-fast-fn m f n unspec)))
+              (dolist (m (reverse around)) (setq f (%method-fast-fn m f n unspec shape)))
               f))))))
 
-(defun %standard-fast-emf (gf methods n unspec)
+(defun %standard-fast-emf (gf methods n unspec &optional shape)
   (let ((around nil) (before nil) (primary nil) (after nil))
     (dolist (m methods)
       (let ((q (%method-qualifiers m)))
@@ -1095,12 +1338,12 @@ the N arguments, or NIL when its operator is not a function."
               (t (%invalid-qualifiers gf m 'standard)))))
     ;; AROUND, PRIMARY and AFTER are now least specific first
     (if (null primary)
-        (%arity-case n (lambda (%args) (no-applicable-method gf %args)))
+        (%no-applicable-fast gf n shape)
         (let ((f nil))
-          (dolist (m primary) (setq f (%method-fast-fn m f n unspec)))
+          (dolist (m primary) (setq f (%method-fast-fn m f n unspec shape)))
           (when (or before after)
-            (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec)) (nreverse before)))
-                  (afns (mapcar (lambda (m) (%method-fast-fn m nil n unspec)) after))
+            (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) (nreverse before)))
+                  (afns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) after))
                   (p f))
               (setq f (if afns
                           (%arity-case n (lambda (%args)
@@ -1110,7 +1353,7 @@ the N arguments, or NIL when its operator is not a function."
                           (%arity-case n (lambda (%args)
                                            (dolist (b bfns) (funcall (the function b) %args))
                                            (funcall (the function p) %args)))))))
-          (dolist (m around) (setq f (%method-fast-fn m f n unspec)))
+          (dolist (m around) (setq f (%method-fast-fn m f n unspec shape)))
           f))))
 
 (defun %check-call-keys (info valid keys)
@@ -1201,7 +1444,7 @@ the N arguments, or NIL when its operator is not a function."
              (nreq (%gf-slot info +gf-nreq+)))
         ;; the object is a direct instance of CLASS (the key of the cache
         ;; entry), whose slot locations stay while the entry does
-        (when (and (fixnump loc) (eql nreq (if writerp 2 1)))
+        (when (and (fixnump loc) (eql nreq (if writerp 2 1)) (eql (%gf-slot info +gf-fast+) nreq))
           (if writerp
               (let ((writer (lambda (v o)
                               (if (and (%instancep o) (or (null count) (%slot-count-is-p o count)))
@@ -1622,6 +1865,91 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                           (next-method-p () (not (null ,next))))
                      ,inner))))))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %spread-bindings (ll vars)
+    "The LET* bindings of the variables of the method lambda list LL from the
+spread arguments in VARS (%FAST-SHAPE), and the temporary variables."
+    (let ((state :req) (r nil) (temps nil) (v vars) (more nil))
+      (dolist (x ll)
+        (cond ((eq x '&optional) (setq state :opt))
+              ((or (eq x '&rest) (eq x '&body)) (setq state :rest))
+              ((eq x '&key) (setq state :key))
+              ((eq x '&allow-other-keys) nil)
+              ((eq x '&aux) (setq state :aux))
+              ((eq state :req) (push (list x (pop v)) r))
+              ((eq state :opt)
+               (let ((var (if (consp x) (car x) x)) (default (if (consp x) (cadr x) nil))
+                     (svar (if (consp x) (caddr x) nil)) (s (pop v)))
+                 (push (list var `(if (%unboundp ,s) ,default ,s)) r)
+                 (when svar (push (list svar `(not (%unboundp ,s))) r))))
+              ((eq state :rest) (push (list x (or more (setq more (pop v)))) r))
+              ((eq state :key)
+               (let* ((spec (if (consp x) (car x) x))
+                      (var (if (consp spec) (cadr spec) spec))
+                      (default (if (consp x) (cadr x) nil))
+                      (svar (if (consp x) (caddr x) nil))
+                      (found (gensym "KEY")))
+                 (push (list found `(%plist-find ,(or more (setq more (pop v))) ',(%key-name x))) r)
+                 (push found temps)
+                 (push (list var `(if ,found (cadr ,found) ,default)) r)
+                 (when svar (push (list svar `(not (null ,found))) r))))
+              ((eq state :aux)
+               (push (if (consp x) (list (car x) (cadr x)) (list x nil)) r))))
+      (values (nreverse r) temps)))
+
+  (defun %expand-spread-cnm (cnm-args vars next cell shape check)
+    "The expansion of (CALL-NEXT-METHOD . CNM-ARGS) in a method of the spread
+arguments in VARS (shape SHAPE), whose next method is in NEXT."
+    (destructuring-bind (nreq nopt more) shape
+      (if cnm-args
+          `(%call-next-method-spread (list ,@vars) ,next (list ,@cnm-args) ,cell ,nreq ,nopt ,more ,check)
+          `(if ,next
+               (funcall (the function ,next) ,@vars)
+               (%no-next-method ,cell (%unspread ,nreq ,nopt ,more (list ,@vars)))))))
+
+  (defun %spread-method-forms (name plain-ll body cell shape)
+    "Returns (values fast cnm-p): the form of the function of the spread
+arguments (shape SHAPE) of a method with the lambda list PLAIN-LL, or, when its
+BODY uses CALL-NEXT-METHOD or NEXT-METHOD-P (CNM-P), the form of the function
+making that function from the next method (as %FAST-METHOD-MAKER)."
+    (destructuring-bind (nreq nopt more) shape
+      (multiple-value-bind (decls doc forms) (%parse-body body t)
+        (declare (ignore doc))
+        (let* ((vars (mapcar (lambda (v) (declare (ignore v)) (gensym "S"))
+                             (make-list (+ nreq nopt more))))
+               (cnm-p (%tree-mentions-p body '(call-next-method next-method-p)))
+               (all-vars (let ((r nil))
+                           (dolist (x plain-ll (nreverse r))
+                             (unless (member x lambda-list-keywords)
+                               (let ((y (if (consp x) (car x) x)))
+                                 (push (if (consp y) (cadr y) y) r)
+                                 (when (and (consp x) (consp (cddr x))) (push (caddr x) r))))))))
+          (multiple-value-bind (bindings temps) (%spread-bindings plain-ll vars)
+            (let ((inner `(let* ,bindings
+                            (declare (ignorable ,@temps ,@all-vars))
+                            ,@decls
+                            (block ,(if (consp name) (cadr name) name) ,@forms))))
+              (if (not cnm-p)
+                  (values `(lambda ,vars ,inner) nil)
+                  (let ((next (gensym "NEXT")) (unspec (gensym "UNSPEC")) (check (%safety-3-p decls)))
+                    (values
+                     `(lambda (,next ,unspec)
+                        (declare (ignorable ,unspec))
+                        (lambda ,vars
+                          ,(if (%only-operators-p (cons 'progn body) '(call-next-method next-method-p))
+                               `(macrolet ((call-next-method (&rest cnm-args)
+                                             (%expand-spread-cnm cnm-args ',vars ',next ',cell ',shape ',check))
+                                           (next-method-p () '(not (null ,next))))
+                                  ,inner)
+                               `(flet ((call-next-method (&rest cnm-args)
+                                         (if (or cnm-args (null ,next))
+                                             (%call-next-method-spread (list ,@vars) ,next cnm-args ,cell
+                                                                       ,nreq ,nopt ,more ,check)
+                                             (funcall (the function ,next) ,@vars)))
+                                       (next-method-p () (not (null ,next))))
+                                  ,inner))))
+                     t))))))))))
+
 (defmacro %defmethod-1 (name &rest args)
   (multiple-value-bind (quals ll body) (%split-method-args args)
     (let ((cell (gensym "CELL")) (fast (gensym "FAST")))
@@ -1630,8 +1958,29 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                                                             `(list 'eql ,(cadr s))
                                                             `',s))
                                             specs)))
-              (maker `(%gf-function-maker ,(%fast-arity plain-ll))))
-          (cond ((and (listp ll) (notany (lambda (x) (member x lambda-list-keywords)) plain-ll)
+              (maker `(%gf-function-maker ,(%fast-shape plain-ll)))
+              (shape (%fast-shape plain-ll)))
+          (cond ((and shape (not (%fast-arity plain-ll)))
+                 ;; optional or rest/keyword parameters: the method is also
+                 ;; known as a function of the spread arguments (%FAST-SHAPE)
+                 (multiple-value-bind (form cnm-p) (%spread-method-forms name plain-ll body cell shape)
+                   (let ((args-var (gensym "ARGS")) (next (gensym "NEXT")))
+                     `(let* ((,cell (list nil))
+                             (*gf-function-maker* ,maker)
+                             (,fast ,form))
+                        ,(if cnm-p
+                             `(%note-method-fast-maker
+                               (%defmethod ',name ',quals ,specs-form ',plain-ll
+                                           (%spread-maker-method-function ,fast ,@shape) ,doc ,cell)
+                               ,fast)
+                             `(%note-method-fast-function
+                               (%defmethod ',name ',quals ,specs-form ',plain-ll
+                                           (lambda (,args-var ,next)
+                                             (declare (ignore ,next))
+                                             (apply ,fast (%spread-list ,@shape ,args-var)))
+                                           ,doc ,cell)
+                               ,fast))))))
+                ((and (listp ll) (notany (lambda (x) (member x lambda-list-keywords)) plain-ll)
                       (not (%tree-mentions-p body '(call-next-method next-method-p))))
                  ;; the method function applies a function of the arguments, which
                  ;; is also called directly by the dispatch of one to four arguments
@@ -1756,7 +2105,8 @@ the classes of N arguments."
        (let ((info (%gf-info (fdefinition name))))
          (and info
               (let ((pic (%gf-slot info +gf-cache+)))
-                (and (eq (%svref pic 1) n) (null (%svref pic 2)) info))))))
+                (and (eq (%svref pic 1) n) (eql (%gf-slot info +gf-nreq+) n) (null (%svref pic 2))
+                     info))))))
 
 (defun %gf-site-miss-count (c i)
   "Count a miss of the site cache C (the count is at index I); a site that
@@ -1854,7 +2204,7 @@ keeps missing (more classes than entries) stops caching."
                        (= (length (remove-duplicates (car apo))) nreq))
             (%program-error "DEFGENERIC ~S: invalid argument precedence order ~S" name (car apo))))))
     (let ((gf (gensym "GF")))
-      `(let* ((*gf-function-maker* (%gf-function-maker ,(%fast-arity lambda-list)))
+      `(let* ((*gf-function-maker* (%gf-function-maker ,(%fast-shape lambda-list)))
               (,gf (%defgeneric ',name ',lambda-list ',combination ,doc ',apo ',gfclass ',mclass ',decls)))
          (%set-gf-initial-methods ,gf (list ,@(reverse methods)))
          ,gf))))
@@ -2312,8 +2662,9 @@ whose name is that instance)."
   (and (%instancep object) (not (null (%slot-location object slot-name)))))
 
 ;;; Slot access by a constant name: (SLOT-VALUE x 'name), (SETF SLOT-VALUE),
-;;; SLOT-BOUNDP (and so WITH-SLOTS) are compiled to a call with a cache of the
-;;; form, #(index location index location index location index location next):
+;;; SLOT-BOUNDP (and so WITH-SLOTS) are compiled to code comparing the slot
+;;; index of the instance's class with the entries of a cache of the form
+;;; (%CACHED-SLOT-ACCESS), #(index location index location index location index location next):
 ;;; the slot indexes of four classes seen there (the slot index of a class is
 ;;; replaced when its slot locations change), with the location of the slot
 ;;; in their instances, and the entry to replace next.
@@ -2376,14 +2727,48 @@ access protocol; else NIL."
     (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
          (symbolp (cadr form)))))
 
+(defun %slot-value-slow (object name) (slot-value object name))
+(defun %set-slot-value-slow (object name value) (%set-slot-value object name value))
+(defun %slot-boundp-slow (object name) (slot-boundp object name))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %cached-slot-access (object name kind &optional value)
+    "The inline code of a slot access by the constant NAME (a quoted symbol):
+the four entries of the cache are compared at the call site (also where the
+call site is compiled apart from the runtime, in the image or a fasl, whose
+calls of the runtime's functions are not inlined by the engine)."
+    (let ((o (gensym "O")) (c (gensym "C")) (index (gensym "INDEX")) (loc (gensym "LOC"))
+          (v (gensym "V")) (new (gensym "NEW")))
+      `(let* ((,o ,object) ,@(when (eq kind :set) `((,new ,value)))
+              (,c (load-time-value (%make-slot-cache)))
+              (,loc (if (%instancep ,o)
+                        (let ((,index (%instance-ref (%instance-layout ,o) +class-slot-index+)))
+                          (cond ((eq ,index (%svref ,c 0)) (%svref ,c 1))
+                                ((eq ,index (%svref ,c 2)) (%svref ,c 3))
+                                ((eq ,index (%svref ,c 4)) (%svref ,c 5))
+                                ((eq ,index (%svref ,c 6)) (%svref ,c 7))
+                                (t (%slot-cache-miss ,o ,name ,c ,index))))
+                        nil)))
+         ,(ecase kind
+            (:read `(if ,loc
+                        (let ((,v (%instance-ref ,o ,loc)))
+                          (if (%unboundp ,v) (%slot-value-slow ,o ,name) ,v))
+                        (%slot-value-slow ,o ,name)))
+            (:set `(if ,loc
+                       (%set-instance-ref ,o ,loc ,new)
+                       (%set-slot-value-slow ,o ,name ,new)))
+            (:boundp `(if ,loc
+                          (not (%unboundp (%instance-ref ,o ,loc)))
+                          (%slot-boundp-slow ,o ,name))))))))
+
 (define-compiler-macro slot-value (&whole form object name)
   (if (%constant-slot-name-p name)
-      `(%slot-value-cached ,object ,name (load-time-value (%make-slot-cache)))
+      (%cached-slot-access object name :read)
       form))
 
 (define-compiler-macro %set-slot-value (&whole form object name value)
   (if (%constant-slot-name-p name)
-      `(%set-slot-value-cached ,object ,name ,value (load-time-value (%make-slot-cache)))
+      (%cached-slot-access object name :set value)
       form))
 
 ;;; (setf (slot-value x 'name) v): the constant name reaches the compiler macro
@@ -2393,7 +2778,7 @@ access protocol; else NIL."
 
 (define-compiler-macro slot-boundp (&whole form object name)
   (if (%constant-slot-name-p name)
-      `(%slot-boundp-cached ,object ,name (load-time-value (%make-slot-cache)))
+      (%cached-slot-access object name :boundp)
       form))
 
 ;;; the slot access protocol (AMOP): applies to instances of classes whose
@@ -2576,8 +2961,14 @@ when it depends on more than the classes of ARGS."
     (if (or (%gf-slot info +gf-eql+)
             (not (eq (%instance-layout info) *the-standard-generic-function-class*)))
         t
-        (let ((entry (%gf-lookup info args (%gf-slot info +gf-nreq+) 0)))
-          (if (consp entry) (car entry) t)))))
+        (let ((entry (%gf-lookup info args (%gf-slot info +gf-nreq+) 0))
+              (shape (%gf-shape info)))
+          (cond ((consp entry) (car entry))
+                ;; a function of the spread arguments: of the instance (and
+                ;; the slot names) and the list of the initargs
+                ((and (functionp entry) (equal shape (if (eq gf #'initialize-instance) '(1 0 1) '(2 0 1))))
+                 (list entry))
+                (t t))))))
 
 (defun %compute-make-info (class)
   (when (eq (%class-kind class) :forward)
@@ -2636,6 +3027,7 @@ whose make-info is MI."
   (let ((shared (svref mi 5)))
     (cond ((null shared) (%std-shared-initialize instance class t initargs))
           ((functionp shared) (funcall shared (cons instance (cons t initargs))))
+          ((consp shared) (funcall (the function (car shared)) instance t initargs))
           (t (apply #'shared-initialize instance t initargs)))))
 
 (defun %make-instance-of (class initargs &optional checked)
@@ -2652,6 +3044,7 @@ whose make-info is MI."
                    (%run-shared-initialize instance class mi initargs)
                    (apply #'shared-initialize instance t initargs)))
               ((functionp init) (funcall init (cons instance initargs)))
+              ((consp init) (funcall (the function (car init)) instance initargs))
               (t (apply #'initialize-instance instance initargs)))
         instance))))
 
@@ -3122,31 +3515,68 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
 ;;; slot readers and writers of conditions defined from now on are generic
 ;;; functions (CLHS DEFINE-CONDITION)
 (setq *condition-accessor-hook*
-      (lambda (name class fn writerp)
+      (lambda (name class fn writerp &optional slot-name)
         (when (and (fboundp name) (not (%generic-function-p (fdefinition name))))
           (fmakunbound name))
-        (%note-method-fast-function
-         (%defmethod name nil (if writerp (list t class) (list class))
-                     (if writerp '(new-value condition) '(condition))
-                     (lambda (args next) (declare (ignore next)) (apply fn args))
-                     nil nil)
-         fn)))
+        (let ((m (%note-method-fast-function
+                  (%defmethod name nil (if writerp (list t class) (list class))
+                              (if writerp '(new-value condition) '(condition))
+                              (lambda (args next) (declare (ignore next)) (apply fn args))
+                              nil nil)
+                  fn)))
+          ;; (the effective method of the reader alone reads the slot itself)
+          (when slot-name (%note-slot-accessor m slot-name writerp))
+          m)))
 
 ;;; ------------------------------------------------------------
 ;;; constructors: (MAKE-INSTANCE 'NAME :KEY value ...) with constant initarg
 ;;; keys compiles to a call of a per-site constructor, which precomputes the
 ;;; slot locations while only the standard methods apply.
 ;;; A ctor is #(generation name keys class plan default-initarg-functions
-;;; standard-class);
+;;; standard-class valid template arg-plan initform-plan default-plan);
 ;;; PLAN is a list of (location . n) for slots taking the n-th argument,
 ;;; (location . (i)) for the i-th default initarg, (location . function) for
 ;;; slots taking their initform.  STANDARD-CLASS is the class when only the
 ;;; standard method of MAKE-INSTANCE applies to it (then %MAKE-INSTANCE-OF is
 ;;; called without going through the generic function); VALID is true when
 ;;; the keys and the default initargs are then valid initargs.
+;;; The new instance's slots are a copy of TEMPLATE, which holds the values of
+;;; the constant initforms (and the unbound marker); then the slots get the
+;;; values of the default initargs (DEFAULT-PLAN: #(function locations ...),
+;;; in order), of the arguments (ARG-PLAN: #(n location ...)) and of the other
+;;; initforms (INITFORM-PLAN: #(location function ...), in slot order).
 ;;; ------------------------------------------------------------
 
-(defun %make-ctor (name keys) (vector -1 name keys nil nil nil nil nil))
+(defun %make-ctor (name keys) (vector -1 name keys nil nil nil nil nil nil nil nil nil))
+
+(defun %constant-initform-p (form)
+  "True when the initform FORM always has the same value (which an
+initfunction returning it would always return)."
+  (or (and (atom form) (or (not (symbolp form)) (null form) (eq form t) (keywordp form)))
+      (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form)))))
+
+(defun %ctor-plans (ctor class plan defaults)
+  "Set the template and the plans of CTOR from its PLAN."
+  (let ((template (%make-simple-vector (or (%class-slot class +class-instance-size+) (%instance-slot-count class))
+                                       (%unbound-marker)))
+        (args nil) (forms nil) (dplan nil)
+        (slotds (%class-effective-slots class)))
+    (dotimes (i (length defaults))
+      (let ((locs nil))
+        (dolist (p plan) (when (and (consp (cdr p)) (eql (cadr p) i)) (push (car p) locs)))
+        (push (nth i defaults) dplan) (push locs dplan)))
+    (dolist (p plan)
+      (let ((loc (car p)) (src (cdr p)))
+        (cond ((fixnump src) (push src args) (push loc args))
+              ((consp src))
+              (t (let ((sd (find loc slotds :key #'%slotd-location)))
+                   (if (and sd (eq (%slotd-initfunction sd) src) (%constant-initform-p (%slotd-initform sd)))
+                       (setf (svref template loc) (funcall src))
+                       (progn (push loc forms) (push src forms))))))))
+    (setf (svref ctor 8) template
+          (svref ctor 9) (coerce (nreverse args) 'simple-vector)
+          (svref ctor 10) (coerce (nreverse forms) 'simple-vector)
+          (svref ctor 11) (coerce (nreverse dplan) 'simple-vector))))
 
 (defun %ctor-update (ctor)
   "Recompute CTOR's plan; NIL when the fast path does not apply."
@@ -3184,8 +3614,10 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
                                             (%class-effective-slots class)))
                         defaults))
               (setf (svref ctor 3) nil)
-              (setf (svref ctor 3) class (svref ctor 4) (nreverse plan)
-                    (svref ctor 5) (mapcar #'cdr defaults)))))
+              (progn
+                (setf (svref ctor 3) class (svref ctor 4) (nreverse plan)
+                      (svref ctor 5) (mapcar #'cdr defaults))
+                (%ctor-plans ctor class (svref ctor 4) (svref ctor 5))))))
     (svref ctor 3)))
 
 (defun %ctor-make-instance (ctor &rest args)
@@ -3208,23 +3640,30 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
                                        (t (funcall src))))))))))
 
 ;;; Up to four initargs: no argument list (the general function when the
-;;; constructor is not up to date or the class has default initargs)
+;;; constructor is not up to date)
 (defmacro %define-ctor-entry (name &rest params)
   `(defun ,name (ctor ,@params)
      (declare (simple-vector ctor))
-     (if (and (eql (svref ctor 0) *ctor-generation*) (svref ctor 3))
-         (let* ((fns (svref ctor 5))
-                ;; the default initargs first, in order
-                (defaults (and fns (mapcar #'funcall fns)))
-                (inst (%allocate-instance (svref ctor 3))))
-           (dolist (p (svref ctor 4) inst)
-             (let ((src (cdr p)))
-               (%set-instance-ref inst (car p)
-                                  (cond ((fixnump src)
-                                         (case src ,@(let ((i -1)) (mapcar (lambda (v) (setq i (+ i 1)) (list i v)) params))
-                                           (t nil)))
-                                        ((consp src) (nth (car src) defaults))
-                                        (t (funcall src)))))))
+     (if (and (eql (%svref ctor 0) *ctor-generation*) (%svref ctor 3))
+         (let* ((slots (%copy-simple-vector (%svref ctor 8)))
+                (inst (%make-instance (%svref ctor 3) slots)))
+           ;; the default initargs first, in order
+           (let ((dp (%svref ctor 11)))
+             (do ((i 0 (%fx+ i 2))) ((%fx>= i (%svlength dp)))
+               (let ((v (funcall (the function (%svref dp i)))))
+                 (dolist (loc (%svref dp (%fx+ i 1))) (%set-svref slots loc v)))))
+           ,@(when params
+               `((let ((ap (%svref ctor 9)))
+                   (do ((i 0 (%fx+ i 2))) ((%fx>= i (%svlength ap)))
+                     (%set-svref slots (%svref ap (%fx+ i 1))
+                                 (case (%svref ap i)
+                                   ,@(let ((i -1)) (mapcar (lambda (v) (setq i (+ i 1)) (list i v)) (butlast params)))
+                                   (t ,(car (last params)))))))))
+           (let ((fp (%svref ctor 10)))
+             (do ((i 0 (%fx+ i 2))) ((%fx>= i (%svlength fp)))
+               (%set-svref slots (%svref fp i) (funcall (the function (%svref fp (%fx+ i 1)))))))
+           (when *track-instance-hook* (funcall *track-instance-hook* (%svref ctor 3) inst))
+           inst)
          (%ctor-make-instance ctor ,@params))))
 (%define-ctor-entry %ctor-make-instance-0)
 (%define-ctor-entry %ctor-make-instance-1 a)

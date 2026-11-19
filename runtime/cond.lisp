@@ -37,14 +37,19 @@
         (let ((generic (and (boundp '*condition-accessor-hook*) (symbol-value '*condition-accessor-hook*))))
           (dolist (r readers)
             (push (if generic
-                      `(%define-condition-accessor ',r ',name (lambda (c) (%slot-value-by-name c ',sname)) nil)
+                      `(%define-condition-accessor ',r ',name (lambda (c) (%slot-value-by-name c ',sname)) nil ',sname)
                       `(defun ,r (c) (%slot-value-by-name c ',sname)))
-                  accessor-forms))
+                  accessor-forms)
+            ;; (the caches of call sites of CLOS, as for DEFCLASS)
+            (when (and generic (fboundp '%gf-site-macro-forms))
+              (dolist (f (funcall '%gf-site-macro-forms r '(object))) (push f accessor-forms))))
           (dolist (w writers)
             (push (if generic
-                      `(%define-condition-accessor ',w ',name (lambda (v c) (%set-slot-value-by-name c ',sname v)) t)
+                      `(%define-condition-accessor ',w ',name (lambda (v c) (%set-slot-value-by-name c ',sname v)) t ',sname)
                       `(defun ,w (v c) (%set-slot-value-by-name c ',sname v)))
-                  accessor-forms)))))
+                  accessor-forms)
+            (when (and generic (fboundp '%gf-site-macro-forms))
+              (dolist (f (funcall '%gf-site-macro-forms w '(new-value object))) (push f accessor-forms)))))))
     (dolist (o options)
       (case (car o)
         (:report (setq report (cadr o)))
@@ -68,9 +73,9 @@
 (defvar *condition-accessor-hook* nil
   "set by CLOS: makes condition slot readers and writers generic functions")
 
-(defun %define-condition-accessor (name class fn writerp)
+(defun %define-condition-accessor (name class fn writerp &optional slot-name)
   (if *condition-accessor-hook*
-      (funcall *condition-accessor-hook* name class fn writerp)
+      (funcall *condition-accessor-hook* name class fn writerp slot-name)
       (%set-fdefinition name fn))
   name)
 

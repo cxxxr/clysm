@@ -1356,7 +1356,7 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
-it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.5, slowest `c-eql-dispatch`
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.4, slowest `c-eql-dispatch`
 4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.8;
 `i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
 
@@ -1395,24 +1395,26 @@ What is not as fast as intended, and why:
   cannot exit are not tested.
 * **Generic functions**: dispatch on EQL specializers (4 times: the entry
   of a class with EQL specializer objects calls a guard function shared by
-  all generic functions, which then calls the method) or on many classes at
-  one call site (2.3–4: the entries are searched one after the other; past
-  32 they move to a hash table, searched out of the generic function's own
-  code, which is slower still), `make-instance` with a class that is not a
-  constant (2.2: the call site keeps the constructors of the classes it
-  saw), generic functions with `&optional`/`&key` (2.6: every call makes
-  the list of its arguments, goes through `%gf-invoke`, which checks them
-  against the lambda list and looks the entry up, and the effective method
-  and the method are functions of that list; SBCL calls them as fast as
-  those of required parameters only. A dispatch per number of arguments
-  that searches the entries itself made separate calls 25% faster but
-  `c-gf-lambda-lists` slower, shared by all generic functions (8%) and
-  copied into each (20%): the remedy is methods of spread arguments). Slot accessors are
-  about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots` 1.2): a call
-  site of a reader, of `setf` of an accessor or of a `:writer` keeps the
-  slot locations of four classes and reads or writes the slot itself. The
-  slots of a class redefined with other slots after it had instances are
-  checked first (`c-slot-redef` 1.6; see the limitations).
+  all generic functions, which then calls the method; comparing the EQL
+  objects in each generic function's own dispatch (out of line or inline),
+  or letting that dispatch call the method the guard selects, were slower
+  still, 2026-11) or on many classes at one call site (2.2–3.7: the entries
+  are searched one after the other; past 32 they move to a hash table,
+  searched out of the generic function's own code. Probing the table in
+  that code, past 8 entries, was twice as slow as the linear search for 12
+  to 20 classes in turn or at random and gained 10% only past 32: the
+  address of the method then depends on a chain of loads from the argument,
+  which a mispredicted call waits for; SBCL takes 3–4 ns a call whatever
+  the number of classes). Generic functions with `&optional`/`&rest`/`&key`
+  (`c-gf-lambda-lists` 1.3, was 2.6) and `make-instance` with a class that
+  is not a constant (`c-make-instance-plain` 1.6, was 2.7) are below. Slot
+  accessors are about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots`
+  1.0): a call site of a reader, of `setf` of an accessor or of a `:writer`
+  (of a class or a condition) keeps the slot locations of four classes and
+  reads or writes the slot itself, and `slot-value` with a constant name
+  compares the four entries of its cache inline. The slots of a class
+  redefined with other slots after it had instances are checked first
+  (`c-slot-redef` 1.5; see the limitations).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
   structures or passed between functions (fixnums in SBCL; a parameter or
   variable updated by integer arithmetic keeps them in an i64 local).
@@ -1464,11 +1466,26 @@ What makes the code fast:
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.
-* **CLOS**: generic functions of one to four required arguments dispatch and
-  combine methods without argument lists; `call-next-method` is a direct
-  call; call sites cache the functions for the classes of their arguments
-  and read slots of readers inline; `slot-value` with a constant name and
-  `make-instance` with a constant class use caches at the call site.
+* **CLOS**: generic functions dispatch and combine methods without argument
+  lists when they have one to four *spread arguments*: the required ones,
+  the optional ones (the unbound marker for one not given) and, with
+  `&rest` or `&key`, the list of the arguments after them (`%fast-shape`,
+  `%gf-scall`); the methods are functions of those too, and a generic
+  function with `&key` checks the keywords of a call only when there are
+  some. The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
+  function of each generic function, also when that is compiled in the
+  image or into a fasl, where the engine does not inline the runtime's
+  functions; `call-next-method` is a direct call; call sites cache the
+  functions for the classes of their arguments and read slots of readers
+  inline (`compile-file` defines their compiler macro for the rest of the
+  file); `slot-value` with a constant name and `make-instance` with a
+  constant class use caches at the call site. A constructor copies a
+  template of the instance's slots holding the values of constant
+  initforms, then stores the arguments and the other initforms; the
+  effective methods of `initialize-instance` and `shared-initialize` are
+  called with the instance and the list of initargs. The `append`, `nconc`,
+  `max` and `min` method combinations of two or three methods make no list
+  of the values.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm
