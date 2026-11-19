@@ -307,12 +307,18 @@
 
   (defun %typep-cell-expansion (x type)
     "The test of X for a class or structure name (or a type defined later):
-an instance of exactly that class, or an object that is not an instance or
-a function when the class is not a built-in one, is answered here; the rest
-by %TYPEP-CELL."
-    (let ((cell (gensym "CELL")) (c (gensym "C")))
+an instance (by the class precedence list of its class), or an object that
+is not an instance or a function when the class is not a built-in one, is
+answered here; the rest by %TYPEP-CELL."
+    (let ((cell (gensym "CELL")) (c (gensym "C")) (l (gensym "LAYOUT")))
       `(let* ((,cell (load-time-value (%type-cell ',type))) (,c (car ,cell)))
-         (cond ((%instancep ,x) (if (eq (%instance-layout ,x) ,c) t (%typep-cell ,x ,cell)))
+         (cond ((%instancep ,x)
+                ;; (%STRUCTURE-TYPEP X C): its class or a class it inherits from
+                (let ((,l (%instance-layout ,x)))
+                  (cond ((eq ,l ,c) t)
+                        ((null ,c) (%typep-cell ,x ,cell))
+                        ((%instancep ,l) (if (%memq ,c (%instance-ref ,l +class-cpl+)) t nil))
+                        (t nil))))
                ((or (null ,c) (functionp ,x) (eq (%instance-ref ,c +class-kind+) :built-in))
                 (%typep-cell ,x ,cell))
                (t nil)))))

@@ -149,16 +149,24 @@ temporaries-bindings special-bindings stream-form), else NIL."
                (output-object ,o ,s))
              (%scratch-string-result ,s))))))
 
+(defun %fixnum-decimal-string-p (object)
+  "OBJECT is a fixnum printed in decimal, the same with and without escapes."
+  (and (fixnump object) (not (eql object most-negative-fixnum)) (eql *print-base* 10) (not *print-radix*)
+       (not (and *print-pretty* (%ppd-user-entries-p)))))
+
 (defun prin1-to-string (object)
-  (let ((s (%scratch-string-stream)))
-    (prin1 object s)
-    (%scratch-string-result s)))
-(defun princ-to-string (object)
-  (if (and (%simple-string-p object) (not (and *print-pretty* (%ppd-user-entries-p))))
-      (%simple-substring object 0 (%string-length object))
+  (if (%fixnum-decimal-string-p object)
+      (%fixnum-decimal-string object)
       (let ((s (%scratch-string-stream)))
-        (princ object s)
+        (prin1 object s)
         (%scratch-string-result s))))
+(defun princ-to-string (object)
+  (cond ((%fixnum-decimal-string-p object) (%fixnum-decimal-string object))
+        ((and (%simple-string-p object) (not (and *print-pretty* (%ppd-user-entries-p))))
+         (%simple-substring object 0 (%string-length object)))
+        (t (let ((s (%scratch-string-stream)))
+             (princ object s)
+             (%scratch-string-result s)))))
 
 ;;; compatibility for other runtime files
 (defun %write-object (x stream) (output-object x stream))
@@ -390,6 +398,14 @@ spaces at the end of a line) or contain a newline."
 ;;; Digits are made at the end of a scratch buffer and copied to the stream
 ;;; at once (nothing else runs between the two steps).
 (defvar *%digit-buffer* (%make-string 80 #\0))
+
+(defun %fixnum-decimal-string (n)
+  "A fresh string of the decimal digits of the fixnum N."
+  (let* ((buf *%digit-buffer*) (end (%string-length buf))
+         (i (%fixnum-digits (if (< n 0) (- n) n) 10 buf end)))
+    (when (< n 0) (setq i (- i 1)) (%set-schar buf i #\-))
+    (%simple-substring buf i end)))
+
 
 (defun %fixnum-digits (n base buf i)
   "Store the digits of the nonnegative fixnum N in BASE into the simple
