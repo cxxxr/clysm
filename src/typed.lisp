@@ -552,6 +552,13 @@ when REP cannot hold every element."
         (:f32 (if (eq wt :f32) nil :no))
         (t :no)))))
 
+(defun subscript-box-code (node local)
+  "The subscript NODE, held as an i32 in LOCAL, as a Lisp integer (for the
+generic function, which signals the error of a subscript out of bounds)."
+  (if (fx-arg-p node)
+      `((:local.get ,local) :ref.i31)
+      `((:local.get ,local) (:call :box-i32))))
+
 (defun array-locate-code (name args slow)
   "For an element access NAME of ARGS (the array and its subscripts, the nodes):
 returns (values setup locate kind data index slow-args) or NIL when the types
@@ -570,7 +577,7 @@ generic function."
         ;; a two-dimensional access to an array of unknown type: inline for
         ;; an array of elements of type T (a header over a simple vector)
         (if (ty-array-kind aty) (ty-array-kind aty) (values :vector :md2))
-      (when (and kind (every #'fx-arg-p subs)
+      (when (and kind (every #'i32-arg-p subs)
                  (or (not (member name '(char schar))) (eq kind :string))
                  (cond (two (member shape '(:md2 :any)))
                        (row-major t)
@@ -582,7 +589,7 @@ generic function."
              (values `(,@(cg-rep a (ref-rep kind)) (:local.set ,d) ,@(cg-rep (first subs) :i32) (:local.set ,k))
                      `((:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
                      kind d k
-                     `((:local.get ,d) (:local.get ,k) :ref.i31)))
+                     `((:local.get ,d) ,@(subscript-box-code (first subs) k))))
             ((and (eq shape :md2) (eq (lvar-rep-of a) (md2-rep kind)))
              ;; a variable held with its storage, dimensions and offset in locals
              (destructuring-bind (data d0 d1 off) (md2-shadows (second a))
@@ -599,7 +606,7 @@ generic function."
                             (:local.get ,off) (:local.get ,x) :i32.add))
                     (:local.set ,k) (:local.get ,data) (:local.set ,d))
                   kind d k
-                  `(,@(cg a) (:local.get ,x) :ref.i31 ,@(when two `((:local.get ,y) :ref.i31)))))))
+                  `(,@(cg a) ,@(subscript-box-code (first subs) x) ,@(when two (subscript-box-code (second subs) y)))))))
             ((and (not two) (member shape '(:vec :any)) (not (and row-major (eq shape :any))))
               ;; the array is the storage
               (values `(,@(cg a) (:local.set ,e) ,@(cg-rep (first subs) :i32) (:local.set ,k))
@@ -607,7 +614,7 @@ generic function."
                         (:local.get ,e) (:ref.cast! ,kind) (:local.set ,d)
                         (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
                       kind d k
-                      `((:local.get ,e) (:local.get ,k) :ref.i31)))
+                      `((:local.get ,e) ,@(subscript-box-code (first subs) k))))
             (t
               ;; a header (with ROW-MAJOR-AREF of an array of any rank: only two-dimensional ones inline)
               (let ((m (new-local '(:ref :null :mdarray))) (s (new-local))
@@ -632,7 +639,7 @@ generic function."
                          `((:local.get ,x) :i32.add))
                    (:local.set ,k))
                  kind d k
-                 `((:local.get ,e) (:local.get ,x) :ref.i31 ,@(when two `((:local.get ,y) :ref.i31))))))))))))
+                 `((:local.get ,e) ,@(subscript-box-code (first subs) x) ,@(when two (subscript-box-code (second subs) y))))))))))))
 
 (defun speculative-locate-code (name a sub slow)
   "ARRAY-LOCATE-CODE for a one-dimensional access whose array is of unknown
@@ -851,6 +858,13 @@ code leaves nothing, else the value."
       ((evenp oddp)
        (when (i32-arg-p a)
          `(,@(cg-rep a :i32) (:i32.const 1) :i32.and ,@(when (eq name 'evenp) '(:i32.eqz)))))
+      (clysm-sys::fixnump
+       ;; (the check of a value given to a variable declared FIXNUM)
+       (cond ((fx-arg-p a) `(,@(cg-effect a) (:i32.const 1)))
+             ((i32-arg-p a)
+              `(,@(cg-rep a :i32) (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u))
+             ((i64-arg-p a)
+              `(,@(cg-rep a :i64) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u))))
       ((eq eql)
        (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b)
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
