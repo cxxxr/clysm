@@ -1076,7 +1076,7 @@ digits."
   ;; and SMALL are fixnums by construction (K < KMAX digits always make a
   ;; fixnum): their arithmetic is the unchecked one.
   (let ((i start) (neg nil) (small 0) (k 0) (value nil) (any nil)
-        (kmax (%fixnum-digit-capacity radix)))
+        (kmax (if (eql radix 10) 8 (%fixnum-digit-capacity radix))))
     (macrolet ((whitespace-p (code)
                  `(let ((code ,code)) (or (eql code 32) (and (%fx<= 9 code) (%fx<= code 13) (not (eql code 11))))))
                (skip-whitespace ()
