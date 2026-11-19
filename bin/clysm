@@ -39,6 +39,23 @@ repl_image() {
   fi
   echo "$img"
 }
+# The REPL image starts from a heap image of itself saved after its toplevel
+# forms ran (build/clysm-native.img, made when the image is built; see
+# "Start-up and loading" in docs/INTERNALS.md), unless CLYSM_IMAGE names
+# another or CLYSM_SAVE_IMAGE is set (an image started from a heap image
+# cannot save one); CLYSM_NO_HEAP_IMAGE=1 starts it as it is.
+heap_image() {
+  [ -n "$CLYSM_IMAGE" ] || [ -n "$CLYSM_SAVE_IMAGE" ] || [ -n "$CLYSM_NO_HEAP_IMAGE" ] && return
+  himg="${1%.wasm}.img"
+  if [ ! -f "$himg" ] || [ "$1" -nt "$himg" ]; then
+    tmp="$himg.tmp$$"
+    CLYSM_SAVE_IMAGE=1 "$NODE" "$ROOT/host/run.mjs" "$1" --no-userinit \
+      --eval "(sys::save-image \"$tmp\" (function sys::main))" </dev/null >/dev/null 2>&1 \
+      && mv -f "$tmp" "$himg" 2>/dev/null
+    rm -f "$tmp"
+  fi
+  [ -f "$himg" ] && export CLYSM_IMAGE="$himg"
+}
 case "$cmd" in
   compile)
     out="a.wasm"; files=""; shake=""
@@ -67,15 +84,19 @@ case "$cmd" in
     status=0; "$NODE" "$ROOT/host/run.mjs" "$out" "$@" || status=$?
     rm -f "$out"; exit $status ;;
   repl)   if [ "$1" = "--interp" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(interp_image)" "$@"; fi
-          exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
-  script) exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$@" ;;
-  eval)   if [ "$1" = "--no-userinit" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --no-userinit --eval "$@"; fi
-          exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" --eval "$@" ;;
+          img="$(repl_image)"; heap_image "$img"
+          exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+  script) img="$(repl_image)"; heap_image "$img"
+          exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+  eval)   img="$(repl_image)"; heap_image "$img"
+          if [ "$1" = "--no-userinit" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" --no-userinit --eval "$@"; fi
+          exec "$NODE" "$ROOT/host/run.mjs" "$img" --eval "$@" ;;
   swank)  port=4005
           while [ $# -gt 0 ]; do
             case "$1" in --port) port="$2"; shift 2;; *) echo "clysm swank: unknown option $1" >&2; exit 1;; esac
           done
-          CLYSM_SWANK_PORT="$port" exec "$NODE" "$ROOT/host/run.mjs" "$(repl_image)" "$ROOT/contrib/swank/start.lisp" ;;
+          img="$(repl_image)"; heap_image "$img"
+          CLYSM_SWANK_PORT="$port" exec "$NODE" "$ROOT/host/run.mjs" "$img" "$ROOT/contrib/swank/start.lisp" ;;
   exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;

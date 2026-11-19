@@ -457,10 +457,15 @@ if (isMainThread && process.argv[1] === selfPath) {
   worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
   worker.on('exit', (code) => process.exit(code));
 } else if (!isMainThread && workerData && workerData.file) {
-  // The engine's flags are set here, once the worker has started: a flag
-  // set before (in the main thread, or on the command line) makes Node.js
-  // compile its own JavaScript again in the worker instead of taking it from
-  // its code cache, made with the default flags (35 ms).
+  // The engine's flags are set here, once the worker has started and
+  // imported its modules: a flag set before (in the main thread, or on the
+  // command line) makes Node.js compile its own JavaScript again instead of
+  // taking it from its code cache, made with the default flags (35 ms).
+  await importWorkerModules();
+  if (workerData.netBuffer) {
+    const { parentPort } = await import('node:worker_threads');
+    installNetClient(parentPort, workerData.netBuffer);
+  }
   try {
     const v8 = await import('node:v8');
     // the compiler marks unlikely branches (the branch hinting section of the modules)
@@ -476,13 +481,8 @@ if (isMainThread && process.argv[1] === selfPath) {
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
   } catch (e) {}
-  await importWorkerModules();
   // the program may run as a computation that can wait (sys::main, threads)
   globalThis.__clysm_deep_async_stacks = true;
-  if (workerData.netBuffer) {
-    const { parentPort } = await import('node:worker_threads');
-    installNetClient(parentPort, workerData.netBuffer);
-  }
   // CLYSM_DOM=1 (bin/clysm.mjs test --dom): a document of happy-dom, found
   // from the working directory, as in a page
   if (process.env.CLYSM_DOM) {
