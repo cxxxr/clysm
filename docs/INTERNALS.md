@@ -1527,6 +1527,7 @@ time unless noted):
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.6–1.8 | `l-ppcre-replace` 2.4–3.0 | `l-alexandria-tests` 0.3–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
+| `bench/arith.lisp` | 11 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -1665,6 +1666,27 @@ What makes the code fast:
   (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
   floats, complex numbers of floats (two locals), references to specialized
   vectors, two-dimensional arrays with their storage and dimensions in locals.
+* **Arithmetic on values of unknown type** (undeclared code: structure
+  slots, list elements, parameters; `src/prims.lisp`, `src/typed.lisp`).
+  A tree of `+ - *` (and `1+ 1- logand logior logxor ash`) is computed in
+  i64 when its operands are integers within 64 bits, and the trees of
+  `+ - *` try f64 next when they are doubles; a tree of `+ - * / sqrt` with
+  a double among its operands (a double constant, a value known to be one,
+  an unboxed double variable) is computed in f64 first. Operands are
+  evaluated in order and tested; when one is not of the kind or a step gives
+  an infinity, a NaN, a zero that may be an underflow or a negative square
+  root, the generic operations compute the tree again from the operands
+  already evaluated, so the conditions are those of the generic code. Only
+  the root is boxed. A `let` variable bound (or, when assigned, updated) by
+  such arithmetic and used twice or more as an operand keeps an f64 beside
+  its eqref local (null while the f64 holds the value); the first other use
+  makes the double once. `incf` of a variable by arithmetic on variables is
+  one tree with the update. Trees of operands of unknown type with no
+  double among them are not tried in f64 first: integer code (array
+  elements summed) would pay for it. `truncate floor ceiling round` of two
+  fixnums, `evenp oddp`, and `(reduce #'+ list)` (and `* max min logand
+  logior logxor`) are inline. `bench/arith.lisp` measures this; an n-body
+  over undeclared structure slots takes a third of its earlier time.
 * **Specialized arrays**: every upgraded element type (bit, the integer types
   of 7 to 64 bits, single and double floats, characters) has its own Wasm
   array type; `aref` on an array whose element type is known (from
