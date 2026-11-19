@@ -733,64 +733,61 @@ helper signals the type error)."
 (defprim clysm-sys::%make-gf-closure (g f1 f2) :value
   ;; the entries of G, except for one and two arguments those of F1 and F2
   ;; (the three closures have the same environment layout)
-  (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure)))
+  (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure))) (tc (new-local))
         (t2 (new-local '(:ref :null :closure))))
     `(,@g (:ref.cast :closure) (:local.set ,tg) ,@f1 (:ref.cast :closure) (:local.set ,t1)
       ,@f2 (:ref.cast :closure) (:local.set ,t2)
-      (:local.get ,tg) (:struct.get :closure 0)
-      (:local.get ,t1) (:struct.get :closure 1)
-      (:local.get ,t2) (:struct.get :closure 2)
-      (:local.get ,tg) (:struct.get :closure 3)
-      (:local.get ,tg) (:struct.get :closure 4)
-      (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-env+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-name+)
+      (:local.get ,tg) ,@(clo-field-code 0)
+      (:local.get ,t1) ,@(clo-field-code 1)
+      (:local.get ,t2) ,@(clo-field-code 2)
+      (:local.get ,tg) ,@(clo-field-code 3)
+      (:local.get ,tg) ,@(clo-field-code 4)
+      (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
       (:ref.null :func) (:ref.null :eq)
-      (:struct.new :closure))))
+      (:struct.new :code)
+      (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; %MAKE-GF-CLOSURE4 with the keyed main function and the key layout of K
 (defprim clysm-sys::%make-gf-closure4k (g f1 f2 f3 f4 k) :value
   (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure)))
         (t2 (new-local '(:ref :null :closure))) (t3 (new-local '(:ref :null :closure)))
-        (t4 (new-local '(:ref :null :closure))) (tk (new-local '(:ref :null :closure))))
+        (t4 (new-local '(:ref :null :closure))) (tk (new-local '(:ref :null :closure))) (tc (new-local)))
     `(,@g (:ref.cast :closure) (:local.set ,tg) ,@f1 (:ref.cast :closure) (:local.set ,t1)
       ,@f2 (:ref.cast :closure) (:local.set ,t2) ,@f3 (:ref.cast :closure) (:local.set ,t3)
       ,@f4 (:ref.cast :closure) (:local.set ,t4) ,@k (:ref.cast :closure) (:local.set ,tk)
-      (:local.get ,tg) (:struct.get :closure 0)
-      (:local.get ,t1) (:struct.get :closure 1)
-      (:local.get ,t2) (:struct.get :closure 2)
-      (:local.get ,t3) (:struct.get :closure 3)
-      (:local.get ,t4) (:struct.get :closure 4)
-      (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-env+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-name+)
-      (:local.get ,tk) (:struct.get :closure ,+clo-kmain+)
-      (:local.get ,tk) (:struct.get :closure ,+clo-klayout+)
-      (:struct.new :closure))))
+      (:local.get ,tg) ,@(clo-field-code 0)
+      (:local.get ,t1) ,@(clo-field-code 1)
+      (:local.get ,t2) ,@(clo-field-code 2)
+      (:local.get ,t3) ,@(clo-field-code 3)
+      (:local.get ,t4) ,@(clo-field-code 4)
+      (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
+      (:local.get ,tk) ,@(clo-field-code +clo-kmain+)
+      (:local.get ,tk) ,@(clo-field-code +clo-klayout+)
+      (:struct.new :code)
+      (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 (defprim clysm-sys::%make-gf-closure4 (g f1 f2 f3 f4) :value
   ;; like %MAKE-GF-CLOSURE with the entries for one to four arguments (G
   ;; itself may be given for an entry that is not specialized)
-  (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure)))
+  (let ((tg (new-local '(:ref :null :closure))) (t1 (new-local '(:ref :null :closure))) (tc (new-local))
         (t2 (new-local '(:ref :null :closure))) (t3 (new-local '(:ref :null :closure)))
         (t4 (new-local '(:ref :null :closure))))
     `(,@g (:ref.cast :closure) (:local.set ,tg) ,@f1 (:ref.cast :closure) (:local.set ,t1)
       ,@f2 (:ref.cast :closure) (:local.set ,t2) ,@f3 (:ref.cast :closure) (:local.set ,t3)
       ,@f4 (:ref.cast :closure) (:local.set ,t4)
-      (:local.get ,tg) (:struct.get :closure 0)
-      (:local.get ,t1) (:struct.get :closure 1)
-      (:local.get ,t2) (:struct.get :closure 2)
-      (:local.get ,t3) (:struct.get :closure 3)
-      (:local.get ,t4) (:struct.get :closure 4)
-      (:local.get ,tg) (:struct.get :closure ,+clo-entry-n+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-env+)
-      (:local.get ,tg) (:struct.get :closure ,+clo-name+)
+      (:local.get ,tg) ,@(clo-field-code 0)
+      (:local.get ,t1) ,@(clo-field-code 1)
+      (:local.get ,t2) ,@(clo-field-code 2)
+      (:local.get ,t3) ,@(clo-field-code 3)
+      (:local.get ,t4) ,@(clo-field-code 4)
+      (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
       (:ref.null :func) (:ref.null :eq)
-      (:struct.new :closure))))
+      (:struct.new :code)
+      (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; the function of a symbol is (EQ) a given function
 (defprim clysm-sys::%function-cell-eq (sym f) :test
   `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
 (defprim clysm-sys::%closure-key-layout (f) :value
   (let ((tmp (new-local)))
-    `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-klayout+) (:local.tee ,tmp) :ref.is_null
+    `(,@f (:ref.cast :closure) ,@(clo-field-code +clo-klayout+) (:local.tee ,tmp) :ref.is_null
       (:if nil :eqref ,(nil-code) ((:local.get ,tmp))))))
 (defprim clysm-sys::%closure-name (f) :value `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-name+)))
 (defprim clysm-sys::%set-closure-name (f n) :value
@@ -1186,7 +1183,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   (let ((tmp (new-local '(:ref :null :closure))))
     (checked-call
      `(,@f (:call :coerce-function) (:local.tee ,tmp) :ref.as_non_null ,@v (:ref.cast :vector)
-       (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+) (:call_ref :fN)))))
+       (:local.get ,tmp) ,@(clo-field-code +clo-entry-n+) (:call_ref :fN)))))
 (defprim clysm-sys::%identity-hash (x) :value
   `(,@x (:call :identity-hash) :ref.i31))
 (defprim clysm-sys::%mv-buf-ref (i) :value `((:global.get :mv-buf) ,@(idx-code i) (:array.get :vector)))
@@ -1358,7 +1355,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                                (:block ,ok :eqref
                                  (:local.get clo) (:ref.as_non_null)
                                  ,@(loop for i below k collect `(:local.get ,i))
-                                 (:local.get clo) (:struct.get :closure ,k)
+                                 (:local.get clo) ,@(clo-field-code k)
                                  (:call_ref ,(fixed-entry-type k))
                                  (:br_on_non_null ,ok)
                                  ;; null: an exit pending (thrown: the callers of
@@ -3692,22 +3689,23 @@ f64s in locals DA and DB (it may branch to SLOW)."
   `(:block generic nil
      (:block a4 nil (:block a3 nil (:block a2 nil (:block a1 nil (:block a0 nil
        (:local.get n) (:br_table a0 a1 a2 a3 a4 generic))
-       (:local.get f) :ref.as_non_null (:local.get f) (:struct.get :closure 0) (:return_call_ref :f0))
+       (:local.get f) :ref.as_non_null (:local.get f) ,@(clo-field-code 0) (:return_call_ref :f0))
        (:local.get f) :ref.as_non_null (:local.get v) (:i32.const 0) (:array.get :vector)
-       (:local.get f) (:struct.get :closure 1) (:return_call_ref :f1))
+       (:local.get f) ,@(clo-field-code 1) (:return_call_ref :f1))
        (:local.get f) :ref.as_non_null
        (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
-       (:local.get f) (:struct.get :closure 2) (:return_call_ref :f2))
+       (:local.get f) ,@(clo-field-code 2) (:return_call_ref :f2))
        (:local.get f) :ref.as_non_null
        (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
        (:local.get v) (:i32.const 2) (:array.get :vector)
-       (:local.get f) (:struct.get :closure 3) (:return_call_ref :f3))
+       (:local.get f) ,@(clo-field-code 3) (:return_call_ref :f3))
      (:local.get f) :ref.as_non_null
      (:local.get v) (:i32.const 0) (:array.get :vector) (:local.get v) (:i32.const 1) (:array.get :vector)
      (:local.get v) (:i32.const 2) (:array.get :vector) (:local.get v) (:i32.const 3) (:array.get :vector)
-     (:local.get f) (:struct.get :closure 4) (:return_call_ref :f4))
+     (:local.get f) ,@(clo-field-code 4) (:return_call_ref :f4))
   '(:local.get f) :ref.as_non_null '(:local.get v) :ref.as_non_null
-  '(:local.get f) `(:struct.get :closure ,+clo-entry-n+) '(:return_call_ref :fN))
+  '(:local.get f) `(:struct.get :closure ,+clo-code+) `(:struct.get :code ,+clo-entry-n+)
+  '(:return_call_ref :fN))
 
 ;;; lambda-list support
 (defhelper :vector-tail-to-list :vi-e ((l :eqref) (i :i32))
@@ -3792,7 +3790,7 @@ modules made at run time define these helpers each time)."
                            `((:local.get 0)
                              ,@(loop for i from 1 to k collect `(:local.get ,i))
                              (:array.new_fixed :vector ,k)
-                             (:local.get 0) (:struct.get :closure ,+clo-entry-n+)
+                             (:local.get 0) ,@(clo-field-code +clo-entry-n+)
                              (:return_call_ref :fN))))
                    *helpers*))))
 
@@ -5480,7 +5478,7 @@ those the code calls (modules made at run time call few of them)."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 3)
+(defconstant +img-version+ 4)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
     :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst))
@@ -5492,15 +5490,83 @@ those the code calls (modules made at run time call few of them)."
   '(:local.get 0) '(:ref.cast :closure) '(:local.set c)
   (loop for i from 0 to 5
         append `((:local.get 1) (:i32.const ,i) :i32.eq
-                 (:if nil nil ((:local.get c) (:struct.get :closure ,i) (:call :host-code-index)
+                 (:if nil nil ((:local.get c) ,@(clo-field-code i) (:call :host-code-index)
                                :ref.i31 :return))))
-  `((:local.get c) (:struct.get :closure ,+clo-kmain+) (:local.tee f) :ref.is_null
+  `((:local.get c) ,@(clo-field-code +clo-kmain+) (:local.tee f) :ref.is_null
     (:if nil nil ((:i32.const -1) :ref.i31 :return))
     (:local.get f) (:call :host-code-index) :ref.i31))
 (defprim clysm-sys::%closure-code (f i) :value `(,@f ,@(idx-code i) (:call :closure-code)))
-(defprim clysm-sys::%closure-env (f) :value `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-env+)))
+;; the values of the free variables of a closure (heap images)
+(defprim clysm-sys::%closure-env-length (f) :value `(,@f (:call :closure-env-length) :ref.i31))
+(defprim clysm-sys::%closure-env-ref (f i) :value `(,@f ,@(idx-code i) (:call :closure-env-ref)))
+
+(defun envclo-switch-code (fn &optional vector-code)
+  "For each closure type with free variables in fields, (FN N TYPE) run when
+the closure in local 0 is of that type; then VECTOR-CODE when it is an
+:ENVCLOV."
+  `(,@(loop for n from 1 to +clo-env-max+
+            for type = (envclo-type n)
+            append `((:local.get 0) (:ref.test ,type)
+                     (:if nil nil ,(funcall fn n type))))
+    ,@(when vector-code
+        `((:local.get 0) (:ref.test :envclov) (:if nil nil ,vector-code)))))
+
+(defhelper :closure-env-length :e-i ()
+  (envclo-switch-code (lambda (n type) (declare (ignore type)) `((:i32.const ,n) :return))
+                      `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) :array.len :return))
+  '(:i32.const 0))
+(defhelper :closure-env-ref :ei-e ()
+  (envclo-switch-code
+   (lambda (n type)
+     (img-switch-code '((:local.get 1))
+                      (loop for i below n
+                            collect `((:local.get 0) (:ref.cast! ,type) (:struct.get ,type ,(+ +clo-env+ i))
+                                      :return))))
+   `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.get 1)
+     (:array.get :vector) :return))
+  '(:ref.null :eq))
+(defhelper :closure-env-set :eie-e ()
+  (envclo-switch-code
+   (lambda (n type)
+     (img-switch-code '((:local.get 1))
+                      (loop for i below n
+                            collect `((:local.get 0) (:ref.cast! ,type) (:local.get 2)
+                                      (:struct.set ,type ,(+ +clo-env+ i))
+                                      (:local.get 2) :return))))
+   `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.get 1)
+     (:local.get 2) (:array.set :vector) (:local.get 2) :return))
+  '(:local.get 2))
+;; a closure like CLO (local 0) with the code CODE (local 1): the same name
+;; and free variables
+(defhelper :closure-with-code :ee-e ()
+  (envclo-switch-code
+   (lambda (n type)
+     `((:local.get 1) (:ref.cast! :code)
+       (:local.get 0) (:ref.cast! ,type) (:struct.get ,type ,+clo-name+)
+       ,@(loop for i below n collect `(:local.get 0) collect `(:ref.cast! ,type)
+               collect `(:struct.get ,type ,(+ +clo-env+ i)))
+       (:struct.new ,type) :return))
+   `((:local.get 1) (:ref.cast! :code)
+     (:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-name+)
+     (:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+)
+     (:struct.new :envclov) :return))
+  '(:local.get 1) '(:ref.cast! :code)
+  '(:local.get 0) '(:ref.cast! :closure) `(:struct.get :closure ,+clo-name+)
+  '(:struct.new :closure))
+;; a closure of the code CODE (local 0) with N (local 1) free variables, all
+;; null (heap images: they are set afterwards)
+(defhelper :make-env-closure :ei-e ()
+  (loop for n from 1 to +clo-env-max+
+        append `((:local.get 1) (:i32.const ,n) :i32.eq
+                 (:if nil nil ((:local.get 0) (:ref.cast! :code) (:ref.null :eq)
+                               ,@(loop repeat n collect '(:ref.null :eq))
+                               (:struct.new ,(envclo-type n)) :return))))
+  '(:local.get 1) :i32.eqz
+  '(:if nil nil ((:local.get 0) (:ref.cast! :code) (:ref.null :eq) (:struct.new :closure) :return))
+  '(:local.get 0) '(:ref.cast! :code) '(:ref.null :eq) '(:local.get 1) '(:array.new_default :vector)
+  '(:struct.new :envclov))
 (defprim clysm-sys::%closure-raw-klayout (f) :value
-  `(,@f (:ref.cast :closure) (:struct.get :closure ,+clo-klayout+)))
+  `(,@f (:ref.cast :closure) ,@(clo-field-code +clo-klayout+)))
 (defprim clysm-sys::%symbol-raw-value (s) :value `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-value+)))
 (defprim clysm-sys::%symbol-raw-plist (s) :value `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-plist+)))
 (defprim clysm-sys::%symbol-raw-function (s) :value
@@ -5655,14 +5721,15 @@ local LIMIT, incrementing it."
                              (:ref.null :closure) (:ref.null :eq) (:call :img-word) (:i32.const 0)
                              (:struct.new :symbol))))
             (:closure
-             ;; the words: the 6 entries, the environment, the function taking
-             ;; keywords (-1: none), the layout of its keywords
+             ;; the words: the 6 entries, the function taking keywords (-1:
+             ;; none), the layout of its keywords, the number of free
+             ;; variables (their values are mutable fields)
              (done (loop for i from 0 to 4 append (img-code-ref (fixed-entry-type i)))
                    (img-code-ref :fN)
-                   '((:call :img-ref) (:ref.cast :null :vector) (:ref.null :eq)
-                     (:call :img-word) (:local.tee w) (:i32.const -1) :i32.eq
+                   '((:call :img-word) (:local.tee w) (:i32.const -1) :i32.eq
                      (:if nil (:ref :null :func) ((:ref.null :func)) ((:local.get w) (:table.get)))
-                     (:call :img-ref) (:struct.new :closure))))
+                     (:call :img-ref) (:struct.new :code)
+                     (:call :img-word) (:call :make-env-closure))))
             (:mdarray (done '((:struct.new_default :mdarray))))
             (:double (done '((:call :img-i64) :f64.reinterpret_i64 (:struct.new :double))))
             (:single (done '((:call :img-word) :f32.reinterpret_i32 (:struct.new :single))))
@@ -5714,6 +5781,10 @@ words that follow, by its type."
                         (:br ,end)))
           (:local.get x) (:ref.test :closure)
           (:if nil nil ((:local.get x) (:ref.cast! :closure) (:call :img-ref) (:struct.set :closure ,+clo-name+)
+                        (:i32.const 0) (:local.set j)
+                        (:local.get x) (:call :closure-env-length) (:local.set len)
+                        ,@(img-loop-code 'j 'len '((:local.get x) (:local.get j) (:call :img-ref)
+                                                   (:call :closure-env-set) :drop))
                         (:br ,end)))
           (:local.get x) (:ref.test :si1)
           (:if nil nil ((:local.get x) (:ref.cast! :instance) (:call :img-ref) (:struct.set :instance 0)

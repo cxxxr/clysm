@@ -92,8 +92,12 @@ predicates compile to `ref.test`, never to pointer tag arithmetic.
 
 ## Calling convention (spec: ハイブリッド渡し)
 
-A closure is `struct { entry0..entry4, entryN, env, name }`. A call with k ≤ 4
-arguments uses `call_ref` on `entry_k` with the arguments as native Wasm
+A closure is `struct { code, name, free variables... }`, where `code` is a
+`$code` struct `{ entry0..entry4, entryN, kmain, klayout }` made once per
+lambda and shared by all its closures (`static-closure-global` in
+`src/codegen.lisp`: the closure without environment of a lambda is a global
+whose code a new closure takes). A call with k ≤ 4
+arguments uses `call_ref` on `code.entry_k` with the arguments as native Wasm
 parameters; more arguments, `apply`, and `multiple-value-call` use `entryN`,
 which takes an argument array. For a function with only required parameters the
 matching entry *is* the function body; the other fixed entries are shared
@@ -101,11 +105,26 @@ argument-count-error stubs, and `entryN` is a small unpacking adapter. Functions
 with `&optional/&rest/&key` take the argument array directly (shared packing
 stubs fill the fixed entries). Calls to functions defined in the same program
 are compiled as direct `call`s (CLHS 3.2.2.3), and tail calls become
-`return_call` / `return_call_ref`.
+`return_call` / `return_call_ref`. `funcall` of an object not known to be a
+function tests at the call site for a closure, then for a symbol whose
+function cell is set; only other objects go to the `:coerce-function` helper.
 
-Closure conversion: free variables are copied into the closure's environment
-array; variables that are both captured and assigned are boxed in cells.
-`labels` closures are created first and their environments patched afterwards.
+Closure conversion: the values of free variables are fields of the closure
+itself, in a final subtype of `$closure` per number of them (`:envclo1` …
+`:envclo8`, `envclo-type` in `src/layout.lisp`; more than eight are in a
+vector, `:envclov`); the function casts its closure parameter to that type
+once on entry. Making a closure is thus one allocation of 8 + 4·(2 + n)
+bytes: the code from the lambda's global, the name, the values. (The
+closure was `struct { entry0..entry4, entryN, env, name, kmain, klayout }`
+with the values in a separate vector: six `ref.func` and two allocations of
+72 bytes in all for two variables; continuation-passing code and other
+combinator-style code ran 1.2–2 times faster after the change.) Variables
+that are both captured and assigned are boxed in cells. `labels` closures
+are created first and their free variables set afterwards. The few runtime
+operations that take closures of any shape (`%make-gf-closure`, heap
+images: `:closure-with-code`, `:closure-env-length`, `:closure-env-ref`,
+`:closure-env-set`, `:make-env-closure` in `src/prims.lisp`) test the
+subtypes one after the other.
 
 ## Multiple values (spec: 多値リターン用バッファ)
 
@@ -164,8 +183,8 @@ not thrown. It is a *return with the exit pending*: the tag and the value
 are stored in the symbols `sys::%exit-tag` and `sys::%exit-value` and the
 function returns null, which is no Lisp value. Every call of a Lisp
 function that is not a tail call is followed by a test for null
-(`checked-call` in `src/codegen.lisp`: `local.tee`, `ref.is_null` and an
-`if` hinted as unlikely); on null, the code branches to the handler of the
+(`checked-call` in `src/codegen.lisp`: a `br_on_non_null` out of a block
+around the call, after which comes the null case); on null, the code branches to the handler of the
 call's context — the catchers around the call in that function (a non-local
 block or tagbody, a `catch`, a `handler-case` or `restart-case`) take the
 exit if its tag is theirs, else the function returns null in turn, through
@@ -506,7 +525,7 @@ forms (`build/clysm-native.img`, see Start-up and loading).
   immutable contents (made in an order in which an object's immutable
   fields refer to objects made before it: strings and vectors, then
   instances, numbers, symbols and closures), then records that set the
-  mutable fields of objects (cons, vector, symbol, closure name, instance,
+  mutable fields of objects (cons, vector, symbol, closure name and free variables, instance,
   cell, package, array header), so that cycles are made in two steps; then
   the roots. A reference is one word: an i31 (fixnum, character) is its
   value * 2 + 1, an object (index + 1) * 2, null 0. The heap is copied into
@@ -1641,7 +1660,11 @@ slowest `x-sort-key` 1.26; in the image 1.13 of compiled). An `aref` of a
 vector of known kind whose subscript has no known type (an element of a
 vector, an unbounded counter) is inline with a test of the subscript, and
 a parameter that starts a loop counter (`(loop for i from start ...)`)
-makes its function's fixnum version be tried on entry.
+makes its function's fixnum version be tried on entry,
+`bench/closures.lisp` (combinator-style code: continuation passing, parser
+combinators, an interpreter compiled to closures, generators, a pattern
+matcher; 1.27, was 1.50; slowest `k-memoize` 3.9, which is `equal` hashing
+of argument lists, and `k-labels-escape` 1.9).
 
 What is not as fast as intended, and why:
 
@@ -1713,9 +1736,9 @@ What is not as fast as intended, and why:
   every call that is not a tail call (above, "Non-local exits"): a throw
   from a closure one frame below its `catch` costs what SBCL's does
   (`t-throw-closure` 1.0, was 13; 20 frames below, 0.43, was 4.4; in the
-  image 21 ms instead of 280). The test costs about 10% in recursion
-  through `funcall` (`h-fib-funcall`); direct calls of functions that
-  cannot exit are not tested.
+  image 21 ms instead of 280). The test costs a few percent in recursion
+  through `funcall` (`h-fib-funcall` about 1.0 times SBCL); direct calls
+  of functions that cannot exit are not tested.
 * **Generic functions**: dispatch on EQL specializers (4 times: the entry
   of a class with EQL specializer objects calls a guard function shared by
   all generic functions, which then calls the method; comparing the EQL
@@ -1865,6 +1888,16 @@ What makes the code fast:
   image went from 120 to 23 ms. Small functions are
   copied into their callers — in the image with a test that the function has
   not been redefined.
+* **Closures**: one allocation of the code (shared per lambda), the name
+  and the values of the free variables in fields of the closure; a
+  `labels` function finds its own closure in its first parameter.
+  Interleaved runs against the previous layout (a struct of six entries
+  and an environment vector): `bench/closures.lisp` 0.82 of the time
+  (`k-cps-tree` 0.49, `k-cps-fib` 0.59, `k-matcher` 0.69), also with the
+  code loaded into the image (0.82), `p-labels` 0.82, `p-closures` 0.88,
+  `h-closures` 0.83; a call of an unknown function loads the code first,
+  which costs calls through symbols and generic functions a little
+  (`h-fib-generic` 1.07–1.14).
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.

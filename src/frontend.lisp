@@ -26,7 +26,8 @@ functions made from it are, for the clysm.sources section (stack traces).")
   body free-vars
   (toplevel nil)          ; global defun with no free vars
   (static-p nil)          ; closure object is a module constant
-  (may-exit :unknown))    ; NIL when no call of it can return with an exit pending (codegen.lisp)
+  (may-exit :unknown)     ; NIL when no call of it can return with an exit pending (codegen.lisp)
+  (self nil))             ; the variable of a LABELS function referred to in its own body: its closure
 
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
@@ -900,6 +901,14 @@ the arguments do not fit (they are then passed by a call)."
             do (setf (fun-lam f)
                      (convert-lambda name ll fbody def-env
                                      :block-name (if (consp name) (second name) name))))
+      ;; a LABELS function that refers to itself finds its closure in its
+      ;; first parameter, not among its free variables
+      (when recursive
+        (dolist (f funs)
+          (let ((lam (fun-lam f)))
+            (when (member (fun-lvar f) (lam-free-vars lam))
+              (setf (lam-free-vars lam) (remove (fun-lvar f) (lam-free-vars lam))
+                    (lam-self lam) (fun-lvar f))))))
       `(,(if recursive :labels :flet) ,funs ,(convert-locally decls forms inner-env)))))
 
 (defun make-host-macro-expander (name ll body)

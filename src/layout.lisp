@@ -22,8 +22,15 @@
 (defconstant +sym-name+ 0) (defconstant +sym-package+ 1) (defconstant +sym-value+ 2)
 (defconstant +sym-function+ 3) (defconstant +sym-plist+ 4) (defconstant +sym-hash+ 5)
 (defconstant +sym-flags+ 6)
-(defconstant +clo-entry-n+ 5) (defconstant +clo-env+ 6) (defconstant +clo-name+ 7)
-(defconstant +clo-kmain+ 8) (defconstant +clo-klayout+ 9)
+;; a closure: its code (shared by the closures of one lambda), its name,
+;; and in a subtype the values of its free variables from field +CLO-ENV+ on
+;; (:ENVCLOn for n = 1 to +CLO-ENV-MAX+ of them; :ENVCLOV holds more in a
+;; vector, its field +CLO-ENV+)
+(defconstant +clo-code+ 0) (defconstant +clo-name+ 1) (defconstant +clo-env+ 2)
+(defconstant +clo-env-max+ 8)
+;; the code: the entries for 0-4 arguments (0-4), for any number (5), the
+;; function taking keyword arguments in fixed slots and its layout
+(defconstant +clo-entry-n+ 5) (defconstant +clo-kmain+ 6) (defconstant +clo-klayout+ 7)
 
 ;; symbol flags
 (defconstant +flag-special+ 1)
@@ -91,8 +98,14 @@ when ET is not one of the specifiers recognized at compile time."
            (int-kind 0 (1- (cadr et))))
           (t nil))))
 
+(defun envclo-type (n)
+  "The type of a closure with N (> 0) free variables."
+  (if (<= n +clo-env-max+)
+      (intern (format nil "ENVCLO~D" n) :keyword)
+      :envclov))
+
 (defparameter *type-defs*
-  '((:string    (:array (:i32 t)))
+  `((:string    (:array (:i32 t)))
     (:vector    (:array (:eqref t)))
     ;; the binding stack (its top and the vector of its entries), which the
     ;; image and the modules compiled in it reach through one immutable
@@ -118,8 +131,9 @@ when ET is not one of the specifiers recognized at compile time."
     (:package   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
     (:symbol    (:struct (((:ref :string) nil) ((:ref :null :package) t) (:eqref t)
                           ((:ref :null :closure) t) (:eqref t) (:i32 nil) (:i32 t))))
-    (:closure   (:struct (((:ref :f0) nil) ((:ref :f1) nil) ((:ref :f2) nil) ((:ref :f3) nil)
-                          ((:ref :f4) nil) ((:ref :fN) nil) ((:ref :null :vector) nil) (:eqref t)
+    (:closure   (:sub () nil (:struct (((:ref :code) nil) (:eqref t)))))
+    (:code      (:struct (((:ref :f0) nil) ((:ref :f1) nil) ((:ref :f2) nil) ((:ref :f3) nil)
+                          ((:ref :f4) nil) ((:ref :fN) nil)
                           ;; for a function with keyword parameters: the function taking them
                           ;; in fixed slots, and its layout (required optional . keywords)
                           ((:ref :null :func) nil) (:eqref nil))))
@@ -129,6 +143,11 @@ when ET is not one of the specifiers recognized at compile time."
     (:f3        (:func ((:ref :closure) :eqref :eqref :eqref) (:eqref)))
     (:f4        (:func ((:ref :closure) :eqref :eqref :eqref :eqref) (:eqref)))
     (:fN        (:func ((:ref :closure) (:ref :vector)) (:eqref)))
+    ,@(loop for n from 1 to +clo-env-max+
+            collect `(,(envclo-type n)
+                      (:sub (:closure) t (:struct (((:ref :code) nil) (:eqref t)
+                                                   ,@(loop repeat n collect '(:eqref t)))))))
+    (:envclov   (:sub (:closure) t (:struct (((:ref :code) nil) (:eqref t) ((:ref :vector) nil)))))
     (:cell      (:struct ((:eqref t))))
     (:bignum    (:struct ((:i32 nil) ((:ref :null :limbs) t) (:i64 nil))))  ; sign limbs value (limbs null: |value| < 2^63 in VALUE)
     (:ratio     (:struct ((:eqref nil) (:eqref nil))))
