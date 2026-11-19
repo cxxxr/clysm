@@ -1284,14 +1284,14 @@ it cannot be done so: the form is then evaluated and compiled apart."
         (when (eq form %eof-marker) (terpri) (return))
         (unless (eq form %read-error-marker)
           (restart-case
-              (handler-bind ((error (lambda (c)
-                                      ;; a debugger of the program's own (SWANK's)
-                                      ;; is called by INVOKE-DEBUGGER
-                                      (unless *debugger-hook*
-                                        (if (interactive-stream-p *standard-input*)
-                                            (%repl-debugger c)
-                                            (progn (format t "~&; Error: ~A~%" c)
-                                                   (invoke-restart 'abort-to-toplevel)))))))
+              ;; (a debugger of the program's own, SWANK's, is *DEBUGGER-HOOK*,
+              ;; which INVOKE-DEBUGGER calls first)
+              (let ((*debugger-fallback*
+                      (lambda (c)
+                        (if (interactive-stream-p *standard-input*)
+                            (%repl-debugger c)
+                            (progn (format t "~&; Error: ~A~%" c)
+                                   (invoke-restart 'abort-to-toplevel))))))
                 (%repl-eval-print form))
             (abort-to-toplevel () :report "Return to the top level." nil)))))))
 
@@ -1305,13 +1305,18 @@ it cannot be done so: the form is then evaluated and compiled apart."
       (handler-case (load file)
         (error (c) (format *error-output* "~&; error while loading ~A: ~A~%" (namestring file) c))))))
 
+;;; The REPL, scripts, threads and JavaScript calling Lisp act when the
+;;; debugger would be entered (*DEBUGGER-FALLBACK*, called by
+;;; INVOKE-DEBUGGER after *DEBUGGER-HOOK*), not on every error signalled: a handler of ERROR there
+;;; also took the conditions of type ERROR given to SIGNAL, which no handler
+;;; of the program handled and which SIGNAL then returns from.
 (defun %script-main (path)
-  (handler-bind ((error (lambda (c)
-                          (unless *debugger-hook*
-                            (format *error-output* "~&Unhandled ~S: ~A~%" (type-of c) c)
-                            (finish-output *error-output*)
-                            (%backtrace 2)
-                            (%exit 1)))))
+  (let ((*debugger-fallback*
+          (lambda (c)
+            (format *error-output* "~&Unhandled ~S: ~A~%" (type-of c) c)
+            (finish-output *error-output*)
+            (%backtrace 2)
+            (%exit 1))))
     (load path)))
 
 (defun %command-line-arguments ()

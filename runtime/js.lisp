@@ -280,10 +280,18 @@ of the place where it was signalled), in the object that tells the host to throw
          (*js-running* t)
          (*js-can-await* async))
     (block run
-      (handler-bind ((error (lambda (c)
-                              (unless (or *debugger-hook* *invoke-debugger-hook*)
-                                (return-from run (%js-failure c))))))
-        (js:to-js (apply f lisp-args))))))
+      ;; an error that ERROR signals (not one given to SIGNAL, which returns
+      ;; when no handler takes it) becomes the JavaScript error, before the
+      ;; handlers of the Lisp code that called the JavaScript code; unless a
+      ;; REPL, a script or a thread inside takes it (*DEBUGGER-FALLBACK*
+      ;; bound again), or a debugger of the program's own
+      (let* ((fallback (lambda (c) (return-from run (%js-failure c))))
+             (*debugger-fallback* fallback))
+        (handler-bind ((error (lambda (c)
+                                (when (and (eq c *erroring*) (eq *debugger-fallback* fallback)
+                                           (not (or *debugger-hook* *invoke-debugger-hook*)))
+                                  (funcall fallback c)))))
+          (js:to-js (apply f lisp-args)))))))
 
 ;;; called from JavaScript (exported as lisp_apply) when a Lisp function
 ;;; wrapped by TO-JS is invoked
