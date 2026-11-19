@@ -302,6 +302,16 @@ The check is left out by the compiler where the type of FORM shows it holds."
         ((null (cdr forms)) (convert (car forms) env))
         (t `(:progn ,@(mapcar (lambda (f) (convert f env)) forms)))))
 
+(defun printable-constant-p (x depth)
+  "Whether X, the value of a constant, can be written in a fasl: a number,
+character, symbol or string, or a list or simple vector of them (to DEPTH)."
+  (cond ((or (numberp x) (characterp x) (symbolp x) (stringp x)) t)
+        ((<= depth 0) nil)
+        ((consp x) (and (handler-case (list-length x) (error () nil))
+                        (every (lambda (e) (printable-constant-p e (- depth 1))) x)))
+        ((simple-vector-p x) (every (lambda (e) (printable-constant-p e (- depth 1))) x))
+        (t nil)))
+
 (defun convert-symbol (sym env)
   (cond ((or (null sym) (eq sym t) (keywordp sym)) `(:const ,sym))
         (t
@@ -317,7 +327,13 @@ The check is left out by the compiler where the type of FORM shows it holds."
                                    `(:const ,v)
                                    `(:sref ,sym))))
                             ((and *live-constant-hook* (nth-value 1 (funcall *live-constant-hook* sym)))
-                             `(:const ,(funcall *live-constant-hook* sym)))
+                             (let ((v (funcall *live-constant-hook* sym)))
+                               ;; (a constant that a fasl cannot write, a
+                               ;; package...: COMPILE-FILE would leave the
+                               ;; form as source, compiled at every load)
+                               (if (printable-constant-p v 3)
+                                   `(:const ,v)
+                                   `(:sref ,sym))))
                             (t (unless (special-var-p sym)
                                  (cwarn "undefined variable ~S" sym))
                                `(:sref ,sym))))))))))

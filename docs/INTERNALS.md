@@ -216,6 +216,22 @@ about 175× faster than with the interpreter (`bin/clysm repl --interp`).
 demo also embeds the compiler, so code typed in the page is compiled to Wasm in
 the browser.
 
+A form that is only a call of a global function with constant arguments
+(after its macros are expanded: `(swank:connection-info)`, `(micros:autodoc
+'...)`, a `defsystem` of an `.asd` file, which is `(apply
+'register-system-definition '...)`, `defpackage`, `in-package`) is called at
+once instead (`native-eval`, `lib/live-image.lisp`): compiling it took 5 to
+30 ms, for a call of microseconds, and the first compilation in an image
+started from a heap image also has V8 compile the compiler's own functions
+(a few hundred ms). Definitions (`defun`, `defmacro`, `defstruct`...) are
+always compiled, as the compiler does more with them than their expansion
+does. A constant whose value a fasl cannot write (a package, a hash table)
+is read from its symbol in compiled code instead of being a literal of the
+module: as a literal, it made `compile-file` leave the whole form as source,
+compiled again at every load (micros's `(defconstant keyword-package
+(find-package :keyword))` did that for three of its functions each time Lem
+loaded its Lisp mode).
+
 ## Heap images
 
 An image that has loaded a large program (Lem: 360 fasls) can save its heap
@@ -329,6 +345,13 @@ functions that call back into Lisp through the exported `lisp_apply`):
 (js:funcall (js:eval "(f, x) => f(x) * 2") (lambda (x) (+ x 1)) 20)   ; => 42
 (js:call (js:global "JSON") "stringify" (js:object "name" "clysm"))
 ```
+
+A property, a method or a global named by a literal string (`(js:get node
+"kind")`) is made a JavaScript string once, where it is written (compiler
+macros of `js:get`, `js:set`, `js:call` and `js:global`), and kept in a cell
+of that name: a heap image cannot hold JavaScript strings, so `save-image`
+empties the cells and the image started from the file makes each name again
+when it first uses it.
 
 `js:get` of `null` or `undefined` (`NIL`) is `NIL`. A JavaScript exception in
 `js:call`, `js:funcall` or `js:new` is a Lisp error of type `js:js-error`
