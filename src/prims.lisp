@@ -2249,6 +2249,57 @@ element (local I) of it.  D is a scratch eqref local."
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%string-hash)) '(:call (:callsym 1)))
 (defprim clysm-sys::%string-hash (s) :value `(,@s (:call :string-hash)))
 
+;;; Hash tables (runtime/hash.lisp): the entry whose key is EQ to KEY, of
+;;; hash HASH, in the table whose slot vector is SV; its index or -1.  The
+;;; slot vector and its arrays are cast once, not at every access.  The
+;;; slot indices are those of runtime/hash.lisp (+HT-KEYS+ ...).
+(defhelper :ht-eq-index :eei-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+                                (i :i32) (j :i32) (bits :i32) (y :i32))
+  '(:local.get 0) '(:ref.cast :vector) '(:local.tee v)
+  '(:i32.const 2) '(:array.get :vector) '(:ref.cast :vector) '(:local.set keys)
+  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast :limbs) '(:local.set next)
+  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast :i31) ':i31.get_s '(:local.set bits)
+  ;; the chain: (hash + y*40503 + (y >> bits)*31153) & (2^bits - 1), y = hash >> bits
+  '(:local.get 2) '(:local.get bits) ':i32.shr_s '(:local.set y)
+  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast :limbs)
+  '(:local.get 2) '(:local.get y) '(:i32.const 40503) ':i32.mul ':i32.add
+  '(:local.get y) '(:local.get bits) ':i32.shr_s '(:i32.const 31153) ':i32.mul ':i32.add
+  '(:i32.const 1) '(:local.get bits) ':i32.shl '(:i32.const 1) ':i32.sub ':i32.and
+  '(:array.get :limbs) '(:local.set i)
+  '(:block done nil
+     (:loop again nil
+       (:local.get i) :i32.eqz (:br_if done)
+       (:local.get i) (:i32.const 1) :i32.sub (:local.set j)
+       (:local.get keys) (:local.get j) (:array.get :vector) (:local.get 1) :ref.eq
+       (:if nil nil ((:local.get j) :ref.i31 :return))
+       (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
+       (:br again)))
+  '(:i32.const -1) ':ref.i31)
+(defprim clysm-sys::%ht-eq-index (sv key hash) :value `(,@sv ,@key ,@(idx-code hash) (:call :ht-eq-index)))
+;;; The index of the entry of KEY in the table whose slot vector is SV when
+;;; KEY is a fixnum, a character or a symbol, which EQ finds (not a fixnum
+;;; or a character in an EQUALP table): the index, -1 when there is none,
+;;; -2 for another key.  The hash is that of %HT-HASH.
+(defhelper :ht-fast-index :ee-e ((v (:ref :null :vector)) (hash :i32) (kind :i32))
+  '(:local.get 0) '(:ref.cast :vector) '(:local.tee v)
+  '(:i32.const 10) '(:array.get :vector) '(:ref.cast :i31) ':i31.get_s '(:local.set kind)
+  '(:block found nil
+     (:block notimm :eqref
+       (:local.get 1) (:br_on_cast_fail notimm :eqref (:ref :i31)) :i31.get_s (:local.tee hash)
+       ;; an EQUALP table compares numbers with = and characters ignoring case
+       (:local.get kind) (:i32.const 3) :i32.eq (:if nil nil ((:i32.const -2) :ref.i31 :return))
+       (:i32.const 536870912) :i32.ge_s
+       (:if nil nil
+            ;; a character: its code
+            ((:local.get hash) (:i32.const 536870912) :i32.sub (:local.set hash) (:br found)))
+       ;; a fixnum
+       (:local.get hash) (:i32.const 536870911) :i32.and (:local.set hash) (:br found))
+     :drop
+     (:local.get 1) (:ref.test :symbol) :i32.eqz (:if nil nil ((:i32.const -2) :ref.i31 :return))
+     (:local.get 1) (:ref.cast :symbol) (:struct.get :symbol 5) (:local.set hash))
+  '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index))
+(defprim clysm-sys::%ht-fast-index (sv key) :value `(,@sv ,@key (:call :ht-fast-index)))
+
 (defhelper :simple-string= :ee-i ((a (:ref :null :string)) (b (:ref :null :string)) (i :i32) (n :i32))
   '(:local.get 0) '(:ref.cast! :string) '(:local.tee a) :array.len '(:local.tee n)
   '(:local.get 1) '(:ref.cast! :string) '(:local.tee b) :array.len :i32.ne '(:if nil nil ((:i32.const 0) :return))

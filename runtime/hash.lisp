@@ -208,13 +208,14 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 
 (defmacro %ht-hash (h key)
   "The hash of KEY in the table H.  Fixnums and symbols hash the same way for
-every test, without a call."
+every test, characters for every test but EQUALP, without a call."
   (let ((k (gensym)) (x (gensym)))
     `(let ((,x ,key))
        (cond ((fixnump ,x) (%fxlogand ,x 536870911))
              ((symbolp ,x) (%symbol-hash ,x))
              (t (let ((,k (%ht ,h +ht-kind+)))
-                  (cond ((%fx= ,k 0) (%eq-hash ,x))
+                  (cond ((and (characterp ,x) (%fx< ,k 3)) (%char-code ,x))   ; (EQUALP: of the upcased character)
+                        ((%fx= ,k 0) (%eq-hash ,x))
                         ((%fx= ,k 1) (%eql-hash ,x))
                         ((%fx= ,k 2) (%sxhash ,x 4))
                         (t (%equalp-hash ,x 4)))))))))
@@ -247,19 +248,12 @@ every test, without a call."
 A key that only an EQ key can match (any key of an EQ table, a symbol, a
 fixnum or a non-number in an EQL table, a fixnum in an EQUAL table) is looked
 for here, without a call."
-  (let ((kind (gensym)) (buckets (gensym)) (keys (gensym)) (next (gensym)) (i (gensym)) (j (gensym)))
+  (let ((kind (gensym)))
     `(let ((,kind (%svref ,sv +ht-kind+)))
        (if (or (%fx= ,kind 0)
                (symbolp ,key)
                (if (fixnump ,key) (not (%fx= ,kind 3)) (and (%fx= ,kind 1) (not (numberp ,key)))))
-           (let* ((,buckets (%svref ,sv +ht-buckets+))
-                  (,keys (%svref ,sv +ht-keys+))
-                  (,next (%svref ,sv +ht-next+))
-                  (,i (%lref ,buckets (%ht-bucket ,hash (%svref ,sv +ht-shift+)))))
-             (do () ((%fx= ,i 0) -1)
-               (let ((,j (%fx- ,i 1)))
-                 (when (eq (%svref ,keys ,j) ,key) (return ,j))
-                 (setq ,i (%lref ,next ,j)))))
+           (%ht-eq-index ,sv ,key ,hash)
            (%ht-find-general ,sv ,key ,hash ,kind)))))
 
 (defun %ht-find (h key hash)
@@ -268,6 +262,11 @@ for here, without a call."
     (%ht-lookup sv key hash)))
 
 (defun gethash (key h &optional default)
+  ;; a fixnum, a character or a symbol: looked up by one helper
+  (when (and (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
+    (let* ((sv (%instance-slots h)) (i (%ht-fast-index sv key)))
+      (cond ((%fx>= i 0) (return-from gethash (values (%svref (%svref sv +ht-vals+) i) t)))
+            ((eql i -1) (return-from gethash (values default nil))))))
   (%check-ht h)
   (let* ((sv (%instance-slots h))
          (hash (%ht-hash h key))
@@ -296,6 +295,12 @@ for here, without a call."
     value))
 
 (defun %ht-put (h key value)
+  ;; a fixnum, a character or a symbol already in the table: stored at once
+  (when (and (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
+    (let* ((sv (%instance-slots h)) (i (%ht-fast-index sv key)))
+      (when (%fx>= i 0)
+        (%set-svref (%svref sv +ht-vals+) i value)
+        (return-from %ht-put value))))
   (%check-ht h)
   ;; the entry GETHASH has just found (never one of a fixnum or a symbol)
   (unless (or (fixnump key) (symbolp key))
