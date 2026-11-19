@@ -2300,6 +2300,40 @@ element (local I) of it.  D is a scratch eqref local."
      (:local.get 1) (:ref.cast :symbol) (:struct.get :symbol 5) (:local.set hash))
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index))
 (defprim clysm-sys::%ht-fast-index (sv key) :value `(,@sv ,@key (:call :ht-fast-index)))
+;;; The index of the entry whose key is a simple string equal to the simple
+;;; string KEY, of hash HASH (%STRING-HASH), in the table whose slot vector
+;;; is SV, or -1: the stored hashes are compared first, then the strings;
+;;; -2 when a key of the same hash is not a simple string.
+(defhelper :ht-string-index :eei-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+                                    (hashes (:ref :null :limbs)) (i :i32) (j :i32) (bits :i32) (y :i32) (k :eqref))
+  '(:local.get 0) '(:ref.cast :vector) '(:local.tee v)
+  '(:i32.const 2) '(:array.get :vector) '(:ref.cast :vector) '(:local.set keys)
+  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast :limbs) '(:local.set next)
+  '(:local.get v) '(:i32.const 5) '(:array.get :vector) '(:ref.cast :limbs) '(:local.set hashes)
+  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get 2) '(:local.get bits) ':i32.shr_s '(:local.set y)
+  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast :limbs)
+  '(:local.get 2) '(:local.get y) '(:i32.const 40503) ':i32.mul ':i32.add
+  '(:local.get y) '(:local.get bits) ':i32.shr_s '(:i32.const 31153) ':i32.mul ':i32.add
+  '(:i32.const 1) '(:local.get bits) ':i32.shl '(:i32.const 1) ':i32.sub ':i32.and
+  '(:array.get :limbs) '(:local.set i)
+  '(:block done nil
+     (:loop again nil
+       (:local.get i) :i32.eqz (:br_if done)
+       (:local.get i) (:i32.const 1) :i32.sub (:local.set j)
+       (:local.get hashes) (:local.get j) (:array.get :limbs) (:local.get 2) :i32.eq
+       (:if nil nil
+            ((:local.get keys) (:local.get j) (:array.get :vector) (:local.tee k)
+             (:ref.test :string)
+             (:if nil nil
+                  ((:local.get k) (:local.get 1) (:call :simple-string=)
+                   (:if nil nil ((:local.get j) :ref.i31 :return)))
+                  ;; a key of the same hash that is not a simple string: left to EQUAL
+                  ((:i32.const -2) :ref.i31 :return))))
+       (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
+       (:br again)))
+  '(:i32.const -1) ':ref.i31)
+(defprim clysm-sys::%ht-string-index (sv key hash) :value `(,@sv ,@key ,@(idx-code hash) (:call :ht-string-index)))
 (defprim clysm-sys::%immediate-or-symbol-p (x) :test
   ;; a fixnum, a character or a symbol: an i31 or a $symbol
   (let ((v (new-local))) `(,@x (:local.tee ,v) (:ref.test :i31) (:local.get ,v) (:ref.test :symbol) :i32.or)))
