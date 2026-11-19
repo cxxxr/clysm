@@ -1481,7 +1481,7 @@ eight characters, numbers or symbols, else :NO."
     (let ((seq (cond ((stringp form) form)
                      ;; a constant variable whose value is a string
                      ((and (symbolp form) form (not (keywordp form)) (constantp form)
-                           (ignore-errors (and (boundp form) (stringp (symbol-value form)))))
+                           (boundp form) (stringp (symbol-value form)))
                       (symbol-value form))
                      ((and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
                            (listp (cadr form)))
@@ -1501,7 +1501,10 @@ POSITION when they are only a :TEST of a known function, else NIL."
                   (car (member (cadr f) '(eql eq equal char= char-equal))))))
           (t nil)))
   (defun %proper-list-or-string-p (x)
-    (or (stringp x) (and (listp x) (handler-case (list-length x) (error () nil))))))
+    (or (stringp x)
+        (and (listp x)
+             (do ((l x (cdr l)) (n 0 (+ n 1))) (nil)
+               (cond ((null l) (return t)) ((or (atom l) (> n 8)) (return nil))))))))
 
 ;;; FIND and POSITION of an item in a short literal sequence: comparisons inline
 (define-compiler-macro find (&whole form item seq &rest keys)
