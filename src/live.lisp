@@ -57,6 +57,76 @@ Returns (values bytes constants-vector)."
         (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0))
       (build-live-module))))
 
+(defun live-used-globals (tops)
+  "The names of the globals (and functions) that the code of a live module
+can reach from its toplevel functions TOPS, the closures they refer to and
+the other globals: a hash table."
+  (let ((used (make-hash-table :test 'equal)) (queue nil)
+        (closure-inits (make-hash-table :test 'equal))
+        (rewrites (wasm-module-cast-rewrites *m*)))
+    (dolist (g *closure-globals*) (setf (gethash (first g) closure-inits) (third g)))
+    (labels ((mark (name)
+               (unless (gethash name used)
+                 (setf (gethash name used) t)
+                 (let ((f (find-func *m* name)))
+                   (when f (push (wasm-func-body f) queue)))
+                 (multiple-value-bind (init found) (gethash name closure-inits)
+                   (when found (push init queue)))))
+             (walk (x)
+               (when (consp x)
+                 (case (car x)
+                   ((:call :return_call :ref.func :global.get :global.set)
+                    (when (consp (cdr x)) (mark (second x))))
+                   (:ref.cast (when (and (consp (cdr x)) (not (eq (second x) :null)))
+                                (let ((fn (cdr (assoc (second x) rewrites))))
+                                  (when fn (mark fn))))))
+                 (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
+      (dolist (l tops) (mark (list :main (lam-id l))) (mark (static-closure-global l)))
+      (dolist (g *misc-globals*) (mark (first g)) (push (fourth g) queue))
+      ;; (RUN casts the symbols it is given)
+      (push '((:ref.cast :symbol)) queue)
+      (loop while queue do (walk (pop queue))))
+    used))
+
+(defun add-called-helpers ()
+  "Add to the module the runtime helpers its functions call, and those they
+call (a module made at run time uses few of them: making the code of all of
+them, to drop most again, was most of the time of compiling a small form)."
+  (let ((helpers (make-hash-table :test 'equal)) (next 0)
+        (funcs (wasm-module-funcs *m*))
+        (*fs* (make-fstate :lam nil :nparams 0)))
+    (dolist (h *helpers*) (setf (gethash (first h) helpers) h))
+    (labels ((add-helper (h)
+               (destructuring-bind (name type locals body-fn) h
+                 (let ((body (directify-helper-calls
+                              (loop for item in (funcall body-fn)
+                                    if (and (consp item) (eq (car item) :progn-marker))
+                                      append (cdr item)
+                                    else collect item))))
+                   (add-func *m* name type
+                             :locals (mapcar #'second locals)
+                             :local-names (mapcar #'first locals)
+                             :body (remove nil body)))))
+             (need (name)
+               (let ((h (gethash name helpers)))
+                 (when (and h (not (func-defined-p *m* name)))
+                   (add-helper h))))
+             (walk (x)
+               (when (consp x)
+                 (when (and (member (car x) '(:call :return_call :ref.func)) (consp (cdr x)))
+                   (need (second x)))
+                 (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
+      ;; (the helpers' code can make further functions be compiled: the
+      ;; direct calls of DIRECTIFY-HELPER-CALLS)
+      (loop (loop while (< next (fill-pointer funcs))
+                  do (walk (wasm-func-body (aref funcs next))) (incf next))
+            ;; (the closures of the globals refer to entries such as (:ARGERR k))
+            (dolist (g *closure-globals*) (walk (third g)))
+            (dolist (g *misc-globals*) (walk (fourth g)))
+            (if (or *pending-lams* (< next (fill-pointer funcs)))
+                (compile-pending-lams)
+                (return))))))
+
 (defun build-live-module ()
   (let ((*m* (make-wasm-module)))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
@@ -81,23 +151,14 @@ Returns (values bytes constants-vector)."
     (let ((tops (reverse *toplevel-lams*)))
       (dolist (l tops) (ensure-lam-compiled l) (static-closure-global l))
       (compile-pending-lams)
-      (let ((*fs* (make-fstate :lam nil :nparams 0)))
-        (dolist (h (reverse *helpers*))
-          (destructuring-bind (name type locals body-fn) h
-            (let ((body (directify-helper-calls
-                         (loop for item in (funcall body-fn)
-                               if (and (consp item) (eq (car item) :progn-marker))
-                                 append (cdr item)
-                               else collect item))))
-              (add-func *m* name type
-                        :locals (mapcar #'second locals)
-                        :local-names (mapcar #'first locals)
-                        :body (remove nil body))))))
-      (compile-pending-lams)
-      ;; globals: symbols, live constants and closures are filled in by RUN
-      (let* ((syms (reverse *symbol-globals*))
-             (consts (reverse *live-constants*))
-             (closures (reverse *closure-globals*))
+      (add-called-helpers)
+      ;; globals: symbols, live constants and closures are filled in by RUN;
+      ;; only those the code that can run refers to (every helper's symbols
+      ;; were made, also those of the helpers it does not use)
+      (let* ((used (live-used-globals tops))
+             (syms (remove-if-not (lambda (s) (gethash (list :sym s) used)) (reverse *symbol-globals*)))
+             (consts (remove-if-not (lambda (c) (gethash (car c) used)) (reverse *live-constants*)))
+             (closures (remove-if-not (lambda (g) (gethash (first g) used)) (reverse *closure-globals*)))
              (objects (append syms (mapcar #'cdr consts))))
         (dolist (s syms)
           (add-global *m* (list :sym s) '(:ref :null :symbol) t '((:ref.null :symbol)))
