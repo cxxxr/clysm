@@ -2309,10 +2309,12 @@ difference in S1 + how S1 compares with S2 there: 0 equal, 1 less, 2 greater."
       (%string-eq s1 s2 0 nil 0 nil nil)))
 (defmacro %string-eq-call (s1 s2 keys ci)
   "STRING= or STRING-EQUAL of S1 and S2 with the keyword arguments KEYS as a
-call of %STRING-EQ, the arguments evaluated in their order; NIL when KEYS
-are not distinct :START1 :END1 :START2 :END2 written as keywords (a call
-with keywords checked them and took 70% of the time of comparing the 5
-characters of a comment's start in a line, in Lem)."
+call of the comparison with its bounds, the arguments evaluated in their
+order; NIL when KEYS are not distinct :START1 :END1 :START2 :END2 written as
+keywords (a call with keywords checked them and took 70% of the time of
+comparing the 5 characters of a comment's start in a line, in Lem).  With
+the bounds of one string only, the function called takes four arguments,
+which a call passes without making a vector of them."
   (let ((names (loop for (k) on keys by #'cddr collect k)))
     (when (and (evenp (length keys))
                (every (lambda (k) (member k '(:start1 :end1 :start2 :end2))) names)
@@ -2321,7 +2323,18 @@ characters of a comment's start in a line, in Lem)."
              (vars (loop for (k v) on keys by #'cddr collect (list k (gensym (symbol-name k)) v))))
         (flet ((arg (k default) (let ((e (assoc k vars))) (if e (second e) default))))
           `(let* ((,a ,s1) (,b ,s2) ,@(mapcar (lambda (e) (list (second e) (third e))) vars))
-             (%string-eq ,a ,b ,(arg :start1 0) ,(arg :end1 nil) ,(arg :start2 0) ,(arg :end2 nil) ,ci)))))))
+             ,(cond ((every (lambda (k) (member k '(:start1 :end1))) names)
+                     `(,(if ci '%string-equal-1 '%string=-1) ,a ,b ,(arg :start1 0) ,(arg :end1 nil)))
+                    ((every (lambda (k) (member k '(:start2 :end2))) names)
+                     `(,(if ci '%string-equal-1 '%string=-1) ,b ,a ,(arg :start2 0) ,(arg :end2 nil)))
+                    (t `(%string-eq ,a ,b ,(arg :start1 0) ,(arg :end1 nil) ,(arg :start2 0) ,(arg :end2 nil) ,ci)))))))))
+
+(defun %string=-1 (s1 s2 start1 end1)
+  "STRING= of the part of S1 from START1 to END1 and S2."
+  (%string-eq s1 s2 start1 end1 0 nil nil))
+(defun %string-equal-1 (s1 s2 start1 end1)
+  "STRING-EQUAL of the part of S1 from START1 to END1 and S2."
+  (%string-eq s1 s2 start1 end1 0 nil t))
 
 (define-compiler-macro string= (&whole form s1 s2 &rest keys)
   (if keys
