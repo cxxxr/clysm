@@ -915,9 +915,9 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 
 (defun define-standard-helpers ()
   ;; (:callsym k): (sym, a1..ak) -> eqref, calling through the function cell
+  (setf *helpers* (remove-helpers-of-kinds '(:callsym)))
   (loop for k from 0 to +max-fixed-args+
         do (let ((k k))
-             (setf *helpers* (remove (list :callsym k) *helpers* :key #'first :test #'equal))
              (push (list (list :callsym k)
                          (let ((tn (list :callsym-type k)))
                            (unless (gethash tn *extra-types*)
@@ -3068,13 +3068,18 @@ f64s in locals DA and DB (it may branch to SLOW)."
     ,@(fixnum-code k)
     (:global.get ,(sym-global 'clysm-sys::%arg-count-error)) (:call (:callsym 2))))
 
+(defun remove-helpers-of-kinds (kinds)
+  "*HELPERS* without the helpers named (KIND k) for KIND in KINDS (one pass:
+modules made at run time define these helpers each time)."
+  (remove-if (lambda (h) (let ((name (first h))) (and (consp name) (member (car name) kinds))))
+             *helpers*))
+
 (defun define-argerr-helpers ()
+  (setf *helpers* (remove-helpers-of-kinds '(:argerr :pack)))
   (loop for k from 0 to +max-fixed-args+
         do (let ((k k))
-             (setf *helpers* (remove (list :argerr k) *helpers* :key #'first :test #'equal))
              (push (list (list :argerr k) (fixed-entry-type k) nil (lambda () (argerr-body k))) *helpers*)
              ;; pack entries for complex lambdas: build vector and call entryN
-             (setf *helpers* (remove (list :pack k) *helpers* :key #'first :test #'equal))
              (push (list (list :pack k) (fixed-entry-type k) nil
                          (lambda ()
                            `((:local.get 0)
@@ -4691,8 +4696,12 @@ in local V and the index in local K; else branch to FAIL."
     (:bits . simple-bit-vector) (:f64vec . (simple-array double-float (*))) (:foreign . t)
     (:limbs . t) (:closure . function)))
 
-(defun define-checked-casts ()
-  (dolist (e *checked-cast-types*)
+(defun define-checked-casts (&key lazy)
+  "Define the functions that checked casts call (CAST-REWRITES).  With LAZY,
+they are not added: returns a table of name -> function adding one, for
+those the code calls (modules made at run time call few of them)."
+  (let ((pending (and lazy (make-hash-table :test 'equal))))
+  (dolist (e *checked-cast-types* pending)
     (let* ((type (car e)) (lisp-type (cdr e))
            (fname (list :castfn type))
            (tname (list :cast-type type)))
@@ -4701,14 +4710,16 @@ in local V and the index in local K; else branch to FAIL."
         (add-type *m* tname `(:func (:eqref) ((:ref ,type))))
         ;; the block type of the inline cast (wasm.lisp)
         (add-type *m* (list :cast-bt type) `(:func (:eqref) ((:ref ,type)))))
-      (add-func *m* fname tname
-                :body `((:block fail :eqref
-                          (:local.get 0) (:br_on_cast_fail fail :eqref (:ref ,type)) :return)
-                        :drop
-                        (:local.get 0) ,@(const-init-code lisp-type)
-                        (:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2))
-                        (:ref.cast ,type)))
-      (push (cons type fname) (wasm-module-cast-rewrites *m*)))))
+      (flet ((add ()
+               (add-func *m* fname tname
+                         :body `((:block fail :eqref
+                                   (:local.get 0) (:br_on_cast_fail fail :eqref (:ref ,type)) :return)
+                                 :drop
+                                 (:local.get 0) ,@(const-init-code lisp-type)
+                                 (:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2))
+                                 (:ref.cast ,type)))))
+        (if lazy (setf (gethash fname pending) #'add) (add)))
+      (push (cons type fname) (wasm-module-cast-rewrites *m*))))))
 
 ;;; ------------------------------------------------------------
 ;;; Heap images (runtime/image.lisp)

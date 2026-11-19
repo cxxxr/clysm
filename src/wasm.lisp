@@ -163,11 +163,13 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
   (or (gethash name (wasm-module-func-index-table m))
       (error "wasm: unknown function ~S" name)))
 
-(defun remove-unreachable-functions (m)
+(defun remove-unreachable-functions (m &optional known)
   "Drop the defined functions that cannot be reached from the exports, the
 start function and the global initializers (e.g. runtime helpers that a
-small module does not use), and renumber the others."
-  (let ((reached (make-hash-table :test 'equal)) (queue nil)
+small module does not use), and renumber the others.  KNOWN: an EQUAL hash
+table of names known to be reached, with all that they refer to (they are
+not walked again)."
+  (let ((reached (or known (make-hash-table :test 'equal))) (queue nil)
         (rewrites (wasm-module-cast-rewrites m)))
     (labels ((mark (name)
                (unless (gethash name reached)
@@ -523,26 +525,32 @@ functions).  Calls of the installs that are not reached are removed."
 (defvar *branch-hints* nil
   "The branch hints of the function being encoded: (offset . value), latest first.")
 
+(defvar *op-table* nil
+  "The operators without immediates of *SIMPLE-OPS*, *GC-OPS* and *FC-OPS*
+in one table: op -> code, or (prefix . code).")
+
+(defun op-table ()
+  (or *op-table*
+      (let ((h (make-hash-table :test 'eq)))
+        (maphash (lambda (k v) (setf (gethash k h) v)) *simple-ops*)
+        (maphash (lambda (k v) (setf (gethash k h) (cons #xFB v))) *gc-ops*)
+        (maphash (lambda (k v) (setf (gethash k h) (cons #xFC v))) *fc-ops*)
+        (setf *op-table* h))))
+
 (defun emit-instr (buf ins)
   (let ((m *module*))
-    (when (keywordp ins) (setf ins (list ins)))
-    (let ((op (first ins)) (args (rest ins)))
+    (let ((op (if (consp ins) (first ins) ins)) (args (if (consp ins) (rest ins) nil)))
       ;; (:hint 0) / (:hint 1): the IF or BR_IF that follows is unlikely / likely
       ;; to be taken (the branch hinting section)
       (when (eq op :hint)
         (push (cons (length buf) (first args)) *branch-hints*)
         (return-from emit-instr))
-      (multiple-value-bind (code found) (gethash op *simple-ops*)
-        (when found
-          (emit-byte buf code)
-          (return-from emit-instr)))
-      (multiple-value-bind (code found) (gethash op *gc-ops*)
-        (when found
-          (emit-byte buf #xFB) (emit-u32 buf code)
-          (return-from emit-instr)))
-      (multiple-value-bind (code found) (gethash op *fc-ops*)
-        (when found
-          (emit-byte buf #xFC) (emit-u32 buf code)
+      ;; (one lookup for the operators without immediates)
+      (let ((code (gethash op (op-table))))
+        (when code
+          (if (consp code)
+              (progn (emit-byte buf (car code)) (emit-u32 buf (cdr code)))
+              (emit-byte buf code))
           (return-from emit-instr)))
       (ecase op
         ;; structured: (:block label bt . body)
@@ -739,6 +747,11 @@ functions).  Calls of the installs that are not reached are removed."
       (emit-expr buf (wasm-func-body f)))
     (values buf (nreverse *branch-hints*))))
 
+(defvar *type-section-cache* nil
+  "(base-count types section): the type section last encoded, for its types.")
+(defvar *name-octets* (make-hash-table :test 'equal)
+  "Function names that are not strings -> the octets of their printed form.")
+
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
@@ -767,16 +780,23 @@ functions).  Calls of the installs that are not reached are removed."
       ;; type section: the base types form one rec group (identical in every
       ;; module, so that types are shared across modules); types added later
       ;; are singleton groups
-      (let* ((b (make-buf))
-             (types (wasm-module-types m))
-             (base (or (wasm-module-base-types m) (length types))))
-        (emit-u32 b (+ 1 (- (length types) base)))
-        (emit-byte b #x4E)
-        (emit-u32 b base)
-        (loop for i below base do (emit-subtype m b (cdr (aref types i))))
-        (loop for i from base below (length types)
-              do (emit-subtype m b (cdr (aref types i))))
-        (emit-section out 1 b))
+      (let* ((types (wasm-module-types m))
+             (base (or (wasm-module-base-types m) (length types)))
+             (cache *type-section-cache*))
+        ;; (modules made at run time have the same types, mostly: the
+        ;; section of the last one is used again when they are equal)
+        (unless (and cache (eql (car cache) base) (= (length (cadr cache)) (length types))
+                     (every #'equal (cadr cache) types))
+          (let ((b (make-buf)))
+            (emit-u32 b (+ 1 (- (length types) base)))
+            (emit-byte b #x4E)
+            (emit-u32 b base)
+            (loop for i below base do (emit-subtype m b (cdr (aref types i))))
+            (loop for i from base below (length types)
+                  do (emit-subtype m b (cdr (aref types i))))
+            (setf cache (list base (coerce types 'simple-vector) b)
+                  *type-section-cache* cache)))
+        (emit-section out 1 (third cache)))
       ;; imports
       (when (plusp (+ (length (wasm-module-imports m)) (length (wasm-module-global-imports m))
                       (length (wasm-module-tag-imports m)) (if (wasm-module-memory-import m) 1 0)
@@ -907,9 +927,18 @@ functions).  Calls of the installs that are not reached are removed."
         (emit-u32 sub (length all))
         (loop for f in all for i from 0
               do (emit-u32 sub i)
-                 (emit-name sub (let ((n (or (wasm-func-display f) (wasm-func-name f))))
-                                  (if (stringp n) n (let ((*package* (find-package :keyword)))
-                                                      (prin1-to-string n))))))
+                 (let ((n (or (wasm-func-display f) (wasm-func-name f))))
+                   (if (stringp n)
+                       (emit-name sub n)
+                       ;; (the names of the helpers, the same in every module)
+                       (let ((octets (gethash n *name-octets*)))
+                         (unless octets
+                           (when (> (hash-table-count *name-octets*) 20000) (clrhash *name-octets*))
+                           (setf octets (utf8-octets (let ((*package* (find-package :keyword)))
+                                                       (prin1-to-string n)))
+                                 (gethash n *name-octets*) octets))
+                         (emit-u32 sub (length octets))
+                         (emit-bytes sub octets)))))
         (emit-byte b 1)
         (emit-vec-buf b sub)
         (emit-section out 0 b))
