@@ -140,7 +140,10 @@ catcher that takes the exit restores the binding stack. One handler serves
 all the calls of a context (a function's top level, the body of each
 catcher and `unwind-protect`); a direct call of a known function that
 cannot leave with an exit pending (no `throw`, no exit out of a closure,
-no call of an unknown function: `lam-may-exit-p`) is not tested.
+no call of an unknown function: `lam-may-exit-p`) is not tested, and after
+a direct call of one that never returns normally (`error`, or a function
+whose type the inference found to be empty: `lam-noreturn-p`) the code
+branches to the handler at once.
 
 So `(catch 'tag (funcall f))` where `f` throws, an exit from a closure
 called by a library function, and `error` many calls below a
@@ -279,18 +282,38 @@ What made it slow, and what was done:
   and the compiler's tables of lambdas, variables and nodes are the
   module's own (they were global in the image and grew with every form).
 * **Forms evaluated at compile time too** (`eval-when` with
-  `:compile-toplevel` and `:load-toplevel`, ASDF's `with-upgradability`, and
-  the definers `compile-file` evaluates, such as `declaim` and `defclass`)
-  were compiled twice: to a module run at once and again for the fasl. The
-  fasl's module is now also the one run (`%cf-compile-and-run`,
-  `runtime/eval.lisp`), unless the form has literal objects made by
-  `make-load-form`.
+  `:compile-toplevel` and `:load-toplevel`, ASDF's `with-upgradability`)
+  are compiled twice, to a module run at once and again for the fasl.
+  Compiling them once (the fasl's module also being the one run) saved 3 s
+  of ASDF's 7.8 but made each such form a module of its own in the fasl,
+  1979 modules instead of 1064, and loading ASDF from the cache (every
+  start that uses it) took 0.42 s instead of 0.31: reverted.
+* **Modules evaluated at once** (the REPL, `load` of a source file,
+  `compile`) are made without `SNAP` and `RESTORE` unless the host records
+  the modules for `save-image` (`CLYSM_SAVE_IMAGE`, `*live-snapshots*`):
+  a third of the octets of a small form's module.
 
 After the second round (the integration of 2026-11-20, whose image-compiled
 code is larger: compiling a module there takes about 1.5 times as long as
 before it; 4-CPU benchmark slot, medians of 4, a busy machine): ASDF in the
 image 7.8 → 4.6 s (SBCL 2.8 s), cl-ppcre 2.5 → 2.05 s (SBCL 1.0 s), 500
 `defun`s 0.77 → 0.65 s (SBCL 0.10 s).
+
+Where the code of modules compiled in the image grew in that integration
+(octets of the code section of ASDF's fasl, 1064 modules, with the changes
+above): 3.10 MB before it; 3.46 MB with non-local exits as returns (+11.5%,
+mostly about 300 octets of fixed cost per module: the helpers
+`exit-pending-p` and `throw-pending-exit`, the test in `(:callsym k)`, the
+symbols of the pending exit in `RUN`/`SNAP`/`RESTORE`; the tests after
+calls are a small part in the image, where calls go through the function
+cell); 4.55 MB with the CLOS dispatch copied into each generic function
+(+32%, 1105 modules): a generic function of required parameters carries one
+copy of the dispatch (about 1.4 KB, also each reader and writer of a
+`defclass`), one with `&optional`/`&key`/`&rest` one per number of
+arguments, up to five (one shared copy called by the entries: −6% of
+ASDF's code, but `bench/clos.lisp` 2.5% slower, `c-gf-lambda-lists` 6%).
+The name section is 0.57 MB of the 6.8 MB fasl, the type section (the base
+types, the same in every module) 1.05 MB.
 
 What remains (compiler in Wasm, whole program): type inference 0.8 s (its
 node types are an EQ hash table keyed by conses, whose identity hash is a
