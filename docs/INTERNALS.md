@@ -1804,7 +1804,10 @@ caches for every page that uses it.
 
 `tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
-NAME...` prints the Wasm generated for functions.
+NAME...` prints the Wasm generated for functions. For code compiled in the
+image (a fasl, the REPL, `load`), `(setq clysm::*live-dump* '("NAME" ...))`
+prints the Wasm of the functions of those names to `*trace-output*` as they
+are compiled (`compile-file` the file again to see them).
 
 ### Start-up and loading
 
