@@ -1865,7 +1865,13 @@ What makes the code fast:
   10^9 a pass straight into the string; `expt` of an integer from the top
   bit down.
 * **Library**: sequence functions with one implementation per family and
-  direct loops over lists, simple vectors and strings; hash tables for
+  direct loops over lists, simple vectors and strings; `member`, `assoc`
+  and `rassoc` with EQL (the default, or `:test #'eql`) of an item that EQ
+  compares (fixnums, characters, symbols, conses, instances: not boxed
+  numbers) are an EQ loop in a Wasm helper, the Lisp function only for
+  other items and improper lists; `gethash` and `(setf gethash)` of a
+  fixnum, character or symbol key read or store the value at the call
+  site; hash tables for
   `remove-duplicates` and the set functions; `typep` with a constant type,
   `format` with a constant control string (all directives), `coerce` and
   `parse-integer` compiled at the call site; string streams as buffers
