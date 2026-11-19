@@ -419,7 +419,14 @@ of its segment. The fasl has `(%fasl-unit ...)` for the module and its first
 segment, which sets `sys::*fasl-unit-runner*` (a function calling the
 `(:run-seg K)` functions of the module), and `(%fasl-segment K constants ...)`
 for the others; when the image differs, the source of each segment is
-compiled again. A form the compiler fails on is written as source; when the
+compiled again. A `defun` evaluated at compile time too (in `eval-when` with
+`:compile-toplevel` and `:load-toplevel`: ASDF's and UIOP's
+`with-upgradability`, the helpers of macros) is part of the module as well;
+at compile time its name gets a function that compiles the `defun` when it
+is first called (`%cf-define-lazily`), since most are never called then.
+Other forms evaluated at compile time are compiled once, to a module of
+their own run at once (`%cf-compile-and-run`), whose fasl entry is kept, as
+printed before it ran, among the segments. A form the compiler fails on is written as source; when the
 module cannot be made or the constants of a segment cannot be written, the
 whole file is written as source.
 
