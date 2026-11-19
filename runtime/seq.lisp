@@ -1368,6 +1368,30 @@ F on the elements I; with more sequences runs GENERAL."
     seq))
 
 (defun replace (seq1 seq2 &key (start1 0) end1 (start2 0) end2)
+  (%replace seq1 seq2 start1 end1 start2 end2))
+
+;; with literal keywords (or none): the bounds as positional arguments
+(define-compiler-macro replace (&whole form seq1 seq2 &rest keys)
+  (let ((args (list :start1 0 :end1 nil :start2 0 :end2 nil)) (seen nil) (temps nil)
+        (a (gensym "S1")) (b (gensym "S2")))
+    (do ((l keys (cddr l)))
+        ((null l)
+         `(let* ((,a ,seq1) (,b ,seq2) ,@(nreverse temps))
+            (%replace ,a ,b ,(getf args :start1) ,(getf args :end1) ,(getf args :start2) ,(getf args :end2))))
+      (let ((key (car l)))
+        (unless (and (consp (cdr l)) (member key '(:start1 :end1 :start2 :end2)) (not (member key seen)))
+          (return form))
+        (push key seen)
+        (let ((g (gensym "V")))
+          (push (list g (cadr l)) temps)
+          (setf (getf args key) g))))))
+
+(defun %replace (seq1 seq2 start1 end1 start2 end2)
+  ;; two whole simple vectors: one copy of the storage
+  (when (and (%simple-vector-p seq1) (%simple-vector-p seq2) (eql start1 0) (eql start2 0)
+             (null end1) (null end2))
+    (%storage-copy seq1 0 seq2 0 (min (%svlength seq1) (%svlength seq2)))
+    (return-from %replace seq1))
   (let* ((end1 (%check-bounds start1 end1 (%seq-length seq1)))
          (end2 (%check-bounds start2 end2 (%seq-length seq2)))
          (n (min (- end1 start1) (- end2 start2))))
