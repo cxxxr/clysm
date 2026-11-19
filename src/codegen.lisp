@@ -421,6 +421,44 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:values (cg-values (cdr node) mv))
       (:apply (maybe-checked-call tail (cg-apply (second node) (cddr node) tail))))))
 
+(defun live-apply-code (fnode args tail)
+  "In the image, (APPLY 'F SPREAD... LIST) of a global function that has
+(or that this compilation defines with) required parameters and &REST, as
+many as there are spread arguments or fewer: when the symbol's function is
+still one with that rest layout, its main function is called with them and
+the rest list, as for a known function; else the generic way."
+  (let* ((sym (and (member (car fnode) '(:fref :const)) (second fnode)))
+         (layout (and sym (symbolp sym) sym *live-key-layout-hook*
+                      (not (gethash sym *notinline*)) (not (member sym *local-notinline*))
+                      (or (funcall *live-key-layout-hook* sym)
+                          (gethash sym *compiled-key-layouts*))))
+         (nreq (rest-layout-nreq layout))
+         (spread (butlast args)))
+    (when (and nreq (<= nreq (length spread)))
+      (let* ((temps (loop for nil in args collect (new-local)))
+             (f (new-local '(:ref :null :closure)))
+             (type (main-type (1+ nreq)))
+             (call (if tail :return_call_ref :call_ref))
+             (slow (gensym "GENERIC")) (done (gensym "ACALL")))
+        `(,@(loop for a in args for tmp in temps append `(,@(cg a) (:local.set ,tmp)))
+          (:block ,done :eqref
+            (:block ,slow nil
+              (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) (:local.tee ,f)
+              :ref.is_null (:br_if ,slow)
+              (:local.get ,f) ,@(clo-field-code +clo-klayout+)
+              ,@(const-init-code layout) :ref.eq :i32.eqz (:br_if ,slow)
+              (:local.get ,f) :ref.as_non_null
+              ,@(loop for tmp in (subseq temps 0 nreq) collect `(:local.get ,tmp))
+              ,@(loop for tmp in (nthcdr nreq temps) collect `(:local.get ,tmp))
+              ,@(loop repeat (- (length temps) nreq 1) collect '(:struct.new :cons))
+              (:local.get ,f) ,@(clo-field-code +clo-kmain+) (:ref.cast! ,type)
+              (,call ,type)
+              (:br ,done))
+            (:global.get ,(sym-global sym)) (:call :fdefinition)
+            ,@(loop for tmp in temps collect `(:local.get ,tmp))
+            ,@(loop repeat (1- (length temps)) collect '(:struct.new :cons))
+            (,(if tail :return_call :call) :apply-list)))))))
+
 (defun cg-apply (fnode args tail)
   "(APPLY F SPREAD... LIST): the entry of F taking a list, called directly
 when F is a known global function; a known function of required parameters
@@ -446,6 +484,7 @@ others are consed onto the list for its rest list."
              (ensure-lam-compiled lam)
              `((:global.get ,(static-closure-global lam)) ,@(list*-code args)
                (,call ,(lam-apply-entry-name lam))))
+            ((live-apply-code fnode args tail))
             (t `(,@(cg fnode) ,@(list*-code args) (,call :apply-list)))))))
 
 (defun cg-values (args mv)
@@ -766,10 +805,28 @@ object; LAYOUT itself when a key's name would not survive in that name."
         (t nil)))
 
 (defun lam-kmain-code (lam)
-  "The last two fields of LAM's closure."
-  (if (and (lam-keyed-p lam) (lam-keyp lam))
-      `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (key-layout-object (lam-key-layout lam))))
-      `((:ref.null :func) (:ref.null :eq))))
+  "The kmain and klayout fields of LAM's code: for a function with keyword
+parameters its keyed main function and key layout; for one of required
+parameters and &REST its main function taking the rest list and a rest
+layout (REST-LAYOUT-OBJECT), for APPLY in the image (CG-APPLY)."
+  (cond ((and (lam-keyed-p lam) (lam-keyp lam))
+         `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (key-layout-object (lam-key-layout lam)))))
+        ((lam-rest-only-p lam)
+         `((:ref.func (:rmain ,(lam-id lam))) ,@(const-init-code (rest-layout-object (length (lam-req lam))))))
+        (t `((:ref.null :func) (:ref.null :eq)))))
+
+(defun rest-layout-object (nreq)
+  "The object in the klayout field of the code of a function of NREQ
+required parameters and &REST (its kmain field is then its main function,
+taking the rest list): a symbol, the same in every module."
+  (intern (format nil "%REST-LAYOUT ~D" nreq) (symbol-package 'clysm-sys::%car)))
+
+(defun rest-layout-nreq (object)
+  "The number of required parameters of a rest layout object, or NIL."
+  (and object (symbolp object)
+       (let ((name (symbol-name object)))
+         (and (> (length name) 13) (string= "%REST-LAYOUT " name :end2 13)
+              (parse-integer name :start 13 :junk-allowed t)))))
 
 (defun lam-name-code (lam)
   (let ((name (lam-name lam)))

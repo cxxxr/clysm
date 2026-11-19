@@ -114,7 +114,14 @@ rest list (CLHS 3.4.1.3 lets it share structure with the last argument of
 a known global function calls its `entryA` directly, and one of required
 parameters and `&rest` whose required parameters the spread arguments of
 `(apply f a b ... list)` fill is called with them, only the spread
-arguments beyond them consed onto the list. `funcall` of an object not known to be a
+arguments beyond them consed onto the list. In the image, where global
+functions are not known, the code of such a function has its main function
+taking the rest list in the `kmain` field and a rest layout
+(`%REST-LAYOUT n`, a symbol) in `klayout`: `(apply #'f a b list)` of a
+function whose layout the compiler finds (`*live-key-layout-hook*`, or a
+definition in the same compilation) compares the layout of the symbol's
+current function and calls its main function the same way, or makes the
+list for its `entryA` when the function has changed (`live-apply-code`). `funcall` of an object not known to be a
 function tests at the call site for a closure, then for a symbol whose
 function cell is set; only other objects go to the `:coerce-function` helper.
 
