@@ -1254,7 +1254,7 @@ as %SEQ-TYPE-SPEC, with the usual names recognized at once."
        ,@body)))
 (defmacro %cursor-next (l d off i)
   "The element I; the elements must be asked for in order, each once."
-  `(if ,d (%vref ,d (+ ,i ,off)) (prog1 (car ,l) (setq ,l (cdr ,l)))))
+  `(if ,d (%vref ,d (%fx+ ,i ,off)) (prog1 (car ,l) (setq ,l (cdr ,l)))))
 
 (defmacro %with-map-call ((f seq more n) general &body body)
   "For one or two sequences, runs BODY with N bound to the number of elements
@@ -1860,13 +1860,13 @@ list result shares the tail after END."
 (defun notany (pred seq &rest more) (not (%quantify 1 pred seq more)))
 (defun notevery (pred seq &rest more) (not (%quantify 0 pred seq more)))
 
-;;; With a function written in place and one sequence, MAP (to NIL or a
-;;; list) and the quantifiers are loops at the call site: the function is a
-;;; local one, so that an exit out of it (RETURN-FROM, GO) is a branch, not
-;;; a Wasm exception.
+;;; With a function written in place (a lambda or #'name), MAP (to NIL, a
+;;; list, a vector or a string), MAP-INTO and the quantifiers are loops at
+;;; the call site, for any number of sequences: the function is a local one
+;;; or called directly, so that an exit out of it (RETURN-FROM, GO) is a
+;;; branch, not a Wasm exception, and a primitive such as + is inline.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun %literal-function-form-p (f)
-    (and (consp f) (member (car f) '(lambda function))))
+  (defun %seq-gensyms (seqs prefix) (loop for nil in seqs collect (gensym prefix)))
   (defun %seq-loop-expansion (seq element-var body)
     "A loop over the elements of SEQ (a variable) with ELEMENT-VAR bound to each."
     (let ((l (gensym "L")) (d (gensym "D")) (i (gensym "I")) (e (gensym "E")))
@@ -1881,17 +1881,42 @@ list result shares the tail after END."
                    ((>= ,i ,e))
                  (declare (fixnum ,i ,e))
                  (let ((,element-var (%vref ,d ,i))) ,body)))))))
+  (defun %seqs-loop-expansion (seqs element-vars body &optional index extra-length count-var)
+    "A loop over the elements of the sequences SEQS (variables) in step, with
+ELEMENT-VARS bound to them, until one of them ends, as many times as the
+shortest one has elements (and EXTRA-LENGTH, a form, when given).  Each
+sequence is followed by its tail (a list) or read from its storage (a
+vector).  INDEX, when given, is bound to the number of the element;
+COUNT-VAR, when given, is set to the number of elements visited."
+    (let ((n (gensym "N")) (i (or index (gensym "I")))
+          (ls (%seq-gensyms seqs "L")) (ds (%seq-gensyms seqs "D")) (os (%seq-gensyms seqs "O")))
+      `(let* ((,n (min ,@(loop for s in seqs collect `(%map-length ,s)) ,@(when extra-length (list extra-length))))
+              ,@(loop for s in seqs for l in ls for d in ds for o in os
+                      append `((,l (if (listp ,s) ,s nil))
+                               (,d (if (listp ,s) nil (%array-storage ,s)))
+                               (,o (if (listp ,s) 0 (%array-total-offset ,s))))))
+         (declare (fixnum ,n ,@os))
+         ,@(when count-var `((setq ,count-var ,n)))
+         (dotimes (,i ,n)
+           (let* (,@(loop for x in element-vars for l in ls for d in ds for o in os
+                          collect `(,x (if ,d (%vref ,d (%fx+ ,i ,o)) (prog1 (car ,l) (setq ,l (cdr ,l)))))))
+             ,body)))))
+  (defun %elements-loop-expansion (seqs element-vars body)
+    (if (cdr seqs)
+        (%seqs-loop-expansion seqs element-vars body)
+        (%seq-loop-expansion (car seqs) (car element-vars) body)))
   (defun %quantifier-expansion (form mode negate pred seq more)
     ;; MODE 0: EVERY, 1: SOME
-    (if (or more (not (%literal-function-form-p pred)))
+    (if (not (%literal-function-form-p pred))
         form
-        (let ((f (gensym "F")) (s (gensym "S")) (x (gensym "X")) (v (gensym "V")) (b (gensym "B")))
-          (let ((loop `(let ((,f ,pred) (,s ,seq))
+        (let* ((f (gensym "F")) (seqs (cons seq more)) (ss (%seq-gensyms seqs "S")) (xs (%seq-gensyms seqs "X"))
+               (v (gensym "V")) (b (gensym "B")))
+          (let ((loop `(let (,@(%function-binding f pred) ,@(mapcar #'list ss seqs))
                          (block ,b
-                           ,(%seq-loop-expansion
-                             s x (if (eql mode 0)
-                                     `(unless (funcall ,f ,x) (return-from ,b nil))
-                                     `(let ((,v (funcall ,f ,x))) (when ,v (return-from ,b ,v)))))
+                           ,(%elements-loop-expansion
+                             ss xs (if (eql mode 0)
+                                       `(unless ,(%literal-call pred f xs) (return-from ,b nil))
+                                       `(let ((,v ,(%literal-call pred f xs))) (when ,v (return-from ,b ,v)))))
                            ,(eql mode 0)))))
             (if negate `(not ,loop) loop))))))
 
@@ -1901,20 +1926,52 @@ list result shares the tail after END."
 (define-compiler-macro notevery (&whole form pred seq &rest more) (%quantifier-expansion form 0 t pred seq more))
 
 (define-compiler-macro map (&whole form result-type f seq &rest more)
-  (let ((collect (equal result-type ''list)))
-    (if (or more (not (%literal-function-form-p f))
-            (not (or collect (null result-type) (equal result-type ''nil))))
+  (let ((kind (cond ((member result-type '(nil 'nil) :test #'equal) :none)
+                    ((equal result-type ''list) :list)
+                    ((member result-type '('vector 'simple-vector) :test #'equal) :vector)
+                    ((member result-type '('string 'simple-string) :test #'equal) :string))))
+    (if (or (null kind) (not (%literal-function-form-p f)))
         form
-        (let ((fn (gensym "F")) (s (gensym "S")) (x (gensym "X")) (head (gensym "HEAD")) (tail (gensym "TAIL"))
-              (c (gensym "C")))
-          (if collect
-              `(let* ((,fn ,f) (,s ,seq) (,head (cons nil nil)) (,tail ,head))
-                 ,(%seq-loop-expansion s x `(let ((,c (cons (funcall ,fn ,x) nil)))
-                                              (%setcdr ,tail ,c) (setq ,tail ,c)))
-                 (cdr ,head))
-              `(let ((,fn ,f) (,s ,seq))
-                 ,(%seq-loop-expansion s x `(funcall ,fn ,x))
-                 nil))))))
+        (let* ((fn (gensym "F")) (seqs (cons seq more)) (ss (%seq-gensyms seqs "S")) (xs (%seq-gensyms seqs "X"))
+               (head (gensym "HEAD")) (tail (gensym "TAIL")) (c (gensym "C")) (r (gensym "R")) (k (gensym "K"))
+               (call (%literal-call f fn xs)))
+          `(let* (,@(%function-binding fn f) ,@(mapcar #'list ss seqs))
+             ,(ecase kind
+                (:none `(progn ,(%elements-loop-expansion ss xs call) nil))
+                (:list `(let* ((,head (cons nil nil)) (,tail ,head))
+                          ,(%elements-loop-expansion ss xs `(let ((,c (cons ,call nil)))
+                                                              (%setcdr ,tail ,c) (setq ,tail ,c)))
+                          (cdr ,head)))
+                ((:vector :string)
+                 ;; the result is made with the length of the shortest sequence
+                 `(let ((,r ,(let ((n `(min ,@(loop for s in ss collect `(%map-length ,s)))))
+                               (if (eq kind :vector) `(make-array ,n) `(make-string ,n)))))
+                    ,(%seqs-loop-expansion ss xs `(setf (,(if (eq kind :vector) 'svref 'schar) ,r ,k) ,call)
+                                           k `(length ,r))
+                    ,r))))))))
+
+(define-compiler-macro map-into (&whole form result f &rest seqs)
+  (if (not (%literal-function-form-p f))
+      form
+      (let ((r (gensym "R")) (fn (gensym "F")) (ss (%seq-gensyms seqs "S")) (xs (%seq-gensyms seqs "X"))
+            (rl (gensym "RL")) (d (gensym "D")) (k (gensym "K")) (n (gensym "N")) (o (gensym "O")))
+        `(let* ((,r ,result) ,@(%function-binding fn f) ,@(mapcar #'list ss seqs)
+                (,n (cond ((listp ,r) (%list-length-checked ,r))
+                          ((vectorp ,r) (array-dimension ,r 0))
+                          (t (%type-error ,r 'sequence))))
+                (,rl (if (listp ,r) ,r nil))
+                (,d (if (listp ,r) nil (%array-storage ,r)))
+                (,o (if (listp ,r) 0 (%array-total-offset ,r))))
+           (declare (fixnum ,n ,o))
+           ,(let* ((v (gensym "V"))
+                   (store `(let ((,v ,(%literal-call f fn xs)))
+                             (if ,d (%vset ,d (%fx+ ,k ,o) ,v) (progn (%setcar ,rl ,v) (setq ,rl (cdr ,rl)))))))
+              (if ss
+                  ;; N becomes the number of elements stored
+                  (%seqs-loop-expansion ss xs store k n n)
+                  `(dotimes (,k ,n) ,store)))
+           (when (and ,d (array-has-fill-pointer-p ,r)) (%set-mdarray-fill ,r ,n))
+           ,r))))
 
 ;;; sorting: a stable merge sort, of the conses of a list and of the storage
 ;;; of a vector.  The key of an element is computed once for each merge step

@@ -107,6 +107,17 @@
 (defvar *string-stream-layout*
   (%instance-layout (%make-sstream :string-in "" 0 0 :input)))
 
+(defmacro %skind (s)
+  "The kind of the stream S, which is known to be a stream (the slot is read
+without the accessor's check of the type)."
+  (let ((x (gensym "S")))
+    `(let ((,x ,s)) (if (%instancep ,x) (%instance-ref ,x +stream-kind-slot+) (stream-kind ,x)))))
+
+(defmacro %string-out-p (s)
+  "S is a :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM)."
+  `(and (%instancep ,s) (eq (%instance-layout ,s) (load-time-value *string-stream-layout*))
+        (eq (%instance-ref ,s +stream-kind-slot+) :string-out)))
+
 (defmacro %fast-out-file-p (s)
   `(and (%instancep ,s) (eq (%instance-layout ,s) (load-time-value *file-stream-layout*))
         (eq (%instance-ref ,s +stream-fast-out-slot+) :file)))
@@ -487,6 +498,13 @@ character file stream S, encoded in UTF-8, at once."
 ;;; ------------------------------------------------------------
 
 (defun %stream-write-char (s c)
+  ;; the column of a :string-out stream is computed on demand
+  (when (%string-out-p s)
+    (let ((buf (%instance-ref s +stream-buffer-slot+)) (i (%instance-ref s +stream-index-slot+)))
+      (when (%fx>= i (%string-length buf)) (setq buf (%string-out-grow s 1)))
+      (%set-schar buf i c)
+      (%set-instance-ref s +stream-index-slot+ (%fx+ i 1))
+      (return-from %stream-write-char c)))
   ;; an ASCII character to a character output file: one octet
   (when (and (%fast-out-file-p s) (%fx< (char-code c) 128))
     (let* ((sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf))
@@ -501,16 +519,7 @@ character file stream S, encoded in UTF-8, at once."
       (%set-svref sl +stream-column-slot+
                   (if (eql c #\Newline) 0 (%fx+ (%svref sl +stream-column-slot+) 1)))
       (return-from %stream-write-char c)))
-  (let ((kind (stream-kind s)))
-    (if (eq kind :string-out)
-        ;; the column of a :string-out stream is computed on demand
-        (let ((buf (stream-buffer s)) (i (stream-index s)))
-          (declare (fixnum i))
-          (when (>= i (%string-length buf)) (setq buf (%string-out-grow s 1)))
-          (%set-schar buf i c)
-          (setf (stream-index s) (+ i 1))
-          c)
-        (%stream-write-char-1 s kind c))))
+  (%stream-write-char-1 s (%skind s) c))
 
 (defun %stream-write-char-1 (s kind c)
   (case kind
@@ -546,8 +555,24 @@ character file stream S, encoded in UTF-8, at once."
                                 :format-arguments (list s what))))
 
 (defun write-char (c &optional stream)
+  (%write-char-2 c stream))
+
+(defun %write-char-2 (c stream)
   (unless (characterp c) (%type-error c 'character))
-  (%stream-write-char (%output-stream stream) c))
+  (%stream-write-char (if (%string-out-p stream) stream (%output-stream stream)) c))
+
+;; a character to a string output stream with room for it is stored at the
+;; call site
+(define-compiler-macro write-char (c &optional (stream nil))
+  (let ((ch (gensym "C")) (s (gensym "S")) (buf (gensym "BUF")) (i (gensym "I")))
+    `(let ((,ch ,c) (,s ,stream))
+       (if (and (%string-out-p ,s) (characterp ,ch))
+           (let ((,buf (%instance-ref ,s +stream-buffer-slot+))
+                 (,i (%instance-ref ,s +stream-index-slot+)))
+             (if (%fx< ,i (%string-length ,buf))
+                 (progn (%set-schar ,buf ,i ,ch) (%set-instance-ref ,s +stream-index-slot+ (%fx+ ,i 1)) ,ch)
+                 (%stream-write-char ,s ,ch)))
+           (%write-char-2 ,ch ,s)))))
 
 (defun %write-spaces (stream n)
   (%write-chars stream #\Space n))
@@ -577,11 +602,11 @@ character file stream S, encoded in UTF-8, at once."
   "Append the characters START..END of the simple string STRING to the
 :string-out stream S."
   (declare (fixnum start end))
-  (let* ((n (- end start)) (fill (stream-index s)) (buf (stream-buffer s)))
-    (declare (fixnum n fill))
-    (when (> (+ fill n) (%string-length buf)) (setq buf (%string-out-grow s n)))
+  (let* ((n (%fx- end start)) (fill (%instance-ref s +stream-index-slot+))
+         (buf (%instance-ref s +stream-buffer-slot+)))
+    (when (%fx> (%fx+ fill n) (%string-length buf)) (setq buf (%string-out-grow s n)))
     (%string-copy buf fill string start n)
-    (setf (stream-index s) (+ fill n))
+    (%set-instance-ref s +stream-index-slot+ (%fx+ fill n))
     string))
 
 (defun %fs-fast-write-string (s string start end)
@@ -601,6 +626,8 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
 
 (defun %write-string-2 (string stream)
   (let ((s (if (or (null stream) (eq stream t)) (%output-stream stream) stream)))
+    (when (and (%simple-string-p string) (%string-out-p s))
+      (return-from %write-string-2 (%string-out-write s string 0 (%string-length string))))
     (when (and (%simple-string-p string) (%fast-out-file-p s))
       (return-from %write-string-2 (%fs-fast-write-string s string 0 (%string-length string))))
     (if (and (%simple-string-p string) (%streamp s))
@@ -648,7 +675,7 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
   "Write the characters START..END of the simple string STRING to the stream S."
   (declare (fixnum start end))
   (when (< start end)
-    (case (stream-kind s)
+    (case (%skind s)
       (:string-out (%string-out-write s string start end))
       (:gray (stream-write-string s string start end))
       (:string-fp
@@ -711,11 +738,11 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
 
 (defun terpri (&optional stream)
   (let ((s (%output-stream stream)))
-    (if (eq (stream-kind s) :gray) (stream-terpri s) (%stream-write-char s #\Newline)))
+    (if (eq (%skind s) :gray) (stream-terpri s) (%stream-write-char s #\Newline)))
   nil)
 
 (defun %stream-column (s)
-  (case (stream-kind s)
+  (case (%skind s)
     (:gray (stream-line-column s))
     (:synonym (%stream-column (%synonym-target s)))
     ((:two-way :echo) (%stream-column (cadr (stream-streams s))))
@@ -728,6 +755,15 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
 
 (defun fresh-line (&optional stream)
   (let ((s (%output-stream stream)))
+    ;; a :string-out stream is at the start of a line when its last
+    ;; character is a newline
+    (when (%string-out-p s)
+      (let ((i (%instance-ref s +stream-index-slot+)))
+        (when (%fx> i 0)
+          (return-from fresh-line
+            (if (eql (%schar (%instance-ref s +stream-buffer-slot+) (%fx- i 1)) #\Newline)
+                nil
+                (progn (%stream-write-char s #\Newline) t))))))
     (when (eq (stream-kind s) :gray)
       (return-from fresh-line (stream-fresh-line s)))
     (if (eql (%stream-column s) 0) nil (progn (write-char #\Newline s) t))))

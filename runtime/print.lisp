@@ -390,7 +390,7 @@ is too large for the buffer (it has more than 62 bits)."
 (defun %stream-write-scratch (stream buf start end)
   "Write the characters START..END of a scratch buffer.  Streams that may
 run other code while they take the characters get a copy."
-  (case (stream-kind stream)
+  (case (%skind stream)
     ((:string-out :string-fp :fd-out :file) (%stream-write-simple-string stream buf start end))
     (t (%stream-write-simple-string stream (%simple-substring buf start end) 0 (- end start)))))
 
