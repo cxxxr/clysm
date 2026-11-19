@@ -1488,12 +1488,24 @@ time unless noted):
 | `bench/suite.lisp` | 24, used for tuning | 0.94 | `b-bignum` 1.91 | `b-mandel` 0.08 |
 | `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
-| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.79 | `l-babel` 2.92 | `l-alexandria-tests` 0.32 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.6–1.8 | `l-ppcre-replace` 2.4–3.0 | `l-alexandria-tests` 0.3–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
-bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
+bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.8 (`b-call` 1.1, was
+1.9).
+
+The libraries' own time (Clysm's milliseconds, `tools/bench-libs.sh`, the
+best of two back-to-back runs against the build before, 2026-11, on a busy
+machine whose SBCL times varied by 30%): `l-babel` 344 → 169, `l-ppcre-replace`
+426 → 328, `l-ppcre-scan` 225 → 186, `l-split-sequence` 198 → 142,
+`l-alexandria-utils` 143 → 121; 0.80 times the time before in geometric mean.
+What did it: keyword calls in fasls in fixed slots (the key layout symbols),
+a file as one module, `inline` functions and the small functions of
+`COMMON-LISP` copied into code compiled in the image, inline array access with
+32-bit subscripts and the range test of `fixnum` declarations (Babel), `find`
+in a short literal sequence.
 
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
@@ -1505,10 +1517,13 @@ it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mea
 What is not as fast as intended, and why:
 
 * **Code loaded into the image, single items.** The geometric mean is within
-  1.3, but `b-special` (2.7), `b-call` (1.9), `b-struct` (1.35) and `b-catch`
-  (1.3) are not. A call of a function with `&key` or `&rest` parameters
-  defined in another form goes through the function cell and a comparison of
-  the layout. `b-special` (a `let` of a special variable around a call of
+  1.3, but `b-special` (2.8), `b-catch` (1.4) and `b-struct` (1.35) are
+  not. A call of a function defined in another form goes through the function
+  cell unless the function is small enough to be copied (with a guard): a
+  larger function is not in the caller's module, so neither the engine nor
+  the compiler inlines it, and a `throw` out of it is a Wasm exception
+  (`b-catch`). Structure accessors check the class of the object at each
+  access when its constructor is in another form (`b-struct`). `b-special` (a `let` of a special variable around a call of
   `use-sp`, a function of the form before) runs either at about 1.6 times
   the whole-program speed or at about 2.8, and stays at one of the two for
   hundreds of milliseconds; it is at 2.8 more often in the form right after
@@ -1524,10 +1539,12 @@ What is not as fast as intended, and why:
   binding and a read of `*sp*`) and the same loop with `setq` in place of
   the binding (three times faster) vary between runs in the same way, so
   neither the call nor the binding is the cause.
-* **Libraries** are within 3 but close to it (`l-babel` 2.9, `l-ppcre-replace`
-  2.9, `l-split-sequence` 2.8): they are compiled to fasls file by file, where
-  calls between global functions are ordinary calls and small functions are
-  not copied into their callers.
+* **Libraries** are within 2.5 to 3 (`l-ppcre-replace`, `l-split-sequence`):
+  the remaining time is mostly in the runtime's sequence functions called with
+  keyword arguments of variables (`position` with `:key` and `:test`
+  functions), cl-ppcre's matcher closures calling each other through
+  `funcall`, and calls across files and into the runtime, which are calls of
+  another Wasm instance (not inlined by the engine).
 * **Non-local exits** are returns with the exit pending, tested after
   every call that is not a tail call (above, "Non-local exits"): a throw
   from a closure one frame below its `catch` costs what SBCL's does
