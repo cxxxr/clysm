@@ -14,7 +14,7 @@ globalThis.__clysm_fs = fs;
 
 // With CLYSM_TRACE_FILES=FILE, the files the program reads and the paths it
 // looks at are written to FILE as JSON { read: [...], seen: [...] } when it
-// exits (contrib/lem packs those files for a page without a server).
+// exits (Lem on Clysm, cxxxr/lem's frontends/clysm/, packs those files for a page without a server).
 const traceFile = process.env.CLYSM_TRACE_FILES;
 const traced = { read: new Set(), seen: new Set() };
 const traceRead = (path) => { if (traceFile && typeof path === 'string') traced.read.add(path); };

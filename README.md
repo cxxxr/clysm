@@ -13,7 +13,8 @@ $ bin/clysm eval '(expt 2 100)'
 1267650600228229401496703205376
 ```
 
-Demo: [Lem running in the browser](https://cxxxr.github.io/clysm/). Lem, its
+Demo: [Lem running in the browser](https://cxxxr.github.io/lem/) (from
+[cxxxr/lem](https://github.com/cxxxr/lem), `frontends/clysm/`). Lem, its
 libraries and the compiler are all compiled by Clysm; the page needs no
 server. It needs Chrome or Edge 137 or later and is about 22 MB.
 
@@ -28,7 +29,8 @@ server. It needs Chrome or Edge 137 or later and is about 22 MB.
 * ASDF and Quicklisp work. Alexandria, cl-ppcre, Babel and str load without
   changes. McCLIM runs with its CLX backend.
   [Lem](https://github.com/lem-project/lem) runs as a desktop application and
-  in a browser page (`contrib/lem/`).
+  in a browser page ([cxxxr/lem](https://github.com/cxxxr/lem), a fork whose
+  `frontends/clysm/` is written with Clysm's GUI framework).
 * Threads (green threads) with Bordeaux Threads, sockets and subprocesses
   work on Node.js. SLIME connects to a SWANK server.
 * The compiler compiles itself; the second and third generations are
@@ -145,20 +147,20 @@ definitions ([examples/ide/README.md](examples/ide/README.md)).
 
 ## Lem
 
-`contrib/lem/` loads Lem's core with ASDF and gives it a frontend written
-with the GUI framework. Lem's editor thread becomes a computation that waits
-for events with `js:await`. Lisp buffers are evaluated in the editor's own
-image (`C-M-x`, `M-x lisp-repl`), or, after `M-x world-start`, in a world:
-another image in a worker ([contrib/world/](contrib/world/README.md)), which
-can loop or be killed without the editor.
+[cxxxr/lem](https://github.com/cxxxr/lem), a fork of Lem, has a frontend
+for Clysm (`frontends/clysm/`, with this repository as a submodule): it
+loads Lem's core with ASDF and gives it a frontend written with the GUI
+framework. Lem's editor thread becomes a computation that waits for events
+with `js:await`. Lisp buffers are evaluated in the editor's own image
+(`C-M-x`, `M-x lisp-repl`), or, after `M-x world-start`, in a world: another
+image in a worker ([contrib/world/](contrib/world/README.md)), which can loop
+or be killed without the editor.
 
 ```
-$ contrib/lem/build.sh                    # desktop application in build/lem-desktop/
-$ (cd build/lem-desktop && npm start)
-$ contrib/lem/build-web.sh                # build/lem-web/lem.html, one file for a browser
+$ git clone --recurse-submodules https://github.com/cxxxr/lem && cd lem
+$ make clysm                               # desktop application in build/clysm/desktop/
+$ make clysm-web                           # build/clysm/web/lem.html, one file for a browser
 ```
-
-See [contrib/lem/README.md](contrib/lem/README.md).
 
 ## SLIME
 
@@ -257,7 +259,6 @@ $ make test-mcclim   # McCLIM on a virtual X server
 $ make test-quicklisp   # installs Quicklisp from scratch (downloads) and loads libraries
 $ make test-downstream  # the programs of tests/downstream/projects.txt, with this Clysm
 $ make test-ui       # the GUI framework and the examples of its guide
-$ make test-lem      # Lem in Electron and in a browser page, without a display
 ```
 
 `test-system`, `test-threads`, `test-swank` and `test-mcclim` take their

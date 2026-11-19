@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-lem test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -55,10 +55,6 @@ test-downstream:
 # the npm package (Node.js only, no SBCL): build/npm/
 npm:
 	tools/build-npm.sh
-
-# Lem (contrib/lem) in Electron, typed into without a display
-test-lem:
-	tests/lem/run.sh
 
 test-asdf:
 	mkdir -p build; bin/clysm script tests/asdf/run.lisp > build/asdf-test.out 2> build/asdf-test.err; \

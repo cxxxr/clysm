@@ -12,8 +12,11 @@
 // program that has the files of the computer (host/web/clysm.mjs with fs),
 // as have its workers.
 // "jsFlags" are flags of the JavaScript engine (e.g. a larger stack).
+// With "menu": false the application has no menu bar (nor Electron's
+// default menus and their keys), and desktop.setMenu does nothing: for an
+// application that handles all its keys itself, as Lem does.
 // With "resident": true the application stays: closing its window hides it,
-// and a client (bin/client of the application, e.g. contrib/lem/desktop/lem)
+// and a client (bin/client of the application, e.g. Lem's frontends/clysm/desktop/lem)
 // shows it at once through a Unix domain socket in the application's data
 // directory (resident.sock): lines "open FILE" (FILE given to the page's
 // desktop.onOpen), "show", "hide" and "stop" (which ends it); when the page
@@ -46,6 +49,7 @@ const testModule = process.env.CLYSM_ELECTRON_TEST;
 let win = null;
 let quitting = false;
 const resident = !!options.resident;
+const noMenu = options.menu === false;
 const startHidden = process.argv.includes('--hidden');
 // files to open given on the command line (after the application's directory)
 const argvFiles = (argv) => argv.slice(2).filter((a) => !a.startsWith('-') && a !== '.')
@@ -88,7 +92,7 @@ const api = {
       buttons: o.buttons, cancelId: o.cancelId, defaultId: 0, noLink: true,
     });
   },
-  setMenu(spec) { buildMenu(spec); return null; },
+  setMenu(spec) { if (!noMenu) buildMenu(spec); return null; },
   // end the application (a resident one only hides its window when it is
   // closed); a resident one starts again at once, hidden, so that a client
   // shows it without waiting (a client's "stop" ends it)
@@ -263,6 +267,7 @@ ipcMain.on('open-ready', () => {
 });
 
 app.whenReady().then(() => {
+  if (noMenu) Menu.setApplicationMenu(null);
   protocol.handle('app', (request) => {
     const file = path.join(__dirname, decodeURIComponent(new URL(request.url).pathname));
     if (!file.startsWith(__dirname + path.sep)) return new Response('not found', { status: 404 });

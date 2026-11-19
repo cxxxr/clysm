@@ -11,7 +11,8 @@ so what is evaluated runs outside the editor's image and thread:
   second and a half;
 * what is defined in a world is not defined in the editor.
 
-In Lem on Clysm (`contrib/lem/`, the desktop application):
+In Lem on Clysm ([cxxxr/lem](https://github.com/cxxxr/lem)'s
+`frontends/clysm/`, the desktop application):
 
 ```
 M-x world-start     start a world and connect the Lisp mode to it
@@ -44,7 +45,8 @@ the world is ready. In Electron the worker has Node.js
 (`nodeIntegrationInWorker`), so the world has the files of the computer.
 
 **Connections** (`world.lisp`). The sockets are those of
-`contrib/lem/stubs/usocket/`, which connect within an image through pipes.
+`usocket/` here (Clysm's usocket for a page), which connect within an
+image through pipes.
 A connection to a world is the same socket at each end, but the pipe that
 an end writes gives its octets to a function, which posts them to the other
 side as a message (`data`), where they are written into the pipe that the

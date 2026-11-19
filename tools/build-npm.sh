@@ -20,7 +20,7 @@ cp build/clysmc.wasm "$image" "$out/"
 cp -r host runtime data lib ui "$out/"
 mkdir -p "$out/contrib"
 for d in contrib/*; do
-  case "$d" in contrib/lem) ;; *) cp -r "$d" "$out/contrib/" ;; esac
+  cp -r "$d" "$out/contrib/"
 done
 cp third_party/asdf/asdf.lisp "$out/third_party/asdf/"
 cp tools/runtime-files.lisp tools/gen-library.mjs "$out/tools/"
