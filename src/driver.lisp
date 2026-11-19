@@ -36,6 +36,7 @@
         *const-string-table* (make-hash-table :test 'equal)
         *const-counter* 0
         *closure-globals* nil
+        *closure-global-names* (make-hash-table :test 'equal)
         *misc-globals* nil
         *pending-lams* nil
         *compiled-lams* (make-hash-table :test 'eq)
@@ -450,7 +451,11 @@ skipped)."
   (let* ((octets (with-open-file (in path :element-type '(unsigned-byte 8))
                    (let ((v (make-array (file-length in) :element-type '(unsigned-byte 8))))
                      (read-sequence v in) v)))
-         (n (length octets)))
+         (n (length octets))
+         ;; the positions of the newlines, in order (a line is found by a
+         ;; binary search, not by counting from the start of the file)
+         (newlines (let ((v (make-array 64 :adjustable t :fill-pointer 0)))
+                     (dotimes (i n v) (when (= (aref octets i) 10) (vector-push-extend i v))))))
     (lambda (pos)
       (let ((p (or pos 0)))
         (loop
@@ -462,7 +467,12 @@ skipped)."
                  (let ((e (search #(124 35) octets :start2 (+ p 2))))
                    (setf p (if e (+ e 2) n))))
                 (t (return))))
-        (1+ (count 10 octets :end (min p n)))))))
+        ;; 1 + the number of newlines before (MIN P N)
+        (let ((end (min p n)) (lo 0) (hi (length newlines)))
+          (loop while (< lo hi)
+                do (let ((mid (floor (+ lo hi) 2)))
+                     (if (< (aref newlines mid) end) (setf lo (1+ mid)) (setf hi mid))))
+          (1+ lo))))))
 
 (defvar *source-root* nil
   "A directory: the source files under it are named in stack traces by their
