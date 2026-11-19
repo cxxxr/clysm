@@ -339,7 +339,8 @@ for here, without a call."
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
   (if (eql (%ht h +ht-count+) 0)
       (values nil nil)                  ; e.g. the external symbols of a package without any
-      (let ((i (%ht-find-general (%instance-slots h) key hash 2)))
+      (let ((i (if (%simple-string-p key) (%ht-string-index (%instance-slots h) key hash) -2)))
+        (when (eql i -2) (setq i (%ht-find-general (%instance-slots h) key hash 2)))
         (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t)))))
 
 (defun %puthash (key h &rest rest)
