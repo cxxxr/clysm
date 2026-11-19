@@ -1424,8 +1424,9 @@ bench/suite.lisp`): geometric mean 1.13, slowest `b-special` 2.72.
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.4, slowest `c-eql-dispatch`
-4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.8;
-`i-file-roundtrip` 1.6–2.0, was 13), `bench/library.lisp` (1.1; `v-hash-iterate` 3.4).
+4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.2–1.3, was 1.46;
+`i-file-roundtrip` 1.6–2.0, was 13; `i-print-numbers`, `i-parse-ints` 2.5), `bench/library.lisp`
+(1.04, was 1.12; `v-map-every` 2.8, `v-hash-iterate` 2.2, was 3.4).
 
 What is not as fast as intended, and why:
 
