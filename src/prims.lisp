@@ -266,27 +266,35 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                                  t)
                          nil)))))))
 
-(defun fused-code (node rep)
+(defun fused-code (node rep &optional target)
   "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
 its type is a fixnum), the generic code when that fails.  When its operands
 may be doubles (operands of unknown type, with a double among the operands
-of each operation), the tree is tried in f64 too, before the generic code."
+of each operation), the tree is tried in f64 too, before the generic code.
+With TARGET, (B . F) the locals of an unboxed double variable: nothing is
+left, the value is stored there."
   (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (r (new-local :i64)))
     (multiple-value-bind (leaves i64-code generic recs) (fused-parts node)
       `(,@leaves
-        (:block ,done ,rep
+        (:block ,done ,(if target nil rep)
           (:block ,fail nil
             ,@(funcall i64-code fail)
             ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
                   `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
                   `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
                     (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
+            ,@(when target `((:local.set ,(car target))))
             (:br ,done))
           ,@(when (eq rep :eqref)
               (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
                 (when code
-                  `((:block ,fail2 nil ,@code (:struct.new :double) (:br ,done))))))
+                  `((:block ,fail2 nil ,@code
+                      ,@(if target
+                            `((:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)))
+                            '((:struct.new :double)))
+                      (:br ,done))))))
           ,@generic
+          ,@(when target `((:local.set ,(car target))))
           ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
 
 ;;; Arithmetic on doubles of unknown type.  A tree of + - * / (and SQRT)
@@ -482,9 +490,6 @@ constant unless the product cannot signal."
   (when (fused-tree-node-p `(:prim ,p ,@args))
     (return-from cg-prim
       `(,@(fused-code `(:prim ,p ,@args) :eqref) ,@(when mv (mv-one)))))
-  (when (spec-tree-node-p `(:prim ,p ,@args))
-    (return-from cg-prim
-      `(,@(spec-tree-code `(:prim ,p ,@args)) ,@(when mv (mv-one)))))
   (let ((codes (mapcar #'cg args)))
     (append (funcall (prim-fn p) codes)
             (when (eq (prim-kind p) :test) (bool-code))

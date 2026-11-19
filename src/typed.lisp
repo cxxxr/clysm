@@ -1207,18 +1207,35 @@ an accumulator when its assignments are integer arithmetic."
         (:local.get ,f) (:struct.new :double) (:local.tee ,b) :ref.as_non_null))))
 
 (defun arith-operand-use-p (lv body)
-  "LV is an operand of + - * / or SQRT somewhere in BODY."
-  (labels ((walk (n)
-             (when (consp n)
-               (when (and (spec-op-node-p n)
-                          (some (lambda (a) (and (eq (car a) :lref) (eq (second a) lv))) (cddr n)))
-                 (return-from arith-operand-use-p t))
-               (map-subnodes #'walk n))))
-    (walk body)
-    nil))
+  "LV is an operand of + - * / or SQRT twice or more in BODY (an unboxed
+value pays when it is used again: not for the temporary of an INCF)."
+  (let ((n 0))
+    (labels ((walk (x)
+               (when (consp x)
+                 (when (spec-op-node-p x)
+                   (dolist (a (cddr x))
+                     (when (and (eq (car a) :lref) (eq (second a) lv) (>= (incf n) 2))
+                       (return-from arith-operand-use-p t))))
+                 (map-subnodes #'walk x))))
+      (walk body)
+      nil)))
+
+(defun fused-able-p (expr)
+  "EXPR is + - * of integers or doubles that the fused trees compute (the
+integer path first, then f64)."
+  (and (spec-op-node-p expr) (member (prim-name (second expr)) '(+ - *))
+       (not (eq (fused-plan expr nil) :no))))
 
 (defun spec-able-p (expr)
-  (and (spec-op-node-p expr) (spec-op-p expr) (spec-tree-has-u-p expr)))
+  "EXPR may give a double, computed unboxed: a speculative tree with a double
+among its operands, or arithmetic of the fused trees."
+  (and (spec-op-node-p expr) (spec-op-p expr) (spec-tree-has-u-p expr)
+       (or (nth-value 2 (spec-tree-stats expr)) (fused-able-p expr))))
+
+(defun spec-store-code (expr b f)
+  (if (nth-value 2 (spec-tree-stats expr))
+      (spec-tree-code expr (cons b f))
+      (fused-code expr :eqref (cons b f))))
 
 (defun fdual-candidate-p (lv init body)
   "LV (bound to INIT around BODY) is kept as an unboxed double: it is an
@@ -1242,7 +1259,7 @@ that may give a double."
        (arith-operand-use-p lv body)))
 
 (defun fdual-bind-code (lv init b f)
-  (cond ((spec-able-p init) (spec-tree-code init (cons b f)))
+  (cond ((spec-able-p init) (spec-store-code init b f))
         ((and (eq (car init) :const) (typep (second init) 'double-float))
          `((:f64.const ,(second init)) (:local.set ,f) (:ref.null :eq) (:local.set ,b)))
         (t `(,@(cg init) (:local.set ,b)))))
@@ -1275,7 +1292,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
     (when (and (fdual-local lv) (eq (car (get-loc lv)) :local) (spec-able-p expr))
       (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
         (return-from dual-lset-code
-          `(,@(spec-tree-code expr (cons b f))
+          `(,@(spec-store-code expr b f)
             ,@(unless effect (fdual-materialize-code b f))))))
     (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*) (fusable-op-node-p expr)
                (not (eq (fused-plan expr nil) :no)))

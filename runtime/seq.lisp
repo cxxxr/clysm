@@ -1351,6 +1351,24 @@ F on the elements I; with more sequences runs GENERAL."
               (t (setq acc (funcall (the function f) acc v))))))
     (if first (funcall (the function f)) acc)))
 
+;;; (REDUCE #'+ list) and the like with an arithmetic function and no
+;;; keywords: a loop at the call site over a list, where the operation is the
+;;; two-argument primitive (no call of the function of any number of
+;;; arguments); other sequences and the empty list take REDUCE.
+(define-compiler-macro reduce (&whole form f seq &rest keys)
+  (let ((op (and (null keys) (consp f) (member (car f) '(function quote)) (consp (cdr f))
+                 (car (member (cadr f) '(+ * max min logand logior logxor))))))
+    (if (null op)
+        form
+        (let ((s (gensym "SEQ")) (acc (gensym "ACC")) (l (gensym "L")))
+          `(let ((,s ,seq))
+             (if (consp ,s)
+                 (let ((,acc (car ,s)))
+                   (do ((,l (cdr ,s) (cdr ,l))) ((endp ,l) ,acc)
+                     (setq ,acc (,op ,acc (car ,l)))))
+                 (%reduce-other #',op ,s)))))))
+(defun %reduce-other (f seq) (reduce f seq))
+
 (defun fill (seq item &key (start 0) end)
   (let ((end (%check-bounds start end (%seq-length seq))))
     (if (listp seq)
