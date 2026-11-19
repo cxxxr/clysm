@@ -1068,6 +1068,20 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
                                *cf-wrappers*)))
       (dolist (f body) (%cf-process f out compile-time-too)))))
 
+(defun %cf-uninterned-symbol-in (form)
+  "Whether FORM has an uninterned symbol in it (in its conses and simple vectors)."
+  (let ((seen (make-hash-table :test 'eq)))
+    (labels ((walk (x)
+               (cond ((symbolp x) (and x (null (symbol-package x))))
+                     ((consp x)
+                      (unless (gethash x seen)
+                        (setf (gethash x seen) t)
+                        (or (walk (car x)) (walk (cdr x)))))
+                     ((and (simple-vector-p x) (not (gethash x seen)))
+                      (setf (gethash x seen) t)
+                      (some #'walk x)))))
+      (walk form))))
+
 (defun %cf-compile-and-run (form out)
   "An ordinary FORM evaluated at compile time too (EVAL-WHEN with
 :COMPILE-TOPLEVEL and :LOAD-TOPLEVEL): compiled once, to a module that is run
@@ -1075,7 +1089,12 @@ now and written to the fasl as an entry of its own.  NIL (nothing done) when
 it cannot be done so: the form is then evaluated and compiled apart."
   (when (and *native-run-octets-hook* *native-compile-form-hook* *image-id* *cf-modules*
              ;; (no literal objects made by MAKE-LOAD-FORM)
-             (or (null *cf-externalizer*) (null (%literal-objects form nil))))
+             (or (null *cf-externalizer*) (null (%literal-objects form nil)))
+             ;; nor uninterned symbols: an entry of its own would read its
+             ;; own copy of one that the forms around it share (Lem's
+             ;; DEFINE-MAJOR-MODE names the class of its command with
+             ;; MAKE-SYMBOL, in a DEFCLASS and in forms that refer to it)
+             (not (%cf-uninterned-symbol-in form)))
     (%cf-flush out)
     (let ((entry (%cf-compiled-form form)))
       (when entry
