@@ -3751,9 +3751,25 @@ division and the product are the identity)."
   '(:local.get 0) '(:local.get 1) '(:local.get 2) :ref.i31
   `(:global.get ,(sym-global 'clysm-sys::%divmod-slow)) '(:call (:callsym 3)))
 
+;;; the front of each division: two fixnums inline (small enough for the
+;;; engine to copy into the caller), the general helper otherwise
+(macrolet ((front (name mode)
+             `(defhelper ,name :ee-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32))
+                (fixnum-pair-code
+                 `((:local.get y) :i32.eqz :i32.eqz
+                   (:if nil nil
+                        ((:local.get x) (:local.get y) :i32.div_s (:local.set qi)
+                         (:local.get x) (:local.get y) :i32.rem_s (:local.set ri)
+                         ,@(int-divmod-adjust-code :i32 ,mode 'x 'y 'qi 'ri 'ti 'ti2)
+                         (:global.get :mv-buf) (:i32.const 0) (:local.get ri) :ref.i31 (:array.set :vector)
+                         (:i32.const 2) (:global.set :mv-count)
+                         (:local.get qi) (:call :box-i32) :return))))
+                '(:local.get 0) '(:local.get 1) '(:i32.const ,mode) '(:return_call :divmod))))
+  (front :divmod0 0) (front :divmod1 1) (front :divmod2 2) (front :divmod3 3))
+
 (macrolet ((div (name mode)
              `(progn
-                (defprim ,name (a b) :mv `(,@a ,@b (:i32.const ,,mode) (:call :divmod)))
+                (defprim ,name (a b) :mv `(,@a ,@b (:call ,,(intern (format nil "DIVMOD~D" mode) :keyword))))
                 (defprim ,name (a) :mv `(,@a ,@(fixnum-code 1) (:i32.const ,,mode) (:call :divmod))))))
   (div truncate 0) (div floor 1) (div ceiling 2) (div round 3))
 

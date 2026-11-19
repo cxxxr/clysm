@@ -1196,7 +1196,9 @@ an accumulator when its assignments are integer arithmetic."
 (defvar *fdual-vars* (make-hash-table :test 'eq) "lvar -> index of its f64 local")
 
 (defun fdual-local (lv)
-  (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *fdual-vars*)))
+  ;; (an entry of another compilation of the variable's function does not count:
+  ;; the variable has its location in this one)
+  (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv (fstate-locs *fs*)) (gethash lv *fdual-vars*)))
 
 (defun fdual-materialize-code (b f)
   (let ((ok (gensym "FDUAL")))
@@ -1214,6 +1216,36 @@ an accumulator when its assignments are integer arithmetic."
                (map-subnodes #'walk n))))
     (walk body)
     nil))
+
+(defun spec-able-p (expr)
+  (and (spec-op-node-p expr) (spec-op-p expr) (spec-tree-has-u-p expr)))
+
+(defun fdual-candidate-p (lv init body)
+  "LV (bound to INIT around BODY) is kept as an unboxed double: it is an
+operand of arithmetic, it may hold doubles, and its value or (for an
+assigned variable, one that is not captured) an assignment is arithmetic
+that may give a double."
+  (and (not (lvar-captured lv)) (not (boxed-p lv)) (not (lvar-special lv)) (null (lvar-rep lv))
+       (not *no-fuse*)
+       (or (and (spec-able-p init)
+                (or (not (lvar-mutated lv)) (nth-value 2 (spec-tree-stats init))))
+           (and (lvar-mutated lv) (lvar-type lv) (logtest (ty-bits (lvar-type lv)) +k-double+)
+                (labels ((walk (n)
+                           (when (consp n)
+                             (when (and (eq (car n) :lset) (eq (second n) lv) (spec-able-p (third n))
+                                        ;; (a double among the operands: not a counter)
+                                        (nth-value 2 (spec-tree-stats (third n))))
+                               (return-from fdual-candidate-p (arith-operand-use-p lv body)))
+                             (map-subnodes #'walk n))))
+                  (walk body)
+                  nil)))
+       (arith-operand-use-p lv body)))
+
+(defun fdual-bind-code (lv init b f)
+  (cond ((spec-able-p init) (spec-tree-code init (cons b f)))
+        ((and (eq (car init) :const) (typep (second init) 'double-float))
+         `((:f64.const ,(second init)) (:local.set ,f) (:ref.null :eq) (:local.set ,b)))
+        (t `(,@(cg init) (:local.set ,b)))))
 
 (defun dual-local (lv)
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
@@ -1239,6 +1271,12 @@ an accumulator when its assignments are integer arithmetic."
 integer arithmetic (the fused trees of prims.lisp, here also a single
 operation); NIL otherwise.  EFFECT: no value is left."
   (let* ((lv (second node)) (v (dual-local lv)) (expr (third node)))
+    ;; an unboxed double variable
+    (when (and (fdual-local lv) (eq (car (get-loc lv)) :local) (spec-able-p expr))
+      (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
+        (return-from dual-lset-code
+          `(,@(spec-tree-code expr (cons b f))
+            ,@(unless effect (fdual-materialize-code b f))))))
     (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*) (fusable-op-node-p expr)
                (not (eq (fused-plan expr nil) :no)))
       (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (done (gensym "ACC")))
