@@ -80,8 +80,12 @@
                             :format-arguments (list name))))
 
 (defun list-all-packages ()
+  ;; (each package once: under its name, not its nicknames; the table's key
+  ;; is the package's name itself.  Looking for each package in the list
+  ;; made so far took 2 ms with Lem's 600 packages, which Lem's Lisp mode
+  ;; asks for every symbol it indents.)
   (let ((r nil))
-    (maphash (lambda (k p) (declare (ignore k)) (unless (member p r) (push p r))) *package-table*)
+    (maphash (lambda (k p) (when (eq k (%pkg p 0)) (push p r))) *package-table*)
     (nreverse r)))
 
 (defun %new-package (name nicknames)
