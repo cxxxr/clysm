@@ -581,6 +581,9 @@ to a Wasm module linked with the image, returning (values octets constants).")
 (defvar *native-run-module-hook* nil
   "When the compiler is part of the image: a function instantiating and running
 a module made by *NATIVE-COMPILE-FORM-HOOK* (octets, constants).")
+(defvar *native-run-octets-hook* nil
+  "When the compiler is part of the image: a function instantiating and running
+a module made by *NATIVE-COMPILE-FORM-HOOK* from its octets and constants.")
 (defvar *image-id* nil
   "Identifies the image build; compiled modules in fasls are only valid for it.")
 
@@ -948,6 +951,23 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
                                *cf-wrappers*)))
       (dolist (f body) (%cf-process f out compile-time-too)))))
 
+(defun %cf-compile-and-run (form out)
+  "An ordinary FORM evaluated at compile time too (EVAL-WHEN with
+:COMPILE-TOPLEVEL and :LOAD-TOPLEVEL): compiled once, to a module that is run
+now and written to the fasl as an entry of its own.  NIL (nothing done) when
+it cannot be done so: the form is then evaluated and compiled apart."
+  (when (and *native-run-octets-hook* *native-compile-form-hook* *image-id* *cf-modules*
+             ;; (no literal objects made by MAKE-LOAD-FORM)
+             (or (null *cf-externalizer*) (null (%literal-objects form nil))))
+    (%cf-flush out)
+    (let ((entry (%cf-compiled-form form)))
+      (when entry
+        ;; (%CF-COMPILED-FORM pushed the module's octets, then its source)
+        (let ((octets (second (first *cf-modules*))))
+          (%cf-write entry out)
+          (funcall *native-run-octets-hook* octets (nth 4 entry))
+          t)))))
+
 (defun %cf-process (form out compile-time-too)
   (let ((x (%cf-toplevel-expansion form)))
     ;; a compile-time side effect ends the batch of pending forms
@@ -957,6 +977,10 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
     (when (or x (and (consp form) (member (car form) '(defvar defparameter proclaim))))
       (%cf-flush out))
     (cond
+      ((and (null x) compile-time-too (%cf-compile-and-run (%cf-wrap form) out))
+       (when (and (consp form) (member (car form) '(defvar defparameter))
+                  (consp (cdr form)) (symbolp (second form)))
+         (proclaim `(special ,(second form)))))
       ((null x)
        (when compile-time-too (%eval-toplevel (%cf-wrap form)))
        ;; CLHS DEFVAR/DEFPARAMETER: the compiler must recognize the variable
@@ -983,8 +1007,9 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
                (lt (dolist (f (cddr x)) (%cf-process f out nil)))
                ((or ct (and ex compile-time-too))
                 (%eval-toplevel (%cf-wrap `(progn ,@(cddr x))))))))
-      (t (%eval-toplevel (%cf-wrap x))
-         (%cf-emit (%cf-wrap x) out)
+      (t (unless (%cf-compile-and-run (%cf-wrap x) out)
+           (%eval-toplevel (%cf-wrap x))
+           (%cf-emit (%cf-wrap x) out))
          ;; the symbols of the package are read after it is made
          (when (eq (car x) 'defpackage) (%cf-flush out))))))
 

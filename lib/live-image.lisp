@@ -155,6 +155,11 @@ at once (SIMPLE-EVAL)."
                                        (lambda () (live-compile-forms (list form))))
     (values (coerce bytes '(simple-array (unsigned-byte 8) (*))) consts)))
 
+(defun native-run-octets (octets consts)
+  "Run a module made by NATIVE-COMPILE-FORM."
+  (dotimes (i (length octets)) (sys::%put-char-buf (aref octets i)))
+  (sys::%compile-module (sys::%js-take-string) (sys::%js-wrap-lisp consts)))
+
 (defun native-run-module (file offset length consts)
   "Run the module stored in FILE (a native file name) at OFFSET."
   (let ((bytes (js:call (js:global) "__clysm_read_bytes" file offset length)))
@@ -163,6 +168,7 @@ at once (SIMPLE-EVAL)."
 (install-live-hooks)
 (setq sys::*native-compile-form-hook* #'native-compile-form)
 (setq sys::*native-run-module-hook* #'native-run-module)
+(setq sys::*native-run-octets-hook* #'native-run-octets)
 ;; compiled modules in fasls are valid only for this build of the image
 (setq sys::*image-id* #.(format nil "~36R" (random (expt 2 64) (make-random-state t))))
 (setq sys::*native-compile-hook* #'native-compile)
