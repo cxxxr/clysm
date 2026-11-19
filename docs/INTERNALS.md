@@ -283,11 +283,13 @@ What made it slow, and what was done:
   module's own (they were global in the image and grew with every form).
 * **Forms evaluated at compile time too** (`eval-when` with
   `:compile-toplevel` and `:load-toplevel`, ASDF's `with-upgradability`)
-  are compiled twice, to a module run at once and again for the fasl.
-  Compiling them once (the fasl's module also being the one run) saved 3 s
-  of ASDF's 7.8 but made each such form a module of its own in the fasl,
-  1979 modules instead of 1064, and loading ASDF from the cache (every
-  start that uses it) took 0.42 s instead of 0.31: reverted.
+  were compiled twice, to a module run at once and again for the fasl.
+  They are compiled once, the fasl's module also being the one run
+  (`%cf-compile-and-run`): ASDF compiles in 3.8 s instead of 4.8, but with
+  a module of its own in the fasl for each such form (1979 modules instead
+  of 1064) loading ASDF from the cache (every start that uses it) takes
+  0.45 s instead of 0.33 (4-CPU slot, interleaved). With one module per
+  fasl that cost of the number of modules goes away.
 * **Modules evaluated at once** (the REPL, `load` of a source file,
   `compile`) are made without `SNAP` and `RESTORE` unless the host records
   the modules for `save-image` (`CLYSM_SAVE_IMAGE`, `*live-snapshots*`):
