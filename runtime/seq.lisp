@@ -1899,7 +1899,7 @@ COUNT-VAR, when given, is set to the number of elements visited."
          ,@(when count-var `((setq ,count-var ,n)))
          (dotimes (,i ,n)
            (let* (,@(loop for x in element-vars for l in ls for d in ds for o in os
-                          collect `(,x (if ,d (%vref ,d (%fx+ ,i ,o)) (prog1 (car ,l) (setq ,l (cdr ,l)))))))
+                          collect `(,x (if ,d (%simple-ref ,d (%fx+ ,i ,o)) (prog1 (car ,l) (setq ,l (cdr ,l)))))))
              ,body)))))
   (defun %elements-loop-expansion (seqs element-vars body)
     (if (cdr seqs)
