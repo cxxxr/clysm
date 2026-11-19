@@ -383,10 +383,10 @@ copy of X made later could expand it differently than the function did."
     (let* ((l (second fn-form))
            (ll (if (eq (car l) 'lambda) (second l) (third l)))
            (body (if (eq (car l) 'lambda) (cddr l) (cdddr l))))
-      (when (and (listp ll) (every #'symbolp ll)
-                 (notany (lambda (x) (member x lambda-list-keywords)) ll)
-                 (not (tree-mentions-p body sym))
-                 (not (uses-redefinable-macros-p body))
+      (when (and (listp ll)
+                 (notany (lambda (x) (member x '(&environment &whole))) ll)
+                 (not (tree-mentions-p (cons ll body) sym))
+                 (not (uses-redefinable-macros-p (cons ll body)))
                  ;; a loop stays in its own function (which the engine optimizes when it is called again)
                  (notany (lambda (op) (tree-mentions-p body op))
                          '(dotimes dolist do do* loop tagbody go prog prog* do-symbols do-external-symbols
@@ -404,20 +404,16 @@ copy of X made later could expand it differently than the function did."
                    ;; (not into the code of a toplevel form, which runs once)
                    *current-lam* (lam-parent *current-lam*)
                    (gethash op *live-inline-sources*))))
-    (when (and rec (= (length (cdr form)) (length (first rec)))
-               (not (gethash op *notinline*)) (not (member op *local-notinline*)))
+    (when (and rec (not (gethash op *notinline*)) (not (member op *local-notinline*)))
       (let ((closure (funcall *live-inline-closure-hook* op)))
         (when (and closure (not (eq closure (third rec))))
-          (multiple-value-bind (decls forms) (parse-body (second rec))
-            (let ((temps (loop for nil in (cdr form) collect (gensym "ARG"))))
+          (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+                 ;; (the body sees none of the caller's lexical bindings)
+                 (copy (inline-lambda-application op (first rec) (second rec) temps (cdr form))))
+            (when copy
               `(let ,(mapcar #'list temps (cdr form))
                  (if (clysm-sys::%function-cell-eq ',op ',closure)
-                     ;; (the body sees none of the caller's lexical bindings)
-                     (clysm-sys::%with-only-variables ,temps
-                       ((lambda ,(first rec)
-                          ,@(when decls `((declare ,@decls)))
-                          (block ,op ,@forms))
-                        ,@temps))
+                     ,copy
                      (locally (declare (notinline ,op)) (,op ,@temps)))))))))))
 
 ;;; In the image, a function declaimed INLINE that is defined at top level
@@ -449,7 +445,7 @@ that may be copied into the callers, or NIL."
          (second form))
         (t nil)))
 
-(defun inline-lambda-application (name ll body args)
+(defun inline-lambda-application (name ll body args &optional (key-forms args))
   "A form binding the parameters of lambda list LL to ARGS (forms) and
 running BODY (with the block NAME) in a null lexical environment, or NIL when
 the arguments do not fit (they are then passed by a call)."
@@ -472,7 +468,8 @@ the arguments do not fit (they are then passed by a call)."
         (push (list (getf pl :rest) `(list ,@rest-temps)) bindings))
       (cond ((getf pl :keyp)
              (when (oddp (length rest-args)) (return-from inline-lambda-application nil))
-             (let ((pairs (loop for (k nil) on rest-args by #'cddr for (nil tv) on rest-temps by #'cddr
+             (let ((pairs (loop for (k nil) on (nthcdr (- (length args) (length rest-args)) key-forms) by #'cddr
+                                for (nil tv) on rest-temps by #'cddr
                                 collect (let ((kw (inline-key-name k)))
                                           (unless kw (return-from inline-lambda-application nil))
                                           (cons kw tv))))
@@ -484,7 +481,7 @@ the arguments do not fit (they are then passed by a call)."
                                  (getf pl :keys))))
                (unless (or (getf pl :aok)
                            (let ((a (assoc :allow-other-keys pairs)))
-                             (and a (let ((form (nth (position (cdr a) temps) args)))
+                             (and a (let ((form (nth (position (cdr a) temps) key-forms)))
                                       (and (constantp form) (not (null form)) (not (eq form 'nil)))))))
                  (dolist (p pairs)
                    (unless (or (eq (car p) :allow-other-keys) (find (car p) keys :key #'first))
@@ -549,8 +546,11 @@ the arguments do not fit (they are then passed by a call)."
           `(:prim ,prim ,@(convert-args (cdr form) env)))))
     (let ((expansion (inline-expansion-call form)))
       (when expansion
-        (return-from convert-compound
-          (let ((*inline-expansion-depth* (1+ *inline-expansion-depth*))) (convert expansion env)))))
+        (let ((node (handler-case
+                        (let ((*inline-expansion-depth* (1+ *inline-expansion-depth*))) (convert expansion env))
+                      ;; (a source that cannot be compiled here is not used again)
+                      (error () (remprop op 'clysm-sys::%inline-expansion) nil))))
+          (when node (return-from convert-compound node)))))
     (let ((inlined (and (symbolp op) (not (member op *local-notinline*)) (live-inline-call form))))
       (when inlined
         (return-from convert-compound
