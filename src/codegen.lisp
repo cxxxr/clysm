@@ -188,8 +188,20 @@ function, innermost first.  A local exit through unwind-protect regions jumps
 to the innermost one's cleanup, which then continues the exit.")
 (defstruct uwpf code res landing (exits nil) (nexits 0) dyn-depth uwp-depth parent mv-used)
 (defvar *fexit* nil
-  "In a flagging function: (blk tag-local value-local); BLK is around the whole body.")
-(defvar *flag-clone* nil "the function whose flag clone is being compiled")
+  "In a function being compiled: (blk tag-local value-local pctx); exits through
+the function's own cleanups branch to BLK with the pending exit in the two
+locals; PCTX is the context of the calls outside every catcher (a pending
+exit returns from the function).")
+(defstruct pctx label fs used tmp)
+(defvar *pend* nil
+  "The PCTX of the calls being compiled when they are inside a catcher or an
+UNWIND-PROTECT of the current function.")
+(defmacro with-pctx ((type) &body body)
+  "BODY (code leaving TYPE) as a context of calls of its own; call where the
+dynamic environment (*CATCHERS*, *UWP-FRAMES*) is the context's."
+  (let ((ctx (gensym)))
+    `(let ((,ctx (new-pctx)))
+       (wrap-pctx ,ctx (let ((*pend* ,ctx)) ,@body) ,type #'pend-handler-code))))
 (defvar *catchers* nil
   "The constructs around the code being compiled in the current function that
 catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
@@ -393,8 +405,10 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
       (:values (cg-values (cdr node) mv))
-      (:apply `(,@(cg (second node)) ,@(cg (third node))
-                (,(if tail :return_call :call) :apply-list))))))
+      (:apply (maybe-checked-call
+               tail
+               `(,@(cg (second node)) ,@(cg (third node))
+                 (,(if tail :return_call :call) :apply-list)))))))
 
 (defun cg-values (args mv)
   (cond ((null args) `(,@(nil-code) ,@(when mv '((:i32.const 0) (:global.set :mv-count)))))
@@ -701,16 +715,68 @@ representation) or :effect (no value)."
   "CLOSURE-CODE pushes a (ref $closure)."
   (declare (ignore mv))
   (let ((n (length arg-codes)) (tmp (new-local '(:ref :null :closure))))
-    (if (<= n +max-fixed-args+)
-        `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
-          ,@(apply #'append arg-codes)
-          (:local.get ,tmp) (:struct.get :closure ,n)
-          (,(if tail :return_call_ref :call_ref) ,(fixed-entry-type n)))
-        `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
-          ,@(apply #'append arg-codes)
-          (:array.new_fixed :vector ,n)
-          (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+)
-          (,(if tail :return_call_ref :call_ref) :fN)))))
+    (maybe-checked-call
+     tail
+     (if (<= n +max-fixed-args+)
+         `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
+           ,@(apply #'append arg-codes)
+           (:local.get ,tmp) (:struct.get :closure ,n)
+           (,(if tail :return_call_ref :call_ref) ,(fixed-entry-type n)))
+         `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
+           ,@(apply #'append arg-codes)
+           (:array.new_fixed :vector ,n)
+           (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+)
+           (,(if tail :return_call_ref :call_ref) :fN))))))
+
+(defun maybe-checked-call (tail code)
+  (if tail code (checked-call code)))
+
+;;; A global function whose code contains no exit of its own (THROW, a
+;;; RETURN-FROM or GO out of a closure) and calls no function that is not
+;;; known not to leave with one never returns with an exit pending: a direct
+;;; call of it is not checked.
+(defparameter *exiting-prims* '(clysm-sys::%throw clysm-sys::%apply-vector clysm-sys::%compile-module))
+
+(defvar *may-exit-assumed* nil "set when a result depended on a function still being analyzed")
+
+(defun lam-may-exit-p (lam)
+  (let ((v (lam-may-exit lam)))
+    (cond ((eq v :unknown)
+           (setf (lam-may-exit lam) :in-progress)
+           (let* ((*may-exit-assumed* nil)
+                  (r (lam-may-exit-1 lam)))
+             (setf (lam-may-exit lam) (if (or r (not *may-exit-assumed*)) r :unknown))
+             r))
+          ((eq v :in-progress) (setf *may-exit-assumed* t) nil)
+          (t v))))
+
+(defun lam-may-exit-1 (lam)
+  (let ((root lam))
+    (labels ((walk-lam (l)
+               (loop for (nil init) in (lam-opt l) do (walk init))
+               (loop for (nil nil init) in (lam-keys l) do (walk init))
+               (walk (lam-body l)))
+             (walk (n)
+               (when (case (car n)
+                       ((:throw :funcall :mvcall :apply) t)
+                       (:go (not (eq (tb-lam (second n)) root)))
+                       (:return-from (not (eq (blk-lam (second n)) root)))
+                       (:prim (member (prim-name (second n)) *exiting-prims*))
+                       (:call (let ((callee (and (not (gethash (second n) *notinline*))
+                                                 (known-global-lam (second n)))))
+                                (or (null callee) (lam-may-exit-p callee))))
+                       (:lambda (walk-lam (second n)) nil)
+                       ((:flet :labels) (dolist (f (second n)) (walk-lam (fun-lam f))) nil))
+                 (return-from lam-may-exit-1 t))
+               (map-subnodes #'walk n)))
+      (walk-lam lam)
+      nil)))
+
+(defun direct-call-checked (lam tail code)
+  "CODE: a direct call of LAM."
+  (if (or tail (and (null (lam-parent lam)) (not (lam-may-exit-p lam))))
+      code
+      (checked-call code)))
 
 (defun lam-accepts-p (lam n)
   (let ((req (length (lam-req lam))))
@@ -748,6 +814,9 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 (defun direct-call-code (lam closure-code arg-codes tail &optional arg-nodes)
   "Call LAM's main function directly."
   (ensure-lam-compiled lam)
+  (direct-call-checked lam tail (direct-call-code-1 lam closure-code arg-codes tail arg-nodes)))
+
+(defun direct-call-code-1 (lam closure-code arg-codes tail arg-nodes)
   (let ((call (if tail :return_call :call)))
     (cond ((lam-simple-p lam)
            `(,@closure-code ,@(apply #'append arg-codes) (,call (:main ,(lam-id lam)))))
@@ -795,31 +864,8 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         (:br_on_non_null ,l)
         (:global.get ,(sym-global sym)) (:call :undefined-function)))))
 
-;;; The signalling functions and the functions that invoke restarts exist
-;;; twice (runtime/cond.lisp): the function itself throws its non-local exit
-;;; (to the HANDLER-CASE clause, the RESTART-CASE clause); its twin, compiled
-;;; from the same source as a flagging function, returns with the exit pending
-;;; (see "Non-local exits of local functions as returns").  A direct call with
-;;; a catcher around it in the calling function, or in a flagging function,
-;;; calls the twin, so that a HANDLER-CASE or RESTART-CASE of the function
-;;; takes the exit without a Wasm exception.
-(defparameter *flag-returning-calls*
-  '((error . clysm-sys::%error*) (signal . clysm-sys::%signal*)
-    (warn . clysm-sys::%warn*) (cerror . clysm-sys::%cerror*)
-    (invoke-restart . clysm-sys::%invoke-restart*)
-    (abort . clysm-sys::%abort*) (continue . clysm-sys::%continue*)
-    (muffle-warning . clysm-sys::%muffle-warning*)
-    (use-value . clysm-sys::%use-value*) (store-value . clysm-sys::%store-value*)))
-
 (defun cg-global-call (sym args mv tail)
-  (let ((variant (and (or *fexit* *catchers*)
-                      (not (gethash sym *notinline*))
-                      (cdr (assoc sym *flag-returning-calls*)))))
-    (if variant
-        (let ((tail (and tail *fexit*)))
-          `(,@(cg-global-call-1 variant args mv tail)
-            ,@(unless tail (pending-exit-check-code))))
-        (cg-global-call-1 sym args mv tail))))
+  (cg-global-call-1 sym args mv tail))
 
 (defun cg-global-call-1 (sym args mv tail)
   (let ((lam (known-global-lam sym))
@@ -833,16 +879,14 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
         `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
           (:return_call ,(ensure-catch-clone lam *catching-tag*)))))
     (if (and lam (lam-accepts-p lam (length args)))
-        (let ((sig (spec-signature lam args))
-              ;; the callee's flag clone: its exits come back pending
-              (flag (flag-clone-call-p lam tail)))
-          (if (or sig flag)
-              (let ((tail (if flag (and tail *fexit*) tail)))
+        (let ((sig (spec-signature lam args)))
+          (if sig
+              (progn
                 (ensure-lam-compiled lam)
-                `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
-                  (,(if tail :return_call :call)
-                   ,(if sig (spec-clone-name lam sig flag) (ensure-flag-clone lam)))
-                  ,@(when (and flag (not tail)) (pending-exit-check-code))))
+                (direct-call-checked
+                 lam tail
+                 `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
+                   (,(if tail :return_call :call) ,(spec-clone-name lam sig)))))
               (direct-call-code lam `((:global.get ,(static-closure-global lam))) arg-codes tail args)))
         (progn
           (when (and lam (not (lam-accepts-p lam (length args))))
@@ -879,11 +923,13 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                     :ref.is_null (:br_if ,slow)
                     (:local.get ,f) (:struct.get :closure ,+clo-klayout+)
                     ,@(const-init-code layout-list) :ref.eq :i32.eqz (:br_if ,slow)
-                    (:local.get ,f) :ref.as_non_null
-                    ,@(loop for idx across layout
-                            collect (if idx `(:local.get ,(nth idx temps)) '(:ref.null :eq)))
-                    (:local.get ,f) (:struct.get :closure ,+clo-kmain+) (:ref.cast! ,type)
-                    (,(if tail :return_call_ref :call_ref) ,type)
+                    ,@(maybe-checked-call
+                       tail
+                       `((:local.get ,f) :ref.as_non_null
+                         ,@(loop for idx across layout
+                                 collect (if idx `(:local.get ,(nth idx temps)) '(:ref.null :eq)))
+                         (:local.get ,f) (:struct.get :closure ,+clo-kmain+) (:ref.cast! ,type)
+                         (,(if tail :return_call_ref :call_ref) ,type)))
                     (:br ,done))
                   ,@(call-closure-code (fdef-code sym)
                                        (loop for tmp in temps collect `((:local.get ,tmp)))
@@ -909,17 +955,11 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
 
 (defun cg-local-call (fun args mv tail)
   (let* ((lam (fun-lam fun))
-         (closure-code (var-get-code (fun-lvar fun)))
-         (flagging (lam-flagging lam))
-         ;; a flagging caller in tail position has no catchers around the
-         ;; call: its own caller takes up the exit
-         (tail (and tail (or (not flagging) *fexit*))))
-    `(,@(if (lam-accepts-p lam (length args))
-            (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
-            (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
-                   (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))
-      ,@(when (and flagging (not tail))
-          (if (or *fexit* *catchers*) (pending-exit-check-code) (pending-exit-throw-code))))))
+         (closure-code (var-get-code (fun-lvar fun))))
+    (if (lam-accepts-p lam (length args))
+        (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
+        (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
+               (call-closure-code `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) mv tail)))))
 
 (defvar *shake* nil
   "True when the whole program is shaken (SHAKE-MODULE): a global definition
@@ -1002,7 +1042,9 @@ own, which the shaker keeps only if something refers to SYMBOL.")
       (set-loc (blk-tag-var blk) (cons :local (new-local)))
       (let ((body-code (let ((*tail-ok* (and *tail-ok* (not (blk-nonlocal blk))))
                              (*catchers* (if (blk-nonlocal blk) (cons (list :block blk) *catchers*) *catchers*)))
-                         (cg body mv tail))))
+                         (if (blk-nonlocal blk)
+                             (with-pctx (:eqref) (cg body mv tail))
+                             (cg body mv tail)))))
         (if (not (blk-nonlocal blk))
             `(,@(save-bsp-code (blk-saved-bsp blk))
               (:block ,label :eqref ,@body-code))
@@ -1030,13 +1072,34 @@ own, which the shaker keeps only if something refers to SYMBOL.")
   (do ((f frames (cdr f))) ((or (null f) (eq f outer)) nil)
     (when (uwpf-p (car f)) (return (car f)))))
 
-(defun register-uwp-exit (frame continuation)
+(defun register-uwp-exit (frame continuation &optional mv)
   "Register a local exit through FRAME; CONTINUATION generates the code that
 continues the exit after the cleanup (in the context outside FRAME).  Returns
-the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
+the code that starts the exit, the value (if any) being in (uwpf-res FRAME).
+MV: the exit carries multiple values (saved around the cleanup)."
   (let ((k (incf (uwpf-nexits frame))))
     (push (cons k continuation) (uwpf-exits frame))
+    (when mv (push k (uwpf-mv-used frame)))
     `((:i32.const ,k) (:local.set ,(uwpf-code frame)) (:br ,(uwpf-landing frame)))))
+
+(defun uwp-mv-save-code (frame res mvsave)
+  "In the landing of FRAME: save the values of the exits that carry several."
+  (let ((ks (uwpf-mv-used frame)))
+    (cond ((null ks) nil)
+          ((= (length ks) (uwpf-nexits frame))
+           `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)))
+          (t `((:ref.null :eq) (:local.set ,mvsave)
+               ,@(loop for k in ks
+                       append `((:local.get ,(uwpf-code frame)) (:i32.const ,k) :i32.eq
+                                (:if nil nil ((:local.get ,res) (:call :mv-save) (:local.set ,mvsave))))))))))
+
+(defun uwp-mv-restore-code (frame mvsave)
+  (let ((ks (uwpf-mv-used frame)))
+    (cond ((null ks) nil)
+          ((= (length ks) (uwpf-nexits frame))
+           `((:local.get ,mvsave) (:call :mv-restore) :drop))
+          (t `((:local.get ,mvsave) :ref.is_null :i32.eqz
+               (:if nil nil ((:local.get ,mvsave) (:call :mv-restore) :drop)))))))
 
 (defun local-exit-to-block (blk value-code)
   "Code for a return-from BLK in the current function, VALUE-CODE pushing the value."
@@ -1047,10 +1110,10 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
               (restore-bsp-code (blk-saved-bsp blk)))
           (:br ,(blk-label blk)))
         (progn
-          (when (blk-mv blk) (setf (uwpf-mv-used frame) t))
           `(,@value-code (:local.set ,(uwpf-res frame))
             ,@(register-uwp-exit
-               frame (lambda () (local-exit-to-block blk `((:local.get ,(uwpf-res frame)))))))))))
+               frame (lambda () (local-exit-to-block blk `((:local.get ,(uwpf-res frame)))))
+               (blk-mv blk)))))))
 
 (defun cg-return-from (node)
   (destructuring-bind (blk value) (cdr node)
@@ -1067,74 +1130,32 @@ the code that starts the exit, the value (if any) being in (uwpf-res FRAME)."
                  (:throw :lisp-throw))))))))
 
 ;;; ------------------------------------------------------------
-;;; Non-local exits of local functions as returns
+;;; Non-local exits as returns
 ;;;
-;;; A Wasm exception costs about 85 ns in V8 plus 33 ns per frame it
-;;; unwinds, so a non-local exit is not thrown where the frames it leaves
-;;; are known.  The exits of a "flagging" function store the tag and the
-;;; value in the symbols SYS::%EXIT-TAG and SYS::%EXIT-VALUE (the pending
-;;; exit; unbound when there is none) and return; the code after every call
-;;; of a flagging function looks at the tag: the catchers around the call in
-;;; the calling function (non-local blocks and tagbodies, CATCH and %CATCH
-;;; forms) take the exit if the tag is theirs, a flagging caller returns in
-;;; turn, and any other caller throws the exit as before.  The pending exit
-;;; is in the two symbols only between the return and that test; while the
-;;; cleanups of a function run it is kept in locals.
+;;; A Wasm exception costs about 120 ns in V8 plus 33 ns per frame it
+;;; unwinds (SBCL's THROW: about 7 ns), so non-local exits are not thrown.
+;;; An exit out of a function (a THROW, a RETURN-FROM or GO out of a
+;;; closure, SYS:%THROW of a HANDLER-CASE or RESTART-CASE) stores the tag
+;;; and the value in the symbols SYS::%EXIT-TAG and SYS::%EXIT-VALUE (the
+;;; pending exit; unbound when there is none) and the function returns null,
+;;; which no Lisp value is (an unbound marker that a function returns is
+;;; told apart by the tag).  After every call that is not a tail call the
+;;; code tests for null (CHECKED-CALL) and branches to the handler of the
+;;; call's context: the catchers around the call in the function
+;;; (non-local blocks and tagbodies, CATCH and %CATCH forms) take the exit
+;;; if the tag is theirs; otherwise the function returns null in turn,
+;;; through its UNWIND-PROTECT cleanups (while they run the exit is kept in
+;;; locals).  The bindings of special variables are undone by the catcher
+;;; that takes the exit.
 ;;;
-;;; Every caller of a flagging function must test, so they are:
-;;; - local functions (FLET/LABELS) that are only called (never used as a
-;;;   value) and that contain a RETURN-FROM / GO to an enclosing function
-;;;   or a THROW, or call a flagging function (ANALYZE-FLAGGING);
-;;; - flag clones of global functions (below, "A flag clone ...");
-;;; - the twins of the signalling and restart functions
-;;;   (*FLAG-RETURNING-CALLS*);
-;;; - lambdas written as handlers in HANDLER-BIND (SYS:%HANDLER-FUNCTION),
-;;;   whose callers are the signalling functions (SYS:%TAKE-PENDING-EXIT).
+;;; The code that does not test - the Wasm helpers that call Lisp functions
+;;; through (:CALLSYM K) or a direct stub, and JavaScript - gets the exit
+;;; thrown as the exception $LISP-THROW, which the catchers also take
+;;; (TRY_TABLE).  A direct call of a function that cannot leave with an exit
+;;; pending (LAM-MAY-EXIT-P) is not tested.
 ;;; ------------------------------------------------------------
 
 (defun pending-tag-code () `((:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:struct.get :symbol ,+sym-value+)))
-
-(defun analyze-flagging (root)
-  "Set LAM-FLAGGING in the tree of lambdas of ROOT."
-  (let ((funs nil)                                ; the lams of local functions
-        (fun-lvars (make-hash-table :test 'eq))   ; lvar of a local function -> t
-        (value-used (make-hash-table :test 'eq))  ; lvar of a local function used as a value
-        (lvar-of (make-hash-table :test 'eq))     ; lam -> lvar
-        (direct (make-hash-table :test 'eq))      ; lam with an exit of its own
-        (calls (make-hash-table :test 'eq)))      ; lam -> lams it calls as local functions
-    (labels ((walk-lam (lam)
-               (loop for (nil init) in (lam-opt lam) do (walk init lam))
-               (loop for (nil nil init) in (lam-keys lam) do (walk init lam))
-               (walk (lam-body lam) lam))
-             (walk (n lam)
-               (case (car n)
-                 (:lref (when (gethash (second n) fun-lvars) (setf (gethash (second n) value-used) t)))
-                 (:lambda (walk-lam (second n)))
-                 ((:flet :labels)
-                  (dolist (f (second n))
-                    (setf (gethash (fun-lvar f) fun-lvars) t
-                          (gethash (fun-lam f) lvar-of) (fun-lvar f))
-                    (push (fun-lam f) funs))
-                  (dolist (f (second n)) (walk-lam (fun-lam f)))
-                  (walk (third n) lam))
-                 (:go (unless (eq (tb-lam (second n)) lam) (setf (gethash lam direct) t)))
-                 (t
-                  (case (car n)
-                    (:return-from (unless (eq (blk-lam (second n)) lam) (setf (gethash lam direct) t)))
-                    (:throw (setf (gethash lam direct) t))
-                    (:lcall (push (fun-lam (second n)) (gethash lam calls))))
-                  (map-subnodes (lambda (x) (walk x lam)) n)))))
-      (walk-lam root))
-    (setf funs (nreverse funs))
-    (dolist (lam funs) (setf (lam-flagging lam) nil))
-    (loop
-      (let ((changed nil))
-        (dolist (lam funs)
-          (when (and (not (lam-flagging lam))
-                     (not (gethash (gethash lam lvar-of) value-used))
-                     (or (gethash lam direct) (some #'lam-flagging (gethash lam calls))))
-            (setf (lam-flagging lam) t changed t)))
-        (unless changed (return))))))
 
 (defun refine-nonlocal (lam)
   "Call after the calls in LAM are inlined: a block or tagbody of LAM to which
@@ -1176,53 +1197,61 @@ no other function exits any more (the lambdas that did were inlined) is local."
           (unless (member b exited)
             (if (blk-p b) (setf (blk-nonlocal b) nil) (setf (tb-nonlocal b) nil))))))))
 
-(defun ensure-flag-analysis (lam)
-  ;; the twins of the signalling functions are flagging
-  (when (and (lam-name lam) (symbolp (lam-name lam)) (rassoc (lam-name lam) *flag-returning-calls*))
-    (setf (lam-flagging lam) t))
-  (let ((root lam))
-    (loop while (lam-parent root) do (setf root (lam-parent root)))
-    (unless (lam-flag-analyzed root)
-      (setf (lam-flag-analyzed root) t)
-      (analyze-flagging root))))
-
 (defun make-fexit (lam &optional force)
-  "The exit of the function being compiled if it is flagging (or FORCE), else
-NIL.  Call when *FS* is set up, before any code of the function is generated."
-  (when (or force (lam-flagging lam))
-    (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
-                    :uwp-frames nil :saved-bsp (new-local :i32))
-          (new-local) (new-local))))
+  "The exit state of the function being compiled (*FEXIT*).  Call when *FS*
+is set up, before any code of the function is generated."
+  (declare (ignore force))
+  (list (make-blk :name nil :lam lam :label (gensym "FEXIT") :mv t :dyn-depth 0 :uwp-depth 0
+                  :uwp-frames nil :saved-bsp (new-local :i32))
+        (new-local) (new-local)
+        (make-pctx :label (gensym "FPEND") :fs *fs*)))
+
+(defun exit-globals-code (tag-code value-code)
+  "Make the exit (TAG-CODE, VALUE-CODE: one instruction list each, without
+calls) the pending exit."
+  `((:global.get ,(sym-global 'clysm-sys::%exit-value)) ,@value-code (:struct.set :symbol ,+sym-value+)
+    (:global.get ,(sym-global 'clysm-sys::%exit-tag)) ,@tag-code (:struct.set :symbol ,+sym-value+)))
 
 (defun wrap-fexit (body)
-  "BODY: the whole code of the function being compiled.  In a flagging
-function, exits branch out of it with the tag and the value in locals,
-which are made the pending exit here."
+  "BODY: the whole code of the function being compiled.  Its exits through
+its own cleanups end at the FEXIT block with the exit in two locals, which
+are made the pending exit; a call outside every catcher that returned with
+an exit pending returns null in turn."
   (if (null *fexit*)
       body
-      (destructuring-bind (blk tag val) *fexit*
-        (let ((res (new-local)))
-          `(,@(when (tree-member `(:local.get ,(blk-saved-bsp blk)) body) (save-bsp-code (blk-saved-bsp blk)))
-            (:block ,(blk-label blk) :eqref ,@body)
-            (:local.set ,res)
-            (:local.get ,tag) :ref.is_null :i32.eqz
-            (:if nil nil
-                 ((:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:local.get ,tag)
-                  (:struct.set :symbol ,+sym-value+)
-                  (:global.get ,(sym-global 'clysm-sys::%exit-value)) (:local.get ,val)
-                  (:struct.set :symbol ,+sym-value+)))
-            (:local.get ,res))))))
+      (destructuring-bind (blk tag val ctx) *fexit*
+        (let ((code body))
+          (when (tree-member `(:br ,(blk-label blk)) code)
+            (let ((normal (gensym "NORMAL")))
+              (setf code `(,@(when (tree-member `(:local.get ,(blk-saved-bsp blk)) code)
+                               (save-bsp-code (blk-saved-bsp blk)))
+                           (:block ,normal :eqref
+                             (:block ,(blk-label blk) :eqref ,@code (:br ,normal))
+                             :drop
+                             ,@(exit-globals-code `((:local.get ,tag)) `((:local.get ,val)))
+                             (:ref.null :eq))))))
+          (when (pctx-used ctx)
+            (setf code `((:block ,(pctx-label ctx) nil ,@code :return)
+                         (:ref.null :eq))))
+          code))))
 
 (defun tree-member (x tree)
   (cond ((equal x tree) t)
         ((consp tree) (or (tree-member x (car tree)) (tree-member x (cdr tree))))))
 
 (defun flagged-exit-code (tag-code value-code)
-  "Leave the flagging function being compiled with a pending exit."
-  (destructuring-bind (blk tag val) *fexit*
-    `(,@value-code (:local.set ,val)
-      ,@tag-code (:local.set ,tag)
-      ,@(local-exit-to-block blk (nil-code)))))
+  "Leave the function being compiled with a pending exit (TAG-CODE: code
+without calls), through its cleanups."
+  (if (innermost-uwpf-between *uwp-frames* nil)
+      (destructuring-bind (blk tag val ctx) *fexit*
+        (declare (ignore ctx))
+        `(,@value-code (:local.set ,val)
+          ,@tag-code (:local.set ,tag)
+          ,@(local-exit-to-block blk (nil-code))))
+      (let ((v (new-local)) (tg (new-local)))
+        `(,@value-code (:local.set ,v) ,@tag-code (:local.set ,tg)
+          ,@(exit-globals-code `((:local.get ,tg)) `((:local.get ,v)))
+          (:ref.null :eq) :return))))
 
 (defun local-exit-to-catch (entry value-code)
   "Code for a throw to the CATCH form ENTRY (of *CATCHERS*) of the current
@@ -1233,10 +1262,10 @@ function, VALUE-CODE pushing the value."
       (if (null frame)
           `(,@value-code ,@(restore-bsp-code saved) (:br ,done))
           (progn
-            (setf (uwpf-mv-used frame) t)
             `(,@value-code (:local.set ,(uwpf-res frame))
               ,@(register-uwp-exit
-                 frame (lambda () (local-exit-to-catch entry `((:local.get ,(uwpf-res frame))))))))))))
+                 frame (lambda () (local-exit-to-catch entry `((:local.get ,(uwpf-res frame)))))
+                 t)))))))
 
 (defun local-go-pc (tb)
   "Code for a GO to the segment whose number is in TB's pc local."
@@ -1260,29 +1289,71 @@ function, VALUE-CODE pushing the value."
                 ,@(local-go-pc (second c))))
     (:catch (local-exit-to-catch c `((:local.get ,value-local))))))
 
-(defun pending-exit-check-code ()
-  "After a call of a flagging function (its value is on the stack): take up
-the exit it may have left pending."
-  (let ((res (new-local)) (tag (new-local)) (val (new-local)))
-    `((:local.set ,res)
-      ,@(pending-tag-code) (:local.tee ,tag) :ref.is_null :i32.eqz
-      (:if nil nil
-           ((:global.get ,(sym-global 'clysm-sys::%exit-value)) (:struct.get :symbol ,+sym-value+) (:local.set ,val)
-            (:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)
-            (:global.get ,(sym-global 'clysm-sys::%exit-value)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)
+;;; The calls.  A call of a Lisp function returns null when it left with an
+;;; exit pending (and only then, unless the function returned an unbound
+;;; marker: the pending tag tells them apart); the code after it branches to
+;;; the handler of the context of the call.
+
+(defun current-pctx ()
+  (cond ((and *pend* (eq (pctx-fs *pend*) *fs*)) *pend*)
+        (*fexit* (fourth *fexit*))))
+
+(defun checked-call (code)
+  "CODE: instructions that push the result of a call of a Lisp function (not
+a tail call).  When it returns with an exit pending, the handler of the
+context takes it up."
+  (let ((ctx (current-pctx)))
+    (if (null ctx)
+        code
+        (let* ((fctx (fourth *fexit*))
+               (tmp (or (pctx-tmp fctx) (setf (pctx-tmp fctx) (new-local)))))
+          (setf (pctx-used ctx) t)
+          `(,@code
+            (:local.tee ,tmp) :ref.is_null (:hint 0)
+            (:if nil nil ((:call :exit-pending-p) (:br_if ,(pctx-label ctx))))
+            (:local.get ,tmp))))))
+
+(defun take-pending-code (val)
+  "The pending exit's value to VAL; no exit is pending any more."
+  `((:global.get ,(sym-global 'clysm-sys::%exit-value)) (:struct.get :symbol ,+sym-value+) (:local.set ,val)
+    (:global.get ,(sym-global 'clysm-sys::%exit-tag)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)
+    (:global.get ,(sym-global 'clysm-sys::%exit-value)) (:ref.null :eq) (:struct.set :symbol ,+sym-value+)))
+
+(defun pend-handler-code ()
+  "The handler of a context of calls (in the context's dynamic environment):
+the catchers around it take the pending exit if it is theirs; else the
+function returns null with the exit pending, through its cleanups."
+  (let ((tag (new-local)) (val (new-local))
+        ;; the bindings made since the catcher are undone (the call may
+        ;; have been in a LET of a special variable inside the context)
+        (*dyn-depth* most-positive-fixnum)
+        (*tail-ok* nil))
+    `(,@(when *catchers*
+          `(,@(pending-tag-code) (:local.set ,tag)
             ,@(loop for c in *catchers*
                     append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
-                             (:if nil nil ,(catcher-exit-code c val))))
-            ,@(if *fexit*
-                  (flagged-exit-code `((:local.get ,tag)) `((:local.get ,val)))
-                  `((:local.get ,tag) (:local.get ,val) (:throw :lisp-throw)))))
-      (:local.get ,res))))
+                             (:if nil nil (,@(take-pending-code val) ,@(catcher-exit-code c val)))))))
+      ,@(if (innermost-uwpf-between *uwp-frames* nil)
+            (destructuring-bind (blk ftag fval ctx) *fexit*
+              (declare (ignore ctx))
+              `(,@(pending-tag-code) (:local.set ,ftag)
+                ,@(take-pending-code fval)
+                ,@(local-exit-to-block blk (nil-code))))
+            '((:ref.null :eq) :return))
+      :unreachable)))
 
-(defun pending-exit-throw-code ()
-  "After a call of a flagging function where no catcher is around and the
-caller is not flagging: throw the exit it may have left pending."
-  `(,@(pending-tag-code) :ref.is_null :i32.eqz
-    (:if nil nil ((:call :throw-pending-exit)))))
+(defun new-pctx () (make-pctx :label (gensym "PEND") :fs *fs*))
+
+(defun wrap-pctx (ctx code type handler)
+  "CODE (leaving a value of TYPE, :EQREF or NIL) in the context CTX, whose
+handler is HANDLER (a thunk run in the context's dynamic environment)."
+  (if (not (pctx-used ctx))
+      code
+      (let ((done (gensym "PDONE")))
+        `((:block ,done ,type
+            (:block ,(pctx-label ctx) nil ,@code (:br ,done))
+            ,@(funcall handler))))))
+
 
 ;;; ------------------------------------------------------------
 ;;; TAGBODY / GO
@@ -1322,7 +1393,8 @@ loop with a BR_TABLE."
             (tb-dyn-depth tb) *dyn-depth* (tb-uwp-depth tb) *uwp-depth* (tb-uwp-frames tb) *uwp-frames*
             (tb-saved-bsp tb) (new-local :i32))
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
-      (let* ((seg-codes (let ((*tail-ok* nil)
+      (let* ((ctx (and (tb-nonlocal tb) (new-pctx)))
+             (seg-codes (let ((*tail-ok* nil) (*pend* (or ctx *pend*))
                               (*catchers* (if (tb-nonlocal tb) (cons (list :tagbody tb) *catchers*) *catchers*)))
                           (loop for (k . forms) in segments for ll in loop-labels
                                 collect (progn
@@ -1334,7 +1406,10 @@ loop with a BR_TABLE."
              (blocks (let ((acc inner))
                        (loop for label in labels for code in seg-codes
                              do (setf acc `((:block ,label nil ,@acc) ,@code)))
-                       acc))
+                       (if ctx
+                           (let ((*tail-ok* nil) (*catchers* (cons (list :tagbody tb) *catchers*)))
+                             (wrap-pctx ctx acc nil #'pend-handler-code))
+                           acc)))
              (loop-body (if (tb-nonlocal tb)
                             (let ((h (gensym "H")) (vtmp (new-local)) (ttmp (new-local))
                                   (etmp (new-local :exnref)))
@@ -1413,7 +1488,8 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                                      (if (and (not unchecked) (eq (car tag-node) :const) (symbolp (second tag-node)))
                                          (second tag-node) :unknown))
                                *catchers*)))
-                  (or (and (not unchecked) (catch-clone-call tag-node body)) (cg body mv))))
+                  (with-pctx (:eqref)
+                    (or (and (not unchecked) (catch-clone-call tag-node body)) (cg body mv)))))
             ,@(unless unchecked (restore-bsp-code saved))
             (:br ,done))
           (:local.set ,etmp) (:local.set ,vtmp) (:local.set ,ttmp)
@@ -1446,7 +1522,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                   append `((:local.get ,tag) ,@(catcher-tag-code c) :ref.eq
                            (:if nil nil ,(catcher-exit-code c v))))
         ,@(if *fexit*
-              ;; in a flagging function: a return with the exit pending
+              ;; a return with the exit pending
               `(,@(flagged-exit-code `((:local.get ,tag)) `((:local.get ,v)))
                 :unreachable)
               `((:local.get ,tag) (:local.get ,v)
@@ -1461,7 +1537,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                              :uwp-depth *uwp-depth* :parent *uwp-frames*))
            (body-code (let ((*tail-ok* nil) (*uwp-depth* (1+ *uwp-depth*))
                             (*uwp-frames* (cons frame *uwp-frames*)))
-                        (cg form mv))))
+                        (with-pctx (:eqref) (cg form mv)))))
       (let* ((cleanup-code (let ((*tail-ok* nil)) `(,@(cg cleanup) :drop)))
              (normal-code (if mv
                              `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)
@@ -1486,11 +1562,9 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                       (:if nil :eqref
                            ,normal-code
                            (,@(restore-bsp-code saved)
-                            ,@(when (uwpf-mv-used frame)
-                                `((:local.get ,res) (:call :mv-save) (:local.set ,mvsave)))
+                            ,@(uwp-mv-save-code frame res mvsave)
                             ,@cleanup-code
-                            ,@(when (uwpf-mv-used frame)
-                                `((:local.get ,mvsave) (:call :mv-restore) :drop))
+                            ,@(uwp-mv-restore-code frame mvsave)
                             ,@(let ((*uwp-frames* (uwpf-parent frame)) (*uwp-depth* (uwpf-uwp-depth frame))
                                     (*dyn-depth* (uwpf-dyn-depth frame)) (*tail-ok* nil))
                                 (loop for (k . cont) in (reverse (uwpf-exits frame))
@@ -1519,10 +1593,12 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
         ,@(loop for a in args
                 append `(,@(cg a t) (:call :mv-to-list) (:local.get ,acc) (:call :revappend-onto)
                          (:local.set ,acc)))
-        (:local.get ,ftmp) (:ref.as_non_null)
-        (:local.get ,acc) (:call :reverse-list-to-vector)
-        (:local.get ,ftmp) (:struct.get :closure ,+clo-entry-n+)
-        (,(if tail :return_call_ref :call_ref) :fN)))))
+        ,@(maybe-checked-call
+           tail
+           `((:local.get ,ftmp) (:ref.as_non_null)
+             (:local.get ,acc) (:call :reverse-list-to-vector)
+             (:local.get ,ftmp) (:struct.get :closure ,+clo-entry-n+)
+             (,(if tail :return_call_ref :call_ref) :fN)))))))
 
 (defun cg-mvprog1 (node mv)
   (destructuring-bind (form body) (cdr node)
@@ -1589,13 +1665,11 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (loop while *pending-lams*
         do (let* ((lam (pop *pending-lams*)) (*catchers* nil)
                   (*func-source* (let ((l (cond ((not (consp lam)) lam)
-                                                ((member (car lam) '(:spec :flag)) (second lam))
+                                                ((eq (car lam) :spec) (second lam))
                                                 (t (car lam)))))
                                    (and (lam-p l) (lam-source l)))))
              (cond ((and (consp lam) (eq (car lam) :spec))
                     (compile-spec-clone (second lam) (third lam) (fourth lam)))
-                   ((and (consp lam) (eq (car lam) :flag))
-                    (compile-flag-clone (second lam)))
                    ((consp lam)
                     (compile-catch-clone (car lam) (cdr lam)))
                    (t
@@ -1618,10 +1692,9 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
       (push (cons lam tag) *pending-lams*))
     (catch-clone-name lam tag)))
 
-(defun compile-catch-clone (lam tag &aux (*flag-clone* lam))
+(defun compile-catch-clone (lam tag)
   ;; (it is a flag clone as well: the other exits that leave it, such as a
   ;; throw to the tag from a recursive call, return to the CATCH pending)
-  (ensure-flag-analysis lam)
   (inline-calls lam)
   (refine-nonlocal lam)
   (infer-lam lam)
@@ -1648,80 +1721,9 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                    (= (length args) (length (lam-req lam))))
           (let ((arg-codes (mapcar #'cg args)))
             (ensure-lam-compiled lam)
-            `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
-              (:call ,(ensure-catch-clone lam tag))
-              ,@(pending-exit-check-code))))))))
-
-;;; A flag clone of a known global function F is a copy of F compiled as a
-;;; flagging function (see "Non-local exits of local functions as returns"):
-;;; the exits that leave F - the handler-case exits of the ERROR, SIGNAL, WARN
-;;; and CERROR calls in it, its throws, the exits of its local functions -
-;;; return to F's caller pending.  It is called where that is of use: from a
-;;; call of F with a catcher around it in the calling function (which then
-;;; takes the exit with a branch), and from a flag clone, by the calls of the
-;;; function itself and the tail calls of other functions.  (Other calls in
-;;; a flag clone are ordinary, or every function reachable from a catcher
-;;; would be compiled twice: an exit from further down is thrown.)
-
-(defparameter *flag-clone-max-nodes* 600 "larger functions get no flag clone")
-
-(defun may-flag-p (lam)
-  "LAM has exits that its flag clone would return (and is not too large)."
-  (when (null (lam-may-flag lam))
-    (setf (lam-may-flag lam) :no)       ; (for recursive functions)
-    (ensure-flag-analysis lam)
-    (inline-calls lam)
-    (let ((n 0) (found nil))
-      (labels ((walk (node)
-                 (when (or (> (incf n) *flag-clone-max-nodes*)
-                           (eq (car node) :ltv)) ; (evaluated once, not once per copy)
-                   (return-from may-flag-p nil))
-                 (when (case (car node)
-                         (:throw t)
-                         (:call (assoc (second node) *flag-returning-calls*))
-                         (:lcall (lam-flagging (fun-lam (second node)))))
-                   (setf found t))
-                 (map-subnodes #'walk node)))
-        (walk (lam-body lam)))
-      (when found (setf (lam-may-flag lam) :yes))))
-  (eq (lam-may-flag lam) :yes))
-
-(defun flag-clone-call-p (lam tail)
-  "A direct call of the global function LAM at this place calls its flag clone."
-  (and (lam-simple-p lam) (null (lam-free-vars lam))
-       (if *fexit*
-           (and *flag-clone* (or tail (eq lam *flag-clone*)))
-           *catchers*)
-       (may-flag-p lam)))
-
-(defun flag-clone-name (lam) (list :flag-main (lam-id lam)))
-
-(defun ensure-flag-clone (lam)
-  (unless (lam-flag-clone lam)
-    (setf (lam-flag-clone lam) t)
-    (push (list :flag lam) *pending-lams*))
-  (flag-clone-name lam))
-
-(defun compile-flag-clone (lam)
-  (ensure-flag-analysis lam)
-  (inline-calls lam)
-  (refine-nonlocal lam)
-  (infer-lam lam)
-  (let* ((n (length (lam-req lam)))
-         (*fs* (make-fstate :lam lam :nparams (1+ n)))
-         (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*catchers* nil) (*catching-tag* nil)
-         (*flag-clone* lam)
-         (*fexit* (make-fexit lam t))
-         (prologue (setup-free-vars lam))
-         (specials nil))
-    (loop for lv in (lam-req lam) for i from 1
-          do (multiple-value-bind (code sp) (param-setup-code lv i)
-               (setf prologue (append prologue code))
-               (when sp (setf specials (append specials (list sp))))))
-    (let ((body (wrap-fexit (finish-body lam prologue specials))))
-      (add-func *m* (flag-clone-name lam) (main-type n)
-                :locals (reverse (fstate-locals *fs*)) :body body
-                :display (format nil "~A/flag" (lam-display-name lam))))))
+            (checked-call
+             `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
+               (:call ,(ensure-catch-clone lam tag))))))))))
 
 (defun setup-free-vars (lam)
   (when (lam-free-vars lam)
@@ -1776,8 +1778,7 @@ list of (symbol . local), which are bound around the body."
                   (:local.get ,res))))
       `(,@prologue ,@(let ((*tail-ok* t)) (cg (lam-body lam) t t)))))
 
-(defun compile-lam (lam &aux (*catching-tag* nil) (*flag-clone* nil))
-  (ensure-flag-analysis lam)
+(defun compile-lam (lam &aux (*catching-tag* nil))
   (inline-calls lam)
   (refine-nonlocal lam)
   (infer-lam lam)
@@ -1949,8 +1950,7 @@ are of the classes of its specialized version, a tail call of that version."
       (walk (lam-body lam)))
     r))
 
-(defun compile-spec-clone (lam sig flag &aux (*flag-clone* (and flag lam)))
-  (ensure-flag-analysis lam)
+(defun compile-spec-clone (lam sig flag)
   (inline-calls lam)
   (refine-nonlocal lam)
   (let* ((lvars (lam-all-lvars lam))

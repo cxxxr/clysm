@@ -730,18 +730,12 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
           (:local.get ,i) (:local.get ,step) :i32.add (:local.set ,i)
           (:br ,again)))
       ,@(nil-code))))
-;; throw to a SYS:%CATCH (the tag is known to be active); in a flagging
-;; function, a return with the exit pending
+;; throw to a SYS:%CATCH (the tag is known to be active): a return with the
+;; exit pending
 (defprim clysm-sys::%throw (tag value) :value
   (if *fexit*
       `((:i32.const 1) (:global.set :mv-count) ,@(flagged-exit-code tag value) :unreachable)
       `(,@tag ,@value (:i32.const 1) (:global.set :mv-count) (:throw :lisp-throw))))
-;; after a call of a function that may have returned with an exit pending
-;; (a handler written in the HANDLER-BIND form): take it up
-(defprim clysm-sys::%take-pending-exit () :value
-  (if (or *fexit* *catchers*)
-      `(,@(nil-code) ,@(pending-exit-check-code))
-      `(,@(pending-exit-throw-code) ,@(nil-code))))
 (defprim clysm-sys::%write-char (c fd) :value
   (let ((tmp (new-local)))
     `(,@fd (:ref.cast :i31) :i31.get_s ,@c (:local.tee ,tmp) (:call :check-char) (:i32.const ,+char-tag+) :i32.sub (:call :host-write-char)
@@ -750,8 +744,9 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
 (defprim clysm-sys::%exit (code) :value `(,@code (:ref.cast :i31) :i31.get_s (:call :host-exit) ,@(nil-code)))
 (defprim clysm-sys::%apply-vector (f v) :value
   (let ((tmp (new-local '(:ref :null :closure))))
-    `(,@f (:call :coerce-function) (:local.tee ,tmp) :ref.as_non_null ,@v (:ref.cast :vector)
-      (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+) (:call_ref :fN))))
+    (checked-call
+     `(,@f (:call :coerce-function) (:local.tee ,tmp) :ref.as_non_null ,@v (:ref.cast :vector)
+       (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+) (:call_ref :fN)))))
 (defprim clysm-sys::%identity-hash (x) :value
   `(,@x (:call :identity-hash) :ref.i31))
 (defprim clysm-sys::%mv-buf-ref (i) :value `((:global.get :mv-buf) ,@(idx-code i) (:array.get :vector)))
@@ -914,15 +909,22 @@ is the layout's direct superclass, or (out of line) C is in its precedence list.
                            tn)
                          '((clo (:ref :null :closure)))
                          (lambda ()
-                           (let ((l (gensym)))
+                           (let ((l (gensym)) (ok (gensym)))
                              `((:block ,l (:ref :closure)
                                  (:local.get ,k) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
                                  (:local.get ,k) (:call :undefined-function))
                                (:local.set clo)
-                               (:local.get clo) (:ref.as_non_null)
-                               ,@(loop for i below k collect `(:local.get ,i))
-                               (:local.get clo) (:struct.get :closure ,k)
-                               (:return_call_ref ,(fixed-entry-type k))))))
+                               (:block ,ok :eqref
+                                 (:local.get clo) (:ref.as_non_null)
+                                 ,@(loop for i below k collect `(:local.get ,i))
+                                 (:local.get clo) (:struct.get :closure ,k)
+                                 (:call_ref ,(fixed-entry-type k))
+                                 (:br_on_non_null ,ok)
+                                 ;; null: an exit pending (thrown: the callers of
+                                 ;; the helpers do not look), or an unbound marker
+                                 (:call :exit-pending-p)
+                                 (:if nil nil ((:call :throw-pending-exit)))
+                                 (:ref.null :eq))))))
                    *helpers*))))
 
 (defun type-error-instrs (datum-local type-sym)
@@ -2633,8 +2635,12 @@ f64s in locals DA and DB (it may branch to SLOW)."
        (:br again)))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%no-catch-error)) '(:call (:callsym 1)) :drop)
 
-;;; the pending non-local exit (codegen.lisp, "Non-local exits of local
-;;; functions as returns") is thrown
+;;; is an exit pending (codegen.lisp, "Non-local exits as returns")?
+(defhelper :exit-pending-p :v-i ()
+  `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) `(:struct.get :symbol ,+sym-value+) :ref.is_null :i32.eqz)
+
+;;; the pending non-local exit (codegen.lisp, "Non-local exits as returns")
+;;; is thrown
 (defhelper :throw-pending-exit :v-v ((tag :eqref) (val :eqref))
   `(:global.get ,(sym-global 'clysm-sys::%exit-tag)) `(:struct.get :symbol ,+sym-value+) '(:local.set tag)
   `(:global.get ,(sym-global 'clysm-sys::%exit-value)) `(:struct.get :symbol ,+sym-value+) '(:local.set val)
@@ -4385,8 +4391,9 @@ in local V and the index in local K; else branch to FAIL."
 ;; (RUN is called from WebAssembly, without a JavaScript frame in between,
 ;; so that the code of the module can wait: JS:AWAIT, threads)
 (defprim clysm-sys::%compile-module (bytes consts) :mv
-  `(,@(ext-code consts) ,@(ext-code bytes) (:call :host-instantiate-module)
-    (:call_ref :x-e)))
+  (checked-call
+   `(,@(ext-code consts) ,@(ext-code bytes) (:call :host-instantiate-module)
+     (:call_ref :x-e))))
 (defprim clysm-sys::%flush () :value `((:call :host-flush) ,@(nil-code)))
 
 ;;; ------------------------------------------------------------

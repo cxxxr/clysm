@@ -307,16 +307,7 @@
                                    :format-arguments (list restart)))
     r))
 
-;;; Functions that leave by a non-local exit to a HANDLER-CASE or RESTART-CASE
-;;; exist twice: the function itself, where %THROW throws, and a twin that
-;;; the compiler calls (src/codegen.lisp, *FLAG-RETURNING-CALLS*) and
-;;; compiles as a flagging function, where %THROW and the calls of other
-;;; such functions return with the exit pending.
-(defmacro %define-twin (name twin lambda-list &body body)
-  `(progn (defun ,name ,lambda-list ,@body)
-          (defun ,twin ,lambda-list ,@body)))
-
-(%define-twin invoke-restart %invoke-restart* (restart &rest args)
+(defun invoke-restart (restart &rest args)
   (let* ((r (%find-active-restart restart)) (f (restart-function r)))
     (if f
         (apply f args)
@@ -437,19 +428,19 @@ the restarts are associated with the condition being signaled."
        (unwind-protect (progn ,@body)
          (dolist (r ,rs) (setf (restart-conditions r) (remove ,c (restart-conditions r) :count 1)))))))
 
-(%define-twin abort %abort* (&optional condition)
+(defun abort (&optional condition)
   (let ((r (find-restart 'abort condition)))
     (if r (invoke-restart r)
         (error 'simple-control-error :format-control "There is no active ABORT restart."
                                      :format-arguments nil))))
-(%define-twin continue %continue* (&optional condition)
+(defun continue (&optional condition)
   (let ((r (find-restart 'continue condition))) (when r (invoke-restart r))))
-(%define-twin muffle-warning %muffle-warning* (&optional condition)
+(defun muffle-warning (&optional condition)
   (let ((r (find-restart 'muffle-warning condition)))
     (if r (invoke-restart r) (error 'control-error))))
-(%define-twin use-value %use-value* (value &optional condition)
+(defun use-value (value &optional condition)
   (let ((r (find-restart 'use-value condition))) (when r (invoke-restart r value))))
-(%define-twin store-value %store-value* (value &optional condition)
+(defun store-value (value &optional condition)
   (let ((r (find-restart 'store-value condition))) (when r (invoke-restart r value))))
 
 ;;; ------------------------------------------------------------
@@ -505,10 +496,7 @@ the restarts are associated with the condition being signaled."
             (do ((i 0 (+ i 1))) ((>= i n))
               (when (%condition-of-type-p ,condition (%svref types i))
                 (let ((*handler-clusters* next))
-                  (funcall (%svref cluster (+ i 3)) ,condition))
-                ;; a handler written in the HANDLER-BIND form returns with
-                ;; its non-local exit pending
-                (%take-pending-exit)))
+                  (funcall (%svref cluster (+ i 3)) ,condition))))
             (do ((i 0 (+ i 1))) ((>= i n))
               (when (%condition-of-type-p ,condition (%svref types i))
                 (%set-svref cluster 2 i)
@@ -516,14 +504,13 @@ the restarts are associated with the condition being signaled."
         (setq cluster next)))))
 
 (defun %throw (tag value) (%throw tag value))
-(defun %take-pending-exit () (%take-pending-exit))
 
-;;; The pending non-local exit (src/codegen.lisp, "Non-local exits of local
-;;; functions as returns"): unbound when there is none.
+;;; The pending non-local exit (src/codegen.lisp, "Non-local exits as
+;;; returns"): unbound when there is none.
 (defvar %exit-tag)
 (defvar %exit-value)
 
-(%define-twin signal %signal* (datum &rest args)
+(defun signal (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-condition)))
     (%signal-condition condition)
     nil))
@@ -544,14 +531,14 @@ the restarts are associated with the condition being signaled."
   ;; trap so that the host prints a stack trace
   (%wasm nil () :unreachable))
 
-(%define-twin error %error* (datum &rest args)
+(defun error (datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let* ((*error-depth* (+ *error-depth* 1))
          (condition (%coerce-to-condition datum args 'simple-error)))
     (%signal-condition condition)
     (invoke-debugger condition)))
 
-(%define-twin cerror %cerror* (continue-format datum &rest args)
+(defun cerror (continue-format datum &rest args)
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
     (restart-case (progn
@@ -562,7 +549,7 @@ the restarts are associated with the condition being signaled."
       (continue () :report (lambda (s) (apply #'format s continue-format args)) nil)))
   nil)
 
-(%define-twin warn %warn* (datum &rest args)
+(defun warn (datum &rest args)
   (let ((condition (%coerce-to-condition datum args 'simple-warning)))
     (unless (typep condition 'warning)
       (error 'simple-type-error :datum condition :expected-type 'warning
@@ -587,14 +574,11 @@ the restarts are associated with the condition being signaled."
   nil)
 
 ;;; handler macros
-;;; (the compiler compiles a lambda written as a handler so that its
-;;; non-local exits are returns to the signalling function: frontend.lisp)
-(defmacro %handler-function (function) function)
 
 (defmacro handler-bind (bindings &body body)
   `(let ((*handler-clusters*
            (vector *handler-clusters* ',(apply #'vector (mapcar #'car bindings)) t
-                   ,@(mapcar (lambda (b) `(%handler-function ,(cadr b))) bindings))))
+                   ,@(mapcar #'cadr bindings))))
      ,@body))
 
 (defmacro handler-case (form &rest clauses)
