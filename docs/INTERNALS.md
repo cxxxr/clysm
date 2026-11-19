@@ -1815,7 +1815,11 @@ What makes the code fast:
   `call-next-method` passes all four on); a method with `&rest`,
   `call-next-method` with arguments or as a function, another method
   combination, or more than four arguments in all fall back to the list of
-  the keyword arguments. `compile-file` knows the layout of the generic
+  the keyword arguments (with more than four required, optional and
+  keyword arguments in all, the keyed main function still takes them in
+  its slots and makes that list without checking it: a McCLIM-like
+  `(draw-point* medium x y :ink ... :size ...)` 0.82 of its time in loaded
+  code and fasls, about SBCL's). `compile-file` knows the layout of the generic
   functions of the file before they are made (`*note-key-layout-hook*`).
   Calls with one or two keywords take 0.2–0.3 of their earlier time in
   loaded code and fasls (`k-key-*` in scratch tests: about SBCL's time).
