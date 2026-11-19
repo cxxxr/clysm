@@ -1524,7 +1524,14 @@ fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.4, slowest `c-eql-dispatch`
 4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.2–1.3, was 1.46;
 `i-file-roundtrip` 1.6–2.0, was 13; `i-print-numbers`, `i-parse-ints` 2.5), `bench/library.lisp`
-(1.04, was 1.12; `v-map-every` 2.8, `v-hash-iterate` 2.2, was 3.4).
+(1.04, was 1.12; `v-map-every` 2.8, `v-hash-iterate` 2.2, was 3.4),
+`bench/vectors.lisp` (0.43, algorithmic code over simple vectors without
+declarations: fannkuch, sorts written by hand, a heap, a sieve, shuffles;
+slowest `x-sort-key` 1.26; in the image 1.13 of compiled). An `aref` of a
+vector of known kind whose subscript has no known type (an element of a
+vector, an unbounded counter) is inline with a test of the subscript, and
+a parameter that starts a loop counter (`(loop for i from start ...)`)
+makes its function's fixnum version be tried on entry.
 
 What is not as fast as intended, and why:
 
