@@ -2299,6 +2299,9 @@ element (local I) of it.  D is a scratch eqref local."
      (:local.get 1) (:ref.cast :symbol) (:struct.get :symbol 5) (:local.set hash))
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index))
 (defprim clysm-sys::%ht-fast-index (sv key) :value `(,@sv ,@key (:call :ht-fast-index)))
+(defprim clysm-sys::%immediate-or-symbol-p (x) :test
+  ;; a fixnum, a character or a symbol: an i31 or a $symbol
+  (let ((v (new-local))) `(,@x (:local.tee ,v) (:ref.test :i31) (:local.get ,v) (:ref.test :symbol) :i32.or)))
 
 (defhelper :simple-string= :ee-i ((a (:ref :null :string)) (b (:ref :null :string)) (i :i32) (n :i32))
   '(:local.get 0) '(:ref.cast! :string) '(:local.tee a) :array.len '(:local.tee n)
