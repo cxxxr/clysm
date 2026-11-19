@@ -142,6 +142,12 @@
                               (editor:code-editor-focus *editor*))
           (option "standard" "標準" (string-downcase (editor:code-editor-keymap *editor*)))
           (option "emacs" "Emacs" (string-downcase (editor:code-editor-keymap *editor*)))))
+      (:label
+        (:input :type "checkbox" :checked (and (editor:code-editor-wrap *editor*) t)
+                :on-change (lambda (e)
+                             (setf (editor:code-editor-wrap *editor*) (eq (js:get (js:get e "target") "checked") t))
+                             (editor:code-editor-focus *editor*)))
+        " 折り返す")
       (:input :type "search" :class "find" :placeholder "検索 (Enter / Shift+Enter)"
               :value *find-text*
               :on-input (lambda (e) (setf *find-text* (js:get (js:get e "target") "value")))

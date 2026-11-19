@@ -159,14 +159,128 @@ there."
 (define-motion backward-char select-backward-char "Move one character backward."
   (or (previous-pos (doc editor) (head editor)) (head editor)))
 
-(defun vertical (editor lines)
+;;; Wrapping.  With the property :WRAP-WIDTH (a number of cells; the view
+;;; sets it from the width of the page), a long line is shown as several
+;;; rows, and the cursor moves up and down by rows.  A character is one cell
+;;; wide, or two for the wide ones of East Asia; a tab goes to the next stop.
+
+(defun wide-char-p (char)
+  (let ((code (char-code char)))
+    (or (<= #x1100 code #x115F) (<= #x2E80 code #x303E) (<= #x3041 code #x33FF)
+        (<= #x3400 code #x4DBF) (<= #x4E00 code #x9FFF) (<= #xA000 code #xA4CF)
+        (<= #xAC00 code #xD7A3) (<= #xF900 code #xFAFF) (<= #xFE30 code #xFE4F)
+        (<= #xFF00 code #xFF60) (<= #xFFE0 code #xFFE6)
+        (<= #x1F300 code #x1F64F) (<= #x1F900 code #x1F9FF) (<= #x20000 code #x3FFFD))))
+
+(defun char-cells (char x tab-width)
+  "The cells CHAR takes at the cell X."
+  (cond ((char= char #\Tab) (- tab-width (mod x tab-width)))
+        ((wide-char-p char) 2)
+        (t 1)))
+
+(defun wrap-string (string width &optional (tab-width 2))
+  "The columns where the rows of STRING after the first start, when a row
+has WIDTH cells.  A row breaks after a space if there is one in it (or
+next to a wide character)."
+  (let ((starts '()) (start 0) (x 0) (space nil) (i 0) (n (length string)))
+    (loop while (< i n)
+          do (let* ((char (char string i))
+                    (cells (char-cells char x tab-width)))
+               ;; a row can also break before and after a wide character
+               (when (and (> i start)
+                          (or (wide-char-p char) (wide-char-p (char string (1- i)))))
+                 (setf space i))
+               (if (and (> (+ x cells) width) (> i start))
+                   (let ((break (if (and space (> space start)) space i)))
+                     (push break starts)
+                     (setf start break x 0 space nil i break))
+                   (progn
+                     (incf x cells)
+                     (incf i)
+                     (when (member char '(#\Space #\Tab)) (setf space i))))))
+    (nreverse starts)))
+
+(defun wrap-width (editor) (editor-property editor :wrap-width))
+
+(defun line-rows (editor line)
+  "The columns where the rows of LINE after the first start (NIL if the
+line is one row, or nothing is wrapped)."
+  (let ((width (wrap-width editor)))
+    (when width
+      (let* ((string (line-string (doc editor) line))
+             (cache (or (editor-property editor :wrap-cache)
+                        (setf (editor-property editor :wrap-cache) (make-hash-table :test 'eq))))
+             (entry (gethash string cache)))
+        (unless (and entry (eql (car entry) width))
+          (when (> (hash-table-count cache) 50000) (clrhash cache))
+          (setf entry (cons width (wrap-string string width (editor-tab-width editor)))
+                (gethash string cache) entry))
+        (cdr entry)))))
+
+(defun row-of (rows col)
+  "The row (from 0) of the column COL, and the column the row starts at."
+  (let ((row 0) (start 0))
+    (dolist (s rows (values row start))
+      (if (< col s) (return (values row start)) (setf row (1+ row) start s)))))
+
+(defun cells-between (string from to tab-width)
+  (let ((x 0))
+    (loop for i from from below (min to (length string))
+          do (incf x (char-cells (char string i) x tab-width)))
+    x))
+
+(defun column-at-cells (string from to cells tab-width)
+  "The column between FROM and TO nearest to CELLS cells after FROM."
+  (let ((x 0))
+    (loop for i from from below to
+          do (let ((w (char-cells (char string i) x tab-width)))
+               (when (> (+ x (/ w 2)) cells) (return-from column-at-cells i))
+               (incf x w)))
+    to))
+
+(defun vertical-rows (editor n)
+  "The position N rows below (above, if negative) the cursor."
   (let* ((head (head editor))
-         (goal (or (editor-goal-column editor) (setf (editor-goal-column editor) (pos-col head))))
-         (line (+ (pos-line head) lines))
-         (count (line-count (doc editor))))
-    (cond ((< line 0) (make-pos 0 0))
-          ((>= line count) (document-end (doc editor)))
-          (t (make-pos line (min goal (line-length (doc editor) line)))))))
+         (doc (doc editor))
+         (tab (editor-tab-width editor))
+         (line (pos-line head))
+         (rows (line-rows editor line)))
+    (multiple-value-bind (row start) (row-of rows (pos-col head))
+      (let ((goal (or (editor-goal-column editor)
+                      (setf (editor-goal-column editor)
+                            (cells-between (line-string doc line) start (pos-col head) tab)))))
+        ;; walk N rows
+        (loop repeat (abs n)
+              do (if (plusp n)
+                     (if (< row (length rows))
+                         (incf row)
+                         (if (< (1+ line) (line-count doc))
+                             (setf line (1+ line) rows (line-rows editor line) row 0)
+                             (return-from vertical-rows (document-end doc))))
+                     (if (plusp row)
+                         (decf row)
+                         (if (plusp line)
+                             (setf line (1- line) rows (line-rows editor line) row (length rows))
+                             (return-from vertical-rows (make-pos 0 0))))))
+        (let* ((string (line-string doc line))
+               (from (if (zerop row) 0 (nth (1- row) rows)))
+               (last (= row (length rows)))
+               (to (if last (length string) (nth row rows))))
+          ;; the end of a row that is not the last is the start of the next:
+          ;; stay before it
+          (make-pos line (min (column-at-cells string from to goal tab)
+                              (if last to (max from (1- to))))))))))
+
+(defun vertical (editor lines)
+  (if (wrap-width editor)
+      (vertical-rows editor lines)
+      (let* ((head (head editor))
+             (goal (or (editor-goal-column editor) (setf (editor-goal-column editor) (pos-col head))))
+             (line (+ (pos-line head) lines))
+             (count (line-count (doc editor))))
+        (cond ((< line 0) (make-pos 0 0))
+              ((>= line count) (document-end (doc editor)))
+              (t (make-pos line (min goal (line-length (doc editor) line))))))))
 
 (define-motion next-line select-next-line "Move one line down." :keep-goal (vertical editor 1))
 (define-motion previous-line select-previous-line "Move one line up." :keep-goal (vertical editor -1))

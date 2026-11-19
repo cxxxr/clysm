@@ -187,4 +187,21 @@
   (undo e)
   (check "back to saved" (editor-modified e) nil))
 
+;;; wrapping
+(check "wrap words" (editor::wrap-string "aaa bbb ccc" 6) '(4 8))
+(check "wrap hard" (editor::wrap-string "abcdefghij" 4) '(4 8))
+(check "wrap wide" (editor::wrap-string (coerce (list (code-char #x3042) (code-char #x3044) (code-char #x3046)) 'string) 4) '(2))
+(check "wrap after a wide character"
+       (editor::wrap-string (concatenate 'string "a " (make-string 4 :initial-element (code-char #x3042))) 6) '(4))
+(check "wrap short" (editor::wrap-string "abc" 8) '())
+(flet ((wrapped (text width)
+         (let ((e (mk text)))
+           (setf (editor-property e :wrap-width) width)
+           e)))
+  (check "down a row" (show (keys (wrapped "ab|cdefgh" 4) "Down")) "abcdef|gh")
+  (check "down off the line" (show (keys (wrapped (format nil "abcd|efgh~%x") 4) "Down")) (format nil "abcdefgh~%|x"))
+  (check "up a row" (show (keys (wrapped (format nil "abcdefgh~%x|") 4) "Up")) (format nil "abcde|fgh~%x"))
+  (check "stays on the row" (show (keys (wrapped "abcdefg|h" 4) "Up")) "abc|defgh")
+  (check "first row" (show (keys (wrapped "ab|cdef" 4) "Up")) "|abcdef"))
+
 (format t "~D tests, ~D failures~%" *count* *failures*)

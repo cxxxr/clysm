@@ -14,8 +14,11 @@
 ;;;; scroller its height, and the lines in view are moved into place.  A line
 ;;;; is rendered again only when its arguments change (its text, tokens, the
 ;;;; part of the selection on it, the cursor), so a key typed changes a line.
-;;;; Lines have a fixed height (LINE-HEIGHT): a position on the page is a
-;;;; line by division.  The column under the mouse is found by the browser
+;;;; Rows have a fixed height (LINE-HEIGHT): a position on the page is a
+;;;; row by division.  When the lines are wrapped (:WRAP T), a line is cut
+;;;; into rows here (WRAP-STRING of commands.lisp, from the width of a
+;;;; character), not by the browser, so that the height of every line is
+;;;; known without asking the page.  The column under the mouse is found by the browser
 ;;;; (caretPositionFromPoint), which knows the widths of the characters, wide
 ;;;; ones included.
 ;;;;
@@ -33,7 +36,8 @@
           code-editor-change-callback code-editor-cursor-callback code-editor-save-callback
           code-editor-line-height code-editor-font-size code-editor-focused
           code-editor-version code-editor-message code-editor-cursor code-editor-focus
-          code-editor-run code-editor-select code-editor-reveal code-editor-find))
+          code-editor-run code-editor-select code-editor-reveal code-editor-find
+          code-editor-wrap))
 
 (ui:defmodel code-editor (ui:pane)
   (;; the model (buffer.lisp); it is not observed: VERSION is
@@ -46,6 +50,10 @@
    ;; in pixels: every line is LINE-HEIGHT high
    (line-height :initarg :line-height :initform 20 :accessor code-editor-line-height)
    (font-size :initarg :font-size :initform 14 :accessor code-editor-font-size)
+   ;; true: long lines are wrapped to the width of the pane
+   (wrap :initarg :wrap :initform nil :accessor %code-editor-wrap)
+   ;; the cells a row of text has on the page (when wrapped)
+   (columns :initform nil :accessor wrap-columns)
    ;; called with the pane after the user changed the text
    (change-callback :initarg :change-callback :initform nil :accessor code-editor-change-callback)
    ;; called with the pane after the cursor or the selection moved
@@ -76,6 +84,10 @@ of commands.lisp."))
    (last-press :initform nil :accessor dom-last-press)
    (reveal :initform nil :accessor dom-reveal)
    (frame-requested :initform nil :accessor dom-frame-requested)
+   ;; the width of a character in pixels
+   (char-width :initform nil :accessor dom-char-width)
+   ;; (version width . vector): the first row of every line, and the rows in all
+   (row-offsets :initform nil :accessor dom-row-offsets)
    (text-version :initform -1 :accessor dom-text-version)))
 
 (defvar *doms* (make-hash-table :test 'eq) "code-editor -> code-editor-dom")
@@ -160,6 +172,13 @@ of commands.lisp."))
   (incf (code-editor-version pane))
   value)
 
+(defun code-editor-wrap (pane) (%code-editor-wrap pane))
+(defun (setf code-editor-wrap) (value pane)
+  (setf (%code-editor-wrap pane) value)
+  (sync-wrap pane)
+  (after-command pane)
+  value)
+
 (defun code-editor-message (pane)
   "The message of the last command (\"Mark set\", \"C-x-\"...), or NIL."
   (code-editor-version pane)
@@ -204,21 +223,69 @@ of the editor) on PANE."
 
 (defun line-count* (pane) (line-count (editor-document (code-editor-editor pane))))
 
+(defun sync-wrap (pane)
+  "Tell the model how wide a row is (NIL: lines are not wrapped)."
+  (setf (editor-property (code-editor-editor pane) :wrap-width)
+        (and (%code-editor-wrap pane) (wrap-columns pane))))
+
+(defun row-offsets (pane)
+  "When the lines are wrapped, a vector of the first row of every line (and
+the number of rows after them); NIL when they are not."
+  (let ((editor (code-editor-editor pane)))
+    (when (editor-property editor :wrap-width)
+      (let* ((dom (dom pane))
+             (width (editor-property editor :wrap-width))
+             (cache (dom-row-offsets dom)))
+        (if (and cache (eql (first cache) (editor-version editor)) (eql (second cache) width))
+            (cddr cache)
+            (let* ((count (line-count* pane))
+                   (offsets (make-array (1+ count)))
+                   (row 0))
+              (dotimes (line count)
+                (setf (aref offsets line) row)
+                (incf row (1+ (length (line-rows editor line)))))
+              (setf (aref offsets count) row)
+              (setf (dom-row-offsets dom) (list* (editor-version editor) width offsets))
+              offsets))))))
+
+(defun line-at-row (offsets row)
+  "The line that has the row ROW (OFFSETS of ROW-OFFSETS)."
+  (let ((low 0) (high (1- (length offsets))))
+    ;; the last line whose first row is not after ROW
+    (loop while (> (- high low) 1)
+          do (let ((mid (floor (+ low high) 2)))
+               (if (<= (aref offsets mid) row) (setf low mid) (setf high mid))))
+    low))
+
+(defun line-top (pane line &optional (offsets (row-offsets pane)))
+  "The first row of LINE."
+  (if offsets (aref offsets line) line))
+
 (defun visible-range (pane)
   "The first line and the line after the last that are on the page."
   (let* ((lh (code-editor-line-height pane))
          (first (floor (scroll-top pane) lh))
          (rows (ceiling (viewport-height pane) lh))
-         (overscan 8))
-    (values (max 0 (- first overscan))
-            (min (line-count* pane) (+ first rows overscan)))))
+         (overscan 8)
+         (offsets (row-offsets pane))
+         (count (line-count* pane)))
+    (if offsets
+        (values (max 0 (- (line-at-row offsets first) overscan))
+                (min count (+ (line-at-row offsets (+ first rows)) 1 overscan)))
+        (values (max 0 (- first overscan))
+                (min count (+ first rows overscan))))))
 
 (defun code-editor-reveal (pane)
   "Scroll so that the cursor is in view."
   (let* ((scroller (dom-scroller (dom pane)))
+         (editor (code-editor-editor pane))
          (lh (code-editor-line-height pane))
-         (line (pos-line (editor-head (code-editor-editor pane))))
-         (top (* line lh))
+         (head (editor-head editor))
+         (offsets (row-offsets pane))
+         (row (if offsets
+                  (+ (aref offsets (pos-line head)) (row-of (line-rows editor (pos-line head)) (pos-col head)))
+                  (pos-line head)))
+         (top (* row lh))
          (height (viewport-height pane))
          (scroll (scroll-top pane))
          (margin (min (* 2 lh) (floor height 4))))
@@ -229,6 +296,31 @@ of the editor) on PANE."
       (when (/= new scroll)
         (setf (scroll-top pane) new)
         (when scroller (js:set scroller "scrollTop" new))))))
+
+(defun measure (pane)
+  "Find how many cells a row has on the page (when the lines are wrapped)."
+  (let* ((dom (dom pane))
+         (root (dom-root dom))
+         (scroller (dom-scroller dom)))
+    (when (and root (%code-editor-wrap pane))
+      (unless (dom-char-width dom)
+        (let ((probe (js:call root "querySelector" ".ce-measure")))
+          (when (js:js-value-p probe)
+            (let ((width (js:get (js:call probe "getBoundingClientRect") "width")))
+              (when (and (numberp width) (plusp width))
+                (setf (dom-char-width dom) (/ width 10)))))))
+      (let* ((ch (dom-char-width dom))
+             (gutter (js:call root "querySelector" ".ce-gutter"))
+             (gutter-width (if (js:js-value-p gutter) (js:get gutter "offsetWidth") 0))
+             (width (js:get scroller "clientWidth")))
+        (when (and ch (numberp width) (plusp width))
+          ;; the text has 1ch before it, and 2ch and the cursor after it
+          (let ((columns (max 8 (- (floor (- width gutter-width) ch) 4))))
+            (unless (eql columns (wrap-columns pane))
+              (setf (wrap-columns pane) columns)
+              (sync-wrap pane)
+              (code-editor-reveal pane)
+              (request-frame pane))))))))
 
 (defun after-command (pane)
   (setf (editor-property (code-editor-editor pane) :page-lines)
@@ -247,6 +339,7 @@ bring the cursor into view sideways)."
                (lambda (&rest args)
                  (declare (ignore args))
                  (setf (dom-frame-requested dom) nil)
+                 (ignore-errors (measure pane))
                  (ignore-errors (place-input pane))
                  nil)))))
 
@@ -277,15 +370,16 @@ bring the cursor into view sideways)."
           (format out "~:[ ~;~]ce-~A" (zerop start) (subseq class start space))
           (if space (setf start (1+ space)) (return)))))))
 
-(defun line-segments (text tokens selection cursor brackets)
-  "The spans of a line: runs of TEXT with the classes of their tokens, the
-selection (start end) and the brackets, and the cursor at its column."
-  (let ((cuts (list 0 (length text))))
+(defun line-segments (text tokens selection cursor brackets &optional (from 0) (to (length text)) (last t))
+  "The spans of a line (or of its row from FROM to TO; LAST: the row ends the
+line): runs of TEXT with the classes of their tokens, the selection (start
+end) and the brackets, and the cursor at its column."
+  (let ((cuts (list from to)))
     (dolist (token tokens) (push (first token) cuts) (push (second token) cuts))
     (when selection (push (first selection) cuts) (push (min (length text) (second selection)) cuts))
     (when cursor (push cursor cuts))
     (dolist (b brackets) (push b cuts) (push (1+ b) cuts))
-    (setf cuts (sort (remove-duplicates (remove-if (lambda (c) (> c (length text))) cuts)) #'<))
+    (setf cuts (sort (remove-duplicates (remove-if-not (lambda (c) (<= from c to)) cuts)) #'<))
     (let ((nodes '()))
       (loop for (start end) on cuts
             while end
@@ -299,16 +393,27 @@ selection (start end) and the brackets, and the cursor at its column."
                  (push (ui:html (:span :class (if (string= class "") nil (string-left-trim " " class))
                                   (subseq text start end)))
                        nodes)))
-      (when (eql cursor (length text)) (push (ui:html (:span :class "ce-cursor")) nodes))
+      (when (and last (eql cursor to)) (push (ui:html (:span :class "ce-cursor")) nodes))
       ;; the newline at the end of the line is selected
-      (when (and selection (third selection))
+      (when (and last selection (third selection))
         (push (ui:html (:span :class "ce-selected ce-eol" " ")) nodes))
       (nreverse nodes))))
 
-(ui:defcomponent editor-line (number text tokens selection cursor brackets current gutter)
+(defun row-nodes (text tokens selection cursor brackets rows)
+  "The rows of a wrapped line: ROWS are the columns they start at after the first."
+  (loop for (from to) on (cons 0 (append rows (list (length text))))
+        while to
+        collect (let ((last (= to (length text))))
+                  (ui:html (:div :class "ce-row"
+                             (line-segments text tokens selection cursor brackets from to last))))))
+
+(ui:defcomponent editor-line (number text tokens selection cursor brackets current gutter rows)
   (:div :class (if current "ce-line ce-current" "ce-line") :data-line number
     (when gutter (:span :class "ce-gutter" (1+ number)))
-    (:span :class "ce-text" (line-segments text tokens selection cursor brackets))))
+    (:span :class "ce-text"
+      (if rows
+          (row-nodes text tokens selection cursor brackets rows)
+          (line-segments text tokens selection cursor brackets)))))
 
 (defun line-selection (editor line)
   "The part of the selection on LINE: (start end newline-p), or NIL."
@@ -334,6 +439,7 @@ selection (start end) and the brackets, and the cursor at its column."
                                   (when (and (numberp height) (plusp height)
                                              (/= height (viewport-height pane)))
                                     (setf (viewport-height pane) height)))
+                                (ignore-errors (measure pane))
                                 nil))))
         (js:call observer "observe" scroller)
         (setf (dom-resize-observer dom) observer))
@@ -356,22 +462,26 @@ selection (start end) and the brackets, and the cursor at its column."
          (focused (code-editor-focused pane))
          (gutter (code-editor-line-numbers pane))
          (digits (max 2 (length (princ-to-string count))))
-         (pair (and (selection-empty-p editor) (bracket-pair-near editor head))))
+         (pair (and (selection-empty-p editor) (bracket-pair-near editor head)))
+         (wrap (progn (sync-wrap pane) (editor-property editor :wrap-width)))
+         (offsets (row-offsets pane))
+         (total (if offsets (aref offsets count) count)))
     (multiple-value-bind (first last) (visible-range pane)
       (ui:html
-        (:div :class (format nil "ce-editor~:[~; ce-focused~]~:[~; ce-read-only~]~:[ ce-no-gutter~;~]"
-                             focused (editor-read-only editor) gutter)
+        (:div :class (format nil "ce-editor~:[~; ce-focused~]~:[~; ce-read-only~]~:[ ce-no-gutter~;~]~:[~; ce-wrap~]"
+                             focused (editor-read-only editor) gutter (%code-editor-wrap pane))
               :style (format nil "--ce-line-height:~Dpx;--ce-font-size:~Dpx;--ce-gutter-chars:~D;"
                              lh (code-editor-font-size pane) digits)
               :on-mount (lambda (node) (on-mount pane node))
+          (:span :class "ce-measure" :aria-hidden "true" "0000000000")
           (:div :class "ce-scroller"
                 :on-scroll (lambda (event) (on-scroll pane event))
                 :on-pointerdown (lambda (event) (on-pointer-down pane event))
                 :on-pointermove (lambda (event) (on-pointer-move pane event))
                 :on-pointerup (lambda (event) (on-pointer-up pane event))
                 :on-pointercancel (lambda (event) (on-pointer-up pane event))
-            (:div :class "ce-sizer" :style (format nil "height:~Dpx;" (* count lh))
-              (:div :class "ce-lines" :style (format nil "transform:translateY(~Dpx);" (* first lh))
+            (:div :class "ce-sizer" :style (format nil "height:~Dpx;" (* total lh))
+              (:div :class "ce-lines" :style (format nil "transform:translateY(~Dpx);" (* (line-top pane first offsets) lh))
                 (loop for line from first below last
                       collect (ui:keyed line
                                         (editor-line line (line-string doc line) (line-tokens editor line)
@@ -382,7 +492,8 @@ selection (start end) and the brackets, and the cursor at its column."
                                                              collect (pos-col p))
                                                      (and focused (selection-empty-p editor)
                                                           (= line (pos-line head)))
-                                                     gutter))))
+                                                     gutter
+                                                     (and wrap (line-rows editor line))))))
               (:textarea :class (if (composing pane) "ce-input ce-composing" "ce-input")
                          :autocomplete "off" :autocapitalize "off" :spellcheck "false"
                          :aria-label "editor" :rows 1 :wrap "off"
@@ -532,27 +643,43 @@ selection (start end) and the brackets, and the cursor at its column."
          (rect (js:call sizer "getBoundingClientRect"))
          (x (js:get event "clientX"))
          (y (js:get event "clientY"))
-         (line (floor (- y (js:get rect "top")) lh)))
-    (cond ((< line 0) (make-pos 0 0))
+         (offsets (row-offsets pane))
+         (row (floor (- y (js:get rect "top")) lh))
+         (line (if (and offsets (< -1 row (aref offsets (line-count doc))))
+                   (line-at-row offsets row)
+                   row))
+         (sub (if offsets (- row (line-top pane line offsets)) 0)))
+    (cond ((< row 0) (make-pos 0 0))
           ((>= line (line-count doc)) (document-end doc))
-          (t (make-pos line (column-at pane line x (+ (js:get rect "top") (* line lh) (/ lh 2))))))))
+          ((and offsets (>= row (aref offsets (line-count doc)))) (document-end doc))
+          (t (make-pos line (column-at pane line sub x (+ (js:get rect "top") (* row lh) (/ lh 2))))))))
 
-(defun column-at (pane line x y)
-  "The column of LINE nearest to the point X, Y of the page."
+(defun column-at (pane line sub x y)
+  "The column of LINE (in its row SUB, if it is wrapped) nearest to the point X, Y of the page."
   (let* ((root (dom-root (dom pane)))
-         (row (find-row root line))
-         (text (and row (js:call row "querySelector" ".ce-text")))
-         (len (line-length (editor-document (code-editor-editor pane)) line)))
+         (editor (code-editor-editor pane))
+         (element (find-row root line))
+         (rows (line-rows editor line))
+         (len (line-length (editor-document editor) line))
+         (from (if (plusp sub) (or (nth (1- sub) rows) len) 0))
+         (last (>= sub (length rows)))
+         (to (if last len (nth sub rows)))
+         (text (and element
+                    (if rows
+                        (js:call (js:call element "querySelectorAll" ".ce-row") "item" sub)
+                        (js:call element "querySelector" ".ce-text")))))
     (if (not (js:js-value-p text))
-        0
+        from
         (let* ((rect (js:call text "getBoundingClientRect"))
-               (left (js:get rect "left")))
-          (cond ((<= x left) 0)
-                ((>= x (js:get rect "right")) len)
+               (left (js:get rect "left"))
+               ;; the end of a row that is not the last is the start of the next
+               (end (if last to (max from (1- to)))))
+          (cond ((<= x left) from)
+                ((>= x (js:get rect "right")) end)
                 (t (let ((caret (caret-at x y)))
                      (if caret
-                         (min len (caret-column text (car caret) (cdr caret)))
-                         len))))))))
+                         (min end (+ from (caret-column text (car caret) (cdr caret))))
+                         end))))))))
 
 (defun find-row (root line)
   "The element of LINE on the page, or NIL."

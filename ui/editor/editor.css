@@ -118,3 +118,11 @@
 .ce-paren-3 { color: var(--ce-paren-3); }
 .ce-paren-4 { color: var(--ce-paren-4); }
 .ce-paren-5 { color: var(--ce-paren-5); }
+
+/* wrapped lines: a line is as high as its rows, which are cut by view.lisp */
+.ce-wrap .ce-sizer { width: 100%; }
+.ce-wrap .ce-line { height: auto; }
+.ce-wrap .ce-text { min-width: 0; }
+.ce-row { height: var(--ce-line-height); }
+/* a character, to measure its width */
+.ce-measure { position: absolute; visibility: hidden; white-space: pre; pointer-events: none; }

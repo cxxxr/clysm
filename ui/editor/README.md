@@ -8,6 +8,7 @@ Common Lisp だけで書いたコードエディタの部品です。CodeMirror 
                  :text "(defun hello () 42)"
                  :language "lisp"          ; "lisp" か "text"、または LANGUAGE のインスタンス
                  :keymap :standard         ; :standard か :emacs、または keymap
+                 :wrap t                   ; 長い行をペインの幅で折り返す
                  :change-callback (lambda (pane) (print (editor:code-editor-text pane)))
                  :save-callback (lambda (pane) ...)))   ; Mod-S、C-x C-s
 
@@ -36,6 +37,7 @@ $ (cd build/editor-desktop && npx electron . ~/foo.lisp)                       #
 - IME（日本語入力）。変換中の文字はカーソルの位置に出ます
 - 検索（`code-editor-find`）
 - 大きなファイル: 画面に見えている行だけをページに置くので、数万行でも1キー数ミリ秒です
+- 折り返し表示（`:wrap t`）。空白か全角文字の前後で折り返し、上下の矢印は見た目の行ごとに動きます
 - 読み取り専用モード
 
 ## 構成
@@ -53,7 +55,7 @@ $ (cd build/editor-desktop && npx electron . ~/foo.lisp)                       #
 `view.lisp` は JavaScript のコードを1行も書いていません。ページには DOM のメソッドを `js:call`・`js:get` で呼ぶだけで触ります。
 
 - 行は UI フレームワークのコンポーネントで、引数（行の文字列、トークン、行の中の選択、カーソルの列）が変わったときだけ描き直されます。見えている行（と上下の数行）だけを置き、全体の高さの要素でスクロールバーを作ります。
-- 行の高さは一定なので、マウスの y 座標から行は割り算で求まります。列はブラウザ（`caretPositionFromPoint`）に聞くので、全角文字の幅も正しく扱えます。
+- 見た目の行（折り返した行）の高さは一定なので、マウスの y 座標から行は割り算で求まります。折り返すときは、どこで切るかをブラウザに任せずに Lisp が決めます（`wrap-string`: 文字の幅は半角 1、全角 2 で、ペインの幅は文字の幅を測って求めます）。そのため、各行が何段になるかがページに聞かなくてもわかり、数万行でも見えている行だけを置けます。列はブラウザ（`caretPositionFromPoint`）に聞くので、全角文字の幅も正しく扱えます。
 - キーは、カーソルの位置に置いた見えない textarea が受け取ります。修飾キー付きのキーや文字のないキーは keydown でキーマップを引き、文字は input イベント、IME の確定文字は compositionend で受け取ります。
 
 ## プログラムからの操作
@@ -64,6 +66,7 @@ $ (cd build/editor-desktop && npx electron . ~/foo.lisp)                       #
 | `(code-editor-language pane)`、`setf` | 言語 |
 | `(code-editor-keymap pane)`、`setf` | `:standard`、`:emacs` |
 | `(code-editor-read-only pane)`、`setf` | 読み取り専用 |
+| `(code-editor-wrap pane)`、`setf` | 折り返し表示 |
 | `(code-editor-cursor pane)` | カーソルの行と列（0 から）の2値 |
 | `(code-editor-select pane l1 c1 l2 c2)` | 選択して見えるようにスクロール |
 | `(code-editor-find pane string &key backward)` | 次（前）を選択 |
