@@ -111,7 +111,10 @@ takes the required ones off the list and passes the rest of the list as the
 rest list (CLHS 3.4.1.3 lets it share structure with the last argument of
 `apply`), with no argument vector and no copy; for the others the shared
 `:apply-generic` takes up to four elements to the fixed entries. `apply` of
-a known global function calls its `entryA` directly. `funcall` of an object not known to be a
+a known global function calls its `entryA` directly, and one of required
+parameters and `&rest` whose required parameters the spread arguments of
+`(apply f a b ... list)` fill is called with them, only the spread
+arguments beyond them consed onto the list. `funcall` of an object not known to be a
 function tests at the call site for a closure, then for a symbol whose
 function cell is set; only other objects go to the `:coerce-function` helper.
 
