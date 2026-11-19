@@ -206,6 +206,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
   "Write the heap to FILE, from which a host can start this image again
 (see the beginning of this file); there FUNCTION is called."
   (mapc #'funcall *save-image-hooks*)
+  ;; (the JavaScript strings of literal names: made again when first used)
+  (%js-forget-names)
   (let ((host-values (mapcar (lambda (e) (symbol-value (car e))) *host-variables*)))
     (dolist (e *host-variables*) (setf (symbol-value (car e)) nil))
     (unwind-protect (%save-image file function)
