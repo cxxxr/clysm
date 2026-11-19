@@ -577,6 +577,13 @@ generic function."
         ;; a two-dimensional access to an array of unknown type: inline for
         ;; an array of elements of type T (a header over a simple vector)
         (if (ty-array-kind aty) (ty-array-kind aty) (values :vector :md2))
+      ;; a simple vector of a known kind with a subscript of unknown type
+      ;; (an element of a vector, a counter that may grow): the subscript is
+      ;; tested to be a fixnum inline, as for an array of unknown type
+      (when (and kind (not two) (not row-major) (eq shape :vec) (null (cdr subs))
+                 (not (i32-arg-p (first subs)))
+                 (or (not (member name '(char schar))) (eq kind :string)))
+        (return-from array-locate-code (speculative-locate-code-1 name kind a (first subs) slow)))
       (when (and kind (every #'i32-arg-p subs)
                  (or (not (member name '(char schar))) (eq kind :string))
                  (cond (two (member shape '(:md2 :any)))
