@@ -13,10 +13,10 @@
 # toplevel forms, the highlighting of the whole file, a search, STRING-WIDTH
 # of every line.
 #
-# Lem: a checkout of cxxxr/lem, LEM_DIR or build/lem, where
-# frontends/clysm/build.sh (or its copy without the network,
-# build/lem/frontends/clysm/build-local.sh) has put micros and lem-mailbox
-# in build/clysm/deps/; Lem itself does not have to be built.  The other
+# Lem: a checkout of cxxxr/lem with micros and lem-mailbox in
+# build/clysm/deps/ (Lem itself does not have to be built): LEM_DIR, else
+# build/lem of this tree, else $HOME/src/clysm-lem, which tools/lem-setup.sh
+# makes once.  The other
 # libraries come from Quicklisp (~/quicklisp/, already installed: nothing
 # is downloaded).  Clysm runs it in the REPL image (bin/clysm image-native),
 # which loads Lem's fasls (compiled by ASDF the first time for each build
@@ -27,10 +27,13 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FILE="$(cd "$(dirname "${1:-$ROOT/src/prims.lisp}")" && pwd)/$(basename "${1:-$ROOT/src/prims.lisp}")"
-LEM_DIR="$(cd "${LEM_DIR:-$ROOT/build/lem}" && pwd)"
+if [ -z "$LEM_DIR" ]; then
+  if [ -d "$ROOT/build/lem/build/clysm/deps" ]; then LEM_DIR=$ROOT/build/lem; else LEM_DIR=$HOME/src/clysm-lem; fi
+fi
+LEM_DIR="$(cd "$LEM_DIR" && pwd)"
 export LEM_DIR
 [ -d "$LEM_DIR/build/clysm/deps/micros" ] ||
-  { echo "no $LEM_DIR/build/clysm/deps/micros: run frontends/clysm/build.sh there"; exit 1; }
+  { echo "no $LEM_DIR/build/clysm/deps/micros: run tools/lem-setup.sh"; exit 1; }
 RUNS="${BENCH_RUNS:-3}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
