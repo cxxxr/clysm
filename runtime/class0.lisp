@@ -22,7 +22,8 @@
 (defconstant +class-plist+ 16)
 (defconstant +class-make-info+ 17)  ; what MAKE-INSTANCE does for the class (clos.lisp)
 (defconstant +class-instance-size+ 18) ; the number of slots in an instance (set by the finalization)
-(defconstant +class-size+ 19)
+(defconstant +class-dispatch+ 19) ; #(info cache function ...) of generic functions dispatched by the class (clos.lisp)
+(defconstant +class-size+ 20)
 
 (defvar *the-standard-class* nil)
 (defvar *the-direct-slotd-class* nil)

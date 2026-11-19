@@ -1578,7 +1578,11 @@ What is not as fast as intended, and why:
   or letting that dispatch call the method the guard selects, were slower
   still, 2026-11) or on many classes at one call site (2.2–3.7: the entries
   are searched one after the other; past 32 they move to a hash table,
-  searched out of the generic function's own code. Probing the table in
+  searched out of the generic function's own code, and a class keeps the
+  function of each such generic function for its instances in a short
+  vector of its own (`+class-dispatch+`, `%gf-class-lookup`): 40 classes
+  in random order take 0.62 of the time of the hash table (whole program)
+  and 0.73 (fasl), about 2.5 times SBCL. Probing the table in
   that code, past 8 entries, was twice as slow as the linear search for 12
   to 20 classes in turn or at random and gained 10% only past 32: the
   address of the method then depends on a chain of loads from the argument,
@@ -1682,14 +1686,36 @@ What makes the code fast:
   `&rest` or `&key`, the list of the arguments after them (`%fast-shape`,
   `%gf-scall`); the methods are functions of those too, and a generic
   function with `&key` checks the keywords of a call only when there are
-  some, from its own dispatch (one pass with `eq`); methods find their
-  keyword arguments in that list by inline code. The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
+  some, from its own dispatch (one pass with `eq`). Its function also has a
+  *keyed main function* (`%gf-keyed-entry`) with the layout (required,
+  optional, then its keywords): a call compiled in the image or into a fasl
+  with constant keywords passes them in its slots, as for ordinary
+  functions, and it calls a keyed effective method of four arguments made
+  from methods that are known as functions of them (`%keyed-method-form`:
+  a method finds its keywords by their slot among the generic function's,
+  `call-next-method` passes all four on); a method with `&rest`,
+  `call-next-method` with arguments or as a function, another method
+  combination, or more than four arguments in all fall back to the list of
+  the keyword arguments. `compile-file` knows the layout of the generic
+  functions of the file before they are made (`*note-key-layout-hook*`).
+  Calls with one or two keywords take 0.2–0.3 of their earlier time in
+  loaded code and fasls (`k-key-*` in scratch tests: about SBCL's time).
+  The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
   function of each generic function, also when that is compiled in the
   image or into a fasl, where the engine does not inline the runtime's
-  functions; `call-next-method` is a direct call; call sites cache the
-  functions for the classes of their arguments and read slots of readers
-  inline (`compile-file` defines their compiler macro for the rest of the
-  file); `slot-value` with a constant name and `make-instance` with a
+  functions: once for the call of the required arguments alone, and once
+  into the *core* (`+gf-core+`, `%gf-spread-core`) that the other entries
+  call (and once into the keyed main function); the readers and writers
+  that `defclass` defines have none (`%define-slot-accessor`), their call
+  sites keeping the slot locations. `call-next-method` is a direct call;
+  call sites cache the functions for the classes of their arguments and
+  read or write slots of readers and writers inline (`compile-file`
+  defines their compiler macro for the rest of the file): the class of an
+  instance is compared with four entries and the slot read at the cached
+  location, without an epoch read at each call (`%bump-clos-epoch` empties
+  the caches of the sites that have been used, `*gf-sites*`); readers and
+  writers at about SBCL's time (`r-*` in scratch tests, fasl 0.7 of the
+  earlier time); `slot-value` with a constant name and `make-instance` with a
   constant class use caches at the call site. A constructor copies a
   template of the instance's slots holding the values of constant
   initforms, then stores the arguments and the other initforms; the
