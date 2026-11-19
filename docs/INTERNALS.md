@@ -1960,7 +1960,16 @@ What makes the code fast:
   `string=` and `string-equal` with keyword arguments call the comparison
   with its bounds directly instead of checking keywords (a function of
   four arguments when only one string has bounds), which compares two
-  simple strings in a loop of its own.
+  simple strings in a loop of its own. A vector with a fill pointer or adjustable of a
+  constant element type (a reader's buffer) is made without parsing
+  keywords, with its properties made once where the call is written;
+  `vector-push-extend` of a character to a string buffer with room is a
+  store at the call site; `member` of a list written as a constant is a
+  chain of `eq` tests and with only `:test` a loop at the call site;
+  `elt` of a simple array reads it at the call site. A string with a fill
+  pointer is printed by `princ` without looking at the pretty printer's
+  dispatch, and `class-of` tests an array header once, before the other
+  representations.
 
 ### Size and start-up
 

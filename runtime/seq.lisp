@@ -453,6 +453,49 @@
              (%make-mdarray data fp (copy-list dims) 0
                             (cons et (cons (not (null adjustable)) nil)))))))))
 
+;;; A vector with a fill pointer or adjustable, of an element type written
+;;; as a constant (a reader's buffer: (make-array 32 :element-type 'character
+;;; :adjustable t :fill-pointer 0)), without keyword parsing, the
+;;; normalizing of the element type and the list of its properties at each
+;;; call: INFO, made once where the call is written, is (element-type
+;;; adjustable), which no array changes (ADJUST-ARRAY gives it a new one).
+(defun %make-fill-vector (n fill-pointer info)
+  (unless (and (fixnump n) (%fx>= n 0))
+    ;; (a list of dimensions, or an error: as MAKE-ARRAY does)
+    (return-from %make-fill-vector
+      (make-array n :element-type (car info) :adjustable (cadr info) :fill-pointer fill-pointer)))
+  (let ((fp (cond ((null fill-pointer) nil)
+                  ((eq fill-pointer t) n)
+                  ((and (fixnump fill-pointer) (%fx>= fill-pointer 0) (%fx<= fill-pointer n)) fill-pointer)
+                  (t (%type-error fill-pointer `(integer 0 ,n))))))
+    (%make-mdarray (%make-storage n (car info)) fp (list n) 0 info)))
+
+(define-compiler-macro make-array (&whole form dimensions &rest keys)
+  (let ((names (loop for (k) on keys by #'cddr collect k)))
+    (if (and (evenp (length keys))
+             (every (lambda (k) (member k '(:element-type :initial-element :adjustable :fill-pointer))) names)
+             (= (length (remove-duplicates names)) (length names))
+             (or (member :adjustable names) (member :fill-pointer names))
+             ;; the dimension: one, not a list
+             (not (and (consp dimensions) (eq (car dimensions) 'quote)))
+             (let ((et (getf keys :element-type '(quote t))))
+               (and (consp et) (eq (car et) 'quote)))
+             (member (getf keys :adjustable nil) '(nil t)))
+        (let* ((n (gensym "N"))
+               (vars (loop for (k v) on keys by #'cddr
+                           unless (member k '(:element-type :adjustable))
+                             collect (list k (gensym (symbol-name k)) v)))
+               (v (gensym "V"))
+               (init (assoc :initial-element vars)))
+          `(let* ((,n ,dimensions) ,@(mapcar (lambda (e) (list (second e) (third e))) vars))
+             (let ((,v (%make-fill-vector
+                        ,n ,(second (assoc :fill-pointer vars))
+                        (load-time-value (list (%normalize-element-type ,(getf keys :element-type '(quote t)))
+                                               ,(getf keys :adjustable nil))))))
+               ,@(when init `((%fill-storage (%array-storage ,v) ,(second init) 0 (array-total-size ,v))))
+               ,v)))
+        form)))
+
 (defun %fill-from-contents (data dims contents)
   (let ((i 0))
     (labels ((walk (c ds)
@@ -690,9 +733,13 @@
         `(let* ((,xv ,x) (,vv ,v)
                 (,fp (and (%mdarray-p ,vv) (%mdarray-fill ,vv))))
            (let ((,d (and ,fp (%mdarray-dim1 ,vv))) (,data (and ,fp (%mdarray-data ,vv))))
-             (if (and (fixnump ,fp) (%fx< ,fp ,d)
-                      (%simple-vector-p ,data) (eql (%mdarray-offset ,vv) 0))
-                 (progn (%set-svref ,data ,fp ,xv) (%set-mdarray-fill ,vv (%fx+ ,fp 1)) ,fp)
+             (if (and (fixnump ,fp) (%fx< ,fp ,d) (eql (%mdarray-offset ,vv) 0))
+                 (cond ((%simple-vector-p ,data)
+                        (%set-svref ,data ,fp ,xv) (%set-mdarray-fill ,vv (%fx+ ,fp 1)) ,fp)
+                       ;; a string buffer (a reader's): a character stored in place
+                       ((and (%simple-string-p ,data) (characterp ,xv))
+                        (%set-schar ,data ,fp ,xv) (%set-mdarray-fill ,vv (%fx+ ,fp 1)) ,fp)
+                       (t (vector-push-extend ,xv ,vv 16)))
                  (vector-push-extend ,xv ,vv 16)))))))   ; (with EXTENSION: not expanded again)
 
 ;;; append STRING[START,END) to the string BUF with a fill pointer; returns
@@ -1105,6 +1152,15 @@ the type is fully described by the other values (otherwise the result is checked
                                            :sequence seq))))
         ((vectorp seq) (row-major-aref seq (%check-index seq i (length seq))))
         (t (%type-error seq 'sequence))))
+;;; ELT of a simple vector or other simple array (no fill pointer: the
+;;; bounds are those of AREF) reads it at the call site.
+(define-compiler-macro elt (seq index)
+  (let ((s (gensym "SEQ")) (i (gensym "INDEX")))
+    `(let ((,s ,seq) (,i ,index))
+       (if (or (%simple-vector-p ,s) (%simple-array-p ,s))
+           (%aref1 ,s ,i)
+           (locally (declare (notinline elt)) (elt ,s ,i))))))
+
 (defun %setelt (seq i v)
   (cond ((listp seq)
          (unless (and (fixnump i) (>= i 0)) (%type-error i '(integer 0 *)))
