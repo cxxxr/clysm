@@ -56,6 +56,7 @@ Returns (values bytes constants-vector)."
         (*live-packages* t)
         (*read-package* *package*)
         (*warnings* nil)
+        (*unit-env* nil)
         (*error-output* (make-broadcast-stream)))
     (with-fresh-codegen-state ()
       (let ((env (make-cenv)))
@@ -149,99 +150,257 @@ DEFINE-CHECKED-CASTS)."
                 (compile-pending-lams)
                 (return))))))
 
+(defun close-live-toplevel ()
+  "End the current toplevel function; its value is that of its last form."
+  (when *current-toplevel*
+    (setf (lam-body *current-toplevel*) `(:progn (:const nil) ,@(reverse *toplevel-nodes*)))
+    (push *current-toplevel* *toplevel-lams*)
+    (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0)))
+
 (defun build-live-module ()
   (let ((*m* (make-wasm-module)))
-    (loop for (name def) in *type-defs* do (add-type *m* name def))
-    (setf (wasm-module-base-types *m*) (length *type-defs*))
-    (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
-    (add-import-global *m* :mv-count :i32 t "clysm" "mv_count")
-    (add-import-global *m* :mv-buf '(:ref :vector) nil "clysm" "mv_buf")
-    (add-import-global *m* :bstack '(:ref :vector) t "clysm" "bstack")
-    (add-import-global *m* :bsp :i32 t "clysm" "bsp")
-    (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")
-    (add-import-tag *m* :lisp-throw :exn "clysm" "lisp_throw")
-    (setf (wasm-module-memory-import *m*) (list "clysm" "memory" 1))
-    ;; its functions are placed in the image's table of functions, from
-    ;; CODE_BASE (runtime/image.lisp)
-    (add-import-global *m* :code-base :i32 nil "clysm" "code_base")
-    (setf (wasm-module-table *m*) (list :import "clysm" "codes")
-          (wasm-module-code-base *m*) :code-base)
+    (let ((castfns (live-module-begin))
+          (tops (reverse *toplevel-lams*)))
+      (live-compile-tops tops)
+      (multiple-value-bind (octets vectors) (live-module-finish (list tops) castfns nil)
+        (values octets (first vectors))))))
+
+(defun live-module-begin ()
+  "The types, imports and standard helpers of a module compiled in the image
+(in *M*); returns the functions of the checked casts (DEFINE-CHECKED-CASTS)."
+  (loop for (name def) in *type-defs* do (add-type *m* name def))
+  (setf (wasm-module-base-types *m*) (length *type-defs*))
+  (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
+  (add-import-global *m* :mv-count :i32 t "clysm" "mv_count")
+  (add-import-global *m* :mv-buf '(:ref :vector) nil "clysm" "mv_buf")
+  (add-import-global *m* :bstack '(:ref :vector) t "clysm" "bstack")
+  (add-import-global *m* :bsp :i32 t "clysm" "bsp")
+  (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")
+  (add-import-tag *m* :lisp-throw :exn "clysm" "lisp_throw")
+  (setf (wasm-module-memory-import *m*) (list "clysm" "memory" 1))
+  ;; its functions are placed in the image's table of functions, from
+  ;; CODE_BASE (runtime/image.lisp)
+  (add-import-global *m* :code-base :i32 nil "clysm" "code_base")
+  (setf (wasm-module-table *m*) (list :import "clysm" "codes")
+        (wasm-module-code-base *m*) :code-base)
+  (let ((*func-segment* 0))
     (sym-global nil) (sym-global t)
     (define-standard-helpers)
     (define-argerr-helpers)
-    (let ((tops (reverse *toplevel-lams*))
-          (castfns (define-checked-casts :lazy t)))
-      (dolist (l tops) (ensure-lam-compiled l) (static-closure-global l))
-      (compile-pending-lams)
-      (add-called-helpers castfns)
-      ;; globals: symbols, live constants and closures are filled in by RUN;
-      ;; only those the code that can run refers to (every helper's symbols
-      ;; were made, also those of the helpers it does not use)
-      (let* ((used (live-used-globals tops))
-             (syms (remove-if-not (lambda (s) (gethash (list :sym s) used)) (reverse *symbol-globals*)))
-             (consts (remove-if-not (lambda (c) (gethash (car c) used)) (reverse *live-constants*)))
-             (closures (remove-if-not (lambda (g) (gethash (first g) used)) (reverse *closure-globals*)))
-             (objects (append syms (mapcar #'cdr consts))))
-        (dolist (s syms)
-          (add-global *m* (list :sym s) '(:ref :null :symbol) t '((:ref.null :symbol)))
-          (setf (gethash (list :sym s) (wasm-module-nonnull-globals *m*)) t))
-        (dolist (c consts)
-          (add-global *m* (car c) :eqref t '((:ref.null :eq))))
-        (dolist (g closures)
-          (add-global *m* (first g) '(:ref :null :closure) t '((:ref.null :closure)))
-          (setf (gethash (first g) (wasm-module-nonnull-globals *m*)) t))
-        (dolist (g (reverse *misc-globals*))
-          (destructuring-bind (name type mutable init) g
-            (add-global *m* name type mutable init)))
-        (add-func *m* :run :x-e :export "run"
-                  :locals '((:ref :null :vector) :eqref) :local-names '(v result)
-                  :body `((:local.get 0) :any.convert_extern (:ref.cast! :vector) (:local.set v)
-                          ,@(loop for s in syms for i from 0
-                                  append `((:local.get v) (:i32.const ,i) (:array.get :vector)
-                                           (:ref.cast :symbol) (:global.set (:sym ,s))))
-                          ,@(loop for c in consts for i from (length syms)
-                                  append `((:local.get v) (:i32.const ,i) (:array.get :vector)
-                                           (:global.set ,(car c))))
-                          ,@(loop for g in closures
-                                  append `(,@(third g) (:global.set ,(first g))))
-                          ;; a form that leaves with an exit pending: RUN
-                          ;; returns null too (its caller, %COMPILE-MODULE, looks)
-                          (:block pend nil
-                            ,@(loop for l in tops
-                                    append `((:global.get ,(static-closure-global l))
-                                             (:call (:main ,(lam-id l))) (:local.tee result)
-                                             :ref.is_null
-                                             (:if nil nil ((:call :exit-pending-p) (:br_if pend)))))
-                            (:local.get result) :return)
-                          (:ref.null :eq)))
-        ;; for heap images (runtime/image.lisp): SNAP returns the values of
-        ;; its globals, which RESTORE sets again in a new instance (whose RUN
-        ;; is not called)
-        (let ((globals (append (mapcar (lambda (s) (list :sym s)) syms)
-                               (mapcar #'car consts)
-                               (mapcar #'first closures)
-                               (loop for (name type) in (reverse *misc-globals*)
-                                     when (eq type :eqref) collect name))))
-          (add-func *m* :snap :v-e :export "snap"
-                    :locals '((:ref :null :vector)) :local-names '(v)
-                    :body `((:i32.const ,(length globals)) (:array.new_default :vector) (:local.set v)
-                            ,@(loop for g in globals for i from 0
-                                    append `((:local.get v) (:i32.const ,i) (:global.get ,g)
-                                             (:array.set :vector)))
-                            (:local.get v)))
-          (add-func *m* :restore :e-v :export "restore"
-                    :locals '((:ref :null :vector)) :local-names '(v)
-                    :body `((:local.get 0) (:ref.cast! :vector) (:local.set v)
-                            ,@(loop for g in globals for i from 0
-                                    append `((:local.get v) (:i32.const ,i) (:array.get :vector)
-                                             ;; (plain casts: the values are
-                                                             ;; those SNAP returned)
-                                             ,@(case (car g)
-                                                 (:sym '((:ref.cast! :symbol)))
-                                                 (t (if (member g closures :key #'first)
-                                                        '((:ref.cast! :closure))
-                                                        nil)))
-                                             (:global.set ,g))))))
-        ;; a module made at run time only needs the helpers it calls
-        (remove-unreachable-functions *m* used)
-        (values (encode-module *m*) (coerce objects 'simple-vector))))))
+    (define-checked-casts :lazy t)))
+
+(defun live-compile-tops (tops)
+  "Compile the toplevel functions TOPS and the functions they need."
+  (dolist (l tops) (ensure-lam-compiled l) (static-closure-global l))
+  (compile-pending-lams))
+
+(defun global-segments (globals closures segments)
+  "A table: global name -> the segment whose run sets it: the first of the
+segments whose functions refer to it (a function runs only after the run of
+its segment), or the last.  The symbols that the closures of a segment are
+made with are set by the same run, before them."
+  (let ((seg (make-hash-table :test 'equal)) (nsegs (length segments)))
+    (dolist (g globals) (setf (gethash g seg) nsegs))
+    ;; (the closures of the toplevel functions are called by the run of their segment)
+    (loop for tops in segments for k from 0
+          do (dolist (l tops) (setf (gethash (static-closure-global l) seg) k)))
+    (labels ((walk (x s)
+               (loop while (consp x)
+                     do (let ((i (car x)))
+                          (when (consp i)
+                            (if (and (member (car i) '(:global.get :global.set)) (consp (cdr i)))
+                                (multiple-value-bind (old found) (gethash (second i) seg)
+                                  (when (and found (< s old)) (setf (gethash (second i) seg) s)))
+                                (walk i s))))
+                        (setq x (cdr x)))))
+      (loop for f across (wasm-module-funcs *m*)
+            do (walk (wasm-func-body f) (wasm-func-segment f)))
+      (dolist (g closures)
+        (when (= (gethash (first g) seg) nsegs) (setf (gethash (first g) seg) (1- nsegs)))
+        (walk (third g) (gethash (first g) seg))))
+    (dolist (g globals) (when (= (gethash g seg) nsegs) (setf (gethash g seg) (1- nsegs))))
+    seg))
+
+(defun live-module-finish (segments castfns dispatch)
+  "Add the helpers, the globals and the functions that run the module to *M*,
+and encode it.  SEGMENTS: the toplevel functions of each segment, in order.
+The exported function RUN sets the globals of the first segment from the
+vector of objects it is given and calls its toplevel functions; the functions
+(:RUN-SEG K) do the same for the others, and with DISPATCH,
+(:UNIT-DISPATCH K VECTOR) calls the one of segment K.  Returns (values octets
+vectors), the vector of objects of each segment."
+  (let ((*func-segment* 0))
+    (add-called-helpers castfns))
+  (let* ((nsegs (length segments))
+         (all-tops (apply #'append segments))
+         ;; globals: symbols, live constants and closures are filled in by
+         ;; the runs; only those the code that can run refers to
+         (used (live-used-globals all-tops))
+         (syms (remove-if-not (lambda (s) (gethash (list :sym s) used)) (reverse *symbol-globals*)))
+         (consts (remove-if-not (lambda (c) (gethash (car c) used)) (reverse *live-constants*)))
+         (closures (remove-if-not (lambda (g) (gethash (first g) used)) (reverse *closure-globals*)))
+         (seg (if (= nsegs 1)
+                  nil
+                  (global-segments (append (mapcar (lambda (s) (list :sym s)) syms)
+                                           (mapcar #'car consts)
+                                           (mapcar #'first closures))
+                                   closures segments)))
+         (vectors nil))
+    (flet ((in-segment-p (g k) (or (null seg) (= k (gethash g seg)))))
+      (dolist (s syms)
+        (add-global *m* (list :sym s) '(:ref :null :symbol) t '((:ref.null :symbol)))
+        (setf (gethash (list :sym s) (wasm-module-nonnull-globals *m*)) t))
+      (dolist (c consts)
+        (add-global *m* (car c) :eqref t '((:ref.null :eq))))
+      (dolist (g closures)
+        (add-global *m* (first g) '(:ref :null :closure) t '((:ref.null :closure)))
+        (setf (gethash (first g) (wasm-module-nonnull-globals *m*)) t))
+      (dolist (g (reverse *misc-globals*))
+        (destructuring-bind (name type mutable init) g
+          (add-global *m* name type mutable init)))
+      (loop for tops in segments for k from 0
+            do (let* ((ssyms (remove-if-not (lambda (s) (in-segment-p (list :sym s) k)) syms))
+                      (sconsts (remove-if-not (lambda (c) (in-segment-p (car c) k)) consts))
+                      (sclosures (remove-if-not (lambda (g) (in-segment-p (first g) k)) closures))
+                      (body `(,@(loop for s in ssyms for i from 0
+                                      append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                               (:ref.cast :symbol) (:global.set (:sym ,s))))
+                              ,@(loop for c in sconsts for i from (length ssyms)
+                                      append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                               (:global.set ,(car c))))
+                              ,@(loop for g in sclosures
+                                      append `(,@(third g) (:global.set ,(first g))))
+                              ;; a form that leaves with an exit pending: the
+                              ;; run returns null too (its caller looks)
+                              (:block pend nil
+                                ,@(loop for l in tops
+                                        append `((:global.get ,(static-closure-global l))
+                                                 (:call (:main ,(lam-id l))) (:local.tee result)
+                                                 :ref.is_null
+                                                 (:if nil nil ((:call :exit-pending-p) (:br_if pend)))))
+                                (:local.get result) :return)
+                              (:ref.null :eq))))
+                 (push (coerce (append ssyms (mapcar #'cdr sconsts)) 'simple-vector) vectors)
+                 (if (= k 0)
+                     (add-func *m* :run :x-e :export "run"
+                               :locals '((:ref :null :vector) :eqref) :local-names '(v result)
+                               :body `((:local.get 0) :any.convert_extern (:ref.cast! :vector) (:local.set v)
+                                       ,@body))
+                     (progn
+                       (add-func *m* (list :run-seg k) :e-e
+                                 :locals '((:ref :null :vector) :eqref) :local-names '(v result)
+                                 :body `((:local.get 0) (:ref.cast! :vector) (:local.set v) ,@body))
+                       (setf (gethash (list :run-seg k) used) t))))))
+    (when dispatch
+      (setf (gethash :unit-dispatch used) t)
+      (add-func *m* :unit-dispatch :ee-e
+                :body (labels ((chain (k)
+                                 (if (>= k nsegs)
+                                     (nil-code)
+                                     `((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const ,k) :i32.eq
+                                       (:if nil :eqref ((:local.get 1) (:call (:run-seg ,k))) ,(chain (1+ k)))))))
+                        (chain 1))))
+    ;; for heap images (runtime/image.lisp): SNAP returns the values of
+    ;; its globals, which RESTORE sets again in a new instance (whose RUN
+    ;; is not called)
+    (let ((globals (append (mapcar (lambda (s) (list :sym s)) syms)
+                           (mapcar #'car consts)
+                           (mapcar #'first closures)
+                           (loop for (name type) in (reverse *misc-globals*)
+                                 when (eq type :eqref) collect name))))
+      (add-func *m* :snap :v-e :export "snap"
+                :locals '((:ref :null :vector)) :local-names '(v)
+                :body `((:i32.const ,(length globals)) (:array.new_default :vector) (:local.set v)
+                        ,@(loop for g in globals for i from 0
+                                append `((:local.get v) (:i32.const ,i) (:global.get ,g)
+                                         (:array.set :vector)))
+                        (:local.get v)))
+      (add-func *m* :restore :e-v :export "restore"
+                :locals '((:ref :null :vector)) :local-names '(v)
+                :body `((:local.get 0) (:ref.cast! :vector) (:local.set v)
+                        ,@(loop for g in globals for i from 0
+                                append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                         ;; (plain casts: the values are
+                                         ;; those SNAP returned)
+                                         ,@(case (car g)
+                                             (:sym '((:ref.cast! :symbol)))
+                                             (t (if (member g closures :key #'first)
+                                                    '((:ref.cast! :closure))
+                                                    nil)))
+                                         (:global.set ,g))))))
+    ;; a module made at run time only needs the helpers it calls
+    (remove-unreachable-functions *m* used)
+    (values (encode-module *m*) (nreverse vectors))))
+
+;;; ------------------------------------------------------------
+;;; Compilation units: COMPILE-FILE
+;;; ------------------------------------------------------------
+;;;
+;;; COMPILE-FILE compiles a whole file into one module (CLHS 3.2.2.3: a call
+;;; of a function defined in the same file may be assumed to call that
+;;; definition), so that calls between the functions of a file are direct
+;;; calls, small functions are copied into their callers, and the types of
+;;; arguments and values flow between them, as in a whole program.
+;;;
+;;; The forms are converted when COMPILE-FILE processes them, in the
+;;; environment that the forms before them made (macros, special
+;;; proclamations).  The module is cut into segments where the file's
+;;; compile-time side effects may change how the constants of the forms
+;;; after them are read when the file is loaded (a DEFPACKAGE; see
+;;; %CF-PROCESS): the constants of a segment (symbols, literal objects) are
+;;; read just before it runs.  A segment's functions are compiled when it
+;;; ends, so a function calls the functions of the segments before it and of
+;;; its own segment directly, and those of the segments after it (not
+;;; defined yet when it is compiled) through their symbol.  The first segment
+;;; sets SYS::*FASL-UNIT-RUNNER* to a function of a segment number and a
+;;; vector of objects that runs that segment (LOAD calls it for the others).
+
+(defvar *unit-segments* nil "the toplevel functions of each segment of the unit, reversed")
+(defvar *unit-castfns* nil "the functions of the checked casts of the unit's module")
+
+(defun call-with-compilation-unit (thunk)
+  "Call THUNK with a new compilation unit being compiled."
+  (let ((*live-mode* t) (*live-packages* t) (*warnings* nil))
+    (with-fresh-codegen-state ()
+      (let ((*m* (make-wasm-module)) (*unit-env* (make-cenv)) (*unit-segments* nil) (*unit-castfns* nil))
+        (clysm-sys::%call-with-world-lock
+         (lambda ()
+           (let ((*error-output* (make-broadcast-stream)))
+             (setq *unit-castfns* (live-module-begin)))
+           (unit-add-form '(setq clysm-sys::*fasl-unit-runner*
+                            (lambda (k v) (clysm-sys::%wasm :eqref (k v) (:call :unit-dispatch)))))))
+        (funcall thunk)))))
+
+(defun unit-add-form (form)
+  "Process FORM, a toplevel form of the unit."
+  (let ((*read-package* *package*) (*error-output* (make-broadcast-stream))
+        (*func-segment* (length *unit-segments*))
+        (current *current-toplevel*) (nodes *toplevel-nodes*) (weight *toplevel-weight*)
+        (lams *toplevel-lams*) (done nil))
+    (unwind-protect
+         (progn (process-toplevel form *unit-env*) (setq done t))
+      ;; a form the compiler failed on leaves no code (COMPILE-FILE writes
+      ;; its source instead)
+      (unless done
+        (setf *current-toplevel* current *toplevel-nodes* nodes *toplevel-weight* weight
+              *toplevel-lams* lams)))
+    nil))
+
+(defun unit-end-segment ()
+  "End the current segment and compile its functions; its number, or NIL
+when it has no forms."
+  (let ((*error-output* (make-broadcast-stream))
+        (*func-segment* (length *unit-segments*)))
+    (close-live-toplevel)
+    (let ((tops (reverse *toplevel-lams*)))
+      (when tops
+        (setf *toplevel-lams* nil)
+        (live-compile-tops tops)
+        (push tops *unit-segments*)
+        (1- (length *unit-segments*))))))
+
+(defun unit-finish ()
+  "The module of the unit: (values octets vectors), the vector of objects of each segment."
+  (unit-end-segment)
+  (let ((*error-output* (make-broadcast-stream)))
+    (live-module-finish (reverse *unit-segments*) *unit-castfns* t)))

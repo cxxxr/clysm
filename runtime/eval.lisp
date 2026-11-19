@@ -586,6 +586,14 @@ a module made by *NATIVE-COMPILE-FORM-HOOK* (octets, constants).")
 a module made by *NATIVE-COMPILE-FORM-HOOK* from its octets and constants.")
 (defvar *image-id* nil
   "Identifies the image build; compiled modules in fasls are only valid for it.")
+(defvar *native-unit-hooks* nil
+  "When the compiler is part of the image: (CALL-WITH-UNIT ADD-FORM END-SEGMENT
+FINISH), the functions with which COMPILE-FILE compiles a file into one
+module (src/live.lisp, \"Compilation units\").")
+(defvar *fasl-unit-runner* nil
+  "While loading a compiled file: the function of a segment number and a
+vector of objects that runs a segment of the module of the file (set by its
+first segment), or :SOURCE when the module was made for another image.")
 
 (defun compile (name &optional definition)
   (when *native-compile-hook*
@@ -661,6 +669,34 @@ is read and compiled again."
             (declare (ignore source-length))
             (file-position stream here)
             (%eval-toplevel form))))))
+
+(defun %fasl-entry-source (stream source-offset)
+  "The source form stored in the module octets of the fasl at SOURCE-OFFSET."
+  (let ((here (file-position stream)))
+    (file-position stream (+ (cdr *fasl-modules*) source-offset))
+    (prog1 (%call-with-fasl-syntax
+            (lambda () (let ((*print-readably* nil)) (read stream))))
+      (file-position stream here))))
+
+(defun %load-fasl-unit (entry stream)
+  "The first segment of the module of a compiled file (see COMPILE-FILE): the
+module is instantiated and the segment run (it sets *FASL-UNIT-RUNNER*), or,
+when it was made for another image, the segment's source forms evaluated."
+  (destructuring-bind (id offset length consts source-offset source-length) (cdr entry)
+    (declare (ignore source-length))
+    (if (and *native-run-module-hook* (equal id *image-id*))
+        (funcall *native-run-module-hook*
+                 (car *fasl-modules*) (+ (cdr *fasl-modules*) offset) length consts)
+        (progn (setq *fasl-unit-runner* :source)
+               (%eval-toplevel (%fasl-entry-source stream source-offset))))))
+
+(defun %load-fasl-segment (entry stream)
+  "Another segment of the module of a compiled file."
+  (destructuring-bind (k consts source-offset source-length) (cdr entry)
+    (declare (ignore source-length))
+    (if (functionp *fasl-unit-runner*)
+        (funcall *fasl-unit-runner* k consts)
+        (%eval-toplevel (%fasl-entry-source stream source-offset)))))
 
 (defun %skip-fasl-modules (stream)
   "After the header line: skip the module octets; returns (native-name . start)."
@@ -747,6 +783,7 @@ can (%FASL-TEXT-FROM-HOST), which is faster still."
 (defun %load-stream (stream print)
   (let* ((fasl (and (typep stream 'file-stream) (%load-file-stream-p stream)))
          (*fasl-modules* (and fasl (%skip-fasl-modules stream)))
+         (*fasl-unit-runner* nil)
          ;; (the source forms of the modules are read from STREAM itself)
          (in (if fasl (%fasl-text-stream stream) stream))
          (file (and (not fasl) *load-truename* (typep stream 'file-stream)
@@ -763,6 +800,10 @@ can (%FASL-TEXT-FROM-HOST), which is faster still."
         (let ((vals (multiple-value-list
                      (cond ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
                             (%load-fasl-entry form stream))
+                           ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-unit))
+                            (%load-fasl-unit form stream))
+                           ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-segment))
+                            (%load-fasl-segment form stream))
                            ((and fasl (consp form) (eq (car form) '%note-source))
                             (apply #'%note-source (cdr form)))
                            (t (%eval-toplevel form))))))
@@ -878,9 +919,76 @@ effects, so compiling them later sees the same environment.")
          (let ((*print-readably* nil)) (prin1 x out))))
      (terpri out))))
 
+(defvar *cf-unit* nil
+  "During COMPILE-FILE into one module: the entries of the file, reversed:
+(:SEGMENT K FORMS) for a segment of the module, (:SOURCE FORM) for a form
+the compiler failed on, (:ENTRY ENTRY) for a form compiled and run at
+compile time (%CF-COMPILE-AND-RUN).")
+(defvar *cf-unit-forms* nil "During COMPILE-FILE into one module: the forms of the current segment, reversed.")
+(defvar *cf-unit-p* nil "True during COMPILE-FILE into one module.")
+
+(defun %cf-unit-flush ()
+  "End the current segment of the module of the file."
+  (let ((k (%call-with-world-lock (third *native-unit-hooks*)))
+        (forms (reverse *cf-unit-forms*)))
+    (setq *cf-unit-forms* nil)
+    (if k
+        (push (list :segment k forms) *cf-unit*)
+        (dolist (f forms) (push (list :source f) *cf-unit*)))))
+
+(defun %cf-unit-add (form)
+  (if (handler-case (progn (%call-with-world-lock
+                            (lambda () (funcall (second *native-unit-hooks*) form)))
+                           t)
+        (error () nil))
+      (push form *cf-unit-forms*)
+      ;; the compiler failed on the form: it is compiled when the file is loaded
+      (progn (%cf-unit-flush) (push (list :source form) *cf-unit*))))
+
+(defun %cf-write-unit (out)
+  "Write the entries of the file compiled into one module; the module and
+the source of its segments go to *CF-MODULES*.  When the module cannot be
+made, or the objects of a segment cannot be written readably, the source
+forms are written instead."
+  (%cf-unit-flush)
+  (let ((entries (reverse *cf-unit*)))
+    (multiple-value-bind (octets vectors)
+        (handler-case (%call-with-world-lock (fourth *native-unit-hooks*))
+          (error () nil))
+      (if (and octets
+               (every (lambda (v)
+                        (%call-with-fasl-syntax
+                         (lambda () (handler-case (progn (prin1-to-string v) t)
+                                      (error () nil)))))
+                      vectors))
+          (let ((offset (second *cf-modules*)))
+            (push octets (first *cf-modules*))
+            (setf (second *cf-modules*) (+ offset (length octets)))
+            (dolist (e entries)
+              (if (member (car e) '(:source :entry))
+                  (%cf-write (second e) out)
+                  (let* ((k (second e))
+                         (source (%string-utf8-octets
+                                  (%call-with-fasl-syntax
+                                   (lambda () (let ((*print-readably* nil))
+                                                (prin1-to-string `(progn ,@(third e))))))))
+                         (source-offset (second *cf-modules*)))
+                    (push source (first *cf-modules*))
+                    (setf (second *cf-modules*) (+ source-offset (length source)))
+                    (%cf-write (if (= k 0)
+                                   (list '%fasl-unit *image-id* offset (length octets) (nth k vectors)
+                                         source-offset (length source))
+                                   (list '%fasl-segment k (nth k vectors) source-offset (length source)))
+                               out)))))
+          (dolist (e entries)
+            (if (member (car e) '(:source :entry))
+                (%cf-write (second e) out)
+                (dolist (f (third e)) (%cf-write f out))))))))
+
 (defun %cf-flush (out)
   "Write the pending forms: one module for all of them if possible, else one
 per form, else the source forms."
+  (when *cf-unit-p* (return-from %cf-flush (%cf-unit-flush)))
   (let ((forms (reverse *cf-pending*)))
     (setq *cf-pending* nil)
     (when forms
@@ -894,6 +1002,12 @@ per form, else the source forms."
   (let ((forms (if *cf-externalizer* (funcall *cf-externalizer* form) (list form))))
     (cond ((not (and *native-compile-form-hook* *image-id* *cf-modules*))
            (dolist (f forms) (%cf-write f out)))
+          (*cf-unit-p*
+           (if (cdr forms)
+               (progn (%cf-flush out)
+                      (dolist (f forms) (%cf-unit-add f) (%cf-flush out)))
+               (progn (%cf-unit-add (car forms))
+                      (when (>= (length *cf-unit-forms*) %cf-batch-size) (%cf-flush out)))))
           ((cdr forms)
            ;; literal objects externalized with MAKE-LOAD-FORM: the forms
            ;; refer to objects that the preceding ones create when loaded (and
@@ -964,7 +1078,11 @@ it cannot be done so: the form is then evaluated and compiled apart."
       (when entry
         ;; (%CF-COMPILED-FORM pushed the module's octets, then its source)
         (let ((octets (second (first *cf-modules*))))
-          (%cf-write entry out)
+          ;; (in a file compiled into one module, the entries are written
+          ;; at the end, in order)
+          (if *cf-unit-p*
+              (push (list :entry entry) *cf-unit*)
+              (%cf-write entry out))
           (funcall *native-run-octets-hook* octets (nth 4 entry))
           t)))))
 
@@ -1042,19 +1160,27 @@ it cannot be done so: the form is then evaluated and compiled apart."
                        (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
           (let* ((*cf-modules* (list nil 0))
                  (*cf-pending* nil)
+                 (*cf-unit* nil) (*cf-unit-forms* nil)
+                 (*cf-unit-p* (and *native-unit-hooks* *image-id* t))
                  (notes nil)
                  (text (with-output-to-string (out)
-                         (loop
-                           (let* ((start (%form-start in))
-                                  (form (read in nil %eof-marker)))
-                             (when (eq form %eof-marker) (return))
-                             (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
-                             (let ((dspec (%definition-spec form)))
-                               (when dspec
-                                 (push (list '%note-source dspec (namestring *compile-file-truename*) start)
-                                       notes)))
-                             (%cf-process form out nil)))
-                         (%cf-flush out)
+                         (flet ((body ()
+                                  (loop
+                                    (let* ((start (%form-start in))
+                                           (form (read in nil %eof-marker)))
+                                      (when (eq form %eof-marker) (return))
+                                      (when print (format t "~&; ~S~%" (if (consp form) (car form) form)))
+                                      (let ((dspec (%definition-spec form)))
+                                        (when dspec
+                                          (push (list '%note-source dspec (namestring *compile-file-truename*) start)
+                                                notes)))
+                                      (%cf-process form out nil)))
+                                  (if *cf-unit-p*
+                                      (%cf-write-unit out)
+                                      (%cf-flush out))))
+                           (if *cf-unit-p*
+                               (funcall (first *native-unit-hooks*) #'body)
+                               (body)))
                          ;; at the end, where the packages of the names exist
                          (dolist (note (nreverse notes))
                            (when (%call-with-fasl-syntax

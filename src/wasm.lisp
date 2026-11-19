@@ -91,10 +91,13 @@
 ;;; ------------------------------------------------------------
 
 (defvar *func-source* nil "(FILE . LINE) of the functions added now (ADD-FUNC), or NIL.")
+(defvar *func-segment* 0
+  "The segment of a compilation unit (src/live.lisp) whose code the functions added now are.")
 
 (defstruct (wasm-func (:constructor %make-wasm-func))
   name type params-names locals local-names body export import-module import-name display
-  (source *func-source*))
+  (source *func-source*)
+  (segment *func-segment*))
 
 (defstruct wasm-module
   (types (make-array 0 :adjustable t :fill-pointer 0))   ; vector of (name . def)

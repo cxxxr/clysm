@@ -771,6 +771,16 @@ MAPL: the value is the first list)."
   (when (and (consp spec) (eq (car spec) 'special))
     (dolist (s (cdr spec))
       (%set-symbol-flags s (%fxlogior (%symbol-flags s) 1))))
+  ;; the compiler in the image does not copy the inline expansion of a
+  ;; function proclaimed NOTINLINE (src/frontend.lisp)
+  (when (and (consp spec) (member (car spec) '(inline notinline)))
+    (dolist (f (cdr spec))
+      (let ((s (if (symbolp f)
+                   f
+                   (and (consp f) (eq (car f) 'setf) (consp (cdr f)) (symbolp (cadr f))
+                        (null (cddr f)) (%function-name-symbol f)))))
+        (when (and s (symbolp s))
+          (if (eq (car spec) 'notinline) (%put s '%notinline t) (remprop s '%notinline))))))
   nil)
 
 (defun %special-p (s) (not (zerop (%fxlogand (%symbol-flags s) 1))))

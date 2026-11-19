@@ -300,6 +300,46 @@ following forms are read and their macros expanded, unless defined first
 by the interpreter, and calls within the batch would not see a
 redefinition), so it is not done.
 
+**`compile-file` compiles a whole file into one module** (`src/live.lisp`,
+"Compilation units"; CLHS 3.2.2.3 lets the file compiler assume that a call
+of a function defined in the same file calls that definition). Calls between
+the functions of a file are direct calls, small functions are copied into
+their callers, and argument and value types flow between them (fixnum
+versions of a function, keyed calls in fixed slots, flag clones), as in a
+whole program. Each form is converted when `compile-file` processes it, in the
+environment the forms before it made. The module is cut into *segments* where
+the batches of modules used to be cut (before a definer with compile-time
+effects, after a `defpackage` or an `eval-when` with `:compile-toplevel`):
+the constants of a segment are read from the fasl just before it runs, so a
+package made by an earlier segment exists. A segment's functions are compiled
+when it ends: they call the functions of the segments before them and of
+their own directly, those of later segments through the symbol (they are not
+defined yet). Each wasm function records its segment, and each global
+(symbol, constant, closure) is set by the run of the first segment whose
+functions refer to it (`global-segments`): a function runs only after the run
+of its segment. The fasl has `(%fasl-unit ...)` for the module and its first
+segment, which sets `sys::*fasl-unit-runner*` (a function calling the
+`(:run-seg K)` functions of the module), and `(%fasl-segment K constants ...)`
+for the others; when the image differs, the source of each segment is
+compiled again. A form the compiler fails on is written as source; when the
+module cannot be made or the constants of a segment cannot be written, the
+whole file is written as source.
+
+**Functions declaimed `inline`** keep their source in the image (the property
+`sys::%inline-expansion` of the name, also written to the fasl), and calls
+compiled later in the image (other files, the REPL) are replaced by a copy of
+the body that sees none of the caller's lexical bindings, with `&optional`,
+`&rest`, `&aux` and `&key` (constant keywords) bound by `let*`
+(`inline-expansion-call`, `src/frontend.lisp`). `notinline`, global or
+local, prevents it; `proclaim` records `notinline` on the symbol so that it
+holds in an image that loaded the fasl.
+
+The key layout of a keyed function (`(required optional . keywords)`) is a
+symbol of `SYSTEM` named by it (`|%KEY-LAYOUT 2 0 :KEY :TEST ...|`), so that
+a call compiled in a fasl compares it with `eq` to the closure's: a list
+constant of a fasl is a new list when the fasl is loaded, and every keyword
+call of code loaded from fasls took the generic way.
+
 ## Heap images
 
 An image that has loaded a large program (Lem: 360 fasls) can save its heap
@@ -1043,8 +1083,9 @@ ASDF 3.3.7 (the latest release, with a small port in `third_party/asdf/`) is bun
 ```
 
 Systems are compiled with `compile-file` and loaded into the running image.
-A fasl holds the compiled Wasm modules (consecutive ordinary forms share one
-module) with their constants, and the source forms as a fallback; the fasl
+A fasl holds the compiled Wasm module of the file (one module, in segments:
+see "Compiling inside the running image") with its constants, and the source
+forms as a fallback; the fasl
 directory under `~/.cache/common-lisp/` names the image build, so rebuilding
 Clysm recompiles systems.
 
