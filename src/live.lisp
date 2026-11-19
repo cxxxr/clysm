@@ -36,6 +36,16 @@
          (*live-constants* nil)
          (*helpers* *helpers*)
          (*current-lam* nil)
+         ;; (tables of the lambdas, variables and nodes of this module: kept
+         ;; in the image, they grew with every form compiled in it)
+         (*node-types* (make-hash-table :test 'eq))
+         (*ti-analyzed* (make-hash-table :test 'eq))
+         (*inline-candidates* (make-hash-table :test 'eq))
+         (*inlined-into* (make-hash-table :test 'eq))
+         (*lvar-lams* (make-hash-table :test 'eq))
+         (*spec-cloneable* (make-hash-table :test 'eq))
+         (*spec-clones* (make-hash-table :test 'equal))
+         (*catch-clones* (make-hash-table :test 'equal))
          (*macros-ready* t))
      ,@body))
 
@@ -88,10 +98,12 @@ the other globals: a hash table."
       (loop while queue do (walk (pop queue))))
     used))
 
-(defun add-called-helpers ()
+(defun add-called-helpers (castfns)
   "Add to the module the runtime helpers its functions call, and those they
 call (a module made at run time uses few of them: making the code of all of
-them, to drop most again, was most of the time of compiling a small form)."
+them, to drop most again, was most of the time of compiling a small form),
+and the functions of the checked casts they make (CASTFNS, from
+DEFINE-CHECKED-CASTS)."
   (let ((helpers (make-hash-table :test 'equal)) (next 0)
         (funcs (wasm-module-funcs *m*))
         (*fs* (make-fstate :lam nil :nparams 0)))
@@ -111,11 +123,21 @@ them, to drop most again, was most of the time of compiling a small form)."
                (let ((h (gethash name helpers)))
                  (when (and h (not (func-defined-p *m* name)))
                    (add-helper h))))
+             (need-cast (type)
+               (let* ((name (cdr (assoc type (wasm-module-cast-rewrites *m*))))
+                      (add (and name (gethash name castfns))))
+                 (when add
+                   (remhash name castfns)
+                   (funcall add))))
              (walk (x)
                (when (consp x)
-                 (when (and (member (car x) '(:call :return_call :ref.func)) (consp (cdr x)))
-                   (need (second x)))
+                 (case (car x)
+                   ((:call :return_call :ref.func) (when (consp (cdr x)) (need (second x))))
+                   (:ref.cast (when (and (consp (cdr x)) (not (eq (second x) :null)))
+                                (need-cast (second x)))))
                  (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
+      ;; (RUN casts the symbols it is given)
+      (need-cast :symbol)
       ;; (the helpers' code can make further functions be compiled: the
       ;; direct calls of DIRECTIFY-HELPER-CALLS)
       (loop (loop while (< next (fill-pointer funcs))
@@ -147,11 +169,11 @@ them, to drop most again, was most of the time of compiling a small form)."
     (sym-global nil) (sym-global t)
     (define-standard-helpers)
     (define-argerr-helpers)
-    (define-checked-casts)
-    (let ((tops (reverse *toplevel-lams*)))
+    (let ((tops (reverse *toplevel-lams*))
+          (castfns (define-checked-casts :lazy t)))
       (dolist (l tops) (ensure-lam-compiled l) (static-closure-global l))
       (compile-pending-lams)
-      (add-called-helpers)
+      (add-called-helpers castfns)
       ;; globals: symbols, live constants and closures are filled in by RUN;
       ;; only those the code that can run refers to (every helper's symbols
       ;; were made, also those of the helpers it does not use)
@@ -221,5 +243,5 @@ them, to drop most again, was most of the time of compiling a small form)."
                                                         nil)))
                                              (:global.set ,g))))))
         ;; a module made at run time only needs the helpers it calls
-        (remove-unreachable-functions *m*)
+        (remove-unreachable-functions *m* used)
         (values (encode-module *m*) (coerce objects 'simple-vector))))))
