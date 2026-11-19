@@ -1,0 +1,20 @@
+;;; APPLY through the entry taking a list: functions with &REST and required
+;;; parameters take the rest of the list as it is, the others go to the fixed
+;;; entries (or the argument vector past four), errors for short lists.
+(defun r0 (&rest xs) (list :r0 xs))
+(defun r2 (a b &rest xs) (list :r2 a b xs))
+(defun s3 (a b c) (list a b c))
+(defun s6 (a b c d e f) (list a b c d e f))
+(defun o2 (a &optional (b 9)) (list a b))
+(defun k1 (&key x y) (list x y))
+(print (list (apply #'r0 nil) (apply #'r0 1 '(2 3)) (apply #'r2 1 '(2 3 4)) (apply #'r2 '(1 2))
+             (apply #'s3 '(1 2 3)) (apply #'s3 1 '(2 3)) (apply #'s6 '(1 2 3 4 5 6)) (apply #'o2 '(1)) (apply #'o2 '(1 2))
+             (apply #'k1 '(:y 2 :x 1)) (apply 'r2 1 2 '(3)) (apply #'+ '(1 2 3 4 5 6)) (apply #'max '(3 9 2))))
+(let ((f #'r2) (g (lambda (&rest a) (length a))) (h (lambda (a b) (- a b))))
+  (print (list (apply f 1 '(2)) (apply g '(1 2 3 4 5 6 7)) (apply h '(5 3)) (funcall g) (apply g nil))))
+(print (handler-case (apply #'r2 '(1)) (error () :err)))
+(print (handler-case (apply #'s3 '(1 2)) (error () :err)))
+(let ((l (list 3 4))) (print (eq (cddr (apply #'list* 1 2 l)) l)))
+(defgeneric gg (a &optional b))
+(defmethod gg ((a integer) &optional (b 1)) (+ a b))
+(print (list (apply #'gg '(1)) (apply #'gg '(1 5)) (apply #'gg 2 nil)))

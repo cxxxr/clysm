@@ -419,10 +419,20 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
       (:values (cg-values (cdr node) mv))
-      (:apply (maybe-checked-call
-               tail
-               `(,@(cg (second node)) ,@(cg (third node))
-                 (,(if tail :return_call :call) :apply-list)))))))
+      (:apply (maybe-checked-call tail (cg-apply (second node) (third node) tail))))))
+
+(defun cg-apply (fnode lnode tail)
+  "(APPLY F LIST): the entry of F taking a list, called directly when F is a
+known global function."
+  (let* ((call (if tail :return_call :call))
+         (lam (and (eq (car fnode) :fref)
+                   (not (gethash (second fnode) *dynamic-functions*))
+                   (known-global-lam (second fnode)))))
+    (if lam
+        (progn (ensure-lam-compiled lam)
+               `((:global.get ,(static-closure-global lam)) ,@(cg lnode)
+                 (,call ,(lam-apply-entry-name lam))))
+        `(,@(cg fnode) ,@(cg lnode) (,call :apply-list)))))
 
 (defun cg-values (args mv)
   (cond ((null args) `(,@(nil-code) ,@(when mv '((:i32.const 0) (:global.set :mv-count)))))
@@ -696,6 +706,11 @@ representation) or :effect (no value)."
                          (t (list :argerr k))))
      (list (if simple (list :entn id) (list :main id))))))
 
+(defun lam-apply-entry-name (lam)
+  "The entry of LAM taking its arguments as a list: a function with &REST
+and required parameters only takes the rest of the list as its rest list."
+  (if (lam-rest-only-p lam) (list :aentry (lam-id lam)) :apply-generic))
+
 (defun lam-key-layout (lam)
   "(required optional . keywords): how the keyed main function of LAM takes its arguments."
   (list* (length (lam-req lam)) (length (lam-opt lam)) (mapcar #'first (lam-keys lam))))
@@ -762,6 +777,7 @@ $code struct of its entries) every closure of LAM shares."
         (push (list name `(:ref :closure)
                     `(,@(loop for e in (lam-entry-names lam) collect `(:ref.func ,e))
                       ,@(lam-kmain-code lam)
+                      (:ref.func ,(lam-apply-entry-name lam))
                       (:struct.new :code)
                       ,@(lam-name-code lam)
                       (:struct.new :closure)))
@@ -2153,6 +2169,22 @@ its last parameter; the entries for few arguments make the list."
                       (:local.get 1) (:i32.const ,n) (:call :vector-tail-to-list)
                       (:return_call (:rmain ,id)))
               :display (format nil "~A/generic" (lam-display-name lam)))
+    ;; APPLY: the required arguments are taken from the list, whose rest is
+    ;; the rest list (CLHS 3.4.1.3 lets it share structure with the last
+    ;; argument of APPLY); a list too short goes to the generic entry, which
+    ;; signals the error
+    (add-func *m* (list :aentry id) :fA
+              :locals '(:eqref)
+              :body `((:local.get 0)
+                      (:local.get 1) (:local.set 2)
+                      ,@(loop repeat n
+                              append `((:local.get 2) (:ref.test :cons) :i32.eqz
+                                       (:if nil nil ((:local.get 0) (:local.get 1) (:return_call :apply-generic)))
+                                       (:local.get 2) (:ref.cast! :cons) (:struct.get :cons 0)
+                                       (:local.get 2) (:ref.cast! :cons) (:struct.get :cons 1) (:local.set 2)))
+                      (:local.get 2)
+                      (:return_call (:rmain ,id)))
+              :display (format nil "~A/apply" (lam-display-name lam)))
     (loop for k from n to +max-fixed-args+
           do (add-func *m* (list :rentry id k) (fixed-entry-type k)
                        :body `((:local.get 0)

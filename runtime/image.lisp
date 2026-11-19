@@ -314,7 +314,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setq order (nreverse order))
           (setq *img-buf* (%make-limbs 1000000) *img-fill* 0)
           (%img-halves #x494D #x4C43)       ; magic "CLMI"
-          (%img-word 4)                     ; version (+img-version+)
+          (%img-word 5)                     ; version (+img-version+)
           (%img-word (length base))
           (%img-word (- next (length base)))
           (%img-word fillable)
@@ -374,6 +374,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
            (%img-word code)))
        (%img-word (%closure-code x 6))
        (%img-ref (%closure-raw-klayout x))
+       (%img-word (%closure-code x 7))
        (%img-word (%closure-env-length x)))
       (:double (%img-room 2) (%img-put-double *img-buf* *img-fill* x) (setq *img-fill* (+ *img-fill* 2)))
       (:single (%img-room 1) (%img-put-single *img-buf* *img-fill* x) (setq *img-fill* (+ *img-fill* 1)))
