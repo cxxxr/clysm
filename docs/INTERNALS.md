@@ -354,7 +354,9 @@ What made it slow, and what was done:
   7.6 but loads in 0.51 s instead of 0.19 (4-CPU slot, interleaved).
   Loading happens at every start, compiling once per build: in a file
   compiled into one module (`*cf-unit-p*`) such a form is evaluated at
-  compile time and compiled into the file's module, and only the batched
+  compile time by the interpreter (a `defun` is compiled when first
+  called) and compiled into the file's module only (ASDF then compiles in
+  2.6 s and loads in 0.12), and only the batched
   fasl compiles it once. (The separate entries also read their own copies
   of uninterned symbols: `tests/cases/compile-file-uninterned.lisp`.)
 * **Modules evaluated at once** (the REPL, `load` of a source file,
