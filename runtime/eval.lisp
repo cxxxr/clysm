@@ -1084,6 +1084,19 @@ as toplevel forms (CLHS 3.2.3.1) in the environment they establish."
                       (some #'walk x)))))
       (walk form))))
 
+(defvar *cf-unit-compile-time* :interpret
+  "How COMPILE-FILE into one module evaluates the forms evaluated at compile
+time too (other than DEFUNs, defined to be compiled when first called): with
+the interpreter (:INTERPRET), or compiled to a module run at once (:NATIVE);
+either way they are compiled into the file's module.  ASDF: :INTERPRET
+compiles in 2.6 s, :NATIVE (compiling them twice) in 4.4 s.")
+
+(defun %cf-eval (form)
+  "Evaluate FORM at compile time (see *CF-UNIT-COMPILE-TIME*)."
+  (if (and *cf-unit-p* (eq *cf-unit-compile-time* :interpret))
+      (eval form)
+      (%eval-toplevel form)))
+
 (defun %cf-compile-and-run (form out)
   "An ordinary FORM evaluated at compile time too (EVAL-WHEN with
 :COMPILE-TOPLEVEL and :LOAD-TOPLEVEL): compiled once, to a module that is run
@@ -1158,7 +1171,7 @@ when it is first called, and calls the function it defines."
                   (consp (cdr form)) (symbolp (second form)))
          (proclaim `(special ,(second form)))))
       ((null x)
-       (when compile-time-too (%eval-toplevel (%cf-wrap form)))
+       (when compile-time-too (%cf-eval (%cf-wrap form)))
        ;; CLHS DEFVAR/DEFPARAMETER: the compiler must recognize the variable
        ;; as special in the rest of the file
        (when (and (consp form) (member (car form) '(defvar defparameter))
@@ -1193,14 +1206,14 @@ when it is first called, and calls the function it defines."
        (let* ((e (macroexpand-1 x *cf-env*))
               (others (remove-if #'%cf-defun-name (cdr e))))
          (unless (%cf-compile-and-run (%cf-wrap `(progn ,@others)) out)
-           (%eval-toplevel (%cf-wrap `(progn ,@others)))
+           (%cf-eval (%cf-wrap `(progn ,@others)))
            (%cf-emit (%cf-wrap `(progn ,@others)) out))
          (dolist (f (cdr e))
            (when (%cf-defun-name f)
              (%cf-define-lazily (%cf-defun-name f) (%cf-wrap f))
              (%cf-emit (%cf-wrap f) out)))))
       (t (unless (%cf-compile-and-run (%cf-wrap x) out)
-           (%eval-toplevel (%cf-wrap x))
+           (%cf-eval (%cf-wrap x))
            (%cf-emit (%cf-wrap x) out))
          ;; the symbols of the package are read after it is made
          (when (eq (car x) 'defpackage) (%cf-flush out))))))
