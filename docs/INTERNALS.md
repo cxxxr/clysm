@@ -1796,7 +1796,11 @@ What makes the code fast:
   earlier in the file (`*compiled-key-layouts*`): such calls in a fasl took
   twice as long as in loaded code.
 * **CLOS**: generic functions dispatch and combine methods without argument
-  lists when they have one to four *spread arguments*: the required ones,
+  lists when they have one to eight *spread arguments* (past four, the
+  functions are called with a vector of them, and the dispatch is in the
+  function of the calls of more than four arguments; a McCLIM-like call of
+  five required arguments and keywords takes 0.5 of its earlier time, about
+  1.3 times SBCL): the required ones,
   the optional ones (the unbound marker for one not given) and, with
   `&rest` or `&key`, the list of the arguments after them (`%fast-shape`,
   `%gf-scall`); the methods are functions of those too, and a generic
