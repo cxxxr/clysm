@@ -179,6 +179,7 @@
 ;;; ------------------------------------------------------------
 
 (defstruct fstate lam nparams (locals nil) (nlocals 0) (locs (make-hash-table :test 'eq)) env-local
+  env-type                              ; the closure type in ENV-LOCAL (NIL: the vector of a :ENVCLOV)
   (shadows (make-hash-table :test 'eq)))   ; lvar -> the locals of an (:MD2 kind) variable's storage, dimensions, offset
 
 (defvar *fs* nil)
@@ -307,7 +308,13 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
                     ((fdual-local lv) (fdual-materialize-code (cdr loc) (fdual-local lv)))
                     (t
                   `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv))))))
-      (:env `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) (:array.get :vector))))))
+      (:env (env-get-code (cdr loc))))))
+
+(defun env-get-code (i)
+  (let ((type (fstate-env-type *fs*)))
+    (if type
+        `((:local.get ,(fstate-env-local *fs*)) (:struct.get ,type ,(+ +clo-env+ i)))
+        `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,i) (:array.get :vector)))))
 
 (defun var-get-code (lv)
   (if (boxed-p lv)
@@ -321,6 +328,9 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
            `(,@(var-raw-code lv) (:ref.cast :cell) ,@value-code (:struct.set :cell 0)))
           ((eq (car loc) :local) `(,@value-code ,@(unbox-rep-code (lvar-rep* lv) (lvar-type lv))
                                     ,@(rep-local-set-code lv (cdr loc))))
+          ((fstate-env-type *fs*)
+           `((:local.get ,(fstate-env-local *fs*)) ,@value-code
+             (:struct.set ,(fstate-env-type *fs*) ,(+ +clo-env+ (cdr loc)))))
           (t `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) ,@value-code
                (:array.set :vector))))))
 
@@ -743,15 +753,17 @@ object; LAYOUT itself when a key's name would not survive in that name."
     (push lam *pending-lams*)))
 
 (defun static-closure-global (lam)
+  "The global holding LAM's closure without environment, whose code (a
+$code struct of its entries) every closure of LAM shares."
   (let ((name (list :clo (lam-id lam))))
     (unless (global-defined-p *m* name)
       (unless (gethash name *closure-global-names*)
         (setf (gethash name *closure-global-names*) t)
         (push (list name `(:ref :closure)
                     `(,@(loop for e in (lam-entry-names lam) collect `(:ref.func ,e))
-                      (:ref.null :vector)
-                      ,@(lam-name-code lam)
                       ,@(lam-kmain-code lam)
+                      (:struct.new :code)
+                      ,@(lam-name-code lam)
                       (:struct.new :closure)))
               *closure-globals*)))
     name))
@@ -760,12 +772,18 @@ object; LAYOUT itself when a key's name would not survive in that name."
   (ensure-lam-compiled lam)
   (if (null (lam-free-vars lam))
       `((:global.get ,(static-closure-global lam)))
-      `(,@(loop for e in (lam-entry-names lam) collect `(:ref.func ,e))
-        ,@(loop for fv in (lam-free-vars lam) append (var-raw-code fv))
-        (:array.new_fixed :vector ,(length (lam-free-vars lam)))
-        ,@(lam-name-code lam)
-        ,@(lam-kmain-code lam)
-        (:struct.new :closure))))
+      (let ((n (length (lam-free-vars lam))))
+        ;; the values of the free variables are fields of the closure
+        `((:global.get ,(static-closure-global lam)) (:struct.get :closure ,+clo-code+)
+          ,@(lam-name-code lam)
+          ,@(loop for fv in (lam-free-vars lam) append (var-raw-code fv))
+          ,@(when (> n +clo-env-max+) `((:array.new_fixed :vector ,n)))
+          (:struct.new ,(envclo-type n))))))
+
+(defun clo-field-code (i)
+  "Instructions taking a closure to field I of its code (an entry, +CLO-KMAIN+
+or +CLO-KLAYOUT+)."
+  `((:struct.get :closure ,+clo-code+) (:struct.get :code ,i)))
 
 ;;; ------------------------------------------------------------
 ;;; Calls
@@ -780,12 +798,12 @@ object; LAYOUT itself when a key's name would not survive in that name."
      (if (<= n +max-fixed-args+)
          `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
            ,@(apply #'append arg-codes)
-           (:local.get ,tmp) (:struct.get :closure ,n)
+           (:local.get ,tmp) ,@(clo-field-code n)
            (,(if tail :return_call_ref :call_ref) ,(fixed-entry-type n)))
          `(,@closure-code (:local.tee ,tmp) (:ref.as_non_null)
            ,@(apply #'append arg-codes)
            (:array.new_fixed :vector ,n)
-           (:local.get ,tmp) (:struct.get :closure ,+clo-entry-n+)
+           (:local.get ,tmp) ,@(clo-field-code +clo-entry-n+)
            (,(if tail :return_call_ref :call_ref) :fN))))))
 
 (defun maybe-checked-call (tail code)
@@ -989,14 +1007,14 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                   (:block ,slow nil
                     (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) (:local.tee ,f)
                     :ref.is_null (:br_if ,slow)
-                    (:local.get ,f) (:struct.get :closure ,+clo-klayout+)
+                    (:local.get ,f) ,@(clo-field-code +clo-klayout+)
                     ,@(const-init-code layout-object) :ref.eq :i32.eqz (:br_if ,slow)
                     ,@(maybe-checked-call
                        tail
                        `((:local.get ,f) :ref.as_non_null
                          ,@(loop for idx across layout
                                  collect (if idx `(:local.get ,(nth idx temps)) '(:ref.null :eq)))
-                         (:local.get ,f) (:struct.get :closure ,+clo-kmain+) (:ref.cast! ,type)
+                         (:local.get ,f) ,@(clo-field-code +clo-kmain+) (:ref.cast! ,type)
                          (,(if tail :return_call_ref :call_ref) ,type)))
                     (:br ,done))
                   ,@(call-closure-code (fdef-code sym)
@@ -1018,8 +1036,21 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
             (call-closure-code (cg-closure lam) (mapcar #'cg args) mv tail)))
       (call-closure-code (if (ty-only-p (node-ty fnode) +k-func+)
                              `(,@(cg fnode) (:ref.cast! :closure))
-                             `(,@(cg fnode) (:call :coerce-function)))
+                             (coerce-function-code (cg fnode)))
                          (mapcar #'cg args) mv tail)))
+
+(defun coerce-function-code (code)
+  "CODE pushes a function designator; push the function, a (ref $closure):
+a closure is taken as it is and the function of a symbol read from it at the
+call site; only other objects (an error) go to the helper."
+  (let ((l (gensym "FN")) (slow (gensym "SLOW")) (tmp (new-local)))
+    `((:block ,l (:ref :closure)
+        ,@code (:local.tee ,tmp) (:br_on_cast ,l :eqref (:ref :closure)) :drop
+        (:block ,slow :eqref
+          (:local.get ,tmp) (:br_on_cast_fail ,slow :eqref (:ref :symbol))
+          (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
+          (:local.get ,tmp))
+        (:call :coerce-function) :ref.as_non_null))))
 
 (defun cg-local-call (fun args mv tail)
   (let* ((lam (fun-lam fun))
@@ -1082,16 +1113,22 @@ own, which the shaker keeps only if something refers to SYMBOL.")
             ;; patch environments
             (dolist (f funs)
               (let ((lam (fun-lam f)))
-                (loop for fv in (lam-free-vars lam) for i from 0
+                (loop with n = (length (lam-free-vars lam)) with type = (envclo-type n)
+                      for fv in (lam-free-vars lam) for i from 0
                       when (find fv funs :key #'fun-lvar)
                         do (setf code
                                  (append code
-                                         `((:local.get ,(cdr (get-loc (fun-lvar f))))
-                                           (:ref.cast! :closure)
-                                           (:struct.get :closure ,+clo-env+)
-                                           (:i32.const ,i)
-                                           (:local.get ,(cdr (get-loc fv)))
-                                           (:array.set :vector)))))))))
+                                         (if (<= n +clo-env-max+)
+                                             `((:local.get ,(cdr (get-loc (fun-lvar f))))
+                                               (:ref.cast! ,type)
+                                               (:local.get ,(cdr (get-loc fv)))
+                                               (:struct.set ,type ,(+ +clo-env+ i)))
+                                             `((:local.get ,(cdr (get-loc (fun-lvar f))))
+                                               (:ref.cast! :envclov)
+                                               (:struct.get :envclov ,+clo-env+)
+                                               (:i32.const ,i)
+                                               (:local.get ,(cdr (get-loc fv)))
+                                               (:array.set :vector))))))))))
       (append code (cg body mv tail)))))
 
 ;;; ------------------------------------------------------------
@@ -1668,7 +1705,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (destructuring-bind (fnode &rest args) (cdr node)
     (let ((ftmp (new-local '(:ref :null :closure)))
           (acc (new-local)))
-      `(,@(cg fnode) (:call :coerce-function) (:local.set ,ftmp)
+      `(,@(coerce-function-code (cg fnode)) (:local.set ,ftmp)
         ,@(nil-code) (:local.set ,acc)
         ,@(loop for a in args
                 append `(,@(cg a t) (:call :mv-to-list) (:local.get ,acc) (:call :revappend-onto)
@@ -1677,7 +1714,7 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
            tail
            `((:local.get ,ftmp) (:ref.as_non_null)
              (:local.get ,acc) (:call :reverse-list-to-vector)
-             (:local.get ,ftmp) (:struct.get :closure ,+clo-entry-n+)
+             (:local.get ,ftmp) ,@(clo-field-code +clo-entry-n+)
              (,(if tail :return_call_ref :call_ref) :fN)))))))
 
 (defun cg-mvprog1 (node mv)
@@ -1806,12 +1843,19 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
                (:call ,(ensure-catch-clone lam tag))))))))))
 
 (defun setup-free-vars (lam)
+  (when (lam-self lam)
+    (set-loc (lam-self lam) (cons :local 0)))
   (when (lam-free-vars lam)
-    (let ((env (new-local '(:ref :null :vector))))
-      (setf (fstate-env-local *fs*) env)
+    (let* ((n (length (lam-free-vars lam)))
+           (type (envclo-type n))
+           (env (new-local (if (<= n +clo-env-max+) `(:ref :null ,type) '(:ref :null :vector)))))
+      (setf (fstate-env-local *fs*) env
+            (fstate-env-type *fs*) (and (<= n +clo-env-max+) type))
       (loop for fv in (lam-free-vars lam) for i from 0
             do (set-loc fv (cons :env i)))
-      `((:local.get 0) (:struct.get :closure ,+clo-env+) (:local.set ,env)))))
+      (if (<= n +clo-env-max+)
+          `((:local.get 0) (:ref.cast! ,type) (:local.set ,env))
+          `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.set ,env))))))
 
 (defun param-setup-code (lv local-idx)
   "LV was passed in LOCAL-IDX.  Returns (values code special-p); a special
