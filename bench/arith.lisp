@@ -210,3 +210,18 @@
   (let ((x 1) (s 0))
     (dotimes (i 300000) (setq x (lcg x)) (setq s (logxor s x)))
     s))
+
+;;; ------------------------------------------- functions of double parameters
+;;; (called from other forms in the image: the version for doubles)
+
+(defun simpson (a b n)
+  (let ((h (/ (- b a) n)) (s 0))
+    (dotimes (i n)
+      (let ((x (+ a (* i h))))
+        (incf s (* h (/ (+ (* x x) (* 4 (+ x (/ h 2)) (+ x (/ h 2))) (* (+ x h) (+ x h))) 6)))))
+    s))
+(defun newton-sqrt (x eps)
+  (let ((g x)) (loop until (< (abs (- (* g g) x)) eps) do (setq g (/ (+ g (/ x g)) 2))) g))
+
+(defbench a-simpson (20) (simpson 0d0 3d0 100000))
+(defbench a-newton (20) (let ((s 0d0)) (dotimes (i 50000) (incf s (newton-sqrt (+ 2d0 i) 1d-9))) s))

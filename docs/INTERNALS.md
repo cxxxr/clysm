@@ -1527,7 +1527,7 @@ time unless noted):
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.6–1.8 | `l-ppcre-replace` 2.4–3.0 | `l-alexandria-tests` 0.3–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
-| `bench/arith.lisp` | 11 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
+| `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -1721,7 +1721,12 @@ What makes the code fast:
   arithmetic generic).
 * **Versions of a function**: a function with a loop or a recursive call
   whose parameters are used as numbers tests its arguments on entry and
-  continues in a copy compiled for fixnums (or doubles). Small functions are
+  continues in a copy compiled for fixnums, or else in one compiled for
+  doubles (the parameters used as numbers but not as integers: not with
+  integer-only operations, as indexes or compared with an integer variable).
+  This is what callers that do not know the function get (another form in
+  the image, another file): Simpson's rule over doubles loaded into the
+  image went from 120 to 23 ms. Small functions are
   copied into their callers — in the image with a test that the function has
   not been redefined.
 * **Calls**: direct calls between the functions of a program; keyword
