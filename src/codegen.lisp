@@ -56,7 +56,7 @@
           `((:array.new_fixed :string ,(length s)))))
 
 (defun bignum-digits (n)
-  "Base 2^28 little-endian digits of a non-negative integer."
+  "Base 2^32 little-endian digits of a non-negative integer."
   (let ((digits nil))
     (loop while (plusp n) do (push (ldb (byte +limb-bits+ 0) n) digits) (setf n (ash n (- +limb-bits+))))
     (nreverse digits)))
@@ -1748,7 +1748,8 @@ parameter has no code here: FINISH-BODY binds it."
            (values `((:local.get ,local-idx) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv))
                      ,@(rep-local-set-code lv idx))
                    nil)))
-        (t (set-loc lv (cons :local local-idx)) (values nil nil))))
+        (t (note-dual-var lv t)          ; integer accumulators (typed.lisp)
+           (set-loc lv (cons :local local-idx)) (values nil nil))))
 
 (defvar clysm-sys::*interrupt-checks* nil
   "When true, code compiled in the image (live mode) checks for interrupts

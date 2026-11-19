@@ -38,6 +38,14 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
                 (:i32 (when (typep v '(signed-byte 32)) `((:i32.const ,v))))
                 (:i64 (when (typep v '(signed-byte 64)) `((:i64.const ,v)))))))
     (:lref (let ((lv (second node)))
+             ;; an integer accumulator read as an integer: its i64 without making the integer
+             (when (and (member rep '(:i64 :i32)) (dual-local lv) (eq (car (get-loc lv)) :local)
+                        (if (eq rep :i64) (ty-int64-p (node-ty node)) (ty-int32-p (node-ty node))))
+               (let ((b (cdr (get-loc lv))))
+                 (return-from cg-rep-1
+                   `((:local.get ,b) :ref.is_null
+                     (:if nil :i64 ((:local.get ,(dual-local lv))) ((:local.get ,b) (:call :int-i64)))
+                     ,@(when (eq rep :i32) '(:i32.wrap_i64))))))
              (when (unboxed-local-p lv)
                (let ((get `(:local.get ,(cdr (get-loc lv)))))
                  (cond ((eq (lvar-rep lv) rep) (rep-get-code rep (cdr (get-loc lv))))
@@ -1074,10 +1082,12 @@ a sum or a hash value, not a loop index.)"
         (walk (lam-body lam))))
     (or (gethash lv *dual-uses*) (cons 0 0))))
 
-(defun note-dual-var (lv)
-  "Called when LV gets its location (BIND-NEW-VAR-CODE)."
+(defun note-dual-var (lv &optional param)
+  "Called when LV gets its location (BIND-NEW-VAR-CODE, PARAM-SETUP-CODE).
+A parameter's first value may be anything (its eqref local holds it): it is
+an accumulator when its assignments are integer arithmetic."
   (if (and (lvar-mutated lv) (not (lvar-captured lv)) (not (lvar-special lv)) (null (lvar-rep lv))
-           (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)
+           (or param (and (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)))
            (let ((uses (dual-uses lv)))
              (and (> (car uses) 0) (<= (cdr uses) (car uses)))))
       (setf (gethash lv *dual-vars*) (new-local :i64))
