@@ -278,6 +278,10 @@
   (do ((l alist (cdr l))) ((%endp l) nil)
     (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (car e))) (return e)))))
 
+(defun %rassoc-eql (item alist)
+  (do ((l alist (cdr l))) ((%endp l) nil)
+    (let ((e (car l))) (when (and (%alist-entry-p e) (eql item (cdr e))) (return e)))))
+
 (defun %assoc (item alist mode fn neg key by-cdr)
   "The first entry of ALIST whose CAR (CDR when BY-CDR) is selected."
   (do ((l alist (cdr l))) ((%endp l) nil)

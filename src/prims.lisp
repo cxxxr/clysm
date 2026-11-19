@@ -1764,6 +1764,60 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   (car (nil-code)))
 (defprim clysm-sys::%memq (x l) :value `(,@x ,@l (:call :memq-tail)))
 
+;;; MEMBER / ASSOC / RASSOC with EQL of an item that EQ compares (a fixnum,
+;;; a character, a symbol, a cons, an instance...: not a boxed number) on a
+;;; proper list: an EQ loop in Wasm.  Other items, and a list that is not
+;;; proper (an error to signal), take the Lisp function.
+(defun eq-item-code (x slow)
+  "Branch to SLOW unless the eqref local X is compared by EQ under EQL."
+  `((:local.get ,x) (:ref.test :i31) (:local.get ,x) (:ref.test :symbol) :i32.or
+    (:local.get ,x) (:ref.test :cons) :i32.or (:local.get ,x) (:ref.test :instance) :i32.or
+    (:local.get ,x) (:ref.test :string) :i32.or (:local.get ,x) (:ref.test :vector) :i32.or
+    :i32.eqz (:br_if ,slow)))
+(defhelper :member-eq-loop :ee-e ((l :eqref))
+  `(:block slow nil
+     ,@(eq-item-code 0 'slow)
+     (:local.get 1) (:local.set l)
+     (:loop again nil
+       (:local.get l) (:ref.test :cons)
+       (:if nil nil
+            ((:local.get l) (:ref.cast! :cons) (:struct.get :cons 0) (:local.get 0) :ref.eq
+             (:if nil nil ((:local.get l) :return))
+             (:local.get l) (:ref.cast! :cons) (:struct.get :cons 1) (:local.set l)
+             (:br again)))
+       (:local.get l) ,@(nil-code) :ref.eq (:if nil nil (,@(nil-code) :return))))
+  '(:local.get 0) '(:local.get 1)
+  `(:global.get ,(sym-global 'clysm-sys::%member-eql)) '(:call (:callsym 2)))
+(defprim clysm-sys::%member-eql (x l) :value `(,@x ,@l (:call :member-eq-loop)))
+(defhelper :assoc-eq-loop :eei-e ((l :eqref) (e :eqref))
+  ;; the third parameter: 1 for RASSOC
+  `(:block slow nil
+     ,@(eq-item-code 0 'slow)
+     (:local.get 1) (:local.set l)
+     (:loop again nil
+       (:local.get l) (:ref.test :cons)
+       (:if nil nil
+            ((:local.get l) (:ref.cast! :cons) (:struct.get :cons 0) (:local.tee e) (:ref.test :cons)
+             (:if nil nil
+                  ((:local.get 2)
+                   (:if nil :eqref ((:local.get e) (:ref.cast! :cons) (:struct.get :cons 1))
+                        ((:local.get e) (:ref.cast! :cons) (:struct.get :cons 0)))
+                   (:local.get 0) :ref.eq
+                   (:if nil nil ((:local.get e) :return))))
+             ;; an entry that is neither a cons nor NIL: the error, from Lisp
+             (:local.get e) ,@(nil-code) :ref.eq (:local.get e) (:ref.test :cons) :i32.or :i32.eqz (:br_if slow)
+             (:local.get l) (:ref.cast! :cons) (:struct.get :cons 1) (:local.set l)
+             (:br again)))
+       (:local.get l) ,@(nil-code) :ref.eq (:if nil nil (,@(nil-code) :return))))
+  '(:local.get 2)
+  `(:if nil :eqref
+        ((:local.get 0) (:local.get 1) (:global.get ,(sym-global 'clysm-sys::%rassoc-eql)) (:call (:callsym 2)))
+        ((:local.get 0) (:local.get 1) (:global.get ,(sym-global 'clysm-sys::%assoc-eql)) (:call (:callsym 2)))))
+(defprim clysm-sys::%assoc-eql (x l) :value `(,@x ,@l (:i32.const 0) (:call :assoc-eq-loop)))
+(defprim clysm-sys::%rassoc-eql (x l) :value `(,@x ,@l (:i32.const 1) (:call :assoc-eq-loop)))
+
+
+
 ;;; bignum magnitude kernels (base 2^14 limbs, little endian)
 (defhelper :mag-len :e-i ((m (:ref :null :limbs)) (n :i32))
   '(:local.get 0) '(:ref.cast! :limbs) '(:local.tee m) :array.len '(:local.set n)

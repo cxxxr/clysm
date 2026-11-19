@@ -335,6 +335,19 @@ for here, without a call."
                ((eql ,i -1) (values ,(if defaultp d nil) nil))
                (t (%gethash-general ,k ,h ,(if defaultp d nil))))))))
 
+;; a fixnum, a character or a symbol already in the table: the value is
+;; stored at the call site; anything else calls %HT-PUT
+(define-compiler-macro %ht-put (table key value)
+  (let ((k (gensym "KEY")) (h (gensym "H")) (v (gensym "VALUE")) (i (gensym "I")))
+    `(let* ((,h ,table) (,k ,key) (,v ,value))
+       (let ((,i (if (and (%immediate-or-symbol-p ,k) (%instancep ,h)
+                          (eq (%instance-layout ,h) (load-time-value *hash-table-class*)))
+                     (%ht-fast-index (%instance-slots ,h) ,k)
+                     -2)))
+         (if (%fx>= ,i 0)
+             (progn (%set-svref (%svref (%instance-slots ,h) +ht-vals+) ,i ,v) ,v)
+             (%ht-put-slow ,h ,k ,v))))))
+
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
   (if (eql (%ht h +ht-count+) 0)
@@ -349,13 +362,13 @@ for here, without a call."
     (%ht-put h key value)
     value))
 
-(defun %ht-put (h key value)
+(defun %ht-put-slow (h key value)
   ;; a fixnum, a character or a symbol already in the table: stored at once
   (when (and (%immediate-or-symbol-p key) (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
     (let* ((sv (%instance-slots h)) (i (%ht-fast-index sv key)))
       (when (%fx>= i 0)
         (%set-svref (%svref sv +ht-vals+) i value)
-        (return-from %ht-put value))))
+        (return-from %ht-put-slow value))))
   (%check-ht h)
   ;; the entry GETHASH has just found (never one of a fixnum or a symbol)
   (unless (or (fixnump key) (symbolp key))
@@ -363,7 +376,7 @@ for here, without a call."
       (when (and (eq key (%svref sv +ht-last-key+)) (%fx>= li 0) (%fx< li (%svref sv +ht-fill+))
                  (eq (%svref (%svref sv +ht-keys+) li) (%svref sv +ht-last-tkey+)))
         (%set-svref (%svref sv +ht-vals+) li value)
-        (return-from %ht-put value))))
+        (return-from %ht-put-slow value))))
   (let* ((sv (%instance-slots h))
          (hash (%ht-hash h key))
          (i (%ht-lookup sv key hash)))
@@ -384,6 +397,7 @@ for here, without a call."
             (%ht-set h +ht-count+ (%fx+ (%ht h +ht-count+) 1)))))
     value))
 
+(defun %ht-put (h key value) (%ht-put-slow h key value))
 (defun %ht-grow (h)
   "Make room for an entry: the entries are moved to the front of the vectors
 over the removed ones when they are less than half full, else the table
