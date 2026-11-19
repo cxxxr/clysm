@@ -1589,6 +1589,25 @@ What is not as fast as intended, and why:
   binding and a read of `*sp*`) and the same loop with `setq` in place of
   the binding (three times faster) vary between runs in the same way, so
   neither the call nor the binding is the cause.
+* **Tiering of the engine** (measured 2026-11, Node.js 24, V8 13.6). V8
+  compiles a Wasm function with Liftoff first and with TurboFan once it has
+  run enough (`--wasm-tiering-budget`, about 13 MB of code executed); there
+  is no on-stack replacement for Wasm, so a function called once with a hot
+  loop (`main`, a toplevel form of a script) stays in Liftoff, about twice
+  as slow (a nested loop run once: 42-55 ms against 24 with
+  `--no-liftoff`). Real workloads are not limited by it: Lem's actions
+  (`tools/bench-lem.sh`) are as fast with `--no-liftoff` (geometric mean
+  2.44 against 2.38) and real libraries (`bench/apps.lisp`) are slower with
+  it (2.78 against 2.11), because Liftoff code collects the feedback by
+  which TurboFan inlines the targets of `call_ref`; compiling everything
+  with TurboFan also costs 3 s at start (0.16 s now). A lower or higher
+  tiering budget, larger inlining budgets (`--wasm-inlining-budget`,
+  `-max-size`) and a larger young generation (`--max-semi-space-size=64`)
+  changed `bench/apps.lisp` by 3% or less, so the default flags are kept;
+  eager top-tier compilation hints (experimental) would lose the feedback as
+  `--no-liftoff` does. What remains is the run-once hot loop, which only
+  outlining the loop's body into a function called once per iteration of
+  an enclosing loop would let tier up.
 * **Libraries** are within 2.5 to 3 (`l-ppcre-replace`, `l-split-sequence`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
