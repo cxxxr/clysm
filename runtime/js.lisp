@@ -131,18 +131,42 @@ called from JavaScript), otherwise a JS:JS-ERROR."
 ;;; string of Lisp, and made a string of JavaScript at every call: reading a
 ;;; property by its name cost six times what it costs with the name already
 ;;; JavaScript's.  Compiled code makes such a name JavaScript's once, where it
-;;; is written, when it first comes there.
+;;; is written, when it first comes there.  The JavaScript string is kept in
+;;; a cell (string . JavaScript string), one for each name, not as the value
+;;; of the LOAD-TIME-VALUE itself: a heap image cannot hold JavaScript
+;;; objects, so SAVE-IMAGE empties the cells (%JS-FORGET-NAMES) and the image
+;;; started from the file makes each name again when it first uses it.
+(defvar *js-name-cells* nil "string -> (string . JavaScript string or NIL)")
+
+(defun %js-name-cell (string)
+  ;; (a LOAD-TIME-VALUE of the image may come before the DEFVAR)
+  (let ((table (or (and (boundp '*js-name-cells*) *js-name-cells*)
+                   (setq *js-name-cells* (make-hash-table :test 'equal)))))
+    (or (gethash string table)
+        (setf (gethash string table) (cons string nil)))))
+
+(defun %js-name-fill (cell)
+  (setf (cdr cell) (%js-string (car cell))))
+
+(defun %js-forget-names ()
+  (when *js-name-cells*
+    (maphash (lambda (string cell) (declare (ignore string)) (setf (cdr cell) nil)) *js-name-cells*)))
+
+(defmacro %js-literal-name (string)
+  `(let ((cell (load-time-value (%js-name-cell ,string))))
+     (or (cdr cell) (%js-name-fill cell))))
+
 (define-compiler-macro js:get (&whole form object key)
-  (if (stringp key) `(js:get ,object (load-time-value (js:to-js ,key))) form))
+  (if (stringp key) `(js:get ,object (%js-literal-name ,key)) form))
 
 (define-compiler-macro js:set (&whole form object key value)
-  (if (stringp key) `(js:set ,object (load-time-value (js:to-js ,key)) ,value) form))
+  (if (stringp key) `(js:set ,object (%js-literal-name ,key) ,value) form))
 
 (define-compiler-macro js:call (&whole form object method &rest args)
-  (if (stringp method) `(js:call ,object (load-time-value (js:to-js ,method)) ,@args) form))
+  (if (stringp method) `(js:call ,object (%js-literal-name ,method) ,@args) form))
 
 (define-compiler-macro js:global (&whole form &optional name)
-  (if (stringp name) `(js:global (load-time-value (js:to-js ,name))) form))
+  (if (stringp name) `(js:global (%js-literal-name ,name)) form))
 
 (defun js:new (constructor &rest args)
   (%js-result (%js-new (js:to-js constructor) (%js-args args))))
