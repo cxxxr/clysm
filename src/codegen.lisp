@@ -502,7 +502,10 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
 ;;; Dynamic binding helpers
 ;;; ------------------------------------------------------------
 
-(defun save-bsp-code (local) `((:global.get :bsp) (:local.set ,local)))
+(defun bsp-code () '((:global.get :dyn) (:struct.get :dynstate 0)))
+(defun bstack-code () '((:global.get :dyn) (:struct.get :dynstate 1)))
+(defun set-bsp-code (value-code) `((:global.get :dyn) ,@value-code (:struct.set :dynstate 0)))
+(defun save-bsp-code (local) `(,@(bsp-code) (:local.set ,local)))
 (defun restore-bsp-code (local) `((:local.get ,local) (:call :unbind-to)))
 
 ;;; Binding special variables whose symbols are known: the entries
@@ -521,17 +524,17 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
           ,@(loop for (sym . tmp) in bindings
                   append `((:global.get ,(sym-global sym)) (:local.get ,tmp) (:call :bind))))
         (let ((st (new-local '(:ref :null :vector))))
-          `((:global.get :bsp) (:local.tee ,saved) (:i32.const ,(* 2 n)) :i32.add
-            (:global.get :bstack) :array.len :i32.gt_u
+          `(,@(bsp-code) (:local.tee ,saved) (:i32.const ,(* 2 n)) :i32.add
+            ,@(bstack-code) :array.len :i32.gt_u
             (:if nil nil ((:call :grow-bstack)))
-            (:global.get :bstack) (:local.set ,st)
+            ,@(bstack-code) (:local.set ,st)
             ,@(loop for (sym . tmp) in bindings for i from 0 by 2
                     append `((:local.get ,st) (:local.get ,saved) ,@(unless (zerop i) `((:i32.const ,i) :i32.add))
                              (:global.get ,(sym-global sym)) (:array.set :vector)
                              (:local.get ,st) (:local.get ,saved) (:i32.const ,(1+ i)) :i32.add
                              (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:array.set :vector)
                              (:global.get ,(sym-global sym)) (:local.get ,tmp) (:struct.set :symbol ,+sym-value+)))
-            (:local.get ,saved) (:i32.const ,(* 2 n)) :i32.add (:global.set :bsp))))))
+            ,@(set-bsp-code `((:local.get ,saved) (:i32.const ,(* 2 n)) :i32.add)))))))
 
 (defun unbind-specials-code (saved symbols)
   "Undo, at the normal exit, the bindings of SYMBOLS made by BIND-SPECIALS-CODE."
@@ -539,12 +542,12 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
     (if (or (zerop n) (> n *inline-bind-max*))
         (restore-bsp-code saved)
         (let ((st (new-local '(:ref :null :vector))))
-          `((:global.get :bstack) (:local.set ,st)
+          `(,@(bstack-code) (:local.set ,st)
             ,@(loop for sym in (reverse symbols) for i downfrom (1- (* 2 n)) by 2
                     append `((:global.get ,(sym-global sym))
                              (:local.get ,st) (:local.get ,saved) (:i32.const ,i) :i32.add (:array.get :vector)
                              (:struct.set :symbol ,+sym-value+)))
-            (:local.get ,saved) (:global.set :bsp))))))
+            ,@(set-bsp-code `((:local.get ,saved))))))))
 
 (defmacro with-dynamic-scope (() &body body)
   `(let ((*dyn-depth* (1+ *dyn-depth*)) (*tail-ok* nil)) ,@body))
@@ -2126,7 +2129,7 @@ its last parameter; the entries for few arguments make the list."
              (arg (i) `((:local.get 1) (:i32.const ,i) (:array.get :vector))))
       (emit prologue
             `((:local.get 1) :array.len (:local.set ,nargs))
-            `((:global.get :bsp) (:local.set ,saved))
+            (save-bsp-code saved)
             ;; arg count check
             `((:local.get ,nargs) (:i32.const ,nreq) :i32.lt_s
               ,@(unless (or (lam-rest lam) (lam-keyp lam))
@@ -2224,7 +2227,7 @@ its last parameter; the entries for few arguments make the list."
                               (:if nil :eqref ,(let ((*dyn-depth* (+ *dyn-depth* (if specials 1 0)))) (cg init))
                                    ((:local.get ,tmp)))))
                    (when sv (bind sv `((:local.get ,tmp) :ref.is_null :i32.eqz ,@(bool-code)))))))
-        (emit prologue `((:global.get :bsp) (:local.set ,saved)))
+        (emit prologue (save-bsp-code saved))
         (loop for lv in (lam-req lam) for i from 0 do (bind lv (slot i)))
         (loop for (lv init sv) in (lam-opt lam) for i from nreq do (bind-defaulted lv init sv i))
         (loop for (nil lv init sv) in (lam-keys lam) for i from npos do (bind-defaulted lv init sv i))

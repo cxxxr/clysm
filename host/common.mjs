@@ -76,7 +76,7 @@ export function instantiateLinked(state, bytes, codeBase) {
   }
   const inst = new WebAssembly.Instance(mod, {
     ...state.imports,
-    clysm: { ...state.helperImports, mv_count: ex.mv_count, mv_buf: ex.mv_buf, empty_slots: ex.empty_slots, bstack: ex.bstack, bsp: ex.bsp,
+    clysm: { ...state.helperImports, mv_count: ex.mv_count, mv_buf: ex.mv_buf, empty_slots: ex.empty_slots, dyn: ex.dyn, nil_symbol: ex.nil_symbol,
              poll_count: ex.poll_count,
              lisp_throw: ex.lisp_throw, memory: ex.memory,
              codes, code_base: codeBase },
@@ -377,7 +377,7 @@ export async function loadImage(state, file, header, modules) {
     // (asynchronously: a page may not instantiate a large module at once)
     const inst = await WebAssembly.instantiate(modules[0], {
       ...state.imports,
-      clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, empty_slots: ex.empty_slots, bstack: ex.bstack, bsp: ex.bsp,
+      clysm: { mv_count: ex.mv_count, mv_buf: ex.mv_buf, empty_slots: ex.empty_slots, dyn: ex.dyn, nil_symbol: ex.nil_symbol,
                poll_count: ex.poll_count, lisp_throw: ex.lisp_throw, memory: ex.memory, codes },
     });
     restores = header.modules.map((e, i) => inst.exports['restore' + i]);

@@ -94,6 +94,10 @@ when ET is not one of the specifiers recognized at compile time."
 (defparameter *type-defs*
   '((:string    (:array (:i32 t)))
     (:vector    (:array (:eqref t)))
+    ;; the binding stack (its top and the vector of its entries), which the
+    ;; image and the modules compiled in it reach through one immutable
+    ;; global (an imported mutable global costs a load more at each access)
+    (:dynstate  (:struct ((:i32 t) ((:ref :vector) t))))
     (:limbs     (:array (:i32 t)))
     (:bytes     (:array (:i8 t)))
     (:bits      (:array (:i8 t)))
