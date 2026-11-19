@@ -586,8 +586,15 @@ representation) or :effect (no value)."
                 (t (remhash lv *fdual-vars*)
                    (setf code (append code (bind-new-var-code lv (cg init))))))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
-          (when (and (eq (car init) :lambda) (not (lvar-mutated lv)) (not (lvar-special lv)))
-            (setf (gethash lv *lvar-lams*) (second init)))))
+          (when (and (not (lvar-mutated lv)) (not (lvar-special lv)))
+            (cond ((eq (car init) :lambda)
+                   (setf (gethash lv *lvar-lams*) (second init)))
+                  ;; (a variable bound to one that is always a known lambda:
+                  ;; the parameter of a copy of an inline function given a
+                  ;; lambda as its argument)
+                  ((and (eq (car init) :lref) (not (lvar-mutated (second init)))
+                        (gethash (second init) *lvar-lams*))
+                   (setf (gethash lv *lvar-lams*) (gethash (second init) *lvar-lams*)))))))
       (flet ((body-code (tail)
                (case rep
                  (:eqref (cg body mv tail))
