@@ -33,9 +33,11 @@
   (setq sys::*struct-inline-hook*
         (lambda (kind function-name name index writable)
           (let ((*live-mode* t) (*live-packages* t))
-            (if (eq kind :accessor)
-                (register-struct-accessor-inline function-name name index writable)
-                (register-struct-predicate-inline function-name name)))))
+            (case kind
+              (:accessor (register-struct-accessor-inline function-name name index writable))
+              ;; a call of the constructor is of the structure's type
+              (:constructor (setf (gethash function-name *struct-constructors*) name))
+              (t (register-struct-predicate-inline function-name name))))))
   ;; macro expanders called by the compiler receive its environment objects
   (setq sys::*foreign-env-macroexpand-hook* #'cmacroexpand-1)
   (setq sys::*foreign-env-macro-function-hook* #'macro-function-in)

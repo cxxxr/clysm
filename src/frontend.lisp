@@ -59,6 +59,9 @@ image: they are all NOTINLINE, so their callers go through the function cell.")
 ;;; is linked into that running image.  These hooks give access to the
 ;;; image's own macros, special declarations and constants.
 (defvar *live-mode* nil)
+(defvar *struct-constructors* (make-hash-table :test 'eq)
+  "In the image: the name of a constructor of a structure -> the name of the structure.")
+
 (defvar *live-macro-hook* nil "symbol -> macro function or NIL")
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
