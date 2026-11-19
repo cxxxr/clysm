@@ -960,9 +960,9 @@ SORT and the like make no argument list)."
         (setq x (%fxtruncate x base))))))
 
 (defun %integer-to-string (n base)
-  ;; (the helper writes integers within 64 bits)
+  ;; (the helpers write integers within 64 bits, and of any size in base 10)
   (or (%int64-to-string n base)
-      (%bignum-to-string n base)))
+      (if (eql base 10) (%int-decimal-string n) (%bignum-to-string n base))))
 
 (defun %bignum-to-string (n base)
   "N a bignum (or MOST-NEGATIVE-FIXNUM), BASE in [2, 36].  The digits are
