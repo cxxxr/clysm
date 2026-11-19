@@ -279,7 +279,7 @@ can then pass their arguments in its slots.")
          `(lambda (info)
             (%set-gf-slot info +gf-core+ ,(%gf-spread-core n))
             (%make-gf-closure4 ,(%gf-spread-entry-n n)
-                               ,@(%gf-spread-entries n))))
+                               ,@(%gf-spread-entries n t))))
         ((eq n :all)
          '(lambda (info)
            (%make-gf-closure4 (lambda (&rest args) (%gf-invoke info args))
@@ -1236,13 +1236,20 @@ than four arguments (or applied): its lambda list spreads them."
                   ,@(when rest `(&rest ,@rest)))
            (funcall (the function (%instance-ref info +gf-core+)) ,@spread)))))
 
-  (defun %gf-spread-entries (shape)
+  (defun %gf-spread-entries (shape &optional rest-inline)
     "The entries of one to four arguments of a generic function of the shape
 SHAPE: the call with the required arguments alone has the dispatch inline
-(%GF-SCALL), the others call the core (%GF-SCALL-CORE)."
+(%GF-SCALL), and, with REST-INLINE (no keyword parameters), those with the
+optional ones and up to two rest arguments; the others call the core
+(%GF-SCALL-CORE)."
     (loop for args in '((a) (a b) (a b c) (a b c d))
           collect `(lambda ,args
-                     ,(if (eql (length args) (first shape))
+                     ,(if (or (eql (length args) (first shape))
+                              ;; without keywords: the calls with the optional
+                              ;; arguments and up to two rest arguments too
+                              (and rest-inline
+                                   (<= (first shape) (length args)
+                                       (+ (first shape) (second shape) (* 2 (third shape))))))
                           `(%gf-scall info ,shape ,args)
                           `(%gf-scall-core info ,shape ,args)))))
 
@@ -2442,7 +2449,12 @@ parameters and nothing else, and NAME is a symbol outside the implementation's p
                (symbol-package sym)
                (not (member (package-name (symbol-package sym)) '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD")
                             :test #'string=))
-               (not (eql (get sym flag) n)))
+               (or (not (eql (get sym flag) n))
+                   ;; in the image: the form setting the flag may have been
+                   ;; expanded without being evaluated (a toplevel form of a
+                   ;; loaded file is expanded more than once)
+                   (and (boundp '*note-key-layout-hook*) (symbol-value '*note-key-layout-hook*)
+                        (null (compiler-macro-function name)))))
           (progn
             (%put sym flag n)
             `((define-compiler-macro ,name (&whole form &rest args)
