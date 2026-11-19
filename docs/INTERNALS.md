@@ -1724,8 +1724,10 @@ What makes the code fast:
   `(setf gethash)` of a fixnum, a character or a symbol find the entry with
   one Wasm helper (`ht-fast-index`), which casts the table's arrays once
   (a cast at each access cost about a third of the time); `gethash` reads
-  the value at the call site. The rest of the gap to SBCL (about 1.5-2 on
-  these lookups) is the call and the two values. Hash tables are
+  the value at the call site: a character key in an EQL table is looked
+  up as fast as in SBCL. String comparisons with literal keywords take no
+  keyword list; the digits of a float the host makes (a double of 16-17
+  digits) cross in groups of nine (`float_part`). Hash tables are
   iterated in place (`maphash`, `loop ... hash-keys`,
   `with-hash-table-iterator` read the key and value vectors), `(setf
   gethash)` right after `gethash` of the same key in an `equal`/`equalp`
