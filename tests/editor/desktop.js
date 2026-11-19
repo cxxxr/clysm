@@ -90,6 +90,10 @@ module.exports = (win, app) => {
       await sleep(100);
       const copied = await clipboard.readText();
       check('copy to the clipboard', copied === saved, copied.slice(0, 30));
+      // the shell's clipboard, as ui/desktop.lisp reads it (synchronously)
+      await clipboard.writeText('from the system');
+      const read = await js("desktop.call('readClipboard')");
+      check('the shell reads the clipboard', read === 'from the system', read);
       await clipboard.writeText(';; pasted');
       await key('End', ['control']);
       await key('Return');

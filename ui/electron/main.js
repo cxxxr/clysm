@@ -99,17 +99,28 @@ const api = {
     setImmediate(() => app.quit());
     return null;
   },
-  // (the renderer of Electron 45 has no clipboard module of its own)
-  readClipboard() { return clipboard.readText(); },
-  writeClipboard(text) { clipboard.writeText(String(text)); return null; },
+  // (the renderer of Electron 45 has no clipboard module of its own, and the
+  // main process's returns promises: the call returns when they are settled)
+  async readClipboard() { return String(await clipboard.readText()); },
+  async writeClipboard(text) { await clipboard.writeText(String(text)); return null; },
 };
 
+// The page waits for event.returnValue (desktop.call is synchronous): a
+// function of the API that returns a promise answers when it is settled.
 ipcMain.on('desktop', (event, name, args) => {
-  try {
-    event.returnValue = api[name](...args);
-  } catch (e) {
+  const fail = (e) => {
     console.error(`desktop.${name}:`, e);
     event.returnValue = null;
+  };
+  try {
+    const value = api[name](...args);
+    if (value && typeof value.then === 'function') {
+      value.then((v) => { event.returnValue = v === undefined ? null : v; }, fail);
+    } else {
+      event.returnValue = value;
+    }
+  } catch (e) {
+    fail(e);
   }
 });
 

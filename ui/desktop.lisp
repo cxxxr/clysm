@@ -64,6 +64,10 @@ application in the dock or the task bar)."
   (desktop-call "writeClipboard" text)
   text)
 
+(defmethod read-clipboard ((backend desktop-backend) continuation)
+  (let ((text (desktop-call "readClipboard")))
+    (funcall continuation (and (stringp text) text))))
+
 ;;; dialogs
 
 (defmethod choose-file ((backend desktop-backend) continuation &key accept)
