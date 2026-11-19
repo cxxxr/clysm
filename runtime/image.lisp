@@ -217,7 +217,8 @@ now (the oldest binding of a symbol on the binding stack holds it)."
 (defun %save-image (file function)
   (when *image-restored*
     (error "SAVE-IMAGE: an image started from a heap image cannot be saved again (its modules are without the code that saving needs)"))
-  (when (zerop (%module-count))
+  ;; (-1: the host does not record them; 0 for an image that compiled none)
+  (when (minusp (%module-count))
     (error "SAVE-IMAGE: the host does not record the modules compiled in the image (CLYSM_SAVE_IMAGE)"))
   (let* (;; (bound: their global values are saved)
          (*img-buf* nil) (*img-fill* 0) (*img-current* nil) (*img-ids* nil)

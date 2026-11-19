@@ -17,6 +17,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 QL="${QUICKLISP_HOME:-$HOME/quicklisp/}setup.lisp"
 IMG="$("$ROOT/bin/clysm" image-native)"
+# (as bin/clysm starts it: from its heap image, which this makes if needed)
+"$ROOT/bin/clysm" script /dev/null </dev/null >/dev/null 2>&1 || true
+[ -z "$CLYSM_NO_HEAP_IMAGE" ] && [ -f "${IMG%.wasm}.img" ] && export CLYSM_IMAGE="${IMG%.wasm}.img"
 cat > "$TMP/script.lisp" <<'EOF'
 (defun fact (n) (if (< n 2) 1 (* n (fact (1- n)))))
 (format t "~D~%" (length (princ-to-string (fact 100))))

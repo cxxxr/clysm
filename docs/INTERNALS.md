@@ -369,7 +369,9 @@ file (`CLYSM_IMAGE=FILE node host/run.mjs IMAGE.wasm`, or the option
 `image` of `loadClysm`) calls FUNCTION. The image saving it must have been
 started with `CLYSM_SAVE_IMAGE` set, so that the host records the modules
 compiled in it (their octets go into the file; with `CLYSM_SAVE_IMAGE=fasls`
-those read from fasls are named by file and position instead).
+those read from fasls are named by file and position instead). The REPL
+image itself starts from one that `bin/clysm` saves after its toplevel
+forms (`build/clysm-native.img`, see Start-up and loading).
 
 * **What is saved.** The objects reachable from the roots: the objects of
   the image's immutable globals (its symbols, constants and static closures,
@@ -1766,18 +1768,22 @@ small script (`clysm script` of a `defun` and a call). Its fasls go to a
 cache of its own (`build/bench-cache/`, as `$XDG_CACHE_HOME`).
 
 Measured 2026-11 on a slot of four CPUs (`tools/bench-slot.sh`), best of
-five, milliseconds:
+five, milliseconds; "before" is main before this work (2026-11-20 morning),
+"main" after the other start-up changes of that day (simple calls evaluated,
+fewer globals and helpers in each module), "now" this work on top of it.
+The machine was busy and runs differ by 10-20%; compare within a column
+group, which ran one after the other on one slot:
 
-| Item | SBCL | Clysm before | Clysm now | Now / SBCL |
-|---|---|---|---|---|
-| `s-start` (`--eval t`) | 4 | 416 | 158 | 40 |
-| `s-script` (a `defun` and a call) | 7 | 431 | 232 | 33 |
-| `s-require-asdf` | 62 | 862 | 439 | 7.1 |
-| `s-quicklisp` (`setup.lisp`) | 157 | 1301 | 715 | 4.6 |
-| `s-ql-alexandria` | 179 | 1454 | 791 | 4.4 |
-| `s-ql-cl-ppcre` | 223 | 1425 | 782 | 3.5 |
-| `s-ql-babel` | 251 | 1720 | 854 | 3.4 |
-| geometric mean | | 15.8 | 8.1 | |
+| Item | SBCL | Before | Now | SBCL | Main | Now | Now, no heap image |
+|---|---|---|---|---|---|---|---|
+| `s-start` (`--eval t`) | 4 | 416 | 158 | 6 | 263 | 144 | 179 |
+| `s-script` (a `defun` and a call) | 7 | 431 | 232 | 6 | 584 | 265 | 325 |
+| `s-require-asdf` | 62 | 862 | 439 | 68 | 619 | 543 | 521 |
+| `s-quicklisp` (`setup.lisp`) | 157 | 1301 | 715 | 185 | 1169 | 803 | 877 |
+| `s-ql-alexandria` | 179 | 1454 | 791 | 192 | 1127 | 935 | 969 |
+| `s-ql-cl-ppcre` | 223 | 1425 | 782 | 248 | 1368 | 983 | 1025 |
+| `s-ql-babel` | 251 | 1720 | 854 | 300 | 1514 | 1074 | 1181 |
+| geometric mean / SBCL | | 15.8 | 8.1 | | 12.2 | 8.8 | 9.2 |
 
 Where the time went, and what was done:
 
@@ -1807,14 +1813,27 @@ Where the time went, and what was done:
 * **Validation.** `--wasm-lazy-validation`: a function is validated when it
   is first compiled. Most of the image's functions and of a fasl's never
   run; the image compiles in 17 ms instead of 30.
+* **The REPL image's toplevel forms** (making the packages, symbols,
+  classes, readtables of the runtime and the compiler: 45 ms, half of it V8
+  compiling the functions they call) run once: `bin/clysm` saves a heap
+  image of the REPL image after them, `build/clysm-native.img` (1.8 MB,
+  29000 objects; made the first time the image is used after it is built,
+  0.6 s), and `repl`, `script`, `eval` and `swank` start from it
+  (`CLYSM_IMAGE`; see Heap images), unless `CLYSM_IMAGE` names another,
+  `CLYSM_SAVE_IMAGE` is set (an image started from a heap image cannot save
+  one) or `CLYSM_NO_HEAP_IMAGE` is. Making the objects again takes 12 ms.
+  `save-image` of an image that compiled no module is allowed now (the
+  host says -1 modules when it does not record them).
 
-What remains for `--eval t` (about 0.18 s): Node.js and the worker 45 ms,
-compiling (17 ms) and instantiating (25 ms) the image, its toplevel forms
-(`:start`, 45 ms, half of it V8 compiling the functions they call). For
+What remains for `--eval t` (about 0.15 s): Node.js and the worker 45 ms,
+compiling (17 ms) and instantiating (25 ms) the image, making the heap
+image's objects (12 ms), V8 compiling the functions that run. For
 `(require :asdf)`, 0.3 s more: compiling its 1064 modules (70 ms, most of
 it each module's copy of the image's types; linked into one, `host/link.mjs`,
 they compile in 20 ms), instantiating them (18 ms), reading the fasl's text
-(37 ms), running ASDF's toplevel forms (UIOP's `define-package` 67 ms).
+(37 ms), running ASDF's toplevel forms (UIOP's `define-package` 62 ms, most of it
+hashing strings in `equal` hash tables: `%sxhash` 11 ms, `gethash` 7,
+`%ht-find-general` 11, `find-symbol` 5).
 
 Tried and not kept: compilation hints (`withCompilationHints`, the
 functions that run at start compiled eagerly in background threads) are

@@ -468,7 +468,7 @@ export function makeCommonEnv(state) {
       const i = state.codeIndex.get(f);
       return i === undefined ? -1 : i;
     },
-    module_count() { return Array.isArray(state.modules) ? state.modules.length : 0; },
+    module_count() { return Array.isArray(state.modules) ? state.modules.length : -1; },
     module_snap(i) { return state.modules[i].instance.exports.snap(); },
     compile_module(bytes, consts) {
       // instantiate a module compiled inside the image and link it with it
