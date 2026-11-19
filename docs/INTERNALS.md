@@ -424,6 +424,8 @@ compiled again. A `defun` evaluated at compile time too (in `eval-when` with
 `with-upgradability`, the helpers of macros) is part of the module as well;
 at compile time its name gets a function that compiles the `defun` when it
 is first called (`%cf-define-lazily`), since most are never called then.
+So are the functions of a `defstruct` (its constructors, predicate, copier
+and accessors); the rest of its expansion is compiled and run at once.
 Other forms evaluated at compile time are compiled once, to a module of
 their own run at once (`%cf-compile-and-run`), whose fasl entry is kept, as
 printed before it ran, among the segments. A form the compiler fails on is written as source; when the
@@ -1683,6 +1685,16 @@ What is not as fast as intended, and why:
   binding); since that changed (2026-11), `b-special` loaded into the image
   takes 182 ms instead of 238, `v-special-1` 58 instead of 77, `v-special-6`
   186 instead of 264 (same slot, one run each; the bimodal spread remains).
+* **Calls between modules** (fasl or REPL code into the runtime, or into
+  another file's module) go through the function cell into another Wasm
+  instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
+  costs what a `call_ref` through the closure does; what a direct call within
+  one module gains is the engine's inlining of the callee (2–3 times for
+  small functions of `&optional` or `&key` parameters). Importing the
+  runtime's functions into each module (a call of an imported function of
+  another instance) would not be inlined either, so it is not done; what
+  helps is a copy of the callee in the caller's module (`inline` sources,
+  the small functions of `COMMON-LISP`, a file as one module).
 * **Libraries** are within 2.5 to 3 (`l-ppcre-replace`, `l-split-sequence`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
