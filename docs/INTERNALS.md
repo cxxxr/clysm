@@ -1570,7 +1570,23 @@ What makes the code fast:
   direct loops over lists, simple vectors and strings; hash tables for
   `remove-duplicates` and the set functions; `typep` with a constant type,
   `format` with a constant control string (all directives), `coerce` and
-  `parse-integer` compiled at the call site; string streams as buffers.
+  `parse-integer` compiled at the call site; string streams as buffers
+  (`write-char` to one is a store at the call site). The mapping
+  functions (any number of lists), `map`, `map-into`, `reduce` (whole
+  sequence) and the quantifiers (any number of sequences) with a function
+  written in place are loops at the call site, where `#'name` is a direct
+  call (`(mapcar #'+ a b)` adds inline) and a lambda is inline. Hash tables are
+  iterated in place (`maphash`, `loop ... hash-keys`,
+  `with-hash-table-iterator` read the key and value vectors), `(setf
+  gethash)` right after `gethash` of the same key in an `equal`/`equalp`
+  table does not hash it again (`(incf (gethash k h 0))`), and a table
+  with removed entries compacts in place. The pretty printer prints a
+  list or vector of data (numbers, characters, symbols, strings and lists
+  and vectors of them) in the fill style without a pretty stream: each
+  element plainly, a line break before an element that does not fit, as
+  Waters' algorithm decides when no element breaks inside
+  (`%pp-fast-fill`, checked against the pretty stream on random trees);
+  a structure that fits on the line is printed plainly.
 
 ### Size and start-up
 
