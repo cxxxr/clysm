@@ -120,6 +120,9 @@ temporaries-bindings special-bindings stream-form), else NIL."
         ((and (%simple-string-p object) (not *print-circle*)
               (not (and *print-pretty* (%ppd-user-entries-p))))
          (%stream-write-simple-string-whole (%output-stream stream) object))
+        ((and (stringp object) (not *print-circle*)
+              (not (and *print-pretty* (%ppd-user-entries-p))))
+         (write-string object (%output-stream stream)))
         ((or *print-escape* *print-readably*)
          (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream))))
         (t (output-object object (%output-stream stream))))
@@ -326,7 +329,12 @@ spaces at the end of a line) or contain a newline."
   ;; only conses and arrays other than strings have standard pretty printing
   ;; functions
   (if (and *print-pretty*
-           (or (consp x) (and (arrayp x) (not (%simple-string-p x))) (%ppd-user-entries-p)))
+           (or (consp x)
+               ;; (a string, also with a fill pointer, or a bit vector has
+               ;; no standard pretty printing: a JSON reader's keys and
+               ;; values are strings of a buffer)
+               (and (arrayp x) (not (stringp x)) (not (bit-vector-p x)))
+               (%ppd-user-entries-p)))
       (let ((fn (%pprint-dispatch-function x)))
         (cond ((null fn) (output-ugly-object x stream))
               ((and *%pp-fast-fill*

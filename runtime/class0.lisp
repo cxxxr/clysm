@@ -571,6 +571,12 @@ grows when CLASS has more instance slots)."
                          (%builtin-class 4 symbol)))
         ((characterp x) (%builtin-class 5 character))
         ((%simple-string-p x) (%builtin-class 6 simple-string))
+        ;; (a string with a fill pointer, as a reader makes its tokens: its
+        ;; header tested once, not after every other representation)
+        ((%mdarray-p x) (cond ((stringp x) (%builtin-class 7 string))
+                              ((bit-vector-p x) (%builtin-class 9 bit-vector))
+                              ((vectorp x) (%builtin-class 10 vector))
+                              (t (%builtin-class 11 array))))
         ((%double-float-p x) (%builtin-class 15 double-float))
         ((%single-float-p x) (%builtin-class 16 single-float))
         ((%simple-vector-p x) (%builtin-class 8 simple-vector))
