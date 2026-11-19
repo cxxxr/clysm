@@ -71,7 +71,8 @@ const api = {
   addRecentDocument(file) { app.addRecentDocument(file); return null; },
   openDialog(o) {
     const files = dialog.showOpenDialogSync(win, {
-      title: o.title || undefined, properties: ['openFile'], filters: filters(o.filters),
+      title: o.title || undefined, properties: [o.directory ? 'openDirectory' : 'openFile'],
+      filters: o.directory ? undefined : filters(o.filters),
     });
     return files ? files[0] : null;
   },

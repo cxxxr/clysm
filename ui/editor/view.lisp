@@ -37,7 +37,7 @@
           code-editor-line-height code-editor-font-size code-editor-focused
           code-editor-version code-editor-message code-editor-cursor code-editor-focus
           code-editor-run code-editor-select code-editor-reveal code-editor-find
-          code-editor-wrap))
+          code-editor-wrap code-editor-cursor-rect))
 
 (ui:defmodel code-editor (ui:pane)
   (;; the model (buffer.lisp); it is not observed: VERSION is
@@ -84,6 +84,8 @@ of commands.lisp."))
    (last-press :initform nil :accessor dom-last-press)
    (reveal :initform nil :accessor dom-reveal)
    (frame-requested :initform nil :accessor dom-frame-requested)
+   ;; the keyboard was asked for before the pane was on the page
+   (focus-pending :initform nil :accessor dom-focus-pending)
    ;; the width of a character in pixels
    (char-width :initform nil :accessor dom-char-width)
    ;; (version width . vector): the first row of every line, and the rows in all
@@ -213,10 +215,21 @@ of the editor) on PANE."
         (after-command pane)
         t))))
 
+(defun code-editor-cursor-rect (pane)
+  "Where the cursor is on the page: its left, top and bottom (in the
+coordinates of the window), or NIL if it is not shown."
+  (let* ((root (dom-root (dom pane)))
+         (cursor (and root (js:call root "querySelector" ".ce-cursor"))))
+    (when (and cursor (js:js-value-p cursor))
+      (let ((rect (js:call cursor "getBoundingClientRect")))
+        (values (js:get rect "left") (js:get rect "top") (js:get rect "bottom"))))))
+
 (defun code-editor-focus (pane)
-  "Give the keyboard to PANE."
+  "Give the keyboard to PANE (when it is put on the page, if it is not yet)."
   (let ((input (dom-input (dom pane))))
-    (when input (js:call input "focus" (js:object "preventScroll" t)))))
+    (if input
+        (js:call input "focus" (js:object "preventScroll" t))
+        (setf (dom-focus-pending (dom pane)) t))))
 
 ;;; ------------------------------------------------------------------
 ;;; Scrolling
@@ -444,6 +457,9 @@ end) and the brackets, and the cursor at its column."
         (js:call observer "observe" scroller)
         (setf (dom-resize-observer dom) observer))
       (js:set scroller "scrollTop" (scroll-top pane)))
+    (when (dom-focus-pending dom)
+      (setf (dom-focus-pending dom) nil)
+      (code-editor-focus pane))
     (request-frame pane)))
 
 (defmethod ui:pane-unmounted ((pane code-editor))

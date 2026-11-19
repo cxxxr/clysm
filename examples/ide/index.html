@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clysm IDE</title>
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="editor.css">
+<link rel="stylesheet" href="ide.css">
+</head>
+<body>
+<div id="status">Clysm IDE を読み込んでいます…<br><small>コンパイラを含むイメージ（約 12 MB）です</small></div>
+<!-- ide.lisp puts the application here -->
+<div id="app"></div>
+<script type="module">
+  import { loadClysm } from './clysm.mjs';
+  const status = document.getElementById('status');
+  try {
+    const bytes = await (await fetch('ide.wasm')).arrayBuffer();
+    // in the desktop application the page has Node.js ("node": true in
+    // package.json): Lisp's files are those of the computer
+    const fs = typeof require === 'function' ? require('node:fs') : undefined;
+    await loadClysm(bytes, (text) => console.log(text), { readLine: () => null, fs });
+    status.remove();
+  } catch (e) {
+    status.textContent = 'エラー: ' + e.message;
+    throw e;
+  }
+</script>
+</body>
+</html>

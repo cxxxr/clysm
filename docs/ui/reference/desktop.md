@@ -103,6 +103,18 @@ Ask for a file to open; `filters` is a list of (name extension...).
 Return its path, or `nil`.
 
 
+<a id="choose-directory"></a>
+### choose-directory
+
+*Function*
+
+```lisp
+(choose-directory &key title)
+```
+
+Ask for a directory (folder); return its path, or `nil`.
+
+
 <a id="choose-file-to-save"></a>
 ### choose-file-to-save
 

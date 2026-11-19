@@ -67,6 +67,7 @@ Every symbol exported by the package `UI`, with what it is and where it is docum
 | [`choice-selected-items`](panes.md#choice-selected-items) | Generic function | [Panes, layouts, menus and interfaces](panes.md) |
 | [`choice-selection`](panes.md#choice) | Accessor | [Panes, layouts, menus and interfaces](panes.md) |
 | [`choice-selection-callback`](panes.md#choice) | Accessor | [Panes, layouts, menus and interfaces](panes.md) |
+| [`choose-directory`](desktop.md#choose-directory) | Function | [The desktop backend](desktop.md) |
 | [`choose-file`](core.md#choose-file) | Generic function | [Markup, components and state](core.md) |
 | [`choose-file-to-open`](desktop.md#choose-file-to-open) | Function | [The desktop backend](desktop.md) |
 | [`choose-file-to-save`](desktop.md#choose-file-to-save) | Function | [The desktop backend](desktop.md) |

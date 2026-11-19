@@ -87,6 +87,10 @@ application in the dock or the task bar)."
 Return its path, or NIL."
   (desktop-call "openDialog" (js:object "title" title "filters" (file-filters filters))))
 
+(defun choose-directory (&key title)
+  "Ask for a directory (folder); return its path, or NIL."
+  (desktop-call "openDialog" (js:object "title" title "directory" t)))
+
 (defun choose-file-to-save (&key title default-name filters)
   "Ask for a file name to save to; return the path, or NIL."
   (desktop-call "saveDialog" (js:object "title" title "defaultName" default-name

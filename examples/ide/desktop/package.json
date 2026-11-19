@@ -1,0 +1,22 @@
+{
+  "name": "clysm-ide",
+  "productName": "Clysm IDE",
+  "version": "0.1.0",
+  "description": "A Common Lisp IDE written in Common Lisp, compiled to WebAssembly by Clysm",
+  "main": "main.js",
+  "private": true,
+  "window": {
+    "width": 1280,
+    "height": 820,
+    "minWidth": 640,
+    "minHeight": 400,
+    "node": true,
+    "backgroundColor": { "light": "#fbfaf7", "dark": "#1c1d20" }
+  },
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  }
+}

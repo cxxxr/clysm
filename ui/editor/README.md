@@ -15,7 +15,7 @@ Common Lisp だけで書いたコードエディタの部品です。CodeMirror 
 (ui:mount (ui:html (:div (ui:pane-node *editor*))) "#app")
 ```
 
-ページには `ui/ui.css` と `ui/editor/editor.css` を読み込みます。動く例は `examples/editor/` です。
+ページには `ui/ui.css` と `ui/editor/editor.css` を読み込みます。動く例は `examples/editor/`、これを使った Common Lisp の IDE は `examples/ide/` です。
 
 ```
 $ examples/editor/build.sh && python3 -m http.server -d build/editor     # ブラウザ
@@ -71,7 +71,8 @@ $ (cd build/editor-desktop && npx electron . ~/foo.lisp)                       #
 | `(code-editor-select pane l1 c1 l2 c2)` | 選択して見えるようにスクロール |
 | `(code-editor-find pane string &key backward)` | 次（前）を選択 |
 | `(code-editor-run pane 'editor::toggle-comment)` | コマンドを実行 |
-| `(code-editor-focus pane)` | キーボードをエディタに |
+| `(code-editor-focus pane)` | キーボードをエディタに（まだページにないペインなら、置かれたときに） |
+| `(code-editor-cursor-rect pane)` | カーソルの画面上の位置（左、上、下）の3値。補完の一覧などを出す場所 |
 | `(code-editor-message pane)` | 最後のコマンドのメッセージ（"Mark set" など） |
 | `(code-editor-editor pane)` | モデル（`editor:editor`）。`editor-modified`、`mark-saved`、`undo` など |
 

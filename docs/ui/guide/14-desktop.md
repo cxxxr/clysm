@@ -72,6 +72,7 @@ $ (cd build-desktop && npm start)
 | `(write-file path text)` | ファイルに書く。書けなければ `desktop-file-error` を通知 |
 | `(user-data-file name)` | アプリケーション用のデータのディレクトリにあるファイル `name` のパス |
 | `(choose-file-to-open &key title filters)` | 開くファイルを選ばせ、パスを返す（キャンセルなら `nil`） |
+| `(choose-directory &key title)` | フォルダを選ばせ、パスを返す（キャンセルなら `nil`） |
 | `(choose-file-to-save &key title default-name filters)` | 保存するファイルの名前を選ばせ、パスを返す |
 | `(message-box message &key detail buttons type cancel)` | メッセージボックス。押されたボタンの番号を返す |
 | `(add-recent-document path)` | 最近使ったファイルに加える |

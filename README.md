@@ -136,6 +136,12 @@ highlighting, Lisp indentation, undo, the selection, input methods and Emacs
 keys, without a JavaScript editor (`examples/editor/`,
 [ui/editor/README.md](ui/editor/README.md)).
 
+`examples/ide/` is an IDE for Common Lisp made with them, in a browser and
+in Electron: files and tabs, evaluation compiled to WebAssembly in the
+IDE's image, a REPL, a debugger with restarts, interrupts of endless
+computations, an inspector, completion, argument lists and going to
+definitions ([examples/ide/README.md](examples/ide/README.md)).
+
 ## Lem
 
 `contrib/lem/` loads Lem's core with ASDF and gives it a frontend written
