@@ -127,6 +127,23 @@ called from JavaScript), otherwise a JS:JS-ERROR."
 (defun js:funcall (function &rest args)
   (%js-result (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
 
+;;; A name written as a literal string (a property, a method, a global) is a
+;;; string of Lisp, and made a string of JavaScript at every call: reading a
+;;; property by its name cost six times what it costs with the name already
+;;; JavaScript's.  Compiled code makes such a name JavaScript's once, where it
+;;; is written, when it first comes there.
+(define-compiler-macro js:get (&whole form object key)
+  (if (stringp key) `(js:get ,object (load-time-value (js:to-js ,key))) form))
+
+(define-compiler-macro js:set (&whole form object key value)
+  (if (stringp key) `(js:set ,object (load-time-value (js:to-js ,key)) ,value) form))
+
+(define-compiler-macro js:call (&whole form object method &rest args)
+  (if (stringp method) `(js:call ,object (load-time-value (js:to-js ,method)) ,@args) form))
+
+(define-compiler-macro js:global (&whole form &optional name)
+  (if (stringp name) `(js:global (load-time-value (js:to-js ,name))) form))
+
 (defun js:new (constructor &rest args)
   (%js-result (%js-new (js:to-js constructor) (%js-args args))))
 
