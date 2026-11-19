@@ -13,10 +13,14 @@ out=build/lem-desktop
 deps=build/lem-deps
 mkdir -p $out $deps
 # the version of Lem this frontend was written for
-lem_commit=b72d82b4dd40fba07dbde06a13e4a6a0bbec282e
+lem_commit=d3ff8bd07388e1fd05d82bb1412b2d0986caff36
 clone() {   # clone REPOSITORY DIRECTORY [COMMIT]
-  [ -d "$2" ] && return
-  git init -q "$2"
+  # (a checkout of an earlier COMMIT is moved to COMMIT)
+  if [ -d "$2" ]; then
+    [ -z "$3" ] || [ "$(git -C "$2" rev-parse HEAD)" = "$3" ] && return
+  else
+    git init -q "$2"
+  fi
   git -C "$2" fetch -q --depth 1 "$1" "${3:-HEAD}"
   git -C "$2" checkout -q FETCH_HEAD
 }
