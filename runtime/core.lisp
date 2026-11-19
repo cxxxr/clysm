@@ -691,7 +691,16 @@ MAPL: the value is the first list)."
 ;;; the one they were filled at.  It changes when the methods of a generic
 ;;; function or a class change, and when a name stops naming a generic function.
 (defvar *clos-epoch* 1)
-(defun %bump-clos-epoch () (setq *clos-epoch* (%fx+ *clos-epoch* 1)))
+;;; the caches of call sites that have been used: they are emptied here,
+;;; and so compare no epoch at each call
+(defvar *gf-sites* nil)
+(defun %bump-clos-epoch ()
+  (setq *clos-epoch* (%fx+ *clos-epoch* 1))
+  (dolist (c *gf-sites*)
+    (if (eql (%svlength c) 12)
+        (progn (%set-svref c 1 nil) (%set-svref c 3 nil) (%set-svref c 5 nil) (%set-svref c 7 nil))
+        (do ((i 1 (%fx+ i 3))) ((%fx> i 10))
+          (%set-svref c i nil) (%set-svref c (%fx+ i 1) nil)))))
 (defun %note-function-change (sym)
   (when (fboundp sym)
     (let ((old (symbol-function sym)))

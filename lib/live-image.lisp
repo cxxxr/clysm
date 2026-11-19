@@ -18,6 +18,11 @@
             (if e (values (car e) t) (values nil nil)))))
   ;; compiler macros defined by the runtime (AREF, FORMAT, MAKE-INSTANCE ...) and by loaded code
   (setf *live-compiler-macro-hook* (lambda (s) (compiler-macro-function s)))
+  ;; the keyed main functions of generic functions compiled but not yet evaluated
+  (setf sys::*note-key-layout-hook*
+        (lambda (name layout defgeneric-p)
+          (when (or defgeneric-p (not (gethash name *compiled-key-layouts*)))
+            (setf (gethash name *compiled-key-layouts*) (key-layout-object layout)))))
   ;; calls with constant keywords use the fixed slots of the function's keyed main function
   (setf *live-key-layout-hook*
         (lambda (s)
