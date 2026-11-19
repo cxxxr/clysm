@@ -1776,6 +1776,10 @@ What makes the code fast:
   Waters' algorithm decides when no element breaks inside
   (`%pp-fast-fill`, checked against the pretty stream on random trees);
   a structure that fits on the line is printed plainly.
+  `string=` and `string-equal` with keyword arguments call the comparison
+  with its bounds directly instead of checking keywords (a function of
+  four arguments when only one string has bounds), which compares two
+  simple strings in a loop of its own.
 
 ### Size and start-up
 
@@ -1965,12 +1969,23 @@ and prints the ratios as `tools/bench.sh` does
 (`tests/lem/buffer-bench.lisp`, loaded by `tests/lem/load-lem.lisp`): the
 actions that the scenario found to take the time, on `src/prims.lisp` in a
 buffer of Lem's core with the Lisp mode's syntax table and grammar and the
-fake display of Lem's tests. It needs a checkout of cxxxr/lem (`LEM_DIR`,
-by default `build/lem`) in which `frontends/clysm/build.sh` has put micros
+fake display of Lem's tests. It needs a checkout of cxxxr/lem with micros
 and lem-mailbox under `build/clysm/deps/`, and Quicklisp with Lem's
-libraries; Lem does not have to be built. Clysm loads the systems as fasls
-into the REPL image (compiled the first time for each build of the image),
-SBCL the same systems with the same stubs (`frontends/clysm/stubs/`).
+libraries; Lem does not have to be built. `tools/lem-setup.sh [DEST]`
+makes one once, by default in `$HOME/src/clysm-lem`, outside any checkout
+of Clysm (from `LEM_SRC`, a checkout that has them, cloned with `git clone
+--local`, else from GitHub), and `bench-lem.sh` takes `LEM_DIR`, else
+`build/lem`, else that one; `DEST/frontends/clysm/build-offline.sh` (with
+`CLYSM_DIR`) builds the desktop application there for the scenario,
+without downloading. Clysm loads the systems as fasls into the REPL image
+(compiled the first time for each build of the image), SBCL the same
+systems with the same stubs (`frontends/clysm/stubs/`).
+
+`tools/bench-libs.sh bench/apps.lisp` is a second comparator of the same
+kind, with other libraries' real work: JSON read and written by yason and
+by cl-json, a PEG grammar of arithmetic with esrap, dates parsed, moved and
+printed by local-time, and `src/prims.lisp` cut into tokens by a regular
+expression of cl-ppcre.
 
 Measured (Linux, 4 CPUs of the machine, means of three runs):
 
@@ -1995,11 +2010,20 @@ the new lines; the GUI framework's update of the DOM is 1.7 ms. A space in
 Lisp mode runs Lem's `parse-for-autodoc`, which scans the rest of the
 function forward: 100-130 ms, the slowest keys of the scenario.
 `tools/bench-lem.sh` gives the same code to SBCL (a 4-CPU slot, best of
-three): geometric mean 3.00 times SBCL's time; autodoc parses 217 against
-753 ms, indenting 50 against 191, `form-offset` over every form 143 against
-468, highlighting the whole file 124 against 406, `string-width` of every
-line 80 against 204, a search 27 against 55, 150 pages down 49 against 129.
-(On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
+three): geometric mean 3.00 times SBCL's time at first, 2.43 on
+perf/wave3 with `string=` with keywords made a direct call (autodoc parses
+250 against 666 ms, indenting 60 against 159, `form-offset` over every
+form 162 against 511, highlighting the whole file 152 against 395,
+`string-width` of every line 88 against 233, a search 36 against 53, 150
+pages down 49 against 124; the machine was busy, SBCL's times 10-15%
+above those of before). `tools/bench-libs.sh bench/apps.lisp`: 2.66
+(yason 2.3-2.4, cl-json 2.0-2.3, local-time 2.8, cl-ppcre's tokens 3.25,
+esrap 4.3). What remains is spread: `gethash`
+of characters in `char-width` (12% of the time; 3 times SBCL's), the call
+sites of the readers of Lem's classes `line` and `point` (each about 140
+Wasm instructions inline; `%point<`, three lines of Lisp, is 900),
+keyword and `&rest` calls (2.5 and 3 times SBCL's), untyped `=` and `<` of
+fixnums, generic functions of two methods (2 times). (On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
 V8 needs CPUs besides the main thread's for its compilers and its GC.) The time is
 spread over Lem's buffer functions (`%character-offset`,
 `%skip-list-forward`, `line-length`: generic readers of the CLOS class
