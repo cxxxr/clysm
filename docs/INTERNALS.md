@@ -283,13 +283,18 @@ What made it slow, and what was done:
   module's own (they were global in the image and grew with every form).
 * **Forms evaluated at compile time too** (`eval-when` with
   `:compile-toplevel` and `:load-toplevel`, ASDF's `with-upgradability`)
-  were compiled twice, to a module run at once and again for the fasl.
-  They are compiled once, the fasl's module also being the one run
-  (`%cf-compile-and-run`): ASDF compiles in 3.8 s instead of 4.8, but with
-  a module of its own in the fasl for each such form (1979 modules instead
-  of 1064) loading ASDF from the cache (every start that uses it) takes
-  0.45 s instead of 0.33 (4-CPU slot, interleaved). With one module per
-  fasl that cost of the number of modules goes away.
+  are compiled twice, to a module run at once and again for the fasl.
+  Compiling them once, the fasl's module also being the one run
+  (`%cf-compile-and-run`), saves compile time but makes each such form a
+  module of its own in the fasl. With batches of modules, ASDF compiled in
+  3.8 s instead of 4.8 and loaded from the cache in 0.45 s instead of 0.33;
+  with a file compiled into one module, it compiles in 5.3 s instead of
+  7.6 but loads in 0.51 s instead of 0.19 (4-CPU slot, interleaved).
+  Loading happens at every start, compiling once per build: in a file
+  compiled into one module (`*cf-unit-p*`) such a form is evaluated at
+  compile time and compiled into the file's module, and only the batched
+  fasl compiles it once. (The separate entries also read their own copies
+  of uninterned symbols: `tests/cases/compile-file-uninterned.lisp`.)
 * **Modules evaluated at once** (the REPL, `load` of a source file,
   `compile`) are made without `SNAP` and `RESTORE` unless the host records
   the modules for `save-image` (`CLYSM_SAVE_IMAGE`, `*live-snapshots*`):
