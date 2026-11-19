@@ -1,0 +1,10 @@
+;;; MACRO-FUNCTION called by a macro: without an environment, and with the
+;;; environment of the call (a MACROLET around it)
+(defmacro twice (x) `(progn ,x ,x))
+(defmacro kind-of (name &environment env)
+  (list 'quote (list (if (macro-function name) :macro :function)
+                     (if (macro-function name env) :macro :function))))
+(print (kind-of car))
+(print (kind-of twice))
+(print (macrolet ((local (x) x)) (kind-of local)))
+(print (if (macro-function 'twice) :macro :function))

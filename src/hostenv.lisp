@@ -38,7 +38,7 @@
   (let ((p (%host-package-or-die package)))
     (or (gethash p *host->target-name*) (package-name p))))
 
-(defun clysm-sys::%host-macro-function* (sym env)
+(defun clysm-sys::%host-macro-function* (sym &optional env)
   (macro-function-in sym (if (cenv-p env) env nil)))
 
 (define-host-function clysm-sys::%define-symbol-macro (sym expansion)
