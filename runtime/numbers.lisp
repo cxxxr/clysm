@@ -1070,36 +1070,38 @@ digits."
 
 (defun %parse-integer-simple (string start end radix junk-allowed)
   "PARSE-INTEGER for a simple string and valid bounds."
-  (declare (fixnum start end radix))
   ;; The digits are accumulated in a fixnum (SMALL, of K digits); when it is
   ;; full, it is added to VALUE: an integer beyond the fixnums costs one
-  ;; multiplication per group of digits, not one per digit.
+  ;; multiplication per group of digits, not one per digit.  Indices, codes
+  ;; and SMALL are fixnums by construction (K < KMAX digits always make a
+  ;; fixnum): their arithmetic is the unchecked one.
   (let ((i start) (neg nil) (small 0) (k 0) (value nil) (any nil)
         (kmax (%fixnum-digit-capacity radix)))
-    (declare (fixnum i small k kmax))
     (macrolet ((whitespace-p (code)
-                 `(let ((code ,code)) (or (eql code 32) (and (<= 9 code 13) (not (eql code 11))))))
+                 `(let ((code ,code)) (or (eql code 32) (and (%fx<= 9 code) (%fx<= code 13) (not (eql code 11))))))
                (skip-whitespace ()
-                 `(do () ((not (and (< i end) (whitespace-p (char-code (%schar string i))))))
-                    (setq i (+ i 1)))))
+                 `(do () ((not (and (%fx< i end) (whitespace-p (%char-code (%schar string i))))))
+                    (setq i (%fx+ i 1)))))
       (skip-whitespace)
-      (when (< i end)
+      (when (%fx< i end)
         (let ((c (%schar string i)))
-          (cond ((eq c #\-) (setq neg t i (+ i 1)))
-                ((eq c #\+) (setq i (+ i 1))))))
+          (cond ((eq c #\-) (setq neg t i (%fx+ i 1)))
+                ((eq c #\+) (setq i (%fx+ i 1))))))
       (loop
-        (when (>= i end) (return))
-        (let* ((code (char-code (%schar string i)))
-               (d (cond ((<= 48 code 57) (- code 48))
-                        ((<= 65 code 90) (- code 55))
-                        ((<= 97 code 122) (- code 87))
+        (when (%fx>= i end) (return))
+        (let* ((code (%char-code (%schar string i)))
+               (d (cond ((%fx< code 48) 99)
+                        ((%fx<= code 57) (%fx- code 48))
+                        ((%fx< code 65) 99)
+                        ((%fx<= code 90) (%fx- code 55))
+                        ((%fx< code 97) 99)
+                        ((%fx<= code 122) (%fx- code 87))
                         (t 99))))
-          (declare (fixnum code d))
-          (when (>= d radix) (return))
+          (when (%fx>= d radix) (return))
           (when (eql k kmax)
             (setq value (if value (+ (* value (%fixnum-power radix k)) small) small) small 0 k 0))
-          (setq small (+ (* small radix) d) k (+ k 1))
-          (setq any t i (+ i 1))))
+          (setq small (%fx+ (%fx* small radix) d) k (%fx+ k 1))
+          (setq any t i (%fx+ i 1))))
       ;; with JUNK-ALLOWED the index is that of the character after the digits
       (unless (and any junk-allowed) (skip-whitespace))
       (cond ((and any (or junk-allowed (eql i end)))
