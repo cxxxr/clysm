@@ -1585,13 +1585,19 @@ What makes the code fast:
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.
+  The layout object a closure holds and a call compares (EQ) is a symbol
+  named after it (`key-layout-object`), so that a call read from a fasl
+  finds it too, and `compile-file` lays out the calls of a function defined
+  earlier in the file (`*compiled-key-layouts*`): such calls in a fasl took
+  twice as long as in loaded code.
 * **CLOS**: generic functions dispatch and combine methods without argument
   lists when they have one to four *spread arguments*: the required ones,
   the optional ones (the unbound marker for one not given) and, with
   `&rest` or `&key`, the list of the arguments after them (`%fast-shape`,
   `%gf-scall`); the methods are functions of those too, and a generic
   function with `&key` checks the keywords of a call only when there are
-  some. The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
+  some, from its own dispatch (one pass with `eq`); methods find their
+  keyword arguments in that list by inline code. The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
   function of each generic function, also when that is compiled in the
   image or into a fasl, where the engine does not inline the runtime's
   functions; `call-next-method` is a direct call; call sites cache the
