@@ -235,13 +235,29 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
              (output-object x stream))))
         (t (%print-dispatched x stream))))
 
-(defun %flat-atom-list-p (x)
-  "X is a short proper list of numbers, characters, symbols and strings."
-  (let ((n 0))
-    (do ((l x (cdr l))) ((null l) t)
-      (unless (and (consp l) (< (setq n (+ n 1)) 64)) (return nil))
-      (let ((e (car l)))
-        (unless (or (numberp e) (characterp e) (symbolp e) (stringp e)) (return nil))))))
+(defun %pp-plain-tree-p (x)
+  "X is printed by the standard pretty printer as by the plain printer when
+it fits on the line: numbers, characters, symbols and strings, and proper
+lists (dotted or not) and vectors of such objects (at most 200 in all) printed by
+PPRINT-FILL, the style of function calls or as vectors -- not a list such
+as (QUOTE X), (LET ...) or a macro form with a body, which have a layout of
+their own."
+  (let ((budget 200))
+    (labels ((plain-p (x)
+               (cond ((or (numberp x) (characterp x) (symbolp x) (stringp x)) t)
+                     ((< (setq budget (- budget 1)) 0) nil)
+                     ((consp x)
+                      (let ((fn (%standard-pprint-function x)))
+                        (and (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call))
+                             (do ((l x (cdr l))) ((null l) t)
+                               ;; a dotted list: ". tail"
+                               (unless (consp l) (return (plain-p l)))
+                               (unless (plain-p (car l)) (return nil))))))
+                     ((and (%simple-vector-p x) *print-array*)
+                      (dotimes (i (%svlength x) t)
+                        (unless (plain-p (%svref x i)) (return nil))))
+                     (t nil))))
+      (plain-p x))))
 
 (defun %ppd-user-entries-p ()
   "True when the current pprint dispatch table has entries made by the user."
@@ -255,9 +271,10 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
            (or (consp x) (and (arrayp x) (not (%simple-string-p x))) (%ppd-user-entries-p)))
       (let ((fn (%pprint-dispatch-function x)))
         (cond ((null fn) (output-ugly-object x stream))
-              ((and (consp x) (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call))
+              ((and (or (and (consp x) (or (eq fn #'pprint-fill) (eq fn #'%pprint-fun-call)))
+                        (and (%simple-vector-p x) (eq fn #'%pprint-array)))
                     (not (%pretty-stream-p stream)) (null *print-lines*) (null *print-circle*)
-                    (%flat-atom-list-p x))
+                    (not (%ppd-user-entries-p)) (%pp-plain-tree-p x))
                ;; when it fits on the line, the pretty printer prints such a
                ;; list as the plain printer does
                (let ((str (let ((o (%scratch-string-stream)))

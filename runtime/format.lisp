@@ -762,7 +762,9 @@ remaining-arguments)."
     (flet ((do-padding ()
              (let ((pad-len (if (<= num-gaps 0) padding (truncate padding num-gaps))))
                (setq padding (- padding pad-len) num-gaps (- num-gaps 1))
-               (dotimes (i pad-len) (write-char padchar stream)))))
+               (if (characterp padchar)
+                   (%write-chars stream padchar pad-len)
+                   (dotimes (i pad-len) (write-char padchar stream))))))
       (when (or pad-left (and (not pad-right) (null (cdr strings))))
         (do-padding))
       (when strings
