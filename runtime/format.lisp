@@ -653,6 +653,7 @@ remaining-arguments)."
 
 ;;; ~< ... ~:> logical blocks
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
 (defun %fmt-clause-string (clause what)
   (dolist (x clause)
     (unless (stringp x) (%fmt-error "~A of ~~<...~~:> cannot contain format directives" what)))
@@ -690,6 +691,7 @@ remaining-arguments)."
                (push copy out)))
             (t (push n out)))
       (setq prev (if (stringp n) nil n)))))
+)                                       ; eval-when (the compiler of ~<...~:> uses them)
 
 (defun %fmt-logical-block (stream dir orig arg at)
   (let* ((clauses (%fdir-clauses dir)) (seps (%fdir-seps dir))
@@ -1213,8 +1215,11 @@ when zero.  D is the number of fraction digits, or NIL for the shortest."
   "Static mode cannot go on: the directive is compiled again in dynamic mode."
   (if *fmtc-pos* (throw '%fmtc-dynamic nil) (%fmtc-fail)))
 
+(defvar *fmtc-popper* nil)              ; in a compiled logical block: arguments come from PPRINT-POP
+
 (defun %fmtc-next ()
   "A form for the next argument."
+  (when *fmtc-popper* (return-from %fmtc-next '(pprint-pop)))
   (if *fmtc-pos*
       (if (< *fmtc-pos* (length *fmtc-vars*))
           (prog1 (nth *fmtc-pos* *fmtc-vars*) (setq *fmtc-pos* (+ *fmtc-pos* 1)))
@@ -1420,9 +1425,13 @@ position.  In static mode they must all take the same number of arguments."
                     (%fmt-case-flush ,s ,tmp ,colon ,at))))))
       (#\[ (%fmtc-conditional dir colon at))
       (#\{ (%fmtc-iteration dir colon at))
-      (#\< (if (%fmt-logical-block-p dir) (%fmtc-fail) (%fmtc-justify dir colon at)))
+      (#\< (if (%fmt-logical-block-p dir) (%fmtc-logical-block dir colon at) (%fmtc-justify dir colon at)))
       (#\^
        (when at (%fmtc-fail))
+       (when *fmtc-popper*
+         ;; in a logical block: when its list is exhausted
+         (when (or colon (%fdir-params dir)) (%fmtc-fail))
+         (return-from %fmtc-directive (list '(pprint-exit-if-list-exhausted))))
        (when (and colon (null *fmtc-up-up*)) (%fmtc-fail))
        (let ((exit (if colon `(return-from ,*fmtc-up-up* nil) `(return-from ,*fmtc-up* nil))))
          (multiple-value-bind (b v) (%fmtc-params dir '((:any nil) (:any nil) (:any nil)))
@@ -1450,6 +1459,35 @@ position.  In static mode they must all take the same number of arguments."
            (list `(let* (,@b (,f (%fmt-slash-symbol ,(%fdir-name dir))) (,a ,(%fmtc-next)))
                     (funcall ,f ,s ,a ,colon ,at ,@v))))))
       (t (%fmtc-fail)))))
+
+(defun %fmtc-popper-safe-p (nodes)
+  "True when the directives of NODES take their arguments one by one (with
+%FMTC-NEXT): in a logical block they are then popped with PPRINT-POP."
+  (dolist (n nodes t)
+    (unless (stringp n)
+      (unless (and (member (%fdir-char n) '(#\A #\S #\D #\B #\O #\X #\C #\F #\E #\G #\$ #\% #\&
+                                              #\| #\~ #\_ #\I #\W #\^ #\T #\Newline #\())
+                   (not (member :remaining (%fdir-params n)))
+                   (every #'%fmtc-popper-safe-p (%fdir-clauses n)))
+        (return nil)))))
+
+(defun %fmtc-logical-block (dir colon at)
+  "~<...~:> on the argument (not ~@<, whose list is the remaining arguments):
+PPRINT-LOGICAL-BLOCK at the call site, the body's arguments popped from
+the list with PPRINT-POP."
+  (let* ((clauses (%fdir-clauses dir)) (seps (%fdir-seps dir)) (n (length clauses)))
+    (when (or at (> n 3) (%fdir-params dir)) (%fmtc-fail))
+    (let* ((prefix (if (>= n 2) (%fmt-clause-string (first clauses) "prefix") (if colon "(" "")))
+           (per-line (and (>= n 2) (%fdir-at (first seps))))
+           (body (if (>= n 2) (second clauses) (first clauses)))
+           (suffix (if (= n 3) (%fmt-clause-string (third clauses) "suffix") (if colon ")" "")))
+           (body (if (%fdir-at (%fdir-close dir)) (%fmt-add-fill body) body)))
+      (unless (%fmtc-popper-safe-p body) (%fmtc-fail))
+      (let* ((s *fmtc-stream*) (arg (gensym "ARG")) (argform (%fmtc-next))
+             (forms (let ((*fmtc-popper* t) (*fmtc-pos* nil)) (%fmtc-seq body))))
+        (list `(let ((,arg ,argform))
+                 (pprint-logical-block (,s ,arg ,(if per-line :per-line-prefix :prefix) ,prefix :suffix ,suffix)
+                   ,@forms)))))))
 
 (defun %fmtc-jump (dir colon at)
   "~*"
