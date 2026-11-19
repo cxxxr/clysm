@@ -140,6 +140,26 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 (defun %mix (h v)
   (%fxlogand (%fx* (%fxlogxor (%fxlogand (%fx* h 16777619) #xFFFFFFF) v) 16777619) #xFFFFFFF))
 
+(defun %list-hash (x depth equalp)
+  "The hash of the list X: its first DEPTH elements (each to DEPTH - 1) and
+what ends it, combined in order by a loop (EQUALP: as %EQUALP-HASH, else as
+%SXHASH)."
+  (declare (fixnum depth))
+  (if (%fx<= depth 0)
+      17
+      (let ((h 7) (l x) (k depth) (d (%fx- depth 1)))
+        (declare (fixnum h k))
+        (loop
+          (unless (and (consp l) (%fx> k 0)) (return))
+          (setq h (%mix h (let ((e (car l)))
+                            (cond ((fixnump e) (%fxlogand e 536870911))
+                                  ((symbolp e) (%symbol-hash e))
+                                  ((and (not equalp) (%simple-string-p e)) (%string-hash e))
+                                  (equalp (%equalp-hash e d))
+                                  (t (%sxhash e d)))))
+                l (cdr l) k (%fx- k 1)))
+        (%mix h (cond ((null l) 3) ((consp l) 17) (equalp (%equalp-hash l d)) (t (%sxhash l d)))))))
+
 (defun sxhash (x) (%sxhash x 4))
 (defun %sxhash (x depth)
   ;; the tests that are a type test of the reference first
@@ -147,9 +167,7 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
   (cond ((fixnump x) (%fxlogand x 536870911))
         ((symbolp x) (%symbol-hash x))
         ((characterp x) (%char-code x))
-        ((consp x) (if (%fx<= depth 0) 17
-                       ;; the hash of the tail is multiplied again at each cons
-                       (%mix (%sxhash (cdr x) (%fx- depth 1)) (%sxhash (car x) (%fx- depth 1)))))
+        ((consp x) (%list-hash x depth nil))
         ((%simple-string-p x) (%string-hash x))
         ((%double-float-p x) (%number-hash x))
         ((numberp x) (%number-hash x))
@@ -205,8 +223,7 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
                                      ((<= c 122) (- c 32))
                                      ((< c 128) c)
                                      (t (%char-code (char-upcase (%schar d (+ i off))))))))))))
-        ((consp x) (if (<= depth 0) 17
-                       (%mix (%equalp-hash (cdr x) (- depth 1)) (%equalp-hash (car x) (- depth 1)))))
+        ((consp x) (%list-hash x depth t))
         ((vectorp x) (let ((h (length x)))
                        (if (<= depth 0) h
                            (dotimes (i (min 4 (length x)) h)
