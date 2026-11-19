@@ -25,11 +25,23 @@
 
 (defvar *package-local-nicknames* nil) ; package -> ((nickname . package) ...)
 
+;;; The symbol FIND-PACKAGE last found a package by, and the package
+;;; (:KEYWORD, :CL-USER in (INTERN NAME :KEYWORD) and the like); the entry is
+;;; forgotten whenever *PACKAGE-TABLE* changes.
+(defvar *%find-package-last-name* nil)
+(defvar *%find-package-last* nil)
+(defmacro %package-table-changed ()
+  `(setq *%find-package-last-name* nil *%find-package-last* nil))
+
 (defun find-package (name)
   (cond ((%packagep name) name)
         ((and (symbolp name) (null *package-local-nicknames*))
-         ;; a symbol's hash is the hash of its name: no need to hash the name again
-         (values (%gethash-hashed (symbol-name name) *package-table* (%symbol-hash name))))
+         (if (and name (eq name *%find-package-last-name*))
+             *%find-package-last*
+             ;; a symbol's hash is the hash of its name: no need to hash the name again
+             (let ((p (values (%gethash-hashed (symbol-name name) *package-table* (%symbol-hash name)))))
+               (when p (setq *%find-package-last-name* name *%find-package-last* p))
+               p)))
         (t
          (let ((s (string name)))
            (or (and *package-local-nicknames* *package*
@@ -97,8 +109,8 @@
     (%pkg-set p 4 (make-hash-table :test 'equal))
     (%pkg-set p 5 (make-hash-table :test 'equal))
     (%pkg-set p 6 nil)
-    (setf (gethash name *package-table*) p)
-    (dolist (n nicknames) (setf (gethash n *package-table*) p))
+    (setf (gethash name *package-table*) p) (%package-table-changed)
+    (dolist (n nicknames) (setf (gethash n *package-table*) p) (%package-table-changed))
     p))
 
 ;;; ------------------------------------------------------------
@@ -339,8 +351,8 @@
                 (%package-externals p))
        (dolist (u (%pkg p 2)) (%pkg-set u 3 (remove p (%pkg u 3))))
        (%pkg-set p 2 nil)
-       (remhash (%pkg p 0) *package-table*)
-       (dolist (n (%pkg p 1)) (remhash n *package-table*))
+       (remhash (%pkg p 0) *package-table*) (%package-table-changed)
+       (dolist (n (%pkg p 1)) (remhash n *package-table*) (%package-table-changed))
        (%pkg-set p 0 nil)
        (%pkg-set p 1 nil)
        t))))
@@ -353,12 +365,12 @@
       (let ((other (find-package n)))
         (when (and other (not (eq other p)))
           (%package-error n "A package named ~S already exists." n))))
-    (remhash (%pkg p 0) *package-table*)
-    (dolist (n (%pkg p 1)) (remhash n *package-table*))
+    (remhash (%pkg p 0) *package-table*) (%package-table-changed)
+    (dolist (n (%pkg p 1)) (remhash n *package-table*) (%package-table-changed))
     (%pkg-set p 0 new-name)
     (%pkg-set p 1 new-nicknames)
-    (setf (gethash (%pkg p 0) *package-table*) p)
-    (dolist (n (%pkg p 1)) (setf (gethash n *package-table*) p))
+    (setf (gethash (%pkg p 0) *package-table*) p) (%package-table-changed)
+    (dolist (n (%pkg p 1)) (setf (gethash n *package-table*) p) (%package-table-changed))
     p))
 
 (defun %package-symbol-list (package kind)
@@ -451,7 +463,7 @@
         (when (find-package n)
           (%package-error n "A package named ~S already exists." n))
         (%pkg-set p 1 (cons n (%pkg p 1)))
-        (setf (gethash n *package-table*) p)))
+        (setf (gethash n *package-table*) p) (%package-table-changed)))
     (when shadows (shadow shadows p))
     (dolist (imp imports)
       (when (eq (car imp) :shadowing-import-from)
