@@ -81,7 +81,7 @@ export function makeJsImports(state) {
       // does it (a Lisp non-local exit, a WebAssembly.Exception, does not)
       wrap_fn: (closure) => (...args) => {
         const ex = state.instance.exports;
-        const bsp = ex.bsp.value;
+        const bsp = ex.get_bsp();
         let r;
         try { r = ex.lisp_apply(closure, args); } catch (e) {
           if (!(e instanceof WebAssembly.Exception)) {
@@ -105,7 +105,7 @@ export function makeJsImports(state) {
       wrap_async_fn: (closure) => (...args) => {
         const ex = state.instance.exports;
         if (!jspi) {
-          const bsp = ex.bsp.value;
+          const bsp = ex.get_bsp();
           try { return Promise.resolve(lispResult(ex.lisp_apply_async(closure, args))); }
           catch (e) {
             if (!(e instanceof WebAssembly.Exception)) ex.lisp_recover(bsp);
@@ -116,10 +116,10 @@ export function makeJsImports(state) {
         // the computation installs a binding stack of its own and puts the
         // one outside back when it waits or ends; if it is still installed
         // when the call returns, the computation died
-        const stack = ex.bstack.value;
+        const stack = ex.get_bstack();
         let recovered = false;
         const p = promisingApply(closure, args);
-        if (ex.bstack.value !== stack) { ex.lisp_recover(-1); recovered = true; }
+        if (ex.get_bstack() !== stack) { ex.lisp_recover(-1); recovered = true; }
         return p.then(lispResult, (e) => {
           if (!recovered && !(e instanceof WebAssembly.Exception)) ex.lisp_recover(-1);
           throw e;

@@ -111,7 +111,7 @@ export function createRepl(container, { afterEval, historyKey = 'clysm-repl-hist
     scroll();
     // let the page paint before a long computation
     await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
-    const bsp = lisp.instance.exports.bsp.value;
+    const bsp = lisp.instance.exports.get_bsp();
     try {
       const result = lisp.eval(code);
       freshLine();

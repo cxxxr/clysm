@@ -1135,13 +1135,13 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defprim clysm-sys::%unbound-marker () :value `((:ref.null :eq)))
 (defprim values-list (l) :mv `(,@l (:call :values-list)))
 (defprim clysm-sys::%mv-count () :value `((:global.get :mv-count) :ref.i31))
-(defprim clysm-sys::%bsp () :value `((:global.get :bsp) :ref.i31))
+(defprim clysm-sys::%bsp () :value `(,@(bsp-code) :ref.i31))
 (defprim clysm-sys::%unbind-to (sp) :value `(,@sp (:ref.cast :i31) :i31.get_s (:call :unbind-to) ,@(nil-code)))
 ;; the binding stack itself, for computations that wait (runtime/js.lisp):
 ;; each has a stack of its own, installed while it runs
-(defprim clysm-sys::%bstack () :value `((:global.get :bstack)))
-(defprim clysm-sys::%set-bstack (v) :value `(,@v (:ref.cast :vector) (:global.set :bstack) ,@(nil-code)))
-(defprim clysm-sys::%set-bsp (n) :value `(,@(idx-code n) (:global.set :bsp) ,@(nil-code)))
+(defprim clysm-sys::%bstack () :value (bstack-code))
+(defprim clysm-sys::%set-bstack (v) :value `((:global.get :dyn) ,@v (:ref.cast :vector) (:struct.set :dynstate 1) ,@(nil-code)))
+(defprim clysm-sys::%set-bsp (n) :value `(,@(set-bsp-code (idx-code n)) ,@(nil-code)))
 ;; exchange the value of the symbol of each entry of STACK below TOP with the
 ;; value saved in the entry: from the top down (UP false) when a computation
 ;; stops running, so that the symbols get their values from outside it and
@@ -3480,33 +3480,39 @@ f64s in locals DA and DB (it may branch to SLOW)."
 
 ;;; dynamic binding
 (defhelper :grow-bstack :v-v ((new (:ref :vector)))
-  '(:ref.null :eq) '(:global.get :bstack) :array.len '(:i32.const 2) :i32.mul
+  '(:ref.null :eq) '(:global.get :dyn) '(:struct.get :dynstate 1) :array.len '(:i32.const 2) :i32.mul
   '(:array.new :vector) '(:local.set new)
-  '(:local.get new) '(:i32.const 0) '(:global.get :bstack) '(:i32.const 0) '(:global.get :bsp)
+  '(:local.get new) '(:i32.const 0) '(:global.get :dyn) '(:struct.get :dynstate 1) '(:i32.const 0)
+  '(:global.get :dyn) '(:struct.get :dynstate 0)
   '(:array.copy :vector :vector)
-  '(:local.get new) '(:global.set :bstack))
+  '(:global.get :dyn) '(:local.get new) '(:struct.set :dynstate 1))
 
-(defhelper :bind :ee-v ((sp :i32))
+(defhelper :bind :ee-v ((sp :i32) (st (:ref :null :vector)))
   ;; grow if needed
-  '(:global.get :bsp) '(:i32.const 2) :i32.add '(:global.get :bstack) :array.len :i32.gt_u
+  '(:global.get :dyn) '(:struct.get :dynstate 0) '(:local.tee sp) '(:i32.const 2) :i32.add
+  '(:global.get :dyn) '(:struct.get :dynstate 1) :array.len :i32.gt_u
   '(:if nil nil ((:call :grow-bstack)))
-  '(:global.get :bstack) '(:global.get :bsp) '(:local.get 0) '(:array.set :vector)
-  '(:global.get :bstack) '(:global.get :bsp) '(:i32.const 1) :i32.add
+  '(:global.get :dyn) '(:struct.get :dynstate 1) '(:local.set st)
+  '(:local.get st) '(:local.get sp) '(:local.get 0) '(:array.set :vector)
+  '(:local.get st) '(:local.get sp) '(:i32.const 1) :i32.add
   '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)
   '(:local.get 0) '(:ref.cast! :symbol) '(:local.get 1) `(:struct.set :symbol ,+sym-value+)
-  '(:global.get :bsp) '(:i32.const 2) :i32.add '(:global.set :bsp))
+  '(:global.get :dyn) '(:local.get sp) '(:i32.const 2) :i32.add '(:struct.set :dynstate 0))
 
-(defhelper :unbind-to :i-v ((sp :i32))
+(defhelper :unbind-to :i-v ((sp :i32) (st (:ref :null :vector)))
+  '(:global.get :dyn) '(:struct.get :dynstate 1) '(:local.set st)
+  '(:global.get :dyn) '(:struct.get :dynstate 0) '(:local.set sp)
   '(:block done nil
      (:loop again nil
-       (:global.get :bsp) (:local.get 0) :i32.le_s (:br_if done)
-       (:global.get :bsp) (:i32.const 2) :i32.sub (:local.tee sp) (:global.set :bsp)
+       (:local.get sp) (:local.get 0) :i32.le_s (:br_if done)
+       (:local.get sp) (:i32.const 2) :i32.sub (:local.set sp)
        ;; sym.value = old
-       (:global.get :bstack) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
-       (:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
+       (:local.get st) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
+       (:local.get st) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
        (:struct.set :symbol 2)
        ;; (the popped entries are not cleared: the next bindings overwrite them)
-       (:br again))))
+       (:br again)))
+  '(:global.get :dyn) '(:local.get sp) '(:struct.set :dynstate 0))
 
 (defhelper :progv-bind :ee-v ((syms :eqref) (vals :eqref))
   '(:local.get 0) '(:local.set syms) '(:local.get 1) '(:local.set vals)
@@ -3529,15 +3535,15 @@ f64s in locals DA and DB (it may branch to SLOW)."
   ;; its unbound value, which no tag is EQ to)
   `(:global.get ,(sym-global 'clysm-sys::*catch-tags*)) `(:struct.get :symbol ,+sym-value+) '(:local.get 0) :ref.eq
   '(:if nil nil (:return))
-  '(:global.get :bsp) '(:local.set sp)
+  '(:global.get :dyn) '(:struct.get :dynstate 0) '(:local.set sp)
   `(:block done nil
      (:loop again nil
        (:local.get sp) (:i32.const 2) :i32.lt_s (:br_if done)
        (:local.get sp) (:i32.const 2) :i32.sub (:local.set sp)
-       (:global.get :bstack) (:local.get sp) (:array.get :vector)
+       (:global.get :dyn) (:struct.get :dynstate 1) (:local.get sp) (:array.get :vector)
        (:global.get ,(sym-global 'clysm-sys::*catch-tags*)) :ref.eq
        (:if nil nil
-            ((:global.get :bstack) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
+            ((:global.get :dyn) (:struct.get :dynstate 1) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
              (:local.get 0) :ref.eq (:if nil nil (:return))))
        (:br again)))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%no-catch-error)) '(:call (:callsym 1)) :drop)

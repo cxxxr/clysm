@@ -704,8 +704,11 @@ host's identity hash, and that hash."
       (add-export *m* "mv_count" :global :mv-count)
       (add-export *m* "mv_buf" :global :mv-buf)
       (add-export *m* "empty_slots" :global :empty-slots)
-      (add-export *m* "bstack" :global :bstack)
-      (add-export *m* "bsp" :global :bsp)
+      (add-export *m* "dyn" :global :dyn)
+      (add-export *m* "nil_symbol" :global (list :sym nil))
+      ;; (for the hosts: the binding stack's top and vector)
+      (add-func *m* :get-bsp :v-i :export "get_bsp" :body (bsp-code))
+      (add-func *m* :get-bstack :v-e :export "get_bstack" :body (bstack-code))
       (add-export *m* "poll_count" :global :poll-count)
       (add-export *m* "lisp_throw" :tag :lisp-throw)
       ;; the memory through which strings and octets cross to the host at once
@@ -739,8 +742,8 @@ host's identity hash, and that hash."
       (add-global *m* :mv-buf '(:ref :vector) nil `((:i32.const ,+mv-limit+) (:array.new_default :vector)))
       ;; the slot vector of structures whose slots are fields of their own
       (add-global *m* :empty-slots '(:ref :vector) nil '((:array.new_fixed :vector 0)))
-      (add-global *m* :bstack '(:ref :vector) t '((:i32.const 1024) (:array.new_default :vector)))
-      (add-global *m* :bsp :i32 t '((:i32.const 0)))
+      (add-global *m* :dyn '(:ref :dynstate) nil
+                  '((:i32.const 0) (:i32.const 1024) (:array.new_default :vector) (:struct.new :dynstate)))
       (add-global *m* :poll-count :i32 t '((:i32.const 0)))
       (add-identity-hash-cache)
       ;; loading a heap image (runtime/image.lisp)
@@ -852,7 +855,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
   (add-export m "codes" :table nil)
   (let ((objects nil) (mutables nil))
     (loop for (name type mutable) across (wasm-module-globals m)
-          do (cond ((member name '(:mv-buf :bstack :img-objs :img-roots :empty-slots)))
+          do (cond ((member name '(:mv-buf :dyn :img-objs :img-roots :empty-slots)))
                    ((not (and (consp type) (eq (car type) :ref)))
                     (when (and mutable (eq type :eqref)) (push name mutables)))
                    ((not mutable) (push name objects))))

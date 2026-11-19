@@ -123,6 +123,25 @@ stack to its saved depth. A `let` of up to six special variables writes its
 stack entries inline with one check of the stack size, and stores the old
 values back from their known positions at the normal exit.
 
+The stack's top and its vector are the two fields of one structure (type
+`:dynstate`), which the image holds in an immutable global, `dyn`, and every
+module compiled in it imports. They were two mutable globals of the image,
+which such a module imported: V8 reaches an imported mutable global through
+one load more at every access, and the code cannot keep its value across a
+store, so a binding in code loaded into the image took twice the time it
+takes in the image (10 million bindings with a read of the variable, in
+modules written for the measurement: 25 ms against 12; with the structure, 13
+in both). The symbols of such a module are its globals, set by its `run`;
+they are not nullable either now (they start as `NIL`, the image's
+`nil_symbol`): reading a nullable global is a check more (17 ms against 14).
+The hosts read the stack with the image's `get_bsp` and `get_bstack`.
+
+The multiple-value count (`mv-count`) stays a mutable global of the image,
+which the modules import: in the structure as well, every return that sets
+it took a load more in the image's own code, and whole programs that return
+values (`(floor i 7)`, `(values a b)` in a loop) were 1.3 to 1.6 times slower;
+in code loaded into the image those were no faster.
+
 ## Non-local exits (spec: Wasm EH)
 
 `block`/`return-from` and `tagbody`/`go` inside one function compile to Wasm
@@ -182,7 +201,20 @@ the list of active tags) whose tag is the handler cluster itself, a small
 vector `#(next types clause-number)` bound to the list of clusters; `signal`
 stores the number of the clause and leaves for it with the condition, and the
 clauses are inline code after the catch. `restart-case` is built the same way
-around its first restart object.
+around its cluster: entering it makes one simple vector, `#(next clauses
+chosen restarts function...)` in the chain `*restart-clusters*`, where
+CLAUSES is a constant vector that names the restarts and says where their
+report, interactive and test functions are; the restart objects are made
+only when they are asked for (`compute-restarts`, `find-restart` of one of
+its names, a condition associated with them: `%cluster-restarts`), and
+`invoke-restart` stores the number of the clause in CHOSEN. It made a
+restart structure for each clause, a list of them and a cons, and set the
+tag of each: `v-restart-nosignal` (a `restart-case` of two restarts and a
+`with-simple-restart` that are not used) took 2.0 times SBCL's time, 1.3
+now. A `handler-bind` whose handlers are all `lambda` forms makes one
+closure, of the number of the type and the condition, instead of one for
+each handler (kind `:one` in the cluster): a closure is a structure of ten
+fields and its environment a vector.
 
 ## The runtime
 
@@ -1625,6 +1657,12 @@ What is not as fast as intended, and why:
   `--no-liftoff` does. What remains is the run-once hot loop, which only
   outlining the loop's body into a function called once per iteration of
   an enclosing loop would let tier up.
+  neither the call nor the binding is the cause. Part of the cost was the
+  binding itself: such code reached the binding stack through imported
+  mutable globals and its symbols through nullable globals (see Dynamic
+  binding); since that changed (2026-11), `b-special` loaded into the image
+  takes 182 ms instead of 238, `v-special-1` 58 instead of 77, `v-special-6`
+  186 instead of 264 (same slot, one run each; the bimodal spread remains).
 * **Libraries** are within 2.5 to 3 (`l-ppcre-replace`, `l-split-sequence`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
