@@ -263,10 +263,14 @@ for here, without a call."
 
 (defun gethash (key h &optional default)
   ;; a fixnum, a character or a symbol: looked up by one helper
-  (when (and (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
+  (when (and (%immediate-or-symbol-p key) (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
     (let* ((sv (%instance-slots h)) (i (%ht-fast-index sv key)))
       (cond ((%fx>= i 0) (return-from gethash (values (%svref (%svref sv +ht-vals+) i) t)))
             ((eql i -1) (return-from gethash (values default nil))))))
+  (%gethash-general key h default))
+
+(defun %gethash-general (key h default)
+  "GETHASH for any key (without the helper of fixnums, characters and symbols)."
   (%check-ht h)
   (let* ((sv (%instance-slots h))
          (hash (%ht-hash h key))
@@ -281,19 +285,18 @@ for here, without a call."
             (%set-svref sv +ht-last-tkey+ (%svref (%svref sv +ht-keys+) i)))
           (values (%svref (%svref sv +ht-vals+) i) t)))))
 
-(defun %gethash-3 (key h default) (gethash key h default))
-
 ;; a fixnum, a character or a symbol found in the table: the value is read
 ;; at the call site (one helper call); anything else calls GETHASH
 (define-compiler-macro gethash (key table &optional (default nil defaultp))
   (let ((k (gensym "KEY")) (h (gensym "H")) (d (gensym "DEFAULT")) (i (gensym "I")))
     `(let* ((,k ,key) (,h ,table) ,@(when defaultp `((,d ,default))))
-       (let ((,i (if (and (%instancep ,h) (eq (%instance-layout ,h) (load-time-value *hash-table-class*)))
+       (let ((,i (if (and (%immediate-or-symbol-p ,k) (%instancep ,h)
+                          (eq (%instance-layout ,h) (load-time-value *hash-table-class*)))
                      (%ht-fast-index (%instance-slots ,h) ,k)
                      -2)))
-         (if (%fx>= ,i 0)
-             (values (%svref (%svref (%instance-slots ,h) +ht-vals+) ,i) t)
-             (%gethash-3 ,k ,h ,(if defaultp d nil)))))))
+         (cond ((%fx>= ,i 0) (values (%svref (%svref (%instance-slots ,h) +ht-vals+) ,i) t))
+               ((eql ,i -1) (values ,(if defaultp d nil) nil))
+               (t (%gethash-general ,k ,h ,(if defaultp d nil))))))))
 
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
@@ -310,7 +313,7 @@ for here, without a call."
 
 (defun %ht-put (h key value)
   ;; a fixnum, a character or a symbol already in the table: stored at once
-  (when (and (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
+  (when (and (%immediate-or-symbol-p key) (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
     (let* ((sv (%instance-slots h)) (i (%ht-fast-index sv key)))
       (when (%fx>= i 0)
         (%set-svref (%svref sv +ht-vals+) i value)
