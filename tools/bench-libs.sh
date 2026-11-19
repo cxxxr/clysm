@@ -9,7 +9,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS="${BENCH_RUNS:-3}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-ms() { date +%s%3N; }
+ms() { echo $(( $(date +%s%N) / 1000000 )); }   # (uutils date: %3N is not zero-padded)
 # warm the fasl caches (libraries are compiled once)
 sbcl --noinform --non-interactive --load "$ROOT/bench/libs.lisp" >/dev/null 2>&1 || true
 "$ROOT/bin/clysm" script "$ROOT/bench/libs.lisp" >/dev/null 2>&1 || true
