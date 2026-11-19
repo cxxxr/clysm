@@ -1926,9 +1926,12 @@ specialized version of LAM that its general version tries on entry, or NIL."
       (labels ((param-of (node) (and (eq (car node) :lref) (gethash (second node) alias)))
                (walk (node)
                  (case (car node)
+                   ;; a variable bound to a parameter, even one assigned later
+                   ;; (the counter of (LOOP FOR I FROM START ...)): its uses as a
+                   ;; number count as uses of the parameter
                    (:let (dolist (b (second node))
                            (let ((p (param-of (cdr b))))
-                             (when (and p (not (lvar-mutated (car b))) (not (lvar-special (car b))))
+                             (when (and p (not (lvar-special (car b))))
                                (setf (gethash (car b) alias) p)))))
                    (:tagbody (setf loop-p t))
                    ((:prim :call)
