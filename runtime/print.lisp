@@ -19,6 +19,21 @@
 (defvar *print-gensym* t)
 (defvar *print-lines* nil)
 (defvar *fasl-syntax* nil "true while reading or writing a compiled file")
+(defvar *fasl-gensyms* nil
+  "While COMPILE-FILE writes a compiled file: an EQ hash table of the
+uninterned symbols written, to their numbers.  Each is written as
+#.(SYSTEM::%FASL-GENSYM number name), the same symbol in every entry of the
+file when it is loaded (SBCL keeps them EQ in the whole file).")
+(defvar *fasl-load-gensyms* nil
+  "While LOAD reads a compiled file: an EQL hash table of the numbers of its
+uninterned symbols to the symbols (%FASL-GENSYM).")
+
+(defun %fasl-gensym (n name)
+  "The uninterned symbol number N of the compiled file being loaded."
+  (if *fasl-load-gensyms*
+      (or (gethash n *fasl-load-gensyms*)
+          (setf (gethash n *fasl-load-gensyms*) (make-symbol name)))
+      (make-symbol name)))
 (defvar *print-right-margin* nil)
 (defvar *print-miser-width* nil)
 (defvar *print-pprint-dispatch* nil)
@@ -924,6 +939,19 @@ string DIGITS; returns (values number-of-digits exponent negative-p) with
     (if (or *print-escape* *print-readably*)
         (let ((pkg (%symbol-package s)) (rt (%print-readtable)))
           (cond ((eq pkg *keyword-package*) (write-char #\: stream))
+                ((and (null pkg) *fasl-syntax* *fasl-gensyms* *read-eval*)
+                 (let ((n (or (gethash s *fasl-gensyms*)
+                              (setf (gethash s *fasl-gensyms*) (hash-table-count *fasl-gensyms*)))))
+                   (write-string "#.(SYSTEM::%FASL-GENSYM " stream)
+                   (%write-integer-digits n 10 stream)
+                   (write-string " \"" stream)
+                   (dotimes (i (length name))
+                     (let ((c (char name i)))
+                       (when (or (char= c #\") (char= c #\\)) (write-char #\\ stream))
+                       (write-char c stream)))
+                   (write-char #\" stream)
+                   (write-char #\) stream)
+                   (return-from %output-symbol nil)))
                 ((null pkg) (when (or *print-gensym* *print-readably*) (write-string "#:" stream)))
                 ((eq pkg *package*) nil)
                 (t (multiple-value-bind (found status) (find-symbol name *package*)
