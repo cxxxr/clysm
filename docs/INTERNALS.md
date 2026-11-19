@@ -266,15 +266,39 @@ What made it slow, and what was done:
 * **Searches that grew with the program**: closure globals were found in a
   list, and the line of each toplevel form by counting the newlines from the
   start of the file.
-* **Modules made at run time** (above).
+* **Modules made at run time** (above), and their fixed work: the
+  functions of checked casts are made only when the code casts
+  (`define-checked-casts :lazy`), the type section is reused from the last
+  module when the types are equal, the printed names of helpers are kept,
+  and the compiler's tables of lambdas, variables and nodes are the
+  module's own (they were global in the image and grew with every form).
+* **Forms evaluated at compile time too** (`eval-when` with
+  `:compile-toplevel` and `:load-toplevel`, ASDF's `with-upgradability`, and
+  the definers `compile-file` evaluates, such as `declaim` and `defclass`)
+  were compiled twice: to a module run at once and again for the fasl. The
+  fasl's module is now also the one run (`%cf-compile-and-run`,
+  `runtime/eval.lisp`), unless the form has literal objects made by
+  `make-load-form`.
+
+After the second round (the integration of 2026-11-20, whose image-compiled
+code is larger: compiling a module there takes about 1.5 times as long as
+before it; 4-CPU benchmark slot, medians of 4, a busy machine): ASDF in the
+image 7.8 → 4.6 s (SBCL 2.8 s), cl-ppcre 2.5 → 2.05 s (SBCL 1.0 s), 500
+`defun`s 0.77 → 0.65 s (SBCL 0.10 s).
 
 What remains (compiler in Wasm, whole program): type inference 0.8 s (its
 node types are an EQ hash table keyed by conses, whose identity hash is a
 call to the host: 0.3 s), code generation 0.6 s, encoding 0.75 s, macro
-expansion and conversion 0.45 s. In the image, each module costs about
-0.5 ms of the compiler's time plus V8's compilation of the module; ASDF
-compiles each form of its `with-upgradability` twice (once to run it at
-compile time, once for the fasl).
+expansion and conversion 0.45 s. In the image, a small form costs about
+0.4 ms of the compiler's time and 0.3 ms of V8's (decoding, validating and
+instantiating the module); a third of the code of a small module is its
+`RUN`, `SNAP` and `RESTORE`, the last two needed only by images that record
+modules for `save-image`. Loading a source file compiles each form to a
+module of its own; batching the `defun`s of a file would change what
+`load` means (a function defined by the batch is not there while the
+following forms are read and their macros expanded, unless defined first
+by the interpreter, and calls within the batch would not see a
+redefinition), so it is not done.
 
 ## Heap images
 
