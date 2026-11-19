@@ -545,7 +545,15 @@ helper signals the type error)."
 ;;; Strings and vectors (simple)
 ;;; ------------------------------------------------------------
 
-(defun idx-code (i) `(,@i (:ref.cast! :i31) :i31.get_s))
+(defun idx-code (i)
+  "The code of the index I (code of a fixnum) as an i32.  An integer the
+code has just boxed, from an i32 (an index computed with + in an i32, as
+(+ I OFFSET)), is used as it is: an index beyond the fixnums is out of the
+bounds of the array either way."
+  (let ((last (car (last i))))
+    (if (or (equal last '(:call :box-i32)) (eq last :ref.i31))
+        (butlast i)
+        `(,@i (:ref.cast! :i31) :i31.get_s))))
 
 (defprim clysm-sys::%make-string (n c) :value
   `(,@c (:call :check-char) (:i32.const ,+char-tag+) :i32.sub ,@(idx-code n) (:array.new :string)))
