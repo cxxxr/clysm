@@ -523,6 +523,10 @@ checked, CHECKED-VALUE, the others trusted)."
                            (convert (checked-value sym spec) env))))
           (t `(:the ,spec (:sref ,sym))))))
 
+(defvar *unit-env* nil
+  "The environment of the toplevel forms of the compilation unit (COMPILE-FILE)
+being compiled, or NIL (src/live.lisp).")
+
 ;;; Code evaluated in the image (the REPL, LOAD of a source file) may contain
 ;;; a copy of the body of a small global function defined there earlier, as
 ;;; whole-program compilation does: the copy is used as long as the symbol's
@@ -535,6 +539,8 @@ the function the symbol had when the source was recorded")
 (defvar *live-inline-closure-hook* nil "symbol -> the function made by its recorded definition, if it is still the symbol's function")
 (defvar *live-inline-depth* 0)
 (defparameter *live-inline-max-size* 60)
+(defparameter *fasl-inline-max-depth* 1 "copies of functions of fasls in a copied body")
+(defparameter *fasl-inline-max-size* 40 "the largest body (conses and atoms) of a function of a fasl that is copied")
 
 (defun form-size (x limit)
   "The number of conses and atoms of X, or more than LIMIT."
@@ -560,9 +566,9 @@ copy of X made later could expand it differently than the function did."
         ((and (symbolp x) x (not (keywordp x))) (nth-value 1 (global-symbol-macro x)))
         (t nil)))
 
-(defun live-inline-record (sym fn-form)
-  "Record the source of SYM's definition FN-FORM, #'(named-lambda name ll . body), when it may be copied."
-  (remhash sym *live-inline-sources*)
+(defun live-inline-source (sym fn-form)
+  "(lambda-list body) of SYM's definition FN-FORM, #'(named-lambda name ll . body),
+when it may be copied into callers compiled later, else NIL."
   (when (and (consp fn-form) (eq (car fn-form) 'function) (consp (second fn-form))
              (member (car (second fn-form)) '(clysm-sys::named-lambda lambda)))
     (let* ((l (second fn-form))
@@ -577,19 +583,62 @@ copy of X made later could expand it differently than the function did."
                          '(dotimes dolist do do* loop tagbody go prog prog* do-symbols do-external-symbols
                            do-all-symbols))
                  (<= (form-size body *live-inline-max-size*) *live-inline-max-size*))
-        (setf (gethash sym *live-inline-sources*)
-              (list ll body (and *live-inline-closure-hook* (funcall *live-inline-closure-hook* sym))))
-        t))))
+        (list ll body)))))
+
+(defun live-inline-record (sym fn-form)
+  "Record the source of SYM's definition FN-FORM, #'(named-lambda name ll . body), when it may be copied."
+  (remhash sym *live-inline-sources*)
+  (let ((src (live-inline-source sym fn-form)))
+    (when src
+      (setf (gethash sym *live-inline-sources*)
+            (list (first src) (second src)
+                  (and *live-inline-closure-hook* (funcall *live-inline-closure-hook* sym))))
+      t)))
+
+;;; A small function defined at top level in a file given to COMPILE-FILE
+;;; keeps its source in the fasl, with a mark of that compilation
+;;; (SYS::%NOTE-FASL-INLINE: the property SYS::%FASL-INLINE of its name,
+;;; (lambda-list body mark function)), and calls of it compiled in the image
+;;; after the fasl was loaded (other files, the REPL) contain a guarded copy
+;;; of its body: in a fasl the function the guard compares with is found when
+;;; the code first runs and kept in a global of the module (%FASL-INLINE-GUARD
+;;; calls SYS::%FASL-INLINE-FUNCTION: the function of the name if it is still
+;;; the one of that definition, else an object that is no function), so that
+;;; a redefinition, before or after, makes the call an ordinary one.
+(defun fasl-inline-entry (op)
+  "The recorded source of OP from a loaded fasl, (lambda-list body mark function), or NIL."
+  (and (symbolp op) (fboundp op)
+       (let ((e (get op 'clysm-sys::%fasl-inline)))
+         (and (consp e) (= (length e) 4) (functionp (fourth e)) e))))
 
 (defun live-inline-call (form)
   "FORM with a guarded copy of the body of the function it calls, or NIL."
   (let* ((op (car form))
-         (rec (and *live-inline-ok* *live-inline-closure-hook* (< *live-inline-depth* 2)
-                   (not clysm-sys::*record-frames*)
-                   ;; (not into the code of a toplevel form, which runs once)
-                   *current-lam* (lam-parent *current-lam*)
+         (ok (and *live-mode* (< *live-inline-depth* 2)
+                  (not clysm-sys::*record-frames*)
+                  ;; (not into the code of a toplevel form, which runs once)
+                  *current-lam* (lam-parent *current-lam*)
+                  (not (gethash op *notinline*)) (not (member op *local-notinline*))
+                  (not (get op 'clysm-sys::%notinline))))
+         (rec (and ok *live-inline-ok* *live-inline-closure-hook*
                    (gethash op *live-inline-sources*))))
-    (when (and rec (not (gethash op *notinline*)) (not (member op *local-notinline*)))
+    (when (and ok (not rec) (< *live-inline-depth* *fasl-inline-max-depth*)
+               ;; (not a function of the file being compiled, called directly)
+               (not (gethash op *global-defuns*)))
+      (let ((e (fasl-inline-entry op)))
+        (when (and e (eq (fourth e) (symbol-function op)))
+          (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+                 (copy (inline-lambda-application op (first e) (second e) temps (cdr form))))
+            (when copy
+              (return-from live-inline-call
+                `(let ,(mapcar #'list temps (cdr form))
+                   (if ,(if *unit-env*
+                            ;; (a fasl: the function is found when the code first runs)
+                            `(clysm-sys::%fasl-inline-guard ',op ,(third e))
+                            `(clysm-sys::%function-cell-eq ',op ',(fourth e)))
+                       ,copy
+                       (locally (declare (notinline ,op)) (,op ,@temps))))))))))
+    (when rec
       (let ((closure (funcall *live-inline-closure-hook* op)))
         (when (and closure (not (eq closure (third rec))))
           (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))

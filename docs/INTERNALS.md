@@ -540,6 +540,32 @@ defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
 `&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
 defined in an earlier form runs as fast as in a whole program.
 
+**Small functions of a compiled file** (a `defun` at top level, no closed-over
+bindings, no loop, no macro outside `COMMON-LISP`, a body of at most 40
+conses and atoms: `*fasl-inline-max-size*`, not declaimed `notinline` or
+`inline`) keep their source in the fasl: `(sys::%note-fasl-inline name
+lambda-list body mark)` after the `defun` puts it on the name with a mark
+made when the file was compiled and the function that the definition made.
+Calls compiled later in the image (the next files of a system, the REPL)
+contain a copy of the body guarded as at the REPL (`live-inline-call`), one
+level deep (`*fasl-inline-max-depth*`: a copy has no copies in it): in a
+fasl the guard (`%fasl-inline-guard`) compares the function of the name with
+a global of the module that the first run sets to the function of that
+definition while it is the name's function (`sys::%fasl-inline-function`
+compares the mark), else to an object that is no function; a redefinition,
+before the caller's fasl is loaded or after, a `trace`, or a fasl of the
+callee compiled again (another mark) make it an ordinary call. Lem's buffer
+code (`line-length`, `line-alive-p`, the wrappers of the readers of `point`)
+crosses files at every call: `tools/bench-lem.sh` takes 0.935 of its time
+(best of five interleaved, Clysm alone; `l-line-down` 0.91,
+`l-type-redisplay` 0.82, `l-search` and `l-syntax-scan` unchanged); Lem's
+fasls are 19.7 MB instead of 17.2, all the fasls the comparators load 56.0
+instead of 53.1, and loading Lem's fasls takes 1.85 s instead of 1.78 (medians
+of seven). Larger copies cost more space than they gain: 60 conses and copies
+two deep made Lem's fasls 23.5 MB (with about the same time), 24 conses
+18.7 MB and 0.95 of the time. `bench/apps.lisp`, `bench/libs.lisp` and
+`bench/suite.lisp` and `bench/holdout.lisp` in the three modes are unchanged.
+
 A call of a structure's constructor compiled in the image is of the
 structure's type (`*struct-constructors*`, registered by `defstruct` through
 `%note-struct-inline`), so the inline accessors of the object it made do

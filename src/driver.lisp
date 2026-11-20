@@ -365,7 +365,19 @@ destructuring-bind (defined by the runtime)."
       ;; contain a copy of its body (LIVE-INLINE-CALL)
       (when (and *live-inline-ok* (symbolp name) (eq (car fnode) :lambda)
                  (null (cenv-entries env)) (live-inline-record sym fn-form))
-        (emit-toplevel-form `(clysm-sys::%note-live-inline ',sym) env)))))
+        (emit-toplevel-form `(clysm-sys::%note-live-inline ',sym) env))
+      ;; a small function of a file given to COMPILE-FILE: its source is kept
+      ;; in the fasl for the calls compiled after it is loaded (LIVE-INLINE-CALL)
+      (when (and *unit-env* (symbolp name) (eq (car fnode) :lambda) (null (cenv-entries env))
+                 (not (gethash sym *notinline*)) (not (gethash sym *declared-inline*)))
+        (let ((src (let ((*live-inline-max-size* *fasl-inline-max-size*)) (live-inline-source sym fn-form))))
+          (when (and src
+                     (ignore-errors (clysm-sys::%call-with-fasl-syntax
+                                     (lambda () (prin1-to-string src) t))))
+            (emit-toplevel-form
+             `(clysm-sys::%note-fasl-inline ',sym ',(first src) ',(second src)
+                                            ,(format nil "~36R" (random (expt 2 60))))
+             env)))))))
 
 (defun process-defpackage (form env)
   (destructuring-bind (name &rest options) (cdr form)
@@ -402,9 +414,6 @@ destructuring-bind (defined by the runtime)."
                                                    ',interns)
                           env))))
 
-(defvar *unit-env* nil
-  "The environment of the toplevel forms of the compilation unit (COMPILE-FILE)
-being compiled, or NIL (src/live.lisp).")
 
 (defun directify-helper-calls (instrs)
   "Replace (global.get (:sym S)) (call (:callsym K)) by a direct call stub when

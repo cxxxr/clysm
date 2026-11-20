@@ -797,6 +797,19 @@ helper signals the type error)."
 ;; the function of a symbol is (EQ) a given function
 (defprim clysm-sys::%function-cell-eq (sym f) :test
   `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
+;; the function of a symbol is the one of the definition that a fasl
+;; recorded with the mark MARK (a guarded copy of its body, LIVE-INLINE-CALL):
+;; the function is found the first time (SYS::%FASL-INLINE-FUNCTION) and kept
+;; in a global of the module
+(defprim clysm-sys::%fasl-inline-guard (sym mark) :test
+  (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "FIG")))
+    (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
+    `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)
+      (:block ,l :eqref
+        (:global.get ,g) (:br_on_non_null ,l)
+        ,@sym ,@mark ,@(lisp-call-instrs 'clysm-sys::%fasl-inline-function 2)
+        (:global.set ,g) (:global.get ,g))
+      :ref.eq)))
 (defprim clysm-sys::%closure-key-layout (f) :value
   (let ((tmp (new-local)))
     `(,@f (:ref.cast :closure) ,@(clo-field-code +clo-klayout+) (:local.tee ,tmp) :ref.is_null
