@@ -837,11 +837,12 @@ separated by COMMA, after the character SIGN (or NIL)."
         (princ arg stream))))
 
 (defun %fmt-decimal-padded (arg stream mincol padchar)
-  "~mincol,padcharD: a nonnegative fixnum into a string output stream is
+  "~mincol,padcharD: a fixnum into a string output stream is
 written into its buffer at once."
-  (if (and (fixnump arg) (%fx>= arg 0) (fixnump mincol) (characterp padchar) (%string-out-p stream))
-      (let ((len (do ((k (%fxtruncate arg 10) (%fxtruncate k 10)) (c 1 (%fx+ c 1))) ((eql k 0) c)
-                   (declare (fixnum k c)))))
+  (if (and (fixnump arg) (not (eql arg most-negative-fixnum)) (fixnump mincol) (characterp padchar)
+           (%string-out-p stream))
+      ;; (the padding goes before the sign)
+      (let ((len (if (%fx< arg 0) (%fx+ 1 (%decimal-length (%fx- 0 arg))) (%decimal-length arg))))
         (declare (fixnum len))
         (when (%fx> mincol len) (%write-chars stream padchar (%fx- mincol len)))
         (%string-out-decimal stream arg))
