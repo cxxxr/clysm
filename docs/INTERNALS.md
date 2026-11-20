@@ -524,6 +524,41 @@ following forms are read and their macros expanded, unless defined first
 by the interpreter, and calls within the batch would not see a
 redefinition), so it is not done.
 
+Why code loaded from source runs slower than the same code as a whole
+program (2026-11, `MODE=script tools/bench.sh`, the emitted Wasm compared
+with `*live-dump*` and `tools/dump-func.lisp`): the code of a function is
+mostly the same, but
+
+* **V8 inlines no call into another module.** A whole program is one
+  module, and the engine inlines the targets of `call_ref` it has seen
+  (a method called from a call site's cache, `call-next-method`, a
+  `notinline` function called through its symbol); in the image each
+  toplevel form is a module of its own (`x-8typecase` 2 times the whole
+  program's time, `p-cnm` 1.9, `c-gf3` 1.9, the runtime's `equal` 1.7).
+  `load` of a source file therefore compiles consecutive `defmethod` and
+  `defgeneric` forms (up to 32) into one module (`%load-method-batch`,
+  `*native-eval-forms-hook*`): a method is only reached through its
+  generic function, so unlike a batch of `defun`s this means what the
+  forms one by one mean; methods calling each other then share a module
+  (`p-cnm` 52 → 38 ms in a script, whole program 27). A form after the
+  batch is read before the batch runs (only a `#.` that calls the
+  methods could tell). The call from the caller's module into the method
+  stays a call.
+* **A store into an old object of an object made after the engine's
+  last full collection takes the slow path of the write barrier**, until
+  a full collection (a scavenge does not help; a 50 ms pause of the event
+  loop, or `gc()`, makes the same loop twice as fast). In a loaded file
+  the symbols, constants and closures of a form are new when the next
+  form runs it: binding a special variable stored the symbol and its old
+  value into the binding stack, made at start, at each binding
+  (`b-special` in a script 2.3 times the whole program). The binding
+  code now stores each only when its slot holds another object, which a
+  binding in a loop finds there (`bind-specials-code`): `b-special` in a
+  script 165 → 75 ms, the whole program 80 → 66.
+* What `MODE=script` also shows comes from causes described elsewhere: a
+  guarded copy of a fixnum function whose value is assigned back
+  (`a-lcg`, `p-hash-fn`'s `xorshift`), a loop at top level in Liftoff.
+
 **`compile-file` compiles a whole file into one module** (`src/live.lisp`,
 "Compilation units"; CLHS 3.2.2.3 lets the file compiler assume that a call
 of a function defined in the same file calls that definition). Calls between

@@ -691,10 +691,23 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
             (:if nil nil ((:call :grow-bstack)))
             ,@(bstack-code) (:local.set ,st)
             ,@(loop for (sym . tmp) in bindings for i from 0 by 2
+                    ;; (the symbol is stored only when its slot holds
+                    ;; another: a binding in a loop finds it there, and a
+                    ;; store of an object made after the engine's last
+                    ;; full collection, such as a symbol of code just
+                    ;; loaded, into the old binding stack costs a slow
+                    ;; write barrier: b-special in a script 2 times as long)
                     append `((:local.get ,st) (:local.get ,saved) ,@(unless (zerop i) `((:i32.const ,i) :i32.add))
-                             (:global.get ,(sym-global sym)) (:array.set :vector)
-                             (:local.get ,st) (:local.get ,saved) (:i32.const ,(1+ i)) :i32.add
-                             (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:array.set :vector)
+                             (:array.get :vector) (:global.get ,(sym-global sym)) :ref.eq
+                             (:if nil nil nil
+                              ((:local.get ,st) (:local.get ,saved) ,@(unless (zerop i) `((:i32.const ,i) :i32.add))
+                               (:global.get ,(sym-global sym)) (:array.set :vector)))
+                             ;; (so is the old value)
+                             (:local.get ,st) (:local.get ,saved) (:i32.const ,(1+ i)) :i32.add (:array.get :vector)
+                             (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) :ref.eq
+                             (:if nil nil nil
+                              ((:local.get ,st) (:local.get ,saved) (:i32.const ,(1+ i)) :i32.add
+                               (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:array.set :vector)))
                              (:global.get ,(sym-global sym)) (:local.get ,tmp) (:struct.set :symbol ,+sym-value+)))
             ,@(set-bsp-code `((:local.get ,saved) (:i32.const ,(* 2 n)) :i32.add)))))))
 

@@ -169,6 +169,17 @@ any, happens at run time)."
           (return-from native-eval (eval form))))
     (native-run-octets bytes consts)))
 
+(defun native-eval-forms (forms)
+  "Compile the toplevel FORMS into one module linked with this image and run
+it: T, or NIL when the compiler signals an error (nothing has run then)."
+  (multiple-value-bind (bytes consts)
+      (handler-case (let ((*live-inline-ok* t)
+                          (*live-snapshots* (and (sys::%getenv "CLYSM_SAVE_IMAGE") t)))
+                      (sys::%call-with-world-lock (lambda () (live-compile-forms forms))))
+        (error () (return-from native-eval-forms nil)))
+    (native-run-octets bytes consts)
+    t))
+
 (defun native-compile (name definition)
   (cond (definition
          (let* ((*native-eval-failure* nil)
@@ -224,4 +235,5 @@ any, happens at run time)."
 (setq sys::*image-id* #.(format nil "~36R" (random (expt 2 64) (make-random-state t))))
 (setq sys::*native-compile-hook* #'native-compile)
 (setq sys::*native-eval-hook* #'native-eval)
+(setq sys::*native-eval-forms-hook* #'native-eval-forms)
 (setq *package* (find-package "COMMON-LISP-USER"))
