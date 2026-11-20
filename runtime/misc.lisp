@@ -124,6 +124,33 @@
 that returns true has provided the module.  ASDF adds its own provider.")
 
 (%defvar-host %decode-host-octets nil)
+(%defvar-host %fasl-head-function nil)
+
+(defun %fasl-head-from-host (native)
+  "If the file NATIVE (a native file name) is a compiled file, (START N
+SIZE), read by the host (__clysm_read_bytes): its modules are the N octets
+from START, its text follows them to the end of the file, SIZE octets.  NIL
+if it is not one or the host cannot tell."
+  (ignore-errors
+   (let ((read (js:get (js:global) "__clysm_read_bytes"))
+         (fs (js:get (js:global) "__clysm_fs")))
+     (when (and (js:js-value-p read) (js:js-value-p fs))
+       (let ((head (js:funcall (or %fasl-head-function
+                                   (setq %fasl-head-function
+                                         (js:eval "(read, fs, path) => {
+                                                     const size = fs.statSync(path).size;
+                                                     const b = read(path, 0, Math.min(size, 64));
+                                                     let s = '';
+                                                     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+                                                     const m = /^;;; Clysm compiled file\\n;;; wasm (\\d+)\\n/.exec(s);
+                                                     return m ? m[0].length + ' ' + m[1] + ' ' + size : null;
+                                                   }")))
+                               read fs native)))
+         (when (stringp head)
+           (let* ((a (position #\Space head)) (b (position #\Space head :start (1+ a))))
+             (list (parse-integer head :end a)
+                   (parse-integer head :start (1+ a) :end b)
+                   (parse-integer head :start (1+ b))))))))))
 
 (defun %fasl-text-from-host (path offset length)
   "The UTF-8 text of the LENGTH octets at OFFSET of the file PATH, read and
