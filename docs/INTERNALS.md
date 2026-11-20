@@ -2425,6 +2425,34 @@ What makes the code fast:
   remainder by a divisor below 2^32 without a quotient, decimal printing by
   10^9 a pass straight into the string; `expt` of an integer from the top
   bit down.
+* **Printing and reading numbers**: the shortest digits of a double or
+  single are Schubfach's (Giulietti; Java's `Double.toString`): one Wasm
+  helper (`%float-shortest`) multiplies the significand, shifted, by a
+  126-bit power of ten of a table (63-bit halves in an immutable global,
+  64x64->128 products in 32-bit halves) and takes the shortest decimal of
+  the interval that reads back as the float. It prints as SBCL does where
+  SBCL is not Schubfach: of two shortest decimals as near, the larger, and
+  a subnormal as if it had all the bits of a normal float
+  (`4.9406564584124654d-324`, SBCL's `flonum-to-digits` on the shifted
+  significand; the table goes down to 10^-345 for them). Checked against
+  SBCL on 1.8 million random floats in a model of the helper and 950000
+  printed by both. An integer within 64 bits is printed by a helper
+  dividing an i64 by 10 into the scratch buffer, a bignum by 10^9 passes
+  into it (`%integer-decimal-into`), a ratio's parts without strings.
+  Reading: a decimal integer of more than 8 digits is made by a helper
+  (`%decimal-integer`: 18 digits in an i64, more in limbs multiplied by
+  10^9 a group of nine at a time), from the reader (string streams read
+  integers, ratios and floats of any length without a token buffer) and
+  `parse-integer`; a float by `%decimal-float`: up to 2^53 and 10^22
+  (2^24 and 10^10 for a single) one exact product (Clinger), else the
+  19 significant digits times the same table's power of ten give 128 bits
+  within 5 units of the exact product, which round correctly unless the
+  bits after the significand are within 8 of a half (Eisel and Lemire);
+  more digits, a result outside the normal floats, or that case: exact
+  rational arithmetic, as before. Checked against exact rounding on 400000
+  random decimals and halfway cases (singles are rounded once, not through
+  a double; SBCL's own reader is off by one unit in some singles and
+  subnormals). A float beyond the largest is a reader error, as in SBCL.
 * **Library**: sequence functions with one implementation per family and
   direct loops over lists, simple vectors and strings; `member`, `assoc`
   and `rassoc` with EQL (the default, or `:test #'eql`) of an item that EQ
@@ -2475,6 +2503,12 @@ What makes the code fast:
   keys 0.72, `bench/library.lisp` 0.97 (`v-hash-churn` 0.78). String comparisons with literal keywords take no
   keyword list; the digits of a float the host makes (a double of 16-17
   digits) cross in groups of nine (`float_part`). Hash tables are
+  `(setf gethash)` of a fixnum, a character or a symbol find the entry with
+  one Wasm helper (`ht-fast-index`), which casts the table's arrays once
+  (a cast at each access cost about a third of the time); `gethash` reads
+  the value at the call site: a character key in an EQL table is looked
+  up as fast as in SBCL. String comparisons with literal keywords take no
+  keyword list. Hash tables are
   iterated in place (`maphash`, `loop ... hash-keys`,
   `with-hash-table-iterator` read the key and value vectors), `(setf
   gethash)` right after `gethash` of the same key in an `equal`/`equalp`

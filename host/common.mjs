@@ -397,8 +397,6 @@ export function makeCommonEnv(state) {
   const ids = new WeakMap();
   let nextId = 1;
   let charBuf = '';
-  const floatGroups = [0, 0, 0, 0];
-  let floatExp = 0, floatNeg = 0;
   state.setCharBuf = (s) => { charBuf = s; };
   const math1 = [Math.sin, Math.cos, Math.tan, Math.asin, Math.acos, Math.atan, Math.exp, Math.log,
                  Math.sqrt, Math.sinh, Math.cosh, Math.tanh, Math.asinh, Math.acosh, Math.atanh,
@@ -410,52 +408,6 @@ export function makeCommonEnv(state) {
       let id = ids.get(x);
       if (id === undefined) { id = nextId++ & 0x1FFFFFFF; ids.set(x, id); }
       return id;
-    },
-    float_to_chars(x, mode) {
-      // Shortest round-trip digits in exponential form "d.ddde+N".
-      // mode 0: double, 1: single
-      if (!isFinite(x)) { charBuf = isNaN(x) ? 'NaN' : (x > 0 ? 'Inf' : '-Inf'); return charBuf.length; }
-      if (mode === 1) {
-        let p = 1;
-        for (; p < 9; p++) {
-          if (Math.fround(parseFloat(x.toExponential(p - 1))) === x) break;
-        }
-        charBuf = x.toExponential(p - 1);
-      } else {
-        charBuf = x.toExponential();
-      }
-      if (Object.is(x, -0)) charBuf = '-' + charBuf;
-      return charBuf.length;
-    },
-    // the parts of the digits FLOAT_TO_CHARS just made, so that they cross
-    // in a few calls: 0 the number of digits, 1 the exponent, 2 1 when
-    // negative, 3.. the digits by groups of nine (an integer each)
-    float_part(k) {
-      if (k === 0) {
-        // one pass over "-d.ddde+N": the digits by groups of nine
-        const n = charBuf.length;
-        let i = 0, nd = 0, g = 0, v = 0;
-        floatNeg = 0;
-        if (charBuf.charCodeAt(0) === 45) { floatNeg = 1; i = 1; }
-        for (; i < n; i++) {
-          const c = charBuf.charCodeAt(i);
-          if (c === 101) break;                 // e
-          if (c === 46) continue;               // .
-          v = v * 10 + (c - 48); nd++;
-          if (nd % 9 === 0) { floatGroups[g++] = v; v = 0; }
-        }
-        if (nd % 9 !== 0) floatGroups[g] = v;
-        let e = 0, eneg = false;
-        for (i++; i < n; i++) {
-          const c = charBuf.charCodeAt(i);
-          if (c === 45) eneg = true; else if (c !== 43) e = e * 10 + (c - 48);
-        }
-        floatExp = eneg ? -e : e;
-        return nd;
-      }
-      if (k === 1) return floatExp;
-      if (k === 2) return floatNeg;
-      return floatGroups[k - 3];
     },
     get_char(i) { return charBuf.charCodeAt(i); },
     math1(x, op) { return math1[op](x); },
