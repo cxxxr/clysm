@@ -1174,11 +1174,20 @@ leaving quoted data alone."
     (handler-bind ((warning #'muffle-warning))
       (compile nil lambda-form))))
 
+(defun local-macro-expander (lambda-form)
+  "The expander of a local macro (MACROLET) made of LAMBDA-FORM.  In Clysm
+it is interpreted: it runs a few times, while compiling it was a module of
+its own, which made compiling a form with a LOOP (whose expansion has a
+MACROLET of LOOP-FINISH) twice as long."
+  #-clysm (host-compile lambda-form)
+  #+clysm (let ((*package* (find-package :clysm)))
+            (eval `(function ,(substitute-host-functions lambda-form)))))
+
 (defun convert-macrolet (defs body env)
   (let ((new-env (apply #'env-extend env
                         (loop for (name ll . mbody) in defs
                               collect (list :macro name
-                                            (host-compile (make-host-macro-expander name ll mbody)))))))
+                                            (local-macro-expander (make-host-macro-expander name ll mbody)))))))
     (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
       (convert-locally decls forms new-env))))
 
