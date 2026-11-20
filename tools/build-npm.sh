@@ -17,6 +17,9 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/tools" "$out/third_party/asdf"
 cp bin/clysm.mjs "$out/bin/"
 cp build/clysmc.wasm "$image" "$out/"
+# the heap image the REPL image starts from (bin/clysm makes it)
+bin/clysm script /dev/null </dev/null >/dev/null 2>&1 || true
+[ -f "${image%.wasm}.img" ] && cp "${image%.wasm}.img" "$out/"
 cp -r host runtime data lib ui "$out/"
 mkdir -p "$out/contrib"
 for d in contrib/*; do
@@ -43,7 +46,7 @@ cat > "$out/package.json" <<EOF
   },
   "engines": { "node": ">=24" },
   "files": ["bin", "host", "runtime", "data", "lib", "ui", "contrib", "third_party", "tools",
-            "clysmc.wasm", "clysm-native.wasm", "README.md", "VERSION"],
+            "clysmc.wasm", "clysm-native.wasm", "clysm-native.img", "README.md", "VERSION"],
   "clysm": { "commit": "$commit" }
 }
 EOF
