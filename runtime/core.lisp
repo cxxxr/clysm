@@ -853,6 +853,11 @@ MAPL: the value is the first list)."
   (when (and (consp spec) (eq (car spec) 'special))
     (dolist (s (cdr spec))
       (%set-symbol-flags s (%fxlogior (%symbol-flags s) 1))))
+  ;; the type of global variables: references compiled in the image after it
+  ;; are of that type (*LIVE-VAR-TYPE-HOOK*, src/frontend.lisp)
+  (multiple-value-bind (type vars) (%proclaimed-var-type spec)
+    (when type
+      (dolist (v vars) (when (and v (symbolp v)) (%put v '%var-type type)))))
   ;; the compiler in the image does not copy the inline expansion of a
   ;; function proclaimed NOTINLINE (src/frontend.lisp)
   (when (and (consp spec) (member (car spec) '(inline notinline)))
@@ -864,6 +869,22 @@ MAPL: the value is the first list)."
         (when (and s (symbolp s))
           (if (eq (car spec) 'notinline) (%put s '%notinline t) (remprop s '%notinline))))))
   nil)
+
+(defun %proclaimed-var-type (spec)
+  "The type and the variables of the type proclamation SPEC, or NIL (the
+abbreviated form only for the type names the compiler knows in declarations)."
+  (cond ((atom spec) nil)
+        ((eq (car spec) 'type) (and (consp (cdr spec)) (values (cadr spec) (cddr spec))))
+        ((member (car spec) '(fixnum integer float double-float single-float short-float long-float
+                              character base-char string simple-string simple-vector cons list symbol
+                              number real rational bit function unsigned-byte signed-byte null
+                              simple-bit-vector simple-base-string))
+         (values (car spec) (cdr spec)))
+        ((and (consp (car spec))
+              (member (caar spec) '(integer unsigned-byte signed-byte simple-array simple-vector
+                                    simple-string simple-bit-vector)))
+         (values (car spec) (cdr spec)))
+        (t nil)))
 
 (defun %special-p (s) (not (zerop (%fxlogand (%symbol-flags s) 1))))
 (defun constantp (form &optional env)

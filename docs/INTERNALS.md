@@ -171,6 +171,21 @@ they are not nullable either now (they start as `NIL`, the image's
 `nil_symbol`): reading a nullable global is a check more (17 ms against 14).
 The hosts read the stack with the image's `get_bsp` and `get_bstack`.
 
+A reference of a special variable is the symbol's value field with one
+null test (unbound: `symbol-value` signals the error); that test is all an
+unbound check costs, the same as the engine's own null check of a
+non-nullable read would, so a variable known to be bound is read the same
+way. A type proclaimed for a global variable (`(declaim (fixnum *end-pos*))`,
+`(declaim (type simple-string *string*))`: the compiler's `*var-types*` from
+`declaim`, and in the image the symbol's `sys::%var-type`, set by `proclaim`,
+for code compiled after the proclamation was loaded from a fasl) or declared
+around a reference (`(declare (fixnum *end-string-pos*))`) applies to its
+references as to a lexical variable's (`typed-special-ref`): an integer type
+is checked where it is read (`checked-value`) and the code after it computes
+with a machine integer, other types are trusted as `the` is. cl-ppcre
+declares its positions and its string so: its benchmarks take 0.93-0.97 of
+the time before, Lem's `l-syntax-scan` 202 ms against 222.
+
 The multiple-value count (`mv-count`) stays a mutable global of the image,
 which the modules import: in the structure as well, every return that sets
 it took a load more in the image's own code, and whole programs that return
@@ -1776,7 +1791,17 @@ What is not as fast as intended, and why:
   with a cast and `call_ref` of the entry (`next-fn` declared `function`);
   what remains is the closures' own work: special variables (`*string*`,
   `*end-pos*`) read with a test of their binding, positions boxed between
-  closures, character classes as lists of test closures.
+  closures, character classes as lists of test closures. Ruled out
+  (2026-11-20): typing the closure's field of a variable declared
+  `function` (the fields of `:envcloN` are mutable, `labels` sets them, so
+  a subtype cannot refine them; it would take struct types of their own,
+  which the runtime's operations on closures of any shape do not know: a
+  cast less per call, not measured); a class as a list of closures (8 per
+  character in `[^\s()"';`,]`) runs at 1.35 times SBCL in a probe without
+  cl-ppcre, the engine inlining the closures at the `call_ref` (they do
+  not appear in a profile), and the second `endp` test of each iteration of
+  `loop for x in` (at the step and again at the top) was left out with no
+  change in time (the engine drops it), so neither was kept.
 * **Non-local exits** are returns with the exit pending, tested after
   every call that is not a tail call (above, "Non-local exits"): a throw
   from a closure one frame below its `catch` costs what SBCL's does

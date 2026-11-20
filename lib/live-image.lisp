@@ -6,6 +6,7 @@
 (defun install-live-hooks ()
   (setf *live-macro-hook* (lambda (s) (macro-function s))
         *live-special-hook* (lambda (s) (sys::%special-p s))
+        *live-var-type-hook* (lambda (s) (and (symbolp s) (get s 'sys::%var-type)))
         *live-constant-hook*
         (lambda (s)
           (if (and (symbolp s) (not (keywordp s)) (boundp s)
