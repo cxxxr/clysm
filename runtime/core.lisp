@@ -809,6 +809,18 @@ MAPL: the value is the first list)."
 
 ;; (the compiler in the image: the function made by the definition whose source it recorded)
 (defun %note-live-inline (sym) (%put sym '%inline-closure (symbol-function sym)) sym)
+;; (a small function of a compiled file: its source and the function it made,
+;; for the calls compiled after the fasl is loaded; src/frontend.lisp)
+(defun %note-fasl-inline (sym lambda-list body mark)
+  (%put sym '%fasl-inline (list lambda-list body mark (symbol-function sym)))
+  sym)
+;; the function a guarded copy of SYM's body compares SYM's function with:
+;; that of the definition MARK while it is SYM's function, else no function
+(defun %fasl-inline-function (sym mark)
+  (let ((e (get sym '%fasl-inline)))
+    (if (and (consp e) (equal (third e) mark) (fboundp sym) (eq (fourth e) (symbol-function sym)))
+        (fourth e)
+        (list mark))))
 
 (defun %set-fdefinition (name f)
   (let ((sym (%function-name-symbol name)))
