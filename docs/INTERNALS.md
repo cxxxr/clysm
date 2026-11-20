@@ -1843,6 +1843,50 @@ reads `(complex X)` as the complexes whose parts are of
 
 ## Status and limitations
 
+### Floating-point conditions
+
+Float arithmetic signals what SBCL signals with its default traps, at
+every safety and in declared and undeclared code alike:
+`floating-point-overflow` for an infinite result (`%float-result` in
+`runtime/numbers.lisp`), `division-by-zero` for a float divided by zero;
+an underflow is no condition (SBCL masks it by default; CLHS 12.1.4.3 and
+the arithmetic functions' pages leave it to the implementation): a result
+too small for a normalized float is the denormalized float or the zero
+that IEEE arithmetic gives, for `* /`, `exp`, `expt`, `scale-float`,
+`float`/`coerce` to a single, complex products alike. So the inline code
+tests a product or quotient only for being finite: its exponent compared
+with all ones (`f64-not-finite-code`; the subtraction `x - x != 0` that a
+sum is tested with made `d-mandelbrot` at `(safety 1)` 1.29 times as long,
+V8 compiling that comparison into two branches), with no test of a zero
+and of the operands after it. `(expt float -n)` whose `float^n` is past the floats
+takes the host's `pow` (`(expt 10d0 -400)` is 0, `(expt 2d0 -1074)` the
+least denormalized double), as SBCL's does. Compared with SBCL 2.6 on a
+probe of underflowing operations (products, quotients, sums of
+denormalized floats, `exp`, `expt`, `sqrt`, `log`, `sin`, `tanh`,
+`atan`, `scale-float`, `float` of tiny ratios, complex products, `cis`,
+`abs` of complex): the same values bit for bit (`integer-decode-float` of
+a denormalized single now gives SBCL's significand and exponent -149),
+printed with fewer digits where they are denormalized (the shortest
+representation that reads back). Differences left: `(/ 0d0 0d0)` signals
+`division-by-zero` where SBCL signals `floating-point-invalid-operation`
+(its `:invalid` trap); Clysm signals no `floating-point-invalid-operation`
+(an operation on an infinity or a NaN, which SBCL's traps make hard to
+come by, gives the IEEE result, or `floating-point-overflow` when the
+result is an infinity). There is no trap mask (no equivalent of
+`sb-int:with-float-traps-masked`). The ANSI tests that expect
+`floating-point-underflow` (`EXP.ERROR.8`–`11`, `EXPT.ERROR.8`–`11`) carry
+the note `:no-floating-point-underflow-by-default`, which an implementation
+that does not signal underflows disables; until `tests/ansi/driver.lisp`
+does, they are 8 failures.
+
+Measured against the build before (2026-11-21, interleaved, best of five
+on one slot): `bench/declared.lisp` at `(safety 1)` 0.97 in geometric mean
+(`d-matmul` 194 → 151 ms, `d-nbody` 694 → 564, `d-mandelbrot` 229 → 246,
+the one slower), at its `(safety 0)` unchanged (no float tests there; the
+items within the noise of a run); `holdout` 0.98 (`h-matmul-double` 152 →
+135, `h-nbody` 110 → 104), `suite` 0.99, `arith` 1.02 (`a-nbody-struct`
+1.01; the items above 1.05 are of under 10 ms).
+
 Implemented: all special operators, macros and functions of the COMMON-LISP
 package that SBCL defines (checked by listing every fbound/bound external CL
 symbol), including CLOS, the condition system with restarts, the full `loop`,
@@ -2177,8 +2221,7 @@ What makes the code fast:
   a double among its operands (a double constant, a value known to be one,
   an unboxed double variable) is computed in f64 first. Operands are
   evaluated in order and tested; when one is not of the kind or a step gives
-  an infinity, a NaN, a zero that may be an underflow or a negative square
-  root, the generic operations compute the tree again from the operands
+  an infinity, a NaN or a negative square root, the generic operations compute the tree again from the operands
   already evaluated, so the conditions are those of the generic code. Only
   the root is boxed. A `let` variable bound (or, when assigned, updated) by
   such arithmetic and used twice or more as an operand keeps an f64 beside
@@ -3026,8 +3069,9 @@ a value (not a branch): `ucomisd`, a branch on parity, `set`cc and a
 `jmp`, as much as the test it replaces; and the stretches between stores
 and conditionals are short (n-body stores a slot after every two
 operations). Only removing the zero test of products (the underflow
-condition, which SBCL does not trap by default) would gain much, and that
-changes what the code signals; it was not done.
+condition, which SBCL does not trap by default) would gain much; that was
+then done, with the trap set of SBCL's default (see "Floating-point
+conditions" under Status and limitations).
 
 ### Size and start-up
 

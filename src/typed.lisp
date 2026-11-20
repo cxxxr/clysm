@@ -138,8 +138,9 @@ comparisons need)."
     (* . clysm-sys::%generic-mul) (/ . clysm-sys::%generic-div)))
 
 (defun f64-binop-code (name a-code b-code)
-  "A-CODE and B-CODE leave f64s.  A result that is infinite or NaN, or a zero
-that may be an underflow, is redone by the generic function, which decides.
+  "A-CODE and B-CODE leave f64s.  A result that is infinite or NaN (an
+overflow, a division by zero) is redone by the generic function, which
+decides; an underflow is no condition (SBCL's default traps).
 At (SAFETY 0) there are no such tests: the IEEE result."
   (when (eql (cg-safety) 0)
     (return-from f64-binop-code
@@ -151,22 +152,19 @@ At (SAFETY 0) there are no such tests: the IEEE result."
                    (:ref.cast :double) (:struct.get :double 0))))
     `(,@a-code (:local.set ,x) ,@b-code (:local.set ,y)
       (:local.get ,x) (:local.get ,y) ,op (:local.set ,r)
-      ,@(if (member name '(+ -))
-            ;; not finite
-            `((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-              (:hint 0) (:if nil :f64 ,generic ((:local.get ,r))))
-            ;; one test of the exponent for zero, subnormal, infinite and NaN
-            ;; results; then a zero result of nonzero operands may be an underflow
-            `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
-              (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
-              (:hint 0)
-              (:if nil :f64
-                   ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-                    (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
-                    ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
-                    :i32.or
-                    (:if nil :f64 ,generic ((:local.get ,r))))
-                   ((:local.get ,r))))))))
+      ;; not finite (an underflow is not signalled: see %FLOAT-RESULT)
+      ,@(f64-not-finite-code name r)
+      (:hint 0) (:if nil :f64 ,generic ((:local.get ,r))))))
+
+(defun f64-not-finite-code (name r)
+  "An i32: the f64 in local R is an infinity or a NaN.  For a product or a
+quotient the test of the exponent, which measured faster than the
+subtraction (whose comparison V8 makes two branches) where the products are
+a recurrence (mandelbrot at (SAFETY 1): 235 ms against 312)."
+  (if (member name '(+ -))
+      `((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne)
+      `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
+        (:i32.const #x7FF) :i32.and (:i32.const #x7FF) :i32.eq)))
 
 (defun f64-op-code (node)
   "f64 code for an operation whose result is a double, or NIL."
@@ -229,19 +227,8 @@ At (SAFETY 0) there are no such tests: the IEEE result."
                     (:ref.cast :single) (:struct.get :single 0))))
     `(,@a-code (:local.set ,x) ,@b-code (:local.set ,y)
       (:local.get ,x) (:local.get ,y) ,op (:local.set ,r)
-      ,@(if (member name '(+ -))
-            `((:local.get ,r) (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
-              (:hint 0) (:if nil :f32 ,generic ((:local.get ,r))))
-            `((:local.get ,r) :i32.reinterpret_f32 (:i32.const 23) :i32.shr_u
-              (:i32.const #xFF) :i32.and (:i32.const 1) :i32.sub (:i32.const #xFE) :i32.ge_u
-              (:hint 0)
-              (:if nil :f32
-                   ((:local.get ,r) (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
-                    (:local.get ,r) (:f32.const 0.0) :f32.eq (:local.get ,x) (:f32.const 0.0) :f32.ne :i32.and
-                    ,@(when (eq name '*) `((:local.get ,y) (:f32.const 0.0) :f32.ne :i32.and))
-                    :i32.or
-                    (:if nil :f32 ,generic ((:local.get ,r))))
-                   ((:local.get ,r))))))))
+      (:local.get ,r) (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
+      (:hint 0) (:if nil :f32 ,generic ((:local.get ,r))))))
 
 (defun f32-op-code (node)
   "f32 code for an operation whose result is a single float, or NIL."
@@ -264,13 +251,11 @@ At (SAFETY 0) there are no such tests: the IEEE result."
          (:struct.get :complex-s ,(if (eq name 'clysm-sys::%cs-real) 0 1))))
       (float (let ((x (first args)) (proto (second args)))
                (when (and proto (eq (car proto) :const) (ty-single-p (node-ty proto)) (ty-double-p (node-ty x)))
-                 ;; a double rounded to a single; the generic function when it overflows or underflows
+                 ;; a double rounded to a single; the generic function when it overflows
                  (let ((d (new-local :f64)) (r (new-local :f32)))
                    (return-from f32-op-code
                      `(,@(cg-rep x :f64) (:local.tee ,d) :f32.demote_f64 (:local.tee ,r)
-                       :i32.reinterpret_f32 (:i32.const 23) :i32.shr_u
-                       (:i32.const #xFF) :i32.and (:i32.const 1) :i32.sub (:i32.const #xFE) :i32.ge_u
-                       (:local.get ,d) (:f64.const 0) :f64.ne :i32.and
+                       (:local.get ,r) :f32.sub (:f32.const 0.0) :f32.ne
                        (:hint 0)
                        (:if nil :f32
                             ((:local.get ,d) (:struct.new :double) ,@(cg proto) ,@(lisp-call-instrs 'float 2)
@@ -316,7 +301,7 @@ real number X is (* 0 X), as IMAGPART gives it)."
 (defun cplx-binop-code (name w a-code b-code)
   "A-CODE and B-CODE leave the parts of two complex numbers; the sum,
 difference or product inline, redone by the Lisp function for complex numbers
-when a part of the result is not finite or a product may have underflowed."
+when a part of the result is not finite."
   (let* ((ar (new-local w)) (ai (new-local w)) (br (new-local w)) (bi (new-local w))
          (re (new-local w)) (im (new-local w))
          (bt (rep-block-type (cplx-rep w))) (st (cplx-struct w))
@@ -335,25 +320,13 @@ when a part of the result is not finite or a product may have underflowed."
               `((:local.get ,ar) (:local.get ,br) ,op (:local.set ,re)
                 (:local.get ,ai) (:local.get ,bi) ,op (:local.set ,im)
                 ,@not-finite (:hint 0) (:if nil ,bt ,generic ,result)))
-            (let ((p1 (new-local w)) (p2 (new-local w)) (p3 (new-local w)) (p4 (new-local w)))
-              (flet ((zerop-code (p) `((:local.get ,p) ,(fzero w) ,(fop w :eq)))
-                     (underflow (p x y) `((:local.get ,p) ,(fzero w) ,(fop w :eq)
-                                          (:local.get ,x) ,(fzero w) ,(fop w :ne) :i32.and
-                                          (:local.get ,y) ,(fzero w) ,(fop w :ne) :i32.and)))
-                `((:local.get ,ar) (:local.get ,br) ,(fop w :mul) (:local.set ,p1)
-                  (:local.get ,ai) (:local.get ,bi) ,(fop w :mul) (:local.set ,p2)
-                  (:local.get ,ar) (:local.get ,bi) ,(fop w :mul) (:local.set ,p3)
-                  (:local.get ,ai) (:local.get ,br) ,(fop w :mul) (:local.set ,p4)
-                  (:local.get ,p1) (:local.get ,p2) ,(fop w :sub) (:local.set ,re)
-                  (:local.get ,p3) (:local.get ,p4) ,(fop w :add) (:local.set ,im)
-                  ,@not-finite ,@(zerop-code p1) :i32.or ,@(zerop-code p2) :i32.or
-                  ,@(zerop-code p3) :i32.or ,@(zerop-code p4) :i32.or
-                  (:hint 0)
-                  (:if nil ,bt
-                       (,@not-finite ,@(underflow p1 ar br) :i32.or ,@(underflow p2 ai bi) :i32.or
-                        ,@(underflow p3 ar bi) :i32.or ,@(underflow p4 ai br) :i32.or
-                        (:if nil ,bt ,generic ,result))
-                       ,result))))))))
+            ;; (a product of infinite parts is not finite either: only a
+            ;; NaN part can hide an infinity, and it is not finite)
+            `((:local.get ,ar) (:local.get ,br) ,(fop w :mul) (:local.get ,ai) (:local.get ,bi) ,(fop w :mul)
+              ,(fop w :sub) (:local.set ,re)
+              (:local.get ,ar) (:local.get ,bi) ,(fop w :mul) (:local.get ,ai) (:local.get ,br) ,(fop w :mul)
+              ,(fop w :add) (:local.set ,im)
+              ,@not-finite (:hint 0) (:if nil ,bt ,generic ,result))))))
 
 (defun cplx-op-code (node w)
   "Code leaving the two parts of an operation whose result is a complex number of W floats, or NIL."
@@ -1436,12 +1409,11 @@ computed for a division by 1 unless NEED-REM)."
            (values (typed-float-divmod node :fquotient)))
           ((and (member name '(sin cos tan atan exp log sinh cosh tanh asinh)) (= (length (cddr node)) 1)
                 (ty-double-p (node-ty (third node))))
-           ;; the host function; a result that is not finite (or a zero of
-           ;; EXP) is redone by the helper, which signals
+           ;; the host function; a result that is not finite is redone by
+           ;; the helper, which signals
            (let ((x (new-local :f64)) (r (new-local :f64)))
              `(,@(cg-rep (third node) :f64) (:local.tee ,x) (:call ,(math-import name)) (:local.tee ,r)
                (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-               ,@(when (eq name 'exp) `((:local.get ,r) (:f64.const 0) :f64.eq :i32.or))
                (:if nil :f64
                     ((:local.get ,x) (:struct.new :double) (:call ,(math-helper name))
                      (:ref.cast :double) (:struct.get :double 0))
