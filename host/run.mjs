@@ -153,14 +153,19 @@ function nodePlatform(state, args) {
   };
 }
 
-export async function runModule(bytes, args = []) {
+// (COMPILED: a promise of the module BYTES compiled, if it is being compiled)
+export async function runModule(bytes, args = [], compiled = null) {
   await importWorkerModules();
   const state = { ...nodeModuleAccess() };
   const imports = makeImports(state, nodePlatform(state, args));
+  // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
+  // was saved by this build of the image (otherwise as usual)
+  const imagePath = process.env.CLYSM_IMAGE;
+  const file = imagePath && fs.existsSync(imagePath) ? fs.readFileSync(imagePath) : null;
   let instance;
   try {
-    let module;
-    ({ module, instance } = await WebAssembly.instantiate(bytes, imports));
+    const module = await (compiled || WebAssembly.compile(bytes));
+    instance = await WebAssembly.instantiate(module, imports);
     installSourceMap(state, module);
     state.instance = instance;
     state.module = module;
@@ -174,12 +179,8 @@ export async function runModule(bytes, args = []) {
     console.error('instantiate failed:', e.message);
     process.exit(3);
   }
-  // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
-  // was saved by this build of the image (otherwise as usual)
   let restored = false;
-  const imagePath = process.env.CLYSM_IMAGE;
-  if (imagePath && fs.existsSync(imagePath)) {
-    const file = fs.readFileSync(imagePath);
+  if (file) {
     const header = imageHeader(state.module, file);
     if (header) {
       try {
@@ -188,7 +189,7 @@ export async function runModule(bytes, args = []) {
       } catch (e) {
         console.error(';; the heap image could not be loaded:', e.message);
         state.codeIndex = null;
-        instance = (await WebAssembly.instantiate(bytes, imports)).instance;
+        instance = await WebAssembly.instantiate(state.module, imports);
         state.instance = instance;
       }
     }
@@ -496,8 +497,6 @@ function lazyServerPort(netBuffer) {
 // Run the program: workerData-like { file, args, tty }; PORT and NETBUFFER
 // connect it to the thread that serves its sockets and processes.
 async function runProgram(data, port, netBuffer) {
-  await importWorkerModules();
-  installNetClient(port, netBuffer);
   try {
     const v8 = await import('node:v8');
     // the compiler marks unlikely branches (the branch hinting section of the modules)
@@ -514,6 +513,12 @@ async function runProgram(data, port, netBuffer) {
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
   } catch (e) {}
+  // the module compiles in V8's threads while this one imports the rest
+  const bytes = fs.readFileSync(data.file);
+  const compiled = WebAssembly.compile(bytes);
+  compiled.catch(() => {});
+  await importWorkerModules();
+  installNetClient(port, netBuffer);
   // the program may run as a computation that can wait (sys::main, threads)
   globalThis.__clysm_deep_async_stacks = true;
   // CLYSM_DOM=1 (bin/clysm.mjs test --dom): a document of happy-dom, found
@@ -534,8 +539,7 @@ async function runProgram(data, port, netBuffer) {
       process.exit(2);
     }
   }
-  const bytes = fs.readFileSync(data.file);
-  await runModule(bytes, data.args);
+  await runModule(bytes, data.args, compiled);
   writeTrace();
   // the program ends when nothing is left to do: the promises and timers that
   // it made are settled and run first
