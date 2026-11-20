@@ -17,6 +17,24 @@
 (defvar *inline-caller* nil "the lam receiving the copies")
 (defvar *declared-inline* (make-hash-table :test 'eq) "functions declaimed INLINE (no size limit)")
 (defparameter *inline-max-declared-nodes* 400)
+(defvar *inline-big-caller-nodes* nil
+  "When set, a function larger than this (in nodes) gets no copies of
+functions not declared INLINE, and *INLINE-CALLER-BUDGET* limits those of
+the others (tools/build-repl.lisp sets them for the compiler's own code).")
+(defvar *inline-caller-budget* nil
+  "When set, the nodes of copies of functions not declared INLINE that a
+function gets at most.")
+(defvar *inline-budget-source-p* (constantly t)
+  "Whether the limits above apply to a function of the source file (a name).")
+
+(defun count-nodes (node limit)
+  "The number of nodes of NODE, counting at most to LIMIT + 1."
+  (let ((n 0))
+    (labels ((walk (x)
+               (when (> (incf n) limit) (return-from count-nodes n))
+               (map-subnodes #'walk x)))
+      (walk node)
+      n)))
 
 (defun inlinable-lam-p (lam sym)
   (multiple-value-bind (v found) (gethash lam *inline-candidates*)
@@ -111,9 +129,21 @@
   "Replace (in place) the calls in LAM's body to inlinable functions."
   (unless (gethash lam *inlined-into*)
     (setf (gethash lam *inlined-into*) t)
-    (let ((*inline-caller* lam) (lvar-lams (make-hash-table :test 'eq))
-          (fresh (make-hash-table :test 'eq)))   ; the variables made by copying
-      (labels ((register (bindings)
+    (let* ((*inline-caller* lam) (lvar-lams (make-hash-table :test 'eq))
+           (fresh (make-hash-table :test 'eq))   ; the variables made by copying
+           ;; (copies in a large function make its code larger, which V8
+           ;; compiles when it first runs, more than faster)
+           (budget (cond ((or (null *inline-big-caller-nodes*)
+                              (not (funcall *inline-budget-source-p* (car (lam-source lam)))))
+                          nil)
+                         ((> (count-nodes (lam-body lam) *inline-big-caller-nodes*) *inline-big-caller-nodes*)
+                          0)
+                         (t *inline-caller-budget*))))
+      (labels ((afford (callee declared)
+                 (or declared (null budget)
+                     (let ((n (count-nodes (lam-body callee) budget)))
+                       (when (<= n budget) (decf budget n) t))))
+               (register (bindings)
                  (dolist (b bindings)
                    (cond ((and (member (car (cdr b)) '(:lambda :fref)) (not (lvar-mutated (car b)))
                                (not (lvar-special (car b))))
@@ -154,7 +184,8 @@
                                                     (lam-p (gethash (second (second node)) lvar-lams))
                                                     (gethash (second (second node)) lvar-lams))))))
                        (when (and callee (= (length (lam-req callee)) (length (cddr node)))
-                                  (local-inlinable-p callee lam))
+                                  (local-inlinable-p callee lam)
+                                  (afford callee nil))
                          ;; the reference replaced (references in copies still exist
                          ;; in their originals)
                          (when (or (= depth 0)
@@ -167,7 +198,7 @@
                          (return-from walk))))
                    (when (and (eq (car node) :call) (< depth *inline-max-depth*))
                      (let ((callee (inline-candidate node)))
-                       (when callee
+                       (when (and callee (afford callee (gethash (second node) *declared-inline*)))
                          (let* ((map (make-hash-table :test 'eq))
                                 (bindings (loop for p in (lam-req callee) for a in (cddr node)
                                                 collect (cons (copy-lvar-for-inline p map) a)))

@@ -28,6 +28,16 @@
         (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/types" "src/inline" "src/codegen"
                      "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "lib/live-image"))
           (compile-source-file (rpath (concatenate 'string f ".lisp"))))
+        ;; the compiler's own functions get fewer copies of others: V8
+        ;; compiles them when they are first called, and a first DEFUN
+        ;; called 1.2 MB of them, a quarter of it copies
+        (setq *inline-big-caller-nodes* 400 *inline-caller-budget* 200
+              *inline-budget-source-p*
+              (lambda (file)
+                (and (stringp file)
+                     (or (search "src/" file) (search "lib/live-image" file)
+                         ;; (macros: run when code is compiled)
+                         (search "runtime/loop" file)))))
         ;; with CLYSM_REDEFINABLE set, the functions of the MAIN files can be
         ;; redefined in the running image (tools/build-ui-dev.sh)
         (let ((*redefinable-functions* (and (sb-ext:posix-getenv "CLYSM_REDEFINABLE") t)))
