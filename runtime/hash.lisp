@@ -597,7 +597,7 @@ not allowed while iterating."
         `(let (,@(%function-binding f fn) (,h ,table))
            (%check-ht ,h)
            (%with-ht-vectors (,h ,keys ,vals ,fill ,del)
-             (dotimes (,i ,fill nil)
+             (%do ((,i 0 (1+ ,i))) ((>= ,i ,fill) nil)
                (let ((,k (%svref ,keys ,i)))
                  (unless (eq ,k ,del) ,(%literal-call fn f `(,k (%svref ,vals ,i)))))))))))
 

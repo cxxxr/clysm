@@ -137,9 +137,14 @@ the declarations (when forms follow it)."
   (%expand-do varlist endlist body 'let 'psetq))
 (defmacro do* (varlist endlist &body body)
   (%expand-do varlist endlist body 'let* 'setq))
+;;; DO without the block named NIL, for the expansions of compiler macros
+;;; (MAPCAR, EVERY, MAPHASH, ...) that put a lambda or argument forms of the
+;;; caller inside their loop: a RETURN there must leave the caller's block.
+(defmacro %do (varlist endlist &body body)
+  (%expand-do varlist endlist body 'let 'psetq (gensym "DO")))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun %expand-do (varlist endlist body let-op set-op)
+  (defun %expand-do (varlist endlist body let-op set-op &optional block)
     (let ((top (gensym "DO-TOP"))
           (bindings nil) (steps nil) (decls nil) (forms body))
       (dolist (v varlist)
@@ -151,12 +156,12 @@ the declarations (when forms follow it)."
                 (setq steps (cons (car v) steps))
                 (setq steps (cons (caddr v) steps))))))
       (multiple-value-bind (d f) (%split-decls body) (setq decls d) (setq forms f))
-      `(block nil
+      `(block ,block
          (,let-op ,(reverse bindings)
           ,@(reverse decls)
           (tagbody
              ,top
-             (if ,(car endlist) (return-from nil (progn ,@(cdr endlist))))
+             (if ,(car endlist) (return-from ,block (progn ,@(cdr endlist))))
              (tagbody ,@forms)
              ,@(when steps `((,set-op ,@(reverse steps))))
              (go ,top)))))))

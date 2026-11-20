@@ -2213,12 +2213,12 @@ list result shares the tail after END."
     "A loop over the elements of SEQ (a variable) with ELEMENT-VAR bound to each."
     (let ((l (gensym "L")) (d (gensym "D")) (i (gensym "I")) (e (gensym "E")))
       `(if (listp ,seq)
-           (do ((,l ,seq (cdr ,l))) ((%endp ,l))
+           (%do ((,l ,seq (cdr ,l))) ((%endp ,l))
              (let ((,element-var (car ,l))) ,body))
            (progn
              (unless (vectorp ,seq) (%type-error ,seq 'sequence))
              (let ((,d (%array-storage ,seq)))
-               (do ((,i (%array-total-offset ,seq) (+ ,i 1))
+               (%do ((,i (%array-total-offset ,seq) (+ ,i 1))
                     (,e (+ (%array-total-offset ,seq) (length ,seq))))
                    ((>= ,i ,e))
                  (declare (fixnum ,i ,e))
