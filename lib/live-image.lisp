@@ -164,8 +164,7 @@ any, happens at run time)."
         (error (e)
           (setq *native-eval-failure* e)
           (return-from native-eval (eval form))))
-    (dotimes (i (length bytes)) (sys::%put-char-buf (aref bytes i)))
-    (sys::%compile-module (sys::%js-take-string) (sys::%js-wrap-lisp consts))))
+    (native-run-octets bytes consts)))
 
 (defun native-compile (name definition)
   (cond (definition
@@ -202,8 +201,9 @@ any, happens at run time)."
 
 (defun native-run-octets (octets consts)
   "Run a module made by NATIVE-COMPILE-FORM."
-  (dotimes (i (length octets)) (sys::%put-char-buf (aref octets i)))
-  (sys::%compile-module (sys::%js-take-string) (sys::%js-wrap-lisp consts)))
+  ;; (a Uint8Array, made at once through the memory: octet by octet, through
+  ;; put_char_buf, it took a tenth of the time of compiling a small DEFUN)
+  (sys::%compile-module (js:from-octets octets) (sys::%js-wrap-lisp consts)))
 
 (defun native-run-module (file offset length consts)
   "Run the module stored in FILE (a native file name) at OFFSET."
