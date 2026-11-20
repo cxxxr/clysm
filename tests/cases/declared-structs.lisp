@@ -8,7 +8,6 @@
   s21 s22 s23 s24 s25 s26 s27 s28 s29 s30 s31 s32 s33)
 (defstruct (qc (:include qa)) z)
 ;; (an instance of an including structure with a slot vector takes the general path)
-(declaim (notinline fa fq))
 (defun fa (o) (declare (pa o)) (setf (pa-x o) (list (pa-x o))) (incf (pa-y o) 1.5d0) (list (pa-x o) (pa-y o)))
 (defun fq (o) (declare (type qa o)) (setf (qa-y o) 7) (list (qa-x o) (qa-y o)))
 (print (fa (make-pa :x 1 :y 2d0)))

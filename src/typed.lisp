@@ -983,12 +983,12 @@ CLS (a declaration of the variable, a test, a slot access before)."
 
 (defun struct-class-shape-type (name)
   "The Wasm type of the instances of the structure class NAME when its slots
-are fields (its own instances are of exactly that type), else NIL."
+are fields or typed (its own instances are of exactly that type), else NIL."
   (let ((desc (get name 'clysm-sys::%struct-description)))
     (when (and (consp desc) (null (car desc)) (listp (second desc)))
-      (let ((size (third desc)) (rep (nth 6 desc)))
+      (let ((rep (nth 6 desc)))
         (case rep
-          (:fields (and (integerp size) (<= 1 size +struct-inline-max+) (sinst-type size)))
+          (:fields (let ((size (third desc))) (and (integerp size) (<= 1 size +struct-inline-max+) (sinst-type size))))
           (:typed (let ((kinds (mapcar (lambda (sl) (if (member (third sl) '(double-float long-float)) :d :e))
                                        (second desc))))
                     (and (<= 1 (length kinds) +struct-inline-max+) (member :d kinds)
@@ -1032,22 +1032,28 @@ are fields (its own instances are of exactly that type), else NIL."
            (cdr e)))))
 
 (defun known-struct-check-code (o ty s slow &optional x)
-  "For an object (local O) known to be of the structure class: code branching
-to SLOW unless it is of the Wasm type TY (left in S) -- an instance of a
-structure including it that has a slot vector is not, nor an object that
-is not of the class at all, which the slow path signals."
+  "For an object (local O) known to be of the structure class: code leaving
+it in S as the Wasm type TY, branching to SLOW where it may not be of it."
   (let ((sh (and x (struct-shadow-of x ty))))
-    (cond (sh
-           `((:local.get ,sh) :ref.is_null (:hint 0) (:br_if ,slow) (:local.get ,sh) (:local.set ,s)))
-          ((and x (eq (car x) :lref) (not (lvar-decl (second x))))
-           ;; a variable not declared, known by an access before, a
-           ;; constructor or a type test: a cast, as before structure
-           ;; types were declared (a test costs undeclared n-body 7%; the
-           ;; cast traps on an instance of an including structure of more
-           ;; than 32 slots, which has a slot vector)
+    (cond ((and (loop for k from 1 to +struct-inline-max+ thereis (eq ty (sinst-type k)))
+                (or (eql (cg-safety) 0)
+                    ;; (not by a declaration: by an access before, a
+                    ;; constructor, a type test)
+                    (and x (eq (car x) :lref) (not (lvar-decl (second x))))))
+           ;; a structure of field slots: every instance of its class, or
+           ;; of one including it, is of its Wasm type (one of more slots
+           ;; is a big structure, runtime/struct.lisp): a cast
            `((:local.get ,o) (:ref.cast! ,ty) (:local.set ,s)))
+          (sh
+           ;; (a declared variable: one test where it is bound; a value not
+           ;; of the type declared takes the function, which signals)
+           `((:local.get ,sh) :ref.is_null (:hint 0) (:br_if ,slow) (:local.get ,sh) (:local.set ,s)))
           (t
-           ;; (a BR_ON_CAST measured slower than the test and the cast)
+           ;; another declared object, or a structure of typed slots, whose
+           ;; instances may have a slot vector (made by the interpreter,
+           ;; restored from a heap image, of an including structure of more
+           ;; than 32 slots): a test (a BR_ON_CAST measured slower than the
+           ;; test and the cast)
            `((:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
              (:local.get ,o) (:ref.cast! ,ty) (:local.set ,s))))))
 

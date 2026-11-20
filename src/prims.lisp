@@ -1177,6 +1177,22 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defprim clysm-sys::%sinst-make (k) :value `(,@(idx-code k) (:call :sinst-make)))
 ;; a structure of class LAYOUT with the slots ARGS: its own fields for up to
 ;; +STRUCT-INLINE-MAX+ slots, else a slot vector
+;; a structure of more than +STRUCT-INLINE-MAX+ slots that includes one of
+;; field slots (runtime/struct.lisp, :BIG): a $si<max>, its first slots in
+;; fields, the others in an overflow vector at the end of its slot vector
+;; (after the structures its class includes), so that it is of the Wasm
+;; type of every structure it includes
+(defprim clysm-sys::%make-big-struct :any :value
+  (let* ((vals (rest args)) (n (length vals)) (c (new-local))
+         (tmps (loop repeat n collect (new-local))) (m +struct-inline-max+))
+    `(,@(first args) (:local.set ,c)
+      ,@(loop for v in vals for tmp in tmps append `(,@v (:local.set ,tmp)))
+      (:local.get ,c) (:local.get ,c)
+      ,@(loop for tmp in (nthcdr m tmps) collect `(:local.get ,tmp)) (:array.new_fixed :vector ,(- n m))
+      (:call :big-inherits) (:ref.cast :vector) (:i32.const 0)
+      ,@(loop for tmp in tmps repeat m collect `(:local.get ,tmp))
+      (:struct.new ,(sinst-type m)))))
+
 (defprim clysm-sys::%make-struct :any :value
   (let ((n (length (rest args))) (c (new-local)))
     (if (<= 1 n +struct-inline-max+)
@@ -6016,7 +6032,10 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   `((:block typed :eqref
       ,@(sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:br_on_cast_fail typed :eqref (:ref ,(sinst-type (1+ j))))
                                              (:struct.get ,(sinst-type (1+ j)) ,(sinst-field j)) :return))
-                             '((:local.get 0) (:br typed))))
+                             `((:local.get 1) (:i32.const ,+struct-inline-max+) :i32.ge_s
+                               (:if nil nil ((:local.get 0) (:call :big-overflow) :ref.is_null :i32.eqz
+                                             (:if nil nil ((:local.get 0) (:local.get 1) (:call :big-ref) :return))))
+                               (:local.get 0) (:br typed))))
     :drop)
   '(:local.get 0) '(:local.get 1) :ref.i31 (lisp-call-instrs 'clysm-sys::%tstruct-gref 2))
 (defhelper :sinst-set :eie-e ()
@@ -6024,17 +6043,52 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
       ,@(sinst-dispatch-code 1 (lambda (j) `((:local.get 0) (:br_on_cast_fail typed :eqref (:ref ,(sinst-type (1+ j))))
                                              (:local.get 2) (:struct.set ,(sinst-type (1+ j)) ,(sinst-field j))
                                              (:local.get 2) :return))
-                             '((:local.get 0) (:br typed))))
+                             `((:local.get 1) (:i32.const ,+struct-inline-max+) :i32.ge_s
+                               (:if nil nil ((:local.get 0) (:call :big-overflow) :ref.is_null :i32.eqz
+                                             (:if nil nil ((:local.get 0) (:local.get 1) (:local.get 2)
+                                                           (:call :big-set) :return))))
+                               (:local.get 0) (:br typed))))
     :drop)
   '(:local.get 0) '(:local.get 1) :ref.i31 '(:local.get 2) (lisp-call-instrs 'clysm-sys::%tstruct-gset 3))
-(defhelper :sinst-size :e-i () (sinst-size-code 0 +struct-inline-max+))
+;; (of a big structure, :BIG above: its fields and its overflow vector)
+(defhelper :sinst-size :e-i ((o :eqref))
+  '(:local.get 0) `(:call :big-overflow) '(:local.tee o) :ref.is_null :i32.eqz
+  `(:if nil nil ((:i32.const ,+struct-inline-max+) (:local.get o) (:ref.cast! :vector) :array.len :i32.add :return))
+  (sinst-size-code 0 +struct-inline-max+))
+;; the overflow vector of a big structure, else null
+(defhelper :big-overflow :e-e ((iv (:ref :null :vector)) (n :i32) (o :eqref))
+  '(:local.get 0) `(:ref.test ,(sinst-type +struct-inline-max+)) :i32.eqz '(:if nil nil ((:ref.null :eq) :return))
+  '(:local.get 0) `(:ref.cast! ,(sinst-type +struct-inline-max+)) `(:struct.get ,(sinst-type +struct-inline-max+) 1)
+  '(:local.tee iv) :array.len '(:local.tee n) :i32.eqz '(:if nil nil ((:ref.null :eq) :return))
+  '(:local.get iv) '(:local.get n) '(:i32.const 1) :i32.sub '(:array.get :vector) '(:local.tee o) '(:ref.test :vector)
+  '(:if nil nil ((:local.get o) :return))
+  '(:ref.null :eq))
+;; the slot vector of a big structure of class L with the overflow vector O
+(defhelper :big-inherits :ee-e ((iv (:ref :null :vector)) (v (:ref :null :vector)) (n :i32))
+  '(:local.get 0) '(:call :layout-inherits) '(:local.tee iv) :array.len '(:local.tee n) '(:i32.const 1) :i32.add
+  '(:array.new_default :vector) '(:local.tee v) '(:i32.const 0) '(:local.get iv) '(:i32.const 0) '(:local.get n)
+  '(:array.copy :vector :vector)
+  '(:local.get v) '(:local.get n) '(:local.get 1) '(:array.set :vector)
+  '(:local.get v))
+;; slot K (at least +STRUCT-INLINE-MAX+) of a big structure
+(defhelper :big-ref :ei-e ()
+  '(:local.get 0) '(:call :big-overflow) '(:ref.cast :vector)
+  '(:local.get 1) `(:i32.const ,+struct-inline-max+) :i32.sub '(:array.get :vector))
+(defhelper :big-set :eie-e ()
+  '(:local.get 0) '(:call :big-overflow) '(:ref.cast :vector)
+  '(:local.get 1) `(:i32.const ,+struct-inline-max+) :i32.sub '(:local.get 2) '(:array.set :vector)
+  '(:local.get 2))
 ;; a new structure of local 0 field slots (from 1), its fields unset
 (defhelper :sinst-make :i-e ((k :i32))
   '(:local.get 0) '(:i32.const 1) :i32.sub '(:local.set k)
   (sinst-dispatch-code 'k (lambda (j) `((:ref.null :eq) (:global.get :empty-slots) (:i32.const 0)
                                         ,@(loop repeat (1+ j) collect '(:ref.null :eq))
                                         (:struct.new ,(sinst-type (1+ j))) :return))
-                       '(:unreachable)))
+                       ;; more: a big structure (its slot vector the overflow vector only)
+                       `((:ref.null :eq) (:ref.null :eq) (:local.get 0) (:i32.const ,+struct-inline-max+) :i32.sub
+                         (:array.new :vector) (:array.new_fixed :vector 1) (:i32.const 0)
+                         ,@(loop repeat +struct-inline-max+ collect '(:ref.null :eq))
+                         (:struct.new ,(sinst-type +struct-inline-max+)))))
 ;; a copy of a structure of field slots
 (defhelper :sinst-copy :e-e ((k :i32))
   '(:local.get 0) '(:call :sinst-size) '(:i32.const 1) :i32.sub '(:local.set k)
@@ -6046,4 +6100,20 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                                 ,@(loop for f below (1+ j)
                                         append `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field f))))
                                 (:struct.new ,ty) :return)))
-                       '(:unreachable)))
+                       ;; a big structure: a copy of its overflow vector too
+                       (let ((ty (sinst-type +struct-inline-max+)))
+                         `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 0)
+                           (:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 1) (:call :big-iv-copy) (:ref.cast :vector)
+                           (:i32.const 0)
+                           ,@(loop for f below +struct-inline-max+
+                                   append `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field f))))
+                           (:struct.new ,ty)))))
+;; a copy of the slot vector of a big structure with a copy of its overflow vector
+(defhelper :big-iv-copy :e-e ((iv (:ref :null :vector)) (v (:ref :null :vector)) (n :i32) (o (:ref :null :vector)))
+  '(:local.get 0) '(:ref.cast :vector) '(:local.tee iv) :array.len '(:local.tee n) '(:array.new_default :vector)
+  '(:local.tee v) '(:i32.const 0) '(:local.get iv) '(:i32.const 0) '(:local.get n) '(:array.copy :vector :vector)
+  '(:local.get iv) '(:local.get n) '(:i32.const 1) :i32.sub '(:array.get :vector) '(:ref.cast :vector) '(:local.tee o)
+  :array.len '(:array.new_default :vector) '(:local.set iv)
+  '(:local.get iv) '(:i32.const 0) '(:local.get o) '(:i32.const 0) '(:local.get o) :array.len '(:array.copy :vector :vector)
+  '(:local.get v) '(:local.get n) '(:i32.const 1) :i32.sub '(:local.get iv) '(:array.set :vector)
+  '(:local.get v))

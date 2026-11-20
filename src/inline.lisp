@@ -60,7 +60,9 @@ function gets at most.")
 (defun copy-lvar-for-inline (lv map)
   (let ((new (make-lvar :name (lvar-name lv) :owner *inline-caller* :captured nil
                         :mutated (lvar-mutated lv) :special (lvar-special lv)
-                        :refs (lvar-refs lv) :ignorable (lvar-ignorable lv))))
+                        :refs (lvar-refs lv) :ignorable (lvar-ignorable lv)
+                        ;; (the copy is typed as the function was)
+                        :decl (lvar-decl lv))))
     (setf (gethash lv map) new)
     new))
 
