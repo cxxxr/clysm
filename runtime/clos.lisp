@@ -718,26 +718,27 @@ spread arguments that are not just its required ones, else NIL."
   `(%fx= (%svlength (%instance-slots ,o)) ,n))
 
 (defmacro %fast-class-of (x)
+  ;; The objects that generic functions of built-in classes (printers,
+  ;; encoders) are given most find their class in CLASS-OF's cache without a
+  ;; call of CLASS-OF, which is in another module for a function compiled in
+  ;; the image (the engine does not inline it): fixnums, symbols, simple
+  ;; strings, conses, doubles and strings with a fill pointer over a simple
+  ;; string.  One index, one read of the cache and one call for the others,
+  ;; as this is copied into the dispatch of every generic function.
   `(let ((x ,x))
-     (cond ((%instancep x) (%instance-layout x))
-           ((fixnump x) (or (%svref *builtin-classes* 0) (class-of x)))
-           ;; (the indexes of CLASS-OF's cache)
-           ((and x (symbolp x))
-            (or (%svref *builtin-classes* (if (eq (%symbol-package x) *keyword-package*) 3 4))
-                (class-of x)))
-           ;; the other objects that generic functions of built-in classes
-           ;; (printers, encoders) are given most: no call of CLASS-OF, which
-           ;; is in another module for a function compiled in the image
-           ((%simple-string-p x) (or (%svref *builtin-classes* 6) (class-of x)))
-           ((consp x) (or (%svref *builtin-classes* 1) (class-of x)))
-           ((%double-float-p x) (or (%svref *builtin-classes* 15) (class-of x)))
-           ;; a string with a fill pointer over a simple string
-           ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
-                 (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
-            (or (%svref *builtin-classes* 7) (class-of x)))
-           ((and (functionp x) (not (%instancep (%closure-name x))))
-            (or (%svref *builtin-classes* 12) (class-of x)))
-           (t (class-of x)))))
+     (if (%instancep x)
+         (%instance-layout x)
+         (let ((i (cond ((fixnump x) 0)
+                        ((and x (symbolp x)) (if (eq (%symbol-package x) *keyword-package*) 3 4))
+                        ((%simple-string-p x) 6)
+                        ((consp x) 1)
+                        ((%double-float-p x) 15)
+                        ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
+                              (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
+                         7)
+                        (t -1))))
+           (declare (fixnum i))
+           (or (and (%fx>= i 0) (%svref *builtin-classes* i)) (class-of x))))))
 
 (defun %eql-key (markers x)
   "The cache key of the argument X for a parameter with the EQL specializer

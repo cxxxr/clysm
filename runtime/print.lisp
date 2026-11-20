@@ -501,18 +501,27 @@ is too large for the buffer (it has more than 62 bits)."
                  (setq x q)))))
           (t nil))))
 
+(defmacro %decimal-length (m)
+  "The number of decimal digits of the nonnegative fixnum M (comparisons, not divisions)."
+  (let ((v (gensym "M")))
+    `(let ((,v ,m))
+       (declare (fixnum ,v))
+       (cond ((%fx< ,v 10) 1) ((%fx< ,v 100) 2) ((%fx< ,v 1000) 3) ((%fx< ,v 10000) 4)
+             ((%fx< ,v 100000) 5) ((%fx< ,v 1000000) 6) ((%fx< ,v 10000000) 7)
+             ((%fx< ,v 100000000) 8) (t 9)))))
+
 (defun %string-out-decimal (s n)
   "Write the fixnum N, which is not MOST-NEGATIVE-FIXNUM, in decimal into the
 buffer of the :STRING-OUT stream S."
   (declare (fixnum n))
   (let* ((m (if (%fx< n 0) (%fx- 0 n) n))
-         (len (do ((k (%fxtruncate m 10) (%fxtruncate k 10)) (c 1 (%fx+ c 1))) ((eql k 0) c)
-                (declare (fixnum k c))))
+         (len (%decimal-length m))
          (len (if (%fx< n 0) (%fx+ len 1) len))
          (fill (%instance-ref s +stream-index-slot+))
          (buf (%instance-ref s +stream-buffer-slot+)))
     (declare (fixnum m len fill))
-    (when (%fx> (%fx+ fill len) (%string-length buf)) (setq buf (%string-out-grow s len)))
+    (when (%fx> (%fx+ fill len) (%string-length buf))
+      (setq buf (%string-out-grow s len) fill (%instance-ref s +stream-index-slot+)))
     (when (%fx< n 0) (%set-schar buf fill #\-))
     (%fixnum-digits m 10 buf (%fx+ fill len))
     (%set-instance-ref s +stream-index-slot+ (%fx+ fill len))

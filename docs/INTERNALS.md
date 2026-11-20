@@ -2145,6 +2145,48 @@ What makes the code fast:
   option but `:size` makes the table without parsing keywords;
   `concatenate` of simple strings into a string (`apply` of a list of
   parts) copies them at once.
+* **JSON and dates** (yason, cl-json, local-time; probes of each library
+  function against SBCL). A generic function compiled in the image or a
+  fasl found the class of an argument that is not an instance, fixnum or
+  symbol with a call of `class-of`, which is in the runtime's module and
+  not inlined by the engine (6 of the 16 ns of yason's `encode` of a
+  string): `%fast-class-of`, copied into every dispatch, now gives an
+  index in `class-of`'s cache for simple strings, conses, doubles and
+  strings with a fill pointer over a simple string too (one read of the
+  cache, one call of `class-of` for the rest). Strings with a fill pointer
+  (what parsers make) are written by `write-string`/`princ` from their
+  simple storage at once, copied by `princ-to-string`, read by
+  `make-string-input-stream`/`read-from-string` from their storage (an
+  integer 417 → 133 ns, a double 473 → 160; SBCL 80 and 163), and
+  `stringp` of one reads the header's data without a call. A string
+  output stream past 16384 characters keeps its full buffers in a list
+  and starts a new one (64 KB, below the engine's large objects, which are
+  collected with the old generation) instead of copying into a buffer
+  twice the size; `get-output-stream-string` copies the chunks once (700000
+  characters written one by one: 5.0 → 3.2 ms, SBCL 2.3).
+  `with-output-to-string` makes its stream without parsing keywords;
+  `princ` and `~D` of a fixnum into a string output stream put the digits
+  into its buffer, `~mincol,padcharD` calls a function of four arguments
+  (not `%fmt-integer`'s nine, an argument vector each); `peek-char t` of a
+  string input stream skips whitespace in one loop over the readtable's
+  ASCII table; `char-equal` of two ASCII characters is compared inline;
+  `find`/`position` with only `:test` call a function of four arguments,
+  and their scan of specialized vectors and tests with `<`, `<=`, `>`,
+  `>=`, `=` are loops of their own (local-time's month table);
+  `hash-table-p` is copied into image code (it used `load-time-value`);
+  `(setf gethash)` of a string key in an `equal` table hashes it as
+  `gethash` does. A `funcall` of a function held in a special variable
+  (cl-json's handlers) is already a test for a closure and a `call_ref`
+  (4 ns, SBCL 2.3); what remains of cl-json's time is mostly the
+  collection of the data it builds, which survives (see Allocation).
+  `tools/bench-libs.sh bench/apps.lisp`, the build before and after
+  alternately on one slot, twice: yason's encoding 1.47–1.55 → 1.06–1.11
+  times SBCL (107 → 71 ms), its parsing 1.66–1.73 → 1.35–1.44, cl-json's
+  decoding 1.86–1.88 → 1.56–1.61, local-time 1.77–1.85 → 1.49–1.55; the
+  file 1.78–1.80 → 1.56–1.59. `bench/io.lisp` 0.95 of its time compiled
+  and 0.92 in a script, `bench/library.lisp` 0.99 and 0.98. The dispatch
+  of a generic function grows by one index computation (the image by
+  0.3%).
 
 ### Size and start-up
 

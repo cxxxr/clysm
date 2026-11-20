@@ -50,7 +50,11 @@
 (defun (setf file-stream-fill) (v s) (%set-fsbuf-fill (file-stream-buf s) v))
 ;;; String streams.  A :STRING-OUT stream (MAKE-STRING-OUTPUT-STREAM) owns a
 ;;; simple string BUFFER with INDEX characters in it; its column is computed
-;;; when asked for: COLUMN is the column at buffer position END.  A :STRING-FP
+;;; when asked for: COLUMN is the column at buffer position END.  Past
+;;; +STRING-OUT-CHUNK+ characters, a full buffer is not copied into a larger
+;;; one: it is kept in STREAMS, a list of (fill . string) of the earlier
+;;; characters, newest first, whose number is FD (NIL for none), and a new
+;;; buffer takes the characters that follow.  A :STRING-FP
 ;;; stream writes to a user's string with a fill pointer (WITH-OUTPUT-TO-STRING
 ;;; with a string, FORMAT to a string).  A :STRING-IN stream reads BUFFER from
 ;;; INDEX to END.
@@ -238,17 +242,52 @@ without the accessor's check of the type)."
   "An output stream that appends to STRING, which has a fill pointer."
   (%make-sstream :string-fp string 0 0 :output))
 
+;; (16384 characters are 64 KB, below the size of the engine's large objects,
+;; which are collected with the old generation)
+(defconstant +string-out-chunk+ 16384)
+
 (defun %string-out-grow (s need)
-  "Make room for NEED more characters in the :string-out stream S; returns the buffer."
+  "Make room for NEED more characters in the :string-out stream S; returns the
+buffer, whose fill (the stream's INDEX) may have changed: a caller reads it
+after the call."
   (let* ((buf (stream-buffer s)) (fill (stream-index s)) (cap (%string-length buf)))
     (declare (fixnum fill cap need))
-    (if (<= (+ fill need) cap)
-        buf
-        ;; four times the size while the buffer is small: fewer copies
-        (let ((new (%make-string (max (+ fill need) (if (< cap 65536) (* 4 cap) (* 2 cap))) #\Space)))
-          (%string-copy new 0 buf 0 fill)
-          (setf (stream-buffer s) new)
-          new))))
+    (cond ((<= (+ fill need) cap) buf)
+          ((and (>= cap +string-out-chunk+) (<= need +string-out-chunk+))
+           ;; a large buffer: kept as it is, and the characters that follow
+           ;; go to a new one, without a copy (the column is brought up to
+           ;; date at the boundary)
+           (%string-out-column s)
+           (setf (stream-streams s) (cons (cons fill buf) (stream-streams s))
+                 (stream-fd s) (+ (or (stream-fd s) 0) fill))
+           (let ((new (%make-string +string-out-chunk+ #\Space)))
+             (setf (stream-buffer s) new (stream-index s) 0 (stream-end s) 0)
+             new))
+          (t
+           ;; four times the size while the buffer is small: fewer copies
+           (let ((new (%make-string (max (+ fill need) (min +string-out-chunk+ (* 4 cap))) #\Space)))
+             (%string-copy new 0 buf 0 fill)
+             (setf (stream-buffer s) new)
+             new)))))
+
+(defun %string-out-length (s)
+  "The number of characters in the :string-out stream S."
+  (+ (or (stream-fd s) 0) (stream-index s)))
+
+(defun %string-out-flatten (s)
+  "Put the characters of the chunks of the :string-out stream S back into one buffer."
+  (let ((chunks (stream-streams s)))
+    (when chunks
+      (let* ((before (stream-fd s)) (fill (stream-index s)) (total (+ before fill))
+             (new (%make-string (max total 1) #\Space)))
+        (let ((pos before))
+          (dolist (c chunks)
+            (setq pos (- pos (car c)))
+            (%string-copy new pos (cdr c) 0 (car c))))
+        (%string-copy new before (stream-buffer s) 0 fill)
+        (setf (stream-buffer s) new (stream-index s) total
+              (stream-end s) (+ before (stream-end s))
+              (stream-streams s) nil (stream-fd s) nil)))))
 
 (defun %string-out-column (s)
   "The column of the :string-out stream S, brought up to date."
@@ -265,6 +304,7 @@ without the accessor's check of the type)."
 
 (defun %string-out-reset (s fill)
   "Set the length of the contents of the :string-out stream S."
+  (%string-out-flatten s)
   (let ((buf (stream-buffer s)))
     (setf (stream-index s) fill (stream-end s) fill)
     (setf (stream-column s)
@@ -273,18 +313,25 @@ without the accessor's check of the type)."
 
 (defun %string-out-contents (s)
   "A fresh string of the contents of the :string-out stream S, which is emptied."
-  (let* ((n (stream-index s)) (r (%make-string n #\Space)))
-    (%string-copy r 0 (stream-buffer s) 0 n)
+  (let* ((n (stream-index s)) (before (or (stream-fd s) 0)) (r (%make-string (+ before n) #\Space)))
+    (declare (fixnum n before))
+    (when (stream-streams s)
+      (let ((pos before))
+        (dolist (c (stream-streams s))
+          (setq pos (- pos (car c)))
+          (%string-copy r pos (cdr c) 0 (car c))))
+      (setf (stream-streams s) nil (stream-fd s) nil))
+    (%string-copy r before (stream-buffer s) 0 n)
     (setf (stream-index s) 0 (stream-end s) 0 (stream-column s) 0)
     r))
 
 (defun get-output-stream-string (s)
-  (when (and (%string-out-p s) (not (eql (%instance-ref s +stream-index-slot+) 0)))
+  (when (and (%string-out-p s) (or (not (eql (%instance-ref s +stream-index-slot+) 0)) (stream-fd s)))
     (return-from get-output-stream-string (%string-out-contents s)))
   (unless (%streamp s) (%type-error s 'string-stream))
   (case (stream-kind s)
     (:string-out
-     (if (and (null (stream-elt-type s)) (eql (stream-index s) 0))
+     (if (and (null (stream-elt-type s)) (eql (%string-out-length s) 0))
          (make-array 0 :element-type nil)   ; a string of element type NIL
          (%string-out-contents s)))
     (:string-fp
@@ -516,7 +563,8 @@ character file stream S, encoded in UTF-8, at once."
   ;; the column of a :string-out stream is computed on demand
   (when (%string-out-p s)
     (let ((buf (%instance-ref s +stream-buffer-slot+)) (i (%instance-ref s +stream-index-slot+)))
-      (when (%fx>= i (%string-length buf)) (setq buf (%string-out-grow s 1)))
+      (when (%fx>= i (%string-length buf))
+        (setq buf (%string-out-grow s 1) i (%instance-ref s +stream-index-slot+)))
       (%set-schar buf i c)
       (%set-instance-ref s +stream-index-slot+ (%fx+ i 1))
       (return-from %stream-write-char c)))
@@ -596,7 +644,7 @@ character file stream S, encoded in UTF-8, at once."
   "Write the character C N times."
   (when (> n 0)
     (if (eq (stream-kind stream) :string-out)
-        (let* ((fill (stream-index stream)) (buf (%string-out-grow stream n)))
+        (let* ((buf (%string-out-grow stream n)) (fill (stream-index stream)))
           (declare (fixnum fill n))
           (do ((i fill (+ i 1)) (e (+ fill n))) ((>= i e) (setf (stream-index stream) e))
             (declare (fixnum i e))
@@ -619,7 +667,8 @@ character file stream S, encoded in UTF-8, at once."
   (declare (fixnum start end))
   (let* ((n (%fx- end start)) (fill (%instance-ref s +stream-index-slot+))
          (buf (%instance-ref s +stream-buffer-slot+)))
-    (when (%fx> (%fx+ fill n) (%string-length buf)) (setq buf (%string-out-grow s n)))
+    (when (%fx> (%fx+ fill n) (%string-length buf))
+      (setq buf (%string-out-grow s n) fill (%instance-ref s +stream-index-slot+)))
     (%string-copy buf fill string start n)
     (%set-instance-ref s +stream-index-slot+ (%fx+ fill n))
     string))
@@ -779,6 +828,7 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
     ;; a :string-out stream is at the start of a line when its last
     ;; character is a newline
     (when (%string-out-p s)
+      (when (and (eql (%instance-ref s +stream-index-slot+) 0) (stream-fd s)) (%string-out-flatten s))
       (let ((i (%instance-ref s +stream-index-slot+)))
         (when (%fx> i 0)
           (return-from fresh-line
@@ -1597,8 +1647,8 @@ domain socket PATH."
                         (when (and (stream-open s) (%simple-string-p (stream-buffer s)))
                           (setf (stream-fast s) :string))
                         (if (<= p (stream-end s)) (progn (setf (stream-index s) p) t) nil)))
-          (:string-out (let ((p (case pos (:start 0) (:end (stream-index s)) (t pos))))
-                         (if (<= p (stream-index s)) (progn (%string-out-reset s p) t) nil)))
+          (:string-out (let ((p (case pos (:start 0) (:end (%string-out-length s)) (t pos))))
+                         (if (<= p (%string-out-length s)) (progn (%string-out-reset s p) t) nil)))
           (:string-fp (let* ((buf (stream-buffer s))
                              (p (case pos (:start 0) (:end (fill-pointer buf)) (t pos))))
                         (if (<= p (fill-pointer buf)) (progn (setf (fill-pointer buf) p) t) nil)))
@@ -1611,7 +1661,7 @@ domain socket PATH."
                      (if (stream-unread s) (max 0 (- p 1)) p)
                      (floor p n))))
         (:string-in (- (stream-index s) (if (stream-unread s) 1 0)))
-        (:string-out (stream-index s))
+        (:string-out (%string-out-length s))
         (:string-fp (fill-pointer (stream-buffer s)))
         (:synonym (file-position (%synonym-target s)))
         (:broadcast (let ((l (last (stream-streams s)))) (if l (file-position (car l)) 0)))
@@ -1667,7 +1717,11 @@ domain socket PATH."
                ,@decls
                ,@forms))
           `(let ((,et ,element-type))
-             (let ((,var (make-string-output-stream :element-type ,et)))
+             (declare (ignorable ,et))
+             ;; (the default element type: no keyword argument to parse)
+             (let ((,var ,(if (equal element-type ''character)
+                              '(%make-string-out)
+                              `(make-string-output-stream :element-type ,et))))
                ,@decls
                (progn ,@forms)
                (get-output-stream-string ,var)))))))
