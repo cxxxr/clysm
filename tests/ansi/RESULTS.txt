@@ -8,7 +8,7 @@ cons                     total  1882  pass  1882  fail     0  crash    0
 arrays                   total  1356  pass  1356  fail     0  crash    0 
 hash-tables              total   167  pass   167  fail     0  crash    0 
 packages                 total   500  pass   500  fail     0  crash    0 
-numbers                  total  1444  pass  1444  fail     0  crash    0 
+numbers                  total  1436  pass  1436  fail     0  crash    0 
 sequences                total  3287  pass  3287  fail     0  crash    0 
 structures               total  1394  pass  1394  fail     0  crash    0 
 types-and-classes        total   627  pass   626  fail     1  crash    0 
@@ -22,4 +22,4 @@ reader                   total   673  pass   673  fail     0  crash    0
 system-construction      total    77  pass    77  fail     0  crash    0 
 environment              total   210  pass   210  fail     0  crash    0 
 misc                     total   740  pass   740  fail     0  crash    0 
-ALL                      total 21940  pass 21939  fail     1  crash    0  (100.0%)
+ALL                      total 21932  pass 21931  fail     1  crash    0  (100.0%)
