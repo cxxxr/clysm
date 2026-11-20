@@ -1,0 +1,46 @@
+;;; Call sites of readers, writers and generic functions of one argument: the
+;;; entries compared inline, and what is out of line (arguments that are not
+;;; instances, unbound slots, methods added after the sites were filled,
+;;; redefined classes, change-class).
+(defclass a1 () ((x :initarg :x :accessor ax) (y :accessor ay)))
+(defclass a2 (a1) ((z :initform 3 :accessor az)))
+(defun get-x (o) (ax o))
+(defun get-y (o) (ay o))
+(defun put-x (v o) (setf (ax o) v))
+(defgeneric g1 (o))
+(defmethod g1 ((o integer)) (list :int o))
+(defmethod g1 ((o symbol)) (list :sym o))
+(defmethod g1 ((o a1)) (list :a1 (ax o)))
+(defun call-g1 (o) (g1 o))
+(defun check (name got want)
+  (format t "~A ~A~%" (if (equal got want) "ok  " "FAIL") name)
+  (unless (equal got want) (format t "   got ~S want ~S~%" got want)))
+(let ((p (make-instance 'a1 :x 1)) (q (make-instance 'a2 :x 2)))
+  (check "read" (list (get-x p) (get-x q) (get-x p)) '(1 2 1))
+  (check "unbound" (handler-case (get-y p) (unbound-slot () :unbound)) :unbound)
+  (setf (ay p) 9)
+  (check "bound after" (get-y p) 9)
+  (check "no method" (handler-case (get-x 42) (error () :err)) :err)
+  (check "no method nil" (handler-case (get-x nil) (error () :err)) :err)
+  (put-x 5 p) (put-x 6 q)
+  (check "write" (list (get-x p) (get-x q)) '(5 6))
+  (check "gf builtins" (list (call-g1 1) (call-g1 'a) (call-g1 p) (call-g1 2) (call-g1 q))
+         '((:int 1) (:sym a) (:a1 5) (:int 2) (:a1 6)))
+  ;; an :around method on the reader after the sites were cached
+  (defmethod ax :around ((o a2)) (* 10 (call-next-method)))
+  (check "around" (list (get-x p) (get-x q)) '(5 60))
+  (defmethod (setf ax) :before (v (o a2)) (setf (az o) v))
+  (put-x 7 q)
+  (check "setf before" (list (get-x q) (az q)) '(70 7))
+  ;; many classes at one site
+  (let ((objs (loop for i below 8 collect (make-instance (if (evenp i) 'a1 'a2) :x i))))
+    (check "poly" (mapcar #'get-x objs) '(0 10 2 30 4 50 6 70)))
+  ;; redefinition: the slot moves
+  (defclass a1 () ((w :initform 0) (x :initarg :x :accessor ax) (y :accessor ay)))
+  (let ((r (make-instance 'a1 :x 11)))
+    (check "redefined" (list (get-x r) (get-x p)) '(11 5)))
+  ;; change-class
+  (let ((s (make-instance 'a1 :x 4)))
+    (get-x s)
+    (change-class s 'a2)
+    (check "change-class" (list (get-x s) (az s)) '(40 3))))

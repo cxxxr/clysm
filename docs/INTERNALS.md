@@ -2039,7 +2039,21 @@ What makes the code fast:
   evaluated, which left the call sites of `clysm script` without caches): the class of an
   instance is compared with four entries and the slot read at the cached
   location, without an epoch read at each call (`%bump-clos-epoch` empties
-  the caches of the sites that have been used, `*gf-sites*`); readers and
+  the caches of the sites that have been used, `*gf-sites*`). A site
+  compares the class with the four entries and then has one access (or
+  call) for the entry found; an argument that is not an instance, an
+  unbound slot and a miss go to one function out of line
+  (`%gf-site-other1`/`2`), a site that is not cached calls the function
+  as before. A site is about 55 Wasm instructions instead of 140: a
+  module of two functions with six reader and writer calls 12.6 KB instead
+  of 20.2, Lem's fasls 17.2 MB instead of 19.5 (its buffer code 2.17
+  instead of 2.68 MB), all the fasls of the libraries the comparators load
+  53.1 instead of 57.3 MB; the time is the same (`tools/bench-lem.sh`,
+  `bench/apps.lisp` and `bench/clos.lisp` in the three modes within the
+  noise). Comparing only the first entry inline (the rest out of line)
+  made the sites smaller still (10.6 KB) but polymorphic sites slower
+  (`c-accessors` 2.3 times its time, `bench/clos.lisp` 1.2), and Lem's
+  sites of `point` readers saw a `cursor` (a subclass) first; readers and
   writers at about SBCL's time (`r-*` in scratch tests, fasl 0.7 of the
   earlier time); `slot-value` with a constant name and `make-instance` with a
   constant class use caches at the call site (with up to eight initargs
@@ -2373,7 +2387,10 @@ line 86 against 126, a search 28 against 53, 150 pages down 47 against
 1.4-2.1, local-time 2.0, cl-ppcre's tokens 2.7, esrap 2.8). In the editor, the slowest key typed in Lisp mode now takes
 60-72 ms (184-233 at first). What remains is spread: the call sites of the
 readers of Lem's classes `line` and `point` (`line-length`,
-`%move-to-position`, `point-change-line`, `%point<`), `char-width`, the
+`%move-to-position`, `point-change-line`, `%point<`; making their sites
+smaller, 55 Wasm instructions instead of 140, did not change the time:
+what is left there is the calls of these small functions and `length` of
+an undeclared string), `char-width`, the
 closures that `character-offset` passes to the function it inlines,
 untyped `=` and `<` of fixnums. (On 2 CPUs the autodoc parses took 1270 ms in the editor, SBCL's still 234:
 V8 needs CPUs besides the main thread's for its compilers and its GC.) The time is
