@@ -667,7 +667,30 @@ which DECLARED-TY knows something)."
 (defstruct texit (env :bottom) (ty *ty-bottom*) depth (tags nil))
 
 (defun node-ty (node)
-  (or (gethash node *node-types*) *ty-top*))
+  (let ((ty (or (gethash node *node-types*) *ty-top*)))
+    (if (and (consp node) (member (car node) '(:if :let :block :progn :the :prim))
+             (assumed-guards-active-p))
+        (assumed-node-ty node ty)
+        ty)))
+
+(defun assumed-node-ty (node ty)
+  "In code compiled with guards of copies taken as true (a loop's version,
+codegen.lisp): the type of the copy for an IF of such a guard, and for the
+forms ending in one."
+  (let ((refined (case (car node)
+                   (:if (when (assumed-guard-p (second node)) (node-ty (third node))))
+                   ((:let :block :the) (let ((tail (third node)))
+                                         (when (and (consp tail) (member (car tail) '(:if :let :block :progn :the)))
+                                           (node-ty tail))))
+                   ;; (arithmetic on doubles that the copies gave: a double)
+                   (:prim (when (and (not (ty-double-p ty)) (spec-op-node-p node)
+                                     (member (prim-name (second node)) '(+ - * /))
+                                     (every (lambda (a) (ty-double-p (node-ty a))) (cddr node)))
+                            (mkty +k-double+)))
+                   (:progn (let ((tail (car (last node))))
+                             (when (and (consp tail) (member (car tail) '(:if :let :block :progn :the)))
+                               (node-ty tail)))))))
+    (if refined (ty-intersect ty refined) ty)))
 
 (defun note-ty (node ty)
   (let ((old (gethash node *node-types*)))

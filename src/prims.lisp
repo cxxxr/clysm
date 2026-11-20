@@ -359,7 +359,10 @@ has-a-double-operand) of the tree NODE (an unboxed double variable is both)."
   (let ((ops 0) (u nil) (d nil))
     (labels ((walk (n)
                (if (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n))
-                   (progn (incf ops) (mapc #'walk (cddr n)))
+                   (progn (incf ops)
+                          ;; (a square root of doubles may be complex: tested too)
+                          (when (eq (prim-name (second n)) 'sqrt) (setq u t))
+                          (mapc #'walk (cddr n)))
                    (case (spec-leaf-class n)
                      ;; (a value that is a double on one of its paths: also evidence)
                      (:u (setq u t) (when (dual-f64-node-p n) (setq d t)))
@@ -813,8 +816,15 @@ helper signals the type error)."
       (:struct.new :code)
       (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; the function of a symbol is (EQ) a given function
+(defun symbol-ref-code (code)
+  "CODE leaving a symbol, cast to one unless it reads the global of a
+symbol (which has the type)."
+  (if (and (= (length code) 1) (consp (car code)) (eq (caar code) :global.get)
+           (consp (second (car code))) (eq (car (second (car code))) :sym))
+      code
+      `(,@code (:ref.cast :symbol))))
 (defprim clysm-sys::%function-cell-eq (sym f) :test
-  `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
+  `(,@(symbol-ref-code sym) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
 ;; the function of a symbol is the one of the definition that a fasl
 ;; recorded with the mark MARK (a guarded copy of its body, LIVE-INLINE-CALL):
 ;; it is compared with a global of the module, one for each function and
@@ -828,7 +838,7 @@ helper signals the type error)."
           (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
           (setf (gethash key *fasl-guard-globals*) g)))))
 (defprim clysm-sys::%fasl-inline-guard (sym mark) :test
-  `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)
+  `(,@(symbol-ref-code sym) (:struct.get :symbol ,+sym-function+)
     (:global.get ,(fasl-guard-global sym mark)) :ref.eq))
 (defprim clysm-sys::%fasl-inline-guard-set (sym mark) :value
   (let ((g (fasl-guard-global sym mark)))

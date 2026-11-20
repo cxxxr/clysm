@@ -503,6 +503,9 @@ others are consed onto the list for its rest list."
 
 (defun cg-test (node)
   "Instructions leaving an i32 (0 = false)."
+  (when (assumed-guard-p node) (return-from cg-test '((:i32.const 1))))
+  (let ((h (hoisted-guard-local node)))
+    (when h (return-from cg-test `((:local.get ,h)))))
   (let ((typed (and (member (car node) '(:prim :call)) (typed-test-code node))))
     (when typed (return-from cg-test typed)))
   ;; (not x) / (null x): the test of X, negated (no T/NIL in between)
@@ -539,11 +542,13 @@ others are consed onto the list for its rest list."
 
 (defun cg-if (node mv tail)
   (destructuring-bind (c a b) (cdr node)
+    ;; (a guard taken as true in a loop's version: the copy only)
+    (when (assumed-guard-p c) (return-from cg-if (cg a mv tail)))
     `(,@(cg-test c)
       ;; the guard of a copied function body is expected to hold
       ,@(when (and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard)))
           '((:hint 1)))
-      (:if nil :eqref ,(cg a mv tail) ,(cg b mv tail)))))
+      (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c))))))
 
 (defun cg-progn (nodes mv tail)
   (if (null nodes)
@@ -1578,7 +1583,153 @@ handler is HANDLER (a thunk run in the context's dynamic environment)."
                (mapc #'walk forms)))
     modes))
 
+;;; The guards of the copies of functions (LIVE-INLINE-CALL) in a loop that
+;;; calls nothing else are tested once before the loop, into locals: nothing
+;;; in the loop can redefine the function, except the call that a failed
+;;; guard makes and the interrupt check (POLL-CODE), after which they are
+;;; tested again.  (Primitives may signal errors, whose handlers run user
+;;; code, but none of their errors can be continued into the loop.)
+(defvar *hoisted-guards* nil "((guard-node . key) . i32 local) of the enclosing loops")
+(defvar *hoisted-guards-fs* nil "the function whose locals *HOISTED-GUARDS* are")
+(defvar *assumed-guards* nil "keys of the guards taken as true in the code being compiled")
+(defvar *assumed-guards-fs* nil)
+
+(defun current-hoisted-guards ()
+  (and (eq *hoisted-guards-fs* *fs*) *hoisted-guards*))
+
+(defun guard-node-p (c)
+  (and (consp c) (eq (car c) :prim)
+       (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard))
+       (every (lambda (a) (eq (car a) :const)) (cddr c))))
+
+(defun guard-key (c) (cons (prim-name (second c)) (mapcar #'second (cddr c))))
+
+(defun hoisted-guard-local (c)
+  (and (current-hoisted-guards) (guard-node-p c)
+       (cdr (assoc (guard-key c) *hoisted-guards* :key #'cdr :test #'equal))))
+
+(defun hoisted-guards-test-code ()
+  "Code testing again the guards hoisted out of the enclosing loops."
+  (let ((guards (current-hoisted-guards)))
+    (let ((*hoisted-guards* nil) (*assumed-guards* nil))
+      (loop for ((node . nil) . loc) in guards
+            append `(,@(cg-test node) (:local.set ,loc))))))
+
+(defun guard-else-epilogue (c)
+  "After the call that a failed guard made: the hoisted guards tested again."
+  (when (hoisted-guard-local c) (hoisted-guards-test-code)))
+
+(defparameter *guard-loop-safe-calls*
+  '(aref svref char schar row-major-aref length elt car cdr first rest nth nthcdr cons list vector
+    sqrt expt exp log sin cos tan atan abs floor ceiling truncate round ffloor fceiling ftruncate fround
+    mod rem min max float + - * / = < > <= >= /= 1+ 1- zerop plusp minusp evenp oddp
+    logand logior logxor lognot ash ldb isqrt gcd lcm signum numberp integerp floatp realp rationalp
+    complex realpart imagpart conjugate phase char-code code-char gethash
+    clysm-sys::%aref1 clysm-sys::%aset1 clysm-sys::%svref clysm-sys::%set-svref clysm-sys::%svset
+    clysm-sys::%row-major-aset clysm-sys::%aref2 clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset
+    clysm-sys::%struct-ref clysm-sys::%struct-set clysm-sys::%struct-tref clysm-sys::%struct-tset
+    clysm-sys::%struct-iref clysm-sys::%struct-iset clysm-sys::%lref clysm-sys::%lset))
+
+(defun loop-guards (segments)
+  "The guards (nodes) of copies in the forms SEGMENTS of a loop when it calls
+nothing but the functions guarded (when the guard fails) and primitives; else NIL."
+  (let ((guards nil))
+    (labels ((walk (n)
+               (when (consp n)
+                 (case (car n)
+                   ((:funcall :mvcall :apply :lcall :catch :throw :unwind-protect :progv :defun
+                     :flet :labels :symtab :ltv :lambda)
+                    (return-from loop-guards nil))
+                   (:call (unless (member (second n) *guard-loop-safe-calls*)
+                            (return-from loop-guards nil))
+                          (mapc #'walk (cddr n)))
+                   (:prim (when (member (prim-name (second n))
+                                        '(clysm-sys::%fasl-inline-guard-set clysm-sys::%image-resume))
+                            (return-from loop-guards nil))
+                          (mapc #'walk (cddr n)))
+                   (:if (if (guard-node-p (second n))
+                            (progn (pushnew (cons (second n) (guard-key (second n))) guards
+                                            :key #'cdr :test #'equal)
+                                   ;; (the else branch is the call of the function)
+                                   (walk (third n)))
+                            (mapc #'walk (cdr n))))
+                   (t (map-subnodes #'walk n))))))
+      (dolist (seg segments) (mapc #'walk (cdr seg)))
+      guards)))
+
+;;; An innermost loop whose guards all hold when it starts runs in a version
+;;; compiled with the guards taken as true (no call at all: V8 keeps its
+;;; values in registers); an interrupt check whose interrupt redefined a
+;;; function goes on in the other version, compiled with the guards, from
+;;; the head of the same segment (both versions share their variables, and a
+;;; segment's head is where an iteration starts).
+(defun assumed-guards-active-p () (and *assumed-guards* (eq *assumed-guards-fs* *fs*)))
+
+(defun assumed-guard-p (c)
+  (and *assumed-guards* (eq *assumed-guards-fs* *fs*) (guard-node-p c)
+       (member (guard-key c) *assumed-guards* :test #'equal)))
+
+(defun nested-loop-p (segments)
+  (labels ((walk (n)
+             (when (consp n)
+               (when (and (eq (car n) :tagbody)
+                          (let ((m (tagbody-go-modes (second n) (third n))))
+                            (or (find :self m) (find :far m))))
+                 (return-from nested-loop-p t))
+               (map-subnodes #'walk n))))
+    (dolist (seg segments) (mapc #'walk (cdr seg)))
+    nil))
+
 (defun cg-tagbody (node mv)
+  (let* ((segments (third node))
+         (outer (current-hoisted-guards))
+         (modes (and *live-mode* (consp segments) (tagbody-go-modes (second node) segments)))
+         (all (and modes (or (find :self modes) (find :far modes)) (loop-guards segments)))
+         (guards (remove-if (lambda (g) (assoc (cdr g) outer :key #'cdr :test #'equal)) all)))
+    (if (null all)
+        (cg-tagbody-1 node mv)
+        (let* ((new (loop for g in guards collect (cons g (new-local :i32))))
+               (init (let ((*hoisted-guards* nil) (*assumed-guards* nil))
+                       (loop for ((gn . nil) . loc) in new append `(,@(cg-test gn) (:local.set ,loc))))))
+          (let ((*hoisted-guards* (append new outer)) (*hoisted-guards-fs* *fs*))
+            (if (or (tb-nonlocal (second node)) (nested-loop-p segments))
+                `(,@init ,@(cg-tagbody-1 node mv))
+                (let* ((keys (mapcar #'cdr all))
+                       (flags (let ((locs (loop for k in keys
+                                                collect (cdr (assoc k *hoisted-guards* :key #'cdr :test #'equal)))))
+                                `((:local.get ,(car locs))
+                                  ,@(loop for l in (cdr locs) append `((:local.get ,l) :i32.and)))))
+                       (pc (new-local :i32)) (slow-entry (gensym "SLOWLOOP")) (done (gensym "LOOPV"))
+                       (fast-poll (lambda (set-pc)
+                                    (subst `((:call :poll-slow) ,@(hoisted-guards-test-code)
+                                             ,@flags :i32.eqz
+                                             (:if nil nil (,@set-pc (:br ,slow-entry))))
+                                           '((:call :poll-slow)) (poll-code) :test #'equal)))
+                       (fast (let ((*assumed-guards* keys) (*assumed-guards-fs* *fs*))
+                               (cg-tagbody-1 node nil :pc pc :bare t
+                                             :seg-poll (lambda (k) (funcall fast-poll `((:i32.const ,k) (:local.set ,pc))))
+                                             :dispatch-poll (lambda () (funcall fast-poll nil)))))
+                       (slow (cg-tagbody-1 node nil :pc pc :bare t :force-dispatch t :no-pc-init t)))
+                  `(,@init
+                    (:block ,done nil
+                      (:block ,slow-entry nil
+                        ,@flags
+                        (:if nil nil (,@fast (:br ,done)) ((:i32.const 0) (:local.set ,pc))))
+                      ,@slow)
+                    ,@(nil-code)
+                    ,@(when mv (mv-one))))))))))
+
+(defun poll-code-p () (and (poll-code) t))
+
+(defun loop-poll-code ()
+  (let ((p (poll-code)))
+    (if (and p (current-hoisted-guards))
+        ;; (an interrupt may have redefined a function)
+        (let ((again (hoisted-guards-test-code)))
+          (subst (cons '(:call :poll-slow) again) '((:call :poll-slow)) p :test #'equal))
+        p)))
+
+(defun cg-tagbody-1 (node mv &key pc force-dispatch no-pc-init bare seg-poll dispatch-poll)
   "Segment K starts after the end of block K, which encloses the segments
 before it: a GO forward is a BR to that block.  A segment that is the
 target of GOs from within itself is a LOOP.  Only GOs back from a later
@@ -1589,9 +1740,9 @@ loop with a BR_TABLE."
            (labels (loop for i below n collect (gensym (format nil "SEG~D-" i))))
            (dispatch (gensym "DISPATCH"))
            (end (gensym "TBEND"))
-           (pc (new-local :i32))
+           (pc (or pc (new-local :i32)))
            (modes (tagbody-go-modes tb segments))
-           (need-dispatch (or (tb-nonlocal tb) (find :far modes)))
+           (need-dispatch (or force-dispatch (tb-nonlocal tb) (find :far modes)))
            (loop-labels (loop for i below n collect (and (eq (aref modes i) :self) (gensym "TAGLOOP")))))
       (setf (tb-labels tb) labels (tb-dispatch tb) dispatch (tb-pc tb) pc
             (tb-modes tb) modes (tb-loop-labels tb) loop-labels
@@ -1605,7 +1756,7 @@ loop with a BR_TABLE."
                                 collect (progn
                                           (setf (tb-cur tb) k)
                                           (let ((code (loop for f in forms append (cg-effect f))))
-                                            (if ll `((:loop ,ll nil ,@(poll-code) ,@code)) code))))))
+                                            (if ll `((:loop ,ll nil ,@(if seg-poll (funcall seg-poll k) (loop-poll-code)) ,@code)) code))))))
              ;; build nested blocks: innermost has br_table
              (inner (when need-dispatch `((:local.get ,pc) (:br_table ,@labels ,(car (last labels))))))
              (blocks (let ((acc inner))
@@ -1631,14 +1782,16 @@ loop with a BR_TABLE."
                                       (:br ,dispatch))
                                      ((:local.get ,etmp) :throw_ref))))
                             `(,@blocks (:br ,end)))))
-        `(,@(when need-dispatch `((:i32.const 0) (:local.set ,pc)))
+        `(,@(when (and need-dispatch (not no-pc-init)) `((:i32.const 0) (:local.set ,pc)))
           ,@(save-bsp-code (tb-saved-bsp tb))
           ,@(when (tb-nonlocal tb)
               (var-set-code (tb-tag-var tb) `(,@(nil-code) (:struct.new :cell))))
           (:block ,end nil
-            ,@(if need-dispatch `((:loop ,dispatch nil ,@(poll-code) ,@loop-body)) loop-body))
-          ,@(nil-code)
-          ,@(when mv (mv-one)))))))
+            ,@(if need-dispatch
+                  `((:loop ,dispatch nil ,@(if dispatch-poll (funcall dispatch-poll) (loop-poll-code)) ,@loop-body))
+                  loop-body))
+          ,@(unless bare (nil-code))
+          ,@(when (and mv (not bare)) (mv-one)))))))
 
 (defun local-go (tb index)
   (let ((frame (innermost-uwpf-between *uwp-frames* (tb-uwp-frames tb))))

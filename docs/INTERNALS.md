@@ -598,16 +598,70 @@ of making the integer and calling `to-f64`, and `(/ a k)` of such an
 integer by a constant computed inline when K divides it, else the generic
 division, `exact-int-division-code`.)
 
-What remains: a guarded copy of a function of fixnums gives a fixnum or
-anything, so its value is boxed as an `i31` and the arithmetic around it is
-the generic arithmetic's inline fixnum path (the fixnum helpers 17 ms in
-the image, 8 as a whole program); a variable assigned the value of a copy
-(`(setq x (lcg x))`) has the copy's type joined with anything, so the copy's
-body sees an argument of unknown type (pairs of locals for integers within
-64 bits, as above for doubles, were tried: no change, as the body is then
-compiled for any argument). The guard, the pair of locals and the
-duplicated generic path still make the spectral norm's inner loop 1.6
-times the time of a copy declared `inline` (10 ms against 6).
+**Loops that call nothing but copies run in a version without guards**
+(`cg-tagbody`, `src/codegen.lisp`). A cold branch with a call in a loop
+costs V8 about half the speed of the loop even when it is never taken (a
+hand-written loop: 9-10 ms with the call in the guard's else branch, 6
+without), so the guards are not merely hoisted:
+
+* The guards of a loop that calls nothing but the copied functions (when a
+  guard fails) and primitives (`loop-guards`: no `funcall`, no local
+  function, no closure, no `catch`/`unwind-protect`, and only a list of
+  calls of `COMMON-LISP` accessors and arithmetic) are tested once before
+  the loop into locals (`*hoisted-guards*`). After the call of a failed
+  guard and after the interrupt check (`poll-code`: an interrupt, SWANK, or
+  another thread may redefine a function), they are tested again.
+* An innermost such loop is compiled twice: a version where the guards are
+  true (`*assumed-guards*`: the copy alone, no else branch, no call at all),
+  entered when they all hold, and the version with the guards. Both share
+  their variables; the interrupt check of the first, when an interrupt made
+  a guard fail, sets the segment number and goes on in the second (compiled
+  with the dispatch of `tagbody`) from the head of the same segment, where
+  an iteration starts. In the first version the type of a copied call is
+  the copy's (`assumed-node-ty`, `src/types.lisp`), also through the
+  `let`/`block` around it and arithmetic of such doubles, so `(* (eval-a i
+  j) (aref v j))` is f64 arithmetic; a `let` variable bound to a double
+  there and an accumulator that starts as a double are unboxed although
+  used once, and a tree with `sqrt` of doubles is speculative (a negative
+  operand is tested).
+* The guard reads the symbol's global without a cast (it has the type).
+
+`tests/cases/copies-in-loops.lisp` checks a redefinition before a loop; a
+redefinition from inside a loop (by `eval` in it) and by an interrupt in the
+middle of a loop (`sys::*interrupt-poll-function*`) were checked by hand to
+give the results of the build before.
+
+Measured (`clysm script`, best of three, same slot, a busy machine,
+before → after this round; whole program and `compile-file` + `load` in
+parentheses): spectral norm 82 → 58 ms (57, 55), declared 32 → 23 (18,
+18), double helpers 40 → 27 (16, 17), mandelbrot with a helper 24 → 18
+(18, 18), the loop at top level 20 → 14 (14, 14), matrix multiply over
+vectors of doubles 108 → 79 (78, 76); n-body unchanged; the spectral inner
+loop alone 10 → 7 ms against 6 for a copy declared `inline`.
+`MODE=script` geometric means, interleaved with the build before (both
+noisy): `bench/suite.lisp` 1.14 → 1.09, `bench/arith.lisp` 1.16 → 1.14,
+`bench/vectors.lisp` 1.03 → 1.06 (script time 1.01 of before),
+`bench/holdout.lisp` 1.07 → 1.07.
+
+What remains:
+
+* A guarded copy of a function of fixnums: its value is still boxed as an
+  `i31` where it is assigned to a variable, and a variable assigned the
+  value of a copy (`(setq x (lcg x))`) has the copy's type joined with
+  anything, so the copy's body sees an argument of unknown type: `a-lcg`
+  in the image 26 ms, 6 as a whole program; the fixnum helpers 5-6 against
+  3. The types of the loop's version come from the inference of the whole
+  function, in which the else branches exist; inferring the version again
+  with the guards true (as `compile-spec-clone` does for a function) would
+  type such variables, but the variables would then need representations of
+  their own in that version, converted where it hands over to the other.
+* A loop at top level runs once, in Liftoff: 14 ms against 7 with
+  `--no-liftoff` (as in a whole program, whose `main` also runs once).
+  Outlining the loop into chunks called repeatedly was measured by hand and
+  does not pay: a local function is inlined back (28-44 ms), and a global
+  function taking the loop's variables as parameters loses their types
+  (30-46 ms); outlining would need typed parameters (a version of the
+  outlined function for the types the variables have).
 
 **Small functions of a compiled file** (a `defun` at top level, no closed-over
 bindings, no loop, no macro outside `COMMON-LISP`, a body of at most 40
