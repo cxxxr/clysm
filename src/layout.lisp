@@ -244,6 +244,7 @@ when ET is not one of the specifiers recognized at compile time."
     (:eeei-e    (:func (:eqref :eqref :eqref :i32) (:eqref)))
     (:ll-l      (:func (:i64 :i64) (:i64)))
     (:eli-e     (:func (:eqref :i64 :i32) (:eqref)))
+    (:eeeee-e   (:func (:eqref :eqref :eqref :eqref :eqref) (:eqref)))
     ;; heap images: a function's index in the table of functions
     (:fr-i      (:func ((:ref :null :func)) (:i32)))
     (:v-l       (:func () (:i64)))))

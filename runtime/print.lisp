@@ -513,12 +513,44 @@ buffer of the :STRING-OUT stream S."
     (%set-instance-ref s +stream-index-slot+ (%fx+ fill len))
     n))
 
+(defun %fs-out-decimal (s n)
+  "Write the fixnum N, which is not MOST-NEGATIVE-FIXNUM, in decimal to S, an
+open character output file (its FAST-OUT slot is :FILE): its digits are
+stored as octets at once."
+  (declare (fixnum n))
+  (let* ((m (if (%fx< n 0) (%fx- 0 n) n))
+         (len (%decimal-length m))
+         (len (if (%fx< n 0) (%fx+ len 1) len))
+         (sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf))
+         (octets (%fsbuf-octets buf)))
+    (declare (fixnum m len pos))
+    (when (%fx> (%fx+ pos len) (%bytes-length octets))
+      (%fs-ensure s (%fx+ pos len))
+      (setq octets (%fsbuf-octets buf)))
+    (when (%fx< n 0) (%set-bytes-ref octets pos 45))
+    (let ((i (%fx+ pos len)))
+      (declare (fixnum i))
+      (loop
+        (let ((q (%fxtruncate m 10)))
+          (declare (fixnum q))
+          (setq i (%fx- i 1))
+          (%set-bytes-ref octets i (%fx+ 48 (%fx- m (%fx* q 10))))
+          (when (eql q 0) (return))
+          (setq m q))))
+    (%set-fsbuf-pos buf (%fx+ pos len))
+    (when (%fx> (%fx+ pos len) (%fsbuf-fill buf)) (%set-fsbuf-fill buf (%fx+ pos len)))
+    (%set-svref sl +fs-dirty-slot+ t)
+    (%set-svref sl +stream-column-slot+ (%fx+ (%svref sl +stream-column-slot+) len))
+    n))
+
 (defun %write-integer-digits (n base stream)
   "Write the integer N in BASE (with a minus sign when negative)."
   ;; a decimal fixnum into a string output stream: its digits are put in
   ;; the stream's buffer at once (PRINC, FORMAT's ~D)
-  (when (and (eql base 10) (fixnump n) (not (eql n most-negative-fixnum)) (%string-out-p stream))
-    (return-from %write-integer-digits (%string-out-decimal stream n)))
+  (when (and (eql base 10) (fixnump n) (not (eql n most-negative-fixnum)))
+    (cond ((%string-out-p stream) (return-from %write-integer-digits (%string-out-decimal stream n)))
+          ;; and into the octets of a character output file
+          ((%fast-out-file-p stream) (return-from %write-integer-digits (%fs-out-decimal stream n)))))
   (let* ((buf *%digit-buffer*) (i (%integer-digits n base buf)))
     (if i
         (progn
@@ -529,9 +561,11 @@ buffer of the :STRING-OUT stream S."
 (defun %stream-write-scratch (stream buf start end)
   "Write the characters START..END of a scratch buffer.  Streams that may
 run other code while they take the characters get a copy."
-  (case (%skind stream)
-    ((:string-out :string-fp :fd-out :file) (%stream-write-simple-string stream buf start end))
-    (t (%stream-write-simple-string stream (%simple-substring buf start end) 0 (- end start)))))
+  (cond ((%string-out-p stream) (%string-out-write stream buf start end))
+        ((%fast-out-file-p stream) (%fs-fast-write-string stream buf start end))
+        (t (case (%skind stream)
+             ((:string-out :string-fp :fd-out :file) (%stream-write-simple-string stream buf start end))
+             (t (%stream-write-simple-string stream (%simple-substring buf start end) 0 (- end start)))))))
 
 (defun %stream-write-simple-string-whole (stream string)
   (%stream-write-simple-string stream string 0 (%string-length string)))

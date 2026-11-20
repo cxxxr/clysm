@@ -2479,6 +2479,21 @@ What makes the code fast:
   random decimals and halfway cases (singles are rounded once, not through
   a double; SBCL's own reader is off by one unit in some singles and
   subnormals). A float beyond the largest is a reader error, as in SBCL.
+  `parse-integer` of a simple string is one Wasm helper call
+  (`%parse-integer-fast`: bounds, whitespace, sign, digits in an i64 in
+  any radix, both values); it gives the Lisp function the errors to signal,
+  other arguments and digits beyond 63 bits outside base 10 (`"42"` 16 →
+  8 ns, `"123456789"` 37 → 11, SBCL 6 and 10; `i-parse-ints` 2.1 → 1.1
+  times SBCL). Output to a character file (its `fast-out` slot is
+  `:file`): `write-char` at the call site and `terpri` call the octet
+  store at once, a decimal fixnum (`princ`, `prin1`, `~D`) is written as
+  octets straight into the file's buffer (`%fs-out-decimal`), and the
+  scratch buffer of other numbers goes to the fast string writer
+  (`write-char` 10 → 5 ns, `princ` of a fixnum 72 → 43, `~D~%` 66 → 26;
+  SBCL 3.7, 43, 33). `i-file-roundtrip`'s time is mostly the host's write
+  of the file when it is closed, which varies from 1 to 60 ms an iteration
+  on this machine for SBCL as for Clysm (the writes and reads themselves
+  take 0.1-0.4 ms on both).
 * **Library**: sequence functions with one implementation per family and
   direct loops over lists, simple vectors and strings; `member`, `assoc`
   and `rassoc` with EQL (the default, or `:test #'eql`) of an item that EQ
@@ -2604,7 +2619,11 @@ What makes the code fast:
   collected with the old generation) instead of copying into a buffer
   twice the size; `get-output-stream-string` copies the chunks once (700000
   characters written one by one: 5.0 → 3.2 ms, SBCL 2.3).
-  `with-output-to-string` makes its stream without parsing keywords;
+  `with-output-to-string` (of the default element type) uses the scratch
+  string stream of `format nil` and `princ-to-string`, whose buffer is
+  kept (the stream has dynamic extent; a body left by a non-local exit
+  does not give it back; a closed one is not reused): `(with-output-to-string
+  (o) (write-string "abc" o))` 49 → 27 ns, SBCL 39;
   `princ` and `~D` of a fixnum into a string output stream put the digits
   into its buffer, `~mincol,padcharD` calls a function of four arguments
   (not `%fmt-integer`'s nine, an argument vector each); `peek-char t` of a
