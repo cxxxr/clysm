@@ -1816,7 +1816,13 @@ What makes the code fast:
 
 * **Type inference** (`src/types.lisp`) per function, flow-sensitive, with
   integer ranges; loops are iterated to a fixed point and what the earlier
-  passes recorded outside a loop is undone. **Unboxed representations**
+  passes recorded outside a loop is undone. Declared types of variables
+  are trusted, except integer types, whose values are checked where the
+  variable is bound (`checked-value`); a declaration about a variable bound
+  outside the form that holds it (`(let (...) (declare (function next-fn))
+  ...)`, CLHS 3.3.4) applies to the references within that form, which are
+  converted as `(the type var)` — checked there for an integer type
+  (`free-type-decl-env` in `src/frontend.lisp`). **Unboxed representations**
   (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
   floats, complex numbers of floats (two locals), references to specialized
   vectors, two-dimensional arrays with their storage and dimensions in locals.
