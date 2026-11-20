@@ -739,7 +739,7 @@ host's identity hash, and that hash."
       ;; also intern symbols referenced by the symbol table itself
       (dolist (s syms)
         (add-global *m* (list :sym s) '(:ref :symbol) nil (symbol-global-init s)))
-      (dolist (g (reverse *const-globals*))
+      (dolist (g (inline-single-use-constants (reverse *const-globals*)))
         (destructuring-bind (name type init) g
           (add-global *m* name (if (eq type :eqref) '(:ref :eq) type) nil init)))
       (dolist (g (reverse *closure-globals*))
@@ -821,6 +821,42 @@ host's identity hash, and that hash."
     (report-undefined-functions)
     (when *shake* (shake-module *m*))
     (with-build-section (encode-module *m*))))
+
+(defun inline-single-use-constants (consts)
+  "CONSTS ((name type init), in dependency order) without those that only
+the initializer of one other constant refers to, whose initializers are put
+in that one's instead (the cells of a quoted list but its first are then
+not globals of their own).  Each global costs V8 the evaluation of its
+initializer when it compiles and instantiates the image: of the 80000 of the
+REPL image, 59000 were the conses of constant lists."
+  (let ((pinned (make-hash-table :test 'equal))
+        (uses (make-hash-table :test 'equal))
+        (names (make-hash-table :test 'equal)))
+    (dolist (c consts) (setf (gethash (first c) names) t))
+    (labels ((walk (x table)
+               (when (consp x)
+                 (if (and (eq (car x) :global.get) (consp (cdr x)) (gethash (second x) names))
+                     (incf (gethash (second x) table 0))
+                     (do ((l x (cdr l))) ((atom l)) (walk (car l) table))))))
+      ;; what refers to them otherwise: the code, the other globals
+      (loop for f across (wasm-module-funcs *m*) do (walk (wasm-func-body f) pinned))
+      (loop for g across (wasm-module-globals *m*) do (walk (fourth g) pinned))
+      (dolist (g *closure-globals*) (walk (third g) pinned))
+      (dolist (g *misc-globals*) (walk (fourth g) pinned))
+      (dolist (c consts) (walk (third c) uses)))
+    (let ((inlined (make-hash-table :test 'equal)) (out nil))
+      (labels ((subst-init (init)
+                 (loop for i in init
+                       for v = (and (consp i) (eq (car i) :global.get) (consp (cdr i))
+                                    (gethash (second i) inlined))
+                       if v append v else collect i)))
+        (dolist (c consts)
+          (destructuring-bind (name type init) c
+            (let ((init (subst-init init)))
+              (if (and (not (gethash name pinned)) (eql (gethash name uses) 1))
+                  (setf (gethash name inlined) init)
+                  (push (list name type init) out))))))
+      (nreverse out))))
 
 (defun with-build-section (bytes)
   "BYTES with a custom section clysm.build at the end that names the image by
