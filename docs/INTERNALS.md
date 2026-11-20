@@ -2316,11 +2316,37 @@ What makes the code fast:
     distribution of buckets unchanged on sets of keys (numbered names,
     English words, the names of every symbol). `k-memoize` (a key of two
     strings of 50 characters and two fixnums) 145 → 110 ms.
+  - `map` to a vector or a string of one or two sequences, `map-into` a
+    simple vector from one or two, and the quantifiers and `map` to `nil` or
+    a list over two sequences of any other kinds (a list and a vector, a
+    string) are a loop at the call site over *cursors*
+    (`%cursor-loop-expansion`: a list followed by its tail, a vector read
+    from its storage; one copy of the function's body for every mix of
+    kinds). Where no result has to be allocated first, lists are not
+    measured before the loop (`%lazy-count-form`: only the vectors bound the
+    count, a list ends the loop at its end). Other results of `map-into`
+    (a list, a vector with a fill pointer) go out of line. One thousand
+    elements, best of two runs, before → after (SBCL): `map 'vector` of two
+    simple vectors 14 → 8 ms (42), `map-into` of two 19 → 8 (36), `map
+    'list` of a list and a vector 20 → 14 (31), `some` of a list and a
+    vector 13 → 8 (19); `v-map-every` 2.16 → 1.76 times SBCL (the rest is
+    mostly making its data: `loop ... collect` of 10000 conses is 2 times
+    SBCL).
+  - A variable both captured and assigned has its cell in a local of type
+    `(ref null $cell)` (location `:cell`): a `let` or parameter that makes
+    the cell, and a closure that captures it, which casts the field of its
+    environment once on entry (`setup-free-vars`) instead of at every
+    reference. A generator counting in a closed-over variable: 249 → 196 ms
+    (SBCL 102).
   Not changed, measured: tier-up. A combinator probe of 10 repetitions
   (`p-rx-strings`: regular expressions compiled to closures at each match) is 3 times SBCL, 1.08 at 300 repetitions; with
-  `--no-liftoff` 2.2, with a lower tiering budget slower. Generators that
-  return `(values x t)` stay at about 2 times SBCL (a closure call that
-  writes a cell or vector slot and returns through the value buffer).
+  `--no-liftoff` 2.2, with a lower tiering budget slower. Generators stay
+  at about 2 times SBCL; returning `(values x t)` is not the cost (the same
+  generators returning a sentinel instead take as long). The machine code
+  of the counting closure (`--print-wasm-code`) is mostly the fixnum tests
+  of `<` and `1+` on the boxed values (an i31 is a fixnum or a character,
+  so the range is tested), the call and the store, whose write barrier is
+  skipped for an i31 at once.
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.

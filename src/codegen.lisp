@@ -358,7 +358,9 @@ them from the header again, in a loop), else NIL."
                     ((fdual-local lv) (fdual-materialize-code (cdr loc) (fdual-local lv)))
                     (t
                   `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv))))))
-      (:env (env-get-code (cdr loc))))))
+      (:env (env-get-code (cdr loc)))
+      ;; a captured and assigned variable's cell, in a local of its type
+      (:cell `((:local.get ,(cdr loc)))))))
 
 (defun env-get-code (i)
   (let ((type (fstate-env-type *fs*)))
@@ -367,14 +369,16 @@ them from the header again, in a loop), else NIL."
         `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,i) (:array.get :vector)))))
 
 (defun var-get-code (lv)
-  (if (boxed-p lv)
-      `(,@(var-raw-code lv) (:ref.cast :cell) (:struct.get :cell 0))
-      (var-raw-code lv)))
+  (cond ((not (boxed-p lv)) (var-raw-code lv))
+        ((eq (car (get-loc lv)) :cell) `((:local.get ,(cdr (get-loc lv))) (:struct.get :cell 0)))
+        (t `(,@(var-raw-code lv) (:ref.cast :cell) (:struct.get :cell 0)))))
 
 (defun var-set-code (lv value-code)
   "Store; leaves nothing on the stack."
   (let ((loc (get-loc lv)))
-    (cond ((boxed-p lv)
+    (cond ((and (boxed-p lv) (eq (car loc) :cell))
+           `((:local.get ,(cdr loc)) ,@value-code (:struct.set :cell 0)))
+          ((boxed-p lv)
            `(,@(var-raw-code lv) (:ref.cast :cell) ,@value-code (:struct.set :cell 0)))
           ((eq (car loc) :local) `(,@value-code ,@(unbox-rep-code (lvar-rep* lv) (lvar-type lv))
                                     ,@(rep-local-set-code lv (cdr loc))))
@@ -394,10 +398,12 @@ them from the header again, in a loop), else NIL."
       (set-loc lv (cons :local idx))
       (return-from bind-new-var-code `(,@value-code ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv))
                                        ,@(rep-local-set-code lv idx)))))
-  (let ((idx (new-local)))
-    (set-loc lv (cons :local idx))
-    (if (boxed-p lv)
-        `(,@value-code (:struct.new :cell) (:local.set ,idx))
+  (if (boxed-p lv)
+      (let ((idx (new-local '(:ref :null :cell))))
+        (set-loc lv (cons :cell idx))
+        `(,@value-code (:struct.new :cell) (:local.set ,idx)))
+      (let ((idx (new-local)))
+        (set-loc lv (cons :local idx))
         `(,@value-code (:local.set ,idx) ,@(struct-shadow-init-code lv idx)))))
 
 (defun mv-one () '((:i32.const 1) (:global.set :mv-count)))
@@ -2185,9 +2191,16 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
             (fstate-env-type *fs*) (and (<= n +clo-env-max+) type))
       (loop for fv in (lam-free-vars lam) for i from 0
             do (set-loc fv (cons :env i)))
-      (if (<= n +clo-env-max+)
-          `((:local.get 0) (:ref.cast! ,type) (:local.set ,env))
-          `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.set ,env))))))
+      `(,@(if (<= n +clo-env-max+)
+              `((:local.get 0) (:ref.cast! ,type) (:local.set ,env))
+              `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.set ,env)))
+        ;; the cells of captured and assigned variables: cast once, held in
+        ;; locals of their type (not cast at each reference)
+        ,@(loop for fv in (lam-free-vars lam) for i from 0
+                when (boxed-p fv)
+                  append (let ((idx (new-local '(:ref :null :cell))))
+                           (prog1 `(,@(env-get-code i) (:ref.cast :cell) (:local.set ,idx))
+                             (set-loc fv (cons :cell idx)))))))))
 
 (defun param-setup-code (lv local-idx)
   "LV was passed in LOCAL-IDX.  Returns (values code special-p); a special
@@ -2195,8 +2208,9 @@ parameter has no code here: FINISH-BODY binds it."
   (cond ((lvar-special lv)
          (values nil (cons (lvar-name lv) local-idx)))
         ((boxed-p lv)
-         (set-loc lv (cons :local local-idx))
-         (values `((:local.get ,local-idx) (:struct.new :cell) (:local.set ,local-idx)) nil))
+         (let ((idx (new-local '(:ref :null :cell))))
+           (set-loc lv (cons :cell idx))
+           (values `((:local.get ,local-idx) (:struct.new :cell) (:local.set ,idx)) nil)))
         ((lvar-rep lv)
          ;; known to be a fixnum / double (in a specialized clone): unboxed copy
          (let ((idx (new-rep-local (lvar-rep lv))))
