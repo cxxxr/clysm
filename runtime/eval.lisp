@@ -1036,11 +1036,32 @@ Returns the expansion, or NIL when FORM is an ordinary form."
         (return form))
       (when (and (member op %compile-time-definers) (not (%env-fun *cf-env* op)))
         (return form))
+      (when (eq op 'defconstant) (%cf-note-defconstant form))
       (when (or (member op %load-time-definers) (special-operator-p op))
         (return nil))
       (multiple-value-bind (new changed) (macroexpand-1 form *cf-env*)
         (unless changed (return nil))
         (setq form new)))))
+
+;;; CLHS DEFCONSTANT: the compiler must recognize the name as a constant
+;;; variable, and may evaluate the value form at compile time.  A value that
+;;; is a number, character, symbol or string and can be computed now defines
+;;; the constant now (as SBCL does), so that the rest of the file is compiled
+;;; with the value: (FIND C +WHITESPACE+ :TEST #'CHAR=) as comparisons inline,
+;;; arithmetic on the value.  Other values (lists, vectors, structures) are not:
+;;; a copy in the fasl would not be EQ to the value made when it is loaded.
+(defun %cf-note-defconstant (form)
+  (when (and (consp (cdr form)) (symbolp (second form)) (second form)
+             (not (keywordp (second form))) (consp (cddr form))
+             (not (boundp (second form))))
+    (let ((sym (second form)))
+      (multiple-value-bind (v ok)
+          (handler-bind ((warning #'muffle-warning))
+            (ignore-errors (values (%cf-eval (%cf-wrap (third form))) t)))
+        ;; (OK is the condition when the evaluation failed)
+        (when (and (eq ok t) (not (boundp sym))
+                   (or (numberp v) (characterp v) (symbolp v) (stringp v)))
+          (%defconstant sym v))))))
 
 (defun %cf-wrap (form)
   "FORM inside the MACROLET, SYMBOL-MACROLET and LOCALLY forms around it."

@@ -475,6 +475,16 @@ fasl take 0.25 s instead of 0.12, and compiling them twice (run now and into
 the module) made compiling ASDF take 4.4 s instead of 2.6. A form the compiler fails on is written as source; when the
 module cannot be made or the constants of a segment cannot be written, the
 whole file is written as source.
+A `defconstant` (also as the expansion of a macro: cl-ppcre's, Alexandria's
+`define-constant`) whose value can be computed at compile time and is a
+number, character, symbol or string defines the constant then, as SBCL
+does (`%cf-note-defconstant`; CLHS lets the value be evaluated at compile
+time), so the rest of the file is compiled with its value: cl-ppcre's
+`(find chr +whitespace-char-string+ :test #'char=)` is five comparisons
+instead of a call of `find` with keywords. Other values (vectors, lists) are
+not: a copy in the fasl would not be the object made when it is loaded. A
+value form that fails then (it calls a function of the same file) is left
+for the load.
 
 **Functions declaimed `inline`** keep their source in the image (the property
 `sys::%inline-expansion` of the name, also written to the fasl), and calls
@@ -1640,7 +1650,7 @@ time unless noted):
 | `bench/suite.lisp` | 24, used for tuning | 0.94 | `b-bignum` 1.91 | `b-mandel` 0.08 |
 | `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 1.01 | `g-traverse` 1.54 | `g-ctak` 0.71 |
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
-| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.6–1.8 | `l-ppcre-replace` 2.4–3.0 | `l-alexandria-tests` 0.3–0.5 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
 | `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
 
@@ -1743,12 +1753,30 @@ What is not as fast as intended, and why:
   another instance) would not be inlined either, so it is not done; what
   helps is a copy of the callee in the caller's module (`inline` sources,
   the small functions of `COMMON-LISP`, a file as one module).
-* **Libraries** are within 2.5 to 3 (`l-ppcre-replace`, `l-split-sequence`):
+* **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
   functions), cl-ppcre's matcher closures calling each other through
   `funcall`, and calls across files and into the runtime, which are calls of
   another Wasm instance (not inlined by the engine).
+  Regular expressions (cl-ppcre, 2026-11-20): `char-equal` of two
+  characters, `char-upcase` and `char-downcase` are inline for ASCII (a call
+  for the others), `search` with `:test #'char=` or `#'char-equal` on
+  strings compares the characters inline, constants are known at compile
+  time (above, `defconstant`), and `scan` with three keywords uses a wide
+  keyed effective method (above, CLOS). The time of `a-ppcre-tokens` went
+  65 → 42 ms (2.4 → 1.56 times SBCL), `l-ppcre-replace` 248 → 200 (2.0 →
+  1.54), `l-ppcre-scan` 1.45 → 1.34 times SBCL; probes written for the
+  change (log lines with register groups, C-like tokens, split and replace
+  by a function, case-insensitive scanners made at run time) 2.0 → 1.21
+  times SBCL in geometric mean (`r-dynamic`, case-insensitive `\b...\b`,
+  105 → 39 ms, 0.4 times SBCL). In Lem (`tools/bench-lem.sh`, the same
+  slot): `l-syntax-scan` 312 → 218 ms (2.5 → 1.74 times SBCL), `l-search`
+  52 → 35, geometric mean 2.00 → 1.75. The matchers' closures call each other
+  with a cast and `call_ref` of the entry (`next-fn` declared `function`);
+  what remains is the closures' own work: special variables (`*string*`,
+  `*end-pos*`) read with a test of their binding, positions boxed between
+  closures, character classes as lists of test closures.
 * **Non-local exits** are returns with the exit pending, tested after
   every call that is not a tail call (above, "Non-local exits"): a throw
   from a closure one frame below its `catch` costs what SBCL's does
@@ -1960,6 +1988,15 @@ What makes the code fast:
   functions of the file before they are made (`*note-key-layout-hook*`).
   Calls with one or two keywords take 0.2–0.3 of their earlier time in
   loaded code and fasls (`k-key-*` in scratch tests: about SBCL's time).
+  With more than four required, optional and keyword arguments in all (and
+  at most three required and optional), the keyed effective method is
+  *wide*: its fourth argument is a simple vector of the fourth and later
+  ones, which a method reads by the slot of its keyword (cl-ppcre's
+  `(scan regex string :start s :end e :real-start-pos p)` of each match of
+  `do-matches`: no list of keywords, no `%plist-find`; before, past four the
+  keyword arguments went to the methods as a list). `%fast-class-of` finds
+  the class of a simple string and of a function that is not a generic
+  function without `class-of`.
   The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
   function of each generic function, also when that is compiled in the
   image or into a fasl, where the engine does not inline the runtime's

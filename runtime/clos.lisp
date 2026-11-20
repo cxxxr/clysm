@@ -725,6 +725,11 @@ spread arguments that are not just its required ones, else NIL."
            ((and x (symbolp x))
             (or (%svref *builtin-classes* (if (eq (%symbol-package x) *keyword-package*) 3 4))
                 (class-of x)))
+           ;; (a closure that is not a generic function, a simple string:
+           ;; CLASS-OF's cache without its tests of other representations)
+           ((%simple-string-p x) (or (%svref *builtin-classes* 6) (class-of x)))
+           ((and (functionp x) (not (%instancep (%closure-name x))))
+            (or (%svref *builtin-classes* 12) (class-of x)))
            (t (class-of x)))))
 
 (defun %eql-key (markers x)
@@ -1309,7 +1314,8 @@ image with constant keywords among KEYS passes the arguments in its slots,
 the keyword ones in the order of KEYS (the unbound marker, null, for those not
 given).  It calls the keyed effective method of the cache entry (functions of
 four arguments: the required, optional and keyword ones, padded with NIL;
-%GF-KEYED-EMF), or else the effective method of the spread arguments with the
+past four in all, the fourth is a simple vector of the fourth and later ones,
+*wide*; %GF-KEYED-EMF), or else the effective method of the spread arguments with the
 list of the keyword arguments (which are valid: they are keywords of the
 generic function)."
     (destructuring-bind (nreq nopt more) shape
@@ -1319,9 +1325,11 @@ generic function)."
              (req (subseq vars 0 nreq))
              (opt (subseq vars nreq npos))
              (kvars (subseq vars npos (+ npos (length keys))))
-             ;; (more than four in all: no keyed effective method, the
-             ;; keyword arguments are passed in their list, unchecked)
-             (keyed-emf-p (<= (+ npos (length keys)) 4))
+             ;; (more than four in all: the fourth argument of the keyed
+             ;; effective method is a vector of the fourth and later ones)
+             (keyed-emf-p (<= npos 3))
+             (wide (> (+ npos (length keys)) 4))
+             (all (append req opt kvars))
              (pad (make-list (max 0 (- 4 (+ npos (length keys))))))
              (ks (subseq '(k0 k1 k2 k3) 0 nreq))
              (stride (+ nreq 2))
@@ -1357,9 +1365,10 @@ generic function)."
                                             :none)))
                              (return-from kd
                                (if (functionp kemf)
-                                   ,(if keyed-emf-p
-                                        `(funcall (the function kemf) ,@req ,@opt ,@kvars ,@pad)
-                                        nil)
+                                   ,(cond ((not keyed-emf-p) nil)
+                                          (wide `(funcall (the function kemf) ,@(subseq all 0 3)
+                                                          (vector ,@(subseq all 3))))
+                                          (t `(funcall (the function kemf) ,@all ,@pad)))
                                    (funcall (the function (%svref kn 0)) ,@req ,@opt
                                             (let ((r nil))
                                               ,@(reverse
@@ -1368,6 +1377,11 @@ generic function)."
                                               r))))))
                          (return))))))
                (%gf-invoke info (%keyed-args ,nreq ,nopt ',keys (list ,@req ,@opt ,@kvars))))))))))
+
+(defun %unwide-keyed (spread)
+  "The keyed spread arguments of the four arguments SPREAD of a wide keyed
+effective method (%GF-KEYED-ENTRY)."
+  (append (subseq spread 0 3) (coerce (fourth spread) 'list)))
 
 (defun %keyed-args (nreq nopt keys spread)
   "The arguments whose keyed spread arguments are SPREAD (the required, the
@@ -2321,7 +2335,7 @@ CALL-NEXT-METHOD with arguments or as a function)."
         (multiple-value-bind (decls doc forms) (%parse-body body t)
           (declare (ignore doc))
           (let* ((vars (list (gensym "S") (gensym "S") (gensym "S") (gensym "S")))
-                 (next (gensym "NEXT")) (gfkeys (gensym "GFKEYS"))
+                 (next (gensym "NEXT")) (gfkeys (gensym "GFKEYS")) (wide (gensym "WIDE"))
                  (npos (+ nreq nopt))
                  (slots nil) (bindings nil) (temps nil) (all-vars nil)
                  (state :req) (i 0))
@@ -2344,9 +2358,17 @@ CALL-NEXT-METHOD with arguments or as a function)."
                             (svar (if (consp x) (caddr x) nil))
                             (slot (gensym "SLOT")) (raw (gensym "RAW")))
                        (push (list slot `(%key-slot ,gfkeys ',(%key-name x) ,npos)) slots)
-                       (push (list raw `(case ,slot
-                                          ,@(loop for j from 1 to 3 collect (list j (nth j vars)))
-                                          (t (%unbound-marker))))
+                       ;; (a wide keyed effective method: the slots from
+                       ;; the fourth on are in a vector, the fourth argument)
+                       (push (list raw `(if ,wide
+                                            (if (and ,slot (%fx>= ,slot 3))
+                                                (%svref ,(nth 3 vars) (%fx- ,slot 3))
+                                                (case ,slot
+                                                  ,@(loop for j from 0 to 2 collect (list j (nth j vars)))
+                                                  (t (%unbound-marker))))
+                                            (case ,slot
+                                              ,@(loop for j from 0 to 3 collect (list j (nth j vars)))
+                                              (t (%unbound-marker)))))
                              bindings)
                        (push raw temps)
                        (push (list var `(if (%unboundp ,raw) ,default ,raw)) bindings) (push var all-vars)
@@ -2356,13 +2378,17 @@ CALL-NEXT-METHOD with arguments or as a function)."
                      (push (if (consp x) (car x) x) all-vars))))
             `(lambda (,next ,gfkeys)
                (declare (ignorable ,next))
-               (let ,(reverse slots)
+               (let (,@(reverse slots) (,wide (> (+ ,npos (length ,gfkeys)) 4)))
+                 (declare (ignorable ,wide))
                  (lambda ,vars
                    (declare (ignorable ,@vars))
                    (macrolet ((call-next-method ()
                                 '(if ,next
                                   (funcall (the function ,next) ,@vars)
-                                  (%no-next-method ,cell (%keyed-args ,nreq ,nopt ,gfkeys (list ,@vars)))))
+                                  (%no-next-method ,cell (%keyed-args ,nreq ,nopt ,gfkeys
+                                                                      (if ,wide
+                                                                          (%unwide-keyed (list ,@vars))
+                                                                          (list ,@vars))))))
                               (next-method-p () '(not (null ,next))))
                      (let* ,(reverse bindings)
                        (declare (ignorable ,@temps ,@all-vars))
