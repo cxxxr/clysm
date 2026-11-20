@@ -2468,8 +2468,13 @@ CALL-NEXT-METHOD with arguments or as a function)."
 ;;; The function (SETF NAME) of a generic function has such call sites too:
 ;;; its compiler macro is that of the calls (FUNCALL #'(SETF NAME) ...) that
 ;;; SETF of (NAME object) expands to.
-;;;   one argument:   #(epoch a fn-a b fn-b c fn-c d fn-d name misses)
-;;;   two arguments:  #(epoch a0 a1 fn-a b0 b1 fn-b c0 c1 fn-c d0 d1 fn-d name misses)
+;;;   one argument:   #(epoch a fn-a b fn-b c fn-c d fn-d name misses registered)
+;;;   two arguments:  #(epoch a0 a1 fn-a b0 b1 fn-b c0 c1 fn-c d0 d1 fn-d name misses registered)
+;;; The call site compares the class of an instance with the four entries
+;;; and then reads or writes the slot, or calls the function, in one place;
+;;; an argument that is not an instance, an unbound slot and a miss are out
+;;; of line (%GF-SITE-OTHER1, %GF-SITE-OTHER2), so that a call site stays
+;;; small (about 55 Wasm instructions; 140 with an access for each entry).
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %gf-site-expansion (form args name n)
@@ -2478,43 +2483,51 @@ CALL-NEXT-METHOD with arguments or as a function)."
         (let ((c (if (eql n 1)
                      (vector 0 nil nil nil nil nil nil nil nil name 0 nil)
                      (vector 0 nil nil nil nil nil nil nil nil nil nil nil nil name 0 nil)))
-              (a (gensym "A")) (b (gensym "B")) (k (gensym "K")) (kb (gensym "KB")))
+              (a (gensym "A")) (b (gensym "B")) (k (gensym "K")) (kb (gensym "KB"))
+              (f (gensym "F")) (v (gensym "V")) (blk (gensym "SITE")))
           (if (eql n 1)
-              ;; (no epoch is compared: %BUMP-CLOS-EPOCH empties the cache)
+              ;; (no epoch is compared: %BUMP-CLOS-EPOCH empties the cache;
+              ;; the key of an argument that is not an instance is 0, which
+              ;; is the key of the entry of a parameter that no method
+              ;; specializes, or no key: out of line)
               `(let* ((,a ,(car args))
-                      (,k (%fast-class-of ,a)))
-                 ;; the value of an entry: the function to call, or the
-                 ;; location of the slot that a reader reads
-                 (cond ,@(loop for i in '(1 3 5 7)
-                               collect `((eq (%svref ',c ,i) ,k)
-                                         (let ((f (%svref ',c ,(+ i 1))))
-                                           (if (%i31p f)
-                                               (let ((v (%instance-ref ,a f)))
-                                                 (if (%unboundp v) (%gf-site-call1 ',c ,a) v))
-                                               (funcall (the function f) ,a)))))
+                      (,k (if (%instancep ,a) (%instance-layout ,a) 0))
+                      ;; the value of the entry: the function to call, or the
+                      ;; location of the slot that a reader reads
+                      (,f (cond ((eq ,k (%svref ',c 1)) (%svref ',c 2))
+                                ((eq ,k (%svref ',c 3)) (%svref ',c 4))
+                                ((eq ,k (%svref ',c 5)) (%svref ',c 6))
+                                ((eq ,k (%svref ',c 7)) (%svref ',c 8))
+                                (t nil))))
+                 (block ,blk
+                   (if (%i31p ,f)
+                       (let ((,v (%instance-ref ,a ,f)))
+                         (unless (%unboundp ,v) (return-from ,blk ,v)))
+                       (when ,f (return-from ,blk (funcall (the function ,f) ,a))))
+                   (if (eq (%svref ',c 0) -1)
                        ;; a site that is not cached (-1): the usual call
-                       ((eq (%svref ',c 0) -1)
-                        (locally (declare (notinline ,name)) (,name ,a)))
-                       (t (%gf-site-miss1 ',c ,a))))
+                       (locally (declare (notinline ,name)) (,name ,a))
+                       (%gf-site-other1 ',c ,a))))
+              ;; (a parameter that no method specializes has the key 0 in
+              ;; every entry; an argument that is not an instance has no key
+              ;; here, NIL: an empty entry, out of line)
               `(let ((,a ,(car args)) (,b ,(cadr args)))
                  (if (eq (%svref ',c 0) -1)
                      ;; a site that is not cached: the usual call
                      ,(if (symbolp name)
                           `(locally (declare (notinline ,name)) (,name ,a ,b))
                           `(%gf-site-call2 ',c ,a ,b))
-                     ;; (a parameter that no method specializes has the key 0
-                     ;; in every entry)
-                     (let ((,k (if (eq (%svref ',c 1) 0) 0 (%fast-class-of ,a)))
-                           (,kb (if (eq (%svref ',c 2) 0) 0 (%fast-class-of ,b))))
-                       ;; the value of an entry: the function to call, or the
-                       ;; location of the slot that a writer writes
-                       (cond ,@(loop for i in '(1 4 7 10)
-                                     collect `((and (eq (%svref ',c ,i) ,k) (eq (%svref ',c ,(+ i 1)) ,kb))
-                                               (let ((f (%svref ',c ,(+ i 2))))
-                                                 (if (%i31p f)
-                                                     (progn (%set-instance-ref ,b f ,a) ,a)
-                                                     (funcall (the function f) ,a ,b)))))
-                             (t (%gf-site-miss2 ',c ,a ,b))))))))))
+                     (let* ((,k (cond ((eq (%svref ',c 1) 0) 0) ((%instancep ,a) (%instance-layout ,a)) (t nil)))
+                            (,kb (cond ((eq (%svref ',c 2) 0) 0) ((%instancep ,b) (%instance-layout ,b)) (t nil)))
+                            ;; the value of the entry: the function to call, or the
+                            ;; location of the slot that a writer writes
+                            (,f (cond ,@(loop for i in '(1 4 7 10)
+                                              collect `((and (eq (%svref ',c ,i) ,k) (eq (%svref ',c ,(+ i 1)) ,kb))
+                                                        (%svref ',c ,(+ i 2))))
+                                      (t nil))))
+                       (cond ((%i31p ,f) (%set-instance-ref ,b ,f ,a) ,a)
+                             (,f (funcall (the function ,f) ,a ,b))
+                             (t (%gf-site-other2 ',c ,a ,b))))))))))
 
   (defun %gf-site-macro-forms (name lambda-list)
     "Forms defining the compiler macro of the generic function NAME that
@@ -2582,6 +2595,42 @@ keeps missing (more classes than entries) stops caching."
                 (funcall (the function f) a)))))))
 
 (defun %gf-site-call1 (c a) (funcall (%svref c 9) a))
+;;; What a call site does not do inline: the entries of arguments that
+;;; are not instances, an unbound slot, a site that is not cached and the
+;;; misses, in one function that every call site calls (the call sites stay
+;;; small)
+(defun %gf-site-other1 (c a)
+  (let ((k (%fast-class-of a)))
+    (macrolet ((entry (i)
+                 `(when (eq (%svref c ,i) k)
+                    (let ((f (%svref c ,(+ i 1))))
+                      (return-from %gf-site-other1
+                        (if (%i31p f)
+                            (let ((v (%instance-ref a f)))
+                              (if (%unboundp v) (%gf-site-call1 c a) v))
+                            (funcall (the function f) a)))))))
+      (entry 1) (entry 3) (entry 5) (entry 7))
+    (if (eq (%svref c 0) -1)
+        ;; a site that is not cached: the usual call
+        (funcall (%svref c 9) a)
+        (%gf-site-miss1 c a))))
+
+(defun %gf-site-other2 (c a b)
+  (if (eq (%svref c 0) -1)
+      ;; a site that is not cached: the usual call
+      (%gf-site-call2 c a b)
+      ;; (a parameter that no method specializes has the key 0 in every entry)
+      (let ((k (if (eq (%svref c 1) 0) 0 (%fast-class-of a)))
+            (kb (if (eq (%svref c 2) 0) 0 (%fast-class-of b))))
+        (macrolet ((entry (i)
+                     `(when (and (eq (%svref c ,i) k) (eq (%svref c ,(+ i 1)) kb))
+                        (let ((f (%svref c ,(+ i 2))))
+                          (return-from %gf-site-other2
+                            (if (%i31p f)
+                                (progn (%set-instance-ref b f a) a)
+                                (funcall (the function f) a b)))))))
+          (entry 1) (entry 4) (entry 7) (entry 10))
+        (%gf-site-miss2 c a b))))
 
 (defun %gf-site-class (x)
   "The cache key of an argument that is not an instance."
