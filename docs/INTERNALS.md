@@ -2457,6 +2457,37 @@ runs 780 functions of the compiler, 1.3 MB of code (`encode-module`,
 `emit-instr`, `i32-op-code`... 20 to 50 KB each); loading Quicklisp and a
 library compiles 2 MB of the image's functions and 0.7 MB of the fasls'.
 
+**The compiler's code, smaller.** What Liftoff compiles is measured with
+`node --trace-wasm-compilation-times` (the body size of each function
+compiled). A first `defun` in the REPL ran 1.23 MB of the image's code
+(150 KB of it what every start runs); now 1.05 MB:
+
+* `emit-byte` was declared inline, and its `vector-push-extend` expands to
+  the paths of every kind of vector: a hundred copies in `emit-instr`. In
+  Clysm it is a call now (`emit-instr` 36 -> 11 KB, `encode-module` 31 ->
+  20 KB).
+* Inlining has a budget for the compiler's own functions (`src/`,
+  `lib/live-image.lisp`, `runtime/loop.lisp`; set by
+  `tools/build-repl.lisp`): a function larger than 400 nodes gets no copies
+  of functions not declared INLINE, the others at most 200 nodes of them
+  (`*inline-big-caller-nodes*`, `*inline-caller-budget*`). Without any
+  inlining a first `defun` would run 0.91 MB, but for all code (the
+  runtime's too) the budget made `b-int64` and `b-call` of
+  `bench/suite.lisp` slower, so the runtime and programs keep theirs.
+* Integer arithmetic on constants is folded when compiling
+  (`constant-integer-form`): `ty-int32-p` computed `(- (expt 2 31))` each
+  time.
+
+`clysm script` of a `defun` and a call 168 -> 135 ms, `s-quicklisp` 426 ->
+397, `s-ql-*` 15 to 20 ms less; compiling small `defun`s warm is no slower.
+Tried: leaving out the compiler macros of `define-compiler-macro` in the
+compiler's code (`vector-push-extend`'s and others): 3% less code run, no
+time measurable; no inlining at all in the compiler's code: 0.98 MB, no
+time measurable on a busy machine. What remains is mostly the runtime's
+functions (`format`'s directives, sequence functions, `typep`, the
+`loop` parser...), whose inlining the benchmarks need, and the check of a
+pending exit after each call (12 octets a call).
+
 Tried and not kept: compilation hints (`withCompilationHints`, the
 functions that run at start compiled eagerly in background threads) are
 not used by Node.js 24's V8 (13.6; `--experimental-wasm-compilation-hints`
