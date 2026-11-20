@@ -22,6 +22,9 @@ async function importMainModules() {
   ({ makeProcessManager } = await import('./process.mjs'));
 }
 
+// the program's file, arguments and whether its input is a terminal
+let programData = null;
+
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
 
@@ -146,7 +149,7 @@ function nodePlatform(state, args) {
     arg_len(i) { return args[i].length; },
     arg_char(i, j) { return args[i].codePointAt(j); },
     debug_mode() { return process.env.CLYSM_DEBUG ? 1 : 0; },
-    is_tty() { return (process.env.CLYSM_INTERACTIVE || workerData?.tty) ? 1 : 0; },
+    is_tty() { return (process.env.CLYSM_INTERACTIVE || programData?.tty) ? 1 : 0; },
   };
 }
 
@@ -442,30 +445,59 @@ function installNetClient(port, sab) {
   };
 }
 
-// The module runs in a worker thread so that the stack size can be raised
-// (deep non-tail recursion is common in Lisp programs).
+// Where the program runs.  Deep non-tail recursion is common in Lisp
+// programs, and the main thread's stack is the system's (8 MB): a program
+// runs in a worker, whose stack can be as large as asked (CLYSM_STACK_MB),
+// unless it starts from a heap image.  An image started from one runs its
+// function as a computation that can wait (%call-as-main-thread,
+// runtime/thread.lisp), on a stack of the engine's whose size the flags
+// give in the main thread as well, and the REPL then runs in the main
+// thread: starting a worker and ending it cost 30 ms of the 130 of
+// `clysm eval t`.  The sockets and processes, which the program calls as if
+// they were synchronous (it waits with Atomics.wait while another thread
+// answers), are then served by a worker started when first needed.
+//   CLYSM_WORKER=1: always in a worker
 const selfPath = fileURLToPath(import.meta.url);
-if (isMainThread && process.argv[1] === selfPath) {
-  const stackMb = Number(process.env.CLYSM_STACK_MB || 1024);
-  const netBuffer = new SharedArrayBuffer(16 + NET_DATA_BYTES);
-  const worker = new Worker(selfPath, {
-    workerData: { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY, netBuffer },
-    resourceLimits: { stackSizeMb: stackMb, maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096) },
-    stdin: false,
-  });
-  makeNetServer(worker, netBuffer);
-  worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
-  worker.on('exit', (code) => process.exit(code));
-} else if (!isMainThread && workerData && workerData.file) {
-  // The engine's flags are set here, once the worker has started and
-  // imported its modules: a flag set before (in the main thread, or on the
-  // command line) makes Node.js compile its own JavaScript again instead of
-  // taking it from its code cache, made with the default flags (35 ms).
+const NET_BUFFER_BYTES = 16 + NET_DATA_BYTES;
+const stackMb = () => Number(process.env.CLYSM_STACK_MB || 1024);
+
+async function inMainThread() {
+  const env = process.env;
+  if (env.CLYSM_WORKER || env.CLYSM_HEAP_MB || !env.CLYSM_IMAGE || env.CLYSM_SAVE_IMAGE) return false;
+  // (without JSPI the program would run on the main thread's stack)
+  if (typeof WebAssembly.Suspending !== 'function' || typeof WebAssembly.promising !== 'function') return false;
+  if (!fs.existsSync(env.CLYSM_IMAGE)) return false;
+  // the worker's heap is limited to 4 GB: the main thread's must be as large
+  const v8 = await import('node:v8');
+  return v8.getHeapStatistics().heap_size_limit >= 4000 * 1048576;
+}
+
+// A port to a worker that serves the sockets and processes of a program
+// running in the main thread, started when a message is first posted
+// (the interface of installNetClient: postMessage, on('message'), ref, unref)
+function lazyServerPort(netBuffer) {
+  let worker = null, referenced = false;
+  const handlers = [];
+  const start = () => {
+    worker = new Worker(selfPath, { workerData: { netServer: true, netBuffer }, stdin: false });
+    for (const h of handlers) worker.on('message', h);
+    worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
+    if (!referenced) worker.unref();
+    return worker;
+  };
+  return {
+    postMessage: (m) => (worker || start()).postMessage(m),
+    on: (event, h) => { handlers.push(h); if (worker) worker.on(event, h); },
+    ref: () => { referenced = true; if (worker) worker.ref(); },
+    unref: () => { referenced = false; if (worker) worker.unref(); },
+  };
+}
+
+// Run the program: workerData-like { file, args, tty }; PORT and NETBUFFER
+// connect it to the thread that serves its sockets and processes.
+async function runProgram(data, port, netBuffer) {
   await importWorkerModules();
-  if (workerData.netBuffer) {
-    const { parentPort } = await import('node:worker_threads');
-    installNetClient(parentPort, workerData.netBuffer);
-  }
+  installNetClient(port, netBuffer);
   try {
     const v8 = await import('node:v8');
     // the compiler marks unlikely branches (the branch hinting section of the modules)
@@ -476,8 +508,9 @@ if (isMainThread && process.argv[1] === selfPath) {
     v8.setFlagsFromString('--wasm-lazy-validation');
     // the stacks of computations that can wait (JSPI, the threads of
     // runtime/thread.lisp) as deep as the worker's own (they are limited by
-    // --stack-size too; the main thread itself recurses little)
-    const kb = Number(process.env.CLYSM_STACK_MB || 1024) * 1024;
+    // --stack-size too, which, set now, leaves the limit of the thread's
+    // own stack as it is: the main thread's stays within the system's)
+    const kb = stackMb() * 1024;
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
   } catch (e) {}
@@ -501,9 +534,44 @@ if (isMainThread && process.argv[1] === selfPath) {
       process.exit(2);
     }
   }
-  const bytes = fs.readFileSync(workerData.file);
-  await runModule(bytes, workerData.args);
+  const bytes = fs.readFileSync(data.file);
+  await runModule(bytes, data.args);
   writeTrace();
-  // the worker ends when nothing is left to do: the promises and timers that
-  // the program made are settled and run first
+  // the program ends when nothing is left to do: the promises and timers that
+  // it made are settled and run first
+}
+
+if (isMainThread && process.argv[1] === selfPath) {
+  const data = { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY };
+  if (await inMainThread()) {
+    programData = data;
+    // (as the worker's 'error' below)
+    const fail = (e) => { console.error(';; worker error:', e); process.exit(2); };
+    process.on('uncaughtException', fail);
+    process.on('unhandledRejection', fail);
+    const netBuffer = new SharedArrayBuffer(NET_BUFFER_BYTES);
+    await runProgram(data, lazyServerPort(netBuffer), netBuffer);
+  } else {
+    const netBuffer = new SharedArrayBuffer(NET_BUFFER_BYTES);
+    const worker = new Worker(selfPath, {
+      workerData: { ...data, netBuffer },
+      resourceLimits: { stackSizeMb: stackMb(), maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096) },
+      stdin: false,
+    });
+    makeNetServer(worker, netBuffer);
+    worker.on('error', (e) => { console.error(';; worker error:', e); process.exit(2); });
+    worker.on('exit', (code) => process.exit(code));
+  }
+} else if (!isMainThread && workerData && workerData.netServer) {
+  // the sockets and processes of a program in the main thread
+  const { parentPort } = await import('node:worker_threads');
+  makeNetServer(parentPort, workerData.netBuffer);
+} else if (!isMainThread && workerData && workerData.file) {
+  // The engine's flags are set once the worker has started and imported its
+  // modules: a flag set before (in the main thread, or on the command line)
+  // makes Node.js compile its own JavaScript again instead of taking it from
+  // its code cache, made with the default flags (35 ms).
+  programData = workerData;
+  const { parentPort } = await import('node:worker_threads');
+  await runProgram(workerData, parentPort, workerData.netBuffer);
 }
