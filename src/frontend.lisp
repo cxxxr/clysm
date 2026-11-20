@@ -27,12 +27,14 @@ functions made from it are, for the clysm.sources section (stack traces).")
   (toplevel nil)          ; global defun with no free vars
   (static-p nil)          ; closure object is a module constant
   (may-exit :unknown)     ; NIL when no call of it can return with an exit pending (codegen.lisp)
+  (safety nil)            ; the SAFETY of its body (POLICY-SAFETY), NIL for the default
   (self nil))             ; the variable of a LABELS function referred to in its own body: its closure
 
 (defun lam-simple-p (l)
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
 
-(defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp uwp-frames)
+(defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp uwp-frames
+  (used nil))             ; a RETURN-FROM refers to it
 (defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp uwp-frames
   modes loop-labels cur)
 (defstruct fun name lvar lam)
@@ -55,6 +57,9 @@ image: they are all NOTINLINE, so their callers go through the function cell.")
 (defvar *dynamic-functions* (make-hash-table :test 'eq) "functions defined at runtime (generic functions)")
 (defvar *current-lam* nil)
 (defvar *warnings* nil)
+(defvar clysm-sys::*proclaimed-safety* 1
+  "The SAFETY of the OPTIMIZE proclamations (DECLAIM, PROCLAIM): 1 unless one
+says otherwise.  COMPILE-FILE binds it around a file, as SBCL's policy.")
 
 ;;; Live mode: the compiler runs inside a Clysm image and compiles code that
 ;;; is linked into that running image.  These hooks give access to the
@@ -224,11 +229,30 @@ runtime definition is kept."
                             (values (car d) (cdr d))))
                    (and spec (list (cons spec vars))))))
 
+(defun decls-safety (decls)
+  "The SAFETY that an OPTIMIZE declaration among DECLS gives (the last), or NIL."
+  (let ((found nil))
+    (dolist (d decls found)
+      (when (and (consp d) (eq (car d) 'optimize))
+        (dolist (q (cdr d))
+          (cond ((eq q 'safety) (setq found 3))
+                ((and (consp q) (eq (car q) 'safety) (consp (cdr q)) (typep (second q) '(integer 0 3)))
+                 (setq found (second q)))))))))
+
+(defun policy-safety (env)
+  "The SAFETY in effect in ENV: that of the innermost OPTIMIZE declaration
+around (an entry (:SAFETY n) of ENV, FREE-TYPE-DECL-ENV), else the
+proclaimed one."
+  (dolist (e (and env (cenv-entries env)) clysm-sys::*proclaimed-safety*)
+    (when (eq (first e) :safety) (return (second e)))))
+
 (defun free-type-decl-env (decls bound env)
   "ENV with the free type declarations of DECLS (about lexical variables of
 ENV that are not among the symbols BOUND by the form, nor declared where
-they are bound)."
+they are bound), and the SAFETY of an OPTIMIZE declaration among them."
   (let ((entries nil))
+    (let ((safety (decls-safety decls)))
+      (when safety (push (list :safety safety) entries)))
     (loop for (spec . vars) in (type-decl-specs decls)
           do (dolist (v vars)
                (when (and (symbolp v) (not (member v bound)))
@@ -289,20 +313,31 @@ they are bound)."
 checked (CHECKED-VALUE).  False while the runtime is compiled: its
 declarations are kept by how it is written, and it must not pay for the checks.")
 
-(defun checked-value (form spec)
+(defun trust-types-p (env)
+  "Whether declared types are trusted without checks in ENV: (SAFETY 0), as
+in SBCL.  The values are then of the types by declaration (CLHS 3.3.1: a
+value not of the declared type is undefined behaviour); a FIXNUM is Clysm's
+31-bit fixnum, and arithmetic stored into one is computed modulo 2^32 with
+no test of overflow."
+  (and *check-declared-integers* (eql (policy-safety env) 0)))
+
+(defun checked-value (form spec &optional env)
   "FORM as the value of a variable declared to be of the integer type SPEC:
 checked, since the code after it computes with the variable as a machine
 integer (a value past the type would become another number, or a character).
-The check is left out by the compiler where the type of FORM shows it holds."
+The check is left out by the compiler where the type of FORM shows it holds.
+At (SAFETY 0) in ENV the value is trusted: (THE SPEC FORM), unchecked."
   ;; (a literal NIL is how macros bind a variable before its first value,
   ;; under the declarations of their body: DOLIST's variable for its result form)
   (if (or (not *check-declared-integers*) (not (integer-decl-p spec)) (integerp form) (null form))
       form
-      (let ((v (gensym "V")))
-        `(let ((,v ,form))
-           (if ,(type-test-form v spec)
-               ,v
-               (clysm-sys::%signal-type-error ,v ',spec))))))
+      (if (and env (trust-types-p env))
+          `(the ,spec ,form)
+          (let ((v (gensym "V")))
+            `(let ((,v ,form))
+               (if ,(type-test-form v spec)
+                   ,v
+                   (clysm-sys::%signal-type-error ,v ',spec)))))))
 
 ;;; FTYPE proclamations (CLHS 3.3.3.1 FTYPE: calls of the function with
 ;;; arguments not of the types, or values not of the type, are undefined).
@@ -386,8 +421,18 @@ the required parameters of the types SYM's FTYPE gives checked on entry."
                               when (and (ftype-useful-spec-p spec) (not (declared-spec p decls))
                                         (not (member p (declared-specials decls))))
                                 collect (list p (gensym (symbol-name p)) spec))))
-            (if (null checks)
-                fn-form
+            (cond
+              ((null checks) fn-form)
+              ;; (SAFETY 0): the parameters are declared of the types, unchecked
+              ((and *check-declared-integers*
+                    (eql (or (decls-safety decls) clysm-sys::*proclaimed-safety*) 0))
+               `(function
+                 (clysm-sys::named-lambda ,name ,ll
+                   ,@(when doc (list doc))
+                   (declare ,@(loop for (p nil spec) in checks collect `(type ,spec ,p)))
+                   ,@(when decls `((declare ,@decls)))
+                   ,@forms)))
+              (t
                 `(function
                   (clysm-sys::named-lambda ,name
                       ,(mapcar (lambda (p) (let ((c (assoc p checks))) (if c (second c) p))) ll)
@@ -395,7 +440,7 @@ the required parameters of the types SYM's FTYPE gives checked on entry."
                     (let ,(loop for (p g spec) in checks collect `(,p ,(type-checked-form g spec)))
                       (declare ,@(loop for (p nil spec) in checks collect `(type ,spec ,p)))
                       ,@(when decls `((declare ,@decls)))
-                      ,@forms))))))))))
+                      ,@forms)))))))))))
 
 (defun ftype-call-form (form env)
   "FORM, a value that is not returned, with the value of a call of a function
@@ -408,8 +453,17 @@ of a proclaimed result type checked, or FORM."
              (not (macro-function-in op env))
              (ftype-result-spec op))
         (let ((g (gensym "V")) (spec (ftype-result-spec op)))
-          `(let ((,g (clysm-sys::%ftype-raw ,form))) ,(type-checked-form g spec)))
+          (if (trust-types-p env)
+              `(the ,spec (clysm-sys::%ftype-raw ,form))
+              `(let ((,g (clysm-sys::%ftype-raw ,form))) ,(type-checked-form g spec))))
         form)))
+
+(defun the-trust (env)
+  "The tail of a :THE node converted in ENV: (:TRUST) at (SAFETY 0), where
+the code may assume the type without keeping the representation of other
+values (an integer arithmetic result declared FIXNUM is wrapped to 32 bits:
+typed.lisp)."
+  (when (trust-types-p env) '(:trust)))
 
 (defun convert-value (form env)
   "Convert FORM, whose value is used but not returned."
@@ -488,9 +542,9 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
            (cond ((and e (eq (first e) :var))
                   (let ((spec (free-type-decl env sym)))
                     (cond ((null spec) `(:lref ,(note-ref (third e))))
-                          ((and *check-declared-integers* (integer-decl-p spec))
+                          ((and *check-declared-integers* (integer-decl-p spec) (not (trust-types-p env)))
                            `(:the ,spec ,(let ((*ignore-tdecls* t)) (convert (checked-value sym spec) env))))
-                          (t `(:the ,spec (:lref ,(note-ref (third e))))))))
+                          (t `(:the ,spec (:lref ,(note-ref (third e))) ,@(the-trust env))))))
                  ((and e (eq (first e) :special)) (typed-special-ref sym env))
                  ((and e (eq (first e) :smacro)) (convert (third e) env))
                  (t (multiple-value-bind (exp found) (global-symbol-macro sym)
@@ -518,10 +572,10 @@ or a proclamation gives it, as for a lexical variable (an integer type
 checked, CHECKED-VALUE, the others trusted)."
   (let ((spec (and (not *suppress-var-types*) (or (free-type-decl env sym) (global-var-type sym)))))
     (cond ((null spec) `(:sref ,sym))
-          ((and *check-declared-integers* (integer-decl-p spec))
+          ((and *check-declared-integers* (integer-decl-p spec) (not (trust-types-p env)))
            `(:the ,spec ,(let ((*ignore-tdecls* t) (*suppress-var-types* t))
                            (convert (checked-value sym spec) env))))
-          (t `(:the ,spec (:sref ,sym))))))
+          (t `(:the ,spec (:sref ,sym) ,@(the-trust env))))))
 
 (defvar *unit-env* nil
   "The environment of the toplevel forms of the compilation unit (COMPILE-FILE)
@@ -824,7 +878,42 @@ the depth of copies, one more."
         (cond ((symbolp name) (setf (gethash name *dynamic-functions*) t))
               ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (second name)))
                (setf (gethash (setf-function-symbol (second name)) *dynamic-functions*) t)))))
-    `(:call ,op ,@(convert-args (cdr form) env))))
+    `(:call ,op ,@(convert-args (trusted-ftype-args op (cdr form) env) env))))
+
+(defvar *defun-param-specs* nil
+  "(name . specs) of the global function being converted: the integer types
+declared for its required parameters (NIL for one not declared so).")
+
+(defun param-decl-specs (ll decls)
+  "The integer types DECLS declare for the required parameters of the lambda list LL."
+  (loop for p in ll
+        until (member p lambda-list-keywords)
+        collect (let ((spec (and (symbolp p) (declared-spec p decls))))
+                  (and spec (integer-decl-p spec) spec))))
+
+(defun known-param-specs (op)
+  "The integer types declared for the required parameters of the global
+function OP of this compilation (or being converted), or NIL."
+  (if (and *defun-param-specs* (eq (car *defun-param-specs*) op))
+      (cdr *defun-param-specs*)
+      (let ((lam (and (fboundp 'known-global-lam) (known-global-lam op))))
+        (and lam (loop for lv in (lam-req lam)
+                       collect (let ((spec (lvar-decl lv))) (and spec (integer-decl-p spec) spec)))))))
+
+(defun trusted-ftype-args (op args env)
+  "ARGS of a call of the global function OP; at (SAFETY 0), those of the
+types OP's FTYPE gives as (THE type arg), trusted (as SBCL does), and else
+those of the integer types its parameters are declared of (a known
+function of this compilation, whose code takes them so unchecked)."
+  (let ((specs (and (symbolp op) (not (env-lookup-fun env op)) (trust-types-p env)
+                    (not (gethash op *notinline*)) (not (member op *local-notinline*))
+                    (or (ftype-arg-specs op) (known-param-specs op)))))
+    (if (and specs (<= (length specs) (length args)))
+        (loop for a in args
+              for i from 0
+              collect (let ((spec (nth i specs)))
+                        (if (and spec (ftype-useful-spec-p spec)) `(the ,spec ,a) a)))
+        args)))
 
 (defparameter *foldable-integer-functions*
   '(+ - * expt ash 1+ 1- logand logior logxor lognot abs min max integer-length))
@@ -952,16 +1041,16 @@ forms whose value is an integer of at most 256 bits."
         (let ((body-forms (if block-name `((block ,block-name ,@forms)) forms)))
           (when (getf pl :aux)
             (setf body-forms `((let* ,(getf pl :aux) (declare ,@decls) ,@body-forms))))
-          (setf (lam-body lam)
-                (convert-body body-forms
-                              (free-type-decl-env decls (append (getf pl :req) (mapcar #'first (getf pl :opt))
-                                                                (mapcar #'third (getf pl :opt))
-                                                                (and (getf pl :rest) (list (getf pl :rest)))
-                                                                (mapcar (lambda (k) (let ((s (first k))) (if (consp s) (second s) s)))
-                                                                        (getf pl :keys))
-                                                                (mapcar #'third (getf pl :keys))
-                                                                (mapcar #'first (getf pl :aux)))
-                                                  env)))
+          (let ((body-env (free-type-decl-env decls (append (getf pl :req) (mapcar #'first (getf pl :opt))
+                                                            (mapcar #'third (getf pl :opt))
+                                                            (and (getf pl :rest) (list (getf pl :rest)))
+                                                            (mapcar (lambda (k) (let ((s (first k))) (if (consp s) (second s) s)))
+                                                                    (getf pl :keys))
+                                                            (mapcar #'third (getf pl :keys))
+                                                            (mapcar #'first (getf pl :aux)))
+                                              env)))
+            (setf (lam-safety lam) (and *check-declared-integers* (policy-safety body-env)))
+            (setf (lam-body lam) (convert-body body-forms body-env)))
           (when (and *live-mode* clysm-sys::*record-frames* (debug-frames-wanted-p decls))
             (setf (lam-body lam) (add-debug-frame lam (lam-body lam))))))
       lam)))
@@ -1105,7 +1194,7 @@ forms whose value is an integer of at most 256 bits."
                                         ,(convert-body (cddr form) env)))
       (multiple-value-call `(:mvcall ,(convert (second form) env) ,@(convert-args (cddr form) env)))
       (multiple-value-prog1 `(:mvprog1 ,(convert (second form) env) ,(convert-body (cddr form) env)))
-      (the `(:the ,(second form) ,(convert (third form) env)))
+      (the `(:the ,(second form) ,(convert (third form) env) ,@(the-trust env)))
       (eval-when (if (intersection (second form) '(:execute eval))
                      (convert-body (cddr form) env)
                      '(:const nil)))
@@ -1128,7 +1217,7 @@ forms whose value is an integer of at most 256 bits."
     (let* ((dspecials (declared-specials decls))
            (inits (loop for b in bindings
                         collect (convert-value (if (consp b)
-                                                   (checked-value (second b) (declared-spec (first b) decls))
+                                                   (checked-value (second b) (declared-spec (first b) decls) env)
                                                    nil)
                                                env)))
            (lvars nil) (entries nil))
@@ -1170,7 +1259,7 @@ forms whose value is an integer of at most 256 bits."
                          (let* ((b (car bs))
                                 (sym (if (consp b) (first b) b))
                                 (init (convert-value (if (consp b)
-                                                         (checked-value (second b) (declared-spec sym decls))
+                                                         (checked-value (second b) (declared-spec sym decls) env)
                                                          nil)
                                                      env))
                                 (sp (binding-special-p sym dspecials))
@@ -1190,7 +1279,7 @@ forms whose value is an integer of at most 256 bits."
                          (let ((lv (third e)))
                            (note-ref lv)
                            (setf (lvar-mutated lv) t)
-                           `(:lset ,lv ,(convert-value (checked-value val (lvar-decl lv)) env))))
+                           `(:lset ,lv ,(convert-value (checked-value val (lvar-decl lv) env) env))))
                         ((and e (eq (first e) :smacro))
                          (convert `(setf ,(third e) ,val) env))
                         ((and (null e) (nth-value 1 (global-symbol-macro var)))
@@ -1330,14 +1419,21 @@ MACROLET of LOOP-FINISH) twice as long."
 
 (defun convert-block (name body env)
   (let* ((blk (make-blk :name name :lam *current-lam*))
-         (tag (new-lvar (gensym "BLOCK-TAG"))))
-    (setf (blk-tag-var blk) tag)
-    `(:block ,blk ,(convert-body body (env-extend env (list :block name blk))))))
+         (tag (new-lvar (gensym "BLOCK-TAG")))
+         (node (progn (setf (blk-tag-var blk) tag)
+                      (convert-body body (env-extend env (list :block name blk))))))
+    ;; a block no RETURN-FROM refers to (that of a DEFUN, of an inline
+    ;; function's copy) is its body: it then leaves its value in any
+    ;; representation (an inline function's double stays an f64, typed.lisp)
+    (if (blk-used blk)
+        `(:block ,blk ,node)
+        node)))
 
 (defun convert-return-from (name value env)
   (let ((e (env-lookup env :block name)))
     (unless e (error "return-from unknown block ~S" name))
     (let ((blk (third e)))
+      (setf (blk-used blk) t)
       (unless (eq (blk-lam blk) *current-lam*)
         (setf (blk-nonlocal blk) t)
         (note-ref (blk-tag-var blk)))
