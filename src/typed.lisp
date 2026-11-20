@@ -897,8 +897,11 @@ overlapping ranges as if through a buffer), else NIL."
       ;; setting the car or cdr of what is known to be a cons: no check
       ((clysm-sys::%setcar clysm-sys::%setcdr rplaca rplacd)
        (when (and (ty-only-p aty +k-cons+) (= (length args) 2))
-         (let ((field (if (member name '(clysm-sys::%setcar rplaca)) 0 1))
-               (tmp (new-local)))
+         (let* ((field (if (member name '(clysm-sys::%setcar rplaca)) 0 1))
+                ;; RPLACA/RPLACD return the cons: it is kept in a local of
+                ;; the cons type (an eqref local would lose the type the
+                ;; store needs)
+                (tmp (new-local (if (member name '(rplaca rplacd)) '(:ref :null :cons) :eqref))))
            (if (member name '(rplaca rplacd))
                `(,@(cg a) (:ref.cast! :cons) (:local.tee ,tmp) ,@(cg (second args))
                  (:struct.set :cons ,field) (:local.get ,tmp))
