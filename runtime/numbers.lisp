@@ -1076,8 +1076,11 @@ digits."
   ;; multiplication per group of digits, not one per digit.  Indices, codes
   ;; and SMALL are fixnums by construction (K < KMAX digits always make a
   ;; fixnum): their arithmetic is the unchecked one.
-  (let ((i start) (neg nil) (small 0) (k 0) (value nil) (any nil)
+  ;; In base 10, more than 8 digits are read again at the end by a Wasm
+  ;; helper, which gathers 18 in an i64 or makes the limbs at once.
+  (let ((i start) (neg nil) (small 0) (k 0) (value nil) (any nil) (big nil) (dstart 0)
         (kmax (if (eql radix 10) 8 (%fixnum-digit-capacity radix))))
+    (declare (fixnum dstart))
     (macrolet ((whitespace-p (code)
                  `(let ((code ,code)) (or (eql code 32) (and (%fx<= 9 code) (%fx<= code 13) (not (eql code 11))))))
                (skip-whitespace ()
@@ -1088,6 +1091,7 @@ digits."
         (let ((c (%schar string i)))
           (cond ((eq c #\-) (setq neg t i (%fx+ i 1)))
                 ((eq c #\+) (setq i (%fx+ i 1))))))
+      (setq dstart i)
       (loop
         (when (%fx>= i end) (return))
         (let* ((code (%char-code (%schar string i)))
@@ -1100,18 +1104,24 @@ digits."
                         (t 99))))
           (when (%fx>= d radix) (return))
           (when (eql k kmax)
-            (setq value (if value (+ (* value (%fixnum-power radix k)) small) small) small 0 k 0))
+            (if (eql radix 10)
+                (setq big t small 0 k 0)
+                (setq value (if value (+ (* value (%fixnum-power radix k)) small) small) small 0 k 0)))
           (setq small (%fx+ (%fx* small radix) d) k (%fx+ k 1))
           (setq any t i (%fx+ i 1))))
-      ;; with JUNK-ALLOWED the index is that of the character after the digits
-      (unless (and any junk-allowed) (skip-whitespace))
-      (cond ((and any (or junk-allowed (eql i end)))
-             (values (let ((v (if value (+ (* value (%fixnum-power radix k)) small) small)))
-                       (if neg (- v) v))
-                     i))
-            (junk-allowed (values nil i))
-            (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"
-                                           :format-arguments (list string)))))))
+      (let ((dend i))
+        (declare (fixnum dend))
+        ;; with JUNK-ALLOWED the index is that of the character after the digits
+        (unless (and any junk-allowed) (skip-whitespace))
+        (cond ((and any (or junk-allowed (eql i end)))
+               (values (if big
+                           (%decimal-integer string dstart dend neg)
+                           (let ((v (if value (+ (* value (%fixnum-power radix k)) small) small)))
+                             (if neg (- v) v)))
+                       i))
+              (junk-allowed (values nil i))
+              (t (error 'parse-error-simple :format-control "Cannot parse integer from ~S"
+                                             :format-arguments (list string))))))))
 
 ;;; a call with literal keywords does not parse a keyword list
 (define-compiler-macro parse-integer (&whole form string &rest keys)

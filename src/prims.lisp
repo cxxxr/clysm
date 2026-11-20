@@ -1366,9 +1366,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
     (:host-code-index :fr-i "env" "code_index")
     (:host-module-count :v-i "env" "module_count")
     (:host-module-snap :i-e "env" "module_snap")
-    (:host-float-to-chars :di-i "env" "float_to_chars")
     (:host-get-char :i-i "env" "get_char")
-    (:host-float-part :i-i "env" "float_part")
     (:host-math1 :di-d "env" "math1")
     (:host-math2 :ddi-d "env" "math2")
     (:host-time :i-d "env" "time")
@@ -4407,9 +4405,6 @@ division and the product are the identity)."
     ,@hi (:ref.cast :i31) :i31.get_s :i64.extend_i32_u (:i64.const 26) :i64.shl :i64.or
     ,@lo (:ref.cast :i31) :i31.get_s :i64.extend_i32_u :i64.or
     :f64.reinterpret_i64 ,@(box-f64)))
-(defprim clysm-sys::%float-to-chars (d mode) :value
-  `(,@(f64-code d) ,@(idx-code mode) (:call :host-float-to-chars) :ref.i31))
-(defprim clysm-sys::%host-float-part (k) :value `(,@(idx-code k) (:call :host-float-part) :ref.i31))
 
 ;;; The shortest digits of a float, by Schubfach (R. Giulietti, "The
 ;;; Schubfach way to render doubles", 2020; Java's Double.toString), with
@@ -4419,9 +4414,10 @@ division and the product are the identity)."
 ;;; of two shortest decimals equally near, the larger is taken.  The table
 ;;; holds g = floor(10^-k 2^-r) + 1, r = floor(-k log2 10) - 125, as two
 ;;; halves of 63 bits, for k from +SCHUBFACH-KMIN+ (the powers below
-;;; Schubfach's -324 are for the shifted subnormals) to 292.
+;;; Schubfach's -324 are for the shifted subnormals) to 343 (the powers
+;;; above 292 are for reading: %DECIMAL-FLOAT).
 (defconstant +schubfach-kmin+ -345)
-(defconstant +schubfach-kmax+ 292)
+(defconstant +schubfach-kmax+ 343)
 (defvar *schubfach-table-init* nil)
 (defun schubfach-table-init ()
   (or *schubfach-table-init*
@@ -4435,6 +4431,8 @@ division and the product are the identity)."
                                              (floor (expt 10 e) (expt 2 r))
                                              (* (expt 10 e) (expt 2 (- r))))
                                          (floor (expt 2 (- r)) (expt 10 (- e)))))))
+                         (unless (<= (expt 2 125) g (1- (expt 2 126)))
+                           (error "Schubfach table: g(~D) out of range" k))
                          (push `(:i64.const ,(ash g -63)) code)
                          (push `(:i64.const ,(ldb (byte 63 0) g)) code)
                          (incf n 2)))
@@ -4610,6 +4608,207 @@ rounded to odd (Schubfach's rop)."
 (defprim clysm-sys::%float-shortest (x buf) :value
   (schubfach-table-global)
   `(,@x ,@buf (:call :float-shortest)))
+
+;;; Reading a decimal: (string start end packed) -> the float nearest to
+;;; the digits of STRING[START,END) (a point among them is skipped) times
+;;; 10^e, where PACKED = 4e + 2 negative-p + single-p; NIL when the helper
+;;; cannot tell (more than 19 significant digits, a result that is not a
+;;; normal float, a product too near a half): the caller computes it exactly.
+;;; Up to 2^53 (2^24 for a single) and 10^22 (10^10) the product of two
+;;; exact floats is correctly rounded (Clinger); otherwise the digits W,
+;;; shifted to 64 bits, times the 126 bits of 10^e of Schubfach's table
+;;; give the top 128 bits of a product within 5 units of their last bit
+;;; of the exact one, enough to round it unless its bits after the
+;;; significand are within 8 of a half or of zero (as Eisel and Lemire's
+;;; algorithm, with Schubfach's table).
+(defhelper :decimal-float :eeee-e ((s (:ref :null :string)) (i :i32) (end :i32) (c :i32) (nd :i32)
+                                   (single :i32) (neg :i32) (idx :i32)
+                                   (w :i64) (q :i64) (lz :i64) (g1 :i64) (g0 :i64)
+                                   (mll :i64) (mlh :i64) (mhl :i64)
+                                   (ahi :i64) (alo :i64) (bhi :i64) (blo :i64) (uhi :i64) (ulo :i64)
+                                   (sh :i64) (mask :i64) (mant :i64) (e2 :i64) (p :i64) (be :i64)
+                                   (d :f64) (pw :f64) (fs :f32) (fpw :f32))
+  '(:local.get 0) '(:ref.cast :string) '(:local.set s)
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.set i)
+  '(:local.get 2) '(:ref.cast :i31) :i31.get_s '(:local.set end)
+  '(:local.get 3) '(:ref.cast :i31) :i31.get_s '(:local.tee c) '(:i32.const 1) :i32.and '(:local.set single)
+  '(:local.get c) '(:i32.const 1) :i32.shr_u '(:i32.const 1) :i32.and '(:local.set neg)
+  '(:local.get c) '(:i32.const 2) :i32.shr_s :i64.extend_i32_s '(:local.set q)
+  ;; the significant digits
+  `(:block ddone nil
+    (:loop dagain nil
+     (:local.get i) (:local.get end) :i32.ge_s (:br_if ddone)
+     (:local.get s) (:local.get i) (:array.get :string) (:local.set c)
+     (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+     (:local.get c) (:i32.const 46) :i32.eq (:br_if dagain)
+     (:local.get c) (:i32.const 48) :i32.sub (:local.tee c)
+     (:local.get w) :i64.eqz :i32.eqz :i32.or
+     (:if nil nil
+          ((:local.get nd) (:i32.const 1) :i32.add (:local.tee nd) (:i32.const 19) :i32.gt_u
+           (:if nil nil (,@(nil-code) :return))
+           (:local.get w) (:i64.const 10) :i64.mul (:local.get c) :i64.extend_i32_u :i64.add (:local.set w)))
+     (:br dagain)))
+  ;; zero
+  '(:local.get w) :i64.eqz
+  '(:if nil nil
+    ((:local.get single)
+     (:if nil nil
+          ((:f32.const 0f0) (:f32.const -1f0) (:f32.const 1f0) (:local.get neg) :select :f32.copysign
+           (:struct.new :single) :return)
+          ((:f64.const 0d0) (:f64.const -1d0) (:f64.const 1d0) (:local.get neg) :select :f64.copysign
+           (:struct.new :double) :return))))
+  ;; Clinger's fast path
+  '(:local.get single)
+  '(:if nil nil
+    ((:local.get w) (:i64.const #x1000000) :i64.le_u
+     (:local.get q) (:i64.const -10) :i64.ge_s :i32.and (:local.get q) (:i64.const 10) :i64.le_s :i32.and
+     (:if nil nil
+          ((:f32.const 1f0) (:local.set fpw)
+           (:local.get q) (:i64.const 0) :i64.lt_s
+           (:if nil nil ((:i64.const 0) (:local.get q) :i64.sub (:local.set lz)) ((:local.get q) (:local.set lz)))
+           (:block pdone nil
+             (:loop pagain nil
+               (:local.get lz) :i64.eqz (:br_if pdone)
+               (:local.get fpw) (:f32.const 10f0) :f32.mul (:local.set fpw)
+               (:local.get lz) (:i64.const 1) :i64.sub (:local.set lz)
+               (:br pagain)))
+           (:local.get w) :f32.convert_i64_u (:local.set fs)
+           (:local.get q) (:i64.const 0) :i64.lt_s
+           (:if nil :f32 ((:local.get fs) (:local.get fpw) :f32.div) ((:local.get fs) (:local.get fpw) :f32.mul))
+           (:local.set fs)
+           (:local.get fs) :f32.neg (:local.get fs) (:local.get neg) :select (:struct.new :single) :return)))
+    ((:local.get w) (:i64.const #x20000000000000) :i64.le_u
+     (:local.get q) (:i64.const -22) :i64.ge_s :i32.and (:local.get q) (:i64.const 22) :i64.le_s :i32.and
+     (:if nil nil
+          ((:f64.const 1d0) (:local.set pw)
+           (:local.get q) (:i64.const 0) :i64.lt_s
+           (:if nil nil ((:i64.const 0) (:local.get q) :i64.sub (:local.set lz)) ((:local.get q) (:local.set lz)))
+           (:block pdone nil
+             (:loop pagain nil
+               (:local.get lz) :i64.eqz (:br_if pdone)
+               (:local.get pw) (:f64.const 10d0) :f64.mul (:local.set pw)
+               (:local.get lz) (:i64.const 1) :i64.sub (:local.set lz)
+               (:br pagain)))
+           (:local.get w) :f64.convert_i64_u (:local.set d)
+           (:local.get q) (:i64.const 0) :i64.lt_s
+           (:if nil :f64 ((:local.get d) (:local.get pw) :f64.div) ((:local.get d) (:local.get pw) :f64.mul))
+           (:local.set d)
+           (:local.get d) :f64.neg (:local.get d) (:local.get neg) :select (:struct.new :double) :return))))
+  ;; the powers of the table
+  `(:local.get q) `(:i64.const ,(- +schubfach-kmax+)) :i64.lt_s
+  '(:local.get q) '(:i64.const 308) :i64.gt_s :i32.or
+  `(:if nil nil (,@(nil-code) :return))
+  `(:global.get ,(schubfach-table-global))
+  `(:i64.const ,(- +schubfach-kmin+)) '(:local.get q) :i64.sub :i32.wrap_i64 '(:i32.const 1) :i32.shl '(:local.tee idx)
+  '(:array.get :u63vec) '(:local.set g1)
+  '(:global.get :schubfach-table) '(:local.get idx) '(:i32.const 1) :i32.add '(:array.get :u63vec) '(:local.set g0)
+  '(:local.get w) :i64.clz '(:local.set lz) '(:local.get w) '(:local.get lz) :i64.shl '(:local.set w)
+  ;; A = w g1, B = w g0; U = 2A + floor(B / 2^62) = floor(w g / 2^62)
+  '(:local.get w) '(:local.get g1) :i64.mul '(:local.set alo)
+  (mulhi64-code 'w 'g1) '(:local.set ahi)
+  '(:local.get w) '(:local.get g0) :i64.mul '(:local.set blo)
+  (mulhi64-code 'w 'g0) '(:local.set bhi)
+  '(:local.get alo) '(:i64.const 1) :i64.shl
+  '(:local.get bhi) '(:i64.const 2) :i64.shl '(:local.get blo) '(:i64.const 62) :i64.shr_u :i64.or
+  :i64.add '(:local.set ulo)
+  '(:local.get ahi) '(:i64.const 1) :i64.shl '(:local.get alo) '(:i64.const 63) :i64.shr_u :i64.or
+  '(:local.get bhi) '(:i64.const 62) :i64.shr_u :i64.add
+  ;; (the carry of the low halves)
+  '(:local.get ulo) '(:local.get bhi) '(:i64.const 2) :i64.shl '(:local.get blo) '(:i64.const 62) :i64.shr_u :i64.or
+  :i64.lt_u :i64.extend_i32_u :i64.add '(:local.set uhi)
+  ;; U has 127 or 128 bits: the significand and a rounding bit are in UHI
+  '(:i64.const 24) '(:i64.const 53) '(:local.get single) :select '(:local.set p)
+  '(:i64.const 62) '(:local.get p) :i64.sub '(:local.get uhi) '(:i64.const 63) :i64.shr_u :i64.add '(:local.set sh)
+  '(:i64.const 1) '(:local.get sh) :i64.shl '(:i64.const 1) :i64.sub '(:local.set mask)
+  ;; the bits below: too near zero or all ones, the rounding is not known
+  '(:local.get uhi) '(:local.get mask) :i64.and '(:local.tee mant) :i64.eqz
+  '(:local.get ulo) '(:i64.const 8) :i64.lt_u :i32.and
+  '(:local.get mant) '(:local.get mask) :i64.eq
+  '(:local.get ulo) '(:i64.const -9) :i64.gt_u :i32.and :i32.or
+  `(:if nil nil (,@(nil-code) :return))
+  '(:local.get uhi) '(:local.get sh) :i64.shr_u '(:i64.const 1) :i64.add '(:i64.const 1) :i64.shr_u '(:local.set mant)
+  ;; e2 = sh + 127 + r - lz, r = floor(q log2 10) - 125
+  '(:local.get sh) '(:i64.const 2) :i64.add
+  '(:local.get q) '(:i64.const 913124641741) :i64.mul '(:i64.const 38) :i64.shr_s :i64.add
+  '(:local.get lz) :i64.sub '(:local.set e2)
+  '(:local.get mant) '(:local.get p) :i64.shr_u :i64.eqz :i32.eqz
+  '(:if nil nil ((:local.get mant) (:i64.const 1) :i64.shr_u (:local.set mant)
+                 (:local.get e2) (:i64.const 1) :i64.add (:local.set e2)))
+  ;; the biased exponent
+  '(:local.get e2) '(:local.get p) :i64.add '(:i64.const 126) '(:i64.const 1022) '(:local.get single) :select
+  :i64.add '(:local.tee be) '(:i64.const 1) :i64.lt_s
+  '(:local.get be) '(:i64.const 254) '(:i64.const 2046) '(:local.get single) :select :i64.gt_s :i32.or
+  `(:if nil nil (,@(nil-code) :return))
+  '(:local.get single)
+  '(:if nil :eqref
+    ((:local.get be) (:i64.const 23) :i64.shl (:local.get mant) (:i64.const #x7FFFFF) :i64.and :i64.or
+     (:local.get neg) :i64.extend_i32_u (:i64.const 31) :i64.shl :i64.or :i32.wrap_i64 :f32.reinterpret_i32
+     (:struct.new :single))
+    ((:local.get be) (:i64.const 52) :i64.shl (:local.get mant) (:i64.const #xFFFFFFFFFFFFF) :i64.and :i64.or
+     (:local.get neg) :i64.extend_i32_u (:i64.const 63) :i64.shl :i64.or :f64.reinterpret_i64
+     (:struct.new :double))))
+(defprim clysm-sys::%decimal-float (str start end packed) :value
+  (schubfach-table-global)
+  `(,@str ,@start ,@end ,@packed (:call :decimal-float)))
+
+;;; (string start end negative-p) -> the integer of the decimal digits
+;;; STRING[START,END): up to 18 digits in an i64, more in limbs multiplied
+;;; by 10^9 and added a group of nine digits at a time.
+(defhelper :decimal-int :eeee-e ((s (:ref :null :string)) (i :i32) (end :i32) (n :i32) (k :i32) (used :i32)
+                                 (j :i32) (m (:ref :null :limbs)) (w :i64) (mult :i64) (tt :i64))
+  '(:local.get 0) '(:ref.cast :string) '(:local.set s)
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.set i)
+  '(:local.get 2) '(:ref.cast :i31) :i31.get_s '(:local.tee end) '(:local.get i) :i32.sub '(:local.tee n)
+  '(:i32.const 18) :i32.le_s
+  `(:if nil nil
+    ((:block done nil
+       (:loop again nil
+         (:local.get i) (:local.get end) :i32.ge_s (:br_if done)
+         (:local.get w) (:i64.const 10) :i64.mul
+         (:local.get s) (:local.get i) (:array.get :string) (:i32.const 48) :i32.sub :i64.extend_i32_u :i64.add
+         (:local.set w)
+         (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+         (:br again)))
+     (:i64.const 0) (:local.get w) :i64.sub (:local.get w) (:local.get 3) ,@(nil-code) :ref.eq :i32.eqz :select
+     (:call :i64-int) :return))
+  ;; limbs: 32 bits hold more than nine digits
+  '(:local.get n) '(:i32.const 9) :i32.div_u '(:i32.const 2) :i32.add '(:array.new_default :limbs) '(:local.set m)
+  ;; the first group has N mod 9 digits (9 when none)
+  '(:local.get n) '(:i32.const 9) :i32.rem_u '(:local.tee k) :i32.eqz
+  '(:if nil nil ((:i32.const 9) (:local.set k)))
+  `(:block done nil
+     (:loop again nil
+       (:local.get i) (:local.get end) :i32.ge_s (:br_if done)
+       (:i64.const 0) (:local.set w) (:i64.const 1) (:local.set mult)
+       (:block gdone nil
+         (:loop gagain nil
+           (:local.get k) :i32.eqz (:br_if gdone)
+           (:local.get w) (:i64.const 10) :i64.mul
+           (:local.get s) (:local.get i) (:array.get :string) (:i32.const 48) :i32.sub :i64.extend_i32_u :i64.add
+           (:local.set w)
+           (:local.get mult) (:i64.const 10) :i64.mul (:local.set mult)
+           (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+           (:local.get k) (:i32.const 1) :i32.sub (:local.set k)
+           (:br gagain)))
+       (:i32.const 9) (:local.set k)
+       ;; m := m * mult + w
+       (:i32.const 0) (:local.set j)
+       (:block mdone nil
+         (:loop magain nil
+           (:local.get j) (:local.get used) :i32.ge_u (:br_if mdone)
+           (:local.get m) (:local.get j) (:array.get :limbs) :i64.extend_i32_u (:local.get mult) :i64.mul
+           (:local.get w) :i64.add (:local.tee tt)
+           (:i64.const ,+limb-bits+) :i64.shr_u (:local.set w)
+           (:local.get m) (:local.get j) (:local.get tt) :i32.wrap_i64 (:array.set :limbs)
+           (:local.get j) (:i32.const 1) :i32.add (:local.set j)
+           (:br magain)))
+       (:local.get w) :i64.eqz :i32.eqz
+       (:if nil nil ((:local.get m) (:local.get used) (:local.get w) :i32.wrap_i64 (:array.set :limbs)
+                     (:local.get used) (:i32.const 1) :i32.add (:local.set used)))
+       (:br again)))
+  '(:local.get m) '(:local.get 3) (nil-code) :ref.eq :i32.eqz '(:call :make-int))
+(defprim clysm-sys::%decimal-integer (str start end neg) :value
+  `(,@str ,@start ,@end ,@neg (:call :decimal-int)))
 (defprim clysm-sys::%host-char (i) :value
   `(,@(idx-code i) (:call :host-get-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%math1 (d op) :value `(,@(f64-code d) ,@(idx-code op) (:call :host-math1) ,@(box-f64)))
@@ -5572,6 +5771,74 @@ in local V and the index in local K; else branch to FAIL."
   '(:array.copy :string :string)
   '(:local.get s) :ref.as_non_null)
 (defprim clysm-sys::%int-decimal-string (x) :value `(,@x (:call :int-decimal)))
+
+;;; The decimal digits of the magnitude of an integer written at the end of
+;;; the simple string BUF (a scratch buffer): the index of the first, or -1
+;;; when they may not fit.  Within 64 bits: divisions of an i64 by 10;
+;;; beyond: a copy of the magnitude divided in place by 10^9, as above.
+(defhelper :int-decimal-into :ee-e ((buf (:ref :null :string)) (b (:ref :null :bignum))
+                                    (m (:ref :null :limbs)) (src (:ref :null :limbs))
+                                    (n :i32) (pos :i32) (i :i32) (k :i32) (r :i32) (small :i32)
+                                    (v :i64) (q :i64) (rem :i64) (cur :i64))
+  '(:local.get 1) '(:ref.cast :string) '(:local.tee buf) :array.len '(:local.set pos)
+  '(:local.get 0) '(:ref.test :i31)
+  '(:if nil nil
+    ((:local.get 0) (:ref.cast :i31) :i31.get_s :i64.extend_i32_s (:local.set v)
+     (:i32.const 1) (:local.set small))
+    ((:local.get 0) (:ref.cast :bignum) (:local.tee b) (:struct.get :bignum 1) :ref.is_null
+     (:if nil nil ((:local.get b) (:struct.get :bignum 2) (:local.set v)
+                   (:i32.const 1) (:local.set small)))))
+  ;; within 64 bits: V, its magnitude as an unsigned i64
+  '(:local.get small)
+  '(:if nil nil
+    ((:local.get v) (:i64.const 0) :i64.lt_s
+     (:if nil nil ((:i64.const 0) (:local.get v) :i64.sub (:local.set v)))
+     (:loop again nil
+       (:local.get pos) (:i32.const 1) :i32.sub (:local.set pos)
+       (:local.get v) (:i64.const 10) :i64.div_u (:local.set q)
+       (:local.get buf) (:local.get pos)
+       (:local.get v) (:local.get q) (:i64.const 10) :i64.mul :i64.sub :i32.wrap_i64 (:i32.const 48) :i32.add
+       (:array.set :string)
+       (:local.get q) (:local.tee v) :i64.eqz :i32.eqz (:br_if again))
+     (:local.get pos) :ref.i31 :return))
+  ;; limbs
+  '(:local.get b) '(:struct.get :bignum 1) '(:ref.cast! :limbs) '(:local.tee src) '(:call :mag-len) '(:local.set n)
+  '(:local.get n) '(:i32.const 10) :i32.mul '(:local.get pos) :i32.gt_u
+  '(:if nil nil ((:i32.const -1) :ref.i31 :return))
+  '(:local.get n) '(:array.new_default :limbs) '(:local.set m)
+  '(:local.get m) '(:i32.const 0) '(:local.get src) '(:i32.const 0) '(:local.get n) '(:array.copy :limbs :limbs)
+  `(:block done nil
+     (:loop again nil
+       (:local.get n) :i32.eqz (:br_if done)
+       ;; m := m / 10^9, rem := the remainder
+       (:i64.const 0) (:local.set rem) (:local.get n) (:local.set i)
+       (:block ddone nil
+         (:loop dagain nil
+           (:local.get i) :i32.eqz (:br_if ddone)
+           (:local.get i) (:i32.const 1) :i32.sub (:local.set i)
+           (:local.get rem) (:i64.const ,+limb-bits+) :i64.shl
+           (:local.get m) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.or (:local.tee cur)
+           (:i64.const 1000000000) :i64.div_u (:local.set q)
+           (:local.get m) (:local.get i) (:local.get q) :i32.wrap_i64 (:array.set :limbs)
+           (:local.get cur) (:local.get q) (:i64.const 1000000000) :i64.mul :i64.sub (:local.set rem)
+           (:br dagain)))
+       (:local.get m) (:local.get n) (:i32.const 1) :i32.sub (:array.get :limbs) :i32.eqz
+       (:if nil nil ((:local.get n) (:i32.const 1) :i32.sub (:local.set n)))
+       ;; nine digits (the last chunk: without leading zeros)
+       (:local.get rem) :i32.wrap_i64 (:local.set r) (:i32.const 0) (:local.set k)
+       (:block wdone nil
+         (:loop wagain nil
+           (:local.get k) (:i32.const 9) :i32.ge_u (:br_if wdone)
+           (:local.get n) :i32.eqz (:local.get r) :i32.eqz :i32.and (:br_if wdone)
+           (:local.get pos) (:i32.const 1) :i32.sub (:local.set pos)
+           (:local.get buf) (:local.get pos) (:local.get r) (:i32.const 10) :i32.rem_u (:i32.const 48) :i32.add
+           (:array.set :string)
+           (:local.get r) (:i32.const 10) :i32.div_u (:local.set r)
+           (:local.get k) (:i32.const 1) :i32.add (:local.set k)
+           (:br wagain)))
+       (:br again)))
+  '(:local.get pos) :ref.i31)
+(defprim clysm-sys::%integer-decimal-into (x buf) :value `(,@x ,@buf (:call :int-decimal-into)))
 
 ;;; ISQRT of an integer within 64 bits
 (defhelper :isqrt :e-e ((v :i32) (xa :i64) (ka :i32) (r :i64))

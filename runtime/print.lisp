@@ -474,32 +474,18 @@ string BUF, ending before index I; returns the index of the first digit."
                  (when (eql q 0) (return i))
                  (setq n q))))))))
 
-(defun %fixnum-digits-padded (n buf i width)
-  "Like %FIXNUM-DIGITS in base 10, with leading zeros up to WIDTH digits."
-  (declare (fixnum n i width))
-  (let ((start (- i width)))
-    (declare (fixnum start))
-    (setq i (%fixnum-digits n 10 buf i))
-    (do () ((<= i start) i)
-      (setq i (- i 1))
-      (%set-schar buf i #\0))))
-
 (defun %integer-digits (n base buf)
   "Store the digits of the magnitude of the integer N in BASE at the end of
 the scratch buffer BUF and return the index of the first one, or NIL when N
-is too large for the buffer (it has more than 62 bits)."
-  (let ((end (%string-length buf)))
-    (cond ((and (fixnump n) (not (eql n most-negative-fixnum)))
-           (%fixnum-digits (if (< n 0) (- n) n) base buf end))
-          ((and (eql base 10) (< (integer-length n) 63))
-           ;; chunks of eight decimal digits, which are fixnums
-           (let ((x (abs n)) (i end))
-             (loop
-               (when (fixnump x) (return (%fixnum-digits x 10 buf i)))
-               (multiple-value-bind (q r) (truncate x 100000000)
-                 (setq i (%fixnum-digits-padded r buf i 8))
-                 (setq x q)))))
-          (t nil))))
+is too large for the buffer."
+  (cond ((and (fixnump n) (not (eql n most-negative-fixnum)))
+         (%fixnum-digits (if (< n 0) (- n) n) base buf (%string-length buf)))
+        ;; in base 10, a Wasm helper (an i64 divided by 10, or limbs by 10^9)
+        ((eql base 10)
+         (let ((i (%integer-decimal-into n buf)))
+           (declare (fixnum i))
+           (if (< i 0) nil i)))
+        (t nil)))
 
 (defmacro %decimal-length (m)
   "The number of decimal digits of the nonnegative fixnum M (comparisons, not divisions)."
@@ -572,9 +558,9 @@ run other code while they take the characters get a copy."
   (cond ((integerp x) (%write-integer x stream))
         ((%ratiop x)
          (when *print-radix* (%write-radix-prefix *print-base* stream))
-         (write-string (%integer-to-string (%ratio-num x) *print-base*) stream)
+         (%write-integer-digits (%ratio-num x) *print-base* stream)
          (write-char #\/ stream)
-         (write-string (%integer-to-string (%ratio-den x) *print-base*) stream))
+         (%write-integer-digits (%ratio-den x) *print-base* stream))
         ((floatp x) (%write-float x stream))
         ((%complexp x)
          (write-string "#C(" stream)

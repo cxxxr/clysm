@@ -324,15 +324,24 @@ consumed."
 
 (defun %read-plain-number (s rt)
   "The token whose first character was just read from the string stream S,
-when it is a decimal integer of at most 8 digits or a float of at most 15
-digits and a small exponent, made only of constituent characters: returns T
-and the number, else NIL with nothing more consumed."
+when it is a decimal integer or ratio, or a float of an exponent of at most
+three digits that %DECIMAL-FLOAT rounds, made only of constituent
+characters: returns T and the number, else NIL with nothing more consumed."
   (let* ((buf (stream-buffer s)) (end (stream-end s)) (start (- (stream-index s) 1)) (i start)
          (ascii (%rt-ascii rt))
          (neg nil) (ni 0) (nf 0) (dot nil) (marker 0) (expo 0) (eneg nil) (ne 0)
          (mstart 0) (mend 0) (small 0))
     (declare (fixnum end start i ni nf marker expo ne mstart mend small))
-    (macrolet ((peek () `(if (< i end) (char-code (%schar buf i)) -1)))
+    (macrolet ((peek () `(if (< i end) (char-code (%schar buf i)) -1))
+               (check-token-end ()
+                 ;; the token must end at I, and be made of constituents only
+                 `(progn
+                    (unless (or (>= i end) (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
+                      (return-from %read-plain-number nil))
+                    (do ((k start (+ k 1))) ((>= k i))
+                      (declare (fixnum k))
+                      (unless (eq (svref ascii (char-code (%schar buf k))) :constituent)
+                        (return-from %read-plain-number nil))))))
       (when (< start 0) (return-from %read-plain-number nil))
       (let ((code (peek)))
         (cond ((eql code 45) (setq neg t i (+ i 1)))
@@ -343,6 +352,24 @@ and the number, else NIL with nothing more consumed."
           (unless (<= 48 code 57) (return))
           (when (< ni 8) (setq small (+ (* small 10) (- code 48))))
           (setq ni (+ ni 1) i (+ i 1))))
+      ;; a ratio
+      (when (and (eql (peek) 47) (> ni 0))
+        (setq i (+ i 1))
+        (let ((dstart i) (nd 0) (dsmall 0))
+          (declare (fixnum dstart nd dsmall))
+          (loop
+            (let ((code (peek)))
+              (unless (<= 48 code 57) (return))
+              (when (< nd 8) (setq dsmall (+ (* dsmall 10) (- code 48))))
+              (setq nd (+ nd 1) i (+ i 1))))
+          (when (eql nd 0) (return-from %read-plain-number nil))
+          (check-token-end)
+          (let ((den (if (<= nd 8) dsmall (%decimal-integer buf dstart i nil))))
+            ;; (a zero denominator: the reader of tokens signals the error)
+            (when (eql den 0) (return-from %read-plain-number nil))
+            (let ((num (if (<= ni 8) small (%decimal-integer buf mstart (+ mstart ni) nil))))
+              (setf (stream-index s) i)
+              (return-from %read-plain-number (values t (/ (if neg (- num) num) den)))))))
       (when (eql (peek) 46)
         (setq dot t i (+ i 1))
         (loop
@@ -363,31 +390,27 @@ and the number, else NIL with nothing more consumed."
               (setq expo (+ (* expo 10) (- code 48)) ne (+ ne 1) i (+ i 1))
               (when (> ne 3) (return-from %read-plain-number nil))))
           (when (eql ne 0) (return-from %read-plain-number nil))))
-      ;; the token must end here, and be made of constituents only
-      (unless (or (>= i end) (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
-        (return-from %read-plain-number nil))
-      (do ((k start (+ k 1))) ((>= k i))
-        (declare (fixnum k))
-        (unless (eq (svref ascii (char-code (%schar buf k))) :constituent)
-          (return-from %read-plain-number nil)))
+      (check-token-end)
       (cond ((and (eql marker 0) (eql nf 0))
              ;; an integer, possibly with a decimal point at the end
-             (if (<= 1 ni 8)
-                 (progn (setf (stream-index s) i)
-                        (values t (if neg (- small) small)))
-                 nil))
-            ((and (> (+ ni nf) 0) (<= (+ ni nf) 15) (or (> nf 0) (not (eql marker 0))))
-             (let ((e10 (- (if eneg (- expo) expo) nf)))
-               (declare (fixnum e10))
-               (if (<= -22 e10 22)
-                   (let* ((d (%decimal-to-double buf mstart mend e10))
-                          (d (if neg (%dneg d) d))
-                          (type (cond ((or (eql marker 68) (eql marker 76)) 'double-float)
-                                      ((or (eql marker 70) (eql marker 83)) 'single-float)
-                                      (t *read-default-float-format*))))
-                     (setf (stream-index s) i)
-                     (values t (if (member type '(double-float long-float)) d (%double-to-single d))))
-                   nil)))
+             (cond ((eql ni 0) nil)
+                   ((<= ni 8)
+                    (setf (stream-index s) i)
+                    (values t (if neg (- small) small)))
+                   (t (setf (stream-index s) i)
+                      (values t (%decimal-integer buf mstart (+ mstart ni) neg)))))
+            ((and (> (+ ni nf) 0) (or (> nf 0) (not (eql marker 0))))
+             ;; the nearest float, unless the helper cannot tell
+             (let* ((type (cond ((or (eql marker 68) (eql marker 76)) 'double-float)
+                                ((or (eql marker 70) (eql marker 83)) 'single-float)
+                                (t *read-default-float-format*)))
+                    (x (%decimal-float buf mstart mend
+                                       (+ (* 4 (- (if eneg (- expo) expo) nf))
+                                          (if neg 2 0)
+                                          (if (member type '(double-float long-float)) 0 1)))))
+               (when x
+                 (setf (stream-index s) i)
+                 (values t x))))
             (t nil)))))
 
 (defun %read-top (s eof-error-p eof-value)
@@ -643,7 +666,9 @@ token is empty when the next character ends a token."
     (let ((end (if (char= (char str (- len 1)) #\.) (- len 1) len)))
       (when (and (> end i) (%digits-p str i end (if (< end len) 10 base)))
         (return-from %parse-number-token
-          (list (* sign (%digits-value str i end (if (< end len) 10 base)))))))
+          (list (if (and (or (< end len) (eql base 10)) (%simple-string-p str))
+                    (%decimal-integer str i end (eql sign -1))
+                    (* sign (%digits-value str i end (if (< end len) 10 base))))))))
     ;; ratio
     (let ((slash (position #\/ str)))
       (when slash
@@ -683,37 +708,25 @@ token is empty when the next character ends a token."
                        ((#\F #\S) 'single-float)
                        (t *read-default-float-format*)))
                (e10 (- expo frac-digits))
-               ;; up to 15 digits and a power of ten up to 10^22 are exact
-               ;; doubles: one multiplication or division gives the
-               ;; correctly rounded double
-               (fast (and (<= (+ int-digits frac-digits) 15) (fixnump e10) (<= -22 e10 22)
-                          (%simple-string-p str)
-                          (%decimal-to-double str i mant-end e10))))
+               ;; the nearest float, unless the helper cannot tell
+               (fast (and (fixnump e10) (< -100000000 e10 100000000) (%simple-string-p str)
+                          (%decimal-float str i mant-end
+                                          (+ (* 4 e10) (if (= sign -1) 2 0)
+                                             (if (member type '(double-float long-float)) 0 1))))))
           (if fast
-              (let ((d (if (= sign -1) (%dneg fast) fast)))
-                (list (if (member type '(double-float long-float)) d (%double-to-single d))))
+              (list fast)
               (let* ((digits (remove #\. (subseq str i mant-end)))
                      (exact (* sign (%digits-value digits 0 (length digits) 10)
                                (expt 10 e10))))
-                (list (if (and (zerop exact) (= sign -1))
-                          (if (member type '(double-float long-float)) -0.0d0 -0.0)
-                          (if (member type '(double-float long-float)) (%to-double exact) (%to-single exact)))))))))))
-
-(defun %decimal-to-double (str start end e10)
-  "The double nearest to the decimal digits (and possibly a point) in
-STR[START,END) times 10^E10, for at most 15 digits and |E10| <= 22."
-  (declare (fixnum start end e10))
-  (let ((acc 0d0))
-    (declare (double-float acc))
-    (do ((i start (+ i 1))) ((>= i end))
-      (declare (fixnum i))
-      (let ((code (char-code (%schar str i))))
-        (declare (fixnum code))
-        (unless (eql code 46)
-          (setq acc (%d+ (%d* acc 10d0) (%fixnum-to-double (- code 48)))))))
-    (if (>= e10 0)
-        (%d* acc (svref *%powers-of-ten* e10))
-        (%d/ acc (svref *%powers-of-ten* (- e10))))))
+                (let ((x (if (and (zerop exact) (= sign -1))
+                             (if (member type '(double-float long-float)) -0.0d0 -0.0)
+                             (if (member type '(double-float long-float)) (%to-double exact) (%to-single exact)))))
+                  ;; beyond the largest float: an error, as in SBCL
+                  (when (and s (> (abs x) (if (%single-float-p x)
+                                              most-positive-single-float
+                                              most-positive-double-float)))
+                    (%reader-error s "floating-point overflow reading ~S" str))
+                  (list x)))))))))
 
 (defun %digits-p (str start end base)
   "True when the characters START..END of STR are all digits in BASE."
