@@ -74,6 +74,7 @@ Returns (values bytes constants-vector)."
         (*read-package* *package*)
         (*warnings* nil)
         (*unit-env* nil)
+        (*live-toplevel-loop-p* (some #'form-has-loop-p forms))
         (*error-output* (make-broadcast-stream)))
     (with-fresh-codegen-state ()
       (let ((env (make-cenv)))

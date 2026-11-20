@@ -61,6 +61,10 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     (:if `(,@(cg-test (second node))
            (:if nil ,(rep-block-type rep) ,(cg-rep (third node) rep) ,(cg-rep (fourth node) rep))))
     (:let (cg-let node nil nil rep))
+    ;; a block that nothing returns from (the body of a copied function)
+    (:block (when (and (not (blk-nonlocal (second node)))
+                       (not (block-returned-to-p (second node) (third node))))
+              (cg-rep (third node) rep)))
     ((:prim :call)
      (or (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
               (typed-elt-code node rep))
@@ -69,7 +73,17 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
       (ecase rep
                      (:i64 (cond ((ty-int32-p (node-ty node)) `(,@(cg-rep node :i32) :i64.extend_i32_s))
                                  ((ty-int64-p (node-ty node)) (i64-op-code node))))
-                     (:f64 (when (ty-double-p (node-ty node)) (f64-op-code node)))
+                     (:f64 (if (ty-double-p (node-ty node))
+                               (f64-op-code node)
+                               ;; arithmetic that may give a double, taken as
+                               ;; one (a variable declared DOUBLE-FLOAT): its
+                               ;; fast path unboxed, else the object's double
+                               (when (and (eq (car node) :prim) (spec-tree-node-p node t))
+                                 (let ((b (new-local)) (f (new-local :f64)))
+                                   `(,@(spec-tree-code node (cons b f))
+                                     (:local.get ,b) :ref.is_null
+                                     (:if nil :f64 ((:local.get ,f))
+                                          ((:local.get ,b) ,@(unbox-rep-code :f64 (node-ty node)))))))))
                      (:f32 (when (ty-single-p (node-ty node)) (f32-op-code node)))
                      (:c64 (when (ty-cdouble-p (node-ty node)) (cplx-op-code node :f64)))
                      (:c32 (when (ty-csingle-p (node-ty node)) (cplx-op-code node :f32)))
@@ -96,6 +110,8 @@ comparisons need)."
     (cond ((ty-double-p ty) (cg-rep node :f64))
           ((ty-single-p ty) `(,@(cg-rep node :f32) :f64.promote_f32))
           ((ty-int32-p ty) `(,@(cg-rep node :i32) :f64.convert_i32_s))
+          ;; (rounded to the nearest double, as FLOAT does)
+          ((ty-int64-p ty) `(,@(cg-rep node :i64) :f64.convert_i64_s))
           (t `(,@(cg node) (:call :to-f64))))))
 
 (defparameter *f64-generic*
@@ -460,6 +476,21 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
 
 (defun i64-arg-p (node) (ty-int64-p (node-ty node)))
 
+(defun exact-int-division-code (node)
+  "(/ a k) of an integer A within 64 bits by a constant integer K (not 0 or
+-1): the quotient when K divides A, else the generic division (a ratio)."
+  (when (and (eq (node-op-name node) '/) (= (length (cddr node)) 2))
+    (destructuring-bind (a b) (cddr node)
+      (let ((k (const-int-node b)))
+        (when (and k (typep k '(signed-byte 32)) (not (member k '(0 -1))) (i64-arg-p a))
+          (let ((x (new-local :i64)) (q (new-local :i64)))
+            `(,@(cg-rep a :i64) (:local.tee ,x) ,@(cg-effect b) (:i64.const ,k) :i64.rem_s :i64.eqz
+              (:if nil :eqref
+                   ((:local.get ,x) (:i64.const ,k) :i64.div_s (:local.tee ,q)
+                    (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                    (:if nil :eqref ((:local.get ,q) :i32.wrap_i64 :ref.i31) ((:local.get ,q) (:call :i64-int))))
+                   ((:local.get ,x) (:call :i64-int) (:i64.const ,k) (:call :i64-int) (:call :div))))))))))
+
 (defun i64-op-code (node)
   "i64 code for an integer operation whose result is within 64 bits, or NIL."
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
@@ -524,6 +555,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                    `(,@(cg-rep (first args) :f32) ,@(cg-rep (second args) :f32) (:struct.new :complex-s)))
                   ((ty-double-p ty)
                    (let ((c (f64-op-code node))) (when c `(,@c (:struct.new :double)))))
+                  ((exact-int-division-code node))
                   ((ty-single-p ty)
                    (let ((c (f32-op-code node))) (when c `(,@c (:struct.new :single)))))
                   ((ty-cdouble-p ty)
@@ -1023,7 +1055,8 @@ the structure class (local C) or one including it."
                      (or (ty-double-p (node-ty a)) (ty-double-p (node-ty b))
                          (ty-single-p (node-ty a)) (ty-single-p (node-ty b))))
                 `(,@(f64-arg-code a) ,@(f64-arg-code b)
-                  ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne)))))))
+                  ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne))))
+               ((spec-cmp-code node)))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
                                                   (plusp '((:i32.const 0) :i32.gt_s))
@@ -1047,6 +1080,41 @@ the structure class (local C) or one including it."
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
          `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq)))
       (t (numeric-test-code node)))))
+
+(defun f64-evident-p (node)
+  "NODE is a double, or a double on one of its paths (an unboxed double
+variable, CG-DUAL-F64)."
+  (or (ty-double-p (node-ty node)) (fdual-lref-p node) (dual-f64-node-p node)))
+
+(defun spec-cmp-code (node)
+  "For a comparison of two numbers one of which is a double (or may be one,
+unboxed) and the other may be one: i32 code comparing f64s when both are
+doubles, else the generic comparison; or NIL."
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (when (and (spec-cmp-node-p node) (not *no-fuse*)
+               (or (f64-evident-p a) (f64-evident-p b))
+               (logtest (ty-bits (node-ty a)) +k-double+) (logtest (ty-bits (node-ty b)) +k-double+))
+      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+            (ba (new-local)) (fa (new-local :f64)) (bb (new-local)) (fb (new-local :f64))
+            (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
+        (when p
+          (flet ((operand (n bl fl)
+                   (cond ((ty-double-p (node-ty n))
+                          `(,@(cg-rep n :f64) (:local.set ,fl) (:ref.null :eq) (:local.set ,bl)))
+                         ((or (fdual-lref-p n) (dual-f64-node-p n)) (cg-dual-f64 n bl fl))
+                         (t `(,@(cg n) (:local.set ,bl)))))
+                 (unbox (bl fl)
+                   `((:local.get ,bl) :ref.is_null
+                     (:if nil :f64 ((:local.get ,fl))
+                          ((:local.get ,bl) (:ref.test :double) :i32.eqz (:br_if ,slow)
+                           (:local.get ,bl) (:ref.cast! :double) (:struct.get :double 0))))))
+            `(,@(operand a ba fa) ,@(operand b bb fb)
+              (:block ,done :i32
+                (:block ,slow nil
+                  ,@(unbox ba fa) ,@(unbox bb fb)
+                  ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne))
+                  (:br ,done))
+                ,@(funcall (prim-fn p) (list (fdual-materialize-code ba fa) (fdual-materialize-code bb fb)))))))))))
 
 (defun typed-divmod-code (node)
   "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a
@@ -1319,6 +1387,7 @@ eqref), the local of the remainder and its representation; or NIL."
 (defvar *dual-uses* (make-hash-table :test 'eq)
   "lvar -> (arithmetic assignments . other uses) in the function being compiled")
 
+
 (defun dual-uses (lv)
   "How LV is used in the function being compiled: the number of its
 assignments from integer arithmetic, and of its uses other than as an operand
@@ -1376,15 +1445,27 @@ an accumulator when its assignments are integer arithmetic."
         (:local.get ,b) (:br_on_non_null ,ok)
         (:local.get ,f) (:struct.new :double) (:local.tee ,b) :ref.as_non_null))))
 
-(defun arith-operand-use-p (lv body)
-  "LV is an operand of + - * / or SQRT twice or more in BODY (an unboxed
-value pays when it is used again: not for the temporary of an INCF)."
+(defun spec-cmp-node-p (node)
+  (and (member (car node) '(:prim :call))
+       (member (node-op-name node) '(< > <= >= = /=)) (= (length (cddr node)) 2)))
+
+(defun arith-operand-use-p (lv body &optional (min 2))
+  "LV is an operand of + - * / SQRT or a comparison MIN times or more in
+BODY (an unboxed value made by arithmetic pays when it is used again: not
+for the temporary of an INCF)."
   (let ((n 0))
     (labels ((walk (x)
                (when (consp x)
-                 (when (spec-op-node-p x)
+                 (when (or (spec-op-node-p x) (spec-cmp-node-p x))
                    (dolist (a (cddr x))
-                     (when (and (eq (car a) :lref) (eq (second a) lv) (>= (incf n) 2))
+                     (when (and (eq (car a) :lref) (eq (second a) lv) (>= (incf n) min))
+                       (return-from arith-operand-use-p t))))
+                 ;; the value of a variable bound to it (the parameter of a
+                 ;; copied function bound to the temporary of the argument)
+                 (when (eq (car x) :let)
+                   (dolist (b (second x))
+                     (when (and (eq (cadr b) :lref) (eq (caddr b) lv) (not (lvar-mutated (car b)))
+                                (arith-operand-use-p (car b) (third x) min))
                        (return-from arith-operand-use-p t))))
                  (map-subnodes #'walk x))))
       (walk body)
@@ -1416,23 +1497,95 @@ that may give a double."
        (not *no-fuse*)
        (or (and (spec-able-p init)
                 (or (not (lvar-mutated lv)) (nth-value 2 (spec-tree-stats init))))
+           ;; a value that is a double on one of its paths, or another such variable
+           (and (not (lvar-mutated lv)) (or (fdual-lref-p init) (dual-f64-node-p init)))
            (and (lvar-mutated lv) (lvar-type lv) (logtest (ty-bits (lvar-type lv)) +k-double+)
                 (labels ((walk (n)
                            (when (consp n)
                              (when (and (eq (car n) :lset) (eq (second n) lv) (spec-able-p (third n))
-                                        ;; (a double among the operands: not a counter)
-                                        (nth-value 2 (spec-tree-stats (third n))))
+                                        ;; (a double among the operands, or a
+                                        ;; variable that starts as a double: not a counter)
+                                        (or (nth-value 2 (spec-tree-stats (third n)))
+                                            (ty-double-p (node-ty init))))
                                (return-from fdual-candidate-p (arith-operand-use-p lv body)))
                              (map-subnodes #'walk n))))
                   (walk body)
                   nil)))
-       (arith-operand-use-p lv body)))
+       ;; (a value that needs no arithmetic to be unboxed, or arithmetic
+       ;; with a double among its operands: one use is enough)
+       (arith-operand-use-p lv body (if (and (not (lvar-mutated lv))
+                                             (or (fdual-lref-p init) (dual-f64-node-p init)
+                                                 (and (spec-able-p init) (nth-value 2 (spec-tree-stats init)))))
+                                        1 2))))
 
 (defun fdual-bind-code (lv init b f)
   (cond ((spec-able-p init) (spec-store-code init b f))
+        ((or (fdual-lref-p init) (dual-f64-node-p init)) (cg-dual-f64 init b f))
         ((and (eq (car init) :const) (typep (second init) 'double-float))
          `((:f64.const ,(second init)) (:local.set ,f) (:ref.null :eq) (:local.set ,b)))
         (t `(,@(cg init) (:local.set ,b)))))
+
+;;; Values that are doubles on some of their paths.  An IF (a LET, PROGN or
+;;; BLOCK ending in one) one of whose branches gives a double or arithmetic
+;;; that may give one, and the others anything (the guarded copy of a
+;;; function defined in another form, whose other branch calls the function;
+;;; (cond ((< x 0d0) 0d0) (t x))), is computed into a pair of locals as an
+;;; unboxed double variable is (B null: the value is the f64 F), so that the
+;;; double is not boxed where arithmetic or a double variable takes it.
+(defun block-returned-to-p (blk body)
+  (labels ((walk (n)
+             (when (consp n)
+               (when (and (eq (car n) :return-from) (eq (second n) blk))
+                 (return-from block-returned-to-p t))
+               (map-subnodes #'walk n))))
+    (walk body)
+    nil))
+
+(defun fdual-lref-p (node)
+  (and (eq (car node) :lref) (fdual-local (second node)) (eq (car (get-loc (second node))) :local)))
+
+(defun dual-f64-branch-p (node)
+  (or (ty-double-p (node-ty node)) (spec-able-p node) (fdual-lref-p node) (dual-f64-source-p node)))
+
+(defun dual-f64-source-p (node)
+  (case (car node)
+    (:if (or (dual-f64-branch-p (third node)) (dual-f64-branch-p (fourth node))))
+    (:progn (and (cdr node) (dual-f64-branch-p (car (last node)))))
+    (:let (and (notany (lambda (b) (lvar-special (car b))) (second node))
+               (not (or-let-p node))
+               (dual-f64-branch-p (third node))))
+    (:block (and (not (blk-nonlocal (second node)))
+                 (dual-f64-branch-p (third node))
+                 (not (block-returned-to-p (second node) (third node)))))
+    (:the (dual-f64-branch-p (third node)))
+    (t nil)))
+
+(defun dual-f64-node-p (node)
+  "NODE may give a double, not only doubles, and has a path giving one unboxed."
+  (let ((ty (node-ty node)))
+    (and (not *no-fuse*) (logtest (ty-bits ty) +k-double+) (not (ty-double-p ty))
+         (dual-f64-source-p node))))
+
+(defun cg-dual-f64 (node b f)
+  "Code (leaving nothing) setting the pair of locals B (eqref) and F (f64) to
+the value of NODE: B null when F holds it."
+  (cond ((ty-double-p (node-ty node))
+         `(,@(cg-rep node :f64) (:local.set ,f) (:ref.null :eq) (:local.set ,b)))
+        ((spec-able-p node) (spec-store-code node b f))
+        ((fdual-lref-p node)
+         (let ((lv (second node)))
+           `((:local.get ,(cdr (get-loc lv))) (:local.set ,b) (:local.get ,(fdual-local lv)) (:local.set ,f))))
+        ((dual-f64-source-p node)
+         (ecase (car node)
+           (:if `(,@(cg-test (second node))
+                  (:if nil nil ,(cg-dual-f64 (third node) b f) ,(cg-dual-f64 (fourth node) b f))))
+           (:progn `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
+                     ,@(cg-dual-f64 (car (last node)) b f)))
+           (:let (cg-let node nil nil (list :dual b f)))
+           ;; (no RETURN-FROM to it)
+           (:block (cg-dual-f64 (third node) b f))
+           (:the (cg-dual-f64 (third node) b f))))
+        (t `(,@(cg node) (:local.set ,b)))))
 
 (defun dual-local (lv)
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))

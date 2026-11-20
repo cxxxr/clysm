@@ -538,6 +538,9 @@ being compiled, or NIL (src/live.lisp).")
 the function the symbol had when the source was recorded")
 (defvar *live-inline-closure-hook* nil "symbol -> the function made by its recorded definition, if it is still the symbol's function")
 (defvar *live-inline-depth* 0)
+(defvar *live-toplevel-loop-p* nil "the form compiled in the image has a loop: its toplevel code gets copies too")
+(defparameter *loop-operators*
+  '(dotimes dolist do do* loop tagbody go prog prog* do-symbols do-external-symbols do-all-symbols))
 (defparameter *live-inline-max-size* 60)
 (defvar *fasl-guard-globals* (make-hash-table :test 'equal) "(symbol code . mark code) -> the global of a guard (prims.lisp)")
 (defvar *fasl-guards-set* (make-hash-table :test 'equal) "(symbol . mark) whose guard global the unit sets")
@@ -553,6 +556,19 @@ the function the symbol had when the source was recorded")
                (when (consp x) (walk (car x)) (walk (cdr x)))))
       (walk x))
     n))
+
+(defun form-has-loop-p (form &optional (limit 5000))
+  "FORM mentions an operator of iteration, looking at no more than LIMIT
+conses (a literal may be circular)."
+  (let ((n 0))
+    (labels ((walk (x)
+               (cond ((consp x)
+                      (when (> (incf n) limit) (return-from form-has-loop-p nil))
+                      (walk (car x)) (walk (cdr x)))
+                     ((and x (symbolp x) (member x *loop-operators*))
+                      (return-from form-has-loop-p t)))))
+      (walk form)
+      nil)))
 
 (defun tree-mentions-p (x sym)
   (if (consp x) (or (tree-mentions-p (car x) sym) (tree-mentions-p (cdr x) sym)) (eq x sym)))
@@ -582,9 +598,7 @@ when it may be copied into callers compiled later, else NIL."
                  (not (tree-mentions-p (cons ll body) sym))
                  (not (uses-redefinable-macros-p (cons ll body)))
                  ;; a loop stays in its own function (which the engine optimizes when it is called again)
-                 (notany (lambda (op) (tree-mentions-p body op))
-                         '(dotimes dolist do do* loop tagbody go prog prog* do-symbols do-external-symbols
-                           do-all-symbols))
+                 (notany (lambda (op) (tree-mentions-p body op)) *loop-operators*)
                  (<= (form-size body *live-inline-max-size*) *live-inline-max-size*))
         (list ll body)))))
 
@@ -621,8 +635,9 @@ when it may be copied into callers compiled later, else NIL."
   (let* ((op (car form))
          (ok (and *live-mode* (< *live-inline-depth* 2)
                   (not clysm-sys::*record-frames*)
-                  ;; (not into the code of a toplevel form, which runs once)
-                  *current-lam* (lam-parent *current-lam*)
+                  ;; (not into the code of a toplevel form, which runs once,
+                  ;; unless it has a loop)
+                  *current-lam* (or (lam-parent *current-lam*) *live-toplevel-loop-p*)
                   (not (gethash op *notinline*)) (not (member op *local-notinline*))
                   (not (get op 'clysm-sys::%notinline))))
          (rec (and ok *live-inline-ok* *live-inline-closure-hook*
@@ -685,10 +700,12 @@ that may be copied into the callers, or NIL."
          (second form))
         (t nil)))
 
-(defun inline-lambda-application (name ll body args &optional (key-forms args))
+(defun inline-lambda-application (name ll body args &optional (key-forms args) (depth-var '*live-inline-depth*))
   "A form binding the parameters of lambda list LL to ARGS (forms) and
 running BODY (with the block NAME) in a null lexical environment, or NIL when
-the arguments do not fit (they are then passed by a call)."
+the arguments do not fit (they are then passed by a call).  The body (not
+the arguments, which are the caller's code) is converted with DEPTH-VAR,
+the depth of copies, one more."
   (let* ((pl (parse-lambda-list ll))
          (temps (loop for nil in args collect (gensym "A")))
          (rest-temps temps) (rest-args args)
@@ -737,10 +754,11 @@ the arguments do not fit (they are then passed by a call)."
         (push (list (first a) (second a)) bindings)))
     (multiple-value-bind (decls forms) (parse-body body)
       `(let ,(mapcar #'list temps args)
-         (clysm-sys::%with-only-variables ,temps
-           (let* ,(nreverse bindings)
-             ,@(when decls `((declare ,@decls)))
-             (block ,name ,@forms)))))))
+         (clysm-sys::%inline-copy ,depth-var
+           (clysm-sys::%with-only-variables ,temps
+             (let* ,(nreverse bindings)
+               ,@(when decls `((declare ,@decls)))
+               (block ,name ,@forms))))))))
 
 (defun inline-expansion-call (form)
   "FORM, a call of a function with an inline expansion, as a copy of its body, or NIL."
@@ -750,7 +768,7 @@ the arguments do not fit (they are then passed by a call)."
                    (not (get op 'clysm-sys::%notinline))
                    (get op 'clysm-sys::%inline-expansion))))
     (when (and (consp src) (eq (car src) 'lambda) (consp (cdr src)))
-      (inline-lambda-application op (second src) (cddr src) (cdr form)))))
+      (inline-lambda-application op (second src) (cddr src) (cdr form) (cdr form) '*inline-expansion-depth*))))
 
 (defun convert-compound (form env)
   (let ((op (car form)))
@@ -791,14 +809,13 @@ the arguments do not fit (they are then passed by a call)."
     (let ((expansion (inline-expansion-call form)))
       (when expansion
         (let ((node (handler-case
-                        (let ((*inline-expansion-depth* (1+ *inline-expansion-depth*))) (convert expansion env))
+                        (convert expansion env)
                       ;; (a source that cannot be compiled here is not used again)
                       (error () (remprop op 'clysm-sys::%inline-expansion) nil))))
           (when node (return-from convert-compound node)))))
     (let ((inlined (and (symbolp op) (not (member op *local-notinline*)) (live-inline-call form))))
       (when inlined
-        (return-from convert-compound
-          (let ((*live-inline-depth* (1+ *live-inline-depth*))) (convert inlined env)))))
+        (return-from convert-compound (convert inlined env))))
     ;; a function defined at run time (a generic function)
     (when (and (member op '(ensure-generic-function clysm-sys::%add-method-to clysm-sys::%defmethod
                             clysm-sys::%defgeneric))
@@ -1389,6 +1406,13 @@ MACROLET of LOOP-FINISH) twice as long."
              (make-cenv (loop for v in (second form)
                               for e = (env-lookup-var env v)
                               when e collect e)))))
+
+;;; (%inline-copy depth-var form): FORM, the body of a copied function,
+;;; converted with the depth of copies DEPTH-VAR one more (the arguments of
+;;; the copied call are converted at the caller's depth)
+(defnative clysm-sys::%inline-copy (form env)
+  (progv (list (second form)) (list (1+ (symbol-value (second form))))
+    (convert (third form) env)))
 
 ;;; (sys:%ftype-raw (f ...)): the call, its value not checked (FTYPE-CALL-FORM)
 (defnative clysm-sys::%ftype-raw (form env)
