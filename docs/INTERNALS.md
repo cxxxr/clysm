@@ -2088,11 +2088,27 @@ What makes the code fast:
   outside the form that holds it (`(let (...) (declare (function next-fn))
   ...)`, CLHS 3.3.4) applies to the references within that form, which are
   converted as `(the type var)` — checked there for an integer type
-  (`free-type-decl-env` in `src/frontend.lisp`). At `(safety 0)` nothing
-  is checked (see "What `(safety 0)` does" below). **Unboxed representations**
+  (`free-type-decl-env` in `src/frontend.lisp`). A structure class defined
+  by `defstruct` is a declared type too (`(declare (body a))`, `(type body
+  a)`: `struct-class-type-p`), and so is the slot type of a slot declared
+  of one; an accessor of an object known to be of its class (by such a
+  declaration, by a constructor, a type test or an access before) is a
+  `ref.test` of the structure's Wasm type and the `struct.get`/`struct.set`
+  of the field — no load of the class, no layout comparison (an instance
+  of an including structure that has a slot vector, or a value not of the
+  class, takes the call of the function). A declared integer type is
+  checked by tests the type of the value decides where it can
+  (`known-test-result`: `(<= 0 v)` and `sys::%integerp` of a value of a
+  known range), so a `setq` of a `(unsigned-byte 32)` variable to a value
+  computed in an i64 costs nothing. A declaration that would leave a value
+  with no type (the NIL a variable is bound to before its first value)
+  leaves it its own type. At `(safety 0)` nothing is checked (see "What
+  `(safety 0)` does" below). **Unboxed representations**
   (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
   floats, complex numbers of floats (two locals), references to specialized
-  vectors, two-dimensional arrays with their storage and dimensions in locals.
+  vectors, two-dimensional arrays with their storage and dimensions in locals
+  (a variable bound to another one, as `(incf (aref c i j))` binds one,
+  in an innermost loop uses those locals instead of loading the header again).
 * **Arithmetic on values of unknown type** (undeclared code: structure
   slots, list elements, parameters; `src/prims.lisp`, `src/typed.lisp`).
   A tree of `+ - *` (and `1+ 1- logand logior logxor ash`) is computed in
@@ -2491,6 +2507,9 @@ in 30 bits (Clysm's fixnums), as portable code must.
 | `d-fft` | 103 | 86 | 0.83 |
 | geometric mean | | | 1.56 |
 
+After items 1, 3 and 5 below (structure accessors, integer checks, array
+headers): 1.48 against 1.57 for the code before, run by run on one slot.
+
 In the image (`MODE=script`): 1.03 of the whole program; `d-tokenize` 1.67,
 `d-tak` 1.12, `d-k-nucleotide` 1.10, the rest within 0.8–1.07. The same file
 with `(safety 1)` in place of `(safety 0)`: 1.52 (SBCL's checks cost it
@@ -2538,6 +2557,17 @@ ranked by the gain expected:
    where it is bound, or trusted at safety 0) should keep a typed
    reference whose accessors are a bare `struct.get`. Expected: n-body and
    particles 3.5 → about 1.3.
+   *Done (2026-11-21):* a structure class is a declared type (also as a
+   declaration identifier, and as a slot type), and an accessor of an
+   object known to be of the class is a `ref.test` of its Wasm type and
+   the field access, the class loaded only on the slow path (see "Type
+   inference" above). `d-nbody` 785 → 683 ms, `d-particles` 507 → 439
+   (3.6 → 3.15 and 3.3 → 3.0; `clysm script`: 802 → 656, 507 → 417); the
+   rest is item 2, whose float tests are around every one of those
+   reads. The test of the Wasm type is kept (not a bare cast): a
+   structure that includes one of field slots but has more than 32 slots
+   keeps a slot vector, and its instances are not of the Wasm type (the
+   cast that the code made after a first access trapped on them before).
 2. **Floating-point trap emulation on every f64 operation** (`d-matmul`,
    `d-spectral-norm`, `d-nbody`, `d-particles`, `d-mandelbrot`). Each
    `f64.add`/`f64.sub` is followed by a NaN/infinity test (`x - x != 0`)
@@ -2555,6 +2585,10 @@ ranked by the gain expected:
    it for a bignum, then compares the range. The same function without
    the declaration of `crc` runs in 77 ms against 136 (SBCL 76). An i64
    is an integer: the test is two i64 comparisons (none at safety 0).
+   *Done:* the check uses `sys::%integerp` and comparisons that the
+   types of the value decide (`known-test-result`), so it is folded away
+   when the value is known to be in range, and `%bignump` of a value in
+   an i64 is a comparison: `d-crc32` 282 → 157 ms (1.82 → 1.02 SBCL).
 4. **Arithmetic of declared fixnums whose result is not proved a fixnum,
    and calls** (`d-tak` 2.2, `d-triangle` 2.5, `d-fannkuch` 2.35). `(1- x)`
    of a fixnum is boxed by a call of `$box-i32` and passed as an `eqref`;
@@ -2576,6 +2610,15 @@ ranked by the gain expected:
    each subscript has its own bounds test besides the Wasm array's own.
    Hoisting the header of an array variable out of the loop and one test
    of the row-major index are the gain.
+   *Done in part:* a variable of the representation `(:md2 kind)` bound
+   to another one (SETF's, an inline function's parameter) in an
+   innermost loop uses that one's locals (or copies them) instead of
+   loading the header again. `d-matmul` 327 → 200 ms (2.8 → 1.75). Outside an innermost
+   loop it loads the header as before: keeping the locals live across the
+   inner loop made `p-double-2d` 10% slower (register pressure in V8).
+   Testing both subscripts with one branch (`and` of the two
+   comparisons) measured no different and was left out. Left: the row
+   offset `i * dim1` is computed at every access.
 6. **An inline function's double result is boxed** (`d-spectral-norm`).
    `eval-a` (`declaim inline`) returns through a block of type `eqref`: its
    f64 is put in a `struct.new $double` and unboxed by the caller at once,
