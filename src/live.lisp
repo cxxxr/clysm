@@ -27,6 +27,9 @@
          (*closure-globals* nil)
          (*closure-global-names* (make-hash-table :test 'equal))
          (*misc-globals* nil)
+         (*fasl-guard-globals* (make-hash-table :test 'equal))
+         (*fasl-guards-set* (make-hash-table :test 'equal))
+         (*fasl-guards-pending* nil)
          (*pending-lams* nil)
          (*compiled-lams* (make-hash-table :test 'eq))
          (*extra-types* (make-hash-table :test 'equal))
@@ -415,8 +418,16 @@ as in stack traces (FOO, or FOO#123 for one of them).")
         (*func-segment* (length *unit-segments*))
         (current *current-toplevel*) (nodes *toplevel-nodes*) (weight *toplevel-weight*)
         (lams *toplevel-lams*) (done nil))
+    (setq *fasl-guards-pending* nil)
     (unwind-protect
-         (progn (process-toplevel form *unit-env*) (setq done t))
+         (progn (process-toplevel form *unit-env*)
+                ;; the globals of the guards of the copies the form made
+                ;; (LIVE-INLINE-CALL) are set after it
+                (dolist (k (reverse *fasl-guards-pending*))
+                  (unless (gethash k *fasl-guards-set*)
+                    (setf (gethash k *fasl-guards-set*) t)
+                    (process-toplevel `(clysm-sys::%fasl-inline-guard-set ',(car k) ,(cdr k)) *unit-env*)))
+                (setq done t))
       ;; a form the compiler failed on leaves no code (COMPILE-FILE writes
       ;; its source instead)
       (unless done

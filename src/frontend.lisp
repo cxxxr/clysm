@@ -539,6 +539,9 @@ the function the symbol had when the source was recorded")
 (defvar *live-inline-closure-hook* nil "symbol -> the function made by its recorded definition, if it is still the symbol's function")
 (defvar *live-inline-depth* 0)
 (defparameter *live-inline-max-size* 60)
+(defvar *fasl-guard-globals* (make-hash-table :test 'equal) "(symbol code . mark code) -> the global of a guard (prims.lisp)")
+(defvar *fasl-guards-set* (make-hash-table :test 'equal) "(symbol . mark) whose guard global the unit sets")
+(defvar *fasl-guards-pending* nil "(symbol . mark) of the copies made by the toplevel form being processed")
 (defparameter *fasl-inline-max-depth* 1 "copies of functions of fasls in a copied body")
 (defparameter *fasl-inline-max-size* 40 "the largest body (conses and atoms) of a function of a fasl that is copied")
 
@@ -600,11 +603,13 @@ when it may be copied into callers compiled later, else NIL."
 ;;; (SYS::%NOTE-FASL-INLINE: the property SYS::%FASL-INLINE of its name,
 ;;; (lambda-list body mark function)), and calls of it compiled in the image
 ;;; after the fasl was loaded (other files, the REPL) contain a guarded copy
-;;; of its body: in a fasl the function the guard compares with is found when
-;;; the code first runs and kept in a global of the module (%FASL-INLINE-GUARD
-;;; calls SYS::%FASL-INLINE-FUNCTION: the function of the name if it is still
-;;; the one of that definition, else an object that is no function), so that
-;;; a redefinition, before or after, makes the call an ordinary one.
+;;; of its body: in a fasl the guard (%FASL-INLINE-GUARD) compares the
+;;; function of the name with a global of the module, one for each function
+;;; and mark, that a toplevel form after the first form making such a copy
+;;; sets (%FASL-INLINE-GUARD-SET, from SYS::%FASL-INLINE-FUNCTION: the
+;;; function of the name if it is still the one of that definition, else an
+;;; object that is no function); until then it is null and the call is made.
+;;; So a redefinition, before or after, makes the call an ordinary one.
 (defun fasl-inline-entry (op)
   "The recorded source of OP from a loaded fasl, (lambda-list body mark function), or NIL."
   (and (symbolp op) (fboundp op)
@@ -633,8 +638,9 @@ when it may be copied into callers compiled later, else NIL."
               (return-from live-inline-call
                 `(let ,(mapcar #'list temps (cdr form))
                    (if ,(if *unit-env*
-                            ;; (a fasl: the function is found when the code first runs)
-                            `(clysm-sys::%fasl-inline-guard ',op ,(third e))
+                            ;; (a fasl: the function is found when the module runs)
+                            (progn (pushnew (cons op (third e)) *fasl-guards-pending* :test #'equal)
+                                   `(clysm-sys::%fasl-inline-guard ',op ,(third e)))
                             `(clysm-sys::%function-cell-eq ',op ',(fourth e)))
                        ,copy
                        (locally (declare (notinline ,op)) (,op ,@temps))))))))))

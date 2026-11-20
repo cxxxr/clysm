@@ -545,16 +545,20 @@ bindings, no loop, no macro outside `COMMON-LISP`, a body of at most 40
 conses and atoms: `*fasl-inline-max-size*`, not declaimed `notinline` or
 `inline`) keep their source in the fasl: `(sys::%note-fasl-inline name
 lambda-list body mark)` after the `defun` puts it on the name with a mark
-made when the file was compiled and the function that the definition made.
-Calls compiled later in the image (the next files of a system, the REPL)
-contain a copy of the body guarded as at the REPL (`live-inline-call`), one
-level deep (`*fasl-inline-max-depth*`: a copy has no copies in it): in a
-fasl the guard (`%fasl-inline-guard`) compares the function of the name with
-a global of the module that the first run sets to the function of that
+made when the file was compiled (the time and a hash of the source: every
+session of an image starts from the same random state) and the function
+that the definition made. Calls compiled later in the image (the next files
+of a system, the REPL) contain a copy of the body guarded as at the REPL
+(`live-inline-call`), one level deep (`*fasl-inline-max-depth*`: a copy has
+no copies in it): in a fasl the guard (`%fasl-inline-guard`, five
+instructions) compares the function of the name with a global of the
+module, one for each callee, that a toplevel form after the first form
+making such a copy sets (`%fasl-inline-guard-set`) to the function of that
 definition while it is the name's function (`sys::%fasl-inline-function`
-compares the mark), else to an object that is no function; a redefinition,
-before the caller's fasl is loaded or after, a `trace`, or a fasl of the
-callee compiled again (another mark) make it an ordinary call. Lem's buffer
+compares the mark), else to an object that is no function, and that is
+null before (the call is made); a redefinition, before the caller's fasl is
+loaded or after, a `trace`, or a fasl of the callee compiled again (another
+mark) make it an ordinary call. Lem's buffer
 code (`line-length`, `line-alive-p`, the wrappers of the readers of `point`)
 crosses files at every call: `tools/bench-lem.sh` takes 0.935 of its time
 (best of five interleaved, Clysm alone; `l-line-down` 0.91,
@@ -565,6 +569,14 @@ of seven). Larger copies cost more space than they gain: 60 conses and copies
 two deep made Lem's fasls 23.5 MB (with about the same time), 24 conses
 18.7 MB and 0.95 of the time. `bench/apps.lisp`, `bench/libs.lisp` and
 `bench/suite.lisp` and `bench/holdout.lisp` in the three modes are unchanged.
+Of the 2.5 MB that Lem's fasls gained, the copies are 2.14 and the sources
+0.36 (17.38 MB with nothing recorded, 17.74 with the sources and no copies);
+one guard global for each callee instead of one for each copy, set by a form
+of the module instead of at the first run of each copy, saves 0.08 MB.
+Writing the sources after the module, apart, read only by the first
+compilation that copies one, made the fasls no smaller (the text moves) and
+loading them no faster (1.706 s against 1.715, medians of seven), so it was
+not kept.
 
 A call of a structure's constructor compiled in the image is of the
 structure's type (`*struct-constructors*`, registered by `defstruct` through

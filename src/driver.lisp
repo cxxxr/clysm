@@ -374,10 +374,15 @@ destructuring-bind (defined by the runtime)."
           (when (and src
                      (ignore-errors (clysm-sys::%call-with-fasl-syntax
                                      (lambda () (prin1-to-string src) t))))
-            (emit-toplevel-form
-             `(clysm-sys::%note-fasl-inline ',sym ',(first src) ',(second src)
-                                            ,(format nil "~36R" (random (expt 2 60))))
-             env)))))))
+            ;; (a mark of this compilation: the time, and a hash of the
+            ;; source, since every session of the image starts from the
+            ;; same random state)
+            (let ((mark (format nil "~36R-~36R-~36R" (get-universal-time) (get-internal-real-time)
+                                (sxhash (clysm-sys::%call-with-fasl-syntax
+                                         (lambda () (prin1-to-string (cons sym src))))))))
+              (emit-toplevel-form
+               `(clysm-sys::%note-fasl-inline ',sym ',(first src) ',(second src) ,mark)
+               env))))))))
 
 (defun process-defpackage (form env)
   (destructuring-bind (name &rest options) (cdr form)
