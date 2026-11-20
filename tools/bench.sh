@@ -3,6 +3,11 @@
 #   tools/bench.sh [FILE]          bench/suite.lisp by default
 #   MODE=script tools/bench.sh F   compare `clysm script` (code loaded into the
 #                                  REPL image) with `clysm run` instead
+#   SBCL_OPT="(speed 3) (safety 0)" tools/bench.sh F
+#                                  SBCL proclaims this optimize policy before
+#                                  it compiles F (SBCL at its best policy on
+#                                  the same code; a DECLAIM in F still wins);
+#                                  the Clysm side is unchanged
 # Each side runs BENCH_RUNS times (default 3); the best time of each benchmark
 # is used.
 set -e
@@ -14,7 +19,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 best() { awk '{ if (!($1 in t)) { order[n++]=$1 } if (!($1 in t) || $2 < t[$1]) t[$1]=$2; r[$1]=$3 }
               END { for (i=0;i<n;i++) print order[i], t[order[i]], r[order[i]] }' "$@" | sort; }
-sbcl --noinform --non-interactive --eval "(compile-file \"$FILE\" :output-file \"$TMP/s.fasl\")" >/dev/null 2>&1
+SBCL_PROCLAIM="nil"
+[ -n "$SBCL_OPT" ] && SBCL_PROCLAIM="(proclaim '(optimize $SBCL_OPT))"
+sbcl --noinform --non-interactive --eval "$SBCL_PROCLAIM" --eval "(compile-file \"$FILE\" :output-file \"$TMP/s.fasl\")" >/dev/null 2>&1
 "$ROOT/bin/clysm" compile "$FILE" -o "$TMP/c.wasm" >/dev/null 2>&1
 i=0
 while [ $i -lt "$RUNS" ]; do

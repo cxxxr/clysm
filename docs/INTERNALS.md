@@ -1854,6 +1854,7 @@ time unless noted):
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
 | `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
+| `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 1.56 | `d-particles`, `d-nbody` 3.5 | `d-fft` 0.83 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -2425,6 +2426,149 @@ What makes the code fast:
   and 0.92 in a script, `bench/library.lisp` 0.99 and 0.98. The dispatch
   of a generic function grows by one index computation (the image by
   0.3%).
+
+### Declared code, and SBCL at its best policy
+
+The files above are undeclared code at SBCL's default policy, where SBCL
+uses generic arithmetic and boxed doubles. `bench/declared.lisp` is the
+other side: 19 programs written as one writes Lisp for speed in SBCL,
+starting with `(declaim (optimize (speed 3) (safety 0) (debug 0)))`. They
+have full type declarations (`fixnum`, `(unsigned-byte 32)`, `double-float`,
+`(simple-array double-float (*))` and `(* *)`, `simple-string`,
+`simple-vector`, `simple-bit-vector`), typed structure slots, `ftype`
+proclamations, `inline` helpers and `dynamic-extent`, and nothing that
+belongs to SBCL. They are the Benchmarks Game programs (n-body,
+spectral-norm, mandelbrot, fannkuch-redux, binary-trees, fasta,
+k-nucleotide, reverse-complement, pidigits), tak, an FFT and Gabriel's
+triangle with declarations, and matrix multiplication, a bit-vector sieve,
+a particle simulation over structures of doubles, a tokenizer over a simple
+string, an `eql` table of fixnums, a quicksort over `(simple-array fixnum
+(*))` and CRC-32. A `fixnum` declaration is only made where the value fits
+in 30 bits (Clysm's fixnums), as portable code must.
+
+`tools/bench.sh bench/declared.lisp` (2026-11-21, best of three, one slot):
+
+| Program | SBCL ms | Clysm ms | Ratio |
+|---|---|---|---|
+| `d-nbody` | 208 | 732 | 3.52 |
+| `d-particles` | 136 | 480 | 3.53 |
+| `d-spectral-norm` | 137 | 393 | 2.87 |
+| `d-matmul` | 108 | 297 | 2.75 |
+| `d-triangle` | 140 | 351 | 2.51 |
+| `d-fannkuch` | 142 | 334 | 2.35 |
+| `d-tak` | 195 | 422 | 2.16 |
+| `d-crc32` | 145 | 254 | 1.75 |
+| `d-mandelbrot` | 165 | 221 | 1.34 |
+| `d-fixnum-hash` | 175 | 223 | 1.27 |
+| `d-pidigits` | 190 | 229 | 1.21 |
+| `d-quicksort` | 165 | 193 | 1.17 |
+| `d-fasta` | 123 | 137 | 1.11 |
+| `d-tokenize` | 160 | 176 | 1.10 |
+| `d-binary-trees` | 184 | 197 | 1.07 |
+| `d-revcomp` | 115 | 117 | 1.02 |
+| `d-sieve` | 124 | 110 | 0.89 |
+| `d-k-nucleotide` | 110 | 93 | 0.85 |
+| `d-fft` | 103 | 86 | 0.83 |
+| geometric mean | | | 1.56 |
+
+In the image (`MODE=script`): 1.03 of the whole program; `d-tokenize` 1.67,
+`d-tak` 1.12, `d-k-nucleotide` 1.10, the rest within 0.8–1.07. The same file
+with `(safety 1)` in place of `(safety 0)`: 1.52 (SBCL's checks cost it
+little: its times move within the noise, `d-matmul` 108 → 176 ms, the
+bounds checks of a two-dimensional array).
+
+`SBCL_OPT="(speed 3) (safety 0)" tools/bench.sh FILE` has SBCL proclaim that
+policy before it compiles FILE (undeclared code at SBCL's best policy; the
+Clysm side is the same). Default policy → `(speed 3) (safety 0)`, geometric
+mean (slowest):
+
+| File | Default | `(speed 3) (safety 0)` |
+|---|---|---|
+| `bench/suite.lisp` | 0.91 (`b-hash` 2.14) | 0.92 (`b-matmul` 2.23) |
+| `bench/gabriel.lisp` | 0.94 (`g-traverse` 1.38) | 1.08 (`g-takl` 1.92) |
+| `bench/holdout.lisp` | 0.91 (`h-fib-generic` 1.68) | 0.96 (`h-matmul-double` 2.22) |
+| `bench/programs.lisp` | 1.02 (`p-builtin-dispatch` 3.62) | 1.08 (`p-builtin-dispatch` 4.13) |
+| `bench/library.lisp` | 0.96 (`v-hash-churn` 2.40) | 1.03 (`v-map-every` 2.38) |
+| `bench/vectors.lisp` | 0.46 (`x-fannkuch` 1.36) | 0.46 (`x-sort-key` 1.48) |
+| `bench/arith.lisp` | 0.66 (`a-sum-overflow` 2.35) | 0.69 (`a-sum-overflow` 2.39) |
+| `bench/arrays.lisp` | 0.76 (`a-struct-int` 1.69) | 0.77 (`a-struct-int` 1.54) |
+| `bench/closures.lisp` | 1.09 (`k-memoize` 2.67) | 1.21 (`k-memoize` 2.77) |
+
+Without declarations the policy gains SBCL little (2–11% in geometric
+mean): it removes type and bounds checks but cannot remove generic
+arithmetic. The items that gain most: `g-takl` (SBCL 51 → 26 ms),
+`v-search-mismatch` (48 → 28), `g-browse` (139 → 97), `h-matmul-double`
+(90 → 63), `p-coerce` (47 → 33), `p-double-2d` (36 → 26). Declared code is
+where Clysm is behind: 1.56 against about 0.9–1.1 on undeclared code.
+Clysm reads no `optimize` quality but `debug` and `speed` (for the
+frame records of the debugger): `safety 0` changes nothing in its code.
+
+What Clysm generates for the slowest items (`tools/dump-func.lisp`),
+ranked by the gain expected:
+
+1. **Accessors of a variable declared as a structure** (`d-nbody`,
+   `d-particles`, 3.5; also `arrays`' `a-struct-*`). `(declare (body a))`
+   does not make `(body-x a)` a field read: every accessor loads the class
+   from a `load-time-value` cell (with its null test), `ref.test`s
+   `$ts-ddddddd`, compares the layout, and on a mismatch walks the
+   inheritance vector, before the `struct.get` of the f64. `advance` does
+   that 30 times per pair of bodies. SBCL at safety 0 reads the slot at a
+   fixed offset. A declared variable of a structure type (checked once
+   where it is bound, or trusted at safety 0) should keep a typed
+   reference whose accessors are a bare `struct.get`. Expected: n-body and
+   particles 3.5 → about 1.3.
+2. **Floating-point trap emulation on every f64 operation** (`d-matmul`,
+   `d-spectral-norm`, `d-nbody`, `d-particles`, `d-mandelbrot`). Each
+   `f64.add`/`f64.sub` is followed by a NaN/infinity test (`x - x != 0`)
+   and each `f64.mul`/`f64.div` by an exponent extraction and up to five
+   comparisons, with a branch to the generic function (to signal
+   `floating-point-overflow` etc. as SBCL does with hardware traps, at no
+   cost there). In `matmul`'s inner loop that is about 15 instructions
+   around one multiply-add. Dropping the tests under `(safety 0)` (or
+   testing once where a value leaves the f64 world: a store, a return)
+   is worth an estimated 1.3–1.6 on these programs.
+3. **Integers declared `(unsigned-byte 32)` assigned in a loop** (`d-crc32`
+   1.75). The value is computed in an i64, but the `setq` of the declared
+   variable tests its type as for an object: when it is above the fixnum
+   range it calls `$i64-int` (allocating an integer) only to `ref.test`
+   it for a bignum, then compares the range. The same function without
+   the declaration of `crc` runs in 77 ms against 136 (SBCL 76). An i64
+   is an integer: the test is two i64 comparisons (none at safety 0).
+4. **Arithmetic of declared fixnums whose result is not proved a fixnum,
+   and calls** (`d-tak` 2.2, `d-triangle` 2.5, `d-fannkuch` 2.35). `(1- x)`
+   of a fixnum is boxed by a call of `$box-i32` and passed as an `eqref`;
+   so the recursive calls of `tak` go to the version for `(t fixnum
+   fixnum)` and the tail call to the main entry, and results come back
+   boxed with `mv-count` set. `(the fixnum (1- x))` changes nothing. `(incf
+   count ...)` of a `fixnum` variable keeps its overflow test into
+   `%type-error`. `triangle-count` calls itself through the main entry and
+   unboxes the result with `$int-i64`; `(decf (aref count r))` of a fixnum
+   vector goes through the generic `aset1` with an `$i64-int`; `replace`
+   of two fixnum vectors is a call of the general function. Under
+   `(safety 0)`, or with an `ftype` that says the arguments are fixnums,
+   the arguments and result of such arithmetic can be wrapped to 30 bits
+   and calls made to the i32 version; SBCL passes untagged words. Expected
+   about 2.2 → 1.2 on these three.
+5. **Two-dimensional arrays** (`d-matmul`, `h-matmul-double`,
+   `p-double-2d`). `(incf (aref c i j))` reloads the header of `c` (its
+   data vector, with a cast, and both dimensions) on every iteration, and
+   each subscript has its own bounds test besides the Wasm array's own.
+   Hoisting the header of an array variable out of the loop and one test
+   of the row-major index are the gain.
+6. **An inline function's double result is boxed** (`d-spectral-norm`).
+   `eval-a` (`declaim inline`) returns through a block of type `eqref`: its
+   f64 is put in a `struct.new $double` and unboxed by the caller at once,
+   an allocation per inner iteration unless the engine removes it; the
+   `(the fixnum (* ...))` of its denominator goes through `$i64-int` and
+   `$int-i64` as well.
+
+Smaller: every `block` and `let` saves the dynamic state
+(`global.get $dyn`, `struct.get`) into a local; `dynamic-extent` is
+ignored (the vectors are heap-allocated, which costs little here).
+Where Clysm is ahead (FFT over `(simple-array double-float (*))`,
+k-nucleotide's `equal` table of strings, the bit sieve) the inner loops are
+typed array accesses with no float operations whose result is tested, or
+library code.
 
 ### Size and start-up
 
