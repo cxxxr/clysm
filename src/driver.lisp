@@ -227,6 +227,17 @@ that may not be done twice.")
       (declaim (dolist (d (cdr form)) (compile-time-proclaim d))
                (return (emit-toplevel-form `(clysm-sys::%proclaim-list ',(cdr form)) env)))
       (clysm-sys::%defun (return (process-defun form env nil)))
+      (clysm-sys::%note-compiler-macro
+       ;; In the image (LOAD of a source file, COMPILE-FILE), the compiler
+       ;; macro is in effect for the forms processed after it, also those of
+       ;; the same toplevel PROGN (a DEFCLASS or DEFGENERIC giving the call
+       ;; sites of a reader or generic function a cache, and code using them,
+       ;; made by one macro), which are compiled before it is evaluated.
+       (when (and *live-mode* (every (lambda (a) (and (consp a) (eq (car a) 'quote) (consp (cdr a))))
+                                     (cdr form))
+                  (eql (length (cdr form)) 3))
+         (apply 'clysm-sys::%note-compiler-macro (mapcar #'second (cdr form))))
+       (return (emit-toplevel-form form env)))
       (clysm-sys::%emit-deferred-macros (return (clysm-sys::%emit-deferred-macros-now env)))
       (t
        (multiple-value-bind (new changed) (if (get (car form) 'clysm-native)

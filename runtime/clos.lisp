@@ -293,6 +293,9 @@ can then pass their arguments in its slots.")
             (%make-gf-closure4 ,(%gf-spread-entry-n n)
                                ,@(%gf-spread-entries n t))))
         ((eq n :all)
+         ;; (the readers and writers that DEFCLASS defines: the dispatch of
+         ;; %GF-CALL1/2 here, one copy for all of them, made Lem's code 3%
+         ;; slower, 2026-11)
          '(lambda (info)
            (%make-gf-closure4 (lambda (&rest args) (%gf-invoke info args))
             (lambda (a) (%gf-miss1 info a)) (lambda (a b) (%gf-miss2 info a b))
@@ -404,9 +407,12 @@ spread arguments that are not just its required ones, else NIL."
     f))
 
 ;;; The cache (+GF-CACHE+) is a simple-vector
-;;;   #(tag fast eql unspecialized table  key-0 ... key-(nreq-1) value methods  key-0 ...)
+;;;   #(tag fast eql unspecialized table builtin  key-0 ... key-(nreq-1) value methods  key-0 ...)
 ;;; (FAST, EQL, UNSPECIALIZED: +GF-FAST+, +GF-EQL+, +GF-UNSPECIALIZED+; TABLE:
-;;; the vector of +GF-TABLE+ or NIL -- what the dispatch needs, in one object)
+;;; the vector of +GF-TABLE+ or NIL; BUILTIN: NIL or, for a generic function
+;;; of one required argument, the values of the entries of built-in classes
+;;; by the index %BUILTIN-INDEX gives (%GF-NOTE-BUILTIN) -- what the dispatch
+;;; needs, in one object)
 ;;; searched without consing.  A key is the class of a required argument, or
 ;;; the marker (object . hash) of the EQL specializer object the argument is
 ;;; (+GF-EQL+: NIL or a simple-vector of the markers per parameter), or 0 for
@@ -429,7 +435,7 @@ spread arguments that are not just its required ones, else NIL."
 ;;; (the address of the method then depends on a chain of loads from the
 ;;; argument, which a mispredicted call waits for).
 (defconstant +gf-cache-entries+ 32)
-(defconstant +gf-cache-header+ 5)
+(defconstant +gf-cache-header+ 6)
 
 (defun %gf-reset-cache (info)
   (%bump-clos-epoch)                    ; the caches of call sites
@@ -455,7 +461,7 @@ spread arguments that are not just its required ones, else NIL."
                                             (<= (+ nreq nopt (length mk)) 8) (<= (+ nreq nopt 1) 4)
                                             (every (lambda (k) (member k gfkeys)) mk))
                                        8192 0))))
-                          fast (%gf-slot info +gf-eql+) (%gf-slot info +gf-unspecialized+) nil))
+                          fast (%gf-slot info +gf-eql+) (%gf-slot info +gf-unspecialized+) nil nil))
     (%set-gf-slot info +gf-table+ nil)))
 
 (defun %gf-invalidate (info)
@@ -728,18 +734,31 @@ spread arguments that are not just its required ones, else NIL."
   `(let ((x ,x))
      (if (%instancep x)
          (%instance-layout x)
-         (let ((i (cond ((fixnump x) 0)
-                        ((and x (symbolp x)) (if (eq (%symbol-package x) *keyword-package*) 3 4))
-                        ((%simple-string-p x) 6)
-                        ((consp x) 1)
-                        ((%double-float-p x) 15)
-                        ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
-                              (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
-                         7)
-                        ((and (functionp x) (not (%instancep (%closure-name x)))) 12)
-                        (t -1))))
-           (declare (fixnum i))
-           (or (and (%fx>= i 0) (%svref *builtin-classes* i)) (class-of x))))))
+         (%builtin-class-of x (%builtin-index x)))))
+
+(defmacro %builtin-index (x)
+  "The index in CLASS-OF's cache (*BUILTIN-CLASSES*) of the class of the
+object X that is not an instance, or -1 (another kind of object)."
+  `(let ((x ,x))
+     (the fixnum
+          (cond ((%i31p x) (if (fixnump x) 0 5)) ; (else a character)
+                ((symbolp x) (cond ((null x) 2) ((eq (%symbol-package x) *keyword-package*) 3) (t 4)))
+                ((%simple-string-p x) 6)
+                ((consp x) 1)
+                ((%double-float-p x) 15)
+                ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
+                      (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
+                 7)
+                ((%simple-vector-p x) 8)
+                ((%single-float-p x) 16)
+                ((and (functionp x) (not (%instancep (%closure-name x)))) 12)
+                (t -1)))))
+
+(defmacro %builtin-class-of (x i)
+  "The class of X, which is not an instance, whose %BUILTIN-INDEX is I."
+  `(let ((i ,i))
+     (declare (fixnum i))
+     (or (and (%fx>= i 0) (%svref *builtin-classes* i)) (class-of ,x))))
 
 (defun %eql-key (markers x)
   "The cache key of the argument X for a parameter with the EQL specializer
@@ -875,16 +894,21 @@ own, which the dispatch on classes does not find."
     (cond ((or (null guards) (> n 8) (< n 1)) value)
           ((null (cdr guards))
            ;; one such parameter: the entries of its objects are remembered
-           (let ((p (caar guards)) (cache (mapcar (lambda (o) (cons o nil)) (cdar guards))))
+           (let* ((p (caar guards))
+                  (objects (coerce (cdar guards) 'simple-vector))
+                  (fns (make-array (length objects) :initial-element nil))
+                  (count (length objects)))
+             (declare (fixnum count))
              (macrolet ((guard (test)
                           `(%arity-case n
                              (lambda (%args)
                                (let ((x (%pick p %args)))
-                                 (dolist (e cache (funcall (the function value) %args))
-                                   (when (,test (car e) x)
+                                 (do ((i 0 (%fx+ i 1))) ((%fx>= i count) (funcall (the function value) %args))
+                                   (declare (fixnum i))
+                                   (when (,test (%svref objects i) x)
                                      (return (funcall (the function
-                                                           (or (cdr e)
-                                                               (setf (cdr e) (%gf-lookup info (list %args) nkeys 0))))
+                                                           (or (%svref fns i)
+                                                               (setf (svref fns i) (%gf-lookup info (list %args) nkeys 0))))
                                                       %args)))))))))
                (if (every (lambda (o) (or (fixnump o) (symbolp o) (characterp o) (%instancep o))) (cdar guards))
                    (guard eq)
@@ -999,7 +1023,7 @@ the first NKEYS are the required ones."
              (setf (svref new j) value (svref new (+ j 1)) methods)
              (%set-gf-slot info +gf-cache+ new)))
           (t
-           (let ((new (vector (svref pic 0) (svref pic 1) (svref pic 2) (svref pic 3) nil)))
+           (let ((new (vector (svref pic 0) (svref pic 1) (svref pic 2) (svref pic 3) nil (svref pic 5))))
              (%set-gf-slot info +gf-cache+ new)
              (do ((b +gf-cache-header+ (+ b stride))) ((>= b len))
                (%gf-table-put info (let ((r nil)) (dotimes (j nreq (nreverse r)) (push (svref pic (+ b j)) r)))
@@ -1131,6 +1155,32 @@ the first NKEYS are the required ones."
 ;;; EQL specializers, the table, the computation of the effective method) and
 ;;; returns the function to call, or NIL when the generic function is not
 ;;; dispatched on n arguments.  %GF-MISSn is the whole dispatch out of line.
+(defmacro %gf-find-noting (name one info x form)
+  "The value of FORM, the function that the %GF-FINDn named NAME found for
+arguments whose first is X (FORM returns from the block NAME): with ONE (one
+required argument), also noted in the vector of the built-in classes of the
+cache when X is not an instance."
+  (if one
+      `(let ((v (block ,name ,form)))
+         (when (and v (not (%instancep ,x))) (%gf-note-builtin ,info ,x v))
+         v)
+      form))
+
+(defun %gf-note-builtin (info x value)
+  "Note VALUE, the function of the generic function INFO of one required
+argument for X, which is not an instance, under the %BUILTIN-INDEX of X in
+the vector of the built-in classes of its cache (the dispatch inlined in the
+function of the generic function looks there first): with EQL specializers,
+the value of the entry of the class of X (which tests the EQL specializer
+objects)."
+  (let ((pic (%gf-slot info +gf-cache+)) (i (%builtin-index x)))
+    (declare (fixnum i))
+    (when (and (%fx>= i 0) (functionp value) (eql (%gf-slot info +gf-nreq+) 1)
+               (eql (logand (svref pic 3) 1) 0) (not (eql (svref pic 0) 0)))
+      (let ((v (%gf-site-value info value (list (%fast-class-of x)))))
+        (when (functionp v)
+          (setf (svref (or (svref pic 5) (setf (svref pic 5) (make-array 20 :initial-element nil))) i) v))))))
+
 (defmacro %define-gf-dispatch (n &optional (nkeys n))
   ;; N: the number of arguments of the functions; NKEYS: the number of them
   ;; that the dispatch looks at (the required ones).  With fewer keys than
@@ -1153,6 +1203,7 @@ the first NKEYS are the required ones."
                                keys)))))
       `(progn
          (defun ,find (info ,@args)
+          (%gf-find-noting ,find ,(eql nkeys 1) info ,(car args)
            (if (and (eq (%svref (%gf-slot info +gf-cache+) 1) ,n) (eql (%gf-slot info +gf-nreq+) ,nkeys))
                (let* ((pic (%gf-slot info +gf-cache+))
                       (eqls (%svref pic 2)) (unspec (%svref pic 3))
@@ -1182,7 +1233,7 @@ the first NKEYS are the required ones."
                  (let ((v (%gf-fill info (list ,@keys) (list ,@args) ,nkeys 0))
                        (pic (%gf-slot info +gf-cache+)))
                    (if (%svref pic 4) (%gf-class-note info pic (%single-key ,@keys) v) v)))
-               nil))
+               nil)))
          ,@(when (eql n nkeys)
              `((defun ,miss (info ,@args)
                  (let ((f (,find info ,@args)))
@@ -1221,17 +1272,31 @@ cache has the shape bits CODE."
          (let* ((pic (%instance-ref info +gf-cache+))
                 (tag (%svref pic 0)))
            (when (eq (%fxlogand tag #x70f) ,code)
-             (let (,@(let ((i -1))
-                       (mapcar (lambda (k a)
-                                 (setq i (+ i 1))
-                                 `(,k (if (eq ,(if (< i 4)
-                                                       `(%fxlogand tag ,(ash 16 i))
-                                                       ;; (the tag has the bits of the first four)
-                                                       `(%fxlogand (%svref pic 3) ,(ash 1 i)))
-                                                  0)
-                                              (%fast-class-of ,a)
-                                              0)))
-                               keys kargs))
+             (let (,@(if (eql nkeys 1)
+                         ;; one required argument: the function for an object
+                         ;; that is not an instance may be in the vector of
+                         ;; the built-in classes (%GF-NOTE-BUILTIN)
+                         `((k0 (if (eq (%fxlogand tag 16) 0)
+                                   (let ((x ,(car kargs)))
+                                     (if (%instancep x)
+                                         (%instance-layout x)
+                                         (let* ((bi (%builtin-index x))
+                                                (bv (%svref pic 5))
+                                                (bf (and bv (%fx>= bi 0) (%svref bv bi))))
+                                           (when bf (return-from dispatch (funcall (the function bf) ,@spread)))
+                                           (%builtin-class-of x bi))))
+                                   0)))
+                         (let ((i -1))
+                           (mapcar (lambda (k a)
+                                     (setq i (+ i 1))
+                                     `(,k (if (eq ,(if (< i 4)
+                                                           `(%fxlogand tag ,(ash 16 i))
+                                                           ;; (the tag has the bits of the first four)
+                                                           `(%fxlogand (%svref pic 3) ,(ash 1 i)))
+                                                      0)
+                                                  (%fast-class-of ,a)
+                                                  0)))
+                                   keys kargs)))
                    (len (%svlength pic)))
                (do ((i +gf-cache-header+ (%fx+ i ,stride))) ((%fx>= i len))
                  (when (and ,@(let ((i -1))
@@ -1257,7 +1322,13 @@ cache has the shape bits CODE."
                ;; many classes: the class of the one specialized argument
                ;; may know the function (%GF-CLASS-NOTE)
                (when (%svref pic 4)
-                 (let ((f (%gf-class-lookup pic (%single-key ,@keys))))
+                 (let* ((key (%single-key ,@keys))
+                        (f (and (%instancep key)
+                                (let ((v (%instance-ref key +class-dispatch+)))
+                                  (and v
+                                       (if (eq (%svref v 1) pic)
+                                           (%svref v 2)
+                                           (%gf-class-lookup pic key)))))))
                    (when f (return-from dispatch (funcall (the function f) ,@spread)))))
                (let ((f ,(if find
                              `(,find info ,@spread)
@@ -2547,8 +2618,8 @@ instances."
                           `(%gf-site-call2 ',c ,a ,b))
                      ;; (two arguments: the class of a fixnum inline, of the
                      ;; other built-in objects out of line)
-                     (let* ((,k (if (eq (%svref ',c 1) 0) 0 ,(%gf-site-key-form a (or accessor :fixnum))))
-                            (,kb (if (eq (%svref ',c 2) 0) 0 ,(%gf-site-key-form b (or accessor :fixnum))))
+                     (let* ((,k (if (eq (%svref ',c 1) 0) 0 ,(%gf-site-key-form a accessor)))
+                            (,kb (if (eq (%svref ',c 2) 0) 0 ,(%gf-site-key-form b accessor)))
                             ;; the value of the entry: the function to call, or the
                             ;; location of the slot that a writer writes
                             (,f (cond ,@(loop for i in '(1 4 7 10)
@@ -2593,8 +2664,27 @@ the classes of N arguments."
        (let ((info (%gf-info (fdefinition name))))
          (and info
               (let ((pic (%gf-slot info +gf-cache+)))
-                (and (eq (%svref pic 1) n) (eql (%gf-slot info +gf-nreq+) n) (null (%svref pic 2))
+                (and (eq (%svref pic 1) n) (eql (%gf-slot info +gf-nreq+) n)
                      info))))))
+
+(defun %gf-site-value (info f keys)
+  "The function that a call site caches for the classes KEYS of its
+arguments (0 for a parameter that no method specializes), F being the one
+the generic function INFO found for them: with EQL specializers, the
+value of the entry of those classes (which tests whether an argument is one
+of the EQL specializer objects, %EQL-GUARDED-VALUE), or NIL when there is
+none."
+  (if (null (%svref (%gf-slot info +gf-cache+) 2))
+      f
+      (let* ((pic (%gf-slot info +gf-cache+)) (len (length pic)) (nreq (length keys))
+             (stride (+ nreq 2)) (table (%gf-slot info +gf-table+)))
+        (or (do ((i +gf-cache-header+ (+ i stride))) ((>= i len) nil)
+              (when (do ((j i (+ j 1)) (l keys (cdr l))) ((null l) t)
+                      (unless (eq (svref pic j) (car l)) (return nil)))
+                (return (svref pic (+ i nreq)))))
+            (and table
+                 (let ((pos (%gf-table-find (cdr table) keys nreq)))
+                   (and pos (svref (cdr table) pos))))))))
 
 (defun %gf-site-miss-count (c i)
   "Count a miss of the site cache C (the count is at index I); a site that
@@ -2608,7 +2698,9 @@ keeps missing (more classes than entries) stops caching."
     (if (null info)
         (progn (%set-svref c 0 -1) (funcall name a))
         (let ((f (%gf-find1 info a)))
-          (if (null f)
+          (setq f (and f (%gf-site-value
+                          info f (list (if (eq (%fxlogand (%svref (%gf-slot info +gf-cache+) 3) 1) 0) (%fast-class-of a) 0)))))
+          (if (not (functionp f))
               (funcall name a)
               (progn
                 (%gf-site-register c 11)
@@ -2679,7 +2771,10 @@ keeps missing (more classes than entries) stops caching."
     (if (null info)
         (progn (%set-svref c 0 -1) (%gf-site-call2 c a b))
         (let ((f (%gf-find2 info a b)))
-          (if (null f)
+          (setq f (and f (let ((unspec (%svref (%gf-slot info +gf-cache+) 3)))
+                           (%gf-site-value info f (list (if (eq (%fxlogand unspec 1) 0) (%fast-class-of a) 0)
+                                                        (if (eq (%fxlogand unspec 2) 0) (%fast-class-of b) 0))))))
+          (if (not (functionp f))
               (%gf-site-call2 c a b)
               (let ((unspec (%svref (%gf-slot info +gf-cache+) 3)))
                 (%gf-site-register c 15)
