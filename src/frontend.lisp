@@ -326,22 +326,41 @@ The check is left out by the compiler where the type of FORM shows it holds."
        (or (gethash sym *declared-ftypes*)
            (and *live-mode* (get sym 'clysm-sys::%ftype)))))
 
+(defun ftype-check-spec (spec &optional (depth 0))
+  "SPEC as a type that TYPEP accepts and the code checks (its DEFTYPEs
+expanded, (FUNCTION ...) as FUNCTION, also inside OR, AND and NOT), or NIL
+when it is not one (VALUES, SATISFIES, a type not defined yet, an error)."
+  (let ((e (or (ignore-errors (expand-deftypes spec)) spec)))
+    (cond ((> depth 8) nil)
+          ((and (consp e) (eq (car e) 'function)) 'function)
+          ((and (consp e) (member (car e) '(or and not)))
+           (let ((parts (loop for x in (cdr e) collect (ftype-check-spec x (1+ depth)))))
+             (and (listp (cdr e)) (notany #'null parts) (cons (car e) parts))))
+          ((and (consp e) (member (car e) '(values satisfies))) nil)
+          (t e))))
+
+(defun ftype-usable-spec (spec)
+  "The type a check of a value of type SPEC (from an FTYPE) tests, or NIL."
+  (let ((s (ignore-errors (ftype-check-spec spec))))
+    (and s (ftype-useful-spec-p s) s)))
+
 (defun ftype-arg-specs (sym)
-  "The types of the required parameters FSYM's FTYPE gives, or NIL."
+  "The types of the required parameters FSYM's FTYPE gives (NIL for one not
+checked), or NIL."
   (let ((ft (declared-ftype sym)))
     (and (consp ft) (eq (car ft) 'function) (consp (cdr ft)) (listp (second ft))
+         (ignore-errors (list-length (second ft)))
          (loop for s in (second ft)
                until (member s lambda-list-keywords)
-               collect s))))
+               collect (ftype-usable-spec s)))))
 
 (defun ftype-result-spec (sym)
   "The type of the single value FSYM's FTYPE gives, (VALUES TYPE &OPTIONAL), or NIL."
   (let ((ft (declared-ftype sym)))
     (when (and (consp ft) (eq (car ft) 'function) (consp (cdr ft)) (consp (cddr ft)))
       (let ((r (third ft)))
-        (and (consp r) (eq (car r) 'values) (= (length r) 3) (eq (third r) '&optional)
-             (ftype-useful-spec-p (second r))
-             (second r))))))
+        (and (consp r) (eq (car r) 'values) (eql (ignore-errors (list-length r)) 3) (eq (third r) '&optional)
+             (ftype-usable-spec (second r)))))))
 
 (defun type-checked-form (var spec)
   "A form of the value of the variable VAR, checked to be of type SPEC."
