@@ -79,10 +79,21 @@ The universal value type is `(ref null eq)`.
   layout, else (an instance of a structure including it) the class at its
   depth in the instance's slot vector, and reads the field; a constructor
   is one `struct.new`. Generic code tests `$sfield` before using the slot
-  vector of an instance (`:instance-ref`). Larger
-  structures, structures that include one of a slot vector, and the streams
-  (`(sys::%slot-vector)`, read by fast paths that index the vector) keep a
-  slot vector. Generic code reads slot I of any instance with
+  vector of an instance (`:instance-ref`). A structure of more than 32
+  slots that includes one of field slots is *big*: a `$si32` whose slot
+  vector is the vector of the structures its class includes followed by an
+  overflow vector of its slots past the 32nd (`%make-big-struct`; generic
+  code reaches those slots through `:big-overflow`, `:sinst-size` counts
+  them, copies and heap images keep them), so that every instance of a
+  structure of field slots, or of one including it, is of its Wasm type
+  and its accessors on an object known to be of its class are a bare cast
+  (`known-struct-check-code`). Other larger structures, structures that
+  include one of a slot vector, and the streams (`(sys::%slot-vector)`,
+  read by fast paths that index the vector) keep a slot vector; so may the
+  instances of a structure of typed slots (below: made by the interpreter,
+  restored from a heap image, of a structure of more than 32 slots
+  including it), whose accessors test the Wasm type even where the class
+  is known. Generic code reads slot I of any instance with
   `%instance-gref` (the slot vector, else field I through a `br_table` on
   I); `%instance-ref` is for instances known to have a slot vector. A
   structure class keeps its included structures by depth in
@@ -2099,15 +2110,17 @@ What makes the code fast:
   object cast, or null for an instance of an including structure that has
   a slot vector, which then takes the call of the function; a variable
   bound to one with a shadow, as SETF's, copies it), and its accessors
-  test the shadow for null (`struct-shadow-init-code`); other declared
-  objects (an assigned variable, a slot declared of the type) are tested
-  with `ref.test` at each access; an undeclared variable known by an
-  access before, a constructor or a type test is cast, as before (a test
-  where it is bound cost undeclared n-body 5%; that cast traps on an
-  instance of an including structure of more than 32 slots, as such a
-  structure keeps a slot vector — an old limitation, the test of
-  `declared-structs.lisp` declares its functions NOTINLINE because an
-  inline copy loses the declarations of its parameters). A declared integer type is
+  test the shadow for null (`struct-shadow-init-code`; a value not of the
+  type declared takes the function, which signals the `type-error` at
+  safety 1); other declared objects are tested with `ref.test` at each
+  access, and so are the objects of a structure of typed slots, whose
+  instances may have a slot vector. An object of a structure of field
+  slots whose class is proved (by an access before, a constructor, a type
+  test), or declared at `(safety 0)`, is cast, as every instance of its
+  class is of its Wasm type (big structures, above; before them an
+  including structure of more than 32 slots had a slot vector, and the
+  cast trapped on it, `tests/cases/big-structs.lisp`). An inline copy of
+  a function keeps the declarations of its variables. A declared integer type is
   checked by tests the type of the value decides where it can
   (`known-test-result`: `(<= 0 v)` and `sys::%integerp` of a value of a
   known range), so a `setq` of a `(unsigned-byte 32)` variable to a value

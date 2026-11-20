@@ -439,7 +439,11 @@ grows when CLASS has more instance slots)."
   (unless (%class-slot class +class-make-info+)
     (%set-class-slot class +class-make-info+ #(-1 nil nil nil nil nil nil)))
   (let* ((n (or (%class-slot class +class-instance-size+) (%instance-slot-count class)))
-         (v (if (and (eq (%class-slot class +class-kind+) :structure) (%struct-field-slots-p n))
+         (v (if (and (eq (%class-slot class +class-kind+) :structure)
+                     (or (%struct-field-slots-p n)
+                         ;; a big structure (runtime/struct.lisp)
+                         (let ((d (get (%class-slot class +class-name+) '%struct-description)))
+                           (and (consp d) (eq (nth 6 d) :big)))))
                 nil
                 (%make-simple-vector n (%unbound-marker)))))
     (when (null v)

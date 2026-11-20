@@ -142,9 +142,16 @@
            ;; one with a slot vector, or asks for one: (SYS::%SLOT-VECTOR)):
            ;; then its shape, SIZE + 64 DEPTH, which the compiled accesses take
            (inline-rep (and (null seq-kind) (%struct-field-slots-p size)
-                            (not (%struct-opt options '%slot-vector))
+                            (or (not (%struct-opt options '%slot-vector))
+                                (and include-desc (member (nth 6 include-desc) '(:fields :typed))))
                             (or (null include-desc) (eql (caddr include-desc) 0)
                                 (member (nth 6 include-desc) '(:fields :typed)))))
+           ;; more slots, including a structure of field slots: a big
+           ;; structure, of the Wasm type of the structures it includes (its
+           ;; first slots in fields, the others in an overflow vector,
+           ;; %MAKE-BIG-STRUCT), so that their compiled accessors take it
+           (big-rep (and (null seq-kind) (not inline-rep) include-desc
+                         (member (nth 6 include-desc) '(:fields :big))))
            ;; the kinds of its slots, when some are double floats: :D for
            ;; those, :E for the others; its type is then one of its own (a
            ;; double float slot holds the number unboxed, src/typed.lisp)
@@ -153,9 +160,10 @@
                          (and (member :d ks) ks))))
            (field-rep (and inline-rep (not kinds)))
            ;; (for a structure of a slot vector or of typed slots: its depth only)
-           (fields (and (null seq-kind) (+ (if field-rep size 0) (* 64 depth))))
+           (fields (and (null seq-kind) (+ (cond (field-rep size) (big-rep 32) (t 0))
+                                           (* 64 depth))))
            (desc (list seq-kind all-slots size names fields depth
-                       (cond (kinds :typed) (field-rep :fields) (t :vector))))
+                       (cond (kinds :typed) (field-rep :fields) (big-rep :big) (t :vector))))
            (class-slots (mapcar (lambda (s) (subseq s 0 4)) all-slots))
            (predicate (and named predicate))
            (keyvars (mapcar (lambda (s) (declare (ignore s)) (gensym "SLOT")) all-slots)))
@@ -166,6 +174,7 @@
                (if (null seq-kind)
                    (cond (kinds `(%make-tstruct (load-time-value (find-class ',name)) ',kinds ,@vals))
                          (field-rep `(%make-struct (load-time-value (find-class ',name)) ,@vals))
+                         (big-rep `(%make-big-struct (load-time-value (find-class ',name)) ,@vals))
                          (t `(%make-instance (load-time-value (find-class ',name)) (vector ,@vals))))
                    (let ((cells (make-list size :initial-element nil)))
                      (dolist (n names) (setf (nth (car n) cells) `',(cdr n)))
@@ -251,7 +260,7 @@
                            forms))
                    (push (cond ((null seq-kind)
                                 `(defun ,acc (,x) ,(cond (kinds `(%struct-tref ,x (load-time-value (find-class ',name)) ,idx ',kinds))
-                                                         (field-rep `(%struct-iref ,x (load-time-value (find-class ',name)) ,idx ,fields))
+                                                         ((or field-rep big-rep) `(%struct-iref ,x (load-time-value (find-class ',name)) ,idx ,fields))
                                                          (t `(%struct-ref ,x (load-time-value (find-class ',name)) ,idx ,fields)))))
                                ((eq seq-kind 'list) `(defun ,acc (,x) (nth ,idx ,x)))
                                (t `(defun ,acc (,x) (aref ,x ,idx))))
@@ -260,7 +269,7 @@
                      (push (cond ((null seq-kind)
                                   `(defun (setf ,acc) (,v ,x)
                                      ,(cond (kinds `(%struct-tset ,x (load-time-value (find-class ',name)) ,idx ,v ',kinds))
-                                            (field-rep `(%struct-iset ,x (load-time-value (find-class ',name)) ,idx ,v ,fields))
+                                            ((or field-rep big-rep) `(%struct-iset ,x (load-time-value (find-class ',name)) ,idx ,v ,fields))
                                             (t `(%struct-set ,x (load-time-value (find-class ',name)) ,idx ,v ,fields)))))
                                  ((eq seq-kind 'list) `(defun (setf ,acc) (,v ,x) (setf (nth ,idx ,x) ,v)))
                                  (t `(defun (setf ,acc) (,v ,x) (setf (aref ,x ,idx) ,v))))
@@ -329,6 +338,11 @@
           (%set-instance-layout x layout)
           (dolist (v slots x) (%set-instance-gref x i v) (setq i (+ i 1))))
         (%make-instance layout (coerce slots 'simple-vector)))))
+
+(defun %make-big-struct (layout &rest slots)
+  (let ((x (%sinst-make (length slots))) (i 0))
+    (%set-instance-layout x layout)
+    (dolist (v slots x) (%set-instance-gref x i v) (setq i (+ i 1)))))
 
 (defun %structure-typep (x class &optional size)
   (declare (ignore size))
