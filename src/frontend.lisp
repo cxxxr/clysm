@@ -854,10 +854,18 @@ the depth of copies, one more."
     (multiple-value-bind (v found) (constant-integer-form form env)
       (when found (return-from convert-compound `(:const ,v))))
     ;; compiler macros
-    (let ((cm (or (gethash op *compiler-macros*)
-                  (and *live-compiler-macro-hook* (symbolp op) (funcall *live-compiler-macro-hook* op)))))
+    (let* ((host-cm (gethash op *compiler-macros*))
+           (cm (or host-cm
+                   (and *live-compiler-macro-hook* (symbolp op) (funcall *live-compiler-macro-hook* op)))))
       (when (and cm (not (gethash op *notinline*)) (not (member op *local-notinline*)))
-        (let ((new (let ((*package* *read-package*)) (funcall cm form env))))
+        (let ((new (let ((*package* *read-package*))
+                     (if host-cm
+                         (funcall cm form env)
+                         ;; (a compiler macro defined in the image whose
+                         ;; expansion fails, such as one calling a function of
+                         ;; its file not defined yet, is not used: the call
+                         ;; stays as it is)
+                         (handler-case (funcall cm form env) (error () form))))))
           (unless (eq new form)
             (return-from convert-compound (convert new env))))))
     (let ((tr (and (symbolp op) (get op 'clysm-transform))))

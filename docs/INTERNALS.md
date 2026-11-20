@@ -1940,6 +1940,8 @@ The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.4, slowest `c-eql-dispatch`
 4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9; `t-return-maphash` about 1 since 2026-11-21), `bench/io.lisp` (1.2–1.3, was 1.46;
+it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.28, was 1.37; slowest `c-builtin-eql`
+3.5, `c-eql-dispatch` 2.6, was 4.4), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.2–1.3, was 1.46;
 `i-file-roundtrip` 1.6–2.0, was 13; `i-print-numbers`, `i-parse-ints` 2.5), `bench/library.lisp`
 (1.04, was 1.12; `v-map-every` 2.8, `v-hash-iterate` 2.2, was 3.4),
 `bench/vectors.lisp` (0.43, algorithmic code over simple vectors without
@@ -2057,12 +2059,18 @@ What is not as fast as intended, and why:
   image 21 ms instead of 280). The test costs a few percent in recursion
   through `funcall` (`h-fib-funcall` about 1.0 times SBCL); direct calls
   of functions that cannot exit are not tested.
-* **Generic functions**: dispatch on EQL specializers (4 times: the entry
-  of a class with EQL specializer objects calls a guard function shared by
-  all generic functions, which then calls the method; comparing the EQL
+* **Generic functions**: dispatch on EQL specializers (2.6 times, was 4.4:
+  the entry of a class with EQL specializer objects calls a guard function
+  shared by all generic functions, which compares the objects, kept in a
+  vector, and then calls the method; call sites cache that entry for the
+  class of the argument like any other (`%gf-site-value`), where they
+  used to call the generic function; comparing the EQL
   objects in each generic function's own dispatch (out of line or inline),
   or letting that dispatch call the method the guard selects, were slower
-  still, 2026-11) or on many classes at one call site (2.2–3.7: the entries
+  still, 2026-11; a copy of the guard for each position of the argument
+  gained nothing), on many built-in classes with two specialized arguments
+  (`c-builtin-eql` 3.5, the entries searched one after the other) or on
+  many classes at one call site (2.1–3.7: the entries
   are searched one after the other; past 32 they move to a hash table,
   searched out of the generic function's own code, and a class keeps the
   function of each such generic function for its instances in a short
@@ -2073,7 +2081,11 @@ What is not as fast as intended, and why:
   to 20 classes in turn or at random and gained 10% only past 32: the
   address of the method then depends on a chain of loads from the argument,
   which a mispredicted call waits for; SBCL takes 3–4 ns a call whatever
-  the number of classes). Generic functions with `&optional`/`&rest`/`&key`
+  the number of classes; the first entry of the class's vector is now
+  compared inline. Moving a generic function of one specialized argument
+  to the classes' vectors past 8 entries instead of 32, 2026-11:
+  `c-megamorphic` 0.94 in a whole program, the same in fasls, Lem's code
+  3% slower). Generic functions with `&optional`/`&rest`/`&key`
   (`c-gf-lambda-lists` 1.3, was 2.6) and `make-instance` with a class that
   is not a constant (`c-make-instance-plain` 1.6, was 2.7) are below. Slot
   accessors are about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots`
@@ -2407,7 +2419,22 @@ What makes the code fast:
   `do-matches`: no list of keywords, no `%plist-find`; before, past four the
   keyword arguments went to the methods as a list). `%fast-class-of` finds
   the class of a simple string and of a function that is not a generic
-  function without `class-of`.
+  function without `class-of` (also of NIL, characters, simple vectors and
+  single floats, `%builtin-index`). A generic function of one required
+  argument keeps in its cache (`+gf-cache+`, slot 5) a vector of the
+  functions of the built-in classes by that index (`%gf-note-builtin`,
+  filled by `%gf-find1`): its dispatch reads it for an argument that is not
+  an instance before searching the entries (`p-builtin-dispatch`, eight
+  classes at a call site that cannot cache them: 0.69–0.73 of its time in
+  the three modes, 2.5 times SBCL instead of 3.6; 0.6 when the call sites
+  are not cached at all). An earlier jump table by representation in each
+  such generic function (fixnum, cons, symbol, ...) gained in whole
+  programs only. With the EQL call sites and the call sites of two
+  arguments below, interleaved against the commit before (four rounds,
+  best times): Lem's buffer code (`tools/bench-lem.sh`) 0.99 of its time,
+  `bench/apps.lisp` 0.97 (yason's parsing 0.90), `bench/holdout.lisp` and
+  `bench/programs.lisp` the same but for `p-builtin-dispatch`; `clos.fasl`
+  of `bench/clos.lisp` 4% larger.
   The dispatch (`%gf-callN`, `%gf-scall`, macros) is copied into the
   function of each generic function, also when that is compiled in the
   image or into a fasl, where the engine does not inline the runtime's
@@ -2422,17 +2449,28 @@ What makes the code fast:
   read or write slots of readers and writers inline (`compile-file`
   defines their compiler macro for the rest of the file, and a loaded file
   defines it again when the form that set its flag was expanded but not
-  evaluated, which left the call sites of `clysm script` without caches): the class of an
+  evaluated, which left the call sites of `clysm script` without caches;
+  in the image a `define-compiler-macro` takes effect when its toplevel
+  form is processed, not when it is evaluated, so that a macro expanding
+  to a `defclass` or `defgeneric` and the code calling it, one toplevel
+  `progn` compiled at once, gets them too: `c-megamorphic` in a script
+  0.47 of its time, the methods' calls of the reader `size` were not
+  cached; an image compiler macro whose expansion fails is not used): the class of an
   instance is compared with four entries and the slot read at the cached
   location, without an epoch read at each call (`%bump-clos-epoch` empties
   the caches of the sites that have been used, `*gf-sites*`). A site
   compares the class with the four entries and then has one access (or
   call) for the entry found; the class of an instance, and at a site of a
   generic function (not of a reader or writer that `defclass` defines) of
-  a fixnum, a simple string or a symbol (one argument; a fixnum of two) is
+  a fixnum, a simple string or a symbol (one or two arguments; until
+  2026-11 only a fixnum of two, the symbols of a call such as `(op :add x)`
+  then going out of line: 0.45 of the time of such calls) is
   read inline from CLASS-OF's cache (`%gf-site-key-form`); other
   arguments, an unbound slot and a miss go to one function out of line
-  (`%gf-site-other1`/`2`), a site that is not cached calls the function
+  (`%gf-site-other1`/`2`); a generic function with EQL specializers is
+  cached too, by the classes of the arguments, the value being that of
+  the entry of those classes (which tests the EQL specializer objects,
+  `%gf-site-value`); a site that is not cached calls the function
   as before (with fixnums out of line too, `h-fib-generic`, a generic
   `fib` of an `integer` method, took 441 ms instead of 320). A site is about 55 Wasm instructions instead of 140: a
   module of two functions with six reader and writer calls 12.6 KB instead
@@ -2729,7 +2767,7 @@ mean (slowest):
 | `bench/suite.lisp` | 0.91 (`b-hash` 2.14) | 0.92 (`b-matmul` 2.23) |
 | `bench/gabriel.lisp` | 0.94 (`g-traverse` 1.38) | 1.08 (`g-takl` 1.92) |
 | `bench/holdout.lisp` | 0.91 (`h-fib-generic` 1.68) | 0.96 (`h-matmul-double` 2.22) |
-| `bench/programs.lisp` | 1.02 (`p-builtin-dispatch` 3.62) | 1.08 (`p-builtin-dispatch` 4.13) |
+| `bench/programs.lisp` | 1.01 (`p-builtin-dispatch` 2.86, was 3.62) | 1.08 (`p-builtin-dispatch` 4.13) |
 | `bench/library.lisp` | 0.96 (`v-hash-churn` 2.40) | 1.03 (`v-map-every` 2.38) |
 | `bench/vectors.lisp` | 0.46 (`x-fannkuch` 1.36) | 0.46 (`x-sort-key` 1.48) |
 | `bench/arith.lisp` | 0.66 (`a-sum-overflow` 2.35) | 0.69 (`a-sum-overflow` 2.39) |
