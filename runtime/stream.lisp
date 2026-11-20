@@ -279,6 +279,8 @@ without the accessor's check of the type)."
     r))
 
 (defun get-output-stream-string (s)
+  (when (and (%string-out-p s) (not (eql (%instance-ref s +stream-index-slot+) 0)))
+    (return-from get-output-stream-string (%string-out-contents s)))
   (unless (%streamp s) (%type-error s 'string-stream))
   (case (stream-kind s)
     (:string-out
@@ -316,6 +318,12 @@ without the accessor's check of the type)."
     (unless (and (integerp start) (<= 0 start len)) (%type-error start `(integer 0 ,len)))
     (unless (or (null end) (and (integerp end) (<= start end len)))
       (%type-error end `(or null (integer ,start ,len))))
+    ;; a string with a fill pointer over a simple string (a parser's buffer
+    ;; given to READ-FROM-STRING) is read from its storage, whose indices
+    ;; are the same
+    (when (and (%mdarray-p string) (%simple-string-p (%mdarray-data string))
+               (eql (%mdarray-offset string) 0))
+      (setq string (%mdarray-data string)))
     (let ((s (%make-sstream :string-in string start (or end len) :input)))
       ;; (READ-CHAR and PEEK-CHAR read a simple string inline: %FS-FAST-CHAR)
       (when (%simple-string-p string) (setf (stream-fast s) :string))
@@ -641,7 +649,7 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
         (if (eq (stream-kind s) :string-out)
             (%string-out-write s string 0 (%string-length string))
             (progn (%stream-write-simple-string s string 0 (%string-length string)) string))
-        (write-string string stream))))
+        (%write-string-4 string stream 0 nil))))
 
 (defun %write-string-4 (string stream start end)
   "WRITE-STRING with its keyword arguments as positional ones."
@@ -651,6 +659,12 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
           ((eq (stream-kind s) :gray) (stream-write-string s string start end))
           ((eq (stream-kind s) :broadcast)
            (dolist (x (stream-streams s)) (%write-string-4 string x start end)))
+          ;; a string with a fill pointer (or displaced) over a simple
+          ;; string: the characters of its storage at once
+          ((%simple-string-p (%mdarray-data string))
+           (let ((off (%mdarray-offset string)))
+             (declare (fixnum off))
+             (%stream-write-simple-string s (%mdarray-data string) (+ off start) (+ off end))))
           (t (do ((i start (+ i 1))) ((>= i end))
                (%stream-write-char s (char string i)))))
     string))
@@ -1002,9 +1016,11 @@ octet of a character input file when it is ASCII, else the call FALLBACK."
 
 (define-compiler-macro peek-char (&whole form &optional (peek-type nil) (stream nil) (eof-error-p t) eof-value
                                          (recursive-p nil recursive-p-p))
-  (if (or (not (null peek-type)) (and recursive-p-p (not (constantp recursive-p))))
-      form
-      (%inline-file-char-expansion stream eof-error-p eof-value nil '%peek-char-3)))
+  (cond ((and recursive-p-p (not (constantp recursive-p))) form)
+        ((null peek-type) (%inline-file-char-expansion stream eof-error-p eof-value nil '%peek-char-3))
+        ;; skipping whitespace (a tokenizer's next token)
+        ((eq peek-type t) `(%peek-char-skip ,stream ,eof-error-p ,eof-value))
+        (t form)))
 
 (defun %read-line-3 (stream eof-error-p eof-value)
   "READ-LINE of up to three arguments; a character input file is read here."
@@ -1409,6 +1425,12 @@ and whether the newline was missing, or :eof."
             s))))))
 
 (defun %native-close (stream &key abort)
+  ;; a string stream (an accumulator closed after GET-OUTPUT-STREAM-STRING)
+  (when (and (%instancep stream) (eq (%instance-layout stream) (load-time-value *string-stream-layout*)))
+    (%set-instance-ref stream +stream-open-slot+ nil)
+    (%set-instance-ref stream +stream-fast-slot+ nil)
+    (%set-instance-ref stream +stream-fast-out-slot+ nil)
+    (return-from %native-close t))
   (%check-stream stream)
   (when (stream-open stream)
     (when (eq (stream-kind stream) :file)

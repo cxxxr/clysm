@@ -87,6 +87,26 @@
 (defun %rt-whitespace-p (c)
   (eq (%syntax c (or *readtable* *standard-readtable*)) :whitespace))
 
+(defun %peek-char-skip (stream eof-error-p eof-value)
+  "PEEK-CHAR with PEEK-TYPE T: the whitespace of a string input stream over a
+simple string is skipped here, its ASCII characters by the table of the
+readtable."
+  (let ((s (cond ((null stream) *standard-input*) ((eq stream t) *terminal-io*) (t stream))))
+    (when (and (%string-in-p s) (null (%instance-ref s +stream-unread-slot+))
+               (%simple-string-p (%instance-ref s +stream-buffer-slot+)))
+      (let ((buf (%instance-ref s +stream-buffer-slot+))
+            (end (%instance-ref s +stream-end-slot+))
+            (ascii (%rt-ascii (or *readtable* *standard-readtable*))))
+        (declare (fixnum end))
+        (do ((i (%instance-ref s +stream-index-slot+) (%fx+ i 1))) ((%fx>= i end) (%set-instance-ref s +stream-index-slot+ end))
+          (declare (fixnum i))
+          (let* ((c (%schar buf i)) (code (%char-code c)))
+            (unless (if (%fx< code 128) (eq (%svref ascii code) :whitespace) (%rt-whitespace-p c))
+              (%set-instance-ref s +stream-index-slot+ i)
+              (return-from %peek-char-skip c))))))
+    (locally (declare (notinline peek-char))
+      (peek-char t s eof-error-p eof-value))))
+
 (defun %rt-designator (rt)
   "NIL designates the standard readtable."
   (if (null rt) *standard-readtable* (%check-readtable rt)))

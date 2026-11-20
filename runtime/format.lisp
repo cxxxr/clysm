@@ -836,6 +836,17 @@ separated by COMMA, after the character SIGN (or NIL)."
       (let ((*print-base* base) (*print-radix* nil) (*print-escape* nil) (*print-readably* nil))
         (princ arg stream))))
 
+(defun %fmt-decimal-padded (arg stream mincol padchar)
+  "~mincol,padcharD: a nonnegative fixnum into a string output stream is
+written into its buffer at once."
+  (if (and (fixnump arg) (%fx>= arg 0) (fixnump mincol) (characterp padchar) (%string-out-p stream))
+      (let ((len (do ((k (%fxtruncate arg 10) (%fxtruncate k 10)) (c 1 (%fx+ c 1))) ((eql k 0) c)
+                   (declare (fixnum k c)))))
+        (declare (fixnum len))
+        (when (%fx> mincol len) (%write-chars stream padchar (%fx- mincol len)))
+        (%string-out-decimal stream arg))
+      (%fmt-integer stream arg 10 nil nil mincol padchar #\, 3)))
+
 (defun %fmt-decimal (arg stream)
   (if (integerp arg)
       (%write-integer-digits arg 10 stream)
@@ -1347,9 +1358,13 @@ position.  In static mode they must all take the same number of arguments."
        (let ((base (case char (#\D 10) (#\B 2) (#\O 8) (t 16))))
          (multiple-value-bind (b v) (%fmtc-params dir '((:int 0) (:char #\Space) (:char #\,) (:int 3)))
            (%fmtc-with-arg b (lambda (arg)
-                               (if (and (null (%fdir-params dir)) (not colon) (not at) (= base 10))
-                                   `(%fmt-decimal ,arg ,s)
-                                   `(%fmt-integer ,s ,arg ,base ,colon ,at ,@v)))))))
+                               (cond ((and (null (%fdir-params dir)) (not colon) (not at) (= base 10))
+                                      `(%fmt-decimal ,arg ,s))
+                                     ;; ~mincol,padcharD (a date's fields): the
+                                     ;; comma parameters do not matter
+                                     ((and (not colon) (not at) (= base 10))
+                                      `(%fmt-decimal-padded ,arg ,s ,(first v) ,(second v)))
+                                     (t `(%fmt-integer ,s ,arg ,base ,colon ,at ,@v))))))))
       (#\R
        (multiple-value-bind (b v)
            (%fmtc-params dir '((:int nil) (:int 0) (:char #\Space) (:char #\,) (:int 3)))
