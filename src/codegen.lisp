@@ -2822,6 +2822,9 @@ the raw clone returning that, or NIL."
           (t
            (let ((idx (new-local)))
              (set-loc lv (cons :local idx))
+             ;; (an integer accumulator gets its i64 local in this function,
+             ;; or none: *DUAL-VARS* may hold that of another compiled before)
+             (note-dual-var lv t)
              `((:local.get ,local-idx) ,@(box-rep-code r) (:local.set ,idx)))))))
 
 (defun compile-raw-clone (lam sig rrep)
