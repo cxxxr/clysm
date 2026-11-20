@@ -21,6 +21,10 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="${NODE:-node}"
+# The compiler runs on SBCL, whose heap is 1 GB (or 8 GB, as it was built) unless it is told:
+# a large program (a system of some hundred files, with --shake) needs more than 1 GB.
+# CLYSM_SBCL_HEAP_MB names another size.
+SBCL_HEAP="${CLYSM_SBCL_HEAP_MB:-4096}"
 cmd="$1"; [ $# -gt 0 ] && shift
 stale() { [ ! -f "$1" ] || [ -n "$(find "$ROOT/runtime" "$ROOT/src" "$ROOT/lib" -newer "$1" -name '*.lisp' 2>/dev/null | head -1)" ]; }
 interp_image() {
@@ -62,7 +66,7 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake"; shift;; *) files="$files $1"; shift;; esac
     done
-    exec sbcl --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
+    exec sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
   library)
     out=""; files=""; shake=""
     while [ $# -gt 0 ]; do
@@ -70,7 +74,7 @@ case "$cmd" in
     done
     [ -n "$out" ] || { echo "clysm library: -o DIR/NAME.wasm is needed" >&2; exit 1; }
     mkdir -p "$(dirname "$out")"
-    sbcl --script "$ROOT/tools/build.lisp" $shake "$out" $files || exit 1
+    sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files || exit 1
     exec "$NODE" "$ROOT/tools/gen-library.mjs" "$out" ;;
   run)
     files=""
@@ -79,7 +83,7 @@ case "$cmd" in
     done
     mkdir -p "$ROOT/build"
     out="$ROOT/build/run-$$.wasm"
-    sbcl --script "$ROOT/tools/build.lisp" "$out" $files >/dev/null 2>"$out.log" || { cat "$out.log" >&2; rm -f "$out.log"; exit 1; }
+    sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" "$out" $files >/dev/null 2>"$out.log" || { cat "$out.log" >&2; rm -f "$out.log"; exit 1; }
     rm -f "$out.log"
     status=0; "$NODE" "$ROOT/host/run.mjs" "$out" "$@" || status=$?
     rm -f "$out"; exit $status ;;

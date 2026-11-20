@@ -45,9 +45,13 @@ function systemFiles(name, asd) {
   return r.stdout.split('\n').filter((l) => l);
 }
 
+// The heap of the SBCL that compiles, in megabytes (see bin/clysm): its own default
+// (1 GB as it is usually built) is too little for a large program.
+const sbclHeap = process.env.CLYSM_SBCL_HEAP_MB || '4096';
+
 function compileQuiet(files, out, shake) {
   const args = sbcl
-    ? ['--script', path.join(root, 'tools', 'build.lisp'), ...(shake ? ['--shake'] : []), out, ...files]
+    ? ['--dynamic-space-size', sbclHeap, '--script', path.join(root, 'tools', 'build.lisp'), ...(shake ? ['--shake'] : []), out, ...files]
     : [runHost, compiler, ...(shake ? ['--shake'] : []), out, ...files, '--runtime', path.join(root, 'runtime')];
   return new Promise((resolve) => {
     const child = spawn(sbcl ? 'sbcl' : node, args, { stdio: ['ignore', 'pipe', 'pipe'] });
