@@ -39,7 +39,7 @@ $ make web         # browser demo in build/web
 | `src/driver.lisp` | toplevel processing (`eval-when`, `defmacro`, `defpackage`…) and module assembly |
 | `runtime/*.lisp` | the Common Lisp library, written in Lisp and compiled by Clysm |
 | `ui/*.lisp` | the GUI framework (see [GUI framework](#gui-framework)); `ui/electron/` is its desktop shell |
-| `host/run.mjs` | Node.js host: I/O imports, runs the module in a worker with a large stack |
+| `host/run.mjs` | Node.js host: I/O imports, runs the module in a worker with a large stack (an image started from a heap image: in the main thread) |
 | `tools/run-tests.sh` | runs every `tests/cases/*.lisp` on SBCL and Clysm and compares the output |
 
 ## Object representation (spec: データ構造のWasmGCマッピング)
@@ -547,7 +547,9 @@ started with `CLYSM_SAVE_IMAGE` set, so that the host records the modules
 compiled in it (their octets go into the file; with `CLYSM_SAVE_IMAGE=fasls`
 those read from fasls are named by file and position instead). The REPL
 image itself starts from one that `bin/clysm` saves after its toplevel
-forms (`build/clysm-native.img`, see Start-up and loading).
+forms (`build/clysm-native.img`, see Start-up and loading). An image
+started from a heap image runs in Node.js's main thread rather than a
+worker (Start-up and loading).
 
 * **What is saved.** The objects reachable from the roots: the objects of
   the image's immutable globals (its symbols, constants and static closures,
@@ -770,7 +772,8 @@ The processes are kept by the manager of `host/process.mjs`, which holds
 what they write until Lisp reads it. In the Node.js host the Lisp program
 runs in a worker: a call of the manager, which is in the main thread,
 blocks the worker until the answer is in a shared buffer (as for TCP
-sockets). In a library (`host/lib.mjs`) the manager is in the same thread,
+sockets; a program in the main thread, an image started from a heap image,
+has them served by a worker started when first needed). In a library (`host/lib.mjs`) the manager is in the same thread,
 and a read that has to wait waits with `js:await` — so it is done in a
 function of `js:async-function`, and several processes can be read at the
 same time. UIOP's `run-program`, `launch-program`, `wait-process`,
@@ -1336,7 +1339,8 @@ implementation layer (TCP connections, directory listing), and is installed
 automatically when ASDF loads the Quicklisp client. TCP connections are
 synchronous sockets provided by the Node.js host (`sys::open-tcp-stream`): the
 Lisp program runs in a worker thread, which blocks with `Atomics.wait` while
-the main thread performs the socket operation.
+the main thread performs the socket operation (or, when the program runs in
+the main thread, a worker started for that).
 
 ```lisp
 ;; an existing installation ($QUICKLISP_HOME, by default ~/quicklisp/)
@@ -1431,7 +1435,7 @@ is made nothing changes: they block as before.
 * The program (`sys::main`, the REPL and scripts) runs as a computation, the
   main thread, so it can wait too. The host gives computations stacks as
   deep as the worker's (`--wasm-stack-switching-stack-size` and
-  `--stack-size`, set before the worker starts); elsewhere (a browser,
+  `--stack-size`, set when the host starts, in the main thread too); elsewhere (a browser,
   where they are about 1 MB) the program does not run as one.
 * A module compiled in the image is run from WebAssembly (`call_ref` of its
   `run` function, which the host's `instantiate_module` returns), not
@@ -2336,11 +2340,93 @@ they compile in 20 ms), instantiating them (18 ms), reading the fasl's text
 hashing strings in `equal` hash tables: `%sxhash` 11 ms, `gethash` 7,
 `%ht-find-general` 11, `find-symbol` 5).
 
+Later the same day (2026-11-20 evening), measured on one slot one run after
+the other, best of five, milliseconds ("main" is main at 017e37e, "now" this
+work on top of it):
+
+| Item | SBCL | Main | Now |
+|---|---|---|---|
+| `s-start` (`--eval t`) | 4 | 134 | 85 |
+| `s-script` | 5 | 201 | 165 |
+| `s-require-asdf` | 50 | 266 | 216 |
+| `s-quicklisp` | 126 | 467 | 415 |
+| `s-ql-alexandria` | 142 | 517 | 462 |
+| `s-ql-cl-ppcre` | 171 | 519 | 480 |
+| `s-ql-babel` | 213 | 601 | 552 |
+| geometric mean / SBCL | | 7.0 | 6.0 |
+
+* **The main thread.** An image started from a heap image runs its
+  function as a computation that can wait (`%call-as-main-thread`, JSPI),
+  on a stack of the engine's whose size `--wasm-stack-switching-stack-size`
+  and `--stack-size` give, in any thread: such an image (the REPL) runs in
+  Node.js's main thread (`host/run.mjs`), where starting the worker cost
+  20 ms and ending it (joining the thread, freeing its heap) 12 to 17.
+  `--stack-size` set at run time leaves the limit of the thread's own stack
+  as it was, so the main thread's stays within the system's 8 MB, and a
+  deep recursion outside a computation (a callback from JavaScript) still
+  ends with a `RangeError`. The sockets and processes that the program calls
+  as if they were synchronous (`Atomics.wait`) are served by a worker
+  started when one is first needed. A program that does not start from a
+  heap image (`clysm run`, `exec`, the tests, `CLYSM_NO_HEAP_IMAGE`) keeps
+  the worker, as do `CLYSM_HEAP_MB`, a heap limit under 4 GB, a host without
+  JSPI and `CLYSM_WORKER=1`.
+* **Globals.** V8 validates the initializer of every global when it
+  compiles a module and evaluates it when it instantiates it (about 15 ns
+  an instruction and 0.1 µs a global each time). 59000 of the REPL image's
+  80000 globals were the conses of constant lists; a constant that only the
+  initializer of one other constant refers to is now built in that one's
+  (`inline-single-use-constants`, `src/driver.lisp`): 30000 globals, the
+  image 8.9 MB instead of 9.5, compiling and instantiating it 49 -> 42 ms,
+  making the heap image's objects 15 -> 9.5 ms (`:image-objects`, one
+  `global.get` for each object of a global, is a third as long).
+* **Overlap.** The image compiles in V8's threads while the host imports
+  its modules and reads the heap image.
+* **Compiling a form in the image.** The module's octets crossed to the
+  host one by one (`put_char_buf`, a string concatenated, then converted);
+  they cross at once now (`js:from-octets`). The expander of a local macro
+  is interpreted instead of compiled to a module of its own: every `loop`
+  expands to a `macrolet` of `loop-finish`, and that module was a fifth of
+  the time of compiling small `defun`s with a `loop`. Loading 300 small
+  `defun`s from source: 0.90 -> 0.68 s.
+* **Fasls.** `load` of a compiled file opened a file stream, which read the
+  whole file into Lisp octets (4.5 MB for ASDF: 13 ms of reading and 10 of
+  copying when ASDF and Quicklisp load), though the host reads the modules
+  and decodes the text itself; `load` asks the host for the head of the
+  file and reads a compiled file through it (a stream is opened only when a
+  source form must be read).
+* **The npm package** ships the heap image (`clysm-native.img`) and starts
+  its REPL from it: `clysm eval t` 168 -> 120 ms.
+
+Where the time of `--eval t` goes now (85 ms): Node.js and the host's
+modules 19 ms; compiling and instantiating the image 42 ms (compiling, 18
+ms in V8's threads, overlaps the rest); making the heap image's objects
+9.5 ms (half of it Liftoff compiling `:image-objects` and
+`:set-image-mutables`, 140 KB of code); the program 10 ms. The cold
+compiler is what `s-script` adds (70 ms for one `defun`): Liftoff compiles
+about 30 MB of code a second on one thread, and compiling a first `defun`
+runs 780 functions of the compiler, 1.3 MB of code (`encode-module`,
+`emit-instr`, `i32-op-code`... 20 to 50 KB each); loading Quicklisp and a
+library compiles 2 MB of the image's functions and 0.7 MB of the fasls'.
+
 Tried and not kept: compilation hints (`withCompilationHints`, the
 functions that run at start compiled eagerly in background threads) are
 not used by Node.js 24's V8 (13.6; `--experimental-wasm-compilation-hints`
 changed nothing). V8 has no cache of compiled WebAssembly that Node.js
 exposes (`v8.serialize` of a `WebAssembly.Module` gives 2 octets).
+
+Also tried and not kept (2026-11-20 evening): a Node.js startup snapshot
+(`node --build-snapshot`) cannot hold WebAssembly (`WebAssembly` is not
+defined while the snapshot is built). V8's PGO
+(`--experimental-wasm-pgo-to-file` / `-from-file`, a profile per module in
+the working directory) compiles the functions that ran eagerly, and those
+that tiered up with TurboFan, before the module is ready: `--eval t` 115 ->
+270 ms, Quicklisp no faster. The image's objects from a passive element
+segment (`array.new_elem`) instead of the 73000 `global.get`s of
+`:image-objects`: V8 evaluates the segment when it instantiates the module,
+no gain. Compiling a form before the heap image is saved (so that the
+compiler's tables made when first used are in it): no gain. Ending the
+worker by a message from it before it tears down: the main thread's exit
+joins it anyway.
 
 ### Allocation, garbage collection and the engine's flags
 
