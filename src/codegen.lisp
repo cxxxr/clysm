@@ -254,6 +254,44 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
       (setf (gethash lv (fstate-shadows *fs*))
             (list (new-local `(:ref :null ,(second (lvar-rep lv)))) (new-local :i32) (new-local :i32) (new-local :i32)))))
 
+(defvar *cg-loop* nil "The innermost TAGBODY node with a loop around the code being compiled.")
+
+(defun innermost-loop-p ()
+  "The code being compiled is in a loop that has no loop inside it."
+  (and *cg-loop*
+       (let ((inner nil))
+         (labels ((walk (n) (when (and (consp n) (not inner))
+                              (if (and (eq (car n) :tagbody) (not (eq n *cg-loop*)))
+                                  (setf inner t)
+                                  (map-subnodes #'walk n)))))
+           (walk *cg-loop*))
+         (not inner))))
+
+(defun md2-alias-src (lv init)
+  (let ((src (loop while (eq (car init) :the) do (setf init (third init))
+                   finally (return (and (eq (car init) :lref) (second init))))))
+    ;; (only in an innermost loop: elsewhere the locals of the array, live
+    ;; across the inner loops, cost the engine more registers than the
+    ;; loads of its header they save)
+    (and src (innermost-loop-p) (not (lvar-special lv)) (not (boxed-p lv)) (not (lvar-mutated lv)) (not (lvar-mutated src))
+         (consp (lvar-rep lv)) (eq (first (lvar-rep lv)) :md2)
+         (eq (lvar-rep src) (lvar-rep lv)) (unboxed-local-p src)
+         src)))
+
+(defun md2-copy-code (lv idx init)
+  "When LV, a two-dimensional array variable (:MD2 kind) whose local is IDX,
+is bound to another one of the same representation (the variable of a SETF
+expansion, the parameter of an inline function): code copying its header
+and the locals of its storage, dimensions and offset (instead of loading
+them from the header again, in a loop), else NIL."
+  (let ((src (loop while (eq (car init) :the) do (setf init (third init))
+                   finally (return (and (eq (car init) :lref) (second init))))))
+    (when (and src (innermost-loop-p) (consp (lvar-rep lv)) (eq (first (lvar-rep lv)) :md2)
+               (eq (lvar-rep src) (lvar-rep lv)) (unboxed-local-p src))
+      `((:local.get ,(cdr (get-loc src))) (:local.set ,idx)
+        ,@(loop for from in (md2-shadows src) for to in (md2-shadows lv)
+                append `((:local.get ,from) (:local.set ,to)))))))
+
 (defun rep-local-set-code (lv idx &optional tee)
   "Store the value on the stack (in LV's representation) in LV's local IDX
 (with TEE the value stays on the stack)."
@@ -670,10 +708,16 @@ representation) or :effect (no value)."
                  (let ((tmp (new-local)))
                    (setf code (append code (cg init) `((:local.set ,tmp))))
                    (push (cons lv tmp) specials)))
+                ((md2-alias-src lv init)
+                 ;; (bound to an array variable neither of which is assigned: its locals)
+                 (let ((src (md2-alias-src lv init)))
+                   (set-loc lv (get-loc src))
+                   (setf (gethash lv (fstate-shadows *fs*)) (md2-shadows src))))
                 ((and (lvar-rep lv) (not (boxed-p lv)))
                  (let ((idx (new-rep-local (lvar-rep lv))))
                    ;; the init is compiled before the variable has a location
-                   (setf code (append code (cg-rep init (lvar-rep lv)) (rep-local-set-code lv idx)))
+                   (setf code (append code (or (md2-copy-code lv idx init)
+                                               (append (cg-rep init (lvar-rep lv)) (rep-local-set-code lv idx)))))
                    (set-loc lv (cons :local idx))))
                 ((fdual-candidate-p lv init body)
                  ;; a double of unknown type kept unboxed (typed.lisp)
@@ -1774,6 +1818,7 @@ loop with a BR_TABLE."
       (set-loc (tb-tag-var tb) (cons :local (new-local)))
       (let* ((ctx (and (tb-nonlocal tb) (new-pctx)))
              (seg-codes (let ((*tail-ok* nil) (*pend* (or ctx *pend*))
+                              (*cg-loop* (if (or need-dispatch (some #'identity loop-labels)) node *cg-loop*))
                               (*catchers* (if (tb-nonlocal tb) (cons (list :tagbody tb) *catchers*) *catchers*)))
                           (loop for (k . forms) in segments for ll in loop-labels
                                 collect (progn

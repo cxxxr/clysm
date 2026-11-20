@@ -12,6 +12,7 @@
 
 (defun bignump (x) (%bignump x))
 (defun integerp (x) (or (fixnump x) (%bignump x)))
+(defun %integerp (x) (%integerp x))
 (defun rationalp (x) (or (fixnump x) (%bignump x) (%ratiop x)))
 (defun floatp (x) (or (%double-float-p x) (%single-float-p x)))
 (defun realp (x) (or (fixnump x) (%bignump x) (%ratiop x) (%double-float-p x) (%single-float-p x)))

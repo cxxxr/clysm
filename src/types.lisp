@@ -247,13 +247,15 @@ compiler: in the file being compiled, or in the image), else NIL."
         (or (if (and (consp spec) (cdr spec))
                 (reduce #'ty-union (mapcar #'declared-ty (cdr spec)))
                 *ty-top*))
-        (t *ty-top*)))))
+        ;; an instance of a structure class (or of one including it)
+        (t (if (struct-class-type-p spec) (mkty +k-other+ nil nil spec) *ty-top*))))))
 
 (defun ftype-useful-spec-p (spec)
   "Whether the compiler makes something of the type SPEC of an FTYPE (src/frontend.lisp)."
   (and spec (not (eq spec t))
        (let ((ty (ignore-errors (declared-ty spec))))
-         (and ty (/= (ty-bits ty) +k-all+)))))
+         ;; (not a structure class: the checks would cost what they save)
+         (and ty (/= (ty-bits ty) +k-all+) (not (struct-class-type-p (ty-cls ty)))))))
 
 (defun type-test-form (var spec)
   "A form true when the value of the variable VAR is of the type SPEC (one of
@@ -407,7 +409,7 @@ which DECLARED-TY knows something)."
               clysm-sys::%complex-d-p clysm-sys::%complex-s-p
               clysm-sys::%simple-string-p clysm-sys::%simple-vector-p clysm-sys::%instancep
               simple-bit-vector-p clysm-sys::double-float-p clysm-sys::single-float-p clysm-sys::ratiop
-              clysm-sys::bignump
+              clysm-sys::bignump clysm-sys::%integerp
               boundp fboundp clysm-sys::%fx< clysm-sys::%fx> clysm-sys::%fx<= clysm-sys::%fx>=
               clysm-sys::%fx= typep)
     (a) *ty-bool*)
@@ -631,7 +633,7 @@ which DECLARED-TY knows something)."
   (pred (symbolp) (logior +k-null+ +k-sym+) t)
   (pred (characterp) +k-char+ t)
   (pred (functionp) +k-func+ t)
-  (pred (integerp) +k-int+ t)
+  (pred (integerp clysm-sys::%integerp) +k-int+ t)
   (pred (rationalp) +k-rational+ t)
   (pred (floatp) +k-float+ t)
   (pred (realp) +k-real+ t)
@@ -764,8 +766,13 @@ forms ending in one."
     (loop for (region . copy) in regions do (replace region copy))))
 
 (defun decl-ty (lv ty)
-  "TY restricted to the type declared for LV."
-  (if (lvar-decl lv) (ty-intersect ty (declared-ty (lvar-decl lv))) ty))
+  "TY restricted to the type declared for LV (but not to nothing: a value not
+of the declared type, as the NIL a variable is bound to before its first
+value, keeps its type, so that the code after is not taken to be unreachable)."
+  (if (lvar-decl lv)
+      (let ((d (ty-intersect ty (declared-ty (lvar-decl lv)))))
+        (if (and (ty-bottom-p d) (not (ty-bottom-p ty))) ty d))
+      ty))
 
 (defun ti-bind (lv value-ty)
   (let ((ty (decl-ty lv value-ty)))
@@ -947,7 +954,8 @@ forms ending in one."
     (:prim (let ((tys (ti-args (cddr node))) (name (prim-name (second node))))
              ;; after a structure slot access, the object is of that structure class
              (when (member name '(clysm-sys::%struct-ref clysm-sys::%struct-set
-                                  clysm-sys::%struct-iref clysm-sys::%struct-iset))
+                                  clysm-sys::%struct-iref clysm-sys::%struct-iset
+                                  clysm-sys::%struct-tref clysm-sys::%struct-tset))
                (let ((x (third node)) (cls (struct-class-node-name (fourth node))))
                  (when (and cls (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
                    (setf *env* (refine-env *env* (ti-slot (second x)) (mkty +k-other+ nil nil cls))))))
@@ -969,6 +977,8 @@ forms ending in one."
                          (eq (car (sixth node)) :const) (consp (second (sixth node)))
                          (eq (nth (second (fifth node)) (second (sixth node))) :d))
                     (mkty +k-double+))
+                   ;; a slot declared of a structure type
+                   ((struct-slot-node-ty node))
                    ((and (member name '(clysm-sys::%make-instance clysm-sys::%make-struct clysm-sys::%make-tstruct))
                          (struct-class-node-name (third node)))
                     (mkty +k-other+ nil nil (struct-class-node-name (third node))))
@@ -1264,6 +1274,20 @@ with them, replacing the node types of the widened iterations."
                                      ef (refine-env ef k (third r)))))))
                        (values et ef)))))))
         (t (ti node) (values (env-copy *env*) (env-copy *env*))))))
+
+(defun struct-slot-node-ty (node)
+  "For a read of a slot (%STRUCT-REF, %STRUCT-IREF, %STRUCT-TREF of a constant
+index) declared of the type of a structure class: that type, else NIL (the
+type is trusted, as that of a variable is)."
+  (when (member (prim-name (second node)) '(clysm-sys::%struct-ref clysm-sys::%struct-iref clysm-sys::%struct-tref))
+    (let* ((args (cddr node)) (cls (struct-class-node-name (second args))) (i (third args)))
+      (when (and cls i (eq (car i) :const) (integerp (second i)))
+        (let* ((desc (get cls 'clysm-sys::%struct-description))
+               (slot (and (consp desc) (null (car desc)) (listp (second desc))
+                          (find (second i) (second desc) :key (lambda (s) (and (consp s) (nth 4 s))))))
+               (type (and (consp slot) (third slot))))
+          (and type (symbolp type) (struct-class-type-p type)
+               (mkty +k-other+ nil nil type)))))))
 
 (defun struct-class-node-name (node)
   "NODE is (LOAD-TIME-VALUE (FIND-CLASS 'NAME)): NAME."

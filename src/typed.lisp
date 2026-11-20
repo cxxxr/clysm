@@ -975,23 +975,41 @@ the structure class (local C) or one including it."
         :ref.eq (:hint 1) (:br_if ,hit)
         ,@(inherits-check-code l c '((:i32.const 0))) :i32.eqz (:br_if ,slow)))))
 
+(defun struct-class-known-p (x cls)
+  "The object (node X) is known to be of the structure class whose node is
+CLS (a declaration of the variable, a test, a slot access before)."
+  (let ((name (struct-class-node-name cls)))
+    (and name (eq (ty-cls (node-ty x)) name))))
+
+(defun known-struct-check-code (o ty s slow)
+  "For an object (local O) known to be of the structure class: code branching
+to SLOW unless it is of the Wasm type TY (left in S) -- an instance of a
+structure including it that has a slot vector is not, nor an object that
+is not of the class at all, which the slow path signals."
+  `((:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
+    (:local.get ,o) (:ref.cast! ,ty) (:local.set ,s)))
+
 (defun tstruct-ref-code (node rep)
   "%STRUCT-TREF in REP (:EQREF, or :F64 for a slot of kind :D), or NIL."
   (destructuring-bind (x cls i kinds-node) (cddr node)
     (let ((k (const-int-node i)) (kinds (tstruct-kinds kinds-node)))
       (when (and k kinds (< -1 k (length kinds))
                  (or (eq rep :eqref) (and (eq rep :f64) (eq (nth k kinds) :d))))
-        (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d))
+        (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d)) (known (struct-class-known-p x cls))
                (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
                (slow (gensym "SLOW")) (done (gensym "TREF")))
-          `(,@(cg x) (:local.set ,o) ,@(cg cls) (:local.set ,c) ,@(cg-effect i) ,@(cg-effect kinds-node)
+          ;; (the class is only loaded where it is compared)
+          `(,@(cg x) (:local.set ,o) ,@(unless known `(,@(cg cls) (:local.set ,c)))
+            ,@(cg-effect i) ,@(cg-effect kinds-node)
             (:block ,done ,(if (eq rep :f64) :f64 :eqref)
               (:block ,slow nil
-                ,@(tstruct-field-check-code o c ty s l slow)
+                ,@(if known
+                      (known-struct-check-code o ty s slow)
+                      (tstruct-field-check-code o c ty s l slow))
                 (:local.get ,s) (:struct.get ,ty ,(sinst-field k))
                 ,@(when (and d (eq rep :eqref)) '((:struct.new :double)))
                 (:br ,done))
-              (:local.get ,o) (:local.get ,c) (:i32.const ,k) :ref.i31
+              (:local.get ,o) ,@(if known (cg cls) `((:local.get ,c))) (:i32.const ,k) :ref.i31
               ,@(lisp-call-instrs 'clysm-sys::%struct-ref 3)
               ,@(when (eq rep :f64) (unbox-rep-code :f64 (mkty +k-double+))))))))))
 
@@ -1001,14 +1019,17 @@ the structure class (local C) or one including it."
     (let ((k (const-int-node i)) (kinds (tstruct-kinds kinds-node)))
       (when (and k kinds (< -1 k (length kinds)))
         (let* ((ty (tshape-type kinds)) (d (eq (nth k kinds) :d)) (raw (and d (ty-double-p (node-ty v))))
+               (known (struct-class-known-p x cls))
                (o (new-local)) (c (new-local)) (s (new-local `(:ref :null ,ty))) (l (new-local))
                (val (new-local)) (f (new-local :f64)) (slow (gensym "SLOW")) (done (gensym "TSET")))
-          `(,@(cg x) (:local.set ,o) ,@(cg cls) (:local.set ,c) ,@(cg-effect i)
+          `(,@(cg x) (:local.set ,o) ,@(unless known `(,@(cg cls) (:local.set ,c))) ,@(cg-effect i)
             ,@(if raw `(,@(cg-rep v :f64) (:local.set ,f)) `(,@(cg v) (:local.set ,val)))
             ,@(cg-effect kinds-node)
             (:block ,done nil
               (:block ,slow nil
-                ,@(tstruct-field-check-code o c ty s l slow)
+                ,@(if known
+                      (known-struct-check-code o ty s slow)
+                      (tstruct-field-check-code o c ty s l slow))
                 ,@(cond ((not d) `((:local.get ,s) (:local.get ,val) (:struct.set ,ty ,(sinst-field k))))
                         (raw `((:local.get ,s) (:local.get ,f) (:struct.set ,ty ,(sinst-field k))))
                         (t `((:local.get ,val) (:ref.test :double)
@@ -1018,7 +1039,7 @@ the structure class (local C) or one including it."
                                   ((:local.get ,val) (:global.get ,(sym-global 'double-float))
                                    ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :drop)))))
                 (:br ,done))
-              (:local.get ,o) (:local.get ,c) (:i32.const ,k) :ref.i31
+              (:local.get ,o) ,@(if known (cg cls) `((:local.get ,c))) (:i32.const ,k) :ref.i31
               ,@(if raw `((:local.get ,f) (:struct.new :double)) `((:local.get ,val)))
               ,@(lisp-call-instrs 'clysm-sys::%struct-set 4) :drop)
             ,@(unless effect
@@ -1069,7 +1090,7 @@ the structure class (local C) or one including it."
                (:struct.new ,ty)))))))))
 
 (defun typed-struct-code (node)
-  "Slot access of an object known to be of the structure class: no check."
+  "Slot access of an object known to be of the structure class: no test of its class."
   (when (member (node-op-name node) '(clysm-sys::%struct-iref clysm-sys::%struct-iset))
     ;; slots in fields of their own: a cast to the structure's type
     (return-from typed-struct-code
@@ -1078,11 +1099,22 @@ the structure class (local C) or one including it."
                (n (let ((s (const-int-node size))) (and s (mod s 64))))
                (ty (and k n (< -1 k n) (<= n +struct-inline-max+) (sinst-type n))))
           (when (and ty name (eq (ty-cls (node-ty x)) name))
-            (if vp
-                (let ((tmp (new-local)))
-                  `(,@(cg x) (:ref.cast! ,ty) ,@(cg v) (:local.tee ,tmp) (:struct.set ,ty ,(sinst-field k))
-                    (:local.get ,tmp)))
-                `(,@(cg x) (:ref.cast! ,ty) (:struct.get ,ty ,(sinst-field k)))))))))
+            ;; (an instance of a structure including it that has a slot vector: the function)
+            (let ((o (new-local)) (s (new-local `(:ref :null ,ty))) (tmp (new-local))
+                  (slow (gensym "SLOW")) (done (gensym "SREF")))
+              `(,@(cg x) (:local.set ,o) ,@(when vp `(,@(cg v) (:local.set ,tmp)))
+                (:block ,done :eqref
+                  (:block ,slow nil
+                    ,@(known-struct-check-code o ty s slow)
+                    (:local.get ,s)
+                    ,@(if vp
+                          `((:local.get ,tmp) (:struct.set ,ty ,(sinst-field k)) (:local.get ,tmp))
+                          `((:struct.get ,ty ,(sinst-field k))))
+                    (:br ,done))
+                  (:local.get ,o) ,@(cg cls) (:i32.const ,k) :ref.i31
+                  ,@(if vp
+                        `((:local.get ,tmp) ,@(lisp-call-instrs 'clysm-sys::%struct-set 4))
+                        (lisp-call-instrs 'clysm-sys::%struct-ref 3))))))))))
   (destructuring-bind (x cls i &optional (v nil vp))
       ;; (without the shape, the last argument when there is one)
       (let ((args (cddr node)))
@@ -1096,10 +1128,44 @@ the structure class (local C) or one including it."
             `(,@(cg x) (:ref.cast! :instance) (:struct.get :instance 1) ,@(cg-rep i :i32)
               (:array.get :vector)))))))
 
+(defun known-test-result (name args)
+  "When the types of the arguments decide the test NAME of ARGS: :TRUE or
+:FALSE (the check of a value given to a variable declared of an integer
+type, where the type of the value shows it holds), else NIL."
+  (let ((tys (mapcar #'node-ty args)))
+    (when (notany #'ty-bottom-p tys)
+      (case name
+        ((integerp clysm-sys::%integerp) (when (= (length tys) 1)
+                    (cond ((ty-only-p (first tys) +k-int+) :true)
+                          ((not (ty-int-p (first tys))) :false))))
+        ((clysm-sys::%bignump clysm-sys::bignump)
+         (when (= (length tys) 1)
+           (cond ((not (ty-int-p (first tys))) :false)
+                 ((ty-fixnum-p (first tys)) :false))))
+        ((< > <= >= = /=)
+         (when (= (length tys) 2)
+           (let ((a (first tys)) (b (second tys)))
+             (when (and (ty-only-p a +k-int+) (ty-only-p b +k-int+))
+               (let ((alo (ty-lo a)) (ahi (ty-hi a)) (blo (ty-lo b)) (bhi (ty-hi b)))
+                 (flet ((lt (x y) (and x y (< x y))) (le (x y) (and x y (<= x y))))
+                   (ecase name
+                     (< (cond ((lt ahi blo) :true) ((le bhi alo) :false)))
+                     (> (cond ((lt bhi alo) :true) ((le ahi blo) :false)))
+                     (<= (cond ((le ahi blo) :true) ((lt bhi alo) :false)))
+                     (>= (cond ((le bhi alo) :true) ((lt ahi blo) :false)))
+                     (= (cond ((or (lt ahi blo) (lt bhi alo)) :false)
+                              ((and alo (eql alo ahi) (eql blo bhi) (eql alo blo)) :true)))
+                     (/= (cond ((or (lt ahi blo) (lt bhi alo)) :true)
+                               ((and alo (eql alo ahi) (eql blo bhi) (eql alo blo)) :false))))))))))))))
+
 (defun typed-test-code (node)
   "i32 code for a numeric comparison or predicate using the argument types, or NIL."
   (let* ((name (node-op-name node)) (args (cddr node))
          (a (first args)) (b (second args)))
+    (let ((known (known-test-result name args)))
+      (when known
+        (return-from typed-test-code
+          `(,@(loop for x in args append (cg-effect x)) (:i32.const ,(if (eq known :true) 1 0))))))
     (case name
       ((< > <= >= = /=)
        (when (= (length args) 2)
@@ -1133,6 +1199,10 @@ the structure class (local C) or one including it."
               `(,@(cg-rep a :i32) (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u))
              ((i64-arg-p a)
               `(,@(cg-rep a :i64) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u))))
+      ((clysm-sys::%bignump clysm-sys::bignump)
+       ;; an integer within 64 bits is a bignum when it is not a fixnum
+       (when (i64-arg-p a)
+         `(,@(cg-rep a :i64) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.ge_u)))
       ((eq eql)
        (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b)
                   (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))

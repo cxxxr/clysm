@@ -195,6 +195,13 @@ runtime definition is kept."
     string simple-string simple-vector cons list symbol number real rational bit function
     unsigned-byte signed-byte null simple-bit-vector simple-base-string))
 
+(defun struct-class-type-p (spec)
+  "SPEC names a structure class defined by DEFSTRUCT (without :TYPE) known
+at compile time: a declaration whose identifier it is declares a type."
+  (and spec (symbolp spec)
+       (let ((d (get spec 'clysm-sys::%struct-description)))
+         (and (consp d) (null (car d))))))
+
 (defun apply-type-decls (decls lvars)
   "Record the types declared in DECLS for the variables LVARS."
   (dolist (d decls)
@@ -204,7 +211,8 @@ runtime definition is kept."
                 ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
                 ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte simple-array simple-vector simple-string
                                                     simple-bit-vector)))
-                 (values (car d) (cdr d))))
+                 (values (car d) (cdr d)))
+                ((struct-class-type-p (car d)) (values (car d) (cdr d))))
         (when spec
           (dolist (v vars)
             (let ((lv (find v lvars :key #'lvar-name :from-end t)))
@@ -226,7 +234,8 @@ runtime definition is kept."
                            ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
                            ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte simple-array
                                                                simple-vector simple-string simple-bit-vector)))
-                            (values (car d) (cdr d))))
+                            (values (car d) (cdr d)))
+                           ((struct-class-type-p (car d)) (values (car d) (cdr d))))
                    (and spec (list (cons spec vars))))))
 
 (defun decls-safety (decls)
@@ -297,7 +306,7 @@ they are bound), and the SAFETY of an OPTIMIZE declaration among them."
              (if (and (integerp lo) (integerp hi)
                       (<= +most-negative-fixnum+ lo) (<= hi +most-positive-fixnum+))
                  `(and (clysm-sys::fixnump ,v) ,@tests)
-                 `(and (integerp ,v) ,@tests)))))
+                 `(and (clysm-sys::%integerp ,v) ,@tests)))))
     (cond ((eq spec 'fixnum) `(clysm-sys::fixnump ,v))
           ((and (eq (car spec) 'integer) (listp (cdr spec)))
            (range (second spec) (third spec)))
@@ -306,7 +315,7 @@ they are bound), and the SAFETY of an OPTIMIZE declaration among them."
           ((and (eq (car spec) 'signed-byte) (integerp (second spec)))
            (range (- (expt 2 (1- (second spec)))) (1- (expt 2 (1- (second spec))))))
           ((eq (car spec) 'unsigned-byte) (range 0 nil))
-          (t `(integerp ,v)))))
+          (t `(clysm-sys::%integerp ,v)))))
 
 (defvar *check-declared-integers* t
   "True when the value given to a variable of a declared integer type is
