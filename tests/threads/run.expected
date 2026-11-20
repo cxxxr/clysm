@@ -4,6 +4,7 @@ ok   a new thread starts when its creator waits
 ok   bindings per thread
 ok   handlers of the creator are not those of the thread
 ok   mutual exclusion
+ok   string streams of threads waiting inside with-output-to-string
 ok   grab-mutex without waiting
 ok   condition variable
 ok   condition-wait times out
