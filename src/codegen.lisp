@@ -372,6 +372,8 @@ them from the header again, in a loop), else NIL."
           (t `((:local.get ,(fstate-env-local *fs*)) (:i32.const ,(cdr loc)) ,@value-code
                (:array.set :vector))))))
 
+(defvar *binding-init* nil "The node of the value BIND-NEW-VAR-CODE binds, when known.")
+
 (defun bind-new-var-code (lv value-code)
   "Initialize a fresh lexical variable (allocating its local)."
   (note-dual-var lv)                    ; integer accumulators (typed.lisp)
@@ -384,7 +386,7 @@ them from the header again, in a loop), else NIL."
     (set-loc lv (cons :local idx))
     (if (boxed-p lv)
         `(,@value-code (:struct.new :cell) (:local.set ,idx))
-        `(,@value-code (:local.set ,idx)))))
+        `(,@value-code (:local.set ,idx) ,@(struct-shadow-init-code lv idx)))))
 
 (defun mv-one () '((:i32.const 1) (:global.set :mv-count)))
 
@@ -727,7 +729,7 @@ representation) or :effect (no value)."
                    (remhash lv *dual-vars*)
                    (setf (gethash lv *fdual-vars*) f)))
                 (t (remhash lv *fdual-vars*)
-                   (setf code (append code (bind-new-var-code lv (cg init))))))
+                   (setf code (append code (let ((*binding-init* init)) (bind-new-var-code lv (cg init)))))))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
           (when (and (not (lvar-mutated lv)) (not (lvar-special lv)))
             (cond ((eq (car init) :lambda)
@@ -2184,7 +2186,8 @@ parameter has no code here: FINISH-BODY binds it."
                      ,@(rep-local-set-code lv idx))
                    nil)))
         (t (note-dual-var lv t)          ; integer accumulators (typed.lisp)
-           (set-loc lv (cons :local local-idx)) (values nil nil))))
+           (set-loc lv (cons :local local-idx))
+           (values (struct-shadow-init-code lv local-idx) nil))))
 
 (defvar clysm-sys::*interrupt-checks* nil
   "When true, code compiled in the image (live mode) checks for interrupts

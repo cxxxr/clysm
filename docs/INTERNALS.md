@@ -2092,11 +2092,22 @@ What makes the code fast:
   by `defstruct` is a declared type too (`(declare (body a))`, `(type body
   a)`: `struct-class-type-p`), and so is the slot type of a slot declared
   of one; an accessor of an object known to be of its class (by such a
-  declaration, by a constructor, a type test or an access before) is a
-  `ref.test` of the structure's Wasm type and the `struct.get`/`struct.set`
-  of the field — no load of the class, no layout comparison (an instance
-  of an including structure that has a slot vector, or a value not of the
-  class, takes the call of the function). A declared integer type is
+  declaration, by a constructor, a type test or an access before) is the
+  `struct.get`/`struct.set` of the field — no load of the class, no layout
+  comparison. A variable declared of the type and bound once has a
+  *shadow* local of the structure's Wasm type, set where it is bound (the
+  object cast, or null for an instance of an including structure that has
+  a slot vector, which then takes the call of the function; a variable
+  bound to one with a shadow, as SETF's, copies it), and its accessors
+  test the shadow for null (`struct-shadow-init-code`); other declared
+  objects (an assigned variable, a slot declared of the type) are tested
+  with `ref.test` at each access; an undeclared variable known by an
+  access before, a constructor or a type test is cast, as before (a test
+  where it is bound cost undeclared n-body 5%; that cast traps on an
+  instance of an including structure of more than 32 slots, as such a
+  structure keeps a slot vector — an old limitation, the test of
+  `declared-structs.lisp` declares its functions NOTINLINE because an
+  inline copy loses the declarations of its parameters). A declared integer type is
   checked by tests the type of the value decides where it can
   (`known-test-result`: `(<= 0 v)` and `sys::%integerp` of a value of a
   known range), so a `setq` of a `(unsigned-byte 32)` variable to a value
@@ -2508,7 +2519,10 @@ in 30 bits (Clysm's fixnums), as portable code must.
 | geometric mean | | | 1.56 |
 
 After items 1, 3 and 5 below (structure accessors, integer checks, array
-headers): 1.48 against 1.57 for the code before, run by run on one slot.
+headers): 1.48 against 1.57 for the code before, run by run on one slot;
+on top of the `(safety 0)` work (da5b950), 1.11 against 1.27 (`d-nbody`
+489 → 232 ms, `d-particles` 422 → 245, `d-matmul` 253 → 77; the same in
+`clysm script`: 512 → 232, 430 → 242, 261 → 77).
 
 In the image (`MODE=script`): 1.03 of the whole program; `d-tokenize` 1.67,
 `d-tak` 1.12, `d-k-nucleotide` 1.10, the rest within 0.8–1.07. The same file
@@ -2561,13 +2575,16 @@ ranked by the gain expected:
    declaration identifier, and as a slot type), and an accessor of an
    object known to be of the class is a `ref.test` of its Wasm type and
    the field access, the class loaded only on the slow path (see "Type
-   inference" above). `d-nbody` 785 → 683 ms, `d-particles` 507 → 439
-   (3.6 → 3.15 and 3.3 → 3.0; `clysm script`: 802 → 656, 507 → 417); the
-   rest is item 2, whose float tests are around every one of those
-   reads. The test of the Wasm type is kept (not a bare cast): a
-   structure that includes one of field slots but has more than 32 slots
-   keeps a slot vector, and its instances are not of the Wasm type (the
-   cast that the code made after a first access trapped on them before).
+   inference" above). Before the `(safety 0)` work: `d-nbody` 785 → 683
+   ms, `d-particles` 507 → 439 (the rest was item 2, whose float tests were
+   around every one of those reads). The type of the object is tested once where a variable is
+   bound (its shadow local, see "Type inference"): a test and a cast at
+   every access took n-body 1.35 times as long as a bare cast, a
+   `br_on_cast` 1.9 times, the shadow 1.1 times (V8 shares none of the
+   tests between accesses); comparing the object with the one an access
+   before found (`ref.eq`), for undeclared code, was slower than the
+   test. With the `(safety 0)` work (da5b950): `d-nbody` 489 → 232 ms
+   (2.3 → 1.08 SBCL), `d-particles` 422 → 245 (2.9 → 1.7).
 2. **Floating-point trap emulation on every f64 operation** (`d-matmul`,
    `d-spectral-norm`, `d-nbody`, `d-particles`, `d-mandelbrot`). Each
    `f64.add`/`f64.sub` is followed by a NaN/infinity test (`x - x != 0`)
@@ -2588,7 +2605,9 @@ ranked by the gain expected:
    *Done:* the check uses `sys::%integerp` and comparisons that the
    types of the value decide (`known-test-result`), so it is folded away
    when the value is known to be in range, and `%bignump` of a value in
-   an i64 is a comparison: `d-crc32` 282 → 157 ms (1.82 → 1.02 SBCL).
+   an i64 is a comparison: `d-crc32` 282 → 157 ms (1.82 → 1.02 SBCL)
+   before the `(safety 0)` work, which leaves the check out at safety 0;
+   this is what makes it free at the default safety.
 4. **Arithmetic of declared fixnums whose result is not proved a fixnum,
    and calls** (`d-tak` 2.2, `d-triangle` 2.5, `d-fannkuch` 2.35). `(1- x)`
    of a fixnum is boxed by a call of `$box-i32` and passed as an `eqref`;
@@ -2613,7 +2632,8 @@ ranked by the gain expected:
    *Done in part:* a variable of the representation `(:md2 kind)` bound
    to another one (SETF's, an inline function's parameter) in an
    innermost loop uses that one's locals (or copies them) instead of
-   loading the header again. `d-matmul` 327 → 200 ms (2.8 → 1.75). Outside an innermost
+   loading the header again. `d-matmul` 327 → 200 ms (2.8 → 1.75) before
+   the `(safety 0)` work, 253 → 77 (2.2 → 0.66) with it. Outside an innermost
    loop it loads the header as before: keeping the locals live across the
    inner loop made `p-double-2d` 10% slower (register pressure in V8).
    Testing both subscripts with one branch (`and` of the two

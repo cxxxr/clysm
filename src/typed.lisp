@@ -981,13 +981,75 @@ CLS (a declaration of the variable, a test, a slot access before)."
   (let ((name (struct-class-node-name cls)))
     (and name (eq (ty-cls (node-ty x)) name))))
 
-(defun known-struct-check-code (o ty s slow)
+(defun struct-class-shape-type (name)
+  "The Wasm type of the instances of the structure class NAME when its slots
+are fields (its own instances are of exactly that type), else NIL."
+  (let ((desc (get name 'clysm-sys::%struct-description)))
+    (when (and (consp desc) (null (car desc)) (listp (second desc)))
+      (let ((size (third desc)) (rep (nth 6 desc)))
+        (case rep
+          (:fields (and (integerp size) (<= 1 size +struct-inline-max+) (sinst-type size)))
+          (:typed (let ((kinds (mapcar (lambda (sl) (if (member (third sl) '(double-float long-float)) :d :e))
+                                       (second desc))))
+                    (and (<= 1 (length kinds) +struct-inline-max+) (member :d kinds)
+                         (tshape-type kinds)))))))))
+
+;;; A variable bound once (never assigned) to an object known to be of a
+;;; structure class whose slots are fields has a shadow local of the Wasm
+;;; type of the class: the object cast where the variable is bound, or null
+;;; (an instance of an including structure that has a slot vector).  Its
+;;; accessors test the shadow for null and use it, one test of the object's
+;;; type per binding instead of one per access (which the engine does not
+;;; share between the accesses: n-body took 1.35 times as long).
+(defun struct-shadow-type (lv)
+  (let ((ty (lvar-type lv)))
+    (and ty (not (lvar-mutated lv)) (not (lvar-special lv)) (not (boxed-p lv))
+         (ty-cls ty) (symbolp (ty-cls ty)) (struct-class-type-p (ty-cls ty))
+         (struct-class-shape-type (ty-cls ty)))))
+
+(defun struct-shadow-init-code (lv idx)
+  "Code setting the shadow of LV (in local IDX), when it has one."
+  (let* ((ty (struct-shadow-type lv))
+         (from (and ty *binding-init* (struct-shadow-of *binding-init* ty))))
+    ;; (for a variable not declared, only a copy: its accesses are casts
+    ;; otherwise, cheaper than a test where it is bound)
+    (when (and ty (or from (lvar-decl lv)))
+      (let ((sh (new-local `(:ref :null ,ty))))
+        (setf (gethash lv (fstate-shadows *fs*)) (cons ty sh))
+        (if from
+            ;; (bound to a variable that has one: the variable of a SETF expansion)
+            `((:local.get ,from) (:local.set ,sh))
+        `((:local.get ,idx) (:ref.test ,ty)
+          (:if nil (:ref :null ,ty) ((:local.get ,idx) (:ref.cast! ,ty)) ((:ref.null ,ty)))
+          (:local.set ,sh)))))))
+
+(defun struct-shadow-of (x ty)
+  "The shadow local of the variable X (a node) when it is of the Wasm type TY."
+  (when (eq (car x) :lref)
+    (let ((e (gethash (second x) (fstate-shadows *fs*))))
+      (and (consp e) (eq (car e) ty)
+           (eq (car (get-loc (second x))) :local)
+           (cdr e)))))
+
+(defun known-struct-check-code (o ty s slow &optional x)
   "For an object (local O) known to be of the structure class: code branching
 to SLOW unless it is of the Wasm type TY (left in S) -- an instance of a
 structure including it that has a slot vector is not, nor an object that
 is not of the class at all, which the slow path signals."
-  `((:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
-    (:local.get ,o) (:ref.cast! ,ty) (:local.set ,s)))
+  (let ((sh (and x (struct-shadow-of x ty))))
+    (cond (sh
+           `((:local.get ,sh) :ref.is_null (:hint 0) (:br_if ,slow) (:local.get ,sh) (:local.set ,s)))
+          ((and x (eq (car x) :lref) (not (lvar-decl (second x))))
+           ;; a variable not declared, known by an access before, a
+           ;; constructor or a type test: a cast, as before structure
+           ;; types were declared (a test costs undeclared n-body 7%; the
+           ;; cast traps on an instance of an including structure of more
+           ;; than 32 slots, which has a slot vector)
+           `((:local.get ,o) (:ref.cast! ,ty) (:local.set ,s)))
+          (t
+           ;; (a BR_ON_CAST measured slower than the test and the cast)
+           `((:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
+             (:local.get ,o) (:ref.cast! ,ty) (:local.set ,s))))))
 
 (defun tstruct-ref-code (node rep)
   "%STRUCT-TREF in REP (:EQREF, or :F64 for a slot of kind :D), or NIL."
@@ -1004,7 +1066,7 @@ is not of the class at all, which the slow path signals."
             (:block ,done ,(if (eq rep :f64) :f64 :eqref)
               (:block ,slow nil
                 ,@(if known
-                      (known-struct-check-code o ty s slow)
+                      (known-struct-check-code o ty s slow x)
                       (tstruct-field-check-code o c ty s l slow))
                 (:local.get ,s) (:struct.get ,ty ,(sinst-field k))
                 ,@(when (and d (eq rep :eqref)) '((:struct.new :double)))
@@ -1028,7 +1090,7 @@ is not of the class at all, which the slow path signals."
             (:block ,done nil
               (:block ,slow nil
                 ,@(if known
-                      (known-struct-check-code o ty s slow)
+                      (known-struct-check-code o ty s slow x)
                       (tstruct-field-check-code o c ty s l slow))
                 ,@(cond ((not d) `((:local.get ,s) (:local.get ,val) (:struct.set ,ty ,(sinst-field k))))
                         (raw `((:local.get ,s) (:local.get ,f) (:struct.set ,ty ,(sinst-field k))))
@@ -1105,7 +1167,7 @@ is not of the class at all, which the slow path signals."
               `(,@(cg x) (:local.set ,o) ,@(when vp `(,@(cg v) (:local.set ,tmp)))
                 (:block ,done :eqref
                   (:block ,slow nil
-                    ,@(known-struct-check-code o ty s slow)
+                    ,@(known-struct-check-code o ty s slow x)
                     (:local.get ,s)
                     ,@(if vp
                           `((:local.get ,tmp) (:struct.set ,ty ,(sinst-field k)) (:local.get ,tmp))
