@@ -101,9 +101,17 @@
      (define-compiler-macro ,name (&whole form &rest args)
        ;; case-sensitive comparisons compare the codes inline
        (flet ((pair (x y)
-                ,(if case-insensitive
-                     `(list ',name-2 x y)
-                     `(list ',op (list 'char-code x) (list 'char-code y)))))
+                ,(cond ((and case-insensitive (eq op '=))
+                        ;; CHAR-EQUAL: ASCII inline, the other characters
+                        ;; by NAME-2
+                        `(let ((ca (gensym "CODE")) (cb (gensym "CODE")))
+                           `(let ((,ca (char-code ,x)) (,cb (char-code ,y)))
+                              (or (eql ,ca ,cb)
+                                  (if (and (< ,ca 128) (< ,cb 128))
+                                      (and (eql (logxor ,ca ,cb) 32) (<= 97 (logior ,ca 32) 122))
+                                      (,',name-2 ,x ,y))))))
+                       (case-insensitive `(list ',name-2 x y))
+                       (t `(list ',op (list 'char-code x) (list 'char-code y))))))
          (cond ((and (consp args) (consp (cdr args)) (null (cddr args)))
                 (let ((vars (list (gensym "C") (gensym "C"))))
                   (list 'let (mapcar #'list vars args) (pair (car vars) (cadr vars)))))
@@ -122,6 +130,22 @@
 (%define-char-comparison char-greaterp %char-greaterp-2 > t)
 (%define-char-comparison char-not-greaterp %char-not-greaterp-2 <= t)
 (%define-char-comparison char-not-lessp %char-not-lessp-2 >= t)
+
+;;; CHAR-UPCASE and CHAR-DOWNCASE: ASCII inline, the other characters by a call
+(defun %char-upcase-1 (c) (char-upcase c))
+(defun %char-downcase-1 (c) (char-downcase c))
+(define-compiler-macro char-upcase (c)
+  (let ((x (gensym "C")) (n (gensym "CODE")))
+    `(let* ((,x ,c) (,n (char-code ,x)))
+       (if (< ,n 128)
+           (if (and (>= ,n 97) (<= ,n 122)) (code-char (- ,n 32)) ,x)
+           (%char-upcase-1 ,x)))))
+(define-compiler-macro char-downcase (c)
+  (let ((x (gensym "C")) (n (gensym "CODE")))
+    `(let* ((,x ,c) (,n (char-code ,x)))
+       (if (< ,n 128)
+           (if (and (>= ,n 65) (<= ,n 90)) (code-char (+ ,n 32)) ,x)
+           (%char-downcase-1 ,x)))))
 
 (defparameter *char-names*
   ;; SBCL's names for the C0 and C1 controls and the Latin-1 characters
@@ -2024,19 +2048,30 @@ list result shares the tail after END."
       (%with-indexable ((d1 o1) s1 start1 end1)
         (let ((p1 (+ start1 o1)))
           (cond
-            ((and (null key) (eql mode 0) (%simple-string-p d1) (not (listp s2))
-                  (%simple-string-p (%array-storage s2)))
-             ;; a string in a string: characters are EQL when they are EQ
+            ((and (null key) (%simple-string-p d1) (not (listp s2))
+                  (%simple-string-p (%array-storage s2))
+                  (or (eql mode 0)
+                      (and (eql mode 1) (not neg) (or (eq fn #'%char=-2) (eq fn #'%char-equal-2)))))
+             ;; a string in a string: characters are EQL (and CHAR=) when
+             ;; they are EQ; CHAR-EQUAL inline for ASCII
              (let ((d2 (%array-storage s2)) (o2 (%array-total-offset s2)))
-               (if from-end
-                   (do ((i last (- i 1))) ((< i start2) nil)
-                     (when (do ((k 0 (+ k 1))) ((>= k n) t)
-                             (unless (eq (%schar d1 (+ p1 k)) (%schar d2 (+ i o2 k))) (return nil)))
-                       (return i)))
-                   (do ((i start2 (+ i 1))) ((> i last) nil)
-                     (when (do ((k 0 (+ k 1))) ((>= k n) t)
-                             (unless (eq (%schar d1 (+ p1 k)) (%schar d2 (+ i o2 k))) (return nil)))
-                       (return i))))))
+               (macrolet ((scan (same)
+                            `(if from-end
+                                 (do ((i last (- i 1))) ((< i start2) nil)
+                                   (when (do ((k 0 (+ k 1))) ((>= k n) t)
+                                           (unless (let ((a (%schar d1 (+ p1 k))) (b (%schar d2 (+ i o2 k))))
+                                                     ,same)
+                                             (return nil)))
+                                     (return i)))
+                                 (do ((i start2 (+ i 1))) ((> i last) nil)
+                                   (when (do ((k 0 (+ k 1))) ((>= k n) t)
+                                           (unless (let ((a (%schar d1 (+ p1 k))) (b (%schar d2 (+ i o2 k))))
+                                                     ,same)
+                                             (return nil)))
+                                     (return i))))))
+                 (if (eq fn #'%char-equal-2)
+                     (scan (%char-ci-eq a b))
+                     (scan (eq a b))))))
             ((and (listp s2) (not from-end))
              ;; follow the list: no indexing
              (do ((i start2 (+ i 1)) (l (nthcdr start2 s2) (cdr l))) ((> i last) nil)
