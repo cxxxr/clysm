@@ -7,7 +7,7 @@
 //   clysm run [--shake] FILE... [-- ARGS]
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...
-//   clysm repl | clysm script FILE | clysm eval FORM
+//   clysm repl | clysm script FILE | clysm eval [--no-userinit] FORM...
 //   clysm swank [--port N]   (a SWANK server for SLIME; needs Quicklisp)
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -25,6 +25,16 @@ function find(...candidates) {
 }
 const compiler = find(path.join(root, 'clysmc.wasm'), path.join(root, 'build', 'clysmc.wasm'));
 const replImage = find(path.join(root, 'clysm-native.wasm'), path.join(root, 'build', 'clysm-native.wasm'));
+// the REPL image starts from the heap image saved after its toplevel forms
+// ran (clysm-native.img, made by tools/build-npm.sh; see "Start-up and
+// loading" in docs/INTERNALS.md), unless CLYSM_IMAGE names another,
+// CLYSM_SAVE_IMAGE or CLYSM_NO_HEAP_IMAGE is set; a heap image of another
+// build of the image is not used (the image then starts as it is)
+function replEnv(env = process.env) {
+  if (env.CLYSM_IMAGE || env.CLYSM_SAVE_IMAGE || env.CLYSM_NO_HEAP_IMAGE || !replImage) return env;
+  const heap = replImage.replace(/\.wasm$/, '.img');
+  return fs.existsSync(heap) ? { ...env, CLYSM_IMAGE: heap } : env;
+}
 
 function run(args, options = {}) {
   const r = spawnSync(node, args, { stdio: 'inherit', ...options });
@@ -190,7 +200,10 @@ switch (cmd) {
     break;
   case 'repl': case 'script': case 'eval': {
     if (!replImage) { console.error('clysm: the REPL image (clysm-native.wasm) is missing'); process.exit(1); }
-    process.exit(run([runHost, replImage, ...(cmd === 'eval' ? ['--eval'] : []), ...args]));
+    // (clysm eval [--no-userinit] FORM...)
+    const forms = cmd === 'eval' && args[0] === '--no-userinit' ? ['--no-userinit', '--eval', ...args.slice(1)]
+      : cmd === 'eval' ? ['--eval', ...args] : args;
+    process.exit(run([runHost, replImage, ...forms], { env: replEnv() }));
     break;
   }
   case 'swank': {
@@ -202,7 +215,7 @@ switch (cmd) {
     }
     if (!Number.isInteger(port)) { console.error('clysm swank: --port needs a number'); process.exit(1); }
     process.exit(run([runHost, replImage, path.join(root, 'contrib', 'swank', 'start.lisp')],
-                     { env: { ...process.env, CLYSM_SWANK_PORT: String(port) } }));
+                     { env: replEnv({ ...process.env, CLYSM_SWANK_PORT: String(port) }) }));
     break;
   }
   default:
