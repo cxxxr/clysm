@@ -868,6 +868,14 @@ MAPL: the value is the first list)."
                         (null (cddr f)) (%function-name-symbol f)))))
         (when (and s (symbolp s))
           (if (eq (car spec) 'notinline) (%put s '%notinline t) (remprop s '%notinline))))))
+  ;; the compiler in the image checks the types of an FTYPE (src/frontend.lisp)
+  (when (and (consp spec) (eq (car spec) 'ftype))
+    (dolist (f (cddr spec))
+      (let ((s (if (symbolp f)
+                   f
+                   (and (consp f) (eq (car f) 'setf) (consp (cdr f)) (symbolp (cadr f))
+                        (null (cddr f)) (%function-name-symbol f)))))
+        (when (and s (symbolp s)) (%put s '%ftype (cadr spec))))))
   nil)
 
 (defun %proclaimed-var-type (spec)

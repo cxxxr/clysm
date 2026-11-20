@@ -300,9 +300,101 @@ The check is left out by the compiler where the type of FORM shows it holds."
       form
       (let ((v (gensym "V")))
         `(let ((,v ,form))
-           (if ,(integer-decl-test v spec)
+           (if ,(type-test-form v spec)
                ,v
-               (clysm-sys::%type-error ,v ',spec))))))
+               (clysm-sys::%signal-type-error ,v ',spec))))))
+
+;;; FTYPE proclamations (CLHS 3.3.3.1 FTYPE: calls of the function with
+;;; arguments not of the types, or values not of the type, are undefined).
+;;; DECLAIM records (function (types...) result) for the name, at compile
+;;; time (COMPILE-TIME-PROCLAIM: *DECLARED-FTYPES*) and, in the image, on its
+;;; plist when the proclamation is evaluated (PROCLAIM: SYSTEM::%FTYPE, so a
+;;; fasl loaded later still gives it).  Two uses, both checked, so that a
+;;; wrong proclamation signals a TYPE-ERROR as in SBCL:
+;;;  * a function defined at top level checks its required arguments of the
+;;;    types on entry, into variables declared of the types (FTYPE-CHECKED-FUNCTION);
+;;;  * the value of a call of a function whose result is (VALUES TYPE &OPTIONAL)
+;;;    is checked where it is used as a value that is not returned (an argument,
+;;;    a variable's value, a test: CONVERT-VALUE), so tail calls stay tail calls.
+;;; Only types of which the compiler makes something (DECLARED-TY not T:
+;;; numbers, characters, lists, symbols, functions, simple arrays) are used.
+(defvar *declared-ftypes* (make-hash-table :test 'eq)
+  "function name (symbol, or that of a SETF function) -> its proclaimed FTYPE")
+
+(defun declared-ftype (sym)
+  (and (symbolp sym)
+       (or (gethash sym *declared-ftypes*)
+           (and *live-mode* (get sym 'clysm-sys::%ftype)))))
+
+(defun ftype-arg-specs (sym)
+  "The types of the required parameters FSYM's FTYPE gives, or NIL."
+  (let ((ft (declared-ftype sym)))
+    (and (consp ft) (eq (car ft) 'function) (consp (cdr ft)) (listp (second ft))
+         (loop for s in (second ft)
+               until (member s lambda-list-keywords)
+               collect s))))
+
+(defun ftype-result-spec (sym)
+  "The type of the single value FSYM's FTYPE gives, (VALUES TYPE &OPTIONAL), or NIL."
+  (let ((ft (declared-ftype sym)))
+    (when (and (consp ft) (eq (car ft) 'function) (consp (cdr ft)) (consp (cddr ft)))
+      (let ((r (third ft)))
+        (and (consp r) (eq (car r) 'values) (= (length r) 3) (eq (third r) '&optional)
+             (ftype-useful-spec-p (second r))
+             (second r))))))
+
+(defun type-checked-form (var spec)
+  "A form of the value of the variable VAR, checked to be of type SPEC."
+  `(the ,spec (if ,(type-test-form var spec)
+                  ,var
+                  (clysm-sys::%signal-type-error ,var ',spec))))
+
+(defun ftype-checked-function (sym fn-form)
+  "FN-FORM, #'(NAMED-LAMBDA name ll . body) of the toplevel function SYM, with
+the required parameters of the types SYM's FTYPE gives checked on entry."
+  (let ((specs (ftype-arg-specs sym)))
+    (unless (and specs (consp fn-form) (eq (car fn-form) 'function) (consp (cdr fn-form))
+                 (consp (second fn-form)) (eq (car (second fn-form)) 'clysm-sys::named-lambda)
+                 (consp (cdr (second fn-form))) (listp (third (second fn-form))))
+      (return-from ftype-checked-function fn-form))
+    (destructuring-bind (name ll &rest body) (cdr (second fn-form))
+      (let* ((nreq (or (position-if (lambda (x) (member x lambda-list-keywords)) ll) (length ll))))
+        ;; (the init forms of the other parameters may refer to the required ones)
+        (unless (and (every #'symbolp ll) (every #'symbolp (subseq ll 0 nreq)))
+          (return-from ftype-checked-function fn-form))
+        (multiple-value-bind (decls forms doc) (parse-body body)
+          (let ((checks (loop for p in (subseq ll 0 nreq) for spec in specs
+                              when (and (ftype-useful-spec-p spec) (not (declared-spec p decls))
+                                        (not (member p (declared-specials decls))))
+                                collect (list p (gensym (symbol-name p)) spec))))
+            (if (null checks)
+                fn-form
+                `(function
+                  (clysm-sys::named-lambda ,name
+                      ,(mapcar (lambda (p) (let ((c (assoc p checks))) (if c (second c) p))) ll)
+                    ,@(when doc (list doc))
+                    (let ,(loop for (p g spec) in checks collect `(,p ,(type-checked-form g spec)))
+                      (declare ,@(loop for (p nil spec) in checks collect `(type ,spec ,p)))
+                      ,@(when decls `((declare ,@decls)))
+                      ,@forms))))))))))
+
+(defun ftype-call-form (form env)
+  "FORM, a value that is not returned, with the value of a call of a function
+of a proclaimed result type checked, or FORM."
+  (let ((op (and (consp form) (car form))))
+    (if (and op (symbolp op) (not (keywordp op))
+             (not (member op *special-forms*))
+             (not (get op 'clysm-native))
+             (not (env-lookup-fun env op))
+             (not (macro-function-in op env))
+             (ftype-result-spec op))
+        (let ((g (gensym "V")) (spec (ftype-result-spec op)))
+          `(let ((,g (clysm-sys::%ftype-raw ,form))) ,(type-checked-form g spec)))
+        form)))
+
+(defun convert-value (form env)
+  "Convert FORM, whose value is used but not returned."
+  (convert (ftype-call-form form env) env))
 
 (defvar *local-notinline* nil "function names declared NOTINLINE in the forms being converted")
 (defun notinline-name (name)
@@ -644,7 +736,7 @@ the arguments do not fit (they are then passed by a call)."
   fun)
 
 (defun convert-args (args env)
-  (mapcar (lambda (a) (convert a env)) args))
+  (mapcar (lambda (a) (convert-value a env)) args))
 
 (defun convert-lambda-application (form env)
   (destructuring-bind ((lambda-sym ll &rest body) &rest args) form
@@ -854,7 +946,7 @@ the arguments do not fit (they are then passed by a call)."
       (quote `(:const ,(second form)))
       (function (convert-function-designator (second form) env))
       (if (destructuring-bind (test then &optional else) (cdr form)
-            `(:if ,(convert test env) ,(convert then env) ,(convert else env))))
+            `(:if ,(convert-value test env) ,(convert then env) ,(convert else env))))
       (progn (convert-body (cdr form) env))
       (let (convert-let (second form) (cddr form) env))
       (let* (convert-let* (second form) (cddr form) env))
@@ -900,10 +992,10 @@ the arguments do not fit (they are then passed by a call)."
   (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
     (let* ((dspecials (declared-specials decls))
            (inits (loop for b in bindings
-                        collect (convert (if (consp b)
-                                             (checked-value (second b) (declared-spec (first b) decls))
-                                             nil)
-                                         env)))
+                        collect (convert-value (if (consp b)
+                                                   (checked-value (second b) (declared-spec (first b) decls))
+                                                   nil)
+                                               env)))
            (lvars nil) (entries nil))
       (dolist (b bindings)
         (let* ((sym (if (consp b) (first b) b))
@@ -942,10 +1034,10 @@ the arguments do not fit (they are then passed by a call)."
                                           (mapcar (lambda (b) (if (consp b) (car b) b)) bindings))
                          (let* ((b (car bs))
                                 (sym (if (consp b) (first b) b))
-                                (init (convert (if (consp b)
-                                                   (checked-value (second b) (declared-spec sym decls))
-                                                   nil)
-                                               env))
+                                (init (convert-value (if (consp b)
+                                                         (checked-value (second b) (declared-spec sym decls))
+                                                         nil)
+                                                     env))
                                 (sp (binding-special-p sym dspecials))
                                 (lv (new-lvar sym sp))
                                 (new-env (env-extend env (if sp (list :special sym) (list :var sym lv)))))
@@ -963,7 +1055,7 @@ the arguments do not fit (they are then passed by a call)."
                          (let ((lv (third e)))
                            (note-ref lv)
                            (setf (lvar-mutated lv) t)
-                           `(:lset ,lv ,(convert (checked-value val (lvar-decl lv)) env))))
+                           `(:lset ,lv ,(convert-value (checked-value val (lvar-decl lv)) env))))
                         ((and e (eq (first e) :smacro))
                          (convert `(setf ,(third e) ,val) env))
                         ((and (null e) (nth-value 1 (global-symbol-macro var)))
@@ -1170,6 +1262,10 @@ leaving quoted data alone."
              (make-cenv (loop for v in (second form)
                               for e = (env-lookup-var env v)
                               when e collect e)))))
+
+;;; (sys:%ftype-raw (f ...)): the call, its value not checked (FTYPE-CALL-FORM)
+(defnative clysm-sys::%ftype-raw (form env)
+  (convert (second form) env))
 
 (defnative clysm-sys::named-lambda (form env)
   (convert-function-designator form env))

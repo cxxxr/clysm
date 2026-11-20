@@ -244,7 +244,38 @@ compiler: in the file being compiled, or in the image), else NIL."
                              (array-spec-ty (second spec) '*))
                             (t *ty-top*)))
         (function (mkty +k-func+))
+        (or (if (and (consp spec) (cdr spec))
+                (reduce #'ty-union (mapcar #'declared-ty (cdr spec)))
+                *ty-top*))
         (t *ty-top*)))))
+
+(defun ftype-useful-spec-p (spec)
+  "Whether the compiler makes something of the type SPEC of an FTYPE (src/frontend.lisp)."
+  (and spec (not (eq spec t))
+       (let ((ty (ignore-errors (declared-ty spec))))
+         (and ty (/= (ty-bits ty) +k-all+)))))
+
+(defun type-test-form (var spec)
+  "A form true when the value of the variable VAR is of the type SPEC (one of
+which DECLARED-TY knows something)."
+  (let* ((exp (or (ignore-errors (expand-deftypes spec)) spec))
+         (ty (ignore-errors (declared-ty exp))))
+    (cond ((and ty (ty-only-p ty +k-int+) (ty-lo ty) (ty-hi ty)
+                (<= +most-negative-fixnum+ (ty-lo ty)) (<= (ty-hi ty) +most-positive-fixnum+))
+           `(clysm-sys::%fixnum-in-range-p ,var ,(ty-lo ty) ,(ty-hi ty)))
+          ((integer-decl-p exp) (integer-decl-test var exp))
+          ((and ty (= (ty-bits ty) +k-svec+) (null (ty-cls ty))) `(clysm-sys::%simple-vector-p ,var))
+          ((and ty (= (ty-bits ty) +k-string+) (null (ty-cls ty))) `(clysm-sys::%simple-string-p ,var))
+          ((and (consp exp) (eq (car exp) 'or) (cdr exp)
+                (every (lambda (s) (let ((ty (ignore-errors (declared-ty s)))) (and ty (/= (ty-bits ty) +k-all+))))
+                       (cdr exp)))
+           `(or ,@(mapcar (lambda (s) (type-test-form var s)) (cdr exp))))
+          (t (let ((pred (cdr (assoc exp '((simple-vector . clysm-sys::%simple-vector-p) (cons . consp) (list . listp)
+                                            (symbol . symbolp) (function . functionp) (null . null)
+                                            (character . characterp) (simple-string . clysm-sys::%simple-string-p)
+                                            (double-float . clysm-sys::%double-float-p))
+                                     :test #'equal))))
+               (if pred `(,pred ,var) `(typep ,var ',spec)))))))
 
 ;;; ------------------------------------------------------------
 ;;; Arithmetic
@@ -351,7 +382,7 @@ compiler: in the file being compiled, or in the image), else NIL."
   `(let ((fn (lambda (,args) (declare (ignorable ,args)) ,@body)))
      (dolist (n ',(if (listp names) names (list names))) (setf (gethash n *ti-test-rules*) fn))))
 
-(dolist (s '(error clysm-sys::%type-error)) (setf (gethash s *ti-noreturn*) t))
+(dolist (s '(error clysm-sys::%type-error clysm-sys::%signal-type-error)) (setf (gethash s *ti-noreturn*) t))
 
 (def-ti-rule + (a) (if (= (length a) 2) (arith-ty :add (first a) (second a)) *ty-number*))
 (def-ti-rule - (a) (case (length a)
@@ -373,10 +404,12 @@ compiler: in the file being compiled, or in the image), else NIL."
 (def-ti-rule (< > <= >= = /= eq eql equal not null consp atom listp symbolp functionp characterp zerop
               plusp minusp evenp oddp integerp floatp realp numberp rationalp stringp simple-string-p
               vectorp simple-vector-p arrayp keywordp char= char< char> char<= char>= char/=
-              char-equal string= clysm-sys::fixnump clysm-sys::%bignump clysm-sys::%ratiop
+              char-equal string= clysm-sys::fixnump clysm-sys::%fixnum-in-range-p clysm-sys::%bignump clysm-sys::%ratiop
               clysm-sys::%single-float-p clysm-sys::%double-float-p clysm-sys::%complexp
               clysm-sys::%complex-d-p clysm-sys::%complex-s-p
               clysm-sys::%simple-string-p clysm-sys::%simple-vector-p clysm-sys::%instancep
+              simple-bit-vector-p clysm-sys::double-float-p clysm-sys::single-float-p clysm-sys::ratiop
+              clysm-sys::bignump
               boundp fboundp clysm-sys::%fx< clysm-sys::%fx> clysm-sys::%fx<= clysm-sys::%fx>=
               clysm-sys::%fx= typep)
     (a) *ty-bool*)
@@ -605,17 +638,22 @@ compiler: in the file being compiled, or in the image), else NIL."
   (pred (floatp) +k-float+ t)
   (pred (realp) +k-real+ t)
   (pred (numberp) +k-number+ t)
-  (pred (clysm-sys::%double-float-p) +k-double+ t)
-  (pred (clysm-sys::%single-float-p) +k-single+ t)
-  (pred (clysm-sys::%ratiop) +k-ratio+ t)
+  (pred (clysm-sys::%double-float-p clysm-sys::double-float-p) +k-double+ t)
+  (pred (clysm-sys::%single-float-p clysm-sys::single-float-p) +k-single+ t)
+  (pred (clysm-sys::%ratiop clysm-sys::ratiop) +k-ratio+ t)
   (pred (clysm-sys::%complexp) +k-anycomplex+ t)
   (pred (clysm-sys::%complex-d-p) +k-cdouble+ t)
   (pred (clysm-sys::%complex-s-p) +k-csingle+ t)
   (pred (clysm-sys::%simple-string-p) +k-string+ t)
-  (pred (clysm-sys::%simple-vector-p) +k-svec+ t)
-  (pred (clysm-sys::%bignump) +k-int+))
+  (pred (clysm-sys::%simple-vector-p simple-vector-p) +k-svec+ t)
+  (pred (clysm-sys::%bignump clysm-sys::bignump) +k-int+))
 (def-ti-test atom (a) (list (list 0 (ty-remove *ty-top* +k-cons+) (mkty +k-cons+))))
 (def-ti-test clysm-sys::fixnump (a) (list (list 0 *ty-fixnum* *ty-top*)))
+(def-ti-test clysm-sys::%fixnum-in-range-p (a)
+  (list (list 0 (if (and (ty-lo (second a)) (ty-hi (third a)))
+                    (int-ty (ty-lo (second a)) (ty-hi (third a)))
+                    *ty-fixnum*)
+              *ty-top*)))
 
 ;;; ------------------------------------------------------------
 ;;; Abstract interpretation
@@ -904,6 +942,7 @@ compiler: in the file being compiled, or in the image), else NIL."
                             (when (and x (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
                               (setf *env* (refine-env *env* (ti-slot (second x)) ty)))))))
              (cond ((eq (prim-kind (second node)) :test) *ty-bool*)
+                   ((gethash name *ti-noreturn*) (setf *env* :bottom) *ty-bottom*)
                    ;; the square of a double is not MINUSP (so its square root is a double)
                    ((and (eq name '*) (= (length tys) 2) (ty-double-p (first tys))
                          (eq (car (third node)) :lref) (equal (third node) (fourth node)))
