@@ -575,6 +575,10 @@ frame of the caller or NIL.")
 (defvar %no-value (make-symbol "NO-VALUE") "The value of a variable of a frame not bound yet.")
 
 (defvar *native-eval-hook* nil "when set, the REPL compiles each form natively")
+(defvar *native-eval-forms-hook* nil
+  "When the compiler is part of the image: a function evaluating a list of
+toplevel forms compiled into one module (NIL when that fails before any of
+them ran, the caller then evaluating them one by one).")
 (defvar *native-compile-form-hook* nil
   "When the compiler is part of the image: a function compiling a toplevel form
 to a Wasm module linked with the image, returning (values octets constants).")
@@ -808,31 +812,65 @@ host cannot decode its text."
             (when stream (close stream)))
           t)))))
 
+(defparameter %load-batch-max 32)
+
+(defun %method-definition-p (form)
+  (and (consp form) (member (car form) '(defmethod defgeneric)) (consp (cdr form))))
+
+(defun %load-method-batch (stream file form)
+  "Evaluate the DEFMETHOD or DEFGENERIC FORM, read from the source file STREAM,
+with the definitions of methods and generic functions that follow it, in one
+module: the methods of a generic function, which call each other
+(CALL-NEXT-METHOD) and are called through it, are then in one module, whose
+calls the engine can inline (it cannot inline a call into another module:
+p-cnm in a script 0.75 of its time).  Unlike DEFUNs (see docs/INTERNALS.md),
+a method is only reached through its generic function, so the batch means
+what the forms one by one do.  Returns the form read after them (or the
+end-of-file marker) and the position where it starts."
+  (let ((forms (list form)) (next nil) (start nil))
+    (loop
+      (setq start (and file (%form-start stream)))
+      (setq next (read stream nil %eof-marker))
+      (unless (and (%method-definition-p next) (< (length forms) %load-batch-max))
+        (return))
+      (when start
+        (let ((dspec (%definition-spec next)))
+          (when dspec (%note-source dspec file start))))
+      (push next forms))
+    (setq forms (nreverse forms))
+    (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
+      (dolist (f forms) (%eval-toplevel f)))
+    (values next start)))
+
 (defun %load-forms (stream in fasl file print)
   "Evaluate the forms read from IN, those of STREAM: a compiled file when FASL
 (STREAM is then the file, or a function returning it), or a source file (of
 native name FILE, if any)."
-  (progn
+  (let ((pending nil) (pending-start nil))
     (loop
-      (let* ((start (and file (%form-start stream)))
-             (form (if fasl
-                       (%call-with-fasl-syntax (lambda () (read in nil %eof-marker)))
-                       (read stream nil %eof-marker))))
+      (let* ((start (if pending pending-start (and file (%form-start stream))))
+             (form (cond (pending (prog1 (car pending) (setq pending nil)))
+                         (fasl (%call-with-fasl-syntax (lambda () (read in nil %eof-marker))))
+                         (t (read stream nil %eof-marker)))))
         (when (eq form %eof-marker) (return t))
         (when start
           (let ((dspec (%definition-spec form)))
             (when dspec (%note-source dspec file start))))
-        (let ((vals (multiple-value-list
-                     (cond ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
-                            (%load-fasl-entry form stream))
-                           ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-unit))
-                            (%load-fasl-unit form stream))
-                           ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-segment))
-                            (%load-fasl-segment form stream))
-                           ((and fasl (consp form) (eq (car form) '%note-source))
-                            (apply #'%note-source (cdr form)))
-                           (t (%eval-toplevel form))))))
-          (when print (format t "~&~{~S~^ ~}~%" vals)))))))
+        (if (and (not fasl) (not print) *native-eval-forms-hook* (%method-definition-p form))
+            ;; (consecutive method definitions in one module)
+            (multiple-value-bind (next next-start) (%load-method-batch stream file form)
+              (setq pending (list next) pending-start next-start))
+            (let ((vals (multiple-value-list
+                         (cond ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
+                                (%load-fasl-entry form stream))
+                               ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-unit))
+                                (%load-fasl-unit form stream))
+                               ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-segment))
+                                (%load-fasl-segment form stream))
+                               ((and fasl (consp form) (eq (car form) '%note-source))
+                                (apply #'%note-source (cdr form)))
+                               (t (%eval-toplevel form))))))
+              (when print (format t "~&~{~S~^ ~}~%" vals))))))))
 
 (defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
                            (if-does-not-exist t) external-format)
