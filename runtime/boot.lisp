@@ -727,16 +727,14 @@ variable, so it may be evaluated after a variable is read."
 
 (defmacro assert (test &optional places datum &rest args)
   (declare (ignore places))
-  (let ((top (gensym "ASSERT")))
-    `(block ,top
-       (tagbody
-          again
-          (when ,test (return-from ,top nil))
-          (restart-case ,(if datum
-                             `(error ,datum ,@args)
-                             `(error "The assertion ~S failed." ',test))
-            (continue () :report "Retry the assertion." nil))
-          (go again)))))
+  ;; (the error and its CONTINUE restart out of line, in %ASSERT-ERROR: the
+  ;; code of the restart is not in every function that asserts)
+  (let ((again (gensym "AGAIN")))
+    `(tagbody
+        ,again
+        (unless ,test
+          (%assert-error ',test ,@(when datum `(,datum ,@args)))
+          (go ,again)))))
 
 (defmacro check-type (place type &optional type-string)
   (let ((top (gensym "CHECK-TYPE")))

@@ -750,6 +750,25 @@ What remains:
   (30-46 ms); outlining would need typed parameters (a version of the
   outlined function for the types the variables have).
 
+**Local functions and lambdas of a function** are copied into their calls
+(`inline-calls`, `src/inline.lisp`) when their body has at most 30 nodes,
+or 300 when the call is the only reference of the variable that holds the
+function (and of the variable it was bound from: a lambda given to a copy
+of a function): the copy then replaces the function's code, which is not
+compiled, and the closure is not made. A test of a variable always bound to
+a lambda is true (`(when zero-fn (funcall zero-fn))` in a copy given a
+lambda), and a variable bound to such a variable that is no longer
+referenced once its calls are copied is not bound, so that the lambda's
+variable has no reference left either. Lem's `character-offset` and
+`character-at` pass two lambdas to `%character-offset`, which they copy:
+each call made two closures, used only to be compared with `nil`, and
+`character-at` a third for a lambda of more than 30 nodes called once; they
+make none now. `assert` signals its error and offers its `continue` restart in
+`%assert-error`, a function, instead of a `restart-case` at each assertion
+(about 100 Wasm instructions, a `try_table` and the binding of
+`*restart-clusters*`, in every function that asserts: Lem's
+`%move-to-position` asserts twice: its Wasm is a third smaller).
+
 **Small functions of a compiled file** (a `defun` at top level, no closed-over
 bindings, no loop, no macro outside `COMMON-LISP`, a body of at most 40
 conses and atoms: `*fasl-inline-max-size*`, not declaimed `notinline` or
@@ -2100,7 +2119,18 @@ What is not as fast as intended, and why:
   runtime's functions into each module (a call of an imported function of
   another instance) would not be inlined either, so it is not done; what
   helps is a copy of the callee in the caller's module (`inline` sources,
-  the small functions of `COMMON-LISP`, a file as one module).
+  the small functions of `COMMON-LISP`, a file as one module). Such a call
+  of a function of one argument returning it takes 2.6 ns in a loop (fasls
+  compiled in the image, 2026-11-21), SBCL's 1.5: the caller loads the
+  symbol, its function cell, the closure's code, the entry and the engine's
+  internal function before the call (nine loads), and the callee sets
+  `mv-count`, an imported mutable global (two loads and a store), 0.7 ns of
+  the 2.6 (a callee that does not: 1.9). `mv-count` as a word of the linear
+  memory that every module imports (one load and a store) took 2.3 ns in
+  that loop but gained nothing in Lem's code (`tools/bench-lem.sh` 1.01 of
+  its time, interleaved), so it was not kept; what would remove the store
+  is returning the count with the value (a Wasm function of two results),
+  a change of every function's type.
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
@@ -2529,7 +2559,14 @@ What makes the code fast:
   sites keeping the slot locations. `call-next-method` is a direct call;
   call sites cache the functions for the classes of their arguments and
   read or write slots of readers and writers inline (`compile-file`
-  defines their compiler macro for the rest of the file, and a loaded file
+  defines their compiler macro for the rest of the file and writes it to
+  the fasl for the files loaded after it; until 2026-11-21 the fasl did not
+  have it: `compile-file` evaluates a `defclass`, which defined the compiler
+  macro and set the flag of `%gf-site-macro-forms`, before expanding it
+  again for the fasl, which then made none, so that in the files loaded
+  after a class's own a call of its reader was a call of the generic
+  function, 12 ns against 2 for a reader of Lem's `point` in a loop; a
+  `defclass` or `define-condition` now always makes the forms; and a loaded file
   defines it again when the form that set its flag was expanded but not
   evaluated, which left the call sites of `clysm script` without caches;
   in the image a `define-compiler-macro` takes effect when its toplevel
@@ -3516,6 +3553,39 @@ their argument (a cons tested inline); `equal` settles `eq` arguments and a
 symbol, fixnum or character first argument inline (in the image `equal` is
 a call through the function cell). The redisplay probe and
 `bench/apps.lisp` take 0.99 of their time before.
+
+A fresh profile (2026-11-21, `tools/bench-lem.sh` on a 7000-line file:
+geometric mean 1.59 times SBCL at the start of the round, one run; V8's
+`--cpu-prof` against `sb-sprof` on the same actions, and `node --prof` with
+`--print-wasm-code` for the ticks of each instruction): no function stands
+out. Of `l-type-autodoc` (`parse-partial-sexp` from the start of the
+function, 230 ns a character against SBCL's 142) and `l-forms-forward`,
+each Lem function called per character (`point<=`, `character-at`, the
+syntax predicates, `character-offset`, `%move-to-position`,
+`point-change-line`) takes 1.1 to 1.5 times SBCL's time on its own in a
+loop, and the calls between them, 20 or so a character, cross files: 1.1
+ns more than SBCL's for each (see Calls between modules). Of the redisplay
+(`l-type-redisplay`, a probe typing 1000 characters: 225 ms against 138),
+`char-width` and what it calls is 1.4 times SBCL's time, the rest 1.85
+(drawing objects made with `make-instance`, `with-point` points made and
+deleted, `remove-if-not` of closures over the overlays): spread too. Found
+and made general: the readers of classes defined in another file had no
+call-site caches (see Generic functions), `character-offset` and
+`character-at` made closures for the lambdas their copy of
+`%character-offset` no longer calls, `assert` put a `restart-case` in each
+function (see Local functions above). Interleaved runs of Clysm alone, best
+of eight, against main before: geometric mean 0.98 (`l-forms-forward`
+0.93, `l-type-indent` 0.93, `l-type-autodoc` 0.96, the others within 2%);
+`tools/bench-lem.sh` 1.47 after (one run). `bench/suite.lisp` (script),
+`holdout.lisp`, `clos.lisp`, `library.lisp` and `apps.lisp` are unchanged
+(two interleaved rounds each: within the runs' spread; the code of the
+holdout's `h-matmul-double` and `h-sieve-bits`, which looked 4% slower, is
+the same). Measured and not kept: no call-site caches for the readers at
+all (their calls then go to the generic function: 1.43 times the time),
+`mv-count` in the linear memory (1.01). A micro-benchmark of one operation
+in a loop of a function called once stays in Liftoff (no on-stack
+replacement): such numbers mislead by 2 to 4 times; each operation has to be
+a function called many times.
 
 ## Building and distributing
 
