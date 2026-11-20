@@ -195,6 +195,47 @@ runtime definition is kept."
             (let ((lv (find v lvars :key #'lvar-name :from-end t)))
               (when (and lv (symbolp v)) (setf (lvar-decl lv) spec)))))))))
 
+;;; A type declaration about a lexical variable bound outside the form whose
+;;; declarations hold it (a free declaration, CLHS 3.3.4) applies to the
+;;; references of the variable within the form: they are converted as
+;;; (THE type var), under an environment entry (:TDECL symbol type).  As for
+;;; the variable's own declaration, the type is trusted, except an integer
+;;; type, which is checked where the reference is (CHECKED-VALUE) while
+;;; *CHECK-DECLARED-INTEGERS*.
+(defun type-decl-specs (decls)
+  "The (type . variables) of the type declarations in DECLS."
+  (loop for d in decls
+        when (consp d)
+          append (multiple-value-bind (spec vars)
+                     (cond ((eq (car d) 'type) (values (second d) (cddr d)))
+                           ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
+                           ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte simple-array
+                                                               simple-vector simple-string simple-bit-vector)))
+                            (values (car d) (cdr d))))
+                   (and spec (list (cons spec vars))))))
+
+(defun free-type-decl-env (decls bound env)
+  "ENV with the free type declarations of DECLS (about lexical variables of
+ENV that are not among the symbols BOUND by the form, nor declared where
+they are bound)."
+  (let ((entries nil))
+    (loop for (spec . vars) in (type-decl-specs decls)
+          do (dolist (v vars)
+               (when (and (symbolp v) (not (member v bound)))
+                 (let ((e (env-lookup-var env v)))
+                   (when (and e (eq (first e) :var) (null (lvar-decl (third e))))
+                     (push (list :tdecl v spec) entries))))))
+    (if entries (apply #'env-extend env (nreverse entries)) env)))
+
+(defvar *ignore-tdecls* nil "true while converting the check of a reference under a free declaration")
+
+(defun free-type-decl (env sym)
+  "The type a free declaration in ENV gives the variable SYM, or NIL."
+  (unless *ignore-tdecls*
+    (dolist (e (cenv-entries env) nil)
+      (cond ((and (eq (first e) :tdecl) (eq (second e) sym)) (return (third e)))
+            ((and (member (first e) '(:var :special :smacro)) (eq (second e) sym)) (return nil))))))
+
 (defun integer-decl-p (spec)
   (or (eq spec 'fixnum)
       (and (consp spec) (member (car spec) '(integer unsigned-byte signed-byte)))))
@@ -320,7 +361,12 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
   (cond ((or (null sym) (eq sym t) (keywordp sym)) `(:const ,sym))
         (t
          (let ((e (env-lookup-var env sym)))
-           (cond ((and e (eq (first e) :var)) `(:lref ,(note-ref (third e))))
+           (cond ((and e (eq (first e) :var))
+                  (let ((spec (free-type-decl env sym)))
+                    (cond ((null spec) `(:lref ,(note-ref (third e))))
+                          ((and *check-declared-integers* (integer-decl-p spec))
+                           `(:the ,spec ,(let ((*ignore-tdecls* t)) (convert (checked-value sym spec) env))))
+                          (t `(:the ,spec (:lref ,(note-ref (third e))))))))
                  ((and e (eq (first e) :special)) `(:sref ,sym))
                  ((and e (eq (first e) :smacro)) (convert (third e) env))
                  (t (multiple-value-bind (exp found) (global-symbol-macro sym)
@@ -655,7 +701,16 @@ the arguments do not fit (they are then passed by a call)."
         (let ((body-forms (if block-name `((block ,block-name ,@forms)) forms)))
           (when (getf pl :aux)
             (setf body-forms `((let* ,(getf pl :aux) (declare ,@decls) ,@body-forms))))
-          (setf (lam-body lam) (convert-body body-forms env))
+          (setf (lam-body lam)
+                (convert-body body-forms
+                              (free-type-decl-env decls (append (getf pl :req) (mapcar #'first (getf pl :opt))
+                                                                (mapcar #'third (getf pl :opt))
+                                                                (and (getf pl :rest) (list (getf pl :rest)))
+                                                                (mapcar (lambda (k) (let ((s (first k))) (if (consp s) (second s) s)))
+                                                                        (getf pl :keys))
+                                                                (mapcar #'third (getf pl :keys))
+                                                                (mapcar #'first (getf pl :aux)))
+                                                  env)))
           (when (and *live-mode* clysm-sys::*record-frames* (debug-frames-wanted-p decls))
             (setf (lam-body lam) (add-debug-frame lam (lam-body lam))))))
       lam)))
@@ -809,11 +864,13 @@ the arguments do not fit (they are then passed by a call)."
       (progv `(:progv ,(convert (second form) env) ,(convert (third form) env)
                       ,(convert-body (cdddr form) env))))))
 
-(defun convert-locally (decls forms env)
+(defun convert-locally (decls forms env &optional bound)
   (let ((sp (declared-specials decls)))
     (with-notinline-decls (decls)
-      (convert-body forms (if sp (apply #'env-extend env (mapcar (lambda (s) (list :special s)) sp))
-                              env)))))
+      (convert-body forms (free-type-decl-env
+                           decls bound
+                           (if sp (apply #'env-extend env (mapcar (lambda (s) (list :special s)) sp))
+                               env))))))
 
 (defun convert-let (bindings body env)
   (multiple-value-bind (decls forms) (parse-body body :doc-allowed nil)
@@ -835,7 +892,9 @@ the arguments do not fit (they are then passed by a call)."
       (let ((free-specials (loop for s in dspecials
                                  unless (find s bindings :key (lambda (b) (if (consp b) (car b) b)))
                                    collect (list :special s))))
-        (let ((new-env (apply #'env-extend env (append (reverse entries) free-specials)))
+        (let ((new-env (free-type-decl-env
+                        decls (mapcar (lambda (b) (if (consp b) (car b) b)) bindings)
+                        (apply #'env-extend env (append (reverse entries) free-specials))))
               (*local-notinline* (append (declared-notinline decls) *local-notinline*)))
           (if (null bindings)
               (convert-body forms new-env)
@@ -855,7 +914,8 @@ the arguments do not fit (they are then passed by a call)."
                                           (apply #'env-extend env
                                                  (loop for s in dspecials
                                                        unless (find s bindings :key (lambda (b) (if (consp b) (car b) b)))
-                                                         collect (list :special s))))
+                                                         collect (list :special s)))
+                                          (mapcar (lambda (b) (if (consp b) (car b) b)) bindings))
                          (let* ((b (car bs))
                                 (sym (if (consp b) (first b) b))
                                 (init (convert (if (consp b)
@@ -1076,7 +1136,7 @@ leaving quoted data alone."
                                            collect (if (lvar-special lv) (list :special v) (list :var v lv)))
                                      (loop for s in dspecials unless (member s vars)
                                            collect (list :special s))))))
-        `(:mvbind ,lvars ,vnode ,(convert-body forms new-env)))))))
+        `(:mvbind ,lvars ,vnode ,(convert-body forms (free-type-decl-env decls vars new-env))))))))
 
 (defnative clysm-sys::%with-only-variables (form env)
   ;; (%with-only-variables (var...) form): FORM converted in a lexical
