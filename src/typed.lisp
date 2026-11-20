@@ -547,7 +547,8 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                                  (struct-iref-code (cg x) (cg cls) k (mod n 64) (floor n 64) (cg v))
                                  (struct-iref-code (cg x) (cg cls) k (mod n 64) (floor n 64))))))))
                   ((member name '(car cdr first rest clysm-sys::%lref clysm-sys::%lset
-                                  clysm-sys::%svref clysm-sys::%set-svref))
+                                  clysm-sys::%svref clysm-sys::%set-svref
+                                  clysm-sys::%setcar clysm-sys::%setcdr rplaca rplacd))
                    (typed-access-code node))
                   ((and (eq name 'clysm-sys::%make-complex-d) (every (lambda (a) (ty-double-p (node-ty a))) args))
                    `(,@(cg-rep (first args) :f64) ,@(cg-rep (second args) :f64) (:struct.new :complex-d)))
@@ -893,6 +894,16 @@ overlapping ranges as if through a buffer), else NIL."
            `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code (second args))
              ,@(index-i32-code (third args)) (:local.tee ,tmp) (:array.set :limbs)
              (:local.get ,tmp) :ref.i31))))
+      ;; setting the car or cdr of what is known to be a cons: no check
+      ((clysm-sys::%setcar clysm-sys::%setcdr rplaca rplacd)
+       (when (and (ty-only-p aty +k-cons+) (= (length args) 2))
+         (let ((field (if (member name '(clysm-sys::%setcar rplaca)) 0 1))
+               (tmp (new-local)))
+           (if (member name '(rplaca rplacd))
+               `(,@(cg a) (:ref.cast! :cons) (:local.tee ,tmp) ,@(cg (second args))
+                 (:struct.set :cons ,field) (:local.get ,tmp))
+               `(,@(cg a) (:ref.cast! :cons) ,@(cg (second args)) (:local.tee ,tmp)
+                 (:struct.set :cons ,field) (:local.get ,tmp))))))
       (clysm-sys::%svref
        (when (ty-only-p aty +k-svec+)
          `(,@(cg a) (:ref.cast! :vector) ,@(index-i32-code (second args)) (:array.get :vector))))

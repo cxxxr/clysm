@@ -3322,6 +3322,23 @@ pushed conses, a hash table of 500000 lists, 300000 strings in a vector):
   generation), 50–100 ms each once the young generation has grown to its
   64 MB; full collections of a 400 MB heap take about 80 ms. Those are the
   longest pauses an application (an editor) sees.
+* **Building lists** (2026-11-21, probes of `loop ... collect`, `push` and
+  `nreverse`, `mapcar`, `copy-list`, `append`, `make-list`, `list`):
+  in a heap that has grown, a cons costs about 2 ns to make (SBCL about 1;
+  `(list i i i i)` 2 times SBCL), and collecting at the tail is as fast as
+  SBCL (10000 elements: `loop collect` 0.9, `mapcar` 0.8, `copy-list` 1.1).
+  A million conses kept alive are 6 times SBCL the first time a process
+  builds them (the young generation grows, and each scavenge copies the
+  list made so far: 75–140 ms of collection), as fast as SBCL once it has
+  grown; building them with `push` and `nreverse` instead of at the tail
+  is no faster then. Neither a typed local for the tail nor setting the cdr
+  without the test of a cons changed TurboFan's code (it inlines the
+  `:check-cons` helper and drops the test), but code still running in
+  Liftoff (the first part of a short program) collects 30% faster with
+  the test left out: `%setcdr`, `%setcar`, `rplaca` and `rplacd` of a
+  value the inference knows is a cons are a field store (`typed-access-code`),
+  and `loop`'s `collect` tests its tail (NIL or a cons) rather than the
+  list, which makes the tail a cons where its cdr is set.
 * **Walking a large structure** (a tree of 2 million conses, 64 MB) is
   4–6 times SBCL's time; the same walk over a tree that fits in the cache
   is 0.9–1.5. The objects are twice as large, and probably no longer in the

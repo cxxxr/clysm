@@ -329,8 +329,10 @@ the default value of its type (and no declaration when there is none)."
            (var (%loop-accumulator s into kind type))
            (tail (caddr (assoc var (%ls s 9)))))
       (cond ((%lkw-in kw '("COLLECT" "COLLECTING"))
-             `(let ((c (list ,form)))
-                (if ,var (setf (cdr ,tail) c) (setq ,var c))
+             ;; (TAIL is NIL or the last cons collected: the test that
+             ;; tells which makes it a cons where the cdr is set)
+             `(let ((c (cons ,form nil)))
+                (if ,tail (setf (cdr ,tail) c) (setq ,var c))
                 (setq ,tail c)))
             ((%lkw-in kw '("APPEND" "APPENDING" "NCONC" "NCONCING"))
              `(let ((c ,(if (%lkw-in kw '("APPEND" "APPENDING")) `(copy-list ,form) form)))
