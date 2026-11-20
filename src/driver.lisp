@@ -205,7 +205,7 @@ that may not be done twice.")
        (let ((new-env (apply #'env-extend env
                              (loop for (name ll . mbody) in (second form)
                                    collect (list :macro name
-                                                 (host-compile (make-host-macro-expander name ll mbody)))))))
+                                                 (local-macro-expander (make-host-macro-expander name ll mbody)))))))
          (dolist (f (cddr form)) (process-toplevel f new-env compile-time-too)))
        (return))
       (symbol-macrolet
