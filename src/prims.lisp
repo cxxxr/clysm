@@ -799,17 +799,23 @@ helper signals the type error)."
   `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
 ;; the function of a symbol is the one of the definition that a fasl
 ;; recorded with the mark MARK (a guarded copy of its body, LIVE-INLINE-CALL):
-;; the function is found the first time (SYS::%FASL-INLINE-FUNCTION) and kept
-;; in a global of the module
+;; it is compared with a global of the module, one for each function and
+;; mark, that a toplevel form after the first form using it sets
+;; (%FASL-INLINE-GUARD-SET: SYS::%FASL-INLINE-FUNCTION); before, the global
+;; is null and the guard fails (the call is made)
+(defun fasl-guard-global (sym mark)
+  (let ((key (cons sym mark)))
+    (or (gethash key *fasl-guard-globals*)
+        (let ((g (list :ltv (incf *ltv-counter*))))
+          (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
+          (setf (gethash key *fasl-guard-globals*) g)))))
 (defprim clysm-sys::%fasl-inline-guard (sym mark) :test
-  (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "FIG")))
-    (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
-    `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)
-      (:block ,l :eqref
-        (:global.get ,g) (:br_on_non_null ,l)
-        ,@sym ,@mark ,@(lisp-call-instrs 'clysm-sys::%fasl-inline-function 2)
-        (:global.set ,g) (:global.get ,g))
-      :ref.eq)))
+  `(,@sym (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)
+    (:global.get ,(fasl-guard-global sym mark)) :ref.eq))
+(defprim clysm-sys::%fasl-inline-guard-set (sym mark) :value
+  (let ((g (fasl-guard-global sym mark)))
+    `(,@sym ,@mark ,@(lisp-call-instrs 'clysm-sys::%fasl-inline-function 2)
+      (:global.set ,g) (:global.get ,g))))
 (defprim clysm-sys::%closure-key-layout (f) :value
   (let ((tmp (new-local)))
     `(,@f (:ref.cast :closure) ,@(clo-field-code +clo-klayout+) (:local.tee ,tmp) :ref.is_null
