@@ -2107,10 +2107,14 @@ What makes the code fast:
   location, without an epoch read at each call (`%bump-clos-epoch` empties
   the caches of the sites that have been used, `*gf-sites*`). A site
   compares the class with the four entries and then has one access (or
-  call) for the entry found; an argument that is not an instance, an
-  unbound slot and a miss go to one function out of line
+  call) for the entry found; the class of an instance, and at a site of a
+  generic function (not of a reader or writer that `defclass` defines) of
+  a fixnum, a simple string or a symbol (one argument; a fixnum of two) is
+  read inline from CLASS-OF's cache (`%gf-site-key-form`); other
+  arguments, an unbound slot and a miss go to one function out of line
   (`%gf-site-other1`/`2`), a site that is not cached calls the function
-  as before. A site is about 55 Wasm instructions instead of 140: a
+  as before (with fixnums out of line too, `h-fib-generic`, a generic
+  `fib` of an `integer` method, took 441 ms instead of 320). A site is about 55 Wasm instructions instead of 140: a
   module of two functions with six reader and writer calls 12.6 KB instead
   of 20.2, Lem's fasls 17.2 MB instead of 19.5 (its buffer code 2.17
   instead of 2.68 MB), all the fasls of the libraries the comparators load

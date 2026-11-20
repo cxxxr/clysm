@@ -2479,14 +2479,37 @@ CALL-NEXT-METHOD with arguments or as a function)."
 ;;; SETF of (NAME object) expands to.
 ;;;   one argument:   #(epoch a fn-a b fn-b c fn-c d fn-d name misses registered)
 ;;;   two arguments:  #(epoch a0 a1 fn-a b0 b1 fn-b c0 c1 fn-c d0 d1 fn-d name misses registered)
-;;; The call site compares the class of an instance with the four entries
+;;; The call site compares the class of the argument with the four entries
 ;;; and then reads or writes the slot, or calls the function, in one place;
-;;; an argument that is not an instance, an unbound slot and a miss are out
-;;; of line (%GF-SITE-OTHER1, %GF-SITE-OTHER2), so that a call site stays
-;;; small (about 55 Wasm instructions; 140 with an access for each entry).
+;;; the class of an instance, a fixnum, a simple string or a symbol is found
+;;; inline (%GF-SITE-KEY-FORM), that of other objects, an unbound slot and a
+;;; miss out of line (%GF-SITE-OTHER1, %GF-SITE-OTHER2), so
+;;; that a call site stays small (140 Wasm instructions with an access for
+;;; each entry).
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (defun %gf-site-expansion (form args name n)
+  (defun %gf-site-key-form (x &optional only)
+    "The cache key of the value of the variable X at a call site: the class
+of an instance, of a fixnum, a simple string or a symbol (the built-in classes
+of CLASS-OF's cache, *BUILTIN-CLASSES*), else -1, the key of no entry (the
+site then calls %GF-SITE-OTHER1 or 2, which find it; not NIL, the key of an
+entry emptied by %BUMP-CLOS-EPOCH, whose value stays).  ONLY :FIXNUM: only
+instances and fixnums; T (a reader or writer that DEFCLASS defines): only
+instances."
+    (if (eq only t)
+        `(if (%instancep ,x) (%instance-layout ,x) -1)
+        `(if (%instancep ,x)
+             (%instance-layout ,x)
+             (let ((i (cond ((fixnump ,x) 0)
+                            ,@(unless only
+                                `(((%simple-string-p ,x) 6)
+                                  ((null ,x) 2)
+                                  ((symbolp ,x) (if (eq (%symbol-package ,x) *keyword-package*) 3 4))))
+                            (t -1))))
+               (declare (fixnum i))
+               (or (and (%fx>= i 0) (%svref *builtin-classes* i)) -1)))))
+
+  (defun %gf-site-expansion (form args name n &optional accessor)
     (if (not (= (length args) n))
         form
         (let ((c (if (eql n 1)
@@ -2495,12 +2518,9 @@ CALL-NEXT-METHOD with arguments or as a function)."
               (a (gensym "A")) (b (gensym "B")) (k (gensym "K")) (kb (gensym "KB"))
               (f (gensym "F")) (v (gensym "V")) (blk (gensym "SITE")))
           (if (eql n 1)
-              ;; (no epoch is compared: %BUMP-CLOS-EPOCH empties the cache;
-              ;; the key of an argument that is not an instance is 0, which
-              ;; is the key of the entry of a parameter that no method
-              ;; specializes, or no key: out of line)
+              ;; (no epoch is compared: %BUMP-CLOS-EPOCH empties the cache)
               `(let* ((,a ,(car args))
-                      (,k (if (%instancep ,a) (%instance-layout ,a) 0))
+                      (,k ,(%gf-site-key-form a accessor))
                       ;; the value of the entry: the function to call, or the
                       ;; location of the slot that a reader reads
                       (,f (cond ((eq ,k (%svref ',c 1)) (%svref ',c 2))
@@ -2518,16 +2538,17 @@ CALL-NEXT-METHOD with arguments or as a function)."
                        (locally (declare (notinline ,name)) (,name ,a))
                        (%gf-site-other1 ',c ,a))))
               ;; (a parameter that no method specializes has the key 0 in
-              ;; every entry; an argument that is not an instance has no key
-              ;; here, NIL: an empty entry, out of line)
+              ;; every entry)
               `(let ((,a ,(car args)) (,b ,(cadr args)))
                  (if (eq (%svref ',c 0) -1)
                      ;; a site that is not cached: the usual call
                      ,(if (symbolp name)
                           `(locally (declare (notinline ,name)) (,name ,a ,b))
                           `(%gf-site-call2 ',c ,a ,b))
-                     (let* ((,k (cond ((eq (%svref ',c 1) 0) 0) ((%instancep ,a) (%instance-layout ,a)) (t nil)))
-                            (,kb (cond ((eq (%svref ',c 2) 0) 0) ((%instancep ,b) (%instance-layout ,b)) (t nil)))
+                     ;; (two arguments: the class of a fixnum inline, of the
+                     ;; other built-in objects out of line)
+                     (let* ((,k (if (eq (%svref ',c 1) 0) 0 ,(%gf-site-key-form a (or accessor :fixnum))))
+                            (,kb (if (eq (%svref ',c 2) 0) 0 ,(%gf-site-key-form b (or accessor :fixnum))))
                             ;; the value of the entry: the function to call, or the
                             ;; location of the slot that a writer writes
                             (,f (cond ,@(loop for i in '(1 4 7 10)
@@ -2538,7 +2559,7 @@ CALL-NEXT-METHOD with arguments or as a function)."
                              (,f (funcall (the function ,f) ,a ,b))
                              (t (%gf-site-other2 ',c ,a ,b))))))))))
 
-  (defun %gf-site-macro-forms (name lambda-list)
+  (defun %gf-site-macro-forms (name lambda-list &optional accessor)
     "Forms defining the compiler macro of the generic function NAME that
 gives its call sites a cache, when LAMBDA-LIST has one or two required
 parameters and nothing else, and NAME is a symbol outside the implementation's packages."
@@ -2562,7 +2583,7 @@ parameters and nothing else, and NAME is a symbol outside the implementation's p
           (progn
             (%put sym flag n)
             `((define-compiler-macro ,name (&whole form &rest args)
-                (%gf-site-expansion form args ',name ,n))))
+                (%gf-site-expansion form args ',name ,n ,@(when accessor '(t))))))
           nil))))
 
 (defun %gf-site-info (name n)
@@ -2960,12 +2981,12 @@ CLASS-NAME, as DEFMETHOD would."
         (push form slotd-forms)
         (dolist (r readers)
           ;; (the compiler macro giving the reader's call sites a cache: a toplevel form)
-          (setq site-forms (append (%gf-site-macro-forms r '(object)) site-forms))
+          (setq site-forms (append (%gf-site-macro-forms r '(object) t) site-forms))
           ;; (not DEFMETHOD: the generic function needs no dispatch of its
           ;; own, the call sites keep the slot locations)
           (push `(%define-slot-accessor ',r ',name ',sname nil) accessor-forms))
         (dolist (w writers)
-          (setq site-forms (append (%gf-site-macro-forms w '(new-value object)) site-forms))
+          (setq site-forms (append (%gf-site-macro-forms w '(new-value object) t) site-forms))
           (push `(%define-slot-accessor ',w ',name ',sname t) accessor-forms))))
     (dolist (o options)
       (unless (and (consp o) (symbolp (car o)))

@@ -44,3 +44,23 @@
     (get-x s)
     (change-class s 'a2)
     (check "change-class" (list (get-x s) (az s)) '(40 3))))
+;; built-in classes as keys at the call sites of generic functions, and the
+;; entries emptied when a method is added
+(defgeneric g2 (a b))
+(defmethod g2 ((a integer) (b integer)) :int)
+(defmethod g2 ((a string) (b symbol)) :str)
+(defun call-g2 (a b) (g2 a b))
+(defgeneric gk (x))
+(defmethod gk ((x integer)) :int)
+(defmethod gk ((x string)) :str)
+(defmethod gk ((x symbol)) :sym)
+(defmethod gk ((x t)) :t)
+(defun call-gk (x) (gk x))
+(check "builtin keys"
+       (list (call-g2 1 2) (call-g2 "a" 'b) (call-gk 1) (call-gk "s") (call-gk :k) (call-gk nil) (call-gk 1.5))
+       '(:int :str :int :str :sym :sym :t))
+(defmethod g2 ((a fixnum) (b fixnum)) :fix)
+(defmethod gk ((x fixnum)) :fix)
+(defmethod gk ((x null)) :null)
+(check "after new methods" (list (call-g2 1 2) (call-g2 "a" 'b) (call-gk 1) (call-gk "s") (call-gk nil))
+       '(:fix :str :fix :str :null))
