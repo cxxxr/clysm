@@ -1854,7 +1854,7 @@ time unless noted):
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
 | `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
-| `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 1.56 | `d-particles`, `d-nbody` 3.5 | `d-fft` 0.83 |
+| `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 1.24 (1.56 before `safety` was read) | `d-particles` 3.0, `d-nbody` 2.3 | `d-k-nucleotide` 0.79 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
@@ -2069,7 +2069,8 @@ What makes the code fast:
   outside the form that holds it (`(let (...) (declare (function next-fn))
   ...)`, CLHS 3.3.4) applies to the references within that form, which are
   converted as `(the type var)` — checked there for an integer type
-  (`free-type-decl-env` in `src/frontend.lisp`). **Unboxed representations**
+  (`free-type-decl-env` in `src/frontend.lisp`). At `(safety 0)` nothing
+  is checked (see "What `(safety 0)` does" below). **Unboxed representations**
   (`src/typed.lisp`): fixnums and integers within 64 bits, double and single
   floats, complex numbers of floats (two locals), references to specialized
   vectors, two-dimensional arrays with their storage and dimensions in locals.
@@ -2500,8 +2501,9 @@ arithmetic. The items that gain most: `g-takl` (SBCL 51 → 26 ms),
 `v-search-mismatch` (48 → 28), `g-browse` (139 → 97), `h-matmul-double`
 (90 → 63), `p-coerce` (47 → 33), `p-double-2d` (36 → 26). Declared code is
 where Clysm is behind: 1.56 against about 0.9–1.1 on undeclared code.
-Clysm reads no `optimize` quality but `debug` and `speed` (for the
-frame records of the debugger): `safety 0` changes nothing in its code.
+Until 2026-11-21 Clysm read no `optimize` quality but `debug` and `speed`
+(for the frame records of the debugger), and `safety 0` changed nothing in
+its code; see "What `(safety 0)` does" below for what it does now.
 
 What Clysm generates for the slowest items (`tools/dump-func.lisp`),
 ranked by the gain expected:
@@ -2569,6 +2571,95 @@ Where Clysm is ahead (FFT over `(simple-array double-float (*))`,
 k-nucleotide's `equal` table of strings, the bit sieve) the inner loops are
 typed array accesses with no float operations whose result is tested, or
 library code.
+
+#### What `(safety 0)` does
+
+Clysm reads `safety` as SBCL does: `(declaim (optimize (safety N)))`
+(`compile-time-proclaim` in `src/driver.lisp`, and `proclaim` in the image,
+`sys::*proclaimed-safety*`, bound around a file by the whole-program
+compiler and by `compile-file`, as SBCL's policy), and `(declare (optimize
+(safety N)))` in any body with declarations (an entry `(:safety N)` of the
+compiler's environment, `policy-safety`; `lam-safety` for the code
+generator). At safety 1 to 3 nothing changes. At safety 0 declarations are
+trusted (`trust-types-p`):
+
+* the value bound or assigned to a variable declared of an integer type,
+  a free declaration's reference, the arguments of a function with an
+  `ftype` and its result are not checked: they become `(the type form)`,
+  and that `the` is marked `:trust`. A trusted `(the fixnum x)` of integer
+  arithmetic within 64 bits is that arithmetic wrapped to 32 bits
+  (`trusted-fixnum-code`), of anything else its i31 (`ref.cast` traps
+  where the declaration lied): `(1- x)` of a declared fixnum passed to a
+  function stays an `i32.sub` and a `ref.i31` (`$box-i32` before), the
+  result of a call is a `ref.cast` (`$int-i64` before);
+* the arguments of a call of a function of the same compilation whose
+  required parameters are declared of integer types (itself, while it is
+  converted: `*defun-param-specs*`) are such trusted `the`s too, so
+  `tak`'s calls go to its fixnum version, the tail call too;
+* `f64`/`f32` operations of declared floats have no trap tests (the IEEE
+  result: an infinity, a NaN, a zero where the default signals
+  `floating-point-overflow` and the like): `matmul`'s multiply-add is two
+  instructions;
+* an integer within 64 bits stored into an integer array is trusted to be
+  an element (wrapped to the storage), so `(decf (aref count r))` of a
+  `(simple-array fixnum (*))` is an inline store;
+* a vector's subscript is not compared with its length before an inline
+  access: the Wasm array's own test traps.
+
+Wrong declarations give wrong numbers or a Wasm trap, never a corrupted
+heap (a Wasm array or cast is always checked). A `fixnum` is Clysm's
+31-bit fixnum: portable code declares `fixnum` only for values within 30
+bits (`bench/declared.lisp` does; a library that declares hash values
+`fixnum` at safety 0 and counts on 62 bits computes others here).
+
+At any safety: a `block` that no `return-from` refers to is not made (its
+body is the node; the `defun`'s block of nearly every function, and that of
+an inline function's copy, whose double result now stays an f64 instead of
+going through an `eqref` block: `eval-a` in `d-spectral-norm`), and
+`replace` of two whole simple vectors of the same storage kind is one
+`array.copy` (`replace-copy-code`; `fannkuch`'s permutation copy).
+
+`tools/bench.sh bench/declared.lisp` (2026-11-21, one slot, before → after;
+the SBCL times of `d-fixnum-hash` vary between 235 and 404 ms):
+
+| Program | Clysm ms | Ratio to SBCL |
+|---|---|---|
+| `d-spectral-norm` | 418 → 148 | 2.82 → 1.01 |
+| `d-fannkuch` | 364 → 139 | 2.43 → 0.89 |
+| `d-crc32` | 282 → 152 | 1.81 → 0.97 |
+| `d-nbody` | 797 → 520 | 3.64 → 2.32 |
+| `d-mandelbrot` | 239 → 181 | 1.41 → 1.04 |
+| `d-triangle` | 370 → 303 | 2.53 → 2.05 |
+| `d-matmul` | 325 → 276 | 2.80 → 2.30 |
+| `d-particles` | 516 → 451 | 3.46 → 2.97 |
+| `d-tak` | 457 → 418 | 2.22 → 1.96 |
+| `d-k-nucleotide` | 119 → 95 | 0.99 → 0.79 |
+| `d-tokenize` | 189 → 180 | 1.10 → 1.01 |
+| `d-binary-trees` | 244 → 233 | 1.23 → 1.14 |
+| `d-quicksort` | 203 → 195 | 1.14 → 1.06 |
+| `d-fasta` | 149 → 146 | 1.16 → 1.06 |
+| `d-pidigits` | 239 → 235 | 1.18 → 1.13 |
+| `d-revcomp` | 124 → 123 | 1.07 → 0.99 |
+| `d-fft` | 95 → 98 | 0.90 → 0.89 |
+| `d-sieve` | 116 → 123 | 0.89 → 0.92 |
+| `d-fixnum-hash` | 282 → 254 | 0.70 → 1.08 |
+| geometric mean | | 1.55 → 1.24 |
+
+Interleaved runs of the two builds on one slot (best of three): 0.81 of
+the time before in geometric mean. In the image (`MODE=script`): 1.01 of
+the whole program. Undeclared code at the default policy, the two builds
+interleaved: `suite` 0.98, `gabriel` 1.02 (`g-div2` 1.12 and `g-fft` 1.06
+in one run of five, less code in both), `holdout` 0.99, `arrays` 0.99,
+`vectors` 0.98, `programs` 1.00, `arith` 0.88. With `SBCL_OPT="(speed 3)
+(safety 0)"`: `suite` 0.92, `gabriel` 1.09, as before. Libraries in the
+image (`bench/apps.lisp`, the two builds interleaved, best of five): 1.01;
+`tools/bench-libs.sh` 1.15 against SBCL with both builds.
+
+What remains of the list above: the structure accessors (1) and
+two-dimensional arrays (5) are separate work; `d-tak` and `d-triangle`
+are calls (a fixnum is passed and returned as an i31 `eqref`, the
+result count set in `$mv-count`); the floating-point test of a value
+where it leaves the f64 world at safety 1 (2) was not tried.
 
 ### Size and start-up
 

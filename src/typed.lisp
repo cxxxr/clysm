@@ -22,6 +22,16 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
       (or (cg-rep-1 node rep)
           `(,@(cg node) ,@(unbox-rep-code rep (node-ty node))))))
 
+(defun trusted-fixnum-code (node)
+  "An i32 of the value of NODE, declared a fixnum at (SAFETY 0) (THE) but not
+known to be a 32-bit integer: arithmetic within 64 bits is wrapped to 32
+bits; any other value is an i31 (no test of overflow or of the type)."
+  (let ((ty (node-ty node)))
+    (if (and (ty-int64-p ty) (member (car node) '(:prim :call))
+             (member (node-op-name node) *i64-arith-ops*))
+        `(,@(cg-rep node :i64) :i32.wrap_i64)
+        `(,@(cg node) (:ref.cast! :i31) :i31.get_s))))
+
 (defun cg-rep-1 (node rep)
   ;; a reference representation: only variables are held in one
   (when (and (consp rep) (not (member (car node) '(:lref :lset :the))))
@@ -54,7 +64,10 @@ or :i32).  For :f64 / :i32 the type of NODE must be a double / fixnum."
     (:lset (let ((lv (second node)))
              (when (and (eq (lvar-rep lv) rep) (unboxed-local-p lv))
                `(,@(cg-rep (third node) rep) ,@(rep-local-set-code lv (cdr (get-loc lv)) t)))))
-    (:the (cg-rep (third node) rep))
+    (:the (if (and (eq rep :i32) (eq (fourth node) :trust) (ty-fixnum-p (node-ty node))
+                   (not (ty-int32-p (node-ty (third node)))))
+              (trusted-fixnum-code (third node))
+              (cg-rep (third node) rep)))
     (:progn (when (cdr node)
               `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
                 ,@(cg-rep (car (last node)) rep))))
@@ -123,7 +136,11 @@ comparisons need)."
 
 (defun f64-binop-code (name a-code b-code)
   "A-CODE and B-CODE leave f64s.  A result that is infinite or NaN, or a zero
-that may be an underflow, is redone by the generic function, which decides."
+that may be an underflow, is redone by the generic function, which decides.
+At (SAFETY 0) there are no such tests: the IEEE result."
+  (when (eql (cg-safety) 0)
+    (return-from f64-binop-code
+      `(,@a-code ,@b-code ,(ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div)))))
   (let* ((x (new-local :f64)) (y (new-local :f64)) (r (new-local :f64))
          (op (ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div)))
          (generic `((:local.get ,x) (:struct.new :double) (:local.get ,y) (:struct.new :double)
@@ -199,6 +216,9 @@ that may be an underflow, is redone by the generic function, which decides."
 
 (defun f32-binop-code (name a-code b-code)
   "A-CODE and B-CODE leave f32s; as F64-BINOP-CODE."
+  (when (eql (cg-safety) 0)
+    (return-from f32-binop-code
+      `(,@a-code ,@b-code ,(ecase name (+ :f32.add) (- :f32.sub) (* :f32.mul) (/ :f32.div)))))
   (let* ((x (new-local :f32)) (y (new-local :f32)) (r (new-local :f32))
          (op (ecase name (+ :f32.add) (- :f32.sub) (* :f32.mul) (/ :f32.div)))
          (generic `((:local.get ,x) (:struct.new :single) (:local.get ,y) (:struct.new :single)
@@ -534,6 +554,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                   ((member name '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
                                   clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
                    (typed-store-code node nil))
+                  ((eq name 'clysm-sys::%replace) (replace-copy-code node))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
                   ((eq name 'clysm-sys::%struct-tref) (tstruct-ref-code node :eqref))
@@ -644,7 +665,9 @@ generic function."
             ((and (not two) (eq shape :vec) (eq (lvar-rep-of a) (ref-rep kind)))
              ;; a variable held as a reference to the storage: no test
              (values `(,@(cg-rep a (ref-rep kind)) (:local.set ,d) ,@(cg-rep (first subs) :i32) (:local.set ,k))
-                     `((:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
+                     ;; (at (SAFETY 0) the subscript is trusted: the Wasm array's own test traps)
+                     (unless (eql (cg-safety) 0)
+                       `((:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)))
                      kind d k
                      `((:local.get ,d) ,@(subscript-box-code (first subs) k))))
             ((and (eq shape :md2) (eq (lvar-rep-of a) (md2-rep kind)))
@@ -669,7 +692,8 @@ generic function."
               (values `(,@(cg a) (:local.set ,e) ,@(cg-rep (first subs) :i32) (:local.set ,k))
                       `((:local.get ,e) (:ref.test ,kind) :i32.eqz (:hint 0) (:br_if ,slow)
                         (:local.get ,e) (:ref.cast! ,kind) (:local.set ,d)
-                        (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
+                        ,@(unless (eql (cg-safety) 0)
+                            `((:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))))
                       kind d k
                       `((:local.get ,e) ,@(subscript-box-code (first subs) k))))
             (t
@@ -791,6 +815,11 @@ NIL when the types are not known or REP cannot hold the elements."
                       (unbox-rep-code rep (node-ty node))
                       '(:unreachable))))))))))
 
+(defun trust-int-store-p (vty)
+  "A value of type VTY stored into an array of integers is trusted to be an
+element: at (SAFETY 0), an integer within 64 bits."
+  (and (eql (cg-safety) 0) (ty-int64-p vty)))
+
 (defun typed-store-code (node effect)
   "An element store ((SETF AREF) of one or two subscripts, (SETF SVREF),
 (SETF ROW-MAJOR-AREF)) into a simple array whose storage kind is known, with
@@ -813,13 +842,17 @@ code leaves nothing, else the value."
                            (:f64vec (and (ty-double-p vty) :f64))
                            ((:u64vec :u63vec) (and (ty-in-range-p vty 0 (1- (expt 2 63))) :i64))
                            ((:s64vec) (and (ty-int64-p vty) :i64))
-                           ((:u32vec) (and (ty-in-range-p vty lo hi) :i64))
-                           (t (and (ty-in-range-p vty lo hi) :i32))))
+                           ((:u32vec) (and (or (ty-in-range-p vty lo hi) (trust-int-store-p vty)) :i64))
+                           (t (cond ((ty-in-range-p vty lo hi) :i32)
+                                    ;; (SAFETY 0): an integer within 64 bits is
+                                    ;; trusted to be an element (wrapped)
+                                    ((and (integerp lo) (trust-int-store-p vty)) :wrap)))))
                  (x (unless proven (new-local))))
             (when (or proven (member kind '(:string :bits :u7vec :bytes :s8vec :u15vec :u16vec :s16vec :f32vec :f64vec)))
               `(,@setup
                 ,@(if proven
-                      `(,@(cg-rep val proven) ,@(when (eq kind :u32vec) '(:i32.wrap_i64)) (:local.set ,raw))
+                      `(,@(cg-rep val (if (eq proven :wrap) :i64 proven))
+                        ,@(when (or (eq kind :u32vec) (eq proven :wrap)) '(:i32.wrap_i64)) (:local.set ,raw))
                       `(,@(cg val) (:local.set ,x)))
                 (:block ,done nil
                   (:block ,slow nil
@@ -833,6 +866,25 @@ code leaves nothing, else the value."
                   ,@(if (array-slow-returns-p name (cddr node)) '(:drop) '(:unreachable)))
                 ,@(unless effect
                     (if proven `((:local.get ,raw) ,@(storage-box-code kind)) `((:local.get ,x))))))))))))
+
+(defun replace-copy-code (node)
+  "(%REPLACE A B 0 NIL 0 NIL), REPLACE of two whole simple vectors over the
+same kind of storage: one array.copy of the shorter length (it copies
+overlapping ranges as if through a buffer), else NIL."
+  (destructuring-bind (a b s1 e1 s2 e2) (cddr node)
+    (flet ((vec-kind (x) (multiple-value-bind (kind shape) (ty-array-kind (node-ty x))
+                           (and (eq shape :vec) kind)))
+           (const-p (x v) (and (eq (car x) :const) (eql (second x) v))))
+      (let ((ka (vec-kind a)) (kb (vec-kind b)))
+        (when (and ka (eq ka kb) (const-p s1 0) (const-p s2 0) (const-p e1 nil) (const-p e2 nil))
+          (let ((da (new-local `(:ref :null ,ka))) (db (new-local `(:ref :null ,ka))) (r (new-local)))
+            `(,@(cg a) (:local.set ,r) ,@(cg b) (:ref.cast ,ka) (:local.set ,db)
+              (:local.get ,r) (:ref.cast ,ka) (:local.set ,da)
+              (:local.get ,da) (:i32.const 0) (:local.get ,db) (:i32.const 0)
+              (:local.get ,da) :array.len (:local.get ,db) :array.len
+              (:local.get ,da) :array.len (:local.get ,db) :array.len :i32.lt_u :select
+              (:array.copy ,ka ,ka)
+              (:local.get ,r))))))))
 
 (defun index-i32-code (node)
   "An index known to be a fixnum (unchecked) as an i32."

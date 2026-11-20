@@ -879,6 +879,10 @@ MAPL: the value is the first list)."
   (%set-symbol-flags s (%fxlogior (%symbol-flags s) 3))
   s)
 
+(defvar *proclaimed-safety* 1
+  "The SAFETY of the OPTIMIZE proclamations, which the compiler in the image
+reads (src/frontend.lisp); COMPILE-FILE binds it around a file.")
+
 (defun %proclaim-list (specs)
   (dolist (s specs) (proclaim s)))
 
@@ -893,6 +897,11 @@ MAPL: the value is the first list)."
   (when (and (consp spec) (eq (car spec) 'special))
     (dolist (s (cdr spec))
       (%set-symbol-flags s (%fxlogior (%symbol-flags s) 1))))
+  (when (and (consp spec) (eq (car spec) 'optimize))
+    (dolist (q (cdr spec))
+      (cond ((eq q 'safety) (setq *proclaimed-safety* 3))
+            ((and (consp q) (eq (car q) 'safety) (consp (cdr q)) (typep (cadr q) '(integer 0 3)))
+             (setq *proclaimed-safety* (cadr q))))))
   ;; the type of global variables: references compiled in the image after it
   ;; are of that type (*LIVE-VAR-TYPE-HOOK*, src/frontend.lisp)
   (multiple-value-bind (type vars) (%proclaimed-var-type spec)

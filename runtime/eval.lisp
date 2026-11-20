@@ -1298,6 +1298,8 @@ when it is first called, and calls the function it defines."
       (let ((*compile-file-pathname* in-path)
             (*compile-file-truename* (truename in))
             (*package* *package*) (*readtable* *readtable*)
+            ;; a DECLAIM of OPTIMIZE in the file holds to its end (as in SBCL)
+            (*proclaimed-safety* *proclaimed-safety*)
             (*cf-externalizer* (%new-externalizer in-path)))
         (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
         (handler-bind ((warning (lambda (c)

@@ -350,6 +350,24 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
 
 (defun mv-one () '((:i32.const 1) (:global.set :mv-count)))
 
+(defun cg-safety ()
+  "The SAFETY of the function being compiled (its LAM-SAFETY; 1 by default)."
+  (let ((lam (and *fs* (fstate-lam *fs*))))
+    (or (and (lam-p lam) (lam-safety lam)) 1)))
+
+(defparameter *i64-arith-ops* '(+ - * 1+ 1- ash logand logior logxor lognot abs)
+  "Operations computed in an i64 when their operands and result are within 64 bits.")
+
+(defun trusted-fixnum-the-p (node)
+  "NODE is a (THE type X) converted at (SAFETY 0) whose type is a fixnum,
+with X integer arithmetic within 64 bits not known to give a fixnum: its
+value is X's wrapped to 32 bits (TRUSTED-FIXNUM-CODE)."
+  (and (eq (fourth node) :trust)
+       (ty-fixnum-p (node-ty node))
+       (let ((x (third node)))
+         (and (not (ty-fixnum-p (node-ty x))) (ty-int64-p (node-ty x))
+              (member (car x) '(:prim :call)) (member (node-op-name x) *i64-arith-ops*)))))
+
 ;;; ------------------------------------------------------------
 ;;; Main dispatcher
 ;;; ------------------------------------------------------------
@@ -411,7 +429,10 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:unwind-protect (cg-unwind-protect node mv))
       (:mvcall (cg-mvcall node mv tail))
       (:mvprog1 (cg-mvprog1 node mv))
-      (:the (cg (third node) mv tail))
+      (:the (if (trusted-fixnum-the-p node)
+                ;; (SAFETY 0): an integer declared a fixnum is one (wrapped to 32 bits)
+                `(,@(cg-rep node :i32) :ref.i31 ,@(when mv (mv-one)))
+                (cg (third node) mv tail)))
       (:ltv (cg-ltv node mv))
       (:progv (cg-progv node mv))
       (:wasm (cg-wasm node mv))
