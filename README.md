@@ -20,7 +20,7 @@ server. It needs Chrome or Edge 137 or later and is about 22 MB.
 
 ## State
 
-* 21939 of the 21940 tests of the
+* 21931 of the 21932 tests of the
   [ANSI test suite](https://gitlab.common-lisp.net/ansi-test/ansi-test) pass;
   GitHub Actions runs the suite on every push and pull request.
 * CLOS with the metaobject protocol, the condition system, `loop`, `format`

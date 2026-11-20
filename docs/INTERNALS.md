@@ -1831,11 +1831,14 @@ resumes with the next test. Per-category logs and `summary.txt` are written to
 
 Categories run in parallel (`ANSI_JOBS`, default 8; `files` runs first because
 the `streams` tests use the directory it creates), starting from a pristine
-sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21939 of 21940
+sandbox. The latest results are in `tests/ansi/RESULTS.txt`: 21931 of 21932
 tests pass (99.99%), with no crashes. The five tests with the note
 `:loop-iteration-values-in-finally` (marked `:ansi-spec-problem`) are
 inactive, as on SBCL: like the MIT LOOP, an arithmetic `for` variable is
-stepped past its limit before the loop ends, and libraries rely on it. The one failure, SUBTYPEP-COMPLEX.8,
+stepped past its limit before the loop ends, and libraries rely on it. So
+are the eight with the note `:no-floating-point-underflow-by-default`,
+which expect `floating-point-underflow`: like SBCL with its default traps,
+Clysm does not signal underflows (see "Floating-point conditions"). The one failure, SUBTYPEP-COMPLEX.8,
 assumes that `(complex single-float)` is not a subtype of
 `(complex (float 0.0 1.0))`; like SBCL (which fails it the same way), Clysm
 reads `(complex X)` as the complexes whose parts are of
@@ -1848,7 +1851,9 @@ reads `(complex X)` as the complexes whose parts are of
 Float arithmetic signals what SBCL signals with its default traps, at
 every safety and in declared and undeclared code alike:
 `floating-point-overflow` for an infinite result (`%float-result` in
-`runtime/numbers.lisp`), `division-by-zero` for a float divided by zero;
+`runtime/numbers.lisp`), `division-by-zero` for a float divided by zero,
+`floating-point-invalid-operation` for a zero (or a NaN) divided by zero
+(SBCL's `:invalid` trap; `(/ 0 0)` of rationals is a division by zero);
 an underflow is no condition (SBCL masks it by default; CLHS 12.1.4.3 and
 the arithmetic functions' pages leave it to the implementation): a result
 too small for a normalized float is the denormalized float or the zero
@@ -1867,17 +1872,16 @@ denormalized floats, `exp`, `expt`, `sqrt`, `log`, `sin`, `tanh`,
 `abs` of complex): the same values bit for bit (`integer-decode-float` of
 a denormalized single now gives SBCL's significand and exponent -149),
 printed with fewer digits where they are denormalized (the shortest
-representation that reads back). Differences left: `(/ 0d0 0d0)` signals
-`division-by-zero` where SBCL signals `floating-point-invalid-operation`
-(its `:invalid` trap); Clysm signals no `floating-point-invalid-operation`
-(an operation on an infinity or a NaN, which SBCL's traps make hard to
-come by, gives the IEEE result, or `floating-point-overflow` when the
-result is an infinity). There is no trap mask (no equivalent of
+representation that reads back). Difference left: other
+operations on an infinity or a NaN (which SBCL's traps make hard to come
+by) give the IEEE result, or `floating-point-overflow` when the result is
+an infinity, where SBCL's `:invalid` trap signals
+`floating-point-invalid-operation` for some. There is no trap mask (no equivalent of
 `sb-int:with-float-traps-masked`). The ANSI tests that expect
 `floating-point-underflow` (`EXP.ERROR.8`–`11`, `EXPT.ERROR.8`–`11`) carry
 the note `:no-floating-point-underflow-by-default`, which an implementation
-that does not signal underflows disables; until `tests/ansi/driver.lisp`
-does, they are 8 failures.
+that does not signal underflows disables, as `tests/ansi/driver.lisp`
+does.
 
 Measured against the build before (2026-11-21, interleaved, best of five
 on one slot): `bench/declared.lisp` at `(safety 1)` 0.97 in geometric mean

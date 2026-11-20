@@ -37,7 +37,12 @@
   ;; like SBCL (and the MIT LOOP that libraries such as McCLIM rely on), an
   ;; arithmetic FOR variable is stepped past its limit before the loop ends:
   ;; the tests that assume otherwise (marked :ANSI-SPEC-PROBLEM) are inactive
-  (funcall (find-symbol "DISABLE-NOTE" "RT") :loop-iteration-values-in-finally))
+  (funcall (find-symbol "DISABLE-NOTE" "RT") :loop-iteration-values-in-finally)
+  ;; like SBCL with its default traps, Clysm does not signal
+  ;; FLOATING-POINT-UNDERFLOW (CLHS leaves it to the implementation; see
+  ;; "Floating-point conditions" in docs/INTERNALS.md): the tests that expect
+  ;; it (EXP.ERROR.8-11, EXPT.ERROR.8-11) are inactive
+  (funcall (find-symbol "DISABLE-NOTE" "RT") :no-floating-point-underflow-by-default))
 
 (in-package :cl-test)
 

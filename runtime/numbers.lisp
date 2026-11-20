@@ -241,7 +241,13 @@ converts the others): its top 62 bits with a sticky bit, scaled."
           ((< r 4)
            (let ((db (%to-double b)))
              (when (%d= db (%fixnum-to-double 0))
-               (error 'division-by-zero :operation '/ :operands (list a b)))
+               ;; a zero (or NaN) divided by zero has no value: SBCL's
+               ;; :INVALID trap; any other number, division by zero
+               (let ((da (%to-double a)))
+                 (error (if (or (%d= da (%fixnum-to-double 0)) (%double-nan-p da))
+                            'floating-point-invalid-operation
+                            'division-by-zero)
+                        :operation '/ :operands (list a b))))
              (%float-result (%d/ (%to-double a) db) r)))
           (t (%complex-div a b)))))
 
