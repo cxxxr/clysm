@@ -2646,6 +2646,13 @@ parameters and nothing else, and NAME is a symbol outside the implementation's p
                (not (member (package-name (symbol-package sym)) '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD")
                             :test #'string=))
                (or (not (eql (get sym flag) n))
+                   ;; a reader or writer of DEFCLASS or DEFINE-CONDITION: its
+                   ;; definition is made once, and COMPILE-FILE evaluates it
+                   ;; (defining the compiler macro) before it expands it again
+                   ;; for the fasl, which would otherwise lose the compiler
+                   ;; macro: the calls in the files loaded after it would be
+                   ;; calls of the generic function
+                   accessor
                    ;; in the image: the form setting the flag may have been
                    ;; expanded without being evaluated (a toplevel form of a
                    ;; loaded file is expanded more than once)
