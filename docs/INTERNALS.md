@@ -151,10 +151,26 @@ the values of its tail positions, its tail calls of itself with arguments
 of the same classes left aside, are all fixnums (or all doubles), with its
 types inferred for those arguments (`raw-clone-rrep`), it returns an `i32`
 (an `f64`) and sets no `$mv-count`, and those tail calls of itself are
-`return_call`s of itself. Any other call in a tail position of such a copy
-would not stay a tail call, so a function with one keeps an eqref result
-(its copy for raw arguments is then a `return_call` target like the main
-function). A call of a copy with a raw result is made only where one value
+`return_call`s of itself. A tail call of another known function whose raw
+copy for the classes of its arguments returns the same (`i32` or `f64`) is
+a `return_call` of that copy, and its value counts as a fixnum (double)
+leaf; any other call in a tail position would not stay a tail call, so a
+function with one keeps an eqref result (its copy for raw arguments is then
+a `return_call` target like the main function; mutually recursive functions
+whose raw results depend on each other keep eqref results too, as the copy
+being analysed counts as returning an eqref). A raw copy returning an
+`i32` or `f64` of a function without free variables that does not refer
+to itself as a closure takes no closure parameter (`raw-clone-closure-p`;
+its locals are numbered one lower, `shift-locals-down`), so its callers do
+not load the closure's global and a recursive one does not keep it across
+its calls (`d-tak` 334 → 320 ms). The copies returning an eqref keep it:
+without it for them too, `b-call` (which calls none of them) ran 150 →
+178 ms, `length` no longer inlined by V8 into its caller, a change of the
+engine's decisions over the module that was not explained. `lam-may-exit-p` takes `(length v)` of a variable
+declared a simple vector or string (`inline-length-call-p`) for the
+`array.len` that it is compiled to, not a call that may exit, so a
+function like `triangle-count` (a `dotimes` over a declared vector) gets a
+raw result. A call of a copy with a raw result is made only where one value
 is wanted and not in a tail position of a function returning an eqref;
 type inference gives such a call the fixnum or double type
 (`raw-call-return-ty`), so the arithmetic around it stays unboxed. `tak`'s
@@ -2937,6 +2953,43 @@ the undeclared trees alone `arith` 0.99, `suite` 1.01, `holdout` 1.00. The
 tests are a few instructions beside a branch the engine predicts; the
 values are not where the time goes. `tests/cases/float-traps-trees.lisp`
 keeps the overflows of such trees tested.
+
+Raw copies (2026-11-21, "Raw clones" under Calling convention): tail
+calls of other raw copies with the same result, no closure parameter for
+copies with a raw result, `length` of a declared vector not taken as a
+call that may exit. Interleaved against the build before, best of five on
+one slot: `bench/declared.lisp` 1.01 in geometric mean (`d-tak` 329 → 314
+ms; `d-triangle` gets a raw result but 274 → 282, its time is in its loop,
+not its calls), the same file at `(safety 1)` 0.96; best of three:
+`suite` 1.01, `gabriel` 0.98, `holdout` 0.99, `arith` 1.02, `arrays` 1.01,
+no item beyond the noise of a run.
+
+Testing once per stretch of code without branches was tried and measured
+too (2026-11-21), and is not kept either. The tests do cost at `(safety
+1)`: without them (an experiment, not CL semantics) `d-nbody` ran 255 ms
+against 700, `d-spectral-norm` 220 against 430, `d-particles` 195 against
+310 — about one cycle per test, 27 tests in n-body's inner loop. What was
+tried, each against the per-operation tests on `d-nbody` at `(safety 1)`,
+best of five interleaved: (a) the operations of a stretch of straight-line
+code (`let` bindings, `setq`s, a tree) computed into locals of their own
+with their operands, each zero product or quotient OR-ed into a flag, the
+values that no other operation consumed summed and the sum tested once
+before anything that may see them (a call, a store, a conditional), the
+operations gone through again by the generic functions when it failed:
+817 ms against 679 — the operands kept live to the test are spilled; (b) a
+tree compiled twice, a copy without tests and a checked copy run again
+from the same leaves when the one test of the tree's value (and its
+divisors) or the zero flag fails: 846 against 731, with the flag of a
+product as an `i64` test of the shifted bits; 1089 with the flag replaced
+by the product of all the products (tested for zero once); (c) the
+checked copy replaced by `unreachable` changed nothing, so it is not the
+code size. The reason is V8's code for an `f64` comparison whose result is
+a value (not a branch): `ucomisd`, a branch on parity, `set`cc and a
+`jmp`, as much as the test it replaces; and the stretches between stores
+and conditionals are short (n-body stores a slot after every two
+operations). Only removing the zero test of products (the underflow
+condition, which SBCL does not trap by default) would gain much, and that
+changes what the code signals; it was not done.
 
 ### Size and start-up
 
