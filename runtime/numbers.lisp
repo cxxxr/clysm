@@ -1008,8 +1008,21 @@ digits."
 
 (defun %digit-char (d) (code-char (if (< d 10) (+ 48 d) (+ 55 d))))
 
+;;; A Wasm helper parses a simple string (whitespace, sign, digits in an
+;;; i64, the index); it gives up (%PARSE-INTEGER-FAIL) on other arguments,
+;;; on an error to signal and on digits beyond 63 bits in a radix other
+;;; than 10, which the Lisp function does.
+(defmacro %parse-integer-call (string start end radix junk)
+  (let ((s (gensym "S")) (st (gensym "START")) (e (gensym "END")) (r (gensym "RADIX")) (j (gensym "JUNK"))
+        (v (gensym "V")) (i (gensym "I")))
+    `(let ((,s ,string) (,st ,start) (,e ,end) (,r ,radix) (,j ,junk))
+       (multiple-value-bind (,v ,i) (%parse-integer-fast ,s ,st ,e ,r ,j)
+         (if (eq ,v '%parse-integer-fail)
+             (%parse-integer ,s ,st ,e ,r ,j)
+             (values ,v ,i))))))
+
 (defun parse-integer (string &key (start 0) end (radix 10) junk-allowed)
-  (%parse-integer string start end radix junk-allowed))
+  (%parse-integer-call string start end radix junk-allowed))
 
 (defun %parse-integer (string start end radix junk-allowed)
   (when (and (%simple-string-p string) (fixnump start) (or (null end) (fixnump end))
@@ -1137,7 +1150,7 @@ digits."
     (if ok
         (let ((s (gensym "STRING")))
           `(let* ((,s ,string) ,@(nreverse temps))
-             (%parse-integer ,s ,start ,end ,radix ,junk)))
+             (%parse-integer-call ,s ,start ,end ,radix ,junk)))
         form)))
 
 (defun %whitespace-char-p (c)

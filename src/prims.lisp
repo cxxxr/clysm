@@ -4809,6 +4809,97 @@ rounded to odd (Schubfach's rop)."
   '(:local.get m) '(:local.get 3) (nil-code) :ref.eq :i32.eqz '(:call :make-int))
 (defprim clysm-sys::%decimal-integer (str start end neg) :value
   `(,@str ,@start ,@end ,@neg (:call :decimal-int)))
+
+;;; PARSE-INTEGER of a simple string in one call: (string start end radix
+;;; junk-allowed) -> the integer (NIL when JUNK-ALLOWED and there are no
+;;; digits) and the index, as PARSE-INTEGER's two values; the symbol
+;;; %PARSE-INTEGER-FAIL when the Lisp function must do it (other arguments,
+;;; an error to signal, digits beyond 63 bits in a radix other than 10).
+(defun parse-integer-fail-code ()
+  `((:global.get ,(sym-global 'clysm-sys::%parse-integer-fail)) :return))
+(defhelper :parse-integer :eeeee-e ((s (:ref :null :string)) (i :i32) (e :i32) (r :i32) (c :i32) (d :i32)
+                                     (neg :i32) (ds :i32) (de :i32) (big :i32) (v :i64) (limit :i64)
+                                     (val :eqref))
+  ;; the arguments
+  '(:local.get 0) '(:ref.test :string) :i32.eqz
+  '(:local.get 1) '(:ref.test :i31) :i32.eqz :i32.or
+  '(:local.get 3) '(:ref.test :i31) :i32.eqz :i32.or
+  `(:if nil nil ,(parse-integer-fail-code))
+  '(:local.get 0) '(:ref.cast :string) '(:local.tee s) :array.len '(:local.set e)
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.set i)
+  '(:local.get 2) (nil-code) :ref.eq :i32.eqz
+  `(:if nil nil
+        ((:local.get 2) (:ref.test :i31) :i32.eqz (:if nil nil ,(parse-integer-fail-code))
+         (:local.get 2) (:ref.cast :i31) :i31.get_s (:local.tee c) (:local.get e) :i32.gt_u
+         (:if nil nil ,(parse-integer-fail-code))
+         (:local.get c) (:local.set e)))
+  '(:local.get i) '(:local.get e) :i32.gt_u
+  '(:local.get 3) '(:ref.cast :i31) :i31.get_s '(:local.tee r) '(:i32.const 2) :i32.lt_s :i32.or
+  '(:local.get r) '(:i32.const 36) :i32.gt_s :i32.or
+  `(:if nil nil ,(parse-integer-fail-code))
+  '(:i64.const #x7FFFFFFFFFFFFFFF) '(:local.get r) :i64.extend_i32_u :i64.div_u '(:local.set limit)
+  ;; whitespace, a sign
+  (flet ((skip-whitespace ()
+           '(:block wdone nil
+             (:loop wagain nil
+              (:local.get i) (:local.get e) :i32.ge_u (:br_if wdone)
+              (:local.get s) (:local.get i) (:array.get :string) (:local.tee c) (:i32.const 32) :i32.eq
+              (:local.get c) (:i32.const 9) :i32.sub (:i32.const 5) :i32.lt_u
+              (:local.get c) (:i32.const 11) :i32.ne :i32.and :i32.or
+              :i32.eqz (:br_if wdone)
+              (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+              (:br wagain)))))
+    (list
+     (skip-whitespace)
+     '(:local.get i) '(:local.get e) :i32.lt_u
+     '(:if nil nil
+       ((:local.get s) (:local.get i) (:array.get :string) (:local.tee c) (:i32.const 45) :i32.eq
+        (:if nil nil ((:i32.const 1) (:local.set neg) (:local.get i) (:i32.const 1) :i32.add (:local.set i))
+             ((:local.get c) (:i32.const 43) :i32.eq
+              (:if nil nil ((:local.get i) (:i32.const 1) :i32.add (:local.set i)))))))
+     '(:local.get i) '(:local.set ds)
+     ;; the digits
+     '(:block ddone nil
+       (:loop dagain nil
+        (:local.get i) (:local.get e) :i32.ge_u (:br_if ddone)
+        (:local.get s) (:local.get i) (:array.get :string) (:local.tee c) (:i32.const 48) :i32.sub
+        (:local.tee d) (:i32.const 10) :i32.ge_u
+        (:if nil nil
+             ((:i32.const 99) (:local.set d)
+              (:local.get c) (:i32.const 32) :i32.or (:i32.const 97) :i32.sub (:local.tee c) (:i32.const 26) :i32.lt_u
+              (:if nil nil ((:local.get c) (:i32.const 10) :i32.add (:local.set d)))))
+        (:local.get d) (:local.get r) :i32.ge_u (:br_if ddone)
+        (:local.get v) (:local.get limit) :i64.ge_u
+        (:if nil nil ((:i32.const 1) (:local.set big))
+             ((:local.get v) (:local.get r) :i64.extend_i32_u :i64.mul (:local.get d) :i64.extend_i32_u :i64.add
+              (:local.set v)))
+        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+        (:br dagain)))
+     '(:local.get i) '(:local.set de)
+     ;; the value (NIL without digits)
+     '(:local.get de) '(:local.get ds) :i32.eq
+     `(:if nil nil
+           (,@(nil-code) (:local.set val))
+           ((:local.get big)
+            (:if nil nil
+                 ((:local.get r) (:i32.const 10) :i32.ne (:if nil nil ,(parse-integer-fail-code))
+                  (:local.get 0) (:local.get ds) :ref.i31 (:local.get de) :ref.i31
+                  (:local.get neg) (:if nil :eqref ,(t-code) ,(nil-code))
+                  (:call :decimal-int) (:local.set val))
+                 ((:i64.const 0) (:local.get v) :i64.sub (:local.get v) (:local.get neg) :select
+                  (:call :i64-int) (:local.set val)))))
+     ;; with JUNK-ALLOWED the index is that of the character after the digits
+     '(:local.get val) (car (nil-code)) :ref.eq '(:local.get 4) (car (nil-code)) :ref.eq :i32.or
+     `(:if nil nil ,(list (skip-whitespace)))
+     ;; junk (or no digits) without JUNK-ALLOWED: the Lisp function signals
+     '(:local.get 4) (car (nil-code)) :ref.eq
+     '(:local.get val) (car (nil-code)) :ref.eq '(:local.get i) '(:local.get e) :i32.ne :i32.or :i32.and
+     `(:if nil nil ,(parse-integer-fail-code))
+     '(:global.get :mv-buf) '(:i32.const 0) '(:local.get i) :ref.i31 '(:array.set :vector)
+     '(:i32.const 2) '(:global.set :mv-count)
+     '(:local.get val))))
+(defprim clysm-sys::%parse-integer-fast (string start end radix junk) :mv
+  `(,@string ,@start ,@end ,@radix ,@junk (:call :parse-integer)))
 (defprim clysm-sys::%host-char (i) :value
   `(,@(idx-code i) (:call :host-get-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%math1 (d op) :value `(,@(f64-code d) ,@(idx-code op) (:call :host-math1) ,@(box-f64)))

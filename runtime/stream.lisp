@@ -355,7 +355,7 @@ after the call."
 (defun %scratch-string-result (s)
   "The contents of the scratch stream S, which is given back."
   (let ((r (%string-out-contents s)))
-    (when (<= (%string-length (stream-buffer s)) 4096)
+    (when (and (<= (%string-length (stream-buffer s)) 4096) (stream-open s))
       (setq *%scratch-string-stream* s))
     r))
 
@@ -581,20 +581,27 @@ character file stream S, encoded in UTF-8, at once."
       (%set-instance-ref s +stream-index-slot+ (%fx+ i 1))
       (return-from %stream-write-char c)))
   ;; an ASCII character to a character output file: one octet
-  (when (and (%fast-out-file-p s) (%fx< (char-code c) 128))
-    (let* ((sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf))
-           (octets (%fsbuf-octets buf)))
-      (when (%fx>= pos (%bytes-length octets))
-        (%fs-ensure s (%fx+ pos 1))
-        (setq octets (%fsbuf-octets buf)))
-      (%set-bytes-ref octets pos (char-code c))
-      (%set-fsbuf-pos buf (%fx+ pos 1))
-      (when (%fx> (%fx+ pos 1) (%fsbuf-fill buf)) (%set-fsbuf-fill buf (%fx+ pos 1)))
-      (%set-svref sl +fs-dirty-slot+ t)
-      (%set-svref sl +stream-column-slot+
-                  (if (eql c #\Newline) 0 (%fx+ (%svref sl +stream-column-slot+) 1)))
-      (return-from %stream-write-char c)))
+  (when (%fast-out-file-p s)
+    (return-from %stream-write-char (%fs-fast-write-char s c)))
   (%stream-write-char-1 s (%skind s) c))
+
+(defun %fs-fast-write-char (s c)
+  "Write the character C to S, an open character output file (its FAST-OUT
+slot is :FILE): an ASCII character is one octet stored at once."
+  (if (%fx< (char-code c) 128)
+      (let* ((sl (%instance-slots s)) (buf (%svref sl +fs-buf-slot+)) (pos (%fsbuf-pos buf))
+             (octets (%fsbuf-octets buf)))
+        (when (%fx>= pos (%bytes-length octets))
+          (%fs-ensure s (%fx+ pos 1))
+          (setq octets (%fsbuf-octets buf)))
+        (%set-bytes-ref octets pos (char-code c))
+        (%set-fsbuf-pos buf (%fx+ pos 1))
+        (when (%fx> (%fx+ pos 1) (%fsbuf-fill buf)) (%set-fsbuf-fill buf (%fx+ pos 1)))
+        (%set-svref sl +fs-dirty-slot+ t)
+        (%set-svref sl +stream-column-slot+
+                    (if (eql c #\Newline) 0 (%fx+ (%svref sl +stream-column-slot+) 1)))
+        c)
+      (%stream-write-char-1 s :file c)))
 
 (defun %stream-write-char-1 (s kind c)
   (case kind
@@ -647,7 +654,10 @@ character file stream S, encoded in UTF-8, at once."
              (if (%fx< ,i (%string-length ,buf))
                  (progn (%set-schar ,buf ,i ,ch) (%set-instance-ref ,s +stream-index-slot+ (%fx+ ,i 1)) ,ch)
                  (%stream-write-char ,s ,ch)))
-           (%write-char-2 ,ch ,s)))))
+           ;; to a character output file: one call
+           (if (and (%fast-out-file-p ,s) (characterp ,ch))
+               (%fs-fast-write-char ,s ,ch)
+               (%write-char-2 ,ch ,s))))))
 
 (defun %write-spaces (stream n)
   (%write-chars stream #\Space n))
@@ -773,11 +783,14 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
            (%write-char (%schar string i) fd)))
        (%stream-note-string-column s string start end))
       (:file
-       (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
-                    (eql (file-stream-esize s) 0))
-         (%not-output-stream s 'character))
-       (%fs-write-chars s string start end)
-       (%stream-note-string-column s string start end))
+       (if (%fast-out-file-p s)
+           (%fs-fast-write-string s string start end)
+           (progn
+             (unless (and (stream-open s) (member (stream-direction s) '(:output :io))
+                          (eql (file-stream-esize s) 0))
+               (%not-output-stream s 'character))
+             (%fs-write-chars s string start end)
+             (%stream-note-string-column s string start end))))
       ;; each component stream gets the whole string
       (:broadcast (dolist (x (stream-streams s)) (%stream-write-simple-string x string start end)))
       ((:two-way :echo)
@@ -820,7 +833,9 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
 
 (defun terpri (&optional stream)
   (let ((s (%output-stream stream)))
-    (if (eq (%skind s) :gray) (stream-terpri s) (%stream-write-char s #\Newline)))
+    (cond ((%fast-out-file-p s) (%fs-fast-write-char s #\Newline))
+          ((eq (%skind s) :gray) (stream-terpri s))
+          (t (%stream-write-char s #\Newline))))
   nil)
 
 (defun %stream-column (s)
@@ -1730,13 +1745,18 @@ domain socket PATH."
                ,@forms))
           `(let ((,et ,element-type))
              (declare (ignorable ,et))
-             ;; (the default element type: no keyword argument to parse)
-             (let ((,var ,(if (equal element-type ''character)
-                              '(%make-string-out)
-                              `(make-string-output-stream :element-type ,et))))
-               ,@decls
-               (progn ,@forms)
-               (get-output-stream-string ,var)))))))
+             ;; the default element type: the scratch stream, whose
+             ;; buffer is reused (the stream has dynamic extent); when the
+             ;; body is left by a non-local exit it is not given back
+             ,(if (equal element-type ''character)
+                  `(let ((,var (%scratch-string-stream)))
+                     ,@decls
+                     (progn ,@forms)
+                     (%scratch-string-result ,var))
+                  `(let ((,var (make-string-output-stream :element-type ,et)))
+                     ,@decls
+                     (progn ,@forms)
+                     (get-output-stream-string ,var))))))))
 
 (defmacro with-input-from-string ((var string &key (start 0) end index) &body body)
   (multiple-value-bind (decls forms) (%split-declarations body)
