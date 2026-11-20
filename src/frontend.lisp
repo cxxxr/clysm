@@ -762,6 +762,10 @@ the arguments do not fit (they are then passed by a call)."
       (when m
         (return-from convert-compound
           (convert (let ((*package* *read-package*)) (funcall m form env)) env))))
+    ;; integer arithmetic on constants, done now: (- (expt 2 31)) was two
+    ;; calls each time it ran
+    (multiple-value-bind (v found) (constant-integer-form form env)
+      (when found (return-from convert-compound `(:const ,v))))
     ;; compiler macros
     (let ((cm (or (gethash op *compiler-macros*)
                   (and *live-compiler-macro-hook* (symbolp op) (funcall *live-compiler-macro-hook* op)))))
@@ -798,6 +802,46 @@ the arguments do not fit (they are then passed by a call)."
               ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (second name)))
                (setf (gethash (setf-function-symbol (second name)) *dynamic-functions*) t)))))
     `(:call ,op ,@(convert-args (cdr form) env))))
+
+(defparameter *foldable-integer-functions*
+  '(+ - * expt ash 1+ 1- logand logior logxor lognot abs min max integer-length))
+
+(defun constant-integer-form (form env)
+  "(values N T) when FORM is an integer known when it is compiled: a literal,
+a constant variable, or a call of one of *FOLDABLE-INTEGER-FUNCTIONS* on such
+forms whose value is an integer of at most 256 bits."
+  (flet ((small (n) (and (integerp n) (<= (integer-length n) 256))))
+    (cond ((integerp form) (values form t))
+          ((and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
+                (integerp (second form)))
+           (values (second form) t))
+          ((and (symbolp form) form (not (eq form t)) (not (keywordp form))
+                (not (env-lookup-var env form))
+                (not (nth-value 1 (global-symbol-macro form))))
+           (multiple-value-bind (v found) (gethash form *constants*)
+             (cond ((and found (integerp (car v))) (values (car v) t))
+                   ((and (not found) *live-constant-hook*)
+                    (multiple-value-bind (v found) (funcall *live-constant-hook* form)
+                      (if (and found (integerp v)) (values v t) (values nil nil))))
+                   (t (values nil nil)))))
+          ((and (consp form) (symbolp (car form))
+                (member (car form) *foldable-integer-functions*)
+                (not (env-lookup-fun env (car form)))
+                (not (gethash (car form) *notinline*))
+                (not (member (car form) *local-notinline*))
+                (handler-case (list-length form) (error () nil)))
+           (let ((args nil))
+             (dolist (a (cdr form))
+               (multiple-value-bind (v found) (constant-integer-form a env)
+                 (unless (and found (small v)) (return-from constant-integer-form (values nil nil)))
+                 (push v args)))
+             (setf args (nreverse args))
+             ;; (no huge powers or shifts)
+             (when (and (member (car form) '(expt ash)) (not (and (= (length args) 2) (<= (abs (second args)) 256))))
+               (return-from constant-integer-form (values nil nil)))
+             (let ((v (handler-case (apply (car form) args) (error () nil))))
+               (if (small v) (values v t) (values nil nil)))))
+          (t (values nil nil)))))
 
 (defun note-fun (fun)
   (note-ref (fun-lvar fun))
