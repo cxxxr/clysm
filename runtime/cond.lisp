@@ -777,6 +777,14 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
       :interactive (lambda () (format *query-io* "~&New value: ") (list (eval (read *query-io*))))
       v)))
 
+(defun %assert-error (test &optional (datum nil datum-p) &rest args)
+  "The failure of (ASSERT TEST ...): signal the error, returning when the
+CONTINUE restart is chosen (the assertion is then tried again)."
+  (restart-case (if datum-p
+                    (apply #'error datum args)
+                    (error "The assertion ~S failed." test))
+    (continue () :report "Retry the assertion." nil)))
+
 (defun %check-type-error (place value type &optional type-string)
   (declare (ignore type-string))
   (restart-case (error 'simple-type-error :datum value :expected-type type

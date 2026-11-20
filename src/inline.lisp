@@ -12,6 +12,9 @@
 (defparameter *inline-max-nodes* 30)
 (defparameter *inline-max-depth* 3)
 (defparameter *inline-max-local-nodes* 30 "for local functions and lambdas of the function")
+(defparameter *inline-max-single-use-nodes* 300
+  "for a local function or lambda called once, nowhere else referenced: the
+copy replaces its code")
 (defvar *inline-candidates* (make-hash-table :test 'eq) "lam -> inlinable-p")
 (defvar *inlined-into* (make-hash-table :test 'eq) "lams whose bodies were processed")
 (defvar *inline-caller* nil "the lam receiving the copies")
@@ -112,13 +115,13 @@ function gets at most.")
          (inlinable-lam-p lam sym)
          lam)))
 
-(defun local-inlinable-p (callee caller)
+(defun local-inlinable-p (callee caller &optional (limit *inline-max-local-nodes*))
   "CALLEE (a local function or lambda defined in CALLER) can be copied into CALLER."
   (and (eq (lam-parent callee) caller) (lam-simple-p callee)
        (notany #'lvar-special (lam-req callee))
        (let ((n 0))
          (labels ((walk (node)
-                    (when (or (> (incf n) *inline-max-local-nodes*)
+                    (when (or (> (incf n) limit)
                               (member (car node) '(:lambda :flet :labels :ltv :defun :symtab
                                                    :catch :unwind-protect :progv))
                               (and (eq (car node) :lcall) (eq (fun-lam (second node)) callee)))
@@ -132,6 +135,8 @@ function gets at most.")
   (unless (gethash lam *inlined-into*)
     (setf (gethash lam *inlined-into*) t)
     (let* ((*inline-caller* lam) (lvar-lams (make-hash-table :test 'eq))
+           ;; a variable bound to a variable bound to a lambda -> the latter
+           (lvar-roots (make-hash-table :test 'eq))
            (fresh (make-hash-table :test 'eq))   ; the variables made by copying
            ;; (copies in a large function make its code larger, which V8
            ;; compiles when it first runs, more than faster)
@@ -156,7 +161,9 @@ function gets at most.")
                          ((and (eq (car (cdr b)) :lref) (not (lvar-mutated (car b)))
                                (not (lvar-special (car b))) (not (lvar-mutated (second (cdr b))))
                                (gethash (second (cdr b)) lvar-lams))
-                          (setf (gethash (car b) lvar-lams) (gethash (second (cdr b)) lvar-lams))))))
+                          (setf (gethash (car b) lvar-lams) (gethash (second (cdr b)) lvar-lams))
+                          (setf (gethash (car b) lvar-roots)
+                                (or (gethash (second (cdr b)) lvar-roots) (second (cdr b))))))))
                (expand (node callee args depth)
                  (let* ((map (make-hash-table :test 'eq))
                         (bindings (loop for p in (lam-req callee) for a in args
@@ -166,13 +173,45 @@ function gets at most.")
                          do (when (lvar-p new) (setf (gethash new fresh) t)))
                    (register bindings)
                    (walk body (1+ depth))
+                   (drop-aliases bindings depth)
                    (setf (car node) :let
                          (cdr node) (list bindings body))))
+               (single-use-p (v depth)
+                 ;; the only reference of a variable whose lambda is in no
+                 ;; other variable (copying it moves its code)
+                 (and (eql (lvar-refs v) 1) (or (= depth 0) (gethash v fresh))
+                      (let ((root (gethash v lvar-roots)))
+                        (or (null root) (and (eql (lvar-refs root) 1)
+                                             (or (= depth 0) (gethash root fresh)))))))
+               (drop-aliases (bindings depth)
+                 ;; a variable bound to a variable always bound to a lambda,
+                 ;; no longer referenced (its calls were copied): not bound,
+                 ;; so that the lambda, if it has no other references, makes
+                 ;; no closure
+                 (dolist (b bindings)
+                   (let ((init (cdr b)))
+                     (when (and (zerop (lvar-refs (car b))) (not (lvar-special (car b)))
+                                (eq (car init) :lref) (lam-p (gethash (second init) lvar-lams))
+                                (not (lvar-mutated (second init))))
+                       (when (or (= depth 0) (gethash (second init) fresh))
+                         (decf (lvar-refs (second init))))
+                       (setf (cdr b) '(:const nil))))))
                (walk (node depth)
                  (when (consp node)
                    ;; a variable always bound to a lambda of this function
                    (when (eq (car node) :let) (register (second node)))
+                   ;; a test of a variable always bound to a lambda is true:
+                   ;; (WHEN FN (FUNCALL FN)) of a copy given a lambda, whose
+                   ;; call is copied, then makes no closure (before the
+                   ;; call is reached: the call may then be the variable's
+                   ;; only reference)
+                   (when (and (eq (car node) :if) (consp (second node)) (eq (car (second node)) :lref)
+                              (lam-p (gethash (second (second node)) lvar-lams)))
+                     (when (or (= depth 0) (gethash (second (second node)) fresh))
+                       (decf (lvar-refs (second (second node)))))
+                     (setf (second node) '(:const t)))
                    (map-subnodes (lambda (n) (walk n depth)) node)
+                   (when (eq (car node) :let) (drop-aliases (second node) depth))
                    ;; FUNCALL of a variable bound to #'name: a call of NAME
                    (when (and (eq (car node) :funcall) (eq (car (second node)) :lref)
                               (consp (gethash (second (second node)) lvar-lams)))
@@ -186,7 +225,13 @@ function gets at most.")
                                                     (lam-p (gethash (second (second node)) lvar-lams))
                                                     (gethash (second (second node)) lvar-lams))))))
                        (when (and callee (= (length (lam-req callee)) (length (cddr node)))
-                                  (local-inlinable-p callee lam)
+                                  (local-inlinable-p callee lam
+                                                     (if (single-use-p (if (eq (car node) :lcall)
+                                                                           (fun-lvar (second node))
+                                                                           (second (second node)))
+                                                                       depth)
+                                                         *inline-max-single-use-nodes*
+                                                         *inline-max-local-nodes*))
                                   (afford callee nil))
                          ;; the reference replaced (references in copies still exist
                          ;; in their originals)
