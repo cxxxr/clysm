@@ -67,4 +67,28 @@
 (print (mapcon (lambda (x) (list (length x))) '(a b c)))
 (print (maplist #'reverse '(1 2 3)))
 (print (mapl (lambda (x) x) '(1 2)))
+;; EVERY, SOME, NOTANY, NOTEVERY of several sequences: lists (a loop at the
+;; call site), vectors and both, of different lengths, with #'name, a
+;; lambda with free variables, three sequences, and an exit from the lambda
+(let ((a '(1 2 3 4)) (b '(2 3 4 5 6)) (c #(1 1 1)) (d "abcd") (k 3))
+  (print (list (every #'< a b) (every #'< b a) (some #'> a c) (some (lambda (x y) (and (> x k) (+ x y))) a b)
+               (notany #'= a b) (notevery #'< a b) (every #'< a c) (every (lambda (x y z) (< x y (+ z 10))) a b c)
+               (some (lambda (x y z) (and (= (+ x y z) 9) (list x y z))) a b '(4 4 4 4))
+               (notany (lambda (x c) (char= c (code-char (+ x 96)))) a d)
+               (every #'char< "abc" d) (every #'< '() b) (some #'= a '())
+               (block nil (every (lambda (x y) (when (= x 3) (return (list :out x y))) t) a b))
+               (let ((n 0)) (list (every (lambda (x y) (incf n) (< x y)) a b) n))
+               (handler-case (every #'< 3 a) (type-error () :type-error))
+               (some #'+ '(1 2 3) '(4 5 6) '(7 8 9) '(10 11 12))
+               (every #'< #(1 2) #(2 3 0)) (every #'< #(1 2 3) #(2 3 0))
+               (some (lambda (x y) (and (= x y) (list x y))) (vector 1 2 3) (vector 0 2 3))
+               (notany #'eql #(a b) (make-array 2 :initial-contents '(b a) :fill-pointer 2))
+               (notevery #'eq #() #(1)))))
+;; MAP to NIL or a list of two sequences
+(let ((a '(1 2 3)) (v (vector 10 20 30 40)) (s "xyz") (n 0))
+  (print (list (map 'list #'+ a '(4 5)) (map 'list #'- v (vector 1 2 3 4 5)) (map 'list #'cons a s)
+               (map 'list (lambda (x y) (list x y n)) v a) (map nil (lambda (x y) (incf n (* x y))) a v) n
+               (block nil (map nil (lambda (x y) (when (= x 2) (return (list :out y)))) a a))
+               (map 'list #'list '() v) (map 'list #'+ (make-array 2 :initial-contents '(1 2) :fill-pointer 1) v))))
+(terpri)
 (terpri)

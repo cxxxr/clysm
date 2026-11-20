@@ -2183,6 +2183,11 @@ list result shares the tail after END."
              (do ((i off (+ i 1)) (e (+ off (length seq)))) ((>= i e) default)
                (declare (fixnum i e))
                (%quantifier-step mode (funcall (the function pred) (%vref d i))))))
+          ((and (null (cdr more)) (%simple-vector-p seq) (%simple-vector-p (car more)))
+           (let* ((s2 (car more)) (n (min (%svlength seq) (%svlength s2))))
+             (declare (fixnum n))
+             (dotimes (i n default)
+               (%quantifier-step mode (funcall (the function pred) (%svref seq i) (%svref s2 i))))))
           ((null (cdr more))
            (let* ((s2 (car more)) (n (min (%map-length seq) (%map-length s2))))
              (declare (fixnum n))
@@ -2191,6 +2196,17 @@ list result shares the tail after END."
                  (dotimes (i n default)
                    (%quantifier-step mode (funcall (the function pred) (%cursor-next l1 d1 o1 i)
                                                    (%cursor-next l2 d2 o2 i))))))))
+          ((null (cddr more))
+           (let* ((s2 (car more)) (s3 (cadr more))
+                  (n (min (%map-length seq) (%map-length s2) (%map-length s3))))
+             (declare (fixnum n))
+             (%cursor-bind (l1 d1 o1) seq
+               (%cursor-bind (l2 d2 o2) s2
+                 (%cursor-bind (l3 d3 o3) s3
+                   (dotimes (i n default)
+                     (%quantifier-step mode (funcall (the function pred) (%cursor-next l1 d1 o1 i)
+                                                     (%cursor-next l2 d2 o2 i)
+                                                     (%cursor-next l3 d3 o3 i)))))))))
           (t
            (let* ((seqs (cons seq more)) (n (%min-length seqs)) (cursors (copy-list seqs)))
              (dotimes (i n default)
@@ -2204,10 +2220,12 @@ list result shares the tail after END."
 ;;; With a function written in place (a lambda or #'name) and one
 ;;; sequence, MAP (to NIL or a list) and the quantifiers are loops at the
 ;;; call site: a lambda is inline (an exit out of it is a branch) and #'name a
-;;; direct call.  With several sequences, or MAP to a vector or a string, the
-;;; loop stays out of line (inline it made the caller bigger than it was
-;;; worth: V8 tiers a function up as a whole) and #'NAME is passed as a
-;;; lambda of known arity, which calls it directly.
+;;; direct call.  With two or three sequences (the quantifiers) or two (MAP to
+;;; NIL or a list), the call site has a loop for lists and, for two, one for
+;;; simple vectors; other sequences, more of them, or MAP to a vector or a
+;;; string take the function out of line (a whole generic loop inline made
+;;; the caller bigger than it was worth: V8 tiers a function up as a whole),
+;;; #'NAME passed as a lambda of known arity, which calls it directly.
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %seq-loop-expansion (seq element-var body)
     "A loop over the elements of SEQ (a variable) with ELEMENT-VAR bound to each."
@@ -2223,11 +2241,49 @@ list result shares the tail after END."
                    ((>= ,i ,e))
                  (declare (fixnum ,i ,e))
                  (let ((,element-var (%vref ,d ,i))) ,body)))))))
+  (defun %quantifier-lists-expansion (form mode negate pred seq more)
+    "With several sequences and a function written in place: a loop at the
+call site when they are all lists (the usual case), else the function out of
+line with the function as a closure (#'NAME as a lambda of known arity)."
+    (let* ((n (+ 1 (length more)))
+           (svars (loop repeat n collect (gensym "S")))
+           (lvars (loop repeat n collect (gensym "L")))
+           (f (gensym "F")) (v (gensym "V")) (b (gensym "B"))
+           (fn (or (%arity-lambda pred n) pred))
+           (i (gensym "I")) (e (gensym "E"))
+           (call (%literal-call pred f (loop for l in lvars collect `(car ,l)))))
+      (declare (ignore form))
+      (flet ((qstep (call)
+               (if (eql mode 0)
+                   `(unless ,call (return-from ,b nil))
+                   `(let ((,v ,call)) (when ,v (return-from ,b ,v))))))
+      (let ((test
+              `(let (,@(%function-binding f pred)
+                     ,@(loop for sv in svars for x in (cons seq more) collect (list sv x)))
+                 (cond ((and ,@(loop for sv in svars collect `(listp ,sv)))
+                        (block ,b
+                          (%do ,(loop for l in lvars for sv in svars collect `(,l ,sv (cdr ,l)))
+                               ((or ,@(loop for l in lvars collect `(%endp ,l))) ,(eql mode 0))
+                            ,(qstep call))))
+                       ;; two simple vectors
+                       ,@(when (= n 2)
+                           `(((and (%simple-vector-p ,(first svars)) (%simple-vector-p ,(second svars)))
+                              (let ((,e (min (%svlength ,(first svars)) (%svlength ,(second svars)))))
+                                (declare (fixnum ,e))
+                                (block ,b
+                                  (%do ((,i 0 (%fx+ ,i 1))) ((%fx>= ,i ,e) ,(eql mode 0))
+                                    (declare (fixnum ,i))
+                                    ,(qstep (%literal-call pred f (loop for sv in svars collect `(%svref ,sv ,i))))))))))
+                       (t (%quantify ,mode ,(if (%direct-function-form-p pred) fn f)
+                                     ,(car svars) (list ,@(cdr svars))))))))
+        (if negate `(not ,test) test)))))
   (defun %quantifier-expansion (form mode negate pred seq more)
     ;; MODE 0: EVERY, 1: SOME
     (if (or more (not (%literal-function-form-p pred)))
-        (let ((l (%arity-lambda pred (+ 1 (length more)))))
-          (if l `(,(car form) ,l ,seq ,@more) form))
+        (if (and more (<= (length more) 3) (%direct-function-form-p pred))
+            (%quantifier-lists-expansion form mode negate pred seq more)
+            (let ((l (%arity-lambda pred (+ 1 (length more)))))
+              (if l `(,(car form) ,l ,seq ,@more) form)))
         (let ((f (gensym "F")) (s (gensym "S")) (x (gensym "X")) (v (gensym "V")) (b (gensym "B")))
           (let ((loop `(let (,@(%function-binding f pred) (,s ,seq))
                          (block ,b
@@ -2243,9 +2299,39 @@ list result shares the tail after END."
 (define-compiler-macro notany (&whole form pred seq &rest more) (%quantifier-expansion form 1 t pred seq more))
 (define-compiler-macro notevery (&whole form pred seq &rest more) (%quantifier-expansion form 0 t pred seq more))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %map2-expansion (kind result-type f seq seq2)
+    "MAP to NIL or a list of the function F written in place over two
+sequences: a loop at the call site for two lists or two simple vectors,
+else MAP out of line."
+    (let ((s1 (gensym "S")) (s2 (gensym "S")) (l1 (gensym "L")) (l2 (gensym "L"))
+          (i (gensym "I")) (e (gensym "E")) (g (gensym "F"))
+          (head (gensym "HEAD")) (tail (gensym "TAIL")) (c (gensym "C")))
+      (flet ((body (a b)
+               (let ((call (%literal-call f nil (list a b))))
+                 (if (eq kind :none)
+                     call
+                     `(let ((,c (cons ,call nil))) (%setcdr ,tail ,c) (setq ,tail ,c))))))
+        `(let* ((,s1 ,seq) (,s2 ,seq2)
+                ,@(when (eq kind :list) `((,head (cons nil nil)) (,tail ,head))))
+           (cond ((and (listp ,s1) (listp ,s2))
+                  (%do ((,l1 ,s1 (cdr ,l1)) (,l2 ,s2 (cdr ,l2))) ((or (%endp ,l1) (%endp ,l2)))
+                    ,(body `(car ,l1) `(car ,l2)))
+                  ,(if (eq kind :none) nil `(cdr ,head)))
+                 ((and (%simple-vector-p ,s1) (%simple-vector-p ,s2))
+                  (let ((,e (min (%svlength ,s1) (%svlength ,s2))))
+                    (declare (fixnum ,e))
+                    (%do ((,i 0 (%fx+ ,i 1))) ((%fx>= ,i ,e))
+                      (declare (fixnum ,i))
+                      ,(body `(%svref ,s1 ,i) `(%svref ,s2 ,i))))
+                  ,(if (eq kind :none) nil `(cdr ,head)))
+                 (t (let ((,g ,(or (%arity-lambda f 2) f))) (map ,result-type ,g ,s1 ,s2)))))))))
+
 (define-compiler-macro map (&whole form result-type f seq &rest more)
   (let ((kind (cond ((member result-type '(nil 'nil) :test #'equal) :none)
                     ((equal result-type ''list) :list))))
+    (when (and kind more (null (cdr more)) (%direct-function-form-p f))
+      (return-from map (%map2-expansion kind result-type f seq (car more))))
     (if (or (null kind) more (not (%literal-function-form-p f)))
         (let ((l (%arity-lambda f (+ 1 (length more)))))
           (if l `(map ,result-type ,l ,seq ,@more) form))
@@ -2411,7 +2497,8 @@ least half the length (KTMP is TMP when KEYS is V)."
         (dotimes (i n r) (%set-schar r i (char s i))))))
 
 (defun %string-hash (s)
-  ;; FNV-1a 32 bit, reduced to 29 bits (must match the compiler)
+  ;; (the hash of :STRING-HASH, which calls this for a string that is not
+  ;; simple; must match the compiler's STRING-HASH)
   ;; a string with a fill pointer or displaced over a simple string (a
   ;; reader's buffer, a JSON object's key): its storage hashed in Wasm
   (when (%mdarray-p s)
@@ -2423,18 +2510,8 @@ least half the length (KTMP is TMP when KEYS is V)."
       (when (%simple-string-p d)
         (let ((off (%array-total-offset s)))
           (return-from %string-hash (%string-hash-range d off (%fx+ off (length s))))))))
-  (let ((h1 #x811C) (h0 #x9DC5))
-    ;; represent the 32-bit hash as two 16-bit halves to stay in fixnum range
-    (dotimes (i (length s))
-      (let ((c (char-code (char s i))))
-        (setq h0 (%fxlogxor h0 (%fxlogand c #xFFFF)))
-        (setq h1 (%fxlogxor h1 (%fxash-right c 16)))
-        ;; multiply (h1:h0) by 16777619 = 0x01000193 mod 2^32
-        (let* ((lo (%fx* h0 #x193))
-               (hi (%fx+ (%fx+ (%fx* h1 #x193) (%fxash-left (%fxlogand h0 #xFF) 8)) (%fxash-right lo 16))))
-          (setq h0 (%fxlogand lo #xFFFF))
-          (setq h1 (%fxlogand hi #xFFFF)))))
-    (%fxlogior (%fxash-left (%fxlogand h1 #x1FFF) 16) h0)))
+  ;; any other string: a simple copy, hashed in Wasm
+  (%string-hash (%copy-simple-string s)))
 
 (defun string (x)
   (cond ((stringp x) x)

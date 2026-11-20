@@ -1923,7 +1923,7 @@ constructor.
 The slow areas that `bench/holdout.lisp` first showed (4.5 at the time) were
 fixed as whole features, and each fix was measured on programs written for
 it afterwards; those are kept in further files: `bench/clos.lisp` (geometric mean 1.4, slowest `c-eql-dispatch`
-4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9), `bench/io.lisp` (1.2–1.3, was 1.46;
+4.0), `bench/control.lisp` (0.94, was 1.3; slowest `t-return-maphash` 4, `v-hb-nosignal` 2.9; `t-return-maphash` about 1 since 2026-11-21), `bench/io.lisp` (1.2–1.3, was 1.46;
 `i-file-roundtrip` 1.6–2.0, was 13; `i-print-numbers`, `i-parse-ints` 2.5), `bench/library.lisp`
 (1.04, was 1.12; `v-map-every` 2.8, `v-hash-iterate` 2.2, was 3.4),
 `bench/vectors.lisp` (0.43, algorithmic code over simple vectors without
@@ -1936,7 +1936,9 @@ makes its function's fixnum version be tried on entry,
 `bench/closures.lisp` (combinator-style code: continuation passing, parser
 combinators, an interpreter compiled to closures, generators, a pattern
 matcher; 1.27, was 1.50; slowest `k-memoize` 3.9, which is `equal` hashing
-of argument lists, and `k-labels-escape` 1.9).
+of argument lists, and `k-labels-escape` 1.9; 2026-11-21, after the changes
+under "Functional code" below: 1.11 against 1.28 for the build before in the
+same run, `k-memoize` 2.6 → 1.9).
 
 What is not as fast as intended, and why:
 
@@ -2278,6 +2280,47 @@ What makes the code fast:
   the entries for one and two arguments copied into the closure as well
   gained nothing on the first and 5% on the second, so they are not). `apply` through `entryA`:
   `k-funcall-args` 0.77, `k-higher-order` 0.86, `p-call-conv` 0.87.
+* **Functional code** (2026-11-21; `bench/functional.lisp`, combinator-style
+  code written for it: matchers of closures over lists with backtracking through
+  `(or (funcall k ...) ...)`, CPS walks, parser combinators returning two
+  values, generators, memoization with `equal` tables keyed by argument
+  lists, `compose`/`curry` pipelines, `every`/`some`/`mapcar` of lambdas
+  over several lists). At steady state most of these are within 0.7–1.3
+  times SBCL; the call of an unknown closure (a cast, two loads and a
+  `call_ref`, the test of a pending exit) was not where the time went.
+  What changed:
+  - The compiler macros that expand `mapcar`, `mapc`, `every`, `some`, `map`,
+    `maphash` and `member :test` into a loop at the call site put the lambda
+    inside a `do`: a `(return x)` in the lambda was taken by the loop's own
+    `block nil` (`(block nil (maphash (lambda (k v) (when ... (return v))) h)
+    0)` returned 0). They use `%do`, a `do` whose block has a name of its own.
+  - `every`, `some`, `notany`, `notevery` of a lambda or `#'name` over two
+    or three sequences are a loop at the call site when they are all lists,
+    and for two simple vectors (`%quantifier-lists-expansion`); `map` to
+    `nil` or a list over two sequences the same (`%map2-expansion`); any
+    other sequences call the function out of line, where three sequences no
+    longer make an argument list for `apply` at each element and two simple
+    vectors are read with `svref`. Two simple vectors through `every #'<`:
+    5.4 → 1.5 times SBCL; `some` of a lambda over three lists 2.6 → about
+    1; a probe of several of these 2.4 → 1.4.
+  - `eql` of a value whose type the inference knows holds no boxed number
+    (a fixnum, a character, a symbol, ...) is `ref.eq` (`ty-eq-comparable-p`),
+    not the helper: the key compared in `(maphash (lambda (k v) (when (eql k
+    key) ...)))`, `t-return-maphash` 2.25 → 1.0. `equal`'s inline test for
+    objects only `eq` makes equal is one `ref.test` of i31 and one of symbol.
+  - Strings of 8 characters or more are hashed (`sxhash`, `equal` tables,
+    symbol names: `string-hash` in the compiler, `string-hash-loop-code` in
+    `src/prims.lisp`) as four FNV-1a hashes of every fourth character,
+    combined at the end, instead of one chain of multiplications: twice as
+    fast on 50 characters (a million `sxhash` 34 → 18 ms, SBCL 31), the
+    distribution of buckets unchanged on sets of keys (numbered names,
+    English words, the names of every symbol). `k-memoize` (a key of two
+    strings of 50 characters and two fixnums) 145 → 110 ms.
+  Not changed, measured: tier-up. A combinator probe of 10 repetitions
+  (`p-rx-strings`: regular expressions compiled to closures at each match) is 3 times SBCL, 1.08 at 300 repetitions; with
+  `--no-liftoff` 2.2, with a lower tiering budget slower. Generators that
+  return `(values x t)` stay at about 2 times SBCL (a closure call that
+  writes a cell or vector slot and returns through the value buffer).
 * **Calls**: direct calls between the functions of a program; keyword
   arguments passed in fixed slots (in the image too, checked against the
   layout of the function's current definition); structure accessors inline.

@@ -47,11 +47,23 @@
 (defun fixnump* (x) (and (integerp x) (<= +most-negative-fixnum+ x +most-positive-fixnum+)))
 
 (defun string-hash (s)
-  "FNV-1a over code points, 29-bit result. Must match the runtime."
-  (let ((h 2166136261))
-    (loop for c across s
-          do (setf h (ldb (byte 32 0) (* (logxor h (char-code c)) 16777619))))
-    (ldb (byte 29 0) h)))
+  "FNV-1a over code points, from 8 characters on in four lanes of every
+fourth character combined at the end; 29-bit result.  Must match the
+runtime (:STRING-HASH in src/prims.lisp)."
+  (flet ((fnv (h c) (ldb (byte 32 0) (* (logxor h c) 16777619))))
+    (let* ((n (length s)) (h 2166136261) (i 0))
+      (if (< n 8)
+          (loop while (< i n) do (setf h (fnv h (char-code (char s i))) i (+ i 1)))
+          (let ((h1 (+ h 1)) (h2 (+ h 2)) (h3 (+ h 3)))
+            (loop while (<= (+ i 4) n)
+                  do (setf h (fnv h (char-code (char s i)))
+                           h1 (fnv h1 (char-code (char s (+ i 1))))
+                           h2 (fnv h2 (char-code (char s (+ i 2))))
+                           h3 (fnv h3 (char-code (char s (+ i 3))))
+                           i (+ i 4)))
+            (loop while (< i n) do (setf h (fnv h (char-code (char s i))) i (+ i 1)))
+            (setf h (fnv (fnv (fnv h h1) h2) h3))))
+      (ldb (byte 29 0) h))))
 
 (defun string-array-code (s)
   (append (loop for c across s collect `(:i32.const ,(char-code c)))

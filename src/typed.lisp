@@ -1272,9 +1272,15 @@ type, where the type of the value shows it holds), else NIL."
        (when (i64-arg-p a)
          `(,@(cg-rep a :i64) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.ge_u)))
       ((eq eql)
-       (when (and (= (length args) 2) (fx-arg-p a) (fx-arg-p b)
-                  (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
-         `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq)))
+       (when (= (length args) 2)
+         (cond ((and (fx-arg-p a) (fx-arg-p b)
+                     (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
+                `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq))
+               ;; EQL of a value that is no boxed number (a fixnum, a
+               ;; character, a symbol, a cons, ...) is EQ, without the
+               ;; helper (a key compared in MAPHASH, (eql x 'sym))
+               ((and (eq name 'eql) (or (ty-eq-comparable-p (node-ty a)) (ty-eq-comparable-p (node-ty b))))
+                `(,@(cg a) ,@(cg b) :ref.eq)))))
       (t (numeric-test-code node)))))
 
 (defun f64-evident-p (node)

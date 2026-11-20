@@ -98,6 +98,14 @@
   (and (ty-only-p ty +k-int+) (ty-lo ty) (ty-hi ty) (>= (ty-lo ty) lo) (<= (ty-hi ty) hi)))
 
 (defun ty-fixnum-p (ty) (ty-in-range-p ty +most-negative-fixnum+ +most-positive-fixnum+))
+(defun ty-eq-comparable-p (ty)
+  "EQL of a value of TY and anything is EQ: TY holds no number that is
+boxed (an integer only within the fixnums)."
+  (and (not (ty-bottom-p ty))
+       (zerop (logand (ty-bits ty) (logandc2 +k-number+ +k-int+)))
+       (or (not (ty-int-p ty))
+           (and (ty-lo ty) (ty-hi ty)
+                (>= (ty-lo ty) +most-negative-fixnum+) (<= (ty-hi ty) +most-positive-fixnum+)))))
 (defun ty-int32-p (ty) (ty-in-range-p ty (- (expt 2 31)) (1- (expt 2 31))))
 (defun ty-int64-p (ty) (ty-in-range-p ty (- (expt 2 63)) (1- (expt 2 63))))
 (defun ty-double-p (ty) (ty-only-p ty +k-double+))

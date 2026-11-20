@@ -36,7 +36,7 @@
       (let ((a (gensym "A")) (b (gensym "B")))
         `(let ((,a ,(first args)) (,b ,(second args)))
            (cond ((eq ,a ,b) t)
-                 ((or (symbolp ,a) (fixnump ,a) (characterp ,a)) nil)
+                 ((%immediate-or-symbol-p ,a) nil)
                  (t (%equal-2 ,a ,b)))))
       form))
 
