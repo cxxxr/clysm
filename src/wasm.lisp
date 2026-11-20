@@ -11,7 +11,10 @@
 ;;; ------------------------------------------------------------
 
 (defun make-buf () (make-array 64 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
-(declaim (inline emit-byte))
+;; (in Clysm a call: the copies of VECTOR-PUSH-EXTEND's paths for every kind
+;; of vector, a hundred in EMIT-INSTR, made the compiler's code larger, which
+;; V8 compiles when it first runs)
+#-clysm (declaim (inline emit-byte))
 (defun emit-byte (buf b) (vector-push-extend (ldb (byte 8 0) b) buf))
 (defun emit-bytes (buf bytes)
   ;; (at once: the bodies of functions and sections are copied into the module)
