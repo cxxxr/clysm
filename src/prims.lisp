@@ -512,6 +512,23 @@ constant unless the product cannot signal."
 (defprim functionp (x) :test `(,@x (:ref.test :closure)))
 (defprim characterp (x) :test `(,@x (:call :characterp)))
 (defprim clysm-sys::fixnump (x) :test `(,@x (:call :fixnump)))
+(defun s32-const (k)
+  "K, the operand of an i32.const (a constant may be written as unsigned), as a signed integer."
+  (and (integerp k) (if (>= k (expt 2 31)) (- k (expt 2 32)) k)))
+;; (sys:%signal-type-error datum type): signal the TYPE-ERROR (out of line: the
+;; code of the function that calls it needs nothing for the exits it may make)
+(defprim clysm-sys::%signal-type-error (x type) :value
+  `(,@x ,@type ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :unreachable))
+;; (sys:%fixnum-in-range-p x lo hi), LO and HI constant fixnums: X is a fixnum
+;; from LO to HI (a character, an i31 above every fixnum, is not)
+(defprim clysm-sys::%fixnum-in-range-p (x lo hi) :test
+  (let ((v (new-local)) (l (s32-const (struct-iref-index lo))) (h (s32-const (struct-iref-index hi))))
+    (if (and l h)
+        `(,@x (:local.tee ,v) (:ref.test :i31)
+          (:if nil :i32 ((:local.get ,v) (:ref.cast! :i31) :i31.get_s (:i32.const ,l) :i32.sub
+                         (:i32.const ,(- h l)) :i32.le_u)
+               ((:i32.const 0))))
+        `(,@x (:call :fixnump) ,@lo :drop ,@hi :drop))))
 (defprim clysm-sys::%bignump (x) :test `(,@x (:ref.test :bignum)))
 (defprim clysm-sys::%ratiop (x) :test `(,@x (:ref.test :ratio)))
 (defprim clysm-sys::%single-float-p (x) :test `(,@x (:ref.test :single)))
@@ -521,6 +538,13 @@ constant unless the product cannot signal."
 (defprim clysm-sys::%complex-s-p (x) :test `(,@x (:ref.test :complex-s)))
 (defprim clysm-sys::%simple-string-p (x) :test `(,@x (:ref.test :string)))
 (defprim clysm-sys::%simple-vector-p (x) :test `(,@x (:ref.test :vector)))
+;; the predicates that are a type test (runtime/seq.lisp, numbers.lisp define the functions)
+(defprim simple-vector-p (x) :test `(,@x (:ref.test :vector)))
+(defprim simple-bit-vector-p (x) :test `(,@x (:ref.test :bits)))
+(defprim clysm-sys::double-float-p (x) :test `(,@x (:ref.test :double)))
+(defprim clysm-sys::single-float-p (x) :test `(,@x (:ref.test :single)))
+(defprim clysm-sys::ratiop (x) :test `(,@x (:ref.test :ratio)))
+(defprim clysm-sys::bignump (x) :test `(,@x (:ref.test :bignum)))
 (defprim clysm-sys::%bytes-p (x) :test `(,@x (:ref.test :bytes)))
 (defprim clysm-sys::%bits-p (x) :test `(,@x (:ref.test :bits)))
 (defprim clysm-sys::%f64vec-p (x) :test `(,@x (:ref.test :f64vec)))

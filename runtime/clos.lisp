@@ -736,6 +736,7 @@ spread arguments that are not just its required ones, else NIL."
                         ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
                               (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
                          7)
+                        ((and (functionp x) (not (%instancep (%closure-name x)))) 12)
                         (t -1))))
            (declare (fixnum i))
            (or (and (%fx>= i 0) (%svref *builtin-classes* i)) (class-of x))))))
