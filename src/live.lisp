@@ -48,6 +48,7 @@
          (*lvar-lams* (make-hash-table :test 'eq))
          (*spec-cloneable* (make-hash-table :test 'eq))
          (*spec-clones* (make-hash-table :test 'equal))
+         (*raw-clones* (make-hash-table :test 'equal))
          (*catch-clones* (make-hash-table :test 'equal))
          (*macros-ready* t))
      ,@body))

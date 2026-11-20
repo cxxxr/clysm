@@ -937,7 +937,7 @@ forms ending in one."
                    ((gethash sym *ti-rules*)
                     (if (some #'ty-bottom-p tys) *ty-bottom* (funcall (gethash sym *ti-rules*) tys)))
                    (t (let ((lam (known-global-lam sym)))
-                        (cond (lam (lam-return-ty lam))
+                        (cond (lam (or (raw-call-return-ty lam tys) (lam-return-ty lam)))
                               ;; in the image: the constructor of a structure defined
                               ;; before (registered by DEFSTRUCT, lib/live-image.lisp)
                               ((and *live-mode* (gethash sym *struct-constructors*)

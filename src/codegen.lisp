@@ -1063,6 +1063,8 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
   (cg-global-call-1 sym args mv tail))
 
 (defun cg-global-call-1 (sym args mv tail)
+  (let ((raw (raw-call-code (known-global-lam sym) args mv tail)))
+    (when raw (return-from cg-global-call-1 raw)))
   (let ((lam (known-global-lam sym))
         (arg-codes (mapcar #'cg args)))
     ;; in a catch clone, a tail call under no CATCH or UNWIND-PROTECT may call
@@ -2044,11 +2046,13 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
   (loop while *pending-lams*
         do (let* ((lam (pop *pending-lams*)) (*catchers* nil)
                   (*func-source* (let ((l (cond ((not (consp lam)) lam)
-                                                ((eq (car lam) :spec) (second lam))
+                                                ((member (car lam) '(:spec :raw)) (second lam))
                                                 (t (car lam)))))
                                    (and (lam-p l) (lam-source l)))))
              (cond ((and (consp lam) (eq (car lam) :spec))
                     (compile-spec-clone (second lam) (third lam) (fourth lam)))
+                   ((and (consp lam) (eq (car lam) :raw))
+                    (compile-raw-clone (second lam) (third lam) (fourth lam)))
                    ((consp lam)
                     (compile-catch-clone (car lam) (cdr lam)))
                    (t
@@ -2579,3 +2583,224 @@ its last parameter; the entries for few arguments make the list."
                                  ,@(loop for i from 1 to k collect `(:local.get ,i))
                                  ,@(loop repeat (- size k) collect '(:ref.null :eq))
                                  (:return_call (:kmain ,(lam-id lam)))))))))
+
+;;; ------------------------------------------------------------
+;;; Raw clones: a known function called with fixnum or double arguments
+;;; (SPEC-SIGNATURE) is called in a copy that takes those arguments as i32 /
+;;; f64 parameters, (:RAW id sig); when its result is a fixnum (a double) on
+;;; every path and it cannot return with an exit pending, the copy returns it
+;;; as an i32 (an f64).  Such a copy's only tail calls (it would not keep
+;;; others) are calls of itself with arguments of the same classes, which
+;;; are return_calls of itself.  A call whose value is used as an i32 / f64
+;;; (CG-REP) takes the raw result; a call in a tail position of a function
+;;; returning an eqref goes to the copy only when that returns an eqref.
+;;; ------------------------------------------------------------
+
+(defvar *raw-clones* (make-hash-table :test 'equal) "(lam-id . sig) -> the result rep of its raw clone")
+(defvar *raw-tail-calls* nil "in a raw clone returning an i32 / f64: its tail calls of itself")
+
+(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) ((nil) nil)))
+
+(defun raw-clone-name (lam sig rrep)
+  (let ((key (list (lam-id lam) sig :raw)))
+    (unless (gethash key *spec-clones*)
+      (setf (gethash key *spec-clones*) t)
+      (push (list :raw lam sig rrep) *pending-lams*))
+    (list :raw (lam-id lam) sig)))
+
+(defun raw-func-type (sig rrep)
+  (let ((key (list* :rawfn rrep sig)))
+    (unless (gethash key *extra-types*)
+      (setf (gethash key *extra-types*) t)
+      (add-type *m* key `(:func ((:ref :closure) ,@(mapcar (lambda (c) (or (class-rep c) :eqref)) sig))
+                                (,rrep))))
+    key))
+
+(defmacro with-clone-inference ((lam sig) &body body)
+  "Run BODY with LAM's types inferred for arguments of the classes SIG (as
+COMPILE-SPEC-CLONE does); the types before are restored after."
+  (let ((lvars (gensym "LVARS")) (saved (gensym "SAVED")) (l (gensym "LAM")))
+    `(let* ((,l ,lam)
+            (,lvars (lam-all-lvars ,l))
+            (,saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) ,lvars)))
+       (dolist (lv ,lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))
+       (unwind-protect
+            (let ((*ti-shared* (cons *node-types* *ti-analyzed*))
+                  (*node-types* (make-hash-table :test 'eq))
+                  (*ti-analyzed* (make-hash-table :test 'eq)))
+              (infer-lam ,l (mapcar #'class-ty ,sig))
+              ,@body)
+         (loop for lv in ,lvars for (ty . rep) in ,saved
+               do (setf (lvar-type lv) ty (lvar-rep lv) rep))))))
+
+(defun raw-tail-self-calls (lam sig)
+  "With LAM's types inferred for SIG: the calls of LAM itself in tail
+positions of its body, or :FAIL when a tail position holds another call (or
+one with arguments of other classes), or a form that a raw result cannot
+leave through (a binding of a special variable, a CATCH...).  Second value:
+the other forms in tail positions (whose values are the function's)."
+  (let ((found nil) (leaves nil))
+    (labels ((fail () (return-from raw-tail-self-calls :fail))
+             (forbidden (n)
+               (when (member (car n) '(:catch :unwind-protect :progv :throw)) (fail))
+               (map-subnodes #'forbidden n))
+             (returns-to (blk n values)
+               (when (and (eq (car n) :return-from) (eq (second n) blk))
+                 (when values (push (third n) leaves))
+                 (tail (third n) nil))
+               (map-subnodes (lambda (x) (returns-to blk x values)) n))
+             (no-fall-p (n)
+               ;; N never ends normally (a loop's TAGBODY left by RETURN-FROM)
+               (case (car n)
+                 ((:go :return-from :throw) t)
+                 (:progn (no-fall-p (car (last n))))
+                 ((:let :the) (no-fall-p (third n)))
+                 (:if (and (no-fall-p (third n)) (no-fall-p (fourth n))))
+                 (:tagbody (let ((last-seg (car (last (third n)))))
+                             (and (cdr last-seg) (no-fall-p (car (last last-seg))))))))
+             ;; TOP: a tail position of the function (else of a form that
+             ;; CG-REP compiles as a whole, where a call is not a tail call)
+             (tail (n top)
+               (case (car n)
+                 (:if (tail (third n) top) (tail (fourth n) top))
+                 (:progn (tail (car (last n)) top))
+                 (:let (when (some (lambda (b) (lvar-special (car b))) (second n)) (fail))
+                  (tail (third n) top))
+                 (:the (tail (third n) top))
+                 (:call (if (and top (eq (known-global-lam (second n)) lam)
+                                 (= (length (cddr n)) (length sig))
+                                 (equal (mapcar #'arg-class (cddr n)) sig))
+                            (push n found)
+                            (fail)))
+                 ((:lcall :funcall :mvcall :apply) (fail))
+                 (:block (let ((by-returns (and top (no-fall-p (third n)))))
+                           ;; (its values: those of its RETURN-FROMs when its body does not end)
+                           (when (and top (not by-returns)) (push n leaves))
+                           (tail (third n) nil)
+                           (returns-to (second n) (third n) by-returns)))
+                 (:mvbind (when top (push n leaves)) (tail (fourth n) nil))
+                 ((:flet :labels) (when top (push n leaves)) (tail (third n) nil))
+                 (t (when top (push n leaves))))))
+      (forbidden (lam-body lam))
+      (tail (lam-body lam) t)
+      (values found leaves))))
+
+(defun raw-clone-rrep (lam sig)
+  "The result rep of LAM's raw clone for SIG: :I32, :F64 or :EQREF."
+  (let* ((key (cons (lam-id lam) sig)) (v (gethash key *raw-clones*)))
+    (cond
+      ((eq v :in-progress) :eqref)        ; (a call of it in its own analysis)
+      (v v)
+      (t
+        (setf (gethash key *raw-clones*) :in-progress)
+        (setf (gethash key *raw-clones*)
+              (progn
+                (inline-calls lam)
+                (refine-nonlocal lam)
+                (if (lam-may-exit-p lam)
+                    :eqref
+                    (with-clone-inference (lam sig)
+                      ;; (the values of its tail calls of itself are its values)
+                      (multiple-value-bind (calls leaves) (raw-tail-self-calls lam sig)
+                        (cond ((or (eq calls :fail) (null leaves)) :eqref)
+                              ((every (lambda (n) (ty-fixnum-p (node-ty n))) leaves) :i32)
+                              ((every (lambda (n) (ty-double-p (node-ty n))) leaves) :f64)
+                              (t :eqref)))))))))))
+
+(defun raw-call-return-ty (lam tys)
+  "During type inference: the type of the value of a call of the known
+function LAM with arguments of the types TYS when its raw clone for them
+returns a fixnum or a double (RAW-CLONE-RREP), else NIL."
+  (when (and (not (eq lam *ti-lam*)) (not (member lam *ti-in-progress*))
+             (not *catching-tag*) (= (length tys) (length (lam-req lam)))
+             (spec-cloneable-p lam))
+    (let ((sig (mapcar (lambda (ty) (cond ((ty-fixnum-p ty) :fixnum) ((ty-double-p ty) :double))) tys)))
+      (when (some #'identity sig)
+        (let ((*ti-in-progress* (cons *ti-lam* *ti-in-progress*)))
+          (case (raw-clone-rrep lam sig)
+            (:i32 *ty-fixnum*)
+            (:f64 (mkty +k-double+))))))))
+
+(defun raw-call-sig (lam args)
+  (and lam (not *catching-tag*) (lam-accepts-p lam (length args))
+       (spec-signature lam args)))
+
+(defun raw-args-code (sig args)
+  (loop for class in sig for a in args
+        append (if (class-rep class) (cg-rep a (class-rep class)) (cg a))))
+
+(defun raw-call-code (lam args mv tail)
+  "A call of LAM's raw clone leaving an eqref (CG-GLOBAL-CALL), or NIL."
+  (let ((sig (raw-call-sig lam args)))
+    (when sig
+      (let ((rrep (raw-clone-rrep lam sig)))
+        ;; (a tail call returns what the caller returns: an eqref; a raw
+        ;; result is the first value only)
+        (unless (and (or tail mv) (not (eq rrep :eqref)))
+          (ensure-lam-compiled lam)
+          (let ((call `((:global.get ,(static-closure-global lam)) ,@(raw-args-code sig args)
+                        (,(if tail :return_call :call) ,(raw-clone-name lam sig rrep)))))
+            (if (eq rrep :eqref)
+                (direct-call-checked lam tail call)
+                `(,@call ,@(box-rep-code rrep)))))))))
+
+(defun raw-call-rep-code (node rep)
+  "NODE, a :CALL whose value is wanted in REP (:I32, :I64, :F64): a call of
+the raw clone returning that, or NIL."
+  (let* ((lam (known-global-lam (second node))) (args (cddr node))
+         (sig (raw-call-sig lam args)))
+    (when sig
+      (let ((rrep (raw-clone-rrep lam sig)))
+        (when (or (eq rrep rep) (and (eq rrep :i32) (eq rep :i64)))
+          (ensure-lam-compiled lam)
+          (let ((self-tail (and *raw-tail-calls* (gethash node *raw-tail-calls*) (eq rrep rep))))
+            `((:global.get ,(static-closure-global lam)) ,@(raw-args-code sig args)
+              (,(if self-tail :return_call :call) ,(raw-clone-name lam sig rrep))
+              ,@(when (and (eq rrep :i32) (eq rep :i64)) '(:i64.extend_i32_s)))))))))
+
+(defun raw-param-setup-code (lv local-idx class)
+  "LV was passed in LOCAL-IDX as the raw value of CLASS (or an eqref)."
+  (let ((r (class-rep class)))
+    (cond ((null r) (values (param-setup-code lv local-idx)))
+          ((eq (lvar-rep lv) r)
+           (let ((idx (new-rep-local r)))
+             (set-loc lv (cons :local idx))
+             `((:local.get ,local-idx) ,@(rep-local-set-code lv idx))))
+          ((lvar-rep lv)
+           (let ((idx (new-rep-local (lvar-rep lv))))
+             (set-loc lv (cons :local idx))
+             `((:local.get ,local-idx) ,@(box-rep-code r) ,@(unbox-rep-code (lvar-rep lv) (lvar-type lv))
+               ,@(rep-local-set-code lv idx))))
+          (t
+           (let ((idx (new-local)))
+             (set-loc lv (cons :local idx))
+             `((:local.get ,local-idx) ,@(box-rep-code r) (:local.set ,idx)))))))
+
+(defun compile-raw-clone (lam sig rrep)
+  (inline-calls lam)
+  (refine-nonlocal lam)
+  (with-clone-inference (lam sig)
+    (let* ((n (length (lam-req lam)))
+           (*catching-tag* nil)
+           (*fs* (make-fstate :lam lam :nparams (1+ n)))
+           (*dyn-depth* 0) (*uwp-depth* 0) (*uwp-frames* nil) (*fexit* (make-fexit lam nil)) (*catchers* nil)
+           (*raw-tail-calls* (unless (eq rrep :eqref)
+                               (let ((h (make-hash-table :test 'eq)) (calls (raw-tail-self-calls lam sig)))
+                                 (when (eq calls :fail)
+                                   (error "raw clone of ~S: its tail calls changed" (lam-name lam)))
+                                 (dolist (c calls h) (setf (gethash c h) t)))))
+           (prologue (setup-free-vars lam)))
+      (loop for lv in (lam-req lam) for i from 1 for class in sig
+            do (setf prologue (append prologue (raw-param-setup-code lv i class))))
+      (let ((body (if (eq rrep :eqref)
+                      (wrap-fexit (finish-body lam prologue nil))
+                      (let ((code `(,@(poll-code) ,@prologue ,@(cg-rep (lam-body lam) rrep))))
+                        (destructuring-bind (blk tag val ctx) *fexit*
+                          (declare (ignore tag val))
+                          (when (or (pctx-used ctx) (tree-member `(:br ,(blk-label blk)) code))
+                            (error "raw clone of ~S: an exit may be pending" (lam-name lam))))
+                        code))))
+        (add-func *m* (list :raw (lam-id lam) sig) (raw-func-type sig rrep)
+                  :locals (reverse (fstate-locals *fs*)) :body body
+                  :display (format nil "~A/raw~{,~(~A~)~}~@[->~(~A~)~]" (lam-display-name lam)
+                                   (mapcar (lambda (c) (or c "t")) sig) (unless (eq rrep :eqref) rrep)))))))

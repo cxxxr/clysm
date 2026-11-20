@@ -131,6 +131,25 @@ list for its `entryA` when the function has changed (`live-apply-code`). `funcal
 function tests at the call site for a closure, then for a symbol whose
 function cell is set; only other objects go to the `:coerce-function` helper.
 
+Raw clones (`raw-call-code` in `src/codegen.lisp`): a direct call of a
+known function of required parameters with arguments known to be fixnums
+or doubles (`spec-signature`) calls a copy of it, `(:raw id sig)`, that
+takes those arguments as `i32` / `f64` parameters (the others as eqrefs).
+When that copy cannot return with an exit pending (`lam-may-exit-p`), and
+the values of its tail positions, its tail calls of itself with arguments
+of the same classes left aside, are all fixnums (or all doubles), with its
+types inferred for those arguments (`raw-clone-rrep`), it returns an `i32`
+(an `f64`) and sets no `$mv-count`, and those tail calls of itself are
+`return_call`s of itself. Any other call in a tail position of such a copy
+would not stay a tail call, so a function with one keeps an eqref result
+(its copy for raw arguments is then a `return_call` target like the main
+function). A call of a copy with a raw result is made only where one value
+is wanted and not in a tail position of a function returning an eqref;
+type inference gives such a call the fixnum or double type
+(`raw-call-return-ty`), so the arithmetic around it stays unboxed. `tak`'s
+recursive calls are `local.get`s, an `i32.sub` and a `call`, with no
+`ref.i31`, `i31.get_s` or store of `$mv-count`.
+
 Closure conversion: the values of free variables are fields of the closure
 itself, in a final subtype of `$closure` per number of them (`:envclo1` …
 `:envclo8`, `envclo-type` in `src/layout.lisp`; more than eight are in a
@@ -2656,10 +2675,32 @@ image (`bench/apps.lisp`, the two builds interleaved, best of five): 1.01;
 `tools/bench-libs.sh` 1.15 against SBCL with both builds.
 
 What remains of the list above: the structure accessors (1) and
-two-dimensional arrays (5) are separate work; `d-tak` and `d-triangle`
-are calls (a fixnum is passed and returned as an i31 `eqref`, the
-result count set in `$mv-count`); the floating-point test of a value
-where it leaves the f64 world at safety 1 (2) was not tried.
+two-dimensional arrays (5) are separate work. Calls of known functions
+with fixnum or double arguments now pass and return them raw ("Raw
+clones" under Calling convention), interleaved against the build before
+(best of three): `d-tak` 387 → 311 ms, `d-triangle` 276 → 262, `d-nbody`
+469 → 430 (`declared.lisp` 0.98 in geometric mean; at `(safety 1)` 0.99,
+`d-tak` 0.92); `b-fib` 28 → 21, `b-tak` 0.92 (`suite` 0.98), `closures`
+0.97 (`k-church` 0.83), `gabriel` 0.99, `holdout`, `programs` 1.00,
+`arith` 1.01.
+
+Testing a float for an overflow only where it leaves an arithmetic tree
+(2) was tried and measured (2026-11-21), and is not kept. In a tree of
+`+ - * /` an infinity or a NaN goes on to the root (an infinity divisor
+gives a zero), so the operations below the root need no test of being
+finite, only `*` and `/` one of a zero that may be an underflow, and the
+generic operations compute the whole tree again when the root's test fails
+(the speculative and fused trees of `src/prims.lisp` already do; the trees
+of declared doubles of `f64-binop-code` were given the same, with the
+leaves, which must then have no side effects, evaluated first). Interleaved
+runs against the build without it: with the zero test cheaper than the
+exponent test on inner products, `d-matmul` at `(safety 1)` 0.92 but
+`d-mandelbrot` 1.08 (1.51 before the tests had branch hints); with the
+exponent test kept on products, `d-mandelbrot` 0.95, `d-matmul` 1.01; for
+the undeclared trees alone `arith` 0.99, `suite` 1.01, `holdout` 1.00. The
+tests are a few instructions beside a branch the engine predicts; the
+values are not where the time goes. `tests/cases/float-traps-trees.lisp`
+keeps the overflows of such trees tested.
 
 ### Size and start-up
 

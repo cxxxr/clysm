@@ -30,7 +30,8 @@ bits; any other value is an i31 (no test of overflow or of the type)."
     (if (and (ty-int64-p ty) (member (car node) '(:prim :call))
              (member (node-op-name node) *i64-arith-ops*))
         `(,@(cg-rep node :i64) :i32.wrap_i64)
-        `(,@(cg node) (:ref.cast! :i31) :i31.get_s))))
+        (or (and (eq (car node) :call) (raw-call-rep-code node :i32))
+            `(,@(cg node) (:ref.cast! :i31) :i31.get_s)))))
 
 (defun cg-rep-1 (node rep)
   ;; a reference representation: only variables are held in one
@@ -82,7 +83,9 @@ bits; any other value is an i31 (no test of overflow or of the type)."
                        (not (block-returned-to-p (second node) (third node))))
               (cg-rep (third node) rep)))
     ((:prim :call)
-     (or (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
+     (or (and (eq (car node) :call) (member rep '(:i32 :i64 :f64))
+              (raw-call-rep-code node rep))
+         (and (member (node-op-name node) '(clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2))
               (typed-elt-code node rep))
          (and (eq (node-op-name node) 'clysm-sys::%struct-tref) (eq rep :f64)
               (tstruct-ref-code node :f64))
