@@ -725,9 +725,16 @@ spread arguments that are not just its required ones, else NIL."
            ((and x (symbolp x))
             (or (%svref *builtin-classes* (if (eq (%symbol-package x) *keyword-package*) 3 4))
                 (class-of x)))
-           ;; (a closure that is not a generic function, a simple string:
-           ;; CLASS-OF's cache without its tests of other representations)
+           ;; the other objects that generic functions of built-in classes
+           ;; (printers, encoders) are given most: no call of CLASS-OF, which
+           ;; is in another module for a function compiled in the image
            ((%simple-string-p x) (or (%svref *builtin-classes* 6) (class-of x)))
+           ((consp x) (or (%svref *builtin-classes* 1) (class-of x)))
+           ((%double-float-p x) (or (%svref *builtin-classes* 15) (class-of x)))
+           ;; a string with a fill pointer over a simple string
+           ((and (%mdarray-p x) (%simple-string-p (%mdarray-data x))
+                 (let ((d (%mdarray-dims x))) (and (consp d) (null (cdr d)))))
+            (or (%svref *builtin-classes* 7) (class-of x)))
            ((and (functionp x) (not (%instancep (%closure-name x))))
             (or (%svref *builtin-classes* 12) (class-of x)))
            (t (class-of x)))))

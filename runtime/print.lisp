@@ -182,6 +182,12 @@ temporaries-bindings special-bindings stream-form), else NIL."
   (cond ((%fixnum-decimal-string-p object) (%fixnum-decimal-string object))
         ((and (%simple-string-p object) (not (and *print-pretty* (%ppd-user-entries-p))))
          (%simple-substring object 0 (%string-length object)))
+        ;; a string with a fill pointer over a simple string (a parser's
+        ;; buffer, a key of a JSON object)
+        ((and (stringp object) (%simple-string-p (%mdarray-data object))
+              (not (and *print-pretty* (%ppd-user-entries-p))))
+         (let ((off (%mdarray-offset object)))
+           (%simple-substring (%mdarray-data object) off (+ off (length object)))))
         (t (let ((s (%scratch-string-stream)))
              (princ object s)
              (%scratch-string-result s)))))
@@ -495,8 +501,29 @@ is too large for the buffer (it has more than 62 bits)."
                  (setq x q)))))
           (t nil))))
 
+(defun %string-out-decimal (s n)
+  "Write the fixnum N, which is not MOST-NEGATIVE-FIXNUM, in decimal into the
+buffer of the :STRING-OUT stream S."
+  (declare (fixnum n))
+  (let* ((m (if (%fx< n 0) (%fx- 0 n) n))
+         (len (do ((k (%fxtruncate m 10) (%fxtruncate k 10)) (c 1 (%fx+ c 1))) ((eql k 0) c)
+                (declare (fixnum k c))))
+         (len (if (%fx< n 0) (%fx+ len 1) len))
+         (fill (%instance-ref s +stream-index-slot+))
+         (buf (%instance-ref s +stream-buffer-slot+)))
+    (declare (fixnum m len fill))
+    (when (%fx> (%fx+ fill len) (%string-length buf)) (setq buf (%string-out-grow s len)))
+    (when (%fx< n 0) (%set-schar buf fill #\-))
+    (%fixnum-digits m 10 buf (%fx+ fill len))
+    (%set-instance-ref s +stream-index-slot+ (%fx+ fill len))
+    n))
+
 (defun %write-integer-digits (n base stream)
   "Write the integer N in BASE (with a minus sign when negative)."
+  ;; a decimal fixnum into a string output stream: its digits are put in
+  ;; the stream's buffer at once (PRINC, FORMAT's ~D)
+  (when (and (eql base 10) (fixnump n) (not (eql n most-negative-fixnum)) (%string-out-p stream))
+    (return-from %write-integer-digits (%string-out-decimal stream n)))
   (let* ((buf *%digit-buffer*) (i (%integer-digits n base buf)))
     (if i
         (progn

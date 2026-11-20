@@ -130,6 +130,23 @@
 (%define-char-comparison char-greaterp %char-greaterp-2 > t)
 (%define-char-comparison char-not-greaterp %char-not-greaterp-2 <= t)
 (%define-char-comparison char-not-lessp %char-not-lessp-2 >= t)
+;; CHAR-EQUAL of two ASCII characters compares their codes inline (the
+;; separators of a date, the letters of a keyword); other characters, and
+;; other objects, which are an error, go to the function
+(define-compiler-macro char-equal (&whole form &rest args)
+  (if (and (consp args) (consp (cdr args)) (null (cddr args)))
+      (let ((a (gensym "C")) (b (gensym "C")) (ca (gensym "CODE")) (cb (gensym "CODE")))
+        `(let ((,a ,(car args)) (,b ,(cadr args)))
+           (if (and (characterp ,a) (characterp ,b))
+               (let ((,ca (%char-code ,a)) (,cb (%char-code ,b)))
+                 (declare (fixnum ,ca ,cb))
+                 (cond ((eql ,ca ,cb) t)
+                       ((%fx< (%fxlogior ,ca ,cb) 128)
+                        (and (eql (%fxlogxor ,ca ,cb) 32)
+                             (let ((u (%fxlogior ,ca 32))) (and (%fx>= u 97) (%fx<= u 122)))))
+                       (t (%char-equal-2 ,a ,b))))
+               (%char-equal-2 ,a ,b))))
+      form))
 
 ;;; CHAR-UPCASE and CHAR-DOWNCASE: ASCII inline, the other characters by a call
 (defun %char-upcase-1 (c) (char-upcase c))
@@ -261,13 +278,21 @@
   (or (%simple-array-p x) (and (%mdarray-p x) (%mdarray-simple-p x))))
 (defun simple-vector-p (x) (%simple-vector-p x))
 (defun vectorp (x) (or (%simple-array-p x) (%header-vector-p x)))
+;;; (the storage of a header is read at once when it is simple, as for the
+;;; strings with a fill pointer that readers and JSON parsers make: no call)
 (defun stringp (x)
-  (or (%simple-string-p x) (and (%header-vector-p x) (%simple-string-p (%array-storage x)))))
+  (or (%simple-string-p x)
+      (and (%header-vector-p x)
+           (let ((d (%mdarray-data x)))
+             (or (%simple-string-p d) (and (%mdarray-p d) (%simple-string-p (%array-storage d))))))))
 (defun simple-string-p (x)
   (or (%simple-string-p x)
       (and (%header-vector-p x) (%mdarray-simple-p x) (%simple-string-p (%array-storage x)))))
 (defun bit-vector-p (x)
-  (or (%bits-p x) (and (%header-vector-p x) (%bits-p (%array-storage x)))))
+  (or (%bits-p x)
+      (and (%header-vector-p x)
+           (let ((d (%mdarray-data x)))
+             (or (%bits-p d) (and (%mdarray-p d) (%bits-p (%array-storage d))))))))
 (defun simple-bit-vector-p (x) (%bits-p x))
 
 (defun %array-storage (a)
@@ -1556,7 +1581,7 @@ its index when POSP."
         (when (funcall (the function fn) (car l)) (return (if posp i (car l)))))))
   ;; a simple string or simple vector read forwards: a loop for each kind
   ;; of test and key, with the elements read directly
-  (when (and (not from-end) (or (%simple-string-p seq) (%simple-vector-p seq)))
+  (when (and (not from-end) (not (listp seq)) (%simple-array-p seq))
     (return-from %find-position
       (let ((key (%keyfn key)))
         (macrolet ((scan (ref len)
@@ -1584,14 +1609,21 @@ its index when POSP."
                                        ((eq fn #'%char-equal-2) (loops (char-equal item v)))
                                        ((eq fn #'%string=-2) (loops (%string=-2 item v)))
                                        ((eq fn #'%string-equal-2) (loops (%string-equal-2 item v)))
+                                       ;; (a table of numbers searched by order)
+                                       ((eq fn #'<) (loops (< item v)))
+                                       ((eq fn #'<=) (loops (<= item v)))
+                                       ((eq fn #'>) (loops (> item v)))
+                                       ((eq fn #'>=) (loops (>= item v)))
+                                       ((eq fn #'=) (loops (= item v)))
                                        (t (loops (funcall (the function fn) item v)))))
                                 (t
                                  (if neg
                                      (loops (not (funcall (the function fn) v)))
                                      (loops (funcall (the function fn) v)))))))))
-          (if (%simple-string-p seq)
-              (scan %schar %string-length)
-              (scan %svref %svlength))))))
+          (cond ((%simple-string-p seq) (scan %schar %string-length))
+                ((%simple-vector-p seq) (scan %svref %svlength))
+                ;; a specialized vector (of bits, integers, floats)
+                (t (scan %simple-ref %simple-length)))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)))
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (return (if posp i x))))))
@@ -1636,6 +1668,10 @@ general way)."
         (%find-position item mode fn neg seq key from-end start end nil))))
 
 ;;; FIND, POSITION and COUNT of an item with no keyword arguments: functions of two arguments
+(defun %find-with-test (item seq test posp)
+  "FIND (POSP false) or POSITION with only a :TEST: no keyword arguments to parse."
+  (%with-test (mode fn neg) (test nil)
+    (%find-position item mode fn neg seq nil nil 0 nil posp)))
 (defun %find2 (item seq)
   (cond ((%simple-string-p seq)
          (and (characterp item)
@@ -1704,6 +1740,8 @@ POSITION when they are only a :TEST of a known function, else NIL."
              `(let ((,x ,item))
                 (cond ,@(mapcar (lambda (e) `((,test ,x ',e) ',e)) elts) (t nil)))))
           ((null keys) `(%find2 ,item ,seq))
+          ((and (= (length keys) 2) (eq (first keys) :test))
+           `(%find-with-test ,item ,seq ,(second keys) nil))
           (t form))))
 (define-compiler-macro position (&whole form item seq &rest keys)
   (let* ((test (%short-find-test keys))
@@ -1714,6 +1752,8 @@ POSITION when they are only a :TEST of a known function, else NIL."
                 (cond ,@(loop for e in elts for i from 0 collect `((,test ,x ',e) ,i))
                       (t nil)))))
           ((null keys) `(%position2 ,item ,seq))
+          ((and (= (length keys) 2) (eq (first keys) :test))
+           `(%find-with-test ,item ,seq ,(second keys) t))
           (t form))))
 
 (defun position-if (pred seq &key key from-end (start 0) end)

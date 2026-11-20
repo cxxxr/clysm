@@ -35,7 +35,9 @@
 
 (defvar *hash-table-class* (find-class 'hash-table))
 
-(defun hash-table-p (x) (and (%instancep x) (eq (%instance-layout x) (load-time-value *hash-table-class*))))
+;; (no LOAD-TIME-VALUE: code compiled in the image then has a copy of it,
+;; the test inline, as code walking JSON objects calls it for every value)
+(defun hash-table-p (x) (and (%instancep x) (eq (%instance-layout x) *hash-table-class*)))
 
 (defmacro %ht (h i) `(%instance-ref ,h ,i))
 (defmacro %ht-set (h i v) `(%set-instance-ref ,h ,i ,v))
@@ -416,8 +418,11 @@ for here, without a call."
         (%set-svref (%svref sv +ht-vals+) li value)
         (return-from %ht-put-slow value))))
   (let* ((sv (%instance-slots h))
-         (hash (%ht-hash h key))
-         (i (%ht-lookup sv key hash)))
+         ;; a string key of an EQUAL table as in %GETHASH-GENERAL (the
+         ;; same hash as %SXHASH's)
+         (string-key (%ht-string-key-p sv key))
+         (hash (if string-key (%string-hash key) (%ht-hash h key)))
+         (i (if string-key (%ht-string-lookup sv key hash) (%ht-lookup sv key hash))))
     (if (%fx>= i 0)
         (%set-svref (%svref sv +ht-vals+) i value)
         (progn
