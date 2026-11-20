@@ -27,6 +27,19 @@
           ((pathnamep a) (return (and (pathnamep b) (equal (namestring a) (namestring b)))))
           (t (return nil)))))
 
+(defun %equal-2 (a b) (equal a b))
+;; (EQUAL A B): EQ, and the objects that only EQ makes EQUAL (symbols,
+;; fixnums, characters), settled inline; the others by the function (in code
+;; compiled in the image, a call of the image's function through its cell)
+(define-compiler-macro equal (&whole form &rest args)
+  (if (and (consp args) (consp (cdr args)) (null (cddr args)))
+      (let ((a (gensym "A")) (b (gensym "B")))
+        `(let ((,a ,(first args)) (,b ,(second args)))
+           (cond ((eq ,a ,b) t)
+                 ((or (symbolp ,a) (fixnump ,a) (characterp ,a)) nil)
+                 (t (%equal-2 ,a ,b)))))
+      form))
+
 (defun %equalp-arrays (a b)
   (cond ((and (%simple-vector-p a) (%simple-vector-p b))
          (let ((n (%svlength a)))

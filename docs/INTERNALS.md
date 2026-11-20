@@ -2593,6 +2593,24 @@ compilation on the main thread), reading the fasls' forms (0.15 s).
 Compiling eagerly (`--no-wasm-lazy-compilation`) made it slower (1.2 s) and
 the start 1.5 to 2.3 s.
 
+The redisplay of a key typed (`l-type-redisplay`; a probe typing 2000
+characters with a redisplay after each, 1.5 s against SBCL's 1.0, 2026-11-20):
+a little over half of its time under `redraw-display` is `char-width` and
+what it calls (`control-char` twice and `icon-code-p`: `gethash` of a
+character in `eql` tables, and `eastasian-code-p` through its function cell):
+650 ms against about 250 in SBCL (`sb-sprof`), the hash tables' part being
+most of it; the
+highlighting the edit triggers (`tm-scan-line`: cl-ppcre, and the text
+properties of `lem/buffer/line`, `remove-elements` as fast as SBCL's) is
+most of the rest. Found on the way and made general: `last` of one argument
+walked the list twice (a compiler macro calls `%last1`, one pass: 0.28 of
+the time on a list of 30); `second`, `third`, `cadr`... were calls of the
+`:car`/`:cdr` helpers, now nested `car`/`cdr` compiled with the type of
+their argument (a cons tested inline); `equal` settles `eq` arguments and a
+symbol, fixnum or character first argument inline (in the image `equal` is
+a call through the function cell). The redisplay probe and
+`bench/apps.lisp` take 0.99 of their time before.
+
 ## Building and distributing
 
 `bin/clysm` needs SBCL, which hosts the cross compiler. `tools/build-npm.sh`

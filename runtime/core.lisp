@@ -39,6 +39,24 @@
                `(progn ,@defs))))
   (define-cxrs))
 
+;;; The compositions of CAR and CDR as nested CARs and CDRs: each is then
+;;; compiled with what is known of its argument (a cons tested inline, the
+;;; helper only for NIL or the type error), not as calls of the helpers
+(macrolet ((define-cxr-expansions (&rest specs)
+             `(progn
+                ,@(mapcar (lambda (spec)
+                            (let ((name (car spec)) (path (cadr spec)))
+                              `(define-compiler-macro ,name (x)
+                                 ,(let ((form 'x))
+                                    (dolist (c (reverse (coerce path 'list)))
+                                      (setq form (list 'list (if (char= c #\A) ''car ''cdr) form)))
+                                    form))))
+                          specs))))
+  (define-cxr-expansions
+    (caar "AA") (cadr "AD") (cdar "DA") (cddr "DD") (caddr "ADD") (cdddr "DDD")
+    (caadr "AAD") (cddar "DDA") (cdadr "DAD") (cadar "ADA") (caaar "AAA") (cdaar "DAA")
+    (cadddr "ADDD") (cddddr "DDDD") (second "AD") (third "ADD") (fourth "ADDD")))
+
 (defun code-char (n)
   (if (and (fixnump n) (>= n 0) (< n #x110000)) (code-char n) nil))
 
@@ -129,7 +147,17 @@
 (defsetf tenth (l) (v) `(%setnth 9 ,l ,v))
 (defsetf nthcdr (n l) (v) `(%setcdr (nthcdr (1- ,n) ,l) ,v))
 
+(defun %last1 (list)
+  "(LAST LIST): one pass, to the last cons."
+  (unless (listp list) (%type-error list 'list))
+  (if (atom list)
+      list
+      (do ((l list (cdr l))) ((atom (cdr l)) l))))
+;; (LAST L): the function of one pass
+(define-compiler-macro last (&whole form list &optional (n nil np))
+  (if (or (not np) (eql n 1)) `(%last1 ,list) form))
 (defun last (list &optional (n 1))
+  (when (eql n 1) (return-from last (%last1 list)))
   (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
   (unless (listp list) (%type-error list 'list))
   (let ((count 0))
