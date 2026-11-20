@@ -659,20 +659,17 @@ first segment), or :SOURCE when the module was made for another image.")
 was made for this image, otherwise its source form (stored after the module)
 is read and compiled again."
   (destructuring-bind (id offset length consts source-offset source-length) (cdr entry)
+    (declare (ignore source-length))
     (if (and *native-run-module-hook* (equal id *image-id*))
         (funcall *native-run-module-hook*
                  (car *fasl-modules*) (+ (cdr *fasl-modules*) offset) length consts)
-        (let ((here (file-position stream)))
-          (file-position stream (+ (cdr *fasl-modules*) source-offset))
-          (let ((form (%call-with-fasl-syntax
-                       (lambda () (let ((*print-readably* nil)) (read stream))))))
-            (declare (ignore source-length))
-            (file-position stream here)
-            (%eval-toplevel form))))))
+        (%eval-toplevel (%fasl-entry-source stream source-offset)))))
 
 (defun %fasl-entry-source (stream source-offset)
-  "The source form stored in the module octets of the fasl at SOURCE-OFFSET."
-  (let ((here (file-position stream)))
+  "The source form stored in the module octets of the fasl at SOURCE-OFFSET.
+STREAM is the fasl, or a function returning it (opened when first needed)."
+  (let* ((stream (if (functionp stream) (funcall stream) stream))
+         (here (file-position stream)))
     (file-position stream (+ (cdr *fasl-modules*) source-offset))
     (prog1 (%call-with-fasl-syntax
             (lambda () (let ((*print-readably* nil)) (read stream))))
@@ -790,6 +787,32 @@ can (%FASL-TEXT-FROM-HOST), which is faster still."
          (in (if fasl (%fasl-text-stream stream) stream))
          (file (and (not fasl) *load-truename* (typep stream 'file-stream)
                     (namestring *load-truename*))))
+    (%load-forms stream in fasl file print)))
+
+(defun %load-fasl-from-host (native head print)
+  "Load the compiled file NATIVE (a native file name) whose octets the host
+reads (HEAD: see %FASL-HEAD-FROM-HOST), without a file stream, which reads
+the whole file (most of it the modules: 4.5 MB for ASDF) into Lisp octets;
+one is opened only if a source form of the file must be read.  NIL if the
+host cannot decode its text."
+  (destructuring-bind (start n size) head
+    (let ((text (%fasl-text-from-host native (+ start n) (- size start n))))
+      (when text
+        (let* ((*fasl-modules* (cons native start))
+               (*fasl-unit-runner* nil)
+               (*fasl-load-gensyms* (make-hash-table))
+               (stream nil))
+          (unwind-protect
+               (%load-forms (lambda () (or stream (setq stream (open native :direction :input))))
+                            (make-string-input-stream text) t nil print)
+            (when stream (close stream)))
+          t)))))
+
+(defun %load-forms (stream in fasl file print)
+  "Evaluate the forms read from IN, those of STREAM: a compiled file when FASL
+(STREAM is then the file, or a function returning it), or a source file (of
+native name FILE, if any)."
+  (progn
     (loop
       (let* ((start (and file (%form-start stream)))
              (form (if fasl
@@ -815,13 +838,28 @@ can (%FASL-TEXT-FROM-HOST), which is faster still."
                            (if-does-not-exist t) external-format)
   (declare (ignore external-format))
   (let* ((path (%load-pathname-of filespec))
-         (stream (if (streamp filespec) filespec
-                     (open (if (and (null (pathname-type path)) (not (probe-file path)))
-                               (or (probe-file (make-pathname :type "lisp" :defaults path))
-                                   (probe-file (make-pathname :type "fasl" :defaults path))
-                                   path)
-                               path)
-                           :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
+         (file (and (not (streamp filespec))
+                    (if (and (null (pathname-type path)) (not (probe-file path)))
+                        (or (probe-file (make-pathname :type "lisp" :defaults path))
+                            (probe-file (make-pathname :type "fasl" :defaults path))
+                            path)
+                        path)))
+         ;; a compiled file is read by the host
+         (truename (and file (probe-file file)))
+         (native (and truename (%native-name truename)))
+         (head (and native (%fasl-head-from-host native))))
+    (when head
+      (let ((*package* *package*) (*readtable* *readtable*)
+            (*load-pathname* path)
+            (*load-truename* truename))
+        (when verbose (format t "~&; loading ~S~%" (or path filespec)))
+        (when (%load-fasl-from-host native head print)
+          (return-from load t))))
+    (%load-1 filespec path file verbose print if-does-not-exist)))
+
+(defun %load-1 (filespec path file verbose print if-does-not-exist)
+  (let ((stream (if (streamp filespec) filespec
+                    (open file :direction :input :if-does-not-exist (if if-does-not-exist :error nil)))))
     (if (null stream)
         nil
         (let ((*package* *package*) (*readtable* *readtable*)
