@@ -540,6 +540,75 @@ defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
 `&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
 defined in an earlier form runs as fast as in a whole program.
 
+How such copies are compiled (2026-11, measured on numeric probes written
+for it: spectral norm with and without declarations, small double helpers
+called in a loop, a loop at top level):
+
+* **The depth of copies counts the copied bodies only.** Copies are made
+  two deep (`*live-inline-depth*`); the arguments of a copied call used to
+  be converted at the copy's depth too, so in `(clamp01 (lerp (hyp x 1d0)
+  (sq x) 0.25d0))` the calls of `hyp` and `sq` went through the function
+  cell. The body is now converted inside `(sys::%inline-copy depth-var
+  ...)`, the arguments at the caller's depth (also for `inline` functions,
+  `*inline-expansion-depth*`).
+* **A value that is a double on one of its paths** is not boxed. The guarded
+  copy is `(if guard COPY (call))`: its type is the union of the copy's
+  (a double) and the call's (anything), so its double was boxed and the
+  arithmetic around it was generic. An `if` (or a `let`, `progn`, or a
+  `block` nothing returns from, ending in one) one of whose branches gives a
+  double, arithmetic that may give one or an unboxed double variable is
+  computed into a pair of locals as an unboxed double variable is
+  (`cg-dual-f64`, `src/typed.lisp`: the eqref null when the f64 holds the
+  value): as a leaf of a speculative arithmetic tree, as the value of a `let`
+  variable used in arithmetic or comparisons once or more, as an operand of a
+  comparison. `(cond ((< x 0d0) 0d0) ((> x 1d0) 1d0) (t x))` is such a value
+  too. The parameters of a copy, bound to the temporaries of the arguments,
+  stay unboxed through those bindings.
+* **Comparisons of doubles of unknown type**: `<` `>` `<=` `>=` `=` `/=` with
+  an operand that is a double (or one on one of its paths) and another that
+  may be one compare f64s after testing (`spec-cmp-code`); before, a double
+  failed the inline fixnum test and called the generic comparison.
+* A variable declared `double-float` assigned arithmetic of unknown operands
+  takes the f64 of its fast path; the temporary of an `incf` bound to
+  arithmetic with a double among its operands is unboxed although it is
+  used once; a variable that starts as a double and is assigned such
+  arithmetic is an unboxed double variable (it needed a double among the
+  operands of the assignment, which a copy's value in the pair of locals
+  was not when the variable was bound).
+* **A toplevel form with a loop gets copies** too (before, the code of a
+  toplevel form, which runs once, got none; `*live-toplevel-loop-p*`, a scan
+  of the form for the operators of iteration, bounded for circular
+  literals): `(let ((s 0d0)) (dotimes (i 3000000) (incf s (poly ...))))`
+  takes 33 ms instead of 63 (it stays in Liftoff, see Tiering of the engine).
+
+Measured on these probes (`clysm script`, best of three, 4-CPU slot):
+
+| probe | whole program | in the image, before | after |
+|---|---|---|---|
+| spectral norm, undeclared (`svref`, `(/ (* ..) 2)`) | 76 → 58 ms | 141 | 72 |
+| spectral norm, `fixnum` and `double-float` arrays | 24 → 17 | 54 | 29 |
+| small double helpers (`sq`, `hyp`, `lerp`, `clamp01`) in a loop | 17 → 15 | 188 | 35 |
+| a loop at top level calling a function of an earlier form | 16 → 13 | 34 | 18 |
+| mandelbrot with a helper `mag2` | 17 → 16 | 24 | 22 |
+| n-body and matrix multiply over vectors of doubles | = | = | = |
+
+(The whole program got faster from two changes that apply to it too: an
+integer within 64 bits converted to a double by `f64.convert_i64_s` instead
+of making the integer and calling `to-f64`, and `(/ a k)` of such an
+integer by a constant computed inline when K divides it, else the generic
+division, `exact-int-division-code`.)
+
+What remains: a guarded copy of a function of fixnums gives a fixnum or
+anything, so its value is boxed as an `i31` and the arithmetic around it is
+the generic arithmetic's inline fixnum path (the fixnum helpers 17 ms in
+the image, 8 as a whole program); a variable assigned the value of a copy
+(`(setq x (lcg x))`) has the copy's type joined with anything, so the copy's
+body sees an argument of unknown type (pairs of locals for integers within
+64 bits, as above for doubles, were tried: no change, as the body is then
+compiled for any argument). The guard, the pair of locals and the
+duplicated generic path still make the spectral norm's inner loop 1.6
+times the time of a copy declared `inline` (10 ms against 6).
+
 **Small functions of a compiled file** (a `defun` at top level, no closed-over
 bindings, no loop, no macro outside `COMMON-LISP`, a body of at most 40
 conses and atoms: `*fasl-inline-max-size*`, not declaimed `notinline` or
@@ -1735,7 +1804,14 @@ time unless noted):
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
 against the same file compiled as a whole program (`MODE=script tools/bench.sh
 bench/suite.lisp`): geometric mean 1.1, slowest `b-special` 2.8 (`b-call` 1.1, was
-1.9; `b-struct` 1.0, was 1.35).
+1.9; `b-struct` 1.0, was 1.35). In 2026-11 (after the guarded copies of
+numeric helpers were made to keep their doubles unboxed, see "Compiling
+inside the running image"): `bench/suite.lisp` 1.11, `bench/holdout.lisp`
+1.06, `bench/arith.lisp` 1.14 (1.07 before, but only because the whole
+program got faster: `a-lcg` 12 → 6 ms, `a-points` 12 → 8; in the image it is
+0.97 of its time before), `bench/vectors.lisp` 1.09; numeric probes written
+for it (spectral norm, double helpers in a loop) went from 1.9–11 times the
+whole program to 1.2–2.3.
 
 The libraries' own time (Clysm's milliseconds, `tools/bench-libs.sh`, the
 best of two back-to-back runs on the same 4-CPU slot against the build

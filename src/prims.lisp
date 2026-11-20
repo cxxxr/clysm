@@ -361,7 +361,8 @@ has-a-double-operand) of the tree NODE (an unboxed double variable is both)."
                (if (and (spec-op-node-p n) (not (ty-double-p (node-ty n))) (spec-op-p n))
                    (progn (incf ops) (mapc #'walk (cddr n)))
                    (case (spec-leaf-class n)
-                     (:u (setq u t))
+                     ;; (a value that is a double on one of its paths: also evidence)
+                     (:u (setq u t) (when (dual-f64-node-p n) (setq d t)))
                      (:d (setq d t))
                      (:f (setq u t d t))))))
       (walk node))
@@ -375,7 +376,10 @@ or (with EVIDENCE, or an unboxed double variable among its operands) one
 operation and a double among its operands."
   (and (not *no-fuse*) (spec-op-node-p node) (spec-op-p node)
        (multiple-value-bind (ops u d) (spec-tree-stats node)
-         (and u (if evidence d (or (>= ops 2) (some (lambda (a) (eq (spec-leaf-class a) :f)) (cddr node))))))))
+         (and u (if evidence d (or (>= ops 2)
+                                   (some (lambda (a) (or (eq (spec-leaf-class a) :f)
+                                                         (and (eq (spec-leaf-class a) :u) (dual-f64-node-p a))))
+                                         (cddr node))))))))
 
 (defun spec-tree-code (node &optional target)
   "The value (an eqref) of the speculative tree NODE.  With TARGET, (B . F)
@@ -427,6 +431,18 @@ stored there (F, with B null, when the fast path gave it)."
                               ((:local.get ,f))
                               ((:local.get ,b) (:ref.test :double) :i32.eqz (:br_if ,bail)
                                (:local.get ,b) (:ref.cast! :double) (:struct.get :double 0)))))))
+                 (when (and (eq class :u) (dual-f64-node-p n))
+                   ;; a double on one of its paths: computed into a pair of
+                   ;; locals (CG-DUAL-F64), tested only when not unboxed
+                   (let ((b (new-local)) (f (new-local :f64)) (i (incf count)))
+                     (push (list n i :dual (cons b f)) leaves)
+                     (return-from leaf
+                       `(,@(cg-dual-f64 n b f) (:i32.const ,i) (:local.set ,done)
+                         (:local.get ,b) :ref.is_null
+                         (:if nil :f64
+                              ((:local.get ,f))
+                              ((:local.get ,b) (:ref.test :double) :i32.eqz (:br_if ,bail)
+                               (:local.get ,b) (:ref.cast! :double) (:struct.get :double 0)))))))
                  (if (eq (car n) :const)
                      (let ((v (second n)))
                        `((:f64.const ,(coerce v 'double-float))))
@@ -449,8 +465,10 @@ stored there (F, with B null, when the fast path gave it)."
                        (destructuring-bind (i rep loc) (cdr (assoc n leaves))
                          `((:local.get ,done) (:i32.const ,i) :i32.ge_u
                            (:if nil :eqref
-                                ((:local.get ,loc) ,@(ecase rep (:f64 '((:struct.new :double))) (:i32 '(:ref.i31))
-                                                       (:eqref nil)))
+                                ,(if (eq rep :dual)
+                                     (fdual-materialize-code (car loc) (cdr loc))
+                                     `((:local.get ,loc) ,@(ecase rep (:f64 '((:struct.new :double))) (:i32 '(:ref.i31))
+                                                             (:eqref nil))))
                                 (,@(cg n)))))))))
       (let ((fast-code (fast node)))
         (if target
