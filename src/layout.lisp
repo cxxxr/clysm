@@ -227,6 +227,7 @@ when ET is not one of the specifiers recognized at compile time."
     (:e-l       (:func (:eqref) (:i64)))
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))
+    (:eeiii-e   (:func (:eqref :eqref :i32 :i32 :i32) (:eqref)))
     (:ei-e      (:func (:eqref :i32) (:eqref)))
     (:v-dd      (:func () (:f64 :f64)))
     (:v-ff      (:func () (:f32 :f32)))

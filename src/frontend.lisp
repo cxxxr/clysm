@@ -1620,6 +1620,14 @@ MACROLET of LOOP-FINISH) twice as long."
       `(eq ,(second form) ,(third form))
       form))
 
+;; (EQUAL x #\") of a character, a symbol or a fixnum: EQ (a JSON reader's
+;; test of the character it read)
+(deftransform equal (form)
+  (if (and (= (length form) 3)
+           (or (eq-comparable-constant-p (second form)) (eq-comparable-constant-p (third form))))
+      `(eq ,(second form) ,(third form))
+      form))
+
 (defun eql-test-form-p (f)
   "F is #'EQL, 'EQL, #'EQ or 'EQ (an EQ test is EQL on the items EQ compares)."
   (and (consp f) (member (car f) '(function quote)) (consp (cdr f)) (null (cddr f))

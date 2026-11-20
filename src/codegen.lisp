@@ -591,6 +591,11 @@ others are consed onto the list for its rest list."
                 `(,@(loop for n in (butlast (cdr node)) append `(,@(cg n) :drop))
                   ,@(cg-test (car (last node))))
                 '((:i32.const 0))))
+    ;; a LET binding no special variable (a chained comparison (< a b c)
+    ;; binds its arguments): the test of its body
+    (:let (if (notany (lambda (b) (lvar-special (car b))) (second node))
+              (cg-let node nil nil :test)
+              `(,@(cg node) ,@(nil-code) :ref.eq :i32.eqz)))
     (t `(,@(cg node) ,@(nil-code) :ref.eq :i32.eqz))))
 
 (defun or-let-p (node)
@@ -697,7 +702,8 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
 
 (defun cg-let (node mv tail &optional (rep :eqref))
   "REP: :eqref (the value as usual), :f64 / :i32 (the value in that
-representation) or :effect (no value)."
+representation), :effect (no value) or :test (an i32 that is 0 for false,
+as CG-TEST; only without special variables)."
   (destructuring-bind (bindings body) (cdr node)
     (let ((code nil) (specials nil))
       ;; evaluate inits in order
@@ -743,6 +749,7 @@ representation) or :effect (no value)."
       (flet ((body-code (tail)
                (cond ((eq rep :eqref) (cg body mv tail))
                      ((eq rep :effect) (cg-effect body))
+                     ((eq rep :test) (cg-test body))
                      ;; (:dual b f): into a pair of locals (CG-DUAL-F64, typed.lisp)
                      ((and (consp rep) (eq (car rep) :dual)) (cg-dual-f64 body (second rep) (third rep)))
                      (t (cg-rep body rep)))))

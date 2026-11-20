@@ -404,6 +404,12 @@ module: as a literal, it made `compile-file` leave the whole form as source,
 compiled again at every load (micros's `(defconstant keyword-package
 (find-package :keyword))` did that for three of its functions each time Lem
 loaded its Lisp mode).
+A toplevel `defconstant` whose value is written as a number, a character or
+a symbol (or another such constant of the file) is known to `compile-file`
+for the rest of the file (`*cf-constants*`, consulted by the compiler's
+constant hook), as SBCL knows it: the code of the file uses the value, not
+the symbol's value cell (Lem's `+default-tab-size+`, the default of
+`char-width`'s `:tab-size`, was read from its symbol at every call).
 
 A module made at run time carries only the runtime helpers that its
 functions and closures call, transitively (`add-called-helpers`,
@@ -2400,11 +2406,30 @@ What makes the code fast:
   `format` compiles `~<...~:>` on an argument to `pprint-logical-block`;
   the reader reads string streams without the accessors' type tests;
   `find-package` of a symbol remembers the last one found. `gethash` and
-  `(setf gethash)` of a fixnum, a character or a symbol find the entry with
-  one Wasm helper (`ht-fast-index`), which casts the table's arrays once
-  (a cast at each access cost about a third of the time); `gethash` reads
-  the value at the call site: a character key in an EQL table is looked
-  up as fast as in SBCL. String comparisons with literal keywords take no
+  `(setf gethash)` of an existing entry are one call each of a Wasm helper
+  (`ht-get`, `ht-put-old`) that tests that the object is a hash table, finds
+  the entry of a fixnum, a character or a symbol (`ht-fast-index`, which
+  casts the table's arrays once: a cast at each access cost about a third of
+  the time) and reads or stores the value; it returns null for anything
+  else, and the call site then calls the function. A key of another type
+  (tested at the call site: an `i31` or a symbol) calls the function at
+  once: a string key that went through the helper first made
+  `p-word-count` 1.25 times slower. The call site is a call and a branch: a
+  character key in an EQL table is looked up as fast as in SBCL. The whole lookup written out at each call site (the hash, the chain's
+  first entry compared there) was slower (a loop of two lookups of
+  characters 28 → 46 ms, Lem's `string-width` 113 → 140): V8 no longer
+  inlined the larger functions that hold the lookups (`control-char` into
+  `char-width`), while it does inline the helper. A new key of a fixnum,
+  character or symbol is added without looking for it again, and a table
+  grows by copying its arrays (`array.copy`) and chaining the entries
+  again; what remains of `(setf gethash)` of new keys (2 times SBCL's
+  time in a loop that fills tables of 20000 fixnums) is allocating the
+  larger arrays (V8's large objects). Measured against the build without
+  these changes (2026-11-21, interleaved runs on one slot): Lem's
+  `l-string-width` 128 → 121 ms (`tools/bench-lem.sh` on the same file),
+  `string-width` of Lem's own code in a loop 0.90 of its time, a reader's
+  buffer with a fill pointer looked up in an `equal` table 0.55, new fixnum
+  keys 0.72, `bench/library.lisp` 0.97 (`v-hash-churn` 0.78). String comparisons with literal keywords take no
   keyword list; the digits of a float the host makes (a double of 16-17
   digits) cross in groups of nine (`float_part`). Hash tables are
   iterated in place (`maphash`, `loop ... hash-keys`,
@@ -2431,7 +2456,12 @@ What makes the code fast:
   pointer is printed by `princ` without looking at the pretty printer's
   dispatch, and `class-of` tests an array header once, before the other
   representations. Such a string is hashed (`equal` tables, `sxhash`) by the
-  Wasm loop of simple strings over its storage; `unread-char` of the
+  Wasm loop of simple strings over its storage, compared by `equal` with
+  another string over the storages (`string-region=`), and looked up in an
+  `equal` table by a helper that compares the stored hashes and then the
+  characters of the keys that are simple strings or strings with a fill
+  pointer (yason keeps its reader's buffers as the keys of the tables it
+  makes), without `equal`; `unread-char` of the
   character just read from a string input stream moves its index back at
   once; the printer looks at `*print-pprint-dispatch*` only once some
   table has been given an entry by `set-pprint-dispatch`. `read-char` and
@@ -2444,6 +2474,14 @@ What makes the code fast:
   option but `:size` makes the table without parsing keywords;
   `concatenate` of simple strings into a string (`apply` of a list of
   parts) copies them at once.
+* **Tests**: a `let` without special variables used as a test (a chained
+  comparison `(<= a x b)` binds its arguments) is compiled as the test of
+  its body, and `not`/`null` of a test as the test negated, so no `T`/`NIL`
+  is made in between (Lem's `eastasian-code-p`, a tree of `(<= lo code hi)`
+  over a table of ranges, made and compared `T`/`NIL` at each node, and
+  `icon-code-p`'s `(not (null (gethash ...)))` twice); `equal` with a
+  character, a symbol or a fixnum written as a constant is `eq` (yason's
+  `(equal c #\")` for each string it reads).
 * **JSON and dates** (yason, cl-json, local-time; probes of each library
   function against SBCL). A generic function compiled in the image or a
   fasl found the class of an argument that is not an instance, fixnum or

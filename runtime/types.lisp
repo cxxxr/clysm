@@ -16,11 +16,11 @@
           ((or (symbolp a) (fixnump a) (characterp a)) (return nil))
           ((%simple-string-p a)
            (return (cond ((%simple-string-p b) (%simple-string= a b))
-                         ((stringp b) (string= a b))
+                         ((stringp b) (%string-equal-regions a b))
                          (t nil))))
           ((%simple-vector-p a) (return nil))
           ((numberp a) (return (eql a b)))
-          ((stringp a) (return (and (stringp b) (string= a b))))
+          ((stringp a) (return (and (stringp b) (%string-equal-regions a b))))
           ((bit-vector-p a)
            (return (and (bit-vector-p b) (= (length a) (length b))
                         (dotimes (i (length a) t) (unless (eql (bit a i) (bit b i)) (return nil))))))
@@ -39,6 +39,17 @@
                  ((or (symbolp ,a) (fixnump ,a) (characterp ,a)) nil)
                  (t (%equal-2 ,a ,b)))))
       form))
+
+;;; STRING= of two strings, one of them not simple (a reader's buffer with a
+;;; fill pointer, the key of a JSON object looked up in an EQUAL table):
+;;; compared over their storage in Wasm when that is a simple string.
+(defun %string-equal-regions (a b)
+  (let ((n (length a)))
+    (and (eql n (length b))
+         (let ((da (%array-storage a)) (db (%array-storage b)))
+           (if (and (%simple-string-p da) (%simple-string-p db))
+               (%string-region= da (%array-total-offset a) db (%array-total-offset b) n)
+               (string= a b))))))
 
 (defun %equalp-arrays (a b)
   (cond ((and (%simple-vector-p a) (%simple-vector-p b))
