@@ -203,6 +203,7 @@ when ET is not one of the specifiers recognized at compile time."
     (:vie-e     (:func ((:ref :vector) :i32 :eqref) (:eqref)))
     (:vie-v     (:func ((:ref :vector) :i32 :eqref) ()))
     (:e-cons    (:func (:eqref) ((:ref :cons))))
+    (:e-vec     (:func (:eqref) ((:ref :vector))))
     (:e-sym     (:func (:eqref) ((:ref :symbol))))
     (:e-pkgn    (:func (:eqref) ((:ref :null :package))))
     (:sym-e     (:func ((:ref :symbol)) (:eqref)))

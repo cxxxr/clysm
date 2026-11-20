@@ -519,11 +519,9 @@
                   (t (%type-error fill-pointer `(integer 0 ,n))))))
     (%make-mdarray (%make-storage n (car info)) fp (list n) 0 info)))
 
-;;; (MAKE-ARRAY n [:element-type 'type] [:initial-element x]): a simple
-;;; vector made where the call is written when N is a fixnum (an array.new
-;;; for element type T; the storage of the element type normalized once
-;;; where the call is, then filled), else the call of MAKE-ARRAY (a list of
-;;; dimensions, or an error).
+;;; (MAKE-ARRAY n [:element-type t] [:initial-element x]): a simple vector
+;;; made where the call is written (an array.new) when N is a fixnum, else
+;;; the call of MAKE-ARRAY (a list of dimensions, or an error).
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-simple-array-form (form dimensions keys)
     (let ((names (loop for (k) on keys by #'cddr collect k)))
@@ -531,27 +529,17 @@
                (every (lambda (k) (member k '(:element-type :initial-element))) names)
                (= (length (remove-duplicates names)) (length names))
                (not (and (consp dimensions) (eq (car dimensions) 'quote)))
-               (let ((et (getf keys :element-type '(quote t))))
-                 (and (consp et) (eq (car et) 'quote) (consp (cdr et)) (null (cddr et)))))
-          (let* ((n (gensym "N")) (ie (gensym "INIT")) (v (gensym "V")) (ety (gensym "ET"))
+               ;; (a specialized vector: the call, whose type the compiler knows)
+               (equal (getf keys :element-type '(quote t)) '(quote t)))
+          (let* ((n (gensym "N")) (ie (gensym "INIT"))
                  (initp (member :initial-element names))
-                 (et (second (getf keys :element-type '(quote t))))
                  (bindings (loop for (k val) on keys by #'cddr
                                  when (eq k :initial-element) collect (list ie val))))
             `(let ((,n ,dimensions) ,@bindings)
-               ,(if (eq et t)
-                    `(if (and (fixnump ,n) (%fx>= ,n 0))
-                         (%make-simple-vector ,n ,(if initp ie nil))
-                         (locally (declare (notinline make-array))
-                           (make-array ,n ,@(when initp `(:initial-element ,ie)))))
-                    `(let ((,ety (load-time-value (%normalize-element-type ',et))))
-                       (if (and (fixnump ,n) (%fx>= ,n 0) ,ety)
-                           (the (simple-array ,et (*))
-                                (let ((,v (%make-storage ,n ,ety)))
-                                  ,@(when initp `((%fill-storage ,v ,ie 0 ,n)))
-                                  ,v))
-                           (locally (declare (notinline make-array))
-                             (make-array ,n :element-type ',et ,@(when initp `(:initial-element ,ie)))))))))
+               (if (and (fixnump ,n) (%fx>= ,n 0))
+                   (%make-simple-vector ,n ,(if initp ie nil))
+                   (locally (declare (notinline make-array))
+                     (make-array ,n ,@(when initp `(:initial-element ,ie)))))))
           form))))
 
 (define-compiler-macro make-array (&whole form dimensions &rest keys)

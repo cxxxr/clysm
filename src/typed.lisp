@@ -950,7 +950,7 @@ the structure class (local C) or one including it."
                        append (if (and (eq k :d) (ty-double-p (node-ty v)))
                                   `(,@(cg-rep v :f64) (:local.set ,loc))
                                   `(,@(cg v) (:local.set ,loc))))
-               (:local.get ,c) (:global.get :empty-slots) (:i32.const 0)
+               (:local.get ,c) (:local.get ,c) (:call :layout-inherits) (:i32.const 0)
                ,@(loop for k in kinds for v in vals for loc in locals
                        append (cond ((not (eq k :d)) `((:local.get ,loc)))
                                     ((ty-double-p (node-ty v)) `((:local.get ,loc)))
@@ -961,9 +961,10 @@ the structure class (local C) or one including it."
                                                (:f64.const 0d0)))))))
                (:struct.new ,ty))))))
       (clysm-sys::%make-tstruct-default
-       (let ((kinds (tstruct-kinds (second args))))
+       (let ((kinds (tstruct-kinds (second args))) (c (new-local)))
          (when kinds
-           `(,@(cg (first args)) ,@(cg-effect (second args)) (:global.get :empty-slots) (:i32.const 0)
+           `(,@(cg (first args)) (:local.set ,c) ,@(cg-effect (second args))
+             (:local.get ,c) (:local.get ,c) (:call :layout-inherits) (:i32.const 0)
              ,@(mapcar (lambda (k) (if (eq k :d) '(:f64.const 0d0) '(:ref.null :eq))) kinds)
              (:struct.new ,(tshape-type kinds))))))
       (clysm-sys::%copy-tstruct
@@ -971,7 +972,8 @@ the structure class (local C) or one including it."
          (when kinds
            (let ((ty (tshape-type kinds)) (s (new-local)))
              `(,@(cg (first args)) (:local.set ,s) ,@(cg-effect (second args)) ,@(cg-effect (third args))
-               (:local.get ,s) (:ref.cast ,ty) (:struct.get ,ty 0) (:global.get :empty-slots) (:i32.const 0)
+               (:local.get ,s) (:ref.cast ,ty) (:struct.get ,ty 0) (:local.get ,s) (:ref.cast! ,ty) (:struct.get ,ty 1)
+               (:i32.const 0)
                ,@(loop for i below (length kinds)
                        append `((:local.get ,s) (:ref.cast! ,ty) (:struct.get ,ty ,(sinst-field i))))
                (:struct.new ,ty)))))))))
