@@ -1025,15 +1025,25 @@ or +CLO-KLAYOUT+)."
                        (:go (not (eq (tb-lam (second n)) root)))
                        (:return-from (not (eq (blk-lam (second n)) root)))
                        (:prim (member (prim-name (second n)) *exiting-prims*))
-                       (:call (let ((callee (and (not (gethash (second n) *notinline*))
-                                                 (known-global-lam (second n)))))
-                                (or (null callee) (lam-may-exit-p callee))))
+                       (:call (and (not (inline-length-call-p n))
+                                   (let ((callee (and (not (gethash (second n) *notinline*))
+                                                      (known-global-lam (second n)))))
+                                     (or (null callee) (lam-may-exit-p callee)))))
                        (:lambda (walk-lam (second n)) nil)
                        ((:flet :labels) (dolist (f (second n)) (walk-lam (fun-lam f))) nil))
                  (return-from lam-may-exit-1 t))
                (map-subnodes #'walk n)))
       (walk-lam lam)
       nil)))
+
+(defun inline-length-call-p (n)
+  "N is a call of LENGTH that I32-OP-CODE compiles as the length of a Wasm
+array, with no call: of a variable declared a simple vector or string."
+  (and (eq (second n) 'length) (= (length (cddr n)) 1)
+       (let ((a (third n)))
+         (and (eq (car a) :lref) (lvar-decl (second a))
+              (let ((ty (declared-ty (lvar-decl (second a)))))
+                (or (ty-vec-kind ty) (ty-only-p ty +k-svec+) (ty-only-p ty +k-string+)))))))
 
 (defun direct-call-checked (lam tail code)
   "CODE: a direct call of LAM."
@@ -2689,13 +2699,36 @@ its last parameter; the entries for few arguments make the list."
       (push (list :raw lam sig rrep) *pending-lams*))
     (list :raw (lam-id lam) sig)))
 
-(defun raw-func-type (sig rrep)
-  (let ((key (list* :rawfn rrep sig)))
+(defun raw-func-type (sig rrep closure)
+  "CLOSURE: the clone takes its closure (as its first parameter)."
+  (let ((key (list* (if closure :rawfn :rawfn-noclo) rrep sig)))
     (unless (gethash key *extra-types*)
       (setf (gethash key *extra-types*) t)
-      (add-type *m* key `(:func ((:ref :closure) ,@(mapcar (lambda (c) (or (class-rep c) :eqref)) sig))
+      (add-type *m* key `(:func (,@(when closure '((:ref :closure)))
+                                 ,@(mapcar (lambda (c) (or (class-rep c) :eqref)) sig))
                                 (,rrep))))
     key))
+
+;;; A raw clone of a function without free variables that does not refer
+;;; to itself as a closure takes no closure: its calls pass only the
+;;; arguments (the global of the closure was loaded, and kept across the
+;;; calls of a recursive function, at each call).
+(defun raw-clone-closure-p (lam rrep)
+  (or (eq rrep :eqref) (lam-self lam) (lam-free-vars lam)))
+
+(defun raw-closure-code (lam rrep)
+  (when (raw-clone-closure-p lam rrep) `((:global.get ,(static-closure-global lam)))))
+
+(defun shift-locals-down (instrs)
+  "INSTRS with every local index lowered by one (the closure parameter, local
+0, removed; an error if it is used)."
+  (labels ((walk (x)
+             (cond ((atom x) x)
+                   ((and (member (car x) '(:local.get :local.set :local.tee)) (integerp (second x)))
+                    (when (zerop (second x)) (error "codegen: a raw clone uses its closure"))
+                    (list* (car x) (1- (second x)) (cddr x)))
+                   (t (mapcar #'walk x)))))
+    (mapcar #'walk instrs)))
 
 (defmacro with-clone-inference ((lam sig) &body body)
   "Run BODY with LAM's types inferred for arguments of the classes SIG (as
@@ -2748,11 +2781,21 @@ the other forms in tail positions (whose values are the function's)."
                  (:let (when (some (lambda (b) (lvar-special (car b))) (second n)) (fail))
                   (tail (third n) top))
                  (:the (tail (third n) top))
-                 (:call (if (and top (eq (known-global-lam (second n)) lam)
-                                 (= (length (cddr n)) (length sig))
-                                 (equal (mapcar #'arg-class (cddr n)) sig))
-                            (push n found)
-                            (fail)))
+                 (:call (let ((callee (known-global-lam (second n))))
+                          (cond ((not top) (fail))
+                                ((and (eq callee lam)
+                                      (= (length (cddr n)) (length sig))
+                                      (equal (mapcar #'arg-class (cddr n)) sig))
+                                 (push n found))
+                                ;; a call of another function whose raw clone
+                                ;; returns a fixnum or a double: a return_call
+                                ;; of it when that is what this one returns
+                                ;; (its value, typed by RAW-CALL-RETURN-TY, a leaf)
+                                ((and callee (not (eq callee lam))
+                                      (let ((csig (raw-call-sig callee (cddr n))))
+                                        (and csig (member (raw-clone-rrep callee csig) '(:i32 :f64)))))
+                                 (push n found) (push n leaves))
+                                (t (fail)))))
                  ((:lcall :funcall :mvcall :apply) (fail))
                  (:block (let ((by-returns (and top (no-fall-p (third n)))))
                            ;; (its values: those of its RETURN-FROMs when its body does not end)
@@ -2819,7 +2862,7 @@ returns a fixnum or a double (RAW-CLONE-RREP), else NIL."
         ;; result is the first value only)
         (unless (and (or tail mv) (not (eq rrep :eqref)))
           (ensure-lam-compiled lam)
-          (let ((call `((:global.get ,(static-closure-global lam)) ,@(raw-args-code sig args)
+          (let ((call `(,@(raw-closure-code lam rrep) ,@(raw-args-code sig args)
                         (,(if tail :return_call :call) ,(raw-clone-name lam sig rrep)))))
             (if (eq rrep :eqref)
                 (direct-call-checked lam tail call)
@@ -2835,7 +2878,7 @@ the raw clone returning that, or NIL."
         (when (or (eq rrep rep) (and (eq rrep :i32) (eq rep :i64)))
           (ensure-lam-compiled lam)
           (let ((self-tail (and *raw-tail-calls* (gethash node *raw-tail-calls*) (eq rrep rep))))
-            `((:global.get ,(static-closure-global lam)) ,@(raw-args-code sig args)
+            `(,@(raw-closure-code lam rrep) ,@(raw-args-code sig args)
               (,(if self-tail :return_call :call) ,(raw-clone-name lam sig rrep))
               ,@(when (and (eq rrep :i32) (eq rep :i64)) '(:i64.extend_i32_s)))))))))
 
@@ -2884,7 +2927,8 @@ the raw clone returning that, or NIL."
                           (when (or (pctx-used ctx) (tree-member `(:br ,(blk-label blk)) code))
                             (error "raw clone of ~S: an exit may be pending" (lam-name lam))))
                         code))))
-        (add-func *m* (list :raw (lam-id lam) sig) (raw-func-type sig rrep)
-                  :locals (reverse (fstate-locals *fs*)) :body body
+        (add-func *m* (list :raw (lam-id lam) sig) (raw-func-type sig rrep (raw-clone-closure-p lam rrep))
+                  :locals (reverse (fstate-locals *fs*))
+                  :body (if (raw-clone-closure-p lam rrep) body (shift-locals-down body))
                   :display (format nil "~A/raw~{,~(~A~)~}~@[->~(~A~)~]" (lam-display-name lam)
                                    (mapcar (lambda (c) (or c "t")) sig) (unless (eq rrep :eqref) rrep)))))))
