@@ -155,6 +155,21 @@ value buffer hold the full set; `values` fills them, and every non-call
 expression in a multiple-value context sets the count to 1. Calls in tail
 position pass values through untouched.
 
+Every return of a single value in a multiple-value context (the end of each
+function's body) stores 1 into the count. Measured before changing the
+convention for it (2026-11-20): the bodies of the functions of the
+benchmarks compiled without that store (and so with multiple values lost,
+an upper bound of any convention that leaves it out: callers resetting the
+count, a second entry for multiple-value contexts), best of three
+interleaved runs on one 4-CPU slot: whole programs `bench/gabriel.lisp`
+1.00 and `bench/closures.lisp` 0.99 of the time (only `k-cps-*` 0.91-0.93);
+loaded into the image (an imported global) `bench/closures.lisp` 0.98,
+`bench/gabriel.lisp` 0.99, `bench/suite.lisp` 0.99 (`b-fib` 0.90, `b-call`
+1.04). The store is one write of a global the engine keeps no value of
+across calls anyway; what a real convention would add back (a reset after
+calls whose values are dropped, or a second copy of every function) would
+take most of that 1-2%, so the convention was not changed.
+
 ## Dynamic binding (spec: シャローバインディング)
 
 The symbol's value slot holds the current value; binding pushes the old value
