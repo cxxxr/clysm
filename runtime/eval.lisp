@@ -1209,7 +1209,31 @@ when it is first called, and calls the function it defines."
     (%set-fdefinition name stub)
     name))
 
+(defvar *cf-constants* nil
+  "During COMPILE-FILE: symbol -> value of the constants that the DEFCONSTANT
+forms read so far define with a value written as a constant.")
+
+(defun %cf-note-constant (form)
+  "A toplevel DEFCONSTANT whose value is written as a constant (a number, a
+character or a symbol, or another such constant): the code of the rest of the
+file is compiled with the value (CLHS DEFCONSTANT: the compiler recognizes
+the name as a constant variable), as the forms of a file compiled by the host."
+  (let ((sym (second form)) (vform (third form)))
+    (when (and (symbolp sym) sym (not (keywordp sym)) (consp (cddr form)))
+      (multiple-value-bind (v ok)
+          (cond ((and (consp vform) (eq (car vform) 'quote) (consp (cdr vform))) (values (second vform) t))
+                ((consp vform) (values nil nil))
+                ((and (symbolp vform) (nth-value 1 (gethash vform *cf-constants*)))
+                 (gethash vform *cf-constants*))
+                ((symbolp vform)
+                 (if (or (null vform) (eq vform t) (keywordp vform)) (values vform t) (values nil nil)))
+                (t (values vform t)))
+        (when (and ok (or (numberp v) (characterp v) (symbolp v)))
+          (setf (gethash sym *cf-constants*) v))))))
+
 (defun %cf-process (form out compile-time-too)
+  (when (and *cf-constants* (consp form) (eq (car form) 'defconstant) (not (%env-fun *cf-env* 'defconstant)))
+    (%cf-note-constant form))
   (let ((x (%cf-toplevel-expansion form)))
     ;; a compile-time side effect ends the batch of pending forms
     ;; (definers with compile-time effects, EVAL-WHEN, special proclamations;
@@ -1307,6 +1331,7 @@ when it is first called, and calls the function it defines."
                                   (unless (typep c 'style-warning) (setq failure-p t))))
                        (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
           (let* ((*cf-modules* (list nil 0))
+                 (*cf-constants* (make-hash-table :test 'eq))
                  (*cf-pending* nil)
                  (*cf-unit* nil) (*cf-unit-forms* nil)
                  (*fasl-gensyms* (make-hash-table :test 'eq))

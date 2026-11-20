@@ -9,10 +9,13 @@
         *live-var-type-hook* (lambda (s) (and (symbolp s) (get s 'sys::%var-type)))
         *live-constant-hook*
         (lambda (s)
-          (if (and (symbolp s) (not (keywordp s)) (boundp s)
-                   (not (zerop (logand (sys::%symbol-flags s) 2))))
-              (values (symbol-value s) t)
-              (values nil nil)))
+          (cond ((and (symbolp s) (not (keywordp s)) (boundp s)
+                      (not (zerop (logand (sys::%symbol-flags s) 2))))
+                 (values (symbol-value s) t))
+                ;; a DEFCONSTANT earlier in the file COMPILE-FILE compiles
+                ((and sys::*cf-constants* (nth-value 1 (gethash s sys::*cf-constants*)))
+                 (values (gethash s sys::*cf-constants*) t))
+                (t (values nil nil))))
         *live-symbol-macro-hook*
         (lambda (s)
           (let ((e (get s 'sys::%symbol-macro)))

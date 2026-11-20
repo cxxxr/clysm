@@ -211,7 +211,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
 
 (defun %ht-rehash (h)
   (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+)))
-    (%ht-init-storage h (max 8 (%svlength keys)))
+    (%ht-init-storage (%instance-slots h) (max 8 (%svlength keys)))
     (dotimes (i fill)
       (let ((k (%svref keys i)))
         (unless (eq k +deleted+) (%ht-put h k (%svref vals i)))))))
