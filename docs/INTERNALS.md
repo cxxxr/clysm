@@ -1967,10 +1967,14 @@ What makes the code fast:
   value of a call of one whose result is `(values TYPE &optional)` is
   checked where it is used as an argument, a variable's value or a test
   (`convert-value`; a call in tail position stays a tail call). Only types
-  of which the compiler makes something are used. The checks are an `i31`
-  test and an unsigned comparison for a fixnum range
-  (`%fixnum-in-range-p`, also for variables declared of an integer type)
-  and a `ref.test` for vectors and strings; the type error is signalled out
+  that TYPEP takes and of which the compiler makes something are used
+  (`ftype-check-spec`: DEFTYPEs expanded, `(function ...)` as `function`,
+  also inside OR/AND/NOT; VALUES, SATISFIES and types not defined yet are
+  not checked). The checks are the integer tests of declared variables
+  (which the compiler leaves out where the type is known: a test of its own
+  for fixnum ranges, not left out, cost babel's encoders 40%) and a
+  `ref.test` for vectors and strings; the type error, also that of a
+  declared integer variable, is signalled out
   of line (`%signal-type-error`: a function whose only other calls are
   helpers needs no code for non-local exits, which cost a reader of a
   vector a third of its time). esrap's packrat cache (positions, chunks)

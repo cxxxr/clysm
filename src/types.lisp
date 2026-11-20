@@ -260,10 +260,8 @@ compiler: in the file being compiled, or in the image), else NIL."
 which DECLARED-TY knows something)."
   (let* ((exp (or (ignore-errors (expand-deftypes spec)) spec))
          (ty (ignore-errors (declared-ty exp))))
-    (cond ((and ty (ty-only-p ty +k-int+) (ty-lo ty) (ty-hi ty)
-                (<= +most-negative-fixnum+ (ty-lo ty)) (<= (ty-hi ty) +most-positive-fixnum+))
-           `(clysm-sys::%fixnum-in-range-p ,var ,(ty-lo ty) ,(ty-hi ty)))
-          ((integer-decl-p exp) (integer-decl-test var exp))
+    ;; (an integer test the compiler leaves out where the type of the value shows it holds)
+    (cond ((integer-decl-p exp) (integer-decl-test var exp))
           ((and ty (= (ty-bits ty) +k-svec+) (null (ty-cls ty))) `(clysm-sys::%simple-vector-p ,var))
           ((and ty (= (ty-bits ty) +k-string+) (null (ty-cls ty))) `(clysm-sys::%simple-string-p ,var))
           ((and (consp exp) (eq (car exp) 'or) (cdr exp)
@@ -404,7 +402,7 @@ which DECLARED-TY knows something)."
 (def-ti-rule (< > <= >= = /= eq eql equal not null consp atom listp symbolp functionp characterp zerop
               plusp minusp evenp oddp integerp floatp realp numberp rationalp stringp simple-string-p
               vectorp simple-vector-p arrayp keywordp char= char< char> char<= char>= char/=
-              char-equal string= clysm-sys::fixnump clysm-sys::%fixnum-in-range-p clysm-sys::%bignump clysm-sys::%ratiop
+              char-equal string= clysm-sys::fixnump clysm-sys::%bignump clysm-sys::%ratiop
               clysm-sys::%single-float-p clysm-sys::%double-float-p clysm-sys::%complexp
               clysm-sys::%complex-d-p clysm-sys::%complex-s-p
               clysm-sys::%simple-string-p clysm-sys::%simple-vector-p clysm-sys::%instancep
@@ -649,11 +647,6 @@ which DECLARED-TY knows something)."
   (pred (clysm-sys::%bignump clysm-sys::bignump) +k-int+))
 (def-ti-test atom (a) (list (list 0 (ty-remove *ty-top* +k-cons+) (mkty +k-cons+))))
 (def-ti-test clysm-sys::fixnump (a) (list (list 0 *ty-fixnum* *ty-top*)))
-(def-ti-test clysm-sys::%fixnum-in-range-p (a)
-  (list (list 0 (if (and (ty-lo (second a)) (ty-hi (third a)))
-                    (int-ty (ty-lo (second a)) (ty-hi (third a)))
-                    *ty-fixnum*)
-              *ty-top*)))
 
 ;;; ------------------------------------------------------------
 ;;; Abstract interpretation
