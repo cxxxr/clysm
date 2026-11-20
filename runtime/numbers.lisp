@@ -218,18 +218,19 @@ converts the others): its top 62 bits with a sticky bit, scaled."
         ((%complexp x) (%make-complex (%negate (%complex-real x)) (%negate (%complex-imag x))))
         (t (%type-error x 'number))))
 
-(defun %check-underflow (result a b)
-  "Signals FLOATING-POINT-UNDERFLOW when a float operation on nonzero operands gives zero."
-  (when (and (floatp result) (zerop result) (not (zerop a)) (not (zerop b)))
-    (error 'floating-point-underflow :operation nil :operands (list a b)))
-  result)
+
+;;; The float traps are SBCL's default ones: an infinite result of finite
+;;; operands signals FLOATING-POINT-OVERFLOW (see %FLOAT-RESULT) and a zero
+;;; divisor DIVISION-BY-ZERO; an underflow is not signalled (SBCL masks it
+;;; by default): a result too small for a normalized float is the
+;;; denormalized float or the zero that IEEE arithmetic gives.
 
 (defun %generic-mul (a b)
   (when (and (integerp a) (integerp b)) (return-from %generic-mul (%int-mul-big a b)))
   (let ((r (%contagion a b)))
     (cond ((= r 0) (%int-mul a b))
           ((= r 1) (%ratio-mul a b))
-          ((< r 4) (%check-underflow (%float-result (%d* (%to-double a) (%to-double b)) r) a b))
+          ((< r 4) (%float-result (%d* (%to-double a) (%to-double b)) r))
           (t (%complex-mul a b)))))
 
 (defun %generic-div (a b)
@@ -241,7 +242,7 @@ converts the others): its top 62 bits with a sticky bit, scaled."
            (let ((db (%to-double b)))
              (when (%d= db (%fixnum-to-double 0))
                (error 'division-by-zero :operation '/ :operands (list a b)))
-             (%check-underflow (%float-result (%d/ (%to-double a) db) r) a b)))
+             (%float-result (%d/ (%to-double a) db) r)))
           (t (%complex-div a b)))))
 
 (defun %exact-compare-p (a b)
@@ -720,8 +721,6 @@ SORT and the like make no argument list)."
          (r (if (%double-float-p x) d (%double-to-single d))))
     (when (and (%float-infinite-p (%to-double r)) (not (%float-infinite-p (%to-double x))))
       (error 'floating-point-overflow :operation op :operands (list x)))
-    (when (and (zerop r) (or (eql op 6) (not (zerop d))) (not (%float-infinite-p (%to-double x))))
-      (error 'floating-point-underflow :operation op :operands (list x)))
     r))
 
 (defun %fcomplex (z)
@@ -876,7 +875,20 @@ SORT and the like make no argument list)."
                  (setq result (* result result))
                  (when (logbitp i power) (setq result (* result base)))))))
         ((and (integerp power) (floatp base))
-         (if (minusp power) (/ 1 (expt base (- power)))
+         (if (minusp power)
+             ;; 1 / BASE^-POWER, unless that power is past the floats (the
+             ;; result a denormalized float or zero, as SBCL's pow gives it)
+             (let ((d (%to-double base)) (r 1d0) (b 0d0) (p (- power)))
+               (setq b d)
+               (loop (when (eql p 0) (return))
+                     (when (oddp p) (setq r (%d* r b)))
+                     (setq p (ash p -1))
+                     (unless (eql p 0) (setq b (%d* b b))))
+               (let ((q (if (or (%float-infinite-p r) (%double-nan-p r)
+                                (and (%d= r 0d0) (not (%d= d 0d0))))
+                            (%float-result (%math2 d (%to-double power) 0) 3)
+                            (/ 1 (expt base (- power))))))
+                 (if (%single-float-p base) (float q base) q)))
              (let ((result (float 1 base)) (b base) (p power))
                (do () ((eql p 0) result)
                  (when (oddp p) (setq result (* result b)))
@@ -913,7 +925,12 @@ SORT and the like make no argument list)."
                ;; (a denormalized double has the exponent of the smallest normal one)
                (e (%fx- (if (eql expo 0) 1 expo) 1075)))
           (if (%single-float-p f)
-              (values (ash mant -29) (%fx+ e 29) sign)
+              ;; (a denormalized single: its significand of fewer bits, at
+              ;; the exponent of the smallest one, as SBCL gives it)
+              (let ((m (ash mant -29)) (e (%fx+ e 29)))
+                (if (%fx< e -149)
+                    (values (ash m (- e -149)) -149 sign)
+                    (values m e sign)))
               (values mant e sign))))))
 
 (defun scale-float (f k)

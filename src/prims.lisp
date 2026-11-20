@@ -215,17 +215,10 @@ label giving the i64 code, the generic code, and the records of the leaves."
 
 (defun f64-check-code (name x y r fail)
   "After an f64 operation NAME left its result in R (operands in X and Y):
-branch to FAIL when the result is not finite, or a zero that may be an
-underflow (what the generic operation decides)."
-  (if (member name '(+ -))
-      `((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,fail))
-      `((:local.get ,r) :i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
-        (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
-        (:if nil nil
-             ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-              (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
-              ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
-              :i32.or (:br_if ,fail))))))
+branch to FAIL when the result is not finite (what the generic operation
+decides; an underflow is no condition)."
+  (declare (ignore x y))
+  `(,@(f64-not-finite-code name r) (:br_if ,fail)))
 
 (defun fused-f64-code (node fail &optional top)
   "For a fused tree whose operations are + - * with a double among the
@@ -302,8 +295,7 @@ left, the value is stored there."
 ;;; parameters) but that may be doubles is computed speculatively in f64: the
 ;;; operands are evaluated in order, each one that is not known to be a
 ;;; double is tested, and only the root is boxed.  When an operand is not a
-;;; double, or a step gives an infinity, a NaN, a zero that may be an
-;;; underflow or (SQRT) a negative operand, the tree is computed again by the
+;;; double, or a step gives an infinity, a NaN or (SQRT) a negative operand, the tree is computed again by the
 ;;; generic operations: the operands already evaluated from their locals, the
 ;;; others evaluated there, in their order (so the generic code signals what
 ;;; it would have signalled, after the same evaluations).
@@ -406,19 +398,9 @@ stored there (F, with B null, when the fast path gave it)."
                              ,@(fast (second args)) (:local.set ,y)
                              (:local.get ,x) (:local.get ,y)
                              ,(ecase name (+ :f64.add) (- :f64.sub) (* :f64.mul) (/ :f64.div))
-                             (:local.tee ,r)
-                             ,@(if (member name '(+ -))
-                                   ;; not finite
-                                   `((:local.get ,r) :f64.sub (:f64.const 0) :f64.ne)
-                                   ;; zero, subnormal, infinite or NaN; then a zero of nonzero operands
-                                   `(:i64.reinterpret_f64 (:i64.const 52) :i64.shr_u :i32.wrap_i64
-                                     (:i32.const #x7FF) :i32.and (:i32.const 1) :i32.sub (:i32.const #x7FE) :i32.ge_u
-                                     (:if nil :i32
-                                          ((:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne
-                                           (:local.get ,r) (:f64.const 0) :f64.eq (:local.get ,x) (:f64.const 0) :f64.ne :i32.and
-                                           ,@(when (eq name '*) `((:local.get ,y) (:f64.const 0) :f64.ne :i32.and))
-                                           :i32.or)
-                                          ((:i32.const 0)))))
+                             (:local.set ,r)
+                             ;; not finite
+                             ,@(f64-not-finite-code name r)
                              (:if nil nil ((:br ,bail)))
                              (:local.get ,r)))))
                    (leaf n)))
@@ -3451,13 +3433,7 @@ anything else branches to SLOW.  Uses the i32 local V."
   "OPCODE: 0 + 1 - 2 * 3 /."
   (let ((min64 (- (expt 2 63)))
         (fop (ecase opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul) (3 :f64.div))))
-    (flet ((zero-check (r zero eq)
-             ;; a zero result of nonzero operands may be an underflow
-             (case opcode
-               (2 `((:local.get ,r) ,zero ,eq (:local.get da) (:f64.const 0) :f64.ne :i32.and
-                    (:local.get db) (:f64.const 0) :f64.ne :i32.and (:br_if slow)))
-               (3 `((:local.get ,r) ,zero ,eq (:local.get da) (:f64.const 0) :f64.ne :i32.and (:br_if slow)))))
-           (finite-check (r sub zero ne)
+    (flet ((finite-check (r sub zero ne)
              `((:local.get ,r) (:local.get ,r) ,sub ,zero ,ne (:br_if slow))))
       `(,@(fixnum-pair-code
            (ecase opcode
@@ -3512,11 +3488,9 @@ anything else branches to SLOW.  Uses the i32 local V."
           (:local.get ka) (:local.get kb) :i32.or (:i32.const 2) :i32.and
           (:if nil nil
                (,@(finite-check 'dr :f64.sub '(:f64.const 0) :f64.ne)
-                ,@(zero-check 'dr '(:f64.const 0) :f64.eq)
                 (:local.get dr) (:struct.new :double) :return))
           (:local.get dr) :f32.demote_f64 (:local.set fr)
           ,@(finite-check 'fr :f32.sub '(:f32.const 0) :f32.ne)
-          ,@(zero-check 'fr '(:f32.const 0) :f32.eq)
           (:local.get fr) (:struct.new :single) :return)
         ;; integers beyond 64 bits (or a result beyond): the bignum helpers
         ,@(when (< opcode 3)
@@ -3570,9 +3544,7 @@ not finite (or a zero that may be an underflow)."
             ,@(f32-of-param-code 1 'v 'slow) (:local.set sb)
             (:local.get sa) (:local.get sb) ,op (:local.tee sr)
             (:local.get sr) :f32.sub (:f32.const 0.0) :f32.ne
-            ,@(when zero-check '((:local.get sr) (:f32.const 0.0) :f32.eq
-                                 (:local.get sa) (:f32.const 0.0) :f32.ne :i32.and
-                                 (:local.get sb) (:f32.const 0.0) :f32.ne :i32.and :i32.or))
+            ,@(progn zero-check nil)
             (:br_if slow)
             (:local.get sr) (:struct.new :single) :return)))))
 
@@ -3613,15 +3585,9 @@ f64s in locals DA and DB (it may branch to SLOW)."
     ,@(double-fast-path-code
        `(,@(when (= opcode 3) '((:local.get db) (:f64.const 0) :f64.eq (:br_if slow)))
          (:local.get da) (:local.get db) ,(ecase opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul) (3 :f64.div))
-         (:local.tee dr)
-         ;; not finite, or a zero that may be an underflow: the general helper decides
-         (:local.get dr) :f64.sub (:f64.const 0) :f64.ne
-         ,@(case opcode
-             (2 '((:local.get dr) (:f64.const 0) :f64.eq
-                  (:local.get da) (:f64.const 0) :f64.ne :i32.and
-                  (:local.get db) (:f64.const 0) :f64.ne :i32.and :i32.or))
-             (3 '((:local.get dr) (:f64.const 0) :f64.eq
-                  (:local.get da) (:f64.const 0) :f64.ne :i32.and :i32.or)))
+         (:local.set dr)
+         ;; not finite: the general helper decides (an underflow is no condition)
+         ,@(f64-not-finite-code (ecase opcode (0 '+) (1 '-) (2 '*) (3 '/)) 'dr)
          (:br_if slow)
          (:local.get dr) (:struct.new :double) :return))
     (:local.get 0) (:local.get 1) (:return_call ,gen)))
@@ -5672,9 +5638,9 @@ in local V and the index in local K; else branch to FAIL."
 ;;; one argument are primitives: for a double, a single or an integer within
 ;;; 64 bits the helper calls the host function and returns a float of the
 ;;; argument's format (a single for an integer).  A result that is not
-;;; finite (outside the domain: the result is complex; an overflow), a zero
-;;; of EXP or a single zero of a nonzero double (an underflow), and every
-;;; other argument go to the Lisp function %NAME-SLOW.
+;;; finite (outside the domain: the result is complex; an overflow) and
+;;; every other argument go to the Lisp function %NAME-SLOW (an underflow is
+;;; no condition: the zero or denormalized result).
 (defparameter *math1-functions* '(sin cos tan asin acos atan exp log sinh cosh tanh asinh acosh atanh))
 (defun math-import (name) (intern (concatenate 'string "MATH-" (symbol-name name)) :keyword))
 (defun math-helper (name) (intern (concatenate 'string "FN-" (symbol-name name)) :keyword))
@@ -5689,12 +5655,8 @@ in local V and the index in local K; else branch to FAIL."
       (:local.get dr) :f64.sub (:f64.const 0) :f64.ne (:br_if slow)
       (:local.get ka) (:i32.const 2) :i32.eq
       (:if nil nil
-           (,@(when (eq name 'exp) '((:local.get dr) (:f64.const 0) :f64.eq (:br_if slow)))
-            (:local.get dr) (:struct.new :double) :return))
+           ((:local.get dr) (:struct.new :double) :return))
       (:local.get dr) :f32.demote_f64 (:local.tee fr) (:local.get fr) :f32.sub (:f32.const 0) :f32.ne (:br_if slow)
-      (:local.get fr) (:f32.const 0) :f32.eq
-      ,@(unless (eq name 'exp) '((:local.get dr) (:f64.const 0) :f64.ne :i32.and))
-      (:br_if slow)
       (:local.get fr) (:struct.new :single) :return)
     (:local.get 0) (:global.get ,(sym-global (math-slow-function name))) (:call (:callsym 1))))
 
