@@ -66,6 +66,16 @@ image: they are all NOTINLINE, so their callers go through the function cell.")
 (defvar *live-macro-hook* nil "symbol -> macro function or NIL")
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
+(defvar *live-var-type-hook* nil "symbol -> the type proclaimed for the global variable, or NIL")
+(defvar *var-types* (make-hash-table :test 'eq)
+  "symbol -> the type proclaimed for the global variable (DECLAIM in the forms compiled)")
+(defvar *suppress-var-types* nil "true while converting the check of a reference of a typed special variable")
+(defun global-var-type (sym)
+  "The type proclaimed for the special variable SYM, or NIL."
+  (multiple-value-bind (ty found) (gethash sym *var-types*)
+    (cond (found ty)
+          (*live-var-type-hook* (funcall *live-var-type-hook* sym))
+          (t nil))))
 (defvar *live-symbol-macro-hook* nil "symbol -> (values expansion foundp)")
 (defvar *live-compiler-macro-hook* nil "symbol -> the compiler macro function defined in the image, or NIL")
 (defun global-symbol-macro (sym)
@@ -223,7 +233,10 @@ they are bound)."
           do (dolist (v vars)
                (when (and (symbolp v) (not (member v bound)))
                  (let ((e (env-lookup-var env v)))
-                   (when (and e (eq (first e) :var) (null (lvar-decl (third e))))
+                   (when (or (and e (eq (first e) :var) (null (lvar-decl (third e))))
+                             ;; a special variable (TYPED-SPECIAL-REF)
+                             (and e (eq (first e) :special))
+                             (and (null e) (special-var-p v)))
                      (push (list :tdecl v spec) entries))))))
     (if entries (apply #'env-extend env (nreverse entries)) env)))
 
@@ -367,7 +380,7 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
                           ((and *check-declared-integers* (integer-decl-p spec))
                            `(:the ,spec ,(let ((*ignore-tdecls* t)) (convert (checked-value sym spec) env))))
                           (t `(:the ,spec (:lref ,(note-ref (third e))))))))
-                 ((and e (eq (first e) :special)) `(:sref ,sym))
+                 ((and e (eq (first e) :special)) (typed-special-ref sym env))
                  ((and e (eq (first e) :smacro)) (convert (third e) env))
                  (t (multiple-value-bind (exp found) (global-symbol-macro sym)
                       (cond (found (convert exp env))
@@ -386,7 +399,18 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
                                    `(:sref ,sym))))
                             (t (unless (special-var-p sym)
                                  (cwarn "undefined variable ~S" sym))
-                               `(:sref ,sym))))))))))
+                               (typed-special-ref sym env))))))))))
+
+(defun typed-special-ref (sym env)
+  "A reference of the special variable SYM: of the type a declaration in ENV
+or a proclamation gives it, as for a lexical variable (an integer type
+checked, CHECKED-VALUE, the others trusted)."
+  (let ((spec (and (not *suppress-var-types*) (or (free-type-decl env sym) (global-var-type sym)))))
+    (cond ((null spec) `(:sref ,sym))
+          ((and *check-declared-integers* (integer-decl-p spec))
+           `(:the ,spec ,(let ((*ignore-tdecls* t) (*suppress-var-types* t))
+                           (convert (checked-value sym spec) env))))
+          (t `(:the ,spec (:sref ,sym))))))
 
 ;;; Code evaluated in the image (the REPL, LOAD of a source file) may contain
 ;;; a copy of the body of a small global function defined there earlier, as
