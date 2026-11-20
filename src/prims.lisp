@@ -1023,8 +1023,9 @@ type test), those of structures including it of a subtype."
             (:local.get ,o) (:ref.test ,ty) :i32.eqz (:hint 0) (:br_if ,slow)
             (:local.get ,o) (:ref.cast! ,ty) (:local.tee ,s) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,c)
             :ref.eq (:hint 1) (:br_if ,hit)
-            ;; a structure that includes CLASS
-            ,@(inherits-depth-check-code l c d) :i32.eqz (:br_if ,slow))
+            ;; a structure that includes CLASS: by its slot vector, else its layout
+            ;; (else the Lisp function: a structure made otherwise, a heap image's)
+            ,@(sinst-inherits-check-code s ty c d '((:i32.const 0))) :i32.eqz (:br_if ,slow))
           (:local.get ,s)
           ,@(if vp
                 `((:local.get ,val) (:struct.set ,ty ,(sinst-field k)) (:local.get ,val))
@@ -1040,6 +1041,16 @@ type test), those of structures including it of a subtype."
   (let ((k (struct-iref-index n))) (and k (<= 1 (mod k 64) +struct-inline-max+) (mod k 64))))
 (defun struct-depth-index (n)
   (let ((k (struct-iref-index n))) (and k (floor k 64))))
+
+(defun sinst-inherits-check-code (s ty c d fallback)
+  "Code pushing 1 when the structure of field slots S (a local of type TY)
+includes the class C, at depth D, by the vector of included structures its
+constructor put in its slot vector (LAYOUT-INHERITS); FALLBACK (code pushing
+an i32) when that is empty (a structure made otherwise: a heap image's)."
+  (let ((iv (new-local '(:ref :null :vector))) (n (new-local :i32)))
+    `((:local.get ,s) (:struct.get ,ty 1) (:local.tee ,iv) :array.len (:local.tee ,n) (:i32.const ,d) :i32.gt_u
+      (:if nil :i32 ((:local.get ,iv) (:i32.const ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
+           ((:local.get ,n) :i32.eqz (:if nil :i32 ,fallback ((:i32.const 0))))))))
 
 (defun inherits-depth-check-code (l c d &optional (other '((:i32.const 0))))
   "Code pushing 1 when the layout (local L, not C) includes C, whose index in
@@ -1130,9 +1141,10 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 ;; a structure of class LAYOUT with the slots ARGS: its own fields for up to
 ;; +STRUCT-INLINE-MAX+ slots, else a slot vector
 (defprim clysm-sys::%make-struct :any :value
-  (let ((n (length (rest args))))
+  (let ((n (length (rest args))) (c (new-local)))
     (if (<= 1 n +struct-inline-max+)
-        `(,@(first args) (:global.get :empty-slots) (:i32.const 0) ,@(apply #'append (rest args))
+        `(,@(first args) (:local.tee ,c) (:local.get ,c) (:call :layout-inherits) (:i32.const 0)
+          ,@(apply #'append (rest args))
           (:struct.new ,(sinst-type n)))
         `(,@(first args) ,@(apply #'append (rest args)) (:array.new_fixed :vector ,n) (:i32.const 0)
           (:struct.new :instance)))))
@@ -2691,7 +2703,8 @@ sums LO (low halves) and HI (high halves)."
 ;; of a structure of N field slots: its instances (and those of the
 ;; structures including it) are a $si<N> or a subtype, tested first
 (defprim clysm-sys::%structure-typep (x c n) :test
-  (let ((o (new-local)) (cl (new-local)) (size (struct-size-index n)) (l (new-local)))
+  (let* ((o (new-local)) (cl (new-local)) (size (struct-size-index n)) (l (new-local))
+         (s (and size (new-local `(:ref :null ,(sinst-type size))))))
     (if (null size)
         `(,@x (:local.set ,o) ,@c (:local.set ,cl) ,@n :drop
           ,@(let ((d (struct-depth-index n)))
@@ -2700,8 +2713,11 @@ sums LO (low halves) and HI (high halves)."
           `(,@x (:local.set ,o) ,@c (:local.set ,cl)
             (:local.get ,o) (:ref.test ,ty)
             (:if nil :i32
-                 ((:local.get ,o) (:ref.cast! ,ty) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,cl) :ref.eq
-                  (:if nil :i32 ((:i32.const 1)) ,(inherits-depth-check-code l cl (struct-depth-index n))))
+                 ((:local.get ,o) (:ref.cast! ,ty) (:local.tee ,s) (:struct.get ,ty 0) (:local.tee ,l) (:local.get ,cl)
+                  :ref.eq
+                  (:if nil :i32 ((:i32.const 1))
+                       ,(sinst-inherits-check-code s ty cl (struct-depth-index n)
+                                                   `((:local.get ,o) (:local.get ,cl) (:call :struct-typep)))))
                  ;; a structure of fewer field slots is not one; an instance
                  ;; of a structure of a slot vector including it may be
                  ((:local.get ,o) (:ref.test :si1)
@@ -5930,17 +5946,32 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   :drop
   '(:ref.null :vector) '(:global.set :img-objs))
 
-;;; helpers of structures whose slots are fields (see %INSTANCE-REF above)
+;;; helpers of structures whose slots are fields (see %INSTANCE-REF above;
+;;; the slot vector of such a structure is the vector of the structures its
+;;; class includes, LAYOUT-INHERITS)
 (defhelper :instance-ref :ee-e ((sv (:ref :null :vector)) (k :i32))
-  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.set sv)
-  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.tee k) '(:local.get sv) :array.len :i32.lt_u
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.set k)
+  '(:local.get 0) '(:ref.test :sfield) '(:if nil nil ((:local.get 0) (:local.get k) (:call :sinst-ref) :return))
+  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.tee sv) :array.len '(:local.get k) :i32.gt_u
   '(:if nil nil ((:local.get sv) (:local.get k) (:array.get :vector) :return))
   '(:local.get 0) '(:local.get k) '(:call :sinst-ref))
 (defhelper :instance-set :eee-e ((sv (:ref :null :vector)) (k :i32))
-  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.set sv)
-  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.tee k) '(:local.get sv) :array.len :i32.lt_u
+  '(:local.get 1) '(:ref.cast :i31) :i31.get_s '(:local.set k)
+  '(:local.get 0) '(:ref.test :sfield)
+  '(:if nil nil ((:local.get 0) (:local.get k) (:local.get 2) (:call :sinst-set) :return))
+  '(:local.get 0) '(:ref.cast :instance) '(:struct.get :instance 1) '(:local.tee sv) :array.len '(:local.get k) :i32.gt_u
   '(:if nil nil ((:local.get sv) (:local.get k) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   '(:local.get 0) '(:local.get k) '(:local.get 2) '(:call :sinst-set))
+;; the vector of the structures the class L (a layout) includes, by depth
+;; (+CLASS-INHERITS+), or the empty one: the slot vector of a structure of
+;; class L whose slots are fields, so that the accessors of the structures it
+;; includes find them in it, one load from the instance
+(defhelper :layout-inherits :e-vec ()
+  `(:block fail :eqref
+     (:local.get 0) (:br_on_cast_fail fail :eqref (:ref :instance))
+     (:struct.get :instance 1) (:i32.const ,+class-inherits-slot+) (:array.get :vector)
+     (:br_on_cast_fail fail :eqref (:ref :vector)) :return)
+  :drop '(:global.get :empty-slots))
 
 ;; (a structure with typed slots, src/typed.lisp, is not of the $siK types
 ;; past its leading slots of type T: the Lisp function, by its class's functions)
@@ -5972,7 +6003,8 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   '(:local.get 0) '(:call :sinst-size) '(:i32.const 1) :i32.sub '(:local.set k)
   (sinst-dispatch-code 'k (lambda (j)
                             (let ((ty (sinst-type (1+ j))))
-                              `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 0) (:global.get :empty-slots)
+                              `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 0)
+                                (:local.get 0) (:ref.cast ,ty) (:struct.get ,ty 1)
                                 (:i32.const 0)
                                 ,@(loop for f below (1+ j)
                                         append `((:local.get 0) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field f))))

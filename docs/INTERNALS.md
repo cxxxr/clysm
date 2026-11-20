@@ -69,11 +69,17 @@ The universal value type is `(ref null eq)`.
   where the layout is the class object (the hash caches the identity hash).
   A **structure** (`defstruct` without `:type`) of 1 to 32 slots keeps them
   in fields of its own: it is a `$siK` (K slots), the `$instance` fields (its
-  slot vector is a shared empty one) then K mutable fields, and `$siK` is a
+  slot vector is the vector of the structures its class includes, by depth,
+  the class's `+class-inherits+`, put there by the constructor:
+  `:layout-inherits`; the shared empty vector for one made otherwise, such
+  as a heap image's) then K mutable fields, and `$siK` is a
   subtype of `$si(K-1)`, the first of `$instance` (`src/layout.lisp`). An
   accessor of a structure of N slots tests for `$siN` (exact for its own
   instances, a subtype for those of the structures including it) and the
-  layout, and reads the field; a constructor is one `struct.new`. Larger
+  layout, else (an instance of a structure including it) the class at its
+  depth in the instance's slot vector, and reads the field; a constructor
+  is one `struct.new`. Generic code tests `$sfield` before using the slot
+  vector of an instance (`:instance-ref`). Larger
   structures, structures that include one of a slot vector, and the streams
   (`(sys::%slot-vector)`, read by fast paths that index the vector) keep a
   slot vector. Generic code reads slot I of any instance with
@@ -1937,6 +1943,43 @@ What makes the code fast:
   compiled to a fasl and loaded into the image: 2.0 → 1.7 times SBCL.
   Still slow: `a-nbody` (1.2; doubles in slots without declarations are
   boxed and their arithmetic generic).
+* **Included structures**: the accessor of a structure on an instance of
+  one including it (esrap's `result-%position` on a `successful-parse`)
+  finds the class in the vector of included structures that the
+  constructor put in the instance's slot vector field: one load from the
+  instance instead of the layout's slot vector, its `+class-inherits+` slot
+  and two type tests (when the field holds the empty vector, the Lisp
+  function or `:struct-typep` answers). Probes compiled with `compile-file`,
+  against the build before on the same slot (accessor of the parent on a mix
+  of two children; `setf` of a parent's typed slot and read; predicate of an
+  intermediate structure): 2.3 → 2.0, 2.6 → 1.8, 2.1 → 2.0 times SBCL.
+  esrap (`a-esrap`, loaded into the image with these and the FTYPE checks
+  below) only 2% faster in interleaved runs: its time is spread over calls
+  between files, closures and allocation.
+* **FTYPE proclamations** (`declaim ftype`, `*declared-ftypes*`, and the
+  name's plist `sys::%ftype` for fasls loaded later): a function defined at
+  top level checks its required arguments of the types on entry
+  (`ftype-checked-function`, into variables declared of them), and the
+  value of a call of one whose result is `(values TYPE &optional)` is
+  checked where it is used as an argument, a variable's value or a test
+  (`convert-value`; a call in tail position stays a tail call). Only types
+  of which the compiler makes something are used. The checks are an `i31`
+  test and an unsigned comparison for a fixnum range
+  (`%fixnum-in-range-p`, also for variables declared of an integer type)
+  and a `ref.test` for vectors and strings; the type error is signalled out
+  of line (`%signal-type-error`: a function whose only other calls are
+  helpers needs no code for non-local exits, which cost a reader of a
+  vector a third of its time). esrap's packrat cache (positions, chunks)
+  computes in `i32` and indexes the chunks directly; a probe reading a
+  vector through an FTYPE'd function 2.0 → 1.5 times SBCL.
+* **`make-array`** of one dimension of element type T with only
+  `:initial-element` makes the vector where the call is (`array.new`) when
+  the dimension is a fixnum: a probe making vectors of 256 and 41 elements
+  1.5 → 1.1–1.3 times SBCL. (Specialized element types the same way lost
+  the type of the vector where the dimension's type was not known: a
+  double-float vector program 20 times slower; they stay calls.) `simple-vector-p`,
+  `double-float-p` and the like are primitives, so `(typep x '(simple-vector
+  41))` narrows X itself.
 * **Structures with `double-float` slots** (declared `:type double-float`,
   up to 32 slots) have a Wasm type of their own, made from the kinds of
   their slots (an `f64` field for each such slot), a subtype of the type of
