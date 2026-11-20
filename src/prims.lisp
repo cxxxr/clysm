@@ -4410,6 +4410,206 @@ division and the product are the identity)."
 (defprim clysm-sys::%float-to-chars (d mode) :value
   `(,@(f64-code d) ,@(idx-code mode) (:call :host-float-to-chars) :ref.i31))
 (defprim clysm-sys::%host-float-part (k) :value `(,@(idx-code k) (:call :host-float-part) :ref.i31))
+
+;;; The shortest digits of a float, by Schubfach (R. Giulietti, "The
+;;; Schubfach way to render doubles", 2020; Java's Double.toString), with
+;;; SBCL's choices where they differ: a subnormal is printed as SBCL's
+;;; FLONUM-TO-DIGITS does, as if it had all the bits of a normal float (its
+;;; significand shifted up to P bits, so that it gets up to 17 digits), and
+;;; of two shortest decimals equally near, the larger is taken.  The table
+;;; holds g = floor(10^-k 2^-r) + 1, r = floor(-k log2 10) - 125, as two
+;;; halves of 63 bits, for k from +SCHUBFACH-KMIN+ (the powers below
+;;; Schubfach's -324 are for the shifted subnormals) to 292.
+(defconstant +schubfach-kmin+ -345)
+(defconstant +schubfach-kmax+ 292)
+(defvar *schubfach-table-init* nil)
+(defun schubfach-table-init ()
+  (or *schubfach-table-init*
+      (setf *schubfach-table-init*
+            (let ((n 0) (code nil))
+              (loop for k from +schubfach-kmin+ to +schubfach-kmax+
+                    do (let* ((e (- k))
+                              (r (- (ash (* e 913124641741) -38) 125))
+                              (g (1+ (if (>= e 0)
+                                         (if (>= r 0)
+                                             (floor (expt 10 e) (expt 2 r))
+                                             (* (expt 10 e) (expt 2 (- r))))
+                                         (floor (expt 2 (- r)) (expt 10 (- e)))))))
+                         (push `(:i64.const ,(ash g -63)) code)
+                         (push `(:i64.const ,(ldb (byte 63 0) g)) code)
+                         (incf n 2)))
+              `(,@(nreverse code) (:array.new_fixed :u63vec ,n))))))
+
+(defun schubfach-table-global ()
+  "The global of the table, added to the module being compiled."
+  (unless (find :schubfach-table *misc-globals* :key #'first)
+    (push (list :schubfach-table '(:ref :u63vec) nil (schubfach-table-init)) *misc-globals*))
+  :schubfach-table)
+
+(defun mulhi64-code (a b)
+  "The high 64 bits of the unsigned product of the i64 locals A and B."
+  `((:local.get ,a) (:i64.const #xFFFFFFFF) :i64.and (:local.get ,b) (:i64.const #xFFFFFFFF) :i64.and :i64.mul
+    (:local.set mll)
+    (:local.get ,a) (:i64.const #xFFFFFFFF) :i64.and (:local.get ,b) (:i64.const 32) :i64.shr_u :i64.mul
+    (:local.set mlh)
+    (:local.get ,a) (:i64.const 32) :i64.shr_u (:local.get ,b) (:i64.const #xFFFFFFFF) :i64.and :i64.mul
+    (:local.set mhl)
+    (:local.get ,a) (:i64.const 32) :i64.shr_u (:local.get ,b) (:i64.const 32) :i64.shr_u :i64.mul
+    (:local.get mlh) (:i64.const 32) :i64.shr_u :i64.add
+    (:local.get mhl) (:i64.const 32) :i64.shr_u :i64.add
+    (:local.get mll) (:i64.const 32) :i64.shr_u
+    (:local.get mlh) (:i64.const #xFFFFFFFF) :i64.and :i64.add
+    (:local.get mhl) (:i64.const #xFFFFFFFF) :i64.and :i64.add
+    (:i64.const 32) :i64.shr_u :i64.add))
+
+(defun schubfach-rop-code (cb dest)
+  "DEST := the product of g (G1 and G0; G1 alone for a single) and CB << H,
+rounded to odd (Schubfach's rop)."
+  `((:local.get ,cb) (:local.get h) :i64.shl (:local.set cp)
+    (:local.get single)
+    (:if nil nil
+         (,@(mulhi64-code 'g1 'cp) (:local.tee x1) (:i64.const 31) :i64.shr_u
+          (:local.get x1) (:i64.const #xFFFFFFFF) :i64.and (:i64.const #xFFFFFFFF) :i64.add
+          (:i64.const 32) :i64.shr_u :i64.or (:local.set ,dest))
+         (,@(mulhi64-code 'g0 'cp) (:local.set x1)
+          ;; z = (low(g1 cp) >> 1) + x1
+          (:local.get g1) (:local.get cp) :i64.mul (:i64.const 1) :i64.shr_u (:local.get x1) :i64.add
+          (:local.set z)
+          ,@(mulhi64-code 'g1 'cp) (:local.get z) (:i64.const 63) :i64.shr_u :i64.add
+          (:local.get z) (:i64.const #x7FFFFFFFFFFFFFFF) :i64.and (:i64.const #x7FFFFFFFFFFFFFFF) :i64.add
+          (:i64.const 63) :i64.shr_u :i64.or (:local.set ,dest)))))
+
+;;; (float, simple string) -> fixnum: the digits are stored in the string
+;;; from index 0; the value is n + 32 negative-p + 64 (e + 2048) where
+;;; |x| = 0.d1..dn 10^e (a zero: one digit 0, e = 1).
+(defhelper :float-shortest :ee-e ((buf (:ref :null :string)) (single :i32) (neg :i32) (i :i32) (n :i32)
+                                  (lo :i32) (hi :i32)
+                                  (bits :i64) (bq :i64) (tm :i64) (p :i64) (qmin :i64) (cmin :i64)
+                                  (c :i64) (q :i64) (k :i64) (h :i64) (out :i64) (cb :i64) (cbl :i64) (cbr :i64)
+                                  (g1 :i64) (g0 :i64) (cp :i64) (x1 :i64) (z :i64)
+                                  (mll :i64) (mlh :i64) (mhl :i64)
+                                  (vb :i64) (vbl :i64) (vbr :i64) (s :i64) (tt :i64) (f :i64) (pw :i64))
+  '(:local.get 1) '(:ref.cast :string) '(:local.set buf)
+  '(:local.get 0) '(:ref.test :double)
+  '(:if nil nil
+    ((:local.get 0) (:ref.cast :double) (:struct.get :double 0) :i64.reinterpret_f64 (:local.tee bits)
+     (:i64.const 63) :i64.shr_u :i32.wrap_i64 (:local.set neg)
+     (:local.get bits) (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and (:local.set bq)
+     (:local.get bits) (:i64.const #xFFFFFFFFFFFFF) :i64.and (:local.set tm)
+     (:i64.const 53) (:local.set p) (:i64.const -1074) (:local.set qmin)
+     (:i64.const #x10000000000000) (:local.set cmin))
+    ((:i32.const 1) (:local.set single)
+     (:local.get 0) (:ref.cast :single) (:struct.get :single 0) :i32.reinterpret_f32 :i64.extend_i32_u
+     (:local.tee bits)
+     (:i64.const 31) :i64.shr_u :i32.wrap_i64 (:local.set neg)
+     (:local.get bits) (:i64.const 23) :i64.shr_u (:i64.const #xFF) :i64.and (:local.set bq)
+     (:local.get bits) (:i64.const #x7FFFFF) :i64.and (:local.set tm)
+     (:i64.const 24) (:local.set p) (:i64.const -149) (:local.set qmin)
+     (:i64.const #x800000) (:local.set cmin)))
+  `(:block digits nil
+     (:local.get bq) :i64.eqz
+     (:if nil nil
+          (;; zero
+           (:local.get tm) :i64.eqz
+           (:if nil nil ((:i64.const 0) (:local.set k) (:i64.const 0) (:local.set f) (:br digits)))
+           ;; a subnormal: its significand shifted up to P bits, as SBCL does
+           (:local.get p) (:i64.const 64) :i64.sub (:local.get tm) :i64.clz :i64.add (:local.set h)
+           (:local.get tm) (:local.get h) :i64.shl (:local.set c)
+           (:local.get qmin) (:local.get h) :i64.sub (:local.set q))
+          ((:local.get cmin) (:local.get tm) :i64.or (:local.set c)
+           (:local.get qmin) (:local.get bq) :i64.add (:i64.const 1) :i64.sub (:local.set q)))
+     ;; an integer below 2^P: its digits
+     (:local.get q) (:i64.const 0) :i64.lt_s
+     (:local.get q) (:i64.const 0) (:local.get p) :i64.sub :i64.gt_s :i32.and
+     (:if nil nil
+          ((:local.get c) (:i64.const 1) (:i64.const 0) (:local.get q) :i64.sub :i64.shl (:i64.const 1) :i64.sub
+           :i64.and :i64.eqz
+           (:if nil nil
+                ((:local.get c) (:i64.const 0) (:local.get q) :i64.sub :i64.shr_u (:local.set f)
+                 (:i64.const 0) (:local.set k) (:br digits)))))
+     (:local.get c) (:i64.const 1) :i64.and (:local.set out)
+     (:local.get c) (:i64.const 2) :i64.shl (:local.tee cb) (:i64.const 2) :i64.add (:local.set cbr)
+     (:local.get c) (:local.get cmin) :i64.ne (:local.get q) (:local.get qmin) :i64.eq :i32.or
+     (:if nil nil
+          ((:local.get cb) (:i64.const 2) :i64.sub (:local.set cbl)
+           (:local.get q) (:i64.const 661971961083) :i64.mul (:i64.const 41) :i64.shr_s (:local.set k))
+          ((:local.get cb) (:i64.const 1) :i64.sub (:local.set cbl)
+           (:local.get q) (:i64.const 661971961083) :i64.mul (:i64.const -274743187321) :i64.add
+           (:i64.const 41) :i64.shr_s (:local.set k)))
+     ;; h = q + floor(-k log2 10) + (33 for a single, 2 for a double)
+     (:local.get q) (:i64.const 0) (:local.get k) :i64.sub (:i64.const 913124641741) :i64.mul
+     (:i64.const 38) :i64.shr_s :i64.add
+     (:i64.const 33) (:i64.const 2) (:local.get single) :select :i64.add (:local.set h)
+     (:global.get ,(schubfach-table-global))
+     (:local.get k) (:i64.const ,(- +schubfach-kmin+)) :i64.add :i32.wrap_i64 (:i32.const 1) :i32.shl
+     (:local.tee i)
+     (:array.get :u63vec) (:local.set g1)
+     (:local.get single)
+     (:if nil nil
+          ((:local.get g1) (:i64.const 1) :i64.add (:local.set g1))
+          ((:global.get :schubfach-table) (:local.get i) (:i32.const 1) :i32.add (:array.get :u63vec)
+           (:local.set g0)))
+     ,@(schubfach-rop-code 'cb 'vb)
+     ,@(schubfach-rop-code 'cbl 'vbl)
+     ,@(schubfach-rop-code 'cbr 'vbr)
+     (:local.get vb) (:i64.const 2) :i64.shr_u (:local.set s)
+     ;; one digit less
+     (:local.get s) (:i64.const 100) :i64.ge_u
+     (:if nil nil
+          ((:local.get s) (:i64.const 10) :i64.div_u (:i64.const 10) :i64.mul (:local.tee pw)
+           (:i64.const 10) :i64.add (:local.set tt)
+           (:local.get vbl) (:local.get out) :i64.add (:local.get pw) (:i64.const 2) :i64.shl :i64.le_u
+           (:local.tee lo)
+           (:local.get tt) (:i64.const 2) :i64.shl (:local.get out) :i64.add (:local.get vbr) :i64.le_u
+           (:local.tee hi) :i32.ne
+           (:if nil nil
+                ((:local.get pw) (:local.get tt) (:local.get lo) :select (:local.set f)
+                 (:br digits)))))
+     (:local.get s) (:i64.const 1) :i64.add (:local.set tt)
+     (:local.get vbl) (:local.get out) :i64.add (:local.get s) (:i64.const 2) :i64.shl :i64.le_u
+     (:local.tee lo)
+     (:local.get tt) (:i64.const 2) :i64.shl (:local.get out) :i64.add (:local.get vbr) :i64.le_u
+     (:local.tee hi) :i32.ne
+     (:if nil nil
+          ((:local.get s) (:local.get tt) (:local.get lo) :select (:local.set f)
+           (:br digits)))
+     ;; both: the nearer, the larger when as near (as SBCL)
+     (:local.get s) (:local.get tt)
+     (:local.get vb) (:local.get s) (:local.get tt) :i64.add (:i64.const 1) :i64.shl :i64.sub
+     (:i64.const 0) :i64.lt_s :select (:local.set f))
+  ;; F * 10^K: the zeros at the end removed, the digits stored
+  '(:local.get f) :i64.eqz
+  `(:if nil nil
+        ((:local.get buf) (:i32.const 0) (:i32.const 48) (:array.set :string)
+         (:i32.const ,(+ 1 (* 64 2049))) (:local.get neg) (:i32.const 5) :i32.shl :i32.or
+         :ref.i31 :return))
+  '(:block zdone nil
+    (:loop zagain nil
+     (:local.get f) (:i64.const 10) :i64.rem_u :i64.eqz :i32.eqz (:br_if zdone)
+     (:local.get f) (:i64.const 10) :i64.div_u (:local.set f)
+     (:local.get k) (:i64.const 1) :i64.add (:local.set k)
+     (:br zagain)))
+  '(:i32.const 1) '(:local.set n) '(:i64.const 10) '(:local.set pw)
+  '(:block ndone nil
+    (:loop nagain nil
+     (:local.get f) (:local.get pw) :i64.lt_u (:br_if ndone)
+     (:local.get n) (:i32.const 1) :i32.add (:local.set n)
+     (:local.get pw) (:i64.const 10) :i64.mul (:local.set pw)
+     (:br nagain)))
+  '(:local.get n) '(:local.set i)
+  '(:loop wagain nil
+    (:local.get i) (:i32.const 1) :i32.sub (:local.set i)
+    (:local.get buf) (:local.get i)
+    (:local.get f) (:i64.const 10) :i64.rem_u :i32.wrap_i64 (:i32.const 48) :i32.add (:array.set :string)
+    (:local.get f) (:i64.const 10) :i64.div_u (:local.set f)
+    (:local.get i) (:br_if wagain))
+  '(:local.get n) '(:local.get neg) '(:i32.const 5) :i32.shl :i32.or
+  '(:local.get k) :i32.wrap_i64 '(:local.get n) :i32.add '(:i32.const 2048) :i32.add '(:i32.const 6) :i32.shl
+  :i32.or
+  :ref.i31)
+(defprim clysm-sys::%float-shortest (x buf) :value
+  (schubfach-table-global)
+  `(,@x ,@buf (:call :float-shortest)))
 (defprim clysm-sys::%host-char (i) :value
   `(,@(idx-code i) (:call :host-get-char) (:i32.const ,+char-tag+) :i32.add :ref.i31))
 (defprim clysm-sys::%math1 (d op) :value `(,@(f64-code d) ,@(idx-code op) (:call :host-math1) ,@(box-f64)))
