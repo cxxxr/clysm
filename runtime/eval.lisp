@@ -942,7 +942,7 @@ compiled or its constants cannot be written readably."
     (write-line %fasl-header out)
     (format out ";;; wasm ~D~%" total)
     (dolist (m modules)
-      (dotimes (i (length m)) (%fs-put-octet out (aref m i))))
+      (%fs-put-octets out m))
     (write-string text out)))
 
 (defvar *cf-pending* nil

@@ -451,6 +451,18 @@ after the call."
     (when (> (+ p 1) (the fixnum (file-stream-fill s))) (setf (file-stream-fill s) (+ p 1)))
     (setf (file-stream-dirty s) t)))
 
+(defun %fs-put-octets (s v)
+  "Write the octets of the vector V to the file stream S at once."
+  (let* ((n (length v)) (p (file-stream-pos s)) (end (+ p n)))
+    (declare (fixnum n p end))
+    (%fs-ensure s end)
+    (let ((o (file-stream-octets s)))
+      (unless (and (%bytes-p v) (%storage-copy o p v 0 n))
+        (dotimes (i n) (%set-bytes-ref o (+ p i) (logand (aref v i) 255)))))
+    (setf (file-stream-pos s) end)
+    (when (> end (the fixnum (file-stream-fill s))) (setf (file-stream-fill s) end))
+    (setf (file-stream-dirty s) t)))
+
 (defun %fs-get-octet (s)
   "The next octet, or NIL at end of file."
   (let ((p (file-stream-pos s)))
