@@ -2924,36 +2924,58 @@ element (local I) of it.  D is a scratch eqref local."
 (defprim clysm-sys::%charset (s i c) :value `(,@s ,@i ,@c (:call :char-set)))
 (defprim clysm-sys::%scharset (s i c) :value `(,@s ,@i ,@c (:call :schar-set)))
 
-;;; string hashing (FNV-1a, 29 bits, as STRING-HASH in the compiler) and comparison
-(defhelper :string-hash :e-e ((str (:ref :null :string)) (i :i32) (n :i32) (h :i32))
+;;; string hashing (29 bits, as STRING-HASH in the compiler) and comparison:
+;;; FNV-1a over the code points; from 8 characters on, four FNV-1a hashes
+;;; of every fourth character (independent chains of multiplications, about
+;;; three times as fast on long strings) combined by FNV steps.
+(defun string-hash-loop-code (str i n h h1 h2 h3)
+  "Instructions hashing the characters I to N (locals, I is advanced) of
+the $string in local STR into the i32 local H."
+  (flet ((lane-step (lane k)
+           `((:local.get ,lane) (:local.get ,str) (:local.get ,i)
+             ,@(unless (eql k 0) `((:i32.const ,k) :i32.add))
+             (:array.get :string) :i32.xor (:i32.const ,#x01000193) :i32.mul (:local.set ,lane)))
+         (mix (lane)
+           `((:local.get ,h) (:local.get ,lane) :i32.xor (:i32.const ,#x01000193) :i32.mul (:local.set ,h))))
+    (let ((offset (- #x811C9DC5 (expt 2 32))))
+      (flet ((one-by-one (done again)
+               `((:block ,done nil
+                   (:loop ,again nil
+                     (:local.get ,i) (:local.get ,n) :i32.ge_u (:br_if ,done)
+                     ,@(lane-step h 0)
+                     (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+                     (:br ,again))))))
+        `((:i32.const ,offset) (:local.set ,h)
+          (:local.get ,n) (:local.get ,i) :i32.sub (:i32.const 8) :i32.ge_u
+          (:if nil nil
+               ((:i32.const ,(+ offset 1)) (:local.set ,h1)
+                (:i32.const ,(+ offset 2)) (:local.set ,h2)
+                (:i32.const ,(+ offset 3)) (:local.set ,h3)
+                (:block four nil
+                  (:loop again4 nil
+                    (:local.get ,i) (:i32.const 4) :i32.add (:local.get ,n) :i32.gt_u (:br_if four)
+                    ,@(lane-step h 0) ,@(lane-step h1 1) ,@(lane-step h2 2) ,@(lane-step h3 3)
+                    (:local.get ,i) (:i32.const 4) :i32.add (:local.set ,i)
+                    (:br again4)))
+                ,@(one-by-one 'tail 'again-tail)
+                ,@(mix h1) ,@(mix h2) ,@(mix h3))
+               ,(one-by-one 'done 'again)))))))
+
+(defhelper :string-hash :e-e ((str (:ref :null :string)) (i :i32) (n :i32) (h :i32) (h1 :i32) (h2 :i32) (h3 :i32))
   '(:local.get 0) '(:ref.test :string)
   `(:if nil nil
         ((:local.get 0) (:ref.cast! :string) (:local.tee str) :array.len (:local.set n)
-         (:i32.const ,(- #x811C9DC5 (expt 2 32))) (:local.set h)
-         (:block done nil
-           (:loop again nil
-             (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
-             (:local.get h) (:local.get str) (:local.get i) (:array.get :string) :i32.xor
-             (:i32.const ,#x01000193) :i32.mul (:local.set h)
-             (:local.get i) (:i32.const 1) :i32.add (:local.set i)
-             (:br again)))
+         ,@(string-hash-loop-code 'str 'i 'n 'h 'h1 'h2 'h3)
          (:local.get h) (:i32.const ,#x1FFFFFFF) :i32.and :ref.i31 :return))
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%string-hash)) '(:call (:callsym 1)))
 (defprim clysm-sys::%string-hash (s) :value `(,@s (:call :string-hash)))
 ;; the same hash of the characters of the simple string STR from START to
 ;; END (a string with a fill pointer, displaced: its storage)
-(defhelper :string-hash-range :eee-e ((str (:ref :null :string)) (i :i32) (n :i32) (h :i32))
+(defhelper :string-hash-range :eee-e ((str (:ref :null :string)) (i :i32) (n :i32) (h :i32) (h1 :i32) (h2 :i32) (h3 :i32))
   '(:local.get 0) '(:ref.cast :string) '(:local.set str)
   '(:local.get 1) '(:ref.cast :i31) ':i31.get_s '(:local.set i)
   '(:local.get 2) '(:ref.cast :i31) ':i31.get_s '(:local.set n)
-  `(:i32.const ,(- #x811C9DC5 (expt 2 32))) '(:local.set h)
-  '(:block done nil
-     (:loop again nil
-       (:local.get i) (:local.get n) :i32.ge_u (:br_if done)
-       (:local.get h) (:local.get str) (:local.get i) (:array.get :string) :i32.xor
-       (:i32.const #x01000193) :i32.mul (:local.set h)
-       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
-       (:br again)))
+  (string-hash-loop-code 'str 'i 'n 'h 'h1 'h2 'h3)
   '(:local.get h) '(:i32.const #x1FFFFFFF) ':i32.and ':ref.i31)
 (defprim clysm-sys::%string-hash-range (s start end) :value `(,@s ,@start ,@end (:call :string-hash-range)))
 
