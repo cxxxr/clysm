@@ -55,6 +55,30 @@
                                     (decf inside)))))))
          max)
        1)
+;;; WITH-OUTPUT-TO-STRING, FORMAT NIL and PRINC-TO-STRING share a scratch
+;;; string stream: one in use by a thread waiting inside the body is not
+;;; given to another
+(check "string streams of threads waiting inside with-output-to-string"
+       (let* ((streams nil)
+              (threads
+                (loop for i below 4
+                      collect (let ((i i))
+                                (sys::make-thread
+                                 (lambda ()
+                                   (with-output-to-string (o)
+                                     (push o streams)
+                                     (dotimes (k 4)
+                                       (format o "<~D:~D>" i k)
+                                       (sys::thread-yield)
+                                       (write-string (format nil "[~A]" (princ-to-string i)) o)
+                                       (sleep 0.001)
+                                       (write-string (with-output-to-string (p) (princ (* 10 i) p) (sys::thread-yield)) o)
+                                       (princ k o))))))))
+              (results (mapcar #'sys::join-thread threads)))
+         (list (length (remove-duplicates streams)) results))
+       (list 4 (loop for i below 4
+                     collect (with-output-to-string (o)
+                               (dotimes (k 4) (format o "<~D:~D>[~D]~D~D" i k i (* 10 i) k))))))
 (check "grab-mutex without waiting"
        (let* ((m (sys::make-mutex))
               (th (sys::make-thread (lambda () (sys::with-mutex (m) (sleep 0.05))))))
