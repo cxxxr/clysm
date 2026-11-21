@@ -1403,8 +1403,13 @@ or +CLO-KLAYOUT+)."
                    (:local.get ,tmp) ,@(clo-field-code +clo-entry-n+)
                    (,(if tail :return_call_ref :call_ref) :fN)))))))))
 
+(defvar *call-noreturn* nil
+  "True while the call of a function that never returns normally (ERROR,
+through its symbol) is compiled: MAYBE-CHECKED-CALL ends it with a branch to
+the exit handler.")
+
 (defun maybe-checked-call (tail code)
-  (if tail code (checked-call code)))
+  (if tail code (checked-call code *call-noreturn*)))
 
 ;;; A global function whose code contains no exit of its own (THROW, a
 ;;; RETURN-FROM or GO out of a closure) and calls no function that is not
@@ -1583,7 +1588,12 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
           (when (and lam (not (lam-accepts-p lam (length args))))
             (cwarn "~S called with ~D arguments" sym (length args)))
           (or (and (null lam) (live-keyed-call-code sym args arg-codes tail))
-              (call-closure-code (fdef-code sym) arg-codes mv tail))))))
+              ;; (a call of ERROR: what follows it is not reached when it
+              ;; returns, so that nothing the function computed before is
+              ;; kept across the call; V8 otherwise spills the variables of
+              ;; a loop whose error branch calls it on every iteration)
+              (let ((*call-noreturn* (and (gethash sym *ti-noreturn*) t)))
+                (call-closure-code (fdef-code sym) arg-codes mv tail)))))))
 
 ;;; In the image, a call with constant keywords of a global function that has
 ;;; keyword parameters passes the arguments in the fixed slots of the
