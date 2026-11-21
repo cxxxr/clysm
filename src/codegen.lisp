@@ -1215,13 +1215,48 @@ as CG-TEST; only without special variables)."
   "Required and &OPTIONAL parameters only."
   (and (lam-keyed-p lam) (not (lam-keyp lam))))
 
+(defparameter *arity-entries*
+  (let ((s (lambda (name) (intern name (symbol-package 'clysm-sys::%car)))))
+    (append
+     `((max (2 . ,(funcall s "%MAX-2"))) (min (2 . ,(funcall s "%MIN-2")))
+       (append (2 . ,(funcall s "%APPEND2"))) (gcd (2 . ,(funcall s "%GCD2"))) (lcm (2 . ,(funcall s "%LCM2"))))
+     (loop for name in '(string= string< string-equal char= char-equal string> string-lessp char< char>
+                         string<= string>= string/= string-greaterp string-not-greaterp string-not-lessp
+                         string-not-equal char/= char<= char>= char-lessp char-greaterp char-not-equal
+                         char-not-greaterp char-not-lessp)
+           collect `(,name (2 . ,(funcall s (format nil "%~A-2" (symbol-name name))))))))
+  "Global functions of the runtime taking any number of arguments or keywords
+whose entry for some number of arguments K is the main function of another,
+of K required parameters, that does the same (CHAR= of two characters,
+STRING= of two strings without keywords): FUNCALL #'CHAR-EQUAL, a :TEST
+#'STRING= or REDUCE #'MAX call it with no argument list or keyword search.")
+
+(defun arity-entry-name (lam k)
+  "The entry of LAM for K arguments from *ARITY-ENTRIES*, or NIL."
+  (let* ((name (lam-name lam))
+         (fast (and name (symbolp name) (assoc name *arity-entries*) (eq lam (known-global-lam name))
+                    (cdr (assoc k (cdr (assoc name *arity-entries*))))))
+         (flam (and fast (known-global-lam fast))))
+    (when (and flam (lam-simple-p flam) (= (length (lam-req flam)) k) (null (lam-free-vars flam))
+               (lam-accepts-p lam k))
+      (ensure-lam-compiled flam)
+      (list :main (lam-id flam)))))
+
 (defun lam-entry-names (lam)
   (let ((simple (lam-simple-p lam)) (n (length (lam-req lam))) (id (lam-id lam)))
     (append
      (loop for k from 0 to +max-fixed-args+
-           collect (cond ((lam-rest-only-p lam) (if (< k n) (list :argerr k) (list :rentry id k)))
+           collect (cond ((arity-entry-name lam k))
+                         ((lam-rest-only-p lam) (if (< k n) (list :argerr k) (list :rentry id k)))
                          ((lam-opt-only-p lam)
-                          (if (<= n k (+ n (length (lam-opt lam)))) (list :oentry id k) (list :argerr k)))
+                          (cond ((not (<= n k (+ n (length (lam-opt lam))))) (list :argerr k))
+                                ;; all of them: the keyed main function itself
+                                ((= k (+ n (length (lam-opt lam)))) (list :kmain id))
+                                (t (list :oentry id k))))
+                         ((and (lam-keyed-p lam) (lam-keyp lam))
+                          (cond ((< k n) (list :argerr k))
+                                ((kentry-p lam k) (list :kentry id k))
+                                (t (list :pack k))))
                          ((not simple) (list :pack k))
                          ((= k n) (list :main id))
                          (t (list :argerr k))))
@@ -2478,9 +2513,64 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 ;;; Multiple values
 ;;; ------------------------------------------------------------
 
+(defun mvcall-simple-arg-p (n)
+  "N gives one value and evaluating it leaves the multiple values as they are."
+  (member (car n) '(:const :lref)))
+
+(defun cg-mvcall-fixed (fnode args tail)
+  "(MULTIPLE-VALUE-CALL F ... FORM ...) where every argument form but FORM
+is a constant or a variable: when the values number at most four in all,
+F's entry for that many is called with them (from the multiple-value
+buffer), with no list or argument vector; else the generic way."
+  (let* ((pos (position-if-not #'mvcall-simple-arg-p args))
+         (before (subseq args 0 pos)) (form (nth pos args)) (after (nthcdr (1+ pos) args))
+         (nsimple (+ (length before) (length after)))
+         (ftmp (new-local '(:ref :null :closure)))
+         (btemps (loop for nil in before collect (new-local)))
+         (v (new-local)) (cnt (new-local :i32)) (acc (new-local))
+         (done (gensym "MVCALL")) (generic (gensym "MVGEN"))
+         (call (if tail :return_call_ref :call_ref)))
+    `(,@(coerce-function-code (cg fnode)) (:local.set ,ftmp)
+      ,@(loop for a in before for tm in btemps append `(,@(cg a) (:local.set ,tm)))
+      ,@(cg form t) (:local.set ,v) (:global.get :mv-count) (:local.set ,cnt)
+      (:block ,done :eqref
+        (:block ,generic nil
+          ,@(loop for c from 0 to (- +max-fixed-args+ nsimple)
+                  for k = (+ nsimple c)
+                  append `((:local.get ,cnt) (:i32.const ,c) :i32.eq
+                           (:if nil nil
+                                (,@(maybe-checked-call
+                                    tail
+                                    `((:local.get ,ftmp) :ref.as_non_null
+                                      ,@(loop for tm in btemps collect `(:local.get ,tm))
+                                      ,@(when (> c 0) `((:local.get ,v)))
+                                      ,@(loop for i from 0 below (1- c)
+                                              append `((:global.get :mv-buf) (:i32.const ,i) (:array.get :vector)))
+                                      ,@(loop for a in after append (cg a))
+                                      (:local.get ,ftmp) ,@(clo-field-code k)
+                                      (,call ,(fixed-entry-type k))))
+                                 (:br ,done)))))
+          (:br ,generic))
+        ;; more values: all of them in a vector for entryN
+        ;; (the multiple values are still those of FORM)
+        ,@(nil-code)
+        ,@(loop for tm in btemps append `((:local.set ,acc) (:local.get ,tm) (:local.get ,acc) (:struct.new :cons)))
+        (:local.set ,acc)
+        (:local.get ,v) (:call :mv-to-list) (:local.get ,acc) (:call :revappend-onto)
+        ,@(loop for a in after append `((:local.set ,acc) ,@(cg a) (:local.get ,acc) (:struct.new :cons)))
+        (:local.set ,acc)
+        ,@(maybe-checked-call
+           tail
+           `((:local.get ,ftmp) (:ref.as_non_null)
+             (:local.get ,acc) (:call :reverse-list-to-vector)
+             (:local.get ,ftmp) ,@(clo-field-code +clo-entry-n+)
+             (,call :fN)))))))
+
 (defun cg-mvcall (node mv tail)
   (declare (ignore mv))
   (destructuring-bind (fnode &rest args) (cdr node)
+    (when (= (count-if-not #'mvcall-simple-arg-p args) 1)
+      (return-from cg-mvcall (cg-mvcall-fixed fnode args tail)))
     ;; the values of the arguments are appended to a vector of them, given
     ;; to the function's entry of any number of arguments
     (let ((ftmp (new-local '(:ref :null :closure)))
@@ -3163,7 +3253,13 @@ its last parameter; the entries for few arguments make the list."
                               (:if nil :eqref ,(let ((*dyn-depth* (+ *dyn-depth* (if specials 1 0)))) (cg init))
                                    ((:local.get ,tmp)))))
                    (when sv (bind sv `((:local.get ,tmp) :ref.is_null :i32.eqz ,@(bool-code)))))))
-        (emit prologue (save-bsp-code saved))
+        (emit prologue
+              ;; (the depth is restored only when a parameter is special)
+              (when (some (lambda (lv) (and lv (lvar-special lv)))
+                          (append (lam-req lam)
+                                  (loop for (lv nil sv) in (lam-opt lam) collect lv collect sv)
+                                  (loop for (nil lv nil sv) in (lam-keys lam) collect lv collect sv)))
+                (save-bsp-code saved)))
         (loop for lv in (lam-req lam) for i from 0 do (bind lv (slot i)))
         (loop for (lv init sv) in (lam-opt lam) for i from nreq do (bind-defaulted lv init sv i))
         (loop for (nil lv init sv) in (lam-keys lam) for i from npos do (bind-defaulted lv init sv i))
@@ -3185,7 +3281,56 @@ its last parameter; the entries for few arguments make the list."
                          :body `((:local.get 0)
                                  ,@(loop for i from 1 to k collect `(:local.get ,i))
                                  ,@(loop repeat (- size k) collect '(:ref.null :eq))
-                                 (:return_call (:kmain ,(lam-id lam)))))))))
+                                 (:return_call (:kmain ,(lam-id lam)))))))
+    ;; with keywords: an entry for each number of arguments up to four that
+    ;; finds the keys among its parameters (KEYED-ENTRY-BODY)
+    (when (lam-keyp lam)
+      (loop for k from nreq to +max-fixed-args+
+            when (kentry-p lam k)
+            do (add-func *m* (list :kentry (lam-id lam) k) (fixed-entry-type k)
+                         :locals (make-list (length (lam-keys lam)) :initial-element :eqref)
+                         :body (keyed-entry-body lam k))))))
+
+(defun kentry-p (lam k)
+  "LAM (with keyword parameters, no &REST) has an entry of its own for K
+arguments: not when the keyword arguments would be odd in number (the
+shared stub making the argument vector for the generic entry, which signals
+the error)."
+  (evenp (max 0 (- k (length (lam-req lam)) (length (lam-opt lam))))))
+
+(defun keyed-entry-body (lam k)
+  "The entry of LAM (with keyword parameters, no &REST) for K arguments: the
+positional ones and the keyword arguments go to the slots of its keyed main
+function, the first of a repeated key winning; :ALLOW-OTHER-KEYS or a key
+LAM does not take go to the generic entry (which signals the error or allows
+the keys).  (KENTRY-P: the keyword arguments are even in number.)"
+  (let* ((nreq (length (lam-req lam))) (nopt (length (lam-opt lam)))
+         (npos (+ nreq nopt)) (keys (mapcar #'first (lam-keys lam)))
+         (slot0 (1+ k))                 ; the locals of the key slots
+         (generic `((:local.get 0)
+                    ,@(loop for i from 1 to k collect `(:local.get ,i))
+                    (:array.new_fixed :vector ,k)
+                    (:return_call (:main ,(lam-id lam)))))
+         (nkeyargs (max 0 (- k npos))))
+    `(;; the pairs from the last, so that the first of a key wins
+          ,@(loop for j from (1- (floor nkeyargs 2)) downto 0
+                  for kp = (+ 1 npos (* 2 j))
+                  for found = (gensym "KEY")
+                  append `((:block ,found nil
+                             ,@(loop for kw in keys for i from 0
+                                     append `((:local.get ,kp) ,@(const-init-code kw) :ref.eq
+                                              (:if nil nil ((:local.get ,(1+ kp)) (:local.set ,(+ slot0 i))
+                                                            (:br ,found)))))
+                             ,@(if (and (lam-allow-other-keys lam) (not (member :allow-other-keys keys)))
+                                   `((:local.get ,kp) ,@(const-init-code :allow-other-keys) :ref.eq :i32.eqz
+                                     (:br_if ,found))
+                                   nil)
+                             ,@generic)))
+          (:local.get 0)
+          ,@(loop for i from 1 to (min k npos) collect `(:local.get ,i))
+          ,@(loop repeat (max 0 (- npos k)) collect '(:ref.null :eq))
+          ,@(loop for i from 0 below (length keys) collect `(:local.get ,(+ slot0 i)))
+          (:return_call (:kmain ,(lam-id lam))))))
 
 ;;; ------------------------------------------------------------
 ;;; Raw clones: a known function called with fixnum or double arguments

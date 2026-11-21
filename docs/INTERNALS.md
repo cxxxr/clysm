@@ -119,8 +119,42 @@ parameters; more arguments, `apply`, and `multiple-value-call` use `entryN`,
 which takes an argument array. For a function with only required parameters the
 matching entry *is* the function body; the other fixed entries are shared
 argument-count-error stubs, and `entryN` is a small unpacking adapter. Functions
-with `&optional/&rest/&key` take the argument array directly (shared packing
-stubs fill the fixed entries). Calls to functions defined in the same program
+with `&optional/&rest/&key` take the argument array in `entryN`; their fixed
+entries take the arguments as parameters too: a function of required and
+optional parameters has an entry for each number of arguments it accepts
+that passes them to its keyed main function (`kmain`, one parameter per
+slot, null for a missing optional), and the entry for all of them *is* that
+function; one of required parameters and `&rest` conses the rest list and
+calls its main function; one with `&key` (and no `&rest`) has an entry for
+each number of arguments from its required ones up to four
+(`keyed-entry-body`, `(:kentry id k)`) that compares each key with its
+keywords and passes the values in the slots of `kmain`, the first of a
+repeated key winning, and goes to the generic entry (which signals the
+error, or allows the keys) for an odd number of key arguments, a key it
+does not take or `:allow-other-keys`. (The fixed entries of keyed functions
+were shared stubs that made the argument vector for the generic entry,
+which then searched it for each key: `(funcall f x :y 1)` of such a
+function, or a call through the symbol of one the compiler did not know,
+took three times SBCL's time, 1.1 now.) A global function of the runtime
+taking any number of arguments or keywords can also have, for one number of
+arguments, the main function of another that does the same as its entry
+(`*arity-entries*` in `src/codegen.lisp`: `max`, `min`, `append`, `gcd`,
+`lcm`, the character and string comparisons of two arguments): `(funcall
+#'max a b)`, `(reduce #'max list)`, a `:test #'char-equal` given to a
+function of the image make no rest list or keyword search (`reduce #'max`
+3.6 → 1.1 times SBCL, `funcall` of `max`, `min`, `string<` 2.2–2.4 → 1.0);
+`+`, `-`, `*`, `/`, the numeric comparisons and `logand`/`logior`/`logxor`
+get theirs from `%fast-entries` (`runtime/numbers.lisp`), whose closure now
+keeps the function's entry for `apply` and its main function taking the rest
+list (`(apply #'+ list)` takes the list as the rest list: `(apply f x list)`
+of a symbol naming `+` 43 → 24 ms in a probe, SBCL 13).
+`multiple-value-call` with one argument form that can give several values,
+the others constants or variables, calls the function's fixed entry for the
+number of values when it is at most four, with them from the
+multiple-value buffer (`cg-mvcall-fixed`); else, as for more forms, the
+values are collected in a list and then a vector for `entryN` (a probe of
+`(multiple-value-call f (floor i 3) s)` 82 → 33 ms, SBCL 13; `+` of three
+arguments still conses its rest list). Calls to functions defined in the same program
 are compiled as direct `call`s (CLHS 3.2.2.3), and tail calls become
 `return_call` / `return_call_ref`. `apply` calls `entryA`, which takes the
 arguments as a list: for a function of required parameters and `&rest` it
@@ -2435,6 +2469,42 @@ What is not as fast as intended, and why:
   would need the same guard) loads its target from the instance as the
   cached global does. None of these was worth its cost (under 2% each),
   so the call sequence was not changed.
+  What calls cost against SBCL (2026-11-21, probes loaded with `clysm
+  script`, each callee another form's function, `sbcl --script` of the
+  same file, best of three on one slot, 20 million calls in a loop): a call
+  through the symbol of one to three arguments 66–75 ms against SBCL's
+  67–73, `funcall` of a closure or of a symbol 67–80 against 71–85, a
+  callee returning two values to `multiple-value-bind` 98 against 104, a
+  call site cycling through four closures 77 against 94: the call itself is
+  as fast as SBCL's full call. What was slower were the entries of
+  functions with other parameters: with `&key` 206–252 ms against 75–82
+  (the shared stub made the argument vector and the generic entry searched
+  it; 88–94 with the keyed entries, see Calling convention), `&optional`
+  with all of them given 89 against 73 (73 now that the entry is the main
+  function; with fewer given still 88: the entry's tail call), `&rest` 100
+  against 71 (its list). esrap (`a-esrap`, 1.9–2.0 times SBCL) is no
+  call-heavier than SBCL's profile of it (the same functions take the same
+  shares of the time, each about twice SBCL's), and the calls between its
+  files are not what is left: its fifteen files concatenated and compiled as
+  one file (one module, the calls between them direct, small functions
+  copied, types flowing between them) take 91–97 ms against 109–120 as
+  ASDF loads them, and the same one module with every call between its
+  functions through the function cell (`known-global-lam` answering NIL:
+  what one module per system with calls kept through the symbol would
+  give, the engine inlining the targets of `call_ref` within it) 104–113.
+  So one module per system would gain about 4% on esrap unless it also
+  made the calls between files direct (as within a file: the redefinition
+  of a function from another file would then not reach them, unless each
+  such call tested the function cell as the guarded copies do), and
+  `--no-wasm-inlining` takes it from 114 to 143 ms: what is left of esrap's
+  factor is the code inside its functions (structure type tests of included
+  structures, the lazy productions' closures, allocation), not the
+  convention. The keyed, optional and arity entries left `bench/apps.lisp`
+  (0.99 of the time, three interleaved rounds), `bench/libs.lisp`,
+  `closures`, `functional`, `suite` and `programs` (compiled and in a
+  script) unchanged within the noise, `p-call-conv` 0.84 and `k-higher-order`
+  in a script 0.83; the stubs they replace were under 0.1% of the profiles
+  of the library and Lem benchmarks.
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
