@@ -3305,6 +3305,28 @@ What makes the code fast:
   call (`c-megamorphic`) is about 14 ns, an indirect call of 20 closures
   in turn about 5 ns in V8 (SBCL 3): the rest is the dependent loads from
   the closure to the cache and to the method's code.
+  the closure to the cache and to the method's code. Holding the cache in
+  the closure of the generic function's function (its one variable, the
+  metaobject in the cache's header, the closure's field set with the
+  cache) to save two of those loads changed nothing measurable
+  (`bench/clos.lisp` 0.99-1.00 of its time compiled and in a script,
+  `h-fib-generic`, `p-builtin-dispatch` the same); the guard of up to four
+  EQL specializer objects compared one by one instead of in a loop was
+  1.04-1.09 times the time of `c-builtin-eql` and calls of `op`.
+  Past 32 entries, a generic function of several specialized arguments
+  (whose classes cannot keep its functions) searches the table of its
+  entries in its own function (`%gf-table-probe-form`), not in
+  `%gf-find2` out of line, and the hash of the table multiplies that of
+  the keys (`%hash-spread`; it was h ^ h>>3 ^ h>>6 of each key and
+  h*32 ^ h>>3 ^ k to mix them, which put ten consecutive classes and
+  the 0 of an unspecialized parameter in three buckets of 32): 49 pairs
+  of seven classes (`collide`) 0.70 of their time (SBCL is 0.23 of it);
+  a table of one specialized argument the same.
+  A call site finds the class of a fixnum, simple string or symbol in
+  CLASS-OF's cache as a constant of its module (`load-time-value`: the
+  vector is filled again, never replaced) instead of reading the
+  variable `*builtin-classes*`: `h-fib-generic` 0.97-0.98 of its time,
+  `p-builtin-dispatch` 0.97.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm

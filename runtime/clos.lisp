@@ -778,23 +778,50 @@ objects of MARKERS: the marker of the object that X is, else the class of X."
          ((and ,eqls (%svref ,eqls ,i)) (%eql-key (%svref ,eqls ,i) ,x))
          (t (%fast-class-of ,x))))
 
-;;; The hash of a key.  Identity hashes are numbers given in order (classes
-;;; defined together have hashes at regular distances): higher bits are
-;;; folded into the low ones, which index the table.
+;;; The hash of a key: the low 20 bits of its identity hash (classes and
+;;; markers), 0 for 0.  Identity hashes are numbers given in order (classes
+;;; defined together have hashes at regular distances, often even ones):
+;;; %HASH-SPREAD multiplies the hash of the keys (%MIX-HASH) so that the low
+;;; bits, which index the table, depend on all of them.  (The hash was
+;;; h ^ h>>3 ^ h>>6 of each key, and h*32 ^ h>>3 ^ k to mix them: the ten
+;;; classes of a generic function of two arguments, the second
+;;; unspecialized, fell in three buckets of a table of 32.)
 (defmacro %key-hash (k)
   `(let ((k ,k))
      (if (fixnump k)
          0
-         (let ((h (%fxlogand (the fixnum (if (consp k)
-                                             (cdr k)
-                                             ;; (a class: its identity hash is cached in it)
-                                             (let ((h (%instance-raw-hash k)))
-                                               (if (eq h 0) (%identity-hash k) h))))
-                             #xFFFFF)))
-           (declare (fixnum h))
-           (%fxlogxor h (%fxlogxor (%fxash-right h 3) (%fxash-right h 6)))))))
+         (%fxlogand (the fixnum (if (consp k)
+                                    (cdr k)
+                                    ;; (a class: its identity hash is cached in it)
+                                    (let ((h (%instance-raw-hash k)))
+                                      (if (eq h 0) (%identity-hash k) h))))
+                    #xFFFFF))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %gf-table-probe-form (vec keys stride on-hit)
+    "The search of the table VEC (the vector of +GF-TABLE+, a variable) for the
+keys KEYS (variables holding classes or 0), inline: ON-HIT is called with the
+variable of the index of the entry found and gives the form evaluated then;
+the form returns NIL when there is none.  The hash of a class is that of
+%KEY-HASH when the class has an identity hash (else 0: such a class, which
+%GF-TABLE-INSERT would have given one, has no entry)."
+    (let ((hash nil))
+      (dolist (k keys)
+        (let ((h `(if (%instancep ,k) (%fxlogand (%instance-raw-hash ,k) #xFFFFF) 0)))
+          (setq hash (if hash `(%mix-hash ,hash ,h) h))))
+      ;; (no declarations: a FIXNUM declaration of the mask read from the
+      ;; vector is a test, the %FX operations take it as it is)
+      `(let* ((mask (%svref ,vec 0)) (i (%fxlogand (%hash-spread ,hash) mask)))
+         (loop
+           (let* ((base (%fx+ 1 (%fx* i ,stride))) (e (%svref ,vec base)))
+             (when (null e) (return nil))
+             (when (and (eq e ,(car keys))
+                        ,@(let ((j 0))
+                            (mapcar (lambda (k) (setq j (+ j 1)) `(eq (%svref ,vec (%fx+ base ,j)) ,k))
+                                    (cdr keys))))
+               ,(funcall on-hit 'base))
+             (setq i (%fxlogand (%fx+ i 1) mask)))))))
+
   (defun %splice-args (tree vars)
     "TREE with the elements %ARGS of its lists replaced by the elements of VARS."
     (cond ((atom tree) tree)
@@ -825,12 +852,16 @@ objects of MARKERS: the marker of the object that X is, else the class of X."
 ;;; the hash of several keys: the low bits must depend on all the bits of the
 ;;; keys (the identity hashes of classes defined together are consecutive)
 (defmacro %mix-hash (h k)
-  `(let ((h ,h))
-     (%fxlogand (%fxlogxor (%fxlogxor (%fx* h 32) (%fxash-right h 3)) ,k) #xFFFFF)))
+  `(%fxlogand (%fx+ (%fx* ,h 31) ,k) #xFFFFF))
+
+(defmacro %hash-spread (h)
+  "The index hash of the 20-bit hash H: bits 9 and up of the product of its
+low 15 bits by a constant (fixnums all along)."
+  `(%fxash-right (%fx* (%fxlogand ,h #x7FFF) #x5BD1) 9))
 
 (defun %keys-hash (keys)
   (let ((h (%key-hash (car keys))))
-    (dolist (k (cdr keys) h) (setq h (%mix-hash h (%key-hash k))))))
+    (dolist (k (cdr keys) (%hash-spread h)) (setq h (%mix-hash h (%key-hash k))))))
 
 (defun %gf-table-find (vec keys nreq)
   "The index of the value of KEYS in the table VEC, or NIL."
@@ -1220,11 +1251,12 @@ objects)."
                  (let ((vec (%svref pic 4)))
                    (when vec
                      (let* ((mask (%svref vec 0))
-                            (i (%fxlogand ,(let ((h nil))
-                                             (dolist (k keys h)
-                                               (setq h (if h
-                                                           `(%mix-hash ,h (%key-hash ,k))
-                                                           `(%key-hash ,k)))))
+                            (i (%fxlogand (%hash-spread
+                                           ,(let ((h nil))
+                                              (dolist (k keys h)
+                                                (setq h (if h
+                                                            `(%mix-hash ,h (%key-hash ,k))
+                                                            `(%key-hash ,k))))))
                                           mask)))
                        (loop
                          (let ((base (%fx+ 1 (%fx* i ,stride))))
@@ -1334,12 +1366,19 @@ cache has the shape bits CODE."
                ;; may know the function (%GF-CLASS-NOTE)
                (when (%svref pic 4)
                  (let* ((key (%single-key ,@keys))
-                        (f (and (%instancep key)
-                                (let ((v (%instance-ref key +class-dispatch+)))
-                                  (and v
-                                       (if (eq (%svref v 1) pic)
-                                           (%svref v 2)
-                                           (%gf-class-lookup pic key)))))))
+                        (f (if (%instancep key)
+                               (let ((v (%instance-ref key +class-dispatch+)))
+                                 (and v
+                                      (if (eq (%svref v 1) pic)
+                                          (%svref v 2)
+                                          (%gf-class-lookup pic key))))
+                               ,(if (eql nkeys 1)
+                                    nil
+                                    ;; several specialized arguments: the
+                                    ;; table of the entries, searched here
+                                    `(let ((vec (%svref pic 4)))
+                                       ,(%gf-table-probe-form 'vec keys stride
+                                                              (lambda (base) `(return (%svref vec (%fx+ ,base ,nkeys))))))))))
                    (when f (return-from dispatch (funcall (the function f) ,@spread)))))
                (let ((f ,(if find
                              `(,find info ,@spread)
