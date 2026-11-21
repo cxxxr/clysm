@@ -439,7 +439,7 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                      `(,@(cg-rep a :i32) ,@(cg-effect b) (:i32.const ,c) :i32.shl)
                      `(,@(cg-rep a :i32) ,@(cg-effect b) (:i32.const ,(min 31 (- c))) :i32.shr_s)))))
         ((char-code clysm-sys::%char-code)
-         (or (char-code-elt-code a)
+         (or (char-code-elt-code a) (schar-code-node-code a)
              (when (ty-only-p (node-ty a) +k-char+)
                `(,@(cg a) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub))))
         (clysm-sys::%lref (when (ty-only-p (node-ty a) +k-limbs+)
@@ -1319,15 +1319,21 @@ type, where the type of the value shows it holds), else NIL."
   (let ((tys (mapcar #'node-ty args)))
     (when (notany #'ty-bottom-p tys)
       (case name
-        ;; type predicates whose answer the type of the argument gives
-        ((characterp consp symbolp numberp)
+        ;; type predicates whose answer the type of the argument gives (also
+        ;; the checks of FTYPEs and declarations of a value already tested
+        ;; or declared: three of one argument at the entry of esrap's (SETF CACHED))
+        ((characterp consp symbolp numberp listp null functionp
+          clysm-sys::%double-float-p clysm-sys::double-float-p)
          (when (= (length tys) 1)
            (let ((ty (first tys))
                  (mask (ecase name
                          (characterp +k-char+) (consp +k-cons+)
-                         (symbolp (logior +k-null+ +k-sym+)) (numberp +k-number+))))
+                         (symbolp (logior +k-null+ +k-sym+)) (numberp +k-number+)
+                         (listp +k-list+) (null +k-null+) (functionp +k-func+)
+                         ((clysm-sys::%double-float-p clysm-sys::double-float-p) +k-double+))))
              (cond ((ty-only-p ty mask) :true)
                    ((not (logtest (ty-bits ty) mask)) :false)))))
+        ((clysm-sys::fixnump) (when (and (= (length tys) 1) (ty-fixnum-p (first tys))) :true))
         ((integerp clysm-sys::%integerp) (when (= (length tys) 1)
                     (cond ((ty-only-p (first tys) +k-int+) :true)
                           ((not (ty-int-p (first tys))) :false))))
@@ -1393,7 +1399,8 @@ type, where the type of the value shows it holds), else NIL."
        ;; two characters (known: a declared character, a constant): the
        ;; same immediates, no check
        (when (and (= (length args) 2) (ty-only-p (node-ty a) +k-char+) (ty-only-p (node-ty b) +k-char+))
-         `(,@(cg a) ,@(cg b) :ref.eq ,@(when (eq name 'char/=) '(:i32.eqz)))))
+         (or (char-codes-eq-code a b (eq name 'char/=))
+             `(,@(cg a) ,@(cg b) :ref.eq ,@(when (eq name 'char/=) '(:i32.eqz))))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
                                                   (plusp '((:i32.const 0) :i32.gt_s))
@@ -1421,12 +1428,32 @@ type, where the type of the value shows it holds), else NIL."
          (cond ((and (fx-arg-p a) (fx-arg-p b)
                      (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
                 `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq))
+               ((and (ty-only-p (node-ty a) +k-char+) (ty-only-p (node-ty b) +k-char+)
+                     (char-codes-eq-code a b nil)))
                ;; EQL of a value that is no boxed number (a fixnum, a
                ;; character, a symbol, a cons, ...) is EQ, without the
                ;; helper (a key compared in MAPHASH, (eql x 'sym))
                ((and (eq name 'eql) (or (ty-eq-comparable-p (node-ty a)) (ty-eq-comparable-p (node-ty b))))
                 `(,@(cg a) ,@(cg b) :ref.eq)))))
       (t (numeric-test-code node)))))
+
+(defun schar-code-node-code (node)
+  "The code of the character (%SCHAR S I) reads, as an i32 (the element of
+the string as it is), when NODE is such a read; else NIL."
+  (when (and (eq (car node) :prim) (eq (node-op-name node) 'clysm-sys::%schar) (= (length (cddr node)) 2))
+    (destructuring-bind (s i) (cddr node)
+      `(,@(cg s) (:ref.cast :string) ,@(index-i32-code i) (:array.get :string)))))
+
+(defun char-codes-eq-code (a b negate)
+  "For EQ, EQL or CHAR= of two characters one of which is read from a string
+\(%SCHAR, CHAR or SCHAR read inline): i32 code comparing their codes, with no
+character made of the element read (a search of a string for a character,
+per element); else NIL."
+  (let ((ca (or (schar-code-node-code a) (char-code-elt-code a)))
+        (cb (or (schar-code-node-code b) (char-code-elt-code b))))
+    (when (or ca cb)
+      (flet ((code (n c) (or c `(,@(cg n) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub))))
+        `(,@(code a ca) ,@(code b cb) ,(if negate :i32.ne :i32.eq))))))
 
 (defun f64-evident-p (node)
   "NODE is a double, or a double on one of its paths (an unboxed double
