@@ -2468,6 +2468,45 @@ What makes the code fast:
   loaded into the image 1.02 → 0.83 of SBCL's time): `a-heap-sim` (a binary
   heap of structures in an adjustable vector) 1.22 → 0.66, `a-fp-buffer`
   1.34 → 0.73, `a-fp-stack` 1.04 → 0.78, `a-strings` 1.04 → 0.93.
+* **Two-dimensional arrays of unknown type** (undeclared code; 2026-11-21).
+  A function whose parameter is the array of `(aref a i j)` (or its `setf`)
+  in a loop has a version for simple arrays of element type T (the class
+  `:md2` of the versions of a function, below): its entry tests the
+  argument with one helper (`:simple-md2-p`: a header of rank 2 over a
+  simple vector, no fill pointer, neither adjustable nor displaced, so that
+  the header never changes) and the version holds it as `(:md2 :vector)`,
+  storage, dimensions and offset in locals loaded once; any other array
+  takes the general version, whose accesses test the header each time as
+  before. A `let` variable of unknown type used that way in a loop of its
+  body (a structure's slot, a function's result) compiles the body twice
+  behind the same test (`md2-version-var` in `src/codegen.lisp`; bodies of
+  at most 1200 nodes without lambdas; variables bound to it in the body,
+  SETF's temporaries, share its locals). A subscript of unknown type (a
+  counter of `(dotimes (i n))` with N from a slot) is tested to be an
+  `i31` inline instead of calling the helper: a character or a negative
+  fixnum is beyond any dimension compared unsigned. `(make-array (list n
+  n) ...)` is left a call of MAKE-ARRAY (it was the inline one-dimensional
+  form, which hid its type), so that a local matrix is known to be a
+  simple two-dimensional array. `b-matmul` 147 → 91 ms (2.16 → 1.34 of
+  SBCL), the same matrix product given its arrays as arguments 156 → 89
+  (SBCL 280: it does not know their type), a grid stepped through a
+  structure's slot 41 → 29, a sum with `array-dimension` bounds 10 → 7.
+  Fusing `(incf s (* (aref ..) (aref ..)))` into one i64 tree (letting
+  INCF read the variable after array elements) measured no faster and was
+  left out.
+* **EQUALP** (2026-11-21): the function settles conses, simple strings
+  (compared in its own loop), characters, fixnums and doubles without a
+  call, and compares a fixnum, a single and a double float as doubles
+  (exact for these; no generic `=`); it has no versions for numbers any
+  more (they cost two tests on every call). Structures of one class whose
+  slots are fields are compared by one helper (`:sinst-equalp`: a
+  `br_table` on the count of fields into a chain of `struct.get`s, calling
+  EQUALP only for slots that are not EQ), vectors with a fill pointer or
+  displaced over their storage without the generic `length`/`vectorp`,
+  hash tables in a function of their own. `%instance-size` is one helper
+  (`:instance-nslots`). `v-equalp-mixed` 2.16 → 1.22 of SBCL; a structure
+  of two EQ slots 21 → 14 ns, a vector with a fill pointer against a
+  simple vector 48 → 15 ns.
 * **Structures**: up to 32 slots in fields of their own (see Object
   representation): a constructor is one allocation, an accessor an exact
   type test, a layout comparison and a `struct.get`; `typep` of a structure,
@@ -3129,7 +3168,8 @@ ranked by the gain expected:
    inner loop made `p-double-2d` 10% slower (register pressure in V8).
    Testing both subscripts with one branch (`and` of the two
    comparisons) measured no different and was left out. Left: the row
-   offset `i * dim1` is computed at every access.
+   offset `i * dim1` is computed at every access. Undeclared arrays: see
+   "Two-dimensional arrays of unknown type" above.
 6. **An inline function's double result is boxed** (`d-spectral-norm`).
    `eval-a` (`declaim inline`) returns through a block of type `eqref`: its
    f64 is put in a `struct.new $double` and unboxed by the caller at once,

@@ -529,6 +529,10 @@
                (every (lambda (k) (member k '(:element-type :initial-element))) names)
                (= (length (remove-duplicates names)) (length names))
                (not (and (consp dimensions) (eq (car dimensions) 'quote)))
+               ;; (a list of dimensions written as such: the call, whose type
+               ;; the compiler knows, (MAKE-ARRAY (LIST N N)) a two-dimensional
+               ;; simple array of a known kind)
+               (not (and (consp dimensions) (eq (car dimensions) 'list)))
                ;; (a specialized vector: the call, whose type the compiler knows)
                (equal (getf keys :element-type '(quote t)) '(quote t)))
           (let* ((n (gensym "N")) (ie (gensym "INIT"))

@@ -615,6 +615,20 @@ generic function, which signals the error of a subscript out of bounds)."
       `((:local.get ,local) :ref.i31)
       `((:local.get ,local) (:call :box-i32))))
 
+(defun subscript-i32-parts (node x slow)
+  "For the subscript NODE, to be held as an i32 in the local X: (values setup
+locate slow-arg), the code evaluating it, the code leaving it in X (branching
+to SLOW unless it is a fixnum when its type is not known: a character or a
+negative fixnum is beyond any dimension compared unsigned) and the code
+pushing it for the generic function."
+  (if (i32-arg-p node)
+      (values `(,@(cg-rep node :i32) (:local.set ,x)) nil (subscript-box-code node x))
+      (let ((e (new-local)))
+        (values `(,@(cg node) (:local.set ,e))
+                `((:local.get ,e) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
+                  (:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.set ,x))
+                `((:local.get ,e))))))
+
 (defun array-locate-code (name args slow)
   "For an element access NAME of ARGS (the array and its subscripts, the nodes):
 returns (values setup locate kind data index slow-args) or NIL when the types
@@ -640,7 +654,9 @@ generic function."
                  (not (i32-arg-p (first subs)))
                  (or (not (member name '(char schar))) (eq kind :string)))
         (return-from array-locate-code (speculative-locate-code-1 name kind a (first subs) slow)))
-      (when (and kind (every #'i32-arg-p subs)
+      (when (and kind
+                 ;; (two subscripts of unknown type: tested to be fixnums inline)
+                 (or (every #'i32-arg-p subs) (and two (member shape '(:md2 :any))))
                  (or (not (member name '(char schar))) (eq kind :string))
                  (cond (two (member shape '(:md2 :any)))
                        (row-major t)
@@ -659,10 +675,12 @@ generic function."
              ;; a variable held with its storage, dimensions and offset in locals
              (destructuring-bind (data d0 d1 off) (md2-shadows (second a))
                (let ((x (new-local :i32)) (y (new-local :i32)))
+                (multiple-value-bind (xs xl xb) (subscript-i32-parts (first subs) x slow)
+                 (multiple-value-bind (ys yl yb) (if two (subscript-i32-parts (second subs) y slow) (values nil nil nil))
                  (values
-                  `(,@(cg-rep (first subs) :i32) (:local.set ,x)
-                    ,@(when two `(,@(cg-rep (second subs) :i32) (:local.set ,y))))
-                  `(,@(if two
+                  `(,@xs ,@ys)
+                  `(,@xl ,@yl
+                    ,@(if two
                           `((:local.get ,x) (:local.get ,d0) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
                             (:local.get ,y) (:local.get ,d1) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
                             (:local.get ,off) (:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add)
@@ -671,7 +689,7 @@ generic function."
                             (:local.get ,off) (:local.get ,x) :i32.add))
                     (:local.set ,k) (:local.get ,data) (:local.set ,d))
                   kind d k
-                  `(,@(cg a) ,@(subscript-box-code (first subs) x) ,@(when two (subscript-box-code (second subs) y)))))))
+                  `(,@(cg a) ,@xb ,@yb)))))))
             ((and (not two) (member shape '(:vec :any)) (not (and row-major (eq shape :any))))
               ;; the array is the storage
               (values `(,@(cg a) (:local.set ,e) ,@(cg-rep (first subs) :i32) (:local.set ,k))
@@ -685,11 +703,12 @@ generic function."
               ;; a header (with ROW-MAJOR-AREF of an array of any rank: only two-dimensional ones inline)
               (let ((m (new-local '(:ref :null :mdarray))) (s (new-local))
                     (x (new-local :i32)) (y (new-local :i32)) (d1 (new-local :i32)))
+               (multiple-value-bind (xs xl xb) (subscript-i32-parts (first subs) x slow)
+                (multiple-value-bind (ys yl yb) (if two (subscript-i32-parts (second subs) y slow) (values nil nil nil))
                 (values
-                 `(,@(cg a) (:local.set ,e)
-                   ,@(cg-rep (first subs) :i32) (:local.set ,x)
-                   ,@(when two `(,@(cg-rep (second subs) :i32) (:local.set ,y))))
-                 `((:local.get ,e) (:ref.test :mdarray) :i32.eqz (:br_if ,slow)
+                 `(,@(cg a) (:local.set ,e) ,@xs ,@ys)
+                 `(,@xl ,@yl
+                   (:local.get ,e) (:ref.test :mdarray) :i32.eqz (:br_if ,slow)
                    (:local.get ,e) (:ref.cast! :mdarray) (:local.set ,m)
                    ,@(if two
                          `((:local.get ,x) (:local.get ,m) (:struct.get :mdarray 5) :i32.ge_u (:br_if ,slow)
@@ -705,7 +724,7 @@ generic function."
                          `((:local.get ,x) :i32.add))
                    (:local.set ,k))
                  kind d k
-                 `((:local.get ,e) ,@(subscript-box-code (first subs) x) ,@(when two (subscript-box-code (second subs) y))))))))))))
+                 `((:local.get ,e) ,@xb ,@yb))))))))))))
 
 (defun speculative-locate-code (name a sub slow)
   "ARRAY-LOCATE-CODE for a one-dimensional access whose array is of unknown
