@@ -1125,6 +1125,8 @@ as CG-TEST; only without special variables)."
                (cond ((eq rep :eqref) (cg body mv tail))
                      ((eq rep :effect) (cg-effect body))
                      ((eq rep :test) (cg-test body))
+                     ;; (:mvinto tmps): the values into locals (CG-MV-INTO)
+                     ((and (consp rep) (eq (car rep) :mvinto)) (cg-mv-into body (second rep)))
                      ;; (:dual b f): into a pair of locals (CG-DUAL-F64, typed.lisp)
                      ((and (consp rep) (eq (car rep) :dual)) (cg-dual-f64 body (second rep) (third rep)))
                      (t (cg-rep body rep)))))
@@ -1142,6 +1144,64 @@ as CG-TEST; only without special variables)."
                       (unbind-specials-code saved (mapcar #'car specials))
                       (when res (rep-get-code rep res)))))))))
 
+;;; MULTIPLE-VALUE-BIND of a form whose values are written in it: an IF,
+;;; PROGN or LET whose branches end in VALUES or constants (the NEXT of
+;;; WITH-HASH-TABLE-ITERATOR, (if x (values a b) (values c d))).  Each
+;;; branch stores its values into the variables' locals, without the values
+;;; buffer; a branch of another kind goes through it as before.
+(defun mv-into-worth-p (node)
+  "NODE ends, in some branch, in a VALUES form written there."
+  (case (car node)
+    (:values t)
+    (:if (or (mv-into-worth-p (third node)) (mv-into-worth-p (fourth node))))
+    (:progn (and (cdr node) (mv-into-worth-p (car (last node)))))
+    (:let (and (notany (lambda (b) (lvar-special (car b))) (second node))
+               (mv-into-worth-p (third node))))
+    (t nil)))
+
+(defun cg-mv-into (node tmps)
+  "Instructions storing the values of NODE into the eqref locals TMPS (NIL
+for the missing ones), leaving nothing."
+  (flet ((nils (ts) (loop for tmp in ts append `(,@(nil-code) (:local.set ,tmp)))))
+    (case (car node)
+      (:values
+       (let ((args (cdr node)))
+         `(,@(loop for a in args for i from 0
+                   append (if (< i (length tmps))
+                              `(,@(cg a) (:local.set ,(nth i tmps)))
+                              (cg-effect a)))
+           ,@(nils (nthcdr (length args) tmps)))))
+      (:const `(,@(cg node) (:local.set ,(first tmps)) ,@(nils (rest tmps))))
+      (:if
+       (destructuring-bind (c a b) (cdr node)
+         (if (assumed-guard-p c)
+             (cg-mv-into a tmps)
+             (let ((test (cg-test c)))
+               (cond ((equal test '((:i32.const 1))) (cg-mv-into a tmps))
+                     ((equal test '((:i32.const 0))) `(,@(cg-mv-into b tmps) ,@(guard-else-epilogue c)))
+                     (t `(,@test
+                          (:if nil nil ,(cg-mv-into a tmps)
+                               (,@(cg-mv-into b tmps) ,@(guard-else-epilogue c))))))))))
+      (:progn
+       (if (cdr node)
+           `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
+             ,@(cg-mv-into (car (last node)) tmps))
+           (cg-mv-into '(:const nil) tmps)))
+      (:let
+       (if (notany (lambda (b) (lvar-special (car b))) (second node))
+           (cg-let node nil nil (list :mvinto tmps))
+           (cg-mv-into-generic node tmps)))
+      (t (cg-mv-into-generic node tmps)))))
+
+(defun cg-mv-into-generic (node tmps)
+  `(,@(cg node t) (:local.set ,(first tmps))
+    ,@(loop for i from 1 for tmp in (rest tmps)
+            append `((:global.get :mv-count) (:i32.const ,i) :i32.gt_s
+                     (:if nil :eqref
+                          ((:global.get :mv-buf) (:i32.const ,(1- i)) (:array.get :vector))
+                          ,(nil-code))
+                     (:local.set ,tmp)))))
+
 (defun cg-mvbind (node mv tail &optional effect)
   "EFFECT: the body is compiled for its effects, nothing is left."
   (destructuring-bind (lvars vnode body) (cdr node)
@@ -1158,8 +1218,9 @@ as CG-TEST; only without special variables)."
                    (values c r :f64 (cons b v)))))
               (t (multiple-value-bind (c l) (typed-divmod-code vnode)
                    (if c (values c l nil) (numeric-divmod-code vnode)))))
-      (let* ((code (or divmod (cg vnode t)))
+      (let* ((into (and (not divmod) lvars (mv-into-worth-p vnode)))
              (tmps (loop for nil in lvars collect (new-local)))
+             (code (cond (divmod) (into (cg-mv-into vnode tmps)) (t (cg vnode t))))
              (specials nil)
              ;; the second variable takes the unboxed remainder as it is
              (direct (and divmod rem-rep (second lvars)
@@ -1167,9 +1228,9 @@ as CG-TEST; only without special variables)."
                             (and (eq (lvar-rep lv) rem-rep) (not (boxed-p lv)) (not (lvar-special lv)))))))
         (when (null lvars) (setf code (append code '(:drop))))
         ;; primary
-        (when (and lvars (not qpair))
+        (when (and lvars (not qpair) (not into))
           (setf code (append code `((:local.set ,(first tmps))))))
-        (loop for i from 1 for tmp in (rest tmps)
+        (loop for i from 1 for tmp in (and (not into) (rest tmps))
               do (setf code (append code
                                     (cond ((and divmod (= i 1) direct) nil)
                                           ((and divmod (= i 1))

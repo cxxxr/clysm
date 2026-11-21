@@ -3730,14 +3730,19 @@ What makes the code fast:
   two-element list in an `equal` table 38 → 17 (21), of a short string 22
   → 17 (16); a structure in an `eq` table 15.7 → 12 (5), a list 44 → 26
   (5). Still slow: `a-hash-counts` 1.6 (its values pass the fixnums of 31
-  bits and are boxed), `v-hash-iterate` 1.8 (`with-hash-table-iterator`'s
-  `(values t k v)` goes through the values buffer into
-  `multiple-value-bind`; `loop`'s `hash-keys` 1.5 per entry of SBCL's),
-  `k-memoize` (hashing two strings of 50 characters is two thirds of
-  its time: about 0.5 ns a character), and an `eq` table keyed by
+  bits and are boxed), `v-hash-iterate` 1.8 (`loop`'s `hash-keys` 1.5
+  per entry of SBCL's), `k-memoize` (hashing two strings of 50
+  characters is half of its time, although `sxhash` of a string is faster
+  than SBCL's: 50 characters 18 ns against 35, 1000 characters 306 against
+  901; the rest is `&rest` and `apply`), and an `eq` table keyed by
   conses, whose identity hash is the host's `WeakMap` (a new key costs
   about 500 ns against 31 in SBCL: the map's insertion and its ephemeron
-  table in each scavenge). Tried and not kept: as many chains as entries
+  table in each scavenge). `multiple-value-bind` of an `if`, `progn` or
+  `let` whose branches end in `values` (or a constant) stores each
+  branch's values into the variables' locals (`cg-mv-into`; a branch of
+  another kind goes through the values buffer as before):
+  `with-hash-table-iterator`'s `(next)` over 3000 entries 8.8 → 6.6 µs
+  (SBCL 4). Tried and not kept: as many chains as entries
   instead of twice as many (less to allocate when a table grows) changed
   nothing measurable on `b-hash` and made `b-hash-string` 1.08 times
   slower.

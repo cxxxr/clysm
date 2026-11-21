@@ -1,0 +1,13 @@
+;; MULTIPLE-VALUE-BIND of an IF, LET or PROGN whose branches end in VALUES (each
+;; branch stores into the variables' locals; other branches use the values buffer)
+(defun f1 (x) (multiple-value-bind (a b c) (if (> x 0) (values 1 2) (values 3 4 5 6)) (list a b c)))
+(defun f2 (x) (multiple-value-bind (a b) (let ((y (* x 2))) (if (> y 3) (values y (1+ y)) 'z)) (list a b)))
+(defun f3 (x) (multiple-value-bind (a b) (progn (print x) (if x (floor 7 2) (values 9))) (list a b)))
+(defun f4 (h) (let ((n 0)) (with-hash-table-iterator (next h) (loop (multiple-value-bind (more k v) (next) (unless more (return)) (incf n (+ k v))))) n))
+(defvar *sp* 1)
+(defun f5 (x) (multiple-value-bind (a b) (let ((*sp* x)) (if (> *sp* 0) (values *sp* 2) (values 3 4))) (list a b)))
+(defun f6 (x) (multiple-value-bind (a) (if x (values) (values 1 2)) (list a)))
+(defun f7 (x) (multiple-value-bind (a b) (if x (values (setq x 5) x) (values-list '(8 9))) (list a b x)))
+(print (list (f1 1) (f1 -1) (f2 1) (f2 5) (f3 t) (f3 nil) (f5 1) (f5 -1) (f6 t) (f6 nil) (f7 t) (f7 nil)))
+(let ((h (make-hash-table))) (dotimes (i 10) (setf (gethash i h) i)) (remhash 3 h) (print (f4 h)))
+(print (multiple-value-bind (a b) (if (zerop (random 1)) (values-list '(1 2)) (values 3 4)) (list a b)))
