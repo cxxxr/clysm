@@ -4918,6 +4918,17 @@ carries the 6.6 KB of `%preinit-drop-methods`. What
 classes that have instances (the metaobjects, conditions, streams): their
 generic functions are kept by the printer and `make-instance`.
 
+The three together, on the symbol and string tables of data segments: the
+start function of a module made from the heap fills the symbols and strings
+first (`:init-symbols`, `:init-strings`); `:symtab`, `:pkgtab` and
+`:strtab` keep their symbols and strings, not what they name; with
+`--shake-symbols` an object of the heap that refers to a symbol keeps the
+symbol's global, a symbol that only a package's table refers to is left out
+of the heap and of the vector of the package's symbols (the symbols that
+shadow others stay), and `%image-start` sets `*%dropped-symbols*`. The
+module of one export: 2,034,879 bytes (`gzip -9` 571,412), 2,037,301 with
+`--shake-symbols` (558,841); main before them 4,107,539 (979,112).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
