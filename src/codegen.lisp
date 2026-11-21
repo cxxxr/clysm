@@ -909,11 +909,16 @@ others are consed onto the list for its rest list."
   (destructuring-bind (c a b) (cdr node)
     ;; (a guard taken as true in a loop's version: the copy only)
     (when (assumed-guard-p c) (return-from cg-if (cg a mv tail)))
-    `(,@(cg-test c)
+    (let ((test (cg-test c)))
+      ;; a test the types decide (a version of a loop for a fixnum count): one branch
+      (cond ((equal test '((:i32.const 1))) (return-from cg-if (cg a mv tail)))
+            ((equal test '((:i32.const 0)))
+             (return-from cg-if `(,@(cg b mv tail) ,@(guard-else-epilogue c)))))
+    `(,@test
       ;; the guard of a copied function body is expected to hold
       ,@(when (and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard clysm-sys::%defun-guard)))
           '((:hint 1)))
-      (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c))))))
+      (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c)))))))
 
 (defun cg-progn (nodes mv tail)
   (if (null nodes)
@@ -931,7 +936,10 @@ others are consed onto the list for its rest list."
                  (or (dual-lset-code node t)
                      (var-set-code lv (cg (third node)))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
-    (:if `(,@(cg-test (second node)) (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node)))))
+    (:if (let ((test (cg-test (second node))))
+           (cond ((equal test '((:i32.const 1))) (cg-effect (third node)))
+                 ((equal test '((:i32.const 0))) (cg-effect (fourth node)))
+                 (t `(,@test (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node))))))))
     (:let (cg-let node nil nil :effect))
     (:mvbind (cg-mvbind node nil nil t))
     ((:prim :call)

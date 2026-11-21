@@ -2996,7 +2996,12 @@ does the same: a test or predicate is called with two."
 
 (defun %coerce-to-storage (x et type)
   "A fresh simple vector of element type ET with the elements of the sequence X."
-  (cond ((listp x)
+  (cond ((and (listp x) (eq et t))
+         ;; (a simple vector: made and filled directly)
+         (let ((v (%make-simple-vector (length-of-list x) nil)) (i 0))
+           (declare (fixnum i))
+           (dolist (e x v) (%set-svref v i e) (setq i (%fx+ i 1)))))
+        ((listp x)
          (let ((v (%make-storage (length-of-list x) et)) (i 0))
            (declare (fixnum i))
            (dolist (e x v) (%vset v i e) (setq i (+ i 1)))))
