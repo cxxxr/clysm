@@ -652,6 +652,7 @@ others are consed onto the list for its rest list."
     (:progn (loop for n in (cdr node) append (cg-effect n)))
     (:if `(,@(cg-test (second node)) (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node)))))
     (:let (cg-let node nil nil :effect))
+    (:mvbind (cg-mvbind node nil nil t))
     ((:prim :call)
      (or (and (member (node-op-name node) '(clysm-sys::%aset1 clysm-sys::%svset clysm-sys::%row-major-aset
                                             clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
@@ -803,7 +804,8 @@ as CG-TEST; only without special variables)."
                       (unbind-specials-code saved (mapcar #'car specials))
                       (when res (rep-get-code rep res)))))))))
 
-(defun cg-mvbind (node mv tail)
+(defun cg-mvbind (node mv tail &optional effect)
+  "EFFECT: the body is compiled for its effects, nothing is left."
   (destructuring-bind (lvars vnode body) (cdr node)
     ;; a division whose values are computed inline: the quotient on the
     ;; stack, the remainder in REM-LOCAL (of representation REM-REP when it
@@ -853,15 +855,15 @@ as CG-TEST; only without special variables)."
                         (setf code (append code `((:local.get ,rem-local) (:local.set ,idx))))))
                      (t (setf code (append code (bind-new-var-code lv `((:local.get ,tmp))))))))
       (if (null specials)
-          (append code (cg body mv tail))
-          (let ((saved (new-local :i32)) (res (new-local)))
+          (append code (if effect (cg-effect body) (cg body mv tail)))
+          (let ((saved (new-local :i32)) (res (unless effect (new-local))))
             (setf specials (loop for (lv . tmp) in (reverse specials) collect (cons (lvar-name lv) tmp)))
             (append code
                     (bind-specials-code saved specials)
-                    (with-dynamic-scope () (cg body mv nil))
-                    `((:local.set ,res))
+                    (with-dynamic-scope () (if effect (cg-effect body) (cg body mv nil)))
+                    (when res `((:local.set ,res)))
                     (unbind-specials-code saved (mapcar #'car specials))
-                    `((:local.get ,res)))))))))
+                    (when res `((:local.get ,res))))))))))
 
 ;;; ------------------------------------------------------------
 ;;; Closures
