@@ -2131,6 +2131,34 @@ What is not as fast as intended, and why:
   its time, interleaved), so it was not kept; what would remove the store
   is returning the count with the value (a Wasm function of two results),
   a change of every function's type.
+  the small functions of `COMMON-LISP`, a file as one module).
+  The call through the function cell itself (2026-11-21): a function of
+  one file called in a loop from another file's fasl (a fixnum fast path,
+  too large to be copied) costs 3.45 ns an iteration (two arguments 3.70;
+  a call to the same function in the caller's module and through a
+  variable costs the same, so another instance costs nothing of its own);
+  SBCL's full call in the same loop 2.65 (3.45). The sequence is the
+  symbol's global, its function cell and the null test, the closure's
+  `$code`, the entry, `call_ref`, and the callee's store of 1 into the
+  imported `mv-count`. Upper bounds measured with throwaway compiler
+  changes, on Lem (`tools/bench-lem.sh` on a held-out input, Clysm alone,
+  best of 5–6 interleaved runs on one slot, geometric means of the time
+  before): the callee's entry and closure cached in two globals of the
+  calling module (one load for the target, filled at the first call and
+  *never refreshed*, so not a valid implementation: an invalidating one,
+  a registry of the modules caching a symbol cleared when its function
+  cell is set, would have the same call site) 0.983–0.985 (the loop
+  above 2.90 ns); the same cache guarded by comparing the function cell
+  with the cached closure (valid as it is: a closure's code never
+  changes) 0.98–1.00 (2.75 ns); no store of `mv-count` in the functions
+  of Lem's files (multiple values lost) 0.992–0.993; both the unguarded
+  cache and no store 0.947–0.948, but no convention keeps multiple values
+  without most of that store (a reset after each call whose values are
+  dropped, or a count returned as a second Wasm result by every
+  function). Calling an imported function (fixed at instantiation, so it
+  would need the same guard) loads its target from the instance as the
+  cached global does. None of these was worth its cost (under 2% each),
+  so the call sequence was not changed.
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
