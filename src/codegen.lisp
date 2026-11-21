@@ -3333,6 +3333,20 @@ local function or closure (whose free variables are tested on entry too)."
        (or (null (lam-free-vars lam)) (<= (length (lam-free-vars lam)) +clo-env-max+))
        (spec-body-cloneable-p lam)))
 
+(defvar *runtime-copy-limit* nil
+  "NIL, or (PREFIX NREQ NODES): a function of the source files whose names
+begin with PREFIX (the runtime's, in a shaken module: COMPILE-PROGRAM) with
+NREQ required parameters or more and more than NODES nodes gets no typed
+copies and no entry versions.")
+
+(defun spec-max-nodes (lam)
+  "The size of a function above which it gets no typed copies."
+  (let ((limit *runtime-copy-limit*) (src (lam-source lam)))
+    (if (and limit src (stringp (car src)) (eql 0 (search (first limit) (car src)))
+             (>= (length (lam-req lam)) (second limit)))
+        (min (third limit) *spec-max-nodes*)
+        *spec-max-nodes*)))
+
 (defun spec-body-cloneable-p (lam)
   (multiple-value-bind (v found) (gethash lam *spec-cloneable*)
     (if found v
@@ -3341,7 +3355,7 @@ local function or closure (whose free variables are tested on entry too)."
                    (notany #'lvar-special (lam-req lam))
                    (let ((n 0))
                      (labels ((walk (node)
-                                (when (> (incf n) *spec-max-nodes*) (return-from spec-body-cloneable-p
+                                (when (> (incf n) (spec-max-nodes lam)) (return-from spec-body-cloneable-p
                                                                        (setf (gethash lam *spec-cloneable*) nil)))
                                 (when (and (member (car node) '(:lambda :flet :labels :ltv))
                                            ;; (the class of a structure: the accessors' test; evaluated

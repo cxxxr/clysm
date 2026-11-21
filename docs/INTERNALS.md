@@ -5400,6 +5400,24 @@ instead of their namestrings, and `sxhash` hashes the components: neither
 writes namestrings. The module of one export: 1,266,522 -> 1,206,445
 bytes (`gzip -9` 377,083 -> 359,909).
 
+**No typed copies of the runtime's large workers in a shaken module.** The
+typed (spec and raw) copies and entry versions of functions were a fourth
+of the code of the module of one export, most of them of the workers of
+the sequence functions (`%remove`, `%count-matches`, `%member`,
+`%replace`: a copy for each class of item or bounds a caller gives,
+10 KB each). With `--shake`, a function of the runtime with five required
+parameters or more and more than 300 nodes gets none
+(`*runtime-copy-limit*`, `spec-max-nodes`, `src/codegen.lisp`, bound by
+`compile-program`). Measured as the branch hints above (time without /
+with): `bench/suite.lisp` 1.010-1.014, `bench/library.lisp` 1.010,
+`bench/programs.lisp` 0.997, `bench/gabriel.lisp` 0.982, `bench/clos.lisp`
+0.997. (`b-sieve` takes 42 or 52 ms from one run to the next on the same
+module, and 52 with this, whose code for it is the same instruction for
+instruction: not a change of its code.) Without the limit on the number of
+parameters (all runtime functions over 300 nodes) the module was 38 KB
+smaller still but `b-sieve` and `g-dderiv` 1.2-1.3 slower. The module of
+one export: 1,206,445 -> 1,085,879 bytes (`gzip -9` 359,909 -> 331,662).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates

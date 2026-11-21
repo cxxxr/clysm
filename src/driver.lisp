@@ -1314,6 +1314,18 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
 (WRITE-SHAKE-WHY).  Returns the number of bytes written."
   (reset-compiler)
   (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
+  (let* ((runtime-prefix (and *shake* runtime-dir
+                              (ignore-errors
+                               ;; (as the functions' sources are named, SOURCE-FILE-NAME)
+                               (source-file-name (make-pathname :name nil :type nil :version nil
+                                                                :defaults runtime-dir)))))
+         ;; (in a shaken module, no typed copies of the runtime's large
+         ;; functions of five required parameters or more: the workers of
+         ;; the sequence functions)
+         (*runtime-copy-limit* (and runtime-prefix (list runtime-prefix 5 300))))
+    (compile-program-1 files output runtime-dir runtime-prefix)))
+
+(defun compile-program-1 (files output runtime-dir runtime-prefix)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
     (let ((version (clysm-version runtime-dir)))
@@ -1332,12 +1344,7 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
                       (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal)))
                       ;; (no branch hints in the runtime's large functions)
                       (clysm-wasm::*runtime-hint-limit*
-                        (and *shake* runtime-dir
-                             (ignore-errors
-                              ;; (as the functions' sources are named, SOURCE-FILE-NAME)
-                              (cons (source-file-name (make-pathname :name nil :type nil :version nil
-                                                                     :defaults runtime-dir))
-                                    800)))))
+                        (and runtime-prefix (cons runtime-prefix 800))))
                   (build-module))))
     (with-open-file (o output :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
       (write-sequence bytes o))
