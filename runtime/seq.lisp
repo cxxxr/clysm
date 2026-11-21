@@ -91,9 +91,16 @@
 (defmacro %define-char-comparison (name name-2 op case-insensitive)
   `(progn
      (defun ,name-2 (a b)
-       ,(if case-insensitive
-            `(,op (char-code (char-upcase a)) (char-code (char-upcase b)))
-            `(,op (char-code a) (char-code b))))
+       ,(cond ((and case-insensitive (eq op '=))
+               ;; (ASCII without a call of CHAR-UPCASE)
+               `(let ((ca (char-code a)) (cb (char-code b)))
+                  (or (eql ca cb)
+                      (if (and (< ca 128) (< cb 128))
+                          (and (eql (logxor ca cb) 32) (<= 97 (logior ca 32) 122))
+                          (= (char-code (char-upcase a)) (char-code (char-upcase b)))))))
+              (case-insensitive
+               `(,op (char-code (char-upcase a)) (char-code (char-upcase b))))
+              (t `(,op (char-code a) (char-code b)))))
      (defun ,name (c &rest more)
        (if (and more (null (cdr more)))
            (,name-2 c (car more))
@@ -1668,6 +1675,18 @@ its index when POSP."
                 ;; another specialized vector (of bits, integers, floats)
                 (t (scan %simple-ref %simple-length)))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)))
+    ;; a list read forwards with one of the usual tests (and no key, or
+    ;; :KEY #'CAR, an alist's keys): the test called inline
+    (when (and (listp seq) (not from-end))
+      (macrolet ((scan (keyed test)
+                   `(return-from %find-position
+                      (do ((l (%list-tail seq start) (cdr l)) (i start (+ i 1)))
+                          ((if end (>= i end) (%endp l)) nil)
+                        (declare (fixnum i))
+                        (let* ((x (car l)) (v ,(if keyed '(car x) 'x)))
+                          (when ,test (return (if posp i x))))))))
+        (cond ((null key) (%known-tests mode fn neg item v (scan nil)))
+              ((or (eq key #'car) (eq key #'first)) (%known-tests mode fn neg item v (scan t))))))
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (return (if posp i x))))))
 
@@ -1889,6 +1908,14 @@ POSITION when they are only a :TEST of a known function, else NIL."
           (when (funcall (the function fn) (car l)) (setq n (+ n 1)))))))
   (let* ((key (%keyfn key)) (end (%region-end seq start end from-end)) (n 0))
     (declare (fixnum n))
+    (when (and (listp seq) (not from-end) (null key))
+      (macrolet ((scan (test)
+                   `(return-from %count-matches
+                      (do ((l (%list-tail seq start) (cdr l)) (i start (+ i 1)))
+                          ((if end (>= i end) (%endp l)) n)
+                        (declare (fixnum i))
+                        (let ((v (car l))) (when ,test (setq n (+ n 1))))))))
+        (%known-tests mode fn neg item v (scan))))
     (%do-region (x i seq start end from-end)
       (when (%match mode fn neg item (%key key x)) (setq n (+ n 1))))
     n))
@@ -1972,6 +1999,17 @@ list result shares the tail after END."
             (if (funcall (the function fn) x)
                 (setq removed t)
                 (let ((c (cons x nil))) (%setcdr tail c) (setq tail c))))))))
+  ;; an item removed from a whole list with one of the usual tests, called inline
+  (when (and (listp seq) (null key) (null from-end) (eql start 0) (null end) (null count) (not destructive))
+    (macrolet ((scan (test)
+                 `(return-from %remove
+                    (let* ((head (cons nil nil)) (tail head) (removed nil))
+                      (do ((l seq (cdr l))) ((%endp l) (if removed (cdr head) seq))
+                        (let ((v (car l)))
+                          (if ,test
+                              (setq removed t)
+                              (let ((c (cons v nil))) (%setcdr tail c) (setq tail c)))))))))
+      (%known-tests mode fn neg item v (scan))))
   (let* ((key (%keyfn key)) (count (%check-count count))
          (direct (and (listp seq) (null count) (not from-end)))
          ;; NIL for a list processed to its end in one pass
