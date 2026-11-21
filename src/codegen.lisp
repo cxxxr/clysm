@@ -290,6 +290,76 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
          (eq (lvar-rep src) (lvar-rep lv)) (unboxed-local-p src)
          src)))
 
+;;; A special variable used as the array of two-dimensional accesses in a
+;;; loop (a program's *GRID*): on entry to the outermost such loop its value,
+;;; when a simple array of element type T, is kept in a local with its
+;;; storage, dimensions and offset; each access compares the variable's value
+;;; with it (one load and a REF.EQ: the loop may assign or bind the variable,
+;;; a function it calls too) and takes those locals when it is the same, the
+;;; access of an array of unknown type otherwise.
+(defvar *sref-md2-caches* nil "((symbol header data dim0 dim1 offset) ...)")
+(defvar *sref-md2-aliases* nil "((lvar . symbol) ...): variables bound to such a special variable")
+
+(defun strip-the (node)
+  (loop while (eq (car node) :the) do (setf node (third node)))
+  node)
+
+(defun sref-md2-symbols (node)
+  "The special variables (not cached yet) used as the array of a two-dimensional access in NODE."
+  (let ((syms nil) (aliases nil))
+    (labels ((arr-sym (a)
+               (let ((a (strip-the a)))
+                 (case (car a)
+                   (:sref (second a))
+                   (:lref (cdr (assoc (second a) aliases))))))
+             (walk (n)
+               (case (car n)
+                 ((:lambda :flet :labels :defun) (return-from walk))
+                 (:let (dolist (b (second n))
+                         (let ((a (strip-the (cdr b))))
+                           (when (and (eq (car a) :sref) (not (lvar-mutated (car b))) (not (lvar-special (car b))))
+                             (push (cons (car b) (second a)) aliases)))))
+                 ((:prim :call)
+                  (when (member (node-op-name n) '(clysm-sys::%aref2 clysm-sys::%aset2))
+                    (let ((sym (arr-sym (third n))))
+                      (when (and sym (symbolp sym) (not (assoc sym *sref-md2-caches*)))
+                        (pushnew sym syms))))))
+               (map-subnodes #'walk n)))
+      (walk node))
+    syms))
+
+(defun sref-md2-wrap (node body-fn)
+  (let ((syms (and *fs* (sref-md2-symbols node))))
+    (if (null syms)
+        (funcall body-fn)
+        (let* ((caches (loop for sym in syms
+                             collect (list sym (new-local '(:ref :null :mdarray)) (new-local '(:ref :null :vector))
+                                           (new-local :i32) (new-local :i32) (new-local :i32))))
+               (init (loop for (sym c data d0 d1 off) in caches
+                           append (let ((e (new-local)))
+                                    `((:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:local.tee ,e)
+                                      (:call :simple-md2-p)
+                                      (:if nil nil
+                                           ((:local.get ,e) (:ref.cast :mdarray) (:local.tee ,c)
+                                            (:struct.get :mdarray 0) (:ref.cast :vector) (:local.set ,data)
+                                            (:local.get ,c) (:struct.get :mdarray 5) (:local.set ,d0)
+                                            (:local.get ,c) (:struct.get :mdarray 6) (:local.set ,d1)
+                                            (:local.get ,c) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+                                            (:local.set ,off))
+                                           ;; (an object no value is EQ to)
+                                           ((:struct.new_default :mdarray) (:local.set ,c))))))))
+          (let ((*sref-md2-caches* (append caches *sref-md2-caches*)) (*sref-md2-aliases* *sref-md2-aliases*))
+            (append init (funcall body-fn)))))))
+
+(defun sref-md2-cache-of (a)
+  "The cache of the special variable that the array node A reads (directly or through a variable bound to it), or NIL."
+  (when *sref-md2-caches*
+    (let* ((a (strip-the a))
+           (sym (case (car a)
+                  (:sref (second a))
+                  (:lref (cdr (assoc (second a) *sref-md2-aliases*))))))
+      (and sym (assoc sym *sref-md2-caches*)))))
+
 ;;; A LET binding a variable of unknown type used as the array of
 ;;; two-dimensional accesses in a loop of its body (a slot's value, a
 ;;; function's result) is compiled twice: when the value is a simple array of
@@ -555,7 +625,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       ((:flet :labels) (cg-flet node mv tail))
       (:block (cg-block node mv tail))
       (:return-from (cg-return-from node))
-      (:tagbody (cg-tagbody node mv))
+      (:tagbody (sref-md2-wrap node (lambda () (cg-tagbody node mv))))
       (:go (cg-go node))
       (:catch (cg-catch node mv))
       (:throw (cg-throw node))
@@ -858,6 +928,10 @@ as CG-TEST; only without special variables)."
                    (setf (gethash lv *dual-vars*) v)))
                 (t (remhash lv *fdual-vars*)
                    (setf code (append code (let ((*binding-init* init)) (bind-new-var-code lv (cg init)))))))
+          ;; (bound to a special variable whose array is cached: SREF-MD2-WRAP)
+          (when (and *sref-md2-caches* (not (lvar-mutated lv)) (not (lvar-special lv)) (null (lvar-rep lv))
+                     (let ((a (strip-the init))) (and (eq (car a) :sref) (assoc (second a) *sref-md2-caches*))))
+            (push (cons lv (second (strip-the init))) *sref-md2-aliases*))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
           (when (and (not (lvar-mutated lv)) (not (lvar-special lv)))
             (cond ((eq (car init) :lambda)
