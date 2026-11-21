@@ -503,9 +503,14 @@ whose functions run after the segment that defines them, src/live.lisp)."
                             (:if nil nil ((:call :throw-pending-exit)))
                             (:ref.null :eq))))))))
 
+(defvar *runtime-package-names* nil
+  "The names of the packages there are once the runtime is compiled
+(FINISH-RUNTIME).")
+
 (defun finish-runtime ()
   "Called after the runtime sources have been processed."
   (let ((*read-package* (find-target-package "SYSTEM"))) (emit-primitive-wrappers))
+  (setf *runtime-package-names* (loop for k being the hash-values of *host->target-name* collect k))
   (setf *check-declared-integers* t))
 
 (defun emit-primitive-wrappers ()
@@ -689,33 +694,178 @@ NUMERATOR has a copy of %CHECK-INTEGER, whose type then flows), transitively."
   (let ((p (symbol-package sym)))
     (and p (gethash p *host->target-name*))))
 
-(defun symbol-global-init (sym)
+;;; A symbol whose name is of at most 255 characters of codes below 256 (all
+;;; but a few) is a global made empty ((:STRUCT.NEW_DEFAULT :SYMBOL)), whose
+;;; name, hash, property list and flags :INIT-SYMBOLS sets from the data of
+;;; the symbol table when the module starts (SYMBOL-TABLE-DATA): the
+;;; initializer that held them was 57 bytes a symbol, a third of the global
+;;; section, mostly the characters of the name as an (:I32.CONST C) each.
+(defun data-named-symbol-p (sym)
   (let ((name (symbol-name sym)))
-    `(,@(string-array-code name)
-      (:ref.null :package)
-      ,@(multiple-value-bind (v found) (gethash sym *initial-symbol-values*)
-          (if (and found (immediate-initial-value-p sym (car v)))
-              (const-init-code (car v))
-              '((:ref.null :eq))))
-      (:ref.null :closure)
-      ,@(if (null sym) '((:ref.null :eq)) `((:global.get ,(sym-global nil))))
-      (:i32.const ,(string-hash name))
-      (:i32.const ,(if (gethash sym *specials*) +flag-special+ 0))
-      (:struct.new :symbol))))
+    (and (<= (length name) 255) (every (lambda (c) (< (char-code c) 256)) name))))
+
+(defun symbol-global-init (sym)
+  (if (data-named-symbol-p sym)
+      '((:struct.new_default :symbol))
+      (let ((name (symbol-name sym)))
+        `(,@(string-array-code name)
+          (:ref.null :package)
+          ,@(multiple-value-bind (v found) (gethash sym *initial-symbol-values*)
+              (if (and found (immediate-initial-value-p sym (car v)))
+                  (const-init-code (car v))
+                  '((:ref.null :eq))))
+          (:ref.null :closure)
+          ,@(if (null sym) '((:ref.null :eq)) `((:global.get ,(sym-global nil))))
+          (:i32.const ,(string-hash name))
+          (:i32.const ,(if (gethash sym *specials*) +flag-special+ 0))
+          (:struct.new :symbol)))))
 
 (defun immediate-initial-value-p (sym v)
   (and (not (member sym '(nil t)))
        (or (fixnump* v) (characterp v) (null v) (eq v t))))
 
 (defun initial-value-prologue ()
-  (let ((code nil))
+  "The code setting the initial values of symbols that their initializers do
+not set.  With *SHAKE-SYMBOLS*, each is a function (:INSTALL SYMBOL :VALUE)
+of its own, kept only if something refers to SYMBOL (SHAKE-MODULE)."
+  (let ((code nil) (n 0))
     (maphash (lambda (sym v)
-               (unless (immediate-initial-value-p sym (car v))
-                 (setf code (append code `((:global.get ,(sym-global sym))
-                                           ,@(const-init-code (car v))
-                                           (:struct.set :symbol ,+sym-value+))))))
+               (unless (and (immediate-initial-value-p sym (car v)) (not (data-named-symbol-p sym)))
+                 (let ((set `((:global.get ,(sym-global sym))
+                              ,@(const-init-code (car v))
+                              (:struct.set :symbol ,+sym-value+))))
+                   (if *shake-symbols*
+                       (let ((name (list :install sym :value (incf n))))
+                         (add-func *m* name :v-e :body `(,@set (:global.get ,(sym-global sym))))
+                         (push `((:call ,name) :drop) code))
+                       (push set code)))))
              *initial-symbol-values*)
-    code))
+    (apply #'append (nreverse code))))
+
+(defun symbol-table-data (syms pkg-index)
+  "The data of the symbols SYMS (the order of the symbol table) for
+:INIT-SYMBOLS and %INIT-PACKAGES: (values NAMES INFO), octet vectors.  NAMES
+has the characters of the names of the DATA-NAMED-SYMBOL-P symbols, one after
+the other; INFO three octets a symbol: its package's index in the package
+table plus 1 (0: none), its flags (1: external, 2: special, 4: its
+initializer sets its name) and the length of its name."
+  (let ((names (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+        (info (make-array (* 3 (length syms)) :element-type '(unsigned-byte 8))))
+    (loop for s in syms for k from 0
+          do (let* ((pn (symbol-target-package-name s))
+                    (ext (and pn (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s))) :external)))
+                    (data (data-named-symbol-p s))
+                    (pidx (if pn (1+ (funcall pkg-index pn)) 0)))
+               (assert (< pidx 256))
+               (setf (aref info (* 3 k)) pidx
+                     (aref info (+ (* 3 k) 1)) (logior (if ext 1 0) (if (gethash s *specials*) 2 0) (if data 0 4))
+                     (aref info (+ (* 3 k) 2)) (if data (length (symbol-name s)) 0))
+               (when data
+                 (loop for c across (symbol-name s) do (vector-push-extend (char-code c) names)))))
+    (values (coerce names '(simple-array (unsigned-byte 8) (*))) info)))
+
+(defun symtab-init (syms)
+  "The initializer of :SYMTAB: a vector of vectors of SYMS (array.new_fixed
+takes at most 10000 operands)."
+  (let ((chunks (loop for rest = syms then (nthcdr 9000 rest)
+                      while rest
+                      collect (subseq rest 0 (min 9000 (length rest))))))
+    `(,@(loop for chunk in chunks
+              append `(,@(loop for s in chunk collect `(:global.get (:sym ,s)))
+                       (:array.new_fixed :vector ,(length chunk))))
+      (:array.new_fixed :vector ,(length chunks)))))
+
+(defun init-symbols-body (names-seg names-len info-seg info-len)
+  "The body of :INIT-SYMBOLS, which _START calls first: the names, hashes,
+property lists and flags of the symbols of :SYMTAB from the data segments
+of SYMBOL-TABLE-DATA."
+  `((:i32.const 0) (:i32.const ,names-len) (:array.new_data :bytes ,names-seg) (:local.set names)
+    (:i32.const 0) (:i32.const ,info-len) (:array.new_data :bytes ,info-seg) (:local.set info)
+    (:block done nil
+      (:loop chunks nil
+        (:local.get ci) (:global.get :symtab) :array.len :i32.ge_u (:br_if done)
+        (:global.get :symtab) (:local.get ci) (:array.get :vector) (:ref.cast! :vector) (:local.set chunk)
+        (:i32.const 0) (:local.set i)
+        (:block chunk-done nil
+          (:loop syms nil
+            (:local.get i) (:local.get chunk) :array.len :i32.ge_u (:br_if chunk-done)
+            (:local.get chunk) (:local.get i) (:array.get :vector) (:ref.cast! :symbol) (:local.set s)
+            (:local.get info) (:local.get k) (:i32.const 3) :i32.mul (:i32.const 1) :i32.add
+            (:array.get_u :bytes) (:local.set flags)
+            (:local.get info) (:local.get k) (:i32.const 3) :i32.mul (:i32.const 2) :i32.add
+            (:array.get_u :bytes) (:local.set len)
+            (:local.get flags) (:i32.const 4) :i32.and :i32.eqz
+            (:if nil nil
+                 ((:local.get len) (:array.new_default :string) (:local.set str)
+                  (:i32.const 0) (:local.set j)
+                  (:block copied nil
+                    (:loop copy nil
+                      (:local.get j) (:local.get len) :i32.ge_u (:br_if copied)
+                      (:local.get str) (:local.get j)
+                      (:local.get names) (:local.get pos) (:local.get j) :i32.add (:array.get_u :bytes)
+                      (:array.set :string)
+                      (:local.get j) (:i32.const 1) :i32.add (:local.set j)
+                      (:br copy)))
+                  (:local.get s) (:local.get str) (:struct.set :symbol ,+sym-name+)
+                  (:local.get s) (:local.get str) (:call :string-hash) (:ref.cast! :i31) :i31.get_s
+                  (:struct.set :symbol ,+sym-hash+)
+                  (:local.get s) (:global.get (:sym nil)) (:struct.set :symbol ,+sym-plist+)
+                  (:local.get flags) (:i32.const 2) :i32.and
+                  (:if nil nil ((:local.get s) (:i32.const ,+flag-special+) (:struct.set :symbol ,+sym-flags+)))))
+            (:local.get pos) (:local.get len) :i32.add (:local.set pos)
+            (:local.get k) (:i32.const 1) :i32.add (:local.set k)
+            (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+            (:br syms)))
+        (:local.get ci) (:i32.const 1) :i32.add (:local.set ci)
+        (:br chunks)))))
+
+(defvar *symbol-data-segments* nil
+  "While BUILD-MODULE runs: (names-segment info-segment dropped-segment
+pkg-index), the data segments of SET-SYMBOL-TABLE and the function giving the
+index of a package (by name) in the package table.")
+
+(defun dropped-symbols-data (syms pkg-index)
+  "The octets of the symbols SYMS that a module made with *SHAKE-SYMBOLS*
+left out, for an error when they are looked up (*%DROPPED-SYMBOLS* in
+runtime/package.lisp): those of COMMON-LISP and of the packages the program
+made (those of the runtime, but COMMON-LISP-USER, are its own), whose names
+are DATA-NAMED-SYMBOL-P.  For each, its package's index plus 1, 1 if it is
+external (else 0), the length of its name and its characters."
+  (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+    (dolist (s syms)
+      (let ((pn (symbol-target-package-name s)))
+        (when (and pn (data-named-symbol-p s)
+                   (or (member pn '("COMMON-LISP" "COMMON-LISP-USER") :test #'string=)
+                       (not (member pn *runtime-package-names* :test #'string=))))
+          (vector-push-extend (1+ (funcall pkg-index pn)) out)
+          (vector-push-extend (if (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s))) :external) 1 0)
+                              out)
+          (vector-push-extend (length (symbol-name s)) out)
+          (loop for c across (symbol-name s) do (vector-push-extend (char-code c) out)))))
+    (coerce out '(simple-array (unsigned-byte 8) (*)))))
+
+(defun set-symbol-table (m syms &optional dropped)
+  "Make :SYMTAB the table of SYMS, and :INIT-SYMBOLS, :SYMBOL-INFO and
+:DROPPED-SYMBOLS read their data (DROPPED: the symbols left out;
+:DROPPED-SYMBOLS is NIL without *SHAKE-SYMBOLS*)."
+  (destructuring-bind (names-seg info-seg dropped-seg pkg-index) *symbol-data-segments*
+    (multiple-value-bind (names info) (symbol-table-data syms pkg-index)
+      (let ((dropped (dropped-symbols-data dropped pkg-index)))
+        (setf (aref (wasm-module-data m) dropped-seg) dropped
+              (wasm-func-body (find-func m :dropped-symbols))
+              (if *shake-symbols*
+                  `((:i32.const 0) (:i32.const ,(length dropped)) (:array.new_data :bytes ,dropped-seg))
+                  `((:global.get (:sym nil))))
+              (wasm-func-ref-list (find-func m :dropped-symbols)) :unknown))
+      (setf (aref (wasm-module-data m) names-seg) names
+            (aref (wasm-module-data m) info-seg) info)
+      (setf (fourth (find :symtab (wasm-module-globals m) :key #'first)) (symtab-init syms))
+      (setf (wasm-func-body (find-func m :init-symbols))
+            (init-symbols-body names-seg (length names) info-seg (length info))
+            (wasm-func-body (find-func m :symbol-info))
+            `((:i32.const 0) (:i32.const ,(length info)) (:array.new_data :bytes ,info-seg)))
+      (setf (wasm-func-ref-list (find-func m :init-symbols)) :unknown
+            (wasm-func-ref-list (find-func m :symbol-info)) :unknown))))
 
 (defun add-identity-hash-cache ()
   "The globals of the :IDENTITY-HASH helper: the last object it hashed with the
@@ -781,7 +931,7 @@ host's identity hash, and that hash."
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry
-                :body (append (runtime-consts-prologue) (initial-value-prologue)
+                :body (append '((:call :init-symbols)) (runtime-consts-prologue) (initial-value-prologue)
                        (loop for l in tops
                             append `((:global.get ,(static-closure-global l))
                                      (:call (:main ,(lam-id l))) :drop)))))
@@ -821,23 +971,21 @@ host's identity hash, and that hash."
       (let* ((pkgs (remove-duplicates
                     (loop for k being the hash-values of *host->target-name* collect k) :test #'string=))
              (pkg-index (lambda (name) (position name pkgs :test #'string=))))
-        (let ((entries
-                (loop for s in syms
-                      collect (let* ((pn (symbol-target-package-name s))
-                                    (ext (and pn (eq (nth-value 1 (find-symbol (symbol-name s) (symbol-package s)))
-                                                     :external))))
-                               `((:global.get (:sym ,s))
-                                 ,@(fixnum-code (if pn (funcall pkg-index pn) -1))
-                                 ,@(if ext `((:global.get (:sym t))) `((:global.get (:sym nil)))))))))
-          ;; array.new_fixed is limited to 10000 operands: emit chunks of entries
-          (let ((chunks (loop for rest = entries then (nthcdr 3000 rest)
-                              while rest
-                              collect (subseq rest 0 (min 3000 (length rest))))))
-            (add-global *m* :symtab '(:ref :vector) nil
-                        `(,@(loop for chunk in chunks
-                                  append `(,@(apply #'append chunk)
-                                           (:array.new_fixed :vector ,(* 3 (length chunk)))))
-                          (:array.new_fixed :vector ,(length chunks))))))
+        ;; the symbol table (SET-SYMBOL-TABLE; again after SHAKE-MODULE
+        ;; with *SHAKE-SYMBOLS*, which leaves out symbols)
+        (setf *symbol-data-segments*
+              (list (add-data *m* (make-array 0 :element-type '(unsigned-byte 8)))
+                    (add-data *m* (make-array 0 :element-type '(unsigned-byte 8)))
+                    (add-data *m* (make-array 0 :element-type '(unsigned-byte 8)))
+                    pkg-index))
+        (add-global *m* :symtab '(:ref :vector) nil nil)
+        (add-func *m* :init-symbols :v-v
+                  :locals '((:ref :null :bytes) (:ref :null :bytes) (:ref :null :vector) :i32 :i32 :i32 :i32
+                            :i32 :i32 (:ref :null :symbol) (:ref :null :string) :i32)
+                  :local-names '(names info chunk ci i k pos len flags s str j))
+        (add-func *m* :symbol-info :v-e)
+        (add-func *m* :dropped-symbols :v-e)
+        (set-symbol-table *m* syms)
         ;; pkgtab: vector of (name nicknames uses) built as constant lists of strings
         (let ((pkg-inits
                 (loop for pn in pkgs
@@ -872,7 +1020,16 @@ host's identity hash, and that hash."
     ;; of the immutable globals, and the values of the mutable ones
     (add-image-functions *m*)
     (report-undefined-functions)
-    (when *shake* (shake-module *m*))
+    (when *shake*
+      (shake-module *m* :drop-symbols *shake-symbols*)
+      (when *shake-symbols*
+        ;; the table of the symbols left
+        (let ((kept (loop for g across (wasm-module-globals *m*)
+                          when (and (consp (first g)) (eq (car (first g)) :sym))
+                            collect (second (first g))))
+              (seen (make-hash-table :test 'eq)))
+          (dolist (s kept) (setf (gethash s seen) t))
+          (set-symbol-table *m* kept (remove-if (lambda (s) (gethash s seen)) (reverse *symbol-globals*))))))
     (prog1 (with-build-section (encode-module *m*))
       (when *shake-why-file*
         (with-open-file (o *shake-why-file* :direction :output :if-exists :supersede)
@@ -1031,6 +1188,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
             (format nil "0.1.~A (~A)" count commit))))))
 
 (defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
+                                   ((:shake-symbols *shake-symbols*) *shake-symbols*)
                                    ((:shake-why *shake-why-file*) nil)
                                    ((:source-root *source-root*)
                                     (and runtime-dir
@@ -1043,8 +1201,10 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
   "Compile the runtime and FILES into the WebAssembly module OUTPUT.  With
 SHAKE, the global functions that nothing refers to by name are left out
 (SHAKE-MODULE): the program must not call functions by names it makes at
-run time (INTERN, READ, EVAL of new code).  With SHAKE-WHY (a file), the
-size of each kept function and what kept it are written there
+run time (INTERN, READ, EVAL of new code).  With SHAKE-SYMBOLS (and SHAKE),
+the symbols that nothing refers to are left out too: the program must not
+look up by name (INTERN, FIND-SYMBOL, READ) a symbol that its code does not
+refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept it are written there
 (WRITE-SHAKE-WHY).  Returns the number of bytes written."
   (reset-compiler)
   (let ((*read-package* (find-target-package "SYSTEM")))

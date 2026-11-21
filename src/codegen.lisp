@@ -780,7 +780,8 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:progv (cg-progv node mv))
       (:wasm (cg-wasm node mv))
       (:wasm-test (append (cg-test node) (bool-code) (when mv (mv-one))))
-      (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:struct.new :cons) ,@(when mv (mv-one))))
+      (:symtab `((:global.get :symtab) (:global.get :pkgtab) (:call :symbol-info) (:call :dropped-symbols)
+                 (:struct.new :cons) (:struct.new :cons) (:struct.new :cons) ,@(when mv (mv-one))))
       (:defun (cg-defun node mv))
       (:values (cg-values (cdr node) mv))
       (:apply (maybe-checked-call tail (cg-apply (second node) (cddr node) tail))))))
@@ -1861,6 +1862,10 @@ otherwise; NIL when the classes cannot hold."
   "True when the whole program is shaken (SHAKE-MODULE): a global definition
 of a function without free variables is a function (:install SYMBOL N) of its
 own, which the shaker keeps only if something refers to SYMBOL.")
+(defvar *shake-symbols* nil
+  "True when SHAKE-MODULE also leaves out the symbols that nothing refers to
+(bin/clysm library --shake-symbols): the program promises not to look up by
+name a symbol that its code does not refer to.")
 (defvar *install-counter* 0)
 
 (defun cg-defun (node mv)

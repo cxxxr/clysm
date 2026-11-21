@@ -155,9 +155,12 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:f32vec    (:array (:f32 t)))
     (:cons      (:struct ((:eqref t) (:eqref t))))
     (:package   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
-    ;; (the name and the hash are mutable for heap images only: an image
-    ;; started from one makes its symbols without them, runtime/image.lisp)
-    (:symbol    (:struct (((:ref :string) t) ((:ref :null :package) t) (:eqref t)
+    ;; (the name and the hash are mutable, and the name nullable: the
+    ;; globals of the symbols of a module are made empty and filled from the
+    ;; data of the symbol table when it starts, :INIT-SYMBOLS in
+    ;; src/driver.lisp, and an image started from a heap image makes its
+    ;; symbols without them, runtime/image.lisp)
+    (:symbol    (:struct (((:ref :null :string) t) ((:ref :null :package) t) (:eqref t)
                           ((:ref :null :closure) t) (:eqref t) (:i32 t) (:i32 t))))
     (:closure   (:sub () nil (:struct (((:ref :code) nil) (:eqref t)))))
     (:code      (:struct (((:ref :f0) nil) ((:ref :f1) nil) ((:ref :f2) nil) ((:ref :f3) nil)

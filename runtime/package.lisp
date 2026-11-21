@@ -24,6 +24,9 @@
 (defun %package-externals (p) (%pkg p 5))
 
 (defvar *package-local-nicknames* nil) ; package -> ((nickname . package) ...)
+;; (see %DROPPED-SYMBOL-CHECK)
+(defvar *%dropped-symbols* nil)
+(defvar *%dropped-symbol-packages* nil)
 
 ;;; The symbol FIND-PACKAGE last found a package by, and the package
 ;;; (:KEYWORD, :CL-USER in (INTERN NAME :KEYWORD) and the like); the entry is
@@ -203,13 +206,52 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
 (defun %symbol-name-arg (name)
   (if (stringp name) name (%type-error name 'string)))
 
-(defun find-symbol (name &optional (package *package*))
-  (let* ((p (%find-package-or-die package)) (name (%symbol-name-arg name)) (hash (%sxhash name 4)))
+(defun %find-symbol (name p)
+  "FIND-SYMBOL of the string NAME in the package P, without the check of
+%DROPPED-SYMBOL-CHECK (the printer's, which looks up the names of symbols
+that are there)."
+  (let ((hash (%sxhash name 4)))
     (multiple-value-bind (s status) (%present name p hash)
       (if status (values s status)
           (dolist (u (%pkg p 2) (values nil nil))
             (multiple-value-bind (s found) (%gethash-hashed name (%package-externals u) hash)
               (when found (return (values s :inherited)))))))))
+
+(defun find-symbol (name &optional (package *package*))
+  (let ((p (%find-package-or-die package)) (name (%symbol-name-arg name)))
+    (multiple-value-bind (s status) (%find-symbol name p)
+      (when (and (null status) *%dropped-symbols*) (%dropped-symbol-check name p))
+      (values s status))))
+
+;;; A module compiled with --shake-symbols (bin/clysm library) has only the
+;;; symbols that its code refers to.  *%DROPPED-SYMBOLS* is then the names
+;;; of the others of COMMON-LISP and of the program's packages, as the
+;;; octets of SYMBOL-TABLE-DATA in src/driver.lisp (records of the package's
+;;; index in the package table plus 1, 1 if the symbol was external, the
+;;; length of the name and its characters), made a hash table of NAME ->
+;;; ((package . external-p) ...) when a name is first not found: looking up
+;;; one of these names is an error, not a new symbol that is not the one
+;;; the program meant.
+
+(defun %dropped-symbol-check (name p)
+  (let ((table *%dropped-symbols*))
+    (unless (hash-table-p table)
+      (let ((octets table) (i 0) (pkgs *%dropped-symbol-packages*))
+        (setq table (make-hash-table :test 'equal))
+        (do () ((>= i (%bytes-length octets)))
+          (let* ((pkg (%svref pkgs (- (%bytes-ref octets i) 1)))
+                 (ext (= (%bytes-ref octets (+ i 1)) 1))
+                 (len (%bytes-ref octets (+ i 2)))
+                 (n (make-string len)))
+            (dotimes (j len) (setf (char n j) (code-char (%bytes-ref octets (+ i 3 j)))))
+            (push (cons pkg ext) (gethash n table))
+            (setq i (+ i 3 len))))
+        (setq *%dropped-symbols* table)))
+    (dolist (e (gethash name table))
+      (when (or (eq (car e) p) (and (cdr e) (member (car e) (%pkg p 2))))
+        (%package-error p "~A::~A is not in this module: it was compiled with --shake-symbols, ~
+which leaves out the symbols that its code does not refer to"
+                        (package-name (car e)) name)))))
 
 (defun intern (name &optional (package *package*))
   (let ((p (%find-package-or-die package)) (name (%symbol-name-arg name)))
@@ -482,7 +524,10 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
 (defmacro in-package (name) `(%in-package ,(string name)))
 
 (defun %defpackage (name nicknames uses exports shadows imports &optional interns doc local-nicknames)
-  (let ((p (or (find-package name) (make-package name :nicknames nicknames :use nil))))
+  ;; (with --shake-symbols, a name of DEFPACKAGE is that of a symbol of the
+  ;; program, or of one nothing refers to: see %DEFPACKAGE-IMPORT)
+  (let ((p (or (find-package name) (make-package name :nicknames nicknames :use nil)))
+        (*%dropped-symbols* nil))
     (when (or local-nicknames (and *package-local-nicknames* (gethash p *package-local-nicknames*)))
       (unless *package-local-nicknames* (setq *package-local-nicknames* (make-hash-table :test 'eq)))
       (setf (gethash p *package-local-nicknames*) nil)
@@ -511,7 +556,9 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
   (let ((from (%find-package-or-die (cadr imp))))
     (dolist (sname (cddr imp))
       (multiple-value-bind (s status) (find-symbol sname from)
-        (unless status
+        ;; (with --shake-symbols, a symbol not there is one that nothing
+        ;; refers to: not imported)
+        (unless (or status *%dropped-symbol-packages*)
           (if (%correctable-package-error from (format nil "Intern ~A in ~A." sname (package-name from))
                                           "DEFPACKAGE: there is no symbol named ~S in ~A."
                                           sname (package-name from))
@@ -576,8 +623,13 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
 ;;; initialization from the compiler-generated symbol table
 ;;; ------------------------------------------------------------
 
+;;; TABLES: (symtab pkgtab info . dropped).  SYMTAB is a vector of vectors
+;;; of the symbols, INFO three octets a symbol in the same order
+;;; (SYMBOL-TABLE-DATA in src/driver.lisp): its package's index in PKGTAB
+;;; plus 1 (0: none), its flags (1: external) and the length of its name.
+;;; DROPPED: see *%DROPPED-SYMBOLS*.
 (defun %init-packages (tables)
-  (let ((symtab (car tables)) (pkgtab (cdr tables)))
+  (let ((symtab (car tables)) (pkgtab (cadr tables)) (info (caddr tables)) (dropped (cdddr tables)) (k 0))
     (setq *package-table* (make-hash-table :test 'equal))
     (let ((pkgs (%make-simple-vector (%svlength pkgtab) nil)))
       (dotimes (i (%svlength pkgtab))
@@ -590,10 +642,14 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
       (setq *keyword-package* (find-package "KEYWORD"))
       (setq *cl-package* (find-package "COMMON-LISP"))
       (setq *system-package* (find-package "SYSTEM"))
+      (when dropped
+        (setq *%dropped-symbols* dropped *%dropped-symbol-packages* pkgs))
       (dotimes (chunk-index (%svlength symtab))
        (let ((chunk (%svref symtab chunk-index)))
-        (do ((i 0 (+ i 3))) ((>= i (%svlength chunk)))
-        (let ((sym (%svref chunk i)) (pidx (%svref chunk (+ i 1))) (ext (%svref chunk (+ i 2))))
+        (do ((i 0 (+ i 1))) ((>= i (%svlength chunk)))
+        (let ((sym (%svref chunk i)) (pidx (- (%bytes-ref info (* 3 k)) 1))
+              (ext (oddp (%bytes-ref info (+ (* 3 k) 1)))))
+          (setq k (+ k 1))
           (when (>= pidx 0)
             (let ((p (%svref pkgs pidx)))
               (%set-symbol-package sym p)
