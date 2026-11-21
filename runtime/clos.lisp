@@ -3452,6 +3452,7 @@ call site is compiled apart from the runtime, in the image or a fasl, whose
 calls of the runtime's functions are not inlined by the engine)."
     (let ((o (gensym "O")) (c (gensym "C")) (index (gensym "INDEX")) (loc (gensym "LOC"))
           (v (gensym "V")) (new (gensym "NEW")))
+     (flet ((full (object value)
       `(let* ((,o ,object) ,@(when (eq kind :set) `((,new ,value)))
               (,c (load-time-value (%make-slot-cache)))
               (,loc (if (%instancep ,o)
@@ -3472,7 +3473,25 @@ calls of the runtime's functions are not inlined by the engine)."
                        (%set-slot-value-slow ,o ,name ,new)))
             (:boundp `(if ,loc
                           (not (%unboundp (%instance-ref ,o ,loc)))
-                          (%slot-boundp-slow ,o ,name))))))))
+                          (%slot-boundp-slow ,o ,name)))))))
+       ;; a read or write: the four entries compared in one access
+       ;; (%CACHED-SLOT-READ, -WRITE), the rest (an unbound slot, a miss)
+       ;; out of the way
+       (let ((cache (gensym "CACHE")))
+         (case kind
+           (:read
+            `(let* ((,o ,object) (,cache (load-time-value (%make-slot-cache)))
+                    (,v (%cached-slot-read ,o ,cache +class-slot-index+)))
+               (if (%unboundp ,v)
+                   (progn (%cold) (%slot-value-cached ,o ,name ,cache))
+                   ,v)))
+           (:set
+            `(let* ((,o ,object) (,new ,value) (,cache (load-time-value (%make-slot-cache)))
+                    (,v (%cached-slot-write ,o ,new ,cache +class-slot-index+)))
+               (if (%unboundp ,v)
+                   (progn (%cold) (%set-slot-value-cached ,o ,name ,new ,cache))
+                   ,v)))
+           (t (full object value))))))))
 
 (define-compiler-macro slot-value (&whole form object name)
   (if (%constant-slot-name-p name)

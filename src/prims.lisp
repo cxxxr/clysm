@@ -3263,6 +3263,47 @@ or object."
           (:local.get ,val) (:array.set :vector)
           (:local.get ,val) (:br ,done))
         (:ref.null :eq)))))
+;;; The location cache of SLOT-VALUE with a constant name at a call site
+;;; (%CACHED-SLOT-ACCESS in runtime/clos.lisp): four pairs of the slot index
+;;; of a class (the layout's slot IDX) and the location of the slot, and an
+;;; entry for the instances of the size of a class redefined with other slots.  When X
+;;; is an instance whose class's slot index is that of a pair, the slot at
+;;; its location is read (null when unbound) or V is stored there and
+;;; returned; else null.
+(defun cached-slot-code (x c idx store)
+  (let ((tmp (new-local)) (inst (new-local '(:ref :null :instance))) (cv (new-local '(:ref :null :vector)))
+        (k (new-local)) (e (new-local)) (val (new-local)) (miss (gensym "MISS")) (done (gensym "SLOTC")))
+    `(,@(when store `(,@store (:local.set ,val))) ,@x (:local.set ,tmp)
+      (:block ,done :eqref
+        (:block ,miss nil
+          ,@c (:ref.cast! :vector) (:local.set ,cv)
+          (:local.get ,tmp) (:ref.test :instance) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,tmp) (:ref.cast! :instance) (:local.tee ,inst) (:struct.get :instance 0) (:local.tee ,k)
+          (:ref.test :instance) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,k) (:ref.cast! :instance) (:struct.get :instance 1) ,@idx (:array.get :vector) (:local.set ,k)
+          ,@(labels ((entry (i)
+                       `((:local.get ,k) (:local.get ,cv) (:i32.const ,i) (:array.get :vector) :ref.eq
+                         (:if nil :eqref ((:local.get ,cv) (:i32.const ,(1+ i)) (:array.get :vector))
+                              ,(if (< i 6)
+                                   (entry (+ i 2))
+                                   ;; the entry of a class redefined with
+                                   ;; other slots: for instances of its size
+                                   `((:local.get ,k) (:local.get ,cv) (:i32.const 9) (:array.get :vector) :ref.eq
+                                     :i32.eqz (:br_if ,miss)
+                                     (:local.get ,inst) (:struct.get :instance 1) :array.len :ref.i31
+                                     (:local.get ,cv) (:i32.const 11) (:array.get :vector) :ref.eq
+                                     :i32.eqz (:br_if ,miss)
+                                     (:local.get ,cv) (:i32.const 10) (:array.get :vector)))))))
+              (entry 0))
+          (:local.tee ,e) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,inst) (:struct.get :instance 1) (:local.get ,e) (:ref.cast! :i31) :i31.get_s
+          ,@(if store
+                `((:local.get ,val) (:array.set :vector) (:local.get ,val))
+                '((:array.get :vector)))
+          (:br ,done))
+        (:ref.null :eq)))))
+(defprim clysm-sys::%cached-slot-read (x c idx) :value (cached-slot-code x c (idx-code idx) nil))
+(defprim clysm-sys::%cached-slot-write (x v c idx) :value (cached-slot-code x c (idx-code idx) v))
 ;;; (%COLD): NIL, and a mark on the branch of an IF it begins that the branch
 ;;; is not expected to be taken (a branch hint: see COLD-BRANCH-P)
 (defprim clysm-sys::%cold () :value (nil-code))

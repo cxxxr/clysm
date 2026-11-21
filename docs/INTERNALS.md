@@ -2373,7 +2373,19 @@ What is not as fast as intended, and why:
   `bench/clos.lisp` (whole program) 1.27 → 1.25 (`c-accessors` 0.83 →
   0.56, `c-with-slots` 1.02 → 0.92); `tools/bench-libs.sh` 1.19 → 1.18,
   `bench/apps.lisp` and `bench/library.lisp` (0.90 → 0.91) within the
-  noise.
+  noise. Then `slot-value` with a constant name (`with-slots`) the same
+  way: `%cached-slot-read`/`-write` compare the four pairs of the site's
+  cache and the entry of a class redefined with other slots (with the
+  instance's number of slots) in one access, the rest calls
+  `%slot-value-cached` (it was the four comparisons inline, then a call of
+  `%slot-cache-miss` for the redefined class's entry): `c-with-slots` 0.92
+  → 0.74, `c-slot-redef` 1.72 → 0.96 (in a script 123 → 98 and 107 → 50
+  ms), `bench/clos.lisp` 1.25 → 1.18; a simple vector constant of a whole
+  program is a global of type `(ref $vector)` as well; and `char=` /
+  `char/=` of two values known to be characters (a declared parameter, a
+  constant) is a `ref.eq` of the immediates, without their checks
+  (`tools/bench-lem.sh` the same: 1.24 against 1.29 in one interleaved
+  pair).
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
@@ -2493,14 +2505,16 @@ What is not as fast as intended, and why:
   3% slower). Generic functions with `&optional`/`&rest`/`&key`
   (`c-gf-lambda-lists` 1.3, was 2.6) and `make-instance` with a class that
   is not a constant (`c-make-instance-plain` 1.6, was 2.7) are below. Slot
-  accessors are faster than SBCL's (`c-accessors` 0.56, was 0.83;
-  `c-with-slots` 0.92): a call site of a reader, of `setf` of an accessor or
-  of a `:writer` (of a class or a condition) keeps the slot locations of
-  four classes and reads or writes the slot itself (`%site-slot-read`, see
-  "The machine code of the call sites" below), and `slot-value` with a constant name
-  compares the four entries of its cache inline. The slots of a class
-  redefined with other slots after it had instances are checked first
-  (`c-slot-redef` 1.5; see the limitations).
+  accessors are faster than SBCL's (`c-accessors` 0.53, was 0.83;
+  `c-with-slots` 0.74, was 1.02): a call site of a reader, of `setf` of an
+  accessor or of a `:writer` (of a class or a condition) keeps the slot
+  locations of four classes and reads or writes the slot itself
+  (`%site-slot-read`, see "The machine code of the call sites" below), and
+  `slot-value` with a constant name compares the four entries of its cache
+  and that of a redefined class in one access too (`%cached-slot-read`).
+  The slots of a class redefined with other slots after it had instances
+  are checked by their number (`c-slot-redef` 0.96, was 1.7; see the
+  limitations).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
   structures or passed between functions of unknown types (fixnums in
   SBCL; a parameter or variable updated by integer arithmetic keeps them
