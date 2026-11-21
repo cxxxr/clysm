@@ -73,6 +73,16 @@ The universal value type is `(ref null eq)`.
 * **string** — `(array (mut i32))` of code points; **simple-vector** — `(array (mut eqref))`;
   also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
   multi-dimensional, displaced) use a header struct around a simple array.
+  A constant string of characters below 256 is a global of its length only
+  (`array.new_default`, not inlined into the list or vector that holds
+  it), and `:init-strings` copies its characters from a passive segment of
+  one octet a character, in the order of `:strtab` (`set-string-table` in
+  `src/driver.lisp`, made again after shaking): `_start` calls it after
+  `:init-symbols`, and `:image-load` first, since a heap image does not
+  write the contents of the image's constant strings (`:strtab` is not
+  among the objects it makes empty). Its initializer had an `i32.const` a
+  character: the module of one export 4,214,514 → 4,163,772 bytes (gzip
+  973,724 → 971,312), the REPL image 9,355,652 → 9,285,446.
 * **bignum** — `struct { sign: i32, digits: mut (ref null (array i32)), value: i64 }`
   (base 2^32 digits, unsigned in the i32 elements; the kernels compute in
   i64, and Lisp code never reads a digit, as most are not fixnums). Integers
@@ -4577,7 +4587,29 @@ name (the definition is wrapped in `sys:%when-reached`, installed as a
 function definition is): compiled code has expanded the macro already.
 `SHAKE=1 tools/run-tests.sh` runs the test suite this way. What remains is
 mostly reached through generic paths (the printer, `format`, CLOS dispatch,
-conditions) and the constants and closures of the global section (0.4 MB).
+conditions) and the constants and closures of the global section (0.33 MB).
+
+`order-functions-by-use` (`src/wasm.lisp`, before a whole program, a
+library or the REPL image is encoded) gives the indices below 128, one
+octet of LEB128 instead of two, to the functions that calls and `ref.func`
+name the most (the entries for a wrong number of arguments in every
+closure's code, `:apply-generic`, the casts and helpers), and to the
+globals referred to the most among those whose initializers refer to no
+other defined global (the symbols, the runtime's state): the module of one
+export 4,163,772 → 4,053,666 bytes (gzip 971,312 → 965,589), the REPL image
+9,285,446 → 8,873,131. The others keep their order: sorting all the
+functions by use made the module as small but 25 KB larger with gzip,
+which compresses functions of the same file next to each other better.
+
+What the global section of the module of one export holds then (330 KB):
+3,932 static closures, 130 KB (33 octets each: the `ref.func`s of the
+seven entries, most of them the shared ones for a wrong number of
+arguments, the code struct, the name; near the least a constant
+expression can take), 1,755 constant lists, 98 KB (16,000 conses: the
+`struct.new` of each, 3 octets, and the `global.get` of its element; a
+bytecode for them run at start-up would save the `struct.new`s, about
+30 KB, and little with gzip, so it was not done), 5,078 symbols, 35 KB,
+and vectors, 27 KB.
 For pages, the module is best served as a file of its own, which the browser
 caches for every page that uses it.
 
