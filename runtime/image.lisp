@@ -502,17 +502,6 @@ now (the oldest binding of a symbol on the binding stack holds it)."
         (%set-fdefinition (%gf-slot info +gf-name+) f)
         (%gf-invalidate info)))))
 
-(defun %preinit-forget-methods (table)
-  "Remove from TABLE (method -> what is known of it) the methods that no
-generic function has: those removed, and those that a definition replaced."
-  (let ((gone nil))
-    (maphash (lambda (m v)
-               (declare (ignore v))
-               (let ((gf (%method-gf m)))
-                 (unless (and gf (member m (%gf-slot (%gf-info gf) +gf-methods+))) (push m gone))))
-             table)
-    (dolist (m gone) (remhash m table))))
-
 (defun %preinit-drop-methods ()
   (let* ((spec (%getenv "CLYSM_PREINIT_DROP"))
          (all (%preinit-all-classes))
@@ -520,8 +509,6 @@ generic function has: those removed, and those that a definition replaced."
                    (remove nil (mapcar (lambda (s) (find-class s nil)) (read-from-string spec)))
                    (%preinit-drop-candidates all))))
     (dolist (info *generic-function-infos*) (%preinit-drop-gf-methods info drop))
-    (mapc #'%preinit-forget-methods (list *method-fast-functions* *method-fast-makers* *method-constants*
-                                          *method-keyed-makers* *slot-accessor-methods*))
     (dolist (c all) (%set-class-slot c +class-dispatch+ nil))
     (%bump-clos-epoch)
     (princ "clysm-preinit-drop:")
@@ -548,16 +535,13 @@ function of the module from which the compiler builds a shaken program
         (%set-package-ref p i v))))
   ;; (the methods of the generic functions that only the printer and
   ;; DESCRIBE call stay with their generic functions, which a program keeps
-  ;; only if it refers to them, and not with the tables of the functions of
-  ;; all the methods, which every call of a generic function keeps: the
-  ;; dispatch then finds their functions in the methods themselves)
+  ;; only if it refers to them, and not with *GENERIC-FUNCTION-INFOS* and
+  ;; the methods of their specializers)
   (dolist (s (%printer-gf-symbols))
     (let ((info (%gf-info (fdefinition s))))
       (setq *generic-function-infos* (remove info *generic-function-infos*))
       (%put s '%gf-info info)
       (dolist (m (generic-function-methods (fdefinition s)))
-        (dolist (table (list *method-fast-functions* *method-fast-makers* *method-keyed-makers* *method-constants*))
-          (remhash m table))
         (dolist (sp (%method-specializers m)) (remove-direct-method sp m)))))
   (let ((*img-describe-base* t))
     (save-image (%getenv "CLYSM_PREINIT_FILE") nil)))

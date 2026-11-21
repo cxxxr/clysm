@@ -55,8 +55,9 @@ it still waits where it waits.")
     %initial-methods %fast %table %unspecialized %kmaker %core))
 
 ;;; method: 0 gf 1 qualifiers 2 specializers 3 function 4 lambda-list 5 doc 6 keys
+;;; 7 extra (NIL or a vector of what the dispatch knows of the method: %METHOD-EXTRA)
 (defparameter *method-slot-names*
-  '(%generic-function %qualifiers %specializers %function %lambda-list %documentation %keys))
+  '(%generic-function %qualifiers %specializers %function %lambda-list %documentation %keys %extra))
 
 ;;; method combination: 0 name 1 options
 (defparameter *method-combination-slot-names* '(%name %options))
@@ -89,6 +90,26 @@ it still waits where it waits.")
 (defun %method-specializers (m) (%instance-ref m 2))
 (defun %method-function (m) (%instance-ref m 3))
 (defun %method-gf (m) (%instance-ref m 0))
+
+;;; What the dispatch knows of a method besides its function, in the method
+;;; itself (and so kept with it, in a shaken program, rather than in tables
+;;; of all the methods, which every call of a generic function would keep):
+;;; 0 its function of the spread arguments, 1 a function making one from the
+;;; next method, 2 the maker of its function of the keyed spread arguments,
+;;; 3 (value) of a primary method whose body is a constant, 4 (slot-name
+;;; . writerp) of a reader or writer made by DEFCLASS, 5 (n kind . function)
+;;; of its combiner.
+(defconstant +method-fast-function+ 0) (defconstant +method-fast-maker+ 1)
+(defconstant +method-keyed-maker+ 2) (defconstant +method-constant+ 3)
+(defconstant +method-accessor+ 4) (defconstant +method-combiner+ 5)
+(defun %method-extra (m i)
+  (let ((v (%instance-ref m 7))) (if (simple-vector-p v) (svref v i) nil)))
+(defun %set-method-extra (m i x)
+  (let ((v (%instance-ref m 7)))
+    ;; (NIL, or unbound in a method made by MAKE-INSTANCE)
+    (unless (simple-vector-p v) (setq v (vector nil nil nil nil nil nil)) (%set-instance-ref m 7 v))
+    (setf (svref v i) x)
+    m))
 
 (defun %gf-info (f)
   (let ((info (and (functionp f) (%closure-name f))))
@@ -1526,11 +1547,9 @@ optional and the keyword ones in the order of KEYS)."
   "The slot of the keyword KEY among the four keyed spread arguments, or NIL."
   (let ((p (position key keys))) (and p (+ npos p))))
 
-;;; methods known as functions of the keyed spread arguments: method -> maker
-(defvar *method-keyed-makers* (make-hash-table :test 'eq))
+;;; methods known as functions of the keyed spread arguments: their makers
 (defun %note-method-keyed-maker (m maker)
-  (setf (gethash m *method-keyed-makers*) maker)
-  m)
+  (%set-method-extra m +method-keyed-maker+ maker))
 
 (defun %gf-make-keyed-emf (info kn methods)
   "The keyed effective method of a cache entry whose effective method of the
@@ -1541,7 +1560,7 @@ spread arguments has the name KN, or :NONE; remembered in KN."
   (let ((gfkeys (%gf-slot info +gf-kmaker+)))
     (when (and (consp methods)
                (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
-               (every (lambda (m) (gethash m *method-keyed-makers*)) methods))
+               (every (lambda (m) (%method-extra m +method-keyed-maker+)) methods))
       (let ((around nil) (before nil) (primary nil) (after nil))
         (dolist (m methods)
           (let ((q (%method-qualifiers m)))
@@ -1551,7 +1570,7 @@ spread arguments has the name KN, or :NONE; remembered in KN."
                   ((equal q '(:after)) (push m after))
                   (t (return-from %gf-keyed-emf nil)))))
         (when primary
-          (flet ((fn (m next) (funcall (the function (gethash m *method-keyed-makers*)) next gfkeys)))
+          (flet ((fn (m next) (funcall (the function (%method-extra m +method-keyed-maker+)) next gfkeys)))
             (let ((f nil))
               (dolist (m primary) (setq f (fn m f)))
               (when (or before after)
@@ -1615,12 +1634,9 @@ spread form, or the general call when their number does not fit SHAPE."
 ;;; use CALL-NEXT-METHOD or NEXT-METHOD-P), or a function making one from the
 ;;; next method (a function of the arguments, or NIL) and the bits of the
 ;;; parameters that CALL-NEXT-METHOD may be given any argument for.
-(defvar *method-fast-functions* (make-hash-table :test 'eq))
-(defvar *method-constants* (make-hash-table :test 'eq)
-  "primary method whose body is a constant -> (value)")
 (defun %note-method-constant (m value)
-  (setf (gethash m *method-constants*) (list value))
-  m)
+  "M, a primary method whose body is the constant VALUE."
+  (%set-method-extra m +method-constant+ (list value)))
 
 ;;; The effective method of a primary method alone whose body is a constant
 ;;; (as SBCL's constant-value dispatch functions): a function of N arguments
@@ -1631,13 +1647,10 @@ spread form, or the general call when their number does not fit SHAPE."
   (let ((f (%arity-case n (lambda (%args) (declare (ignore %args)) value))))
     (%set-closure-name f '%constant-emf)
     f))
-(defvar *method-fast-makers* (make-hash-table :test 'eq))
 (defun %note-method-fast-function (m f)
-  (setf (gethash m *method-fast-functions*) f)
-  m)
+  (%set-method-extra m +method-fast-function+ f))
 (defun %note-method-fast-maker (m f)
-  (setf (gethash m *method-fast-makers*) f)
-  m)
+  (%set-method-extra m +method-fast-maker+ f))
 
 ;;; The code combining the methods of an effective method of :BEFORE or
 ;;; :AFTER methods, or of a short-form method combination, is made by the
@@ -1645,14 +1658,12 @@ spread form, or the general call when their number does not fit SHAPE."
 ;;; the arity of its function: the engine inlines no call into another
 ;;; module, and a function of the runtime calling the methods of a module
 ;;; loaded from source (or a fasl) cannot have them inlined.
-;;; method -> (n kind . function), KIND :STANDARD or the operator.
-(defvar *method-combiners* (make-hash-table :test 'eq))
+;;; A method's (n kind . function), KIND :STANDARD or the operator.
 (defun %note-method-combiner (m n kind f)
-  (setf (gethash m *method-combiners*) (list* n kind f))
-  m)
+  (%set-method-extra m +method-combiner+ (list* n kind f)))
 (defun %method-combiner (methods n kind)
   (dolist (m methods nil)
-    (let ((c (gethash m *method-combiners*)))
+    (let ((c (%method-extra m +method-combiner+)))
       (when (and c (eql (car c) n) (eq (cadr c) kind)) (return (cddr c))))))
 
 (defun %spread-maker-method-function (maker nreq nopt more)
@@ -1687,10 +1698,10 @@ a method known by MAKER."
   "A function of the N (spread) arguments calling the method M, NEXT (a
 function of the arguments, or NIL) being its next method; UNSPEC is
 +GF-UNSPECIALIZED+ of the generic function, SHAPE its %GF-SHAPE."
-  (let ((maker (gethash m *method-fast-makers*)))
+  (let ((maker (%method-extra m +method-fast-maker+)))
     (if maker
         (funcall maker next unspec)
-        (or (gethash m *method-fast-functions*)
+        (or (%method-extra m +method-fast-function+)
             (let ((mf (%method-function m)))
               (if shape
                   (destructuring-bind (nreq nopt more) shape
@@ -1846,7 +1857,7 @@ the N arguments, or NIL when its operator is not a function."
     (if (null primary)
         (%no-applicable-fast gf n shape)
         (let ((f nil) (c (and (null shape) (null around) (null before) (null after) (<= 1 n 8)
-                              (gethash (car (last primary)) *method-constants*))))
+                              (%method-extra (car (last primary)) +method-constant+))))
           (when c (return-from %standard-fast-emf (%constant-emf n (car c))))
           (dolist (m primary) (setq f (%method-fast-fn m f n unspec shape)))
           (when (or before after)
@@ -1892,18 +1903,16 @@ the N arguments, or NIL when its operator is not a function."
         (if ok methods (compute-applicable-methods gf args)))))
 
 
-;;; Reader and writer methods made by DEFCLASS: method -> (slot-name . writerp).
+;;; Reader and writer methods made by DEFCLASS know (slot-name . writerp).
 ;;; When such a method is the only applicable one, the effective method
 ;;; accesses the slot at its location in the instance's class directly.
-(defvar *slot-accessor-methods* (make-hash-table :test 'eq))
 (defun %note-slot-accessor (method slot-name writerp)
-  (setf (gethash method *slot-accessor-methods*) (cons slot-name writerp))
-  method)
+  (%set-method-extra method +method-accessor+ (cons slot-name writerp)))
 
 (defun %fast-accessor-emf (info methods args)
   (let ((acc (and (null (cdr methods)) (null (%method-qualifiers (car methods)))
                   (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
-                  (gethash (car methods) *slot-accessor-methods*))))
+                  (%method-extra (car methods) +method-accessor+))))
     (when acc
       (let* ((writerp (cdr acc))
              (object (if writerp (cadr args) (car args)))
@@ -1940,7 +1949,7 @@ the N arguments, or NIL when its operator is not a function."
   "Like %FAST-ACCESSOR-EMF for a function of the arguments themselves."
   (let ((acc (and (null (cdr methods)) (null (%method-qualifiers (car methods)))
                   (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
-                  (gethash (car methods) *slot-accessor-methods*))))
+                  (%method-extra (car methods) +method-accessor+))))
     (when acc
       (let* ((writerp (cdr acc))
              (object (if writerp (cadr args) (car args)))
