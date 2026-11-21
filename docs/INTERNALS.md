@@ -4873,7 +4873,7 @@ are those of the full printer: `tests/lib/messages.lisp`, compiled with
 module of one export: 3,628,248 -> 2,469,838 bytes (`gzip -9` 920,048 ->
 618,266): of code, `pprint.lisp` 204 -> 28 KB, `format.lisp` 199 -> 0,
 `read.lisp` 103 -> 1, `print.lisp` 88 -> 16, `loop.lisp` 48 -> 0,
-`clos.lisp` 535 -> 397; the small printer is 30 KB. What keeps most of the
+`clos.lisp` 535 -> 397; the small printer is 30 KB, which a program that prints carries too (`tests/hello.lisp` with `--shake` 3,782,300 -> 3,812,977; the REPL image 9,723,973 -> 9,776,337). What keeps most of the
 rest is CLOS: the tables of all methods' functions and
 `*generic-function-infos*` keep every generic function and method (item 2),
 and through the method combinations the evaluator.
