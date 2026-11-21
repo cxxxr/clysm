@@ -698,9 +698,19 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
   `(handler-case (progn ,@body)
      (error (condition) (values nil condition))))
 
+(defun %loop-deftype-expansion (type)
+  "(EXPANSION) when TYPE names a type defined by DEFTYPE and expands without
+error into something else, else NIL (for LOOP's default values)."
+  (let* ((name (if (consp type) (car type) type))
+         (expander (and (symbolp name) name (get name '%deftype))))
+    (when expander
+      (let ((e (ignore-errors (list (funcall expander (if (consp type) (cdr type) nil))))))
+        (and e (not (equal (car e) type)) e)))))
+
 ;;; ------------------------------------------------------------
 ;;; errors signalled by the compiler-generated code
 ;;; ------------------------------------------------------------
+
 
 (defun %type-error (datum expected)
   (error 'type-error :datum datum :expected-type expected))

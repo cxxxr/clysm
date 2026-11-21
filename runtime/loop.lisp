@@ -106,7 +106,22 @@ the default value of its type (and no declaration when there is none)."
     (cond ((%lkw-in type '("FIXNUM" "INTEGER" "NUMBER" "REAL" "RATIONAL")) 0)
           ((%lkw-in type '("FLOAT" "SINGLE-FLOAT" "SHORT-FLOAT")) 0.0)
           ((%lkw-in type '("DOUBLE-FLOAT" "LONG-FLOAT")) 0.0d0)
-          ((and (consp type) (member (car type) '(integer mod unsigned-byte signed-byte))) 0)
+          ((and (consp type) (member (car type) '(integer mod unsigned-byte signed-byte)))
+           ;; (only when 0 is of the type: (integer 1 9) has no default)
+           (and (or (not (eq (car type) 'integer))
+                    (let ((lo (cadr type)) (hi (caddr type)))
+                      (and (or (member lo '(nil *)) (and (integerp lo) (<= lo 0)) (and (consp lo) (< (car lo) 0)))
+                           (or (member hi '(nil *)) (and (integerp hi) (>= hi 0)) (and (consp hi) (> (car hi) 0))))))
+                0))
+          ;; a type defined by DEFTYPE (babel's CODE-POINT, (MOD #x110000)):
+          ;; the default of its expansion, so that the variable is declared
+          ;; and kept raw
+          ;; (%LOOP-DEFTYPE-EXPANSION is defined in cond.lisp, with
+          ;; IGNORE-ERRORS; on the host there is none)
+          ((and (symbolp (if (consp type) (car type) type))
+                (fboundp '%loop-deftype-expansion))
+           (let ((e (funcall '%loop-deftype-expansion type)))
+             (and e (%loop-type-default (car e)))))
           (t nil)))
 
   (defun %loop-pattern-defaults (pattern type)

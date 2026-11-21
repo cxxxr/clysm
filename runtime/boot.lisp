@@ -373,9 +373,16 @@ the declarations (when forms follow it)."
         `(setq ,place ,value)
         (multiple-value-bind (temps vals stores setter) (%get-setf-expansion place env)
           (if (and (consp place) (symbolp (car place)) (get (car place) 'setf-update)
-                   (null (cdr stores)))
-              ;; simple defsetf form: avoid temporaries for simple args
-              `(let* (,@(mapcar #'list temps vals) (,(car stores) ,value)) ,setter)
+                   (not (get (car place) 'setf-expander))
+                   ;; (a macro may evaluate its arguments in another order)
+                   (not (macro-function (get (car place) 'setf-update) env)))
+              ;; the short form of DEFSETF: the update function called on the
+              ;; place's subforms and the value, which are evaluated in that
+              ;; order as through temporaries; without them the compiler
+              ;; sees the value ((SETF (SCHAR S I) (CODE-CHAR C)) stores
+              ;; the code)
+              (progn temps vals stores setter
+                     `(,(get (car place) 'setf-update) ,@(cdr place) ,value))
               `(let* (,@(mapcar #'list temps vals))
                  (multiple-value-bind ,stores ,value ,setter)))))))
 
