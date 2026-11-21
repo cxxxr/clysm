@@ -15,3 +15,4 @@
 15 "SIMPLE-ERROR" "one other    42|end"
 16 "SIMPLE-TYPE-ERROR" "bad \"x\""
 17 "SIMPLE-ERROR" "big 1180591620717411303424 ratio 2/3 neg -12"
+18 "SIMPLE-ERROR" "chars #\\Newline #\\Tab #\\Nul #\\Rubout Backspace #\\ "

@@ -5295,6 +5295,17 @@ sets when a class is first redefined: a program that redefines no class
 does not carry it. The module of one export: 1,801,118 -> 1,755,743 bytes
 (`gzip -9` 522,771 -> 511,904).
 
+**The small printer names characters without the file of Unicode names.**
+`char-name` of a character above Latin-1 reads `data/unicode-names.txt`
+from the Clysm installation (`%unicode-names`), so the small printer's
+`#\` and `~:C` kept pathnames, `open`, `close` and `read-line` in every
+shaken module. It now calls `char-name` only when the program has it
+(`%small-char-name`, through `%weak-symbol`), and otherwise writes the
+names of the first 256 characters and `U+XXXX` (as `char-name` does when
+the file is not there). `tests/lib/messages.lisp` prints named characters.
+The module of one export: 1,755,743 -> 1,732,962 bytes (`gzip -9` 511,904
+-> 504,757).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
