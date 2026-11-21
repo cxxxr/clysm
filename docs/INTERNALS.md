@@ -1899,7 +1899,21 @@ its modules; two things made it cost much more, and are avoided:
   reads plain symbols straight from the string, now also `PKG:NAME`,
   `PKG::NAME` and `:NAME` (`%read-plain-symbol`; what it cannot intern is
   left to the reader of tokens, which signals the errors). Reading the
-  13000 forms of Lem's fasls took 1.6 s, and takes 0.4 s.
+  13000 forms of Lem's fasls took 1.6 s, and takes 0.4 s. An entry of a
+  module (`%fasl-wasm`, `%fasl-unit`, `%fasl-segment`, with its vector of
+  constants) is now written in a form of its own that `load` decodes
+  without the reader (`%fasl-bin-encode`, `%fasl-bin-decode` in
+  `runtime/eval.lisp`: `!N;` and N characters of tagged objects, lengths
+  in front of strings, shared objects labelled; any object of another kind
+  than symbols, conses, simple vectors and strings, characters, numbers and
+  pathnames, or a cycle, leaves the entry to the reader). Its symbols are
+  numbered in the file, and found once in it: again in a later entry only
+  if the one found is no longer in its home package (the package may have
+  changed between entries; a symbol whose home is P is the one P names so).
+  Nor are the reader's and printer's variables bound for each entry. Reading
+  ASDF's 1106 entries 38 -> 14 ms (in the profiler); `(require :asdf)` and
+  loading Quicklisp and Babel 1 to 5 % less CPU, within the noise of the
+  machine in time.
 
 ASDF itself, `contrib/asdf-hooks.lisp` and `contrib/fixups.lisp` are compiled
 once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
