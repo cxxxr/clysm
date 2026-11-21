@@ -7285,6 +7285,9 @@ those the code calls (modules made at run time call few of them)."
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
 (defconstant +img-version+ 6)
+;; (the heap of a shaken program's runtime, src/preinit.lisp: records of
+;; symbols without names, IMG-FILL-CODE)
+(defconstant +img-preinit-version+ 1006)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
     :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst))
@@ -7561,9 +7564,11 @@ local LIMIT, incrementing it."
             (:sinst '((:call :img-word) (:call :sinst-make) (:local.tee x) (:ref.cast! :instance)
                       (:call :img-word) (:struct.set :instance 2)))))))
 
-(defun img-fill-code ()
+(defun img-fill-code (&optional compact)
   "The code setting the mutable fields of the object in the local X from the
-words that follow, by its type."
+words that follow, by its type.  COMPACT: a symbol's record is without its
+name and hash (src/preinit.lisp: the objects that the module's globals make
+have theirs, and those of the heap are made with theirs)."
   (let ((end (gensym "END")))
     (flet ((fields (type n &optional cast)
              (loop for f below n
@@ -7588,9 +7593,10 @@ words that follow, by its type."
                         (:struct.set :symbol ,+sym-function+)
                         (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:struct.set :symbol ,+sym-plist+)
                         (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-flags+)
-                        (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:ref.cast! :string)
-                        (:struct.set :symbol ,+sym-name+)
-                        (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-hash+)
+                        ,@(unless compact
+                            `((:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:ref.cast! :string)
+                              (:struct.set :symbol ,+sym-name+)
+                              (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-hash+)))
                         (:br ,end)))
           (:local.get x) (:ref.test :closure)
           (:if nil nil ((:local.get x) (:ref.cast! :closure) (:call :img-ref) (:struct.set :closure ,+clo-name+)
@@ -7626,11 +7632,12 @@ words that follow, by its type."
 ;; image_load(offset): make the objects of the heap image at OFFSET in the
 ;; linear memory (the host has instantiated the modules compiled in the image
 ;; first); the roots are then in :IMG-ROOTS
-(defun img-load-code ()
+(defun img-load-code (&optional compact)
   (list
   '(:local.get 0) '(:global.set :img-pos)
   `(:call :img-word) `(:i32.const ,+img-magic+) :i32.ne '(:if nil nil (:unreachable))
-  `(:call :img-word) `(:i32.const ,+img-version+) :i32.ne '(:if nil nil (:unreachable))
+  `(:call :img-word) `(:i32.const ,(if compact +img-preinit-version+ +img-version+)) :i32.ne
+  '(:if nil nil (:unreachable))
   '(:call :img-word) '(:local.set nbase) '(:call :img-word) '(:local.set nheap)
   '(:call :img-word) '(:local.set nrec)
   '(:local.get nbase) '(:local.get nheap) :i32.add '(:array.new_default :vector) '(:global.set :img-objs)
@@ -7651,7 +7658,14 @@ words that follow, by its type."
                    (:global.get :img-objs) (:local.get k) (:local.get x) (:array.set :vector)))
   ;; their mutable fields
   '(:i32.const 0) '(:local.set k)
-  (img-loop-code 'k 'nrec `((:call :img-ref) (:local.set x) ,@(img-fill-code)))
+  ;; (COMPACT: the object of a record is given by the difference of its
+  ;; index from the previous record's, in the local PREV)
+  (if compact
+      `((:i32.const 0) (:local.set prev)
+        ,@(img-loop-code 'k 'nrec `((:global.get :img-objs) (:local.get prev) (:call :img-word) :i32.add
+                                    (:local.tee prev) (:array.get :vector) (:local.set x)
+                                    ,@(img-fill-code compact))))
+      (img-loop-code 'k 'nrec `((:call :img-ref) (:local.set x) ,@(img-fill-code compact))))
   '(:call :img-ref) '(:global.set :img-roots)))
 
 (defun img-inline (code)
@@ -7700,6 +7714,7 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                       append (if (equal x '(:global.set :img-objs))
                                  '((:local.tee objs) (:global.set :img-objs))
                                  (list x))))))
+
 ;; image_module_snap(i): what RESTORE of the Ith module takes
 (defhelper :image-module-snap :i-e ()
   '(:global.get :img-roots) '(:ref.cast! :vector) '(:i32.const 1) '(:array.get :vector) '(:ref.cast! :vector)

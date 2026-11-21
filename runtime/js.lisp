@@ -538,7 +538,7 @@ for every instance, so it is meant for development."
         (error (c) (format out "; Error: ~A~%" c))))
     (js:to-js (get-output-stream-string out))))
 
-(defvar *windows-paths*
+(%defvar-host *windows-paths*
   (let ((process (ignore-errors (js:global "process"))))
     (and (js:js-value-p process) (equal (ignore-errors (js:get process "platform")) "win32")))
   "True on a Windows host (Node.js's process.platform is win32): in
