@@ -354,7 +354,7 @@ global or a symbol refers to).  While it runs, *SHAKE-MARK* is a function
 of :FUNC, :GLOBAL or :SYMBOL and a name, that keeps that too.")
 (defvar *shake-mark* nil)
 
-(defun shake-module (m &key (keep-globals '(:symtab :pkgtab)) drop-symbols)
+(defun shake-module (m &key (keep-globals '(:symtab :pkgtab)) drop-symbols verify)
   "Drop what a whole program cannot reach: the functions and globals not
 reached from the exports and the start function, and the definitions of
 global functions whose symbols nothing refers to.  A definition is a call
@@ -366,7 +366,9 @@ functions).  Calls of the installs that are not reached are removed.  With
 DROP-SYMBOLS, the globals of the symbols that nothing reached are dropped too
 (the caller then makes the table of symbols again, of those left): a symbol
 stays when something refers to it, or when the value of an install of it
-that is not reached is used (not dropped at once)."
+that is not reached is used (not dropped at once)..
+VERIFY, if given, is called once what is reached is known: if it returns
+true, the module is left as it was and that is returned."
   (let ((funcs (make-hash-table :test 'equal)) (globals (make-hash-table :test 'equal))
         (symbols (make-hash-table :test 'eq)) (pending (make-hash-table :test 'eq))
         (queue nil) (queue-end nil) (gqueue nil)
@@ -463,6 +465,8 @@ that is not reached is used (not dropped at once)."
                                (g (find name (wasm-module-globals m) :key #'first :test #'equal))
                                (*shake-walking* (cons :global name)))
                           (when g (walk (fourth g)))))))
+      (when verify
+        (let ((r (funcall verify))) (when r (return-from shake-module r))))
       ;; the calls of installs that were not reached: the symbol, their value
       ;; (an install whose value is dropped at once goes with the drop)
       (labels ((strip (body)

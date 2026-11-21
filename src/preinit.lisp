@@ -23,7 +23,9 @@
 ;;;; expanders of macros only when code or a constant names the macro
 ;;;; (*PREINIT-CODE-PROPERTIES*).  A constant whose fields are as its
 ;;;; initializer made them has no record, and the conses and vectors that
-;;;; its initializer made are not written again (PH-MATCH-GLOBALS).
+;;;; its initializer made are not written again (PH-MATCH-GLOBALS).  The
+;;;; methods of classes that no instance of can be made are removed before
+;;;; the heap is saved (PH-INSTANTIABLE-CLASSES).
 (in-package :clysm)
 
 ;;; the heap saved by %PREINIT-SAVE (the format of runtime/image.lisp)
@@ -56,6 +58,7 @@
 (defvar *ph-cover* nil)                 ; heap index -> the object of the image whose initializer made it
 (defvar *ph-owner* nil)                 ; (CLYSM_PREINIT_STATS) index -> what first kept it
 (defvar *ph-cur* nil)
+(defvar *ph-kept-mutables* nil)         ; name of a kept mutable global -> T
 
 (defun ph-ref-index (w)
   (and (not (logtest w 1)) (not (zerop w)) (1- (ash w -1))))
@@ -384,7 +387,9 @@ makes, or :FAIL."
        (when (and i (ph-base-symbol i)) (setf (gethash i *ph-kept-symbols*) t))
        (when i (ph-mark i (if (ph-base-symbol i) 1 2))))
      (let ((v (gethash name *ph-mutables*)))
-       (when (and v (not (eq name :ih-key))) (ph-mark-ref v 2))))
+       (when (and v (not (eq name :ih-key)))
+         (when *ph-kept-mutables* (setf (gethash name *ph-kept-mutables*) t))
+         (ph-mark-ref v 2))))
     (:code-symbol
      (let ((i (gethash (list :sym name) *ph-base-index*)))
        (when (and i (not (gethash i *ph-code-reached*)))
@@ -404,9 +409,11 @@ makes, or :FAIL."
 
 ;;; the module made
 
-(defun ph-run-runtime (m init prologue runtime-tops)
+(defun ph-run-runtime (m init prologue runtime-tops drop)
   "Run the runtime's toplevel forms of the module M on the host, and read
-the heap that they made."
+the heap that they made.  DROP is NIL (%PREINIT-DROP-METHODS guesses the
+classes whose methods it removes), :NONE or the names of those classes;
+the names of the classes are the second value."
   (let* ((start (find-func m :start))
          (body (wasm-func-body start))
          (dir (let ((tmp (sb-ext:posix-getenv "TMPDIR")))
@@ -425,22 +432,44 @@ the heap that they made."
         (write-sequence octets o)))
     (unwind-protect
          (let* ((out (make-string-output-stream))
+                (env (append
+                      (list "CLYSM_SAVE_IMAGE=1" (concatenate 'string "CLYSM_PREINIT_FILE=" (namestring img)))
+                      (and drop
+                           (list (format nil "CLYSM_PREINIT_DROP=(~{~A~^ ~})"
+                                         (mapcar (lambda (sym)
+                                                   (flet ((q (s) (with-output-to-string (o)
+                                                                   (loop for c across s
+                                                                         do (when (member c '(#\| #\\)) (write-char #\\ o))
+                                                                            (write-char c o)))))
+                                                     (format nil "|~A|::|~A|" (q (target-package-name (symbol-package sym)))
+                                                             (q (symbol-name sym)))))
+                                                 (if (eq drop :none) nil drop)))))
+                      (remove-if (lambda (e)
+                                   (or (eql 0 (search "CLYSM_" e)) (eql 0 (search "NODE_OPTIONS=" e))))
+                                 (sb-ext:posix-environ))))
                 (p (sb-ext:run-program (or (sb-ext:posix-getenv "NODE") "node")
                                        (list (namestring (merge-pathnames "host/run.mjs" *preinit-root*))
                                              (namestring wasm))
-                                       :search t :output out :error out :input nil
-                                       :environment (list* "CLYSM_SAVE_IMAGE=1"
-                                                           (concatenate 'string "CLYSM_PREINIT_FILE=" (namestring img))
-                                                           (remove-if (lambda (e)
-                                                                        (or (eql 0 (search "CLYSM_" e))
-                                                                            (eql 0 (search "NODE_OPTIONS=" e))))
-                                                                      (sb-ext:posix-environ))))))
+                                       :search t :output out :error out :input nil :environment env))
+                (text (get-output-stream-string out)))
            (unless (and (zerop (sb-ext:process-exit-code p)) (probe-file img))
-             (error "preinit: the runtime's toplevel forms failed on the host:~%~A"
-                    (get-output-stream-string out)))
-           (ph-read-file img))
+             (error "preinit: the runtime's toplevel forms failed on the host:~%~A" text))
+           (values (ph-read-file img) (ph-dropped-classes text)))
       (when (probe-file wasm) (delete-file wasm))
       (when (probe-file img) (delete-file img)))))
+
+(defun ph-dropped-classes (text)
+  "The names of the classes that %PREINIT-DROP-METHODS wrote to the output TEXT."
+  (let* ((key "clysm-preinit-drop:") (b (search key text))
+         (e (and b (search "clysm-preinit-drop-end" text :start2 b))))
+    (unless e (error "preinit: the classes of the methods removed are not in the output:~%~A" text))
+    (with-input-from-string (s text :start (+ b (length key)) :end e)
+      (loop for line = (read-line s nil)
+            while line
+            for tab = (position #\Tab line)
+            when tab
+              collect (or (find-symbol (subseq line (1+ tab)) (find-target-package (subseq line 0 tab)))
+                          (error "preinit: no symbol ~A" line))))))
 
 (defun ph-refs (body fn)
   (labels ((walk (x)
@@ -449,84 +478,112 @@ the heap that they made."
                (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
     (walk body)))
 
+(defun ph-load-heap (m words)
+  "Read the heap WORDS that the module M saved."
+  (multiple-value-bind (objects mutables) (image-globals m)
+    (setf *ph-base-names* (coerce objects 'simple-vector)
+          *ph-base-index* (make-hash-table :test 'equal)
+          *ph-table* (coerce (loop for k being the hash-keys of (wasm-module-declared-refs m) collect k)
+                             'simple-vector))
+    (loop for name across *ph-base-names* for i from 0
+          do (unless (gethash name *ph-base-index*) (setf (gethash name *ph-base-index*) i)))
+    (ph-parse words)
+    (unless (= *ph-nbase* (length objects))
+      (error "preinit: ~D objects of the image saved, ~D globals" *ph-nbase* (length objects)))
+    (setf *ph-mutables* (make-hash-table :test 'equal))
+    (let* ((roots (aref *ph-rec* (ph-ref-index *ph-roots*)))
+           (mvec (aref *ph-rec* (ph-ref-index (cdr (first roots))))))
+      (loop for name in mutables for it in mvec
+            do (setf (gethash name *ph-mutables*) (cdr it))))))
+
 (defun preinit-shake (m parts after-shake)
   "Shake the module M (built by BUILD-MODULE with the start function of
 PARTS, (INIT PROLOGUE RUNTIME-TOPS PROGRAM-TOPS)) to start from the heap that
 the runtime's toplevel forms make (see the beginning of this file); then
 call AFTER-SHAKE with M, before the objects are written."
   (destructuring-bind (init prologue runtime-tops program-tops) parts
-    (let ((words (handler-case (ph-run-runtime m init prologue runtime-tops)
-                   ;; (the module is then shaken as it was before)
-                   (error (e)
-                     (format *error-output* "~&; warning: the runtime's state could not be made when compiling, ~
-                                             the module runs its toplevel forms: ~A~%" e)
-                     (shake-module m :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
-                     (funcall after-shake m)
-                     (return-from preinit-shake m)))))
-      ;; the module the heap was saved by
-      (multiple-value-bind (objects mutables) (image-globals m)
-        (setf *ph-base-names* (coerce objects 'simple-vector)
-              *ph-base-index* (make-hash-table :test 'equal)
-              *ph-table* (coerce (loop for k being the hash-keys of (wasm-module-declared-refs m) collect k)
-                                 'simple-vector))
-        (loop for name across *ph-base-names* for i from 0
-              do (unless (gethash name *ph-base-index*) (setf (gethash name *ph-base-index*) i)))
-        (ph-parse words)
-        (unless (= *ph-nbase* (length objects))
-          (error "preinit: ~D objects of the image saved, ~D globals" *ph-nbase* (length objects)))
-        (setf *ph-mutables* (make-hash-table :test 'equal))
-        (let* ((roots (aref *ph-rec* (ph-ref-index *ph-roots*)))
-               (mvec (aref *ph-rec* (ph-ref-index (cdr (first roots))))))
-          (loop for name in mutables for it in mvec
-                do (setf (gethash name *ph-mutables*) (cdr it))))))
-    ;; the start function: the objects, then the program's toplevel forms
-    (let ((seg (add-data m (make-array 0 :element-type '(unsigned-byte 8))))
-          (start (find-func m :start)))
-      (ph-add-loader m)
-      (setf (wasm-func-body start)
-            `(,@init
-              (:i32.const 0) (:i32.const 0) (:i32.const 0) (:memory.init ,seg) (:data.drop ,seg)
-              (:i32.const 0) (:call :image-load-preinit)
-              (:global.get :img-roots) (:ref.cast! :vector) (:i32.const 0) (:array.get :vector)
-              (:call :set-image-mutables)
-              (:global.get :img-roots) ,@(lisp-call-instrs 'clysm-sys::%image-start 1) :drop
-              (:ref.null :vector) (:global.set :img-objs) (:ref.null :eq) (:global.set :img-roots)
-              ,@program-tops)
-            (wasm-func-ref-list start) :unknown)
-      ;; (made again once the globals are known)
-      (dolist (f '(:image-objects :image-mutables))
-        (setf (wasm-func-body (find-func m f)) '((:array.new_fixed :vector 0))))
-      (setf (wasm-func-body (find-func m :set-image-mutables)) nil)
-      (dolist (f '(:image-objects :image-mutables :set-image-mutables))
-        (setf (wasm-func-ref-list (find-func m f)) :unknown))
-      ;; shake, with the objects
-      (let* ((n (length *ph-kind*))
-             (*ph-state* (make-array n :element-type '(unsigned-byte 8) :initial-element 0))
-             (*ph-match* (make-array n :initial-element nil))
-             (*ph-weak-cells* (make-hash-table))
-             (*ph-pending* (make-hash-table :test 'equal))
-             (*ph-code-reached* (make-hash-table))
-             (*ph-cover* (make-array n :initial-element nil))
-             (*ph-reached* (make-hash-table))
-             (*ph-queue* nil)
-             (*ph-kept-symbols* (make-hash-table))
-             (*ph-owner* (and (sb-ext:posix-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
-             (*shake-heap-hook* #'ph-hook))
-        (let ((inits (make-hash-table :test 'equal)))
-          (loop for g across (wasm-module-globals m) do (setf (gethash (first g) inits) (fourth g)))
-          (ph-match-globals inits))
-        ;; (the tables of the symbols and strings, which the initializing
-        ;; functions read, keep them, not what they name)
-        (shake-module m :keep-globals '(:symtab :pkgtab :strtab) :drop-symbols *shake-symbols*)
-        (funcall after-shake m)
-        (let ((octets (ph-emit m)) (body (wasm-func-body start)))
-          (setf (aref (wasm-module-data m) seg) octets
-                (wasm-module-memory m) (max 1 (ceiling (length octets) 65536)))
-          (setf (wasm-func-body start)
-                (append (subseq body 0 (length init))
-                        (list* '(:i32.const 0) '(:i32.const 0) `(:i32.const ,(length octets))
-                               (nthcdr (+ 3 (length init)) body)))
-                (wasm-func-ref-list start) :unknown)))))
+    (let ((image-funcs (mapcar (lambda (f) (cons f (wasm-func-body (find-func m f))))
+                               '(:image-objects :image-mutables :set-image-mutables)))
+          (words nil) (dropped nil) (drop nil) (seg nil) (start (find-func m :start)))
+      (loop
+        (block round
+          (multiple-value-setq (words dropped)
+            (handler-case (ph-run-runtime m init prologue runtime-tops drop)
+              ;; (the module is then shaken as it was before)
+              (error (e)
+                (when seg (error e))
+                (format *error-output* "~&; warning: the runtime's state could not be made when compiling, ~
+                                        the module runs its toplevel forms: ~A~%" e)
+                (shake-module m :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
+                (funcall after-shake m)
+                (return-from preinit-shake m))))
+          (unless (or (null drop) (subsetp dropped (if (eq drop :none) nil drop)))
+            (error "preinit: the methods of ~S were removed, not those of ~S" dropped drop))
+          ;; the module the heap was saved by
+          (ph-load-heap m words)
+          ;; the start function: the objects, then the program's toplevel forms
+          (unless seg
+            (setf seg (add-data m (make-array 0 :element-type '(unsigned-byte 8))))
+            (ph-add-loader m)
+            (setf (wasm-func-body start)
+                  `(,@init
+                    (:i32.const 0) (:i32.const 0) (:i32.const 0) (:memory.init ,seg) (:data.drop ,seg)
+                    (:i32.const 0) (:call :image-load-preinit)
+                    (:global.get :img-roots) (:ref.cast! :vector) (:i32.const 0) (:array.get :vector)
+                    (:call :set-image-mutables)
+                    (:global.get :img-roots) ,@(lisp-call-instrs 'clysm-sys::%image-start 1) :drop
+                    (:ref.null :vector) (:global.set :img-objs) (:ref.null :eq) (:global.set :img-roots)
+                    ,@program-tops)
+                  (wasm-func-ref-list start) :unknown))
+          ;; (made again once the globals are known)
+          (dolist (f '(:image-objects :image-mutables))
+            (setf (wasm-func-body (find-func m f)) '((:array.new_fixed :vector 0))))
+          (setf (wasm-func-body (find-func m :set-image-mutables)) nil)
+          (dolist (f '(:image-objects :image-mutables :set-image-mutables))
+            (setf (wasm-func-ref-list (find-func m f)) :unknown))
+          ;; shake, with the objects
+          (let* ((n (length *ph-kind*))
+                 (*ph-state* (make-array n :element-type '(unsigned-byte 8) :initial-element 0))
+                 (*ph-match* (make-array n :initial-element nil))
+                 (*ph-weak-cells* (make-hash-table))
+                 (*ph-pending* (make-hash-table :test 'equal))
+                 (*ph-code-reached* (make-hash-table))
+                 (*ph-cover* (make-array n :initial-element nil))
+                 (*ph-reached* (make-hash-table))
+                 (*ph-kept-mutables* (make-hash-table :test 'equal))
+                 (*ph-queue* nil)
+                 (*ph-kept-symbols* (make-hash-table))
+                 (*ph-owner* (and (sb-ext:posix-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
+                 (*shake-heap-hook* #'ph-hook))
+            (let ((inits (make-hash-table :test 'equal)))
+              (loop for g across (wasm-module-globals m) do (setf (gethash (first g) inits) (fourth g)))
+              (ph-match-globals inits))
+            (when *shake-why* (clrhash *shake-why*))
+            (let ((made (shake-module m :keep-globals '(:symtab :pkgtab :strtab) :drop-symbols *shake-symbols*
+                                        :verify (lambda () (ph-instantiable-classes dropped)))))
+              (when (consp made)
+                ;; (instances of some of those classes can be made after
+                ;; all: their methods are kept, and the heap made again)
+                (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+                  (format *error-output* "~&; preinit: the methods of ~S are kept~%" made))
+                (setf drop (or (set-difference dropped made) :none))
+                (loop for (f . body) in image-funcs
+                      do (setf (wasm-func-body (find-func m f)) body
+                               (wasm-func-ref-list (find-func m f)) :unknown))
+                (return-from round)))
+            (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+              (format *error-output* "~&; preinit: the methods of ~D classes are removed: ~S~%"
+                      (length dropped) dropped))
+            (funcall after-shake m)
+            (let ((octets (ph-emit m)) (body (wasm-func-body start)))
+              (setf (aref (wasm-module-data m) seg) octets
+                    (wasm-module-memory m) (max 1 (ceiling (length octets) 65536)))
+              (setf (wasm-func-body start)
+                    (append (subseq body 0 (length init))
+                            (list* '(:i32.const 0) '(:i32.const 0) `(:i32.const ,(length octets))
+                                   (nthcdr (+ 3 (length init)) body)))
+                    (wasm-func-ref-list start) :unknown))
+            (return))))))
   m)
 
 (defun ph-add-loader (m)
@@ -781,5 +838,143 @@ image is loaded, from words written as LEB128 numbers."
         (format *error-output* ";   ~12A ~8D ~8D ~8D ~8D~%" k (gethash k objs 0) (gethash k words 0)
                 (gethash k recs 0) (gethash k rw 0))))))
 
+;;; The methods of classes that no instance of can be made.  The runtime's
+;;; toplevel forms define methods on classes that a program may never make
+;;; an instance of (Gray streams, the streams of subprocesses): such a
+;;; method is kept with its generic function, and holds its code and what
+;;; that reaches.  When the heap is saved, %PREINIT-DROP-METHODS
+;;; (runtime/image.lisp) removes the methods that specialize a parameter on
+;;; one of a set of classes (or a subclass), first those of the classes of
+;;; metaclass STANDARD-CLASS that no metaobject is an instance of, other
+;;; than conditions.  The module is then shaken, and PH-INSTANTIABLE-CLASSES
+;;; checks that the kept code and objects cannot make an instance of any of
+;;; those classes; if they can, the heap is made again with the methods of
+;;; those classes kept.  An instance of a standard class is made by
+;;; MAKE-INSTANCE, ALLOCATE-INSTANCE, CHANGE-CLASS or MAKE-CONDITION of the
+;;; class or its name, so a class (or a subclass) can have instances when
+;;; code or a constant names it (as a DEFCLASS of the program names its
+;;; superclasses), when a kept object is an instance of it, or when a kept
+;;; object or global refers to the class or its name other than as the
+;;; class system does (the class's name, superclasses, subclasses and
+;;; precedence list, the property of its name that FIND-CLASS reads, the
+;;; cell that compiled TYPEP tests read, the table of the methods of each
+;;; specializer).  A class whose name a program makes at run time (INTERN,
+;;; READ) is as a function called by such a name: not there for it.
+
+(defun ph-rec-word (i k) (cdr (nth k (aref *ph-rec* i))))
+
+(defun ph-layout (i)
+  (and (member (aref *ph-kind* i) '(:instance :sinst)) (aref *ph-rec* i) (ph-ref-index (ph-rec-word i 0))))
+
+(defun ph-slots-vector (i)
+  (and (eq (aref *ph-kind* i) :instance) (aref *ph-rec* i) (ph-ref-index (ph-rec-word i 1))))
+
+(defun ph-slot (i k)
+  "The word of the slot K of the instance I (an :INSTANCE), or NIL."
+  (let ((v (ph-slots-vector i))) (and v (ph-rec-word v k))))
+
+(defun ph-list-conses (w)
+  "The conses of the list W."
+  (let ((r nil))
+    (loop (let ((c (ph-ref-index w)))
+            (unless (and c (eq (aref *ph-kind* c) :cons) (aref *ph-rec* c)) (return (nreverse r)))
+            (push c r)
+            (setf w (ph-rec-word c 1))))))
+
+(defun ph-list-items (w)
+  "The indexes of the objects in the list W."
+  (loop for c in (ph-list-conses w) for j = (ph-ref-index (ph-rec-word c 0)) when j collect j))
+
+(defun ph-symbol-value-index (sym)
+  (let ((i (gethash (list :sym sym) *ph-base-index*)))
+    (and i (aref *ph-rec* i) (ph-ref-index (ph-rec-word i 1)))))
+
+(defun ph-class-of-name (si)
+  "The class that the symbol SI names (its property %CLASS), or NIL."
+  (dolist (p (ph-plist-pairs si) nil)
+    (let ((ind (ph-ref-index (first p))))
+      (when (and ind (eq (ph-base-symbol ind) 'clysm-sys::%class))
+        (return (ph-ref-index (second p)))))))
+
+(defun ph-instantiable-classes (names)
+  "Those of the classes NAMES (symbols) of which the kept code and objects
+can make an instance (see above)."
+  (when names
+    (let ((system (make-hash-table)) (watch (make-hash-table)) (made (make-hash-table)) (classes nil)
+          (top (ph-class-of-name (gethash (list :sym t) *ph-base-index*))))
+      (labels ((sys (i) (when i (setf (gethash i system) t)))
+               (subclasses (k) (ph-list-items (ph-slot k 5)))
+               (walk (k seen)
+                 (unless (gethash k seen)
+                   (setf (gethash k seen) t)
+                   (sys (ph-slots-vector k))
+                   (dolist (s (list 1 3 5))
+                     (mapc #'sys (ph-list-conses (ph-slot k s))))
+                   (let ((v (ph-ref-index (or (ph-slot k 20) 0)))) (sys v))
+                   (dolist (c (subclasses k)) (walk c seen))))
+               (note (i why)
+                 (dolist (k (gethash i watch)) (push why (gethash k made)))))
+        (unless top (return-from ph-instantiable-classes names))
+        ;; (the class system's own references)
+        (walk top (make-hash-table))
+        (dotimes (i *ph-nbase*)
+          (when (and (ph-base-symbol i) (aref *ph-rec* i))
+            (let ((spine (ph-list-conses (cdr (fourth (aref *ph-rec* i))))))
+              (mapc #'sys spine)
+              (dolist (p (ph-plist-pairs i))
+                (let ((ind (ph-ref-index (first p))))
+                  (when (and ind (eq (ph-base-symbol ind) 'clysm-sys::%type-cell))
+                    (sys (ph-ref-index (second p)))))))))
+        (let ((ht (ph-symbol-value-index 'clysm-sys::*specializer-methods*)))
+          (when ht
+            (sys ht)
+            (let ((sv (ph-slots-vector ht)))
+              (sys sv)
+              (dolist (x (and sv (aref *ph-rec* sv)))
+                (let ((j (and (eq (car x) :r) (ph-ref-index (cdr x)))))
+                  (when (and j (eq (aref *ph-kind* j) :vector)) (sys j)))))))
+        ;; the classes and their subclasses, and their names
+        (dolist (name names)
+          (let* ((si (gethash (list :sym name) *ph-base-index*))
+                 (k (and si (ph-class-of-name si))))
+            (if (null k)
+                (push (list name :not-found) (gethash name made))
+                (labels ((add (c)
+                           (unless (member name (gethash c watch))
+                             (push name (gethash c watch))
+                             (let ((ci (ph-ref-index (or (ph-slot c 0) 0))))
+                               (when ci
+                                 (push name (gethash ci watch))
+                                 (when (gethash ci *ph-code-reached*)
+                                   (push (list (ph-base-symbol ci) :named) (gethash name made)))))
+                             (mapc #'add (subclasses c)))))
+                  (push name classes)
+                  (add k)))))
+        ;; what refers to them
+        (dotimes (o (length *ph-kind*))
+          (let ((kind (aref *ph-kind* o)))
+            (when (if (eq kind :symbol) (ph-symbol-reached-p o) (= (aref *ph-state* o) 2))
+              (let ((l (ph-layout o)))
+                (when (and l (gethash l watch)) (note l (list :instance (ph-node o)))))
+              (unless (or (gethash o system) (eq kind :package))
+                (dolist (x (append (aref *ph-imm* o)
+                                   (let ((rec (aref *ph-rec* o)))
+                                     (if (and rec (eq kind :symbol)) (subseq rec 1 4) rec))))
+                  (when (eq (car x) :r)
+                    (let ((j (ph-ref-index (cdr x))))
+                      (when (and j (/= j o) (not (eql j (ph-layout o))))
+                        (note j (list :referred (ph-node j) :by (ph-node o)))))))))))
+        (maphash (lambda (name v)
+                   (declare (ignore v))
+                   (let ((j (ph-ref-index (gethash name *ph-mutables*))))
+                     (when j (note j (list :referred (ph-node j) :by (list :global name))))))
+                 *ph-kept-mutables*)
+        (let ((r (loop for k being the hash-keys of made collect k)))
+          (when (and r (sb-ext:posix-getenv "CLYSM_PREINIT_STATS"))
+            (maphash (lambda (k v) (format *error-output* "~&; preinit: ~S can have instances: ~S~%" k (first v)))
+                     made))
+          r)))))
+
 (unless (sb-ext:posix-getenv "CLYSM_NO_PREINIT")
   (setf *preinit-function* 'preinit-shake))
+
