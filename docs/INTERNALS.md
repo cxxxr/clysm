@@ -4842,6 +4842,42 @@ neither a typed reference nor a hoisted `array.len` changes what V8 emits.
 Not taken further: passing `--experimental-wasm-skip-bounds-checks` would
 apply to all code, including code that relies on the trap.
 
+Measured again (2026-11-22, the code of main then, interleaved runs on one
+slot): the cold mark on the arm with the call now gives 263 → 206 ms by
+itself (the counter and the loop's values stay in registers on the path
+without the call; `--print-wasm-code` shows the call, its spills and the
+stores in a deferred block), so `if-branch-hint` (`src/codegen.lisp`) now
+gives that hint without a mark: in a loop, an arm that calls the function
+itself (by its name or as a local function) is hinted unlikely when the
+other arm calls it not and leaves the loop not (a search that recurses on
+the moves that apply: `d-triangle` 250 → 201 ms, 1.90 → 1.49 of SBCL;
+`p-queens` 77 → 70). Not for the IFs of a test (`(do ... ((or (= j 36)
+(try j d))))`, gabriel's TRIANG: there the call is what the loop does).
+Hinting every arm with a call out of line (the call heuristic of static
+branch prediction) was measured and is not kept: it misses the method call
+of a generic function's site cache, whose other arm is a slot's writer
+(`p-method-comb` 42 → 50 ms), and gives 1,672 hints in the runtime against
+a handful. The module of one export is 99 bytes larger.
+
+The board as a `(simple-array fixnum (*))` (the user's choice, not an
+inference) was 1.45x slower than the simple vector, not 0.87: `(eql (aref
+board f) 1)` (the frontend makes it an `EQ`) boxed each element read (a
+range test and `box-i32`) for a `REF.EQ`, because the i32 comparison was
+only made when one operand was an unboxed variable. `EQ`/`EQL` of two
+integers within 32 bits is now an `i32.eq` when either is computed as an
+i32 (`i32-natural-node-p`: an unboxed variable, an element of a vector of
+integers, a raw call's result), for `EQ` when one of them is a fixnum (two
+equal integers are then the same fixnum); with the hint above that board
+runs in 168 ms against the simple vector's 201. What is left between the
+two is the comparison with a fixnum constant: Node's V8 has no pointer
+compression, an i31 1 is the word `0x100000000`, which `cmp` cannot take
+as an immediate, so it holds a register in the loop and the counter is
+spilled instead (an `i32` element compares with an immediate). Giving the
+board an i32 representation behind the program's back (lead 1 of the
+notes: a simple vector proven to hold only fixnums) would need every
+function that sees the vector, here a global function its caller passes it
+to, to agree on it; not done.
+
 ### Size and start-up
 
 A whole program carries the runtime: `tests/hello.lisp` is 4.3 MB (1.25 MB

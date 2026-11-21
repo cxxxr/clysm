@@ -1425,8 +1425,11 @@ type, where the type of the value shows it holds), else NIL."
          `(,@(cg-rep a :i64) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.ge_u)))
       ((eq eql)
        (when (= (length args) 2)
-         (cond ((and (fx-arg-p a) (fx-arg-p b)
-                     (or (eq (lvar-rep-of a) :i32) (eq (lvar-rep-of b) :i32)))
+         ;; (two integers within 32 bits are EQL when they are =, and EQ
+         ;; when one of them is a fixnum too)
+         (cond ((and (i32-arg-p a) (i32-arg-p b)
+                     (or (eq name 'eql) (fx-arg-p a) (fx-arg-p b))
+                     (or (i32-natural-node-p a) (i32-natural-node-p b)))
                 `(,@(cg-rep a :i32) ,@(cg-rep b :i32) :i32.eq))
                ((and (ty-only-p (node-ty a) +k-char+) (ty-only-p (node-ty b) +k-char+)
                      (char-codes-eq-code a b nil)))
@@ -1580,6 +1583,24 @@ fixnum) whose remainder is left in an eqref local; returns (values code local)."
                (:local.get ,r) :ref.i31 (:local.set ,rem)
                (:local.get ,q) :ref.i31 (:i32.const 2) (:global.set :mv-count))
              rem)))))))
+
+;;; (EQL (AREF V I) 1) of a vector of fixnums compares the element as it is
+;;; read, instead of making it an object for REF.EQ
+(defun i32-natural-node-p (node)
+  "NODE's value is computed as an i32 (an unboxed variable, an element of a
+vector of integers within 32 bits, a raw call's result), not as an object."
+  (case (car node)
+    (:lref (eq (lvar-rep-of node) :i32))
+    (:the (i32-natural-node-p (third node)))
+    ((:prim :call)
+     (let ((name (node-op-name node)))
+       (or (and (member name '(clysm-sys::%aref1 row-major-aref clysm-sys::%aref2))
+                (let ((kind (ty-array-kind (node-ty (third node)))))
+                  (and kind (not (eq kind :vector)) (null (storage-raw-rep-code kind :i32)))))
+           (and (eq (car node) :call)
+                (let* ((lam (known-global-lam (second node))) (sig (and lam (raw-call-sig lam (cddr node)))))
+                  (and sig (eq (raw-clone-rrep lam sig) :i32)))))))
+    (t nil)))
 
 (defun lvar-rep-of (node)
   (and (eq (car node) :lref) (unboxed-local-p (second node)) (lvar-rep (second node))))

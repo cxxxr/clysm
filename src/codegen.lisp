@@ -916,7 +916,7 @@ value known to be a fixnum: its i32 followed by :REF.I31 (CG-PRIM, CG-TEST).")
     (:wasm-test `(,@(loop for a in (second node) append (cg a))
                   ,@(resolve-wasm-instrs (third node))))
     (:if `(,@(cg-test (second node))
-           ,@(if-branch-hint (third node) (fourth node))
+           ,@(if-branch-hint (third node) (fourth node) t)
            (:if nil :i32 ,(cg-test (third node)) ,(cg-test (fourth node)))))
     (:progn (if (cdr node)
                 `(,@(loop for n in (butlast (cdr node)) append `(,@(cg n) :drop))
@@ -982,11 +982,53 @@ but close)."
                nil)))
     (cold node)))
 
-(defun if-branch-hint (a b)
+(defvar *recurse-cache* (make-hash-table :test 'eq)
+  "Node -> what ARM-RECURSES found (:EXIT, :CALL or :NONE).")
+
+(defun arm-recurses (node lam)
+  "What NODE, a branch of an IF in LAM, does: :EXIT when it may leave the
+code around it (a RETURN-FROM, a GO, a THROW), else :CALL when it calls LAM
+itself (by its global name or as a local function), else NIL."
+  (when (> (hash-table-count *recurse-cache*) 200000) (clrhash *recurse-cache*))
+  (labels ((walk (n)
+             (if (not (consp n))
+                 :none
+                 (or (gethash n *recurse-cache*)
+                     (setf (gethash n *recurse-cache*)
+                           (case (car n)
+                             ((:return-from :go :throw) :exit)
+                             (:lambda :none)
+                             (t (let ((r (if (or (and (eq (car n) :lcall) (eq (fun-lam (second n)) lam))
+                                                 (and (eq (car n) :call) (lam-name lam) (eq (second n) (lam-name lam))))
+                                            :call :none)))
+                                  (map-subnodes (lambda (x)
+                                                  (let ((v (walk x)))
+                                                    (cond ((eq v :exit) (setf r :exit))
+                                                          ((and (eq v :call) (eq r :none)) (setf r :call)))))
+                                                n)
+                                  r))))))))
+    (let ((v (walk node))) (if (eq v :none) nil v))))
+
+(defun if-branch-hint (a b &optional test)
   "The branch hint of an IF whose branches are A and B: a cold one is not
-expected to be taken, so that the engine lays it out of the way of the other."
+expected to be taken, so that the engine lays it out of the way of the other.
+In a loop, a branch that calls the function itself is not expected either
+when the other does not and does not leave the loop: a search that tries
+each move and recurses on the few that apply (TRIANGLE, QUEENS).  The
+engine then makes the branch a deferred block and keeps
+the loop's values in registers on the way without the call and spills them
+around the call, where the call costs more than the spills.  (Any call
+taken as unlikely, the call heuristic of static branch prediction, was
+measured too: it misses the method call of a site cache whose other branch
+is a slot's writer, 20% slower.)  Not for an IF that is part of a TEST (an
+OR, an AND): there the call decides whether the loop goes on, as in (DO
+(...) ((OR (= J 36) (TRY J)))), and is expected."
   (cond ((cold-branch-p a) '((:hint 0)))
-        ((cold-branch-p b) '((:hint 1)))))
+        ((cold-branch-p b) '((:hint 1)))
+        ((and *cg-loop* (not test) *fs* (lam-p (fstate-lam *fs*)))
+         (let* ((lam (fstate-lam *fs*)) (ca (arm-recurses a lam)) (cb (arm-recurses b lam)))
+           (cond ((and (eq ca :call) (null cb)) '((:hint 0)))
+                 ((and (eq cb :call) (null ca)) '((:hint 1))))))))
 
 ;;; A test that is itself an IF (COND, AND, %ENDP's (cond ((consp x) nil)
 ;;; ((null x) t) (t error))), an OR or a NOT of one is compiled as branches
@@ -1047,7 +1089,7 @@ likely THEN is."
 (defun branch-if-code (c a b then else hint)
   "BRANCH-CODE of the test (IF C A B)."
   (flet ((target (n) (when (eq (car n) :const) (if (second n) then else))))
-    (let ((ta (target a)) (tb (target b)) (h (if-branch-hint a b)))
+    (let ((ta (target a)) (tb (target b)) (h (if-branch-hint a b t)))
       (cond
         ;; an arm that is a constant: C branches to its target, the other arm follows
         (ta (if (eq ta :next)
