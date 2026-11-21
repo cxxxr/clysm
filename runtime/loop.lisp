@@ -161,12 +161,21 @@ the default value of its type (and no declaration when there is none)."
       (let ((kw (%loop-pop s)))
         (cond
           ((%lkw-in kw '("IN" "ON"))
-           (let ((list-form (%loop-pop s)) (g (gensym "LIST")) (step-fn nil))
+           (let ((list-form (%loop-pop s)) (g (gensym "LIST")) (step-fn nil) (step-op nil))
              (%loop-add-binding s g list-form)
              (when (%lkw (%loop-peek s) "BY")
                (%loop-pop s)
-               (setq step-fn (gensym "STEP-FN"))
-               (%loop-add-binding s step-fn (%loop-pop s)))
+               (let ((by (%loop-pop s)))
+                 ;; BY #'CDDR (a function of COMMON-LISP, which is never
+                 ;; redefined): called directly, so that it is compiled inline
+                 (if (and (consp by) (member (car by) '(function quote)) (consp (cdr by))
+                          (null (cddr by)) (symbolp (cadr by)) (cadr by)
+                          (eq (symbol-package (cadr by)) (find-package "COMMON-LISP"))
+                          (fboundp (cadr by)) (not (special-operator-p (cadr by)))
+                          (not (macro-function (cadr by))))
+                     (setq step-op (cadr by))
+                     (progn (setq step-fn (gensym "STEP-FN"))
+                            (%loop-add-binding s step-fn by)))))
              (%loop-bind-pattern s var)
              (if (%lkw kw "IN")
                  (progn
@@ -177,7 +186,9 @@ the default value of its type (and no declaration when there is none)."
                    (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))
              ;; each clause is stepped and then tested (the clauses after
              ;; it are not stepped when it terminates the loop)
-             (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))
+             (%loop-step s `(setq ,g ,(cond (step-op `(,step-op ,g))
+                                             (step-fn `(funcall ,step-fn ,g))
+                                             (t `(cdr ,g)))))
              (%loop-step-test s (if (%lkw kw "IN") `(endp ,g) `(atom ,g)))))
           ((%lkw kw "ACROSS")
            ;; a simple string or a simple vector is read inline (the element
