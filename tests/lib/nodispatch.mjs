@@ -7,4 +7,5 @@ const lib = await import(pathToFileURL(path.resolve(process.argv[2])).href);
 const e = lib.default.exports;
 assert.equal(e.missing(), 'SIMPLE-ERROR');
 assert.match(e.missingMessage(), /slot/i);
+assert.equal(e.elementTypes(), 511);
 console.log('lib nodispatch: ok');

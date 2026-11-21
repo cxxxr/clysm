@@ -5433,6 +5433,26 @@ the generic arithmetic (`:mul`, `:div`, `:divmod`, `expt`: 60 KB), the
 stream functions (27 KB) and `equalp` (12 KB). The heap's largest part is
 the class system: 1,024 slot definitions of 127 classes.
 
+**`subtypep` only when the program has it.** The upgrading of an element
+type that `%normalize-element-type` does not know by its form
+(`%upgrade-element-type`), the general sequence types of `concatenate`,
+`coerce`, `map` and `make-sequence` (`%seq-type-spec-general`), the
+binary element types of `open` (`%binary-element-spec`) and the `and` of
+condition types (`%condition-class-for-type`) called `subtypep`, which
+kept it (68 KB of code with what it calls) in every module that makes an
+array. They now call it through `%weak-subtypep` (`%weak-symbol`): with
+it, as before; in a shaken program that does not refer to `subtypep`, by
+the type's form (`%small-upgrade-element-type`: a `deftype` by its
+expansion, `member`/`eql` by the types of the items, `or` when its
+members upgrade alike, `and` by a member that is specialized, otherwise
+`t`; a sequence type `and` by its first member that is a sequence type, a
+class by its superclasses; a class among condition types by
+`%subclassp`). An upgraded type is then a type that holds the elements
+but may be `t` where `subtypep` would tell a narrower one.
+`tests/lib/nodispatch.lisp` makes such arrays and sequences without
+`subtypep`, `tests/cases/element-types.lisp` with it. The module of one
+export: 1,085,879 -> 1,026,823 bytes (`gzip -9` 331,662 -> 316,060).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
