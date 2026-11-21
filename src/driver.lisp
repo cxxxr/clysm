@@ -963,7 +963,10 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
     ;; started from one can make them empty (host/common.mjs imageVariant):
     ;; their contents were two thirds of the initializers that V8 decodes
     ;; and evaluates
-    (let ((inits (make-hash-table :test 'equal)))
+    ;; (not in a whole program without the compiler, which does not load
+    ;; heap images)
+    (unless *shake*
+     (let ((inits (make-hash-table :test 'equal)))
       (loop for (name nil nil init) across (wasm-module-globals m)
             do (setf (gethash name inits) init))
       (setf (wasm-module-image-defaults m)
@@ -976,7 +979,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
                   when (equal last '(:struct.new :symbol))
                     collect (list name '(:i32.const 0) '(:array.new_default :string)
                                   '(:ref.null :package) '(:ref.null :eq) '(:ref.null :closure) '(:ref.null :eq)
-                                  '(:i32.const 0) '(:i32.const 0) '(:struct.new :symbol)))))
+                                  '(:i32.const 0) '(:i32.const 0) '(:struct.new :symbol))))))
     (add-func m :image-objects :v-e :body (vector-of-globals-code objects))
     (add-func m :image-mutables :v-e :body (vector-of-globals-code mutables))
     ;; (a whole program without the compiler does not load heap images)
