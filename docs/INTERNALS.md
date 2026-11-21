@@ -2795,10 +2795,21 @@ What is not as fast as intended, and why:
   0.99, `bench/gabriel.lisp` and `bench/holdout.lisp` 1.00 (an A/A run of
   the same build is 1.01). `v-mapping` is the same (43 ms either way): its
   `mapc` is a small part, the rest is allocation and collection of
-  32-octet conses (half its ticks outside the module's code). Slower: `b-deriv` 1.08-1.11, whose `mapcar`
-  loops over two to four elements around a recursive call V8 now peels
-  (with `--no-wasm-loop-peeling` it is 0.95 of the time before; that flag
-  makes `bench/suite.lisp` 1.035 times slower in all, so peeling stays).
+  32-octet conses (half its ticks outside the module's code). Slower at first: `b-deriv` 1.08-1.11, whose `mapcar`
+  loops over two to four elements around a recursive call V8 then peeled
+  differently (with `--no-wasm-loop-peeling` it was 0.95 of the time
+  before; that flag makes `bench/suite.lisp` 1.035 times slower in all, so
+  peeling stays; `--wasm-loop-peeling-max-size` changes nothing, and V8
+  peels the loops of the earlier code too: its `deriv` was 10.1 KB
+  unpeeled and 11.9 peeled, the new one 10.3 and 13.5). So an IF for
+  effect (the end test of a `do`, `dolist`, `mapcar` loop) is compiled as
+  branches only when its test begins with a compound test itself
+  (`effect-branch-test-p`: an OR of `%endp`s, as in `mapc` over two lists),
+  and the `(%endp l)` of a loop over one list keeps the IF of an i32:
+  `b-deriv` 0.95-0.97 of the time before the change, the `mapc`/`mapcar`
+  probes 0.865 (0.92 with every effect IF as branches); interleaved against
+  main before it: `bench/gabriel.lisp` 0.96 (`g-dderiv` 0.82),
+  `bench/library.lisp` 0.98, `bench/suite.lisp` 1.00, the others 0.99-1.00.
   The REPL image grows by 18 KB (0.2%), the module of one export
   (`tests/lib/one.lisp`) by 5.6 KB. Measured and not kept: a hint that the
   first leaf of such a test branches to its arm (`b-deriv` the same),
