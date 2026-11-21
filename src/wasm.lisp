@@ -269,10 +269,18 @@ not walked again)."
     m))
 
 (defvar *shake-why* nil
-  "NIL, or a hash table that SHAKE-MODULE fills with what reached each symbol
-(the name of the function or global whose code refers to it): to find out
-why a function is kept.")
-(defvar *shake-walking* nil)
+  "NIL, or an EQUAL hash table that SHAKE-MODULE fills with what refers to
+each thing it keeps: the keys are (:FUNC . NAME), (:GLOBAL . NAME) and
+(:SYMBOL . SYMBOL), and the value of one is a list of those (or :ROOT, for
+the exports, the start function and the globals kept whatever refers to
+them) whose code refers to it, the first to reach it last.  See
+WRITE-SHAKE-WHY.")
+(defvar *shake-walking* :root)
+
+(defun shake-edge (to)
+  (let ((preds (gethash to *shake-why*)))
+    (unless (equal (car preds) *shake-walking*)
+      (setf (gethash to *shake-why*) (cons *shake-walking* preds)))))
 
 (defun shake-module (m &key (keep-globals '(:symtab :pkgtab)))
   "Drop what a whole program cannot reach: the functions and globals not
@@ -285,21 +293,29 @@ table of all symbols, which INTERN uses, keeps the symbols but not their
 functions).  Calls of the installs that are not reached are removed."
   (let ((funcs (make-hash-table :test 'equal)) (globals (make-hash-table :test 'equal))
         (symbols (make-hash-table :test 'eq)) (pending (make-hash-table :test 'eq))
-        (queue nil) (gqueue nil)
+        (queue nil) (queue-end nil) (gqueue nil)
         (rewrites (wasm-module-cast-rewrites m)))
     (labels ((install-p (name) (and (consp name) (eq (car name) :install)))
              (mark-func (name)
+               (when *shake-why* (shake-edge (cons :func name)))
                (unless (gethash name funcs)
                  (setf (gethash name funcs) t)
                  (let ((f (find-func m name)))
-                   (when (and f (not (wasm-func-import-module f))) (push f queue)))))
+                   (when (and f (not (wasm-func-import-module f)))
+                     ;; (first in, first out: what reached a function first
+                     ;; is then on a shortest chain, for *SHAKE-WHY*)
+                     (let ((cell (list f)))
+                       (if queue (setf (cdr queue-end) cell) (setf queue cell))
+                       (setf queue-end cell))))))
              (mark-symbol (sym)
+               (when *shake-why* (shake-edge (cons :symbol sym)))
                (unless (gethash sym symbols)
                  (setf (gethash sym symbols) t)
-                 (when *shake-why* (setf (gethash sym *shake-why*) *shake-walking*))
-                 (dolist (name (gethash sym pending)) (mark-func name))))
+                 (let ((*shake-walking* (cons :symbol sym)))
+                   (dolist (name (gethash sym pending)) (mark-func name)))))
              (mark-global (name)
                (when (and (consp name) (eq (car name) :sym)) (mark-symbol (second name)))
+               (when *shake-why* (shake-edge (cons :global name)))
                (unless (gethash name globals)
                  (setf (gethash name globals) t)
                  (push name gqueue)))
@@ -311,7 +327,8 @@ functions).  Calls of the installs that are not reached are removed."
                       (let ((name (second x)))
                         (if (install-p name)
                             (if (gethash (second name) symbols)
-                                (mark-func name)
+                                (let ((*shake-walking* (cons :symbol (second name))))
+                                  (mark-func name))
                                 (pushnew name (gethash (second name) pending) :test #'equal))
                             (mark-func name)))))
                    ((:global.get :global.set) (when (consp (cdr x)) (mark-global (second x))))
@@ -327,13 +344,14 @@ functions).  Calls of the installs that are not reached are removed."
       (dolist (g keep-globals) (when (global-defined-p m g) (setf (gethash g globals) t)))
       (loop for g across (wasm-module-globals m)
             when (and (consp (first g)) (eq (car (first g)) :sym))
-              do (setf (gethash (first g) globals) t) (push (first g) gqueue))
+              do (setf (gethash (first g) globals) t) (push (first g) gqueue)
+                 (when *shake-why* (shake-edge (cons :global (first g)))))
       (loop while (or queue gqueue)
-            do (cond (queue (let* ((f (pop queue)) (*shake-walking* (wasm-func-name f)))
+            do (cond (queue (let* ((f (pop queue)) (*shake-walking* (cons :func (wasm-func-name f))))
                               (walk (wasm-func-body f))))
                      (t (let* ((name (pop gqueue))
                                (g (find name (wasm-module-globals m) :key #'first :test #'equal))
-                               (*shake-walking* name))
+                               (*shake-walking* (cons :global name)))
                           (when g (walk (fourth g)))))))
       ;; the calls of installs that were not reached: the symbol, their value
       (labels ((strip (body)
@@ -958,6 +976,10 @@ nothing would change."
     (dolist (b bodies) (incf n) (when (< (length b) 50) (incf small)))
     (max 0 (- n (* 2 small)))))
 
+(defvar *func-body-sizes* nil
+  "NIL, or an EQUAL hash table that ENCODE-MODULE fills with the size in octets
+of the body of each function (by name).")
+
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
@@ -967,6 +989,8 @@ nothing would change."
            (bodies (let ((i (length (wasm-module-imports m))) (r nil))
                      (loop for f across (wasm-module-funcs m)
                            do (multiple-value-bind (body h) (encode-function-body m f)
+                                (when *func-body-sizes*
+                                  (setf (gethash (wasm-func-name f) *func-body-sizes*) (length body)))
                                 (push body r)
                                 (when h (push (cons i h) hints))
                                 (incf i)))
@@ -1209,3 +1233,103 @@ nothing would change."
             (loop for (i file line) in entries do (emit-u32 b i) (emit-u32 b file) (emit-u32 b line))
             (emit-section out 0 b)))))
     (subseq out 0)))
+
+;;; The report of --shake-why.  What would go if a function, global or
+;;; symbol went is what it dominates in the graph of references from the
+;;; roots: what every chain from a root to it passes through (Cooper, Harvey
+;;; and Kennedy, "A Simple, Fast Dominance Algorithm").
+(defun shake-dominators (why)
+  "The immediate dominator of each node of WHY (*SHAKE-WHY*), in an EQUAL hash
+table, with :ROOT its root."
+  (let ((succs (make-hash-table :test 'equal)) (order (make-hash-table :test 'equal))
+        (rpo nil) (idom (make-hash-table :test 'equal)))
+    (loop for to being the hash-keys of why using (hash-value preds)
+          do (dolist (from preds) (push to (gethash from succs))))
+    ;; postorder numbers, depth first from the root (without recursion)
+    (let ((n 0) (stack (list (cons :root (gethash :root succs)))))
+      (setf (gethash :root order) -1)
+      (loop while stack
+            do (let ((top (car stack)))
+                 (if (cdr top)
+                     (let ((next (pop (cdr top))))
+                       (unless (gethash next order)
+                         (setf (gethash next order) -1)
+                         (push (cons next (gethash next succs)) stack)))
+                     (progn (pop stack)
+                            (setf (gethash (car top) order) n)
+                            (incf n)
+                            (push (car top) rpo))))))
+    (setf (gethash :root idom) :root)
+    (flet ((intersect (a b)
+             (loop until (equal a b)
+                   do (loop while (< (gethash a order) (gethash b order)) do (setf a (gethash a idom)))
+                      (loop while (< (gethash b order) (gethash a order)) do (setf b (gethash b idom))))
+             a))
+      (loop with changed = t
+            while changed
+            do (setf changed nil)
+               (dolist (node (cdr rpo))
+                 (let ((new nil))
+                   (dolist (p (gethash node why))
+                     (when (gethash p idom)
+                       (setf new (if new (intersect p new) p))))
+                   (when (and new (not (equal new (gethash node idom))))
+                     (setf (gethash node idom) new changed t))))))
+    (remhash :root idom)
+    idom))
+
+(defun write-shake-why (m why sizes stream &key (largest 150))
+  "Write to STREAM, for the module M that SHAKE-MODULE shook while WHY was
+*SHAKE-WHY* and that ENCODE-MODULE encoded while SIZES was *FUNC-BODY-SIZES*:
+the size of the kept code by source file; the LARGEST functions, globals and
+symbols by the code that would go with them (what they dominate); and each
+kept function, largest first, with the first chain from a root that reached
+it."
+  (let ((*package* (find-package :keyword)) (*print-length* 6) (*print-level* 3)
+        (by-file (make-hash-table :test 'equal)) (total 0) (rows nil)
+        (idom (shake-dominators why)) (dominated (make-hash-table :test 'equal)))
+    (labels ((label (node)
+               (if (eq node :root)
+                   "root"
+                   (let* ((f (and (eq (car node) :func) (find-func m (cdr node))))
+                          (src (and f (wasm-func-source f))))
+                     (format nil "~(~A~) ~A~@[ (~A)~]" (car node)
+                             (let ((d (and f (wasm-func-display f))))
+                               (if (stringp d) d (prin1-to-string (cdr node))))
+                             (and (consp src) (format nil "~A:~A" (car src) (cdr src)))))))
+             (chain (node)
+               (let ((seen nil))
+                 (loop for n = node then (car (last (gethash n why)))
+                       while (and n (not (eq n :root)) (not (member n seen :test #'equal)))
+                       do (push n seen)
+                       finally (return (nreverse seen)))))
+             (percent (v) (if (plusp total) (/ (* 100 v) total) 0)))
+      (loop for f across (wasm-module-funcs m)
+            for size = (gethash (wasm-func-name f) sizes 0)
+            for src = (wasm-func-source f)
+            do (incf total size)
+               (incf (gethash (if (consp src) (car src) "?") by-file 0) size)
+               (push (list size f) rows)
+               ;; (its size counts for it and each of its dominators)
+               (loop for n = (cons :func (wasm-func-name f)) then (gethash n idom)
+                     while n do (incf (gethash n dominated 0) size)))
+      (format stream "; ~D octets of code in ~D functions~%" total (length (wasm-module-funcs m)))
+      (format stream "~&; by source file~%")
+      (loop for (k . v) in (sort (loop for k being the hash-keys of by-file using (hash-value v)
+                                       collect (cons k v))
+                                 #'> :key #'cdr)
+            do (format stream "~10D ~5,1F%  ~A~%" v (percent v) k))
+      (format stream "~&; the ~D that the most code would go with (what they dominate), ~
+                      each with what dominates it in turn~%" largest)
+      (loop for (node . v) in (subseq (sort (loop for k being the hash-keys of dominated using (hash-value v)
+                                                  collect (cons k v))
+                                            #'> :key #'cdr)
+                                      0 (min largest (hash-table-count dominated)))
+            do (format stream "~10D ~5,1F%  ~A~{~%                    in ~A~}~%" v (percent v) (label node)
+                       (loop for d = (gethash node idom) then (gethash d idom)
+                             while (and d (not (eq d :root))) collect (label d))))
+      (format stream "~&; functions, largest first: size, function, then what reached it first~%")
+      (loop for (size f) in (sort rows #'> :key #'first)
+            for c = (chain (cons :func (wasm-func-name f)))
+            do (format stream "~8D ~A~{~%           <- ~A~}~%" size (label (first c))
+                       (mapcar #'label (rest c)))))))

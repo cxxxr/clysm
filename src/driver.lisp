@@ -718,6 +718,9 @@ host's identity hash, and that hash."
   (add-global *m* :ih-key :eqref t '((:ref.null :eq)))
   (add-global *m* :ih-hash :i32 t '((:i32.const 0))))
 
+(defvar *shake-why-file* nil
+  "NIL, or the file that BUILD-MODULE writes WRITE-SHAKE-WHY's report to.")
+
 (defun build-module (&key (entry "_start"))
   (let ((*m* (make-wasm-module)))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
@@ -865,7 +868,10 @@ host's identity hash, and that hash."
     (add-image-functions *m*)
     (report-undefined-functions)
     (when *shake* (shake-module *m*))
-    (with-build-section (encode-module *m*))))
+    (prog1 (with-build-section (encode-module *m*))
+      (when *shake-why-file*
+        (with-open-file (o *shake-why-file* :direction :output :if-exists :supersede)
+          (write-shake-why *m* *shake-why* *func-body-sizes* o))))))
 
 (defun inline-single-use-constants (consts)
   "CONSTS ((name type init), in dependency order) without those that only
@@ -1017,6 +1023,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
             (format nil "0.1.~A (~A)" count commit))))))
 
 (defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
+                                   ((:shake-why *shake-why-file*) nil)
                                    ((:source-root *source-root*)
                                     (and runtime-dir
                                          (ignore-errors
@@ -1028,7 +1035,9 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
   "Compile the runtime and FILES into the WebAssembly module OUTPUT.  With
 SHAKE, the global functions that nothing refers to by name are left out
 (SHAKE-MODULE): the program must not call functions by names it makes at
-run time (INTERN, READ, EVAL of new code).  Returns the number of bytes written."
+run time (INTERN, READ, EVAL of new code).  With SHAKE-WHY (a file), the
+size of each kept function and what kept it are written there
+(WRITE-SHAKE-WHY).  Returns the number of bytes written."
   (reset-compiler)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
@@ -1037,7 +1046,9 @@ run time (INTERN, READ, EVAL of new code).  Returns the number of bytes written.
     (finish-runtime))
   (let ((*host-load-defuns* t))
     (dolist (f files) (compile-source-file f)))
-  (let ((bytes (build-module)))
+  (let ((bytes (let ((*shake-why* (and *shake-why-file* (make-hash-table :test 'equal)))
+                      (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal))))
+                  (build-module))))
     (with-open-file (o output :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
       (write-sequence bytes o))
     (length bytes)))
