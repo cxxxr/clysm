@@ -237,6 +237,10 @@ it: T, or NIL when the compiler signals an error (nothing has run then)."
 (setq sys::*native-compile-hook* #'native-compile)
 (setq sys::*native-eval-hook* #'native-eval)
 (setq sys::*native-eval-forms-hook* #'native-eval-forms)
+;; the loops of runtime/hof.lisp call a function of the runtime that is not
+;; open-coded through the runtime's own functions
+(setq sys::*open-coded-function-p-hook*
+      (lambda (name nargs) (or (find-primitive name nargs) (get name 'clysm-transform))))
 ;; a batch of LOAD ends with a form that is compiled (a call of its functions)
 (setq sys::*native-batch-final-p-hook*
       (lambda (form) (and (consp form) (not (ignore-errors (simple-form form))))))

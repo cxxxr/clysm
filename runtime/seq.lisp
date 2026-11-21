@@ -1869,7 +1869,23 @@ POSITION when they are only a :TEST of a known function, else NIL."
                                :start ,st :end ,en ,@(when from-end '(:from-end t))))))))))))
 
 ;;; FIND and POSITION of an item in a short literal sequence: comparisons inline
-(define-compiler-macro find (&whole form item seq &rest keys)
+;;; Compiler macros whose expanders are needed only by the compiler: on the
+;;; host, and in the image (a shaken program leaves them out, also the
+;;; functions their sources name: %WHEN-REACHED of a symbol nothing else
+;;; refers to).
+(defmacro %define-expander-functions (&body defuns)
+  `(progn (eval-when (:compile-toplevel) ,@defuns)
+          (%when-reached '%compiler-macro-expanders (progn ,@defuns))))
+(defmacro %define-image-compiler-macro (name lambda-list &body body)
+  `(progn (eval-when (:compile-toplevel) (%host-define-compiler-macro ,name ,lambda-list ,@body))
+          (%when-reached '%compiler-macro-expanders (%note-compiler-macro ',name ',lambda-list ',body))
+          ',name))
+
+(%define-expander-functions
+(defun %short-constant-sequence-of (keys seq)
+  "The elements of SEQ when FIND or POSITION of it compares inline, else :NO."
+  (if (%short-find-test keys) (%short-constant-sequence seq) :no))
+(defun %find-expansion (form item seq keys)
   (let* ((test (%short-find-test keys))
          (elts (if test (%short-constant-sequence seq) :no)))
     (cond ((not (eq elts :no))
@@ -1881,7 +1897,7 @@ POSITION when they are only a :TEST of a known function, else NIL."
            `(%find-with-test ,item ,seq ,(second keys) nil))
           ((%bounded-find-expansion 'find item seq keys nil))
           (t form))))
-(define-compiler-macro position (&whole form item seq &rest keys)
+(defun %position-expansion (form item seq keys)
   (let* ((test (%short-find-test keys))
          (elts (if test (%short-constant-sequence seq) :no)))
     (cond ((not (eq elts :no))
@@ -1893,7 +1909,9 @@ POSITION when they are only a :TEST of a known function, else NIL."
           ((and (= (length keys) 2) (eq (first keys) :test))
            `(%find-with-test ,item ,seq ,(second keys) t))
           ((%bounded-find-expansion 'position item seq keys t))
-          (t form))))
+          (t form)))))
+(%define-image-compiler-macro find (&whole form item seq &rest keys) (%find-expansion form item seq keys))
+(%define-image-compiler-macro position (&whole form item seq &rest keys) (%position-expansion form item seq keys))
 
 (defun position-if (pred seq &key key from-end (start 0) end)
   (%find-position nil 2 (%fn pred) nil seq key from-end start end t))
