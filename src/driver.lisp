@@ -903,25 +903,24 @@ external (else 0), the length of its name and its characters."
 (defun set-symbol-table (m syms &optional dropped)
   "Make :SYMTAB the table of SYMS, and :INIT-SYMBOLS, :SYMBOL-INFO and
 :DROPPED-SYMBOLS read their data (DROPPED: the symbols left out;
-:DROPPED-SYMBOLS is NIL without *SHAKE-SYMBOLS*)."
-  (destructuring-bind (names-seg info-seg dropped-seg pkg-index) *symbol-data-segments*
-    (multiple-value-bind (names info) (symbol-table-data syms pkg-index)
-      (let ((dropped (dropped-symbols-data dropped pkg-index)))
-        (setf (aref (wasm-module-data m) dropped-seg) dropped
-              (wasm-func-body (find-func m :dropped-symbols))
-              (if *shake-symbols*
-                  `((:i32.const 0) (:i32.const ,(length dropped)) (:array.new_data :bytes ,dropped-seg))
-                  `((:global.get (:sym nil))))
-              (wasm-func-ref-list (find-func m :dropped-symbols)) :unknown))
-      (setf (aref (wasm-module-data m) names-seg) names
-            (aref (wasm-module-data m) info-seg) info)
-      (setf (fourth (find :symtab (wasm-module-globals m) :key #'first)) (symtab-init syms))
-      (setf (wasm-func-body (find-func m :init-symbols))
-            (init-symbols-body names-seg (length names) info-seg (length info))
-            (wasm-func-body (find-func m :symbol-info))
-            `((:i32.const 0) (:i32.const ,(length info)) (:array.new_data :bytes ,info-seg)))
-      (setf (wasm-func-ref-list (find-func m :init-symbols)) :unknown
-            (wasm-func-ref-list (find-func m :symbol-info)) :unknown))))
+:DROPPED-SYMBOLS is NIL without *SHAKE-SYMBOLS*).  (Those of the functions
+that a shaken module has.)"
+  (flet ((set-body (name body)
+           (let ((f (find-func m name)))
+             (when f (setf (wasm-func-body f) body (wasm-func-ref-list f) :unknown)))))
+    (destructuring-bind (names-seg info-seg dropped-seg pkg-index) *symbol-data-segments*
+      (multiple-value-bind (names info) (symbol-table-data syms pkg-index)
+        (let ((dropped (dropped-symbols-data dropped pkg-index)))
+          (setf (aref (wasm-module-data m) dropped-seg) dropped)
+          (set-body :dropped-symbols
+                    (if *shake-symbols*
+                        `((:i32.const 0) (:i32.const ,(length dropped)) (:array.new_data :bytes ,dropped-seg))
+                        `((:global.get (:sym nil))))))
+        (setf (aref (wasm-module-data m) names-seg) names
+              (aref (wasm-module-data m) info-seg) info)
+        (setf (fourth (find :symtab (wasm-module-globals m) :key #'first)) (symtab-init syms))
+        (set-body :init-symbols (init-symbols-body names-seg (length names) info-seg (length info)))
+        (set-body :symbol-info `((:i32.const 0) (:i32.const ,(length info)) (:array.new_data :bytes ,info-seg)))))))
 
 (defun add-identity-hash-cache ()
   "The globals of the :IDENTITY-HASH helper: the last object it hashed with the

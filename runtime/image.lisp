@@ -473,6 +473,9 @@ toplevel forms would have done with the host, before the program's own."
       (let* ((v (%package-ref p i)) (h (make-hash-table :test 'equal :size (length v))))
         (dotimes (k (length v)) (let ((s (svref v k))) (setf (gethash (symbol-name s) h) s)))
         (%set-package-ref p i h))))
+  ;; (the names that --shake-symbols left out: *%DROPPED-SYMBOLS*)
+  (let ((dropped (%wasm :eqref () (:call :dropped-symbols))))
+    (when dropped (setq *%dropped-symbols* dropped *%dropped-symbol-packages* *%table-packages*)))
   (%image-restore-host roots)
   nil)
 

@@ -48,6 +48,7 @@
 (defvar *ph-reached*)                   ; index of a symbol of the image -> T once referred to
 (defvar *ph-queue*)
 (defvar *ph-draining* nil)
+(defvar *ph-kept-symbols* nil)          ; index of a symbol of the image -> T once its global is kept
 (defvar *ph-weak-cells* nil)            ; cons of the value of a property -> the functions that read it
 (defvar *ph-pending* nil)               ; such a function, or (:code symbol) -> the values to keep once it is
 (defvar *ph-code-reached* nil)          ; index of a symbol -> T once code or a constant refers to it
@@ -155,15 +156,24 @@
 
 (defun ph-mark (i mode)
   (let ((old (aref *ph-state* i)))
+    ;; (with --shake-symbols, a symbol that only a package's tables refer
+    ;; to is left out, and the tables without it, PH-EMIT)
+    (when (and *shake-symbols* (= mode 1) (< i *ph-nbase*) (ph-base-symbol i) (not (gethash i *ph-kept-symbols*)))
+      (return-from ph-mark))
     (when (< old mode)
       (setf (aref *ph-state* i) mode)
       (cond ((< i *ph-nbase*)
-             ;; (the globals of the symbols are all kept, and keeping one
-             ;; would keep what it names)
+             ;; (the globals of the symbols are kept whatever refers to
+             ;; them, without what they name: unless --shake-symbols
+             ;; leaves out those nothing refers to)
              (let ((sym (ph-base-symbol i)))
                (cond ((null sym)
                       (when (zerop old) (funcall *shake-mark* :global (aref *ph-base-names* i))))
-                     ((= mode 2) (funcall *shake-mark* :symbol sym)))))
+                     ((= mode 2)
+                      (when *shake-symbols*
+                        (setf (gethash i *ph-kept-symbols*) t)
+                        (funcall *shake-mark* :global (list :sym sym)))
+                      (funcall *shake-mark* :symbol sym)))))
             (*shake-why* (shake-edge (ph-node i))))
       (when (and (zerop old) *ph-owner*) (setf (aref *ph-owner* i) *ph-cur*))
       ;; (an object that the initializer of a global made, which something
@@ -272,8 +282,11 @@ functions that read it, or (:CODE OWNER); NIL if it is kept."
 (defun ph-walk (i mode)
   (case (aref *ph-kind* i)
     (:symbol (ph-walk-symbol i mode))
-    ;; (its tables of symbols)
-    (:package (ph-mark-items (aref *ph-rec* i) 1))
+    ;; (its tables of symbols; the symbols that shadow others stay with
+    ;; --shake-symbols)
+    (:package (let ((rec (aref *ph-rec* i)))
+                (ph-mark-items rec 1)
+                (when *shake-symbols* (ph-mark-items (list (nth 6 rec)) 2))))
     (t (ph-mark-items (aref *ph-imm* i) mode)
        ;; (not the record of an object as its initializer made it)
        (unless (and (< i *ph-nbase*) (aref *ph-match* i))
@@ -368,6 +381,7 @@ makes, or :FAIL."
   (ecase kind
     (:global
      (let ((i (gethash name *ph-base-index*)))
+       (when (and i (ph-base-symbol i)) (setf (gethash i *ph-kept-symbols*) t))
        (when i (ph-mark i (if (ph-base-symbol i) 1 2))))
      (let ((v (gethash name *ph-mutables*)))
        (when (and v (not (eq name :ih-key))) (ph-mark-ref v 2))))
@@ -390,7 +404,7 @@ makes, or :FAIL."
 
 ;;; the module made
 
-(defun ph-run-runtime (m prologue runtime-tops)
+(defun ph-run-runtime (m init prologue runtime-tops)
   "Run the runtime's toplevel forms of the module M on the host, and read
 the heap that they made."
   (let* ((start (find-func m :start))
@@ -403,7 +417,7 @@ the heap that they made."
          (img (merge-pathnames (concatenate 'string stem ".img") dir)))
     (ensure-directories-exist dir)
     (setf (wasm-func-body start)
-          (append prologue runtime-tops (lisp-call-instrs 'clysm-sys::%preinit-save 0) '(:drop))
+          (append init prologue runtime-tops (lisp-call-instrs 'clysm-sys::%preinit-save 0) '(:drop))
           (wasm-func-ref-list start) :unknown)
     (let ((octets (let ((*func-body-sizes* nil)) (with-build-section (encode-module m)))))
       (setf (wasm-func-body start) body (wasm-func-ref-list start) :unknown)
@@ -435,17 +449,20 @@ the heap that they made."
                (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
     (walk body)))
 
-(defun preinit-shake (m parts)
+(defun preinit-shake (m parts after-shake)
   "Shake the module M (built by BUILD-MODULE with the start function of
-PARTS, (PROLOGUE RUNTIME-TOPS PROGRAM-TOPS)) to start from the heap that the
-runtime's toplevel forms make (see the beginning of this file)."
-  (destructuring-bind (prologue runtime-tops program-tops) parts
-    (let ((words (handler-case (ph-run-runtime m prologue runtime-tops)
+PARTS, (INIT PROLOGUE RUNTIME-TOPS PROGRAM-TOPS)) to start from the heap that
+the runtime's toplevel forms make (see the beginning of this file); then
+call AFTER-SHAKE with M, before the objects are written."
+  (destructuring-bind (init prologue runtime-tops program-tops) parts
+    (let ((words (handler-case (ph-run-runtime m init prologue runtime-tops)
                    ;; (the module is then shaken as it was before)
                    (error (e)
                      (format *error-output* "~&; warning: the runtime's state could not be made when compiling, ~
                                              the module runs its toplevel forms: ~A~%" e)
-                     (return-from preinit-shake (shake-module m))))))
+                     (shake-module m :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
+                     (funcall after-shake m)
+                     (return-from preinit-shake m)))))
       ;; the module the heap was saved by
       (multiple-value-bind (objects mutables) (image-globals m)
         (setf *ph-base-names* (coerce objects 'simple-vector)
@@ -467,7 +484,8 @@ runtime's toplevel forms make (see the beginning of this file)."
           (start (find-func m :start)))
       (ph-add-loader m)
       (setf (wasm-func-body start)
-            `((:i32.const 0) (:i32.const 0) (:i32.const 0) (:memory.init ,seg) (:data.drop ,seg)
+            `(,@init
+              (:i32.const 0) (:i32.const 0) (:i32.const 0) (:memory.init ,seg) (:data.drop ,seg)
               (:i32.const 0) (:call :image-load-preinit)
               (:global.get :img-roots) (:ref.cast! :vector) (:i32.const 0) (:array.get :vector)
               (:call :set-image-mutables)
@@ -491,18 +509,23 @@ runtime's toplevel forms make (see the beginning of this file)."
              (*ph-cover* (make-array n :initial-element nil))
              (*ph-reached* (make-hash-table))
              (*ph-queue* nil)
+             (*ph-kept-symbols* (make-hash-table))
              (*ph-owner* (and (sb-ext:posix-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
              (*shake-heap-hook* #'ph-hook))
         (let ((inits (make-hash-table :test 'equal)))
           (loop for g across (wasm-module-globals m) do (setf (gethash (first g) inits) (fourth g)))
           (ph-match-globals inits))
-        (shake-module m :keep-globals nil)
-        (let ((octets (ph-emit m)))
+        ;; (the tables of the symbols and strings, which the initializing
+        ;; functions read, keep them, not what they name)
+        (shake-module m :keep-globals '(:symtab :pkgtab :strtab) :drop-symbols *shake-symbols*)
+        (funcall after-shake m)
+        (let ((octets (ph-emit m)) (body (wasm-func-body start)))
           (setf (aref (wasm-module-data m) seg) octets
                 (wasm-module-memory m) (max 1 (ceiling (length octets) 65536)))
           (setf (wasm-func-body start)
-                (list* '(:i32.const 0) '(:i32.const 0) `(:i32.const ,(length octets))
-                       (cdddr (wasm-func-body start)))
+                (append (subseq body 0 (length init))
+                        (list* '(:i32.const 0) '(:i32.const 0) `(:i32.const ,(length octets))
+                               (nthcdr (+ 3 (length init)) body)))
                 (wasm-func-ref-list start) :unknown)))))
   m)
 
@@ -593,6 +616,21 @@ image is loaded, from words written as LEB128 numbers."
              ;; mutable globals, the modules' (none), the tables to rehash
              (r-roots (+ nbase next)) (r-mut (+ r-roots 1)) (r-snaps (+ r-roots 2)) (r-rehash (+ r-roots 3))
              (nrec 0) (prev 0)
+             ;; (the vectors of the symbols of packages, without the symbols
+             ;; left out)
+             (pkg-vectors (let ((h (make-hash-table)))
+                            (when *shake-symbols*
+                              (dolist (i heap)
+                                (when (eq (aref *ph-kind* i) :package)
+                                  (dolist (f '(4 5))
+                                    (let ((v (ph-ref-index (cdr (nth f (aref *ph-rec* i))))))
+                                      (when (and v (eq (aref *ph-kind* v) :vector))
+                                        (setf (gethash v h)
+                                              (remove-if (lambda (it)
+                                                           (let ((j (ph-ref-index (cdr it))))
+                                                             (and j (null (aref new j)))))
+                                                         (aref *ph-rec* v)))))))))
+                            h))
              (objs (make-array 100000 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
              (recs (make-array 100000 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
              (out objs))
@@ -623,7 +661,9 @@ image is loaded, from words written as LEB128 numbers."
           ;; the objects
           (dolist (i heap)
             (word (position (aref *ph-kind* i) +img-kinds+))
-            (mapc #'item (aref *ph-imm* i)))
+            (if (gethash i pkg-vectors)
+                (word (length (gethash i pkg-vectors)))
+                (mapc #'item (aref *ph-imm* i))))
           (dotimes (k 4) (word (position :vector +img-kinds+))
             (word (case k (0 4) (1 (length mutables)) (2 0) (3 (length rehash)))))
           ;; the records
@@ -654,7 +694,7 @@ image is loaded, from words written as LEB128 numbers."
                                 (word nil-word)
                                 (item (first rec)))
                             (item (second rec))))
-                         (t (mapc #'item rec)))))))
+                         (t (mapc #'item (or (gethash i pkg-vectors) rec))))))))
             (dotimes (i (length *ph-kind*))
               (when (and (< i *ph-nbase*) (plusp (aref *ph-state* i))) (record i)))
             (dolist (i heap) (record i)))
