@@ -1291,7 +1291,9 @@ those read from fasls are named by file and position instead). The REPL
 image itself starts from one that `bin/clysm` saves after its toplevel
 forms (`build/clysm-native.img`, see Start-up and loading). An image
 started from a heap image runs in Node.js's main thread rather than a
-worker (Start-up and loading).
+worker (Start-up and loading). A shaken program starts its runtime from the
+heap that the runtime's toplevel forms made when the program was compiled,
+in a data segment of the module (Size and start-up).
 
 * **What is saved.** The objects reachable from the roots: the objects of
   the image's immutable globals (its symbols, constants and static closures,
@@ -4769,6 +4771,56 @@ bytecode for them run at start-up would save the `struct.new`s, about
 and vectors, 27 KB.
 For pages, the module is best served as a file of its own, which the browser
 caches for every page that uses it.
+
+**The runtime's state made when the program is compiled** (`src/preinit.lisp`,
+with `--shake` on SBCL). The runtime's toplevel forms make its packages,
+classes, generic functions and their methods, structures, readtables and
+tables; run when a module starts, they kept their definers (`%defmethod`,
+`%define-structure-class`, `%finalize-class`, `%defpackage`,
+`%init-standard-readtable`...) and all those reach in every shaken module:
+2.2 of the 3.6 MB of code of the module of one export was reached only from
+them. Now the program is compiled as before; then a module whose start
+function runs only the runtime's toplevel forms and saves the heap
+(`%preinit-save`: the format of Heap images, with the kind of each of the
+image's objects after the roots) is run with `host/run.mjs` (0.3 s), and
+the module made has instead a passive data segment of those objects. Its
+start function copies it into the memory and makes them
+(`:image-load-preinit`: the loader of heap images, its words LEB128
+numbers, a record's object given by the difference of its index from the
+previous one's, symbols' records without their names), then calls
+`%image-start` (a package's tables of symbols are saved as vectors of their
+symbols and made into tables again; the host variables; the tables hashed by
+identity), then runs the program's toplevel forms. The objects are shaken
+with the code (`*shake-heap-hook*` of `shake-module`): an object is kept
+when kept code, a kept global or a kept object refers to it, and what a
+symbol names (its value, function and properties) only when the symbol is
+referred to, other than by a package's tables, so that what the runtime
+defines stays as the definitions did, by being named. The expander of a
+macro (the property `%macro-function`) is kept only when code or a
+constant names the macro, not only an object such as the pretty printer's
+table of forms (those of COMMON-LISP also when the reader is kept: the
+forms of text read and evaluated); the properties of compiler macros only
+when `compiler-macro-function` is kept, documentation only when
+`documentation` is. A constant list or vector whose fields are as its
+initializer made them has no record, and the conses and vectors that its
+initializer made are not written again. `CLYSM_NO_PREINIT=1` compiles as
+before; `CLYSM_PREINIT_STATS=1` prints what the objects are and what keeps
+them. The module of one export: 4,518,062 -> 3,628,248 bytes (`gzip -9`
+998,495 -> 919,111): code 3.59 -> 2.75 MB, globals 774 -> 602 KB, branch
+hints 114 -> 90 KB, and 166 KB of data (67 KB with gzip). `tests/hello.lisp`
+with `--shake`: 4.85 -> 3.81 MB. Loading the module of one export in a new
+Node.js process: compiling it 13 -> 10 ms, instantiating it and its start
+function 40-46 -> 14-20 ms. The definers are now reached only through what
+needs them at run time: the expanders of `defstruct`, `define-condition`,
+`defpackage`... (kept because the reader is: the printer refers to
+`*standard-readtable*`, whose functions are the reader's), and the dispatch
+of a generic function, which fills its caches when it is called. What keeps
+the rest of the code is the printer (issue #30's item 1), the methods of
+generic functions (`*method-fast-functions*` holds every method's function:
+item 2) and `eval_string`'s reader and evaluator (item 4). A function that
+only the runtime's toplevel forms called is no longer there for `eval` of
+new code (`eval_string` of `(symbol-package 'car)`), as the definitions
+that nothing names were not before.
 
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals

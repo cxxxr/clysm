@@ -137,6 +137,9 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setf (gethash s table) (%svref stack (+ i 1))))))))
 
 (defvar *img-globals* nil)
+(defvar *img-describe-base* nil
+  "True while %PREINIT-SAVE saves: the kinds of the image's objects follow the roots.")
+
 
 (defun %img-symbol-value (s)
   (multiple-value-bind (v found) (gethash s *img-globals*)
@@ -334,6 +337,19 @@ now (the oldest binding of a symbol on the binding stack holds it)."
             (unless (= written fillable)
               (error "SAVE-IMAGE: ~D records written, ~D expected" written fillable)))
           (%img-ref roots)
+          ;; (for a module built from the heap, see %PREINIT-SAVE: the kind
+          ;; of each object of the image and its size, which the records
+          ;; of its fields take)
+          (when *img-describe-base*
+            (dotimes (i (length base))
+              (let* ((x (svref base i))
+                     (kind (if (or (fixnump x) (characterp x)) nil (%img-kind x))))
+                (%img-word (if kind (position kind +img-kinds+) -1))
+                (%img-word (case kind
+                             (:vector (%svlength x))
+                             (:closure (%closure-env-length x))
+                             (:sinst (%sinst-size x))
+                             (t 0))))))
           ;; (strings go to the host through the memory: the name first)
           (let ((save (js:global "__clysm_save_image"))
                 (name (js:to-js (namestring (merge-pathnames file)))))
@@ -432,13 +448,47 @@ now (the oldest binding of a symbol on the binding stack holds it)."
          (%img-word (%mdarray-field x 7))))
       t)))
 
-(defun %image-resume (roots)
-  "Called by the host (image_resume) in an image started from a heap image."
-  (setq *image-restored* t)
+(defun %preinit-save ()
+  "Save the heap as the runtime's toplevel forms have made it, to the file
+that the host's environment variable CLYSM_PREINIT_FILE names: the start
+function of the module from which the compiler builds a shaken program
+(src/preinit.lisp) calls it instead of the program's toplevel forms."
+  ;; (a package's tables of symbols are saved as vectors of their symbols,
+  ;; made into tables again by %IMAGE-START: the names are those of the
+  ;; symbols, and the tables' vectors were most of the heap)
+  (dolist (p (list-all-packages))
+    (dolist (i '(4 5))
+      (let ((v (make-array (hash-table-count (%package-ref p i)))) (k 0))
+        (maphash (lambda (name s) (declare (ignore name)) (setf (svref v k) s) (incf k)) (%package-ref p i))
+        (%set-package-ref p i v))))
+  (let ((*img-describe-base* t))
+    (save-image (%getenv "CLYSM_PREINIT_FILE") nil)))
+
+(defun %image-start (roots)
+  "Called by the start function of a shaken program built from the heap of
+its runtime (src/preinit.lisp), once the objects are made: what the
+toplevel forms would have done with the host, before the program's own."
+  (dolist (p (list-all-packages))
+    (dolist (i '(4 5))
+      (let* ((v (%package-ref p i)) (h (make-hash-table :test 'equal :size (length v))))
+        (dotimes (k (length v)) (let ((s (svref v k))) (setf (gethash (symbol-name s) h) s)))
+        (%set-package-ref p i h))))
+  (%image-restore-host roots)
+  nil)
+
+(defun %image-restore-host (roots)
   (dolist (e (reverse *host-variables*))
     (setf (symbol-value (car e)) (funcall (cdr e))))
   (let ((rehash (svref roots 3)))
-    (dotimes (i (length rehash)) (%ht-rehash (svref rehash i))))
+    (dotimes (i (length rehash)) (%ht-rehash (svref rehash i)))))
+
+(defun %image-resume (roots)
+  "Called by the host (image_resume) in an image started from a heap image."
+  (setq *image-restored* t)
+  (%image-restore-host roots)
+  (%image-resume-1 roots))
+
+(defun %image-resume-1 (roots)
   ;; as MAIN (eval.lisp) at the start of an image
   (setq *posix-argv* (%command-line-arguments))
   (%init-default-pathname)

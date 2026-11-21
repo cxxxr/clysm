@@ -929,6 +929,19 @@ host's identity hash, and that hash."
   (add-global *m* :ih-key :eqref t '((:ref.null :eq)))
   (add-global *m* :ih-hash :i32 t '((:i32.const 0))))
 
+(defvar *preinit-function* nil
+  "NIL, or the function (src/preinit.lisp, loaded with the compiler on SBCL)
+that shakes a program whose runtime's state is made from a heap saved when
+it is compiled, instead of by the runtime's toplevel forms: called with the
+module and *PREINIT-PARTS*.")
+(defvar *runtime-top-count* nil
+  "The number of toplevel functions of the runtime, once compiled (when *PREINIT-FUNCTION* is used).")
+(defvar *preinit-parts* nil
+  "(PROLOGUE RUNTIME-TOPS PROGRAM-TOPS): the code of the start function, in parts.")
+(defvar *preinit-root* nil "The directory of Clysm (for host/run.mjs).")
+(defvar *preinit-table-check* nil
+  "The number of functions in the table when src/preinit.lisp placed the functions of the heap's closures.")
+
 (defvar *shake-why-file* nil
   "NIL, or the file that BUILD-MODULE writes WRITE-SHAKE-WHY's report to.")
 
@@ -986,11 +999,18 @@ host's identity hash, and that hash."
       (add-export *m* "memory" :memory nil)
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
-      (add-func *m* :start :v-v :export entry
-                :body (append '((:call :init-symbols) (:call :init-strings)) (runtime-consts-prologue) (initial-value-prologue)
-                       (loop for l in tops
-                            append `((:global.get ,(static-closure-global l))
-                                     (:call (:main ,(lam-id l))) :drop)))))
+      (flet ((calls (lams)
+               (loop for l in lams
+                     append `((:global.get ,(static-closure-global l))
+                              (:call (:main ,(lam-id l))) :drop))))
+        (let ((init '((:call :init-symbols) (:call :init-strings)))
+              (prologue (append (runtime-consts-prologue) (initial-value-prologue))))
+          (add-func *m* :start :v-v :export entry :body (append init prologue (calls tops)))
+          ;; (a shaken program made from the heap of its runtime: src/preinit.lisp)
+          (when (and *shake* *preinit-function* *runtime-top-count*)
+            (setf *preinit-parts*
+                  (list init prologue (calls (subseq tops 0 *runtime-top-count*))
+                        (calls (nthcdr *runtime-top-count* tops))))))))
     ;; globals in dependency order
     ;; NIL first, then T, then the other symbols
     (let ((syms (reverse *symbol-globals*)))
@@ -1084,22 +1104,33 @@ host's identity hash, and that hash."
     (add-image-functions *m*)
     (report-undefined-functions)
     (when *shake*
-      (shake-module *m* :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
-      ;; the table of the strings left
-      (set-string-table *m*)
-      (when *shake-symbols*
-        ;; the table of the symbols left
-        (let ((kept (loop for g across (wasm-module-globals *m*)
-                          when (and (consp (first g)) (eq (car (first g)) :sym))
-                            collect (second (first g))))
-              (seen (make-hash-table :test 'eq)))
-          (dolist (s kept) (setf (gethash s seen) t))
-          (set-symbol-table *m* kept (remove-if (lambda (s) (gethash s seen)) (reverse *symbol-globals*))))))
+      (if *preinit-parts*
+          (funcall *preinit-function* *m* *preinit-parts* #'after-shake)
+          (progn (shake-module *m* :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
+                 (after-shake *m*))))
     (order-functions-by-use *m*)
-    (prog1 (with-build-section (encode-module *m*))
+    (prog1 (let ((bytes (encode-module *m*)))
+             ;; (the places of the functions in the table are those that
+             ;; src/preinit.lisp gave the closures of the heap)
+             (when (and *preinit-parts* *preinit-table-check*)
+               (unless (= (hash-table-count (wasm-module-declared-refs *m*)) *preinit-table-check*)
+                 (error "preinit: the table of functions changed while the module was encoded")))
+             (with-build-section bytes))
       (when *shake-why-file*
         (with-open-file (o *shake-why-file* :direction :output :if-exists :supersede)
           (write-shake-why *m* *shake-why* *func-body-sizes* o))))))
+
+(defun after-shake (m)
+  "What a module needs once SHAKE-MODULE has shaken it: the table of the
+strings left, and with *SHAKE-SYMBOLS* that of the symbols left."
+  (set-string-table m)
+  (when *shake-symbols*
+    (let ((kept (loop for g across (wasm-module-globals m)
+                      when (and (consp (first g)) (eq (car (first g)) :sym))
+                        collect (second (first g))))
+          (seen (make-hash-table :test 'eq)))
+      (dolist (s kept) (setf (gethash s seen) t))
+      (set-symbol-table m kept (remove-if (lambda (s) (gethash s seen)) (reverse *symbol-globals*))))))
 
 (defun inline-single-use-constants (consts)
   "CONSTS ((name type init), in dependency order) without those that only
@@ -1174,13 +1205,10 @@ GLOBALS (names), in pieces of at most 5000 (array.new_fixed is limited to
                        (:array.new_fixed :vector ,(length chunk))))
       (:array.new_fixed :vector ,(length chunks)))))
 
-(defun add-image-functions (m)
-  "The image's table of functions, which every function referred to by a
-closure is placed in (from 0 for the image's own, from their code base for a
-module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
-:SET-IMAGE-MUTABLES (runtime/image.lisp)."
-  (setf (wasm-module-table m) (list :define))
-  (add-export m "codes" :table nil)
+(defun image-globals (m)
+  "The names of the globals of M whose objects a heap image refers to by
+their places (its immutable globals of references), and of those whose
+values it saves (its mutable globals of type eqref): runtime/image.lisp."
   (let ((objects nil) (mutables nil))
     ;; (not :STRTAB, which :IMAGE-LOAD reads before the objects are made)
     (loop for (name type mutable) across (wasm-module-globals m)
@@ -1188,7 +1216,16 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
                    ((not (and (consp type) (eq (car type) :ref)))
                     (when (and mutable (eq type :eqref)) (push name mutables)))
                    ((not mutable) (push name objects))))
-    (setf objects (nreverse objects) mutables (nreverse mutables))
+    (values (nreverse objects) (nreverse mutables))))
+
+(defun add-image-functions (m)
+  "The image's table of functions, which every function referred to by a
+closure is placed in (from 0 for the image's own, from their code base for a
+module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
+:SET-IMAGE-MUTABLES (runtime/image.lisp)."
+  (setf (wasm-module-table m) (list :define))
+  (add-export m "codes" :table nil)
+  (multiple-value-bind (objects mutables) (image-globals m)
     ;; the conses, simple vectors and symbols among them: a heap image writes
     ;; all their fields (the records of runtime/image.lisp), so an image
     ;; started from one can make them empty (host/common.mjs imageVariant):
@@ -1276,11 +1313,19 @@ look up by name (INTERN, FIND-SYMBOL, READ) a symbol that its code does not
 refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept it are written there
 (WRITE-SHAKE-WHY).  Returns the number of bytes written."
   (reset-compiler)
+  (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
     (let ((version (clysm-version runtime-dir)))
       (when version (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv))))
     (finish-runtime))
+  ;; (the runtime's toplevel functions, which src/preinit.lisp runs when
+  ;; the program is compiled)
+  (when (and *shake* *preinit-function* runtime-dir)
+    (flush-toplevel)
+    (setf *runtime-top-count* (length *toplevel-lams*)
+          *preinit-root* (merge-pathnames "../" (make-pathname :name nil :type nil :version nil
+                                                               :defaults runtime-dir))))
   (let ((*host-load-defuns* t))
     (dolist (f files) (compile-source-file f)))
   (let ((bytes (let ((*shake-why* (and *shake-why-file* (make-hash-table :test 'equal)))

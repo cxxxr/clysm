@@ -345,6 +345,15 @@ WRITE-SHAKE-WHY.")
     (unless (equal (car preds) *shake-walking*)
       (setf (gethash to *shake-why*) (cons *shake-walking* preds)))))
 
+(defvar *shake-heap-hook* nil
+  "NIL, or a function that SHAKE-MODULE calls with :GLOBAL and the name of
+each global it keeps, and with :SYMBOL and each symbol it finds referred
+to, when first found (and with :CODE-SYMBOL whenever code or the initializer
+of a global refers to it) (src/preinit.lisp: the objects of the heap that a
+global or a symbol refers to).  While it runs, *SHAKE-MARK* is a function
+of :FUNC, :GLOBAL or :SYMBOL and a name, that keeps that too.")
+(defvar *shake-mark* nil)
+
 (defun shake-module (m &key (keep-globals '(:symtab :pkgtab)) drop-symbols)
   "Drop what a whole program cannot reach: the functions and globals not
 reached from the exports and the start function, and the definitions of
@@ -379,13 +388,19 @@ that is not reached is used (not dropped at once)."
                (unless (gethash sym symbols)
                  (setf (gethash sym symbols) t)
                  (let ((*shake-walking* (cons :symbol sym)))
-                   (dolist (name (gethash sym pending)) (mark-func name)))))
+                   (dolist (name (gethash sym pending)) (mark-func name))
+                   (when *shake-heap-hook* (funcall *shake-heap-hook* :symbol sym)))))
              (mark-global (name)
-               (when (and (consp name) (eq (car name) :sym)) (mark-symbol (second name)))
+               (when (and (consp name) (eq (car name) :sym))
+                 (mark-symbol (second name))
+                 (when *shake-heap-hook* (funcall *shake-heap-hook* :code-symbol (second name))))
                (when *shake-why* (shake-edge (cons :global name)))
                (unless (gethash name globals)
                  (setf (gethash name globals) t)
-                 (push name gqueue)))
+                 (push name gqueue)
+                 (when *shake-heap-hook*
+                   (let ((*shake-walking* (cons :global name)))
+                     (funcall *shake-heap-hook* :global name)))))
              (walk (x)
                (when (consp x)
                  (case (car x)
@@ -411,6 +426,11 @@ that is not reached is used (not dropped at once)."
                          (setf (gethash name globals) t)
                          (push name gqueue)))))))
              (install-call-p (x) (and (consp x) (eq (car x) :call) (install-p (second x)))))
+      (setf *shake-mark* (lambda (kind name)
+                           (ecase kind
+                             (:func (mark-func name))
+                             (:global (mark-global name))
+                             (:symbol (mark-symbol name)))))
       (loop for (nil kind ref) in (wasm-module-exports m)
             do (case kind (:func (mark-func ref)) (:global (mark-global ref))))
       (loop for f across (wasm-module-funcs m) when (wasm-func-export f) do (mark-func (wasm-func-name f)))
@@ -421,7 +441,10 @@ that is not reached is used (not dropped at once)."
         (loop for g across (wasm-module-globals m)
               when (and (consp (first g)) (eq (car (first g)) :sym))
                 do (setf (gethash (first g) globals) t) (push (first g) gqueue)
-                   (when *shake-why* (shake-edge (cons :global (first g))))))
+                   (when *shake-why* (shake-edge (cons :global (first g))))
+                   (when *shake-heap-hook*
+                     (let ((*shake-walking* (cons :global (first g))))
+                       (funcall *shake-heap-hook* :global (first g))))))
       (loop while (or queue gqueue)
             do (cond (queue (let* ((f (pop queue)) (*shake-walking* (cons :func (wasm-func-name f))))
                               (walk (wasm-func-body f))))
@@ -796,6 +819,9 @@ in one table: op -> code, or (prefix . code).")
          (emit-u32 buf (or (first args) 0)))
         (:memory.size (emit-byte buf #x3F) (emit-byte buf 0))
         (:memory.grow (emit-byte buf #x40) (emit-byte buf 0))
+        ;; (:memory.init SEGMENT), (:data.drop SEGMENT): a passive data segment
+        (:memory.init (emit-byte buf #xFC) (emit-u32 buf 8) (emit-u32 buf (first args)) (emit-byte buf 0))
+        (:data.drop (emit-byte buf #xFC) (emit-u32 buf 9) (emit-u32 buf (first args)))
         (:i32.const (emit-byte buf #x41) (emit-sleb buf (let ((v (first args)))
                                                            (if (>= v #x80000000) (- v #x100000000) v))))
         (:i64.const (emit-byte buf #x42) (emit-sleb buf (let ((v (first args)))
