@@ -65,32 +65,86 @@
   ;; the number of field slots of a structure of the shape SHAPE (0: none)
   (defun %shape-field-slots (shape) (if (integerp shape) (mod shape 64) 0))
 
-  ;; A slot declared a simple array (after the types defined by DEFTYPE):
-  ;; its value is checked where it is written, as SBCL does, since compiled
-  ;; reads of it are typed (src/types.lisp, STRUCT-SLOT-NODE-TY; the reads
-  ;; test its storage kind too, and they alone at the slots this does not
-  ;; see).  The form storing VAL into a slot of TYPE.
-  (defun %slot-type-check-form (type val)
+  ;; TYPE after the types defined by DEFTYPE (known now)
+  (defun %slot-type-expansion (type)
     (let ((spec type))
-      (dotimes (i 8)
+      (dotimes (i 8 spec)
         (let ((head (if (consp spec) (car spec) spec)))
           (if (and (symbolp head) head (get head '%deftype))
               ;; (HANDLER-CASE is defined after this file: cond.lisp)
               (let ((r (and (fboundp '%deftype-expansion-list)
                             (funcall '%deftype-expansion-list head (if (consp spec) (cdr spec) nil)))))
-                (if (and r (not (equal (car r) spec))) (setq spec (car r)) (return)))
-              (return))))
-      (if (member (if (consp spec) (car spec) spec)
-                  '(simple-array simple-vector simple-string simple-base-string))
-          ;; (the element type of a SIMPLE-ARRAY is left to the read's
-          ;; test: TYPEP of an element type such as (OR (EQL 0) CHUNK) is
-          ;; decided by SUBTYPEP at run time)
-          (let ((v (gensym "V"))
-                (test (if (and (consp spec) (eq (car spec) 'simple-array))
-                          `(simple-array * ,@(cddr spec))
-                          spec)))
-            `(let ((,v ,val)) (if (typep ,v ',test) ,v (%type-error ,v ',type))))
-          val)))
+                (if (and r (not (equal (car r) spec))) (setq spec (car r)) (return spec)))
+              (return spec))))))
+
+  ;; What a slot of TYPE holds that compiled reads trust, so that it is
+  ;; checked where it is written: :ARRAY (a simple array), the name of a
+  ;; structure class (SELF, the one being defined, whose shape is
+  ;; SELF-FIELDS, or one defined before), else NIL.
+  (defun %slot-check-kind (type &optional self)
+    (let ((spec (%slot-type-expansion type)))
+      (cond ((member (if (consp spec) (car spec) spec)
+                     '(simple-array simple-vector simple-string simple-base-string))
+             :array)
+            ((and spec (symbolp spec) (not (eq spec t))
+                  (or (eq spec self)
+                      (let ((d (get spec '%struct-description))) (and (consp d) (null (car d))))))
+             spec)
+            (t nil))))
+
+  ;; A slot entry (name initform type read-only index kind ctype): KIND is
+  ;; what %SLOT-CHECK-KIND gives for the type CTYPE, which is checked where
+  ;; the slot is written and trusted where it is read (NIL and NIL: none).
+  ;; An included slot whose type the structure restates keeps the included
+  ;; one's check unless its own is one (the included structure's accessors,
+  ;; which check the included type, write it in its instances too).
+  (defun %slot-with-check (s self)
+    (let ((kind (%slot-check-kind (caddr s) self)))
+      (append (subseq s 0 5) (if kind (list kind (caddr s)) (list nil nil)))))
+  (defun %included-slot-with-check (s type)
+    (let ((kind (%slot-check-kind type nil)))
+      (cond (kind (list kind type))
+            (t (list (nth 5 s) (nth 6 s))))))
+
+  ;; A slot declared a simple array or a structure class (after the types
+  ;; defined by DEFTYPE): its value is checked where it is written, as SBCL
+  ;; does, since compiled reads of it are typed (src/types.lisp,
+  ;; STRUCT-SLOT-NODE-TY; the reads of an array test its storage kind too,
+  ;; and they alone at the slots this does not see).  The form storing VAL
+  ;; into the slot S (an entry, above) of the structure SELF (whose shape is
+  ;; SELF-FIELDS); VAL itself at (SAFETY 0), where SBCL trusts it.
+  (defun %slot-store-check-form (s val &optional self self-fields)
+    (let ((kind (nth 5 s)) (type (nth 6 s)) (v (gensym "V")))
+      (cond ((or (null kind) (eql *proclaimed-safety* 0)) val)
+            ((eq kind :array)
+             `(let ((,v ,val)) (if (typep ,v ',(%slot-array-test type)) ,v (%type-error ,v ',type))))
+            (t
+             ;; a structure class: the test of its predicate
+             (let ((fields (if (eq kind self) self-fields (nth 4 (get kind '%struct-description)))))
+               `(let ((,v ,val))
+                  (if (%structure-typep ,v (load-time-value (find-class ',kind)) ,@(when fields (list fields)))
+                      ,v
+                      (%type-error ,v ',type))))))))
+
+  ;; the type tested of a slot of the simple array type TYPE (the element
+  ;; type of a SIMPLE-ARRAY is left to the read's test: TYPEP of an element
+  ;; type such as (OR (EQL 0) CHUNK) is decided by SUBTYPEP at run time)
+  (defun %slot-array-test (type)
+    (let ((spec (%slot-type-expansion type)))
+      (if (and (consp spec) (eq (car spec) 'simple-array))
+          `(simple-array * ,@(cddr spec))
+          spec)))
+
+  ;; (SETF SLOT-VALUE) of a slot of a structure: VALUE checked as the
+  ;; constructors and the SETF of the accessors check it
+  (defun %struct-slot-store-check (class name value)
+    (let* ((d (%struct-description (%class-name class)))
+           (s (and (consp d) (null (car d))
+                   (dolist (s (cadr d) nil) (when (eq (car s) name) (return s)))))
+           (kind (and s (nth 5 s))))
+      (cond ((null kind) value)
+            ((typep value (if (eq kind :array) (%slot-array-test (nth 6 s)) kind)) value)
+            (t (%type-error value (nth 6 s))))))
 
   (defun %struct-error (control &rest args)
     (error 'simple-error :format-control control :format-arguments args)))
@@ -151,15 +205,18 @@
     (let* ((inherited (mapcar (lambda (s)
                                 (let ((ov (assoc (car s) include-overrides)))
                                   (if ov
-                                      (list (car s) (cadr ov) (if (eq (caddr ov) t) (caddr s) (caddr ov))
-                                            (or (cadddr ov) (cadddr s)) (nth 4 s))
+                                      (let ((type (if (eq (caddr ov) t) (caddr s) (caddr ov))))
+                                        (append (list (car s) (cadr ov) type (or (cadddr ov) (cadddr s)) (nth 4 s))
+                                                (if (equal type (caddr s))
+                                                    (list (nth 5 s) (nth 6 s))
+                                                    (%included-slot-with-check s type))))
                                       s)))
                               (cadr include-desc)))
            (base (+ (if include-desc (caddr include-desc) 0) (if seq-kind initial-offset 0)))
            (name-index (if (and seq-kind named) base nil))
            (first-own (+ base (if name-index 1 0)))
            (own (let ((i first-own))
-                  (mapcar (lambda (s) (prog1 (append s (list i)) (setq i (+ i 1)))) own-slots)))
+                  (mapcar (lambda (s) (prog1 (%slot-with-check (append s (list i)) (and (null seq-kind) name)) (setq i (+ i 1)))) own-slots)))
            (all-slots (append inherited own))
            (size (+ first-own (length own)))
            (names (append (cadddr include-desc) (if name-index (list (cons name-index name)) nil)))
@@ -235,14 +292,14 @@
                             (vars (%ll-bound-vars (cadr c))))
                         `(defun ,cname ,ll
                            ,(make-form (mapcar (lambda (s)
-                                                 (%slot-type-check-form
-                                                  (caddr s) (or (%boa-var-named (car s) vars) (cadr s))))
+                                                 (%slot-store-check-form
+                                                  s (or (%boa-var-named (car s) vars) (cadr s)) name fields))
                                                all-slots))))
                       `(defun ,cname (&key ,@(mapcar (lambda (s k)
                                                        (list (list (intern (symbol-name (car s)) "KEYWORD") k)
                                                              (cadr s)))
                                                      all-slots keyvars))
-                         ,(make-form (mapcar (lambda (s k) (%slot-type-check-form (caddr s) k))
+                         ,(make-form (mapcar (lambda (s k) (%slot-store-check-form s k name fields))
                                              all-slots keyvars))))))
               constructors)
            ;; a structure of typed slots: the functions by which generic code
@@ -297,7 +354,7 @@
                    (unless (cadddr s)
                      (push (cond ((null seq-kind)
                                   `(defun (setf ,acc) (,v ,x)
-                                     (setq ,v ,(%slot-type-check-form (caddr s) v))
+                                     (setq ,v ,(%slot-store-check-form s v name fields))
                                      ,(cond (kinds `(%struct-tset ,x (load-time-value (find-class ',name)) ,idx ,v ',kinds))
                                             ((or field-rep big-rep) `(%struct-iset ,x (load-time-value (find-class ',name)) ,idx ,v ,fields))
                                             (t `(%struct-set ,x (load-time-value (find-class ',name)) ,idx ,v ,fields)))))

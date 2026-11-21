@@ -553,6 +553,128 @@ them from the header again, in a loop), else NIL."
 
 (defun mv-one () '((:i32.const 1) (:global.set :mv-count)))
 
+;;; Declared parameters.  The type declared for a parameter is that of the
+;;; variable from the start of the function's body (type inference, and so
+;;; its representation: an i32, an f64, a vector of a kind of storage),
+;;; with no code making it so: a value of another type passed to it trapped
+;;; at the cast of the prologue or of the code using it.  At SAFETY 1 and
+;;; more the prologue tests it (DECL-CHECK-CODE), as SBCL does: one test of
+;;; the object (a fixnum with its range, a double, a vector of the storage
+;;; kind...), a TYPE-ERROR for anything else.
+(defun decl-check-ty (spec)
+  "The type the declaration of a variable of type SPEC gives it, when the
+code may rely on it so that a value of another type would trap; else NIL
+(a structure class, whose accessors test the object: STRUCT-SHADOW-INIT-CODE;
+a type of objects the code handles generically)."
+  (let ((ty (ignore-errors (declared-ty spec))))
+    (and ty (not (ty-bottom-p ty)) (/= (ty-bits ty) +k-all+)
+         (cond ((and (ty-cls ty) (symbolp (ty-cls ty)) (struct-class-type-p (ty-cls ty))) nil)
+               ((ty-array-kind ty) ty)
+               ((logtest (ty-bits ty) (logior +k-other+ +k-limbs+)) nil)
+               (t ty)))))
+
+(defun decl-test-code (l ty)
+  "Code leaving 1 when the object in the local L is of the type TY (from
+DECL-CHECK-TY), else 0; second value, whether 0 means it is not (else it
+may be: a bignum beyond 64 bits within the range, an array of another rank)."
+  (let ((tests nil) (exact t) (bits (ty-bits ty)))
+    (flet ((add (code) (push code tests))
+           (obj () `(:local.get ,l)))
+      (when (logtest bits +k-int+)
+        (let* ((lo (ty-lo ty)) (hi (ty-hi ty))
+               (flo (if lo (max lo +most-negative-fixnum+) +most-negative-fixnum+))
+               (fhi (if hi (min hi +most-positive-fixnum+) +most-positive-fixnum+))
+               (big (or (null lo) (null hi) (< lo +most-negative-fixnum+) (> hi +most-positive-fixnum+)))
+               (v (new-local :i32)))
+          ;; (an i31 is a fixnum or a character, 2^29 + its code: beyond the fixnums)
+          (add `(,(obj) (:ref.test :i31)
+                 (:if nil :i32
+                      ,(cond ((and (= flo +most-negative-fixnum+) (= fhi +most-positive-fixnum+))
+                              `(,(obj) (:ref.cast :i31) :i31.get_s (:local.set ,v) ,@(fixnum-test-instrs v)))
+                             ((> flo fhi) '((:i32.const 0)))
+                             (t `(,(obj) (:ref.cast :i31) :i31.get_s (:local.tee ,v) (:i32.const ,flo) :i32.ge_s
+                                  (:local.get ,v) (:i32.const ,fhi) :i32.le_s :i32.and)))
+                      ,(cond ((not big) '((:i32.const 0)))
+                             ((and (null lo) (null hi)) `(,(obj) (:ref.test :bignum)))
+                             (t
+                              ;; a bignum within 64 bits: its value
+                              (let ((w (new-local :i64))
+                                    (llo (and lo (> lo (- (expt 2 63))) lo))
+                                    (lhi (and hi (< hi (1- (expt 2 63))) hi)))
+                                ;; (beyond 64 bits: within the range unless it is bounded within them)
+                                (when (or (null llo) (null lhi)) (setf exact nil))
+                                `(,(obj) (:ref.test :bignum)
+                                  (:if nil :i32
+                                       (,(obj) (:ref.cast :bignum) (:struct.get :bignum 1) :ref.is_null
+                                        (:if nil :i32
+                                             (,(obj) (:ref.cast :bignum) (:struct.get :bignum 2) (:local.set ,w)
+                                              ,@(if llo `((:local.get ,w) (:i64.const ,llo) :i64.ge_s) '((:i32.const 1)))
+                                              ,@(if lhi `((:local.get ,w) (:i64.const ,lhi) :i64.le_s) '((:i32.const 1)))
+                                              :i32.and)
+                                             ((:i32.const 0))))
+                                       ((:i32.const 0))))))))))))
+      (when (logtest bits +k-ratio+) (add `(,(obj) (:ref.test :ratio))))
+      (when (logtest bits +k-single+) (add `(,(obj) (:ref.test :single))))
+      (when (logtest bits +k-double+)
+        (unless (= (logand bits +k-double+) +k-double+) (setf exact nil))
+        (add `(,(obj) (:ref.test :double))))
+      (when (logtest bits +k-complex+) (add `(,(obj) (:ref.test :complex))))
+      (when (logtest bits +k-cdouble+) (add `(,(obj) (:ref.test :complex-d))))
+      (when (logtest bits +k-csingle+) (add `(,(obj) (:ref.test :complex-s))))
+      (when (logtest bits +k-char+)
+        (let ((v (new-local :i32)))
+          (add `(,(obj) (:ref.test :i31)
+                 (:if nil :i32 (,(obj) (:ref.cast :i31) :i31.get_s (:local.set ,v)
+                                (:local.get ,v) (:i32.const ,+char-tag+) :i32.ge_s)
+                      ((:i32.const 0)))))))
+      (cond ((= (logand bits +k-bool+) +k-bool+) (add `(,(obj) (:ref.test :symbol))))
+            ((logtest bits +k-null+) (add `(,(obj) ,@(nil-code) :ref.eq)))
+            ((logtest bits +k-sym+)
+             (add `(,(obj) (:ref.test :symbol) ,(obj) ,@(nil-code) :ref.eq :i32.eqz :i32.and))))
+      (when (logtest bits +k-cons+) (add `(,(obj) (:ref.test :cons))))
+      (when (logtest bits +k-string+) (add `(,(obj) (:ref.test :string))))
+      (when (logtest bits +k-svec+) (add `(,(obj) (:ref.test :vector))))
+      (when (logtest bits +k-func+) (add `(,(obj) (:ref.test :closure))))
+      (when (logtest bits +k-other+)
+        (let ((kind (ty-vec-kind ty)))
+          (if (and kind (not (member kind '(:vector :string))))
+              (add `(,(obj) (:ref.test ,kind)))
+              (setf exact nil))))
+      (values (if tests
+                  (reduce (lambda (a b) `(,@a (:if nil :i32 ((:i32.const 1)) ,b)))
+                          (nreverse tests))
+                  '((:i32.const 0)))
+              exact))))
+
+(defun decl-check-code (l spec)
+  "At SAFETY 1 and more (in code that is not the runtime's): the test that
+the object in the local L, given to a variable declared of type SPEC, is of
+it, signalling a TYPE-ERROR when it is not; else NIL."
+  (let ((ty (and (not (eql (cg-safety) 0))
+                 (fstate-lam *fs*) (lam-p (fstate-lam *fs*)) (lam-safety (fstate-lam *fs*))
+                 (decl-check-ty spec))))
+    (when ty
+      (multiple-value-bind (test exact) (decl-test-code l ty)
+        `(,@test :i32.eqz
+          (:if nil nil
+               ((:local.get ,l) ,@(const-init-code spec)
+                ,@(if exact
+                      `((:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2)) :unreachable)
+                      `((:global.get ,(sym-global 'clysm-sys::%check-declared-type)) (:call (:callsym 2)) :drop)))))))))
+
+(defun checked-param-value-code (lv value-code)
+  "VALUE-CODE, the object given to the parameter LV, with its test (PARAM-CHECK-CODE)."
+  (if (and (lvar-decl lv) (decl-check-ty (lvar-decl lv)))
+      (let* ((tmp (new-local)) (check (param-check-code lv tmp)))
+        (if check
+            `(,@value-code (:local.set ,tmp) ,@check (:local.get ,tmp))
+            value-code))
+      value-code))
+
+(defun param-check-code (lv local-idx)
+  "The test of the object passed in LOCAL-IDX for the declared parameter LV, or NIL."
+  (and (lvar-decl lv) (not (lvar-special lv)) (decl-check-code local-idx (lvar-decl lv))))
+
 (defun struct-slot-check-code (node)
   "After the code of NODE, a read of a structure slot declared a simple
 array of one kind of storage, whose value the inferred types take to be
@@ -2462,6 +2584,11 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 (defun param-setup-code (lv local-idx)
   "LV was passed in LOCAL-IDX.  Returns (values code special-p); a special
 parameter has no code here: FINISH-BODY binds it."
+  (let ((check (param-check-code lv local-idx)))
+    (multiple-value-bind (code sp) (param-setup-code-1 lv local-idx)
+      (values (append check code) sp))))
+
+(defun param-setup-code-1 (lv local-idx)
   (cond ((lvar-special lv)
          (values nil (cons (lvar-name lv) local-idx)))
         ((boxed-p lv)
@@ -2838,7 +2965,7 @@ its last parameter; the entries for few arguments make the list."
                (if (lvar-special lv)
                    (progn (push lv specials)
                           (emit `((:global.get ,(sym-global (lvar-name lv))) ,@value-code (:call :bind))))
-                   (emit (bind-new-var-code lv value-code))))
+                   (emit (bind-new-var-code lv (checked-param-value-code lv value-code)))))
              (arg (i) `((:local.get 1) (:i32.const ,i) (:array.get :vector))))
       (emit prologue
             `((:local.get 1) :array.len (:local.set ,nargs))
@@ -2931,7 +3058,7 @@ its last parameter; the entries for few arguments make the list."
                  (if (lvar-special lv)
                      (progn (push lv specials)
                             (emit `((:global.get ,(sym-global (lvar-name lv))) ,@value-code (:call :bind))))
-                     (emit (bind-new-var-code lv value-code))))
+                     (emit (bind-new-var-code lv (checked-param-value-code lv value-code)))))
                (slot (i) `((:local.get ,(1+ i))))
                (bind-defaulted (lv init sv i)
                  (let ((tmp (new-local)) (*tail-ok* nil))
@@ -3177,6 +3304,18 @@ the raw clone returning that, or NIL."
 
 (defun raw-param-setup-code (lv local-idx class)
   "LV was passed in LOCAL-IDX as the raw value of CLASS (or an eqref)."
+  (let ((r (class-rep class)))
+    (if (and r (lvar-decl lv) (decl-check-ty (lvar-decl lv))
+             (let ((cty (class-ty class)) (dty (decl-check-ty (lvar-decl lv))))
+               (not (ty-equal (ty-intersect cty dty) cty))))
+        ;; (a value of the class that may not be of the declared type: tested boxed)
+        (let ((tmp (new-local)))
+          `((:local.get ,local-idx) ,@(box-rep-code r) (:local.set ,tmp)
+            ,@(param-check-code lv tmp)
+            ,@(raw-param-setup-code-1 lv local-idx class)))
+        (raw-param-setup-code-1 lv local-idx class))))
+
+(defun raw-param-setup-code-1 (lv local-idx class)
   (let ((r (class-rep class)))
     (cond ((null r) (values (param-setup-code lv local-idx)))
           ((eq (lvar-rep lv) r)

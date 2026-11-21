@@ -286,6 +286,15 @@ they are bound), and the SAFETY of an OPTIMIZE declaration among them."
   (or (eq spec 'fixnum)
       (and (consp spec) (member (car spec) '(integer unsigned-byte signed-byte)))))
 
+(defun checked-decl-p (spec)
+  "Whether a value given to a variable declared of type SPEC is checked (at
+SAFETY 1 and more): an integer type, or a type the code relies on so that a
+value of another would trap (DECL-CHECK-TY in src/codegen.lisp: a float, a
+vector of a kind of storage, a cons, a function...), or a structure class."
+  (or (integer-decl-p spec)
+      (struct-class-type-p spec)
+      (and spec (not (eq spec t)) (decl-check-ty spec) t)))
+
 (defun declared-spec (sym decls)
   "The type DECLS declare for the variable SYM (the last one), or NIL."
   (let ((found nil))
@@ -294,8 +303,10 @@ they are bound), and the SAFETY of an OPTIMIZE declaration among them."
         (multiple-value-bind (spec vars)
             (cond ((eq (car d) 'type) (values (second d) (cddr d)))
                   ((member (car d) *decl-type-names*) (values (car d) (cdr d)))
-                  ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte)))
-                   (values (car d) (cdr d))))
+                  ((and (consp (car d)) (member (caar d) '(integer unsigned-byte signed-byte simple-array
+                                                           simple-vector simple-string simple-bit-vector)))
+                   (values (car d) (cdr d)))
+                  ((struct-class-type-p (car d)) (values (car d) (cdr d))))
           (when (and spec (member sym vars)) (setf found spec)))))))
 
 (defun integer-decl-test (v spec)
@@ -342,7 +353,8 @@ The check is left out by the compiler where the type of FORM shows it holds.
 At (SAFETY 0) in ENV the value is trusted: (THE SPEC FORM), unchecked."
   ;; (a literal NIL is how macros bind a variable before its first value,
   ;; under the declarations of their body: DOLIST's variable for its result form)
-  (if (or (not *check-declared-integers*) (not (integer-decl-p spec)) (integerp form) (null form))
+  (if (or (not *check-declared-integers*) (not (checked-decl-p spec)) (and (integerp form) (integer-decl-p spec))
+          (null form))
       form
       (if (and env (trust-types-p env))
           `(the ,spec ,form)
@@ -482,7 +494,18 @@ typed.lisp)."
 
 (defun convert-value (form env)
   "Convert FORM, whose value is used but not returned."
-  (convert (ftype-call-form form env) env))
+  (convert (checked-the-form (ftype-call-form form env) env) env))
+
+(defun checked-the-form (form env)
+  "FORM, a value that is not returned; (THE type x) of a type CHECKED-DECL-P
+gives, at SAFETY 1 and more, with X checked (CHECKED-VALUE), as SBCL checks
+it (the type is that of the value from there on: a value of another would
+trap).  (Not where the value is returned: X may have more values.)"
+  (if (and (consp form) (eq (car form) 'the) (consp (cdr form)) (consp (cddr form)) (null (cdddr form))
+           *check-declared-integers* (not (trust-types-p env))
+           (checked-decl-p (second form)))
+      `(the ,(second form) ,(checked-value (third form) (second form) env))
+      form))
 
 (defvar *local-notinline* nil "function names declared NOTINLINE in the forms being converted")
 (defun notinline-name (name)
@@ -575,7 +598,7 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
            (cond ((and e (eq (first e) :var))
                   (let ((spec (free-type-decl env sym)))
                     (cond ((null spec) `(:lref ,(note-ref (third e))))
-                          ((and *check-declared-integers* (integer-decl-p spec) (not (trust-types-p env)))
+                          ((and *check-declared-integers* (checked-decl-p spec) (not (trust-types-p env)))
                            `(:the ,spec ,(let ((*ignore-tdecls* t)) (convert (checked-value sym spec) env))))
                           (t `(:the ,spec (:lref ,(note-ref (third e))) ,@(the-trust env))))))
                  ((and e (eq (first e) :special)) (typed-special-ref sym env))
@@ -605,7 +628,7 @@ or a proclamation gives it, as for a lexical variable (an integer type
 checked, CHECKED-VALUE, the others trusted)."
   (let ((spec (and (not *suppress-var-types*) (or (free-type-decl env sym) (global-var-type sym)))))
     (cond ((null spec) `(:sref ,sym))
-          ((and *check-declared-integers* (integer-decl-p spec) (not (trust-types-p env)))
+          ((and *check-declared-integers* (checked-decl-p spec) (not (trust-types-p env)))
            `(:the ,spec ,(let ((*ignore-tdecls* t) (*suppress-var-types* t))
                            (convert (checked-value sym spec) env))))
           (t `(:the ,spec (:sref ,sym) ,@(the-trust env))))))
@@ -1040,6 +1063,19 @@ forms whose value is an integer of at most 256 bits."
     (list :req (nreverse req) :opt (nreverse opt) :rest rest :keyp keyp
           :keys (nreverse keys) :aok aok :aux (nreverse aux))))
 
+(defun struct-param-checks (lam env)
+  "Forms testing that the parameters of LAM declared of a structure class
+are of it (at SAFETY 1 and more: the code after takes them to be, an object
+of another type would trap where an accessor casts it).  The parameters of
+other types are tested by the code generator, before their values are
+unboxed (PARAM-CHECK-CODE)."
+  (when (and *check-declared-integers* (not (trust-types-p env)))
+    (loop for lv in (append (lam-req lam) (mapcar #'first (lam-opt lam)) (mapcar #'second (lam-keys lam)))
+          for spec = (lvar-decl lv)
+          when (and spec (symbolp spec) (struct-class-type-p spec) (not (lvar-special lv)) (symbolp (lvar-name lv)))
+            collect `(unless (typep (clysm-sys::%untyped ,(lvar-name lv)) ',spec)
+                       (clysm-sys::%signal-type-error ,(lvar-name lv) ',spec)))))
+
 (defun convert-lambda (name ll body env &key block-name)
   "Convert a lambda; returns the LAM."
   (multiple-value-bind (decls forms) (parse-body body)
@@ -1093,7 +1129,7 @@ forms whose value is an integer of at most 256 bits."
                                                             (mapcar #'first (getf pl :aux)))
                                               env)))
             (setf (lam-safety lam) (and *check-declared-integers* (policy-safety body-env)))
-            (setf (lam-body lam) (convert-body body-forms body-env)))
+            (setf (lam-body lam) (convert-body (append (struct-param-checks lam body-env) body-forms) body-env)))
           (when (and *live-mode* clysm-sys::*record-frames* (debug-frames-wanted-p decls))
             (setf (lam-body lam) (add-debug-frame lam (lam-body lam))))))
       lam)))

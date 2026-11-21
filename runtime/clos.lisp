@@ -3342,6 +3342,9 @@ access protocol; else NIL."
                     (loc (and (%instancep class) (not (%class-slot class +class-protocol+))
                               (cdr (assoc name index)))))
                (cond ((not (fixnump loc)) nil)
+                     ;; (a structure's slot: its value may need a check, by
+                     ;; the slow way, %SET-SLOT-VALUE-BY-NAME)
+                     ((eq (%class-slot class +class-kind+) :structure) nil)
                      ((%class-redefined-p class)
                       (let ((count (%class-slot class +class-instance-size+)))
                         (setf (svref cache 9) index (svref cache 10) loc (svref cache 11) count)
