@@ -724,7 +724,26 @@ mostly the same, but
   function: `p-cnm` 52 → 38 ms in a script, whole program 27; then
   `defun`s too, with guarded calls between the forms). A call into the
   runtime (`equal`, `length`, the dispatch of a generic function) stays a
-  call into another module.
+  call into another module. Tried and not kept (2026-11-21): a copy of
+  the runtime's small functions with a loop or a recursion (938 of them up
+  to 150 conses, 1089 up to 250, their sources kept in the image as the
+  inline sources are: +370 KB) compiled into each fasl and each batch of
+  `load` that calls them, at most 2000 conses of copies per module, in
+  place of the call through the symbol that no compiling of the call
+  applied to (`equal` split into its common cases and `%equal-other` to be
+  small enough). The probes got faster (`equal` of a list in a loop 90 →
+  48 ms, `%array-storage` 25 → 8), the programs did not: in a script
+  `bench/suite.lisp` 1.07 times its time, `programs` 1.01, `gabriel` 1.01,
+  `control` and `clos` 1.00 (`p-print-object` 1.5, `b-sort` 1.2 slower),
+  and `tools/bench-lem.sh` 1.45/1.49 against 1.45/1.47, `bench/apps.lisp`
+  1.26/1.32 against 1.28/1.27, `bench/libs.lisp` 1.19/1.14 against
+  1.19/1.19 (two rounds each). Pitfalls met on the way: a runtime function
+  may be written as a call of itself that the compiler open-codes
+  (`(defun cddr (x) (cddr x))`), so its source cannot be renamed; a
+  compiler macro may turn the copy's body into a call of the function
+  itself (`equal`'s calls `%equal-2`, whose source is `(equal a b)`);
+  the copy needs the block of the function's name; and copies in every
+  form at the REPL made ANSI's file tests slow enough for its watchdog.
 * **V8 gave a module made in the image almost no inlining budget.** The
   optimizing tier scales its inlining budget by the share of small
   functions (bodies under 50 octets) in the module (`BudgetScaleFactor`,
