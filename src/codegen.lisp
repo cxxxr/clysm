@@ -2560,13 +2560,32 @@ list of (symbol . local), which are bound around the body."
   (let ((ty (node-ty node)))
     (cond ((ty-fixnum-p ty) :fixnum)
           ((ty-double-p ty) :double)
+          ;; an integer within 64 bits computed as an i64 (a mask, a
+          ;; variable declared (UNSIGNED-BYTE 32)): passed as one (not one
+          ;; read from data, which the callee would make again)
+          ((and (ty-int64-p ty) (i64-natural-node-p node)) :int64)
           ;; a two-dimensional simple array of element type T
           ((eq (ty-md2-kind ty) :vector) :md2))))
+
+(defun i64-natural-node-p (node)
+  "NODE's value is computed as an i64 (not read as an object)."
+  (case (car node)
+    (:const t)
+    (:lref (let ((lv (second node))) (or (eq (lvar-rep lv) :i64) (dual-local lv))))
+    (:the (i64-natural-node-p (third node)))
+    ((:prim :call) (or (member (node-op-name node) *i64-arith-ops*)
+                       (member (node-op-name node) '(mod rem floor truncate ceiling round))
+                       ;; a call of a copy returning an i64
+                       (and (eq (car node) :call)
+                            (let* ((lam (known-global-lam (second node))) (sig (raw-call-sig lam (cddr node))))
+                              (and sig (eq (raw-clone-rrep lam sig) :i64))))))
+    (t nil)))
 
 (defun class-ty (class)
   (ecase class
     (:fixnum *ty-fixnum*)
     (:double (mkty +k-double+))
+    (:int64 (mkty +k-int+ (- (expt 2 63)) (1- (expt 2 63))))
     (:md2 (md2-ty :vector))
     ((nil) *ty-top*)))
 
@@ -2946,7 +2965,7 @@ its last parameter; the entries for few arguments make the list."
 (defvar *raw-clones* (make-hash-table :test 'equal) "(lam-id . sig) -> the result rep of its raw clone")
 (defvar *raw-tail-calls* nil "in a raw clone returning an i32 / f64: its tail calls of itself")
 
-(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) ((:md2 nil) nil)))
+(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) (:int64 :i64) ((:md2 nil) nil)))
 
 (defun raw-clone-name (lam sig rrep)
   (let ((key (list (lam-id lam) sig :raw)))
@@ -3049,7 +3068,7 @@ the other forms in tail positions (whose values are the function's)."
                                 ;; (its value, typed by RAW-CALL-RETURN-TY, a leaf)
                                 ((and callee (not (eq callee lam))
                                       (let ((csig (raw-call-sig callee (cddr n))))
-                                        (and csig (member (raw-clone-rrep callee csig) '(:i32 :f64)))))
+                                        (and csig (member (raw-clone-rrep callee csig) '(:i32 :f64 :i64)))))
                                  (push n found) (push n leaves))
                                 (t (fail)))))
                  ((:lcall :funcall :mvcall :apply) (fail))
@@ -3085,6 +3104,7 @@ the other forms in tail positions (whose values are the function's)."
                         (cond ((or (eq calls :fail) (null leaves)) :eqref)
                               ((every (lambda (n) (ty-fixnum-p (node-ty n))) leaves) :i32)
                               ((every (lambda (n) (ty-double-p (node-ty n))) leaves) :f64)
+                              ((every (lambda (n) (ty-int64-p (node-ty n))) leaves) :i64)
                               (t :eqref)))))))))))
 
 (defun raw-call-return-ty (lam tys)
@@ -3094,12 +3114,15 @@ returns a fixnum or a double (RAW-CLONE-RREP), else NIL."
   (when (and (not (eq lam *ti-lam*)) (not (member lam *ti-in-progress*))
              (not *catching-tag*) (= (length tys) (length (lam-req lam)))
              (spec-cloneable-p lam))
-    (let ((sig (mapcar (lambda (ty) (cond ((ty-fixnum-p ty) :fixnum) ((ty-double-p ty) :double))) tys)))
+    (let ((sig (mapcar (lambda (ty) (cond ((ty-fixnum-p ty) :fixnum) ((ty-double-p ty) :double)
+                                          ((ty-int64-p ty) :int64)))
+                       tys)))
       (when (some #'identity sig)
         (let ((*ti-in-progress* (cons *ti-lam* *ti-in-progress*)))
           (case (raw-clone-rrep lam sig)
             (:i32 *ty-fixnum*)
-            (:f64 (mkty +k-double+))))))))
+            (:f64 (mkty +k-double+))
+            (:i64 (class-ty :int64))))))))
 
 (defun raw-call-sig (lam args)
   (and lam (not *catching-tag*) (lam-accepts-p lam (length args))
