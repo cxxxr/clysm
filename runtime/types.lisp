@@ -804,7 +804,11 @@ one."
 (defun %standard-class-type (ty)
   "The class TY is or names when it is a standard, structure or condition
 class whose precedence list is known (a type that is that class), else NIL."
-  (let ((c (cond ((symbolp ty) (and ty (find-class ty nil))) ((%class-p ty) ty))))
+  ;; (the types of COMMON-LISP, which COERCE and TYPEP of compound types ask
+  ;; about at run time, are not looked up as classes)
+  (let ((c (cond ((symbolp ty)
+                  (and ty (not (eq (symbol-package ty) *cl-package*)) (find-class ty nil)))
+                 ((%class-p ty) ty))))
     (and c (member (%class-kind c) '(:standard :structure :condition)) (consp (%class-cpl c)) c)))
 
 (defun subtypep (t1 t2 &optional env)
