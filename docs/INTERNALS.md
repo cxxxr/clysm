@@ -3949,7 +3949,8 @@ vector (24 + 8 per slot). Nothing in the module can make these smaller.
 Measured in 2026-11 (Node.js 24.21, V8 13.6; four CPUs; `bench/alloc.lisp`,
 written for it: binary trees, trees of structures, lists copied over and over,
 closures, boxed doubles, small vectors, and data that survives: 3 million
-pushed conses, a hash table of 500000 lists, 300000 strings in a vector):
+pushed conses, a hash table of 500000 lists, 300000 strings in a vector;
+since 2026-11-21 also `s-ring`, data of medium lifetime, 6.7 times SBCL):
 
 * **Garbage that dies young is cheap**: binary trees of depth 18 take 1.1–1.4
   times SBCL's time, the others 0.8–2.1 (small vectors 2.1, closures 1.7). Scavenges stay under
@@ -3999,6 +4000,40 @@ The engine's defaults were kept; each alternative was measured against them
 | `--single-threaded-gc` | 1.4 (binary trees 2.5) | | | |
 | `--wasm-deopt`, larger `--wasm-inlining-budget` | 1.03–1.06 | | | |
 | `--no-liftoff` | 1.15 (binary trees 1.3) | | | |
+| `--scavenger-max-new-space-capacity-mb=64` (2026-11-21: young generation 128 MB instead of 64) | 0.95 (`bench/alloc.lisp`) | 0.99 | 1.00 | 0.82 (the ring below 0.44; walking 2000 fresh lists 3–4 times slower) |
+| `--minor-ms --no-incremental-marking` (2026-11-21) | 0.96 (`s-build-list` 0.72) | 1.00 (`b-deriv` 1.11) | 1.01 (`g-dderiv` 1.15) | 0.68 (the ring 0.17) |
+
+Measured again in 2026-11-21 (probes of data of medium lifetime, a branch
+not merged): **the scavenger loses the order of lists**. A ring of 2000
+lists of 500 elements (32 MB), one replaced at each step and another one
+walked, takes 7–10 times SBCL's time, and almost none of it is collection
+(430 of 2300 ms): walking the lists is 45 ns a cons instead of 2–4, a cache
+miss each. Walking 2000 lists made just before is 2–4 times slower than in
+a process where they were not copied (`--minor-ms`, which does not move
+young objects: the ring 0.17 of the default's time), and a larger young
+generation makes it worse (128 MB: 3–4 times slower again), so the layout
+the scavenger makes, not the size of the objects, is the cost. (Most
+likely its work list: the heads of many lists found at once are copied in
+turn, so the conses of each list end up strided across the copies of the
+others.) No other flag changes it (`--no-parallel-scavenge`,
+`--single-threaded-gc`, `--no-page-promotion`, `--no-concurrent-marking`,
+`--no-parallel-compaction`, a smaller young generation).
+`--minor-ms` with `--no-incremental-marking` (with incremental marking the
+stores into a large array during a full marking take the slow barrier:
+`b-sieve` 1.56) is the best of the alternatives: `bench/alloc.lisp` 0.96,
+the probes of surviving data 0.68, but `bench/programs.lisp` 1.02, `b-deriv`
+1.11, `g-dderiv` 1.15 (garbage that dies young is allocated in swept pages),
+`bench/apps.lisp` and Lem within the noise, and the flags must be given on
+the command line of `node` (20–30 ms more start-up: Node.js's code cache
+is made with the default flags), so the defaults stay. The young
+generation of 128 MB is no better: it helps the data that dies before its
+second scavenge, and makes the layout of what survives worse. Script mode
+runs in the main thread, whose heap is configured before `host/run.mjs`
+runs; a compiled program in a worker could be given another young
+generation through `resourceLimits.maxYoungGenerationSizeMb`.
+Measurements of large live data on this machine also depend on the other
+processes: two benchmark slots share one 32 MB L3 cache, and the same walk
+takes 33 or 276 ms.
 
 `--minor-ms` would help programs that build large data, but code whose
 garbage all dies young (`b-deriv`, the common case) is 25% slower with it
