@@ -4877,6 +4877,58 @@ board an i32 representation behind the program's back (lead 1 of the
 notes: a simple vector proven to hold only fixnums) would need every
 function that sees the vector, here a global function its caller passes it
 to, to agree on it; not done.
+Specialized vectors in the linear memory instead of Wasm GC arrays were
+measured (2026-11-22) and not done. The idea: a Wasm GC `array.get`/`set`
+always tests the index against the length (V8 never removes it), while on
+a 64-bit host an access to the linear memory has no test (guard pages and
+the trap handler). A `(simple-array double-float (*))`, `(unsigned-byte
+32)` and the like would be a struct of an offset and a length into a
+memory the runtime manages, with only the Lisp-level test that the safety
+asks for. Measured:
+
+* *Upper bound on the benchmarks.* The compiled bench files run with V8's
+  `--experimental-wasm-skip-bounds-checks` (which drops the test of *every*
+  GC array, simple vectors of T too, so more than the linear memory could
+  give), best of three, interleaved with normal runs on one slot. The time
+  with the flag divided by the time without, as a geometric mean:
+  `declared` 0.99, the same file at `(safety 1)` 0.99, `arrays` 0.99,
+  `vectors` 0.96, `arith` 1.00. The best items: `d-matmul` 0.86,
+  `x-matrix` 0.88, `x-sieve` 0.86, `a-hash-counts` 0.90. `d-triangle` is
+  *slower* with the flag, 255-295 → 351-379 ms in five runs of each: V8
+  places and allocates registers for its loop differently. The bounds
+  tests are not what keeps it at about twice SBCL's time.
+* *The loops by hand.* Wasm modules written with `src/wasm.lisp` (triangle-count
+  as Clysm compiles it at safety 0, a 600×600 flat double matmul, a sieve
+  over 20M octets), each over GC arrays and over the memory (the offset
+  read from the struct once at the function's entry): triangle with its
+  three `fixnum` vectors in the memory 0.92 of the GC version (292 → 265
+  ms), with the board too as a vector of `i32` 0.83 (but the board as a
+  GC `i32` array alone is already 0.87: most of that is the board's `T`
+  elements, not the tests); matmul 0.88-0.91 (101-105 → 91); sieve 0.92.
+  About 10% in the kernels that do nothing but index specialized vectors.
+* *Freeing.* Wasm GC has no finalization, so the memory of a vector could
+  be given back only through a host `FinalizationRegistry`, whose callbacks
+  run only after the running job ends: three million objects registered
+  in one synchronous run, none freed during it, 2.47 million after
+  returning to the event loop. A Lisp program runs its toplevel forms in
+  one job, so a loop making temporary double vectors would grow the memory
+  without bound. Registering also costs about 34 ns a vector (one million
+  structs of an offset and a length), against 8.6 ns for making a GC array
+  of 16 doubles; a bump allocation in the memory with its zeroing costs 6
+  ns, but nothing frees it.
+* *What else it would take.* About a hundred places in the compiler that
+  name the vector types (`src/prims.lisp` 61, `src/layout.lisp` 23,
+  `src/driver.lisp` 11, `src/typed.lisp` 8), the generic accessors, heap
+  images (which are themselves loaded at offset 0 of the memory, so the
+  arena would have to be saved and placed elsewhere), constant vectors in
+  fasls, adjustable arrays (whose old storage would have to be freed), and
+  the host's octet transfers through the memory.
+
+So at most a few percent on the files that index specialized vectors
+most, none on `d-triangle`, against an allocator without a way to free
+during a run. A Lisp-level test that the compiler hoists out of a loop
+does not help either while the Wasm array keeps its own test, and the
+upper bound above says that test is cheap where it is not the whole loop.
 
 ### Size and start-up
 
