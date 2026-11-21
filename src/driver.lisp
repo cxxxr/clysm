@@ -1095,6 +1095,7 @@ host's identity hash, and that hash."
               (seen (make-hash-table :test 'eq)))
           (dolist (s kept) (setf (gethash s seen) t))
           (set-symbol-table *m* kept (remove-if (lambda (s) (gethash s seen)) (reverse *symbol-globals*))))))
+    (order-functions-by-use *m*)
     (prog1 (with-build-section (encode-module *m*))
       (when *shake-why-file*
         (with-open-file (o *shake-why-file* :direction :output :if-exists :supersede)

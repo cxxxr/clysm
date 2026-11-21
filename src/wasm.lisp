@@ -222,6 +222,69 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
   (or (gethash name (wasm-module-func-index-table m))
       (error "wasm: unknown function ~S" name)))
 
+(defun order-functions-by-use (m)
+  "Put the defined functions of M that are referred to the most first: a
+function's index is an LEB128 number in each call and ref.func (one octet
+below 128, two below 16384), and the closures' code structs and the calls
+of helpers name a few functions (the entries for a wrong number of
+arguments, :APPLY-GENERIC, the casts) thousands of times."
+  (let ((uses (make-hash-table :test 'equal)))
+    (labels ((walk (x)
+               (when (consp x)
+                 (when (and (member (car x) '(:call :return_call :ref.func)) (consp (cdr x)))
+                   (incf (gethash (second x) uses 0)))
+                 (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
+      (loop for f across (wasm-module-funcs m) do (walk (wasm-func-body f)))
+      (loop for g across (wasm-module-globals m) do (walk (fourth g))))
+    ;; (only those that get an index below 128, one octet: the others keep
+    ;; their order, the order of the source, which gzip compresses better)
+    (let* ((funcs (coerce (wasm-module-funcs m) 'list))
+           (room (max 0 (- 128 (fill-pointer (wasm-module-imports m)))))
+           (top (subseq (stable-sort (copy-list funcs) #'>
+                                     :key (lambda (f) (gethash (wasm-func-name f) uses 0)))
+                        0 (min room (length funcs))))
+           (topset (make-hash-table :test 'eq)))
+      (dolist (f top) (setf (gethash f topset) t))
+      (setf (fill-pointer (wasm-module-funcs m)) 0)
+      (dolist (f top) (vector-push-extend f (wasm-module-funcs m)))
+      (dolist (f funcs) (unless (gethash f topset) (vector-push-extend f (wasm-module-funcs m)))))
+    (let ((index (wasm-module-func-index-table m)) (i (fill-pointer (wasm-module-imports m))))
+      (loop for f across (wasm-module-funcs m)
+            do (setf (gethash (wasm-func-name f) index) i)
+               (incf i)))
+    ;; the same for the globals whose initializers refer to no other defined
+    ;; global (a global may refer only to those before it): the symbols
+    ;; (NIL, T), the state of the runtime (:MV-COUNT, :DYN...)
+    (let ((guses (make-hash-table :test 'equal)) (defined (make-hash-table :test 'equal)))
+      (labels ((walk (x)
+                 (when (consp x)
+                   (when (and (member (car x) '(:global.get :global.set)) (consp (cdr x)))
+                     (incf (gethash (second x) guses 0)))
+                   (do ((l x (cdr l))) ((atom l)) (walk (car l)))))
+               (free-p (init)
+                 (labels ((refers (x)
+                            (and (consp x)
+                                 (or (and (eq (car x) :global.get) (consp (cdr x)) (gethash (second x) defined))
+                                     (some #'refers x)))))
+                   (not (some #'refers init)))))
+        (loop for f across (wasm-module-funcs m) do (walk (wasm-func-body f)))
+        (loop for g across (wasm-module-globals m) do (walk (fourth g)) (setf (gethash (first g) defined) t))
+        (let* ((globals (coerce (wasm-module-globals m) 'list))
+               (room (max 0 (- 128 (fill-pointer (wasm-module-global-imports m)))))
+               (candidates (remove-if-not (lambda (g) (free-p (fourth g))) globals))
+               (top (subseq (stable-sort (copy-list candidates) #'> :key (lambda (g) (gethash (first g) guses 0)))
+                            0 (min room (length candidates))))
+               (topset (make-hash-table :test 'eq)))
+          (dolist (g top) (setf (gethash g topset) t))
+          (setf (fill-pointer (wasm-module-globals m)) 0)
+          (dolist (g top) (vector-push-extend g (wasm-module-globals m)))
+          (dolist (g globals) (unless (gethash g topset) (vector-push-extend g (wasm-module-globals m))))
+          (let ((table (wasm-module-global-table m)) (i (fill-pointer (wasm-module-global-imports m))))
+            (loop for g across (wasm-module-globals m)
+                  do (setf (gethash (first g) table) i)
+                     (incf i))))))
+    m))
+
 (defun remove-unreachable-functions (m &optional known)
   "Drop the defined functions that cannot be reached from the exports, the
 start function and the global initializers (e.g. runtime helpers that a
