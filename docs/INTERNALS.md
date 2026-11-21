@@ -737,7 +737,14 @@ mostly the same, but
   adds as many filler functions (never called, four octets each: no
   locals, `unreachable`) as a module needs to be half small
   (`small-function-fillers`, `src/wasm.lisp`; whole programs need none):
-  `b-tak` in a script 117 → 95 ms (whole program 86).
+  `b-tak` in a script 117 → 95 ms (whole program 86). The modules of fasls
+  (a file compiled into one module) are 56% small on average already (of
+  Lem's 448, 135 under half, 14 under 40%; Babel's `strings.lisp` 14%), as
+  is the REPL image itself: the 2753 fillers that Lem's fasls got changed
+  nothing measurable (`tools/bench-lem.sh` 1.49 and 1.56 against 1.50 and
+  1.49 without them, `bench/apps.lisp` 1.29 and 1.28 against 1.30 and 1.27,
+  `bench/libs.lisp` 1.17 and 1.18 against 1.16 and 1.14; two rounds each,
+  interleaved on one slot).
 * **A store into an old object of an object made after the engine's
   last full collection takes the slow path of the write barrier**, until
   a full collection (a scavenge does not help; a 50 ms pause of the event
