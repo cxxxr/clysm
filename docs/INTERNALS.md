@@ -2652,6 +2652,20 @@ What is not as fast as intended, and why:
   script) unchanged within the noise, `p-call-conv` 0.84 and `k-higher-order`
   in a script 0.83; the stubs they replace were under 0.1% of the profiles
   of the library and Lem benchmarks.
+  The sequence functions of the runtime call the usual two-argument tests
+  inline on lists too, as they did on vectors (`%known-tests` in
+  `runtime/core.lisp`: `equal`, `eq`, `=`, `char=`, `char-equal`, `string=`,
+  `string-equal` of two arguments, which `%with-test` makes of the
+  designators): `find`/`position` (also with `:start`/`:end`, and `:key #'car`
+  or `#'first`, an alist's keys), `count`, `remove` of a whole list, and
+  `member`/`assoc` (which had some of them); `char-equal` of two characters
+  compares ASCII letters without calling `char-upcase`. Probes in a script,
+  before → after (SBCL): `position` with `:test #'char-equal :key #'car` 266
+  → 131 ms (112), `find :test #'char-equal` 209 → 120 (113), `find :test
+  #'char=` 143 → 111 (97), `count :test #'string=` 73 → 46 (97), `find
+  :test #'string-equal :key #'car` 83 → 56 (40), `remove :test #'equal` 38
+  → 33 (26). (`equalp` is left out: its inline expansion is 6 KB a loop; the
+  image grew by 47 KB.)
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`

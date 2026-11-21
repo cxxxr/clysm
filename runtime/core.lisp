@@ -284,6 +284,21 @@
                       (t (funcall (the function ,fn) ,v)))))
        (if ,neg (not ,m) ,m))))
 
+;;; The usual two-argument tests (FN, as %WITH-TEST leaves it, is EQUAL,
+;;; EQUALP, EQ, =, or the CHAR=, CHAR-EQUAL, STRING=, STRING-EQUAL of two
+;;; arguments) called inline in a loop: (SCAN ... TEST) with TEST the call
+;;; of the test on ITEM and V for each of them; nothing for other tests (the
+;;; caller goes on the general way).  A list searched with :TEST
+;;; #'CHAR-EQUAL calls no function per element.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *known-two-arg-tests*
+    '((equal equal) (%char=-2 char=) (%char-equal-2 char-equal)
+      (%string=-2 %string=-2) (%string-equal-2 %string-equal-2)
+      (eq eq) (= =))))
+(defmacro %known-tests (mode fn neg item v (scan &rest args))
+  `(when (and (eql ,mode 1) (not ,neg))
+     (cond ,@(mapcar (lambda (c) `((eq ,fn #',(car c)) (,scan ,@args (,(cadr c) ,item ,v))))
+                     *known-two-arg-tests*))))
 (defun %member (item list mode fn neg key)
   "The tail of LIST whose first element is selected (see %MATCH)."
   (macrolet ((scan (test)
@@ -299,7 +314,9 @@
           ((eq fn #'eq) (scan (eq item v)))
           ((eq fn #'=) (scan (= item v)))
           ((eq fn #'%string=-2) (scan (%string=-2 item v)))
+          ((eq fn #'%string-equal-2) (scan (%string-equal-2 item v)))
           ((eq fn #'%char=-2) (scan (char= item v)))
+          ((eq fn #'%char-equal-2) (scan (char-equal item v)))
           (t (scan (funcall (the function fn) item v))))))
 
 (defun member (item list &key key test test-not)
@@ -387,6 +404,9 @@
           ((eq fn #'eq) (scan (eq item v)))
           ((eq fn #'%string=-2) (scan (%string=-2 item v)))
           ((eq fn #'%string-equal-2) (scan (%string-equal-2 item v)))
+          ((eq fn #'%char=-2) (scan (char= item v)))
+          ((eq fn #'%char-equal-2) (scan (char-equal item v)))
+          ((eq fn #'=) (scan (= item v)))
           (t (scan (funcall (the function fn) item v))))))
 
 (defun assoc (item alist &key key test test-not)
