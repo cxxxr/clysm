@@ -214,7 +214,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
 
 (defun %ht-rehash (h)
   (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+)))
-    (%ht-init-storage (%instance-slots h) (max 8 (%svlength keys)))
+    (%ht-init-storage h (max 8 (%svlength keys)))
     (dotimes (i fill)
       (let ((k (%svref keys i)))
         (unless (eq k +deleted+) (%ht-put h k (%svref vals i)))))))
@@ -278,7 +278,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
                             (:unknown
                              (error "SAVE-IMAGE: an object of an unknown kind is reached from ~A"
                                     (%img-describe-path x parents roots-names))))
-                          (when (and (eq kind :instance) (hash-table-p x) (%ht-identity-keys-p x))
+                          (when (and (member kind (quote (:instance :sinst))) (hash-table-p x) (%ht-identity-keys-p x))
                             (vector-push-extend x rehash))
                           (when (member kind '(:cons :vector :symbol :closure :instance :sinst :cell :package :mdarray))
                             (incf fillable))

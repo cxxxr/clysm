@@ -1368,6 +1368,22 @@ with DEFCLASS whose superclasses include a structure class)."
 (defprim clysm-sys::%instance-gref (x i) :value `(,@x ,@i (:call :instance-ref)))
 (defprim clysm-sys::%set-instance-gref (x i v) :value `(,@x ,@i ,@v (:call :instance-set)))
 
+;;; hash tables (runtime/hash.lisp): a $si17, its slots in fields (no slot
+;;; vector to go through), read and set with a constant index
+(defprim clysm-sys::%make-ht (layout) :value
+  `(,@layout (:global.get :empty-slots) (:i32.const 0)
+    ,@(loop repeat 17 append (nil-code)) (:struct.new :si17)))
+(defprim clysm-sys::%ht-ref (x i) :value
+  (let ((k (struct-iref-index i)))
+    (if (and k (< -1 k 17))
+        `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field k)))
+        `(,@x ,@i (:call :instance-ref)))))
+(defprim clysm-sys::%ht-set! (x i v) :value
+  (let ((k (struct-iref-index i)) (tmp (new-local)))
+    (if (and k (< -1 k 17))
+        `(,@x (:ref.cast! :si17) ,@v (:local.tee ,tmp) (:struct.set :si17 ,(sinst-field k)) (:local.get ,tmp))
+        `(,@x ,@i ,@v (:call :instance-set)))))
+
 ;;; structures whose slots are fields ($si1 ... $siN, src/layout.lisp)
 (defun sinst-dispatch-code (k-local arm default)
   "Helper-body code: a br_table on the i32 local K-LOCAL (0 .. +STRUCT-INLINE-MAX+ - 1)
@@ -3401,13 +3417,13 @@ y*40503 + (y >> bits)*31153) & (2^bits - 1), y = hash >> bits (Y a local i32)."
     (:local.get ,hash) (:local.get ,y) (:i32.const 40503) :i32.mul :i32.add
     (:local.get ,y) (:local.get ,bits) :i32.shr_s (:i32.const 31153) :i32.mul :i32.add
     (:i32.const 1) (:local.get ,bits) :i32.shl (:i32.const 1) :i32.sub :i32.and))
-(defhelper :ht-eq-index :eei-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+(defhelper :ht-eq-index :eei-e ((v (:ref :null :si17)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
                                 (i :i32) (j :i32) (bits :i32) (y :i32))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.set keys)
-  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set next)
-  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
-  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast! :limbs)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.set keys)
+  '(:local.get v) '(:struct.get :si17 7) '(:ref.cast! :limbs) '(:local.set next)
+  '(:local.get v) '(:struct.get :si17 15) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get v) '(:struct.get :si17 9) '(:ref.cast! :limbs)
   (ht-bucket-code 2 'bits 'y)
   '(:array.get :limbs) '(:local.set i)
   '(:block done nil
@@ -3470,16 +3486,16 @@ any object in an EQ table, an instance, a list or a string in an EQL table
 ;;; KEY is a fixnum, a character or a symbol, which EQ finds (not a fixnum
 ;;; or a character in an EQUALP table): the index, -1 when there is none,
 ;;; -2 for another key.  The hash is that of %HT-HASH.
-(defhelper :ht-fast-index :ee-e ((v (:ref :null :vector)) (hash :i32) (kind :i32))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 10) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
+(defhelper :ht-fast-index :ee-e ((v (:ref :null :si17)) (hash :i32) (kind :i32))
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 13) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
   (ht-imm-hash-code 1 'kind 'hash '((:i32.const -2) :ref.i31 :return))
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index))
 (defprim clysm-sys::%ht-fast-index (sv key) :value `(,@sv ,@key (:call :ht-fast-index)))
 ;;; (as :HT-FAST-INDEX, also for the keys found by their identity hash)
-(defhelper :ht-id-index :ee-e ((v (:ref :null :vector)) (hash :i32) (kind :i32))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 10) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
+(defhelper :ht-id-index :ee-e ((v (:ref :null :si17)) (hash :i32) (kind :i32))
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 13) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
   (ht-id-hash-code 1 'kind 'hash '((:i32.const -2) :ref.i31 :return))
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index))
 ;;; GETHASH at the call site, in one call: H is any object.  When it is a
@@ -3497,19 +3513,19 @@ or object."
       (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 0)
       (:global.get ,(sym-global 'clysm-sys::*hash-table-class*)) (:struct.get :symbol ,+sym-value+) :ref.eq
       :i32.eqz (:if nil nil ((:ref.null :eq) :return))
-      (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 1) (:local.get ,k) (:call ,index-helper)
+      (:local.get ,h) (:ref.cast! :si17) (:local.get ,k) (:call ,index-helper)
       (:ref.cast! :i31) :i31.get_s (:local.tee ,i) (:i32.const -2) :i32.eq (:if nil nil ((:ref.null :eq) :return)))))
 (defhelper :ht-get :ee-e ((i :i32))
   (ht-index-code 0 1 'i)
   '(:local.get i) '(:i32.const 0) :i32.lt_s
   `(:if nil nil ((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+) :return))
-  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 1) '(:i32.const 3) '(:array.get :vector)
+  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 6)
   '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
 (defhelper :ht-get-id :ee-e ((i :i32))
   (ht-index-code 0 1 'i :ht-id-index)
   '(:local.get i) '(:i32.const 0) :i32.lt_s
   `(:if nil nil ((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+) :return))
-  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 1) '(:i32.const 3) '(:array.get :vector)
+  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 6)
   '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
 (defun ht-table-test-code (h fail)
   "Code doing FAIL unless the parameter H is a hash table."
@@ -3523,24 +3539,24 @@ hash HASH, at the end of the vectors of the table whose slot vector is the
 local V when there is room (as %HT-ADD), else returning null.  Uses the
 locals KEYS FILL BK B BITS Y."
   `(;; a new entry, at the end of the vectors when there is room
-    (:local.get v) (:i32.const 2) (:array.get :vector) (:ref.cast! :vector) (:local.tee keys) :array.len
-    (:local.get v) (:i32.const 7) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:local.tee fill)
+    (:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.tee keys) :array.len
+    (:local.get v) (:struct.get :si17 10) (:ref.cast! :i31) :i31.get_s (:local.tee fill)
     :i32.le_s (:if nil nil ((:ref.null :eq) :return))
     (:local.get keys) (:local.get fill) (:local.get ,key) (:array.set :vector)
-    (:local.get v) (:i32.const 3) (:array.get :vector) (:ref.cast! :vector)
+    (:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
     (:local.get fill) (:local.get ,value) (:array.set :vector)
-    (:local.get v) (:i32.const 5) (:array.get :vector) (:ref.cast! :limbs)
+    (:local.get v) (:struct.get :si17 8) (:ref.cast! :limbs)
     (:local.get fill) (:local.get hash) (:array.set :limbs)
-    (:local.get v) (:i32.const 12) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:local.set bits)
-    (:local.get v) (:i32.const 6) (:array.get :vector) (:ref.cast! :limbs) (:local.set bk)
+    (:local.get v) (:struct.get :si17 15) (:ref.cast! :i31) :i31.get_s (:local.set bits)
+    (:local.get v) (:struct.get :si17 9) (:ref.cast! :limbs) (:local.set bk)
     ,@(ht-bucket-code 'hash 'bits 'y) (:local.set b)
-    (:local.get v) (:i32.const 4) (:array.get :vector) (:ref.cast! :limbs)
+    (:local.get v) (:struct.get :si17 7) (:ref.cast! :limbs)
     (:local.get fill) (:local.get bk) (:local.get b) (:array.get :limbs) (:array.set :limbs)
     (:local.get bk) (:local.get b) (:local.get fill) (:i32.const 1) :i32.add (:array.set :limbs)
-    (:local.get v) (:i32.const 7) (:local.get fill) (:i32.const 1) :i32.add :ref.i31 (:array.set :vector)
-    (:local.get v) (:i32.const 1)
-    (:local.get v) (:i32.const 1) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.add :ref.i31
-    (:array.set :vector)))
+    (:local.get v) (:local.get fill) (:i32.const 1) :i32.add :ref.i31 (:struct.set :si17 10)
+    (:local.get v)
+    (:local.get v) (:struct.get :si17 4) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.add :ref.i31
+    (:struct.set :si17 4)))
 ;;; (SETF GETHASH) of a fixnum, a character or a symbol (as :HT-GET):
 ;;; the value stored in the entry of KEY, or a new entry made when there is
 ;;; room for one (as %HT-ADD); null (the call site calls the function) for
@@ -3548,38 +3564,38 @@ locals KEYS FILL BK B BITS Y."
 (defun ht-put-code (hash-code)
   (loop for x in (list
   (ht-table-test-code 0 '((:ref.null :eq) :return))
-  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 1) '(:local.tee v)
-  '(:i32.const 10) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 13) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
   (funcall hash-code 1 'kind 'hash '((:ref.null :eq) :return))
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index)
   '(:ref.cast! :i31) ':i31.get_s '(:local.tee i) '(:i32.const 0) ':i32.ge_s
   '(:if nil nil
-       ((:local.get v) (:i32.const 3) (:array.get :vector) (:ref.cast! :vector)
+       ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
         (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   (ht-add-code 1 2)
   '(:local.get 2))
         if (and (consp x) (consp (car x))) append x else collect x))
-(defhelper :ht-put :eee-e ((v (:ref :null :vector)) (i :i32) (hash :i32) (kind :i32) (keys (:ref :null :vector))
+(defhelper :ht-put :eee-e ((v (:ref :null :si17)) (i :i32) (hash :i32) (kind :i32) (keys (:ref :null :vector))
                            (fill :i32) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32))
   (ht-put-code #'ht-imm-hash-code))
 ;;; (as :HT-PUT, for an instance in an EQ or EQL table: its identity hash)
-(defhelper :ht-put-id :eee-e ((v (:ref :null :vector)) (i :i32) (hash :i32) (kind :i32) (keys (:ref :null :vector))
+(defhelper :ht-put-id :eee-e ((v (:ref :null :si17)) (i :i32) (hash :i32) (kind :i32) (keys (:ref :null :vector))
                               (fill :i32) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32))
   (ht-put-code #'ht-id-hash-code))
 ;;; REMHASH of a fixnum, a character or a symbol (as :HT-FAST-INDEX finds
 ;;; them) in a hash table: T when its entry was removed, NIL when it had
 ;;; none, null for another key or object.
-(defhelper :ht-rem :ee-e ((v (:ref :null :vector)) (hash :i32) (kind :i32) (keys (:ref :null :vector))
+(defhelper :ht-rem :ee-e ((v (:ref :null :si17)) (hash :i32) (kind :i32) (keys (:ref :null :vector))
                           (next (:ref :null :limbs)) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32)
                           (i :i32) (j :i32) (prev :i32))
   (ht-table-test-code 0 '((:ref.null :eq) :return))
-  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 1) '(:local.tee v)
-  '(:i32.const 10) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 13) '(:ref.cast! :i31) ':i31.get_s '(:local.set kind)
   (ht-id-hash-code 1 'kind 'hash '((:ref.null :eq) :return))
-  '(:local.get v) '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.set keys)
-  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set next)
-  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set bk)
-  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get v) '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.set keys)
+  '(:local.get v) '(:struct.get :si17 7) '(:ref.cast! :limbs) '(:local.set next)
+  '(:local.get v) '(:struct.get :si17 9) '(:ref.cast! :limbs) '(:local.set bk)
+  '(:local.get v) '(:struct.get :si17 15) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
   (ht-bucket-code 'hash 'bits 'y) '(:local.set b)
   '(:local.get bk) '(:local.get b) '(:array.get :limbs) '(:local.set i)
   `(:block done nil
@@ -3597,24 +3613,24 @@ locals KEYS FILL BK B BITS Y."
              (:local.get keys) (:local.get j)
              (:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+)
              (:array.set :vector)
-             (:local.get v) (:i32.const 3) (:array.get :vector) (:ref.cast! :vector) (:local.get j) ,@(nil-code)
+             (:local.get v) (:struct.get :si17 6) (:ref.cast! :vector) (:local.get j) ,@(nil-code)
              (:array.set :vector)
-             (:local.get v) (:i32.const 1)
-             (:local.get v) (:i32.const 1) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.sub :ref.i31
-             (:array.set :vector)
+             (:local.get v)
+             (:local.get v) (:struct.get :si17 4) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.sub :ref.i31
+             (:struct.set :si17 4)
              ,@(t-code) :return))
        (:local.get i) (:local.set prev)
        (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
        (:br again)))
   (nil-code))
-(defhelper :ht-cons-index :eei-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+(defhelper :ht-cons-index :eei-e ((v (:ref :null :si17)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
                                   (hashes (:ref :null :limbs)) (i :i32) (j :i32) (bits :i32) (y :i32) (k :eqref))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.set keys)
-  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set next)
-  '(:local.get v) '(:i32.const 5) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set hashes)
-  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
-  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast! :limbs)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.set keys)
+  '(:local.get v) '(:struct.get :si17 7) '(:ref.cast! :limbs) '(:local.set next)
+  '(:local.get v) '(:struct.get :si17 8) '(:ref.cast! :limbs) '(:local.set hashes)
+  '(:local.get v) '(:struct.get :si17 15) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get v) '(:struct.get :si17 9) '(:ref.cast! :limbs)
   (ht-bucket-code 2 'bits 'y)
   '(:array.get :limbs) '(:local.set i)
   `(:block done nil
@@ -3658,16 +3674,16 @@ ASCII letter)."
 ;;; (:EQUALP-STRING-HASH) in the EQUALP table whose slot vector is V, or -1;
 ;;; -2 when a key of the same hash is not a simple string or has a
 ;;; character beyond ASCII where they differ (left to EQUALP).
-(defhelper :ht-equalp-str-index :eei-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+(defhelper :ht-equalp-str-index :eei-e ((v (:ref :null :si17)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
                                         (hashes (:ref :null :limbs)) (i :i32) (j :i32) (bits :i32) (y :i32) (k :eqref)
                                         (d (:ref :null :string)) (ks (:ref :null :string)) (c :i32) (c2 :i32) (n :i32))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.set keys)
-  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set next)
-  '(:local.get v) '(:i32.const 5) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set hashes)
-  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.set keys)
+  '(:local.get v) '(:struct.get :si17 7) '(:ref.cast! :limbs) '(:local.set next)
+  '(:local.get v) '(:struct.get :si17 8) '(:ref.cast! :limbs) '(:local.set hashes)
+  '(:local.get v) '(:struct.get :si17 15) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
   '(:local.get 1) '(:ref.cast! :string) '(:local.tee d) ':array.len '(:local.set n)
-  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast! :limbs)
+  '(:local.get v) '(:struct.get :si17 9) '(:ref.cast! :limbs)
   (ht-bucket-code 2 'bits 'y)
   '(:array.get :limbs) '(:local.set i)
   `(:block done nil
@@ -3702,8 +3718,8 @@ parameter 0 is an EQUAL hash table (or an EQ or EQL one, finding the key by
 EQ), else doing FAIL; FAIL too when a key of the same hash as a string is
 not a string (left to EQUAL)."
   `(,@(ht-table-test-code 0 fail)
-    (:local.get 0) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee v)
-    (:i32.const 10) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:local.tee hash) (:i32.const 2) :i32.ne
+    (:local.get 0) (:ref.cast! :si17) (:local.tee v)
+    (:struct.get :si17 13) (:ref.cast! :i31) :i31.get_s (:local.tee hash) (:i32.const 2) :i32.ne
     (:if nil nil
          (;; EQUALP: a simple string of ASCII characters
           (:local.get hash) (:i32.const 2) :i32.gt_s
@@ -3735,39 +3751,39 @@ not a string (left to EQUAL)."
 ;;; +DELETED+ when it has none (the entry found is remembered as by
 ;;; %GETHASH-INDEX, for a (SETF GETHASH) of the same key after it); null for
 ;;; another key or table.
-(defhelper :ht-get-equal :ee-e ((v (:ref :null :vector)) (hash :i32) (i :i32))
+(defhelper :ht-get-equal :ee-e ((v (:ref :null :si17)) (hash :i32) (i :i32))
   (ht-equal-index-code 1 '((:ref.null :eq) :return))
   '(:local.get i) '(:i32.const 0) :i32.lt_s
   `(:if nil nil ((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+) :return))
-  '(:local.get v) '(:i32.const 13) '(:local.get 1) '(:array.set :vector)
-  '(:local.get v) '(:i32.const 14) '(:local.get i) :ref.i31 '(:array.set :vector)
-  '(:local.get v) '(:i32.const 15)
-  '(:local.get v) '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector)
-  '(:array.set :vector)
-  '(:local.get v) '(:i32.const 3) '(:array.get :vector) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
+  '(:local.get v) '(:local.get 1) '(:struct.set :si17 16)
+  '(:local.get v) '(:local.get i) :ref.i31 '(:struct.set :si17 17)
+  '(:local.get v)
+  '(:local.get v) '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector)
+  '(:struct.set :si17 18)
+  '(:local.get v) '(:struct.get :si17 6) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
 ;;; (SETF GETHASH) of a simple string or a list in an EQUAL table (as :HT-PUT): the
 ;;; entry GETHASH has just found for the same key, else the entry of the
 ;;; key, else a new entry when there is room; null for another key or
 ;;; table, or a table that must grow.
-(defhelper :ht-put-equal :eee-e ((v (:ref :null :vector)) (hash :i32) (i :i32) (keys (:ref :null :vector))
+(defhelper :ht-put-equal :eee-e ((v (:ref :null :si17)) (hash :i32) (i :i32) (keys (:ref :null :vector))
                                (fill :i32) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32))
   (ht-table-test-code 0 '((:ref.null :eq) :return))
-  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 1) '(:local.tee v)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
   ;; (the entry remembered: of this key, still at its index)
-  '(:i32.const 13) '(:array.get :vector) '(:local.get 1) :ref.eq
+  '(:struct.get :si17 16) '(:local.get 1) :ref.eq
   '(:if nil nil
-       ((:local.get v) (:i32.const 14) (:array.get :vector) (:ref.cast! :i31) :i31.get_s (:local.tee i)
-        (:local.get v) (:i32.const 7) (:array.get :vector) (:ref.cast! :i31) :i31.get_s :i32.lt_u
+       ((:local.get v) (:struct.get :si17 17) (:ref.cast! :i31) :i31.get_s (:local.tee i)
+        (:local.get v) (:struct.get :si17 10) (:ref.cast! :i31) :i31.get_s :i32.lt_u
         (:if nil nil
-             ((:local.get v) (:i32.const 2) (:array.get :vector) (:ref.cast! :vector) (:local.get i) (:array.get :vector)
-              (:local.get v) (:i32.const 15) (:array.get :vector) :ref.eq
+             ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.get i) (:array.get :vector)
+              (:local.get v) (:struct.get :si17 18) :ref.eq
               (:if nil nil
-                   ((:local.get v) (:i32.const 3) (:array.get :vector) (:ref.cast! :vector)
+                   ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
                     (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))))))
   (ht-equal-index-code 1 '((:ref.null :eq) :return))
   '(:local.get i) '(:i32.const 0) :i32.ge_s
   '(:if nil nil
-       ((:local.get v) (:i32.const 3) (:array.get :vector) (:ref.cast! :vector)
+       ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
         (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   (ht-add-code 1 2)
   '(:local.get 2))
@@ -3823,18 +3839,18 @@ not a string (left to EQUAL)."
 ;;; strings or strings with a fill pointer over a simple string (JSON
 ;;; readers keep their buffers as keys); -2 when a key of the same hash is
 ;;; another object (left to EQUAL).
-(defhelper :ht-region-index :eeiii-e ((v (:ref :null :vector)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
+(defhelper :ht-region-index :eeiii-e ((v (:ref :null :si17)) (keys (:ref :null :vector)) (next (:ref :null :limbs))
                                        (hashes (:ref :null :limbs)) (i :i32) (j :i32) (bits :i32) (y :i32) (k :eqref)
                                        (d (:ref :null :string)) (ks (:ref :null :string)) (c :i32) (koff :i32)
                                        (m (:ref :null :mdarray)))
-  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v)
-  '(:i32.const 2) '(:array.get :vector) '(:ref.cast! :vector) '(:local.set keys)
-  '(:local.get v) '(:i32.const 4) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set next)
-  '(:local.get v) '(:i32.const 5) '(:array.get :vector) '(:ref.cast! :limbs) '(:local.set hashes)
-  '(:local.get v) '(:i32.const 12) '(:array.get :vector) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.tee v)
+  '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.set keys)
+  '(:local.get v) '(:struct.get :si17 7) '(:ref.cast! :limbs) '(:local.set next)
+  '(:local.get v) '(:struct.get :si17 8) '(:ref.cast! :limbs) '(:local.set hashes)
+  '(:local.get v) '(:struct.get :si17 15) '(:ref.cast! :i31) ':i31.get_s '(:local.set bits)
   '(:local.get 1) '(:ref.cast! :string) '(:local.set d)
   '(:local.get 2) '(:local.get bits) ':i32.shr_s '(:local.set y)
-  '(:local.get v) '(:i32.const 6) '(:array.get :vector) '(:ref.cast! :limbs)
+  '(:local.get v) '(:struct.get :si17 9) '(:ref.cast! :limbs)
   '(:local.get 2) '(:local.get y) '(:i32.const 40503) ':i32.mul ':i32.add
   '(:local.get y) '(:local.get bits) ':i32.shr_s '(:i32.const 31153) ':i32.mul ':i32.add
   '(:i32.const 1) '(:local.get bits) ':i32.shl '(:i32.const 1) ':i32.sub ':i32.and

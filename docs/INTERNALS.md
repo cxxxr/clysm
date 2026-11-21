@@ -4097,6 +4097,34 @@ What makes the code fast:
   noise (with the `Map` 5.4–5.8 s, with the `WeakMap` 5.5–6.1). Eight lanes in the string hash
   from 32 characters on: no faster (the four lanes are bound by the
   loads; 1000 characters 306 → 311 ns).
+  **A hash table is a structure of field slots (2026-11-22).** It was an
+  instance whose seventeen slots (`+ht-keys+`... in runtime/hash.lisp)
+  were in a slot vector, so that a lookup went instance → slot vector →
+  key, bucket and next vectors, with a bounds check at each slot read.
+  It is now a `$si17` (src/layout.lisp), its slots in the instance's own
+  fields: `%make-ht` makes it, `%ht-ref` / `%ht-set!` read and set a slot
+  of a constant index with one `struct.get` / `struct.set`, and the
+  helpers (`ht-get`, `ht-put`, `ht-eq-index`...) take the table itself
+  where they took its slot vector. Heap images and the runtime's heap of
+  a shaken module save it as any structure of field slots (`:sinst`);
+  `ph-instantiable-classes` (src/preinit.lisp) reads the fields of
+  `*specializer-methods*` there instead of its slot vector (otherwise the
+  methods of the classes without instances are kept: the one-export
+  module grew by 137 KB until it did). One chain of dependent loads
+  shorter per lookup; the slots' values are still `eqref` (a cast of the
+  key vector, a test of the fixnum shift at each read), which typed
+  fields would take away but which a heap image would then have to know
+  as a kind of its own. Interleaved, two rounds on one slot (before →
+  after): `bench/apps.lisp` 1.23 → 1.205, `tools/bench-libs.sh` 1.085 →
+  1.065, `v-hash-churn` 0.98 → 0.89, `v-hash-iterate` 1.34 → 1.25,
+  `p-hash-misc` 1.19 → 1.15, `v-hash-equalp` 1.32 → 1.28; `suite`,
+  `library`, `programs`, `functional` and Lem's actions (`l-line-down`,
+  `l-page-down`, the redisplay probe: medians within 1–2%) unchanged; a
+  loop of 24 million lookups of characters and fixnums 120 → 117 ms
+  (SBCL 260). The one-export module 2,011,874 → 2,011,438 bytes, the REPL
+  image +1.7 KB. Lem's `char-width` chain is not faster: what it waits
+  for there is the misses on the tables' vectors after the redisplay's
+  other work, which the slot vector was only one of.
   The pretty printer prints a
   list or vector of data (numbers, characters, symbols, strings and lists
   and vectors of them) in the fill style without a pretty stream: each
