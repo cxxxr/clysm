@@ -48,6 +48,8 @@ The universal value type is `(ref null eq)`.
 
 * **fixnum** — `i31ref`, values in [-2^29, 2^29). **character** — `i31ref` with
   the upper-bit tag `01` (value = 2^29 + code point). Both are scalars for the GC.
+  (Characters as interned structs, so that a fixnum is any i31, were
+  measured and not done: Performance, "Characters out of the i31 space".)
 * **NIL / T** — singleton `$symbol` structs held in immutable globals (NIL is a
   real symbol, so `symbol-name`/`symbol-plist` work on it).
 * **cons** — `struct { car: mut eqref, cdr: mut eqref }`.
@@ -4070,6 +4072,65 @@ What makes the code fast:
   against a few percent on every program that reads strings; not worth it
   as such. An 8-bit storage for BASE-STRING only (where the element type
   says so) is cheaper but nothing measured here makes base strings.
+* **Characters out of the i31 space, measured and not done** (2026-11-22).
+  Fixnums and characters share `i31ref`, so "is this a fixnum" on an
+  unknown value is the i31 test plus a range check (`+ 2^29`, unsigned
+  `<`), two for an operation of two operands (two adds, an OR, a compare).
+  The alternative studied: characters as a final struct `$char {code: i32}`,
+  interned (so that EQ, EQL, the `eq`-comparable fast paths and the hash
+  tables need not change) in a table read by CODE-CHAR and SCHAR, and
+  fixnum = `ref.test i31`. What depends on the encoding: `+char-tag+` in
+  `src/prims.lisp` (57 places: the fixnum input checks of the arithmetic
+  helpers and fast paths, `char-code`/`code-char`/`schar`/`char=`, the
+  string and stream helpers, `:characterp`, `:check-char`, `:type-code`),
+  `src/typed.lisp` (14), `src/codegen.lisp` (constants, TYPECASE's kind
+  tests, self-clone checks), every `ref.test :i31` read as "fixnum or
+  character" (`:eql`, `sxhash-fast`, the EQ/EQL table fast paths of an
+  i31 or a symbol, `%type-code`), the heap image (`%img-ref` writes a
+  character as its i31 word; restoring would intern it). Not the hosts
+  (characters cross as i32 codes) nor fasls (constants are written as
+  text, `C` and the character). Estimated in two probes, each A/B against
+  the same tree on the same slot, two rounds:
+  - *The gain*, an upper bound: the fixnum input checks dropped (unsound,
+    only for measuring: arithmetic on a character then misbehaves) from
+    the pair check of the inline operations, `i64-decode-code`,
+    `num-decode-code`, `fixnum-pair-code` and MOD/REM. Compiled: `arith`
+    0.53-0.54 → 0.51, `suite` 0.80 → 0.76-0.77 (`b-struct` 108 → 86 ms,
+    `b-clos` 103 → 86, `b-matmul` 99 → 85, `b-call` 131 → 120), `gabriel`
+    0.88-0.89 → 0.86, `holdout` 0.82-0.83 → 0.79, `programs` 0.81-0.85 →
+    0.82; in a script `suite` 66 → 63 ms (geometric mean of the times),
+    `programs` 62.8 → 61.3. The REPL image 1.5% smaller (9.89 → 9.74 MB).
+  - *The cost*: characters still i31, but each one made from a code read
+    from a 65536-entry global table (`array.get`, a bounds test, the i31
+    built beyond it) and each code taken from a character through a
+    dependent load and compare in that table (as the cast and the field
+    read of a struct would be), inline at every site the compiler boxes or
+    unboxes a character. Compiled `io` 0.87 → 0.90-0.95, `library` 0.83 →
+    0.86-0.87 (`v-string-compare` 77 → 100 ms, `v-string-case` 105 →
+    125, `v-equalp-mixed` 158 → 178, `v-seq-copying` 88 → 98); libs 1.09
+    → 1.11 (`l-ppcre-scan` 133 → 144-148 ms, `l-split-sequence` 107 →
+    117-119, Babel unchanged); Lem's comparator unchanged (1.19-1.23 both).
+    With the box and unbox as calls of helpers instead (V8 inlines them
+    only within its budget) the cost was twice that: libs 1.07 → 1.13-1.18,
+    Lem 1.17 → 1.25. The probe leaves out costs the real change adds:
+    the write barrier on storing a character (an i31 skips it), constant
+    characters read from the table, `characterp` a map compare.
+  - *Size and start-up*: a table of the first 256 characters is free
+    (0.09 ms, made by `array.new_fixed` in a global's initializer); all of
+    the BMP eagerly costs 1.9-2.5 ms and 2 MB at start-up, all of Unicode
+    45 ms and 36 MB, so beyond 256 the table would be filled lazily (one
+    more null test per character made). The REPL image with the inline
+    probe: 0.9% larger (9.89 → 9.98 MB).
+  So about 3-5% on undeclared arithmetic (compiled and in a script)
+  against 2-5% on string, stream and sequence code and up to 25-30% on
+  string comparisons, with the libraries (cl-ppcre, split-sequence)
+  slower, the opposite of the campaign's priority, for a change touching
+  some 300 places and the image format: not done. The cost is in the
+  runtime's character loops that box each character to unbox it again
+  (`string=`, `string-equal`, `char-equal`, the case functions, EQUALP on
+  strings, cl-ppcre's scanners through `char`); were those kept on codes
+  (as `(char-code (schar s i))` already is), most of the cost would go
+  and the change would be worth measuring again.
 
 ### Declared code, and SBCL at its best policy
 
