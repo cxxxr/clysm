@@ -1294,27 +1294,41 @@ with them, replacing the node types of the widened iterations."
                        (values et ef)))))))
         (t (ti node) (values (env-copy *env*) (env-copy *env*))))))
 
-(defun struct-slot-node-ty (node)
+(defun struct-slot-type-spec (node)
   "For a read of a slot (%STRUCT-REF, %STRUCT-IREF, %STRUCT-TREF of a constant
-index) declared of the type of a structure class: that type, else NIL (the
-type is trusted, as that of a variable is)."
+index) of a structure class known at compile time: the slot's declared type,
+else NIL."
   (when (member (prim-name (second node)) '(clysm-sys::%struct-ref clysm-sys::%struct-iref clysm-sys::%struct-tref))
     (let* ((args (cddr node)) (cls (struct-class-node-name (second args))) (i (third args)))
       (when (and cls i (eq (car i) :const) (integerp (second i)))
         (let* ((desc (get cls 'clysm-sys::%struct-description))
                (slot (and (consp desc) (null (car desc)) (listp (second desc))
-                          (find (second i) (second desc) :key (lambda (s) (and (consp s) (nth 4 s))))))
-               (type (and (consp slot) (third slot))))
-          (cond ((null type) nil)
-                ((and (symbolp type) (struct-class-type-p type)) (mkty +k-other+ nil nil type))
-                ;; a simple array of one kind of storage (a SIMPLE-VECTOR,
-                ;; a SIMPLE-STRING, a (SIMPLE-ARRAY (SIGNED-BYTE 32) (*))):
-                ;; its accesses are inline (a value of another type traps
-                ;; at the cast; SBCL checks the slot's type when it is
-                ;; written).  Not integers: a FIXNUM of SBCL's may be a
-                ;; bignum here.
-                (t (let ((ty (ignore-errors (declared-ty type))))
-                     (and ty (or (ty-vec-kind ty) (ty-md2-kind ty)) ty)))))))))
+                          (find (second i) (second desc) :key (lambda (s) (and (consp s) (nth 4 s)))))))
+          (and (consp slot) (third slot)))))))
+
+(defun struct-slot-array-kind (node)
+  "For a read of a slot declared a simple array of one kind of storage (a
+SIMPLE-VECTOR, a SIMPLE-STRING, a (SIMPLE-ARRAY (SIGNED-BYTE 32) (*))): the
+storage kind and the slot's type, else NIL.  Not integer types: a FIXNUM
+of SBCL's may be a bignum here."
+  (let ((type (struct-slot-type-spec node)))
+    (when (and type (not (and (symbolp type) (struct-class-type-p type))))
+      (let* ((ty (ignore-errors (declared-ty type)))
+             (kind (and ty (ty-vec-kind ty))))
+        (when kind (values kind type ty))))))
+
+(defun struct-slot-node-ty (node)
+  "For a read of a slot declared of the type of a structure class: that type
+(trusted, as that of a variable is); declared a simple array of one kind of
+storage: that type, which the read checks (STRUCT-SLOT-CHECK-CODE: a value
+of another type signals a TYPE-ERROR there, it does not trap where it is
+used), else NIL."
+  (let ((type (struct-slot-type-spec node)))
+    (cond ((null type) nil)
+          ((and (symbolp type) (struct-class-type-p type)) (mkty +k-other+ nil nil type))
+          (t (multiple-value-bind (kind spec ty) (struct-slot-array-kind node)
+               (declare (ignore spec))
+               (and kind ty))))))
 
 (defun struct-class-node-name (node)
   "NODE is (LOAD-TIME-VALUE (FIND-CLASS 'NAME)): NAME."

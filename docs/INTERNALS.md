@@ -2411,10 +2411,18 @@ What makes the code fast:
   a)`: `struct-class-type-p`), and so is the slot type of a slot declared
   of one, or of a simple array of one kind of storage (`simple-vector`,
   `simple-string`, `(simple-array (signed-byte 32) (*))`, a type defined
-  by `deftype` as one, `struct-slot-node-ty`: SBCL checks a slot's type
-  where it is written, so a value of another type is a bug that traps here
-  at the cast; not integer types, since a `fixnum` of SBCL's may be a
-  bignum here); an accessor of an object known to be of its class (by such a
+  by `deftype` as one, `struct-slot-node-ty`; not integer types, since a
+  `fixnum` of SBCL's may be a bignum here). Such a value never traps at a
+  cast: the constructors and the SETF of the accessors (the function and
+  its inline expansion) check it where it is written, as SBCL does
+  (`%slot-type-check-form`: `simple-array`, `simple-vector`,
+  `simple-string` and `(simple-array * dims)`, the element type left out
+  since `typep` of `(or (eql 0) chunk)` asks `subtypep` at run time), and
+  the compiled read tests the storage kind and signals a `type-error` for
+  anything else (`struct-slot-check-code`, nothing at `(safety 0)`) —
+  which also covers the writes that check nothing (`(setf slot-value)`,
+  the evaluator's, a type defined by `deftype` after the structure;
+  `tests/cases/struct-array-slots.lisp`); an accessor of an object known to be of its class (by such a
   declaration, by a constructor, a type test or an access before) is the
   `struct.get`/`struct.set` of the field — no load of the class, no layout
   comparison. A variable declared of the type and bound once has a
@@ -3164,7 +3172,9 @@ What makes the code fast:
   (1.29–1.33 → 1.12–1.15 times SBCL), the file 1.31–1.33 → 1.27–1.29;
   `a-esrap` unchanged (1.91–2.00). `bench/suite`, `holdout`, `library`,
   `programs` (compiled and in a script) and Lem's comparator unchanged.
-  esrap's remaining factor is its calls: probes of one call of a
+  With the checks of those slots (on write, and the storage-kind test of
+  each compiled read) `a-local-time` is 37–38 ms against the base's 44–45,
+  three rounds. esrap's remaining factor is its calls: probes of one call of a
   notinline function, of a function given as argument and funcalled, and
   of the dynamic-extent closure of its `with-cached-result` take 2–3 times
   SBCL's time, and the closure's allocation is not the cost (the same

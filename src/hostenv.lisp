@@ -79,6 +79,7 @@
             (lambda (form env)
               (declare (ignore env))
               (if (and (consp (cdr form)) (consp (cddr form)) (null (cdddr form)))
+                  (let ((form (list (first form) (struct-slot-checked-value name idx (second form)) (third form))))
                   (cond
                     (kinds `(clysm-sys::%struct-tset ,(third form) (load-time-value (find-class ',name)) ,idx
                                                      ,(second form) ',kinds))
@@ -87,9 +88,20 @@
                                                 ,(second form) ,fields))
                     (t
                       `(clysm-sys::%struct-set ,(third form) (load-time-value (find-class ',name)) ,idx
-                                               ,(second form) ,@(when fields (list fields)))))
+                                               ,(second form) ,@(when fields (list fields))))))
                   form))))
     acc))
+
+(defun struct-slot-checked-value (name idx val)
+  "VAL checked against the type of the slot IDX of the structure NAME, when
+it is one that compiled reads trust (runtime/struct.lisp)."
+  (let* ((desc (get name 'clysm-sys::%struct-description))
+         (slot (and (consp desc) (listp (second desc))
+                    (find idx (second desc) :key (lambda (s) (and (consp s) (nth 4 s))))))
+         (type (and (consp slot) (third slot))))
+    (if (and type (not (eq type t)))
+        (clysm-sys::%slot-type-check-form type val)
+        val)))
 
 (defun register-struct-predicate-inline (predicate name &optional fields)
   (setf (gethash predicate *compiler-macros*)
