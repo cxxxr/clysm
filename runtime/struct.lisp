@@ -369,11 +369,7 @@
                          :format-arguments (list x))))
 
 ;; the number of slots of an instance
-(defun %instance-size (x)
-  (cond ((not (%sinstp x)) (%svlength (%instance-slots x)))
-        ((%class-slot (%instance-layout x) +class-shape-ops+)
-         (%class-slot (%instance-layout x) +class-instance-size+))
-        (t (%sinst-size x))))
+(defun %instance-size (x) (%instance-nslots x))
 
 ;;; Structures with typed slots: generic code reaches their slots by index
 ;;; through the functions of their class (made by DEFSTRUCT)

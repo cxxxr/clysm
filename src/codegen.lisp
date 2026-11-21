@@ -290,6 +290,81 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
          (eq (lvar-rep src) (lvar-rep lv)) (unboxed-local-p src)
          src)))
 
+;;; A LET binding a variable of unknown type used as the array of
+;;; two-dimensional accesses in a loop of its body (a slot's value, a
+;;; function's result) is compiled twice: when the value is a simple array of
+;;; element type T (neither adjustable nor displaced, so that its header does
+;;; not change), the body with the variable held as (:MD2 :VECTOR), its
+;;; storage, dimensions and offset in locals loaded once; else the body as
+;;; usual.  (A parameter is tested on entry instead: ENTRY-VERSION-SIGNATURE.)
+(defvar *md2-version-vars* nil
+  "(variables) in a cons while the version of a LET for a simple two-dimensional
+array is compiled: the array's variable and the variables bound to it.")
+(defparameter *md2-version-max-nodes* 1200)
+
+(defun md2-version-alias-src (lv init)
+  (when *md2-version-vars*
+    (let ((src (loop while (eq (car init) :the) do (setf init (third init))
+                     finally (return (and (eq (car init) :lref) (second init))))))
+      (and src (member src (car *md2-version-vars*))
+           (null (lvar-rep lv)) (not (lvar-special lv)) (not (boxed-p lv)) (not (lvar-mutated lv))
+           src))))
+
+(defun md2-version-body-p (lv body)
+  "BODY has a two-dimensional access to LV (or a variable bound to it) in a
+loop, nothing that may not be compiled twice, and not many nodes."
+  (let ((n 0) (found nil) (vars (list lv)))
+    (labels ((arr-p (node)
+               (loop while (eq (car node) :the) do (setf node (third node)))
+               (and (eq (car node) :lref) (member (second node) vars)))
+             (walk (node in-loop)
+               (when (> (incf n) *md2-version-max-nodes*) (return-from md2-version-body-p nil))
+               (case (car node)
+                 ((:lambda :flet :labels :ltv :defun) (return-from md2-version-body-p nil))
+                 (:lset (when (member (second node) vars) (return-from md2-version-body-p nil)))
+                 (:let (dolist (b (second node))
+                         (when (arr-p (cdr b)) (push (car b) vars))))
+                 (:tagbody (setf in-loop t))
+                 ((:prim :call)
+                  (when (and in-loop (member (node-op-name node) '(clysm-sys::%aref2 clysm-sys::%aset2))
+                         (arr-p (third node)))
+                    (setf found t))))
+               (map-subnodes (lambda (x) (walk x in-loop)) node)))
+      (walk body nil))
+    found))
+
+(defun md2-version-var (bindings body rep)
+  "The variable of BINDINGS for which the LET is compiled in two versions, or NIL."
+  (unless (or (consp rep) (member rep '(:c64 :c32)))
+    (loop for b in bindings
+          for lv = (car b)
+          when (and (null (lvar-rep lv)) (not (lvar-special lv)) (not (lvar-mutated lv)) (not (lvar-captured lv))
+                    (not (boxed-p lv)) (eq (car (gethash lv (fstate-locs *fs*))) :local)
+                    (not (and *md2-version-vars* (member lv (car *md2-version-vars*))))
+                    ;; (of a type that may be an array header)
+                    (let ((ty (lvar-type lv))) (or (null ty) (not (ty-only-p ty (lognot +k-other+)))))
+                    (md2-version-body-p lv body))
+            return lv)))
+
+(defun md2-version-code (lv rep body-fn tail)
+  (let* ((e (cdr (get-loc lv)))
+         (hdr (new-local '(:ref :null :mdarray)))
+         (block-type (case rep (:effect nil) (:test :i32) (t (rep-block-type rep))))
+         (fast (let ((*md2-version-vars* (list (list lv))))
+                 (setf (lvar-rep lv) (md2-rep :vector))
+                 (remhash lv (fstate-shadows *fs*))
+                 (set-loc lv (cons :local hdr))
+                 (unwind-protect
+                      (append `((:local.get ,e) (:ref.cast :mdarray)) (rep-local-set-code lv hdr)
+                              (funcall body-fn tail))
+                   (dolist (v (car *md2-version-vars*))
+                     (setf (lvar-rep v) nil)
+                     (remhash v (fstate-shadows *fs*)))
+                   (set-loc lv (cons :local e)))))
+         (general (funcall body-fn tail)))
+    `((:local.get ,e) (:call :simple-md2-p)
+      (:if nil ,block-type ,fast ,general))))
+
 (defun md2-copy-code (lv idx init)
   "When LV, a two-dimensional array variable (:MD2 kind) whose local is IDX,
 is bound to another one of the same representation (the variable of a SETF
@@ -748,6 +823,13 @@ as CG-TEST; only without special variables)."
                  (let ((tmp (new-local)))
                    (setf code (append code (cg init) `((:local.set ,tmp))))
                    (push (cons lv tmp) specials)))
+                ((md2-version-alias-src lv init)
+                 ;; (bound to the array of a let's version: its locals)
+                 (let ((src (md2-version-alias-src lv init)))
+                   (push lv (car *md2-version-vars*))
+                   (setf (lvar-rep lv) (lvar-rep src))
+                   (set-loc lv (get-loc src))
+                   (setf (gethash lv (fstate-shadows *fs*)) (md2-shadows src))))
                 ((md2-alias-src lv init)
                  ;; (bound to an array variable neither of which is assigned: its locals)
                  (let ((src (md2-alias-src lv init)))
@@ -794,7 +876,10 @@ as CG-TEST; only without special variables)."
                      ((and (consp rep) (eq (car rep) :dual)) (cg-dual-f64 body (second rep) (third rep)))
                      (t (cg-rep body rep)))))
         (if (null specials)
-            (append code (body-code tail))
+            (let ((lv (md2-version-var bindings body rep)))
+              (if lv
+                  (append code (md2-version-code lv rep #'body-code tail))
+                  (append code (body-code tail))))
             (let ((saved (new-local :i32)) (res (unless (or (eq rep :effect) (consp rep)) (new-rep-local rep))))
               (setf specials (loop for (lv . tmp) in (reverse specials) collect (cons (lvar-name lv) tmp)))
               (append code
@@ -2358,12 +2443,15 @@ list of (symbol . local), which are bound around the body."
 (defun arg-class (node)
   (let ((ty (node-ty node)))
     (cond ((ty-fixnum-p ty) :fixnum)
-          ((ty-double-p ty) :double))))
+          ((ty-double-p ty) :double)
+          ;; a two-dimensional simple array of element type T
+          ((eq (ty-md2-kind ty) :vector) :md2))))
 
 (defun class-ty (class)
   (ecase class
     (:fixnum *ty-fixnum*)
     (:double (mkty +k-double+))
+    (:md2 (md2-ty :vector))
     ((nil) *ty-top*)))
 
 ;;; A function with a loop or a recursive call whose parameters are used as
@@ -2395,7 +2483,7 @@ or compared with a variable known to be an integer: a count)."
            (alias (make-hash-table :test 'eq))       ; variable -> the parameter it is a copy of
            (ints (make-hash-table :test 'eq)) (doubles (make-hash-table :test 'eq))
            (counts (make-hash-table :test 'eq))
-           (nums (make-hash-table :test 'eq))
+           (nums (make-hash-table :test 'eq)) (arrays (make-hash-table :test 'eq))
            (self (lam-name lam)) (loop-p nil) (self-call nil)
            (double-vars (make-hash-table :test 'eq)))  ; variables bound to a double (as DOUBLE-P sees)
       (dolist (p params) (setf (gethash p alias) p))
@@ -2443,6 +2531,10 @@ or compared with a variable known to be an integer: a count)."
                                 (setf (gethash p nums) t)
                                 (when (member name *integer-only-ops*) (setf (gethash p ints) t))
                                 (when double-const (setf (gethash p doubles) t)))))))
+                      ;; the array of a two-dimensional access
+                      (when (member name '(clysm-sys::%aref2 clysm-sys::%aset2))
+                        (let ((p (param-of (first args))))
+                          (when p (setf (gethash p arrays) t))))
                       (let ((positions (cdr (assoc name *index-ops*))))
                         (dolist (i positions)
                           (let ((p (and (nth i args) (param-of (nth i args)))))
@@ -2452,6 +2544,10 @@ or compared with a variable known to be an integer: a count)."
       (when (or loop-p self-call)
         (let ((sig (mapcar (lambda (p)
                              (cond ((lvar-decl p) nil)        ; declared: already typed
+                                   ;; the array of two-dimensional accesses in a loop: a
+                                   ;; simple array of element type T (its storage and
+                                   ;; dimensions in locals, loaded once)
+                                   ((and loop-p (gethash p arrays) (not (gethash p nums))) :md2)
                                    ((not (gethash p nums)) nil)
                                    ((and (or doubles-p (gethash p doubles))
                                          (not (gethash p ints)) (not (gethash p counts)))
@@ -2466,13 +2562,20 @@ or compared with a variable known to be an integer: a count)."
 are of the classes of its specialized version, a tail call of that version."
   (let* ((sig (entry-version-signature lam))
          (sig2 (and sig (entry-version-signature lam t))))
-    (loop for s in (remove-duplicates (remove nil (list sig sig2)) :test #'equal :from-end t)
+    (loop for s in (remove-duplicates
+                    (remove-if-not (lambda (s) (some #'identity s))
+                                   (list sig sig2
+                                         ;; (the numbers without the arrays: an array that is
+                                         ;; not a simple one of element type T)
+                                         (substitute nil :md2 sig) (substitute nil :md2 sig2)))
+                    :test #'equal :from-end t)
           append (let ((skip (gensym "GENERAL")))
                    `((:block ,skip nil
                        ,@(loop for class in s for i from 1
                                append (ecase class
                                         (:fixnum `((:local.get ,i) (:call :fixnump) :i32.eqz (:br_if ,skip)))
                                         (:double `((:local.get ,i) (:ref.test :double) :i32.eqz (:br_if ,skip)))
+                                        (:md2 `((:local.get ,i) (:call :simple-md2-p) :i32.eqz (:br_if ,skip)))
                                         ((nil) nil)))
                        ,@(loop for i from 0 to (length s) collect `(:local.get ,i))
                        (:return_call ,(spec-clone-name lam s))))))))
@@ -2480,6 +2583,11 @@ are of the classes of its specialized version, a tail call of that version."
 (defun spec-signature (lam args)
   (when (and (spec-cloneable-p lam) (= (length args) (length (lam-req lam))))
     (let ((sig (mapcar #'arg-class args)))
+      ;; (an array argument only where the function's own version tests it:
+      ;; no copy of every function given a two-dimensional array)
+      (when (member :md2 sig)
+        (let ((own (or (entry-version-signature lam) (mapcar (constantly nil) sig))))
+          (setf sig (loop for c in sig for o in own collect (if (and (eq c :md2) (not (eq o :md2))) nil c)))))
       (when (some #'identity sig) sig))))
 
 (defun spec-clone-name (lam sig &optional flag)
@@ -2722,7 +2830,7 @@ its last parameter; the entries for few arguments make the list."
 (defvar *raw-clones* (make-hash-table :test 'equal) "(lam-id . sig) -> the result rep of its raw clone")
 (defvar *raw-tail-calls* nil "in a raw clone returning an i32 / f64: its tail calls of itself")
 
-(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) ((nil) nil)))
+(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) ((:md2 nil) nil)))
 
 (defun raw-clone-name (lam sig rrep)
   (let ((key (list (lam-id lam) sig :raw)))

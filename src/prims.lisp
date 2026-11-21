@@ -944,6 +944,7 @@ bounds of the array either way."
 
 (defconstant +class-inherits-slot+ 20)   ; runtime/class0.lisp +CLASS-INHERITS+
 (defconstant +class-shape-ops-slot+ 21)  ; runtime/class0.lisp +CLASS-SHAPE-OPS+
+(defconstant +class-instance-size-slot+ 18)  ; runtime/class0.lisp +CLASS-INSTANCE-SIZE+
 
 (defun inherits-check-code (l c fallback)
   "Code pushing 1 when the layout (local L, not C) has C among its included
@@ -1158,13 +1159,13 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
           do (setf code `((:block ,l nil ,@code) ,@(funcall arm j))))
     `((:block ,dflt nil ,@code) ,@default)))
 ;; the number of field slots of an instance (0: not a structure of field slots)
-(defun sinst-size-code (lo hi)
-  ;; the instance (local 0) is known to be a $si<lo> (or not a $si1 when LO is 0)
+(defun sinst-size-code (lo hi &optional (local 0))
+  ;; the instance (LOCAL) is known to be a $si<lo> (or not a $si1 when LO is 0)
   (if (= lo hi)
       `((:i32.const ,lo))
       (let ((mid (ceiling (+ lo hi) 2)))
-        `((:local.get 0) (:ref.test ,(sinst-type mid))
-          (:if nil :i32 ,(sinst-size-code mid hi) ,(sinst-size-code lo (1- mid)))))))
+        `((:local.get ,local) (:ref.test ,(sinst-type mid))
+          (:if nil :i32 ,(sinst-size-code mid hi local) ,(sinst-size-code lo (1- mid) local))))))
 ;; a structure whose slots are fields (with typed slots too)
 (defprim clysm-sys::%sinstp (x) :test `(,@x (:ref.test :sfield)))
 (defprim clysm-sys::%sinst-size (x) :value `(,@x (:call :sinst-size) :ref.i31))
@@ -5647,6 +5648,28 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) '(:local.get 1) '(:local.get 2) '(:local.get 3)
   `(:global.get ,(sym-global 'clysm-sys::%aset2)) '(:call (:callsym 4)))
 
+;;; X is a two-dimensional simple array of element type T (neither
+;;; adjustable nor displaced, over a simple vector): the test of the version
+;;; of a function compiled for such arrays (codegen.lisp ENTRY-VERSION-CODE),
+;;; whose header does not change, so that its storage and dimensions stay in locals
+(defhelper :simple-md2-p :e-i ((m (:ref :null :mdarray)) (r :eqref))
+  '(:local.get 0) '(:ref.test :mdarray) :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get 0) '(:ref.cast! :mdarray) '(:local.tee m) '(:struct.get :mdarray 0) '(:ref.test :vector) :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  ;; rank 2
+  '(:local.get m) '(:struct.get :mdarray 2) '(:local.tee r) '(:ref.test :cons) :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 1) '(:local.tee r) '(:ref.test :cons) :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 1) (car (nil-code)) :ref.eq :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  ;; no fill pointer; info (element-type adjustable . displaced): neither
+  '(:local.get m) '(:struct.get :mdarray 1) (car (nil-code)) :ref.eq :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get m) '(:struct.get :mdarray 4) '(:local.tee r) '(:ref.test :cons) :i32.eqz '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 1) '(:local.tee r) '(:ref.test :cons) :i32.eqz
+  '(:if nil nil ((:i32.const 0) :return))
+  '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 0) (car (nil-code)) :ref.eq
+  '(:local.get r) '(:ref.cast! :cons) '(:struct.get :cons 1) (car (nil-code)) :ref.eq :i32.and)
+
 (defprim clysm-sys::%aref2 (a i j) :value `(,@a ,@i ,@j (:call :aref2)))
 (defprim clysm-sys::%aset2 (a i j v) :value `(,@a ,@i ,@j ,@v (:call :aset2)))
 (defprim clysm-sys::%aset1 (a i v) :value `(,@a ,@i ,@v (:call :aset1)))
@@ -6743,6 +6766,65 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                                (:local.get 0) (:br typed))))
     :drop)
   '(:local.get 0) '(:local.get 1) :ref.i31 '(:local.get 2) (lisp-call-instrs 'clysm-sys::%tstruct-gset 3))
+;; the number of slots of an instance (runtime/struct.lisp %INSTANCE-SIZE):
+;; its slot vector's length, or of a structure whose slots are fields, the
+;; class's count for typed slots, else the count of its fields
+(defhelper :instance-nslots :e-i ((sv (:ref :null :vector)))
+  '(:local.get 0) '(:ref.test :sfield) :i32.eqz
+  '(:if nil nil ((:local.get 0) (:ref.cast :instance) (:struct.get :instance 1) (:ref.cast :vector) :array.len :return))
+  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 0) '(:ref.cast :instance) '(:struct.get :instance 1)
+  '(:ref.cast :vector) '(:local.tee sv) `(:i32.const ,+class-shape-ops-slot+) '(:array.get :vector) (car (nil-code)) :ref.eq
+  '(:if nil nil ((:local.get 0) (:call :sinst-size) :return))
+  '(:local.get sv) `(:i32.const ,+class-instance-size-slot+) '(:array.get :vector) '(:ref.cast :i31) :i31.get_s)
+(defprim clysm-sys::%instance-nslots (x) :value `(,@x (:call :instance-nslots) :ref.i31))
+;; EQUALP of the slots of two structures of one class whose slots are fields
+;; (untyped, at most +STRUCT-INLINE-MAX+): T or NIL, without a call for the
+;; slots that are EQ; the fixnum 0 when the structures are not of that kind
+;; (runtime/types.lisp %EQUALP-INSTANCES then compares them slot by slot).
+;; The count of the fields selects where the comparisons start: field N-1,
+;; then down to field 0.
+(defhelper :sinst-equalp :ee-e ((n :i32) (x :eqref) (y :eqref) (r :eqref))
+  '(:local.get 0) '(:ref.test :sfield) '(:local.get 1) '(:ref.test :sfield) :i32.and :i32.eqz
+  '(:if nil nil ((:i32.const 0) :ref.i31 :return))
+  '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 0) '(:ref.cast :instance) '(:struct.get :instance 1)
+  '(:ref.cast :vector) `(:i32.const ,+class-shape-ops-slot+) '(:array.get :vector) (car (nil-code)) :ref.eq :i32.eqz
+  '(:if nil nil ((:i32.const 0) :ref.i31 :return))
+  ;; (structures of +STRUCT-INLINE-MAX+ fields or more: slot by slot)
+  '(:local.get 0) `(:ref.test ,(sinst-type +struct-inline-max+)) '(:local.get 1) `(:ref.test ,(sinst-type +struct-inline-max+))
+  :i32.or '(:if nil nil ((:i32.const 0) :ref.i31 :return))
+  (sinst-size-code 0 (1- +struct-inline-max+) 0) '(:local.set n)
+  ;; B has as many fields: it is a $si<N> and not a $si<N+1>
+  (let* ((m +struct-inline-max+)
+         (labels (loop for k below m collect (gensym "SZ")))
+         (code `((:local.get n) (:br_table ,@labels ,(car (last labels))))))
+    (loop for k from 0 for l in labels
+          do (setf code `((:block ,l nil ,@code)
+                          ,@(if (= k 0)
+                                `((:local.get 1) (:ref.test ,(sinst-type 1)))
+                                `((:local.get 1) (:ref.test ,(sinst-type k)) :i32.eqz
+                                  (:local.get 1) (:ref.test ,(sinst-type (1+ k))) :i32.or))
+                          (:if nil nil (,@(nil-code) :return))
+                          (:br sizes))))
+    `((:block sizes nil ,@code)))
+  (let* ((m +struct-inline-max+)
+         (labels (loop for k below m collect (gensym "SEQ")))
+         (dflt (gensym "SEQDONE"))
+         (code `((:i32.const ,m) (:local.get n) :i32.sub (:br_table ,@labels ,dflt))))
+    ;; arm K compares field M-1-K and falls through to the fields below it
+    (loop for k from 0 for l in labels
+          do (let* ((j (- m 1 k)) (ty (sinst-type (1+ j))))
+               (setf code `((:block ,l nil ,@code)
+                            (:local.get 0) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field j)) (:local.tee x)
+                            (:local.get 1) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field j)) (:local.tee y)
+                            :ref.eq :i32.eqz
+                            (:if nil nil
+                                 ((:local.get x) (:local.get y) ,@(lisp-call-instrs 'equalp 2) (:local.tee r)
+                                  :ref.is_null (:if nil nil ((:ref.null :eq) :return))
+                                  (:local.get r) ,@(nil-code) :ref.eq
+                                  (:if nil nil (,@(nil-code) :return))))))))
+    `((:block ,dflt nil ,@code)))
+  (car (t-code)))
+(defprim clysm-sys::%sinst-equalp (a b) :value `(,@a ,@b (:call :sinst-equalp)))
 ;; (of a big structure, :BIG above: its fields and its overflow vector)
 (defhelper :sinst-size :e-i ((o :eqref))
   '(:local.get 0) `(:call :big-overflow) '(:local.tee o) :ref.is_null :i32.eqz
