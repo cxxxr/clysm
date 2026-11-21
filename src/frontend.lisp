@@ -1848,6 +1848,17 @@ bound to the values of ARGS, when their number is known; else NIL."
            (sym (if (consp name) (setf-function-symbol (second name)) name)))
       `(:defun ,sym ,(convert fn-form env)))))
 
+;;; (sys:%when-reached 'SYMBOL form) — FORM for effect, then the value SYMBOL;
+;;; in a shaken program (--shake) FORM is left out unless something else
+;;; refers to SYMBOL, as the definition of a function is (CG-DEFUN)
+;;; (FORM is a function of its own then, run by the one CG-DEFUN makes)
+(declaim (special *shake*))
+(defnative clysm-sys::%when-reached (form env)
+  (destructuring-bind (qsym body) (cdr form)
+    (if *shake*
+        `(:defun ,(second qsym) ,(convert `(lambda () ,body) env) :form)
+        (convert `(progn ,body ,qsym) env))))
+
 ;;; ------------------------------------------------------------
 ;;; source transforms for variadic arithmetic and comparisons
 ;;; ------------------------------------------------------------

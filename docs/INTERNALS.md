@@ -4209,6 +4209,9 @@ instead of 65 (12 ms to compile the module, the rest the toplevel forms of
 the runtime). Every symbol stays, so `intern` and `read` work, but a function
 called only by a name made at run time (`(funcall (intern ...))`, `eval` of
 new code, `~/name/` in a control string made at run time) is not there.
+The expander of a macro is kept only when something refers to the macro's
+name (the definition is wrapped in `sys:%when-reached`, installed as a
+function definition is): compiled code has expanded the macro already.
 `SHAKE=1 tools/run-tests.sh` runs the test suite this way. What remains is
 mostly reached through generic paths (the printer, `format`, CLOS dispatch,
 conditions) and the names of the symbols (the global section, 0.6 MB).
