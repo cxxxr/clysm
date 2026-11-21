@@ -4287,6 +4287,15 @@ initfunction returning it would always return)."
   (or (and (atom form) (or (not (symbolp form)) (null form) (eq form t) (keywordp form)))
       (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form)))))
 
+(defun %constant-default-initarg-p (class fn)
+  "True when FN is the function of a default initarg of CLASS whose form is
+a constant (%CONSTANT-INITFORM-P)."
+  (dolist (c (%class-cpl class) nil)
+    (when (%instancep c)
+      (dolist (d (%class-slot c +class-direct-default-initargs+))
+        (when (and (consp d) (consp (cdr d)) (consp (cddr d)) (eq (caddr d) fn))
+          (return-from %constant-default-initarg-p (%constant-initform-p (cadr d))))))))
+
 (defun %ctor-plans (ctor class plan defaults)
   "Set the template and the plans of CTOR from its PLAN."
   (let ((template (%make-simple-vector (or (%class-slot class +class-instance-size+) (%instance-slot-count class))
@@ -4294,9 +4303,12 @@ initfunction returning it would always return)."
         (args nil) (forms nil) (dplan nil)
         (slotds (%class-effective-slots class)))
     (dotimes (i (length defaults))
-      (let ((locs nil))
+      (let ((locs nil) (fn (nth i defaults)))
         (dolist (p plan) (when (and (consp (cdr p)) (eql (cadr p) i)) (push (car p) locs)))
-        (push (nth i defaults) dplan) (push locs dplan)))
+        (if (%constant-default-initarg-p class fn)
+            ;; (a constant form: its value is in the template)
+            (let ((v (funcall fn))) (dolist (loc locs) (setf (svref template loc) v)))
+            (progn (push fn dplan) (push locs dplan)))))
     (dolist (p plan)
       (let ((loc (car p)) (src (cdr p)))
         (cond ((fixnump src) (push src args) (push loc args))
