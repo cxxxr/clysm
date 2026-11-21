@@ -230,7 +230,8 @@ it: T, or NIL when the compiler signals an error (nothing has run then)."
 (setq sys::*native-run-octets-hook* #'native-run-octets)
 ;; COMPILE-FILE compiles a file into one module (src/live.lisp)
 (setq sys::*native-unit-hooks*
-      (list #'call-with-compilation-unit #'unit-add-form #'unit-end-segment #'unit-finish))
+      (list #'call-with-compilation-unit #'unit-add-form #'unit-end-segment #'unit-finish
+            #'unit-begin-file))
 ;; compiled modules in fasls are valid only for this build of the image
 (setq sys::*image-id* #.(format nil "~36R" (random (expt 2 64) (make-random-state t))))
 (setq sys::*native-compile-hook* #'native-compile)

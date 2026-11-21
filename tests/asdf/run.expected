@@ -3,3 +3,7 @@ Hello, WORLD!
 version 0.1.0
 test: ok
 package greet test util
+480 1
+system fasl: T
+480 2
+4530 -2

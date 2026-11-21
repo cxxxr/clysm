@@ -1638,6 +1638,64 @@ the name as a constant variable), as the forms of a file compiled by the host."
         (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
     (values (truename out-path) warnings-p failure-p)))
 
+;;; Several files compiled into one fasl of one module (a system's files:
+;;; contrib/asdf-hooks.lisp), each read and processed as COMPILE-FILE does
+;;; (its own *PACKAGE*, *READTABLE* and policy, from the values when this is
+;;; called), the module cut into a segment at the start of each file.  A call
+;;; from one file to a function another file of them defines is a guarded
+;;; direct call (src/live.lisp, CALL-WITH-COMPILATION-UNIT), so a later
+;;; redefinition of the function is still seen; calls within a file are
+;;; those of COMPILE-FILE.  Loading the fasl is loading the files in order.
+;;; Returns the truename of the fasl (NIL when the image has no compiler).
+(defun %compile-files (inputs output-file &key verbose)
+  (unless (and *native-unit-hooks* (fifth *native-unit-hooks*) *image-id*)
+    (return-from %compile-files nil))
+  (let ((out-path (merge-pathnames (pathname output-file)))
+        (package *package*) (readtable *readtable*) (safety *proclaimed-safety*))
+    (progn
+      (let* ((*cf-modules* (list nil 0))
+             (*cf-constants* (make-hash-table :test 'eq))
+             (*cf-pending* nil)
+             (*cf-unit* nil) (*cf-unit-forms* nil)
+             (*fasl-gensyms* (make-hash-table :test 'eq))
+             (*cf-unit-p* t)
+             (notes nil)
+             (text (with-output-to-string (out)
+                     (flet ((body ()
+                              (let ((k 0))
+                                (dolist (input inputs)
+                                  (when (> k 0)
+                                    (%cf-unit-flush)
+                                    (%call-with-world-lock
+                                     (let ((k k)) (lambda () (funcall (fifth *native-unit-hooks*) k)))))
+                                  (let ((in-path (merge-pathnames (pathname input))))
+                                    (with-open-file (in in-path :direction :input)
+                                      (let ((*compile-file-pathname* in-path)
+                                            (*compile-file-truename* (truename in))
+                                            (*package* package) (*readtable* readtable)
+                                            (*proclaimed-safety* safety)
+                                            (*cf-externalizer* (%new-externalizer in-path)))
+                                        (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
+                                        (loop
+                                          (let* ((start (%form-start in))
+                                                 (form (read in nil %eof-marker)))
+                                            (when (eq form %eof-marker) (return))
+                                            (let ((dspec (%definition-spec form)))
+                                              (when dspec
+                                                (push (list '%note-source dspec (namestring *compile-file-truename*) start)
+                                                      notes)))
+                                            (%cf-process form out nil))))))
+                                  (setq k (+ k 1))))
+                              (%cf-write-unit out)))
+                       (funcall (first *native-unit-hooks*) #'body t))
+                     (dolist (note (nreverse notes))
+                       (when (%call-with-fasl-syntax
+                              (lambda () (ignore-errors (prin1-to-string note))))
+                         (%cf-write note out))))))
+        (%write-fasl out-path text (reverse (first *cf-modules*)) (second *cf-modules*))))
+    (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))
+    (truename out-path)))
+
 ;;; ------------------------------------------------------------
 ;;; REPL
 ;;; ------------------------------------------------------------
