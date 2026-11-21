@@ -1185,6 +1185,31 @@ of the fixnum branch is an i32 compared with an i32. `p-queens` (a
 `labels` function looping to its free variable `n`) 307 → 261 ms (SBCL
 116); the runtime's module grows by 0.7%.
 
+**The base case of a recursive function** is copied into its calls of
+itself (`partial-inline-candidate`, `src/inline.lisp`): when the body of a
+known global function is an `if` whose test makes no call and whose one
+branch is a constant, a variable or an `if` of them (at most 16 nodes each,
+`*partial-inline-max-nodes*`), and whose other branch calls the function
+itself, each such call in the function becomes `(let ((x a) ...) (if test
+small (f x ...)))` (the residual call is not copied again; under `(the
+fixnum ...)` at `(safety 0)` it gets the `the`, so that its raw result is
+not boxed for the `if`). The calls that end in the base case, most of a
+recursion's, then make no call. V8 makes a frame for every Wasm call (the
+frame marker and the instance pushed, the parameters spilled, the stack
+checked) and has no shrink-wrapping, so in `tak` (`(if (not (< y x)) z
+...)`) the frames of the leaves were most of the time: `d-tak` 308 → 77-94
+ms (SBCL 200-216 at `(speed 3) (safety 0)`; `bench/declared.lisp` 1.03-1.05
+→ 0.96-0.99 in geometric mean), `b-tak` 82-84 → 53-55, `b-fib` 22-23 →
+17-18, `b-deriv` 189-196 → 146-152 (`suite` 0.75-0.76 → 0.74); `programs`,
+`gabriel`, `vectors`, `arith`, `arrays` the same. Copies into other callers, and small branches that
+are primitives (`row-major-aref`'s `%simple-ref`), were tried first: the
+one-export library module grew by 16.5 KB and `p-print-object` was 8%
+slower; as kept it grows by 0.6 KB. The copies of a function whose own
+calls were copied into it after it was found small are limited to three
+times the size limit: mutually recursive small functions (`tak` calling a
+`tak2` that calls `tak`) copied each other's growing bodies until the
+compiler ran out of heap.
+
 **Local functions and lambdas of a function** are copied into their calls
 (`inline-calls`, `src/inline.lisp`) when their body has at most 30 nodes,
 or 300 when the call is the only reference of the variable that holds the
@@ -4610,6 +4635,30 @@ operations). Only removing the zero test of products (the underflow
 condition, which SBCL does not trap by default) would gain much; that was
 then done, with the trap set of SBCL's default (see "Floating-point
 conditions" under Status and limitations).
+
+**`d-triangle`, instruction by instruction** (2026-11-22; `node --prof
+--prof-sampling-interval=50` for the ticks of each pc, `node
+--print-wasm-code` for the TurboFan code; SBCL's `disassemble`). The loop
+of `triangle-count` runs 11.6 M iterations a run, 2.8% of which make the
+recursive call. SBCL's iteration is 9 instructions (three loads, the
+board's load and compare, the counter), all in registers. V8's is about
+25: the same loads and compare, plus a bounds check for each of the four
+arrays (`cmp`/`jnc`, the lengths of three of them spilled; the one of
+`from` repeats the loop's own test: V8 eliminates no array bounds check),
+the loop's stack check, the reload of `n` and of `from`, the counter
+spilled and reloaded each iteration, and the sign extensions of the
+indexes. What each costs, measured with V8's own switches (not CL
+semantics): `--no-wasm-stack-checks` nothing (273 → 270-281 ms);
+`--experimental-wasm-skip-bounds-checks` alone makes it slower (354 ms:
+the register allocator then keeps the loop index in a stack slot, a store
+and a load on the loop-carried path); with the arm that makes the call
+marked cold (`sys::%cold`, so a deferred block where the spills go) the
+same switch gives 154 ms, SBCL's time — but the cold mark alone gains
+nothing (275). So the excess is the bounds checks with the register
+allocation around them; Wasm GC arrays have no unchecked access, and
+neither a typed reference nor a hoisted `array.len` changes what V8 emits.
+Not taken further: passing `--experimental-wasm-skip-bounds-checks` would
+apply to all code, including code that relies on the trap.
 
 ### Size and start-up
 

@@ -132,7 +132,54 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
   (let* ((sym (second node)) (lam (known-global-lam sym)))
     (and lam (= (length (cddr node)) (length (lam-req lam)))
          (inlinable-lam-p lam sym)
+         ;; a function whose own calls were copied into it since it was found
+         ;; small: still not much larger (mutually recursive functions would
+         ;; otherwise copy each other's growing bodies without end)
+         (or (not (gethash lam *inlined-into*))
+             (let ((cap (* 3 (if (gethash sym *declared-inline*) *inline-max-declared-nodes* *inline-max-nodes*))))
+               (<= (count-nodes (lam-body lam) cap) cap)))
          lam)))
+
+(defparameter *partial-inline-max-nodes* 16
+  "The size of the test and of the other branch of a function that
+PARTIAL-INLINE-CANDIDATE copies.")
+
+(defun partial-inline-candidate (node)
+  "The lam of the function NODE calls when its body is an IF of which the
+test and one branch make no call and are small, and the other branch calls
+the function itself (a recursive function's base case, as in (if (< n 2) n
+(+ (fib (- n 1)) (fib (- n 2))))): the call can be replaced by a copy of the
+test and the small branch, the other branch being the call.  The calls that
+end in the base case, most of a recursion's, then make no call: V8 makes a
+frame (its stack check, the parameters spilled, the instance pushed) for
+every call, which in such a function costs more than the body.  The first
+value is the lam, the second :THEN or :ELSE, the small branch, which is a
+constant, a variable or an IF of them."
+  (let* ((sym (second node)) (lam (known-global-lam sym)) (body (and lam (lam-body lam))))
+    (labels ((cheap (n)
+               (and (member (car n) '(:const :lref :prim :the :if))
+                    (or (not (eq (car n) :prim)) (eq (prim-kind (second n)) :value)
+                        (eq (prim-kind (second n)) :test))
+                    (block sub (map-subnodes (lambda (x) (unless (cheap x) (return-from sub nil))) n) t)))
+             (leaf (n)
+               ;; a value the branch gives: a constant, a variable, or an IF of
+               ;; them (no primitive, whose code may be large: %SIMPLE-REF)
+               (case (car n)
+                 ((:const :lref) t)
+                 (:the (leaf (third n)))
+                 (:if (and (cheap (second n)) (leaf (third n)) (leaf (fourth n))))))
+             (self-call-p (n)
+               (or (and (eq (car n) :call) (eq (second n) sym))
+                   (block sub (map-subnodes (lambda (x) (when (self-call-p x) (return-from sub t))) n) nil))))
+      (when (and lam (eq (car body) :if) (lam-simple-p lam) (null (lam-free-vars lam))
+                 (= (length (cddr node)) (length (lam-req lam)))
+                 (notany #'lvar-special (lam-req lam))
+                 (not (gethash sym *notinline*))
+                 (cheap (second body))
+                 (<= (count-nodes (second body) *partial-inline-max-nodes*) *partial-inline-max-nodes*))
+        (flet ((small (n) (and (leaf n) (<= (count-nodes n *partial-inline-max-nodes*) *partial-inline-max-nodes*))))
+          (cond ((and (small (third body)) (self-call-p (fourth body))) (values lam :then))
+                ((and (small (fourth body)) (self-call-p (third body))) (values lam :else))))))))
 
 (defun local-inlinable-p (callee caller &optional (limit *inline-max-local-nodes*))
   "CALLEE (a local function or lambda defined in CALLER) can be copied into CALLER."
@@ -157,6 +204,7 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
            ;; a variable bound to a variable bound to a lambda -> the latter
            (lvar-roots (make-hash-table :test 'eq))
            (fresh (make-hash-table :test 'eq))   ; the variables made by copying
+           (partial-calls (make-hash-table :test 'eq)) ; calls copied by PARTIAL-INLINE-CANDIDATE -> arm
            ;; (copies in a large function make its code larger, which V8
            ;; compiles when it first runs, more than faster)
            (budget (cond ((or (null *inline-big-caller-nodes*)
@@ -262,6 +310,37 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
                                (decf (lvar-refs (second (second node))))))
                          (expand node callee (cddr node) depth)
                          (return-from walk))))
+                   (when (and (eq (car node) :call) (< depth *inline-max-depth*)
+                              (not (inline-candidate node)))
+                     (multiple-value-bind (callee arm) (partial-inline-candidate node)
+                       (when (and callee (eq callee lam) (afford callee nil))
+                         ;; (f a b) -> (let ((x a) (y b)) (if test small (f x y))):
+                         ;; the residual call is not walked again
+                         (let* ((map (make-hash-table :test 'eq))
+                                (bindings (loop for p in (lam-req callee) for a in (cddr node)
+                                                collect (cons (copy-lvar-for-inline p map)
+                                                              (inline-checked-arg p a callee))))
+                                (body (lam-body callee))
+                                (test (copy-node-for-inline (second body) map))
+                                (small (copy-node-for-inline (if (eq arm :then) (third body) (fourth body)) map))
+                                (call `(:call ,(second node)
+                                              ,@(loop for b in bindings
+                                                      do (incf (lvar-refs (car b)))
+                                                         collect `(:lref ,(car b))))))
+                           (setf (car node) :let
+                                 (cdr node) (list bindings (if (eq arm :then)
+                                                               `(:if ,test ,small ,call)
+                                                               `(:if ,test ,call ,small))))
+                           (setf (gethash node partial-calls) arm)
+                           (return-from walk)))))
+                   ;; (the fixnum (f a)) at (SAFETY 0), F's call copied as above:
+                   ;; the residual call is (the fixnum (f x)) too, so that its
+                   ;; raw result is not boxed for the IF
+                   (when (and (eq (car node) :the) (eq (fourth node) :trust)
+                              (gethash (third node) partial-calls))
+                     (let* ((if-node (third (third node)))
+                            (pos (if (eq (gethash (third node) partial-calls) :then) (cdddr if-node) (cddr if-node))))
+                       (setf (car pos) `(:the ,(second node) ,(car pos) :trust))))
                    (when (and (eq (car node) :call) (< depth *inline-max-depth*))
                      (let ((callee (inline-candidate node)))
                        (when (and callee (afford callee (gethash (second node) *declared-inline*)))
