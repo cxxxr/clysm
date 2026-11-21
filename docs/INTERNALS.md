@@ -933,6 +933,19 @@ What remains:
   (30-46 ms); outlining would need typed parameters (a version of the
   outlined function for the types the variables have).
 
+**`dotimes` over a count held in a variable** (`runtime/boot.lisp`) whose
+body uses the counter and is small (at most 120 conses) expands to `(if
+(fixnump n) <the loop with n bound to a variable declared fixnum> <the
+loop>)`. Where the type of `n` is known the test is a constant and only
+one branch is compiled (`cg-if` and `cg-effect` compile the branch a
+constant test takes and not the other; the test must be `fixnump`, which
+is a primitive everywhere, not `typep`, which the runtime's own early files
+call out of line); where it is not (a parameter of a local function or
+closure, a free variable, which get no fixnum entry version), the counter
+of the fixnum branch is an i32 compared with an i32. `p-queens` (a
+`labels` function looping to its free variable `n`) 307 → 261 ms (SBCL
+116); the runtime's module grows by 0.7%.
+
 **Local functions and lambdas of a function** are copied into their calls
 (`inline-calls`, `src/inline.lisp`) when their body has at most 30 nodes,
 or 300 when the call is the only reference of the variable that holds the

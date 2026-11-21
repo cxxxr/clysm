@@ -166,19 +166,48 @@ the declarations (when forms follow it)."
              ,@(when steps `((,set-op ,@(reverse steps))))
              (go ,top)))))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %small-form-p (x limit)
+    "X has at most LIMIT conses."
+    (let ((n 0))
+      (labels ((walk (y) (when (consp y) (setq n (+ n 1)) (when (> n limit) (return-from %small-form-p nil))
+                           (walk (car y)) (walk (cdr y)))))
+        (walk x)
+        t))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %tree-member (x tree)
+    (cond ((eq x tree) t)
+          ((consp tree) (or (%tree-member x (car tree)) (%tree-member x (cdr tree))))
+          (t nil))))
+
 (defmacro dotimes ((var count &optional result) &body body)
   (let ((n (gensym "N")) (top (gensym "TOP")))
     (multiple-value-bind (decls forms) (%split-decls body)
-      `(block nil
-         (let ((,n ,count) (,var 0))
-           (declare (ignorable ,var))
-           ,@decls
-           (tagbody
-              ,top
-              (if (>= ,var ,n) (return-from nil ,result))
-              (tagbody ,@forms)
-              (setq ,var (1+ ,var))
-              (go ,top)))))))
+      (flet ((the-loop (n)
+               `(let ((,var 0))
+                  (declare (ignorable ,var))
+                  ,@decls
+                  (tagbody
+                     ,top
+                     (if (>= ,var ,n) (return-from nil ,result))
+                     (tagbody ,@forms)
+                     (setq ,var (1+ ,var))
+                     (go ,top)))))
+        `(block nil
+           (let ((,n ,count))
+             ,(if (and (symbolp count) (not (constantp count)) (%small-form-p forms 120)
+                      (%tree-member var forms))
+                  ;; a count held in a variable of a type not known here
+                  ;; (a parameter of a closure, a free variable): a version
+                  ;; of the loop for a fixnum count, whose counter is one
+                  ;; (the test is decided at compile time where the type is
+                  ;; known, and that branch alone is compiled)
+                  (let ((fx (gensym "N")))
+                    `(if (fixnump ,n)
+                         (let ((,fx ,n)) (declare (fixnum ,fx)) ,(the-loop fx))
+                         ,(the-loop n)))
+                  (the-loop n))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %case-cond-clauses (k clauses exhaustive typecase)
