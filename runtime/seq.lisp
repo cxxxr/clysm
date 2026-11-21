@@ -2365,9 +2365,10 @@ list result shares the tail after END."
              (let ((,element-var (car ,l))) ,body))
            (progn
              (unless (vectorp ,seq) (%type-error ,seq 'sequence))
-             (let ((,d (%array-storage ,seq)))
-               (%do ((,i (%array-total-offset ,seq) (+ ,i 1))
-                    (,e (+ (%array-total-offset ,seq) (length ,seq))))
+             ;; (a simple vector is its own storage: no call)
+             (let ((,d (if (%simple-vector-p ,seq) ,seq (%array-storage ,seq))))
+               (%do ((,i (if (%simple-vector-p ,seq) 0 (%array-total-offset ,seq)) (+ ,i 1))
+                    (,e (if (%simple-vector-p ,seq) (%svlength ,seq) (+ (%array-total-offset ,seq) (length ,seq)))))
                    ((>= ,i ,e))
                  (declare (fixnum ,i ,e))
                  (let ((,element-var (%vref ,d ,i))) ,body)))))))
