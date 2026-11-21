@@ -1100,11 +1100,20 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
   (let ((neg (minusp n)))
     (let ((s (%big-decimal-digits (if neg (- n) n))))
       (if neg (concatenate 'string "-" s) s))))
+(defun %integer-power (b k)
+  "B^K of the integer B and the index K >= 0, by squaring (EXPT, which
+takes every kind of number, is not kept for the printer of integers)."
+  (let ((r 1))
+    (loop
+      (when (oddp k) (setq r (* r b)))
+      (setq k (ash k -1))
+      (when (zerop k) (return r))
+      (setq b (* b b)))))
 (defun %big-decimal-digits (n)
   (if (%fx<= (integer-length n) +%decimal-split-bits+)
       (%int-decimal-string n)
       (let ((k (floor (* (integer-length n) 1233) 8192))) ; about half the digits (log10 2 = 0.30103)
-        (multiple-value-bind (q r) (truncate n (expt 10 k))
+        (multiple-value-bind (q r) (truncate n (%integer-power 10 k))
           (let* ((hi (%big-decimal-digits q)) (lo (%big-decimal-digits r))
                  (s (make-string (+ (length hi) k) :initial-element #\0)))
             (replace s hi)
