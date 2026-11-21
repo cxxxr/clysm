@@ -230,6 +230,23 @@ across calls anyway; what a real convention would add back (a reset after
 calls whose values are dropped, or a second copy of every function) would
 take most of that 1-2%, so the convention was not changed.
 
+`multiple-value-call` (and `multiple-value-list`, `nth-value` of more than
+a few values, which expand to it) of forms whose number of values is known
+when the form is compiled (`fixed-mvcall-form` in `src/frontend.lisp`: a
+constant or a variable, `(values ...)`, a standard function of a fixed
+number of values such as `floor` or `gethash` (`*cl-nvalues*`), or a call
+of a function of the same file every tail of whose body returns the same
+number of values, `ast-nvalues`) is rewritten into `multiple-value-bind`s
+of the values and a `funcall` of them: `(multiple-value-call #'+ (f x) (f
+y))` with `f` returning three values is an inline addition of six
+variables, `(multiple-value-list (f x))` a `list` of three. Other forms
+append their values to one vector (`:mv-append`) given to the function's
+entry of any number of arguments; they were collected in a list, reversed
+and copied into the vector (three allocations per value). Measured
+(2026-11-21, `p-call-conv`'s lines one by one): `(multiple-value-call #'+
+(mv-fn i) (mv-fn 1))` 76 → 12 ms (SBCL 20), `(length (multiple-value-list
+(mv-fn i)))` 31 → 12 (SBCL 18).
+
 ## Dynamic binding (spec: シャローバインディング)
 
 The symbol's value slot holds the current value; binding pushes the old value
