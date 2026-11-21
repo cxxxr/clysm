@@ -49,6 +49,7 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
         *const-globals* nil
         *const-table* (make-hash-table :test 'eql)
         *const-string-table* (make-hash-table :test 'equal)
+        *data-strings* nil
         *const-counter* 0
         *closure-globals* nil
         *closure-global-names* (make-hash-table :test 'equal)
@@ -819,6 +820,61 @@ of SYMBOL-TABLE-DATA."
         (:local.get ci) (:i32.const 1) :i32.add (:local.set ci)
         (:br chunks)))))
 
+(defvar *string-data-segment* nil
+  "While BUILD-MODULE runs: the data segment of SET-STRING-TABLE.")
+
+(defun set-string-table (m)
+  "Make :STRTAB the vector (of vectors of at most 9000) of the strings of
+*DATA-STRINGS* whose globals M has, the data segment their characters (one
+octet each, in that order), and :INIT-STRINGS copy them into the strings."
+  (let* ((names (remove-if-not (lambda (n) (global-defined-p m n)) (reverse (mapcar #'car *data-strings*))))
+         (texts (let ((h (make-hash-table :test 'equal)))
+                  (dolist (d *data-strings*) (setf (gethash (car d) h) (cdr d)))
+                  h))
+         (octets (make-array (loop for n in names sum (length (gethash n texts)))
+                             :element-type '(unsigned-byte 8)))
+         (chunks (loop for rest = names then (nthcdr 9000 rest)
+                       while rest
+                       collect (subseq rest 0 (min 9000 (length rest))))))
+    (let ((i 0))
+      (dolist (n names)
+        (loop for c across (gethash n texts) do (setf (aref octets i) (char-code c)) (incf i))))
+    (setf (aref (wasm-module-data m) *string-data-segment*) octets)
+    (setf (fourth (find :strtab (wasm-module-globals m) :key #'first))
+          `(,@(loop for chunk in chunks
+                    append `(,@(loop for n in chunk collect `(:global.get ,n))
+                             (:array.new_fixed :vector ,(length chunk))))
+            (:array.new_fixed :vector ,(length chunks))))
+    (let ((f (find-func m :init-strings)))
+      (setf (wasm-func-ref-list f) :unknown
+            (wasm-func-body f)
+            `((:i32.const 0) (:i32.const ,(length octets)) (:array.new_data :bytes ,*string-data-segment*)
+              (:local.set chars)
+              (:block done nil
+                (:loop chunks nil
+                  (:local.get ci) (:global.get :strtab) :array.len :i32.ge_u (:br_if done)
+                  (:global.get :strtab) (:local.get ci) (:array.get :vector) (:ref.cast! :vector) (:local.set chunk)
+                  (:i32.const 0) (:local.set i)
+                  (:block chunk-done nil
+                    (:loop strs nil
+                      (:local.get i) (:local.get chunk) :array.len :i32.ge_u (:br_if chunk-done)
+                      (:local.get chunk) (:local.get i) (:array.get :vector) (:ref.cast! :string) (:local.set str)
+                      (:local.get str) :array.len (:local.set len)
+                      (:i32.const 0) (:local.set j)
+                      (:block copied nil
+                        (:loop copy nil
+                          (:local.get j) (:local.get len) :i32.ge_u (:br_if copied)
+                          (:local.get str) (:local.get j)
+                          (:local.get chars) (:local.get pos) (:local.get j) :i32.add (:array.get_u :bytes)
+                          (:array.set :string)
+                          (:local.get j) (:i32.const 1) :i32.add (:local.set j)
+                          (:br copy)))
+                      (:local.get pos) (:local.get len) :i32.add (:local.set pos)
+                      (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+                      (:br strs)))
+                  (:local.get ci) (:i32.const 1) :i32.add (:local.set ci)
+                  (:br chunks))))))))
+
 (defvar *symbol-data-segments* nil
   "While BUILD-MODULE runs: (names-segment info-segment dropped-segment
 pkg-index), the data segments of SET-SYMBOL-TABLE and the function giving the
@@ -931,7 +987,7 @@ host's identity hash, and that hash."
       (add-export *m* "eval_string" :func :eval-string)
       ;; _start
       (add-func *m* :start :v-v :export entry
-                :body (append '((:call :init-symbols)) (runtime-consts-prologue) (initial-value-prologue)
+                :body (append '((:call :init-symbols) (:call :init-strings)) (runtime-consts-prologue) (initial-value-prologue)
                        (loop for l in tops
                             append `((:global.get ,(static-closure-global l))
                                      (:call (:main ,(lam-id l))) :drop)))))
@@ -983,6 +1039,13 @@ host's identity hash, and that hash."
                   :locals '((:ref :null :bytes) (:ref :null :bytes) (:ref :null :vector) :i32 :i32 :i32 :i32
                             :i32 :i32 (:ref :null :symbol) (:ref :null :string) :i32)
                   :local-names '(names info chunk ci i k pos len flags s str j))
+        (setf *string-data-segment* (add-data *m* (make-array 0 :element-type '(unsigned-byte 8))))
+        (add-global *m* :strtab '(:ref :vector) nil nil)
+        (add-func *m* :init-strings :v-v
+                  :locals '((:ref :null :bytes) (:ref :null :vector) :i32 :i32 :i32 :i32 :i32
+                            (:ref :null :string))
+                  :local-names '(chars chunk ci i j pos len str))
+        (set-string-table *m*)
         (add-func *m* :symbol-info :v-e)
         (add-func *m* :dropped-symbols :v-e)
         (set-symbol-table *m* syms)
@@ -1021,7 +1084,9 @@ host's identity hash, and that hash."
     (add-image-functions *m*)
     (report-undefined-functions)
     (when *shake*
-      (shake-module *m* :drop-symbols *shake-symbols*)
+      (shake-module *m* :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
+      ;; the table of the strings left
+      (set-string-table *m*)
       (when *shake-symbols*
         ;; the table of the symbols left
         (let ((kept (loop for g across (wasm-module-globals *m*)
@@ -1051,6 +1116,8 @@ REPL image, 59000 were the conses of constant lists."
                  (if (and (eq (car x) :global.get) (consp (cdr x)) (gethash (second x) names))
                      (incf (gethash (second x) table 0))
                      (do ((l x (cdr l))) ((atom l)) (walk (car l) table))))))
+      ;; (the strings that :INIT-STRINGS fills are globals of their own)
+      (dolist (d *data-strings*) (setf (gethash (car d) pinned) 1))
       ;; what refers to them otherwise: the code, the other globals
       (loop for f across (wasm-module-funcs *m*) do (walk (wasm-func-body f) pinned))
       (loop for g across (wasm-module-globals *m*) do (walk (fourth g) pinned))
@@ -1114,8 +1181,9 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
   (setf (wasm-module-table m) (list :define))
   (add-export m "codes" :table nil)
   (let ((objects nil) (mutables nil))
+    ;; (not :STRTAB, which :IMAGE-LOAD reads before the objects are made)
     (loop for (name type mutable) across (wasm-module-globals m)
-          do (cond ((member name '(:mv-buf :dyn :img-objs :img-roots :empty-slots)))
+          do (cond ((member name '(:mv-buf :dyn :img-objs :img-roots :empty-slots :strtab)))
                    ((not (and (consp type) (eq (car type) :ref)))
                     (when (and mutable (eq type :eqref)) (push name mutables)))
                    ((not mutable) (push name objects))))
