@@ -454,7 +454,12 @@ export function imageHeader(module, file) {
 export function imageOctets(file, header) {
   if (!header.image) return null;
   const start = header.modulesOffset + header.image.offset;
-  return file.subarray(start, start + header.image.length);
+  if (start + header.image.length > header.heapOffset) return null;
+  const octets = file.subarray(start, start + header.image.length);
+  // (they end with the image's clysm.build section: a tool that rewrote the
+  // file without knowing them may have left their place stale)
+  const tail = new TextDecoder('latin1').decode(octets.subarray(Math.max(0, octets.length - 64)));
+  return tail.endsWith('\x0bclysm.build' + header.build) ? octets : null;
 }
 
 // The heap image FILE (with its HEADER) with OCTETS as the image's octets
