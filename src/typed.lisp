@@ -579,6 +579,14 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                                   clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
                    (typed-store-code node nil))
                   ((eq name 'clysm-sys::%replace) (replace-copy-code node))
+                  ;; a character known to be one: stored without the check
+                  ((and (eq name 'clysm-sys::%set-schar) (= (length args) 3)
+                        (ty-only-p (node-ty (third args)) +k-char+))
+                   (let ((tmp (new-local)))
+                     `(,@(cg (first args)) (:ref.cast :string)
+                       ,@(if (fx-arg-p (second args)) (cg-rep (second args) :i32) (idx-code (cg (second args))))
+                       ,@(cg (third args)) (:local.tee ,tmp) (:ref.cast! :i31) :i31.get_s
+                       (:i32.const ,+char-tag+) :i32.sub (:array.set :string) (:local.get ,tmp))))
                   ;; CODE-CHAR of a fixnum: the character from its i32 (no box)
                   ((and (eq name 'code-char) (= (length args) 1) (fx-arg-p (first args)))
                    `(,@(cg-rep (first args) :i32) (:i32.const ,+char-tag+) :i32.add :ref.i31))
@@ -1311,6 +1319,15 @@ type, where the type of the value shows it holds), else NIL."
   (let ((tys (mapcar #'node-ty args)))
     (when (notany #'ty-bottom-p tys)
       (case name
+        ;; type predicates whose answer the type of the argument gives
+        ((characterp consp symbolp numberp)
+         (when (= (length tys) 1)
+           (let ((ty (first tys))
+                 (mask (ecase name
+                         (characterp +k-char+) (consp +k-cons+)
+                         (symbolp (logior +k-null+ +k-sym+)) (numberp +k-number+))))
+             (cond ((ty-only-p ty mask) :true)
+                   ((not (logtest (ty-bits ty) mask)) :false)))))
         ((integerp clysm-sys::%integerp) (when (= (length tys) 1)
                     (cond ((ty-only-p (first tys) +k-int+) :true)
                           ((not (ty-int-p (first tys))) :false))))

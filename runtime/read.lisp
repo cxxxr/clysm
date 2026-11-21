@@ -45,6 +45,15 @@
         (svref (%rt-ascii rt) code)
         (gethash c (%rt-syntax rt) :constituent))))
 
+;; the syntax type of an ASCII character is read from the table at the call
+;; site (the reader asks it of every character)
+(define-compiler-macro %syntax (c rt)
+  (let ((ch (gensym "C")) (r (gensym "RT")) (code (gensym "CODE")))
+    `(let* ((,ch ,c) (,r ,rt) (,code (char-code ,ch)))
+       (if (%fx< ,code 128)
+           (%svref (%rt-ascii ,r) ,code)
+           (locally (declare (notinline %syntax)) (%syntax ,ch ,r))))))
+
 (defun %set-syntax (c rt type)
   (let ((code (char-code c)))
     (if (< code 128)
@@ -70,6 +79,47 @@
   "To be called when the reader macros of RT change."
   (fill (%rt-mcache rt) nil))
 
+;;; The fast paths of the reader read the characters of a simple string
+;;; between an index and an end: those of a string input stream over a
+;;; simple string without an unread character, or the text of a character
+;;; input file of ASCII octets (its position in octets is the index).
+(defun %rd-file-text (s)
+  "The text of S when it is an open character input file of ASCII octets,
+without an unread character (see FILE-STREAM-TEXT), else NIL."
+  (when (and (%instancep s) (eq (%instance-layout s) (load-time-value *file-stream-layout*))
+             (%fsbufp (%instance-ref s +stream-fast-slot+))
+             (eq (%instance-ref s +stream-direction-slot+) :input))
+    (let ((tx (file-stream-text s)))
+      (cond ((%simple-string-p tx) tx)
+            ((eq tx :none) nil)
+            (t (let* ((buf (%instance-ref s +stream-fast-slot+)) (fill (%fsbuf-fill buf))
+                      (octets (%fsbuf-octets buf)))
+                 (declare (fixnum fill))
+                 (if (and (< fill 67108864)
+                          (dotimes (i fill t)
+                            (when (%fx>= (%bytes-ref octets i) 128) (return nil))))
+                     (setf (file-stream-text s) (%utf8-decode octets 0 fill))
+                     (progn (setf (file-stream-text s) :none) nil))))))))
+
+(defmacro %rd-buffer (s)
+  "The simple string the fast paths read S from, or NIL."
+  (let ((st (gensym "S")) (b (gensym "B")))
+    `(let ((,st ,s))
+       (if (%string-in-p ,st)
+           (and (null (%instance-ref ,st +stream-unread-slot+))
+                (let ((,b (%instance-ref ,st +stream-buffer-slot+))) (and (%simple-string-p ,b) ,b)))
+           (%rd-file-text ,st)))))
+;; RDF: the $fsbuf of the file whose text %RD-BUFFER gave, or NIL for a
+;; string stream (a variable bound where these are used)
+(defmacro %rd-fsbuf (s buf)
+  `(and ,buf (not (%string-in-p ,s)) (%instance-ref ,s +stream-fast-slot+)))
+(defmacro %rd-index (s)
+  `(if rdf (%fsbuf-pos rdf) (%instance-ref ,s +stream-index-slot+)))
+(defmacro %rd-end (s)
+  `(if rdf (%fsbuf-fill rdf) (%instance-ref ,s +stream-end-slot+)))
+(defmacro %rd-set-index (s i)
+  `(if rdf (%set-fsbuf-pos rdf ,i) (%set-instance-ref ,s +stream-index-slot+ ,i)))
+
 ;;; The next character of the stream S or :eof: a string stream is read in line.
 (defmacro %rd-char (s)
   (let ((st (gensym "S")) (i (gensym "I")) (buf (gensym "BUF")))
@@ -82,7 +132,8 @@
                  (progn (%set-instance-ref ,st +stream-index-slot+ (%fx+ ,i 1))
                         (if (%simple-string-p ,buf) (%schar ,buf ,i) (char ,buf ,i)))
                  :eof))
-           (%stream-read-char ,st)))))
+           ;; (an ASCII character of a character input file)
+           (or (%fs-fast-char ,st t) (%stream-read-char ,st))))))
 
 (defun %rt-whitespace-p (c)
   (eq (%syntax c (or *readtable* *standard-readtable*)) :whitespace))
@@ -219,18 +270,31 @@ macro character returned no values), :dot or :eof."
 is not whitespace in the readtable RT.  Returns the values of %READ-OBJECT1."
   (let ((fn (let ((syn (%syntax c rt)))
               (and (or (eq syn :terminating) (eq syn :non-terminating))
-                   (%rt-macro c rt)))))
+                   ;; (the cached entry of an ASCII character read here)
+                   (let ((code (char-code c)))
+                     (if (%fx< code 128)
+                         (let ((e (%svref (%rt-mcache rt) code)))
+                           (cond ((null e) (%rt-macro c rt))
+                                 ((eq e :none) nil)
+                                 (t e)))
+                         (%rt-macro c rt)))))))
     (if fn
         ;; the macro function returns zero values or one
         (let ((v (funcall fn s c)))
           (if (eql (%mv-count) 0) (values nil :none) (values v :object)))
         (multiple-value-bind (found sym) (%read-plain-symbol s c rt)
           (if found
-              (values sym :object)
+              (if (eq sym %dot-marker)
+                  (if allow-dot
+                      (values sym :dot)
+                      (%reader-error s "a token consisting only of dots cannot be read"))
+                  (values sym :object))
               (let ((x (%read-token-object s c allow-dot)))
                 (values x (if (eq x %dot-marker) :dot :object))))))))
 
 (defvar %no-symbol (make-symbol "NO-SYMBOL"))
+(defvar *%rd-name* (%make-string 64 #\0)
+  "The scratch string of the names of the symbols %READ-PLAIN-SYMBOL reads.")
 
 (defun %read-plain-symbol (s c rt)
   "When the token starting with C (just read from S) is an ordinary symbol
@@ -239,14 +303,15 @@ and the characters of ASCII that are plain constituents, with one package
 marker or none (PKG:NAME, PKG::NAME, :NAME: compiled files are mostly such
 symbols) — read it and return T and the symbol, else return NIL with nothing
 consumed."
-  (when (and (eq (stream-kind s) :string-in) (null (stream-unread s)) (not *read-suppress*)
-             (eq (%rt-case rt) :upcase) (%simple-string-p (stream-buffer s))
+  (let* ((rbuf (%rd-buffer s)) (rdf (%rd-fsbuf s rbuf)))
+  (when (and rbuf (not *read-suppress*)
+             (eq (%rt-case rt) :upcase) t
              ;; in bases above ten letters are digits
              (<= *read-base* 10))
     (let ((code0 (char-code c)))
       ;; a decimal fixnum: digits only
       (when (and (<= 48 code0 57) (eql *read-base* 10) (eq (svref (%rt-ascii rt) code0) :constituent))
-        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s)) (v (- code0 48)))
+        (let* ((buf rbuf) (i0 (%rd-index s)) (i i0) (end (%rd-end s)) (v (- code0 48)))
           (declare (fixnum i0 i end v))
           (do () ((or (>= i end) (> (- i i0) 6)))   ; at most 8 digits: a fixnum
             (let ((code (char-code (%schar buf i))))
@@ -254,22 +319,32 @@ consumed."
                   (setq v (+ (* v 10) (- code 48)) i (+ i 1))
                   (return))))
           (when (or (>= i end) (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
-            (setf (stream-index s) i)
+            (%rd-set-index s i)
             (return-from %read-plain-symbol (values t v)))))
+      ;; the consing dot: a dot alone
+      (when (and (eql code0 46) (eq (svref (%rt-ascii rt) 46) :constituent))
+        (let ((i (%rd-index s)) (buf rbuf))
+          (when (or (>= i (%rd-end s)) (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
+            (return-from %read-plain-symbol (values t %dot-marker)))))
       ;; other decimal numbers: a sign, a decimal point, a float
       (when (and (or (<= 48 code0 57) (eql code0 43) (eql code0 45) (eql code0 46))
                  (eql *read-base* 10))
-        (return-from %read-plain-symbol (%read-plain-number s rt)))
-      (when (and (or (<= 65 code0 90) (<= 97 code0 122) (eql code0 58))
-                 (eq (svref (%rt-ascii rt) code0) :constituent))
-        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
+        (multiple-value-bind (found x) (%read-plain-number s rt rbuf rdf)
+          (when found (return-from %read-plain-symbol (values t x)))))
+      ;; a symbol: a token of constituents that is not a number (it begins
+      ;; with a letter, or has no decimal digit and is not only dots)
+      (when (and (<= 33 code0 126) (eq (svref (%rt-ascii rt) code0) :constituent))
+        (let* ((buf rbuf) (i0 (%rd-index s)) (i i0) (end (%rd-end s))
                (ascii (%rt-ascii rt))
                ;; the package marker: the index after it of the name (as
                ;; that of the buffer), and whether it was doubled
-               (colon (if (eql code0 58) -1 nil)) (name-start i0) (double nil))
+               (colon (if (eql code0 58) -1 nil)) (name-start i0) (double nil)
+               ;; a decimal digit before any package marker
+               (digit (<= 48 code0 57)))
           (declare (fixnum i0 i end name-start))
           (do () ((>= i end))
             (let ((code (char-code (%schar buf i))))
+              (when (and (<= 48 code 57) (null colon)) (setq digit t))
               (cond ((and (eql code 58) (null colon))
                      ;; PKG:NAME or PKG::NAME (the package name read so far)
                      (setq colon i)
@@ -284,50 +359,65 @@ consumed."
           (when (and (or (>= i end)
                          (member (%syntax (%schar buf i) rt) '(:whitespace :terminating)))
                      (or (null colon) (> i name-start))
-                     (not (and (eql colon -1) double)))
-            (flet ((upcased (from to first)
-                     ;; the characters FROM..TO of the buffer upcased, after FIRST if any
-                     (let* ((k0 (if first 1 0))
-                            (str (%make-string (+ k0 (- to from)) #\0)))
-                       (declare (fixnum k0))
-                       (when first (%set-schar str 0 (char-upcase first)))
-                       (do ((k from (+ k 1)) (j k0 (+ j 1))) ((>= k to) str)
-                         (declare (fixnum k j))
-                         (let ((code (char-code (%schar buf k))))
-                           (%set-schar str j (if (<= 97 code 122) (code-char (- code 32)) (%schar buf k))))))))
-              (cond
-                ((null colon)
-                 (let ((name (upcased i0 i c)))
-                   (setf (stream-index s) i)
-                   (values t (values (intern name *package*)))))
-                ((eql colon -1)
-                 ;; :NAME
-                 (let ((name (upcased name-start i nil)))
-                   (setf (stream-index s) i)
-                   (values t (values (intern name *keyword-package*)))))
-                (t
-                 ;; PKG:NAME, PKG::NAME; what is not found is left to the
-                 ;; reader of tokens, which signals the errors
-                 (let ((pkg (find-package (upcased i0 colon c)))
-                       (name (upcased name-start i nil)))
-                   (when pkg
-                     (multiple-value-bind (sym status) (if double (values nil nil) (find-symbol name pkg))
-                       (let ((result
-                               (cond (double (values (intern name pkg)))
-                                     ((eq status :external) sym)
-                                     ((or (eq pkg *keyword-package*) *fasl-syntax*)
-                                      (values (intern name pkg)))
-                                     (t %no-symbol))))
-                         (unless (eq result %no-symbol)
-                           (setf (stream-index s) i)
-                           (values t result)))))))))))))))
+                     (not (and (eql colon -1) double))
+                     (or colon (<= 65 code0 90) (<= 97 code0 122)
+                         (and (not digit)
+                              (not (and (eql code0 46)
+                                        (do ((k i0 (+ k 1))) ((>= k i) t)
+                                          (declare (fixnum k))
+                                          (unless (eql (%schar buf k) #\.) (return nil))))))))
+            (let ((pkg nil) (name-len 0))
+              (declare (fixnum name-len))
+              (flet ((upcased (from to first)
+                       ;; the characters FROM..TO of the buffer upcased, after
+                       ;; FIRST if any, into the scratch string; their number
+                       (let* ((k0 (if first 1 0)) (n (+ k0 (- to from))) (str *%rd-name*))
+                         (declare (fixnum k0 n))
+                         (when (> n (%string-length str))
+                           (setq str (%make-string (max n (* 2 (%string-length str))) #\0) *%rd-name* str))
+                         (when first (%set-schar str 0 (char-upcase first)))
+                         (do ((k from (+ k 1)) (j k0 (+ j 1))) ((>= k to) n)
+                           (declare (fixnum k j))
+                           (let ((code (char-code (%schar buf k))))
+                             (%set-schar str j (if (<= 97 code 122) (code-char (- code 32)) (%schar buf k)))))))
+                     (name () (%simple-substring *%rd-name* 0 name-len)))
+                (cond
+                  ((null colon)
+                   (setq name-len (upcased i0 i c) pkg *package*))
+                  ((eql colon -1)
+                   (setq name-len (upcased name-start i nil) pkg *keyword-package*))
+                  (t
+                   ;; PKG:NAME, PKG::NAME; what is not found is left to the
+                   ;; reader of tokens, which signals the errors
+                   (let ((n (upcased i0 colon c)))
+                     (setq pkg (if *package-local-nicknames*
+                                   (find-package (%simple-substring *%rd-name* 0 n))
+                                   (multiple-value-bind (p found)
+                                       (%region-gethash *package-table* *%rd-name* n
+                                                        (%string-hash-range *%rd-name* 0 n))
+                                     (if (eq found :unknown) (find-package (%simple-substring *%rd-name* 0 n)) p)))))
+                   (unless pkg (return-from %read-plain-symbol nil))
+                   (setq name-len (upcased name-start i nil))))
+                (multiple-value-bind (sym status) (%region-find-symbol *%rd-name* name-len pkg)
+                  (when (eq status :unknown)
+                    (multiple-value-setq (sym status) (find-symbol (name) pkg)))
+                  (let ((result
+                          (cond ((or (null colon) (eql colon -1) double)
+                                 (if status sym (values (intern (name) pkg))))
+                                ((eq status :external) sym)
+                                ((or (eq pkg *keyword-package*) *fasl-syntax*)
+                                 (if status sym (values (intern (name) pkg))))
+                                (t %no-symbol))))
+                    (unless (eq result %no-symbol)
+                      (%rd-set-index s i)
+                      (values t result)))))))))))))
 
-(defun %read-plain-number (s rt)
+(defun %read-plain-number (s rt rbuf rdf)
   "The token whose first character was just read from the string stream S,
 when it is a decimal integer or ratio, or a float of an exponent of at most
 three digits that %DECIMAL-FLOAT rounds, made only of constituent
 characters: returns T and the number, else NIL with nothing more consumed."
-  (let* ((buf (stream-buffer s)) (end (stream-end s)) (start (- (stream-index s) 1)) (i start)
+  (let* ((buf rbuf) (end (%rd-end s)) (start (- (%rd-index s) 1)) (i start)
          (ascii (%rt-ascii rt))
          (neg nil) (ni 0) (nf 0) (dot nil) (marker 0) (expo 0) (eneg nil) (ne 0)
          (mstart 0) (mend 0) (small 0))
@@ -368,7 +458,7 @@ characters: returns T and the number, else NIL with nothing more consumed."
             ;; (a zero denominator: the reader of tokens signals the error)
             (when (eql den 0) (return-from %read-plain-number nil))
             (let ((num (if (<= ni 8) small (%decimal-integer buf mstart (+ mstart ni) nil))))
-              (setf (stream-index s) i)
+              (%rd-set-index s i)
               (return-from %read-plain-number (values t (/ (if neg (- num) num) den)))))))
       (when (eql (peek) 46)
         (setq dot t i (+ i 1))
@@ -395,9 +485,9 @@ characters: returns T and the number, else NIL with nothing more consumed."
              ;; an integer, possibly with a decimal point at the end
              (cond ((eql ni 0) nil)
                    ((<= ni 8)
-                    (setf (stream-index s) i)
+                    (%rd-set-index s i)
                     (values t (if neg (- small) small)))
-                   (t (setf (stream-index s) i)
+                   (t (%rd-set-index s i)
                       (values t (%decimal-integer buf mstart (+ mstart ni) neg)))))
             ((and (> (+ ni nf) 0) (or (> nf 0) (not (eql marker 0))))
              ;; the nearest float, unless the helper cannot tell
@@ -409,7 +499,7 @@ characters: returns T and the number, else NIL with nothing more consumed."
                                           (if neg 2 0)
                                           (if (member type '(double-float long-float)) 0 1)))))
                (when x
-                 (setf (stream-index s) i)
+                 (%rd-set-index s i)
                  (values t x))))
             (t nil)))))
 
@@ -435,8 +525,15 @@ characters: returns T and the number, else NIL with nothing more consumed."
         (progn
           (unless (or preserve recursive-p)
             ;; consume one whitespace character following the object
-            (let ((c (%stream-peek-char s)))
-              (when (and (characterp c) (%rt-whitespace-p c)) (%stream-read-char s))))
+            (if (%rd-buffer s)
+                (let* ((buf (%rd-buffer s)) (rdf (%rd-fsbuf s buf)) (i (%rd-index s)))
+                  (when (%fx< i (%rd-end s))
+                    (when (eq (%syntax (%schar buf i)
+                                       (or *readtable* *standard-readtable*))
+                              :whitespace)
+                      (%rd-set-index s (%fx+ i 1)))))
+                (let ((c (%stream-peek-char s)))
+                  (when (and (characterp c) (%rt-whitespace-p c)) (%stream-read-char s)))))
           x))))
 
 (defun read (&optional stream (eof-error-p t) eof-value recursive-p)
@@ -537,9 +634,8 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
                (progn (%stream-unread-char s c) (return))))))
       (setq firstp nil)
       ;; a run of ordinary constituents read straight from a string stream
-      (when (and (eq (stream-kind s) :string-in) (null (stream-unread s))
-                 (%simple-string-p (stream-buffer s)))
-        (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (i i0) (end (stream-end s))
+      (when (%rd-buffer s)
+        (let* ((buf (%rd-buffer s)) (rdf (%rd-fsbuf s buf)) (i0 (%rd-index s)) (i i0) (end (%rd-end s))
                (ascii (%rt-ascii rt)))
           (do () ((>= i end))
             (let ((code (char-code (%schar buf i))))
@@ -553,7 +649,7 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
                   (progn (dotimes (j k) (%set-svref data (+ fp j) nil))
                          (%set-mdarray-fill esc (+ fp k)))
                   (dotimes (j k) (vector-push-extend nil esc))))
-            (setf (stream-index s) i))))
+            (%rd-set-index s i))))
       (setq c (%stream-read-char s)))
     escaped))
 
@@ -757,7 +853,7 @@ token is empty when the next character ends a token."
 
 (defun %read-list (s close allow-dot)
   "Read objects up to the character CLOSE; a list (NIL when reading is suppressed)."
-  (let ((items nil) (tail nil) (after-dot nil))
+  (let ((items nil) (last nil) (tail nil) (after-dot nil))
     (loop
       (let ((c (%read-char-after-whitespace s)))
         (when (eq c :eof) (%reader-eof s))
@@ -766,9 +862,9 @@ token is empty when the next character ends a token."
             (%reader-error s "nothing after . in list"))
           (return (if *read-suppress*
                       nil
-                      (let ((l (nreverse items)))
-                        (when tail (setf (cdr (last l)) (car tail)))
-                        l))))
+                      (progn
+                        (when tail (setf (cdr last) (car tail)))
+                        items))))
         (multiple-value-bind (x kind) (%read-object-at s c *readtable* allow-dot)
           (case kind
             (:eof (%reader-eof s))
@@ -778,7 +874,11 @@ token is empty when the next character ends a token."
                (when (or (null items) after-dot) (%reader-error s "misplaced . in list")))
              (setq after-dot t))
             (:object
-             (cond ((not after-dot) (push x items))
+             (cond ((not after-dot)
+                    ;; the list is made in order
+                    (let ((cell (list x)))
+                      (if last (setf (cdr last) cell) (setq items cell))
+                      (setq last cell)))
                    (*read-suppress*)
                    (tail (%reader-error s "more than one object after . in list"))
                    (t (setq tail (list x)))))))))))
@@ -786,21 +886,40 @@ token is empty when the next character ends a token."
 (defun %read-string-literal (s close)
   (let ((rt *readtable*))
     ;; in a string stream: the characters up to CLOSE, when no escape is among them
-    (when (and (eq (stream-kind s) :string-in) (null (stream-unread s))
-               (%simple-string-p (stream-buffer s)))
-      (let* ((buf (stream-buffer s)) (i0 (stream-index s)) (end (stream-end s)) (i i0)
-             (ascii (%rt-ascii rt)))
-        (declare (fixnum i0 end i))
-        (loop
-          (when (>= i end) (return))
-          (let* ((c (%schar buf i)) (code (char-code c)))
-            (cond ((eq c close)
-                   (setf (stream-index s) (+ i 1))
-                   (return-from %read-string-literal
-                     (if *read-suppress* nil (%simple-substring buf i0 i))))
-                  ((eq (if (< code 128) (svref ascii code) (%syntax c rt)) :single-escape)
-                   (return))
-                  (t (setq i (+ i 1))))))))
+    (when (%rd-buffer s)
+      (let* ((buf (%rd-buffer s)) (rdf (%rd-fsbuf s buf)) (i0 (%rd-index s)) (end (%rd-end s)) (i i0)
+             (ascii (%rt-ascii rt))
+             ;; after an escape: the characters so far, their number, and
+             ;; where the run of characters not yet in OUT starts
+             (out nil) (n 0) (run i0))
+        (declare (fixnum i0 end i n run))
+        (macrolet ((flush ()
+                     ;; the run RUN..I appended to OUT
+                     `(let ((k (- i run)))
+                        (declare (fixnum k))
+                        (when (> (+ n k 1) (%string-length out))
+                          (let ((new (%make-string (+ (* 2 (%string-length out)) k 1) #\Space)))
+                            (%string-copy new 0 out 0 n)
+                            (setq out new)))
+                        (%string-copy out n buf run k)
+                        (setq n (+ n k)))))
+          (loop
+            (when (>= i end) (return))
+            (let* ((c (%schar buf i)) (code (char-code c)))
+              (cond ((eq c close)
+                     (%rd-set-index s (+ i 1))
+                     (return-from %read-string-literal
+                       (cond (*read-suppress* nil)
+                             (out (flush) (%simple-substring out 0 n))
+                             (t (%simple-substring buf i0 i)))))
+                    ((eq (if (< code 128) (svref ascii code) (%syntax c rt)) :single-escape)
+                     ;; the escaped character is taken as it is
+                     (when (>= (+ i 1) end) (return))
+                     (unless out (setq out (%make-string (+ (- i i0) 32) #\Space)))
+                     (flush)
+                     (%set-schar out n (%schar buf (+ i 1)))
+                     (setq n (+ n 1) i (+ i 2) run i))
+                    (t (setq i (+ i 1)))))))))
     (let ((buf (%make-string 32 #\Space)) (n 0))
       (declare (fixnum n))
       (macrolet ((add (c)
@@ -824,7 +943,7 @@ token is empty when the next character ends a token."
 (defun %read-dispatch-macro (s disp)
   (let ((n nil) (c nil))
     (loop
-      (setq c (%stream-read-char s))
+      (setq c (%rd-char s))
       (when (eq c :eof) (%reader-eof s))
       (if (digit-char-p c)
           (setq n (+ (* (or n 0) 10) (digit-char-p c)))
@@ -847,6 +966,16 @@ token is empty when the next character ends a token."
 
 (defun %sharp-backslash (s c n)
   (declare (ignore c n))
+  ;; #\x of one character in a string stream
+  (when (and (%rd-buffer s) (not *read-suppress*))
+    (let* ((buf (%rd-buffer s)) (rdf (%rd-fsbuf s buf)) (i (%rd-index s))
+          (end (%rd-end s)))
+      (declare (fixnum i end))
+      (when (and (< i end)
+                 (or (>= (+ i 1) end)
+                     (member (%syntax (%schar buf (+ i 1)) *readtable*) '(:whitespace :terminating))))
+        (%rd-set-index s (+ i 1))
+        (return-from %sharp-backslash (%schar buf i)))))
   (let ((first (%stream-read-char s)))
     (when (eq first :eof) (%reader-eof s))
     (let ((next (%stream-peek-char s)))

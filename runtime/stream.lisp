@@ -41,7 +41,11 @@
   dirty             ; contents changed since the last write to the host
   native            ; host file name
   created           ; the file was created by OPEN (CLOSE :ABORT T deletes it)
-  (external-format :default))
+  (external-format :default)
+  ;; for the reader (runtime/read.lisp, %RD-FILE-TEXT): the text of a
+  ;; character input file whose octets are all ASCII, so that a character's
+  ;; index is its octet's position; :NONE for another file, NIL until asked
+  (text nil))
 (defun file-stream-octets (s) (%fsbuf-octets (file-stream-buf s)))
 (defun (setf file-stream-octets) (v s) (%set-fsbuf-octets (file-stream-buf s) v))
 (defun file-stream-pos (s) (%fsbuf-pos (file-stream-buf s)))
@@ -313,6 +317,13 @@ after the call."
 
 (defun %string-out-contents (s)
   "A fresh string of the contents of the :string-out stream S, which is emptied."
+  ;; (without earlier chunks: a copy of the buffer's characters)
+  (when (null (%instance-ref s 1))
+    (let ((r (%simple-substring (%instance-ref s +stream-buffer-slot+) 0 (%instance-ref s +stream-index-slot+))))
+      (%set-instance-ref s +stream-index-slot+ 0)
+      (%set-instance-ref s +stream-end-slot+ 0)
+      (%set-instance-ref s +stream-column-slot+ 0)
+      (return-from %string-out-contents r)))
   (let* ((n (stream-index s)) (before (or (stream-fd s) 0)) (r (%make-string (+ before n) #\Space)))
     (declare (fixnum n before))
     (when (stream-streams s)
@@ -865,6 +876,26 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
     (when (eq (stream-kind s) :gray)
       (return-from fresh-line (stream-fresh-line s)))
     (if (eql (%stream-column s) 0) nil (progn (write-char #\Newline s) t))))
+
+;; to a string output stream: the newline stored at the call site
+(define-compiler-macro terpri (&optional (stream nil))
+  (let ((s (gensym "S")))
+    `(let ((,s ,stream))
+       (if (%string-out-p ,s)
+           (progn (write-char #\Newline ,s) nil)
+           (locally (declare (notinline terpri)) (terpri ,s))))))
+
+;; a string output stream with characters in its buffer: its last one is
+;; looked at at the call site
+(define-compiler-macro fresh-line (&optional (stream nil))
+  (let ((s (gensym "S")) (i (gensym "I")))
+    `(let ((,s ,stream))
+       (if (and (%string-out-p ,s) (%fx> (%instance-ref ,s +stream-index-slot+) 0))
+           (let ((,i (%instance-ref ,s +stream-index-slot+)))
+             (if (eq (%schar (%instance-ref ,s +stream-buffer-slot+) (%fx- ,i 1)) #\Newline)
+                 nil
+                 (progn (write-char #\Newline ,s) t)))
+           (locally (declare (notinline fresh-line)) (fresh-line ,s))))))
 
 (defun %finish-output (s)
   (case (stream-kind s)

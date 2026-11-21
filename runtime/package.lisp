@@ -142,6 +142,36 @@
   (remhash name (%package-internals p))
   (remhash name (%package-externals p)))
 
+;;; The symbols and packages the reader finds by the name it has in a scratch
+;;; string, without making the name a string of its own: the value of the
+;;; key made of the N first characters of the simple string D in the EQUAL
+;;; table H (whose hash HASH is that of those characters), else NIL; and
+;;; whether there is one, or :UNKNOWN when a key of the same hash is not a
+;;; string the helper compares.
+(defun %region-gethash (h d n hash)
+  (if (eql (%ht h +ht-count+) 0)
+      (values nil nil)
+      (let ((i (%ht-region-index (%instance-slots h) d hash 0 n)))
+        (cond ((%fx>= i 0) (values (%svref (%ht h +ht-vals+) i) t))
+              ((eql i -2) (values nil :unknown))
+              (t (values nil nil))))))
+
+(defun %region-find-symbol (d n p)
+  "FIND-SYMBOL of the name made of the N first characters of the simple
+string D in the package P, without making the name: the symbol and its
+status, or NIL and :UNKNOWN when the tables cannot tell."
+  (let ((hash (%string-hash-range d 0 n)))
+    (multiple-value-bind (s found) (%region-gethash (%package-externals p) d n hash)
+      (cond ((eq found t) (values s :external))
+            (found (values nil :unknown))
+            (t (multiple-value-bind (s found) (%region-gethash (%package-internals p) d n hash)
+                 (cond ((eq found t) (values s :internal))
+                       (found (values nil :unknown))
+                       (t (dolist (u (%pkg p 2) (values nil nil))
+                            (multiple-value-bind (s found) (%region-gethash (%package-externals u) d n hash)
+                              (cond ((eq found t) (return (values s :inherited)))
+                                    (found (return (values nil :unknown))))))))))))))
+
 ;;; ------------------------------------------------------------
 ;;; creating packages
 ;;; ------------------------------------------------------------

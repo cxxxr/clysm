@@ -2946,6 +2946,31 @@ What is not as fast as intended, and why:
   same text as a simple string with `schar` is itself three times SBCL's
   time: the remaining factor is the cost of Lisp code in Wasm, not of the
   file. Opening and closing a 55 KB file costs about 10–18 µs.
+* **The reader** (`runtime/read.lisp`) reads tokens, strings and `#\x`
+  straight from a simple string between an index and an end: those of a
+  string input stream, or the text of a character input file whose octets
+  are all ASCII (`%rd-file-text`: decoded once, the first time the reader
+  asks, and kept in the stream's `text` slot, so that a character's index
+  is its octet's position and `read-char`, `unread-char` and
+  `file-position` of the stream agree with it; a file of other octets is
+  read character by character as before). A symbol's name is upcased into
+  a scratch string and looked up there, in the package's tables and those
+  of the packages it uses (`%region-find-symbol`, the hash of a range and
+  `ht-region-index`), and the package of `PKG:NAME` in the table of
+  packages, so that only a new symbol makes a string; any token of
+  constituents that cannot be a number (one beginning with a letter, or
+  without a decimal digit and not only dots: `+`, `*x*`, `&rest`, `1+` is
+  not) is a symbol read so, a lone dot is the consing dot, a string with
+  escapes is copied in runs, the syntax type and the reader macro of an
+  ASCII character are read at the call site, lists are made in order. The
+  reading loop reads an ASCII character of a file inline (`%fs-fast-char`).
+  Measured against the build before (2026-11-21, interleaved runs on one
+  slot): `read` of forms from a 7 KB file 3.3 → 1.4 times SBCL's time,
+  `b-read` 1.47 → 1.15, `i-read-stream` 1.55 → 1.05, `i-read-data` 1.48 →
+  1.21–1.27, `(a . b)` 2.8 → 1.2, `()` 1.8 → 1.15; `i-write-mix` 1.55 →
+  1.09–1.24 (`terpri` and `fresh-line` of a string output stream at the
+  call site, `get-output-stream-string` without earlier chunks one copy).
+  In `clysm script` the same benchmarks take 0.70–0.85 of their time.
 
 What makes the code fast:
 
@@ -3684,7 +3709,8 @@ What makes the code fast:
   and inlines call targets by feedback. `concatenate` of two or three
   strings, `string-upcase`/`-downcase` and `parse-integer` are direct;
   `format` compiles `~<...~:>` on an argument to `pprint-logical-block`;
-  the reader reads string streams without the accessors' type tests;
+  the reader reads string streams without the accessors' type tests (see
+  The reader, below Files);
   `find-package` of a symbol remembers the last one found. `gethash` and
   `(setf gethash)` of an existing entry are one call each of a Wasm helper
   (`ht-get`, `ht-put`; see below) that tests that the object is a hash table, finds
