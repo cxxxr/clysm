@@ -3893,7 +3893,49 @@ What makes the code fast:
   functions on lists (any number of lists), and `map` (to `nil` or a list)
   and the quantifiers over one sequence, with a function written in place
   are loops at the call site, where `#'name` is a direct call (`(mapcar #'+
-  a b)` adds inline) and a lambda is inline. Other mapping calls stay out of
+  a b)` adds inline) and a lambda is inline. So are (2026-11-22,
+  `runtime/hof.lisp`) `find-if`, `position-if`, `count-if`, `member-if`,
+  `assoc-if`, `remove-if`, `delete-if` and their `-not` forms, `find`,
+  `position`, `count`, `assoc`, `remove` and `delete` with `:key`, `:test`
+  or `:test-not`, and `reduce` of a lambda or `#'name` (with
+  `:initial-value` or `:key`, or of a list), over a list or any vector
+  (from its storage; a simple vector is its own, so no call is made), with
+  no `:start`, `:end`, `:from-end` or `:count` (those calls stay as they
+  are); `remove` of a vector goes out of line, and `remove` of a list shares
+  the elements after the last one removed (the list itself when none is).
+  A function that is not written in place is called from the loop, where
+  the engine can inline it (from the runtime's function it could not, in a
+  module loaded from source or a fasl). In the image, `#'name` of a
+  function of the runtime that a call does not open-code (`string=`,
+  `char-equal`; `*open-coded-function-p-hook*`, the compiler's primitives
+  and transforms) keeps the runtime's function, whose loop calls it within
+  the runtime's module: in a loop at the call site it was a call into
+  another module at each element (`(find s list :test #'string=)` in a
+  script 15 → 19 ms). The runtime's own code and the compiler's (packages
+  whose names begin with `CLYSM`, `%hof-user-code-p`) keep their calls: the
+  file is the last of the runtime, and the expanders are defined only for
+  the compiler (`%define-expander-functions`, `%define-image-compiler-macro`:
+  a shaken program leaves them and the functions their sources name out),
+  so the module of one export is 0.8 KB larger (4.498 MB) and the REPL
+  image 43 KB (9.86 MB). The loops over vectors of `map`, `every`, `some`
+  and the like take a simple vector without calling `%array-storage` and
+  `%array-total-offset` (a call into the runtime's module each time, in a
+  script): `v-go-closure` in a script 11 → 2 ms (compiled 3). A probe of
+  fifteen such calls (best of three, SBCL / before / after, ms): compiled
+  `find-if` of a lambda over a list 40 / 63 / 8, `find` with `:key #'car`
+  41 / 65 / 8, `count-if` 42 / 22 / 9, `assoc` with a lambda `:test` 29 /
+  24 / 11, `reduce` of a lambda 64 / 53 / 28, `member-if` 53 / 55 / 33,
+  `count-if :key #'cdr` 53 / 79 / 16, geometric mean against SBCL 0.88 →
+  0.39; in a script against compiled 1.27 → 1.14 (`assoc` 42 → 11,
+  `count-if` 38 → 9, `member-if` 79 → 32, `reduce` 77 → 28). The benchmark
+  files, new against before (best of three, one round; clysm's time,
+  compiled / in a script): `library` 0.944 / 0.991 (`v-assoc-member` 714 →
+  506, in a script 688 → 599; `v-find-adjustable` 129 → 78), `programs`
+  0.984 / 0.959 (`p-alist-plist` 42 → 36, `p-seq-vector` 58 → 36),
+  `control` 1.01 / 0.94-0.98, `suite`, `holdout`, `clos`, `gabriel` within
+  noise. `sort` with a key or a predicate stays a call (a merge sort at
+  each call site would be large): `(sort list (lambda ...) :key ...)` 1.75
+  times SBCL compiled. Other mapping calls stay out of
   line with `#'name` passed as a lambda of known arity (no `&rest` entry for
   `max`): a function holding several inline loops ran slower than with the
   calls (`p-seq-vector` 1.3-1.45), because V8 tiers a function up as a whole
