@@ -3979,6 +3979,55 @@ What makes the code fast:
   within noise. V8 folds such pairs when they are next to each other, and
   most unboxings (13000 of 21000) are of variables held boxed, which the
   types would have to change, not a peephole.
+* **Rarely taken paths in loops, probed** (2026-11-21, `build`-time probes
+  of one loop over 300 000 octets with one cold branch, SBCL in brackets):
+  no cold branch 38 ms [33]; a branch that calls an unknown function and
+  goes on 54 [40]; one that calls `warn` with three arguments 79 [52]; an
+  undeclared accumulator (generic `+`, its fallback a call) 62 [117]; a
+  loop of `(svref v i)` declared fixnum 46 against 27 at `(safety 0)` [25,
+  27]. The fallbacks Clysm generates itself (the overflow of fixnum
+  arithmetic, a subscript out of bounds, a failed type test) are already
+  out of the way: a hinted `br_if` to a block that calls the helper, or a
+  branch ending in `unreachable`, which V8 makes deferred blocks; hinting
+  the type tests (`%type-error`) as well changed nothing (46 → 46-49), nor
+  did testing a fixnum inline instead of calling `$fixnump` (V8 inlines
+  it); the cost of the declared fixnum is the test itself (`ref.test`,
+  `i31.get_s`, the range). What was not out of the way is user code: an IF
+  whose arm calls `error`, `cerror`, `warn`, `signal`, `break` or
+  `invoke-debugger` (or a function of the file found never to return) on
+  every way through it is now hinted the other way (the branch hints'
+  `cold-branch-p`, which also takes `warn`, `signal`, `break`,
+  `invoke-debugger`, a function of the file found never to return, and a
+  cold part anywhere in a node other than an IF, memoized in
+  `*cold-cache*`; an IF counts only when its test or both its arms do, so
+  that a COND whose last clause signals does not mark each earlier clause
+  likely, which made `b-deriv` 1.56 → 1.74), and V8 makes that arm a
+  deferred block, spilling there only: the `warn` probe 79 → 32-36 ms
+  [52]. An unknown call in a branch (54) is not known to be cold and keeps
+  its cost. `bench/suite`, `programs`, `gabriel`, `library`, `arith`,
+  `declared`, `io` (compiled; `library`, `io` in a script), apps and libs
+  within noise over two or three rounds each (the machine was loaded:
+  `b-deriv` 1.52-1.56 → 1.48-1.56, apps 1.31 → 1.26-1.31, libs 1.08-1.14 →
+  1.10-1.14); Lem's comparator 1.51-1.54 → 1.47-1.48.
+* **Large strings, design note (not done)**: a string is an `(array (mut
+  i32))`, four bytes a character, so one of more than 32 768 characters is
+  a large object for V8 (over 128 KB), allocated in pages of its own:
+  `(make-string 330000)` takes 0.30 ms (SBCL 0.075), an octet vector of
+  330 000 0.14 ms (SBCL 0.013), the cost of fresh pages rather than of the
+  collector (44 scavenges of 0.08 ms in 400 such strings). Babel's
+  `octets-to-string` spends 11 of its 35-40 ms there. Strings of 8-bit
+  storage would make such strings a quarter of the size, but CL lets any
+  character be stored into a string made as CHARACTER (Babel's, and
+  `make-string`'s default), so the 8-bit storage would have to be widened
+  on the first store of a character beyond 255: the string becomes a
+  header over a storage that can be replaced, every inline `char`/`schar`
+  gains a load and a second storage kind to test (`:string` /
+  `:string8`), and the runtime's string functions (the reader, FORMAT,
+  `string=`, the hashes, cl-ppcre's scanners through them) take two
+  storages. Expected: 8 of Babel's 35-40 ms (`l-babel` about 1.45 → 1.35),
+  against a few percent on every program that reads strings; not worth it
+  as such. An 8-bit storage for BASE-STRING only (where the element type
+  says so) is cheaper but nothing measured here makes base strings.
 
 ### Declared code, and SBCL at its best policy
 
