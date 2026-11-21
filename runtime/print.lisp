@@ -28,6 +28,15 @@ file when it is loaded (SBCL keeps them EQ in the whole file).")
   "While LOAD reads a compiled file: an EQL hash table of the numbers of its
 uninterned symbols to the symbols (%FASL-GENSYM).")
 
+(defvar *fasl-symbol-numbers* nil
+  "While COMPILE-FILE writes a compiled file: an EQ hash table of the
+symbols in the constants of its entries, to their numbers (%FASL-BIN-ENCODE).")
+(defvar *fasl-load-symbols* nil
+  "While LOAD reads a compiled file: (VECTOR), its symbols found so far by number.  A
+symbol is found again in each entry that has it (a package may change between
+entries), unless it is still in the package that it was found in (its home
+package: then the same name in it is the same symbol).")
+
 (defun %fasl-gensym (n name)
   "The uninterned symbol number N of the compiled file being loaded."
   (if *fasl-load-gensyms*
