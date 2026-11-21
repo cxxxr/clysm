@@ -761,7 +761,7 @@ object X that is not an instance, or -1 (another kind of object)."
   "The class of X, which is not an instance, whose %BUILTIN-INDEX is I."
   `(let ((i ,i))
      (declare (fixnum i))
-     (or (and (%fx>= i 0) (%svref *builtin-classes* i)) (class-of ,x))))
+     (or (and (%fx>= i 0) (%svref (load-time-value *builtin-classes* t) i)) (class-of ,x))))
 
 (defun %eql-key (markers x)
   "The cache key of the argument X for a parameter with the EQL specializer
@@ -2649,16 +2649,18 @@ instances and fixnums; T (a reader or writer that DEFCLASS defines): only
 instances."
     (if (eq only t)
         `(if (%instancep ,x) (%instance-layout ,x) -1)
+        ;; (CLASS-OF's cache is one vector, filled again, never replaced:
+        ;; a constant of the module, not the value of the variable)
         `(if (%instancep ,x)
              (%instance-layout ,x)
-             (let ((i (cond ((fixnump ,x) 0)
-                            ,@(unless only
-                                `(((%simple-string-p ,x) 6)
-                                  ((null ,x) 2)
-                                  ((symbolp ,x) (if (eq (%symbol-package ,x) *keyword-package*) 3 4))))
-                            (t -1))))
-               (declare (fixnum i))
-               (or (and (%fx>= i 0) (%svref *builtin-classes* i)) -1)))))
+             (let ((bv (load-time-value *builtin-classes* t)))
+               (or (cond ((fixnump ,x) (%svref bv 0))
+                         ,@(unless only
+                             `(((%simple-string-p ,x) (%svref bv 6))
+                               ((null ,x) (%svref bv 2))
+                               ((symbolp ,x) (%svref bv (if (eq (%symbol-package ,x) *keyword-package*) 3 4)))))
+                         (t nil))
+                   -1)))))
 
   (defun %gf-site-expansion (form args name n &optional accessor)
     (if (not (= (length args) n))
