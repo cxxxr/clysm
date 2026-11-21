@@ -91,7 +91,8 @@ bits; any other value is an i31 (no test of overflow or of the type)."
               (tstruct-ref-code node :f64))
       (ecase rep
                      (:i64 (cond ((ty-int32-p (node-ty node)) `(,@(cg-rep node :i32) :i64.extend_i32_s))
-                                 ((ty-int64-p (node-ty node)) (i64-op-code node))))
+                                 ((ty-int64-p (node-ty node))
+                                  (or (i64-op-code node) (fused-i64-rep-code node)))))
                      (:f64 (if (ty-double-p (node-ty node))
                                (f64-op-code node)
                                ;; arithmetic that may give a double, taken as
@@ -508,10 +509,27 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
         (logior (both :i64.or))
         (logxor (both :i64.xor))
         (ash (let ((c (and b (const-int-node b))))
-               (when (and c (i64-arg-p a) (<= -64 c 63))
-                 (if (>= c 0)
-                     `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,c) :i64.shl)
-                     `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,(min 63 (- c))) :i64.shr_s)))))
+               (cond ((and c (i64-arg-p a) (<= -64 c 63))
+                      (if (>= c 0)
+                          `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,c) :i64.shl)
+                          `(,@(cg-rep a :i64) ,@(cg-effect b) (:i64.const ,(min 63 (- c))) :i64.shr_s)))
+                     ;; a count of a known range (the result is within 64
+                     ;; bits: a left shift loses no bit); a right shift by 63
+                     ;; at most (Wasm takes the count modulo 64)
+                     ((and b (i64-arg-p a) (ty-int32-p (node-ty b)))
+                      (let ((lo (ty-lo (node-ty b))) (hi (ty-hi (node-ty b)))
+                            (x (new-local :i64)) (n (new-local :i32)))
+                        (flet ((right () `((:local.get ,x) (:i32.const 0) (:local.get ,n) :i32.sub (:local.tee ,n)
+                                           (:i32.const 63) (:local.get ,n) (:i32.const 63) :i32.lt_u :select
+                                           :i64.extend_i32_u :i64.shr_s))
+                               (left () `((:local.get ,x) (:local.get ,n) :i64.extend_i32_u :i64.shl)))
+                          (let ((shift (cond ((and lo (>= lo 0) hi (<= hi 63)) (left))
+                                             ((and hi (<= hi 0)) (right))
+                                             ((and hi (<= hi 63))
+                                              `((:local.get ,n) (:i32.const 0) :i32.ge_s
+                                                (:if nil :i64 ,(left) ,(right)))))))
+                            (when shift
+                              `(,@(cg-rep a :i64) (:local.set ,x) ,@(cg-rep b :i32) (:local.set ,n) ,@shift)))))))))
         (t nil))
       ;; the numeric library (below)
       (numeric-i64-op-code node)))))
@@ -1288,6 +1306,7 @@ type, where the type of the value shows it holds), else NIL."
                          (ty-single-p (node-ty a)) (ty-single-p (node-ty b))))
                 `(,@(f64-arg-code a) ,@(f64-arg-code b)
                   ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne))))
+               ((dual-cmp-code node))
                ((spec-cmp-code node)))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
@@ -1357,6 +1376,34 @@ doubles, else the generic comparison; or NIL."
                   ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne))
                   (:br ,done))
                 ,@(funcall (prim-fn p) (list (fdual-materialize-code ba fa) (fdual-materialize-code bb fb)))))))))))
+
+;;; A comparison of an integer accumulator (an i64 beside its eqref local,
+;;; below) with a number: in i64 when both are integers within 64 bits, so
+;;; that the accumulator is not made into an integer (a loop's counter
+;;; compared with its limit); the generic comparison otherwise.
+(defun dual-lref-p (node)
+  (and (eq (car node) :lref) (dual-local (second node)) (eq (car (get-loc (second node))) :local)))
+
+(defun dual-cmp-code (node)
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (when (and (spec-cmp-node-p node) (not *no-fuse*) (or (dual-lref-p a) (dual-lref-p b))
+               (logtest (ty-bits (node-ty a)) +k-int+) (logtest (ty-bits (node-ty b)) +k-int+))
+      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+            (ba (new-local)) (va (new-local :i64)) (bb (new-local)) (vb (new-local :i64))
+            (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
+        (when p
+          (flet ((operand (n bl vl)
+                   (if (dual-lref-p n)
+                       `((:local.get ,(cdr (get-loc (second n)))) (:local.set ,bl)
+                         (:local.get ,(dual-local (second n))) (:local.set ,vl))
+                       `(,@(cg n) (:local.set ,bl)))))
+            `(,@(operand a ba va) ,@(operand b bb vb)
+              (:block ,done :i32
+                (:block ,slow nil
+                  ,@(dual-pair-i64-code ba va slow) ,@(dual-pair-i64-code bb vb slow)
+                  ,(ecase name (< :i64.lt_s) (> :i64.gt_s) (<= :i64.le_s) (>= :i64.ge_s) (= :i64.eq) (/= :i64.ne))
+                  (:br ,done))
+                ,@(funcall (prim-fn p) (list (dual-materialize-code ba va) (dual-materialize-code bb vb)))))))))))
 
 (defun typed-divmod-code (node)
   "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a
@@ -1601,6 +1648,14 @@ computed for a division by 1 unless NEED-REM)."
   (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
     (case name
       ((mod rem truncate floor)
+       ;; MOD and FLOOR by a power of two: the low bits, a shift
+       (let ((k (and (= (length args) 2) (member name '(mod floor)) (i64-arg-p a) (const-int-node b))))
+         (when (and k (> k 0) (= (logcount k) 1) (< k (expt 2 63)))
+           (return-from numeric-i64-op-code
+             `(,@(cg-rep a :i64) ,@(cg-effect b)
+               ,@(if (eq name 'mod)
+                     `((:i64.const ,(1- k)) :i64.and)
+                     `((:i64.const ,(1- (integer-length k))) :i64.shr_s))))))
        (when (and (= (length args) 2) (i64-division-args-p a b))
          (let ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
                (t1 (new-local :i64)) (t2 (new-local :i64)))
@@ -1628,6 +1683,8 @@ eqref), the local of the remainder and its representation; or NIL."
            (:local.get ,q) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
            (:if nil :eqref ((:local.get ,q) :i32.wrap_i64 :ref.i31) ((:local.get ,q) (:call :i64-int))))
          r :i64))))
+  (multiple-value-bind (c rl) (spec-divmod-code vnode)
+    (when c (return-from numeric-divmod-code (values c rl nil))))
   (when (float-divmod-node-p vnode)
     (let ((name (node-op-name vnode)))
       (cond ((member name '(floor truncate ceiling round))
@@ -1636,6 +1693,50 @@ eqref), the local of the remainder and its representation; or NIL."
             ((member name '(ffloor fceiling ftruncate fround))
              (multiple-value-bind (code r) (typed-float-divmod vnode :fquotient t)
                (values `(,@code (:struct.new :double)) r :f64)))))))
+
+;;; A division of a value of unknown type (a sum of slots, a parameter
+;;; declared INTEGER) by a constant fixnum, both values bound
+;;; (MULTIPLE-VALUE-BIND of (FLOOR (+ sec offset) 86400)): tried in i64 (the
+;;; dividend a fused tree, or decoded), the generic division otherwise.
+(defun spec-divmod-code (vnode)
+  (when (and (not *no-fuse*) (member (car vnode) '(:call :prim))
+             (member (node-op-name vnode) '(floor truncate ceiling round))
+             (= (length (cddr vnode)) 2))
+    (let* ((a (third vnode)) (b (fourth vnode))
+           (k (and (eq (car b) :const) (integerp (second b)) (second b)))
+           (mode (position (node-op-name vnode) '(truncate floor ceiling round))))
+      (when (and k (/= k 0) (/= k -1) (< (abs k) +char-tag+)
+                 (logtest (ty-bits (node-ty a)) +k-int+) (not (ty-int64-p (node-ty a))))
+        (let* ((x (new-local :i64)) (y (new-local :i64)) (q (new-local :i64)) (r (new-local :i64))
+               (t1 (new-local :i64)) (t2 (new-local :i64)) (rl (new-local)) (e (new-local))
+               (done (gensym "DIVQ")) (fail (gensym "DIVSLOW"))
+               (tree (and (fusable-op-node-p a) (not (eq (fused-plan a nil) :no)))))
+          (multiple-value-bind (leaves i64-code generic)
+              (if tree
+                  (fused-parts a)
+                  (values `(,@(cg a) (:local.set ,e))
+                          (lambda (fail) (i64-decode-code `((:local.get ,e)) fail))
+                          `((:local.get ,e))))
+            (values
+                    `(,@leaves
+                      (:block ,done :eqref
+                        (:block ,fail nil
+                          ,@(funcall i64-code fail) (:local.set ,x)
+                          (:i64.const ,k) (:local.set ,y)
+                          (:local.get ,x) (:local.get ,y) :i64.div_s (:local.set ,q)
+                          (:local.get ,x) (:local.get ,y) :i64.rem_s (:local.set ,r)
+                          ,@(int-divmod-adjust-code :i64 mode x y q r t1 t2)
+                          ;; (the remainder is smaller than the divisor: a fixnum)
+                          (:local.get ,r) :i32.wrap_i64 :ref.i31 (:local.set ,rl)
+                          (:local.get ,q) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                          (:if nil :eqref ((:local.get ,q) :i32.wrap_i64 :ref.i31) ((:local.get ,q) (:call :i64-int)))
+                          (:br ,done))
+                        ,@generic ,@(cg b)
+                        (:call ,(intern (format nil "DIVMOD~D" mode) :keyword))
+                        (:global.get :mv-count) (:i32.const 1) :i32.gt_s
+                        (:if nil :eqref ((:global.get :mv-buf) (:i32.const 0) (:array.get :vector)) ,(nil-code))
+                        (:local.set ,rl)))
+                    rl)))))))
 
 ;;; ------------------------------------------------------------
 ;;; Integer accumulators
@@ -1657,41 +1758,79 @@ eqref), the local of the remainder and its representation; or NIL."
 
 
 (defun dual-uses (lv)
-  "How LV is used in the function being compiled: the number of its
-assignments from integer arithmetic, and of its uses other than as an operand
-of those.  (Each other use after an update makes the integer, so the pair of
-locals pays only for a variable that is updated more than it is looked at:
-a sum or a hash value, not a loop index.)"
-  (let ((lam (fstate-lam *fs*)))
+  "How LV is used in the function being compiled: a vector of the number of
+its assignments from integer arithmetic, of its uses other than as an
+operand of those, of those assignments within loops, of the uses within
+loops other than as an operand of integer arithmetic or of a comparison
+(which read the i64), and of the assignments within loops by arithmetic
+with an operand known to be an integer.  (Each other use after an update
+makes the integer, so the pair of locals pays only for a variable that is
+updated more than it is looked at: a sum or a hash value, not a loop index.)"
+  (let ((lam (fstate-lam *fs*)) (depth 0))
     (unless (eq lam *dual-uses-lam*)
       (clrhash *dual-uses*)
       (setf *dual-uses-lam* lam)
-      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (cons 0 0))))
+      (labels ((entry (v) (or (gethash v *dual-uses*) (setf (gethash v *dual-uses*) (vector 0 0 0 0 0))))
+               (int-leaf-p (v n)
+                 ;; the tree N has an operand other than V known to be an integer
+                 (if (fusable-op-node-p n)
+                     (some (lambda (a) (int-leaf-p v a)) (cddr n))
+                     (and (not (and (eq (car n) :lref) (eq (second n) v)))
+                          (if (eq (car n) :const)
+                              (integerp (second n))
+                              (ty-only-p (node-ty n) +k-int+)))))
+               (ref (v leaf)
+                 ;; LEAF: an operand of arithmetic or of a comparison
+                 (let ((e (entry v)))
+                   (incf (svref e 1))
+                   (when (and (> depth 0) (not leaf)) (incf (svref e 3)))))
                (operands (v n)
-                 ;; the references of V among the leaves of the arithmetic tree N are not other uses
-                 (cond ((and (eq (car n) :lref) (eq (second n) v)) nil)
+                 ;; the references of V among the leaves of its update N are not other uses
+                 (cond ((eq (car n) :lref) (unless (eq (second n) v) (ref (second n) t)))
                        ((fusable-op-node-p n) (dolist (a (cddr n)) (operands v a)))
                        (t (walk n))))
                (walk (n)
                  (when (consp n)
                    (case (car n)
-                     (:lref (incf (cdr (entry (second n)))))
+                     (:lref (ref (second n) nil))
                      (:lset (let ((v (second n)) (e (third n)))
                               (if (and (eq (car e) :prim) (fusable-op-node-p e))
-                                  (progn (incf (car (entry v))) (operands v e))
+                                  (let ((en (entry v)))
+                                    (incf (svref en 0))
+                                    (when (> depth 0)
+                                      (incf (svref en 2))
+                                      (when (int-leaf-p v e) (incf (svref en 4))))
+                                    (operands v e))
                                   (walk e))))
-                     (t (map-subnodes #'walk n))))))
+                     (:tagbody (incf depth) (map-subnodes #'walk n) (decf depth))
+                     (t (if (or (fusable-op-node-p n) (spec-cmp-node-p n))
+                            (dolist (a (cddr n)) (if (eq (car a) :lref) (ref (second a) t) (walk a)))
+                            (map-subnodes #'walk n)))))))
         (walk (lam-body lam))))
-    (or (gethash lv *dual-uses*) (cons 0 0))))
+    (or (gethash lv *dual-uses*) (vector 0 0 0 0 0))))
 
 (defun note-dual-var (lv &optional param)
   "Called when LV gets its location (BIND-NEW-VAR-CODE, PARAM-SETUP-CODE).
 A parameter's first value may be anything (its eqref local holds it): it is
 an accumulator when its assignments are integer arithmetic."
   (if (and (lvar-mutated lv) (not (lvar-captured lv)) (not (lvar-special lv)) (null (lvar-rep lv))
-           (or param (and (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)))
-           (let ((uses (dual-uses lv)))
-             (and (> (car uses) 0) (<= (cdr uses) (car uses)))))
+           (let ((uses (dual-uses lv)) (ty (lvar-type lv)))
+             (and (> (svref uses 0) 0)
+                  (if (or param (and ty (ty-only-p ty +k-int+)))
+                      (<= (svref uses 1) (svref uses 0))
+                      ;; a number that may be an integer (what is not one
+                      ;; goes to its eqref local), updated in a loop only by
+                      ;; arithmetic with an operand known to be an integer,
+                      ;; more often than it is looked at there (other than
+                      ;; as an operand of arithmetic or of a comparison): a
+                      ;; counter from a value of unknown type.  (Not one
+                      ;; also updated by values of unknown types, whose
+                      ;; updates are fixnums most often: the code of the
+                      ;; i64 and f64 attempts of each, b-catch 36 -> 39 ms;
+                      ;; nor one that may be something else, as the NIL a
+                      ;; LOOP's FOR J = starts with: p-loop-macros 66 -> 78 ms.)
+                      (and (or (null ty) (= (ty-bits ty) +k-all+) (and (logtest (ty-bits ty) +k-int+) (ty-only-p ty +k-number+)))
+                           (> (svref uses 2) 0) (= (svref uses 4) (svref uses 2)) (< (svref uses 3) (svref uses 2)))))))
       (setf (gethash lv *dual-vars*) (new-local :i64))
       (remhash lv *dual-vars*)))
 
@@ -1902,15 +2041,24 @@ operation); NIL otherwise.  EFFECT: no value is left."
           `(,@(spec-store-code expr b f)
             ,@(unless effect (fdual-materialize-code b f))))))
     (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*) (fusable-op-node-p expr)
-               (not (eq (fused-plan expr nil) :no)))
-      (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (done (gensym "ACC")))
-        (multiple-value-bind (leaves i64-code generic) (fused-parts expr)
+               (not (eq (fused-plan expr nil) :no))
+               ;; (a double among the operands: the arithmetic of doubles)
+               (not (labels ((dbl (n) (if (fusable-op-node-p n)
+                                          (some #'dbl (cddr n))
+                                          (eq (spec-leaf-class n) :d))))
+                      (dbl expr))))
+      (let ((b (cdr (get-loc lv))) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (done (gensym "ACC")))
+        (multiple-value-bind (leaves i64-code generic recs) (fused-parts expr)
           `(,@leaves
             (:block ,done nil
               (:block ,fail nil
                 ,@(funcall i64-code fail)
                 (:local.set ,v) (:ref.null :eq) (:local.set ,b)
                 (:br ,done))
+              ;; doubles (an accumulator that is not an integer)
+              ,@(let ((code (let ((*fused-rest* recs)) (fused-f64-code expr fail2 t))))
+                  (when code
+                    `((:block ,fail2 nil ,@code (:struct.new :double) (:local.set ,b) (:br ,done)))))
               ,@generic
               (:local.set ,b))
             ,@(unless effect (dual-materialize-code b v))))))))

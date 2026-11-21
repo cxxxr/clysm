@@ -43,7 +43,8 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
 (defparameter *fusable-ops*
   '((+ . :add) (- . :sub) (* . :mul) (logand . :and) (logior . :or) (logxor . :xor) (1+ . :add) (1- . :sub)))
 (defparameter *fused-helpers*
-  '((:add . :add) (:sub . :sub) (:mul . :mul) (:and . :logand2) (:or . :logior2) (:xor . :logxor2)))
+  '((:add . :add) (:sub . :sub) (:mul . :mul) (:and . :logand2) (:or . :logior2) (:xor . :logxor2)
+    (:mod . :mod) (:rem . :rem)))
 (defvar *no-fuse* nil)
 (defvar *fused-rest* nil "the records of the leaves not yet visited by the walk in progress")
 
@@ -51,17 +52,25 @@ and returns instructions.  KIND is :value (eqref) or :test (i32)."
   "(ASH x constant) with the count within -63 .. 63."
   (and (eq (car node) :prim) (eq (prim-name (second node)) 'ash) (= (length (cddr node)) 2)
        (let ((c (fourth node))) (and (eq (car c) :const) (integerp (second c)) (<= -63 (second c) 63)))))
+(defun fusable-divisor-node-p (node)
+  "(MOD x constant) or (REM x constant), the constant within 64 bits and not zero."
+  (and (eq (car node) :prim) (member (prim-name (second node)) '(mod rem)) (= (length (cddr node)) 2)
+       (let ((c (fourth node)))
+         (and (eq (car c) :const) (typep (second c) '(signed-byte 64)) (/= (second c) 0)))))
 (defun fusable-op-node-p (node)
   (and (eq (car node) :prim)
        (let ((name (prim-name (second node))) (n (length (cddr node))))
          (or (and (member name '(+ - * logand logior logxor)) (= n 2))
              (and (member name '(1+ 1-)) (= n 1))
-             (fusable-ash-node-p node)))))
+             (fusable-ash-node-p node)
+             (fusable-divisor-node-p node)))))
 (defun fused-operands (node)
   "The operation (:add ... or :ash) and the two operands of a fusable node."
   (let ((name (prim-name (second node))))
     (cond ((eq name 'ash) (values :ash (third node) (fourth node)))
           ((member name '(1+ 1-)) (values (cdr (assoc name *fusable-ops*)) (third node) '(:const 1)))
+          ((eq name 'mod) (values :mod (third node) (fourth node)))
+          ((eq name 'rem) (values :rem (third node) (fourth node)))
           (t (values (cdr (assoc name *fusable-ops*)) (third node) (fourth node))))))
 
 (defun fused-int-node-p (node)
@@ -123,7 +132,9 @@ integer within 64 bits; anything else branches to FAIL."
             (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
             (:local.get ,v) :i64.extend_i32_s)
            ;; an integer within 64 bits that is not a fixnum: one call
-           ;; (out of the way of the loop's registers), -2^63 for anything else
+           ;; (out of the way of the loop's registers: inline, the test of
+           ;; a bignum made fixnum code slower, p-queens 149 -> 168 ms),
+           ;; -2^63 for anything else
            ((:local.get ,e) (:call :wide-i64) (:local.tee ,w) (:i64.const ,(- (expt 2 63))) :i64.eq
             (:br_if ,fail) (:local.get ,w))))))
 
@@ -162,6 +173,23 @@ branching to FAIL when that is not possible.  The leaves are taken from
                           (t `(,@(fused-i64-code a fail nil) (:local.tee ,x) (:i64.const ,c) :i64.shl (:local.tee ,r)
                                (:i64.const ,c) :i64.shr_s (:local.get ,x) :i64.ne (:br_if ,fail)
                                (:local.get ,r))))))
+                 ((member op '(:mod :rem))
+                  ;; by a constant: exact (a power of two of MOD: the low bits,
+                  ;; so the operand is needed modulo 2^64 only)
+                  (let* ((k (second b))
+                         (mask (and (eq op :mod) (> k 0) (= (logcount k) 1)))
+                         (r (new-local :i64))
+                         (ca (fused-i64-code a fail mask)))
+                    (pop *fused-rest*)    ; (the constant's leaf, after A's)
+                    (if mask
+                        `(,@ca (:i64.const ,(1- k)) :i64.and)
+                        `(,@ca (:i64.const ,k) :i64.rem_s
+                          ,@(when (eq op :mod)
+                              ;; a remainder of the sign opposite to the divisor's: plus the divisor
+                              `((:local.set ,r) (:local.get ,r) (:i64.const ,k) :i64.add (:local.get ,r)
+                                (:local.get ,r) :i64.eqz :i32.eqz
+                                (:local.get ,r) (:i64.const ,k) :i64.xor (:i64.const 0) :i64.lt_s :i32.and
+                                :select))))))
                  ((member op '(:and :or :xor))
                   ;; under a mask the other operand is needed modulo 2^64 only
                   (let* ((wrap-a (or wrap (and (eq op :and) (fused-mask-p b))))
@@ -208,6 +236,9 @@ branching to FAIL when that is not possible.  The leaves are taken from
   (and (not *no-fuse*) (fusable-op-node-p node)
        (some (lambda (n) (or (fusable-op-node-p n)
                              (and (eq (car n) :lref) (dual-local (second n)))
+                             ;; a constant beyond the fixnums (#xFFFFFFFF, 2^32)
+                             (and (eq (car n) :const) (typep (second n) '(signed-byte 64))
+                                  (not (<= (- +char-tag+) (second n) (1- +char-tag+))))
                              (float-quotient-node-p n)))
              (cddr node))
        (not (eq (fused-plan node nil) :no))))
@@ -259,7 +290,12 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                          (single-float (values `((:f64.const ,(coerce v 'double-float))) :int))
                          ((signed-byte 53) (values `((:f64.const ,(coerce v 'double-float))) :int))
                          (t nil))))
-             ((:dual :fdiv) nil)
+             ;; an integer accumulator holding a double in its eqref local
+             (:dual (when (logtest (ty-bits (node-ty leaf)) +k-double+)
+                      (values `((:local.get ,(first locs)) (:ref.test :double) :i32.eqz (:br_if ,fail)
+                                (:local.get ,(first locs)) (:ref.cast! :double) (:struct.get :double 0))
+                              t)))
+             (:fdiv nil)
              (:i64 (values `((:local.get ,(first locs)) :f64.convert_i64_s) :int))
              (:eqref (if (logtest (ty-bits (node-ty leaf)) +k-double+)
                          (values `((:local.get ,(first locs)) (:ref.test :double) :i32.eqz (:br_if ,fail)
@@ -297,6 +333,22 @@ left, the value is stored there."
           ,@generic
           ,@(when target `((:local.set ,(car target))))
           ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
+
+;;; A tree known to give an integer within 64 bits wanted as an i64 (a
+;;; LOGAND with a mask, a MOD by a constant) whose operands are not all of
+;;; known types: the fast path's i64, else the generic code's integer
+(defun fused-i64-rep-code (node)
+  (when (and (not *no-fuse*) (fusable-op-node-p node) (ty-int64-p (node-ty node))
+             (not (eq (fused-plan node nil) :no)))
+    (let ((done (gensym "FUSED")) (fail (gensym "SLOW")))
+      (multiple-value-bind (leaves i64-code generic) (fused-parts node)
+        `(,@leaves
+          (:block ,done :i64
+            (:block ,fail nil
+              ,@(funcall i64-code fail)
+              (:br ,done))
+            ,@generic
+            ,@(unbox-rep-code :i64 (node-ty node))))))))
 
 ;;; Arithmetic on doubles of unknown type.  A tree of + - * / (and SQRT)
 ;;; whose operands the compiler cannot type (structure slots, list elements,
@@ -3458,24 +3510,8 @@ anything else branches to SLOW.  Uses the i32 local V."
         (fop (ecase opcode (0 :f64.add) (1 :f64.sub) (2 :f64.mul) (3 :f64.div))))
     (flet ((finite-check (r sub zero ne)
              `((:local.get ,r) (:local.get ,r) ,sub ,zero ,ne (:br_if slow))))
-      `(,@(fixnum-pair-code
-           (ecase opcode
-             ((0 1) `((:local.get x) (:local.get y) ,(if (= opcode 0) :i32.add :i32.sub) (:local.tee x)
-                      (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
-                      (:if nil nil ((:local.get x) :ref.i31 :return))
-                      (:local.get x) :i64.extend_i32_s (:call :i64-int) :return))
-             (2 `((:local.get x) :i64.extend_i32_s (:local.get y) :i64.extend_i32_s :i64.mul (:local.tee r)
-                  (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-                  (:if nil nil ((:local.get r) :i32.wrap_i64 :ref.i31 :return))
-                  (:local.get r) (:call :i64-int) :return))
-             (3 `((:local.get y)
-                  (:if nil nil
-                       ((:local.get x) (:local.get y) :i32.rem_s :i32.eqz
-                        (:if nil nil ((:local.get x) :i64.extend_i32_s (:local.get y) :i64.extend_i32_s :i64.div_s
-                                      (:call :i64-int) :return))))))))
-        ;; complex numbers of floats: the Lisp functions for complex numbers
-        ,@(complex-arith-code (ecase opcode (0 'clysm-sys::%complex-add) (1 'clysm-sys::%complex-sub)
-                                (2 'clysm-sys::%complex-mul) (3 'clysm-sys::%complex-div)))
+      ;; (two fixnums: done by the front helper, which calls this one)
+      `(
         (:block slow nil
           ,@(num-decode-code 0 'xa 'da 'ka 'slow)
           ,@(num-decode-code 1 'xb 'db 'kb 'slow)
@@ -3515,6 +3551,9 @@ anything else branches to SLOW.  Uses the i32 local V."
           (:local.get dr) :f32.demote_f64 (:local.set fr)
           ,@(finite-check 'fr :f32.sub '(:f32.const 0) :f32.ne)
           (:local.get fr) (:struct.new :single) :return)
+        ;; complex numbers of floats: the Lisp functions for complex numbers
+        ,@(complex-arith-code (ecase opcode (0 'clysm-sys::%complex-add) (1 'clysm-sys::%complex-sub)
+                                (2 'clysm-sys::%complex-mul) (3 'clysm-sys::%complex-div)))
         ;; integers beyond 64 bits (or a result beyond): the bignum helpers
         ,@(when (< opcode 3)
             `((:local.get 0) (:call :integerp)
@@ -3613,6 +3652,14 @@ f64s in locals DA and DB (it may branch to SLOW)."
          ,@(f64-not-finite-code (ecase opcode (0 '+) (1 '-) (2 '*) (3 '/)) 'dr)
          (:br_if slow)
          (:local.get dr) (:struct.new :double) :return))
+    ;; integers within 64 bits (fixnums, or bignums holding their value):
+    ;; the sum or difference when it fits
+    ,@(when (member opcode '(0 1))
+        `((:block slow nil
+            ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+            ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
+            ,@(i64-checked-op-code (if (= opcode 0) :add :sub) 'xa 'xb 'r 'slow)
+            (:local.get r) (:call :i64-int) :return)))
     (:local.get 0) (:local.get 1) (:return_call ,gen)))
 
 (macrolet ((arith (name gen opcode lisp-fn)
@@ -3620,7 +3667,8 @@ f64s in locals DA and DB (it may branch to SLOW)."
                 (defhelper ,gen :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (xa :i64) (xb :i64)
                                        (ka :i32) (kb :i32) (da :f64) (db :f64) (dr :f64) (fr :f32) (e :eqref))
                   (cons :progn-marker (arith-helper-body ,opcode ',lisp-fn)))
-                (defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (da :f64) (db :f64) (dr :f64))
+                (defhelper ,name :ee-e ((x :i32) (y :i32) (r :i64) (v :i32) (da :f64) (db :f64) (dr :f64)
+                                       (xa :i64) (xb :i64) (ka :i32))
                   (cons :progn-marker (arith-front-body ,opcode ,gen))))))
   (arith :add :add-gen 0 clysm-sys::%generic-add)
   (arith :sub :sub-gen 1 clysm-sys::%generic-sub)
@@ -3675,16 +3723,21 @@ f64s in locals DA and DB (it may branch to SLOW)."
 (defun compare-front-body (iop fop gen)
   `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,iop :return))
     ,@(double-fast-path-code `((:local.get da) (:local.get db) ,fop :return))
+    ;; integers within 64 bits
+    (:block slow nil
+      ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+      ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
+      (:local.get xa) (:local.get xb) ,(if (eq iop :i32.lt_s) :i64.lt_s :i64.eq) :return)
     (:local.get 0) (:local.get 1) (:return_call ,gen)))
 
 (defhelper :lt-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
   (cons :progn-marker (compare-helper-body :i64.lt_s :f64.lt 'clysm-sys::%generic-lt)))
-(defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
+(defhelper :lt :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64) (xa :i64) (xb :i64) (ka :i32))
   (cons :progn-marker (compare-front-body :i32.lt_s :f64.lt :lt-gen)))
 
 (defhelper :num-eq-gen :ee-i ((x :i32) (y :i32) (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64))
   (cons :progn-marker (compare-helper-body :i64.eq :f64.eq 'clysm-sys::%generic-num-eq)))
-(defhelper :num-eq :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64))
+(defhelper :num-eq :ee-i ((x :i32) (y :i32) (v :i32) (da :f64) (db :f64) (xa :i64) (xb :i64) (ka :i32))
   (cons :progn-marker (compare-front-body :i32.eq :f64.eq :num-eq-gen)))
 
 ;;; dynamic binding

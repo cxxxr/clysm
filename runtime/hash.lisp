@@ -289,6 +289,8 @@ every test, characters for every test but EQUALP, without a call."
              (t (let ((,k (%ht ,h +ht-kind+)))
                   (cond ((and (characterp ,x) (%fx< ,k 3)) (%char-code ,x))   ; (EQUALP: of the upcased character)
                         ((%fx= ,k 0) (%eq-hash ,x))
+                        ;; (an integer beyond the fixnums: as %NUMBER-HASH, without its calls)
+                        ((and (%fx< ,k 3) (%bignump ,x)) (%bignum-hash ,x))
                         ((%fx= ,k 1) (%eql-hash ,x))
                         ((%fx= ,k 2) (%sxhash ,x 4))
                         (t (%equalp-hash ,x 4)))))))))

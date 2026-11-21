@@ -153,14 +153,18 @@ five arguments 10.3 → 8 ns (four: 7.1, SBCL 4.5 for both); esrap's `recall`
 (five arguments, called for each rule) no longer allocates.
 
 Raw clones (`raw-call-code` in `src/codegen.lisp`): a direct call of a
-known function of required parameters with arguments known to be fixnums
-or doubles (`spec-signature`) calls a copy of it, `(:raw id sig)`, that
-takes those arguments as `i32` / `f64` parameters (the others as eqrefs).
+known function of required parameters with arguments known to be fixnums,
+doubles, or integers within 64 bits computed as i64s (a mask, a variable
+declared `(unsigned-byte 32)`, a call of a copy returning an i64; not one
+read from data, which the copy would box again: `i64-natural-node-p`)
+(`spec-signature`) calls a copy of it, `(:raw id sig)`, that
+takes those arguments as `i32` / `f64` / `i64` parameters (the others as eqrefs).
 When that copy cannot return with an exit pending (`lam-may-exit-p`), and
 the values of its tail positions, its tail calls of itself with arguments
-of the same classes left aside, are all fixnums (or all doubles), with its
+of the same classes left aside, are all fixnums (or all doubles, or all
+integers within 64 bits), with its
 types inferred for those arguments (`raw-clone-rrep`), it returns an `i32`
-(an `f64`) and sets no `$mv-count`, and those tail calls of itself are
+(an `f64`, an `i64`) and sets no `$mv-count`, and those tail calls of itself are
 `return_call`s of itself. A tail call of another known function whose raw
 copy for the classes of its arguments returns the same (`i32` or `f64`) is
 a `return_call` of that copy, and its value counts as a fixnum (double)
@@ -2107,7 +2111,7 @@ time unless noted):
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 1.06 | `h-clos-methods` 1.68 | `h-mandel-complex` 0.08 |
 | `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
 | `bench/programs.lisp` | 63 more programs | 1.19 | `p-builtin-dispatch` 3.15 | `p-remove-duplicates` 0.03 |
-| `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 1.02 | `a-hash-counts` 3.15 (the hash table) | `a-nbody-struct` 0.47 |
+| `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 0.56 (0.58 before the integers beyond the fixnums stayed in i64 in more places, 2026-11) | `a-sum-overflow` 2.33 (bignums beyond 2^63) | `a-simpson` 0.10 |
 | `bench/declared.lisp` | 19 programs with full declarations at `(speed 3) (safety 0)` (see below) | 1.24 (1.56 before `safety` was read) | `d-particles` 3.0, `d-nbody` 2.3 | `d-k-nucleotide` 0.79 |
 
 Code loaded form by form into the image (`clysm script`, the REPL, `load`)
@@ -2337,8 +2341,34 @@ What is not as fast as intended, and why:
   redefined with other slots after it had instances are checked first
   (`c-slot-redef` 1.5; see the limitations).
 * **Integers between 2^29 and 2^63** are boxed when they are stored in data
-  structures or passed between functions (fixnums in SBCL; a parameter or
-  variable updated by integer arithmetic keeps them in an i64 local).
+  structures or passed between functions of unknown types (fixnums in
+  SBCL; a parameter or variable updated by integer arithmetic keeps them
+  in an i64 local, and a function of such integers of known types called
+  directly takes and returns i64s, see "Raw clones"). A box is a `$bignum`
+  holding the value, made by one `struct.new` (about 2 ns with the work
+  around it); storing a new box into an object that has survived a
+  collection costs about 2 ns more (the engine's write barrier), so a
+  structure slot updated with such integers is 7 times SBCL's time, a
+  vector element 3.5 times. The generic helpers take them before the
+  general code: the front helper of `+ - < =` decodes two integers within
+  64 bits after its fixnum and double paths (a sum of a boxed integer and
+  a fixnum 4 ns, was 6), the general arithmetic helper no longer repeats
+  the fixnum test and tests complex numbers only after the decode failed,
+  and EQL and EQUAL hash tables hash such a key without two calls. Probes
+  of ordinary code over such values (Unix times, nanoseconds, 32-bit
+  hashes, sums of lists, counters, structure slots, hash keys; 17 probes
+  written for the change) went from 2.9 to 2.0 times
+  SBCL, functions of 32-bit hashes that are not inlined (murmur3's steps,
+  declared or masked) from 2.4 to 0.6. `a-local-time` (`bench/apps.lisp`)
+  went from 1.42 to 1.36 only: its time is in splitting the string (`member`
+  of characters with `char-equal`), the time zone's lookups and FORMAT,
+  not in its integers (the integer helpers are under 3% of its profile;
+  its seconds and days pass through CLOS slots and calls of unknown
+  types, where they are boxes). A leaf of fused arithmetic that
+  is a bignum holding its value is decoded by a call (`:wide-i64`): the
+  test of a bignum inline made fixnum code slower (`p-queens` 149 -> 168
+  ms, `p-fixnum-vector` 56 -> 73) although it made the sum of a list of
+  such integers twice as fast.
   **Bignums** have 32-bit digits against SBCL's 64: a pass over the digits
   (addition, a product by a fixnum) is 1.3–1.5 times SBCL, products of two
   large bignums and divisions 2.5–4 times (SBCL multiplies 64 by 64 bits;
@@ -2424,7 +2454,33 @@ What makes the code fast:
   such arithmetic and used twice or more as an operand keeps an f64 beside
   its eqref local (null while the f64 holds the value); the first other use
   makes the double once. `incf` of a variable by arithmetic on variables is
-  one tree with the update. Trees of operands of unknown type with no
+  one tree with the update. `(mod x k)` and `(rem x k)` by a constant are
+  operations of the trees (a `mod` by a power of two under a mask: the low
+  bits), and an operation with a constant beyond the fixnums
+  (`#xFFFFFFFF`, `(expt 2 32)`) is a tree by itself, as the inline fixnum
+  path cannot apply to it; a tree of a known 64-bit type wanted as an i64
+  (`(let ((y (logand x #xFFFFFFFF))) ...)`) gives its i64 directly. `mod`
+  and `floor` of a known 64-bit integer by a power of two are a mask and a
+  shift; `ash` by a count of a known range is a shift. A
+  `multiple-value-bind` of `floor truncate ceiling round` of a value of
+  unknown type (or of a tree: `(floor (+ sec offset) 86400)` with
+  parameters declared `integer`, as local-time writes it) by a constant
+  fixnum divides in i64 inline (`spec-divmod-code`), the generic division
+  otherwise. An *integer accumulator* (a `let` variable that is assigned,
+  not captured, with an i64 beside its eqref local, null while the i64
+  holds the value) is a variable known to hold integers that is updated by
+  integer arithmetic at least as often as it is otherwise looked at, or
+  (`note-dual-var`) a number of unknown type updated in a loop only by
+  arithmetic with an operand known to be an integer, more often than it is
+  looked at there: a counter from a value of unknown type, `(loop for k
+  from start ...)` (one also updated by values of unknown types is not:
+  they are fixnums most often, and the i64 and f64 attempts of each update
+  made `b-catch` 8% slower). Its references as leaves of arithmetic read the i64
+  (they do not count as uses), a comparison with it is done in i64
+  (`dual-cmp-code`), and its update tries doubles after integers when it
+  may hold one. A variable that may be something other than a number (the
+  NIL `for j =` of `loop` starts with) is not one: `p-loop-macros` 66 -> 78
+  ms. Trees of operands of unknown type with no
   double among them are not tried in f64 first: integer code (array
   elements summed) would pay for it. `truncate floor ceiling round` of two
   fixnums, `evenp oddp`, and `(reduce #'+ list)` (and `* max min logand
