@@ -156,7 +156,7 @@
 (defun %region-gethash (h d n hash)
   (if (eql (%ht h +ht-count+) 0)
       (values nil nil)
-      (let ((i (%ht-region-index (%instance-slots h) d hash 0 n)))
+      (let ((i (%ht-region-index h d hash 0 n)))
         (cond ((%fx>= i 0) (values (%svref (%ht h +ht-vals+) i) t))
               ((eql i -2) (values nil :unknown))
               (t (values nil nil))))))

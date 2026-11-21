@@ -928,9 +928,11 @@ can make an instance (see above)."
         (let ((ht (ph-symbol-value-index 'clysm-sys::*specializer-methods*)))
           (when ht
             (sys ht)
+            ;; (a hash table is a structure of field slots, runtime/hash.lisp)
             (let ((sv (ph-slots-vector ht)))
               (sys sv)
-              (dolist (x (and sv (aref *ph-rec* sv)))
+              (dolist (x (cond (sv (aref *ph-rec* sv))
+                               ((eq (aref *ph-kind* ht) :sinst) (cdr (aref *ph-rec* ht)))))
                 (let ((j (and (eq (car x) :r) (ph-ref-index (cdr x)))))
                   (when (and j (eq (aref *ph-kind* j) :vector)) (sys j)))))))
         ;; the classes and their subclasses, and their names
