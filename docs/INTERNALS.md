@@ -3460,6 +3460,41 @@ What makes the code fast:
   SBCL 24: the decoder, the code-point counter and `make-string` of the
   result each take a third). `bench/library.lisp` and `io.lisp` (compiled
   and in a script) and Lem's comparator (1.49–1.53) unchanged.
+* **A call of ERROR is not returned from** (2026-11-21, Babel's UTF-8
+  decoder against probes of its shape): a loop whose error branches call
+  `error` ran 2.5 times as long as the same loop without them (24 ms
+  against 9-11, SBCL 9), though the branches are never taken. A call of a
+  function through its symbol was compiled as one that may return, so
+  everything the loop keeps (the indices, the arrays) was live across it
+  and V8 spilled it on every iteration; the probe with `(error "bad")` (no
+  arguments) is 16 ms, with a pure computation of the same size in the
+  branch 13. The calls of a function in `*ti-noreturn*` (`error`) through
+  its symbol now end as the direct calls of such functions did: a branch
+  to the exit handler of the context after the call (`*call-noreturn*`,
+  `checked-call`'s NORETURN), so that nothing is live after them. Babel's
+  decoder 18 → 10 ms for 50 decodings of 330 KB (SBCL 9), `octets-to-string`
+  44–47 → 35–40 (SBCL 23: what remains is `make-string` of the result, 11
+  ms against SBCL's 3, a large object for V8 (a string of 4-byte
+  characters over 128 KB), and the code-point counter, at SBCL's time).
+  `tools/bench-libs.sh` base and new alternately, two rounds: `l-babel`
+  1.55–1.64 → 1.46–1.55 times SBCL, the file 1.13–1.14 → 1.09–1.11;
+  `bench/apps.lisp` `a-ppcre-tokens` 1.38–1.39 → 1.26–1.27, the rest within
+  noise (the file 1.31–1.34 → 1.26–1.31); `bench/suite`, `library`, `io`,
+  `programs` (compiled; `library` and `io` in a script too) unchanged,
+  Lem's comparator 1.48–1.55 → 1.50–1.56 over four rounds (within its
+  noise).
+  Two things tried here that did not pay off: not saving the binding-stack
+  pointer for a block or tagbody that never restores it (V8 drops the
+  dead load itself: no change), and a peephole pass over the Wasm taking
+  out box/unbox pairs (`ref.i31` then the cast and `i31.get_s`,
+  `struct.new $double` then its read, `box-i32` then `int-i64`, and blocks
+  and ifs boxing at every exit and unboxed after them). It rewrote 3363
+  pairs and 2953 constants in `bench/suite.lisp`'s module (0.5% smaller),
+  but times were unchanged: `bench/suite` 0.83 → 0.83, `library` 0.91–0.92 →
+  0.90, `gabriel` 0.92–0.93 → 0.92, `arith` 0.56 → 0.56, apps, libs and Lem
+  within noise. V8 folds such pairs when they are next to each other, and
+  most unboxings (13000 of 21000) are of variables held boxed, which the
+  types would have to change, not a peephole.
 
 ### Declared code, and SBCL at its best policy
 
