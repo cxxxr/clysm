@@ -967,6 +967,30 @@ What remains:
   (30-46 ms); outlining would need typed parameters (a version of the
   outlined function for the types the variables have).
 
+**Entry versions of local functions and closures.** A local function or
+closure with a loop whose parameters or free variables are used as numbers
+gets entry versions too (`entry-cloneable-p`, `entry-clone-free-vars` in
+`src/codegen.lisp`): its signature covers the required parameters and then
+the free variables that are neither special nor assigned (whose value is
+the closure's for the whole call); the general version tests the
+parameters and the closure's fields (`closure-field-code`) and tail-calls
+the copy with the same closure, which is analysed with those types
+(`compile-spec-clone` sets the free variables' type and representation for
+the copy and restores them) and copies those free variables into unboxed
+locals on entry (`*clone-free-reps*`, `setup-free-vars`). A body with a
+lambda or local function of its own still gets none (it would be compiled
+twice). Direct calls do not choose a copy (only the entry does), so a
+recursive local function passes its boxed arguments to its general version,
+which tests them again. An element access to an array of unknown type
+whose subscript is a 32-bit integer not known to be a fixnum (`(+ row c)`
+of two fixnums) takes the i32 as it is (`speculative-locate-code-1`: out of
+range it is beyond every dimension compared unsigned), boxed only for the
+generic function. Measured (2026-11-21, best of three interleaved runs on
+one slot against the build before): `p-queens` 137 → 107 ms (SBCL 66),
+`k-church` 41 → 27 (SBCL 76; in the image 78 → 53), `k-cps-tree` 87 → 79,
+`k-funcall-args` 113 → 102; `bench/closures.lisp` 1.00 → 0.95 times SBCL,
+the other files unchanged within noise.
+
 **`dotimes` over a count held in a variable** (`runtime/boot.lisp`) whose
 body uses the counter and is small (at most 120 conses) expands to `(if
 (fixnump n) <the loop with n bound to a variable declared fixnum> <the

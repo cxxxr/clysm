@@ -2715,7 +2715,7 @@ buffer), with no list or argument vector; else the generic way."
              `((:global.get ,(static-closure-global lam)) ,@(apply #'append arg-codes)
                (:call ,(ensure-catch-clone lam tag))))))))))
 
-(defun setup-free-vars (lam)
+(defun setup-free-vars (lam &aux free-reps)
   (when (lam-self lam)
     (set-loc (lam-self lam) (cons :local 0)))
   (when (lam-free-vars lam)
@@ -2726,6 +2726,16 @@ buffer), with no list or argument vector; else the generic way."
             (fstate-env-type *fs*) (and (<= n +clo-env-max+) type))
       (loop for fv in (lam-free-vars lam) for i from 0
             do (set-loc fv (cons :env i)))
+      ;; (an entry version of the closure: free variables known to be
+      ;; fixnums or doubles, unboxed into locals)
+      (setf free-reps
+            (loop for (fv . rep) in *clone-free-reps*
+                  for i = (position fv (lam-free-vars lam))
+                  when (and i (eq (lvar-rep fv) rep))
+                    append (let ((idx (new-rep-local rep)))
+                             (prog1 `(,@(env-get-code i) ,@(unbox-rep-code rep (lvar-type fv))
+                                      ,@(rep-local-set-code fv idx))
+                               (set-loc fv (cons :local idx))))))
       `(,@(if (<= n +clo-env-max+)
               `((:local.get 0) (:ref.cast! ,type) (:local.set ,env))
               `((:local.get 0) (:ref.cast! :envclov) (:struct.get :envclov ,+clo-env+) (:local.set ,env)))
@@ -2735,7 +2745,8 @@ buffer), with no list or argument vector; else the generic way."
                 when (boxed-p fv)
                   append (let ((idx (new-local '(:ref :null :cell))))
                            (prog1 `(,@(env-get-code i) (:ref.cast :cell) (:local.set ,idx))
-                             (set-loc fv (cons :cell idx)))))))))
+                             (set-loc fv (cons :cell idx)))))
+        ,@free-reps))))
 
 (defun param-setup-code (lv local-idx)
   "LV was passed in LOCAL-IDX.  Returns (values code special-p); a special
@@ -2835,20 +2846,36 @@ list of (symbol . local), which are bound around the body."
 (defparameter *spec-max-nodes* 3000)
 
 (defun spec-cloneable-p (lam)
+  (and (null (lam-free-vars lam)) (spec-body-cloneable-p lam)))
+
+(defun entry-clone-free-vars (lam)
+  "The free variables of LAM that its entry version may take as fixnums or
+doubles: neither special nor assigned (their value is that of the closure
+for the whole call)."
+  (remove-if (lambda (fv) (or (lvar-special fv) (boxed-p fv) (lvar-mutated fv))) (lam-free-vars lam)))
+
+(defun entry-cloneable-p (lam)
+  "LAM may have an entry version: a function without free variables, or a
+local function or closure (whose free variables are tested on entry too)."
+  (and (or (lam-req lam) (entry-clone-free-vars lam))
+       (or (null (lam-free-vars lam)) (<= (length (lam-free-vars lam)) +clo-env-max+))
+       (spec-body-cloneable-p lam)))
+
+(defun spec-body-cloneable-p (lam)
   (multiple-value-bind (v found) (gethash lam *spec-cloneable*)
     (if found v
         (setf (gethash lam *spec-cloneable*)
-              (and (lam-simple-p lam) (null (lam-free-vars lam)) (lam-req lam)
+              (and (lam-simple-p lam)
                    (notany #'lvar-special (lam-req lam))
                    (let ((n 0))
                      (labels ((walk (node)
-                                (when (> (incf n) *spec-max-nodes*) (return-from spec-cloneable-p
+                                (when (> (incf n) *spec-max-nodes*) (return-from spec-body-cloneable-p
                                                                        (setf (gethash lam *spec-cloneable*) nil)))
                                 (when (and (member (car node) '(:lambda :flet :labels :ltv))
                                            ;; (the class of a structure: the accessors' test; evaluated
                                            ;; once more in the copy, with the same value)
                                            (not (and (eq (car node) :ltv) (struct-class-node-name node))))
-                                  (return-from spec-cloneable-p (setf (gethash lam *spec-cloneable*) nil)))
+                                  (return-from spec-body-cloneable-p (setf (gethash lam *spec-cloneable*) nil)))
                                 (map-subnodes #'walk node)))
                        (walk (lam-body lam))
                        t)))))))
@@ -2912,8 +2939,8 @@ specialized version of LAM that its general version tries on entry, or NIL.
 DOUBLES-P: the second version tried, with doubles for the parameters used as
 numbers but not as integers (not with integer-only operations, as indexes,
 or compared with a variable known to be an integer: a count)."
-  (when (and (spec-cloneable-p lam) (lam-name lam))
-    (let* ((params (lam-req lam))
+  (when (and (entry-cloneable-p lam) (or (lam-name lam) (lam-free-vars lam)))
+    (let* ((params (append (lam-req lam) (entry-clone-free-vars lam)))
            (alias (make-hash-table :test 'eq))       ; variable -> the parameter it is a copy of
            (ints (make-hash-table :test 'eq)) (doubles (make-hash-table :test 'eq))
            (counts (make-hash-table :test 'eq))
@@ -2978,6 +3005,8 @@ or compared with a variable known to be an integer: a count)."
       (when (or loop-p self-call)
         (let ((sig (mapcar (lambda (p)
                              (cond ((lvar-decl p) nil)        ; declared: already typed
+                                   ;; a free variable: a number (no array header copied)
+                                   ((and (not (member p (lam-req lam))) (not (gethash p nums))) nil)
                                    ;; the array of two-dimensional accesses in a loop: a
                                    ;; simple array of element type T (its storage and
                                    ;; dimensions in locals, loaded once)
@@ -2988,6 +3017,14 @@ or compared with a variable known to be an integer: a count)."
                                     :double)
                                    (t :fixnum)))
                            params)))
+          ;; (a free variable's class is that of its value as the closure holds it:
+          ;; fixnums and doubles only)
+          (setf sig (loop for c in sig for i from 0
+                          collect (if (and (>= i (length (lam-req lam))) (eq c :md2)) nil c)))
+          ;; (no trailing NILs of free variables: the signature of a function
+          ;; without them is as it was)
+          (let ((n (length (lam-req lam))))
+            (loop while (and (> (length sig) n) (null (car (last sig)))) do (setf sig (butlast sig))))
           (when (and (some #'identity sig) (or (not doubles-p) (member :double sig)))
             sig))))))
 
@@ -3003,16 +3040,26 @@ are of the classes of its specialized version, a tail call of that version."
                                          ;; not a simple one of element type T)
                                          (substitute nil :md2 sig) (substitute nil :md2 sig2)))
                     :test #'equal :from-end t)
-          append (let ((skip (gensym "GENERAL")))
+          append (let ((skip (gensym "GENERAL")) (n (length (lam-req lam)))
+                       (fvs (entry-clone-free-vars lam)))
                    `((:block ,skip nil
                        ,@(loop for class in s for i from 1
+                               for get = (if (<= i n)
+                                             `((:local.get ,i))
+                                             (closure-field-code lam (nth (- i n 1) fvs)))
                                append (ecase class
-                                        (:fixnum `((:local.get ,i) (:call :fixnump) :i32.eqz (:br_if ,skip)))
-                                        (:double `((:local.get ,i) (:ref.test :double) :i32.eqz (:br_if ,skip)))
-                                        (:md2 `((:local.get ,i) (:call :simple-md2-p) :i32.eqz (:br_if ,skip)))
+                                        (:fixnum `(,@get (:call :fixnump) :i32.eqz (:br_if ,skip)))
+                                        (:double `(,@get (:ref.test :double) :i32.eqz (:br_if ,skip)))
+                                        (:md2 `(,@get (:call :simple-md2-p) :i32.eqz (:br_if ,skip)))
                                         ((nil) nil)))
-                       ,@(loop for i from 0 to (length s) collect `(:local.get ,i))
+                       ,@(loop for i from 0 to n collect `(:local.get ,i))
                        (:return_call ,(spec-clone-name lam s))))))))
+
+(defun closure-field-code (lam fv)
+  "Push the value of the free variable FV of LAM from its closure (local 0),
+before the closure's environment is set up."
+  (let ((i (position fv (lam-free-vars lam))) (type (envclo-type (length (lam-free-vars lam)))))
+    `((:local.get 0) (:ref.cast! ,type) (:struct.get ,type ,(+ +clo-env+ i)))))
 
 (defun spec-signature (lam args)
   (when (and (spec-cloneable-p lam) (= (length args) (length (lam-req lam))))
@@ -3069,19 +3116,31 @@ proved of their declared types (CALL-ARG-CLASSES): no test in its prologue.")
       (walk (lam-body lam)))
     r))
 
+(defvar *clone-free-reps* nil
+  "In an entry version of a closure: (free variable . representation) of
+the free variables it takes as fixnums or doubles (copied from the closure
+into locals of that representation on entry).")
+
 (defun compile-spec-clone (lam sig flag)
   (inline-calls lam)
   (refine-nonlocal lam)
-  (let* ((lvars (lam-all-lvars lam))
+  (let* ((n (length (lam-req lam)))
+         (fv-classes (loop for fv in (entry-clone-free-vars lam) for c in (nthcdr n sig)
+                           when c collect (cons fv c)))
+         (lvars (append (lam-all-lvars lam) (mapcar #'car fv-classes)))
          (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars)))
     (dolist (lv lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))
+    ;; the free variables tested on entry: of that type in the copy
+    (loop for (fv . c) in fv-classes
+          do (setf (lvar-type fv) (class-ty c) (lvar-rep fv) (class-rep c)))
     (unwind-protect
          (let ((*ti-shared* (cons *node-types* *ti-analyzed*))
                (*node-types* (make-hash-table :test 'eq))
                (*ti-analyzed* (make-hash-table :test 'eq))
-               (*catching-tag* nil))
-           (infer-lam lam (mapcar #'class-ty sig))
-           (let ((*proven-params* (clone-proven-params lam sig)))
+               (*catching-tag* nil)
+               (*clone-free-reps* (loop for (fv . c) in fv-classes collect (cons fv (class-rep c)))))
+           (infer-lam lam (mapcar #'class-ty (subseq sig 0 n)))
+           (let ((*proven-params* (clone-proven-params lam (subseq sig 0 n))))
            (compile-simple-main lam (spec-clone-name lam sig flag)
                                 (format nil "~A/~{~(~A~)~^,~}~:[~;/flag~]" (lam-display-name lam)
                                         (mapcar (lambda (c) (or c "t")) sig) flag)
