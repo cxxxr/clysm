@@ -3205,6 +3205,67 @@ or object."
       (:local.get ,k) (:ref.cast :string) :array.len (:call :ht-region-index))))
 (defprim clysm-sys::%ht-region-index (sv d hash off n) :value
   `(,@sv ,@d ,@(idx-code hash) ,@(idx-code off) ,@(idx-code n) (:call :ht-region-index)))
+;;; The entries of the cache C (a simple vector, see %GF-SITE-EXPANSION in
+;;; runtime/clos.lisp) of a call site of a slot reader: when X is an
+;;; instance whose layout is that of an entry and the entry's value is the
+;;; index of a slot, the value of that slot (null when it is unbound), else null.  The
+;;; instance is tested and cast once (the access is the instructions a
+;;; reader needs and no more: each site of a reader of Lem's point was 300
+;;; bytes of machine code before).
+(defprim clysm-sys::%site-slot-read (x c) :value
+  (let ((tmp (new-local)) (inst (new-local '(:ref :null :instance))) (cv (new-local '(:ref :null :vector)))
+        (e (new-local)) (l (new-local)) (miss (gensym "MISS")) (done (gensym "SREAD")))
+    `((:block ,done :eqref
+        (:block ,miss nil
+          ,@c (:ref.cast! :vector) (:local.set ,cv)
+          ,@x (:local.tee ,tmp) (:ref.test :instance) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,tmp) (:ref.cast! :instance) (:local.tee ,inst) (:struct.get :instance 0) (:local.set ,l)
+          ;; entries 1 to 4 (a class and subclasses: Lem's point and cursor,
+          ;; its drawing objects)
+          ,@(labels ((entry (i)
+                       `((:local.get ,l) (:local.get ,cv) (:i32.const ,i) (:array.get :vector) :ref.eq
+                         (:if nil :eqref ((:local.get ,cv) (:i32.const ,(1+ i)) (:array.get :vector))
+                              ,(if (< i 7)
+                                   (entry (+ i 2))
+                                   `((:br ,miss)))))))
+              (entry 1))
+          (:local.tee ,e) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,inst) (:struct.get :instance 1) (:local.get ,e) (:ref.cast! :i31) :i31.get_s
+          (:array.get :vector) (:br ,done))
+        (:ref.null :eq)))))
+;;; The same for a call site of a slot writer (SETF of an accessor), whose
+;;; cache has two keys per entry: when an entry is that of any new value (0)
+;;; and of the layout of X, an instance, and its value the index of a slot,
+;;; V is stored in that slot and returned, else null (nothing is stored).
+(defprim clysm-sys::%site-slot-write (v x c) :value
+  (let ((val (new-local)) (tmp (new-local)) (inst (new-local '(:ref :null :instance)))
+        (cv (new-local '(:ref :null :vector))) (e (new-local)) (l (new-local))
+        (miss (gensym "MISS")) (done (gensym "SWRITE")))
+    `(,@v (:local.set ,val) ,@x (:local.set ,tmp)
+      (:block ,done :eqref
+        (:block ,miss nil
+          ,@c (:ref.cast! :vector) (:local.set ,cv)
+          (:local.get ,tmp) (:ref.test :instance) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,tmp) (:ref.cast! :instance) (:local.tee ,inst) (:struct.get :instance 0) (:local.set ,l)
+          ;; entries 1 to 4
+          ,@(labels ((entry (i)
+                       `((:local.get ,l) (:local.get ,cv) (:i32.const ,(1+ i)) (:array.get :vector) :ref.eq
+                         (:if nil :eqref
+                              ((:local.get ,cv) (:i32.const ,i) (:array.get :vector) (:i32.const 0) :ref.i31
+                               :ref.eq :i32.eqz (:br_if ,miss)
+                               (:local.get ,cv) (:i32.const ,(+ i 2)) (:array.get :vector))
+                              ,(if (< i 10)
+                                   (entry (+ i 3))
+                                   `((:br ,miss)))))))
+              (entry 1))
+          (:local.tee ,e) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,miss)
+          (:local.get ,inst) (:struct.get :instance 1) (:local.get ,e) (:ref.cast! :i31) :i31.get_s
+          (:local.get ,val) (:array.set :vector)
+          (:local.get ,val) (:br ,done))
+        (:ref.null :eq)))))
+;;; (%COLD): NIL, and a mark on the branch of an IF it begins that the branch
+;;; is not expected to be taken (a branch hint: see COLD-BRANCH-P)
+(defprim clysm-sys::%cold () :value (nil-code))
 (defprim clysm-sys::%immediate-or-symbol-p (x) :test
   ;; a fixnum, a character or a symbol: an i31 or a $symbol
   (let ((v (new-local))) `(,@x (:local.tee ,v) (:ref.test :i31) (:local.get ,v) (:ref.test :symbol) :i32.or)))

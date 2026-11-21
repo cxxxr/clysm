@@ -312,7 +312,12 @@ vectors), the vector of objects of each segment."
         ;; (not nullable, so that reading one needs no check: NIL until RUN)
         (add-global *m* (list :sym s) '(:ref :symbol) t '((:global.get :nil-symbol))))
       (dolist (c consts)
-        (add-global *m* (car c) :eqref t '((:ref.null :eq))))
+        (if (simple-vector-p (cdr c))
+            ;; a simple vector (the cache of a call site of a generic
+            ;; function, a table): of its type, so that reading an element
+            ;; needs no test of the global
+            (add-global *m* (car c) '(:ref :vector) t '((:array.new_fixed :vector 0)))
+            (add-global *m* (car c) :eqref t '((:ref.null :eq)))))
       (dolist (g closures)
         (add-global *m* (first g) '(:ref :null :closure) t '((:ref.null :closure)))
         (setf (gethash (first g) (wasm-module-nonnull-globals *m*)) t))
@@ -329,6 +334,7 @@ vectors), the vector of objects of each segment."
                                                (:ref.cast :symbol) (:global.set (:sym ,s))))
                               ,@(loop for c in sconsts for i from (length ssyms)
                                       append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                               ,@(when (simple-vector-p (cdr c)) '((:ref.cast! :vector)))
                                                (:global.set ,(car c))))
                               ,@(loop for g in sclosures
                                       append `(,@(third g) (:global.set ,(first g))))
@@ -367,12 +373,14 @@ vectors), the vector of objects of each segment."
     ;; is not called); not in a module that cannot be saved in one
     (when *live-snapshots*
      (let ((closure-names (make-hash-table :test 'equal))
+           (vector-names (make-hash-table :test 'equal))
            (globals (append (mapcar (lambda (s) (list :sym s)) syms)
                            (mapcar #'car consts)
                            (mapcar #'first closures)
                            (loop for (name type) in (reverse *misc-globals*)
                                  when (eq type :eqref) collect name))))
       (dolist (g closures) (setf (gethash (first g) closure-names) t))
+      (dolist (c consts) (when (simple-vector-p (cdr c)) (setf (gethash (car c) vector-names) t)))
       (add-func *m* :snap :v-e :export "snap"
                 :locals '((:ref :null :vector)) :local-names '(v)
                 :body `((:i32.const ,(length globals)) (:array.new_default :vector) (:local.set v)
@@ -389,9 +397,9 @@ vectors), the vector of objects of each segment."
                                          ;; those SNAP returned)
                                          ,@(case (car g)
                                              (:sym '((:ref.cast! :symbol)))
-                                             (t (if (gethash g closure-names)
-                                                    '((:ref.cast! :closure))
-                                                    nil)))
+                                             (t (cond ((gethash g closure-names) '((:ref.cast! :closure)))
+                                                      ((gethash g vector-names) '((:ref.cast! :vector)))
+                                                      (t nil))))
                                          (:global.set ,g)))))))
     ;; a module made at run time only needs the helpers it calls
     (remove-unreachable-functions *m* used)

@@ -85,7 +85,7 @@ bits; any other value is an i31 (no test of overflow or of the type)."
                 ,@(cg-rep (car (last node)) rep))))
     (:if (if (assumed-guard-p (second node))
              (cg-rep (third node) rep)
-         `(,@(cg-test (second node))
+         `(,@(cg-test (second node)) ,@(if-branch-hint (third node) (fourth node))
            (:if nil ,(rep-block-type rep) ,(cg-rep (third node) rep)
                 (,@(cg-rep (fourth node) rep) ,@(guard-else-epilogue (second node)))))))
     (:let (cg-let node nil nil rep))

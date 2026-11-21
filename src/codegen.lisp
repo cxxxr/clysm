@@ -885,6 +885,7 @@ others are consed onto the list for its rest list."
     (:wasm-test `(,@(loop for a in (second node) append (cg a))
                   ,@(resolve-wasm-instrs (third node))))
     (:if `(,@(cg-test (second node))
+           ,@(if-branch-hint (third node) (fourth node))
            (:if nil :i32 ,(cg-test (third node)) ,(cg-test (fourth node)))))
     (:progn (if (cdr node)
                 `(,@(loop for n in (butlast (cdr node)) append `(,@(cg n) :drop))
@@ -905,6 +906,32 @@ others are consed onto the list for its rest list."
               (eq (car (second body)) :lref) (eq (second (second body)) lv)
               (eq (car (third body)) :lref) (eq (second (third body)) lv)))))
 
+(defparameter *cold-functions*
+  '(error cerror clysm-sys::%type-error clysm-sys::%signal-type-error clysm-sys::%assert-error
+    clysm-sys::%check-type-error)
+  "Functions whose calls are not expected to happen often (they signal errors).")
+
+(defun cold-branch-p (node)
+  "NODE, a branch of an IF, signals an error (or is marked with %COLD) on
+every way through it: the branch is not expected to be taken."
+  (and (consp node)
+       (case (car node)
+         (:call (and (symbolp (second node))
+                     (or (gethash (second node) *ti-noreturn*)
+                         (member (second node) *cold-functions*))
+                     t))
+         (:prim (eq (prim-name (second node)) 'clysm-sys::%cold))
+         (:progn (some #'cold-branch-p (cdr node)))
+         (:let (cold-branch-p (third node)))
+         (:if (and (cold-branch-p (third node)) (cold-branch-p (fourth node))))
+         (t nil))))
+
+(defun if-branch-hint (a b)
+  "The branch hint of an IF whose branches are A and B: a cold one is not
+expected to be taken, so that the engine lays it out of the way of the other."
+  (cond ((cold-branch-p a) '((:hint 0)))
+        ((cold-branch-p b) '((:hint 1)))))
+
 (defun cg-if (node mv tail)
   (destructuring-bind (c a b) (cdr node)
     ;; (a guard taken as true in a loop's version: the copy only)
@@ -914,11 +941,14 @@ others are consed onto the list for its rest list."
       (cond ((equal test '((:i32.const 1))) (return-from cg-if (cg a mv tail)))
             ((equal test '((:i32.const 0)))
              (return-from cg-if `(,@(cg b mv tail) ,@(guard-else-epilogue c)))))
-    `(,@test
-      ;; the guard of a copied function body is expected to hold
-      ,@(when (and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard clysm-sys::%defun-guard)))
-          '((:hint 1)))
-      (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c)))))))
+      `(,@test
+        ;; the guard of a copied function body is expected to hold; a branch
+        ;; that never returns (an error) or is marked cold is not expected to
+        ;; be taken, so that the engine lays it out of the way of the other
+        ,@(cond ((and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard clysm-sys::%defun-guard)))
+                 '((:hint 1)))
+                (t (if-branch-hint a b)))
+        (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c)))))))
 
 (defun cg-progn (nodes mv tail)
   (if (null nodes)
@@ -939,7 +969,8 @@ others are consed onto the list for its rest list."
     (:if (let ((test (cg-test (second node))))
            (cond ((equal test '((:i32.const 1))) (cg-effect (third node)))
                  ((equal test '((:i32.const 0))) (cg-effect (fourth node)))
-                 (t `(,@test (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node))))))))
+                 (t `(,@test ,@(if-branch-hint (third node) (fourth node))
+                      (:if nil nil ,(cg-effect (third node)) ,(cg-effect (fourth node))))))))
     (:let (cg-let node nil nil :effect))
     (:mvbind (cg-mvbind node nil nil t))
     ((:prim :call)

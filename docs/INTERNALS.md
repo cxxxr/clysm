@@ -2326,6 +2326,54 @@ What is not as fast as intended, and why:
   binding); since that changed (2026-11), `b-special` loaded into the image
   takes 182 ms instead of 238, `v-special-1` 58 instead of 77, `v-special-6`
   186 instead of 264 (same slot, one run each; the bimodal spread remains).
+* **The machine code of the call sites of slot readers and writers**
+  (2026-11-21, from Lem). Lem's buffer functions took 1.0–1.25 times
+  SBCL's time each alone in a loop (`%point<` 8.5 ns against 7,
+  `character-at` 26 against 23, `end-buffer-p` 29 against 29) but their
+  composition more: `form-offset` over a form 68 µs against 42, and a
+  copy of `%skip-list-forward` gained 13 µs from `end-buffer-p` where
+  SBCL's gained 5. The cause was the size of the code, which V8's own
+  profiler (`node --prof`, the ticks of each instruction, the code read
+  from `--perf-prof`'s jitdump with `objdump`) showed: the TurboFan code
+  of `%point<` (four reads of `point` slots, two comparisons) was 7.6 KB,
+  SBCL's 338 bytes; `point-change-line` 17 KB against 703,
+  `%skip-list-forward`'s loop 13.9 KB against 1.1. A reader's site was
+  300 bytes on its hot path: the cache vector, an `eqref` live constant,
+  was tested for null, for an i31 and for its map at each of its eight
+  reads and their bounds checked; the instance was cast again for the
+  read by a checked cast (`(:ref.cast :instance)`, whose failure calls a
+  function: V8 kept a flag of the earlier test and the call); and the
+  three calls out of line followed. Now a site of a reader or writer
+  that `defclass` defines is `%site-slot-read` / `%site-slot-write`
+  (`src/prims.lisp`): the instance tested and cast once into a typed
+  local, its layout compared with the four entries in a chain, the slot
+  read or written; anything else (an unbound slot, a miss, a site not
+  cached) is null and one call of `%gf-site-other1`/`2` in a branch marked
+  cold. A live constant that is a simple vector is a global of type
+  `(ref $vector)` (set by RUN with a cast, restored so from a heap image),
+  so that reading an element checks the bounds only. A reader's site is
+  about 25 instructions of machine code: `%point<` 2.9 KB,
+  `point-change-line` 6.5 KB, `%move-to-position` 6 KB instead of 9.
+  The steps, `tools/bench-lem.sh` (geometric mean, SBCL's time 1): 1.46
+  before; branch hints alone (below) 1.45; only the first entry inline
+  (the rest in `%gf-site-other1`) 1.43; with the typed constants and the
+  instance cast once 1.40; two entries inline 1.25 (the sites of `point`'s
+  readers see temporary `point`s and the buffer's `cursor`, a subclass:
+  with one entry 4 million calls of `%gf-site-other1` in a probe of 60
+  parses); four entries 1.21 (drawing objects of several classes in the
+  redisplay). Branch hints: a branch of an IF that signals (a call of
+  ERROR, CERROR, `%assert-error`, `%check-type-error`...) or begins with
+  `(%cold)` is marked unlikely (`cold-branch-p`, `src/codegen.lisp`);
+  marking every branch to a block named SLOW or FAIL as well changed
+  nothing measurable and was not kept. Against main, interleaved on one
+  slot: `tools/bench-lem.sh` 1.47 and 1.41 → 1.21 and 1.29 (`l-forms-forward`
+  285 → 196 ms, `l-type-autodoc` 285 → 200, `l-type-indent` 71 → 51,
+  `l-line-down` 150 → 141, the others within the noise; a probe typing
+  2000 characters with a redisplay after each 163–167 → 149–160 ms);
+  `bench/clos.lisp` (whole program) 1.27 → 1.25 (`c-accessors` 0.83 →
+  0.56, `c-with-slots` 1.02 → 0.92); `tools/bench-libs.sh` 1.19 → 1.18,
+  `bench/apps.lisp` and `bench/library.lisp` (0.90 → 0.91) within the
+  noise.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
@@ -2445,10 +2493,11 @@ What is not as fast as intended, and why:
   3% slower). Generic functions with `&optional`/`&rest`/`&key`
   (`c-gf-lambda-lists` 1.3, was 2.6) and `make-instance` with a class that
   is not a constant (`c-make-instance-plain` 1.6, was 2.7) are below. Slot
-  accessors are about as fast as SBCL's (`c-accessors` 1.0, `c-with-slots`
-  1.0): a call site of a reader, of `setf` of an accessor or of a `:writer`
-  (of a class or a condition) keeps the slot locations of four classes and
-  reads or writes the slot itself, and `slot-value` with a constant name
+  accessors are faster than SBCL's (`c-accessors` 0.56, was 0.83;
+  `c-with-slots` 0.92): a call site of a reader, of `setf` of an accessor or
+  of a `:writer` (of a class or a condition) keeps the slot locations of
+  four classes and reads or writes the slot itself (`%site-slot-read`, see
+  "The machine code of the call sites" below), and `slot-value` with a constant name
   compares the four entries of its cache inline. The slots of a class
   redefined with other slots after it had instances are checked first
   (`c-slot-redef` 1.5; see the limitations).
@@ -4187,6 +4236,18 @@ all (their calls then go to the generic function: 1.43 times the time),
 in a loop of a function called once stays in Liftoff (no on-stack
 replacement): such numbers mislead by 2 to 4 times; each operation has to be
 a function called many times.
+
+The next round (2026-11-21, 1.41–1.47 at its start) found why the parts at
+1.0–1.25 made 1.6: the size of the machine code of the call sites of the
+readers of `point` and `line` (see "The machine code of the call sites of
+slot readers and writers" under Performance). With the sites compact,
+`tools/bench-lem.sh` is 1.21–1.29 (`l-forms-forward` 1.0–1.13,
+`l-type-autodoc` 0.96–1.07, `l-type-indent` 1.0–1.08). What is left:
+`l-line-down`, `l-page-down` and the redisplay (1.4–1.8) are mostly
+`char-width` (`wide-char-p`, `control-char`, `eastasian-code-p`: hash
+tables of characters and a binary search, 40% of the busy time of
+`l-line-down`); `l-syntax-scan` (1.45) is cl-ppcre's matchers (the
+closures of a character class, a list of tests).
 
 ## Building and distributing
 
