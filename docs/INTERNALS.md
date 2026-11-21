@@ -994,11 +994,28 @@ What remains:
   guard fails into the eqref local. `a-lcg` in the image 18 → 4 ms (as a
   whole program, 4; it was 26 before the integers beyond the fixnums
   stayed in i64), `bench/arith.lisp` in the image 0.875 of its time
-  before; the other files unchanged. Doubles assigned from copies inside
-  other arithmetic (`(setq v (+ (decay v) 0.001d0))`) are unboxed double
-  variables already, but their reads still test for a box (38 ms in the
-  image against 18 as a whole program): that needs the variables typed in
-  the loop's version, as above.
+  before; the other files unchanged.
+* Doubles in a loop's version (2026-11-21). Before the version (with the
+  guards taken as true) is compiled, `version-typed-vars` finds the
+  variables that are doubles there: all those assigned or bound in the
+  loop are taken as doubles and one is dropped when its value or one of its
+  assignments is not a double with the others' types (a fixed point; the
+  types of references of those variables come from `*version-lvar-tys*` in
+  `node-ty`, and `assumed-node-ty` then also follows a tail that is
+  arithmetic or a variable). A variable bound in the loop gets an f64
+  local in the version (its representation set for that compilation and
+  restored: it is not live at a segment's head, where the versions hand
+  over). A variable bound outside it must be an unboxed double variable
+  (`fdual-local`, its eqref and f64 locals): the version is entered only
+  when each holds a double (`version-entry-code`, which unboxes one held
+  boxed into the f64 local), and in it the f64 local always holds the value
+  (`*version-fdual-vars*`): reads take it (`cg-rep-1`, `spec-leaf-class`),
+  stores write it and clear the eqref local (`dual-lset-code`), so that the
+  pair is valid for the general version, which needs no conversion where it
+  takes over (an interrupt check after a redefinition) nor after the loop.
+  `(setq v (+ (decay v) 0.001d0))` with `decay` of another form: in the
+  image 22 → 17 ms (as a whole program 16-17); the bench files loaded into
+  the image unchanged (their loops have no such variables).
 * A loop at top level runs once, in Liftoff: 14 ms against 7 with
   `--no-liftoff` (as in a whole program, whose `main` also runs once).
   Outlining the loop into chunks called repeatedly was measured by hand and

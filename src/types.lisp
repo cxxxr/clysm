@@ -682,12 +682,31 @@ which DECLARED-TY knows something)."
 
 (defstruct texit (env :bottom) (ty *ty-bottom*) depth (tags nil))
 
+(defvar *version-lvar-tys* nil
+  "In a loop's version with the guards of copies taken as true: an alist
+(variable . type) of the variables typed for that version (VERSION-TYPED-VARS
+in codegen.lisp), whose references have that type there.")
+
+(defvar *version-fdual-vars* nil
+  "In a loop's version with the guards taken as true: the unboxed double
+variables (FDUAL-LOCAL) bound outside the loop that are doubles there; their
+f64 local holds the value throughout the version (normalised on entry, every
+store writes it and clears the eqref local).")
+
 (defun node-ty (node)
+  (when (and *version-lvar-tys* (consp node) (eq (car node) :lref) (assumed-guards-active-p))
+    (let ((e (assoc (second node) *version-lvar-tys*)))
+      (when e (return-from node-ty (cdr e)))))
   (let ((ty (or (gethash node *node-types*) *ty-top*)))
     (if (and (consp node) (member (car node) '(:if :let :block :progn :the :prim))
              (assumed-guards-active-p))
         (assumed-node-ty node ty)
         ty)))
+
+(defun assumed-tail-kinds ()
+  ;; (with variables typed for the version, arithmetic on them and the
+  ;; variables themselves have types of their own there)
+  (if *version-lvar-tys* '(:if :let :block :progn :the :prim :lref) '(:if :let :block :progn :the)))
 
 (defun assumed-node-ty (node ty)
   "In code compiled with guards of copies taken as true (a loop's version,
@@ -696,7 +715,7 @@ forms ending in one."
   (let ((refined (case (car node)
                    (:if (when (assumed-guard-p (second node)) (node-ty (third node))))
                    ((:let :block :the) (let ((tail (third node)))
-                                         (when (and (consp tail) (member (car tail) '(:if :let :block :progn :the)))
+                                         (when (and (consp tail) (member (car tail) (assumed-tail-kinds)))
                                            (node-ty tail))))
                    ;; (arithmetic on doubles that the copies gave: a double)
                    (:prim (when (and (not (ty-double-p ty)) (spec-op-node-p node)
@@ -704,7 +723,7 @@ forms ending in one."
                                      (every (lambda (a) (ty-double-p (node-ty a))) (cddr node)))
                             (mkty +k-double+)))
                    (:progn (let ((tail (car (last node))))
-                             (when (and (consp tail) (member (car tail) '(:if :let :block :progn :the)))
+                             (when (and (consp tail) (member (car tail) (assumed-tail-kinds)))
                                (node-ty tail)))))))
     (if refined (ty-intersect ty refined) ty)))
 
