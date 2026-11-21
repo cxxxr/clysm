@@ -2127,41 +2127,71 @@ once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
 month old, since several images (the REPL's, an application's) may be in
 use: deleting them made the other image compile ASDF again, ten seconds.
 **System fasls** (opt-in: `(setf asdf::*clysm-system-fasls* t)` after
-`(require :asdf)`; off by default because of the caveats at the end of this
-paragraph). A system's files can also be compiled into one fasl of one
-module (`contrib/asdf-hooks.lisp`, `sys::%compile-files` in
-`runtime/eval.lisp`), so that the calls between its files are direct calls
-that V8 can inline and that carry the types of their arguments and values,
-as within one file. Each file is read and processed as `compile-file`
-processes it (its own `*package*`, `*readtable*` and policy), the module
-being cut into a segment at the start of each file; a call from one file
-to a function another file of the system defines is guarded as the calls
-between the forms of a batch of `load` are (`(if (%defun-guard 'f) direct
-call through the cell)`, the index of a form being that of its file:
-`unit-begin-file` in `src/live.lisp`), so a redefinition of `f` (at the
+`(require :asdf)`, or `CLYSM_SYSTEM_FASLS=1` in the environment). A
+system's files can be compiled into one fasl of one module
+(`contrib/asdf-hooks.lisp`; `sys::%system-compile-file` and the functions
+after it in `runtime/eval.lisp`; "A unit compiled file by file" in
+`src/live.lisp`), so that the calls between its files are direct calls that
+V8 can inline and that carry the types of their arguments and values, as
+within one file. The system fasl is *the product of the compile itself*:
+it is the output of the compile-op of each of the system's files, and
+ASDF's own compiling and loading of each file in turn (the files before it
+loaded when it is compiled, as with a fasl for each file) builds it. The
+compile-op of a file compiles it into the system's compilation unit, which
+stays open between the files (its state, the bindings of
+`call-with-compilation-unit`, kept in a list and bound again with `progv`
+around each file: `unit-open`, `call-in-unit`); each file is read and
+processed as `compile-file` processes it (its own `*package*`,
+`*readtable*` and policy; its compile-time side effects happen once, in the
+same state as for a fasl of its own), the module being cut into a segment
+at the start of each file. The load-op of the file runs modules made for
+its segments alone from the *same compiled functions* as the unit's module
+(`unit-running-module`): each defines the functions of its segments and the
+globals they are the first to use, and exports them (`u:N:M`); the
+functions and globals of earlier files that its code uses (a guarded direct
+call into an earlier file, a closure, a constant, a cache) are imported
+from the modules that defined them (`host/common.mjs` keeps their exports
+while the system is loaded), so they are the same objects as in the final
+module. Their objects are written and read as in a fasl (`%su-text`), so a
+literal is no more `eq` to the compile-time object than when loaded from a
+fasl. When the last file is compiled, the unit's module is finished and
+written (`NAME--system.fasl` next to where the fasl of the first file would
+go, with the list of its files in `NAME--system.files`, written last): each
+function is compiled once. A file is up to date when the system fasl is
+(newer than every file and the `.asd`, made from these files): a change to
+one compiles them all again. Each file's segments begin with
+`(sys::%system-file-start)`, which gives `*package*` and `*readtable*` the
+values ASDF's load of a file of its own gives them. In a later image, the
+load of the first file loads the system fasl, which runs the files in
+order, and the loads of the others only mark them done
+(`asdf::*clysm-system-fasls-loaded*` lists the systems loaded so). A call
+from one file to a function another file of the system defines is guarded
+as the calls between the forms of a batch of `load` are (`(if
+(%defun-guard 'f) direct call through the cell)`, the index of a form being
+that of its file: `unit-begin-file`), so a redefinition of `f` (at the
 REPL, by `trace`, by a later file) is still seen; a call of a function of a
-later file goes through its symbol, as does one of a later segment within
-a file. After a system is loaded from its per-file fasls, its system fasl
-(`NAME--system.fasl` next to the fasl of its first file, with the list of
-its files in `NAME--system.files`) is made when it is missing or older than
-a fasl or source of the system or its `.asd`: in that image, where its
-definitions are made already, so compiling them again is like recompiling a
-loaded file (identical `defstruct`s, `defclass`es, constants). When the
-system is next loaded and is up to date, the load of its first file loads
-the system fasl, which runs the files in order, and the loads of the others
-only mark them done (`asdf::*clysm-system-fasls-loaded*` lists the systems
-loaded so). Only systems whose components are plain Lisp source files (in
-modules, with static files) without around-compile hooks qualify. Measured
-gain: `a-esrap` 1.97 → 1.72–1.77 times SBCL, `bench/apps.lisp` 1.29 →
-1.24–1.25; libraries, Lem and start-up unchanged. Caveats, why it is off
-by default: making the system fasl recompiles the loaded system in the
-same image, so its compile-time side effects run again (harmless for
-identical definitions, not for a library whose compile-time code is not
-idempotent); the fasl cache holds each such system twice; and the first
-build compiles it twice (esrap with Alexandria: 2.2 → 3.1 s from an empty
-cache). `tests/asdf/twofiles` loads a
-system from its system fasl and redefines functions of one file that the
-other calls.
+later file goes through its symbol. Only systems whose components are plain
+Lisp source files (in modules, with static files) without around-compile
+hooks qualify, and not in an image that records its modules for a heap
+image (`CLYSM_SAVE_IMAGE`). A file that fails to compile into the unit (an
+error, ASDF's `retry` or `accept`) leaves it: the files after it are
+compiled to fasls of their own, and `NAME--system.broken` keeps the system
+from being tried again until a file or the `.asd` changes. The methods are
+on `source-file` and `parent-component`, not `cl-source-file` and `system`:
+a library's method with those specializers (asdf-flv's `perform :around` of
+`load-op`) would replace ours. `tests/asdf/twofiles` loads a system from
+its system fasl and redefines functions of one file that the other calls;
+`tests/asdf/sysfasl` checks that each file's compile-time side effects
+happen once per build, that a macro of one file can call a function of the
+file before, and that a changed file makes the system fasl again.
+
+The first version (2026-11-21) made the system fasl after the system was
+loaded, by compiling its files again from source in the loaded image: the
+compile-time side effects ran twice, the expansions differed from those of
+the files compiled in turn (a macro testing `fboundp` of a function of a
+later file, iterate's counter-named clause functions), the first build
+compiled everything twice (96 Quicklisp systems: 1.72 times the time) and
+the cache held each system twice (1.94).
 `make test-asdf` loads a small multi-system example (`tests/asdf/`). There
 are no subprocesses, so `uiop:run-program` is not available.
 
@@ -3029,14 +3059,30 @@ What is not as fast as intended, and why:
   → 33 (26). (`equalp` is left out: its inline expansion is 6 KB a loop; the
   image grew by 47 KB.)
   With system fasls (opt-in, see ASDF), the calls between a system's files are
-  guarded direct calls in one module: `tools/bench-libs.sh bench/apps.lisp`,
-  base and new alternately on one slot, four rounds: `a-esrap` 110–120 →
-  98–108 ms (1.97 → 1.72–1.77 times SBCL), the file 1.27–1.29 → 1.24–1.25;
-  `bench/libs.lisp` (1.16 both), Lem's comparator (1.44 both: its time is in
-  generic functions and the runtime, not in calls between its files) and
-  `tools/bench-startup.sh` (loading Alexandria, cl-ppcre and Babel from
-  their fasls, 5.93 against 6.07) unchanged. esrap's files concatenated into
-  one file (unguarded calls, forward calls direct too) take 95–103 ms.
+  guarded direct calls in one module. Made by the compile itself (2026-11-22,
+  feature off and on alternately on one slot, two rounds each):
+  `tools/bench-libs.sh bench/apps.lisp` `a-esrap` 1.89–1.96 → 1.76–1.80
+  times SBCL, `a-ppcre-tokens` 1.22 → 1.10–1.16, the others the same but
+  `a-yason-parse` 1.13–1.19 → 1.35–1.40. That one is warming up only: run
+  five times in a row in the same process, its rounds take 87, 76, 74, 74,
+  73 ms with fasls of each file and 111, 77, 73, 73, 74 with system fasls
+  (three processes agree), and yason's module is the same function for
+  function whether it is made alone or after Lem's 25 systems; it is slow
+  only while system fasls of esrap, cl-json, local-time or cl-ppcre are
+  loaded too (not of yason itself: with yason's and Alexandria's only,
+  91–95 ms), so it is the engine's work on their larger modules when the
+  first benchmark starts, not their code. Lem's comparator 1.11–1.14 → 1.05–1.08
+  (Lem's systems load through ASDF: `lem/core` is one system fasl);
+  `bench/libs.lisp` 1.05 → 1.02. First build (a fresh cache, the system with
+  its dependencies, a whole process of about 0.3 s of start-up, one slot):
+  alexandria 676 → 706 ms, cl-ppcre 1349 → 1604, babel 1521 → 1634, esrap
+  1043 → 1170, cl-json 571 → 625, yason 804 → 906, local-time 578 → 627,
+  str 3259 → 4095 (the first version: about 1.7 times); cl-jpeg 33.8 → 33.6
+  s (the first version ran its compile-time work twice). What the first
+  build adds is making the modules that load each file (about a tenth) and
+  writing the system fasl's text; the loads from a warm cache take the same
+  time (334–508 ms against 344–508), and the cache is 0.8–1.05 times the
+  size of the fasls of each file (the first version: 1.9).
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`

@@ -592,8 +592,9 @@ a module made by *NATIVE-COMPILE-FORM-HOOK* from its octets and constants.")
   "Identifies the image build; compiled modules in fasls are only valid for it.")
 (defvar *native-unit-hooks* nil
   "When the compiler is part of the image: (CALL-WITH-UNIT ADD-FORM END-SEGMENT
-FINISH), the functions with which COMPILE-FILE compiles a file into one
-module (src/live.lisp, \"Compilation units\").")
+FINISH BEGIN-FILE OPEN CALL-IN-UNIT RUNNING-MODULE), the functions with which
+COMPILE-FILE compiles a file into one module and %SYSTEM-COMPILE-FILE a
+system's files (src/live.lisp, \"Compilation units\").")
 (defvar *fasl-unit-runner* nil
   "While loading a compiled file: the function of a segment number and a
 vector of objects that runs a segment of the module of the file (set by its
@@ -1757,62 +1758,156 @@ the name as a constant variable), as the forms of a file compiled by the host."
         (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))))
     (values (truename out-path) warnings-p failure-p)))
 
-;;; Several files compiled into one fasl of one module (a system's files:
-;;; contrib/asdf-hooks.lisp), each read and processed as COMPILE-FILE does
-;;; (its own *PACKAGE*, *READTABLE* and policy, from the values when this is
-;;; called), the module cut into a segment at the start of each file.  A call
-;;; from one file to a function another file of them defines is a guarded
-;;; direct call (src/live.lisp, CALL-WITH-COMPILATION-UNIT), so a later
-;;; redefinition of the function is still seen; calls within a file are
-;;; those of COMPILE-FILE.  Loading the fasl is loading the files in order.
-;;; Returns the truename of the fasl (NIL when the image has no compiler).
-(defun %compile-files (inputs output-file &key verbose)
-  (unless (and *native-unit-hooks* (fifth *native-unit-hooks*) *image-id*)
-    (return-from %compile-files nil))
-  (let ((out-path (merge-pathnames (pathname output-file)))
-        (package *package*) (readtable *readtable*) (safety *proclaimed-safety*))
-    (progn
-      (let* ((*cf-modules* (list nil 0))
-             (*cf-constants* (make-hash-table :test 'eq))
-             (*cf-pending* nil)
-             (*cf-unit* nil) (*cf-unit-forms* nil)
-             (*fasl-gensyms* (make-hash-table :test 'eq))
-             (*cf-unit-p* t)
-             (notes nil)
-             (text (with-output-to-string (out)
-                     (flet ((body ()
-                              (let ((k 0))
-                                (dolist (input inputs)
-                                  (when (> k 0)
-                                    (%cf-unit-flush)
-                                    (%call-with-world-lock
-                                     (let ((k k)) (lambda () (funcall (fifth *native-unit-hooks*) k)))))
-                                  (let ((in-path (merge-pathnames (pathname input))))
-                                    (with-open-file (in in-path :direction :input)
-                                      (let ((*compile-file-pathname* in-path)
-                                            (*compile-file-truename* (truename in))
-                                            (*package* package) (*readtable* readtable)
-                                            (*proclaimed-safety* safety)
-                                            (*cf-externalizer* (%new-externalizer in-path)))
-                                        (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
-                                        (loop
-                                          (let* ((start (%form-start in))
-                                                 (form (read in nil %eof-marker)))
-                                            (when (eq form %eof-marker) (return))
-                                            (let ((dspec (%definition-spec form)))
-                                              (when dspec
-                                                (push (list '%note-source dspec (namestring *compile-file-truename*) start)
-                                                      notes)))
-                                            (%cf-process form out nil))))))
-                                  (setq k (+ k 1))))
-                              (%cf-write-unit out)))
-                       (funcall (first *native-unit-hooks*) #'body t))
-                     (dolist (note (nreverse notes))
-                       (when (%call-with-fasl-syntax
-                              (lambda () (ignore-errors (prin1-to-string note))))
-                         (%cf-write note out))))))
-        (%write-fasl out-path text (reverse (first *cf-modules*)) (second *cf-modules*))))
-    (when verbose (format t "~&; wrote ~A~%" (namestring out-path)))
+;;; A system's files compiled into one fasl of one module (contrib/asdf-hooks.lisp),
+;;; in the course of ASDF's compiling and loading each file in turn, so that
+;;; each file is compiled, and its compile-time side effects happen, once:
+;;; %SYSTEM-COMPILE-FILE compiles the next file into the unit of the system
+;;; (src/live.lisp, UNIT-OPEN), processing its forms as COMPILE-FILE does
+;;; (with the current *PACKAGE*, *READTABLE* and policy), the module being cut
+;;; into a segment at the start of each file; %SYSTEM-LOAD-FILE loads it by
+;;; running modules made for its segments alone (UNIT-RUNNING-MODULE), their
+;;; objects written and read as in a fasl; %SYSTEM-UNIT-FINISH writes the
+;;; unit's module, loading which is loading the files in order.  A call from
+;;; one file to a function another file defines is a guarded direct call (a
+;;; later redefinition is still seen); calls within a file are those of
+;;; COMPILE-FILE.
+
+(defvar *system-units* 0)
+
+(defstruct (%system-unit (:constructor %make-system-unit (state prefix)) (:conc-name %su-))
+  state                                 ; the compiler's (UNIT-OPEN)
+  prefix                                ; of the exports of its modules
+  (modules (list nil 0))                ; *CF-MODULES* of the fasl
+  (entries nil)                         ; *CF-UNIT* of the fasl
+  (gensyms (make-hash-table :test 'eq)) ; *FASL-GENSYMS* of the fasl
+  (load-gensyms (make-hash-table))      ; *FASL-LOAD-GENSYMS* of the loads
+  (notes nil)                           ; %NOTE-SOURCE entries, reversed
+  (files nil))                          ; what loads each file, reversed
+
+(defun %system-unit-open ()
+  "A unit for the files of a system, or NIL when the image has no compiler."
+  (when (and (nth 7 *native-unit-hooks*) *image-id*)
+    (let ((prefix (format nil "u:~D:" (setq *system-units* (+ *system-units* 1)))))
+      (%make-system-unit (%call-with-world-lock (lambda () (funcall (nth 5 *native-unit-hooks*) prefix)))
+                         prefix))))
+
+(defun %su-text (su x)
+  "X written as in the fasl of SU."
+  (let ((*fasl-gensyms* (%su-gensyms su)) (*fasl-symbol-numbers* (make-hash-table :test 'eq)))
+    (with-output-to-string (out) (%cf-write x out))))
+
+(defun %forms-have-fasl-ref-p (forms)
+  "Whether FORMS have an object made by a MAKE-LOAD-FORM in them."
+  (let ((seen (make-hash-table :test 'eq)))
+    (labels ((walk (x)
+               (cond ((consp x)
+                      (unless (gethash x seen)
+                        (setf (gethash x seen) t)
+                        (or (walk (car x)) (walk (cdr x)))))
+                     ((simple-vector-p x)
+                      (unless (gethash x seen)
+                        (setf (gethash x seen) t)
+                        (some #'walk x)))
+                     (t (%fasl-marker-p x)))))
+      (walk forms))))
+
+(defun %system-compile-file (su input &key verbose)
+  "Compile the file INPUT as the next file of SU.  Returns (values
+warnings-p failure-p), as COMPILE-FILE."
+  (let* ((in-path (merge-pathnames (pathname input)))
+         (k (length (%su-files su))) (warnings-p nil) (failure-p nil) (notes nil) (loads nil))
+    (with-open-file (in in-path :direction :input)
+      (let ((*compile-file-pathname* in-path)
+            (*compile-file-truename* (truename in))
+            (*package* *package*) (*readtable* *readtable*)
+            (*proclaimed-safety* *proclaimed-safety*)
+            (*cf-externalizer* (%new-externalizer in-path))
+            (*cf-modules* (%su-modules su)) (*cf-constants* (make-hash-table :test 'eq))
+            (*cf-pending* nil) (*cf-unit* nil) (*cf-unit-forms* nil)
+            (*fasl-gensyms* (%su-gensyms su)) (*cf-unit-p* t))
+        (when verbose (format t "~&; compiling file ~A~%" (namestring *compile-file-truename*)))
+        (handler-bind ((warning (lambda (c)
+                                  (setq warnings-p t)
+                                  (unless (typep c 'style-warning) (setq failure-p t))))
+                       (error (lambda (c) (declare (ignore c)) (setq warnings-p t failure-p t))))
+          (funcall
+           (nth 6 *native-unit-hooks*) (%su-state su)
+           (lambda ()
+             (when (> k 0)
+               (%call-with-world-lock (lambda () (funcall (nth 4 *native-unit-hooks*) k))))
+             (%cf-unit-add '(%system-file-start))
+             (loop
+               (let* ((start (%form-start in))
+                      (form (read in nil %eof-marker)))
+                 (when (eq form %eof-marker) (return))
+                 (let ((dspec (%definition-spec form)))
+                   (when dspec
+                     (push (list '%note-source dspec (namestring *compile-file-truename*) start) notes)))
+                 (%cf-process form (make-broadcast-stream) nil)))
+             (%cf-unit-flush)
+             ;; what loads the file: a module for its consecutive segments
+             ;; (their source forms if one cannot be made), the forms the
+             ;; compiler failed on
+             (let ((entries (reverse *cf-unit*)))
+               (loop while entries
+                     do (let ((group (loop while (and entries (eq (car (car entries)) :segment))
+                                           collect (pop entries)
+                                           ;; (objects made by the segments before, MAKE-LOAD-FORM:
+                                           ;; its objects are read after they ran)
+                                           until (and entries (%forms-have-fasl-ref-p (third (car entries)))))))
+                          (if group
+                              (push (or (handler-case
+                                            (multiple-value-bind (octets vector)
+                                                (%call-with-world-lock
+                                                 (lambda () (funcall (nth 7 *native-unit-hooks*)
+                                                                     (mapcar #'second group))))
+                                              (list octets (%su-text su (list '%fasl-segment 0 vector 0 0))))
+                                          (error () nil))
+                                        (%su-text su `(progn ,@(mapcan (lambda (e) (copy-list (third e))) group))))
+                                    loads)
+                              (push (%su-text su (second (pop entries))) loads)))))
+             (setf (%su-entries su) (append *cf-unit* (%su-entries su))))))))
+    (setf (%su-notes su) (append notes (%su-notes su)))
+    (push (cons (nreverse loads) (reverse notes)) (%su-files su))
+    (values warnings-p failure-p)))
+
+(defvar *system-load-readtable* nil "The *READTABLE* when the loading of a system fasl began.")
+
+(defun %system-file-start ()
+  "At the start of each file of a system fasl: *PACKAGE* and *READTABLE* as
+ASDF's loading of the file's own fasl would have them."
+  (setq *package* (find-package "COMMON-LISP-USER"))
+  (when *system-load-readtable* (setq *readtable* *system-load-readtable*))
+  nil)
+
+(defun %system-load-file (su k)
+  "Load the Kth file compiled into SU."
+  (let* ((*fasl-load-gensyms* (%su-load-gensyms su)) (*fasl-unit-runner* nil)
+         (*package* *package*) (*readtable* *readtable*) (*system-load-readtable* *readtable*))
+    (destructuring-bind (loads . notes) (nth k (reverse (%su-files su)))
+      (dolist (l loads)
+        (if (consp l)
+            (funcall *native-run-octets-hook* (first l)
+                     (third (%fasl-read (make-string-input-stream (second l)))))
+            (%eval-toplevel (%fasl-read (make-string-input-stream l)))))
+      (dolist (n notes) (apply #'%note-source (cdr n))))))
+
+(defun %system-unit-finish (su output-file)
+  "Write the fasl of the files compiled into SU to OUTPUT-FILE; its truename."
+  (let ((out-path (merge-pathnames (pathname output-file))))
+    (funcall
+     (nth 6 *native-unit-hooks*) (%su-state su)
+     (lambda ()
+       (let* ((*cf-modules* (%su-modules su)) (*cf-unit* (%su-entries su)) (*cf-unit-forms* nil)
+              (*cf-unit-p* t) (*fasl-gensyms* (%su-gensyms su))
+              (*fasl-symbol-numbers* (make-hash-table :test 'eq))
+              (text (with-output-to-string (out)
+                      (%cf-write-unit out)
+                      (dolist (note (reverse (%su-notes su)))
+                        (when (%call-with-fasl-syntax
+                               (lambda () (ignore-errors (prin1-to-string note))))
+                          (%cf-write note out))))))
+         (%write-fasl out-path text (reverse (first *cf-modules*)) (second *cf-modules*)))))
     (truename out-path)))
 
 ;;; ------------------------------------------------------------

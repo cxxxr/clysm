@@ -1,0 +1,6 @@
+(in-package :sysfasl)
+(eval-when (:compile-toplevel) (incf (symbol-value (find-symbol "*SYSFASL-CT*" "CL-USER"))))
+;; a macro whose expander calls a function of the file before (loaded first)
+(defmacro scaled (x) (scale x))
+(defmacro twice (form) `(list ,form ,form))
+(defun origin () (make-pt :x 1 :y 2))

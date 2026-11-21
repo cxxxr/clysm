@@ -12,45 +12,51 @@
 
 (in-package :clysm)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defparameter *codegen-state-bindings*
+  '((*toplevel-lams* nil)
+    (*current-toplevel* nil)
+    (*toplevel-nodes* nil)
+    (*toplevel-weight* 0)
+    (*symbol-globals* nil)
+    (*symbol-global-table* (make-hash-table :test 'eq))
+    (*const-globals* nil)
+    (*const-table* (make-hash-table :test 'eql))
+    (*const-string-table* (make-hash-table :test 'equal))
+    (*closure-globals* nil)
+    (*closure-global-names* (make-hash-table :test 'equal))
+    (*misc-globals* nil)
+    (*fasl-guard-globals* (make-hash-table :test 'equal))
+    (*fasl-guards-set* (make-hash-table :test 'equal))
+    (*fasl-guards-pending* nil)
+    (*pending-lams* nil)
+    (*compiled-lams* (make-hash-table :test 'eq))
+    (*extra-types* (make-hash-table :test 'equal))
+    (*global-defuns* (make-hash-table :test 'eq))
+    (*called-functions* (make-hash-table :test 'eq))
+    (*runtime-consts* nil)
+    (*live-constants* nil)
+    (*helpers* *helpers*)
+    (*current-lam* nil)
+    ;; (tables of the lambdas, variables and nodes of this module: kept
+    ;; in the image, they grew with every form compiled in it)
+    (*node-types* (make-hash-table :test 'eq))
+    (*ti-analyzed* (make-hash-table :test 'eq))
+    (*inline-candidates* (make-hash-table :test 'eq))
+    (*inlined-into* (make-hash-table :test 'eq))
+    (*lvar-lams* (make-hash-table :test 'eq))
+    (*spec-cloneable* (make-hash-table :test 'eq))
+    (*spec-clones* (make-hash-table :test 'equal))
+    (*raw-clones* (make-hash-table :test 'equal))
+    (*catch-clones* (make-hash-table :test 'equal))
+    (*macros-ready* t))
+  "The per-module code generation state, with the initial values of a new module."))
+
 (defmacro with-fresh-codegen-state (() &body body)
-  "Bind all per-module code generation state, so that compilations can nest
-(e.g. a macro expander being compiled while a module is being built)."
-  `(let ((*toplevel-lams* nil)
-         (*current-toplevel* nil)
-         (*toplevel-nodes* nil)
-         (*toplevel-weight* 0)
-         (*symbol-globals* nil)
-         (*symbol-global-table* (make-hash-table :test 'eq))
-         (*const-globals* nil)
-         (*const-table* (make-hash-table :test 'eql))
-         (*const-string-table* (make-hash-table :test 'equal))
-         (*closure-globals* nil)
-         (*closure-global-names* (make-hash-table :test 'equal))
-         (*misc-globals* nil)
-         (*fasl-guard-globals* (make-hash-table :test 'equal))
-         (*fasl-guards-set* (make-hash-table :test 'equal))
-         (*fasl-guards-pending* nil)
-         (*pending-lams* nil)
-         (*compiled-lams* (make-hash-table :test 'eq))
-         (*extra-types* (make-hash-table :test 'equal))
-         (*global-defuns* (make-hash-table :test 'eq))
-         (*called-functions* (make-hash-table :test 'eq))
-         (*runtime-consts* nil)
-         (*live-constants* nil)
-         (*helpers* *helpers*)
-         (*current-lam* nil)
-         ;; (tables of the lambdas, variables and nodes of this module: kept
-         ;; in the image, they grew with every form compiled in it)
-         (*node-types* (make-hash-table :test 'eq))
-         (*ti-analyzed* (make-hash-table :test 'eq))
-         (*inline-candidates* (make-hash-table :test 'eq))
-         (*inlined-into* (make-hash-table :test 'eq))
-         (*lvar-lams* (make-hash-table :test 'eq))
-         (*spec-cloneable* (make-hash-table :test 'eq))
-         (*spec-clones* (make-hash-table :test 'equal))
-         (*raw-clones* (make-hash-table :test 'equal))
-         (*catch-clones* (make-hash-table :test 'equal))
-         (*macros-ready* t))
+  "Bind all per-module code generation state (*CODEGEN-STATE-BINDINGS*), so
+that compilations can nest (e.g. a macro expander being compiled while a
+module is being built)."
+  `(let ,*codegen-state-bindings*
      ,@body))
 
 (defvar *live-helper-imports* nil
@@ -215,6 +221,15 @@ DEFINE-CHECKED-CASTS)."
 (in *M*); returns the functions of the checked casts (DEFINE-CHECKED-CASTS)."
   (loop for (name def) in *type-defs* do (add-type *m* name def))
   (setf (wasm-module-base-types *m*) (length *type-defs*))
+  (live-module-imports)
+  (let ((*func-segment* 0))
+    (sym-global nil) (sym-global t)
+    (define-standard-helpers)
+    (define-argerr-helpers)
+    (define-checked-casts :lazy t)))
+
+(defun live-module-imports ()
+  "The imports of a module compiled in the image (in *M*)."
   (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
   ;; (those not called are dropped with the unreachable functions)
   (when (and *live-helper-imports* (not *live-snapshots*))
@@ -232,12 +247,7 @@ DEFINE-CHECKED-CASTS)."
   ;; CODE_BASE (runtime/image.lisp)
   (add-import-global *m* :code-base :i32 nil "clysm" "code_base")
   (setf (wasm-module-table *m*) (list :import "clysm" "codes")
-        (wasm-module-code-base *m*) :code-base)
-  (let ((*func-segment* 0))
-    (sym-global nil) (sym-global t)
-    (define-standard-helpers)
-    (define-argerr-helpers)
-    (define-checked-casts :lazy t)))
+        (wasm-module-code-base *m*) :code-base))
 
 (defun live-compile-tops (tops)
   "Compile the toplevel functions TOPS and the functions they need."
@@ -521,3 +531,184 @@ when it has no forms."
   (unit-end-segment)
   (let ((*error-output* (make-broadcast-stream)))
     (live-module-finish (reverse *unit-segments*) *unit-castfns* t)))
+
+;;; A unit compiled file by file, each file loaded before the next is
+;;; compiled (a system's files, SYS::%SYSTEM-COMPILE-FILE: ASDF compiles and
+;;; loads them in turn).  The unit stays open between the files: its state
+;;; (the bindings of CALL-WITH-COMPILATION-UNIT) is kept in a list and bound
+;;; again around the work on each file (UNIT-OPEN, CALL-IN-UNIT), while the
+;;; code loaded in between compiles in states of its own.  A file is loaded
+;;; by modules made for each of its segments alone (UNIT-RUNNING-MODULE) from
+;;; the same code as the unit's module: the functions and globals of earlier
+;;; segments that its code refers to are imported from their modules, which
+;;; export them ("u:N", host/common.mjs), so a direct call into an earlier
+;;; file is a call of an imported function, and the closures, constants and
+;;; caches are the same objects.  At the end the unit's module (UNIT-FINISH)
+;;; is that of the system's fasl: each function is compiled once.
+
+(defvar *unit-owners* nil
+  "In a unit compiled file by file: the name of a function or global of the
+unit -> the name of the export of the module of a segment that defines it.")
+(defvar *unit-exports* (list 0) "(the number of exports of segment modules made so far)")
+(defvar *unit-export-prefix* "u:" "The beginning of the names of the exports of the unit's segment modules.")
+
+(defparameter *unit-state-variables*
+  (append '(*live-mode* *live-packages* *warnings* *batch-forms* *batch-unknown-calls*
+            *batch-no-direct* *batch-form-index* *m* *unit-env* *unit-segments* *unit-castfns*
+            *unit-owners* *unit-export-prefix*)
+          (mapcar #'car *codegen-state-bindings*)))
+
+(defun unit-open (prefix)
+  "A new unit of several files (as CALL-WITH-COMPILATION-UNIT with FILES),
+left open: its state, for CALL-IN-UNIT.  PREFIX begins the names of the
+exports of its segment modules (\"u:...\")."
+  (let ((state nil))
+    (call-with-compilation-unit
+     (lambda ()
+       (let ((*unit-owners* (make-hash-table :test 'equal)) (*unit-export-prefix* prefix))
+         (setq state (mapcar (lambda (v) (cons v (symbol-value v))) *unit-state-variables*))))
+     t)
+    state))
+
+(defun call-in-unit (state thunk)
+  "Call THUNK in the unit of STATE (UNIT-OPEN), which keeps what it changes."
+  (progv (mapcar #'car state) (mapcar #'cdr state)
+    (unwind-protect (funcall thunk)
+      (dolist (c state) (setf (cdr c) (symbol-value (car c)))))))
+
+(defun unit-export-name ()
+  (format nil "~A~D" *unit-export-prefix* (incf (car *unit-exports*))))
+
+(defun unit-running-module (segs)
+  "A module that runs the segments SEGS of the unit (ended, consecutive) in
+turn, alone: it defines their functions and the globals that they are the
+first to refer to, and exports them, and imports those of the modules of the
+segments before them.  Returns (values octets vector), the objects for its RUN."
+  (let* ((um *m*) (owners *unit-owners*)
+         (all (reverse *unit-segments*))
+         (tops (loop for k in segs append (nth k all)))
+         (own (loop for f across (wasm-module-funcs um)
+                    when (and (member (wasm-func-segment f) segs)
+                              (not (assoc (wasm-func-name f) *helpers* :test #'equal))
+                              (not (gethash (wasm-func-name f) owners)))
+                      collect f))
+         (own-names (make-hash-table :test 'equal))
+         (consts (make-hash-table :test 'equal))
+         (closures (make-hash-table :test 'equal)) (misc (make-hash-table :test 'equal))
+         (fimports nil) (gimports nil) (defined nil) (castfns nil))
+    (flet ((symp (name) (and (consp name) (eq (car name) :sym))))
+      (dolist (c *live-constants*) (setf (gethash (car c) consts) c))
+      (dolist (g *closure-globals*) (setf (gethash (first g) closures) g))
+      (dolist (g *misc-globals*) (setf (gethash (first g) misc) g))
+      (dolist (f own) (setf (gethash (wasm-func-name f) own-names) t))
+      ;; what the functions and the initializers of the closures defined
+      ;; here refer to: functions and globals of other segments
+      (let ((seen (make-hash-table :test 'equal)) (queue nil))
+        (labels ((ref (r)
+                   (unless (gethash r seen)
+                     (setf (gethash r seen) t)
+                     (let* ((name (cdr r)) (o (gethash name owners)))
+                       (case (car r)
+                         (:call (when (and o (not (gethash name own-names))) (push (cons name o) fimports)))
+                         (:global
+                          (cond (o (push (cons name o) gimports))
+                                ((symp name))
+                                ((gethash name closures)
+                                 (push name defined)
+                                 (push (body-refs (third (gethash name closures))) queue))
+                                (t (push name defined)))))))))
+          (dolist (f own) (push (wasm-func-refs f) queue))
+          (dolist (l tops) (ref (cons :global (static-closure-global l))))
+          (loop while queue do (mapc #'ref (pop queue)))))
+      (let ((*m* (make-wasm-module)) (*live-snapshots* nil) (*func-segment* 0))
+        (copy-module-types um *m*)
+        (live-module-imports)
+        (loop for (name . field) in fimports
+              do (add-import-func *m* name (wasm-func-type (find-func um name)) "u" field))
+        (loop for (name . field) in gimports
+              do (cond ((gethash name consts)
+                        (add-import-global *m* name (if (simple-vector-p (cdr (gethash name consts)))
+                                                        '(:ref :vector) :eqref)
+                                           t "u" field))
+                       ((gethash name closures)
+                        (add-import-global *m* name '(:ref :null :closure) t "u" field)
+                        (setf (gethash name (wasm-module-nonnull-globals *m*)) t))
+                       (t (let ((g (gethash name misc)))
+                            (add-import-global *m* name (second g) (third g) "u" field)))))
+        (define-standard-helpers)
+        (define-argerr-helpers)
+        (setq castfns (define-checked-casts :lazy t))
+        (progn
+          (dolist (f own) (adopt-func *m* f))
+          (loop for name being the hash-keys of (wasm-module-declared-refs um)
+                when (func-defined-p *m* name) do (declare-func-ref *m* name))
+          ;; (the unit's first form sets SYS::*FASL-UNIT-RUNNER*: not used here)
+          (add-func *m* :unit-dispatch :ee-e :body (nil-code))
+          (add-called-helpers castfns))
+        ;; the globals: the symbols set from the vector, the constants,
+        ;; closures and others that this segment uses first (exported)
+        (let ((used (make-hash-table :test 'equal)) (queue nil))
+          (loop for f across (wasm-module-funcs *m*) do (push (wasm-func-refs f) queue))
+          (dolist (n defined) (push (list (cons :global n)) queue))
+          ;; (and what the initializers of the closures refer to)
+          (loop while queue
+                do (dolist (r (pop queue))
+                     (when (and (eq (car r) :global) (not (gethash (cdr r) used)))
+                       (setf (gethash (cdr r) used) t)
+                       (let ((g (gethash (cdr r) closures)))
+                         (when (and g (not (global-defined-p *m* (cdr r))))
+                           (push (body-refs (third g)) queue))))))
+          (flet ((new-p (name) (and (gethash name used) (not (global-defined-p *m* name))))
+                 (export-global (name)
+                   (let ((e (unit-export-name)))
+                     (add-export *m* e :global name)
+                     (setf (gethash name owners) e))))
+            (let ((ssyms (loop for n being the hash-keys of used
+                               when (and (symp n) (not (global-defined-p *m* n))) collect (second n)))
+                  (sconsts (remove-if-not (lambda (c) (new-p (car c))) (reverse *live-constants*)))
+                  (sclosures (remove-if-not (lambda (g) (new-p (first g))) (reverse *closure-globals*))))
+              (dolist (s ssyms) (add-global *m* (list :sym s) '(:ref :symbol) t '((:global.get :nil-symbol))))
+              (dolist (c sconsts)
+                (if (simple-vector-p (cdr c))
+                    (add-global *m* (car c) '(:ref :vector) t '((:array.new_fixed :vector 0)))
+                    (add-global *m* (car c) :eqref t '((:ref.null :eq))))
+                (export-global (car c)))
+              (dolist (g sclosures)
+                (add-global *m* (first g) '(:ref :null :closure) t '((:ref.null :closure)))
+                (setf (gethash (first g) (wasm-module-nonnull-globals *m*)) t)
+                (export-global (first g)))
+              (dolist (g (reverse *misc-globals*))
+                (when (new-p (first g))
+                  (destructuring-bind (name type mutable init) g
+                    (add-global *m* name type mutable init)
+                    (export-global name))))
+              (add-identity-hash-cache)
+              (add-func *m* :run :x-e :export "run"
+                        :locals '((:ref :null :vector) :eqref) :local-names '(v result)
+                        :body `((:local.get 0) :any.convert_extern (:ref.cast! :vector) (:local.set v)
+                                ,@(loop for s in ssyms for i from 0
+                                        append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                                 (:ref.cast :symbol) (:global.set (:sym ,s))))
+                                ,@(loop for c in sconsts for i from (length ssyms)
+                                        append `((:local.get v) (:i32.const ,i) (:array.get :vector)
+                                                 ,@(when (simple-vector-p (cdr c)) '((:ref.cast! :vector)))
+                                                 (:global.set ,(car c))))
+                                ,@(loop for g in sclosures append `(,@(third g) (:global.set ,(first g))))
+                                (:block pend nil
+                                  ,@(loop for l in tops
+                                          append `((:global.get ,(static-closure-global l))
+                                                   (:call (:main ,(lam-id l))) (:local.tee result)
+                                                   :ref.is_null
+                                                   (:if nil nil ((:call :exit-pending-p) (:br_if pend)))))
+                                  (:local.get result) :return)
+                                (:ref.null :eq)))
+              (add-called-helpers castfns)
+              ;; ("u": the host keeps the exports of the module)
+              (add-export *m* "u" :func :run)
+              (dolist (f own)
+                (let ((e (unit-export-name)))
+                  (add-export *m* e :func (wasm-func-name f))
+                  (setf (gethash (wasm-func-name f) owners) e)))
+              (remove-unreachable-functions *m*)
+              (values (encode-module *m*)
+                      (coerce (append ssyms (mapcar #'cdr sconsts)) 'simple-vector)))))))))
