@@ -719,7 +719,11 @@ error into something else, else NIL (for LOOP's default values)."
 ;; not decide (src/codegen.lisp, DECL-CHECK-CODE)
 (defun %untyped (x) x)
 (defun %check-declared-type (datum expected)
-  (if (typep datum expected) datum (%type-error datum expected)))
+  ;; (a compound FUNCTION type is not a type for TYPEP, CLHS 4.2.3: what a
+  ;; declaration of one can be checked for is that the value is a function)
+  (if (typep datum (if (and (consp expected) (eq (car expected) 'function)) 'function expected))
+      datum
+      (%type-error datum expected)))
 
 (defun %read-new-value ()
   (format *query-io* "~&Enter a form to evaluate: ")

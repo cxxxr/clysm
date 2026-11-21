@@ -75,3 +75,11 @@
              (outcome (lambda (x) (p-opt x 2d0)) 'a 'number)
              (outcome (lambda (x) (setq *v* x) (s-read)) (list 1) 'simple-vector)))
 (terpri)
+
+;;; A variable declared of a compound FUNCTION type is checked to be a
+;;; function (TYPEP does not take such a type), as split-sequence declares.
+(defun call-declared-fn (f v)
+  (declare (type (function (vector fixnum) (or null fixnum)) f))
+  (funcall f v 0))
+(print (list (call-declared-fn (lambda (v i) (declare (ignore v)) (1+ i)) #(1 2))
+             (handler-case (call-declared-fn 42 #(1)) (type-error () :type-error))))

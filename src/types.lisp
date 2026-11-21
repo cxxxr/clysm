@@ -275,6 +275,8 @@ which DECLARED-TY knows something)."
          (ty (ignore-errors (declared-ty exp))))
     ;; (an integer test the compiler leaves out where the type of the value shows it holds)
     (cond ((integer-decl-p exp) (integer-decl-test var exp))
+          ;; (a compound FUNCTION type is not one for TYPEP: the value is a function)
+          ((and (consp exp) (eq (car exp) 'function)) `(functionp ,var))
           ((and ty (= (ty-bits ty) +k-svec+) (null (ty-cls ty))) `(clysm-sys::%simple-vector-p ,var))
           ((and ty (= (ty-bits ty) +k-string+) (null (ty-cls ty))) `(clysm-sys::%simple-string-p ,var))
           ((and (consp exp) (eq (car exp) 'or) (cdr exp)
