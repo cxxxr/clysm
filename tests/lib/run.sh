@@ -21,6 +21,10 @@ if ! cmp -s tests/lib/messages.expected build/lib-test/messages.out; then
   exit 1
 fi
 echo "lib: messages ok"
+# classes and a Gray stream in a shaken library (tests/lib/clos.lisp)
+bin/clysm library --shake tests/lib/clos.lisp -o build/lib-test/clos.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/clos.mjs build/lib-test/clos.mjs || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

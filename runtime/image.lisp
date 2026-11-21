@@ -448,11 +448,96 @@ now (the oldest binding of a symbol on the binding stack holds it)."
          (%img-word (%mdarray-field x 7))))
       t)))
 
+;;; The methods of classes that no instance of can exist in a shaken program
+;;; (src/preinit.lisp): the compiler names the classes in the environment
+;;; variable CLYSM_PREINIT_DROP (a list of their names, read), or, when it is
+;;; not set, they are guessed here: the classes of metaclass STANDARD-CLASS
+;;; that some method specializes, other than conditions, of which none of
+;;; the metaobjects is an instance.  The methods that specialize a parameter
+;;; on one of those classes or a subclass are removed, and the classes are
+;;; written to the standard output for the compiler, which checks that the
+;;; code it keeps cannot make an instance of them.
+
+(defun %preinit-all-classes ()
+  (let ((seen nil))
+    (labels ((walk (c) (unless (member c seen) (push c seen) (mapc #'walk (%class-slot c +class-subclasses+)))))
+      (walk (find-class t)))
+    seen))
+
+(defun %preinit-drop-candidates (classes)
+  (let ((made nil) (specialized nil) (std (find-class 'standard-class)) (condition (find-class 'condition)))
+    (flet ((made (x) (dolist (c (%class-cpl (class-of x))) (pushnew c made))))
+      (dolist (c classes)
+        (made c)
+        (mapc #'made (%class-slot c +class-direct-slots+))
+        (mapc #'made (%class-slot c +class-slots+)))
+      (dolist (info *generic-function-infos*)
+        (made info)
+        (when (%gf-slot info +gf-combination+) (made (%gf-slot info +gf-combination+)))
+        (dolist (m (%gf-slot info +gf-methods+))
+          (made m)
+          (dolist (s (%method-specializers m)) (unless (consp s) (pushnew s specialized))))))
+    (remove-if (lambda (c) (or (not (eq (class-of c) std)) (member c made) (%subclassp c condition)))
+               specialized)))
+
+(defun %preinit-drop-gf-methods (info drop)
+  (let ((gf (%gf-slot info +gf-function+)))
+    (dolist (m (%gf-slot info +gf-methods+))
+      (dolist (s (%method-specializers m))
+        (when (and (not (consp s)) (dolist (c drop nil) (when (%subclassp s c) (return t))))
+          (%remove-method-unlocked gf m)
+          (return))))
+    (%set-gf-slot info +gf-initial-methods+
+                  (intersection (%gf-slot info +gf-initial-methods+) (%gf-slot info +gf-methods+)))
+    ;; (a generic function left without methods has a function of the
+    ;; dispatch that one copy serves, instead of its own: should a method be
+    ;; defined, it is called through that)
+    (when (and (null (%gf-slot info +gf-methods+)) (null (%gf-slot info +gf-kmaker+))
+               (eq (%instance-layout info) (find-class 'standard-generic-function))
+               (fboundp (%gf-slot info +gf-name+)) (eq (fdefinition (%gf-slot info +gf-name+)) gf))
+      (let ((f (%make-list-gf-function info)))
+        (%set-closure-name f info)
+        (%set-gf-slot info +gf-function+ f)
+        (%set-gf-slot info +gf-core+ nil)
+        (%set-fdefinition (%gf-slot info +gf-name+) f)
+        (%gf-invalidate info)))))
+
+(defun %preinit-forget-methods (table)
+  "Remove from TABLE (method -> what is known of it) the methods that no
+generic function has: those removed, and those that a definition replaced."
+  (let ((gone nil))
+    (maphash (lambda (m v)
+               (declare (ignore v))
+               (let ((gf (%method-gf m)))
+                 (unless (and gf (member m (%gf-slot (%gf-info gf) +gf-methods+))) (push m gone))))
+             table)
+    (dolist (m gone) (remhash m table))))
+
+(defun %preinit-drop-methods ()
+  (let* ((spec (%getenv "CLYSM_PREINIT_DROP"))
+         (all (%preinit-all-classes))
+         (drop (if spec
+                   (remove nil (mapcar (lambda (s) (find-class s nil)) (read-from-string spec)))
+                   (%preinit-drop-candidates all))))
+    (dolist (info *generic-function-infos*) (%preinit-drop-gf-methods info drop))
+    (mapc #'%preinit-forget-methods (list *method-fast-functions* *method-fast-makers* *method-constants*
+                                          *method-keyed-makers* *slot-accessor-methods*))
+    (dolist (c all) (%set-class-slot c +class-dispatch+ nil))
+    (%bump-clos-epoch)
+    (princ "clysm-preinit-drop:")
+    (dolist (c drop)
+      (let ((name (class-name c)))
+        (princ (concatenate 'string (string #\Newline) (package-name (symbol-package name))
+                            (string #\Tab) (symbol-name name)))))
+    (princ (concatenate 'string (string #\Newline) "clysm-preinit-drop-end" (string #\Newline)))
+    (finish-output)))
+
 (defun %preinit-save ()
   "Save the heap as the runtime's toplevel forms have made it, to the file
 that the host's environment variable CLYSM_PREINIT_FILE names: the start
 function of the module from which the compiler builds a shaken program
 (src/preinit.lisp) calls it instead of the program's toplevel forms."
+  (%preinit-drop-methods)
   ;; (a package's tables of symbols are saved as vectors of their symbols,
   ;; made into tables again by %IMAGE-START: the names are those of the
   ;; symbols, and the tables' vectors were most of the heap)

@@ -4817,7 +4817,7 @@ needs them at run time: the expanders of `defstruct`, `define-condition`,
 of a generic function, which fills its caches when it is called. What keeps
 the rest of the code is the printer (issue #30's item 1), the methods of
 generic functions (`*method-fast-functions*` holds every method's function:
-item 2) and `eval_string`'s reader and evaluator (item 4). A function that
+item 2, below) and `eval_string`'s reader and evaluator (item 4). A function that
 only the runtime's toplevel forms called is no longer there for `eval` of
 new code (`eval_string` of `(symbol-package 'car)`), as the definitions
 that nothing names were not before.
@@ -4878,6 +4878,46 @@ rest is CLOS: the tables of all methods' functions and
 `*generic-function-infos*` keep every generic function and method (item 2),
 and through the method combinations the evaluator.
 
+**Methods of classes that cannot have instances** (issue #30's item 2).
+A method is kept with its generic function, and `*method-fast-functions*`
+(and the tables like it) hold every method's functions: the methods of Gray
+streams and of the streams of subprocesses were kept in every shaken
+module, with what their code reaches. When the heap is saved,
+`%preinit-drop-methods` (`runtime/image.lisp`) removes the methods that
+specialize a parameter on one of a set of classes or a subclass
+(`%remove-method`, then the entries of the tables of methods no generic
+function has, those a definition replaced among them, and the classes'
+caches of dispatch); a generic function left without methods gets the
+function of the dispatch that one copy serves (`%make-list-gf-function`)
+instead of its own. The set is first the classes of metaclass
+`standard-class` that some method specializes, of which no metaobject (a
+class, slot definition, generic function, method or method combination) is
+an instance, and that are not conditions. The module is then shaken, and
+`ph-instantiable-classes` (`src/preinit.lisp`, called by `shake-module`'s
+`:verify` before it changes the module) checks that none of them, nor a
+subclass, can have instances: an instance of a standard class is made by
+`make-instance`, `allocate-instance`, `change-class` or `make-condition` of
+the class or its name, so it can when kept code or a constant names the
+class (as a `defclass` of the program names its superclasses), when a kept
+object is an instance of it, or when a kept object or global refers to the
+class or its name other than as the class system does (its name,
+superclasses, subclasses and precedence list, the `%class` property of its
+name, the cell that compiled `typep` tests read, `*specializer-methods*`).
+If some can, the heap is made again with their methods kept (one more run
+of the toplevel forms and shake, about 1.5 s: a program that defines a Gray
+stream). As for functions, a class that only a name made at run time names
+(`intern`, `read`, `eval_string` of a new `defclass`) is not there for it:
+its inherited methods may be gone. The module of one export: 3,628,248 ->
+3,489,581 bytes (`gzip -9` 920,048 -> 894,729): code 2.75 -> 2.61 MB
+(`process.lisp` 67 -> 0.5 KB, `gray.lisp` 72 -> 17 KB); the methods of the
+Gray streams and of the streams of subprocesses are left out, and the
+generic functions of Gray streams have no dispatch of their own
+(`tests/hello.lisp` with `--shake`: 3,782,300 -> 3,635,773). The REPL image
+carries the 6.6 KB of `%preinit-drop-methods`. What
+`*method-fast-functions*` still holds (160 KB of code) is the methods of
+classes that have instances (the metaobjects, conditions, streams): their
+generic functions are kept by the printer and `make-instance`.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
@@ -4886,7 +4926,9 @@ the globals kept whatever refers to them); and each kept function, largest
 first, with the first chain of references that reached it. `make test-lib`
 compiles the module of one export (`tests/lib/one.lisp`) and fails when it
 is larger than `tests/lib/one.max-bytes`, lowered as the runtime a library
-carries is made smaller (issue #30).
+carries is made smaller (issue #30); it also compiles `tests/lib/clos.lisp`
+shaken, whose classes and Gray stream must still dispatch to the methods
+they inherit from the runtime's.
 
 `tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
