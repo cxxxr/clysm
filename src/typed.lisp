@@ -521,6 +521,14 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
   (let ((ty (node-ty node)) (name (node-op-name node)) (args (cddr node)))
     (when (and mv (member name '(floor truncate ceiling round)))
       (return-from typed-cg nil))
+    (when (and mv (member name '(ffloor fceiling ftruncate fround)))
+      ;; both values: the remainder in the buffer of values
+      (return-from typed-cg
+        (when (float-divmod-node-p node)
+          (multiple-value-bind (code r) (typed-float-divmod node :fquotient t)
+            `(,@code (:struct.new :double)
+              (:global.get :mv-buf) (:i32.const 0) (:local.get ,r) (:struct.new :double) (:array.set :vector)
+              (:i32.const 2) (:global.set :mv-count))))))
     (let ((code
             (cond ((and (eq (car node) :prim) (eq (prim-kind (second node)) :test))
                    (let ((c (typed-test-code node))) (when c `(,@c ,@(bool-code)))))
@@ -1347,11 +1355,31 @@ fixnum) whose remainder is left in an eqref local; returns (values code local)."
        (assoc (node-op-name node) *divmod-modes*)
        (float-divmod-types-p (mapcar #'node-ty (cddr node)))))
 
-(defun typed-float-divmod (node want &optional need-rem)
+(defconstant +f64-int-limit+ 2251799813685248d0
+  "2^51: an integral double of smaller magnitude converts by INTEGRAL-F64-I64-CODE.")
+
+(defun integral-f64-i64-code (q)
+  "The i64 of the integral f64 in the local Q, of magnitude below 2^51: Q
+plus 1.5 * 2^52 has the integer in its low bits.  (No conversion
+instruction: the engine makes those of a scratch register, whose upper part
+each one also reads, which chains the iterations of a loop through it.)"
+  `((:local.get ,q) (:f64.const 6755399441055744d0) :f64.add :i64.reinterpret_f64
+    (:i64.const #x4338000000000000) :i64.sub))
+
+(defun float-quotient-node-p (node)
+  "NODE is the integer quotient of FLOOR TRUNCATE CEILING or ROUND of doubles, computed inline."
+  (and (not *no-fuse*) (member (car node) '(:call :prim))
+       (member (node-op-name node) '(floor truncate ceiling round))
+       (float-divmod-node-p node)))
+
+(defun typed-float-divmod (node want &optional need-rem pair)
   "Division of doubles (or a double and a 32-bit integer) inline, by the
 algorithm of the helper :divmod, which is called when a value is not finite
 or the divisor is zero.  WANT: :quotient (the integer quotient is left on the
-stack), :fquotient (the quotient as an f64) or :remainder (nothing is left).
+stack), :fquotient (the quotient as an f64), :remainder (nothing is left) or
+:pair (nothing is left: the quotient is stored in PAIR, the eqref and i64
+locals of a leaf of fused integer arithmetic, the eqref null when the i64
+holds it).
 Returns the code and the f64 local that holds the remainder (it is not
 computed for a division by 1 unless NEED-REM)."
   (let* ((args (cddr node)) (mode (cdr (assoc (node-op-name node) *divmod-modes*)))
@@ -1360,39 +1388,45 @@ computed for a division by 1 unless NEED-REM)."
          (slow (gensym "SLOW")) (done (gensym "DIV"))
          (unit (null (second args))))
     (if (and unit (not need-rem) (not (eq want :remainder)))
-        ;; one argument, the quotient only: the rounding instruction (the
-        ;; remainder of a division by 1 is exact, so truncating and
-        ;; adjusting by it gives the same integer)
+        ;; one argument, the quotient only: the rounding instruction
         (let ((op (ecase mode (0 :f64.trunc) (1 :f64.floor) (2 :f64.ceil) (3 :f64.nearest))))
           (ecase want
+            (:pair
+             `(,@(f64-arg-code (first args)) ,op (:local.tee ,q) :f64.abs (:f64.const ,+f64-int-limit+) :f64.lt
+               (:hint 1) (:if nil nil
+                    (,@(integral-f64-i64-code q) (:local.set ,(cdr pair)) (:ref.null :eq) (:local.set ,(car pair)))
+                    ((:local.get ,q) (:call :f64-int) (:local.set ,(car pair))))))
             (:quotient
              `(,@(f64-arg-code (first args)) ,op (:local.tee ,q) :f64.abs (:f64.const 536870912d0) :f64.lt
-               (:if nil :eqref
-                    ((:local.get ,q) :i32.trunc_sat_f64_s :ref.i31)
+               (:hint 1) (:if nil :eqref
+                    (,@(integral-f64-i64-code q) :i32.wrap_i64 :ref.i31)
                     ;; (signals when it is not finite)
                     ((:local.get ,q) (:call :f64-int)))))
             (:fquotient
-             `(,@(f64-arg-code (first args)) (:local.tee ,da) ,op (:f64.const 0) :f64.add (:local.tee ,q)
+             `(,@(f64-arg-code (first args)) (:local.tee ,da) ,op (:local.tee ,q)
                (:local.get ,q) :f64.sub (:f64.const 0) :f64.ne
-               (:if nil :f64
+               (:hint 0) (:if nil :f64
                     ((:local.get ,da) (:struct.new :double) ,@(fixnum-code 1) (:i32.const ,mode) (:call :divmod)
                      (:call :to-f64))
                     ((:local.get ,q)))))))
         (values
          `(,@(f64-arg-code (first args)) (:local.set ,da)
            ,@(if unit '((:f64.const 1d0)) (f64-arg-code (second args))) (:local.set ,db)
-           (:block ,done ,(ecase want (:quotient :eqref) (:fquotient :f64) (:remainder nil))
+           (:block ,done ,(ecase want (:quotient :eqref) (:fquotient :f64) ((:remainder :pair) nil))
              (:block ,slow nil
-               ,@(float-divmod-code mode slow da db q r adj nil tmp unit)
+               ,@(float-divmod-code mode slow da db q r adj nil tmp unit
+                                    (and (not need-rem) (member want '(:quotient :pair :fquotient)))
+                                    (eq want :fquotient))
                ,@(ecase want
                    (:quotient
-                    `((:local.get ,q) :f64.abs (:f64.const 536870910d0) :f64.lt
-                      (:if nil :eqref
-                           ((:local.get ,q) :i32.trunc_sat_f64_s (:local.get ,adj) :i32.add :ref.i31)
-                           ((:local.get ,q) :f64.abs (:f64.const 4.611686018427388d18) :f64.lt :i32.eqz (:br_if ,slow)
-                            (:local.get ,q) :i64.trunc_sat_f64_s (:local.get ,adj) :i64.extend_i32_s :i64.add
-                            (:call :i64-int)))))
-                   (:fquotient `((:local.get ,q) (:local.get ,adj) :f64.convert_i32_s :f64.add))
+                    `((:local.get ,q) :f64.abs (:f64.const ,+f64-int-limit+) :f64.lt :i32.eqz (:hint 0) (:br_if ,slow)
+                      ,@(integral-f64-i64-code q) (:local.tee ,w)
+                      (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                      (:if nil :eqref ((:local.get ,w) :i32.wrap_i64 :ref.i31) ((:local.get ,w) (:call :i64-int)))))
+                   (:fquotient `((:local.get ,q)))
+                   (:pair `((:local.get ,q) :f64.abs (:f64.const ,+f64-int-limit+) :f64.lt :i32.eqz (:hint 0) (:br_if ,slow)
+                            ,@(integral-f64-i64-code q)
+                            (:local.set ,(cdr pair)) (:ref.null :eq) (:local.set ,(car pair))))
                    (:remainder nil))
                (:br ,done))
              ;; the helper decides (and signals)
@@ -1401,6 +1435,7 @@ computed for a division by 1 unless NEED-REM)."
              ,@(ecase want
                  (:quotient nil)
                  (:fquotient '((:call :to-f64)))
+                 (:pair `((:local.set ,(car pair))))
                  (:remainder '(:drop)))
              (:global.get :mv-buf) (:i32.const 0) (:array.get :vector) (:ref.cast :double) (:struct.get :double 0)
              (:local.set ,r)))
@@ -1675,6 +1710,13 @@ among its operands, or arithmetic of the fused trees."
   (if (nth-value 2 (spec-tree-stats expr))
       (spec-tree-code expr (cons b f))
       (fused-code expr :eqref (cons b f))))
+
+(defun qdual-candidate-p (lv init)
+  "LV, bound to INIT and never assigned, is the integer quotient of a
+division of doubles computed inline: it has an i64 local beside its eqref
+local (a DUAL-LOCAL, null eqref while the i64 holds it)."
+  (and (not (lvar-captured lv)) (not (boxed-p lv)) (not (lvar-special lv)) (null (lvar-rep lv))
+       (not (lvar-mutated lv)) (float-quotient-node-p init)))
 
 (defun fdual-candidate-p (lv init body)
   "LV (bound to INIT around BODY) is kept as an unboxed double: it is an

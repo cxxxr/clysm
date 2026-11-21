@@ -155,13 +155,14 @@ converts the others): its top 62 bits with a sticky bit, scaled."
         (%dneg (%exact-rational-to-double (- n) d))
         (%exact-rational-to-double n d))))
 
-(defun %exact-rational-to-double (n d)
-  "The double nearest to N/D (N, D positive integers), rounding to even."
-  (let ((shift (min (- 53 (- (integer-length n) (integer-length d))) 1074)))
+(defun %exact-rational-to-double (n d &optional (bits 53) (min-expo 1074))
+  "The double nearest to N/D (N, D positive integers), rounding to even.
+BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
+  (let ((shift (min (- bits (- (integer-length n) (integer-length d))) min-expo)))
     (loop
       (multiple-value-bind (q r) (floor (if (>= shift 0) (ash n shift) n)
                                         (if (>= shift 0) d (ash d (- shift))))
-        (if (and (> (integer-length q) 53) (> shift -2000))
+        (if (and (> (integer-length q) bits) (> shift -2000))
             (setq shift (- shift 1))
             (let* ((twice (* 2 r))
                    (den (if (>= shift 0) d (ash d (- shift))))
@@ -179,7 +180,21 @@ converts the others): its top 62 bits with a sticky bit, scaled."
         (t (%make-double-from-parts 0 (+ k 1023) 0 0))))
 
 (defun %to-single (x)
-  (if (%single-float-p x) x (%double-to-single (%to-double x))))
+  (cond ((%single-float-p x) x)
+        ((fixnump x) (%double-to-single (%fixnum-to-double x)))
+        ((or (%ratiop x) (and (%bignump x) (> (integer-length x) 53)))
+         ;; rounded once to a single (not to a double first)
+         (let* ((n (numerator x)) (d (denominator x))
+                (m (%exact-rational-to-double (abs n) d 24 149))
+                (s (%double-to-single (if (minusp n) (%dneg m) m))))
+           (if (%single-infinite-p s) (%single-overflow x s) s)))
+        (t (let ((s (%double-to-single (%to-double x))))
+             (if (%single-infinite-p s) (%single-overflow x s) s)))))
+(defun %single-overflow (x s)
+  ;; a finite number beyond the singles overflows (as in SBCL)
+  (if (%float-infinite-p (%to-double x))
+      s
+      (error 'floating-point-overflow :operation 'coerce :operands (list x))))
 
 (defun %float-infinite-p (d)
   (and (%d= d (%d* d 2.0d0)) (not (%d= d 0.0d0))))
@@ -514,12 +529,10 @@ SORT and the like make no argument list)."
 ;;; and whatever signals.  MODE: 0 truncate, 1 floor, 2 ceiling, 3 round.
 (defun %float-to-integer-big (d)
   "D is an integral double of magnitude 2^63 or more (or not finite)."
-  (let* ((expo (%double-exponent d))
-         (mant (+ (* (+ (%double-mant-hi d) 67108864) 67108864) (%double-mant-lo d)))
-         (shift (- expo 1075))
-         (v (ash mant shift)))
+  (let ((expo (%double-exponent d)))
     (when (= expo 2047) (error "Cannot convert ~S to an integer" d))
-    (if (= (%double-sign d) 1) (- v) v)))
+    ;; the significand (an integer within 53 bits), negated, shifted
+    (ash (if (= (%double-sign d) 1) (- (%double-mantissa d)) (%double-mantissa d)) (%fx- expo 1075))))
 
 (defun %float-truncate-to-integer (d)
   "D is a double; returns the integer obtained by truncating it."
@@ -533,12 +546,23 @@ SORT and the like make no argument list)."
          (let ((iq (values (%int-truncate (* (numerator number) (denominator divisor))
                                           (* (denominator number) (numerator divisor))))))
            (values iq (- number (* iq divisor)))))
-        (t (let* ((r (%contagion number divisor))
-                  (dn (%to-double number)) (dd (%to-double divisor)))
-             (when (%d= dd 0.0d0)
-               (error 'division-by-zero :operation 'truncate :operands (list number divisor)))
-             (let ((iq (%float-truncate-to-integer (%dtrunc (%d/ dn dd)))))
-               (values iq (- number (* (float iq (%float-result (%fixnum-to-double 0) r)) divisor))))))))
+        (t (%float-divmod number divisor 0))))
+
+(defun %float-divmod (number divisor mode)
+  "A float among NUMBER and DIVISOR: both are converted to the format of the
+result, and, as SBCL computes it, the quotient is the float quotient rounded
+for MODE and the remainder number - quotient * divisor in that format."
+  (let* ((single (%fx= (%contagion number divisor) 2))
+         (x (if single (%to-single number) (%to-double number)))
+         (y (if single (%to-single divisor) (%to-double divisor))))
+    (when (zerop y)
+      (error 'division-by-zero :operation (svref #(truncate floor ceiling round) mode)
+                               :operands (list number divisor)))
+    (let* ((z (%to-double (/ x y)))
+           (qd (cond ((eql mode 0) (%dtrunc z)) ((eql mode 1) (%dfloor z))
+                     ((eql mode 2) (%dceil z)) (t (%dround z))))
+           (q (if single (%to-single qd) qd)))
+      (values (%float-truncate-to-integer qd) (- x (* q y))))))
 
 (defun %int-divmod (number divisor mode)
   "Integers (bignums): the division of MODE."
@@ -559,6 +583,10 @@ SORT and the like make no argument list)."
 (defun %divmod-slow (number divisor mode)
   (when (and (integerp number) (integerp divisor))
     (return-from %divmod-slow (%int-divmod number divisor mode)))
+  (when (or (floatp number) (floatp divisor))
+    (unless (realp number) (%type-error number 'real))
+    (unless (realp divisor) (%type-error divisor 'real))
+    (return-from %divmod-slow (%float-divmod number divisor mode)))
   (multiple-value-bind (q r) (%truncate-slow number divisor)
     (cond ((eql mode 0) (values q r))
           ((eql mode 1)
@@ -597,11 +625,22 @@ SORT and the like make no argument list)."
 (defun %float-of (x proto) (if (and proto (%single-float-p proto)) (%to-single x) (%to-double x)))
 ;;; the quotient as a float of the format of the remainder (a single-float
 ;;; when both arguments are rational)
-(defun %fquotient (q r) (if (%double-float-p r) (float q 1d0) (float q 1.0)))
-(defun ffloor (n &optional (d 1)) (multiple-value-bind (q r) (floor n d) (values (%fquotient q r) r)))
-(defun fceiling (n &optional (d 1)) (multiple-value-bind (q r) (ceiling n d) (values (%fquotient q r) r)))
-(defun ftruncate (n &optional (d 1)) (multiple-value-bind (q r) (truncate n d) (values (%fquotient q r) r)))
-(defun fround (n &optional (d 1)) (multiple-value-bind (q r) (round n d) (values (%fquotient q r) r)))
+(defun %fquotient (q r n d)
+  "The values of FFLOOR (and the others) from those of FLOOR: the quotient as
+a float of the format of the remainder (a single-float when both arguments
+are rational).  A zero quotient of a negative quotient is -0.0, as the float
+rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
+  (let ((f (if (%double-float-p r) (float q 1d0) (float q 1.0))))
+    (if (and (eql q 0)
+             (not (eq (if (floatp n) (minusp (float-sign n)) (minusp n))
+                      (if (floatp d) (minusp (float-sign d)) (minusp d)))))
+        (let ((z (if (%double-float-p f) -0d0 -0f0)))
+          (values z (if (floatp r) (- n (* z d)) r)))
+        (values f r))))
+(defun ffloor (n &optional (d 1)) (multiple-value-bind (q r) (floor n d) (%fquotient q r n d)))
+(defun fceiling (n &optional (d 1)) (multiple-value-bind (q r) (ceiling n d) (%fquotient q r n d)))
+(defun ftruncate (n &optional (d 1)) (multiple-value-bind (q r) (truncate n d) (%fquotient q r n d)))
+(defun fround (n &optional (d 1)) (multiple-value-bind (q r) (round n d) (%fquotient q r n d)))
 
 ;;; logical
 (defun logand (&rest ns) (let ((a -1)) (dolist (n ns a) (setq a (logand a (%check-integer n))))))
@@ -911,7 +950,7 @@ SORT and the like make no argument list)."
 
 (defun decode-float (f)
   (let ((d (%to-double f)))
-    (cond ((%d= d 0.0d0) (values (float 0 f) 0 (float 1 f)))
+    (cond ((%d= d 0.0d0) (values (float 0 f) 0 (if (= (%double-sign d) 1) (float -1 f) (float 1 f))))
           ((eql (%double-exponent d) 0)
            ;; a denormalized double: decode it scaled by 2^64
            (multiple-value-bind (m e s) (decode-float (%d* d 18446744073709551616d0))
@@ -924,7 +963,7 @@ SORT and the like make no argument list)."
 
 (defun integer-decode-float (f)
   (let ((d (%to-double f)))
-    (if (%d= d 0.0d0) (values 0 0 1)
+    (if (%d= d 0.0d0) (values 0 0 (if (= (%double-sign d) 1) -1 1))
         (let* ((expo (%double-exponent d))
                (mant (%double-mantissa d))
                (sign (if (= (%double-sign d) 1) -1 1))
@@ -967,7 +1006,27 @@ SORT and the like make no argument list)."
          (multiple-value-bind (m e s) (integer-decode-float x)
            (if (>= e 0) (* s m (ash 1 e)) (* s (/ m (ash 1 (- e)))))))
         (t (%type-error x 'real))))
-(defun rationalize (x) (rational x))
+(defun rationalize (x)
+  ;; the simplest rational within half an ulp of X (the algorithm of CMUCL
+  ;; and SBCL: the continued fraction between (2m-1)/2^(1-e) and
+  ;; (2m+1)/2^(1-e), whose numerators are prime to the denominator)
+  (cond ((rationalp x) x)
+        ((floatp x)
+         (multiple-value-bind (frac expo sign) (integer-decode-float x)
+           (if (or (zerop frac) (>= expo 0))
+               (if (minusp sign) (- (ash frac expo)) (ash frac expo))
+               (let ((a (/ (- (* 2 frac) 1) (ash 1 (- 1 expo))))
+                     (b (/ (+ (* 2 frac) 1) (ash 1 (- 1 expo))))
+                     (p0 0) (q0 1) (p1 1) (q1 0))
+                 (loop
+                   (let ((c (ceiling a)))
+                     (when (< c b)
+                       (let ((top (+ (* c p1) p0)) (bot (+ (* c q1) q0)))
+                         (return (/ (if (minusp sign) (- top) top) bot))))
+                     (let* ((k (- c 1)) (p2 (+ (* k p1) p0)) (q2 (+ (* k q1) q0)))
+                       (psetq a (/ (- b k)) b (/ (- a k)))
+                       (setq p0 p1 q0 q1 p1 p2 q1 q2))))))))
+        (t (%type-error x 'real))))
 
 ;;; ------------------------------------------------------------
 ;;; integer <-> string

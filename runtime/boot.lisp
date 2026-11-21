@@ -467,7 +467,7 @@ variable, so it may be evaluated after a variable is read."
     (cond ((symbolp form) (not (nth-value 1 (%macroexpand-1 form env))))
           ((atom form) t)
           ((eq (car form) 'quote) t)
-          ((member (car form) '(+ - * 1+ 1- logand logior logxor ash abs))
+          ((member (car form) '(+ - * 1+ 1- logand logior logxor ash abs floor ceiling truncate round mod rem))
            (every (lambda (f) (%plain-arith-form-p f env)) (cdr form)))
           (t nil)))
   (defun %expand-incf (op place delta env)

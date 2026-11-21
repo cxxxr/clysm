@@ -79,6 +79,10 @@ operations can all be done after the leaves."
                (push (cond ((and (eq (car n) :const) (typep (second n) '(signed-byte 64))) (list n :const))
                            ((and (eq (car n) :lref) (dual-local (second n)))
                             (list* n :dual (when alloc (list (new-local) (new-local :i64)))))
+                           ;; the integer quotient of a division of doubles,
+                           ;; computed into a pair of locals as a :dual
+                           ((float-quotient-node-p n)
+                            (list* n :fdiv (when alloc (list (new-local) (new-local :i64)))))
                            ((ty-int64-p (node-ty n)) (list* n :i64 (when alloc (list (new-local :i64)))))
                            (t (list* n :eqref (when alloc (list (new-local))))))
                      recs))
@@ -100,6 +104,7 @@ operations can all be done after the leaves."
       (:dual (let ((lv (second node)))
                `((:local.get ,(cdr (get-loc lv))) (:local.set ,(first locs))
                  (:local.get ,(dual-local lv)) (:local.set ,(second locs)))))
+      (:fdiv (typed-float-divmod node :pair nil (cons (first locs) (second locs))))
       (:i64 `(,@(cg-rep node :i64) (:local.set ,(first locs))))
       (:eqref `(,@(cg node) (:local.set ,(first locs)))))))
 
@@ -180,7 +185,7 @@ branching to FAIL when that is not possible.  The leaves are taken from
          (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
            (ecase kind
              (:const `((:i64.const ,(second leaf))))
-             (:dual (dual-pair-i64-code (first locs) (second locs) fail))
+             ((:dual :fdiv) (dual-pair-i64-code (first locs) (second locs) fail))
              (:i64 `((:local.get ,(first locs))))
              (:eqref (i64-decode-code `((:local.get ,(first locs))) fail)))))))
 
@@ -196,12 +201,18 @@ branching to FAIL when that is not possible.  The leaves are taken from
          (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
            (ecase kind
              (:const (cg leaf))
-             (:dual (dual-materialize-code (first locs) (second locs)))
+             ((:dual :fdiv) (dual-materialize-code (first locs) (second locs)))
              (:i64 `((:local.get ,(first locs)) ,@(box-rep-code :i64 (node-ty leaf))))
              (:eqref `((:local.get ,(first locs)))))))))
 
 (defun fused-tree-node-p (node)
-  (and (not *no-fuse*) (fusable-op-node-p node) (some #'fusable-op-node-p (cddr node))
+  ;; (an operation on an integer held as an i64 beside its eqref local is
+  ;; done in i64 too: the integer is not made)
+  (and (not *no-fuse*) (fusable-op-node-p node)
+       (some (lambda (n) (or (fusable-op-node-p n)
+                             (and (eq (car n) :lref) (dual-local (second n)))
+                             (float-quotient-node-p n)))
+             (cddr node))
        (not (eq (fused-plan node nil) :no))))
 
 (defun fused-parts (node)
@@ -251,7 +262,7 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                          (single-float (values `((:f64.const ,(coerce v 'double-float))) :int))
                          ((signed-byte 53) (values `((:f64.const ,(coerce v 'double-float))) :int))
                          (t nil))))
-             (:dual nil)
+             ((:dual :fdiv) nil)
              (:i64 (values `((:local.get ,(first locs)) :f64.convert_i64_s) :int))
              (:eqref (if (logtest (ty-bits (node-ty leaf)) +k-double+)
                          (values `((:local.get ,(first locs)) (:ref.test :double) :i32.eqz (:br_if ,fail)
@@ -4081,9 +4092,10 @@ modules made at run time define these helpers each time)."
 ;;; Modes: 0 truncate, 1 floor, 2 ceiling, 3 round.  The helper :divmod
 ;;; returns the quotient and leaves the remainder as the second value.  It
 ;;; computes fixnums, integers within 64 bits, and single / double floats
-;;; (with integers up to 2^53) itself, by the algorithm of the Lisp
-;;; functions (truncate, then adjust by the remainder); everything else, and
-;;; whatever would signal, goes to %DIVMOD-SLOW.
+;;; (with integers up to 2^53) itself, integers by truncating and
+;;; adjusting by the remainder, floats as SBCL does (the float quotient
+;;; rounded for the mode, then the remainder); everything else, and whatever
+;;; would signal, goes to %DIVMOD-SLOW, which computes the same.
 
 (defun ity (ty name)
   (intern (concatenate 'string (symbol-name ty) "." (symbol-name name)) :keyword))
@@ -4112,48 +4124,39 @@ modules made at run time define these helpers each time)."
              (:local.get ,q) ,@(when (eq ty :i64) '(:i32.wrap_i64)) (:i32.const 1) :i32.and :i32.and :i32.or
              (:if nil nil ((:local.get ,x) (:local.get ,y) ,(o :xor) ,(c 0) ,(o :ge_s) (:if nil nil ,up ,down)))))))))
 
-(defun float-divmod-code (mode slow da db q r adj single tmp &optional unit)
-  "From the f64 locals DA and DB: the truncated quotient in Q (integral), the
-adjustment of the quotient for MODE in the i32 local ADJ (-1, 0 or 1) and the
-remainder in R.  SINGLE (an i32 local, or NIL when the result is a double):
-when set, every step is rounded to single precision.  Branches to SLOW when
-the divisor is zero or a value is not finite.  UNIT: DB is known to be 1 (the
-division and the product are the identity)."
+(defun float-divmod-code (mode slow da db q r adj single tmp &optional unit no-rem fq)
+  "From the f64 locals DA and DB: the quotient in Q (integral, a float of the
+sign of the quotient: -0.0 for a negative one rounded to zero) and the
+remainder in R, as SBCL computes them: the float quotient rounded for MODE
+\(truncated, down, up or to the nearest even integer), and number - quotient *
+divisor (for an integer quotient, that integer times the divisor: 0.0 times
+it for a quotient -0.0; FQ, the quotient wanted as a float: -0.0 times it).
+ADJ (an i32 local)
+is set to 0.  SINGLE (an i32 local, or NIL when the result is a double):
+when set, the operands and every step are rounded to single precision (the
+arithmetic of singles: an integer operand is first converted to a single).
+Branches to SLOW when the divisor is zero or a value is not finite.  UNIT:
+DB is known to be 1 (the division and the product are the identity).
+NO-REM: the remainder is not wanted (not computed: its overflow does not
+signal, as in SBCL where it is dead code); the quotient is tested instead."
   (flet ((rnd (l) (when single
                     `((:local.get ,single)
-                      (:if nil nil ((:local.get ,l) :f32.demote_f64 :f64.promote_f32 (:local.set ,l)))))))
-    (let ((up `((:i32.const 1) (:local.set ,adj)
-                (:local.get ,r) (:local.get ,db) :f64.sub (:local.set ,r) ,@(rnd r)))
-          (down `((:i32.const -1) (:local.set ,adj)
-                  (:local.get ,r) (:local.get ,db) :f64.add (:local.set ,r) ,@(rnd r))))
-      `(;; (+ 0: the quotient -0.0 is the integer 0)
-        (:local.get ,da) ,@(unless unit `((:local.get ,db) :f64.div)) :f64.trunc (:f64.const 0) :f64.add (:local.set ,q)
-        ;; remainder: number - quotient * divisor (not finite when the
-        ;; quotient is not: a zero divisor, an infinity, a NaN)
-        (:local.get ,q) (:local.set ,tmp) ,@(rnd tmp)
-        ,@(unless unit `((:local.get ,tmp) (:local.get ,db) :f64.mul (:local.set ,tmp) ,@(rnd tmp)))
-        (:local.get ,da) (:local.get ,tmp) :f64.sub (:local.set ,r) ,@(rnd r)
-        (:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:br_if ,slow)
-        (:i32.const 0) (:local.set ,adj)
-        ,@(ecase mode
-            (0 nil)
-            (1 `((:local.get ,r) (:f64.const 0) :f64.ne
-                 (:local.get ,r) (:f64.const 0) :f64.gt (:local.get ,r) (:f64.const 0) :f64.lt
-                 (:local.get ,db) (:f64.const 0) :f64.lt :select :i32.and
-                 (:if nil nil ,down)))
-            (2 `((:local.get ,r) (:f64.const 0) :f64.ne
-                 (:local.get ,r) (:f64.const 0) :f64.lt (:local.get ,r) (:f64.const 0) :f64.gt
-                 (:local.get ,db) (:f64.const 0) :f64.lt :select :i32.and
-                 (:if nil nil ,up)))
-            (3 `((:local.get ,r) (:f64.const 2d0) :f64.mul (:local.set ,tmp) ,@(rnd tmp)
-                 (:local.get ,tmp) :f64.abs (:local.tee ,tmp) (:local.get ,tmp) :f64.sub (:f64.const 0) :f64.ne
-                 (:br_if ,slow)
-                 (:local.get ,tmp) (:local.get ,db) :f64.abs :f64.gt
-                 (:local.get ,tmp) (:local.get ,db) :f64.abs :f64.eq
-                 (:local.get ,q) :f64.abs (:f64.const 9007199254740992d0) :f64.lt :i32.and
-                 (:local.get ,q) :i64.trunc_sat_f64_s :i32.wrap_i64 (:i32.const 1) :i32.and :i32.and :i32.or
-                 (:if nil nil ((:local.get ,da) (:f64.const 0) :f64.lt (:local.get ,db) (:f64.const 0) :f64.lt :i32.eq
-                               (:if nil nil ,up ,down))))))))))
+                      (:if nil nil ((:local.get ,l) :f32.demote_f64 :f64.promote_f32 (:local.set ,l))))))
+         (op () (ecase mode (0 :f64.trunc) (1 :f64.floor) (2 :f64.ceil) (3 :f64.nearest))))
+    `(,@(rnd da) ,@(unless unit (rnd db))
+      ,@(if unit
+            `((:local.get ,da) ,(op) (:local.set ,q))
+            `((:local.get ,da) (:local.get ,db) :f64.div (:local.set ,q) ,@(rnd q)
+              (:local.get ,q) ,(op) (:local.set ,q)))
+      ,@(if no-rem
+            `((:local.get ,q) (:local.get ,q) :f64.sub (:f64.const 0) :f64.ne (:hint 0) (:br_if ,slow))
+            ;; remainder: number - quotient * divisor (not finite when the
+            ;; quotient is not: a zero divisor, an infinity, a NaN)
+            `((:local.get ,q) ,@(unless fq '((:f64.const 0) :f64.add)) (:local.set ,tmp)
+              ,@(unless unit `((:local.get ,tmp) (:local.get ,db) :f64.mul (:local.set ,tmp) ,@(rnd tmp)))
+              (:local.get ,da) (:local.get ,tmp) :f64.sub (:local.set ,r) ,@(rnd r)
+              (:local.get ,r) (:local.get ,r) :f64.sub (:f64.const 0) :f64.ne (:hint 0) (:br_if ,slow)))
+      (:i32.const 0) (:local.set ,adj))))
 
 (defhelper :divmod :eei-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32)
                            (v :i32) (xa :i64) (xb :i64) (ka :i32) (kb :i32) (da :f64) (db :f64)
@@ -4349,6 +4352,10 @@ division and the product are the identity)."
 (defprim clysm-sys::%double-nan-p (d) :test
   (let ((tmp (new-local :f64)))
     `(,@(f64-code d) (:local.tee ,tmp) (:local.get ,tmp) :f64.ne)))
+;; a single that is an infinity (FLOAT and COERCE of a number beyond the singles)
+(defprim clysm-sys::%single-infinite-p (s) :test
+  `(,@s (:ref.cast :single) (:struct.get :single 0) :f32.abs (:f32.const #x7F800000)
+    :f32.eq))
 ;; decode double: fields as fixnums
 (defprim clysm-sys::%double-sign (d) :value
   `(,@(f64-code d) :i64.reinterpret_f64 (:i64.const 63) :i64.shr_u :i32.wrap_i64 :ref.i31))

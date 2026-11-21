@@ -765,6 +765,14 @@ as CG-TEST; only without special variables)."
                    (set-loc lv (cons :local b))
                    (remhash lv *dual-vars*)
                    (setf (gethash lv *fdual-vars*) f)))
+                ((qdual-candidate-p lv init)
+                 ;; the integer quotient of a division of doubles: an i64
+                 ;; beside the eqref local, as an integer accumulator's (typed.lisp)
+                 (let ((b (new-local)) (v (new-local :i64)))
+                   (setf code (append code (values (typed-float-divmod init :pair nil (cons b v)))))
+                   (set-loc lv (cons :local b))
+                   (remhash lv *fdual-vars*)
+                   (setf (gethash lv *dual-vars*) v)))
                 (t (remhash lv *fdual-vars*)
                    (setf code (append code (let ((*binding-init* init)) (bind-new-var-code lv (cg init)))))))
           ;; a variable that is always a known lambda: FUNCALLs of it are direct calls
@@ -800,11 +808,16 @@ as CG-TEST; only without special variables)."
     ;; a division whose values are computed inline: the quotient on the
     ;; stack, the remainder in REM-LOCAL (of representation REM-REP when it
     ;; is not an eqref)
-    (multiple-value-bind (divmod rem-local rem-rep)
-        (if lvars
-            (multiple-value-bind (c l) (typed-divmod-code vnode)
-              (if c (values c l nil) (numeric-divmod-code vnode)))
-            nil)
+    (multiple-value-bind (divmod rem-local rem-rep qpair)
+        (cond ((null lvars) nil)
+              ((qdual-candidate-p (first lvars) vnode)
+               ;; the quotient of doubles into the pair of locals of the
+               ;; first variable (as in CG-LET); nothing is left
+               (let ((b (new-local)) (v (new-local :i64)))
+                 (multiple-value-bind (c r) (typed-float-divmod vnode :pair t (cons b v))
+                   (values c r :f64 (cons b v)))))
+              (t (multiple-value-bind (c l) (typed-divmod-code vnode)
+                   (if c (values c l nil) (numeric-divmod-code vnode)))))
       (let* ((code (or divmod (cg vnode t)))
              (tmps (loop for nil in lvars collect (new-local)))
              (specials nil)
@@ -814,7 +827,7 @@ as CG-TEST; only without special variables)."
                             (and (eq (lvar-rep lv) rem-rep) (not (boxed-p lv)) (not (lvar-special lv)))))))
         (when (null lvars) (setf code (append code '(:drop))))
         ;; primary
-        (when lvars
+        (when (and lvars (not qpair))
           (setf code (append code `((:local.set ,(first tmps))))))
         (loop for i from 1 for tmp in (rest tmps)
               do (setf code (append code
@@ -829,7 +842,11 @@ as CG-TEST; only without special variables)."
                                                     ,(nil-code))
                                                (:local.set ,tmp)))))))
       (loop for lv in lvars for tmp in tmps for i from 0
-            do (cond ((lvar-special lv) (push (cons lv tmp) specials))
+            do (cond ((and qpair (= i 0))
+                      (set-loc lv (cons :local (car qpair)))
+                      (remhash lv *fdual-vars*)
+                      (setf (gethash lv *dual-vars*) (cdr qpair)))
+                     ((lvar-special lv) (push (cons lv tmp) specials))
                      ((and direct (= i 1))
                       (let ((idx (new-local (rep-wasm-type rem-rep))))
                         (set-loc lv (cons :local idx))
