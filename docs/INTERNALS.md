@@ -2603,6 +2603,39 @@ What is not as fast as intended, and why:
   constant) is a `ref.eq` of the immediates, without their checks
   (`tools/bench-lem.sh` the same: 1.24 against 1.29 in one interleaved
   pair).
+* **Checked casts in Lem's `char-width`** (2026-11-21; `char-width` and
+  what it calls are 40% of the busy time of `l-line-down`). A checked
+  cast (`(:ref.cast T)`, which signals a TYPE-ERROR instead of trapping)
+  is `block; br_on_cast; call castfn; end`; `br_on_cast` takes no branch
+  hint, so V8 keeps the call, with the moves of the live registers to the
+  stack and back around it, in the middle of the hot code. The hash
+  table helpers (`:ht-get`, `:ht-fast-index`, `:ht-eq-index`,
+  `:ht-region-index`...) cast the table's own vectors, which cannot be of
+  another type, with such casts, three helpers deep at every `gethash` of
+  a character; they are plain casts now. A probe of 600 lines down with
+  a redisplay after each (interleaved on one slot, best of 3 of 8):
+  127.5 → 120.5 ms, the redisplay probe 148 → 143.5. Measured and not
+  kept: every checked cast as `local.tee S; ref.test T; if (ref T)
+  [hinted likely] (local.get S; ref.cast T) else (local.get S; call
+  castfn)`, which lays the call out of the way: the line-down probe 120.5
+  → 115.5 in one round but the same in another (112–117 either way),
+  `bench/suite.lisp` 0.82 → 0.80 and `bench/programs.lisp` 0.90 → 0.87
+  (one run each), but the code is larger (19 bytes a cast instead of 11)
+  and code run once paid for it: `l-alexandria-tests` 78–80 → 94–102 ms,
+  `tools/bench-startup.sh` 3–6% slower (`s-ql-babel` 529–554 → 586 ms);
+  only inside loops: no better. Branch hints on the i64 and double paths
+  of undeclared arithmetic (fused trees: the i31 test likely, overflows
+  and the double path's checks unlikely) made `character-at` no smaller
+  and the line-down probe no faster (115.5 → 116.5); `char=` of one value
+  known to be a character (the character of a simple string) checking only
+  the other left Lem, `bench/apps.lisp` and cl-ppcre's scans unchanged
+  (`l-syntax-scan` 213–222 ms either way). cl-ppcre's time (`l-syntax-scan`
+  1.4, `a-ppcre-tokens` 1.2) is the matchers' closures: V8 inlines the
+  tests of a character class into the closure that loops over them; what
+  is left in the character searcher's loop is the special variable
+  `*string*` read at each character (its value cell, the map and the
+  bounds of the string), which only a compiler keeping a special variable
+  in a local over a loop without calls would remove.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
