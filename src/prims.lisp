@@ -554,6 +554,26 @@ constant unless the product cannot signal."
                      (and (fused-int-node-p (third m)) (fused-int-node-p (fourth m)))))
         (list (third m) (fourth m) c)))))
 
+(defparameter *fixnum-operand-prims*
+  '(+ - 1+ 1- < > <= >= = /= zerop plusp minusp logand logior logxor))
+
+(defun prim-arg-codes (p args)
+  "The codes of the arguments ARGS of the primitive P, and the list of those
+of them that push a value known to be a fixnum as its i32 followed by
+:REF.I31 (for the inline fixnum operations, which then do not test it)."
+  (if (and (member (prim-name p) *fixnum-operand-prims*) (<= 1 (length args) 2)
+           (some (lambda (a) (and (not (eq (car a) :const)) (ty-fixnum-p (node-ty a)))) args)
+           (notevery (lambda (a) (ty-fixnum-p (node-ty a))) args))
+      (let ((known nil))
+        (values (mapcar (lambda (a)
+                          (let ((raw (and (not (eq (car a) :const)) (ty-fixnum-p (node-ty a)) (cg-rep a :i32))))
+                            (if raw
+                                (let ((code (append raw '(:ref.i31)))) (push code known) code)
+                                (cg a))))
+                        args)
+                known))
+      (values (mapcar #'cg args) nil)))
+
 (defun cg-prim (p args mv)
   ;; (not x) / (null x): the test of X negated, as T or NIL (no T/NIL of X
   ;; in between when X is itself a test: (not (null x)), (not (< a b c)))
@@ -571,8 +591,8 @@ constant unless the product cannot signal."
   (when (fused-tree-node-p `(:prim ,p ,@args))
     (return-from cg-prim
       `(,@(fused-code `(:prim ,p ,@args) :eqref) ,@(when mv (mv-one)))))
-  (let ((codes (mapcar #'cg args)))
-    (append (funcall (prim-fn p) codes)
+  (multiple-value-bind (codes known) (prim-arg-codes p args)
+    (append (let ((*fixnum-known-codes* known)) (funcall (prim-fn p) codes))
             (when (eq (prim-kind p) :test) (bool-code))
             (when (and mv (not (eq (prim-kind p) :mv))) (mv-one)))))
 
@@ -708,18 +728,94 @@ leaving them in the i32 locals X and Y."
     (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y) (:i32.const ,+char-tag+) :i32.add :i32.or
     (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:hint 0) (:br_if ,slow)))
 
+(defun constant-fixnum-payload (code)
+  "The value of the fixnum CODE pushes when it is a constant, else NIL."
+  (and (= (length code) 2) (consp (first code)) (eq (car (first code)) :i32.const)
+       (eq (second code) :ref.i31) (integerp (second (first code)))
+       (let ((v (second (first code))))
+         (when (>= v (expt 2 31)) (decf v (expt 2 32)))
+         (and (<= +most-negative-fixnum+ v +most-positive-fixnum+) v))))
+
+(defun inline-fixnum-add-constant (a k helper b)
+  "(+ A K) of a constant fixnum K: one test that the sum is a fixnum within
+the range that a fixnum plus K reaches (a character, or a sum beyond the
+fixnums, is outside it; an i31 below the fixnums is never made), so that
+the operand's own range need not be tested.  HELPER is called with A and B."
+  (let ((ta (new-local)) (x (new-local :i32)) (slow (gensym "SLOW")) (done (gensym "FX")))
+    ;; the sum R of a fixnum and K is a fixnum when R is in [LO, HI)
+    (multiple-value-bind (lo hi)
+        (if (>= k 0)
+            (values (+ +most-negative-fixnum+ k) (1+ +most-positive-fixnum+))
+            (values +most-negative-fixnum+ (+ (1+ +most-positive-fixnum+) k)))
+      `(,@a (:local.set ,ta)
+        (:block ,done :eqref
+          (:block ,slow nil
+            (:local.get ,ta) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
+            (:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:i32.const ,(ldb (byte 32 0) k)) :i32.add (:local.tee ,x)
+            (:i32.const ,(ldb (byte 32 0) (- lo))) :i32.add (:i32.const ,(- hi lo)) :i32.ge_u (:hint 0) (:br_if ,slow)
+            (:local.get ,x) :ref.i31 (:br ,done))
+          (:local.get ,ta) ,@b (:call ,helper))))))
+
+(defun known-fixnum-code-p (code) (and code (member code *fixnum-known-codes* :test #'eq)))
+
+(defun fixnum-operand (code slow)
+  "For an operand CODE of an inline fixnum operation: (values setup check
+x boxed), the code evaluating it, the code branching to SLOW unless it is a
+fixnum, the code pushing it as an i32 and the code pushing it as an object
+(for the generic function)."
+  (let ((k (constant-fixnum-payload code)))
+    (cond (k (values nil nil `((:i32.const ,(ldb (byte 32 0) k))) code))
+          ((known-fixnum-code-p code)
+           ;; known to be a fixnum: its i32, no test
+           (let ((x (new-local :i32)))
+             (values `(,@(butlast code) (:local.set ,x)) nil `((:local.get ,x)) `((:local.get ,x) :ref.i31))))
+          (t (let ((e (new-local)) (x (new-local :i32)))
+               (values `(,@code (:local.set ,e))
+                       `((:local.get ,e) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
+                         (:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
+                         (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:hint 0)
+                         (:br_if ,slow))
+                       `((:local.get ,x)) `((:local.get ,e))))))))
+
 (defun inline-fixnum-op (a b op helper)
   "Inline fixnum fast path; falls back to HELPER."
-  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32))
-        (slow (gensym "SLOW")) (done (gensym "FX")))
-    `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
-      (:block ,done :eqref
-        (:block ,slow nil
-          ,@(inline-fixnum-pair-code ta tb x y slow)
-          (:local.get ,x) (:local.get ,y) ,op (:local.tee ,x)
-          (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:hint 0) (:br_if ,slow)
-          (:local.get ,x) :ref.i31 (:br ,done))
-        (:local.get ,ta) (:local.get ,tb) (:call ,helper)))))
+  (let ((k (and (member op '(:i32.add :i32.sub)) (not (known-fixnum-code-p a)) (constant-fixnum-payload b))))
+    (when k
+      (return-from inline-fixnum-op
+        (inline-fixnum-add-constant a (if (eq op :i32.add) k (- k)) helper b))))
+  (when (and (eq op :i32.add) (constant-fixnum-payload a) (not (known-fixnum-code-p b)))
+    ;; (the constant first: its value is evaluated first, so the order is kept)
+    (let ((tb (new-local)))
+      (return-from inline-fixnum-op
+        `(,@b (:local.set ,tb)
+          ,@(inline-fixnum-add-constant `((:local.get ,tb)) (constant-fixnum-payload a) helper a)))))
+  (let ((slow (gensym "SLOW")) (done (gensym "FX")) (r (new-local :i32))
+        ;; (LOGAND, LOGIOR, LOGXOR of two fixnums: a fixnum)
+        (result-check (member op '(:i32.add :i32.sub))))
+    (if (or (known-fixnum-code-p a) (known-fixnum-code-p b) (constant-fixnum-payload a) (constant-fixnum-payload b))
+        (multiple-value-bind (sa ca xa ba) (fixnum-operand a slow)
+          (multiple-value-bind (sb cb xb bb) (fixnum-operand b slow)
+            `(,@sa ,@sb
+              (:block ,done :eqref
+                (:block ,slow nil
+                  ,@ca ,@cb
+                  ,@xa ,@xb ,op
+                  ,@(when result-check
+                      `((:local.tee ,r) (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+                        (:hint 0) (:br_if ,slow) (:local.get ,r)))
+                  :ref.i31 (:br ,done))
+                ,@ba ,@bb (:call ,helper)))))
+        (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+          `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
+            (:block ,done :eqref
+              (:block ,slow nil
+                ,@(inline-fixnum-pair-code ta tb x y slow)
+                (:local.get ,x) (:local.get ,y) ,op
+                ,@(when result-check
+                    `((:local.tee ,x) (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+                      (:hint 0) (:br_if ,slow) (:local.get ,x)))
+                :ref.i31 (:br ,done))
+              (:local.get ,ta) (:local.get ,tb) (:call ,helper)))))))
 
 (defun inline-fixnum-mul (a b)
   "Inline fixnum product (in i64); falls back to the :mul helper."
@@ -736,15 +832,24 @@ leaving them in the i32 locals X and Y."
 
 (defun inline-fixnum-cmp (a b op helper-code &optional swap)
   "Inline comparison of two fixnums; falls back to HELPER-CODE."
-  (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32))
-        (slow (gensym "SLOW")) (done (gensym "FX")))
-    `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
-      (:block ,done :i32
-        (:block ,slow nil
-          ,@(inline-fixnum-pair-code ta tb x y slow)
-          (:local.get ,x) (:local.get ,y) ,op (:br ,done))
-        ,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
-        ,@helper-code))))
+  (let ((slow (gensym "SLOW")) (done (gensym "FX")))
+    (if (or (known-fixnum-code-p a) (known-fixnum-code-p b) (constant-fixnum-payload a) (constant-fixnum-payload b))
+        ;; a constant operand, or one known to be a fixnum, needs no test
+        (multiple-value-bind (sa ca xa ba) (fixnum-operand a slow)
+          (multiple-value-bind (sb cb xb bb) (fixnum-operand b slow)
+            `(,@sa ,@sb
+              (:block ,done :i32
+                (:block ,slow nil ,@ca ,@cb ,@xa ,@xb ,op (:br ,done))
+                ,@(if swap `(,@bb ,@ba) `(,@ba ,@bb))
+                ,@helper-code))))
+        (let ((ta (new-local)) (tb (new-local)) (x (new-local :i32)) (y (new-local :i32)))
+          `(,@a (:local.set ,ta) ,@b (:local.set ,tb)
+            (:block ,done :i32
+              (:block ,slow nil
+                ,@(inline-fixnum-pair-code ta tb x y slow)
+                (:local.get ,x) (:local.get ,y) ,op (:br ,done))
+              ,@(if swap `((:local.get ,tb) (:local.get ,ta)) `((:local.get ,ta) (:local.get ,tb)))
+              ,@helper-code))))))
 
 (defprim + (a b) :value (inline-fixnum-op a b :i32.add :add))
 (defprim - (a b) :value (inline-fixnum-op a b :i32.sub :sub))
