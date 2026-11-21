@@ -2629,7 +2629,18 @@ instances."
                      (vector 0 nil nil nil nil nil nil nil nil nil nil nil nil name 0 nil)))
               (a (gensym "A")) (b (gensym "B")) (k (gensym "K")) (kb (gensym "KB"))
               (f (gensym "F")) (v (gensym "V")) (blk (gensym "SITE")))
-          (if (eql n 1)
+          (cond
+            ((and (eql n 1) (eq accessor t))
+             ;; a reader of DEFCLASS: its four entries inline, everything
+             ;; else (an unbound slot, a miss) out of line (%SITE-SLOT-READ: the slot, or null for anything else)
+             `(let* ((,a ,(car args)) (,v (%site-slot-read ,a ',c)))
+                (if (%unboundp ,v) (progn (%cold) (%gf-site-other1 ',c ,a)) ,v)))
+            ((eq accessor t)
+             ;; a writer of DEFCLASS (SETF of an accessor): the same, with
+             ;; %SITE-SLOT-WRITE
+             `(let* ((,a ,(car args)) (,b ,(cadr args)) (,v (%site-slot-write ,a ,b ',c)))
+                (if (%unboundp ,v) (progn (%cold) (%gf-site-other2 ',c ,a ,b)) ,v)))
+            ((eql n 1)
               ;; (no epoch is compared: %BUMP-CLOS-EPOCH empties the cache)
               `(let* ((,a ,(car args))
                       (,k ,(%gf-site-key-form a accessor))
@@ -2641,14 +2652,17 @@ instances."
                                 ((eq ,k (%svref ',c 7)) (%svref ',c 8))
                                 (t nil))))
                  (block ,blk
+                   ;; (a hit returns; the rest, out of the way (%COLD), is
+                   ;; a miss)
                    (if (%i31p ,f)
                        (let ((,v (%instance-ref ,a ,f)))
-                         (unless (%unboundp ,v) (return-from ,blk ,v)))
-                       (when ,f (return-from ,blk (funcall (the function ,f) ,a))))
+                         (if (%unboundp ,v) (%cold) (return-from ,blk ,v)))
+                       (if ,f (return-from ,blk (funcall (the function ,f) ,a)) (%cold)))
                    (if (eq (%svref ',c 0) -1)
                        ;; a site that is not cached (-1): the usual call
                        (locally (declare (notinline ,name)) (,name ,a))
-                       (%gf-site-other1 ',c ,a))))
+                       (%gf-site-other1 ',c ,a)))))
+            (t
               ;; (a parameter that no method specializes has the key 0 in
               ;; every entry)
               `(let ((,a ,(car args)) (,b ,(cadr args)))
@@ -2669,7 +2683,7 @@ instances."
                                       (t nil))))
                        (cond ((%i31p ,f) (%set-instance-ref ,b ,f ,a) ,a)
                              (,f (funcall (the function ,f) ,a ,b))
-                             (t (%gf-site-other2 ',c ,a ,b))))))))))
+                             (t (%cold) (%gf-site-other2 ',c ,a ,b)))))))))))
 
   (defun %gf-site-macro-forms (name lambda-list &optional accessor)
     "Forms defining the compiler macro of the generic function NAME that
