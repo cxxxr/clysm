@@ -3119,7 +3119,8 @@ sums LO (low halves) and HI (high halves)."
                  ;; a structure of fewer field slots is not one; an instance
                  ;; of a structure of a slot vector including it may be
                  ((:local.get ,o) (:ref.test :si1)
-                  (:if nil :i32 ((:i32.const 0)) ,(struct-check-code o cl)))))))))
+                  ;; (rare: out of line)
+                  (:if nil :i32 ((:i32.const 0)) ((:local.get ,o) (:local.get ,cl) (:call :struct-typep))))))))))
 
 ;; (when src/typed.lisp does not compile them: the interpreter's functions)
 (defprim clysm-sys::%make-tstruct :any :value

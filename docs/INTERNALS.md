@@ -4270,6 +4270,68 @@ What makes the code fast:
   within noise over two or three rounds each (the machine was loaded:
   `b-deriv` 1.52-1.56 → 1.48-1.56, apps 1.31 → 1.26-1.31, libs 1.08-1.14 →
   1.10-1.14); Lem's comparator 1.51-1.54 → 1.47-1.48.
+* **split-sequence and esrap at the instruction level** (2026-11-22;
+  `node --prof --prof-sampling-interval=100 --perf-prof`, each tick's pc
+  placed in the TurboFan code object that held it and that code read from
+  the jitdump with `objdump`, against `sb-sprof` and SBCL's `disassemble`).
+  split-sequence's time was the runtime's `position` with `:start`: the
+  loop of `%eql-scan` (the plain EQL search of `position`/`find`/`count`)
+  started its index from the undeclared `start`, so it was a boxed integer
+  with generic `+` and `>=` per element; it is a declared fixnum now (after
+  `%check-bounds`), and a character searched in a string is compared by its
+  code with the element as it is stored (`=` of `char-code` of `%schar`,
+  which `schar-code-node-code` reads as the i32 element; `eq`, `eql` and
+  `char=` of a known character with such a read compare codes too,
+  `char-codes-eq-code`), not a character made of each element: a probe of
+  `(position #\b s :start i :key #'identity :test #'eql)` 300 → 200 ms
+  (SBCL 180, which scans with AVX2). The checks of FTYPEs and declarations
+  that the type of the value decides (`symbolp`, `consp`, `listp`, `null`,
+  `characterp`, `functionp`, `double-float-p`, `fixnump`: three
+  `ref.test :symbol` of the same argument at the entry of esrap's `(setf
+  cached)`, one of the FTYPE, one of its `the`, one of the declaration) are
+  left out (`known-test-result`, whose case for `characterp`, `consp`,
+  `symbolp` and `numberp` now takes the others), an integer of unknown size is unboxed
+  with its fixnum case inline (it was a call of `$int-i64`, 3% of the
+  profile of split-sequence), and a structure predicate's case for an
+  object of no `$siK` type (a structure with a slot vector including it,
+  or no structure) is one call of `$struct-typep` instead of a copy of the
+  search at each test: the image 9.896 → 9.847 MB. `tools/bench-libs.sh`,
+  the build before and after on one slot: `l-split-sequence` 1.51 → 1.22
+  times SBCL (103 → 83 ms; its newline split 18 → 6.5 ms, the space split
+  44 → 33), the file 1.11 → 1.07. `bench/apps.lisp` unchanged (1.30-1.31
+  both, `a-esrap` 1.98 both); Lem's comparator on a held-out file 1.25-1.26
+  → 1.20-1.22 (`l-line-down` 1.46-1.53 → 1.33-1.39); `bench/suite.lisp`
+  0.78-0.80 → 0.79-0.82 and `library.lisp` 0.82-0.83 both compiled, 1.10 → 1.05 and 1.13
+  both in a script (two or three interleaved runs; within the noise).
+  What esrap's time is (`a-esrap` 1.9-2.0): no function stands out, as
+  found before, and per instruction no construct does either. Of the ticks
+  in its TurboFan code, 14.5% are in the first instructions of functions
+  (8.7% on the `push rbp` where a call lands: the indirect call's
+  misprediction, which costs the load chain that computes the target) and
+  12.6% in that chain before each `call_ref` (the symbol's function cell,
+  the closure's `$code`, the entry, then V8's own `WasmInternalFunction`
+  and its code pointer: the hottest loads of RULE/TRANSFORM, `(setf
+  cached)` and COMPILED-SEQUENCE, 30-70 ticks each, cache misses on V8's
+  trusted objects); 5.8% the out-of-line part of V8's subtype test (an
+  instance of a structure including the one tested, `successful-parse`
+  tested as `result` or `error-result`: map, its type info, the length of
+  the supertypes and the entry, three dependent loads, against SBCL's one
+  compare of the layout id); 2.5% the stores of `mv-count`, 2.7% null
+  tests. SBCL's `result-position` is 10 instructions on its hot path and
+  does not test its argument at all (its FTYPE is trusted); Clysm's tests
+  the `$si3` type and the layout. Probes of the operations esrap does, a
+  loop over 1000 mixed `failed-parse`/`successful-parse` compiled to fasls
+  (20 million each, SBCL in brackets): `error-result-p` 38-60 ms [13], the
+  inherited accessor inline 47 [22], through a call of another file's
+  function 98 [48-51], the same call within one module 56 (V8 inlines it),
+  allocation of the structure 61 [91], a lazy production closure made and
+  called 272 [244]. So what is left is the calls between modules (the
+  chain and no inlining, measured before at 17% of esrap) and the subtype
+  test of included structures. Not done: making a parent's and a
+  child's instances the same Wasm type (size classes of 4, 8, 16, 32
+  fields, so V8's exact-map case hits) would cost the padding of every
+  small structure and does not fit the typed structures (`TS-...` types
+  extend `$siK` field by field); estimated gain on esrap under 6%.
 * **Large strings, design note (not done)**: a string is an `(array (mut
   i32))`, four bytes a character, so one of more than 32 768 characters is
   a large object for V8 (over 128 KB), allocated in pages of its own:
