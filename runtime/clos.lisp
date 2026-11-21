@@ -752,6 +752,9 @@ object X that is not an instance, or -1 (another kind of object)."
                 ((%simple-vector-p x) 8)
                 ((%single-float-p x) 16)
                 ((and (functionp x) (not (%instancep (%closure-name x)))) 12)
+                ;; (integers past the fixnums: generic functions of numbers)
+                ((%bignump x) 13)
+                ((%ratiop x) 14)
                 (t -1)))))
 
 (defmacro %builtin-class-of (x i)
@@ -1253,6 +1256,14 @@ objects)."
                        (%gf-dispatch-code ,n ,nkeys ',args '(list ,@args) ,(%shape-code n 0 0))))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %call-entry-form (f-form args)
+    "The call of the function F-FORM (an effective method) with ARGS, or the
+value of a constant one (%CONSTANT-EMF)."
+    `(let ((%cf ,f-form))
+       (if (eq (%closure-name %cf) '%constant-emf)
+           (%closure-env-ref %cf 0)
+           (funcall (the function %cf) ,@args))))
+
   (defun %gf-dispatch-code (n nkeys spread actual code)
     "The dispatch inlined in the function of a generic function: SPREAD are the
 N variables holding the spread arguments, the first NKEYS of them the required
@@ -1283,7 +1294,7 @@ cache has the shape bits CODE."
                                          (let* ((bi (%builtin-index x))
                                                 (bv (%svref pic 5))
                                                 (bf (and bv (%fx>= bi 0) (%svref bv bi))))
-                                           (when bf (return-from dispatch (funcall (the function bf) ,@spread)))
+                                           (when bf (return-from dispatch ,(%call-entry-form 'bf spread)))
                                            (%builtin-class-of x bi))))
                                    0)))
                          (let ((i -1))
@@ -1306,7 +1317,7 @@ cache has the shape bits CODE."
                                         keys)))
                    (return-from dispatch
                      ,(if (eql n nkeys)
-                          `(funcall (the function (%svref pic (%fx+ i ,nkeys))) ,@spread)
+                          (%call-entry-form `(%svref pic (%fx+ i ,nkeys)) spread)
                           ;; a generic function with &KEY (tag bit 4096): the
                           ;; check of the keywords is called from here, and
                           ;; only for a call with some (%KEY-CHECKED-FAST-EMF)
@@ -1566,6 +1577,21 @@ spread form, or the general call when their number does not fit SHAPE."
 ;;; next method (a function of the arguments, or NIL) and the bits of the
 ;;; parameters that CALL-NEXT-METHOD may be given any argument for.
 (defvar *method-fast-functions* (make-hash-table :test 'eq))
+(defvar *method-constants* (make-hash-table :test 'eq)
+  "primary method whose body is a constant -> (value)")
+(defun %note-method-constant (m value)
+  (setf (gethash m *method-constants*) (list value))
+  m)
+
+;;; The effective method of a primary method alone whose body is a constant
+;;; (as SBCL's constant-value dispatch functions): a function of N arguments
+;;; returning VALUE, which the dispatch inlined in the function of a generic
+;;; function takes without calling it (%CALL-ENTRY-FORM): its name is
+;;; %CONSTANT-EMF, VALUE its one free variable.
+(defun %constant-emf (n value)
+  (let ((f (%arity-case n (lambda (%args) (declare (ignore %args)) value))))
+    (%set-closure-name f '%constant-emf)
+    f))
 (defvar *method-fast-makers* (make-hash-table :test 'eq))
 (defun %note-method-fast-function (m f)
   (setf (gethash m *method-fast-functions*) f)
@@ -1762,7 +1788,9 @@ the N arguments, or NIL when its operator is not a function."
     ;; AROUND, PRIMARY and AFTER are now least specific first
     (if (null primary)
         (%no-applicable-fast gf n shape)
-        (let ((f nil))
+        (let ((f nil) (c (and (null shape) (null around) (null before) (null after) (<= 1 n 8)
+                              (gethash (car (last primary)) *method-constants*))))
+          (when c (return-from %standard-fast-emf (%constant-emf n (car c))))
           (dolist (m primary) (setq f (%method-fast-fn m f n unspec shape)))
           (when (or before after)
             (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) (nreverse before)))
@@ -2475,6 +2503,13 @@ CALL-NEXT-METHOD with arguments or as a function)."
                        ,@decls
                        (block ,(if (consp name) (cadr name) name) ,@forms))))))))))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %constant-body-form-p (form)
+    "True when FORM (the whole body of a method) is a literal object."
+    (if (consp form)
+        (and (eq (car form) 'quote) (consp (cdr form)) (null (cddr form)))
+        (or (not (symbolp form)) (null form) (eq form t) (keywordp form)))))
+
 (defmacro %defmethod-1 (name &rest args)
   (multiple-value-bind (quals ll body) (%split-method-args args)
     (let ((cell (gensym "CELL")) (fast (gensym "FAST")))
@@ -2508,18 +2543,24 @@ CALL-NEXT-METHOD with arguments or as a function)."
                  ;; is also called directly by the dispatch of one to four arguments
                  (multiple-value-bind (decls doc2 forms) (%parse-body body t)
                    (declare (ignore doc2))
-                   (let ((args-var (gensym "ARGS")) (next (gensym "NEXT")))
+                   (let* ((args-var (gensym "ARGS")) (next (gensym "NEXT"))
+                          (note `(%note-method-fast-function
+                                  (%defmethod ',name ',quals ,specs-form ',plain-ll
+                                              (lambda (,args-var ,next) (declare (ignore ,next))
+                                                (apply ,fast ,args-var))
+                                              ,doc ,cell)
+                                  ,fast)))
+                     ;; a body that is a constant: the dispatch takes its value
+                     ;; without calling the method (%CONSTANT-EMF)
+                     (when (and (null quals) forms (null (cdr forms)) (%constant-body-form-p (car forms)))
+                       (setq note `(%note-method-constant ,note ,(car forms))))
                      `(let ((,cell (list nil))
                             (*gf-function-maker* ,maker)
                             (,fast (lambda ,plain-ll
                                      ,@decls
                                      (declare (ignorable ,@plain-ll))
                                      (block ,(if (consp name) (cadr name) name) ,@forms))))
-                        (%note-method-fast-function
-                         (%defmethod ',name ',quals ,specs-form ',plain-ll
-                                     (lambda (,args-var ,next) (declare (ignore ,next)) (apply ,fast ,args-var))
-                                     ,doc ,cell)
-                         ,fast)))))
+                        ,note))))
                 ((%fast-arity plain-ll)
                  ;; CALL-NEXT-METHOD calls the next method, a function of the arguments
                  `(let* ((,cell (list nil))
