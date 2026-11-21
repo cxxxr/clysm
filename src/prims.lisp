@@ -588,6 +588,36 @@ constant unless the product cannot signal."
 ;; (sys::%untyped x): X, of a type the compiler does not know (the test of
 ;; a declared parameter's type, which the declaration would decide)
 (defprim clysm-sys::%untyped (x) :value x)
+;; (sys::%type-code x): the kind of X (the helper :TYPE-CODE), a fixnum
+(defprim clysm-sys::%type-code (x) :value
+  ;; (inline: the call of the helper cost more than the tests; arrays and
+  ;; structures apart first, by the abstract heap types)
+  (let ((o (new-local)) (v (new-local :i32)) (done (gensym "KIND")))
+    (flet ((chain (pairs)
+             (loop for (code test) in pairs
+                   append `((:i32.const ,code) (:local.get ,o)
+                            ,@(if (eq (car test) :global.get) (list test :ref.eq) (list test))
+                            (:br_if ,done) :drop))))
+      `(,@x (:local.set ,o)
+        (:block ,done :i32
+          (:local.get ,o) (:ref.test :i31)
+          (:if nil nil ((:local.get ,o) (:ref.cast :i31) :i31.get_s (:local.set ,v)
+                        (:i32.const 1) (:i32.const 0) (:local.get ,v) (:i32.const ,+char-tag+) :i32.ge_s :select
+                        (:br ,done)))
+          (:local.get ,o) (:ref.test :array)
+          (:if nil nil (,@(chain '((6 (:ref.test :string)) (7 (:ref.test :vector))))
+                        (:local.get ,o) (:call :type-code) (:br ,done)))
+          ,@(chain `((2 (:ref.test :cons)) (3 ,(car (nil-code))) (4 (:ref.test :symbol)) (5 (:ref.test :instance))
+                     (8 (:ref.test :double)) (9 (:ref.test :closure)) (10 (:ref.test :bignum))
+                     (11 (:ref.test :ratio)) (12 (:ref.test :single))))
+          (:local.get ,o) (:call :type-code))
+        :ref.i31))))
+;; (sys::%kind-in x code mask): CODE (X's %TYPE-CODE) is one of the bits of
+;; the constant MASK; X is only there for the type inference, which knows
+;; X's type from it where the test is true (src/types.lisp)
+(defprim clysm-sys::%kind-in (x c m) :test
+  (declare (ignore x))
+  `((:i32.const 1) ,@(idx-code c) :i32.shl ,@(idx-code m) :i32.and (:i32.const 0) :i32.ne))
 ;; INTEGERP as a test the compiler decides from the type of X (src/typed.lisp)
 ;; where it can: the check of a value given to a variable of an integer type
 (defprim clysm-sys::%integerp (x) :test `(,@x (:call :integerp)))
@@ -1548,6 +1578,36 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defhelper :listp :e-i ()
   '(:local.get 0) '(:ref.test :cons)
   '(:local.get 0) (car (nil-code)) :ref.eq :i32.or)
+
+;; The kind of an object, one of +TYPE-CODES+ (runtime/types.lisp: the
+;; type tests of TYPECASE and TYPEP of types of several kinds test it): the
+;; tests ordered so that the common objects are told apart first.
+(defhelper :type-code :e-i ((v :i32))
+  '(:local.get 0) '(:ref.test :i31)
+  `(:if nil nil ((:local.get 0) (:ref.cast :i31) :i31.get_s (:local.set v)
+                 (:local.get v) (:i32.const ,+char-tag+) :i32.ge_s
+                 (:if nil nil ((:i32.const 1) :return))
+                 (:i32.const 0) :return))
+  '(:local.get 0) '(:ref.test :cons) '(:if nil nil ((:i32.const 2) :return))
+  '(:local.get 0) (car (nil-code)) :ref.eq '(:if nil nil ((:i32.const 3) :return))
+  '(:local.get 0) '(:ref.test :symbol) '(:if nil nil ((:i32.const 4) :return))
+  '(:local.get 0) '(:ref.test :instance) '(:if nil nil ((:i32.const 5) :return))
+  '(:local.get 0) '(:ref.test :string) '(:if nil nil ((:i32.const 6) :return))
+  '(:local.get 0) '(:ref.test :vector) '(:if nil nil ((:i32.const 7) :return))
+  '(:local.get 0) '(:ref.test :double) '(:if nil nil ((:i32.const 8) :return))
+  '(:local.get 0) '(:ref.test :closure) '(:if nil nil ((:i32.const 9) :return))
+  '(:local.get 0) '(:ref.test :bignum) '(:if nil nil ((:i32.const 10) :return))
+  '(:local.get 0) '(:ref.test :ratio) '(:if nil nil ((:i32.const 11) :return))
+  '(:local.get 0) '(:ref.test :single) '(:if nil nil ((:i32.const 12) :return))
+  '(:local.get 0) '(:ref.test :complex-d) '(:if nil nil ((:i32.const 13) :return))
+  '(:local.get 0) '(:ref.test :complex-s) '(:if nil nil ((:i32.const 13) :return))
+  '(:local.get 0) '(:ref.test :complex) '(:if nil nil ((:i32.const 13) :return))
+  '(:local.get 0) '(:ref.test :mdarray) '(:if nil nil ((:i32.const 15) :return))
+  '(:local.get 0) '(:ref.test :package) '(:if nil nil ((:i32.const 16) :return))
+  (loop for k in *storage-kinds*
+        unless (member (first k) '(:vector :string))
+          append `((:local.get 0) (:ref.test ,(first k)) (:if nil nil ((:i32.const 14) :return))))
+  '(:i32.const 17))
 
 (defhelper :characterp :e-i ()
   '(:local.get 0) '(:ref.test :i31)

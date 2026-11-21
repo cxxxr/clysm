@@ -704,21 +704,48 @@ variable, so it may be evaluated after a variable is read."
     (and (symbolp key) key (not (keywordp key)) (not (eq key t))
          (not (nth-value 1 (%macroexpand-1 key env))))))
 
+;; A TYPECASE of several clauses of types that the kind of the object
+;; decides in part (runtime/types.lisp, %TYPEP-CODE-TEST): the kind is
+;; computed once, and each clause tests it (and its full test only for the
+;; kinds that need one).  NIL when the clauses are not of such types, or
+;; are few clauses of types of one test each.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %typecase-code-clauses (k clauses exhaustive)
+    (when (fboundp '%typep-code-test)
+      (let* ((c (gensym "CODE"))
+             (tests (mapcar (lambda (cl)
+                              (if (and (not exhaustive) (member (car cl) '(t otherwise)))
+                                  t
+                                  (funcall '%typep-code-test k c (car cl))))
+                            clauses)))
+        ;; (worth it with four clauses or more, or one of a type of many
+        ;; kinds: a few single tests, CONS or STRING or a structure, cost
+        ;; less than the kind)
+        (when (let ((n (count-if (lambda (x) (not (member x '(t :none)))) tests)))
+                (and (>= n 2)
+                     (or (>= n 4)
+                         (some (lambda (cl) (and (not (member (car cl) '(t otherwise)))
+                                                 (funcall '%typep-by-code-p (car cl))))
+                               clauses))))
+          (values c (mapcar (lambda (cl test)
+                              `(,(if (eq test :none) `(typep ,k ',(car cl)) test) ,@(or (cdr cl) (list nil))))
+                            clauses tests))))))
+
+  (defun %typecase-form (key clauses exhaustive env)
+    (let* ((var (%typecase-key-variable-p key env))
+           (k (if var key (gensym "KEY")))
+           (fail (when exhaustive `((t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
+      (multiple-value-bind (c code-clauses) (%typecase-code-clauses k clauses exhaustive)
+        (let ((body (if c
+                        `(let ((,c (%type-code ,k))) (cond ,@code-clauses ,@fail))
+                        `(cond ,@(%case-cond-clauses k clauses exhaustive t) ,@fail))))
+          (if var body `(let ((,k ,key)) ,body)))))))
+
 (defmacro typecase (key &rest clauses &environment env)
-  (if (%typecase-key-variable-p key env)
-      `(cond ,@(%case-cond-clauses key clauses nil t))
-      (let ((k (gensym "KEY")))
-        `(let ((,k ,key))
-           (cond ,@(%case-cond-clauses k clauses nil t))))))
+  (%typecase-form key clauses nil env))
 
 (defmacro etypecase (key &rest clauses &environment env)
-  (if (%typecase-key-variable-p key env)
-      `(cond ,@(%case-cond-clauses key clauses t t)
-             (t (%etypecase-failure ,key '(or ,@(mapcar #'car clauses)))))
-      (let ((k (gensym "KEY")))
-        `(let ((,k ,key))
-           (cond ,@(%case-cond-clauses k clauses t t)
-                 (t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses)))))))))
+  (%typecase-form key clauses t env))
 
 ;;; CCASE/CTYPECASE: the STORE-VALUE restart stores a new value into the
 ;;; place and the clauses are tried again

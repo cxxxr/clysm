@@ -662,6 +662,38 @@ which DECLARED-TY knows something)."
   (pred (clysm-sys::%simple-vector-p simple-vector-p) +k-svec+ t)
   (pred (clysm-sys::%bignump clysm-sys::bignump) +k-int+))
 (def-ti-test atom (a) (list (list 0 (ty-remove *ty-top* +k-cons+) (mkty +k-cons+))))
+
+;;; The kinds of objects that SYS::%TYPE-CODE tells apart (runtime/types.lisp,
+;;; +TYPE-CODES+): the type of each, and whether it is all of those bits
+;;; (so that a false test removes them).
+(defparameter *type-code-tys*
+  (vector (cons *ty-fixnum* nil) (cons (mkty +k-char+) t) (cons (mkty +k-cons+) t) (cons (mkty +k-null+) t)
+          (cons (mkty +k-sym+) t) (cons (mkty +k-other+) nil) (cons (mkty +k-string+) t) (cons (mkty +k-svec+) t)
+          (cons (mkty +k-double+) t) (cons (mkty +k-func+) t) (cons (int-ty nil nil) nil) (cons (mkty +k-ratio+) t)
+          (cons (mkty +k-single+) t) (cons (mkty +k-anycomplex+) t) (cons (mkty +k-other+) nil)
+          (cons (mkty +k-other+) nil) (cons (mkty +k-other+) nil) (cons (mkty (logior +k-other+ +k-limbs+)) nil)))
+
+(defun type-code-mask-tys (mask)
+  "The types of the objects whose kinds are in MASK, and of those that are
+surely not of them (for the branch where the test is false)."
+  (let ((in *ty-bottom*) (out-bits 0))
+    (loop for i from 0 below (length *type-code-tys*)
+          when (logbitp i mask)
+            do (let ((e (svref *type-code-tys* i)))
+                 (setf in (ty-union in (car e)))
+                 (when (cdr e) (setf out-bits (logior out-bits (ty-bits (car e)))))))
+    ;; (the fixnums and the bignums: all the integers; all the kinds of other objects)
+    (when (and (logbitp 0 mask) (logbitp 10 mask)) (setf out-bits (logior out-bits +k-int+)))
+    (when (every (lambda (i) (logbitp i mask)) '(5 14 15 16 17))
+      (setf out-bits (logior out-bits +k-other+ +k-limbs+)))
+    (values in (ty-remove *ty-top* out-bits))))
+
+(def-ti-rule clysm-sys::%type-code (a) (int-ty 0 17))
+(def-ti-test clysm-sys::%kind-in (a)
+  (let ((m (third a)))
+    (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
+      (multiple-value-bind (in out) (type-code-mask-tys (ty-lo m))
+        (list (list 0 in out))))))
 (def-ti-test clysm-sys::fixnump (a) (list (list 0 *ty-fixnum* *ty-top*)))
 
 ;;; ------------------------------------------------------------
