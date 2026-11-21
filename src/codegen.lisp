@@ -911,24 +911,49 @@ others are consed onto the list for its rest list."
               (eq (car (third body)) :lref) (eq (second (third body)) lv)))))
 
 (defparameter *cold-functions*
-  '(error cerror clysm-sys::%type-error clysm-sys::%signal-type-error clysm-sys::%assert-error
+  '(error cerror warn signal break invoke-debugger
+    clysm-sys::%type-error clysm-sys::%signal-type-error clysm-sys::%assert-error
     clysm-sys::%check-type-error)
-  "Functions whose calls are not expected to happen often (they signal errors).")
+  "Functions whose calls are not expected to happen often (they signal
+errors, warnings or conditions): an IF of which one branch calls one is
+hinted the other way, so that V8 makes that branch a deferred block,
+spilling what lives across the call there only.")
+
+(defvar *cold-cache* (make-hash-table :test 'eq)
+  "Node -> :YES / :NO, what COLD-BRANCH-P found (each node walked once: the
+branches of nested IFs are asked again).")
+
+(defun cold-function-p (sym)
+  (and (symbolp sym)
+       (or (member sym *cold-functions*) (gethash sym *ti-noreturn*)
+           ;; a function of the file that never returns (an error helper)
+           (let ((l (known-global-lam sym))) (and l (lam-noreturn-p l))))
+       t))
 
 (defun cold-branch-p (node)
-  "NODE, a branch of an IF, signals an error (or is marked with %COLD) on
-every way through it: the branch is not expected to be taken."
-  (and (consp node)
-       (case (car node)
-         (:call (and (symbolp (second node))
-                     (or (gethash (second node) *ti-noreturn*)
-                         (member (second node) *cold-functions*))
-                     t))
-         (:prim (eq (prim-name (second node)) 'clysm-sys::%cold))
-         (:progn (some #'cold-branch-p (cdr node)))
-         (:let (cold-branch-p (third node)))
-         (:if (and (cold-branch-p (third node)) (cold-branch-p (fourth node))))
-         (t nil))))
+  "NODE, a branch of an IF, signals (calls a function of COLD-FUNCTION-P) or
+is marked with %COLD on every way through it: the branch is not expected to
+be taken.  An IF counts when its test does or both its branches do; any
+other node when one of its parts does (not exact for blocks and loops,
+but close)."
+  (when (> (hash-table-count *cold-cache*) 200000) (clrhash *cold-cache*))
+  (labels ((cold (n)
+             (and (consp n)
+                  (let ((c (gethash n *cold-cache*)))
+                    (if c
+                        (eq c :yes)
+                        (let ((r (case (car n)
+                                   (:call (or (cold-function-p (second n)) (some-sub n)))
+                                   (:prim (or (eq (prim-name (second n)) 'clysm-sys::%cold) (some-sub n)))
+                                   (:if (or (cold (second n)) (and (cold (third n)) (cold (fourth n)))))
+                                   (t (some-sub n)))))
+                          (setf (gethash n *cold-cache*) (if r :yes :no))
+                          r)))))
+           (some-sub (n)
+             (block sub
+               (map-subnodes (lambda (x) (when (cold x) (return-from sub t))) n)
+               nil)))
+    (cold node)))
 
 (defun if-branch-hint (a b)
   "The branch hint of an IF whose branches are A and B: a cold one is not
