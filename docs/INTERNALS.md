@@ -5465,6 +5465,13 @@ smaller general case would make their calls on vectors with fill pointers,
 lists with `:key` and the like slower). The module of one export:
 1,026,823 -> 961,571 bytes (`gzip -9` 316,060 -> 303,707).
 
+The decimal digits of a bignum split it by a power of ten made by
+squaring (`%integer-power`) rather than by `expt`, whose cases for every
+kind of number (23 KB) the printer of integers then does not keep, and
+the small upgrader of element types drops the `nil`s of an `or` itself
+instead of with `remove`. The module of one export: 961,571 -> 940,564
+bytes (`gzip -9` 303,707 -> 298,877), below issue #30's 0.3 MB.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
