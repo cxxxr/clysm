@@ -952,6 +952,25 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
                     (when (and mutable (eq type :eqref)) (push name mutables)))
                    ((not mutable) (push name objects))))
     (setf objects (nreverse objects) mutables (nreverse mutables))
+    ;; the conses, simple vectors and symbols among them: a heap image writes
+    ;; all their fields (the records of runtime/image.lisp), so an image
+    ;; started from one can make them empty (host/common.mjs imageVariant):
+    ;; their contents were two thirds of the initializers that V8 decodes
+    ;; and evaluates
+    (let ((inits (make-hash-table :test 'equal)))
+      (loop for (name nil nil init) across (wasm-module-globals m)
+            do (setf (gethash name inits) init))
+      (setf (wasm-module-image-defaults m)
+            (loop for name in objects
+                  for last = (car (last (gethash name inits)))
+                  when (equal last '(:struct.new :cons))
+                    collect (list name '(:struct.new_default :cons))
+                  when (and (consp last) (eq (first last) :array.new_fixed) (eq (second last) :vector))
+                    collect (list name `(:i32.const ,(third last)) '(:array.new_default :vector))
+                  when (equal last '(:struct.new :symbol))
+                    collect (list name '(:i32.const 0) '(:array.new_default :string)
+                                  '(:ref.null :package) '(:ref.null :eq) '(:ref.null :closure) '(:ref.null :eq)
+                                  '(:i32.const 0) '(:i32.const 0) '(:struct.new :symbol)))))
     (add-func m :image-objects :v-e :body (vector-of-globals-code objects))
     (add-func m :image-mutables :v-e :body (vector-of-globals-code mutables))
     ;; (a whole program without the compiler does not load heap images)

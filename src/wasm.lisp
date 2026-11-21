@@ -174,6 +174,14 @@
   ;; ref.func'd functions are placed in it from CODE-BASE (a global, or 0)
   (table nil)
   (code-base nil)
+  ;; the image's globals whose objects a heap image fills (conses, simple
+  ;; vectors, symbols): (name . initializer made empty), for the
+  ;; clysm.image-defaults section
+  (image-defaults nil)
+  ;; the functions that V8 compiles with the module, in background threads
+  ;; (a module's toplevel forms, which run once each when it is loaded):
+  ;; its compilationHints section, see withEagerHints in host/common.mjs
+  (eager-funcs nil)
   (cast-rewrites nil))                                  ; heap type -> function replacing ref.cast     ; nullable globals read as non-null
 
 (defun add-type (m name def)
@@ -1103,6 +1111,21 @@ nothing would change."
                    (loop for (offset . value) in h
                          do (emit-u32 b offset) (emit-u32 b 1) (emit-u32 b value)))
           (emit-section out 0 b)))
+      ;; compilationHints (V8's own format, before the code): the eager
+      ;; functions are compiled by Liftoff with the module (the hint 0x12:
+      ;; eager, Liftoff; withEagerHints in host/common.mjs)
+      (when (wasm-module-eager-funcs m)
+        (let ((hints (make-array (length bodies) :element-type '(unsigned-byte 8) :initial-element 0))
+              (nimports (length (wasm-module-imports m))))
+          (dolist (name (wasm-module-eager-funcs m))
+            (let ((i (gethash name (wasm-module-func-index-table m))))
+              (when (and i (<= nimports i) (< (- i nimports) (length hints)))
+                (setf (aref hints (- i nimports)) #x12))))
+          (let ((b (make-buf)))
+            (emit-name b "compilationHints")
+            (emit-u32 b (length hints))
+            (emit-bytes b hints)
+            (emit-section out 0 b))))
       ;; code
       (let ((b (make-buf)))
         (emit-u32 b (+ (length bodies) fillers))
@@ -1124,6 +1147,25 @@ nothing would change."
           (emit-name b "clysm.codes")
           (emit-u32 b (hash-table-count (wasm-module-declared-refs m)))
           (emit-section out 0 b)))
+      ;; clysm.image-defaults: the globals of the image whose objects a heap
+      ;; image fills when the image starts from it (host/common.mjs
+      ;; imageVariant: there they are made empty): the initializers that
+      ;; make them empty, then (global, initializer)
+      (let* ((inits nil)
+             (entries (loop for (name . init) in (wasm-module-image-defaults m)
+                            for g = (gethash name (wasm-module-global-table m))
+                            when g collect (cons g (or (position init inits :test #'equal)
+                                                       (progn (setf inits (append inits (list init)))
+                                                              (1- (length inits))))))))
+        (when entries
+          (let ((b (make-buf)))
+            (emit-name b "clysm.image-defaults")
+            (emit-u32 b (length inits))
+            (dolist (init inits)
+              (let ((e (make-buf))) (emit-expr e init) (emit-vec-buf b e)))
+            (emit-u32 b (length entries))
+            (loop for (g . k) in entries do (emit-u32 b g) (emit-u32 b k))
+            (emit-section out 0 b))))
       ;; name section (function names) for nicer stack traces
       (let ((b (make-buf)) (sub (make-buf))
             (all (concatenate 'list (wasm-module-imports m) (wasm-module-funcs m))))

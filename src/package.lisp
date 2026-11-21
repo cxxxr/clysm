@@ -8,7 +8,7 @@
            #:wasm-func #:wasm-func-name #:wasm-func-type #:wasm-func-locals #:wasm-func-body
            #:wasm-func-local-names #:func-defined-p #:global-defined-p #:find-func
            #:add-import-global #:add-import-tag #:wasm-module-base-types #:wasm-module-nonnull-globals
-           #:wasm-module-cast-rewrites #:remove-unreachable-functions #:wasm-module-funcs
+           #:wasm-module-cast-rewrites #:wasm-module-image-defaults #:wasm-module-eager-funcs #:remove-unreachable-functions #:wasm-module-funcs
            #:wasm-module-memory #:wasm-module-memory-import #:wasm-module-table #:wasm-module-code-base #:wasm-module-globals #:shake-module #:*func-source*
            #:*func-segment* #:wasm-func-segment #:wasm-func-refs #:body-refs #:wasm-func-p))
 

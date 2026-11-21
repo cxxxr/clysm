@@ -55,6 +55,8 @@ heap_image() {
     tmp="$himg.tmp$$"
     CLYSM_SAVE_IMAGE=1 "$NODE" "$ROOT/host/run.mjs" "$1" --no-userinit \
       --eval "(sys::save-image \"$tmp\" (function sys::main))" </dev/null >/dev/null 2>&1 \
+      && { CLYSM_IMAGE="$tmp" CLYSM_TRAIN_IMAGE=1 "$NODE" "$ROOT/host/run.mjs" "$1" --no-userinit \
+             --eval "(load \"$ROOT/lib/image-training.lisp\")" </dev/null >/dev/null 2>&1; true; } \
       && mv -f "$tmp" "$himg" 2>/dev/null
     rm -f "$tmp"
   fi

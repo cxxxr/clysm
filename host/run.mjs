@@ -7,12 +7,15 @@ import { fileURLToPath } from 'node:url';
 // The modules that only one of the threads needs are imported by it (the
 // main thread starts the worker sooner): the worker's
 let makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
-  byteSources, nodeModuleAccess;
-async function importWorkerModules() {
+  byteSources, instrumentWasm, withEagerHints, imageWithOctets, nodeModuleAccess;
+async function importCommon() {
   if (makeImports) return;
   ({ makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
-     byteSources } = await import('./common.mjs'));
-  ({ nodeModuleAccess } = await import('./lib.mjs'));
+     byteSources, instrumentWasm, withEagerHints, imageWithOctets } = await import('./common.mjs'));
+}
+async function importWorkerModules() {
+  await importCommon();
+  if (!nodeModuleAccess) ({ nodeModuleAccess } = await import('./lib.mjs'));
 }
 // and the main thread's, when the worker first asks for a socket or a process
 let net, makeProcessManager;
@@ -153,18 +156,84 @@ function nodePlatform(state, args) {
   };
 }
 
-// (COMPILED: a promise of the module BYTES compiled, if it is being compiled)
-export async function runModule(bytes, args = [], compiled = null) {
+// The build of the image in the file PATH (its custom section clysm.build,
+// at its end: see with-build-section in src/driver.lisp), read without
+// reading the file, or null
+function fileBuild(path) {
+  try {
+    const fd = fs.openSync(path, 'r');
+    try {
+      const size = fs.fstatSync(fd).size, n = Math.min(size, 64);
+      const tail = Buffer.alloc(n);
+      fs.readSync(fd, tail, 0, n, size - n);
+      const at = tail.lastIndexOf('\x0bclysm.build', undefined, 'latin1');
+      if (at < 2 || tail[at - 2] !== 0 || tail[at - 1] !== n - at) return null;
+      return tail.subarray(at + 12).toString('latin1');
+    } finally { fs.closeSync(fd); }
+  } catch (e) { return null; }
+}
+
+// The heap image of the file PATH, for the image of build BUILD (null: not
+// known), read in two steps: { build, octets, rest }, where OCTETS are the
+// image's octets as it starts from it (imageOctets in host/common.mjs), read
+// first (they are compiled while the rest is read), or null (when BUILD is
+// not the image's, or the file does not have them), and REST() reads the
+// rest and returns the whole file.  Null if there is no file.
+function readHeapImage(path, build) {
+  let fd;
+  try { fd = fs.openSync(path, 'r'); } catch (e) { return null; }
+  const size = fs.fstatSync(fd).size;
+  const file = Buffer.allocUnsafe(size);
+  let done = 0;
+  const upto = (end) => { while (done < end) { const n = fs.readSync(fd, file, done, end - done, done); if (n <= 0) break; done += n; } };
+  const rest = () => { upto(size); fs.closeSync(fd); return done === size ? file : null; };
+  let octets = null;
+  try {
+    // (the header as imageHeader reads it)
+    upto(Math.min(size, 65536));
+    const length = size >= 12 ? file.readUInt32LE(8) : 0;
+    if (build && file.toString('latin1', 0, 8) === 'CLYSMIMG' && 12 + length <= done) {
+      const header = JSON.parse(file.toString('utf8', 12, 12 + length));
+      const start = ((12 + length + 7) & ~7) + (header.image?.offset ?? 0);
+      if (header.build === build && header.image && start + header.image.length <= size) {
+        upto(start + header.image.length);
+        octets = file.subarray(start, start + header.image.length);
+        // (they end with the image's clysm.build section: a file rewritten
+        // by a tool that does not know them may have left their place stale)
+        const tail = octets.subarray(Math.max(0, octets.length - 64)).toString('latin1');
+        if (!tail.endsWith('\x0bclysm.build' + build)) octets = null;
+      }
+    }
+  } catch (e) { octets = null; }
+  return { build, octets, rest };
+}
+
+// Start the image of the file PATH: from the heap image FILE (octets, with
+// its HEADER) if there is one for it, else by its toplevel forms.  BYTES
+// are the image's octets, and COMPILED a promise of the module being
+// compiled (from the image's octets as it starts from the heap image, if
+// FILE has them: imageOctets).
+const TRAIN_TABLE = 192 << 20;   // (in the linear memory, above any heap image)
+export async function runModule(path, args = [], { bytes = null, compiled = null, file = null, header = null,
+                                                   training = null } = {}) {
   await importWorkerModules();
   const state = { ...nodeModuleAccess() };
   const imports = makeImports(state, nodePlatform(state, args));
-  // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
-  // was saved by this build of the image (otherwise as usual)
-  const imagePath = process.env.CLYSM_IMAGE;
-  const file = imagePath && fs.existsSync(imagePath) ? fs.readFileSync(imagePath) : null;
+  // (the image itself, for SAVE-IMAGE, which saves it as it starts from the heap image)
+  if (process.env.CLYSM_SAVE_IMAGE) state.imageBytes = bytes;
+  const modules = header && compileImageModules(file, header, undefined, (p) => fs.readFileSync(p));
+  modules?.catch(() => {});
   let instance;
   try {
-    const module = await (compiled || WebAssembly.compile(bytes));
+    let module;
+    try {
+      module = await (compiled || WebAssembly.compile(bytes));
+    } catch (e) {
+      // (the octets of the heap image are not the image's: the image itself)
+      if (bytes) throw e;
+      bytes = fs.readFileSync(path);
+      module = await WebAssembly.compile(bytes);
+    }
     instance = await WebAssembly.instantiate(module, imports);
     installSourceMap(state, module);
     state.instance = instance;
@@ -180,18 +249,31 @@ export async function runModule(bytes, args = [], compiled = null) {
     process.exit(3);
   }
   let restored = false;
-  if (file) {
-    const header = imageHeader(state.module, file);
-    if (header) {
-      try {
-        await loadImage(state, file, header, await compileImageModules(file, header, undefined, (p) => fs.readFileSync(p)));
-        restored = true;
-      } catch (e) {
-        console.error(';; the heap image could not be loaded:', e.message);
-        state.codeIndex = null;
-        instance = await WebAssembly.instantiate(state.module, imports);
-        state.instance = instance;
-      }
+  if (training && header) {
+    const memory = instance.exports.memory;
+    const pages = Math.ceil((TRAIN_TABLE + training.count) / 65536);
+    if (memory.buffer.byteLength < pages * 65536) memory.grow(pages - memory.buffer.byteLength / 65536);
+    process.on('exit', () => {
+      if (!restored) return;
+      const ran = new Uint8Array(instance.exports.memory.buffer, TRAIN_TABLE, training.count);
+      const functions = [];
+      for (let f = 0; f < training.count; f++) if (ran[f]) functions.push(f);
+      fs.writeFileSync(process.env.CLYSM_IMAGE,
+                       imageWithOctets(file, header, withEagerHints(training.octets, functions)));
+    });
+  }
+  if (header) {
+    try {
+      await loadImage(state, file, header, await modules);
+      restored = true;
+    } catch (e) {
+      console.error(';; the heap image could not be loaded:', e.message);
+      state.codeIndex = null;
+      // (the image itself: the one compiled may be the image as it starts from the heap image)
+      bytes ??= fs.readFileSync(path);
+      state.module = await WebAssembly.compile(bytes);
+      instance = await WebAssembly.instantiate(state.module, imports);
+      state.instance = instance;
     }
   }
   try {
@@ -505,7 +587,10 @@ async function runProgram(data, port, netBuffer) {
     // then (most of the image's functions and of a fasl's never run): the
     // image compiles in 17 ms instead of 30
     v8.setFlagsFromString('--wasm-lazy-validation');
-    // the stacks of computations that can wait (JSPI, the threads of
+    // the functions that a heap image's image names (its compilationHints
+    // section: see training below) are compiled with the module
+    v8.setFlagsFromString('--experimental-wasm-compilation-hints');
+        // the stacks of computations that can wait (JSPI, the threads of
     // runtime/thread.lisp) as deep as the worker's own (they are limited by
     // --stack-size too, which, set now, leaves the limit of the thread's
     // own stack as it is: the main thread's stays within the system's)
@@ -513,10 +598,41 @@ async function runProgram(data, port, netBuffer) {
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
   } catch (e) {}
-  // the module compiles in V8's threads while this one imports the rest
-  const bytes = fs.readFileSync(data.file);
-  const compiled = WebAssembly.compile(bytes);
+  // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
+  // was saved by this build of the image (otherwise as usual); the image is
+  // then compiled from the octets that FILE has of it (readHeapImage), and
+  // the image's own file is not read
+  const imagePath = process.env.CLYSM_IMAGE;
+  const image = imagePath ? readHeapImage(imagePath, fileBuild(data.file)) : null;
+  let bytes = null;
+  if (!image?.octets) bytes = fs.readFileSync(data.file);
+  // CLYSM_TRAIN_IMAGE=1 (bin/clysm, once it has saved the heap image): the
+  // functions of the image that run are noted (instrumentWasm), and the heap
+  // image is written again with them named in the image's compilationHints
+  // section when the program ends
+  const training = process.env.CLYSM_TRAIN_IMAGE && image?.octets ? { octets: image.octets } : null;
+  if (training) {
+    await importCommon();
+    const r = instrumentWasm(image.octets, 0, TRAIN_TABLE);
+    training.count = r.count;
+    image.octets = r.bytes;
+  }
+  // the module compiles in V8's threads while this one reads the heap and
+  // imports the rest
+  let compiled = WebAssembly.compile(image?.octets || bytes);
   compiled.catch(() => {});
+  const file = image && image.rest();
+  let header = null;
+  if (file) {
+    await importCommon();
+    header = imageHeader(bytes || image.build || (bytes = fs.readFileSync(data.file)), file);
+  }
+  if (image?.octets && !header) {
+    // (a file cut short: the image itself, which starts as usual)
+    bytes = fs.readFileSync(data.file);
+    compiled = WebAssembly.compile(bytes);
+    compiled.catch(() => {});
+  }
   await importWorkerModules();
   installNetClient(port, netBuffer);
   // the program may run as a computation that can wait (sys::main, threads)
@@ -539,7 +655,7 @@ async function runProgram(data, port, netBuffer) {
       process.exit(2);
     }
   }
-  await runModule(bytes, data.args, compiled);
+  await runModule(data.file, data.args, { bytes, compiled, file, header, training });
   writeTrace();
   // the program ends when nothing is left to do: the promises and timers that
   // it made are settled and run first
