@@ -51,3 +51,11 @@
 (defbench s-build-hash (3) (let ((h (make-hash-table))) (dotimes (i 500000) (setf (gethash i h) (list i))) (hash-table-count h)))
 (defbench s-build-strings (3)
   (let ((v (make-array 300000))) (dotimes (i 300000) (setf (svref v i) (format nil "line ~D" i))) (length (svref v 299999))))
+;;; data of medium lifetime: a ring of 2000 lists of 500 elements (32 MB),
+;;; one replaced at each step and another walked (a cache, a history)
+(defbench s-ring (1)
+  (let ((ring (make-array 2000 :initial-element nil)) (s 0))
+    (dotimes (i 20000)
+      (setf (svref ring (mod i 2000)) (loop for j below 500 collect j))
+      (incf s (length (svref ring (mod (* i 7) 2000)))))
+    s))
