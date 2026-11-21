@@ -5551,6 +5551,23 @@ Where the time went, and what was done:
   its code cache: 35 ms. The flags are set in the worker once it has
   started. The main thread imports only what it needs to start the worker
   (sockets and processes when the worker first asks for one).
+* **Inlining.** `--wasm-inlining-factor=5` (V8's default 3): TurboFan
+  inlines into a function until its graph is that many times the function's
+  own size (and at most 7000 nodes), taking the calls in the order of the
+  counts the baseline code collected when the function tiered up, so the
+  inlining of a short caller of several small functions depends on when it
+  tiered up. `g-dderiv` (DDERIV: GET and GETF inlined twice, or F* inlined
+  into F+ instead) ran 135-140 ms in most processes and 120 ms in one of ten
+  to forty, the same module; with 5, 111-115 ms every time. The benchmark
+  files with and without it, best of five interleaved: gabriel 0.97,
+  functional 0.96, vectors 0.98, declared, suite, control, alloc, arith,
+  closures 0.99, programs, clos, arrays, library 1.00 (`c-make-instance`
+  1.07, `p-nonlocal` 1.05 the most slower); in the image (`clysm script`)
+  suite 0.99, gabriel 0.99, programs, library, functional 1.00; starting
+  hello the same (set in the worker, see above; on the command line it
+  costs the 35 ms of Node.js's code cache). Two compiles of one source are
+  byte-identical (sequential or parallel, after the fasls are made again);
+  only `clysm.sources` names the file as the command line gave it.
 * **Validation.** `--wasm-lazy-validation`: a function is validated when it
   is first compiled. Most of the image's functions and of a fasl's never
   run; the image compiles in 17 ms instead of 30.
