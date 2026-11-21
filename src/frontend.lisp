@@ -1424,6 +1424,25 @@ MACROLET of LOOP-FINISH) twice as long."
   #+clysm (let ((*package* (find-package :clysm)))
             (eval `(function ,(substitute-host-functions lambda-form)))))
 
+(defparameter *macro-compile-after* 8
+  "How many expansions of a global macro defined in the image (DEFMACRO in
+COMPILE-FILE, LOAD or at the REPL) are interpreted before its expander is
+compiled (GLOBAL-MACRO-EXPANDER).")
+
+(defun global-macro-expander (lambda-form)
+  "The expander of a global macro (DEFMACRO) made of LAMBDA-FORM.  In Clysm
+the first expansions are interpreted and the expander is compiled when it
+is used more: most macros of a file are expanded a few times, and
+compiling one is a module of its own."
+  #-clysm (host-compile lambda-form)
+  #+clysm (let ((interpreted (local-macro-expander lambda-form)) (compiled nil) (uses 0))
+            (lambda (form env)
+              (cond (compiled (funcall compiled form env))
+                    ((< (setq uses (+ uses 1)) *macro-compile-after*)
+                     (funcall interpreted form env))
+                    (t (setq compiled (host-compile lambda-form))
+                       (funcall compiled form env))))))
+
 (defun convert-macrolet (defs body env)
   (let ((new-env (apply #'env-extend env
                         (loop for (name ll . mbody) in defs

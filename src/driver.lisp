@@ -271,7 +271,7 @@ that may not be done twice.")
 (defun process-defmacro (form env)
   (destructuring-bind (name ll &rest body) (cdr form)
     (let* ((expander-form (make-host-macro-expander name ll body))
-           (fn (host-compile expander-form)))
+           (fn (global-macro-expander expander-form)))
       (setf (gethash name *macros*) fn)
       ;; non-CL symbols also become host macros, so that host-evaluated
       ;; code (macro bodies, eval-when) can use them
