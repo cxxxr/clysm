@@ -3067,7 +3067,16 @@ buffer), with no list or argument vector; else the generic way."
 (defun cg-ltv (node mv)
   (let ((g (list :ltv (incf *ltv-counter*))) (l (gensym "LTV")))
     (push (list g :eqref t '((:ref.null :eq))) *misc-globals*)
-    (let ((value-code (let ((*fs* *fs*)) (cg (second node)))))
+    (let ((value-code (let ((*fs* *fs*))
+                        (let ((name (struct-class-node-name node)))
+                          (if name
+                              ;; (the class of a structure: its name by a
+                              ;; reference that does not keep the function of
+                              ;; that name in a shaken program, as
+                              ;; SYS:%WEAK-SYMBOL; the class keeps the name and
+                              ;; its properties)
+                              (cg `(:call find-class (:wasm :eqref () ((:global.get (:sym ,name) :weak)))))
+                              (cg (second node)))))))
       `((:block ,l :eqref
           (:global.get ,g) (:br_on_non_null ,l)
           ,@value-code (:global.set ,g) (:global.get ,g))
