@@ -4778,6 +4778,28 @@ f64s in locals DA and DB (it may branch to SLOW)."
        (:br again)))
   '(:local.get acc))
 
+;;; NREVERSE at the call site: a list turned round in place in a loop of
+;;; the module (the push / NREVERSE idiom ends most list builders); another
+;;; sequence calls the function.
+(defhelper :nreverse-list :e-e ((l :eqref) (prev :eqref) (next :eqref) (c (:ref :null :cons)))
+  '(:local.get 0) '(:ref.test :cons)
+  `(:if nil nil nil
+        ((:local.get 0) ,@(nil-code) :ref.eq (:if nil nil (,@(nil-code) :return))
+         (:local.get 0) (:global.get ,(sym-global 'nreverse)) (:call (:callsym 1)) :return))
+  '(:local.get 0) '(:local.set l) (append (nil-code) '((:local.set prev)))
+  '(:block done nil
+     (:loop again nil
+       (:local.get l) (:ref.test :cons) :i32.eqz (:br_if done)
+       (:local.get l) (:ref.cast :cons) (:local.tee c) (:struct.get :cons 1) (:local.set next)
+       (:local.get c) (:local.get prev) (:struct.set :cons 1)
+       (:local.get c) (:local.set prev)
+       (:local.get next) (:local.set l)
+       (:br again)))
+  `((:local.get l) ,@(nil-code) :ref.eq)
+  `(:if nil nil nil (,@(type-error-instrs 'l 'list) :drop))
+  '(:local.get prev))
+(defprim nreverse (x) :value `(,@x (:call :nreverse-list)))
+
 (defhelper :list-length-i32 :e-i ((l :eqref) (n :i32))
   '(:local.get 0) '(:local.set l)
   '(:block done nil

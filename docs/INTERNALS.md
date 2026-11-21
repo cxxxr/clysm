@@ -5711,6 +5711,73 @@ tables of characters and a binary search, 40% of the busy time of
 `l-line-down`); `l-syntax-scan` (1.45) is cl-ppcre's matchers (the
 closures of a character class, a list of tests).
 
+A round on 2026-11-22 (`tools/bench-lem.sh` on the held-out input: 1.15–1.16,
+`l-type-redisplay` 1.5–1.8, `l-syntax-scan` 1.35–1.4, `l-line-down` and
+`l-page-down` 1.3–1.4, the rest 0.75–1.05) profiled each action with V8's
+CPU profiler and `node --prof` (ticks of each instruction, the code from
+`--perf-prof`'s jitdump) against `sb-sprof` of the same action repeated
+in one process. What it found, by item:
+
+* The redisplay (typing with a redraw after each key, 3.6 s against SBCL's
+  2.7 s for 1000 keys): no function stands out. Against SBCL's totals of the
+  same functions: `char-width` and what it calls 1.1 (but `wide-char-p`
+  1.8–2.4 inside the redisplay while `l-string-width`, the same chain in a
+  tight loop, is 1.0: its ticks sit on the loads of the hash tables'
+  vectors, a chain of eight dependent loads — symbol, value, instance,
+  slot vector, bucket vector and its length, the bucket, the key — that
+  stays in the cache only in the tight loop; SBCL's is about four),
+  `create-logical-line` 1.8 and `create-drawing-objects` 1.5 (large
+  functions holding many inline copies; the ticks are spread over them),
+  the highlighting of the edited line (cl-ppcre) 2.0, the mode line 1.85,
+  Lem's `variable-value` 2.0 (a generic function with an EQL specializer
+  and an `&optional` parameter, dispatched by its generic function: the
+  classes of its arguments computed out of line, then the EQL table).
+* `l-syntax-scan`: cl-ppcre's character-class tests take what SBCL's take;
+  the matchers' closures (`create-matcher-aux`, the character searcher,
+  the scanner) twice SBCL's time, in the code around the calls of the next
+  matcher (the character searcher's loop is 40 instructions an iteration:
+  `*string*` reloaded and its type tested, the character of `schar` boxed
+  and tested as a character, `chr` reloaded from the closure).
+* Loading Lem's 360 fasls with ASDF (1.4 s): 20% of it was `subtypep` of
+  two classes, which ASDF's `coerce-class` calls for every operation it
+  plans, through the set algebra of types (`%type-not`, `equal` of the
+  expansions); 4% the emptying of every used generic-function call site at
+  each method added (`%bump-clos-epoch` walked all of them each time, the
+  emptied ones too).
+
+Made general:
+* `subtypep` of two standard, structure or condition classes (or their
+  names) whose precedence list is known answers from the precedence list
+  (`%standard-class-type`, runtime/types.lisp). Lem's load 1407 → 1160 ms
+  (three interleaved runs each on one slot: 1407 1411 1407 against 1175 1161
+  1146), `tools/bench-startup.sh` 4.26 → 4.19 (`s-ql-babel` 390 → 373 ms).
+* `%bump-clos-epoch` empties the sites in its list and empties the list: a
+  site is noted again when it is filled (`%gf-site-register`).
+* `make-instance` of a class without any initarg (Lem's `point`: every
+  `with-point` and `copy-point`) took the slow path: the constructor's test
+  for "only the standard methods apply" was the class's list of valid
+  initargs, NIL for such a class. A constructor of more than eight
+  initargs (Lem's `make-attribute`, eleven) fills a copy of the template
+  from the arguments put in a vector, as the entries of up to eight do,
+  instead of `nth` of the argument list for each slot.
+* `loop ... by #'cddr` (any function of COMMON-LISP named with `function`
+  or `quote`) calls the function directly, so that it is compiled inline;
+  it was bound to a variable and called with `funcall` at each step (every
+  plist walk).
+* `nreverse` of a list is a helper of the module (`:nreverse-list`): a
+  loop in place of the call through the function cell; another sequence
+  calls the function. (The one-export library module 4,084,602 →
+  4,066,560 bytes, the REPL image 8,933,012 → 8,907,553, with the other
+  changes of this round.)
+
+The actions themselves were unchanged within the runs' spread (two
+interleaved rounds each: geometric mean 1.16 and 1.15 before, 1.16 and
+1.15 after; `l-line-down` 1.34–1.38 → 1.29). What would gain more: a hash
+table as a struct of its own with typed fields (the chain of loads above:
+the slot vector and the casts of its elements go), EQL dispatch at the call
+site for generic functions with optional parameters, and the matchers'
+closures of cl-ppcre.
+
 ## Building and distributing
 
 `bin/clysm` needs SBCL, which hosts the cross compiler. `tools/build-npm.sh`

@@ -801,8 +801,20 @@ one."
         ((and (consp ty) (eq (car ty) 'member)) (null (cdr ty)))
         (t nil)))
 
+(defun %standard-class-type (ty)
+  "The class TY is or names when it is a standard, structure or condition
+class whose precedence list is known (a type that is that class), else NIL."
+  (let ((c (cond ((symbolp ty) (and ty (find-class ty nil))) ((%class-p ty) ty))))
+    (and c (member (%class-kind c) '(:standard :structure :condition)) (consp (%class-cpl c)) c)))
+
 (defun subtypep (t1 t2 &optional env)
   (declare (ignore env))
+  ;; two classes of the user's (ASDF's COERCE-CLASS at every operation it
+  ;; plans): a subclass when the second is in the first's precedence list
+  (let ((c1 (%standard-class-type t1)))
+    (when c1
+      (let ((c2 (%standard-class-type t2)))
+        (when c2 (return-from subtypep (values (%subclassp c1 c2) t))))))
   (setq t1 (%expand-type-fully (%type-class-name t1)) t2 (%expand-type-fully (%type-class-name t2)))
   (multiple-value-bind (r certain unknown) (%subtypep-by-algebra t1 t2)
     (unless unknown (return-from subtypep (values r certain))))
