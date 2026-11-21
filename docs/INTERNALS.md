@@ -2620,8 +2620,7 @@ What makes the code fast:
   `simple-string` and `(simple-array * dims)`, the element type left out
   since `typep` of `(or (eql 0) chunk)` asks `subtypep` at run time; at
   `(safety 0)` nothing). The slot's entry in the structure's description
-  records the check (`%slot-with-check`: the kind and the type checked; an
-  included slot whose type is restated keeps the included one's check), and
+  records the check (`%slot-with-check`: the kind and the type checked), and
   only a checked structure-class slot is read as of its class
   (`struct-slot-node-ty`; a slot of a structure defined later is not); the
   compiled read of an array slot tests the storage kind too and signals a
@@ -2629,8 +2628,18 @@ What makes the code fast:
   `(safety 0)`), which also covers a type defined by `deftype` after the
   structure (`tests/cases/struct-array-slots.lisp`,
   `tests/cases/struct-class-slots.lisp`, `tests/cases/declared-checks.lisp`).
-  Integer slot types are not trusted (a `fixnum` of SBCL's may be a bignum
-  here), so they are not checked. What the checks cost (2026-11-21, against
+  A slot declared of an integer type (`(unsigned-byte 32)`, `(integer 0
+  100)`, `(mod 10)`, `bit`, `fixnum`...) is checked the same way
+  (`%slot-integer-type`; a `fixnum` slot is checked as SBCL's 62-bit
+  fixnum, since code written for SBCL stores larger integers in one), and
+  read as of its range when that is within the fixnums (an i32; a wider
+  one gains nothing: i64 arithmetic whose result is boxed by a call costs
+  more than the generic way of small integers, `d-particles` took 1.2
+  times as long with its `fixnum` slot read as an i64); an `&aux`
+  variable of a BOA constructor without a value leaves such a slot 0.
+  The reads of an included slot whose type is restated trust the
+  included type (its accessors write the slot of the including
+  structure's instances), and its constructors check both. What the checks cost (2026-11-21, against
   ee61f08 on the same slot, alternately): `bench/apps.lisp` 1.30-1.33 both
   (`a-local-time` 41 → 43 ms, `a-ppcre-tokens` 46 → 46-47, a fixnum
   parameter's test inline rather than a call of `$fixnump`: 49-50 with the
