@@ -1774,6 +1774,59 @@ POSITION when they are only a :TEST of a known function, else NIL."
              (do ((l x (cdr l)) (n 0 (+ n 1))) (nil)
                (cond ((null l) (return t)) ((or (atom l) (> n 8)) (return nil))))))))
 
+;;; FIND and POSITION of an item within bounds (:START, :END, and a :TEST or
+;;; :TEST-NOT, :FROM-END a constant): a loop at the call site over a simple
+;;; string or a simple vector, the test called inline when it is a known
+;;; function (local-time's (FIND #\Z S :TEST #'CHAR-EQUAL :START A :END B)),
+;;; the function otherwise.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %bounded-find-expansion (name item seq keys posp)
+    (let ((test nil) (negp nil) (start nil) (end nil) (from-end nil) (seen nil))
+      ;; only the keywords above, each once, with no :KEY
+      (unless (and (evenp (length keys))
+                   (loop for (k v) on keys by #'cddr
+                         always (and (member k '(:test :test-not :start :end :from-end)) (not (member k seen))
+                                     (progn (push k seen) t)
+                                     (case k
+                                       ((:test :test-not) (and (not test) (setq test v negp (eq k :test-not)) t))
+                                       (:start (setq start v) t)
+                                       (:end (setq end v) t)
+                                       (:from-end (and (member v '(nil t)) (setq from-end v) t)))))
+                   (or start end from-end))
+        (return-from %bounded-find-expansion nil))
+      (let* ((x (gensym "X")) (s (gensym "SEQ")) (f (gensym "TEST")) (st (gensym "START")) (en (gensym "END"))
+             (e (gensym "E")) (i (gensym "I")) (v (gensym "V"))
+             (known (and test (consp test) (member (car test) '(function quote)) (consp (cdr test))
+                         (null (cddr test))
+                         (car (member (cadr test) '(eql eq equal equalp char= char-equal < <= > >= = string= string-equal)))))
+             ;; the bindings in the order of the arguments
+             (binds `((,x ,item) (,s ,seq)
+                      ,@(loop for (k val) on keys by #'cddr
+                              append (case k
+                                       ((:test :test-not) (unless known `((,f (%fn ,val)))))
+                                       (:start `((,st ,val)))
+                                       (:end `((,en ,val)))))
+                      ,@(unless start `((,st 0)))
+                      ,@(unless end `((,en nil)))))
+             (call (cond (known `(,known ,x ,v)) (test `(funcall ,f ,x ,v)) (t `(eql ,x ,v))))
+             (match (if negp `(not ,call) call)))
+        (flet ((scan (ref len)
+                 `(let ((,e (%check-bounds ,st ,en (,len ,s))))
+                    (declare (fixnum ,e))
+                    ,(if from-end
+                         `(do ((,i (%fx- ,e 1) (%fx- ,i 1))) ((%fx< ,i ,st) nil)
+                            (declare (fixnum ,i))
+                            (let ((,v (,ref ,s ,i))) (when ,match (return ,(if posp i v)))))
+                         `(do ((,i ,st (%fx+ ,i 1))) ((%fx>= ,i ,e) nil)
+                            (declare (fixnum ,i))
+                            (let ((,v (,ref ,s ,i))) (when ,match (return ,(if posp i v)))))))))
+          `(let* ,binds
+             (cond ((%simple-string-p ,s) ,(scan '%schar '%string-length))
+                   ((%simple-vector-p ,s) ,(scan '%svref '%svlength))
+                   (t (locally (declare (notinline ,name))
+                        (,name ,x ,s ,@(when test `(,(if negp :test-not :test) ,(if known `(function ,known) f)))
+                               :start ,st :end ,en ,@(when from-end '(:from-end t))))))))))))
+
 ;;; FIND and POSITION of an item in a short literal sequence: comparisons inline
 (define-compiler-macro find (&whole form item seq &rest keys)
   (let* ((test (%short-find-test keys))
@@ -1785,6 +1838,7 @@ POSITION when they are only a :TEST of a known function, else NIL."
           ((null keys) `(%find2 ,item ,seq))
           ((and (= (length keys) 2) (eq (first keys) :test))
            `(%find-with-test ,item ,seq ,(second keys) nil))
+          ((%bounded-find-expansion 'find item seq keys nil))
           (t form))))
 (define-compiler-macro position (&whole form item seq &rest keys)
   (let* ((test (%short-find-test keys))
@@ -1797,6 +1851,7 @@ POSITION when they are only a :TEST of a known function, else NIL."
           ((null keys) `(%position2 ,item ,seq))
           ((and (= (length keys) 2) (eq (first keys) :test))
            `(%find-with-test ,item ,seq ,(second keys) t))
+          ((%bounded-find-expansion 'position item seq keys t))
           (t form))))
 
 (defun position-if (pred seq &key key from-end (start 0) end)
