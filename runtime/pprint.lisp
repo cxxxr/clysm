@@ -25,7 +25,9 @@
   (suffix (%make-string 128 #\Space))
   (queue-tail nil)
   (queue-head nil)
-  (pending-blocks nil))
+  (pending-blocks nil)
+  ;; true once a tab has been queued (else %EXPAND-TABS has nothing to do)
+  (tabs nil))
 
 (defstruct (%lblock (:constructor %make-lblock)
                     (:constructor %make-lblock-at (start-column section-column per-line-prefix-end
@@ -76,7 +78,8 @@
                 (%pps-blocks pps) (list (%make-lblock))
                 (%pps-queue-tail pps) nil
                 (%pps-queue-head pps) nil
-                (%pps-pending-blocks pps) nil)
+                (%pps-pending-blocks pps) nil
+                (%pps-tabs pps) nil)
           (setf (stream-column s) 0)
           s)
         (%make-pp-stream :pp (%make-pps :target target
@@ -416,6 +419,7 @@ are not newlines."
   nil)
 
 (defun %expand-tabs (pps through)
+  (unless (%pps-tabs pps) (return-from %expand-tabs nil))
   (let ((insertions nil)
         (additional 0)
         (column (%pps-start-column pps))
@@ -577,6 +581,7 @@ are not newlines."
     (error 'type-error :datum colinc :expected-type 'unsigned-byte))
   (let ((s (%output-stream stream)))
     (when (and *print-pretty* (%pretty-stream-p s))
+      (setf (%pps-tabs (stream-buffer s)) t)
       (%enqueue (stream-buffer s)
                 (%make-tab-op :tab
                               (member kind '(:section :section-relative))
