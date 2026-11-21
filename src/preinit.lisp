@@ -59,6 +59,8 @@
 (defvar *ph-owner* nil)                 ; (CLYSM_PREINIT_STATS) index -> what first kept it
 (defvar *ph-cur* nil)
 (defvar *ph-kept-mutables* nil)         ; name of a kept mutable global -> T
+(defvar *ph-class-data* nil)            ; index of an object of the class system's own data -> T
+(defvar *ph-data-symbols* nil)          ; index of a symbol kept as such data -> T
 
 (defun ph-ref-index (w)
   (and (not (logtest w 1)) (not (zerop w)) (1- (ash w -1))))
@@ -149,14 +151,28 @@
 (defun ph-node (i)
   (if (< i *ph-nbase*)
       (cons :global (aref *ph-base-names* i))
-      (cons :heap (format nil "~(~A~) ~D~@[ ~S~]" (aref *ph-kind* i) i
+      (cons :heap (format nil "~(~A~) ~D~@[ ~S~]~@[ ~A~]" (aref *ph-kind* i) i
                           (and (eq (aref *ph-kind* i) :closure)
-                               (aref *ph-table* (cdr (first (aref *ph-imm* i)))))))))
+                               (aref *ph-table* (cdr (first (aref *ph-imm* i)))))
+                          (and *shake-why* (ph-instance-label i))))))
+
+(defun ph-instance-label (i)
+  "For --shake-why: the name of the class of the instance I, and the
+instance's own name (its slot 0) when that is a symbol (a class, a generic
+function), or NIL."
+  (flet ((sym (w) (let ((j (and w (ph-ref-index w)))) (and j (ph-base-symbol j)))))
+    (let ((l (ph-layout i)))
+      (when (and l (eq (aref *ph-kind* l) :instance))
+        (let ((cname (sym (ph-slot l 0))) (own (and (eq (aref *ph-kind* i) :instance) (sym (ph-slot i 0)))))
+          (when cname
+            (format nil "<~A~@[ ~A~]>" cname own)))))))
 
 (defun ph-base-symbol (i)
   (let ((name (and (< i *ph-nbase*) (aref *ph-base-names* i))))
     (and (consp name) (eq (car name) :sym) (eq (aref *ph-kind* i) :symbol) (second name))))
 
+(defvar *ph-data-mark* nil)              ; true: a global marked is the class system's data
+(defvar *ph-hook-global* nil)           ; the index of the global PH-HOOK is called for
 (defun ph-mark (i mode)
   (let ((old (aref *ph-state* i)))
     ;; (with --shake-symbols, a symbol that only a package's tables refer
@@ -171,7 +187,10 @@
              ;; leaves out those nothing refers to)
              (let ((sym (ph-base-symbol i)))
                (cond ((null sym)
-                      (when (zerop old) (funcall *shake-mark* :global (aref *ph-base-names* i))))
+                      ;; (a global that the class system's data refers to:
+                      ;; its initializer is data too, *SHAKE-DATA-CONTEXT*)
+                      (when (and (zerop old) (not (eql i *ph-hook-global*)))
+                        (funcall *shake-mark* (if *ph-data-mark* :data-global :global) (aref *ph-base-names* i))))
                      ((= mode 2)
                       (when *shake-symbols*
                         (setf (gethash i *ph-kept-symbols*) t)
@@ -262,12 +281,13 @@ functions that read it, or (:CODE OWNER); NIL if it is kept."
               (let ((i (gethash (list :sym u) *ph-base-index*))) (and i (gethash i *ph-reached*)))))
         users))
 
-(defun ph-symbol-named (i)
-  "What the symbol I names: its value, function and properties."
+(defun ph-symbol-named (i &optional (function t))
+  "What the symbol I names: its value, function (unless FUNCTION is false)
+and properties."
   (let ((rec (aref *ph-rec* i)))
     (when rec
       (ph-mark-ref (cdr (second rec)) 2)
-      (ph-mark-ref (cdr (third rec)) 2)
+      (when function (ph-mark-ref (cdr (third rec)) 2))
       (let ((pairs (ph-plist-pairs i)) (last (cdr (fourth rec))))
         (dolist (p pairs)
           (destructuring-bind (ind val . c2) p
@@ -276,13 +296,34 @@ functions that read it, or (:CODE OWNER); NIL if it is kept."
               (setf last (cdr (second (aref *ph-rec* c2))))
               (ph-mark-ref ind 2)
               (let ((users (ph-property-users ind i)))
-                (if (and users (not (ph-user-reached-p users)))
-                    (progn (setf (gethash c2 *ph-weak-cells*) users)
-                           (dolist (u users) (push val (gethash u *ph-pending*))))
-                    (ph-mark-ref val 2))))))
+                (let ((*ph-data-mark* (member (ph-base-symbol (or (ph-ref-index ind) 0)) *preinit-data-properties*)))
+                  (when *ph-data-mark* (ph-data-tree val))
+                  (if (and users (not (ph-user-reached-p users)))
+                      (progn (setf (gethash c2 *ph-weak-cells*) users)
+                             (dolist (u users) (push val (gethash u *ph-pending*))))
+                      (ph-mark-ref val 2)))))))
         (ph-mark-ref last 2)))))
 
+(defun ph-mark-data-symbol (j)
+  "Keep the base symbol J, which an object of the class system's own data
+refers to (PH-CLASS-DATA-OBJECTS), with its value and properties but not
+its function, unless something else refers to it."
+  (unless (gethash j *ph-data-symbols*)
+    (setf (gethash j *ph-data-symbols*) t (gethash j *ph-kept-symbols*) t)
+    (when *shake-symbols* (funcall *shake-mark* :global (list :sym (ph-base-symbol j))))
+    (ph-mark j 1)
+    (unless (ph-symbol-reached-p j) (ph-symbol-named j nil))))
+
 (defun ph-walk (i mode)
+  (when (gethash i *ph-class-data*)
+    (dolist (it (append (aref *ph-imm* i)
+                        ;; (not the record of an object as its initializer made it)
+                        (unless (and (< i *ph-nbase*) (aref *ph-match* i)) (aref *ph-rec* i))))
+      (let ((j (and (eq (car it) :r) (ph-ref-index (cdr it)))))
+        (cond ((and j (ph-base-symbol j)) (ph-mark-data-symbol j))
+              ((eq (car it) :c) (ph-mark-code (cdr it)))
+              (j (let ((*ph-data-mark* t)) (ph-mark j mode))))))
+    (return-from ph-walk))
   (case (aref *ph-kind* i)
     (:symbol (ph-walk-symbol i mode))
     ;; (its tables of symbols; the symbols that shadow others stay with
@@ -385,11 +426,15 @@ makes, or :FAIL."
     (:global
      (let ((i (gethash name *ph-base-index*)))
        (when (and i (ph-base-symbol i)) (setf (gethash i *ph-kept-symbols*) t))
-       (when i (ph-mark i (if (ph-base-symbol i) 1 2))))
+       ;; (the global is marked already, by SHAKE-MODULE)
+       (when i (let ((*ph-hook-global* i)) (ph-mark i (if (ph-base-symbol i) 1 2)))))
      (let ((v (gethash name *ph-mutables*)))
        (when (and v (not (eq name :ih-key)))
          (when *ph-kept-mutables* (setf (gethash name *ph-kept-mutables*) t))
          (ph-mark-ref v 2))))
+    (:data-symbol
+     (let ((i (gethash (list :sym name) *ph-base-index*)))
+       (when i (ph-mark-data-symbol i))))
     (:code-symbol
      (let ((i (gethash (list :sym name) *ph-base-index*)))
        (when (and i (not (gethash i *ph-code-reached*)))
@@ -496,6 +541,76 @@ the names of the classes are the second value."
       (loop for name in mutables for it in mvec
             do (setf (gethash name *ph-mutables*) (cdr it))))))
 
+;;; The class system's own data: the slot vectors of the classes, the lists
+;;; of their superclasses, subclasses, precedence lists, slot definitions
+;;; and slot locations, the slot definitions with their names, initforms,
+;;; types, initargs, readers and writers, and the forms of default
+;;; initargs.  The symbols they refer to are names (of slots, of classes,
+;;; of accessors, in forms whose functions the class has compiled), not
+;;; functions to call: such a reference keeps a symbol, its value and
+;;; properties, but not its function (a file stream's slot PATHNAME, the
+;;; slot CLOSE of a directive of FORMAT).  What else a class refers to
+;;; (functions, the initial values of shared slots, prototypes) is marked
+;;; as any object is.
+
+(defparameter *preinit-data-properties* '(clysm-sys::%struct-description clysm-sys::%struct-slots)
+  "Properties of the names of structures whose values are the class
+system's data (the names, defaults and types of the slots).")
+
+(defun ph-data-tree (w)
+  "The conses of the tree W are the class system's data."
+  (let ((c (ph-ref-index w)))
+    (when (and c (eq (aref *ph-kind* c) :cons) (aref *ph-rec* c) (not (gethash c *ph-class-data*)))
+      (setf (gethash c *ph-class-data*) t)
+      (ph-data-tree (ph-rec-word c 0))
+      (ph-data-tree (ph-rec-word c 1)))))
+
+(defun ph-class-data-objects ()
+  (let ((data (make-hash-table)) (seen (make-hash-table))
+        (top (ph-class-of-name (gethash (list :sym t) *ph-base-index*))))
+    (labels ((add (i) (when i (setf (gethash i data) t)))
+             (spine (w) (mapc #'add (ph-list-conses w)))
+             (tree (w) (tree-at (ph-ref-index w)))
+             (tree-at (c)
+               (when (and c (eq (aref *ph-kind* c) :cons) (aref *ph-rec* c) (not (gethash c data)))
+                 (add c)
+                 (tree (ph-rec-word c 0))
+                 (tree (ph-rec-word c 1))))
+             (instance-p (k) (and k (eq (aref *ph-kind* k) :instance) (ph-slots-vector k)))
+             (slotd (k)
+               (when (instance-p k)
+                 (add (ph-slots-vector k))
+                 (dolist (s '(1 4 5)) (spine (ph-slot k s)))
+                 (tree (ph-slot k 2))
+                 (tree (ph-slot k 7))))
+             (initargs (w)
+               (dolist (c (ph-list-conses w))
+                 (add c)
+                 (let ((e (ph-ref-index (ph-rec-word c 0))))
+                   (when (and e (eq (aref *ph-kind* e) :cons))
+                     (let ((parts (ph-list-conses (ph-rec-word c 0))))
+                       (mapc #'add parts)
+                       (when (second parts) (tree (ph-rec-word (second parts) 0))))))))
+             (walk (k)
+               (when (and (instance-p k) (not (gethash k seen)))
+                 (setf (gethash k seen) t)
+                 (add (ph-slots-vector k))
+                 (dolist (s '(1 2 3 4 5)) (spine (ph-slot k s)))
+                 (dolist (c (ph-list-conses (ph-slot k 8)))
+                   (add c)
+                   (let ((e (ph-ref-index (ph-rec-word c 0))))
+                     (when (and e (eq (aref *ph-kind* e) :cons)) (add e))))
+                 ;; (a structure's slots are lists (name default type read-only))
+                 (dolist (s '(2 4))
+                   (dolist (d (ph-list-items (ph-slot k s)))
+                     (if (eq (aref *ph-kind* d) :cons) (tree-at d) (slotd d))))
+                 (dolist (s '(9 14)) (initargs (ph-slot k s)))
+                 (mapc #'walk (ph-list-items (ph-slot k 5))))))
+      (when top (walk top)))
+    (when (sb-ext:posix-getenv "CLYSM_PREINIT_STATS")
+      (format *error-output* "~&; preinit: ~D objects of the class system's data~%" (hash-table-count data)))
+    data))
+
 (defun preinit-shake (m parts after-shake)
   "Shake the module M (built by BUILD-MODULE with the start function of
 PARTS, (INIT PROLOGUE RUNTIME-TOPS PROGRAM-TOPS)) to start from the heap that
@@ -553,6 +668,8 @@ call AFTER-SHAKE with M, before the objects are written."
                  (*ph-kept-mutables* (make-hash-table :test 'equal))
                  (*ph-queue* nil)
                  (*ph-kept-symbols* (make-hash-table))
+                 (*ph-data-symbols* (make-hash-table))
+                 (*ph-class-data* (ph-class-data-objects))
                  (*ph-owner* (and (sb-ext:posix-getenv "CLYSM_PREINIT_STATS") (make-array n :initial-element nil)))
                  (*shake-heap-hook* #'ph-hook))
             (let ((inits (make-hash-table :test 'equal)))
@@ -739,11 +856,14 @@ image is loaded, from words written as LEB128 numbers."
                           (destructuring-bind (pkg value fn plist flags &rest name-hash) rec
                             (declare (ignore name-hash))
                             (item pkg)
-                            (if (ph-symbol-reached-p i)
-                                (progn (item value) (item fn) (item plist))
+                            (cond
+                              ((ph-symbol-reached-p i) (item value) (item fn) (item plist))
+                              ;; (a name in the class system's data)
+                              ((gethash i *ph-data-symbols*) (item value) (word 0) (item plist))
+                              (t
                                 (let ((v (cdr value)))
                                   (word (if (or (null (ph-ref-index v)) (eql (ph-ref-index v) i)) (ref v) 0))
-                                  (word 0) (word nil-word)))
+                                  (word 0) (word nil-word))))
                             (item flags)))
                          (:cons
                           (let ((users (gethash i *ph-weak-cells*)))

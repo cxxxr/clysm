@@ -365,6 +365,11 @@ of a global refers to it) (src/preinit.lisp: the objects of the heap that a
 global or a symbol refers to).  While it runs, *SHAKE-MARK* is a function
 of :FUNC, :GLOBAL or :SYMBOL and a name, that keeps that too.")
 (defvar *shake-mark* nil)
+(defvar *shake-data-context* nil
+  "True while SHAKE-MODULE walks the initializer of a global that only the
+class system's data refers to (src/preinit.lisp): the symbols it refers to
+are names, kept with their values and properties but not their functions
+(the hook's :DATA-SYMBOL), unless something else refers to them.")
 
 (defun shake-module (m &key (keep-globals '(:symtab :pkgtab)) drop-symbols verify)
   "Drop what a whole program cannot reach: the functions and globals not
@@ -404,17 +409,26 @@ true, the module is left as it was and that is returned."
                  (let ((*shake-walking* (cons :symbol sym)))
                    (dolist (name (gethash sym pending)) (mark-func name))
                    (when *shake-heap-hook* (funcall *shake-heap-hook* :symbol sym)))))
-             (mark-global (name)
+             (mark-global (name &optional data)
                (when (and (consp name) (eq (car name) :sym))
-                 (mark-symbol (second name))
-                 (when *shake-heap-hook* (funcall *shake-heap-hook* :code-symbol (second name))))
+                 (if (and data *shake-heap-hook*)
+                     (funcall *shake-heap-hook* :data-symbol (second name))
+                     (progn
+                       (mark-symbol (second name))
+                       (when *shake-heap-hook* (funcall *shake-heap-hook* :code-symbol (second name))))))
                (when *shake-why* (shake-edge (cons :global name)))
-               (unless (gethash name globals)
-                 (setf (gethash name globals) t)
-                 (push name gqueue)
-                 (when *shake-heap-hook*
-                   (let ((*shake-walking* (cons :global name)))
-                     (funcall *shake-heap-hook* :global name)))))
+               (let ((old (gethash name globals)))
+                 (cond ((null old)
+                        ;; (:DATA: its initializer is walked as data, until
+                        ;; something else refers to it)
+                        (setf (gethash name globals) (if data :data t))
+                        (push name gqueue)
+                        (when *shake-heap-hook*
+                          (let ((*shake-walking* (cons :global name)))
+                            (funcall *shake-heap-hook* :global name))))
+                       ((and (eq old :data) (not data))
+                        (setf (gethash name globals) t)
+                        (push name gqueue)))))
              (walk (x)
                (when (consp x)
                  (case (car x)
@@ -438,7 +452,7 @@ true, the module is left as it was and that is returned."
                             (when *shake-heap-hook*
                               (let ((*shake-walking* (cons :global (second x))))
                                 (funcall *shake-heap-hook* :global (second x)))))
-                          (mark-global (second x)))))
+                          (mark-global (second x) *shake-data-context*))))
                    (:ref.cast (when (and (consp (cdr x)) (not (eq (second x) :null)))
                                 (let ((fn (cdr (assoc (second x) rewrites))))
                                   (when fn (mark-func fn))))))
@@ -455,6 +469,7 @@ true, the module is left as it was and that is returned."
                            (ecase kind
                              (:func (mark-func name))
                              (:global (mark-global name))
+                             (:data-global (mark-global name t))
                              (:symbol (mark-symbol name)))))
       (loop for (nil kind ref) in (wasm-module-exports m)
             do (case kind (:func (mark-func ref)) (:global (mark-global ref))))
@@ -475,7 +490,8 @@ true, the module is left as it was and that is returned."
                               (walk (wasm-func-body f))))
                      (t (let* ((name (pop gqueue))
                                (g (find name (wasm-module-globals m) :key #'first :test #'equal))
-                               (*shake-walking* (cons :global name)))
+                               (*shake-walking* (cons :global name))
+                               (*shake-data-context* (eq (gethash name globals) :data)))
                           (when g (walk (fourth g)))))))
       (when verify
         (let ((r (funcall verify))) (when r (return-from shake-module r))))
