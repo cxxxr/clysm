@@ -541,18 +541,183 @@ expansions on the way: a type defined in terms of itself, such as
                                   (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list head args)))))
                     (if exp (%typep-expansion x (car exp) (+ depth 1)) default))))))))))
 
+;;; Type tests by the kind of the object.  %TYPE-CODE gives one of these
+;;; codes for any object (src/prims.lisp, the helper :TYPE-CODE: a few type
+;;; tests of the Wasm object, the common kinds first):
+;;;   0 fixnum  1 character  2 cons  3 NIL  4 other symbol  5 instance
+;;;   (structures, standard objects, hash tables...)  6 simple string
+;;;   7 simple vector  8 double  9 function  10 bignum  11 ratio  12 single
+;;;   13 complex  14 other specialized vector  15 array header  16 package
+;;;   17 anything else
+;;; A type is then two masks of codes: the kinds all of whose objects are of
+;;; it, and those some of whose objects are (whose objects the full test,
+;;; %TYPEP-EXPANSION, decides).  A TYPECASE computes the code once and tests
+;;; each clause's masks (one shift and AND), with the full test only for the
+;;; kinds that need it; TYPEP of a type of several kinds (NUMBER, SEQUENCE,
+;;; (OR STRING SYMBOL)...) does the same.  (%KIND-IN X CODE MASK) tells the
+;;; compiler X's type where it is true.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter *type-code-all* (- (ash 1 18) 1))
+
+  (defun %type-code-bits (&rest codes)
+    (let ((m 0)) (dolist (c codes m) (setq m (logior m (ash 1 c))))))
+
+  (defun %literal-type-code (x)
+    (cond ((and (integerp x) (<= -536870912 x 536870911)) 0)
+          ((integerp x) 10)
+          ((characterp x) 1)
+          ((null x) 3)
+          ((symbolp x) 4)
+          (t nil)))
+
+  (defun %type-code-masks (type &optional (depth 0))
+    "The masks (values SURE MAYBE) of the type specifier TYPE: the kinds all
+of whose objects are of it, and the other kinds some of whose objects may be."
+    (let ((all *type-code-all*))
+      (flet ((bits (&rest c) (apply #'%type-code-bits c)))
+        (cond
+          ((> depth 8) (values 0 all))
+          ((eq type t) (values all 0))
+          ((null type) (values 0 0))
+          ((symbolp type)
+           (case type
+             (fixnum (values (bits 0) 0))
+             (bignum (values (bits 10) 0))
+             ((integer signed-byte) (values (bits 0 10) 0))
+             (unsigned-byte (values 0 (bits 0 10)))
+             (bit (values 0 (bits 0)))
+             (ratio (values (bits 11) 0))
+             (rational (values (bits 0 10 11) 0))
+             ((single-float short-float) (values (bits 12) 0))
+             ((double-float long-float) (values (bits 8) 0))
+             (float (values (bits 8 12) 0))
+             (real (values (bits 0 10 11 8 12) 0))
+             (complex (values (bits 13) 0))
+             (number (values (bits 0 10 11 8 12 13) 0))
+             ((character base-char) (values (bits 1) 0))
+             ((standard-char extended-char) (values 0 (bits 1)))
+             (cons (values (bits 2) 0))
+             (null (values (bits 3) 0))
+             (list (values (bits 2 3) 0))
+             (symbol (values (bits 3 4) 0))
+             (keyword (values 0 (bits 4)))
+             (boolean (values (bits 3) (bits 4)))
+             (atom (values (logandc2 all (bits 2)) 0))
+             ((string simple-string) (values (bits 6) (bits 15)))
+             ((base-string simple-base-string) (values 0 (bits 6 15)))
+             (simple-vector (values (bits 7) 0))
+             (vector (values (bits 6 7 14) (bits 15)))
+             (simple-array (values (bits 6 7 14) (bits 15)))
+             (array (values (bits 6 7 14 15) 0))
+             ((bit-vector) (values 0 (bits 14 15)))
+             ((simple-bit-vector) (values 0 (bits 14)))
+             (sequence (values (bits 2 3 6 7 14) (bits 15)))
+             ((function compiled-function) (values (bits 9) 0))
+             (package (values (bits 16) 0))
+             ((hash-table structure-object) (values 0 (bits 5)))
+             (standard-object (values 0 (bits 5 9)))
+             (otherwise
+              (cond ((get type '%deftype)
+                     (let ((exp (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list type nil))))
+                       (if exp (%type-code-masks (car exp) (+ depth 1)) (values 0 all))))
+                    ((let ((d (get type '%struct-description))) (and (consp d) (null (car d))))
+                     (values 0 (bits 5)))
+                    (t (values 0 all))))))
+          ((not (and (consp type) (symbolp (car type)) (listp (cdr type)))) (values 0 all))
+          (t
+           (let ((head (car type)) (args (cdr type)))
+             (case head
+               (or (let ((sure 0) (maybe 0))
+                     (dolist (ty args)
+                       (multiple-value-bind (s m) (%type-code-masks ty (+ depth 1))
+                         (setq sure (logior sure s) maybe (logior maybe m))))
+                     (values sure (logandc2 maybe sure))))
+               (and (let ((sure all) (any all))
+                      (dolist (ty args)
+                        (multiple-value-bind (s m) (%type-code-masks ty (+ depth 1))
+                          (setq sure (logand sure s) any (logand any (logior s m)))))
+                      (values sure (logandc2 any sure))))
+               (not (if (and args (null (cdr args)))
+                        (multiple-value-bind (s m) (%type-code-masks (car args) (+ depth 1))
+                          (values (logandc2 all (logior s m)) m))
+                        (values 0 all)))
+               ((member eql)
+                (let ((m 0))
+                  (dolist (x (if (eq head 'eql) (list (car args)) args) (values 0 m))
+                    (let ((c (%literal-type-code x)))
+                      (if c (setq m (logior m (ash 1 c))) (return (values 0 all)))))))
+               ((integer mod unsigned-byte signed-byte)
+                (let ((lo (car args)) (hi (cadr args)))
+                  (if (and (eq head 'integer) (integerp lo) (integerp hi) (<= -536870912 lo) (<= hi 536870911))
+                      (values 0 (bits 0))
+                      (if (and (eq head 'mod) (integerp lo) (<= lo 536870912))
+                          (values 0 (bits 0))
+                          (values 0 (bits 0 10))))))
+               (rational (values 0 (bits 0 10 11)))
+               (real (values 0 (bits 0 10 11 8 12)))
+               (float (values 0 (bits 8 12)))
+               ((single-float short-float) (values 0 (bits 12)))
+               ((double-float long-float) (values 0 (bits 8)))
+               (complex (values 0 (bits 13)))
+               (cons (if (every (lambda (a) (member a '(* t))) args) (values (bits 2) 0) (values 0 (bits 2))))
+               ((string simple-string base-string simple-base-string) (values 0 (bits 6 15)))
+               (simple-vector (values 0 (bits 7)))
+               ((vector simple-array array) (values 0 (bits 6 7 14 15)))
+               ((bit-vector simple-bit-vector) (values 0 (bits 14 15)))
+               (otherwise
+                (let ((exp (and (get head '%deftype) (fboundp '%deftype-expansion-list)
+                                (funcall '%deftype-expansion-list head args))))
+                  (if exp (%type-code-masks (car exp) (+ depth 1)) (values 0 all)))))))))))
+
+  (defun %logcount18 (m) (let ((n 0)) (dotimes (i 18 n) (when (logbitp i m) (setq n (+ n 1))))))
+
+  (defun %typep-code-test (x c type)
+    "A form testing the variable X, whose %TYPE-CODE is the variable C, for
+the constant type TYPE; :NONE when the masks do not help (an unknown type)."
+    (multiple-value-bind (sure maybe) (%type-code-masks type)
+      (let ((all *type-code-all*))
+        (cond ((= sure all) t)
+              ((= (logior sure maybe) 0) nil)
+              ((= maybe 0) `(%kind-in ,x ,c ,sure))
+              ((= (logior sure maybe) all) :none)
+              (t (let ((full (%typep-expansion x type)))
+                   (if (= sure 0)
+                       `(and (%kind-in ,x ,c ,maybe) ,full)
+                       `(or (%kind-in ,x ,c ,sure) (and (%kind-in ,x ,c ,maybe) ,full)))))))))
+
+  (defun %typep-by-code-p (type)
+    "Whether TYPEP of TYPE is tested by the kind of the object: a type of
+several kinds whose predicates would test them one after the other, with
+specialized vectors or complex numbers among them (NUMBER, REAL, SEQUENCE,
+VECTOR, (AND NUMBER (NOT INTEGER))...: the kind tells them at once).  Not
+(OR STRING SYMBOL), whose two tests cost less, nor ATOM, the complement of
+one."
+    (multiple-value-bind (sure maybe) (%type-code-masks type)
+      (let ((any (logior sure maybe)))
+        (and (/= any *type-code-all*) (/= sure *type-code-all*)
+             (<= 3 (%logcount18 any) 12)
+             (or (logbitp 13 any) (logbitp 14 any) (>= (%logcount18 any) 5)))))))
+
 (define-compiler-macro typep (&whole form x type &optional env)
   (if (and (null env) (consp type) (eq (car type) 'quote) (consp (cdr type)) (null (cddr type)))
       (let ((ty (cadr type)))
+        (if (%typep-by-code-p ty)
+            (let ((g (if (symbolp x) x (gensym))) (c (gensym "CODE")))
+              (let ((e `(let ((,c (%type-code ,g))) ,(%typep-code-test g c ty))))
+                (if (symbolp x) e `(let ((,g ,x)) ,e))))
         (if (symbolp x)
             (let ((e (%typep-expansion x ty)))
               (if (and (consp e) (eq (car e) '%typep)) form e))
             (let ((g (gensym)))
               (let ((e (%typep-expansion g ty)))
-                (if (and (consp e) (eq (car e) '%typep)) form `(let ((,g ,x)) ,e))))))
+                (if (and (consp e) (eq (car e) '%typep)) form `(let ((,g ,x)) ,e)))))))
       form))
 
 (defun %typep (x type) (typep x type))
+
+;; (the primitives as functions, for FUNCALL and the evaluator)
+(defun %type-code (x) (%type-code x))
+(defun %kind-in (x c mask) (declare (ignore x)) (logbitp c mask))
 
 ;;; The type cell of a symbol: (class-or-nil . name).  %SET-FIND-CLASS keeps
 ;;; the class in it up to date, so a compiled test of a class or structure

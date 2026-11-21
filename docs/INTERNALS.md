@@ -3045,6 +3045,33 @@ What makes the code fast:
   (`known-test-result` decides `%simple-string-p` and `simple-vector-p`).
   An FNV hash of a string of unknown type: 66 -> 27 ms (SBCL 47),
   `p-hash-fn` 67 -> 43.
+* **Type tests by the kind of the object** (2026-11-21). `typecase`,
+  `etypecase` and `typep` of a type of several kinds compute the kind of
+  the object once (`sys::%type-code`: inline, an `i31` told apart as a
+  fixnum or a character, then `ref.test` of the abstract `array` heap type
+  and of the common structures; the helper `$type-code` for the rare
+  kinds) and test each clause by a mask of kinds (`sys::%kind-in`: a shift
+  and an AND), with the clause's full test only for the kinds where it is
+  not decided (`%type-code-masks` in `runtime/types.lisp`: `number` is
+  sure of six kinds, `string` sure of simple strings and in doubt for
+  array headers, a structure name in doubt for instances, a class name
+  not known: the full test). The type inference takes `%kind-in` as a type
+  test, so the clause taken knows the object's type as before (an
+  `(integer 0 100)` clause's `fixnump` folds after the kind). `typep` uses
+  it for types of 3 to 12 kinds among which specialized vectors or
+  complex numbers, or of 5 or more (`sequence`, `number`, `real`,
+  `vector`, `(and number (not integer))`), not `(or string symbol)`, whose
+  two tests cost less; a `typecase` when it has four clauses or more, or a
+  clause of such a type (two or three clauses of one test each, `cons`,
+  `string`, a structure, cost less than the kind). Against a642c95 on one
+  slot: `p-typep-misc` 2.00 → 1.44 times SBCL (190 → 138 ms), `p-typecase`
+  1.40 → 1.29, `v-typecase-deftype` 1.76 → 1.71 (its class names are
+  tested by their type cells as before); `bench/programs.lisp` 0.93 →
+  0.89, the other files and Lem within the noise. A cache of runtime
+  `typep`'s test per symbol (on the plist) was tried and is not kept:
+  `v-typep-runtime` 100 → 106-111 ms (a plist lookup and a closure cost
+  more than `find-class`), and an EQ table of compound specifiers costs
+  the host's identity hash of a list.
 * **Arrays of unknown type** (a parameter without declarations) are tried
   inline for the usual kind before the helper that handles every array
   (`speculative-locate-code` in `src/typed.lisp`): `aref`, `svref` and
