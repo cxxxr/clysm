@@ -873,7 +873,14 @@ MAPL: the value is the first list)."
       (funcall *foreign-env-macro-function-hook* s env)
       (let ((local (and env (%env-macro env s))))
         (if local local (get s '%macro-function)))))
+(defvar *env-epoch* 0
+  "Counts the changes of what reading or compiling a form depends on: macros,
+proclamations, readtables, packages, LOADs (%LOAD-BATCH reads and compiles
+forms of a file before the forms before them have run, and reads them again
+when one of those changed this).")
+(defun %note-env-change () (setq *env-epoch* (%fx+ *env-epoch* 1)) nil)
 (defun %set-macro-function (s f)
+  (%note-env-change)
   (%put s '%macro-function f)
   f)
 (defun %note-compiler-macro (name lambda-list body)
@@ -906,12 +913,17 @@ MAPL: the value is the first list)."
 reads (src/frontend.lisp); COMPILE-FILE binds it around a file.")
 
 (defun %proclaim-list (specs)
-  (dolist (s specs) (proclaim s)))
+  ;; (DECLAIM: the compiler has seen it when it compiled the forms after it)
+  (dolist (s specs) (%proclaim-1 s)))
 
 (defun %proper-list-p (x)
   (loop (cond ((null x) (return t)) ((atom x) (return nil)) (t (setq x (cdr x))))))
 
 (defun proclaim (spec)
+  (%note-env-change)
+  (%proclaim-1 spec))
+
+(defun %proclaim-1 (spec)
   (unless (and (consp spec) (%proper-list-p spec)
                (or (not (member (car spec) '(type ftype))) (consp (cdr spec))))
     (error 'simple-type-error :datum spec :expected-type '(cons symbol list)
@@ -974,5 +986,6 @@ abbreviated form only for the type names the compiler knows in declarations)."
         (t t)))
 
 (defun %define-symbol-macro (name expansion)
+  (%note-env-change)
   (%put name '%symbol-macro (list expansion))
   name)

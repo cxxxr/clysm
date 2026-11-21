@@ -9,6 +9,9 @@
 
 (defvar *read-base* 10)
 (defvar *read-eval* t)
+(defvar *batch-read-ahead* nil
+  "True while %LOAD-BATCH reads a form before the forms before it have run:
+#. then throws to %BATCH-READ-AHEAD instead of evaluating its form.")
 (defvar *read-suppress* nil)
 
 (defstruct (readtable (:constructor %make-readtable) (:predicate readtablep) (:copier nil)
@@ -34,6 +37,7 @@
 
 (defun readtable-case (rt) (%rt-case (%check-readtable rt)))
 (defun (setf readtable-case) (mode rt)
+  (%note-env-change)
   (%check-readtable rt)
   (unless (member mode '(:upcase :downcase :preserve :invert))
     (%type-error mode '(member :upcase :downcase :preserve :invert)))
@@ -182,6 +186,7 @@ readtable."
     to))
 
 (defun set-macro-character (char function &optional non-terminating-p (rt *readtable*))
+  (%note-env-change)
   (unless (characterp char) (%type-error char 'character))
   (let ((rt (%check-readtable rt)))
     (%set-syntax char rt (if non-terminating-p :non-terminating :terminating))
@@ -198,6 +203,7 @@ readtable."
         (values nil nil))))
 
 (defun make-dispatch-macro-character (char &optional non-terminating-p (rt *readtable*))
+  (%note-env-change)
   (unless (characterp char) (%type-error char 'character))
   (let ((rt (%check-readtable rt)))
     (set-macro-character char #'%read-dispatch-macro non-terminating-p rt)
@@ -210,6 +216,7 @@ readtable."
                            :format-arguments (list disp))))
 
 (defun set-dispatch-macro-character (disp sub function &optional (rt *readtable*))
+  (%note-env-change)
   (let ((table (%dispatch-table disp (%check-readtable rt))))
     (when (digit-char-p sub)
       (error 'simple-error :format-control "~S: a digit cannot be a dispatch sub-character"
@@ -222,6 +229,7 @@ readtable."
     (if (digit-char-p sub) nil (values (gethash (char-upcase sub) table)))))
 
 (defun set-syntax-from-char (to-char from-char &optional (to-rt *readtable*) (from-rt nil))
+  (%note-env-change)
   (let ((to-rt (%check-readtable to-rt)) (from-rt (%rt-designator from-rt)))
     (%set-syntax to-char to-rt (%syntax from-char from-rt))
     (let ((fn (gethash from-char (%rt-macros from-rt)))
@@ -1148,6 +1156,8 @@ token is empty when the next character ends a token."
     (set-dispatch-macro-character #\# #\. (lambda (s c n) (declare (ignore c n))
                                             (let ((form (%read-required s)))
                                               (cond (*read-suppress* nil)
+                                                    ;; (read ahead by %LOAD-BATCH: read again later)
+                                                    (*batch-read-ahead* (throw '%batch-read-ahead nil))
                                                     (*read-eval* (eval form))
                                                     (t (%reader-error s "#. while *READ-EVAL* is NIL"))))))
     (set-dispatch-macro-character #\# #\| #'%sharp-block-comment)

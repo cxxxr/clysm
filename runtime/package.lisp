@@ -182,6 +182,7 @@ status, or NIL and :UNKNOWN when the tables cannot tell."
 (defun %string-designator-list (x) (mapcar #'string (if (listp x) x (list x))))
 
 (defun make-package (name &key nicknames (use nil))
+  (%note-env-change)
   (let ((name (string name)) (nicknames (%string-designator-list nicknames)))
     (let ((existing (find-package name)))
       (when existing
@@ -268,6 +269,7 @@ which leaves out the symbols that its code does not refer to"
             (values s nil))))))
 
 (defun unintern (symbol &optional (package *package*))
+  (%note-env-change)
   (let* ((p (%find-package-or-die package)) (name (symbol-name symbol)))
     (multiple-value-bind (s status) (%present name p)
       (if (and status (eq s symbol))
@@ -294,6 +296,7 @@ which leaves out the symbols that its code does not refer to"
 (defun %designator-list (x) (if (listp x) x (list x)))
 
 (defun export (symbols &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (s (%designator-list symbols) t)
       (let ((name (symbol-name s)))
@@ -327,6 +330,7 @@ which leaves out the symbols that its code does not refer to"
                 (setf (gethash name (%package-externals p)) s)))))))))
 
 (defun unexport (symbols &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (s (%designator-list symbols) t)
       (let ((name (symbol-name s)))
@@ -338,6 +342,7 @@ which leaves out the symbols that its code does not refer to"
             (setf (gethash name (%package-internals p)) s)))))))
 
 (defun import (symbols &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (s (%designator-list symbols) t)
       (let ((name (symbol-name s)))
@@ -352,6 +357,7 @@ which leaves out the symbols that its code does not refer to"
                    (unless (%symbol-package s) (%set-symbol-package s p)))))))))
 
 (defun shadow (names &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (n (%designator-list names) t)
       (let ((name (string n)))
@@ -363,6 +369,7 @@ which leaves out the symbols that its code does not refer to"
           (pushnew s (%pkg p 6)))))))
 
 (defun shadowing-import (symbols &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (s (%designator-list symbols) t)
       (let ((name (symbol-name s)))
@@ -375,6 +382,7 @@ which leaves out the symbols that its code does not refer to"
         (%pkg-set p 6 (cons s (remove name (%pkg p 6) :key #'symbol-name :test #'string=)))))))
 
 (defun use-package (packages &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (when (eq p *keyword-package*) (%package-error p "The KEYWORD package cannot use other packages."))
     (dolist (u (%designator-list packages) t)
@@ -397,6 +405,7 @@ which leaves out the symbols that its code does not refer to"
           (%pkg-set up 3 (cons p (%pkg up 3))))))))
 
 (defun unuse-package (packages &optional (package *package*))
+  (%note-env-change)
   (let ((p (%find-package-or-die package)))
     (dolist (u (%designator-list packages) t)
       (let ((up (%find-package-or-die u)))
@@ -404,6 +413,7 @@ which leaves out the symbols that its code does not refer to"
         (%pkg-set up 3 (remove p (%pkg up 3)))))))
 
 (defun delete-package (package)
+  (%note-env-change)
   (let ((p (find-package package)))
     (cond
       ((null p)
@@ -430,6 +440,7 @@ which leaves out the symbols that its code does not refer to"
        t))))
 
 (defun rename-package (package new-name &optional new-nicknames)
+  (%note-env-change)
   (let* ((p (%find-package-or-die package))
          (new-name (if (%packagep new-name) (package-name new-name) (string new-name)))
          (new-nicknames (%string-designator-list new-nicknames)))
