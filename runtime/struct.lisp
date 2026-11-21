@@ -90,7 +90,33 @@
                   (or (eq spec self)
                       (let ((d (get spec '%struct-description))) (and (consp d) (null (car d))))))
              spec)
+            ((%slot-integer-type spec) :integer)
             (t nil))))
+
+  ;; An integer type as (INTEGER lo hi) (* for no bound), or NIL.  A FIXNUM
+  ;; is SBCL's (62 bits; Clysm's are 30 bits, and code written for SBCL
+  ;; stores larger integers in slots declared FIXNUM).
+  (defun %slot-integer-type (spec)
+    (flet ((bound (b inc)
+             (cond ((or (null b) (eq b '*)) '*)
+                   ((integerp b) b)
+                   ((and (consp b) (integerp (car b)) (null (cdr b))) (+ (car b) inc))
+                   (t :bad))))
+      (let* ((head (if (consp spec) (car spec) spec))
+             (args (if (consp spec) (cdr spec) nil))
+             (n (car args))
+             (r (case head
+                  (fixnum (and (null args) (list (- (expt 2 61)) (- (expt 2 61) 1))))
+                  (bit (and (null args) (list 0 1)))
+                  (integer (and (listp args) (<= (length args) 2)
+                                (list (bound (car args) 1) (bound (cadr args) -1))))
+                  (unsigned-byte (cond ((or (null args) (eq n '*)) (list 0 '*))
+                                       ((and (integerp n) (plusp n) (null (cdr args))) (list 0 (- (expt 2 n) 1)))))
+                  (signed-byte (cond ((or (null args) (eq n '*)) (list '* '*))
+                                     ((and (integerp n) (plusp n) (null (cdr args)))
+                                      (list (- (expt 2 (- n 1))) (- (expt 2 (- n 1)) 1)))))
+                  (mod (and (integerp n) (plusp n) (null (cdr args)) (list 0 (- n 1)))))))
+        (and r (not (member :bad r)) (cons 'integer r)))))
 
   ;; A slot entry (name initform type read-only index kind ctype): KIND is
   ;; what %SLOT-CHECK-KIND gives for the type CTYPE, which is checked where
@@ -98,13 +124,26 @@
   ;; An included slot whose type the structure restates keeps the included
   ;; one's check unless its own is one (the included structure's accessors,
   ;; which check the included type, write it in its instances too).
+  (defun %slot-check-ctype (kind type)
+    (if (eq kind :integer) (%slot-integer-type (%slot-type-expansion type)) type))
   (defun %slot-with-check (s self)
     (let ((kind (%slot-check-kind (caddr s) self)))
-      (append (subseq s 0 5) (if kind (list kind (caddr s)) (list nil nil)))))
+      (append (subseq s 0 5) (if kind (list kind (%slot-check-ctype kind (caddr s))) (list nil nil)))))
   (defun %included-slot-with-check (s type)
-    (let ((kind (%slot-check-kind type nil)))
-      (cond (kind (list kind type))
-            (t (list (nth 5 s) (nth 6 s))))))
+    (declare (ignore type))
+    ;; (the reads trust what the included structure's accessors check: they
+    ;; write the slot of this structure's instances too; the constructors
+    ;; check the type restated as well, %SLOT-CTOR-CHECK-FORM)
+    (list (nth 5 s) (nth 6 s)))
+
+  ;; The form of a constructor storing VAL into the slot S: checked as the
+  ;; SETF of its accessor checks it, and of its own type when an included
+  ;; slot's type is restated.
+  (defun %slot-ctor-check-form (s val self self-fields)
+    (let ((own (%slot-with-check s self)))
+      (if (and (nth 5 own) (not (equal (nth 6 own) (nth 6 s))))
+          (%slot-store-check-form own (%slot-store-check-form s val self self-fields) self self-fields)
+          (%slot-store-check-form s val self self-fields))))
 
   ;; A slot declared a simple array or a structure class (after the types
   ;; defined by DEFTYPE): its value is checked where it is written, as SBCL
@@ -118,6 +157,8 @@
       (cond ((or (null kind) (eql *proclaimed-safety* 0)) val)
             ((eq kind :array)
              `(let ((,v ,val)) (if (typep ,v ',(%slot-array-test type)) ,v (%type-error ,v ',type))))
+            ((eq kind :integer)
+             `(let ((,v ,val)) (if (typep ,v ',type) ,v (%type-error ,v ',(caddr s)))))
             (t
              ;; a structure class: the test of its predicate
              (let ((fields (if (eq kind self) self-fields (nth 4 (get kind '%struct-description)))))
@@ -143,7 +184,7 @@
                    (dolist (s (cadr d) nil) (when (eq (car s) name) (return s)))))
            (kind (and s (nth 5 s))))
       (cond ((null kind) value)
-            ((typep value (if (eq kind :array) (%slot-array-test (nth 6 s)) kind)) value)
+            ((typep value (case kind (:array (%slot-array-test (nth 6 s))) (:integer (nth 6 s)) (t kind))) value)
             (t (%type-error value (nth 6 s))))))
 
   (defun %struct-error (control &rest args)
@@ -289,17 +330,23 @@
                 (let ((cname (car c)))
                   (if (cdr c)
                       (let ((ll (%boa-lambda-list (cadr c) all-slots))
-                            (vars (%ll-bound-vars (cadr c))))
+                            (vars (%ll-bound-vars (cadr c)))
+                            ;; (&AUX variables without a value: the slot is
+                            ;; not initialized, 0 for an integer slot)
+                            (bare (let ((after (member '&aux (cadr c))))
+                                    (remove-if-not #'symbolp (cdr after)))))
                         `(defun ,cname ,ll
                            ,(make-form (mapcar (lambda (s)
-                                                 (%slot-store-check-form
-                                                  s (or (%boa-var-named (car s) vars) (cadr s)) name fields))
+                                                 (let ((var (%boa-var-named (car s) vars)))
+                                                   (if (and var (member var bare) (eq (nth 5 s) :integer))
+                                                       0
+                                                       (%slot-ctor-check-form s (or var (cadr s)) name fields))))
                                                all-slots))))
                       `(defun ,cname (&key ,@(mapcar (lambda (s k)
                                                        (list (list (intern (symbol-name (car s)) "KEYWORD") k)
                                                              (cadr s)))
                                                      all-slots keyvars))
-                         ,(make-form (mapcar (lambda (s k) (%slot-store-check-form s k name fields))
+                         ,(make-form (mapcar (lambda (s k) (%slot-ctor-check-form s k name fields))
                                              all-slots keyvars))))))
               constructors)
            ;; a structure of typed slots: the functions by which generic code

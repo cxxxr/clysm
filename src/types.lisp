@@ -1311,8 +1311,7 @@ else NIL; second value, the slot's entry (runtime/struct.lisp)."
 (defun struct-slot-array-kind (node)
   "For a read of a slot declared a simple array of one kind of storage (a
 SIMPLE-VECTOR, a SIMPLE-STRING, a (SIMPLE-ARRAY (SIGNED-BYTE 32) (*))): the
-storage kind and the slot's type, else NIL.  Not integer types: a FIXNUM
-of SBCL's may be a bignum here."
+storage kind and the slot's type, else NIL."
   (let ((type (struct-slot-type-spec node)))
     (when (and type (not (and (symbolp type) (struct-class-type-p type))))
       (let* ((ty (ignore-errors (declared-ty type)))
@@ -1329,8 +1328,16 @@ TYPE-ERROR there, it does not trap where it is used), else NIL."
   (multiple-value-bind (type slot) (struct-slot-type-spec node)
     (cond ((null type) nil)
           ((let ((checked (nth 5 slot)))
-             (and checked (symbolp checked) (not (eq checked :array)) (struct-class-type-p checked)))
+             (and checked (symbolp checked) (not (member checked '(:array :integer))) (struct-class-type-p checked)))
            (mkty +k-other+ nil nil (nth 5 slot)))
+          ;; an integer type within the fixnums (checked where written, as
+          ;; the classes are): a raw i32 (a wider type gains nothing:
+          ;; arithmetic in i64 and its result boxed by a call cost more
+          ;; than the generic way of small integers, d-particles 1.2 times
+          ;; as long with its FIXNUM slot of SBCL's 62 bits)
+          ((and (eq (nth 5 slot) :integer) (consp (nth 6 slot)))
+           (let ((ty (ignore-errors (declared-ty (nth 6 slot)))))
+             (and ty (ty-fixnum-p ty) ty)))
           ((and (symbolp type) (struct-class-type-p type)) nil)
           (t (multiple-value-bind (kind spec ty) (struct-slot-array-kind node)
                (declare (ignore spec))
