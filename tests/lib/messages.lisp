@@ -29,3 +29,12 @@
 (js:export "f10" #'f10) (js:export "f11" (lambda () (f11 (vector 1 2)))) (js:export "f12" #'f12) (js:export "f13" #'f13)
 (js:export "f14" #'f14) (js:export "f15" #'f15) (js:export "f16" #'f16) (js:export "f17" #'f17)
 (js:export "f18" #'f18)
+;; (the default methods of SLOT-UNBOUND and NO-APPLICABLE-METHOD, called
+;; without the dispatch in a module that adds no method to them)
+(defclass box () ((content)))
+(defgeneric open-box (b))
+(defmethod open-box ((b string)) b)
+(defun f19 () (handler-case (slot-value (make-instance 'box) 'content)
+                (unbound-slot (c) (error "unbound ~S" (cell-error-name c)))))
+(defun f20 () (open-box 42))
+(js:export "f19" #'f19) (js:export "f20" #'f20)

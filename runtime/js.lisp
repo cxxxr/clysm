@@ -507,6 +507,7 @@ for every instance, so it is meant for development."
                   (%js-push args (%js-wrap-lisp class))
                   (%js-push args (%js-wrap-lisp instance))
                   (%js-apply add tracker args)))
+              *live-instances-updater* #'%update-obsolete-instances
               *live-instances-hook*
               (lambda (class)
                 (let* ((array (js:call tracker "live" class))

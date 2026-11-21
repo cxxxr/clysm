@@ -16,3 +16,5 @@
 16 "SIMPLE-TYPE-ERROR" "bad \"x\""
 17 "SIMPLE-ERROR" "big 1180591620717411303424 ratio 2/3 neg -12"
 18 "SIMPLE-ERROR" "chars #\\Newline #\\Tab #\\Nul #\\Rubout Backspace #\\ "
+19 "SIMPLE-ERROR" "unbound CONTENT"
+20 "SIMPLE-ERROR" "There is no applicable method for the generic function #<STANDARD-GENERIC-FUNCTION OPEN-BOX> when called with arguments (42)."

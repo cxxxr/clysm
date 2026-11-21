@@ -489,13 +489,21 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (return))))
     (%set-gf-slot info +gf-initial-methods+
                   (intersection (%gf-slot info +gf-initial-methods+) (%gf-slot info +gf-methods+)))
-    ;; (a generic function left without methods has a function of the
-    ;; dispatch that one copy serves, instead of its own: should a method be
-    ;; defined, it is called through that)
-    (when (and (null (%gf-slot info +gf-methods+)) (null (%gf-slot info +gf-kmaker+))
+    ;; (a generic function left without methods, or with one primary method
+    ;; that specializes nothing, has a function without the dispatch, instead
+    ;; of its own: should a method be defined, the call is dispatched through
+    ;; %GF-INVOKE, %MAKE-EMPTY-GF-FUNCTION)
+    (when (and (let ((ms (%gf-slot info +gf-methods+)))
+                 (or (null ms)
+                     (and (null (cdr ms)) (null (%method-qualifiers (car ms)))
+                          (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
+                          (every (lambda (s) (eq s (find-class t))) (%method-specializers (car ms))))))
+               (null (%gf-slot info +gf-kmaker+))
                (eq (%instance-layout info) (find-class 'standard-generic-function))
                (fboundp (%gf-slot info +gf-name+)) (eq (fdefinition (%gf-slot info +gf-name+)) gf))
-      (let ((f (%make-list-gf-function info)))
+      (let* ((m (car (%gf-slot info +gf-methods+)))
+             (f (%make-empty-gf-function info m)))
+        (when m (%set-instance-ref m 0 f))
         (%set-closure-name f info)
         (%set-gf-slot info +gf-function+ f)
         (%set-gf-slot info +gf-core+ nil)
@@ -510,6 +518,9 @@ now (the oldest binding of a symbol on the binding stack holds it)."
                    (%preinit-drop-candidates all))))
     (dolist (info *generic-function-infos*) (%preinit-drop-gf-methods info drop))
     (dolist (c all) (%set-class-slot c +class-dispatch+ nil))
+    ;; (the runtime's own methods were added: a program dispatches the
+    ;; generic functions without methods once it adds one)
+    (setq *empty-gf-dispatch* nil)
     (%bump-clos-epoch)
     (princ "clysm-preinit-drop:")
     (dolist (c drop)

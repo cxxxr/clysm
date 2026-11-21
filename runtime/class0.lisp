@@ -269,6 +269,9 @@ grows when CLASS has more instance slots)."
 ;;; otherwise take the way that checks the instance.
 (defvar *track-instance-hook* nil "NIL, or a function called with the class and each new instance.")
 (defvar *live-instances-hook* nil "NIL, or a function that returns the tracked instances of a class.")
+(defvar *live-instances-updater* nil
+  "NIL, or %UPDATE-OBSOLETE-INSTANCES, set with *LIVE-INSTANCES-HOOK* (TRACK-INSTANCES,
+js.lisp): a program that does not track instances does not carry it.")
 
 (defun %update-instance-layout (instance old-index class)
   "Give INSTANCE, whose slots are laid out as OLD-INDEX says, the slot vector of CLASS."
@@ -391,7 +394,8 @@ carry it (nor UPDATE-INSTANCE-FOR-REDEFINED-CLASS) in a shaken module.")
                      (not (some (lambda (c) (eq (%class-slot c +class-kind+) :forward)) cpl)))
     (%set-class-slot class +class-prototype+ nil)
     (when *class-finalization-hook* (funcall *class-finalization-hook* class changed))
-    (when *live-instances-hook* (%update-obsolete-instances class old-index))
+    (let ((f *live-instances-updater*))
+      (when (and f *live-instances-hook*) (funcall (the function f) class old-index)))
     ;; refinalize subclasses
     (dolist (sub (%class-slot class +class-subclasses+))
       (%finalize-class sub))
