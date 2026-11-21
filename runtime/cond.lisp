@@ -927,13 +927,13 @@ printer prints."
     (or (= n 0)
         (dotimes (i n nil)
           (let ((c (char name i)))
-            (when (or (find c " |\\:()'\";`,#") (not (graphic-char-p c)) (lower-case-p c)
+            (when (or (%small-position c " |\\:()'\";`,#" 0 nil) (not (graphic-char-p c)) (lower-case-p c)
                       (and (= i 0) (find c "#")))
               (return t))))
         (dotimes (i n t) (unless (eql (char name i) #\.) (return nil)))
         (dotimes (i n t)
           (let ((c (char name i)))
-            (unless (or (digit-char-p c) (and (find c "+-./") (> n 1)))
+            (unless (or (digit-char-p c) (and (%small-position c "+-./" 0 nil) (> n 1)))
               (return nil)))))))
 
 (defun %small-write-token (name out)
@@ -1075,12 +1075,21 @@ usual settings, without the printer: lists and vectors to a few levels."
               (t (when cur (push cur params))
                  (return (values (+ i 1) c (nreverse params) colon at))))))))
 
+;;; (a loop over a string, for the small printer: POSITION and POSITION-IF
+;;; are generic, and their worker, %FIND-POSITION, is 50 KB)
+(defun %small-position-if (pred s start end)
+  (let ((end (or end (length s))))
+    (do ((i start (+ i 1))) ((>= i end) nil)
+      (when (funcall pred (char s i)) (return i)))))
+(defun %small-position (c s start end)
+  (%small-position-if (lambda (x) (eql x c)) s start end))
+
 (defun %small-find-close (control start close)
   "The places of the directive CLOSE (a character) that ends the group after
 START, and of the ~; at its level: (values close-start close-end separators)."
   (let ((i start) (depth 0) (seps nil) (n (length control)))
     (loop
-      (let ((p (position #\~ control :start i)))
+      (let ((p (%small-position #\~ control i nil)))
         (when (null p) (return (values nil n (nreverse seps))))
         (multiple-value-bind (end c) (%small-directive-end control (+ p 1))
           (let ((c (and c (char-upcase c))))
@@ -1104,7 +1113,7 @@ left, and true if ~^ ended it."
   (let ((i start))
     (macrolet ((next () `(if args (pop args) (error "no more arguments for ~S" control))))
       (loop
-        (let ((p (position #\~ control :start i :end end)))
+        (let ((p (%small-position #\~ control i end)))
           (write-string control out :start i :end (or p end))
           (when (null p) (return (values args nil)))
           (multiple-value-bind (j c params colon at) (%small-directive-end control (+ p 1))
@@ -1140,7 +1149,7 @@ left, and true if ~^ ended it."
               (#\& (fresh-line out) (dotimes (k (- (or (first params) 1) 1)) (terpri out)))
               (#\~ (write-char #\~ out))
               (#\Newline (unless colon
-                           (setq i (or (position-if-not (lambda (ch) (member ch '(#\Space #\Tab))) control :start i :end end)
+                           (setq i (or (%small-position-if (lambda (ch) (not (member ch '(#\Space #\Tab)))) control i end)
                                        end)))
                          (when at (terpri out)))
               (#\P (when colon (setq args (cons (or (nth (- (length all) (length args) 1) all) 0) args)))
@@ -1163,7 +1172,7 @@ left, and true if ~^ ended it."
                          (write-string (cond ((and colon at) (string-upcase s))
                                              (colon (string-capitalize s))
                                              (at (let ((d (string-downcase s))
-                                                       (k (position-if #'alpha-char-p s)))
+                                                       (k (%small-position-if #'alpha-char-p s 0 nil)))
                                                    (when k (setf (char d k) (char-upcase (char d k))))
                                                    d))
                                              (t (string-downcase s)))

@@ -5453,6 +5453,18 @@ but may be `t` where `subtypep` would tell a narrower one.
 `subtypep`, `tests/cases/element-types.lisp` with it. The module of one
 export: 1,085,879 -> 1,026,823 bytes (`gzip -9` 331,662 -> 316,060).
 
+**The small printer searches its strings itself.** `position`,
+`position-if`, `position-if-not` and `find` of the small printer (the
+directives of a control string, the characters that need `|...|`) were
+calls of the generic functions, whose general case is `%find-position`
+(46 KB: a loop for each kind of sequence, test and key). They are now
+`%small-position` and `%small-position-if`, loops over a string; the
+small upgrader of element types has its own loops too. `%find-position`
+stays as it was for the programs that call the sequence functions (a
+smaller general case would make their calls on vectors with fill pointers,
+lists with `:key` and the like slower). The module of one export:
+1,026,823 -> 961,571 bytes (`gzip -9` 316,060 -> 303,707).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
