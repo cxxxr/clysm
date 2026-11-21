@@ -1773,10 +1773,20 @@ own, which the shaker keeps only if something refers to SYMBOL.")
 (defvar *install-counter* 0)
 
 (defun cg-defun (node mv)
-  (destructuring-bind (sym fnode) (cdr node)
-    (let ((install `((:global.get ,(sym-global sym))
-                     ,@(cg fnode) (:ref.cast! :closure)
-                     (:struct.set :symbol ,+sym-function+))))
+  "(:DEFUN SYMBOL FNODE): set the function of SYMBOL to the closure of FNODE.
+(:DEFUN SYMBOL (:LAMBDA LAM) :FORM), made by SYS:%WHEN-REACHED with *SHAKE*:
+call LAM (of no arguments nor free variables).  Either is the value SYMBOL,
+and with *SHAKE* it is done only if something refers to SYMBOL
+(SHAKE-MODULE)."
+  (destructuring-bind (sym fnode &optional form) (cdr node)
+    (let ((install (if form
+                       (let ((lam (second fnode)))
+                         (ensure-lam-compiled lam)
+                         `((:global.get ,(static-closure-global lam))
+                           (:call (:main ,(lam-id lam))) :drop))
+                       `((:global.get ,(sym-global sym))
+                         ,@(cg fnode) (:ref.cast! :closure)
+                         (:struct.set :symbol ,+sym-function+)))))
       (if (and *shake* (not (tree-find-if (lambda (x) (member x '(:local.get :local.set :local.tee)))
                                           install)))
           (let ((name (list :install sym (incf *install-counter*))))

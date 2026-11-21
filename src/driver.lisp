@@ -286,14 +286,19 @@ that may not be done twice.")
 (defun target-macros-ready-p () *macros-ready*)
 
 (defun emit-target-macro (name ll body env)
+  ;; (in a shaken program the expander is there only if something refers to
+  ;; NAME: compiled code has expanded the macro, and only EVAL, COMPILE or
+  ;; MACROEXPAND of a form made at run time would call it; the value of the
+  ;; form is NAME, which only the definition refers to)
   (emit-toplevel-form
-   `(progn
-      (clysm-sys::%set-macro-function ',name
-                                      (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
-      ,@(unless (eq (symbol-package name) (find-package :cl))
-          ;; the pretty printer lays out &BODY macros like SBCL
-          `((clysm-sys::%put ',name 'clysm-sys::%macro-lambda-list ',ll)))
-      ',name)
+   `(clysm-sys::%when-reached
+     ',name
+     (progn
+       (clysm-sys::%set-macro-function ',name
+                                       (function (clysm-sys::named-lambda ,name ,@(cdr (target-macro-lambda name ll body)))))
+       ,@(unless (eq (symbol-package name) (find-package :cl))
+           ;; the pretty printer lays out &BODY macros like SBCL
+           `((clysm-sys::%put ',name 'clysm-sys::%macro-lambda-list ',ll)))))
    env))
 
 (defun clysm-sys::%emit-deferred-macros-now (env)
