@@ -1,0 +1,23 @@
+;;; TYPEP and TYPECASE of class names: classes defined before (DEFCLASS,
+;;; DEFINE-CONDITION), after the code testing them, and redefined.
+(defclass vehicle () ())
+(defclass car2 (vehicle) ())
+(define-condition oops (error) ())
+(defgeneric gg (x))
+(defun t1 (x) (list (typep x 'vehicle) (typep x 'car2) (typep x 'oops) (typep x 'error)
+                    (typep x 'generic-function) (typep x 'function) (typep x 'condition)
+                    (typep x 'later)
+                    (typecase x (vehicle 1) (oops 2) (fixnum 3) (string 4) (cons 5) (later 6) (t 7))
+                    (typecase x (car2 1) (later 2) (t 3))))
+(defclass later (vehicle) ())
+(dolist (x (list 1 "s" (make-instance 'car2) (make-instance 'vehicle) (make-instance 'later)
+                 (make-condition 'oops) #'car #'gg '(1) 'a 2.5))
+  (print (t1 x)))
+;; a class given another superclass: the tests follow it
+(defclass bike () ())
+(defun bikep (x) (typecase x (vehicle :vehicle) (bike :bike) (fixnum :fixnum) (string :string) (t :other)))
+(let ((b (make-instance 'bike)))
+  (print (list (bikep b) (typep b 'vehicle)))
+  (defclass bike (vehicle) ())
+  (print (list (bikep b) (typep b 'vehicle) (bikep (make-instance 'bike)))))
+(terpri)

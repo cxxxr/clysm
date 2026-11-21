@@ -55,6 +55,9 @@
         (:report (setq report (cadr o)))
         (:default-initargs (setq default-initargs (cdr o)))))
     `(progn
+       ;; (a class name: the compiled TYPEP tests of it, runtime/types.lisp)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (%put ',name '%defclass t))
        (%define-condition-class ',name ',(or supers '(condition)) (list ,@(reverse slotd-forms))
                                 (list ,@(let ((r nil))
                                           (do ((l default-initargs (cddr l))) ((null l) (reverse r))

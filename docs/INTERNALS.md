@@ -3123,7 +3123,20 @@ What makes the code fast:
   slot: `p-typep-misc` 2.00 → 1.44 times SBCL (190 → 138 ms), `p-typecase`
   1.40 → 1.29, `v-typecase-deftype` 1.76 → 1.71 (its class names are
   tested by their type cells as before); `bench/programs.lisp` 0.93 →
-  0.89, the other files and Lem within the noise. A cache of runtime
+  0.89, the other files and Lem within the noise. A class defined by
+  `defclass` or `define-condition` before the test (in the same file or
+  program: the macro records the name at compile time, `%defclass`) is of
+  the instance and function kinds, so a clause of it costs other objects
+  one mask test; its `typep` answers a function from the function's own
+  layout (a generic function's) and anything else at once, without
+  `class-of` and `%subclassp` (`%typep-cell-expansion`):
+  `v-typecase-deftype` 1.71 → 1.41 times SBCL, `v-typep-class` 1.15 →
+  0.86. A per-call-site cache of the last layout and its answer
+  (invalidated by a counter of class finalizations) was tried and is not
+  kept: a site sees many layouts in turn, so the cache missed and was
+  written again (`v-typep-class` 155 → 205 ms), while the search of a
+  precedence list of three to five classes costs about as much as a hit.
+  A cache of runtime
   `typep`'s test per symbol (on the plist) was tried and is not kept:
   `v-typep-runtime` 100 → 106-111 ms (a plist lookup and a closure cost
   more than `find-class`), and an EQ table of compound specifiers costs

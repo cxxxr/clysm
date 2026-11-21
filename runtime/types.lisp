@@ -433,18 +433,29 @@
 an instance (by the class precedence list of its class), or an object that
 is not an instance or a function when the class is not a built-in one, is
 answered here; the rest by %TYPEP-CELL."
-    (let ((cell (gensym "CELL")) (c (gensym "C")) (l (gensym "LAYOUT")))
-      `(let* ((,cell (load-time-value (%type-cell ',type))) (,c (car ,cell)))
-         (cond ((%instancep ,x)
-                ;; (%STRUCTURE-TYPEP X C): its class or a class it inherits from
-                (let ((,l (%instance-layout ,x)))
+    (let ((cell (gensym "CELL")) (c (gensym "C")) (l (gensym "LAYOUT")) (g (gensym "GF")))
+      (flet ((layout-test (lform)
+               `(let ((,l ,lform))
                   (cond ((eq ,l ,c) t)
                         ((null ,c) (%typep-cell ,x ,cell))
                         ((%instancep ,l) (if (%memq ,c (%instance-ref ,l +class-cpl+)) t nil))
-                        (t nil))))
-               ((or (null ,c) (functionp ,x) (eq (%instance-ref ,c +class-kind+) :built-in))
-                (%typep-cell ,x ,cell))
-               (t nil)))))
+                        (t nil)))))
+        `(let* ((,cell (load-time-value (%type-cell ',type))) (,c (car ,cell)))
+           (cond ((%instancep ,x)
+                  ;; (%STRUCTURE-TYPEP X C): its class or a class it inherits from
+                  ,(layout-test `(%instance-layout ,x)))
+                 ,@(if (get type '%defclass)
+                       ;; a class defined by DEFCLASS or DEFINE-CONDITION (before,
+                       ;; in this file or the image): only instances, and
+                       ;; generic functions (funcallable instances), are of it
+                       `(((functionp ,x)
+                          (let ((,g (%closure-name ,x)))
+                            (if (%instancep ,g) ,(layout-test `(%instance-layout ,g)) (if (null ,c) (%typep-cell ,x ,cell) nil))))
+                         ((null ,c) (%typep-cell ,x ,cell))
+                         (t nil))
+                       `(((or (null ,c) (functionp ,x) (eq (%instance-ref ,c +class-kind+) :built-in))
+                          (%typep-cell ,x ,cell))
+                         (t nil))))))))
 
   (defun %typep-expansion (x type &optional (depth 0))
     "A form testing the variable X for the constant type specifier TYPE; a
@@ -617,7 +628,11 @@ of whose objects are of it, and the other kinds some of whose objects may be."
              ((hash-table structure-object) (values 0 (bits 5)))
              (standard-object (values 0 (bits 5 9)))
              (otherwise
-              (cond ((get type '%deftype)
+              (cond ((and (get type '%defclass) (not (get type '%deftype)))
+                     ;; (a class defined by DEFCLASS or DEFINE-CONDITION:
+                     ;; instances and funcallable instances)
+                     (values 0 (bits 5 9)))
+                    ((get type '%deftype)
                      (let ((exp (and (fboundp '%deftype-expansion-list) (funcall '%deftype-expansion-list type nil))))
                        (if exp (%type-code-masks (car exp) (+ depth 1)) (values 0 all))))
                     ((let ((d (get type '%struct-description))) (and (consp d) (null (car d))))
