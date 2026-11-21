@@ -567,6 +567,32 @@ the image's code in Liftoff. Tried and not kept: a larger young generation
 changed nothing measurable; caching the printed form of each symbol while
 writing a fasl made printing sources 10% faster, too little to matter.
 
+Also tried and not kept (same day, interleaved on one slot, medians of 3):
+
+* **Encoding each segment's functions when the segment ends**, with the
+  indexes of functions and globals (not known until the module ends, and
+  the `ref.as_non_null` after a closure's global) left as relocations
+  written when it is encoded, and the branch hints moved by them; the
+  instructions were dropped then. All 21608 functions of loading cl-ppcre
+  were encoded so and the modules were the same octets, but compiling was
+  no faster (cl-ppcre 0.98 s against 0.99, ASDF 1.87 against 1.88), nor were
+  the scavenges (25 of them, 165-175 ms, against 22, 144-291). What a
+  scavenge copies is the compiler's working data: about 58 MB are made
+  between two of them and a tenth survives; a segment's instructions
+  survive a scavenge before it ends anyway.
+* **Type inference's environments**: copying them and joining them is
+  about 40 ms of cl-ppcre's 125 ms of inference (the rest is mostly its
+  hash tables, the node types keyed by conses); copying them by `svref`
+  instead of `copy-seq` (`subseq`'s dispatch) changed nothing measurable,
+  so environments that share their unchanged parts would gain 3% at most.
+* **`coalesce-locals` only for functions with more locals**: its time is
+  in the large functions (cl-ppcre: 59-71 ms for all, 71-77 with a minimum
+  of 8 locals, 48-52 with 16), and it is a walk that takes 4.5 ns an
+  instruction when the same code runs hot on instructions made together
+  (a probe in a script), against about 40 ns in a real compilation: the
+  cost is the memory of instructions made over the whole file and code
+  still cold, not the work of the walk.
+
 What remains (compiler in Wasm, whole program): type inference 0.8 s (its
 node types are an EQ hash table keyed by conses, whose identity hash is a
 call to the host: 0.3 s), code generation 0.6 s, encoding 0.75 s, macro
