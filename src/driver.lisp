@@ -252,7 +252,7 @@ that may not be done twice.")
     (case (car d)
       (special (dolist (s (cdr d)) (setf (gethash s *specials*) t)))
       (notinline (dolist (s (cdr d)) (setf (gethash (notinline-name s) *notinline*) t)))
-      (inline (dolist (s (cdr d)) (remhash s *notinline*) (setf (gethash s *declared-inline*) t)))
+      (inline (dolist (s (cdr d)) (let ((s (notinline-name s))) (remhash s *notinline*) (setf (gethash s *declared-inline*) t))))
       (optimize (let ((safety (decls-safety (list d))))
                   (when safety (setf clysm-sys::*proclaimed-safety* safety))))
       (ftype (when (consp (cdr d))
@@ -367,10 +367,16 @@ destructuring-bind (defined by the runtime)."
                    (runtime-inline-source sym fn-form))))
       ;; in the image, a function declaimed INLINE keeps its source for the
       ;; calls compiled later (INLINE-EXPANSION-CALL)
-      (when (and *live-mode* (symbolp name))
+      (when (and *live-mode* (symbolp sym))
         (let ((src (and (gethash sym *declared-inline*) (eq (car fnode) :lambda)
                         (null (cenv-entries env))
                         (inline-expansion-source fn-form))))
+          ;; (that of a SETF function, kept under its symbol, has the block
+          ;; of its name: (RETURN-FROM X) in (SETF X))
+          (when (and src (consp name))
+            (multiple-value-bind (decls forms doc) (parse-body (cddr src))
+              (setq src `(lambda ,(second src) ,@(when doc (list doc)) ,@(when decls `((declare ,@decls)))
+                           (block ,(second name) ,@forms)))))
           (when (and src
                      (not (ignore-errors (clysm-sys::%call-with-fasl-syntax
                                           (lambda () (prin1-to-string src) t)))))

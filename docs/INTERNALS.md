@@ -142,6 +142,16 @@ list for its `entryA` when the function has changed (`live-apply-code`). `funcal
 function tests at the call site for a closure, then for a symbol whose
 function cell is set; only other objects go to the `:coerce-function` helper.
 
+A function of 5 to 12 required parameters only (`+max-req-layout-args+`)
+has its main function, which takes them as Wasm parameters, in the `kmain`
+field and a "req layout" (`%REQ-LAYOUT n`, a symbol, `req-layout-object`) in
+`klayout`; a call of n arguments of a function that is not known where it
+is compiled (through the symbol of another file's function, `funcall`)
+compares the layout and calls the main function (`call-closure-code`), and
+only otherwise makes the argument vector for `entryN`. A cross-file call of
+five arguments 10.3 → 8 ns (four: 7.1, SBCL 4.5 for both); esrap's `recall`
+(five arguments, called for each rule) no longer allocates.
+
 Raw clones (`raw-call-code` in `src/codegen.lisp`): a direct call of a
 known function of required parameters with arguments known to be fixnums
 or doubles (`spec-signature`) calls a copy of it, `(:raw id sig)`, that
@@ -699,7 +709,14 @@ the body that sees none of the caller's lexical bindings, with `&optional`,
 `&rest`, `&aux` and `&key` (constant keywords) bound by `let*`
 (`inline-expansion-call`, `src/frontend.lisp`). `notinline`, global or
 local, prevents it; `proclaim` records `notinline` on the symbol so that it
-holds in an image that loaded the fasl.
+holds in an image that loaded the fasl. A local `(declare (inline f))`
+undoes a global or outer `notinline` in its scope (`*local-inline*`: esrap
+declaims `find-chunk` inline, defines it, declaims it `notinline`, and
+inlines it in `ensure-chunk` by `(locally (declare (inline find-chunk))
+...)`). SETF functions are inlined the same way: the `inline` proclamation
+of `(setf f)` is recorded under the function's symbol, and its source has
+the block named `f` (esrap's `(setf get-cached)`, which was a call and a
+tail call through two symbols for each rule).
 
 The small functions of `COMMON-LISP` in the REPL image (required parameters,
 no loop, at most 100 conses: `alphanumericp`, `char-upcase`, `fifth`...) keep
@@ -3003,6 +3020,36 @@ What makes the code fast:
   and 0.92 in a script, `bench/library.lisp` 0.99 and 0.98. The dispatch
   of a generic function grows by one index computation (the image by
   0.3%).
+* **Real libraries, `bench/apps.lisp` from a profile** (2026-11-21; Clysm
+  and SBCL's `sb-sprof` on each item, the excess ranked by function and the
+  Wasm read): esrap's time is spread over its functions at 2-3 times
+  SBCL's each, but some of it was things the compiler did not do. An
+  integer type with an exclusive bound, `(integer 0 (n))` (Alexandria's
+  `array-index`, esrap's `input-position` in its FTYPEs), was checked as
+  `integerp` and a generic comparison and taken apart by a call
+  (`integer-decl-test` now takes `(n)` as `n-1`, a fixnum test); a local
+  `(declare (inline f))` of a function proclaimed `notinline` now inlines
+  it, and SETF functions declaimed `inline` are (see "Compiling inside the
+  running image"); `ldb` of a byte whose size or position is a constant
+  variable (`(byte +chunk-divisor+ 0)`) is a mask (it was `ash` and
+  `logand` by calls); calls of 5 to 12 arguments of unknown functions of
+  required parameters take no argument vector (see Calling convention);
+  `elt` of a declared specialized vector reads it inline (`%simple-array-p`
+  is a primitive whose answer the type gives: local-time's
+  `transition-position` called `storage-kind` for each probe);
+  `find`/`position` over vectors of fixnums or octets read the elements
+  inline (local-time's month table: through the `typed-ref` helper).
+  `tools/bench-libs.sh bench/apps.lisp`, the build before and after
+  interleaved on one slot, two rounds each: `a-esrap` 2.21–2.23 → 1.90–1.98
+  times SBCL (117–129 → 102–115 ms), `a-cl-json-decode` 1.57–1.81 →
+  1.40–1.46, `a-local-time` 1.38–1.42 → 1.32–1.38; the file 1.36–1.40 →
+  1.30–1.34. Lem's comparator 1.48–1.50 → 1.44–1.46; `bench/suite.lisp`,
+  `holdout.lisp`, `library.lisp` unchanged (compiled and in a script).
+  What remains: local-time computes with Unix times, past the 30-bit
+  fixnums, in bignums; esrap's cost is in calls between its files (a
+  cross-file call of three arguments 5.3 ns, SBCL 3.4) and the class tests
+  of its included structures; cl-json's decoding in the collection of the
+  data it keeps.
 
 ### Declared code, and SBCL at its best policy
 

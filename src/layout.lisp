@@ -12,6 +12,7 @@
 (defconstant +most-negative-fixnum+ (- (expt 2 29)))
 (defconstant +char-tag+ (expt 2 29))
 (defconstant +max-fixed-args+ 4)
+(defconstant +max-req-layout-args+ 12)   ; (REQ-LAYOUT-OBJECT, src/codegen.lisp)
 ;; bignum magnitudes: little-endian arrays of base 2^32 digits (unsigned
 ;; in the i32 elements)
 (defconstant +limb-bits+ 32)
