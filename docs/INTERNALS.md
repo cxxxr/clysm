@@ -1075,6 +1075,25 @@ are `i31`s too); with no `i31` below the fixnums a signed comparison could
 replace the addition and the unsigned one, which was not tried (one
 instruction).
 
+Measured and not done (2026-11-21, interleaved on one slot):
+
+* *Return types of self-recursive functions by fixed point* (its calls of
+  itself taken to return nothing, then the union of the body's types,
+  widened, until stable; only in the analysis for any arguments, since in a
+  copy for some types a call of itself with other arguments may return what
+  the copy does not). A count returned by a recursive walk becomes an
+  integer of no bound, which makes the variable it is added to an integer
+  accumulator (decoding each value returned): `g-traverse`'s `travers`
+  156–182 → 181–205 ms. Kept only for results that are no such integers
+  (doubles: a recursive sum of doubles over a tree), it measured within the
+  noise of the boxing of each value returned, and the numeric functions
+  that would gain run in their fixnum copies, where it does not apply.
+* *Accumulators fed by data* (`(setq s (+ s (svref v i)))`, `(incf s x)`
+  over a list, `s` undeclared, as an integer accumulator with its i64):
+  239–251 → 237–244 ms and 111–121 → 116–123 (SBCL 178, 110): the test of
+  the eqref local, the decoding of the element and the i64 addition with
+  its overflow test cost what the inline fixnum addition and the boxing do.
+
 **`dotimes` over a count held in a variable** (`runtime/boot.lisp`) whose
 body uses the counter and is small (at most 120 conses) expands to `(if
 (fixnump n) <the loop with n bound to a variable declared fixnum> <the
