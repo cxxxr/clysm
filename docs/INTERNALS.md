@@ -510,6 +510,63 @@ ASDF's code, but `bench/clos.lisp` 2.5% slower, `c-gf-lambda-lists` 6%).
 The name section is 0.57 MB of the 6.8 MB fasl, the type section (the base
 types, the same in every module) 1.05 MB.
 
+Third round (2026-11-21), libraries compiled from source with ASDF in a
+process of their own (a fresh cache, their dependencies loaded first and not
+timed; `asdf:load-system` timed inside the process, so the compiler's start
+in a cold image is counted; ASDF itself is `(require :asdf)` with an empty
+cache less the same with a full one, against SBCL's `compile-file` of
+`third_party/asdf/asdf.lisp`; 4-CPU slot, medians of 3, milliseconds):
+
+| library | SBCL | before | now |
+|---|---|---|---|
+| ASDF | 1930 | 2690 | 1780 |
+| cl-ppcre | 665 | 1054 | 912 |
+| Alexandria | 255 | 419 | 334 |
+| Babel | 1065 | 992 | 888 |
+| esrap | 345 | 352 | 314 |
+| yason | 79 | 197 | 165 |
+| local-time | 270 | 197 | 156 |
+| split-sequence | 170 | 100 | 81 |
+
+* **Finishing a file's module was quadratic in its segments.** For each
+  segment, `live-module-finish` filtered all the symbols, constants and
+  closures of the module, looking each up in an EQUAL table by a freshly
+  consed `(:sym S)`: ASDF's file has 1105 segments, and this was a quarter
+  of compiling it. The globals are bucketed by segment once.
+* **Three walks of all the code.** `add-called-helpers`,
+  `live-used-globals` and `global-segments` each walked every instruction
+  of every function; they share `wasm-func-refs` (`src/wasm.lisp`), what a
+  function calls, reads or sets and casts to, in order of first occurrence,
+  computed once. (Most of the cost of a walk is the walk itself, about 15 ns
+  an element, not the lookups.)
+* **Macros compiled when defined.** The expander of each `defmacro` of a
+  file (or of a form at the REPL) was compiled to a module of its own as soon
+  as it was defined, though most macros are expanded a few times: 16% of
+  compiling Alexandria. It is interpreted for its first seven expansions
+  and compiled at the eighth (`global-macro-expander`,
+  `*macro-compile-after*`).
+* Type inference joins the environments of branches slot by slot, and made
+  a new type for each slot even when both sides had the same one
+  (`ty-union` of equal types returns the first).
+
+The code of the modules is the same as before (the code sections of the
+fasls of cl-ppcre and Quicklisp compared byte for byte), so run-time
+performance is unchanged. What remains, in cl-ppcre's 0.9 s (a profile of
+the process, `node --cpu-prof`): V8 outside the program (`(program)`,
+mostly Liftoff compiling the compiler's functions and the new module's as
+they first run) 0.25 s, garbage collection 0.18 s (scavenges copy 10-15 MB
+each: the instructions of the whole file's module stay alive until it is
+encoded at the end), type inference 0.15 s (environments are vectors of all
+the variables of a function, copied at each branch), code generation 0.11
+s, encoding 0.16 s (of it `coalesce-locals` 0.07), conversion and macro
+expansion 0.1 s, printing the sources of the segments into the fasl 0.02
+s. For the small libraries (yason, split-sequence) the cold compiler is
+most of the time: compiling the first form of a process runs about 2 MB of
+the image's code in Liftoff. Tried and not kept: a larger young generation
+(`--max-semi-space-size` 32 or 64) and lower tiering budgets (3 MB, 0.8 MB)
+changed nothing measurable; caching the printed form of each symbol while
+writing a fasl made printing sources 10% faster, too little to matter.
+
 What remains (compiler in Wasm, whole program): type inference 0.8 s (its
 node types are an EQ hash table keyed by conses, whose identity hash is a
 call to the host: 0.3 s), code generation 0.6 s, encoding 0.75 s, macro

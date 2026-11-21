@@ -456,6 +456,8 @@ the required parameters of the types SYM's FTYPE gives checked on entry."
 of a proclaimed result type checked, or FORM."
   (let ((op (and (consp form) (car form))))
     (if (and op (symbolp op) (not (keywordp op))
+             ;; (first the test that most calls fail: no FTYPE)
+             (declared-ftype op)
              (not (member op *special-forms*))
              (not (get op 'clysm-native))
              (not (env-lookup-fun env op))
