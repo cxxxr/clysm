@@ -1639,6 +1639,22 @@ spread form, or the general call when their number does not fit SHAPE."
   (setf (gethash m *method-fast-makers*) f)
   m)
 
+;;; The code combining the methods of an effective method of :BEFORE or
+;;; :AFTER methods, or of a short-form method combination, is made by the
+;;; expansion of DEFMETHOD (%COMBINER-FORM) in the module of the method, for
+;;; the arity of its function: the engine inlines no call into another
+;;; module, and a function of the runtime calling the methods of a module
+;;; loaded from source (or a fasl) cannot have them inlined.
+;;; method -> (n kind . function), KIND :STANDARD or the operator.
+(defvar *method-combiners* (make-hash-table :test 'eq))
+(defun %note-method-combiner (m n kind f)
+  (setf (gethash m *method-combiners*) (list* n kind f))
+  m)
+(defun %method-combiner (methods n kind)
+  (dolist (m methods nil)
+    (let ((c (gethash m *method-combiners*)))
+      (when (and c (eql (car c) n) (eq (cadr c) kind)) (return (cddr c))))))
+
 (defun %spread-maker-method-function (maker nreq nopt more)
   "The method function (of the argument list and the next method functions) of
 a method of optional or rest/keyword parameters known by MAKER."
@@ -1766,7 +1782,9 @@ the N arguments, or NIL when its operator is not a function."
         (if (null primary)
             (%no-applicable-fast gf n shape)
             (let* ((pfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) primary))
+                   (c (%method-combiner primary n op))
                    (f (cond ((and identity (null (cdr pfns))) (car pfns))
+                            (c (funcall (the function c) pfns))
                             ((eq op 'progn)
                              (%arity-case n (lambda (%args)
                                               (do ((l pfns (cdr l))) ((null (cdr l)) (funcall (the function (car l)) %args))
@@ -1835,14 +1853,16 @@ the N arguments, or NIL when its operator is not a function."
             (let ((bfns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) (nreverse before)))
                   (afns (mapcar (lambda (m) (%method-fast-fn m nil n unspec shape)) after))
                   (p f))
-              (setq f (if afns
+              (setq f (let ((c (%method-combiner (append before after) n :standard)))
+                        (if c (funcall (the function c) bfns p afns)
+                        (if afns
                           (%arity-case n (lambda (%args)
                                            (dolist (b bfns) (funcall (the function b) %args))
                                            (multiple-value-prog1 (funcall (the function p) %args)
                                              (dolist (a afns) (funcall (the function a) %args)))))
                           (%arity-case n (lambda (%args)
                                            (dolist (b bfns) (funcall (the function b) %args))
-                                           (funcall (the function p) %args)))))))
+                                           (funcall (the function p) %args)))))))))
           (dolist (m around) (setq f (%method-fast-fn m f n unspec shape)))
           f))))
 
@@ -2549,6 +2569,62 @@ CALL-NEXT-METHOD with arguments or as a function)."
         (and (eq (car form) 'quote) (consp (cdr form)) (null (cddr form)))
         (or (not (symbolp form)) (null form) (eq form t) (keywordp form)))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %combiner-form (quals n)
+    "For a method of the qualifiers QUALS whose function takes N (spread)
+arguments: (values kind form), FORM making the code that combines the methods
+of an effective method (see *METHOD-COMBINERS*), or NIL."
+    (when (and n (<= 1 n 8) quals (null (cdr quals)))
+      (let ((q (car quals)) (vars (let ((r nil)) (dotimes (i n r) (push (gensym "A") r))))
+            (fns (gensym "FNS")) (l (gensym "L")) (r (gensym "R")) (f (gensym "F")))
+        (flet ((call (fn) `(funcall (the function ,fn) ,@vars)))
+          (cond ((member q '(:before :after))
+                 (let ((bfns (gensym "BEFORE")) (p (gensym "PRIMARY")) (afns (gensym "AFTER")))
+                   (values :standard
+                           `(lambda (,bfns ,p ,afns)
+                              (if ,afns
+                                  (lambda ,vars
+                                    (dolist (,f ,bfns) ,(call f))
+                                    (multiple-value-prog1 ,(call p)
+                                      (dolist (,f ,afns) ,(call f))))
+                                  (lambda ,vars
+                                    (dolist (,f ,bfns) ,(call f))
+                                    ,(call p)))))))
+                ((member q '(progn and or))
+                 (values q `(lambda (,fns)
+                              (lambda ,vars
+                                (do ((,l ,fns (cdr ,l))) ((null (cdr ,l)) ,(call `(car ,l)))
+                                  ,(case q
+                                     (progn (call `(car ,l)))
+                                     (and `(unless ,(call `(car ,l)) (return nil)))
+                                     (t `(let ((,r ,(call `(car ,l)))) (when ,r (return ,r))))))))))
+                ((eq q '+)
+                 (values q `(lambda (,fns)
+                              (lambda ,vars
+                                (let ((,r (+ ,(call `(car ,fns)))))
+                                  (dolist (,f (cdr ,fns) ,r) (setq ,r (+ ,r ,(call f)))))))))
+                ((member q '(list append nconc max min))
+                 (values q `(lambda (,fns)
+                              ,(let ((general `(lambda ,vars
+                                                 (let ((,r nil))
+                                                   (dolist (,f ,fns) (push ,(call f) ,r))
+                                                   ,(if (eq q 'list) `(nreverse ,r) `(apply #',q (nreverse ,r)))))))
+                                 (if (eq q 'list)
+                                     general
+                                     ;; (two or three methods: no list of their values)
+                                     `(let ((p1 (first ,fns)) (p2 (second ,fns)) (p3 (third ,fns)))
+                                        (cond ((or (null (cdr ,fns)) (cdddr ,fns)) ,general)
+                                              (p3 (lambda ,vars (,q ,(call 'p1) ,(call 'p2) ,(call 'p3))))
+                                              (t (lambda ,vars (,q ,(call 'p1) ,(call 'p2))))))))))))))))
+
+  (defun %with-combiner (registration quals n)
+    "REGISTRATION (a form returning the method) noting the combiner of
+%COMBINER-FORM, when the method is compiled in the image (LOAD, COMPILE-FILE,
+the REPL: in a whole program the runtime's code is in the methods' module)."
+    (multiple-value-bind (kind form)
+        (and (boundp '*native-eval-hook*) (symbol-value '*native-eval-hook*) (%combiner-form quals n))
+      (if kind `(%note-method-combiner ,registration ,n ',kind ,form) registration))))
+
 (defmacro %defmethod-1 (name &rest args)
   (multiple-value-bind (quals ll body) (%split-method-args args)
     (let ((cell (gensym "CELL")) (fast (gensym "FAST")))
@@ -2570,12 +2646,14 @@ CALL-NEXT-METHOD with arguments or as a function)."
                      `(let* ((,cell (list nil))
                              (*gf-function-maker* ,maker)
                              (,fast ,form))
-                        ,(if keyed
-                             `(%note-method-keyed-maker ,(%spread-registration cnm-p name quals specs-form plain-ll
-                                                                               shape doc cell fast args-var next)
-                                                        ,keyed)
-                             (%spread-registration cnm-p name quals specs-form plain-ll shape doc cell fast
-                                                   args-var next))))))
+                        ,(%with-combiner
+                          (if keyed
+                              `(%note-method-keyed-maker ,(%spread-registration cnm-p name quals specs-form plain-ll
+                                                                                shape doc cell fast args-var next)
+                                                         ,keyed)
+                              (%spread-registration cnm-p name quals specs-form plain-ll shape doc cell fast
+                                                    args-var next))
+                          quals (+ (first shape) (second shape) (third shape)))))))
                 ((and (listp ll) (notany (lambda (x) (member x lambda-list-keywords)) plain-ll)
                       (not (%tree-mentions-p body '(call-next-method next-method-p))))
                  ;; the method function applies a function of the arguments, which
@@ -2599,15 +2677,17 @@ CALL-NEXT-METHOD with arguments or as a function)."
                                      ,@decls
                                      (declare (ignorable ,@plain-ll))
                                      (block ,(if (consp name) (cadr name) name) ,@forms))))
-                        ,note))))
+                        ,(%with-combiner note quals (length plain-ll))))))
                 ((%fast-arity plain-ll)
                  ;; CALL-NEXT-METHOD calls the next method, a function of the arguments
                  `(let* ((,cell (list nil))
                          (*gf-function-maker* ,maker)
                          (,fast ,(%fast-method-maker name plain-ll body cell)))
-                    (%note-method-fast-maker
-                     (%defmethod ',name ',quals ,specs-form ',plain-ll (%maker-method-function ,fast) ,doc ,cell)
-                     ,fast)))
+                    ,(%with-combiner
+                      `(%note-method-fast-maker
+                        (%defmethod ',name ',quals ,specs-form ',plain-ll (%maker-method-function ,fast) ,doc ,cell)
+                        ,fast)
+                      quals (length plain-ll))))
                 (t
                  `(let ((,cell (list nil)) (*gf-function-maker* ,maker))
                     (%defmethod ',name ',quals ,specs-form ',plain-ll (function ,lam) ,doc ,cell)))))))))
