@@ -827,11 +827,111 @@ toplevel form may end a batch of LOAD (%LOAD-BATCH): one that is compiled
 (defun %batch-definition-p (form)
   (and (consp form) (member (car form) '(defun defmethod defgeneric)) (consp (cdr form))))
 
+(defvar *batch-unsafe* nil
+  "(operators proclaimers . symbols), made when first needed (%BATCH-UNSAFE):
+the operators of a toplevel form after which %LOAD-BATCH reads and compiles
+no more forms before it has run, those of the proclamations that the
+compiler notes as it compiles the forms after them, and the symbols whose
+mention in its code ends the batch as the operators do.  (Names, not
+symbols, in the code: a symbol in a constant keeps its function in a program
+whose unused functions are left out.)")
+
+(defun %batch-unsafe ()
+  (or *batch-unsafe*
+      (flet ((syms (names) (mapcar (lambda (n) (find-symbol n "COMMON-LISP")) names)))
+        (let ((ops (syms '("DEFMACRO" "DEFINE-COMPILER-MACRO" "DEFSTRUCT" "DEFCLASS" "DEFINE-CONDITION"
+                           "DEFTYPE" "DEFCONSTANT" "DEFSETF" "DEFINE-SETF-EXPANDER" "DEFINE-SYMBOL-MACRO"
+                           "DEFINE-MODIFY-MACRO" "DEFINE-METHOD-COMBINATION" "DEFPACKAGE" "IN-PACKAGE"
+                           "MACROLET" "SYMBOL-MACROLET"))))
+          (setq *batch-unsafe*
+                (list* ops (syms '("DECLAIM" "DEFVAR" "DEFPARAMETER"))
+                      (append ops
+                              (syms '("SET-MACRO-CHARACTER" "SET-DISPATCH-MACRO-CHARACTER"
+                                      "MAKE-DISPATCH-MACRO-CHARACTER" "SET-SYNTAX-FROM-CHAR" "READTABLE-CASE"
+                                      "COPY-READTABLE" "*READTABLE*" "*PACKAGE*" "*READ-BASE*"
+                                      "*READ-DEFAULT-FLOAT-FORMAT*" "*READ-EVAL*" "*READ-SUPPRESS*" "*FEATURES*"
+                                      "EVAL" "COMPILE" "LOAD" "REQUIRE" "PROCLAIM" "DECLAIM" "EVAL-WHEN"
+                                      "MACRO-FUNCTION" "COMPILER-MACRO-FUNCTION" "MAKE-PACKAGE" "USE-PACKAGE"
+                                      "UNUSE-PACKAGE" "EXPORT" "UNEXPORT" "IMPORT" "SHADOW" "SHADOWING-IMPORT"
+                                      "UNINTERN" "DELETE-PACKAGE" "RENAME-PACKAGE" "COMPILE-FILE")))))))))
+
+(defun %batch-mentions-unsafe-p (tree budget)
+  "True when TREE mentions a symbol of the last of %BATCH-UNSAFE, or is larger
+than BUDGET conses (a list: the budget left in its car)."
+  (cond ((symbolp tree) (and tree (member tree (cddr (%batch-unsafe))) t))
+        ((consp tree)
+         (loop
+           (when (<= (setf (car budget) (- (car budget) 1)) 0) (return t))
+           (when (%batch-mentions-unsafe-p (car tree) budget) (return t))
+           (setq tree (cdr tree))
+           (unless (consp tree) (return (%batch-mentions-unsafe-p tree budget)))))
+        (t nil)))
+
+(defun %batch-passable-p (form &optional (depth 0))
+  "True when %LOAD-BATCH may read and compile the forms after the toplevel
+FORM (one that is compiled) before FORM has run: FORM, as the compiler
+processes it at top level, defines no macro, type, structure, class or
+package and its code does not mention what changes the reader or the
+compiler's environment (what it changes at run time anyway is seen by
+%BATCH-CHECK, after FORM has run)."
+  (cond ((> depth 30) nil)
+        ((atom form) t)
+        ((not (symbolp (car form))) (not (%batch-mentions-unsafe-p form (list 2000))))
+        ((member (car form) (car (%batch-unsafe))) nil)
+        ((eq (car form) 'progn)
+         (every (lambda (f) (%batch-passable-p f (+ depth 1))) (cdr form)))
+        ((eq (car form) 'eval-when)
+         (and (consp (cdr form)) (listp (second form))
+              (notany (lambda (s) (and (symbolp s) (member (symbol-name s) '("COMPILE-TOPLEVEL" "COMPILE") :test #'string=)))
+                      (second form))
+              (every (lambda (f) (%batch-passable-p f (+ depth 1))) (cddr form))))
+        ((member (car form) (cadr (%batch-unsafe)))
+         ;; (proclamations the compiler notes as it compiles the forms after it)
+         (not (%batch-mentions-unsafe-p (cddr form) (list 2000))))
+        ((%batch-definition-p form)
+         (not (%batch-mentions-unsafe-p (cddr form) (list 2000))))
+        ((or (special-operator-p (car form)) (not (macro-function (car form))))
+         (not (%batch-mentions-unsafe-p form (list 2000))))
+        (t (multiple-value-bind (expansion ok)
+               (ignore-errors (values (macroexpand-1 form) t))
+             (and ok (%batch-passable-p expansion (+ depth 1)))))))
+
+(defun %batch-snapshot ()
+  (list *env-epoch* *package* *readtable* *read-base* *read-default-float-format*
+        *read-eval* *read-suppress* *features*))
+
+(defvar *batch-snapshot* nil)
+
+(defun %batch-begin ()
+  (setq *batch-snapshot* (%batch-snapshot))
+  nil)
+
+(defun %batch-check (k)
+  "In a batch of LOAD, after a form that was compiled with the forms after
+it before it ran: if it changed what reading or compiling them depends on,
+the rest of the batch does not run (%LOAD-BATCH reads them again)."
+  (unless (every #'eq *batch-snapshot* (%batch-snapshot))
+    (throw '%batch-stop k)))
+
+(defun %batch-run (forms positions)
+  "Evaluate the FORMS of a batch: NIL, or the position of the file where
+reading must go on when a %BATCH-CHECK stopped them."
+  (when (> (length positions) 0)
+    ;; (what compiling the forms changes, the compiler saw)
+    (push '(%batch-begin) forms))
+  (let* ((*batch-snapshot* nil)
+         (k (catch '%batch-stop
+              (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
+                (dolist (f forms) (%eval-toplevel f)))
+              nil)))
+    (and k (aref positions k))))
+
 (defun %load-batch (stream file form)
   "Evaluate the DEFUN, DEFMETHOD or DEFGENERIC FORM, read from the source file
 STREAM, with the definitions of functions, methods and generic functions
-that follow it (and the form after them, when it is compiled: a call of
-them), in one module.  The engine inlines calls within a module, never into
+that follow it (and the forms after them that are compiled: calls of them,
+with more definitions after them while %BATCH-PASSABLE-P lets those forms
+pass), in one module.  The engine inlines calls within a module, never into
 another, and the compiler makes the calls between the functions of a module
 direct, with the types of their arguments and values: a call of a function
 defined by another form of the batch is guarded by a comparison of the
@@ -844,36 +944,53 @@ the definitions, when STREAM is a file: a reader error makes the batch run
 first).  Returns the form read after the batch, the position where it
 starts and whether there is one (NIL when the batch took the last form it
 read, or the stream was positioned to read it again)."
-  (let ((forms (list form)) (next nil) (start nil) (pending t))
+  (let ((forms (list form)) (next nil) (start nil) (pending t)
+        ;; (after a compiled form that does not end the batch: the position
+        ;; after it, and those of the %BATCH-CHECKs before)
+        (after nil) (positions (make-array 0 :adjustable t :fill-pointer 0)) (count 1))
     (loop
       (setq start (and file (%form-start stream)))
-      (let ((failed nil))
-        (handler-case (setq next (read stream nil %eof-marker))
-          (error (c) (setq failed c)))
-        (when failed
+      (let ((failed nil) (ahead t))
+        (catch '%batch-read-ahead
+          (handler-case (let ((*batch-read-ahead* (or after (> (length positions) 0))))
+                          (setq next (read stream nil %eof-marker)))
+            (error (c) (setq failed c)))
+          (setq ahead nil))
+        (when (or failed ahead)
           ;; (the definitions before it run first; the form is read again
           ;; after them, or the error is signaled again)
-          (setq forms (nreverse forms))
-          (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
-            (dolist (f forms) (%eval-toplevel f)))
-          (unless start (error failed))
-          (file-position stream start)
+          (let ((resume (%batch-run (nreverse forms) positions)))
+            (cond (resume (file-position stream resume))
+                  ((not start) (error failed))
+                  (t (file-position stream start))))
           (return-from %load-batch (values nil nil nil))))
       (cond ((eq next %eof-marker) (return))
-            ((>= (length forms) %load-batch-max) (return))
+            ((>= count %load-batch-max) (return))
             ((%batch-definition-p next))
             ((and *native-batch-final-p-hook* (funcall *native-batch-final-p-hook* next))
-             (setq pending nil))
+             (unless (and file (%batch-passable-p next))
+               (setq pending nil)))
             (t (return)))
+      (when after
+        ;; (the forms after a compiled one run only if it changed nothing
+        ;; that reading or compiling them depended on)
+        (push `(%batch-check ,(vector-push-extend after positions)) forms)
+        (setq after nil))
       (when start
         (let ((dspec (%definition-spec next)))
           (when dspec (%note-source dspec file start))))
       (push next forms)
-      (unless pending (return)))
-    (setq forms (nreverse forms))
-    (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
-      (dolist (f forms) (%eval-toplevel f)))
-    (values next start pending)))
+      (setq count (+ count 1))
+      (unless pending (return))
+      (unless (%batch-definition-p next)
+        (setq after (file-position stream))))
+    (when (and after pending (not (eq next %eof-marker)))
+      ;; (NEXT, read after a compiled form, before it ran)
+      (push `(%batch-check ,(vector-push-extend after positions)) forms))
+    (let ((resume (%batch-run (nreverse forms) positions)))
+      (if resume
+          (progn (file-position stream resume) (values nil nil nil))
+          (values next start pending)))))
 
 (defun %load-forms (stream in fasl file print)
   "Evaluate the forms read from IN, those of STREAM: a compiled file when FASL
@@ -910,6 +1027,8 @@ native name FILE, if any)."
 (defun load (filespec &key (verbose *load-verbose*) (print *load-print*)
                            (if-does-not-exist t) external-format)
   (declare (ignore external-format))
+  ;; (what the file defines: %LOAD-BATCH)
+  (%note-env-change)
   (let* ((path (%load-pathname-of filespec))
          (file (and (not (streamp filespec))
                     (if (and (null (pathname-type path)) (not (probe-file path)))
