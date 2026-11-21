@@ -2896,6 +2896,39 @@ What is not as fast as intended, and why:
   `bench/suite.lisp` (0.81) and `bench/programs.lisp` (0.88) within the
   noise. Within one function between calls there is little to gain
   either: cl-ppcre's closures read each special variable once per call.
+  **Since kept (2026-11-22), with the character check it waited for.**
+  `char=` / `char/=` of one value known to be a character (the character
+  of `schar` of a simple string, a declared one, a constant) and one of
+  unknown type compared codes, the known one's read from the string
+  without making a character, the other tested inline (an immediate at
+  least the character tag; the helper `:check-char` only signals): it was
+  two calls of `:check-char`, one per argument, at every element of
+  cl-ppcre's character searcher (`(char= (schar *string* i) chr)`, `chr`
+  a variable the closure captured from a parameter). A probe of that
+  searcher, 30000 scans of 2000 characters in a script: 80 → 64 ms (SBCL
+  43); with `chr` declared a character 47, with `*string*` bound to a
+  local around the loop 64 → 46. Then the loop's reads, as above
+  (`sref-loop-wrap`, src/codegen.lisp): in a loop that calls no function
+  (`:call`, `:funcall`, `:lcall`...), assigns no special variable and binds
+  none, the value cells of the program's special variables it reads (not
+  those of COMMON-LISP or the implementation, which its primitives may
+  set) and the variables of the closure's environment it reads (never
+  assigned: not in cells) are read once on entry, each use taking the
+  local (an empty cell, an unbound variable, read again by the use, which
+  signals): the probe 64 → 58 ms, a probe of three matchers and a greedy
+  repetition 100 → 71 ms (SBCL 73). Interleaved, two rounds on one slot:
+  `tools/bench-lem.sh` (held-out input) 1.17/1.18 → 1.13/1.15
+  (`l-type-redisplay` 1.92/1.96 → 1.73/1.83), a page-down probe 301–306 →
+  288–289 ms, the syntax-scan probe 1173–1201 → 1161–1179;
+  `bench/apps.lisp`, `tools/bench-libs.sh`, `bench/library.lisp`
+  (compiled 0.74–0.75 both, script 1.12 both) unchanged. What is left of
+  cl-ppcre's time is not in loops (a profile naming each closure by its
+  `create-matcher-aux` method): the character-class tests (as SBCL's), the
+  alternation's loop over its matchers calling each, the string and
+  look-behind matchers and the scanner, each call reading `*string*` and
+  `*end-pos*` with their declared types checked and calling the next
+  matcher through `funcall`. The one-export module +162 bytes, the REPL
+  image +9.9 KB.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`

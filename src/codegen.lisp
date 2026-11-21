@@ -307,6 +307,63 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
          (eq (lvar-rep src) (lvar-rep lv)) (unboxed-local-p src)
          src)))
 
+;;; The special variables of a program that a loop (a TAGBODY) reads when
+;;; nothing in it can change their values: no call of a function (only the
+;;; implementation's primitives, which neither bind nor assign the
+;;; program's variables), no assignment of a special variable, no binding
+;;; of one.  Their value cells are read once, on entry to the loop, into
+;;; locals that the reads in the loop take (a cell that was empty, an
+;;; unbound variable, is read again by the read, which signals): a regular
+;;; expression's matcher looping over *STRING* reads it once.
+(defvar *sref-loop-locals* nil "((symbol local . fstate) ...): the special variables read on entry to the loop")
+(defvar *env-loop-locals* nil "((lvar local . fstate) ...): the closure's variables read on entry to the loop")
+
+(defun sref-loop-symbols (node)
+  "The special variables NODE (a TAGBODY) reads that it cannot change, or NIL;
+and the variables of the closure's environment it reads (never assigned)."
+  (let ((syms nil) (envs nil))
+    (labels ((walk (n)
+               (case (car n)
+                 ((:call :funcall :lcall :mvcall :apply :sset :progv :wasm :wasm-test :defun :throw
+                   :flet :labels :ltv)
+                  (return-from sref-loop-symbols nil))
+                 (:sref (let ((sym (second n)))
+                          (when (and (symbolp sym) (symbol-package sym)
+                                     (not (member (package-name (symbol-package sym))
+                                                  '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD" "CLYSM-SYS")
+                                                  :test #'string=))
+                                     (not (let ((h (assoc sym *sref-loop-locals*))) (and h (eq (cddr h) *fs*)))))
+                            (pushnew sym syms))))
+                 (:lref (let ((lv (second n)))
+                          (when (and (not (boxed-p lv)) (eq (car (gethash lv (fstate-locs *fs*))) :env)
+                                     (not (let ((h (assoc lv *env-loop-locals*))) (and h (eq (cddr h) *fs*)))))
+                            (pushnew lv envs))))
+                 ((:let :mvbind)
+                  (when (some #'lvar-special (if (eq (car n) :let) (mapcar #'car (second n)) (second n)))
+                    (return-from sref-loop-symbols nil)))
+                 (:prim (when (member (prim-name (second n))
+                                      '(set clysm-sys::%set-symbol-value makunbound clysm-sys::%makunbound
+                                        symbol-value clysm-sys::%progv-bind))
+                          (return-from sref-loop-symbols nil))))
+               (map-subnodes #'walk n)))
+      (walk node))
+    (values syms envs)))
+
+(defun sref-loop-wrap (node body-fn)
+  (multiple-value-bind (syms envs) (and *fs* (sref-loop-symbols node))
+    (if (and (null syms) (null envs))
+        (funcall body-fn)
+        (let* ((locals (loop for sym in syms collect (list* sym (new-local) *fs*)))
+               (elocals (loop for lv in envs collect (list* lv (new-local) *fs*)))
+               (init (append
+                      (loop for (sym l) in locals
+                            append `((:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-value+) (:local.set ,l)))
+                      (loop for (lv l) in elocals
+                            append `(,@(env-get-code (cdr (gethash lv (fstate-locs *fs*)))) (:local.set ,l))))))
+          (let ((*sref-loop-locals* (append locals *sref-loop-locals*))
+                (*env-loop-locals* (append elocals *env-loop-locals*)))
+            (append init (funcall body-fn)))))))
+
 ;;; A special variable used as the array of two-dimensional accesses in a
 ;;; loop (a program's *GRID*): on entry to the outermost such loop its value,
 ;;; when a simple array of element type T, is kept in a local with its
@@ -527,7 +584,10 @@ them from the header again, in a loop), else NIL."
                     ((fdual-local lv) (fdual-materialize-code (cdr loc) (fdual-local lv)))
                     (t
                   `(,@(rep-get-code (lvar-rep* lv) (cdr loc)) ,@(box-rep-code (lvar-rep* lv) (lvar-type lv))))))
-      (:env (env-get-code (cdr loc)))
+      (:env (let ((h (assoc lv *env-loop-locals*)))
+              (if (and h (eq (cddr h) *fs*))
+                  `((:local.get ,(cadr h)))
+                  (env-get-code (cdr loc)))))
       ;; a captured and assigned variable's cell, in a local of its type
       (:cell `((:local.get ,(cdr loc)))))))
 
@@ -751,7 +811,14 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
                  (when dual (return-from cg `(,@dual ,@(when mv (mv-one)))))
                `(,@(var-set-code (second node) `(,@(cg (third node)) (:local.tee ,tmp)))
                  (:local.get ,tmp) ,@(when mv (mv-one))))))
-      (:sref (let ((ok (gensym "BOUND")))
+      (:sref (let ((ok (gensym "BOUND")) (h (assoc (second node) *sref-loop-locals*)))
+               (when (and h (eq (cddr h) *fs*))
+                 ;; (read on entry to the loop: SREF-LOOP-WRAP)
+                 (return-from cg
+                   `((:block ,ok (:ref :eq)
+                       (:local.get ,(cadr h)) (:br_on_non_null ,ok)
+                       (:global.get ,(sym-global (second node))) (:call :symbol-value) (:ref.as_non_null))
+                     ,@(when mv (mv-one)))))
                `((:block ,ok (:ref :eq)
                    (:global.get ,(sym-global (second node))) (:struct.get :symbol ,+sym-value+) (:br_on_non_null ,ok)
                    (:global.get ,(sym-global (second node))) (:call :symbol-value) (:ref.as_non_null))
@@ -786,7 +853,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       ((:flet :labels) (cg-flet node mv tail))
       (:block (cg-block node mv tail))
       (:return-from (cg-return-from node))
-      (:tagbody (sref-md2-wrap node (lambda () (cg-tagbody node mv))))
+      (:tagbody (sref-loop-wrap node (lambda () (sref-md2-wrap node (lambda () (cg-tagbody node mv))))))
       (:go (cg-go node))
       (:catch (cg-catch node mv))
       (:throw (cg-throw node))
