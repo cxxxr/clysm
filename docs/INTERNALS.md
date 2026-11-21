@@ -5285,6 +5285,16 @@ read instead of a `gethash`). The module of one export: 2,041,819 ->
 1,801,118 bytes (`gzip -9` 575,060 -> 522,771): `clos.lisp` 378 -> 258 KB
 of code, `class0.lisp` 25 -> 12, `gray.lisp` 16 -> 6.
 
+**The update of obsolete instances only after a redefinition.** Every
+access to a slot of an instance that may be obsolete
+(`%ensure-current-instance`: `make-condition` does it) kept the update of
+an instance of a redefined class, its error and
+`update-instance-for-redefined-class` with its methods. The update is now
+called through `*obsolete-instance-updater*`, which `%note-obsolete-layout`
+sets when a class is first redefined: a program that redefines no class
+does not carry it. The module of one export: 1,801,118 -> 1,755,743 bytes
+(`gzip -9` 522,771 -> 511,904).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
