@@ -1363,8 +1363,7 @@ position.  In static mode they must all take the same number of arguments."
 (defun %fmtc-literal (string)
   (let ((s *fmtc-stream*))
     (if (= (length string) 1)
-        ;; (WRITE-CHAR: a store at the call site into a string output stream)
-        (list `(write-char ,(char string 0) ,s))
+        (list `(%stream-write-char ,s ,(char string 0)))
         (list `(%fmt-put ,s ,string)))))
 
 (defun %fmtc-node (node)
@@ -1441,7 +1440,7 @@ position.  In static mode they must all take the same number of arguments."
        (when (or colon at) (%fmtc-fail))
        (multiple-value-bind (b v) (%fmtc-params dir '((:int 1)))
          (let ((c (if (char= char #\|) (code-char 12) #\~)))
-           (%fmtc-with b (if (eql (car v) 1) `(write-char ,c ,s) `(%write-chars ,s ,c ,(car v)))))))
+           (%fmtc-with b (if (eql (car v) 1) `(%stream-write-char ,s ,c) `(%write-chars ,s ,c ,(car v)))))))
       (#\Newline
        (%fmtc-params dir '())
        (when (and colon at) (%fmtc-fail))

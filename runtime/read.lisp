@@ -45,14 +45,14 @@
         (svref (%rt-ascii rt) code)
         (gethash c (%rt-syntax rt) :constituent))))
 
-;; the syntax type of an ASCII character is read from the table at the call
-;; site (the reader asks it of every character)
-(define-compiler-macro %syntax (c rt)
+;; the syntax type of an ASCII character read from the table at the call
+;; site (in the reader's loops, which ask it of every character)
+(defmacro %syntax-fast (c rt)
   (let ((ch (gensym "C")) (r (gensym "RT")) (code (gensym "CODE")))
     `(let* ((,ch ,c) (,r ,rt) (,code (char-code ,ch)))
        (if (%fx< ,code 128)
            (%svref (%rt-ascii ,r) ,code)
-           (locally (declare (notinline %syntax)) (%syntax ,ch ,r))))))
+           (%syntax ,ch ,r)))))
 
 (defun %set-syntax (c rt type)
   (let ((code (char-code c)))
@@ -262,13 +262,13 @@ macro character returned no values), :dot or :eof."
     (let ((c (%rd-char s)))
       (when (eq c :eof) (return (values nil :eof)))
       (let ((rt *readtable*))
-        (unless (eq (%syntax c rt) :whitespace)
+        (unless (eq (%syntax-fast c rt) :whitespace)
           (return (%read-object-at s c rt allow-dot)))))))
 
 (defun %read-object-at (s c rt allow-dot)
   "Read the object that starts with the character C, which was read from S and
 is not whitespace in the readtable RT.  Returns the values of %READ-OBJECT1."
-  (let ((fn (let ((syn (%syntax c rt)))
+  (let ((fn (let ((syn (%syntax-fast c rt)))
               (and (or (eq syn :terminating) (eq syn :non-terminating))
                    ;; (the cached entry of an ASCII character read here)
                    (let ((code (char-code c)))
@@ -570,7 +570,7 @@ characters: returns T and the number, else NIL with nothing more consumed."
   "Skip whitespace; returns the next character, which is consumed, or :eof."
   (loop
     (let ((c (%rd-char s)))
-      (when (or (eq c :eof) (not (eq (%syntax c *readtable*) :whitespace)))
+      (when (or (eq c :eof) (not (eq (%syntax-fast c *readtable*) :whitespace)))
         (return c)))))
 
 (defun %skip-whitespace (s)
@@ -606,7 +606,7 @@ Fills *TOKEN-BUF* / *TOKEN-ESC*; returns true when some character was escaped."
     (setq %token-last-escape -1)
     (loop
       (when (eq c :eof) (return))
-      (let ((syn (%syntax c rt)))
+      (let ((syn (%syntax-fast c rt)))
         (case syn
           (:single-escape
            (let ((n (%stream-read-char s)))

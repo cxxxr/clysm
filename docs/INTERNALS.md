@@ -2962,7 +2962,9 @@ What is not as fast as intended, and why:
   without a decimal digit and not only dots: `+`, `*x*`, `&rest`, `1+` is
   not) is a symbol read so, a lone dot is the consing dot, a string with
   escapes is copied in runs, the syntax type and the reader macro of an
-  ASCII character are read at the call site, lists are made in order. The
+  ASCII character are read at the call site of the reader's loops
+  (`%syntax-fast`; at every call of `%syntax` it made the module of one
+  export 3 KB larger), lists are made in order. The
   reading loop reads an ASCII character of a file inline (`%fs-fast-char`).
   Measured against the build before (2026-11-21, interleaved runs on one
   slot): `read` of forms from a 7 KB file 3.3 → 1.4 times SBCL's time,
@@ -2974,15 +2976,22 @@ What is not as fast as intended, and why:
 * **Printing and FORMAT**: `output-object` writes a number at once (no
   circularity, no standard pretty printing: `prin1-to-string` of a float,
   `write-to-string` with `:base`), `princ` of a symbol in the standard
-  cases writes its name, a literal character of a control string is a
-  `write-char` (a store at the call site into the string stream of `format
-  nil`, a call each before), `~:R` writes the cardinal into a string output
+  cases writes its name, `~:R` writes the cardinal into a string output
   stream and changes its last word there, and a second scratch string
   stream serves a `format nil` or `princ-to-string` made while the first is
   in use (`~R` made a new stream each time). `i-print-numbers` 1.36–1.45 →
   1.09–1.16, `i-format-english` 1.14 → 1.0, `i-format-justify` 1.43 → 1.3
   (the pretty stream skips the expansion of tabs when none was queued);
-  `bench/io.lisp` 0.89 → 0.82. A line of ASCII octets is decoded by
+  `bench/io.lisp` 0.89 → 0.82. `terpri` and `fresh-line` of a string
+  output stream store the newline at the call site when the buffer has
+  room (else one call). Measured and not kept (2026-11-22): FORMAT's
+  literal characters and strings, `~A` of a simple string and `~D` of a
+  fixnum stored into the string stream of `format nil` at the call site
+  (no function of the directive): in `clysm script` (where every such
+  function is a call through the symbol's function cell) `i-format-table`
+  60 → 55 ms and the other `i-format-*` within noise, for 12 KB more in
+  the module of one export (the runtime's own messages are FORMAT calls),
+  and a literal character as an inline `write-char` (5 KB). A line of ASCII octets is decoded by
   `read-line` in one copying loop (`%utf8-decode`): `read-line` over a 58 KB
   file 3.8 → 1.7 times SBCL's time, which is now mostly the copy of the
   file's octets from the memory into a Lisp vector when it is opened (0.33

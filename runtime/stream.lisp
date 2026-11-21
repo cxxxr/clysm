@@ -888,12 +888,19 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
       (return-from fresh-line (stream-fresh-line s)))
     (if (eql (%stream-column s) 0) nil (progn (write-char #\Newline s) t))))
 
-;; to a string output stream: the newline stored at the call site
+;; to a string output stream with room: the newline stored at the call site
+;; (the rest is the function's)
+(defmacro %string-out-newline-inline (s fallback)
+  (let ((b (gensym "BUF")) (i (gensym "I")))
+    `(let ((,b (%instance-ref ,s +stream-buffer-slot+)) (,i (%instance-ref ,s +stream-index-slot+)))
+       (if (%fx< ,i (%string-length ,b))
+           (progn (%set-schar ,b ,i #\Newline) (%set-instance-ref ,s +stream-index-slot+ (%fx+ ,i 1)))
+           ,fallback))))
 (define-compiler-macro terpri (&optional (stream nil))
   (let ((s (gensym "S")))
     `(let ((,s ,stream))
        (if (%string-out-p ,s)
-           (progn (write-char #\Newline ,s) nil)
+           (progn (%string-out-newline-inline ,s (%stream-write-char ,s #\Newline)) nil)
            (locally (declare (notinline terpri)) (terpri ,s))))))
 
 ;; a string output stream with characters in its buffer: its last one is
@@ -905,7 +912,7 @@ character output file (its FAST-OUT slot is :FILE), and update its column."
            (let ((,i (%instance-ref ,s +stream-index-slot+)))
              (if (eq (%schar (%instance-ref ,s +stream-buffer-slot+) (%fx- ,i 1)) #\Newline)
                  nil
-                 (progn (write-char #\Newline ,s) t)))
+                 (progn (%string-out-newline-inline ,s (%stream-write-char ,s #\Newline)) t)))
            (locally (declare (notinline fresh-line)) (fresh-line ,s))))))
 
 (defun %finish-output (s)
