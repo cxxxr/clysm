@@ -88,7 +88,9 @@ outline(source);              // a Lisp error is thrown as an Error named LispEr
 The module loads in the caller's thread (Node.js, Electron's main process)
 or, for deep recursion, in a worker (`host/worker.mjs`). Stack traces name
 Lisp functions by file and line. `--shake` leaves out the functions the
-program does not refer to. Subprocesses are run with `uiop:run-program` and
+program does not refer to; `--shake-symbols` the symbols too, for a program
+that does not look up by name (`intern`, `find-symbol`, `read`) a symbol its
+code does not refer to (looking one up is then an error). Subprocesses are run with `uiop:run-program` and
 `uiop:launch-program`.
 
 ## Implementation

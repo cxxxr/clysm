@@ -5,7 +5,11 @@ cd "$(dirname "$0")/../.." || exit 1
 mkdir -p build
 bin/clysm library ${SHAKE:+--shake} tests/lib/demo.lisp -o build/lib-test/demo.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
-node tests/lib/run.mjs build/lib-test/demo.mjs
+node tests/lib/run.mjs build/lib-test/demo.mjs || exit 1
+# a library without the symbols its code does not refer to (--shake-symbols)
+bin/clysm library --shake-symbols tests/lib/symbols.lisp -o build/lib-test/symbols.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/symbols.mjs build/lib-test/symbols.mjs || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

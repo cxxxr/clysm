@@ -53,9 +53,23 @@ The universal value type is `(ref null eq)`.
 * **NIL / T** — singleton `$symbol` structs held in immutable globals (NIL is a
   real symbol, so `symbol-name`/`symbol-plist` work on it).
 * **cons** — `struct { car: mut eqref, cdr: mut eqref }`.
-* **symbol** — `struct { name: (ref $string), package: mut (ref null $package),
-  value: mut eqref, function: mut (ref null $closure), plist: mut eqref, hash: i32, flags: mut i32 }`.
-  Unbound = null value slot.
+* **symbol** — `struct { name: mut (ref null $string), package: mut (ref null $package),
+  value: mut eqref, function: mut (ref null $closure), plist: mut eqref, hash: mut i32, flags: mut i32 }`.
+  Unbound = null value slot. The symbols of a whole program, a library or
+  the REPL image are immutable globals made empty (`struct.new_default`),
+  and `:init-symbols`, the first thing `_start` does, sets their names,
+  hashes, property lists and flags from two passive data segments: the
+  characters of the names, one octet each, and three octets a symbol (its
+  package, its flags, the length of its name) in the order of `:symtab`,
+  the vector of the symbols that `%init-packages` puts in their packages
+  (`symbol-table-data` in `src/driver.lisp`). Each symbol's initializer had
+  the characters of its name as an `i32.const` each, a third of the global
+  section: the module of one export is 250 KB smaller (4,518,062 →
+  4,267,475 bytes; with `gzip -9` 998,490 → 961,175), the REPL image 386 KB
+  (9,716,468 → 9,330,167), and a library instantiates and starts in 17.5 ms
+  instead of 22.1 (`lib.create()`, median), the REPL image without a heap
+  image in 185 ms instead of 196 (best of 11). A name of more than
+  255 characters or of a character beyond 255 is still in the initializer.
 * **string** — `(array (mut i32))` of code points; **simple-vector** — `(array (mut eqref))`;
   also byte, bit and `f64` vectors. Non-simple arrays (fill pointers, adjustable,
   multi-dimensional, displaced) use a header struct around a simple array.
@@ -4536,12 +4550,34 @@ instead of 65 (12 ms to compile the module, the rest the toplevel forms of
 the runtime). Every symbol stays, so `intern` and `read` work, but a function
 called only by a name made at run time (`(funcall (intern ...))`, `eval` of
 new code, `~/name/` in a control string made at run time) is not there.
+With `--shake-symbols` (implies `--shake`) the symbols nothing refers to go
+too (`shake-module :drop-symbols t`, and the symbol table is made again of the
+symbols left): the program promises not to look up by name a symbol its
+code does not refer to. What stays is every symbol that reached code or a
+reached constant names (the keywords of `&key` parameters, the names the
+printer and the reports of conditions use, the symbols of `defvar`s),
+those whose definition's value is used, and every package (`:pkgtab`).
+The initial value of a variable is then set by a function `(:install
+SYMBOL :value N)` of its own, kept only with its symbol, and an install
+whose value is dropped at once goes with the `drop`. The names left out
+of `COMMON-LISP` and of the program's own packages (not the runtime's,
+but `COMMON-LISP-USER`) are a third data segment: `find-symbol`, and so
+`intern` and the reader, signal a `package-error` ("... is not in this
+module: it was compiled with --shake-symbols") when a name not found is
+one of them, instead of making a new symbol that is not the one meant.
+`DEFPACKAGE` makes anew a symbol it exports that was left out, and does
+not import one (`%defpackage-import`); the printer looks up names without
+the check (`%find-symbol`). The module of one export is 43 KB smaller with
+it (4,224,522 bytes, 951,011 with `gzip -9`: 3,440 symbols of 5,050 are
+reached from the code the runtime's toplevel forms keep, so it gains more
+as that code goes, issue #30); `tests/lib/symbols.lisp` is a library
+compiled with it.
 The expander of a macro is kept only when something refers to the macro's
 name (the definition is wrapped in `sys:%when-reached`, installed as a
 function definition is): compiled code has expanded the macro already.
 `SHAKE=1 tools/run-tests.sh` runs the test suite this way. What remains is
 mostly reached through generic paths (the printer, `format`, CLOS dispatch,
-conditions) and the names of the symbols (the global section, 0.6 MB).
+conditions) and the constants and closures of the global section (0.4 MB).
 For pages, the module is best served as a file of its own, which the browser
 caches for every page that uses it.
 

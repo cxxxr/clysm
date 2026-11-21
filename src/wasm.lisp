@@ -282,7 +282,7 @@ WRITE-SHAKE-WHY.")
     (unless (equal (car preds) *shake-walking*)
       (setf (gethash to *shake-why*) (cons *shake-walking* preds)))))
 
-(defun shake-module (m &key (keep-globals '(:symtab :pkgtab)))
+(defun shake-module (m &key (keep-globals '(:symtab :pkgtab)) drop-symbols)
   "Drop what a whole program cannot reach: the functions and globals not
 reached from the exports and the start function, and the definitions of
 global functions whose symbols nothing refers to.  A definition is a call
@@ -290,7 +290,11 @@ of a function named (:install SYMBOL N) (see CG-DEFUN), which is followed
 only once SYMBOL is reached: by a (:global.get (:sym SYMBOL)) in reached
 code or in the initializer of a reached global other than KEEP-GLOBALS (the
 table of all symbols, which INTERN uses, keeps the symbols but not their
-functions).  Calls of the installs that are not reached are removed."
+functions).  Calls of the installs that are not reached are removed.  With
+DROP-SYMBOLS, the globals of the symbols that nothing reached are dropped too
+(the caller then makes the table of symbols again, of those left): a symbol
+stays when something refers to it, or when the value of an install of it
+that is not reached is used (not dropped at once)."
   (let ((funcs (make-hash-table :test 'equal)) (globals (make-hash-table :test 'equal))
         (symbols (make-hash-table :test 'eq)) (pending (make-hash-table :test 'eq))
         (queue nil) (queue-end nil) (gqueue nil)
@@ -335,17 +339,26 @@ functions).  Calls of the installs that are not reached are removed."
                    (:ref.cast (when (and (consp (cdr x)) (not (eq (second x) :null)))
                                 (let ((fn (cdr (assoc (second x) rewrites))))
                                   (when fn (mark-func fn))))))
-                 (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
+                 (do ((l x (cdr l))) ((atom l))
+                   (walk (car l))
+                   ;; the value of an install, if not reached, is its symbol
+                   (when (and drop-symbols (install-call-p (car l)) (not (eq (cadr l) :drop)))
+                     (let ((name (list :sym (second (second (car l))))))
+                       (unless (gethash name globals)
+                         (setf (gethash name globals) t)
+                         (push name gqueue)))))))
+             (install-call-p (x) (and (consp x) (eq (car x) :call) (install-p (second x)))))
       (loop for (nil kind ref) in (wasm-module-exports m)
             do (case kind (:func (mark-func ref)) (:global (mark-global ref))))
       (loop for f across (wasm-module-funcs m) when (wasm-func-export f) do (mark-func (wasm-func-name f)))
       (when (wasm-module-start m) (mark-func (wasm-module-start m)))
       ;; every symbol stays (INTERN finds it), without making its function reached
       (dolist (g keep-globals) (when (global-defined-p m g) (setf (gethash g globals) t)))
-      (loop for g across (wasm-module-globals m)
-            when (and (consp (first g)) (eq (car (first g)) :sym))
-              do (setf (gethash (first g) globals) t) (push (first g) gqueue)
-                 (when *shake-why* (shake-edge (cons :global (first g)))))
+      (unless drop-symbols
+        (loop for g across (wasm-module-globals m)
+              when (and (consp (first g)) (eq (car (first g)) :sym))
+                do (setf (gethash (first g) globals) t) (push (first g) gqueue)
+                   (when *shake-why* (shake-edge (cons :global (first g))))))
       (loop while (or queue gqueue)
             do (cond (queue (let* ((f (pop queue)) (*shake-walking* (cons :func (wasm-func-name f))))
                               (walk (wasm-func-body f))))
@@ -354,14 +367,19 @@ functions).  Calls of the installs that are not reached are removed."
                                (*shake-walking* (cons :global name)))
                           (when g (walk (fourth g)))))))
       ;; the calls of installs that were not reached: the symbol, their value
+      ;; (an install whose value is dropped at once goes with the drop)
       (labels ((strip (body)
-                 (loop for x in body
-                       collect (cond ((and (consp x) (eq (car x) :call) (install-p (second x))
-                                           (not (gethash (second x) funcs)))
-                                      `(:global.get (:sym ,(second (second x)))))
-                                     ((and (consp x) (member (car x) '(:block :loop :if :try_table)))
-                                      (strip-structured x))
-                                     (t x))))
+                 (let ((out nil))
+                   (do ((l body (cdr l))) ((null l) (nreverse out))
+                     (let ((x (car l)))
+                       (cond ((and (consp x) (eq (car x) :call) (install-p (second x))
+                                   (not (gethash (second x) funcs)))
+                              (if (eq (cadr l) :drop)
+                                  (setf l (cdr l))
+                                  (push `(:global.get (:sym ,(second (second x)))) out)))
+                             ((and (consp x) (member (car x) '(:block :loop :if :try_table)))
+                              (push (strip-structured x) out))
+                             (t (push x out)))))))
                (strip-structured (x)
                  (ecase (car x)
                    ((:block :loop) (list* (first x) (second x) (third x) (strip (cdddr x))))
