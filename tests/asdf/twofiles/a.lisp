@@ -1,0 +1,5 @@
+(defpackage :twofiles (:use :cl) (:export #:f #:g #:h #:total))
+(in-package :twofiles)
+(defvar *loads* 0)
+(defun h (x) (* x 10))
+(defun f (x) (+ (g x) 1))

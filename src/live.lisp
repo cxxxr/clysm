@@ -451,9 +451,17 @@ as in stack traces (FOO, or FOO#123 for one of them).")
 (defvar *unit-segments* nil "the toplevel functions of each segment of the unit, reversed")
 (defvar *unit-castfns* nil "the functions of the checked casts of the unit's module")
 
-(defun call-with-compilation-unit (thunk)
-  "Call THUNK with a new compilation unit being compiled."
-  (let ((*live-mode* t) (*live-packages* t) (*warnings* nil))
+(defun call-with-compilation-unit (thunk &optional files)
+  "Call THUNK with a new compilation unit being compiled.  FILES: the unit
+holds several files (SYS::%COMPILE-FILES, a system's files in one module):
+a call from one file to a function another file defines is a guarded direct
+call, as between the forms of a batch of LOAD (*BATCH-FORMS*, the index of
+a form being that of its file: UNIT-BEGIN-FILE)."
+  (let ((*live-mode* t) (*live-packages* t) (*warnings* nil)
+        (*batch-forms* (and files (make-hash-table :test 'eq)))
+        (*batch-unknown-calls* (and files (make-hash-table :test 'eq)))
+        (*batch-no-direct* (and files (make-hash-table :test 'eq)))
+        (*batch-form-index* 0))
     (with-fresh-codegen-state ()
       (let ((*m* (make-wasm-module)) (*unit-env* (make-cenv)) (*unit-segments* nil) (*unit-castfns* nil))
         (clysm-sys::%call-with-world-lock
@@ -486,6 +494,14 @@ as in stack traces (FOO, or FOO#123 for one of them).")
         (setf *current-toplevel* current *toplevel-nodes* nodes *toplevel-weight* weight
               *toplevel-lams* lams)))
     nil))
+
+(defun unit-begin-file (k)
+  "The forms after this are those of the Kth file of the unit (its segment
+before ended: a call there of a function a later file defines went through
+the symbol, so the function may be known to the files after it)."
+  (setf *batch-form-index* k)
+  (when *batch-unknown-calls* (clrhash *batch-unknown-calls*))
+  nil)
 
 (defun unit-end-segment ()
   "End the current segment and compile its functions; its number, or NIL

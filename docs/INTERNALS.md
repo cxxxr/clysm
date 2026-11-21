@@ -1973,6 +1973,35 @@ once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
 `%load-compiled-bundled`); the fasls of other images are deleted only when a
 month old, since several images (the REPL's, an application's) may be in
 use: deleting them made the other image compile ASDF again, ten seconds.
+**System fasls.** A system's files are also compiled into one fasl of one
+module (`contrib/asdf-hooks.lisp`, `sys::%compile-files` in
+`runtime/eval.lisp`), so that the calls between its files are direct calls
+that V8 can inline and that carry the types of their arguments and values,
+as within one file. Each file is read and processed as `compile-file`
+processes it (its own `*package*`, `*readtable*` and policy), the module
+being cut into a segment at the start of each file; a call from one file
+to a function another file of the system defines is guarded as the calls
+between the forms of a batch of `load` are (`(if (%defun-guard 'f) direct
+call through the cell)`, the index of a form being that of its file:
+`unit-begin-file` in `src/live.lisp`), so a redefinition of `f` (at the
+REPL, by `trace`, by a later file) is still seen; a call of a function of a
+later file goes through its symbol, as does one of a later segment within
+a file. After a system is loaded from its per-file fasls, its system fasl
+(`NAME--system.fasl` next to the fasl of its first file, with the list of
+its files in `NAME--system.files`) is made when it is missing or older than
+a fasl or source of the system or its `.asd`: in that image, where its
+definitions are made already, so compiling them again is like recompiling a
+loaded file (identical `defstruct`s, `defclass`es, constants). When the
+system is next loaded and is up to date, the load of its first file loads
+the system fasl, which runs the files in order, and the loads of the others
+only mark them done (`asdf::*clysm-system-fasls-loaded*` lists the systems
+loaded so). Only systems whose components are plain Lisp source files (in
+modules, with static files) without around-compile hooks qualify;
+`asdf::*clysm-system-fasls*` NIL turns it off. The fasl cache holds each
+such system twice, and the first build compiles it twice (esrap with
+Alexandria: 2.2 → 3.1 s from an empty cache). `tests/asdf/twofiles` loads a
+system from its system fasl and redefines functions of one file that the
+other calls.
 `make test-asdf` loads a small multi-system example (`tests/asdf/`). There
 are no subprocesses, so `uiop:run-program` is not available.
 
@@ -2666,6 +2695,15 @@ What is not as fast as intended, and why:
   :test #'string-equal :key #'car` 83 → 56 (40), `remove :test #'equal` 38
   → 33 (26). (`equalp` is left out: its inline expansion is 6 KB a loop; the
   image grew by 47 KB.)
+  With system fasls (see ASDF), the calls between a system's files are
+  guarded direct calls in one module: `tools/bench-libs.sh bench/apps.lisp`,
+  base and new alternately on one slot, four rounds: `a-esrap` 110–120 →
+  98–108 ms (1.97 → 1.72–1.77 times SBCL), the file 1.27–1.29 → 1.24–1.25;
+  `bench/libs.lisp` (1.16 both), Lem's comparator (1.44 both: its time is in
+  generic functions and the runtime, not in calls between its files) and
+  `tools/bench-startup.sh` (loading Alexandria, cl-ppcre and Babel from
+  their fasls, 5.93 against 6.07) unchanged. esrap's files concatenated into
+  one file (unguarded calls, forward calls direct too) take 95–103 ms.
 * **Libraries** are within 2.5 to 3 (`l-split-sequence`, `l-babel`):
   the remaining time is mostly in the runtime's sequence functions called with
   keyword arguments of variables (`position` with `:key` and `:test`
