@@ -1973,7 +1973,9 @@ once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
 `%load-compiled-bundled`); the fasls of other images are deleted only when a
 month old, since several images (the REPL's, an application's) may be in
 use: deleting them made the other image compile ASDF again, ten seconds.
-**System fasls.** A system's files are also compiled into one fasl of one
+**System fasls** (opt-in: `(setf asdf::*clysm-system-fasls* t)` after
+`(require :asdf)`; off by default because of the caveats at the end of this
+paragraph). A system's files can also be compiled into one fasl of one
 module (`contrib/asdf-hooks.lisp`, `sys::%compile-files` in
 `runtime/eval.lisp`), so that the calls between its files are direct calls
 that V8 can inline and that carry the types of their arguments and values,
@@ -1996,10 +1998,15 @@ system is next loaded and is up to date, the load of its first file loads
 the system fasl, which runs the files in order, and the loads of the others
 only mark them done (`asdf::*clysm-system-fasls-loaded*` lists the systems
 loaded so). Only systems whose components are plain Lisp source files (in
-modules, with static files) without around-compile hooks qualify;
-`asdf::*clysm-system-fasls*` NIL turns it off. The fasl cache holds each
-such system twice, and the first build compiles it twice (esrap with
-Alexandria: 2.2 → 3.1 s from an empty cache). `tests/asdf/twofiles` loads a
+modules, with static files) without around-compile hooks qualify. Measured
+gain: `a-esrap` 1.97 → 1.72–1.77 times SBCL, `bench/apps.lisp` 1.29 →
+1.24–1.25; libraries, Lem and start-up unchanged. Caveats, why it is off
+by default: making the system fasl recompiles the loaded system in the
+same image, so its compile-time side effects run again (harmless for
+identical definitions, not for a library whose compile-time code is not
+idempotent); the fasl cache holds each such system twice; and the first
+build compiles it twice (esrap with Alexandria: 2.2 → 3.1 s from an empty
+cache). `tests/asdf/twofiles` loads a
 system from its system fasl and redefines functions of one file that the
 other calls.
 `make test-asdf` loads a small multi-system example (`tests/asdf/`). There
@@ -2695,7 +2702,7 @@ What is not as fast as intended, and why:
   :test #'string-equal :key #'car` 83 → 56 (40), `remove :test #'equal` 38
   → 33 (26). (`equalp` is left out: its inline expansion is 6 KB a loop; the
   image grew by 47 KB.)
-  With system fasls (see ASDF), the calls between a system's files are
+  With system fasls (opt-in, see ASDF), the calls between a system's files are
   guarded direct calls in one module: `tools/bench-libs.sh bench/apps.lisp`,
   base and new alternately on one slot, four rounds: `a-esrap` 110–120 →
   98–108 ms (1.97 → 1.72–1.77 times SBCL), the file 1.27–1.29 → 1.24–1.25;

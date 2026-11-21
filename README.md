@@ -206,7 +206,12 @@ ahead of time (`tools/bench.sh FILE`, best of three runs):
 
 Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole
 program. The slow cases and their causes are in
-[docs/INTERNALS.md](docs/INTERNALS.md#performance).
+[docs/INTERNALS.md](docs/INTERNALS.md#performance). With
+`(setf asdf::*clysm-system-fasls* t)` (opt-in) ASDF also compiles each system
+of plain Lisp files into one module, whose calls between files can be
+inlined (esrap: 1.97 → 1.75 times SBCL), at the cost of compiling the system
+twice on its first build, re-running its compile-time code, and a second
+copy in the fasl cache (see [ASDF](docs/INTERNALS.md#asdf)).
 
 ## Limitations
 
