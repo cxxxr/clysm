@@ -54,6 +54,45 @@ image: they are all NOTINLINE, so their callers go through the function cell.")
 (defvar *compiler-macros* (make-hash-table :test 'eq) "symbol -> host fn (form env)")
 (defvar *global-defuns* (make-hash-table :test 'eq) "symbol -> list of lams defined at toplevel")
 (defvar *lam-counter* 0)
+
+;;; A batch: consecutive toplevel forms of a source file that LOAD compiles
+;;; into one module (%LOAD-BATCH, runtime/eval.lisp), so that the calls
+;;; between the functions they define are direct calls (which the engine can
+;;; inline, with the types of the arguments and values flowing between them).
+;;; The forms are still evaluated one by one, so a function of the batch may
+;;; be redefined later (by another form, at the REPL, by TRACE): a call from
+;;; one form of the batch to a function defined by another is guarded,
+;;; (IF (%DEFUN-GUARD 'F) (direct call) (call through the function cell)),
+;;; the guard comparing the function of F with the closure of its definition
+;;; in the module.  (Calls between the functions of one form are direct, as
+;;; when the form is compiled alone.)
+(defvar *batch-forms* nil
+  "In a batch: a table, symbol -> the index of the form of the batch that defines it.")
+(defvar *batch-form-index* nil "In a batch: the index of the form being converted.")
+(defvar *batch-unknown-calls* nil
+  "In a batch: symbol -> the indexes of the forms calling it before a form defined it.")
+(defvar *batch-no-direct* nil
+  "In a batch: the functions that a form called unguarded before another form
+defined them (they are not known functions of the module).")
+
+(defun batch-guarded-p (op)
+  "True when a call of OP, a function name, from the form being converted
+must be guarded (OP is defined by another form of the batch)."
+  (when (and *batch-forms* (symbolp op))
+    (multiple-value-bind (k found) (gethash op *batch-forms*)
+      (if found
+          (/= k *batch-form-index*)
+          (progn (pushnew *batch-form-index* (gethash op *batch-unknown-calls*)) nil)))))
+
+(defun note-batch-defun (sym)
+  "SYM is defined by the form being converted (of a batch)."
+  (when *batch-forms*
+    (multiple-value-bind (k found) (gethash sym *batch-forms*)
+      (declare (ignore k))
+      (unless found
+        (setf (gethash sym *batch-forms*) *batch-form-index*)
+        (when (some (lambda (i) (/= i *batch-form-index*)) (gethash sym *batch-unknown-calls*))
+          (setf (gethash sym *batch-no-direct*) t))))))
 (defvar *dynamic-functions* (make-hash-table :test 'eq) "functions defined at runtime (generic functions)")
 (defvar *current-lam* nil)
 (defvar *warnings* nil)
@@ -132,6 +171,31 @@ says otherwise.  COMPILE-FILE binds it around a file, as SBCL's policy.")
 ;;; ------------------------------------------------------------
 ;;; Macroexpansion
 ;;; ------------------------------------------------------------
+
+(defun batch-guarded-catch (form env)
+  "(CATCH 'TAG (F ARG...)), F a function of another form of the batch and the
+ARGs variables or constants: the form testing the guard before the CATCH, so
+that the CATCH of the direct call may call F's copy whose throws to TAG are
+returns (CATCH-CLONE-CALL), or NIL."
+  (destructuring-bind (tag &rest body) (cdr form)
+    (let ((call (car body)))
+      (when (and (consp tag) (eq (car tag) 'quote) (consp (cdr tag)) (symbolp (second tag))
+                 (= (length body) 1) (consp call) (symbolp (car call)) (car call)
+                 (not (env-lookup-fun env (car call)))
+                 (not (macro-function-in (car call) env)) (not (special-operator-p (car call)))
+                 (not (gethash (car call) *notinline*)) (not (member (car call) *local-notinline*))
+                 (not (gethash (car call) *compiler-macros*))
+                 (not (and *live-compiler-macro-hook* (funcall *live-compiler-macro-hook* (car call))))
+                 (ignore-errors (list-length (cdr call)))
+                 (every (lambda (a)
+                          (or (and (atom a) (not (symbolp a))) (keywordp a) (member a '(nil t))
+                              (and (consp a) (eq (car a) 'quote))
+                              (and (symbolp a) (let ((e (env-lookup-var env a))) (and e (eq (first e) :var))))))
+                        (cdr call))
+                 (batch-guarded-p (car call)))
+        `(if (clysm-sys::%defun-guard ',(car call))
+             (catch ,tag (clysm-sys::%batch-direct-call ,@call))
+             (catch ,tag (clysm-sys::%batch-cell-call ,@call)))))))
 
 (defun macro-function-in (sym env)
   (let ((e (and env (env-lookup-fun env sym))))
@@ -680,6 +744,14 @@ conses (a literal may be circular)."
       (walk form)
       nil)))
 
+(defun strip-return-froms (x name)
+  "X with the block name NAME of its (RETURN-FROM NAME ...) forms left out."
+  (cond ((atom x) x)
+        ((and (eq (car x) 'return-from) (consp (cdr x)) (eq (cadr x) name))
+         (cons 'return-from (strip-return-froms (cddr x) name)))
+        (t (let ((a (strip-return-froms (car x) name)) (d (strip-return-froms (cdr x) name)))
+             (if (and (eq a (car x)) (eq d (cdr x))) x (cons a d))))))
+
 (defun tree-mentions-p (x sym)
   (if (consp x) (or (tree-mentions-p (car x) sym) (tree-mentions-p (cdr x) sym)) (eq x sym)))
 
@@ -704,8 +776,10 @@ when it may be copied into callers compiled later, else NIL."
            (ll (if (eq (car l) 'lambda) (second l) (third l)))
            (body (if (eq (car l) 'lambda) (cddr l) (cdddr l))))
       (when (and (listp ll)
+                 (<= (form-size body *live-inline-max-size*) *live-inline-max-size*)
                  (notany (lambda (x) (member x '(&environment &whole))) ll)
-                 (not (tree-mentions-p (cons ll body) sym))
+                 ;; (not recursive; a RETURN-FROM of its block is copied with the block)
+                 (not (tree-mentions-p (strip-return-froms (cons ll body) sym) sym))
                  (not (uses-redefinable-macros-p (cons ll body)))
                  ;; a loop stays in its own function (which the engine optimizes when it is called again)
                  (notany (lambda (op) (tree-mentions-p body op)) *loop-operators*)
@@ -769,6 +843,17 @@ when it may be copied into callers compiled later, else NIL."
                             `(clysm-sys::%function-cell-eq ',op ',(fourth e)))
                        ,copy
                        (locally (declare (notinline ,op)) (,op ,@temps))))))))))
+    ;; a small function of another form of the batch (defined before this
+    ;; one): a copy guarded by the comparison with its definition in the module
+    (when (and rec (batch-guarded-p op))
+      (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
+             (copy (inline-lambda-application op (first rec) (second rec) temps (cdr form))))
+        (return-from live-inline-call
+          (and copy
+               `(let ,(mapcar #'list temps (cdr form))
+                  (if (clysm-sys::%defun-guard ',op)
+                      ,copy
+                      (clysm-sys::%batch-cell-call ,op ,@temps)))))))
     (when rec
       (let ((closure (funcall *live-inline-closure-hook* op)))
         (when (and closure (not (eq closure (third rec))))
@@ -943,6 +1028,18 @@ the depth of copies, one more."
         (cond ((symbolp name) (setf (gethash name *dynamic-functions*) t))
               ((and (consp name) (eq (car name) 'setf) (consp (cdr name)) (symbolp (second name)))
                (setf (gethash (setf-function-symbol (second name)) *dynamic-functions*) t)))))
+    ;; a function of another form of the batch: a guarded direct call
+    ;; (NOTINLINE: through the function cell)
+    (when (and (not (gethash op *notinline*)) (batch-guarded-p op))
+      (let ((temps (loop for nil in (cdr form) collect (gensym "ARG"))))
+        (return-from convert-compound
+          (convert (if (member op *local-notinline*)
+                       `(clysm-sys::%batch-cell-call ,op ,@(cdr form))
+                       `(let ,(mapcar #'list temps (cdr form))
+                          (if (clysm-sys::%defun-guard ',op)
+                              (clysm-sys::%batch-direct-call ,op ,@temps)
+                              (clysm-sys::%batch-cell-call ,op ,@temps))))
+                   env))))
     `(:call ,op ,@(convert-args (trusted-ftype-args op (cdr form) env) env))))
 
 (defvar *defun-param-specs* nil
@@ -1218,14 +1315,16 @@ unboxed (PARAM-CHECK-CODE)."
 (defun convert-function-designator (spec env)
   (cond ((symbolp spec)
          (let ((fe (env-lookup-fun env spec)))
-           (if (and fe (eq (first fe) :fun))
-               `(:lref ,(note-ref (fun-lvar (third fe))))
-               `(:fref ,spec))))
+           (cond ((and fe (eq (first fe) :fun)) `(:lref ,(note-ref (fun-lvar (third fe)))))
+                 ;; (a function of another form of a batch: its current definition)
+                 ((batch-guarded-p spec) (convert `(fdefinition ',spec) env))
+                 (t `(:fref ,spec)))))
         ((and (consp spec) (eq (car spec) 'setf))
          (let ((fe (env-lookup-fun env spec)))
-           (if (and fe (eq (first fe) :fun))
-               `(:lref ,(note-ref (fun-lvar (third fe))))
-               `(:fref ,(setf-function-symbol (second spec))))))
+           (cond ((and fe (eq (first fe) :fun)) `(:lref ,(note-ref (fun-lvar (third fe)))))
+                 ((batch-guarded-p (setf-function-symbol (second spec)))
+                  (convert `(fdefinition ',spec) env))
+                 (t `(:fref ,(setf-function-symbol (second spec)))))))
         ((lambda-form-p spec)
          `(:lambda ,(convert-lambda nil (second spec) (cddr spec) env)))
         ((and (consp spec) (eq (car spec) 'clysm-sys::named-lambda))
@@ -1267,7 +1366,10 @@ unboxed (PARAM-CHECK-CODE)."
       (return-from (convert-return-from (second form) (third form) env))
       (tagbody (convert-tagbody (cdr form) env))
       (go (convert-go (second form) env))
-      (catch `(:catch ,(convert (second form) env) ,(convert-body (cddr form) env)))
+      (catch (let ((guarded (batch-guarded-catch form env)))
+               (if guarded
+                   (convert guarded env)
+                   `(:catch ,(convert (second form) env) ,(convert-body (cddr form) env)))))
       (throw `(:throw ,(convert (second form) env) ,(convert (third form) env)))
       (unwind-protect `(:unwind-protect ,(convert (second form) env)
                                         ,(convert-body (cddr form) env)))
@@ -1574,6 +1676,14 @@ compiling one is a module of its own."
 
 (defmacro defnative (name (form env) &body body)
   `(setf (get ',name 'clysm-native) (lambda (,form ,env) (declare (ignorable ,env)) ,@body)))
+
+;; (a guarded call of a function of another form of a batch, BATCH-GUARDED-P)
+(defnative clysm-sys::%batch-direct-call (form env)
+  (let ((op (second form)) (args (cddr form)))
+    `(:call ,op ,@(convert-args (trusted-ftype-args op args env) env))))
+
+(defnative clysm-sys::%batch-cell-call (form env)
+  `(:funcall ,(convert `(quote ,(second form)) env) ,@(convert-args (cddr form) env)))
 
 (defnative multiple-value-bind (form env)
   (destructuring-bind (vars value-form &rest body) (cdr form)

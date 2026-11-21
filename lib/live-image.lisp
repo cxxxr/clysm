@@ -236,4 +236,7 @@ it: T, or NIL when the compiler signals an error (nothing has run then)."
 (setq sys::*native-compile-hook* #'native-compile)
 (setq sys::*native-eval-hook* #'native-eval)
 (setq sys::*native-eval-forms-hook* #'native-eval-forms)
+;; a batch of LOAD ends with a form that is compiled (a call of its functions)
+(setq sys::*native-batch-final-p-hook*
+      (lambda (form) (and (consp form) (not (ignore-errors (simple-form form))))))
 (setq *package* (find-package "COMMON-LISP-USER"))

@@ -614,12 +614,47 @@ expansion and conversion 0.45 s. In the image, a small form costs about
 0.4 ms of the compiler's time and 0.3 ms of V8's (decoding, validating and
 instantiating the module); a third of the code of a small module is its
 `RUN`, `SNAP` and `RESTORE`, the last two needed only by images that record
-modules for `save-image`. Loading a source file compiles each form to a
-module of its own; batching the `defun`s of a file would change what
-`load` means (a function defined by the batch is not there while the
-following forms are read and their macros expanded, unless defined first
-by the interpreter, and calls within the batch would not see a
-redefinition), so it is not done.
+modules for `save-image`.
+
+**Loading a source file compiles consecutive definitions into one module**
+(`%load-batch`, `runtime/eval.lisp`): a `defun`, `defmethod` or
+`defgeneric` form read from a file is compiled with the definitions that
+follow it (up to 32 forms) and with the form after them when that one is
+compiled (not a simple form: a call of the functions, a `defbench`-like
+macro, a `defmacro`), so that the calls between the functions of a file are
+calls within a module, which V8 inlines, with the types of the arguments and
+values flowing between them (typed and raw copies, catch clones, small
+functions copied into their callers). The forms still mean what they mean
+one by one:
+
+* A call from one form of the batch to a function that another form defines
+  is guarded (`*batch-forms*`, `batch-guarded-p`, `src/frontend.lisp`):
+  `(if (%defun-guard 'f) (direct call) (call through the function cell))`,
+  the guard comparing the function of `f` with the closure of its
+  definition in the module (one `ref.eq`), so a later redefinition (by
+  another form, at the REPL, by `trace`, by `(setf fdefinition)`) is seen.
+  A small function of an earlier form of the batch is copied into the
+  caller under the same guard (`live-inline-call`; the guards of copies in
+  loops are hoisted as those of other copies), a `#'f` of such a function is
+  `(fdefinition 'f)`, and `(catch 'tag (f x y))` of variables tests the
+  guard before the `catch`, so that the direct path may call `f`'s copy whose
+  throws to the tag are returns (`batch-guarded-catch`: `g-ctak` in a script
+  74 → 26 ms, the whole program 30). Calls between the functions of one form
+  are direct, as when the form is compiled alone; a call compiled before
+  another form defined its callee (in a macro's expansion, which the
+  pre-scan of literal `defun`s does not see) makes that callee no known
+  function of the module (`*batch-no-direct*`).
+* A form is read before the definitions before it have run. Only a `#.`
+  calling them, or a macro calling them when it is expanded, can tell: an
+  error of the reader makes the batch run and the form be read again from
+  its position, and an error of the compiler makes the forms be evaluated one
+  by one, as before. (Only the forms of a file are batched; a stream that
+  cannot be read again gets batches of methods only.)
+
+`tests/cases/load-batch.lisp` checks redefinitions of the functions of a
+batch by later forms and by `(setf fdefinition)`, forward calls, `#'f`,
+SETF functions, keywords, doubles, a macro and a `#.` calling a function of
+the batch, and a copy of a function returning from its block in a closure.
 
 Why code loaded from source runs slower than the same code as a whole
 program (2026-11, `MODE=script tools/bench.sh`, the emitted Wasm compared
@@ -632,15 +667,26 @@ mostly the same, but
   `notinline` function called through its symbol); in the image each
   toplevel form is a module of its own (`x-8typecase` 2 times the whole
   program's time, `p-cnm` 1.9, `c-gf3` 1.9, the runtime's `equal` 1.7).
-  `load` of a source file therefore compiles consecutive `defmethod` and
-  `defgeneric` forms (up to 32) into one module (`%load-method-batch`,
-  `*native-eval-forms-hook*`): a method is only reached through its
-  generic function, so unlike a batch of `defun`s this means what the
-  forms one by one mean; methods calling each other then share a module
-  (`p-cnm` 52 → 38 ms in a script, whole program 27). A form after the
-  batch is read before the batch runs (only a `#.` that calls the
-  methods could tell). The call from the caller's module into the method
-  stays a call.
+  `load` of a source file therefore compiles consecutive definitions
+  into one module (`%load-batch`, above; first only `defmethod` and
+  `defgeneric` forms, whose methods are only reached through their generic
+  function: `p-cnm` 52 → 38 ms in a script, whole program 27; then
+  `defun`s too, with guarded calls between the forms). A call into the
+  runtime (`equal`, `length`, the dispatch of a generic function) stays a
+  call into another module.
+* **V8 gave a module made in the image almost no inlining budget.** The
+  optimizing tier scales its inlining budget by the share of small
+  functions (bodies under 50 octets) in the module (`BudgetScaleFactor`,
+  `src/wasm/inlining-tree.h`): none at a quarter or less, the whole at a
+  half or more, a function then growing by a factor of 5 up to 7000 octets
+  instead of 2 up to 700. A whole program has the runtime's many small
+  functions; a module made in the image has mostly large ones (a
+  function's entries and typed copies), so `tak`'s recursive calls of its
+  typed copy were inlined in a program and not in a script. The encoder
+  adds as many filler functions (never called, four octets each: no
+  locals, `unreachable`) as a module needs to be half small
+  (`small-function-fillers`, `src/wasm.lisp`; whole programs need none):
+  `b-tak` in a script 117 → 95 ms (whole program 86).
 * **A store into an old object of an object made after the engine's
   last full collection takes the slow path of the write barrier**, until
   a full collection (a scavenge does not help; a 50 ms pause of the event
@@ -651,7 +697,20 @@ mostly the same, but
   (`b-special` in a script 2.3 times the whole program). The binding
   code now stores each only when its slot holds another object, which a
   binding in a loop finds there (`bind-specials-code`): `b-special` in a
-  script 165 → 75 ms, the whole program 80 → 66.
+  script 165 → 75 ms, the whole program 80 → 66. The helpers `:bind` and
+  `:unbind-to` (which bind `*catch-tags*` to the tag of each `catch`, and
+  more than a few specials at once) store each slot, the symbol's new value
+  and the old value restored at the exit only when it holds another
+  object: a recursion of `catch`es of one tag, `g-ctak`, finds them there
+  (with the batches, `g-ctak` in a script 74 → 26 ms, the whole program 30
+  → 25). The same test of the symbol's value in the inline binding code
+  made the whole program's bindings 10% slower (`v-special-1` 21 → 25 ms),
+  so it is not made there.
+  Making the young generation small (`--max-semi-space-size=1`), so that
+  the objects of a loaded form are promoted before it runs, made
+  `t-throw-closure` in a script 26 → 15 ms but `bench/control.lisp` and
+  `bench/programs.lisp` slower in both modes (whole programs 1.07 and
+  1.02 times their time, scripts 1.04 and 1.06): not kept.
 * What `MODE=script` also shows comes from causes described elsewhere: a
   guarded copy of a fixnum function whose value is assigned back
   (`a-lcg`, `p-hash-fn`'s `xorshift`), a loop at top level in Liftoff.
@@ -729,7 +788,10 @@ when the image starts: 60 KB), so code compiled in the image contains a copy
 of them as a whole program does. The guarded copies of small functions
 defined at the REPL (`live-inline-call`) take any lambda list (`&optional`,
 `&key` with constant keywords, `&rest`): `(kfun i :c 3)` of a function
-defined in an earlier form runs as fast as in a whole program.
+defined in an earlier form runs as fast as in a whole program. A body that
+returns from the function's block (`(return-from f x)`, also in a closure)
+is copied with the block; it was taken for a recursive one
+(`strip-return-froms`).
 
 How such copies are compiled (2026-11, measured on numeric probes written
 for it: spectral norm with and without declarations, small double helpers
@@ -2124,7 +2186,27 @@ inside the running image"): `bench/suite.lisp` 1.11, `bench/holdout.lisp`
 program got faster: `a-lcg` 12 → 6 ms, `a-points` 12 → 8; in the image it is
 0.97 of its time before), `bench/vectors.lisp` 1.09; numeric probes written
 for it (spectral norm, double helpers in a loop) went from 1.9–11 times the
-whole program to 1.2–2.3.
+whole program to 1.2–2.3. In 2026-11-21, with the batches of `load` (guarded
+direct calls between the definitions of a file), the filler functions that
+give a module made in the image V8's whole inlining budget and the
+binding helpers that skip stores of what a slot holds (see "Compiling inside
+the running image"; script time against the same file compiled, best of
+three, interleaved with the build before on one slot): `bench/suite.lisp`
+1.10 → 1.09, `bench/programs.lisp` 1.12 → 1.14 (its script time 0.99 of
+before; the whole programs were faster in that run), `bench/gabriel.lisp`
+1.24 → 1.13, `bench/control.lisp` 1.25 → 1.21, `bench/clos.lisp` 1.16 →
+1.11 (`g-ctak` 2.35 → 1.00, `g-takl` 1.56 → 1.09, `b-tak` 1.36 → 1.08,
+`p-typecase` 1.49 → 0.91, `p-cnm` 1.41 → 1.00, `r-mapc-return` 1.45 →
+1.01, `v-return-closures` 1.64 → 1.17, `c-cnm4` 1.44 → 1.14); compiled, the
+same files against SBCL are unchanged (`suite` 0.82, `gabriel` 0.91 → 0.89,
+`control` 0.76 → 0.78, within the noise). Loading 500 small `defun`s from
+source takes 0.85 s instead of 1.19 (fewer modules). What remains is mostly
+calls into the runtime's module (`equal`, `length`, the dispatch and
+combination of generic functions: `p-method-comb` 1.9, `c-comb-all` 1.5,
+`v-go-closure` 3.7), the objects of a just-loaded form being young when it
+runs (`t-throw-closure` 2.2: see the write barrier), and `p-equal`'s
+similar string literals, which a compiled file may coalesce and `load` may
+not.
 
 The libraries' own time (Clysm's milliseconds, `tools/bench-libs.sh`, the
 best of two back-to-back runs on the same 4-CPU slot against the build

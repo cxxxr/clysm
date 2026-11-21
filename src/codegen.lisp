@@ -911,7 +911,7 @@ others are consed onto the list for its rest list."
     (when (assumed-guard-p c) (return-from cg-if (cg a mv tail)))
     `(,@(cg-test c)
       ;; the guard of a copied function body is expected to hold
-      ,@(when (and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard)))
+      ,@(when (and (eq (car c) :prim) (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard clysm-sys::%defun-guard)))
           '((:hint 1)))
       (:if nil :eqref ,(cg a mv tail) (,@(cg b mv tail) ,@(guard-else-epilogue c))))))
 
@@ -1497,6 +1497,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
     (and lams (null (cdr lams))
          (lam-static-p (car lams))
          (not (gethash sym *notinline*))
+         (not (and *batch-no-direct* (gethash sym *batch-no-direct*)))
          (car lams))))
 
 (defvar *called-functions* (make-hash-table :test 'eq))
@@ -2072,7 +2073,7 @@ handler is HANDLER (a thunk run in the context's dynamic environment)."
 
 (defun guard-node-p (c)
   (and (consp c) (eq (car c) :prim)
-       (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard))
+       (member (prim-name (second c)) '(clysm-sys::%function-cell-eq clysm-sys::%fasl-inline-guard clysm-sys::%defun-guard))
        (every (lambda (a) (eq (car a) :const)) (cddr c))))
 
 (defun guard-key (c) (cons (prim-name (second c)) (mapcar #'second (cddr c))))
