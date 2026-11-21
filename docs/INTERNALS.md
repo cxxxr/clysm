@@ -4289,10 +4289,25 @@ slot running Lem's benchmarks):
   the module is loaded, so the compiler names them (`eager-funcs` of the
   module: `run`, the `run-seg`s, `unit-dispatch` and the main entries of
   the toplevel functions) in the module's `compilationHints` section, and
-  V8 compiles them in its threads (with `new WebAssembly.Module`, it waits
-  for them) instead of one after the other when called: for ASDF's fasl
+  V8 compiles them in its threads instead of one after the other when
+  called (`new WebAssembly.Module` returns at once, 3 ms for ASDF's module,
+  and they are compiled in the background after it): for ASDF's fasl
   280 of the 790 KB of code that loading it compiles; `(require :asdf)`
-  199 -> 185 ms, Quicklisp and Babel 466 -> 445.
+  199 -> 185 ms, Quicklisp and Babel 466 -> 445 (a busy machine: within
+  its noise).
+
+  Tried and not kept (2026-11-21): naming also the other functions that run
+  while a fasl loads. The first load of a fasl ran its module instrumented
+  (`instrumentWasm`), and when the file had loaded the host wrote the
+  functions that ran into the hints of the module in the file, in place (a
+  section `clysm.train` of one octet marked it trained): ASDF's module
+  then names 2408 of its 11542 functions. Loading was no faster
+  (`(require :asdf)` 170/204 -> 181/200 ms, min/median, interleaved; the
+  same CPU time, 610 ms; Quicklisp with Alexandria 348/383 -> 354/408, with
+  Babel 448/493 -> 470/508): the background threads compile the functions in
+  the order of their indexes, while the main thread calls them in the order
+  the toplevel forms run, and compiles itself most that it reaches before
+  them.
 * **Host.** The places of the image's functions in its sources
   (`clysm.sources`, 3 MB of strings for 18000 functions) are read when a
   stack trace first needs them, and `node:child_process` (with much of
