@@ -5472,6 +5472,14 @@ the small upgrader of element types drops the `nil`s of an `or` itself
 instead of with `remove`. The module of one export: 961,571 -> 940,564
 bytes (`gzip -9` 303,707 -> 298,877), below issue #30's 0.3 MB.
 
+The REPL image grew by 54 KB with these changes (9,004,262 -> 9,058,442
+bytes): `%set-method-extra` was copied into the toplevel form of each
+`defmethod` that notes something of its method (20 KB), and
+`%pathname-equal` got a typed copy for each typed copy of `equal` that
+calls it (8 KB). Both are now `notinline`: 9,044,220 bytes (+40 KB: the
+new functions, the small upgrader and its callers' second ways, the
+shake's limits in the compiler).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates

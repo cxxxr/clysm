@@ -27,6 +27,8 @@
           ((pathnamep a) (return (and (pathnamep b) (%pathname-equal a b))))
           (t (return nil)))))
 
+;; (not given copies of its own by the typed copies of EQUAL that call it)
+(declaim (notinline %pathname-equal))
 (defun %pathname-equal (a b)
   ;; (component by component, CLHS EQUAL: not by their namestrings, whose
   ;; printer every program comparing lists would carry)
