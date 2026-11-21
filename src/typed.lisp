@@ -1214,7 +1214,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
                                   ((:local.get ,s) (:local.get ,val) (:ref.cast! :double) (:struct.get :double 0)
                                    (:struct.set ,ty ,(sinst-field k)))
                                   ((:local.get ,val) (:global.get ,(sym-global 'double-float))
-                                   ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :drop)))))
+                                   ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :unreachable)))))
                 (:br ,done))
               (:local.get ,o) ,@(if known (cg cls) `((:local.get ,c))) (:i32.const ,k) :ref.i31
               ,@(if raw `((:local.get ,f) (:struct.new :double)) `((:local.get ,val)))
@@ -1245,8 +1245,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
                                     (t `((:local.get ,loc) (:ref.test :double)
                                          (:if nil :f64 ((:local.get ,loc) (:ref.cast! :double) (:struct.get :double 0))
                                               ((:local.get ,loc) (:global.get ,(sym-global 'double-float))
-                                               ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :drop
-                                               (:f64.const 0d0)))))))
+                                               ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :unreachable))))))
                (:struct.new ,ty))))))
       (clysm-sys::%make-tstruct-default
        (let ((kinds (tstruct-kinds (second args))) (c (new-local)))

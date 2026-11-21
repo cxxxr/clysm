@@ -586,8 +586,18 @@ functions).  Calls of the installs that are not reached are removed."
 (defvar *locals-map*)
 (defvar *local-remap* nil "During ENCODE-FUNCTION-BODY: COALESCE-LOCALS's map, or NIL.")
 
+(defvar *cast-fail-labels* nil
+  "During ENCODE-FUNCTION-BODY: (type . label) for the blocks around the
+function's body that its checked casts of TYPE branch to when they fail.")
+(defvar *cast-fail-count* 0 "The number of those blocks.")
+
 (defun label-depth (label)
-  (if (integerp label) label
+  (if (integerp label)
+      ;; (a depth counted from the code: the blocks of the failing casts are
+      ;; between the function's own label and the code's labels)
+      (if (and (plusp *cast-fail-count*) (>= label (- (length *labels*) *cast-fail-count*)))
+          (+ label *cast-fail-count*)
+          label)
       (let ((pos (position label *labels*)))
         (unless pos (error "wasm: unknown label ~S (in scope: ~S)" label *labels*))
         pos)))
@@ -638,7 +648,9 @@ in one table: op -> code, or (prefix . code).")
          (destructuring-bind (label bt &rest body) args
            (emit-byte buf (if (eq op :block) #x02 #x03))
            (emit-blocktype buf bt)
-           (let ((*labels* (cons label *labels*)))
+           ;; (the checked casts in a loop fail in place, see EMIT-FUNCTION-CODE)
+           (let ((*labels* (cons label *labels*))
+                 (*cast-fail-labels* (if (eq op :loop) nil *cast-fail-labels*)))
              (dolist (i body) (emit-instr buf i)))
            (emit-byte buf #x0B)))
         ;; (:if label bt (then...) (else...))
@@ -666,7 +678,9 @@ in one table: op -> code, or (prefix . code).")
                 (emit-u32 buf (label-depth (third c))))
                (:catch_all (emit-byte buf 2) (emit-u32 buf (label-depth (second c))))
                (:catch_all_ref (emit-byte buf 3) (emit-u32 buf (label-depth (second c))))))
-           (let ((*labels* (cons label *labels*)))
+           ;; (the checked casts inside fail in place: the error they
+           ;; signal is to be caught here)
+           (let ((*labels* (cons label *labels*)) (*cast-fail-labels* nil))
              (dolist (i body) (emit-instr buf i)))
            (emit-byte buf #x0B)))
         (:br (emit-byte buf #x0C) (emit-u32 buf (label-depth (first args))))
@@ -748,13 +762,21 @@ in one table: op -> code, or (prefix . code).")
          ;; function that signals a Lisp error instead of trapping
          (let ((fn (and (eq op :ref.cast) (not (eq (first args) :null))
                         (cdr (assoc (first args) (wasm-module-cast-rewrites m))))))
+           (let ((fail (and fn (cdr (assoc (first args) *cast-fail-labels*)))))
+             (when fail
+               ;; br_on_cast_fail to the block of the type around the body,
+               ;; which calls FN (ENCODE-FUNCTION-BODY)
+               (emit-byte buf #xFB) (emit-u32 buf 25) (emit-byte buf 1) (emit-u32 buf (label-depth fail))
+               (emit-heap-type m buf :eq) (emit-heap-type m buf (first args))
+               (return-from emit-instr)))
            (when (and fn (not (equal fn (wasm-func-name *current-func*))))
-             ;; block (param eqref) (result (ref T)); br_on_cast 0 eqref (ref T); call FN; end
-             ;; (the call only when the cast fails)
+             ;; block (param eqref) (result (ref T)); br_on_cast 0 eqref (ref T); call FN; unreachable; end
+             ;; (the call only when the cast fails; nothing is live after it)
              (emit-byte buf #x02) (emit-sleb buf (type-index m (list :cast-bt (first args))))
              (emit-byte buf #xFB) (emit-u32 buf 24) (emit-byte buf 1) (emit-u32 buf 0)
              (emit-heap-type m buf :eq) (emit-heap-type m buf (first args))
              (emit-byte buf #x10) (emit-u32 buf (func-index m fn))
+             (emit-byte buf #x00)
              (emit-byte buf #x0B)
              (return-from emit-instr)))
          (emit-byte buf #xFB)
@@ -784,6 +806,48 @@ in one table: op -> code, or (prefix . code).")
 (defun emit-expr (buf instrs)
   (let ((*labels* nil))
     (dolist (i instrs) (emit-instr buf i))
+    (emit-byte buf #x0B)))
+
+(defun checked-cast-types (body m self)
+  "The heap types of the checked casts in the instructions BODY of the
+function named SELF (see EMIT-INSTR) outside loops and try_tables, in the
+order of their first cast."
+  (let ((rewrites (wasm-module-cast-rewrites m)) (types nil))
+    (labels ((walk (instrs)
+               (dolist (x instrs)
+                 (when (consp x)
+                   (case (car x)
+                     (:ref.cast
+                      (let ((fn (cdr (assoc (second x) rewrites))))
+                        (when (and fn (not (equal fn self)) (not (member (second x) types)))
+                          (push (second x) types))))
+                     (:block (walk (cdddr x)))
+                     (:if (walk (fourth x)) (walk (fifth x))))))))
+      (walk body))
+    (nreverse types)))
+
+(defun emit-function-code (buf instrs m self)
+  "The code INSTRS of a function: the checked casts that fail branch to a
+block of their type around it, which calls the function that signals the
+TYPE-ERROR (one call per type in the function, and nothing of the failure
+in the code of the casts: a br_on_cast_fail).  Those in a loop or a
+try_table fail in place (EMIT-INSTR): a branch out of the loop from each of
+its casts made V8's code of the loops slower (bench/programs.lisp 2%), and
+the error must be signalled inside the try_table that may catch it."
+  (let* ((types (checked-cast-types instrs m self))
+         (*cast-fail-labels* (mapcar (lambda (type) (cons type (list :cast-fail type))) types))
+         (*cast-fail-count* (length types))
+         (*labels* (reverse (mapcar #'cdr *cast-fail-labels*))))
+    (dolist (type types)
+      (declare (ignore type))
+      (emit-byte buf #x02) (emit-valtype m buf :eqref))
+    (dolist (i instrs) (emit-instr buf i))
+    (when types
+      (emit-byte buf #x0F)                ; return
+      (dolist (type (reverse types))
+        (emit-byte buf #x0B)
+        (emit-byte buf #x10) (emit-u32 buf (func-index m (cdr (assoc type (wasm-module-cast-rewrites m)))))
+        (emit-byte buf #x00)))           ; unreachable
     (emit-byte buf #x0B)))
 
 ;;; ------------------------------------------------------------
@@ -952,7 +1016,7 @@ nothing would change."
     (handler-bind ((error (lambda (c)
                             (format *error-output* "~&;; wasm encode error in function ~S: ~A~%"
                                     (wasm-func-name f) c))))
-      (emit-expr buf (wasm-func-body f)))
+      (emit-function-code buf (wasm-func-body f) m (wasm-func-name f)))
     (values buf (nreverse *branch-hints*))))
 
 (defvar *type-section-cache* nil

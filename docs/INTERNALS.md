@@ -4787,6 +4787,60 @@ map. Running `bench/suite.lisp` with
 6% faster, `--experimental-wasm-skip-null-checks` not at all: that is the
 most that removing casts can give.
 
+Checked casts (a `ref.cast` that signals a `type-error` instead of trapping,
+`define-checked-casts` and `emit-instr` in `src/wasm.lisp`) were a `block`
+around a `br_on_cast` to its end and a call of the cast's function
+(`(:castfn T)`, which signals) on the fall-through, the call's result being
+the cast value. V8 made that call a path that returns into the code: every
+value live across a cast in a loop was spilled to the stack and loaded again
+at each iteration (instruction-level profiles of Lem, `--print-wasm-code`:
+a loop over a list of three fixnum accumulators did six stack accesses per
+element). The function never returns normally (`%type-error`; a non-local
+exit from a handler is thrown as the exception by `(:callsym k)`), so:
+
+* each function's checked casts outside loops and `try_table`s branch with a
+  `br_on_cast_fail` to a block of their type around the function's body,
+  whose end calls the cast's function and is `unreachable` (one call per
+  type in the function; `emit-function-code`, `checked-cast-types`). A
+  cast is 6 octets instead of 13, the REPL image 0.6% smaller
+  (9.20 → 9.15 MB);
+* those in a loop keep the block in place, the call followed by
+  `unreachable` (14 octets). Branching out of the loop from each of its
+  casts as well made V8's code of the loops slower (`bench/programs.lisp`
+  0.969 of main's time against 0.951 for the casts in place, three rounds);
+* those in a `try_table` (`handler-case`, `unwind-protect`, `catch`) stay in
+  place too: the error must be signalled where it can be caught.
+
+With nothing live after the call, V8 keeps the values in registers (that
+loop 50 → 20 ms; it is also peeled). Re-encoding every cast as an `if` on
+`ref.test` hinted likely (tried before) gained 2-3% on hot code but grew a
+cast to 19 octets and made code that runs once slower
+(`l-alexandria-tests` 78 → 94-102 ms); this does not. Against main
+before, interleaved on one slot (best of 2-3 rounds each, time against
+SBCL's): `bench/suite.lisp` 0.80 → 0.77 (0.959; `b-clos` 1.26 → 1.04,
+`b-sort` 0.54 → 0.47, `b-print`, `b-format`, `b-read` 0.89-0.92), the same
+in `clysm script` 0.881 of the time, `library.lisp` 0.942,
+`programs.lisp` 0.97-0.99 (two orders of the rounds), `control.lisp`
+0.988, `gabriel.lisp` 0.993, `apps.lisp` 0.983, `tools/bench-lem.sh` 1.47 →
+1.39 (0.95; 0.93 in another pair of rounds), `tools/bench-libs.sh` 0.988
+(`l-alexandria-tests` the same: 8 runs of the test suite in a process,
+three processes a round, three rounds), start-up 0.987. On the later main
+(the cold branch hints, the hash helpers with plain casts, the filler
+functions): suite 0.977, library 0.975, programs 0.979, apps 0.950,
+`tools/bench-libs.sh` 0.97-1.01, Lem and start-up and `clysm script` of the
+suite unchanged (0.99-1.01), the module of one export (`tests/lib/one.lisp`)
+4.64 → 4.59 MB, the REPL image 9.90 → 9.83 MB. Casts inside loops
+also branching to the blocks (smaller still, 9.12 MB): the same except
+`programs.lisp`, 2-3% slower than in place. Tried and not kept: the call of the type-error function
+from the untyped `car`/`cdr` (NIL, else the error) made a cast too, testing
+NIL first (suite and programs within 1%, and the error's expected type
+would be CONS); the hint `(:hint 1)` on the `if` of that test changed
+nothing in V8's code. The type errors of the inline stores into typed
+structure slots of doubles (`src/typed.lisp`) are followed by
+`unreachable` too. A slow path that does return (the generic `aref` of an
+array of unknown kind, fixnum overflow to `:add`) keeps its call; those are
+hinted unlikely.
+
 ### Lem: where the time goes when it is used
 
 `tools/lem-scenario.sh [LEM-DIR]` runs Lem on Clysm (cxxxr/lem's
