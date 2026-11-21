@@ -12,7 +12,7 @@
 // without Node.js, `fs` can be the file system in memory of vfs.mjs.
 // BYTES can also be a compiled WebAssembly.Module; the module of the image
 // is globalThis.__clysm_module, which a page can give to a worker.
-import { makeImports, installSourceMap, imageBuild, imageHeader, compileImageModules, loadImage,
+import { makeImports, installSourceMap, imageBuild, imageHeader, imageOctets, compileImageModules, loadImage,
          instrumentWasm } from '../common.mjs';
 
 // IMAGE: a heap image (runtime/image.lisp), as octets or the name of a file
@@ -96,21 +96,33 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
     };
   }
   // the modules of the heap image are compiled while the image is compiled
-  // and instantiated
-  const compiled = bytes instanceof WebAssembly.Module ? bytes : WebAssembly.compile(bytes);
-  let file = null, header = null, modules = null;
+  // and instantiated; the image is compiled from the octets that the heap
+  // image has of it as it starts from it, if it has them (imageOctets)
+  let file = null, header = null, modules = null, octets = null;
   if (image) {
     try {
       file = image instanceof Uint8Array ? image : (fs && fs.existsSync(image) ? fs.readFileSync(image) : null);
       header = imageHeader(bytes, file);
       if (header) modules = compileImageModules(file, header, transform, (path) => fs.readFileSync(path));
+      if (header && !train) octets = imageOctets(file, header);
     } catch (e) {
       console.error('the heap image could not be read:', e);
     }
   }
-  const module = await compiled;
+  const original = () => (bytes instanceof WebAssembly.Module ? bytes : WebAssembly.compile(bytes));
+  let module;
+  try {
+    module = await (octets ? WebAssembly.compile(octets) : original());
+  } catch (e) {
+    if (!octets) throw e;
+    octets = null;
+    module = await original();
+  }
   let instance = await WebAssembly.instantiate(module, imports);
-  globalThis.__clysm_module = module;
+  // (a worker that starts the image by its toplevel forms needs the image
+  // itself: its octets, when the one compiled is the image as it starts from
+  // the heap image)
+  globalThis.__clysm_module = octets ? bytes : module;
   installSourceMap(state, module);
   state.instance = instance;
   state.module = module;
@@ -128,6 +140,7 @@ export async function loadClysm(bytes, onOutput = () => {}, { readLine, fs, root
       restored = true;
     } catch (e) {
       console.error('the heap image could not be loaded:', e);
+      if (octets) { module = await original(); installSourceMap(state, module); state.module = module; }
       instance = await WebAssembly.instantiate(module, imports);
       state.instance = instance;
     }

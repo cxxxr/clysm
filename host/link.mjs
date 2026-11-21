@@ -461,3 +461,39 @@ export function linkModules(modules) {
   }
   return out.done();
 }
+
+// The heap image FILE (octets) with its modules linked into one
+// (header.linked), or FILE itself when they are already: what a tool that
+// ships a heap image runs once (cxxxr/lem's frontends/clysm/ desktop
+// build).  The image's own octets as it starts from the file (header.image,
+// see imageVariant in common.mjs) are kept, after the linked module.
+export function linkHeapImage(file) {
+  const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
+  const length = view.getUint32(8, true);
+  const header = JSON.parse(new TextDecoder().decode(file.subarray(12, 12 + length)));
+  if (header.linked) return file;
+  const align8 = (n) => (n + 7) & ~7;
+  const modulesOffset = align8(12 + length);
+  const heapStart = modulesOffset + header.modulesLength;
+  const heap = file.subarray(heapStart, heapStart + header.heapLength);
+  const image = header.image
+    ? file.subarray(modulesOffset + header.image.offset, modulesOffset + header.image.offset + header.image.length)
+    : null;
+  const linked = linkModules(header.modules.map((e) => ({
+    bytes: file.subarray(modulesOffset + e.offset, modulesOffset + e.offset + e.length), codeBase: e.codeBase })));
+  header.linked = { offset: 0, length: linked.length };
+  header.modules = header.modules.map((e) => ({ codeBase: e.codeBase }));
+  let end = align8(linked.length);
+  if (image) { header.image = { offset: end, length: image.length }; end = align8(end + image.length); }
+  header.modulesLength = end;
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const newModulesOffset = align8(12 + json.length);
+  const out = new Uint8Array(newModulesOffset + header.modulesLength + heap.length);
+  out.set(file.subarray(0, 8), 0);
+  new DataView(out.buffer).setUint32(8, json.length, true);
+  out.set(json, 12);
+  out.set(linked, newModulesOffset);
+  if (image) out.set(image, newModulesOffset + header.image.offset);
+  out.set(heap, newModulesOffset + header.modulesLength);
+  return out;
+}

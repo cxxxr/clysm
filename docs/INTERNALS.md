@@ -1166,9 +1166,15 @@ worker (Start-up and loading).
   first cons of each list were dropped by the heap image anyway (it makes
   them itself). The global section is 0.76 MB there: compiling and
   instantiating the REPL image 43 -> 25 ms. A tool that rewrites the file
-  without knowing these octets leaves their place stale: the host checks
-  that they end with the image's build, and compiles the image's file if
-  they do not compile.
+  without knowing these octets leaves their place stale: the hosts check
+  that they end with the image's build (`imageOctets`), and compile the
+  image's file if they do not compile. `linkHeapImage` in `host/link.mjs`
+  links the modules of a heap image into one (below) and keeps them, after
+  the linked module (cxxxr/lem's `desktop/link-image.mjs` writes the file
+  itself and drops them: it should call it). The page host
+  (`host/web/clysm.mjs`) compiles them too; its `__clysm_module`, which a
+  page gives a worker that starts the image by its toplevel forms, is then
+  the image's own octets rather than the module compiled.
 * **Compilation hints.** The image starts with code that has never run, and
   V8 compiles each WebAssembly function the first time it is called, which
   for Clysm's large functions costs tens to hundreds of microseconds each.
