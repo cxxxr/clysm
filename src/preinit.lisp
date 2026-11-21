@@ -247,7 +247,9 @@ function), or NIL."
   '((clysm-sys::%compiler-macro-source compiler-macro-function)
     (clysm-sys::%compiler-macro-function compiler-macro-function)
     (clysm-sys::%documentation documentation)
-    (clysm-sys::%structure-documentation documentation))
+    (clysm-sys::%structure-documentation documentation)
+    ;; (the keyword constructor of a structure, which #S calls)
+    (clysm-sys::%struct-constructor clysm-sys::%sharp-s))
   "Properties of symbols that only the functions named after them read: a
 value is kept only if one of them is.")
 
@@ -918,7 +920,16 @@ image is loaded, from words written as LEB128 numbers."
         (dolist (p (ph-plist-pairs i))
           (let ((k (ph-ref-index (first p))))
             (incf (gethash (if k (aref *ph-base-names* k) (first p)) inds 0))))))
-    (maphash (lambda (k v) (format *error-output* ";  indicator ~S ~D~%" k v)) inds)))
+    (maphash (lambda (k v) (format *error-output* ";  indicator ~S ~D~%" k v)) inds))
+  ;; (the kept instances by class: generic functions, methods...)
+  (let ((by (make-hash-table :test 'equal)))
+    (dotimes (i (length *ph-kind*))
+      (when (and (plusp (aref *ph-state* i)) (eq (aref *ph-kind* i) :instance))
+        (let ((label (let ((*shake-why* t)) (ph-instance-label i))))
+          (when (and label (search "GENERIC-FUNCTION" label))
+            (format *error-output* ";  kept ~A~%" label))
+          (when label (incf (gethash (subseq label 0 (or (position #\Space label) (length label))) by 0))))))
+    (maphash (lambda (k v) (format *error-output* ";  instances ~A ~D~%" k v)) by)))
 
 (defun ph-stats-1 ()
   (let ((objs (make-hash-table)) (words (make-hash-table)) (recs (make-hash-table)) (rw (make-hash-table)))

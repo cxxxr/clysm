@@ -5358,6 +5358,17 @@ writes a generic function as its `print-object` does
 a library. The module of one export: 1,605,008 -> 1,353,620 bytes (`gzip
 -9` 466,857 -> 408,606): code 1.18 -> 0.95 MB.
 
+Two names the runtime refers to as data: the operation of the
+`floating-point-overflow` of `%single-overflow`, `'coerce`, kept `coerce`
+and with it `%coerce-to-function` and the evaluator (now `(%weak-symbol
+coerce)`), and the keyword constructor of a structure (the property
+`%struct-constructor`, which only `#S` reads: now kept only with
+`%sharp-s`, `*preinit-property-users*`; `tests/cases/sharp-s.lisp`). The
+module of one export: 1,353,620 -> 1,290,161 bytes (`gzip -9` 408,606 ->
+390,452). `CLYSM_SHAKE_WHY_LARGEST=N` makes `--shake-why` list the N
+nodes that dominate the most (150), and `CLYSM_PREINIT_STATS=1` also
+lists the kept generic functions and instances by class.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates

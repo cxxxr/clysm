@@ -218,7 +218,7 @@ BITS 24 and MIN-EXPO 149: the single nearest to it, as a double (exact)."
   ;; a finite number beyond the singles overflows (as in SBCL)
   (if (%float-infinite-p (%to-double x))
       s
-      (error 'floating-point-overflow :operation 'coerce :operands (list x))))
+      (error 'floating-point-overflow :operation (%weak-symbol coerce) :operands (list x))))
 
 (defun %float-infinite-p (d)
   (and (%d= d (%d* d 2.0d0)) (not (%d= d 0.0d0))))
