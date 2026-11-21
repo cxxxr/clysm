@@ -2975,7 +2975,8 @@ What makes the code fast:
   keyword arguments went to the methods as a list). `%fast-class-of` finds
   the class of a simple string and of a function that is not a generic
   function without `class-of` (also of NIL, characters, simple vectors and
-  single floats, `%builtin-index`). A generic function of one required
+  single floats, bignums and ratios, `%builtin-index`; a bignum or ratio
+  went to `class-of`, out of line). A generic function of one required
   argument keeps in its cache (`+gf-cache+`, slot 5) a vector of the
   functions of the built-in classes by that index (`%gf-note-builtin`,
   filled by `%gf-find1`): its dispatch reads it for an argument that is not
@@ -3053,7 +3054,35 @@ What makes the code fast:
   effective methods of `initialize-instance` and `shared-initialize` are
   called with the instance and the list of initargs. The `append`, `nconc`,
   `max` and `min` method combinations of two or three methods make no list
-  of the values.
+  of the values. A primary method of required parameters whose body is a
+  literal (`(defmethod kind ((x integer)) :integer)`) is noted
+  (`*method-constants*`); when it alone makes the effective method (no
+  `:before`, `:after` or `:around` method applies), that is a function
+  named `%constant-emf` holding the value, which the dispatch inlined in
+  the function of the generic function returns without calling it
+  (`%call-entry-form`, as SBCL's constant-value dispatch functions):
+  `c-builtin-eql` 127 → 110-115 ms (3.5 → 2.95 times SBCL), in a script
+  144 → 117; the call sites still call it (the test there made
+  `h-fib-generic` 10% slower).
+  Not kept, measured (2026-11-21, interleaved A/B on one slot): an
+  open-addressing table of all the entries probed inline in the function
+  of the generic function (with a multiplicative hash; the hash of the
+  table, `%mix-hash` of a class and the 0 of an unspecialized parameter,
+  put consecutive classes in a few buckets) past 4, 8 or 32 entries was
+  slower than the linear search of up to 32 entries (5 entries 1.25-1.34
+  times the time, 10 entries 1.11-1.14, break-even about 20) and than the
+  vectors of the classes past 32 (48 classes 1.2-1.5 times); keys of
+  EQL specializer objects found by the inline dispatch itself (their
+  markers searched in its list, the entries of their classes no longer
+  testing them) instead of the guarded entries of their classes, 1.23
+  times the time of `c-builtin-eql` and of calls of `op` through
+  `funcall`; a call site of one argument calling the generic function at
+  once when it is not cached: `p-builtin-dispatch` 0.85 of its time, but
+  `c-megamorphic` 1.09-1.12 (the four classes of instances it still had
+  are then dispatched by the generic function). A 20-class megamorphic
+  call (`c-megamorphic`) is about 14 ns, an indirect call of 20 closures
+  in turn about 5 ns in V8 (SBCL 3): the rest is the dependent loads from
+  the closure to the cache and to the method's code.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm
