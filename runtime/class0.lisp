@@ -297,7 +297,13 @@ grows when CLASS has more instance slots)."
 (defvar *obsolete-slot-indexes* nil
   "((class (slot-count . slot-index) ...) ...): the earlier layouts of redefined classes, newest first.")
 
+(defvar *obsolete-instance-updater* nil
+  "NIL until a class is redefined (%NOTE-OBSOLETE-LAYOUT), then the function
+updating an obsolete instance: a program that redefines no class does not
+carry it (nor UPDATE-INSTANCE-FOR-REDEFINED-CLASS) in a shaken module.")
+
 (defun %note-obsolete-layout (class size index)
+  (setq *obsolete-instance-updater* #'%update-redefined-instance)
   (let ((e (assoc class *obsolete-slot-indexes*)))
     (if e
         (push (cons size index) (cdr e))
@@ -310,21 +316,25 @@ grows when CLASS has more instance slots)."
     (when (and (%instancep class) (not (%sinstp instance)))
       (let ((n (length (%instance-slots instance))))
         (unless (eql n (%class-slot class +class-instance-size+))
-          (let ((layouts (cdr (assoc class *obsolete-slot-indexes*))) (found nil) (ambiguous nil))
-            (when layouts
-              (dolist (l layouts)
-                (when (eql (car l) n)
-                  (cond ((null found) (setq found (cdr l)))
-                        ((not (equal found (cdr l))) (setq ambiguous t)))))
-              (if (and found (not ambiguous))
-                  (%update-instance-layout instance found class)
-                  (error 'simple-error
-                         :format-control "~S is an instance of ~S made before the class was redefined, ~
-                                          whose slots are not known any more (instances made before a ~
-                                          redefinition are updated for sure while instances are tracked: ~
-                                          SYS::TRACK-INSTANCES)"
-                         :format-arguments (list instance (%class-name class))))))))))
+          (let ((f *obsolete-instance-updater*))
+            (when f (funcall (the function f) instance class n)))))))
   instance)
+
+(defun %update-redefined-instance (instance class n)
+  (let ((layouts (cdr (assoc class *obsolete-slot-indexes*))) (found nil) (ambiguous nil))
+    (when layouts
+      (dolist (l layouts)
+        (when (eql (car l) n)
+          (cond ((null found) (setq found (cdr l)))
+                ((not (equal found (cdr l))) (setq ambiguous t)))))
+      (if (and found (not ambiguous))
+          (%update-instance-layout instance found class)
+          (error 'simple-error
+                 :format-control "~S is an instance of ~S made before the class was redefined, ~
+                                  whose slots are not known any more (instances made before a ~
+                                  redefinition are updated for sure while instances are tracked: ~
+                                  SYS::TRACK-INSTANCES)"
+                 :format-arguments (list instance (%class-name class)))))))
 
 (defun %update-obsolete-instances (class old-index)
   (when (and *live-instances-hook* old-index
