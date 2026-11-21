@@ -1329,7 +1329,15 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
   (let ((*host-load-defuns* t))
     (dolist (f files) (compile-source-file f)))
   (let ((bytes (let ((*shake-why* (and *shake-why-file* (make-hash-table :test 'equal)))
-                      (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal))))
+                      (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal)))
+                      ;; (no branch hints in the runtime's large functions)
+                      (clysm-wasm::*runtime-hint-limit*
+                        (and *shake* runtime-dir
+                             (ignore-errors
+                              ;; (as the functions' sources are named, SOURCE-FILE-NAME)
+                              (cons (source-file-name (make-pathname :name nil :type nil :version nil
+                                                                     :defaults runtime-dir))
+                                    800)))))
                   (build-module))))
     (with-open-file (o output :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
       (write-sequence bytes o))

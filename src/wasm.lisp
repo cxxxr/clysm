@@ -1194,6 +1194,23 @@ nothing would change."
   "NIL, or an EQUAL hash table that ENCODE-MODULE fills with the size in octets
 of the body of each function (by name).")
 
+;;; The branch hints of a large function of the runtime are left out of a
+;;; shaken module: most of the hints of the runtime are in its large
+;;; functions (the generic sequence functions, the printer, the reader),
+;;; where they made no difference to measure; those of the small functions
+;;; (AREF, the stream and hash table accessors), which programs call in
+;;; their loops, are kept (without them, b-sieve ran 1.3 times as long).
+(defvar *runtime-hint-limit* nil
+  "NIL, or (DIRECTORY . OCTETS): the functions of the source files in
+DIRECTORY (the runtime's) whose bodies are larger than OCTETS get no branch hints.")
+
+(defun large-runtime-function-p (f body)
+  (let ((limit *runtime-hint-limit*) (src (wasm-func-source f)))
+    (and limit src (> (length body) (cdr limit))
+         (let ((file (namestring (car src))))
+           (and (>= (length file) (length (car limit)))
+                (string= (car limit) file :end2 (length (car limit))))))))
+
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
@@ -1206,7 +1223,8 @@ of the body of each function (by name).")
                                 (when *func-body-sizes*
                                   (setf (gethash (wasm-func-name f) *func-body-sizes*) (length body)))
                                 (push body r)
-                                (when h (push (cons i h) hints))
+                                (when (and h (not (large-runtime-function-p f body)))
+                                  (push (cons i h) hints))
                                 (incf i)))
                      (setf hints (nreverse hints))
                      (nreverse r)))
