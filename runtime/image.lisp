@@ -314,7 +314,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setq order (nreverse order))
           (setq *img-buf* (%make-limbs 1000000) *img-fill* 0)
           (%img-halves #x494D #x4C43)       ; magic "CLMI"
-          (%img-word 5)                     ; version (+img-version+)
+          (%img-word 6)                     ; version (+img-version+)
           (%img-word (length base))
           (%img-word (- next (length base)))
           (%img-word fillable)
@@ -416,7 +416,10 @@ now (the oldest binding of a symbol on the binding stack holds it)."
         (:vector (dotimes (i (%svlength x)) (%img-ref (%svref x i))))
         (:symbol (%img-ref (%symbol-raw-package x)) (%img-ref (%img-symbol-value x))
          (%img-ref (%symbol-raw-function x)) (%img-ref (%symbol-raw-plist x))
-         (%img-word (%symbol-flags x)))
+         (%img-word (%symbol-flags x))
+         ;; (the image's own symbols are made without their names in an image
+         ;; started from the file: host/common.mjs imageVariant)
+         (%img-ref (symbol-name x)) (%img-word (%symbol-hash x)))
         (:closure (%img-ref (%closure-name x))
          (dotimes (i (%closure-env-length x)) (%img-ref (%closure-env-ref x i))))
         (:instance (%img-ref (%instance-layout x)) (%img-ref (%img-instance-slots x)))

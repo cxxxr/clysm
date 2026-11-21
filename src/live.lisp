@@ -326,7 +326,9 @@ vectors), the vector of objects of each segment."
           (add-global *m* name type mutable init)))
       (add-identity-hash-cache)
       (loop for tops in segments for k from 0
-            do (let* ((ssyms (aref seg-syms k))
+            do (dolist (l tops) (push (list :main (lam-id l)) (wasm-module-eager-funcs *m*)))
+               (push (if (= k 0) :run (list :run-seg k)) (wasm-module-eager-funcs *m*))
+               (let* ((ssyms (aref seg-syms k))
                       (sconsts (aref seg-consts k))
                       (sclosures (aref seg-closures k))
                       (body `(,@(loop for s in ssyms for i from 0
@@ -361,6 +363,7 @@ vectors), the vector of objects of each segment."
                        (setf (gethash (list :run-seg k) used) t)))))))
     (when dispatch
       (setf (gethash :unit-dispatch used) t)
+      (push :unit-dispatch (wasm-module-eager-funcs *m*))
       (add-func *m* :unit-dispatch :ee-e
                 :body (labels ((chain (k)
                                  (if (>= k nsegs)

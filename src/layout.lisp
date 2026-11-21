@@ -155,8 +155,10 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:f32vec    (:array (:f32 t)))
     (:cons      (:struct ((:eqref t) (:eqref t))))
     (:package   (:struct ((:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t) (:eqref t))))
-    (:symbol    (:struct (((:ref :string) nil) ((:ref :null :package) t) (:eqref t)
-                          ((:ref :null :closure) t) (:eqref t) (:i32 nil) (:i32 t))))
+    ;; (the name and the hash are mutable for heap images only: an image
+    ;; started from one makes its symbols without them, runtime/image.lisp)
+    (:symbol    (:struct (((:ref :string) t) ((:ref :null :package) t) (:eqref t)
+                          ((:ref :null :closure) t) (:eqref t) (:i32 t) (:i32 t))))
     (:closure   (:sub () nil (:struct (((:ref :code) nil) (:eqref t)))))
     (:code      (:struct (((:ref :f0) nil) ((:ref :f1) nil) ((:ref :f2) nil) ((:ref :f3) nil)
                           ((:ref :f4) nil) ((:ref :fN) nil)

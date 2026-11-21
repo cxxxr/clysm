@@ -6,7 +6,12 @@
 // answers each call while the worker blocks (host/run.mjs); in a library
 // (host/lib.mjs) the manager is in the Lisp thread and Lisp waits for its
 // promises with JS:AWAIT.
-import { spawn } from 'node:child_process';
+// (node:child_process, which loads much of Node.js's own JavaScript, is
+// loaded when a process is first started: every program imports this file)
+let spawn = (...args) => {
+  spawn = process.getBuiltinModule('node:child_process').spawn;
+  return spawn(...args);
+};
 
 export function makeProcessManager() {
   const procs = new Map();

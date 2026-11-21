@@ -6498,7 +6498,7 @@ those the code calls (modules made at run time call few of them)."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 5)
+(defconstant +img-version+ 6)
 (defparameter +img-kinds+
   '(:cons :vector :string8 :string32 :limbs :cell :instance :package :symbol :closure
     :mdarray :double :single :bignum :ratio :complex :complex-d :complex-s :storage :fsbuf :sinst))
@@ -6802,6 +6802,9 @@ words that follow, by its type."
                         (:struct.set :symbol ,+sym-function+)
                         (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:struct.set :symbol ,+sym-plist+)
                         (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-flags+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-ref) (:ref.cast! :string)
+                        (:struct.set :symbol ,+sym-name+)
+                        (:local.get x) (:ref.cast! :symbol) (:call :img-word) (:struct.set :symbol ,+sym-hash+)
                         (:br ,end)))
           (:local.get x) (:ref.test :closure)
           (:if nil nil ((:local.get x) (:ref.cast! :closure) (:call :img-ref) (:struct.set :closure ,+clo-name+)

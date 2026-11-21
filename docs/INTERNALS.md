@@ -1147,6 +1147,28 @@ worker (Start-up and loading).
   temporary directory). The hash tables whose keys are hashed by identity
   (the host's identity hashes are not saved) are rehashed when the image
   starts. Other threads and the bindings around the call are not saved.
+* **The image as it starts from the file.** The file also holds the
+  image's own module made for starting from it (`imageVariant` in
+  `host/common.mjs`, when the host that saves it has the image's octets,
+  as `host/run.mjs` does), which `host/run.mjs` compiles instead of the
+  image's file (of which it reads only the end, the `clysm.build`
+  section). Its globals whose objects the heap image fills, conses, simple
+  vectors and symbols (a symbol's name and hash are mutable fields for
+  this, written by its record), are made empty: their initializers are
+  those of the custom section `clysm.image-defaults` (`image-defaults` of
+  the module, set by `add-image-functions` in `src/driver.lisp`: the
+  initializers, then pairs of a global and the index of its initializer).
+  V8 decodes and validates every global's initializer when it compiles a
+  module (about 10 ns an octet) and evaluates it when it instantiates it
+  (about 100 ns a global and 20 ns an instruction): in the REPL image they
+  were 1.55 MB, two thirds of it the contents of constant lists, of
+  symbols' names and of vectors, and of the objects they made all but the
+  first cons of each list were dropped by the heap image anyway (it makes
+  them itself). The global section is 0.76 MB there: compiling and
+  instantiating the REPL image 43 -> 25 ms. A tool that rewrites the file
+  without knowing these octets leaves their place stale: the host checks
+  that they end with the image's build, and compiles the image's file if
+  they do not compile.
 * **Compilation hints.** The image starts with code that has never run, and
   V8 compiles each WebAssembly function the first time it is called, which
   for Clysm's large functions costs tens to hundreds of microseconds each.
@@ -1156,7 +1178,21 @@ worker (Start-up and loading).
   and the image then get a `metadata.code.compilation_priority` section
   naming them (`withCompilationHints`), and V8 started with
   `--wasm-compilation-hints` compiles them with the modules, in background
-  threads.
+  threads (Electron's V8). Node.js 24's V8 (13.6) reads instead the first
+  proposal's `compilationHints` section (a hint octet for each defined
+  function; `withEagerHints`) with `--experimental-wasm-compilation-hints`,
+  which `host/run.mjs` sets: `bin/clysm`, once it has saved the REPL's heap
+  image, runs `lib/image-training.lisp` in the image started from it with
+  `CLYSM_TRAIN_IMAGE=1` (the image instrumented as above), and the image's
+  module in the file gets the section naming the 1070 functions that ran
+  (start, compiling a `defun`, a macro, `loop`, `format`). The hint is
+  0x12 (eager; Liftoff as the "top" tier, which dynamic tiering does not
+  keep a function that runs long from leaving): an eager hint with the
+  default top tier makes `WebAssembly.compile` never settle, and one with
+  TurboFan compiles them all with it. The compilation of the module waits
+  for them, so the set is kept to what nearly every use runs: one that
+  added loading Quicklisp and libraries (1850 functions) made `--eval t`
+  9 ms slower and loading no faster.
 * **Size.** The modules saved in the file are without the bodies of their
   `run` and `snap`, which are never called there (so an image started from
   a heap image cannot be saved again); `restore` uses unchecked casts.
@@ -4139,10 +4175,10 @@ functions (`format`'s directives, sequence functions, `typep`, the
 `loop` parser...), whose inlining the benchmarks need, and the check of a
 pending exit after each call (12 octets a call).
 
-Tried and not kept: compilation hints (`withCompilationHints`, the
-functions that run at start compiled eagerly in background threads) are
-not used by Node.js 24's V8 (13.6; `--experimental-wasm-compilation-hints`
-changed nothing). V8 has no cache of compiled WebAssembly that Node.js
+Tried and not kept: compilation hints in the `metadata.code.compilation_priority`
+format (`withCompilationHints`) are not used by Node.js 24's V8 (13.6;
+`--experimental-wasm-compilation-hints` changed nothing); its own older
+format is (see Heap images, and below). V8 has no cache of compiled WebAssembly that Node.js
 exposes (`v8.serialize` of a `WebAssembly.Module` gives 2 octets).
 
 Also tried and not kept (2026-11-20 evening): a Node.js startup snapshot
@@ -4158,6 +4194,69 @@ no gain. Compiling a form before the heap image is saved (so that the
 compiler's tables made when first used are in it): no gain. Ending the
 worker by a message from it before it tears down: the main thread's exit
 joins it anyway.
+
+Later (2026-11-21), one slot, best of five, milliseconds ("main" is main
+at ee61f08, "now" this work on top of it; the machine was busy, another
+slot running Lem's benchmarks):
+
+| Item | SBCL | Main | Now |
+|---|---|---|---|
+| `s-start` (`--eval t`) | 4 | 100 | 77 |
+| `s-script` | 5 | 154 | 99 |
+| `s-require-asdf` | 52 | 257 | 201 |
+| `s-quicklisp` | 141 | 433 | 356 |
+| `s-ql-alexandria` | 158 | 504 | 399 |
+| `s-ql-cl-ppcre` | 181 | 510 | 408 |
+| `s-ql-babel` | 237 | 592 | 479 |
+| geometric mean / SBCL | | 5.94 | 4.56 |
+
+(On a quieter machine `s-start` is 91 -> 64 ms and `s-script` 125 -> 79.)
+
+* **The image as it starts from the heap image** (see Heap images): its
+  constant lists, vectors and symbols made empty, compiling and
+  instantiating the REPL image 43 -> 25 ms, and 4 MB less to allocate and
+  copy in the young generation. `host/run.mjs` reads the heap image first
+  and compiles the image's module from it (reading the header, then those
+  octets, then the heap while it compiles), and does not read the image's
+  9 MB file.
+* **Compilation hints** that Node.js's V8 reads (`compilationHints`, see
+  Heap images): the 1070 functions of the image that starting, compiling a
+  `defun` and loading run are compiled by Liftoff in V8's threads while the
+  image compiles, instead of one by one on the main thread (1.1 MB:
+  `s-script` 120 -> 79 ms, `--eval t` 70 -> 64).
+* **A module's toplevel forms** are compiled with it: each runs once when
+  the module is loaded, so the compiler names them (`eager-funcs` of the
+  module: `run`, the `run-seg`s, `unit-dispatch` and the main entries of
+  the toplevel functions) in the module's `compilationHints` section, and
+  V8 compiles them in its threads (with `new WebAssembly.Module`, it waits
+  for them) instead of one after the other when called: for ASDF's fasl
+  280 of the 790 KB of code that loading it compiles; `(require :asdf)`
+  199 -> 185 ms, Quicklisp and Babel 466 -> 445.
+* **Host.** The places of the image's functions in its sources
+  (`clysm.sources`, 3 MB of strings for 18000 functions) are read when a
+  stack trace first needs them, and `node:child_process` (with much of
+  Node.js's own JavaScript) when a process is first started.
+
+Tried and not kept (2026-11-21): the young generation growing faster at
+start (`--semi-space-growth-factor`, which can be set at run time; the
+start allocates about 10 MB that all live on, and copies them through six
+scavenges, 10 ms): 16 makes `--eval t` 10 ms faster but loading ASDF 10 ms
+slower and Quicklisp no faster (larger scavenges, and a full collection),
+4 is between. The image's objects from a global's initializer (V8
+evaluates it when instantiating) instead of `:image-objects`, a function
+of 31000 `global.get`s that Liftoff compiles in 2 ms into 1 MB of code: no
+gain. A larger training set for the hints (loading Quicklisp and three
+libraries, 1850 functions; or compiling and loading a file of a class, a
+generic function and a structure, 1580): the module's compilation waits
+for them, `--eval t` 3 to 9 ms slower and loading no faster.
+
+What remains of `--eval t` (64 ms on a quiet slot): Node.js and its ESM
+loader 15 ms, reading the heap image (10.7 MB) and compiling the image 17
+(the main thread waits for it 9), instantiating it 12 (its 7500 static
+closures, 31000 globals, and V8 making a reference for each of the 17000
+functions in the table), making the heap's objects 8, the program 8 (the
+host variables, the REPL), and the collections of the young generation
+(10 ms over all of it).
 
 ### Allocation, garbage collection and the engine's flags
 
