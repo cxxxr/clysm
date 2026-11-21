@@ -1707,9 +1707,60 @@ call site; only other objects (an error) go to the helper."
           (:local.get ,tmp))
         (:call :coerce-function) :ref.as_non_null))))
 
+(defvar *spec-self* nil
+  "While an entry version of a function is compiled: (lam sig name), its
+function, signature and name.")
+
+(defun self-clone-call-code (lam closure-code args tail)
+  "In LAM's entry version (*SPEC-SELF*), a call of LAM itself with its own
+closure: the version called directly when the arguments are of its classes
+(a 32-bit integer tested to be a fixnum here), the general version
+otherwise; NIL when the classes cannot hold."
+  (destructuring-bind (self sig name) *spec-self*
+    (when (and (eq lam self) (lam-simple-p lam) (= (length args) (length (lam-req lam)))
+               (equal closure-code '((:local.get 0))))
+      (let ((tests nil) (codes nil) (boxed nil))
+        (loop for a in args for class in sig
+              do (let ((ty (node-ty a)))
+                   (cond ((or (null class) (and (eq class :fixnum) (ty-fixnum-p ty))
+                              (and (eq class :double) (ty-double-p ty)))
+                          (let ((tmp (new-local)))
+                            (push `(,@(cg a) (:local.set ,tmp)) codes)
+                            (push `(:local.get ,tmp) boxed)))
+                         ((and (eq class :fixnum) (ty-int32-p ty))
+                          (let ((tmp (new-local :i32)))
+                            (push `(,@(cg-rep a :i32) (:local.set ,tmp)) codes)
+                            (push `((:local.get ,tmp) (:i32.const ,+char-tag+) :i32.add
+                                    (:i32.const ,(* 2 +char-tag+)) :i32.lt_u)
+                                  tests)
+                            (push `(:local.get ,tmp) boxed)
+                            (setf (car boxed) (list :box tmp))))
+                         (t (return-from self-clone-call-code nil)))))
+        (setf codes (nreverse codes) boxed (nreverse boxed) tests (nreverse tests))
+        (let* ((call (if tail :return_call :call))
+               (fast `((:local.get 0) (:ref.cast! :closure)
+                       ,@(loop for b in boxed
+                               append (if (eq (car b) :box) `((:local.get ,(second b)) :ref.i31) (list b)))
+                       (,call ,name)))
+               (slow `((:local.get 0) (:ref.cast! :closure)
+                       ,@(loop for b in boxed
+                               append (if (eq (car b) :box) `((:local.get ,(second b)) (:call :box-i32)) (list b)))
+                       (,call (:main ,(lam-id lam))))))
+          (ensure-lam-compiled lam)
+          (direct-call-checked
+           lam tail
+           `(,@(apply #'append codes)
+             ,@(if tests
+                   `(,@(car tests) ,@(loop for tc in (cdr tests) append `(,@tc :i32.and))
+                     (:if nil :eqref ,fast ,slow))
+                   fast))))))))
+
 (defun cg-local-call (fun args mv tail)
   (let* ((lam (fun-lam fun))
          (closure-code (var-get-code (fun-lvar fun))))
+    (when (and *spec-self* (lam-accepts-p lam (length args)))
+      (let ((code (self-clone-call-code lam closure-code args tail)))
+        (when code (return-from cg-local-call code))))
     (if (lam-accepts-p lam (length args))
         (direct-call-code lam `(,@closure-code (:ref.cast! :closure)) (mapcar #'cg args) tail args)
         (progn (cwarn "local function ~S called with ~D arguments" (fun-name fun) (length args))
@@ -3210,7 +3261,8 @@ into locals of that representation on entry).")
                (*node-types* (make-hash-table :test 'eq))
                (*ti-analyzed* (make-hash-table :test 'eq))
                (*catching-tag* nil)
-               (*clone-free-reps* (loop for (fv . c) in fv-classes collect (cons fv (class-rep c)))))
+               (*clone-free-reps* (loop for (fv . c) in fv-classes collect (cons fv (class-rep c))))
+               (*spec-self* (list lam (subseq sig 0 n) (spec-clone-name lam sig flag))))
            (infer-lam lam (mapcar #'class-ty (subseq sig 0 n)))
            (let ((*proven-params* (clone-proven-params lam (subseq sig 0 n))))
            (compile-simple-main lam (spec-clone-name lam sig flag)

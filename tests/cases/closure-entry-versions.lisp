@@ -42,3 +42,10 @@
 (print (handler-case (wrong-type "x") (error () :error)))
 (print (wrong-type 5))
 (print (wrong-type (expt 2 3)))
+;; a recursive local function calling its own version directly, with an
+;; argument that leaves the fixnums
+(defun climb (start limit)
+  (labels ((up (x n) (dotimes (i 1) (setq n (+ n i)))
+             (if (>= n limit) x (up (+ x x) (1+ n)))))
+    (up start 0)))
+(print (list (climb 1 10) (climb 3 40) (climb (expt 2 28) 3) (climb 1.5d0 4)))
