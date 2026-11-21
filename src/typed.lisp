@@ -1900,6 +1900,20 @@ updated more than it is looked at: a sum or a hash value, not a loop index.)"
                    (case (car n)
                      (:lref (ref (second n) nil))
                      (:lset (let ((v (second n)) (e (third n)))
+                              (multiple-value-bind (g tree) (guarded-int-copy e v nil)
+                                (when g
+                                  ;; (SETQ v (f v)) with F's copy guarded (code in the
+                                  ;; image): its arithmetic is an update; the copy's
+                                  ;; argument is v itself, the guard and the call of
+                                  ;; the function other code
+                                  (let ((en (entry v)))
+                                    (incf (svref en 0))
+                                    (when (> depth 0)
+                                      (incf (svref en 2))
+                                      (when (int-leaf-p v tree) (incf (svref en 4))))
+                                    (operands v tree)
+                                    (walk g) (walk (fourth (guarded-copy-if e))))
+                                  (return-from walk)))
                               (if (and (eq (car e) :prim) (fusable-op-node-p e))
                                   (let ((en (entry v)))
                                     (incf (svref en 0))
@@ -2135,11 +2149,73 @@ the value of NODE: B null when F holds it."
   `((:local.get ,b) :ref.is_null
     (:if nil :i64 ((:local.get ,v)) ,(i64-decode-code `((:local.get ,b)) fail))))
 
+(defun guarded-copy-if (expr)
+  "The IF of a guarded copy that EXPR ends in under LETs: (LET ((arg x))
+(IF guard copy (f arg))), as calls of functions of other forms or files are
+compiled in the image."
+  (loop while (and (eq (car expr) :let) (consp (third expr))) do (setq expr (third expr)))
+  (and (eq (car expr) :if) (guard-node-p (second expr)) expr))
+
+(defun guarded-int-copy (expr v &optional (dual-p t))
+  "When EXPR, assigned to the variable V, is a guarded copy (GUARDED-COPY-IF)
+whose LETs only bind variables to V (or to such variables) and whose copy
+ends, under such LETs and blocks nothing returns from, in integer arithmetic
+of the fused trees: (values guard tree else bindings), TREE with the
+references of those variables replaced by references of V (a copy, the
+types of its nodes noted), BINDINGS the LET bindings around the IF.  Else NIL."
+  (let ((aliases (list v)) (bindings nil))
+    (labels ((alias-binding-p (b)
+               (let ((lv (car b)) (init (cdr b)))
+                 (and (not (lvar-special lv)) (not (lvar-mutated lv)) (not (lvar-captured lv))
+                      (eq (car init) :lref) (member (second init) aliases))))
+             (unwrap-lets (e collect)
+               (loop
+                 (case (car e)
+                   (:let (unless (every #'alias-binding-p (second e)) (return nil))
+                    (dolist (b (second e)) (push (car b) aliases))
+                    (when collect (setf bindings (append bindings (second e))))
+                    (setq e (third e)))
+                   (:block (when (or (blk-nonlocal (second e)) (block-returned-to-p (second e) (third e)))
+                             (return nil))
+                    (setq e (third e)))
+                   (:progn (unless (= (length (cdr e)) 1) (return nil)) (setq e (second e)))
+                   (t (return e)))))
+             (subst-tree (n)
+               (let ((new (cond ((and (eq (car n) :lref) (member (second n) aliases)) (list :lref v))
+                                ((eq (car n) :const) n)
+                                ((fusable-op-node-p n) (list* (first n) (second n) (mapcar #'subst-tree (cddr n))))
+                                ((and (eq (car n) :lref)) n)
+                                (t (return-from guarded-int-copy nil)))))
+                 (unless (eq new n) (setf (gethash new *node-types*) (gethash n *node-types*)))
+                 new)))
+      (when (and (or (not dual-p) (dual-local v)) (not *no-fuse*))
+        (let ((if (unwrap-lets expr t)))
+          (when (and if (eq (car if) :if) (guard-node-p (second if)))
+            (let ((tree (unwrap-lets (third if) nil)))
+              (when (and tree (fusable-op-node-p tree) (not (eq (fused-plan tree nil) :no)))
+                (values (second if) (subst-tree tree) (fourth if) bindings)))))))))
+
 (defun dual-lset-code (node effect)
   "Code for (:LSET var expr) when VAR is an integer accumulator and EXPR is
 integer arithmetic (the fused trees of prims.lisp, here also a single
 operation); NIL otherwise.  EFFECT: no value is left."
   (let* ((lv (second node)) (v (dual-local lv)) (expr (third node)))
+    ;; a guarded copy of integer arithmetic: the copy's arithmetic stored
+    ;; as the update of the accumulator (its i64), the call of the function
+    ;; when the guard fails as any other value
+    (when (and v (eq (car (get-loc lv)) :local))
+      (multiple-value-bind (g tree else bindings) (guarded-int-copy expr lv)
+        (when g
+          (let ((fast (dual-lset-code (list :lset lv tree) t)))
+            (when fast
+              (return-from dual-lset-code
+                `(,@(if (assumed-guard-p g)
+                        fast
+                        `(,@(cg-test g) (:hint 1)
+                          (:if nil nil ,fast
+                               (,@(cg-effect (list :let bindings (list :lset lv else)))
+                                ,@(guard-else-epilogue g)))))
+                  ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v)))))))))
     ;; an unboxed double variable
     (when (and (fdual-local lv) (eq (car (get-loc lv)) :local) (spec-able-p expr))
       (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
