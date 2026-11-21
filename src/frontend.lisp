@@ -1859,6 +1859,16 @@ bound to the values of ARGS, when their number is known; else NIL."
         `(:defun ,(second qsym) ,(convert `(lambda () ,body) env) :form)
         (convert `(progn ,body ,qsym) env))))
 
+;;; (sys:%weak-symbol SYMBOL) — the symbol SYMBOL (not evaluated), by a
+;;; reference that does not keep what it names in a shaken program
+;;; (SHAKE-MODULE and the heap of src/preinit.lisp do not follow it): its
+;;; function, value and properties are there only if something else refers
+;;; to SYMBOL, so that code can use them when the program has them anyway
+;;; (the message of an unhandled error, cond.lisp)
+(defnative clysm-sys::%weak-symbol (form env)
+  (declare (ignore env))
+  `(:wasm :eqref () ((:global.get ,(sym-global (second form)) :weak))))
+
 ;;; ------------------------------------------------------------
 ;;; source transforms for variadic arithmetic and comparisons
 ;;; ------------------------------------------------------------

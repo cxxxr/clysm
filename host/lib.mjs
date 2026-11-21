@@ -169,7 +169,8 @@ function instantiate(module, options, debug = null) {
     exports: exportsObject,
     // a stack trace with the Lisp frames named by file and line
     mapStack: state.mapStack,
-    // read and evaluate Lisp forms (in an image that has the evaluator)
+    // read and evaluate Lisp forms (in an image that has the evaluator: a
+    // shaken module has it only when compiled with --eval-string)
     eval(source) { return instance.exports.eval_string(source); },
   };
 }

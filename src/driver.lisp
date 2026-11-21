@@ -1295,6 +1295,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
 (defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
                                    ((:shake-symbols *shake-symbols*) *shake-symbols*)
                                    ((:shake-why *shake-why-file*) nil)
+                                   ((:eval-string *eval-string*) *eval-string*)
                                    ((:source-root *source-root*)
                                     (and runtime-dir
                                          (ignore-errors

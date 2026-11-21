@@ -1,0 +1,29 @@
+;;; Unhandled errors of a library (tests/lib/run.sh): with --shake the
+;;; module has no printer, and the messages that reach JavaScript are written
+;;; by the small printer of runtime/cond.lisp; they must be those that the
+;;; full printer writes (tests/lib/messages.expected, from a module without
+;;; --shake).
+(define-condition my-error (error) ((x :initarg :x)) (:report "a report that is a string"))
+(define-condition bare-error (error) ())
+(defstruct pt x y)
+(defun f1 () (error "plain ~S ~A ~D ~% and ~:D ~X ~B ~O" "str" 'sym 42 1234567 255 5 8))
+(defun f2 (x) (car x))
+(defun f3 () (funcall (intern "NO-SUCH-FUNCTION-XYZ")))
+(defun f4 () (error 'my-error :x '(1 2 "three" #\a 4.5 1/3)))
+(defun f5 () (error 'bare-error))
+(defun f6 () (error "list ~S vec ~S char ~S ~A float ~S ~A" '(a (b c) . d) #(1 2 3) #\Space #\x 1.5d0 -2.25))
+(defun f7 () (error "~{~A~^, ~} and ~:[no~;yes~] ~@[at ~A~] ~(Hello World~) ~:@(up~) ~D thing~:P" '(1 2 3) t 5 2))
+(defun f8 () (error "symbols ~S ~S ~S ~S ~S" :key 'cl-user::foo 'car '|lower case| (make-symbol "G")))
+(defun f9 () (error "struct ~A" (make-pt :x 1 :y 2)))
+(defun f10 () (/ 1 (length (list))))
+(defun f11 (x) (svref x 10))
+(defun f12 () (error 'type-error :datum 3 :expected-type 'string))
+(defun f13 () (error "~? and ~@?" "inner ~A" '(1) "inner2 ~A" 2))
+(defun f14 () (error "quote ~S fn ~S" ''x '#'car))
+(defun f15 () (error "~[zero~;one~;two~] ~[a~;b~:;other~] ~@[~A~]~5D|~a" 1 7 nil 42 "end"))
+(defun f16 () (error 'simple-type-error :format-control "bad ~S" :format-arguments (list "x")))
+(defun f17 () (error "big ~D ratio ~S neg ~D" (expt 2 70) 2/3 -12))
+(js:export "f1" #'f1) (js:export "f2" (lambda () (f2 5))) (js:export "f3" #'f3) (js:export "f4" #'f4)
+(js:export "f5" #'f5) (js:export "f6" #'f6) (js:export "f7" #'f7) (js:export "f8" #'f8) (js:export "f9" #'f9)
+(js:export "f10" #'f10) (js:export "f11" (lambda () (f11 (vector 1 2)))) (js:export "f12" #'f12) (js:export "f13" #'f13)
+(js:export "f14" #'f14) (js:export "f15" #'f15) (js:export "f16" #'f16) (js:export "f17" #'f17)

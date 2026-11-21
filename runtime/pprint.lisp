@@ -27,7 +27,11 @@
   (queue-head nil)
   (pending-blocks nil)
   ;; true once a tab has been queued (else %EXPAND-TABS has nothing to do)
-  (tabs nil))
+  (tabs nil)
+  ;; %PP-OUTPUT, given when the stream is made: the stream functions write
+  ;; to a pretty stream (%PP-CAPTURE-WRITE-CHAR...), and so a shaken
+  ;; program that makes none does not keep what lays out its lines
+  (output nil))
 
 (defstruct (%lblock (:constructor %make-lblock)
                     (:constructor %make-lblock-at (start-column section-column per-line-prefix-end
@@ -86,7 +90,14 @@
                                         :line-length line-length
                                         :start-column start-column
                                         :print-lines *print-lines*
-                                        :blocks (list (%make-lblock)))))))
+                                        :blocks (list (%make-lblock))
+                                        :output #'%pp-output)))))
+
+(defun %pp-output (pps force-newlines-p partial-p)
+  "Output what can be of the queue of PPS (%MAYBE-OUTPUT); if nothing
+could and PARTIAL-P, part of the line."
+  (or (%maybe-output pps force-newlines-p)
+      (when partial-p (%output-partial-line pps) nil)))
 
 (defun %release-pretty-stream (s)
   "The pretty stream S is no longer in use."
@@ -162,8 +173,7 @@ are not newlines."
       (declare (fixnum length fill available))
       (cond ((> available 0) (return available))
             ((> fill (%pps-line-length pps))
-             (unless (%maybe-output pps nil)
-               (%output-partial-line pps)))
+             (funcall (the function (%pps-output pps)) pps nil t))
             (t
              (setf (%pps-buffer pps)
                    (%string-grow buffer (max (* length 2) (+ length (floor (* want 5) 4))) fill)))))))
@@ -177,7 +187,7 @@ are not newlines."
                  (null (%qop-section-end entry))
                  (<= depth (%qop-depth entry)))
         (setf (%qop-section-end entry) newline))))
-  (%maybe-output pps (or (eq kind :literal) (eq kind :mandatory))))
+  (funcall (the function (%pps-output pps)) pps (or (eq kind :literal) (eq kind :mandatory)) nil))
 
 (defun %start-logical-block (stream prefix per-line-p suffix)
   (let ((pps (stream-buffer stream)))

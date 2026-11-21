@@ -18,11 +18,7 @@
 ;;;; let threads waiting for input run when input arrived, and threads whose
 ;;;; SLEEP is over.
 
-(defstruct (thread (:constructor %make-thread (name function)) (:predicate threadp)
-                   (:print-function (lambda (th s d)
-                                      (declare (ignore d))
-                                      (print-unreadable-object (th s :type t :identity t)
-                                        (format s "~S ~(~A~)" (thread-name th) (thread-state th))))))
+(defstruct (thread (:constructor %make-thread (name function)) (:predicate threadp))
   name function
   (state :new)                          ; :new :running :waiting :finished :aborted
   (values nil)                          ; of the function, when :finished
@@ -31,6 +27,12 @@
   (interrupts nil)                      ; functions to call, in order
   (joiners nil)                         ; threads waiting for it to end
   (waiting-for nil))                    ; what it waits for (for display)
+
+;;; (a method of PRINT-OBJECT, which a shaken program keeps only with the
+;;; printer, rather than a print function, which the class would keep)
+(defmethod print-object ((th thread) s)
+  (print-unreadable-object (th s :type t :identity t)
+    (format s "~S ~(~A~)" (thread-name th) (thread-state th))))
 
 (defconstant +ms-per-second+ 1000 "INTERNAL-TIME-UNITS-PER-SECOND (defined later, runtime/misc.lisp).")
 

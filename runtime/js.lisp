@@ -93,12 +93,11 @@ vector OCTETS from START to END."
   ((value :initarg :value :reader js:js-error-value)
    (name :initarg :name :initform nil :reader js:js-error-name)
    (message :initarg :message :initform "" :reader js:js-error-message))
-  (:report (lambda (condition stream)
-             (format stream "JavaScript error: ~@[~A: ~]~A"
-                     (js:js-error-name condition) (js:js-error-message condition))))
   (:documentation "A JavaScript exception thrown by a function called through
 the JS package, or the rejection of a promise awaited by JS:AWAIT.  VALUE is
 what was thrown (usually an Error), NAME and MESSAGE its name and message."))
+(%define-condition-message js:js-error (c)
+  "JavaScript error: ~@[~A: ~]~A" (%condition-slot c 'name) (%condition-slot c 'message))
 
 (defun %js-result (r)
   "Signal a Lisp error for a JavaScript exception boxed by the host's apply:
@@ -265,10 +264,8 @@ of the place where it was signalled), in the object that tells the host to throw
 
 (defun %js-failure (condition)
   (js:funcall *js-make-failure*
-              (handler-case (princ-to-string condition)
-                (error () "<error while printing the condition>"))
-              (handler-case (prin1-to-string (type-of condition))
-                (error () "ERROR"))
+              (%condition-message condition)
+              (%condition-type-string condition)
               (%js-wrap-lisp condition)
               (%js-host 3)
               (%js-host 4)))
@@ -537,6 +534,12 @@ for every instance, so it is meant for development."
                     (format out "; No value~%")))))
         (error (c) (format out "; Error: ~A~%" c))))
     (js:to-js (get-output-stream-string out))))
+
+(defun %host-no-eval-string (src)
+  "eval_string of a shaken program compiled without --eval-string."
+  (declare (ignore src))
+  (js:to-js "; Error: this module has no evaluator: compile it with --eval-string
+"))
 
 (%defvar-host *windows-paths*
   (let ((process (ignore-errors (js:global "process"))))

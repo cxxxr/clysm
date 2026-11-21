@@ -10,6 +10,17 @@ node tests/lib/run.mjs build/lib-test/demo.mjs || exit 1
 bin/clysm library --shake-symbols tests/lib/symbols.lisp -o build/lib-test/symbols.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/symbols.mjs build/lib-test/symbols.mjs || exit 1
+# the messages of unhandled errors written without the printer (--shake):
+# those of tests/lib/messages.expected, which a module with the printer writes
+bin/clysm library --shake tests/lib/messages.lisp -o build/lib-test/messages.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/messages.mjs build/lib-test/messages.mjs > build/lib-test/messages.out 2>&1
+if ! cmp -s tests/lib/messages.expected build/lib-test/messages.out; then
+  echo "lib: the messages of unhandled errors differ (tests/lib/messages.expected):"
+  diff tests/lib/messages.expected build/lib-test/messages.out
+  exit 1
+fi
+echo "lib: messages ok"
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

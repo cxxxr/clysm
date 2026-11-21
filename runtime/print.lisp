@@ -1109,10 +1109,15 @@ value...): a hash table in a compiled file (%WRITE-FASL-HASH-TABLE)."
           (t (print-unreadable-object (x stream :type t :identity t))))))
 
 (defun %report-condition (c stream)
-  (let ((reporter nil))
-    (dolist (class (%class-cpl (%instance-layout c)))
-      (let ((r (get (class-name class) '%condition-report)))
-        (when r (setq reporter r) (return))))
-    (if reporter
-        (funcall reporter c stream)
-        (format stream "Condition of type ~S was signalled." (type-of c)))))
+  (multiple-value-bind (fn args) (%condition-report-args c)
+    (if fn
+        (funcall fn c stream)
+        (apply #'format stream (car args) (cdr args)))))
+
+;;; The message of an unhandled error is written by the full printer when
+;;; the program has it (cond.lisp, %CONDITION-MESSAGE): these properties stay
+;;; in a shaken program only if it refers to PRINT-OBJECT, as the printer
+;;; does (*PRINT-OBJECT-HOOK*) and a program that defines its methods.
+(%put 'print-object '%full-message #'princ-to-string)
+(%put 'print-object '%full-prin1 #'prin1-to-string)
+(%put 'print-object '%full-format #'format)
