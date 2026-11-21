@@ -5418,6 +5418,21 @@ parameters (all runtime functions over 300 nodes) the module was 38 KB
 smaller still but `b-sieve` and `g-dderiv` 1.2-1.3 slower. The module of
 one export: 1,206,445 -> 1,085,879 bytes (`gzip -9` 359,909 -> 331,662).
 
+Where the module of one export is after these (1,085,879 bytes, `gzip -9`
+331,662; `tests/lib/one.max-bytes` 1,120,000): code 720 KB (199 KB with
+gzip), the data segments 226 KB (83 KB: the heap, 127 KB of it, and the
+names of the 5,179 symbols), globals 124 KB (38 KB), branch hints 6 KB.
+What keeps the most code: `subtypep` (68 KB, from the upgrading of an
+unusual element type in `make-array` and `make-string`, the general paths
+of `concatenate`, `coerce` and `map`, and condition types that are
+compound), `%find-position` (52 KB, one function: `find-if` and the
+fallbacks of `position` for sequences that are not simple), the small
+printer (`%small-format` 43 KB, `%small-print` 24 KB), the loader of the
+heap (`:start` 37 KB), `typep` of a type known only at run time (23 KB),
+the generic arithmetic (`:mul`, `:div`, `:divmod`, `expt`: 60 KB), the
+stream functions (27 KB) and `equalp` (12 KB). The heap's largest part is
+the class system: 1,024 slot definitions of 127 classes.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
