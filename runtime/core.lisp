@@ -808,6 +808,15 @@ MAPL: the value is the first list)."
           (t (%undefined-function-error s)))))
 
 (defun fdefinition (name) (symbol-function (%function-name-symbol name)))
+;; (FDEFINITION '(SETF NAME)): #'(SETF NAME), a reference to the setf
+;; function's symbol that a shaken program keeps (the symbol interned when
+;; FDEFINITION runs is not one that the code names)
+(define-compiler-macro fdefinition (&whole form name)
+  (if (and (consp name) (eq (car name) 'quote) (consp (cdr name)) (null (cddr name))
+           (let ((n (cadr name)))
+             (and (consp n) (eq (car n) 'setf) (consp (cdr n)) (symbolp (cadr n)) (null (cddr n)))))
+      `(function ,(cadr name))
+      form))
 
 ;;; Call sites of generic functions cache the functions found for the classes
 ;;; of their arguments (clos.lisp); the caches are valid while this number is
