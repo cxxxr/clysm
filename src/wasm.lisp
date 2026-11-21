@@ -100,7 +100,52 @@
 (defstruct (wasm-func (:constructor %make-wasm-func))
   name type params-names locals local-names body export import-module import-name display
   (source *func-source*)
-  (segment *func-segment*))
+  (segment *func-segment*)
+  ;; what the body refers to (WASM-FUNC-REFS), once it has been asked
+  (ref-list :unknown))
+
+(defun body-refs (body)
+  "What the code BODY refers to, in the order of first occurrence, each once:
+(:call . NAME) for a function it calls or takes the reference of, (:global
+. NAME) for a global it reads or sets, (:cast . TYPE) for a type it casts to
+(not :null)."
+  (let ((seen nil) (refs nil) (small nil) (nsmall 0))
+    (declare (fixnum nsmall))
+    (labels ((note (kind name)
+               ;; (a short list of what was seen, then a table)
+               (let ((bit (case kind (:call 1) (:global 2) (t 4))))
+                 (flet ((add () (push (cons kind name) refs)))
+                   (if seen
+                       (let ((old (gethash name seen 0)))
+                         (when (zerop (logand old bit))
+                           (setf (gethash name seen) (logior old bit))
+                           (add)))
+                       (let ((cell (assoc name small :test #'equal)))
+                         (cond ((null cell)
+                                (push (cons name bit) small) (incf nsmall) (add)
+                                (when (> nsmall 16)
+                                  (setq seen (make-hash-table :test 'equal))
+                                  (dolist (c small) (setf (gethash (car c) seen) (cdr c)))))
+                               ((zerop (logand (cdr cell) bit))
+                                (setf (cdr cell) (logior (cdr cell) bit))
+                                (add))))))))
+             (walk (x)
+               (when (consp x)
+                 (case (car x)
+                   ((:call :return_call :ref.func) (when (consp (cdr x)) (note :call (second x))))
+                   ((:global.get :global.set) (when (consp (cdr x)) (note :global (second x))))
+                   (:ref.cast (when (and (consp (cdr x)) (not (eq (second x) :null)))
+                                (note :cast (second x)))))
+                 (do ((l x (cdr l))) ((atom l)) (when (consp (car l)) (walk (car l)))))))
+      (walk body)
+      (nreverse refs))))
+
+(defun wasm-func-refs (f)
+  "BODY-REFS of the body of the function F, computed once."
+  (let ((r (wasm-func-ref-list f)))
+    (if (eq r :unknown)
+        (setf (wasm-func-ref-list f) (body-refs (wasm-func-body f)))
+        r)))
 
 (defstruct wasm-module
   (types (make-array 0 :adjustable t :fill-pointer 0))   ; vector of (name . def)
@@ -301,7 +346,8 @@ functions).  Calls of the installs that are not reached are removed."
                    (:try_table (list* (first x) (second x) (third x) (fourth x) (strip (nthcdr 4 x)))))))
         (loop for f across (wasm-module-funcs m)
               when (gethash (wasm-func-name f) funcs)
-                do (setf (wasm-func-body f) (strip (wasm-func-body f)))))
+                do (setf (wasm-func-body f) (strip (wasm-func-body f))
+                         (wasm-func-ref-list f) :unknown)))
       ;; drop functions and globals, and renumber
       (let ((kept (remove-if-not (lambda (f) (gethash (wasm-func-name f) funcs))
                                  (coerce (wasm-module-funcs m) 'list))))

@@ -10,7 +10,7 @@
            #:add-import-global #:add-import-tag #:wasm-module-base-types #:wasm-module-nonnull-globals
            #:wasm-module-cast-rewrites #:remove-unreachable-functions #:wasm-module-funcs
            #:wasm-module-memory #:wasm-module-memory-import #:wasm-module-table #:wasm-module-code-base #:wasm-module-globals #:shake-module #:*func-source*
-           #:*func-segment* #:wasm-func-segment))
+           #:*func-segment* #:wasm-func-segment #:wasm-func-refs #:body-refs #:wasm-func-p))
 
 ;;; Host package that holds the compiler itself.
 (defpackage :clysm
