@@ -2768,6 +2768,48 @@ What is not as fast as intended, and why:
   constant) is a `ref.eq` of the immediates, without their checks
   (`tools/bench-lem.sh` the same: 1.24 against 1.29 in one interleaved
   pair).
+* **Tests that are IFs, compiled as branches** (2026-11-22). The test of
+  an IF that is itself an IF, an OR or a NOT of one (`cond`, `and`,
+  `%endp`'s `(cond ((consp x) nil) ((null x) t) (t error))`, the `(or (%endp
+  a) (%endp b))` of `mapc` over two lists) was an i32 made by nested
+  `if (result i32)`s and tested again. V8 kept that i32 (a `sete`, a
+  `test`, another branch) and, the REF.TEST of the leaf no longer being
+  the condition of the branch into the arm, did not know the type of the
+  value there: the `(car l)` after `(%endp l)` cast `l` to a cons again
+  (its null, i31 and map tests). Now `branch-code` (`src/codegen.lisp`)
+  compiles such a test as blocks and BR_IFs: each leaf branches to the arm
+  (or to the next leaf), a leaf that is a constant (the NIL of `%endp`, the
+  T of OR) makes the test before it branch to its target, and a test falls
+  through where it can. The engine then drops the casts after the test
+  (in a `mapc` of a lambda over two lists, both lists' casts) and peels
+  the first iteration of loops it did not peel before (more allocation
+  sites in the code of `b-deriv`; `--no-wasm-loop-peeling` takes 3% of
+  the gain of the `mapc` probes back).
+  `mapc` of a lambda over two lists 0.70-0.79 of its time, `mapcan` over
+  two 0.85; interleaved A/B against the commit before (best of 3-4 runs,
+  the order alternated): `bench/library.lisp` 0.955, `bench/closures.lisp`
+  0.946, `bench/functional.lisp` 0.965, `bench/control.lisp` 0.98,
+  `bench/clos.lisp` 0.99, `bench/suite.lisp` 0.99, `bench/programs.lisp`
+  0.99, `bench/gabriel.lisp` and `bench/holdout.lisp` 1.00 (an A/A run of
+  the same build is 1.01). `v-mapping` is the same (43 ms either way): its
+  `mapc` is a small part, the rest is allocation and collection of
+  32-octet conses (half its ticks outside the module's code). Slower: `b-deriv` 1.08-1.11, whose `mapcar`
+  loops over two to four elements around a recursive call V8 now peels
+  (with `--no-wasm-loop-peeling` it is 0.95 of the time before; that flag
+  makes `bench/suite.lisp` 1.035 times slower in all, so peeling stays).
+  The REPL image grows by 18 KB (0.2%), the module of one export
+  (`tests/lib/one.lisp`) by 5.6 KB. Measured and not kept: a hint that the
+  first leaf of such a test branches to its arm (`b-deriv` the same),
+  the leaves' hinted BR_IFs as hinted IFs around a BR (the same), and
+  the i31 test of the fused integer arithmetic's operands hinted likely
+  (no faster: the out-of-line `wide-i64` call still spills the loop's
+  registers). Also with it: `coerce` to `double-float`, `single-float`
+  or `float` with a constant type is `float` with a prototype (its result
+  type known: `(incf x (coerce i 'single-float))` 6 → 1 ns, it was a call
+  of `%coerce-to-single` and a boxed single), `fill` of a list is one pass
+  (it took the list's length first: 4 → 1 ns an element) and `replace`
+  between a simple vector and a list reads or writes the vector with
+  `svref` (0.7 of the time).
 * **Checked casts in Lem's `char-width`** (2026-11-21; `char-width` and
   what it calls are 40% of the busy time of `l-line-down`). A checked
   cast (`(:ref.cast T)`, which signals a TYPE-ERROR instead of trapping)

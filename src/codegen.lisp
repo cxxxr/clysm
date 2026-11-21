@@ -981,10 +981,84 @@ expected to be taken, so that the engine lays it out of the way of the other."
   (cond ((cold-branch-p a) '((:hint 0)))
         ((cold-branch-p b) '((:hint 1)))))
 
+;;; A test that is itself an IF (COND, AND, %ENDP's (cond ((consp x) nil)
+;;; ((null x) t) (t error))), an OR or a NOT of one is compiled as branches
+;;; to the two arms instead of an i32 computed by nested IFs and tested
+;;; again: each leaf test ends in a BR_IF to the arm (or to the next test),
+;;; so that the engine sees the REF.TEST of a leaf as the condition of the
+;;; branch into the arm, and knows the type of the value there (the cast of
+;;; the CAR after (%ENDP L) goes away), and no i32 is materialized.
+(defun compound-test-p (c)
+  (and (not (assumed-guard-p c)) (not (hoisted-guard-local c))
+       (case (car c)
+         (:if t)
+         (:let (or-let-p c))
+         (:prim (and (member (prim-name (second c)) '(not null)) (compound-test-p (third c)))))))
+
+(defun flip-hint (hint)
+  (cond ((equal hint '((:hint 0))) '((:hint 1)))
+        ((equal hint '((:hint 1))) '((:hint 0)))))
+
+(defun leaf-branch-test (test)
+  "TEST, an i32 for a BR_IF, without a final pair of I32.EQZ."
+  (let ((n (length test)))
+    (if (and (>= n 3) (eq (nth (- n 1) test) :i32.eqz) (eq (nth (- n 2) test) :i32.eqz))
+        (butlast test 2)
+        test)))
+
+(defun branch-code (node then else &optional hint)
+  "Instructions that branch to the label THEN when the test NODE is true and
+to the label ELSE when it is false. Either may be :NEXT instead, the code
+that follows (they fall through to it). HINT, ((:HINT 0|1)) or NIL, is how
+likely THEN is."
+  (cond ((not (compound-test-p node))
+         (let ((test (cg-test node)))
+           (flet ((to (l) (unless (eq l :next) `((:br ,l)))))
+             (cond ((equal test '((:i32.const 1))) (to then))
+                   ((equal test '((:i32.const 0))) (to else))
+                   ((eq else :next) `(,@(leaf-branch-test test) ,@hint (:br_if ,then)))
+                   ((eq then :next) `(,@(leaf-branch-test `(,@test :i32.eqz)) ,@(flip-hint hint) (:br_if ,else)))
+                   (t `(,@(leaf-branch-test test) ,@hint (:br_if ,then) (:br ,else)))))))
+        ((eq (car node) :prim) (branch-code (third node) else then (flip-hint hint)))
+        ((eq (car node) :let)           ; (or x y): (if x t y)
+         (branch-if-code (cdr (first (second node))) '(:const t) (fourth (third node)) then else hint))
+        (t (destructuring-bind (c a b) (cdr node) (branch-if-code c a b then else hint)))))
+
+(defun branch-if-code (c a b then else hint)
+  "BRANCH-CODE of the test (IF C A B)."
+  (flet ((target (n) (when (eq (car n) :const) (if (second n) then else))))
+    (let ((ta (target a)) (tb (target b)) (h (if-branch-hint a b)))
+      (cond
+        ;; an arm that is a constant: C branches to its target, the other arm follows
+        (ta (if (eq ta :next)
+                (let ((lx (gensym "NEXT")))
+                  `((:block ,lx nil ,@(branch-code c lx :next h) ,@(branch-code b then else hint))))
+                `(,@(branch-code c ta :next h) ,@(branch-code b then else hint))))
+        (tb (if (eq tb :next)
+                (let ((lx (gensym "NEXT")))
+                  `((:block ,lx nil ,@(branch-code c :next lx h) ,@(branch-code a then else hint))))
+                `(,@(branch-code c :next tb h) ,@(branch-code a then else hint))))
+        ;; C falls through into A; A must not fall through (into B), so a
+        ;; :NEXT of A is the end of a block around the whole
+        (t (let* ((lb (gensym "ELSE"))
+                  (lx (and (or (eq then :next) (eq else :next)) (gensym "NEXT")))
+                  (code `((:block ,lb nil ,@(branch-code c :next lb h)
+                            ,@(branch-code a (if (eq then :next) lx then) (if (eq else :next) lx else) hint))
+                          ,@(branch-code b then else hint))))
+             (if lx `((:block ,lx nil ,@code)) code)))))))
+
 (defun cg-if (node mv tail)
   (destructuring-bind (c a b) (cdr node)
     ;; (a guard taken as true in a loop's version: the copy only)
     (when (assumed-guard-p c) (return-from cg-if (cg a mv tail)))
+    (when (compound-test-p c)
+      (return-from cg-if
+        (let ((lf (gensym "ELSE")) (end (gensym "IF")))
+          `((:block ,end :eqref
+              (:block ,lf nil
+                ,@(branch-code c :next lf (if-branch-hint a b))
+                ,@(cg a mv tail) (:br ,end))
+              ,@(cg b mv tail) ,@(guard-else-epilogue c))))))
     (let ((test (cg-test c)))
       ;; a test the types decide (a version of a loop for a fixnum count): one branch
       (cond ((equal test '((:i32.const 1))) (return-from cg-if (cg a mv tail)))
@@ -1015,7 +1089,15 @@ expected to be taken, so that the engine lays it out of the way of the other."
                  (or (dual-lset-code node t)
                      (var-set-code lv (cg (third node)))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
-    (:if (let ((test (cg-test (second node))))
+    (:if (when (compound-test-p (second node))
+           (return-from cg-effect
+             (let ((lf (gensym "ELSE")) (end (gensym "IF")))
+               `((:block ,end nil
+                   (:block ,lf nil
+                     ,@(branch-code (second node) :next lf (if-branch-hint (third node) (fourth node)))
+                     ,@(cg-effect (third node)) (:br ,end))
+                   ,@(cg-effect (fourth node)))))))
+         (let ((test (cg-test (second node))))
            (cond ((equal test '((:i32.const 1))) (cg-effect (third node)))
                  ((equal test '((:i32.const 0))) (cg-effect (fourth node)))
                  (t `(,@test ,@(if-branch-hint (third node) (fourth node))
