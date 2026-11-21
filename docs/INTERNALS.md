@@ -5335,6 +5335,29 @@ an instance of the heap, and the instance's name when it has one
 The module of one export: 1,732,962 -> 1,605,008 bytes (`gzip -9` 504,757
 -> 466,857).
 
+**Generic functions without the dispatch.** The generic functions that
+`%preinit-drop-methods` leaves without methods (those of Gray streams,
+which the stream functions call for a Gray stream) had the shared function
+of the dispatch, `%make-list-gf-function`, and so `%gf-invoke`, the
+filling of caches and the making of effective methods (`%compute-fast-emf`,
+the method combinations, and through them the evaluator) were in every
+module whose stream functions were. The runtime's generic functions with
+one primary method that specializes nothing (`slot-missing`,
+`slot-unbound`, `no-applicable-method`, `no-next-method`...) were called
+through the dispatch too. Both now get `%make-empty-gf-function`
+(`runtime/clos.lisp`): a call signals that no method applies, or calls the
+one method's function, unless `*empty-gf-dispatch*` is set, which
+`%add-method-unlocked` does (to `%gf-invoke`) when a method is first
+added, and `%preinit-drop-methods` clears after the runtime's own; such a
+method's generic function is the new function. A program that adds no
+method and calls only such generic functions has no dispatch. The update
+of the instances tracked by `track-instances` is likewise called through
+`*live-instances-updater*`, which `track-instances` sets. The small printer
+writes a generic function as its `print-object` does
+(`#<STANDARD-GENERIC-FUNCTION NAME>`). `tests/lib/nodispatch.lisp` is such
+a library. The module of one export: 1,605,008 -> 1,353,620 bytes (`gzip
+-9` 466,857 -> 408,606): code 1.18 -> 0.95 MB.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates

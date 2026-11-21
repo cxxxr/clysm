@@ -341,6 +341,32 @@ parameters): calls with one to four arguments make the list directly."
                      (lambda (a b c) (%gf-invoke info (list a b c)))
                      (lambda (a b c d) (%gf-invoke info (list a b c d)))))
 
+(defvar *empty-gf-dispatch* nil
+  "NIL until a method is added to a generic function (%ADD-METHOD-UNLOCKED),
+then %GF-INVOKE: what the generic functions that %PREINIT-DROP-GF-METHODS
+(image.lisp) left without methods call.")
+
+(defun %make-empty-gf-function (info method)
+  "The function of a generic function without methods in a shaken program,
+or whose one method METHOD specializes nothing: until a method is added to
+a generic function, which the program can do only if it keeps the code
+that adds one, a call signals that no method applies, or calls METHOD,
+without the dispatch, which the program then does not carry."
+  (%make-gf-closure4 (lambda (&rest args) (%empty-gf-call info method args))
+                     (lambda (a) (%empty-gf-call info method (list a)))
+                     (lambda (a b) (%empty-gf-call info method (list a b)))
+                     (lambda (a b c) (%empty-gf-call info method (list a b c)))
+                     (lambda (a b c d) (%empty-gf-call info method (list a b c d)))))
+
+(defun %empty-gf-call (info method args)
+  (let ((d *empty-gf-dispatch*))
+    (cond (d (funcall (the function d) info args))
+          (method (funcall (the function (%method-function method)) args nil))
+          ;; (what the method of NO-APPLICABLE-METHOD does)
+          (t (error 'simple-error
+                    :format-control "There is no applicable method for the generic function ~S when called with arguments ~S."
+                    :format-arguments (list (%gf-slot info +gf-function+) args))))))
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %fast-arity (ll)
     "The number of required parameters of the lambda list LL when a generic
@@ -611,6 +637,9 @@ spread arguments that are not just its required ones, else NIL."
 (defvar *add-method-hook* nil)
 
 (defun %add-method-unlocked (gf method)
+  ;; (the generic functions left without methods in a shaken program
+  ;; dispatch from now on: %MAKE-EMPTY-GF-FUNCTION)
+  (setq *empty-gf-dispatch* #'%gf-invoke)
   (let* ((info (%gf-info gf))
          (specs (%method-specializers method))
          (quals (%method-qualifiers method)))
