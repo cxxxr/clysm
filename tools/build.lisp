@@ -2,6 +2,9 @@
 ;;;; usage: sbcl --script tools/build.lisp [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] OUT.wasm FILE...
 (load (merge-pathnames "../load.lisp" *load-truename*))
 (in-package :clysm)
+;; (CLYSM_SHAKE_WHY_LARGEST=N: --shake-why lists the N nodes that dominate the most)
+(let ((n (sb-ext:posix-getenv "CLYSM_SHAKE_WHY_LARGEST")))
+  (when n (setf clysm-wasm::*shake-why-largest* (parse-integer n))))
 (let* ((args (cdr sb-ext:*posix-argv*)) (shake nil) (symbols nil) (why nil) (eval-string nil))
   (loop (cond ((equal (first args) "--shake") (pop args) (setf shake t))
               ((equal (first args) "--shake-symbols") (pop args) (setf symbols t))

@@ -1510,7 +1510,8 @@ table, with :ROOT its root."
     (remhash :root idom)
     idom))
 
-(defun write-shake-why (m why sizes stream &key (largest (let ((n (sb-ext:posix-getenv "CLYSM_SHAKE_WHY_LARGEST"))) (if n (parse-integer n) 150))))
+(defvar *shake-why-largest* 150 "How many nodes WRITE-SHAKE-WHY lists of those that dominate the most.")
+(defun write-shake-why (m why sizes stream &key (largest *shake-why-largest*))
   "Write to STREAM, for the module M that SHAKE-MODULE shook while WHY was
 *SHAKE-WHY* and that ENCODE-MODULE encoded while SIZES was *FUNC-BODY-SIZES*:
 the size of the kept code by source file; the LARGEST functions, globals and
