@@ -3271,7 +3271,8 @@ What makes the code fast:
   constant class use caches at the call site (with up to eight initargs
   passed as arguments, not a list). A constructor copies a
   template of the instance's slots holding the values of constant
-  initforms, then stores the arguments and the other initforms; the
+  initforms and of constant default initargs (`c-make-instance-plain`
+  0.91 of its time; they were called each time), then stores the arguments and the other initforms; the
   effective methods of `initialize-instance` and `shared-initialize` are
   called with the instance and the list of initargs. The `append`, `nconc`,
   `max` and `min` method combinations of two or three methods make no list

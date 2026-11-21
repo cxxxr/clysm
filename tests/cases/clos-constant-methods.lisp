@@ -53,3 +53,16 @@
 ;; through FUNCALL and APPLY
 (print (funcall #'arity (make-instance 'leaf) 3))
 (print (apply #'kind '(5)))
+
+;; constant default initargs (kept in the constructor's template)
+(defvar *counter* 0)
+(defclass p1 () ((a :initarg :a :initform 0) (b :initarg :b) (c :initarg :c :initform (incf *counter*)))
+  (:default-initargs :b 'bee))
+(defclass p2 (p1) () (:default-initargs :a 10 :c (list :c (incf *counter*))))
+(defun p-slots (o) (list (slot-value o 'a) (slot-value o 'b) (slot-value o 'c)))
+(dotimes (i 2)
+  (print (list (p-slots (make-instance 'p1)) (p-slots (make-instance 'p1 :b 2))
+               (p-slots (make-instance 'p2)) (p-slots (make-instance 'p2 :a 3 :c 4))
+               (p-slots (make-instance (if (evenp i) 'p2 'p1) :b i)))))
+(defclass p2 (p1) () (:default-initargs :a 20 :b "b"))
+(print (list (p-slots (make-instance 'p2)) (p-slots (make-instance 'p2 :a 1))))
