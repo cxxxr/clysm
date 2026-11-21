@@ -711,7 +711,7 @@ generic function."
       ;; a simple vector of a known kind with a subscript of unknown type
       ;; (an element of a vector, a counter that may grow): the subscript is
       ;; tested to be a fixnum inline, as for an array of unknown type
-      (when (and kind (not two) (not row-major) (eq shape :vec) (null (cdr subs))
+      (when (and kind (not two) (not row-major) (member shape '(:vec :any)) (null (cdr subs))
                  (not (i32-arg-p (first subs)))
                  (or (not (member name '(char schar))) (eq kind :string)))
         (return-from array-locate-code (speculative-locate-code-1 name kind a (first subs) slow)))

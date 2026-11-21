@@ -865,6 +865,10 @@ others are consed onto the list for its rest list."
   "Convert an i32 on the stack to T/NIL."
   `((:if nil :eqref ,(t-code) ,(nil-code))))
 
+(defvar *fixnum-known-codes* nil
+  "The operand codes (the lists themselves) given to a primitive that push a
+value known to be a fixnum: its i32 followed by :REF.I31 (CG-PRIM, CG-TEST).")
+
 (defun cg-test (node)
   "Instructions leaving an i32 (0 = false)."
   (when (assumed-guard-p node) (return-from cg-test '((:i32.const 1))))
@@ -884,7 +888,8 @@ others are consed onto the list for its rest list."
     (:const (if (second node) '((:i32.const 1)) '((:i32.const 0))))
     (:prim (let ((p (second node)))
              (if (eq (prim-kind p) :test)
-                 (funcall (prim-fn p) (mapcar #'cg (cddr node)))
+                 (multiple-value-bind (codes known) (prim-arg-codes p (cddr node))
+                   (let ((*fixnum-known-codes* known)) (funcall (prim-fn p) codes)))
                  `(,@(cg node) ,@(nil-code) :ref.eq :i32.eqz))))
     (:wasm-test `(,@(loop for a in (second node) append (cg a))
                   ,@(resolve-wasm-instrs (third node))))

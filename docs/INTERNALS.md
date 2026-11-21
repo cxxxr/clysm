@@ -1052,6 +1052,29 @@ one slot against the build before): `p-queens` 137 → 107 ms (SBCL 66),
 `k-funcall-args` 113 → 102; `bench/closures.lisp` 1.00 → 0.95 times SBCL,
 the other files unchanged within noise.
 
+The three vectors of `p-queens` (`(make-array n :initial-element nil)` of
+an `n` of unknown type) were still of unknown type in the copy: the inline
+`make-array` has a branch for a fixnum size (a simple vector) and one for
+anything else (a simple array of any rank over the same storage), and the
+union of the two had no class. It is now that array of any rank
+(`union-array-class`, `src/types.lisp`), whose one-subscript `aref` tests
+for the storage only; `p-queens` 110–138 → 86–93 ms (three interleaved
+rounds against the build before; SBCL 66).
+
+**Inline fixnum operations with an operand known** (`inline-fixnum-op`,
+`inline-fixnum-cmp`, `prim-arg-codes`, `src/prims.lisp`): an operation of
+a fixnum and a value of unknown type takes the fixnum's i32 as it is
+(`*fixnum-known-codes*`: its code, the i32 followed by `ref.i31`) and
+tests only the other operand; a constant operand is not tested, and `(+ x
+k)`, `(- x k)` of a constant test the sum alone, against the range a
+fixnum plus K reaches (a character, or a sum beyond the fixnums, falls
+outside it: one comparison for both tests). `logand`, `logior`, `logxor` of
+two fixnums do not test the result. The test of an operand of unknown type
+stays an `i31` test, its extraction and one range comparison (characters
+are `i31`s too); with no `i31` below the fixnums a signed comparison could
+replace the addition and the unsigned one, which was not tried (one
+instruction).
+
 **`dotimes` over a count held in a variable** (`runtime/boot.lisp`) whose
 body uses the counter and is small (at most 120 conses) expands to `(if
 (fixnump n) <the loop with n bound to a variable declared fixnum> <the

@@ -82,7 +82,9 @@
              (mkty (logior (ty-bits a) (ty-bits b))
                    (cond ((and ia ib) (bound-min (ty-lo a) (ty-lo b))) (ia (ty-lo a)) (t (ty-lo b)))
                    (cond ((and ia ib) (bound-max (ty-hi a) (ty-hi b))) (ia (ty-hi a)) (t (ty-hi b)))
-                   (and (eq (ty-cls a) (ty-cls b)) (ty-cls a)))))))
+                   (if (eq (ty-cls a) (ty-cls b))
+                       (ty-cls a)
+                       (union-array-class a b)))))))
 
 (defun ty-intersect (a b)
   (mkty (logand (ty-bits a) (ty-bits b))
@@ -150,6 +152,17 @@ boxed (an integer only within the fixnums)."
 (defparameter *anyrank-classes*
   (loop for k in *storage-kinds*
         collect (cons (first k) (intern (concatenate 'string "ARR-" (symbol-name (first k))) :keyword))))
+(defun union-array-class (a b)
+  "The class of simple arrays of any rank over one kind of storage when A
+and B are only simple arrays over that kind (a vector and an array of any
+rank: the two branches of an inline MAKE-ARRAY of a size of unknown type),
+else NIL."
+  (let ((mask (logior +k-other+ +k-svec+ +k-string+)))
+    (when (and (zerop (logandc2 (ty-bits a) mask)) (zerop (logandc2 (ty-bits b) mask)))
+      (let ((ka (ty-array-kind a)))
+        (when (and ka (eq ka (ty-array-kind b)))
+          (cdr (assoc ka *anyrank-classes*)))))))
+
 (defun anyrank-class-p (cls) (and (rassoc cls *anyrank-classes*) t))
 
 (defun anyrank-ty (kind)
