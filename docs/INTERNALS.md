@@ -2353,6 +2353,17 @@ What makes the code fast:
   variable as it does arithmetic, so the update is one tree. The slow
   branches are hinted unlikely (V8 then keeps the loop's values in
   registers). `programs.lisp` `p-float-round` 156 → 98 ms (SBCL 56).
+  The front of the division helper divides a single by a single or a
+  fixnum with the f32 instructions (an undeclared `(round x 2)` of singles
+  in a loop 113 → 68 ms, SBCL 49). A `multiple-value-bind` whose value is
+  not used compiles its body for effect: before, `(when (> r 1d0) (incf
+  s))` as its last form made the integer of the accumulator `s` (a bignum
+  beyond 2^29) at every iteration and left it in the eqref local, so the
+  next update decoded it again (`p-float-round` 98 → 82 ms,
+  `p-integer-math` 62 → 50). An integer leaf of fused arithmetic that is not
+  a fixnum is decoded by one call (`:wide-i64`, -2^63 for anything that is
+  not an integer within 64 bits; more than two digits fail at once), not by
+  inline tests and two call sites in the loop.
 * **Specialized arrays**: every upgraded element type (bit, the integer types
   of 7 to 64 bits, single and double floats, characters) has its own Wasm
   array type; `aref` on an array whose element type is known (from

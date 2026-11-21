@@ -122,13 +122,10 @@ integer within 64 bits; anything else branches to FAIL."
            ((:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,v)
             (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
             (:local.get ,v) :i64.extend_i32_s)
-           ;; a bignum holding its value as an i64 (nonzero), else the helpers
-           ((:local.get ,e) (:ref.test :bignum) :i32.eqz (:br_if ,fail)
-            (:local.get ,e) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,w) :i64.eqz
-            (:if nil :i64
-                 ((:local.get ,e) (:call :small-int-p) :i32.eqz (:br_if ,fail)
-                  (:local.get ,e) (:call :int-i64))
-                 ((:local.get ,w))))))))
+           ;; an integer within 64 bits that is not a fixnum: one call
+           ;; (out of the way of the loop's registers), -2^63 for anything else
+           ((:local.get ,e) (:call :wide-i64) (:local.tee ,w) (:i64.const ,(- (expt 2 63))) :i64.eq
+            (:br_if ,fail) (:local.get ,w))))))
 
 (defun i64-checked-op-code (op x y r fail)
   "OP (:add :sub :mul) of the i64 locals X and Y into the local R, branching
@@ -1629,6 +1626,20 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                  (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:ref.cast! :limbs) (:i32.const 1)
                  (:array.get :limbs) (:i32.const 0) :i32.ge_s :i32.and :return))
   '(:i32.const 0))
+
+(defhelper :wide-i64 :e-l ((r :i64))
+  ;; the value of an integer within 64 bits (a bignum, or a fixnum), else -2^63
+  '(:local.get 0) '(:ref.test :bignum)
+  `(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee r) :i64.eqz :i32.eqz
+                 (:if nil nil ((:local.get r) :return))
+                 ;; (more than two digits: beyond 64 bits, or the generic code decides)
+                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null :i32.eqz
+                 (:if nil nil
+                      ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :array.len
+                       (:i32.const 2) :i32.gt_u (:if nil nil ((:i64.const ,(- (expt 2 63))) :return))))))
+  '(:local.get 0) '(:call :small-int-p)
+  `(:if nil nil ((:local.get 0) (:call :int-i64) :return))
+  `(:i64.const ,(- (expt 2 63))))
 
 (defhelper :int-i64 :e-l ((m (:ref :null :limbs)) (i :i32) (r :i64))
   '(:local.get 0) '(:ref.test :i31)
