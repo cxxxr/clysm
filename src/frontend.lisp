@@ -34,7 +34,8 @@ functions made from it are, for the clysm.sources section (stack traces).")
   (and (null (lam-opt l)) (null (lam-rest l)) (not (lam-keyp l))))
 
 (defstruct blk name lam tag-var (nonlocal nil) label (mv nil) dyn-depth uwp-depth saved-bsp uwp-frames
-  (used nil))             ; a RETURN-FROM refers to it
+  (used nil)              ; a RETURN-FROM refers to it
+  (rep :eqref))           ; the representation of its value (set by codegen)
 (defstruct tb lam tags tag-var (nonlocal nil) labels dispatch pc dyn-depth uwp-depth saved-bsp uwp-frames
   modes loop-labels cur)
 (defstruct fun name lvar lam)

@@ -1702,10 +1702,13 @@ own, which the shaker keeps only if something refers to SYMBOL.")
 ;;; BLOCK / RETURN-FROM
 ;;; ------------------------------------------------------------
 
-(defun cg-block (node mv tail)
+(defun cg-block (node mv tail &optional (rep :eqref))
+  "REP other than :EQREF (from CG-REP, a local block only): the block and the
+values its RETURN-FROMs pass are raw (an i32, i64 or f64)."
   (destructuring-bind (blk body) (cdr node)
     (let ((label (gensym "BLOCK")))
       (setf (blk-label blk) label
+            (blk-rep blk) rep
             (blk-mv blk) mv
             (blk-dyn-depth blk) *dyn-depth*
             (blk-uwp-depth blk) *uwp-depth*
@@ -1714,12 +1717,12 @@ own, which the shaker keeps only if something refers to SYMBOL.")
       (set-loc (blk-tag-var blk) (cons :local (new-local)))
       (let ((body-code (let ((*tail-ok* (and *tail-ok* (not (blk-nonlocal blk))))
                              (*catchers* (if (blk-nonlocal blk) (cons (list :block blk) *catchers*) *catchers*)))
-                         (if (blk-nonlocal blk)
-                             (with-pctx (:eqref) (cg body mv tail))
-                             (cg body mv tail)))))
+                         (cond ((blk-nonlocal blk) (with-pctx (:eqref) (cg body mv tail)))
+                               ((not (eq rep :eqref)) (cg-rep body rep))
+                               (t (cg body mv tail))))))
         (if (not (blk-nonlocal blk))
             `(,@(save-bsp-code (blk-saved-bsp blk))
-              (:block ,label :eqref ,@body-code))
+              (:block ,label ,(rep-wasm-type rep) ,@body-code))
             ;; non-local: a fresh tag object, try_table
             (let ((h (gensym "H")) (vtmp (new-local)) (ttmp (new-local)) (etmp (new-local :exnref)))
               ;; The body was generated with *tail-ok* possibly true; regenerate is costly,
@@ -1773,25 +1776,31 @@ MV: the exit carries multiple values (saved around the cleanup)."
           (t `((:local.get ,mvsave) :ref.is_null :i32.eqz
                (:if nil nil ((:local.get ,mvsave) (:call :mv-restore) :drop)))))))
 
-(defun local-exit-to-block (blk value-code)
-  "Code for a return-from BLK in the current function, VALUE-CODE pushing the value."
-  (let ((frame (innermost-uwpf-between *uwp-frames* (blk-uwp-frames blk))))
+(defun local-exit-to-block (blk value-code &optional boxed)
+  "Code for a return-from BLK in the current function, VALUE-CODE pushing the
+value (in the block's representation, unless BOXED)."
+  (let ((frame (innermost-uwpf-between *uwp-frames* (blk-uwp-frames blk)))
+        (rep (blk-rep blk)))
     (if (null frame)
         `(,@value-code
+          ,@(when boxed (unbox-rep-code rep *ty-top*))
           ,@(when (> *dyn-depth* (blk-dyn-depth blk))
               (restore-bsp-code (blk-saved-bsp blk)))
           (:br ,(blk-label blk)))
         (progn
-          `(,@value-code (:local.set ,(uwpf-res frame))
+          ;; (through the cleanups the value is kept boxed)
+          `(,@value-code ,@(unless boxed (box-rep-code rep *ty-top*)) (:local.set ,(uwpf-res frame))
             ,@(register-uwp-exit
-               frame (lambda () (local-exit-to-block blk `((:local.get ,(uwpf-res frame)))))
+               frame (lambda () (local-exit-to-block blk `((:local.get ,(uwpf-res frame))) t))
                (blk-mv blk)))))))
 
 (defun cg-return-from (node)
   (destructuring-bind (blk value) (cdr node)
     (let ((local-p (eq (blk-lam blk) (fstate-lam *fs*))))
       (cond (local-p
-             (local-exit-to-block blk (cg value (blk-mv blk))))
+             (local-exit-to-block blk (if (eq (blk-rep blk) :eqref)
+                                          (cg value (blk-mv blk))
+                                          (cg-rep value (blk-rep blk)))))
             (*fexit*
              (flagged-exit-code (var-get-code (blk-tag-var blk)) (cg value t)))
             (t

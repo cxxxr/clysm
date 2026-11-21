@@ -79,9 +79,16 @@ bits; any other value is an i31 (no test of overflow or of the type)."
                 (,@(cg-rep (fourth node) rep) ,@(guard-else-epilogue (second node)))))))
     (:let (cg-let node nil nil rep))
     ;; a block that nothing returns from (the body of a copied function)
-    (:block (when (and (not (blk-nonlocal (second node)))
-                       (not (block-returned-to-p (second node) (third node))))
-              (cg-rep (third node) rep)))
+    (:block (when (not (blk-nonlocal (second node)))
+              (cond ((not (block-returned-to-p (second node) (third node)))
+                     (cg-rep (third node) rep))
+                    ;; a block returned from in the function: raw, as its
+                    ;; RETURN-FROMs' values (babel's decoders' SETTER-BLOCK)
+                    ((case rep
+                       (:i32 (ty-int32-p (node-ty node)))
+                       (:i64 (ty-int64-p (node-ty node)))
+                       (:f64 (ty-double-p (node-ty node))))
+                     (cg-block node nil nil rep)))))
     ((:prim :call)
      (or (and (eq (car node) :call) (member rep '(:i32 :i64 :f64))
               (raw-call-rep-code node rep))
@@ -418,8 +425,9 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                      `(,@(cg-rep a :i32) ,@(cg-effect b) (:i32.const ,c) :i32.shl)
                      `(,@(cg-rep a :i32) ,@(cg-effect b) (:i32.const ,(min 31 (- c))) :i32.shr_s)))))
         ((char-code clysm-sys::%char-code)
-         (when (ty-only-p (node-ty a) +k-char+)
-           `(,@(cg a) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub)))
+         (or (char-code-elt-code a)
+             (when (ty-only-p (node-ty a) +k-char+)
+               `(,@(cg a) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub))))
         (clysm-sys::%lref (when (ty-only-p (node-ty a) +k-limbs+)
                             `(,@(cg a) (:ref.cast! :limbs) ,@(index-i32-code b) (:array.get :limbs))))
         (clysm-sys::%llen (when (ty-only-p (node-ty a) +k-limbs+) `(,@(cg a) (:ref.cast! :limbs) :array.len)))
@@ -557,6 +565,9 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                                   clysm-sys::%aset2 clysm-sys::%charset clysm-sys::%scharset))
                    (typed-store-code node nil))
                   ((eq name 'clysm-sys::%replace) (replace-copy-code node))
+                  ;; CODE-CHAR of a fixnum: the character from its i32 (no box)
+                  ((and (eq name 'code-char) (= (length args) 1) (fx-arg-p (first args)))
+                   `(,@(cg-rep (first args) :i32) (:i32.const ,+char-tag+) :i32.add :ref.i31))
                   ((member name '(clysm-sys::%struct-ref clysm-sys::%struct-set))
                    (typed-struct-code node))
                   ((eq name 'clysm-sys::%struct-tref) (tstruct-ref-code node :eqref))
@@ -855,6 +866,32 @@ NIL when the types are not known or REP cannot hold the elements."
                       (unbox-rep-code rep (node-ty node))
                       '(:unreachable))))))))))
 
+(defun code-char-fixnum-arg (node)
+  "The argument of NODE when it is (CODE-CHAR N) of a fixnum N, else NIL."
+  (and (member (car node) '(:prim :call)) (eq (node-op-name node) 'code-char)
+       (= (length (cddr node)) 1) (fx-arg-p (third node))
+       (third node)))
+
+(defun char-code-elt-code (node)
+  "The code of the character read by NODE when it is a CHAR or SCHAR of a
+string read inline (TYPED-ELT-CODE), as an i32: the element of the storage
+as it is, with no character made and taken apart again (babel's encoders,
+(CHAR-CODE (SCHAR S I)) per character).  NIL when NODE is not such a read."
+  (when (and (member (car node) '(:prim :call)) (member (node-op-name node) '(char schar)))
+    (let ((slow (gensym "SLOW")) (done (gensym "ELT")))
+      (multiple-value-bind (setup locate kind d k slow-args) (array-locate-code (node-op-name node) (cddr node) slow)
+        (when (and setup (eq kind :string))
+          `(,@setup
+            (:block ,done :i32
+              (:block ,slow nil
+                ,@locate
+                (:local.get ,d) (:local.get ,k) ,@(storage-get-code kind)
+                (:br ,done))
+              ,@slow-args ,@(array-slow-call (node-op-name node))
+              ,@(if (array-slow-returns-p (node-op-name node) (cddr node))
+                    `((:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub)
+                    '(:unreachable)))))))))
+
 (defun trust-int-store-p (vty)
   "A value of type VTY stored into an array of integers is trusted to be an
 element: at (SAFETY 0), an integer within 64 bits."
@@ -875,9 +912,13 @@ code leaves nothing, else the value."
           (let* ((raw-type (storage-raw-type kind))
                  (raw (new-local raw-type))
                  ;; the value's type proves it is an element: no test, no box
+                 ;; (SETF (SCHAR S I) (CODE-CHAR N)) of a fixnum N: the code
+                 ;; stored as it is (babel's decoders), tested to be one
+                 ;; unless its type says so
+                 (code (and (eq kind :string) (code-char-fixnum-arg val)))
                  (proven (case kind
                            (:vector :eqref)
-                           (:string nil)
+                           (:string (and code :i32))
                            (:f32vec (and (ty-single-p vty) :f32))
                            (:f64vec (and (ty-double-p vty) :f64))
                            ((:u64vec :u63vec) (and (ty-in-range-p vty 0 (1- (expt 2 63))) :i64))
@@ -891,13 +932,15 @@ code leaves nothing, else the value."
             (when (or proven (member kind '(:string :bits :u7vec :bytes :s8vec :u15vec :u16vec :s16vec :f32vec :f64vec)))
               `(,@setup
                 ,@(if proven
-                      `(,@(cg-rep val (if (eq proven :wrap) :i64 proven))
+                      `(,@(cg-rep (if code code val) (if (eq proven :wrap) :i64 proven))
                         ,@(when (or (eq kind :u32vec) (eq proven :wrap)) '(:i32.wrap_i64)) (:local.set ,raw))
                       `(,@(cg val) (:local.set ,x)))
                 (:block ,done nil
                   (:block ,slow nil
                     ,@locate
                     ,@(unless proven (storage-unbox-code kind x raw `((:br ,slow))))
+                    ,@(when (and code (not (ty-in-range-p (node-ty code) 0 (1- char-code-limit*))))
+                        `((:local.get ,raw) (:i32.const ,char-code-limit*) :i32.ge_u (:hint 0) (:br_if ,slow)))
                     (:local.get ,d) (:local.get ,k) (:local.get ,raw) (:array.set ,kind)
                     (:br ,done))
                   ,@slow-args

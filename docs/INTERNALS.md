@@ -3293,6 +3293,37 @@ What makes the code fast:
   of the dynamic-extent closure of its `with-cached-result` take 2–3 times
   SBCL's time, and the closure's allocation is not the cost (the same
   probe with a global function instead is as slow).
+* **Characters of strings kept as codes** (2026-11-21, Babel's encoders
+  and decoders read with `*live-dump*`): V8 does not fold a character
+  made and taken apart again (`+tag`, `ref.i31`, the cast, `i31.get_s`,
+  `-tag`), so each of these cost per character. `(char-code (schar s
+  i))` (and `char`) of a string read inline now leaves the storage's
+  element as the i32 code (`char-code-elt-code`); `code-char` of a fixnum
+  makes the character from its i32, and `(setf (schar s i) (code-char
+  n))` stores the code as it is, tested against `char-code-limit` unless
+  its type says so (`code-char-fixnum-arg`). For the last one the short
+  form of `defsetf` no longer binds temporaries for the place's subforms
+  and the value (the update function is called on them, which evaluates
+  them in the same order; not when it is a macro), so the store sees the
+  value's form; every `(setf (aref ...))`, `(setf (car ...))` etc. now
+  compiles without the copies. A `block` returned from in its function
+  whose type is a fixnum (or an i64 or double) is compiled in that
+  representation when its value is wanted raw, its `return-from`s passing
+  raw values (`cg-block`'s REP; through an `unwind-protect` the value is
+  boxed): Babel's decoders' `setter-block`. LOOP gives a variable
+  declared with a type defined by `deftype` (`for code of-type code-point
+  = ...`, `(mod #x110000)`) the default of its expansion, so that it is
+  declared and held raw instead of starting as NIL
+  (`%loop-deftype-expansion`). `tools/bench-libs.sh`, base and new
+  alternately on one slot, twice: `l-babel` 141–144 → 110–113 ms (2.07–2.09
+  → 1.62–1.64 times SBCL), `l-split-sequence` 1.70 → 1.56–1.59, the file
+  1.17 → 1.12–1.15; in `bench/apps.lisp` `a-ppcre-tokens` 45 → 43 ms, the
+  rest unchanged (the file 1.30–1.31 → 1.25–1.29). Of Babel's three
+  operations, UTF-8 encoding is now SBCL's time (24 ms for 50, SBCL 24),
+  UTF-16 encoding 44 → 31 (SBCL 21), UTF-8 decoding about unchanged (48,
+  SBCL 24: the decoder, the code-point counter and `make-string` of the
+  result each take a third). `bench/library.lisp` and `io.lisp` (compiled
+  and in a script) and Lem's comparator (1.49–1.53) unchanged.
 
 ### Declared code, and SBCL at its best policy
 
