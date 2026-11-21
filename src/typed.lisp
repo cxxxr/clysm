@@ -643,6 +643,24 @@ generic function."
          (row-major (member name '(row-major-aref clysm-sys::%row-major-aset))))
     (unless (or (ty-array-kind aty) two)
       (return-from array-locate-code (speculative-locate-code name a (first subs) slow)))
+    ;; a special variable's array kept in locals on entry to the loop (SREF-MD2-WRAP)
+    (let ((cache (and two (not (ty-array-kind aty)) (sref-md2-cache-of a))))
+      (when cache
+        (destructuring-bind (c data d0 d1 off) (cdr cache)
+          (let ((e (new-local)) (d (new-local '(:ref :null :vector))) (k (new-local :i32))
+                (x (new-local :i32)) (y (new-local :i32)))
+            (multiple-value-bind (xs xl xb) (subscript-i32-parts (first subs) x slow)
+              (multiple-value-bind (ys yl yb) (subscript-i32-parts (second subs) y slow)
+                (return-from array-locate-code
+                  (values `(,@(cg a) (:local.set ,e) ,@xs ,@ys)
+                          `((:local.get ,e) (:local.get ,c) :ref.eq :i32.eqz (:hint 0) (:br_if ,slow)
+                            ,@xl ,@yl
+                            (:local.get ,x) (:local.get ,d0) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
+                            (:local.get ,y) (:local.get ,d1) :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow)
+                            (:local.get ,off) (:local.get ,x) (:local.get ,d1) :i32.mul :i32.add (:local.get ,y) :i32.add
+                            (:local.set ,k) (:local.get ,data) (:local.set ,d))
+                          :vector d k
+                          `((:local.get ,e) ,@xb ,@yb)))))))))
     (multiple-value-bind (kind shape)
         ;; a two-dimensional access to an array of unknown type: inline for
         ;; an array of elements of type T (a header over a simple vector)

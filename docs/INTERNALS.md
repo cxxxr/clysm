@@ -2510,7 +2510,22 @@ What makes the code fast:
   structure's slot 41 → 29, a sum with `array-dimension` bounds 10 → 7.
   Fusing `(incf s (* (aref ..) (aref ..)))` into one i64 tree (letting
   INCF read the variable after array elements) measured no faster and was
-  left out.
+  left out. A special variable used so in a loop (`(aref *grid* i j)`) has
+  its value tested on entry to the outermost such loop and, when a simple
+  array of element type T, kept in locals with its storage, dimensions and
+  offset (`sref-md2-wrap`); each access compares the variable's value with
+  that header (one load and a `ref.eq`: the loop, or a function it calls,
+  may assign or bind the variable) and takes the access of an array of
+  unknown type when it differs: a grid stepped through `*grid*` 38 → 30 ms
+  (SBCL 53). `array-dimension` (and `fill-pointer`,
+  `array-row-major-index`) is known to return an index, so that the counter
+  of `(dotimes (i (array-dimension a 0)))` is a fixnum: a sum over such
+  bounds 8 → 5 ms, three reads of neighbours in such loops 42 → 19.
+  Measured and not done: computing the row offset `i * dim1` once per outer
+  iteration (written so by hand over a simple vector: 27 ms either way) and
+  leaving out the test of the first subscript (unsafe, as a bound: `b-matmul`
+  and `d-matmul` the same): V8 hoists or hides both, so neither was worth
+  the code.
 * **EQUALP** (2026-11-21): the function settles conses, simple strings
   (compared in its own loop), characters, fixnums and doubles without a
   call, and compares a fixnum, a single and a double float as doubles
@@ -2521,7 +2536,11 @@ What makes the code fast:
   EQUALP only for slots that are not EQ), vectors with a fill pointer or
   displaced over their storage without the generic `length`/`vectorp`,
   hash tables in a function of their own. `%instance-size` is one helper
-  (`:instance-nslots`). `v-equalp-mixed` 2.16 → 1.22 of SBCL; a structure
+  (`:instance-nslots`); `:sinst-equalp` takes the count of fields from the
+  class (an instance of another count: slot by slot), 14 → 13 ns. The
+  EQUALP hash of a simple vector reads its elements directly, and a vector
+  of characters hashes as the string it is EQUALP to (it did not: `(gethash
+  (vector #\a #\b) h)` missed the key `"ab"`). `v-equalp-mixed` 2.16 → 1.22 of SBCL; a structure
   of two EQ slots 21 → 14 ns, a vector with a fill pointer against a
   simple vector 48 → 15 ns.
 * **Structures**: up to 32 slots in fields of their own (see Object

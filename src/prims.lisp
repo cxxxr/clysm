@@ -6786,28 +6786,33 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
 ;; (runtime/types.lisp %EQUALP-INSTANCES then compares them slot by slot).
 ;; The count of the fields selects where the comparisons start: field N-1,
 ;; then down to field 0.
-(defhelper :sinst-equalp :ee-e ((n :i32) (x :eqref) (y :eqref) (r :eqref))
+(defhelper :sinst-equalp :ee-e ((n :i32) (x :eqref) (y :eqref) (r :eqref) (sv (:ref :null :vector)))
   '(:local.get 0) '(:ref.test :sfield) '(:local.get 1) '(:ref.test :sfield) :i32.and :i32.eqz
   '(:if nil nil ((:i32.const 0) :ref.i31 :return))
   '(:local.get 0) '(:ref.cast! :instance) '(:struct.get :instance 0) '(:ref.cast :instance) '(:struct.get :instance 1)
-  '(:ref.cast :vector) `(:i32.const ,+class-shape-ops-slot+) '(:array.get :vector) (car (nil-code)) :ref.eq :i32.eqz
+  '(:ref.cast :vector) '(:local.tee sv) `(:i32.const ,+class-shape-ops-slot+) '(:array.get :vector) (car (nil-code)) :ref.eq :i32.eqz
   '(:if nil nil ((:i32.const 0) :ref.i31 :return))
-  ;; (structures of +STRUCT-INLINE-MAX+ fields or more: slot by slot)
-  '(:local.get 0) `(:ref.test ,(sinst-type +struct-inline-max+)) '(:local.get 1) `(:ref.test ,(sinst-type +struct-inline-max+))
-  :i32.or '(:if nil nil ((:i32.const 0) :ref.i31 :return))
-  (sinst-size-code 0 (1- +struct-inline-max+) 0) '(:local.set n)
-  ;; B has as many fields: it is a $si<N> and not a $si<N+1>
+  ;; the count of fields: the class's count of slots, below +STRUCT-INLINE-MAX+
+  ;; (an instance made before its structure was redefined with other slots, a
+  ;; larger structure: slot by slot); A and B have that many fields, not more
+  '(:local.get sv) `(:i32.const ,+class-instance-size-slot+) '(:array.get :vector) '(:local.tee x)
+  '(:ref.test :i31) :i32.eqz '(:if nil nil ((:i32.const 0) :ref.i31 :return))
+  '(:local.get x) '(:ref.cast! :i31) :i31.get_s '(:local.tee n)
+  `(:i32.const ,+struct-inline-max+) :i32.ge_u '(:if nil nil ((:i32.const 0) :ref.i31 :return))
   (let* ((m +struct-inline-max+)
          (labels (loop for k below m collect (gensym "SZ")))
          (code `((:local.get n) (:br_table ,@labels ,(car (last labels))))))
-    (loop for k from 0 for l in labels
-          do (setf code `((:block ,l nil ,@code)
-                          ,@(if (= k 0)
-                                `((:local.get 1) (:ref.test ,(sinst-type 1)))
-                                `((:local.get 1) (:ref.test ,(sinst-type k)) :i32.eqz
-                                  (:local.get 1) (:ref.test ,(sinst-type (1+ k))) :i32.or))
-                          (:if nil nil (,@(nil-code) :return))
-                          (:br sizes))))
+    (flet ((wrong (o k)
+             ;; the instance in local O does not have exactly K fields
+             (if (= k 0)
+                 `((:local.get ,o) (:ref.test ,(sinst-type 1)))
+                 `((:local.get ,o) (:ref.test ,(sinst-type k)) :i32.eqz
+                   (:local.get ,o) (:ref.test ,(sinst-type (1+ k))) :i32.or))))
+      (loop for k from 0 for l in labels
+            do (setf code `((:block ,l nil ,@code)
+                            ,@(wrong 0 k) ,@(wrong 1 k) :i32.or
+                            (:if nil nil ((:i32.const 0) :ref.i31 :return))
+                            (:br sizes)))))
     `((:block sizes nil ,@code)))
   (let* ((m +struct-inline-max+)
          (labels (loop for k below m collect (gensym "SEQ")))

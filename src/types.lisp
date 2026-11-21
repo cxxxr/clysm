@@ -428,7 +428,7 @@ which DECLARED-TY knows something)."
 (def-ti-rule (code-char char schar clysm-sys::%schar char-upcase char-downcase) (a) (mkty +k-char+))
 (def-ti-rule (length clysm-sys::%svlength clysm-sys::%string-length clysm-sys::%bytes-length
               clysm-sys::%bits-length clysm-sys::%f64vec-length array-total-size clysm-sys::%mdarray-dim1
-              clysm-sys::%instance-nslots)
+              clysm-sys::%instance-nslots array-dimension fill-pointer array-row-major-index)
     (a) (int-ty 0 (1- +most-positive-fixnum+)))
 (def-ti-rule (clysm-sys::%aref1 svref row-major-aref clysm-sys::%aref2) (a)
   (let ((k (ty-array-kind (first a)))) (if k (storage-elt-ty k) *ty-top*)))
