@@ -1092,10 +1092,15 @@ OR, an AND): there the call decides whether the loop goes on, as in (DO
 (...) ((OR (= J 36) (TRY J)))), and is expected."
   (cond ((cold-branch-p a) '((:hint 0)))
         ((cold-branch-p b) '((:hint 1)))
-        ((and *cg-loop* (not test) *fs* (lam-p (fstate-lam *fs*)))
-         (let* ((lam (fstate-lam *fs*)) (ca (arm-recurses a lam)) (cb (arm-recurses b lam)))
-           (cond ((and (eq ca :call) (null cb)) '((:hint 0)))
-                 ((and (eq cb :call) (null ca)) '((:hint 1))))))))
+        ((not test) (recursive-arm-hint a b))))
+
+(defun recursive-arm-hint (a b)
+  "The hint of IF-BRANCH-HINT for an arm of an IF in a loop that calls the
+function itself, or NIL."
+  (when (and *cg-loop* *fs* (lam-p (fstate-lam *fs*)))
+    (let* ((lam (fstate-lam *fs*)) (ca (arm-recurses a lam)) (cb (arm-recurses b lam)))
+      (cond ((and (eq ca :call) (null cb)) '((:hint 0)))
+            ((and (eq cb :call) (null ca)) '((:hint 1)))))))
 
 ;;; A test that is itself an IF (COND, AND, %ENDP's (cond ((consp x) nil)
 ;;; ((null x) t) (t error))), an OR or a NOT of one is compiled as branches
@@ -1218,7 +1223,11 @@ likely THEN is."
                  (or (dual-lset-code node t)
                      (var-set-code lv (cg (third node)))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
-    (:if (when (effect-branch-test-p (second node))
+    ;; (an AND whose arm recurses, hinted unlikely: as branches, each leaf
+    ;; test a hinted BR_IF; an i32 of nested IFs tested once with the hint
+    ;; left d-triangle's loop as it was without it, 1.3x the time)
+    (:if (when (or (effect-branch-test-p (second node))
+                   (and (compound-test-p (second node)) (recursive-arm-hint (third node) (fourth node))))
            (return-from cg-effect
              (let* ((lf (gensym "ELSE")) (end (gensym "IF"))
                     (b (cg-effect (fourth node)))

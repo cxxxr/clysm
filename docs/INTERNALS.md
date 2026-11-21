@@ -4919,6 +4919,14 @@ branch prediction) was measured and is not kept: it misses the method call
 of a generic function's site cache, whose other arm is a slot's writer
 (`p-method-comb` 42 → 50 ms), and gives 1,672 hints in the runtime against
 a handful. The module of one export is 99 bytes larger.
+The hint needs the test as branches: since an IF for effect makes its
+compound test an i32 of nested IFs unless the test begins with a compound
+test (`effect-branch-test-p`, for MAPC's loops), the AND of TRIANGLE-COUNT
+was materialized (`setc`, a spill of the i32, its test) and tested once with
+the hint, and the gain was gone (main with the hint 251 ms, without 263).
+`cg-effect` now uses `branch-code` too for a compound test whose arm gets
+`recursive-arm-hint`: 251 → 185 ms (1.37 of SBCL); no other function of
+`gabriel.lisp` or of the runtime changes.
 
 The board as a `(simple-array fixnum (*))` (the user's choice, not an
 inference) was 1.45x slower than the simple vector, not 0.87: `(eql (aref
