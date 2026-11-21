@@ -5369,6 +5369,21 @@ module of one export: 1,353,620 -> 1,290,161 bytes (`gzip -9` 408,606 ->
 nodes that dominate the most (150), and `CLYSM_PREINIT_STATS=1` also
 lists the kept generic functions and instances by class.
 
+**Branch hints of the runtime's large functions.** In a shaken module the
+functions of the runtime whose bodies are larger than 800 octets get no
+branch hints (`*runtime-hint-limit*`, `large-runtime-function-p`,
+`src/wasm.lisp`, bound by `compile-program` with `--shake`): four fifths
+of the runtime's hints are in them (the generic sequence functions, the
+reader, `format`). Measured on whole programs compiled with `--shake`,
+five interleaved runs on one slot, time without them / with them:
+`bench/suite.lisp` 1.007, `bench/library.lisp` 1.007, `bench/programs.lisp`
+0.994, `bench/clos.lisp` 1.002, `bench/gabriel.lisp` 0.988. Without any
+hints in the runtime's functions `bench/suite.lisp` was 1.018-1.024
+(`b-sieve` 1.23-1.31: the small functions that programs call in their
+loops, as `aref` of a vector of unknown type, need theirs), so the small
+functions keep them. The module of one export: 1,290,161 -> 1,266,522
+bytes (`gzip -9` 390,452 -> 377,083): branch hints 29,969 -> 6,331.
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
