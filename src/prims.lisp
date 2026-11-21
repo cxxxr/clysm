@@ -6037,10 +6037,18 @@ rounded to odd (Schubfach's rop)."
 ;; a new simple (unsigned-byte 8) vector of the N octets at the start of the memory
 (defprim clysm-sys::%mem-get-octets (n) :value
   (let ((len (new-local :i32)) (k (new-local :i32)) (b (new-local '(:ref :null :bytes)))
-        (done (gensym "DONE")) (again (gensym "AGAIN")))
+        (done (gensym "DONE")) (again (gensym "AGAIN")) (done4 (gensym "DONE4")) (again4 (gensym "AGAIN4")))
     `(,@(idx-code n) (:local.set ,len)
       (:local.get ,len) (:array.new_default :bytes) (:local.set ,b)
       (:i32.const 0) (:local.set ,k)
+      (:block ,done4 nil
+        (:loop ,again4 nil
+          (:local.get ,k) (:i32.const 4) :i32.add (:local.get ,len) :i32.gt_u (:br_if ,done4)
+          ,@(loop for j from 0 below 4
+                  append `((:local.get ,b) (:local.get ,k) ,@(unless (zerop j) `((:i32.const ,j) :i32.add))
+                           (:local.get ,k) (:i32.load8_u ,j) (:array.set :bytes)))
+          (:local.get ,k) (:i32.const 4) :i32.add (:local.set ,k)
+          (:br ,again4)))
       (:block ,done nil
         (:loop ,again nil
           (:local.get ,k) (:local.get ,len) :i32.ge_u (:br_if ,done)
