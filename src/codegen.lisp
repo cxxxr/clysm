@@ -676,7 +676,8 @@ it, signalling a TYPE-ERROR when it is not; else NIL."
 
 (defun param-check-code (lv local-idx)
   "The test of the object passed in LOCAL-IDX for the declared parameter LV, or NIL."
-  (and (lvar-decl lv) (not (lvar-special lv)) (decl-check-code local-idx (lvar-decl lv))))
+  (and (lvar-decl lv) (not (lvar-special lv)) (not (member lv *proven-params*))
+       (decl-check-code local-idx (lvar-decl lv))))
 
 (defun struct-slot-check-code (node)
   "After the code of NODE, a read of a structure slot declared a simple
@@ -2783,7 +2784,9 @@ list of (symbol . local), which are bound around the body."
     (:double (mkty +k-double+))
     (:int64 (mkty +k-int+ (- (expt 2 63)) (1- (expt 2 63))))
     (:md2 (md2-ty :vector))
-    ((nil) *ty-top*)))
+    ;; (an object the caller proved of the parameter's declared type: the
+    ;; declaration gives the type)
+    ((nil :checked) *ty-top*)))
 
 ;;; A function with a loop or a recursive call whose parameters are used as
 ;;; numbers is compiled twice: the general version tests the arguments on entry
@@ -2913,13 +2916,40 @@ are of the classes of its specialized version, a tail call of that version."
 
 (defun spec-signature (lam args)
   (when (and (spec-cloneable-p lam) (= (length args) (length (lam-req lam))))
-    (let ((sig (mapcar #'arg-class args)))
-      ;; (an array argument only where the function's own version tests it:
-      ;; no copy of every function given a two-dimensional array)
-      (when (member :md2 sig)
-        (let ((own (or (entry-version-signature lam) (mapcar (constantly nil) sig))))
-          (setf sig (loop for c in sig for o in own collect (if (and (eq c :md2) (not (eq o :md2))) nil c)))))
+    (let ((sig (call-arg-classes lam args)))
       (when (some #'identity sig) sig))))
+
+(defun call-arg-classes (lam args)
+  "The classes of the arguments ARGS of a call of LAM (ARG-CLASS), as a copy
+of LAM for them takes them; :CHECKED for an argument of no class whose type
+shows it is of the type of LAM's parameter, which then has no test of it
+(PARAM-CHECK-CODE): a call of a function with declared parameters from code
+that proved them skips the tests."
+  (let ((sig (mapcar #'arg-class args)))
+    ;; (an array argument only where the function's own version tests it:
+    ;; no copy of every function given a two-dimensional array)
+    (when (member :md2 sig)
+      (let ((own (or (entry-version-signature lam) (mapcar (constantly nil) sig))))
+        (setf sig (loop for c in sig for o in own collect (if (and (eq c :md2) (not (eq o :md2))) nil c)))))
+    (if (and (lam-safety lam) (not (eql (lam-safety lam) 0)))
+        (loop for c in sig for a in args for p in (lam-req lam)
+              collect (or c (and (param-proven-p p (node-ty a)) :checked)))
+        sig)))
+
+(defun param-proven-p (lv ty)
+  "Whether a value of type TY given to the parameter LV needs no test of its declared type."
+  (let ((dty (and (lvar-decl lv) (not (lvar-special lv)) (decl-check-ty (lvar-decl lv)))))
+    (and dty ty (not (ty-bottom-p ty)) (ty-equal (ty-intersect ty dty) ty))))
+
+(defvar *proven-params* nil
+  "The parameters of the copy being compiled whose arguments the callers
+proved of their declared types (CALL-ARG-CLASSES): no test in its prologue.")
+
+(defun clone-proven-params (lam sig)
+  (loop for lv in (lam-req lam) for class in sig
+        when (or (eq class :checked)
+                 (and class (not (eq class :checked)) (param-proven-p lv (class-ty class))))
+          collect lv))
 
 (defun spec-clone-name (lam sig &optional flag)
   "FLAG: the clone is also a flag clone."
@@ -2951,10 +2981,11 @@ are of the classes of its specialized version, a tail call of that version."
                (*ti-analyzed* (make-hash-table :test 'eq))
                (*catching-tag* nil))
            (infer-lam lam (mapcar #'class-ty sig))
+           (let ((*proven-params* (clone-proven-params lam sig)))
            (compile-simple-main lam (spec-clone-name lam sig flag)
                                 (format nil "~A/~{~(~A~)~^,~}~:[~;/flag~]" (lam-display-name lam)
                                         (mapcar (lambda (c) (or c "t")) sig) flag)
-                                flag))
+                                flag)))
       (loop for lv in lvars for (ty . rep) in saved
             do (setf (lvar-type lv) ty (lvar-rep lv) rep)))))
 
@@ -3161,7 +3192,7 @@ its last parameter; the entries for few arguments make the list."
 (defvar *raw-clones* (make-hash-table :test 'equal) "(lam-id . sig) -> the result rep of its raw clone")
 (defvar *raw-tail-calls* nil "in a raw clone returning an i32 / f64: its tail calls of itself")
 
-(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) (:int64 :i64) ((:md2 nil) nil)))
+(defun class-rep (class) (ecase class (:fixnum :i32) (:double :f64) (:int64 :i64) ((:md2 :checked nil) nil)))
 
 (defun raw-clone-name (lam sig rrep)
   (let ((key (list (lam-id lam) sig :raw)))
@@ -3256,7 +3287,7 @@ the other forms in tail positions (whose values are the function's)."
                           (cond ((not top) (fail))
                                 ((and (eq callee lam)
                                       (= (length (cddr n)) (length sig))
-                                      (equal (mapcar #'arg-class (cddr n)) sig))
+                                      (equal (call-arg-classes lam (cddr n)) sig))
                                  (push n found))
                                 ;; a call of another function whose raw clone
                                 ;; returns a fixnum or a double: a return_call
@@ -3404,8 +3435,9 @@ the raw clone returning that, or NIL."
                                    (error "raw clone of ~S: its tail calls changed" (lam-name lam)))
                                  (dolist (c calls h) (setf (gethash c h) t)))))
            (prologue (setup-free-vars lam)))
-      (loop for lv in (lam-req lam) for i from 1 for class in sig
-            do (setf prologue (append prologue (raw-param-setup-code lv i class))))
+      (let ((*proven-params* (clone-proven-params lam sig)))
+        (loop for lv in (lam-req lam) for i from 1 for class in sig
+              do (setf prologue (append prologue (raw-param-setup-code lv i class)))))
       (let ((body (if (eq rrep :eqref)
                       (wrap-fexit (finish-body lam prologue nil))
                       (let ((code `(,@(poll-code) ,@prologue ,@(cg-rep (lam-body lam) rrep))))
