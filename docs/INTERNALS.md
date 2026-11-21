@@ -3322,11 +3322,13 @@ What makes the code fast:
   the 0 of an unspecialized parameter in three buckets of 32): 49 pairs
   of seven classes (`collide`) 0.70 of their time (SBCL is 0.23 of it);
   a table of one specialized argument the same.
-  A call site finds the class of a fixnum, simple string or symbol in
-  CLASS-OF's cache as a constant of its module (`load-time-value`: the
-  vector is filled again, never replaced) instead of reading the
-  variable `*builtin-classes*`: `h-fib-generic` 0.97-0.98 of its time,
-  `p-builtin-dispatch` 0.97.
+  Reading CLASS-OF's cache of built-in classes as a `load-time-value`
+  constant instead of the variable `*builtin-classes*` (the vector is
+  filled again, never replaced) was slower where it mattered: in the
+  dispatch of a generic function (`%builtin-class-of`) calls of an EQL
+  generic function through `funcall` 1.11-1.16 times their time and
+  `c-eql-dispatch` 1.18, at call sites `op` 1.10 and `h-fib-generic`
+  1.02-1.03 (a first measure of 0.97 was noise); reverted.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm
