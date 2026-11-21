@@ -590,14 +590,6 @@ async function runProgram(data, port, netBuffer) {
     // the functions that a heap image's image names (its compilationHints
     // section: see training below) are compiled with the module
     v8.setFlagsFromString('--experimental-wasm-compilation-hints');
-    // V8 inlines into a function until its graph is 3 times its own size
-    // by default; the order of the calls it takes depends on the counts
-    // the baseline code collected when the function tiers up, so a short
-    // caller of several small functions (DDERIV's GET, GETF and the
-    // functions it calls through the property) got the faster code in one
-    // run of ten to forty. With 5: gabriel 0.97, functional 0.96 of the
-    // time, the other benchmark files 0.98-1.00 (docs/INTERNALS.md)
-    v8.setFlagsFromString('--wasm-inlining-factor=5');
         // the stacks of computations that can wait (JSPI, the threads of
     // runtime/thread.lisp) as deep as the worker's own (they are limited by
     // --stack-size too, which, set now, leaves the limit of the thread's

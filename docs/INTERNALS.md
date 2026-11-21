@@ -5551,7 +5551,7 @@ Where the time went, and what was done:
   its code cache: 35 ms. The flags are set in the worker once it has
   started. The main thread imports only what it needs to start the worker
   (sockets and processes when the worker first asks for one).
-* **Inlining.** `--wasm-inlining-factor=5` (V8's default 3): TurboFan
+* **Inlining (measured, not kept).** `--wasm-inlining-factor=5` (V8's default 3): TurboFan
   inlines into a function until its graph is that many times the function's
   own size (and at most 7000 nodes), taking the calls in the order of the
   counts the baseline code collected when the function tiered up, so the
@@ -5565,7 +5565,12 @@ Where the time went, and what was done:
   1.07, `p-nonlocal` 1.05 the most slower); in the image (`clysm script`)
   suite 0.99, gabriel 0.99, programs, library, functional 1.00; starting
   hello the same (set in the worker, see above; on the command line it
-  costs the 35 ms of Node.js's code cache). Two compiles of one source are
+  costs the 35 ms of Node.js's code cache). But on real programs it is not
+  neutral: Lem (`tools/bench-lem.sh`, factor 5 against 3, three and four
+  rounds) 1.018 and 1.008 (`l-forms-forward` 1.03-1.04 every round,
+  `l-type-redisplay` 1.06-1.14), with 4 1.011; `tools/bench-libs.sh` 1.005,
+  `bench/apps.lisp` 1.002. Not kept: the larger budget is spent where the
+  short benchmarks gain and costs the large programs' tier-up. Two compiles of one source are
   byte-identical (sequential or parallel, after the fasls are made again);
   only `clysm.sources` names the file as the command line gave it.
 * **Validation.** `--wasm-lazy-validation`: a function is validated when it
