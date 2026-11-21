@@ -7,3 +7,7 @@ package greet test util
 system fasl: T
 480 2
 4530 -2
+(21 (1 1) 14 7) 3 1
+(21 (1 1) 14 7) 3 2 T
+(21 (1 1) 35 7) 6 3 NIL
+(21 (1 1) 35 7) 6 4 T

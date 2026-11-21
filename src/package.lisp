@@ -12,7 +12,8 @@
            #:wasm-module-memory #:wasm-module-memory-import #:wasm-module-table #:wasm-module-code-base #:wasm-module-globals #:shake-module #:*shake-why* #:*func-body-sizes* #:write-shake-why #:*func-source*
            #:*func-segment* #:wasm-func-segment #:wasm-func-refs #:body-refs #:wasm-func-p
            #:wasm-module-data #:wasm-func-ref-list #:order-functions-by-use
-           #:*shake-heap-hook* #:*shake-mark* #:*shake-walking* #:shake-edge #:wasm-module-declared-refs))
+           #:*shake-heap-hook* #:*shake-mark* #:*shake-walking* #:shake-edge #:wasm-module-declared-refs
+           #:adopt-func #:copy-module-types))
 
 ;;; Host package that holds the compiler itself.
 (defpackage :clysm

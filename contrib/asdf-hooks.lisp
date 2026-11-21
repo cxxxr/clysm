@@ -109,117 +109,213 @@ named BEFORE (at the end without it)."
     c))
 
 ;;; System fasls: the files of a system compiled into one fasl of one module
-;;; (SYS::%COMPILE-FILES), so that the calls between its files are direct
-;;; calls (guarded by a test of the function cell: a redefinition is seen)
-;;; that V8 can inline and that carry the types of arguments and values.
-;;; After a system is loaded from its per-file fasls, its system fasl is made
-;;; (in this image, where all its definitions are made already: compiling
-;;; them again is like recompiling a loaded file) when it is missing or older
-;;; than a fasl, a source of the system or its .asd; when the system is next
-;;; loaded and every file's fasl is up to date, the load of its first file
-;;; loads the system fasl, which runs the files in order, and the loads of
-;;; the others do nothing.  Only systems whose components are plain Lisp
-;;; source files (in modules, with static files) and that have no
-;;; around-compile hooks are made so.  Opt-in: (setf asdf::*clysm-system-fasls* t)
-;;; (the build re-runs the system's compile-time side effects in the image,
-;;; compiles it twice and keeps it twice in the cache).
+;;; (SYS::%SYSTEM-COMPILE-FILE), so that the calls between its files are
+;;; direct calls (guarded by a test of the function cell: a redefinition is
+;;; seen) that V8 can inline and that carry the types of arguments and values.
+;;; The fasl is the output of the compile-op of each of its files: ASDF's
+;;; compiling and loading of the files in turn compiles each file into the
+;;; system's unit and loads it from modules made from that same code (the
+;;; compile-time side effects of each file happen once, with the files before
+;;; it loaded, as with a fasl for each file), and the fasl is written when the
+;;; last file is compiled.  A file is up to date when the fasl is (newer than
+;;; every file and the .asd, made from these files): a change to one compiles
+;;; them all again.  The load of the first file to be loaded loads the fasl,
+;;; which runs the files in order, and the loads of the others do nothing.
+;;; Only systems whose components are plain Lisp source files (in modules,
+;;; with static files) without around-compile hooks are made so, and not in
+;;; an image that records its modules for a heap image.  Opt-in:
+;;; (setf asdf::*clysm-system-fasls* t).
 
-(defvar *clysm-system-fasls* nil "Make and load system fasls (see above); off by default.")
+(defvar *clysm-system-fasls* (equal (uiop:getenv "CLYSM_SYSTEM_FASLS") "1")
+  "Make and load system fasls (see above); off by default (CLYSM_SYSTEM_FASLS=1: on).")
 (defvar *clysm-system-fasls-loaded* nil "The names of the systems loaded from their system fasls.")
 (defvar *clysm-system-fasl-state* (make-hash-table :test 'eq)
-  "system -> :LOADED when its system fasl was loaded in this image, :FILES when its files are loaded one by one")
+  "system -> :LOADED when it is loaded from its system fasl in this image, or
+the system's unit being compiled: (unit (component . index)... ), whose CAR
+is :BROKEN when a file failed to compile into it.")
+(defvar *clysm-system-fasl-files* (make-hash-table :test 'eq)
+  "system -> (children files . system-fasl) of CLYSM-SYSTEM-FASL-FILES")
+(defvar *clysm-per-file-outputs* nil "True: the outputs of files are their own fasls.")
 
 (defun clysm-system-fasl-files (system)
-  "The source files of SYSTEM in the order a load of it loads them, when it
-qualifies for a system fasl; else NIL."
-  (labels ((ok (c)
-             (typecase c
-               (static-file t)
-               (cl-source-file (and (member (type-of c) '(cl-source-file cl-source-file.cl cl-source-file.lsp))
-                                    (null (around-compile-hook c))))
-               (module (and (member (type-of c) '(module system))
-                            (null (around-compile-hook c))
-                            (every #'ok (component-children c))))
-               (t nil))))
-    (when (and *clysm-system-fasls* (typep system 'system) (eq (type-of system) 'system)
-               (not (member (component-name system) '("asdf" "uiop" "quicklisp") :test #'string=))
-               (ignore-errors (every #'ok (component-children system))))
-      (let ((files (ignore-errors
-                    (remove-if-not (lambda (c) (typep c 'cl-source-file))
-                                   (required-components system :other-systems nil
-                                                               :goal-operation 'load-op
-                                                               :keep-operation 'load-op
-                                                               :keep-component 'cl-source-file)))))
-        (and (cdr files) (every (lambda (c) (eq (component-system c) system)) files) files)))))
+  "The source files of SYSTEM, if it is made into a system fasl, and the
+pathname of the fasl; else NIL."
+  (when (and *clysm-system-fasls* (typep system 'system) (eq (type-of system) 'system)
+             (not (sys::%getenv "CLYSM_SAVE_IMAGE")))
+    (let ((e (gethash system *clysm-system-fasl-files*)))
+      (unless (and e (eq (car e) (component-children system)))
+        (setq e (list* (component-children system) (ignore-errors (clysm-system-fasl-files-1 system))))
+        (setf (gethash system *clysm-system-fasl-files*) e))
+      (values (cadr e) (cddr e)))))
 
-(defun clysm-system-fasl-pathname (system files)
-  "Where the system fasl of SYSTEM (of the files FILES) goes: next to the fasl of the first."
-  (let ((fasl (first (output-files (make-operation 'compile-op) (first files)))))
-    (make-pathname :name (concatenate 'string (substitute #\_ #\/ (component-name system)) "--system")
-                   :type "fasl" :defaults fasl)))
+(defun clysm-system-fasl-files-1 (system)
+  (let ((files nil))
+    (labels ((ok (c)
+               (or (let ((f (component-if-feature c))) (and f (not (uiop:featurep f))))
+                   (typecase c
+                     (static-file t)
+                     (cl-source-file (and (member (type-of c) '(cl-source-file cl-source-file.cl cl-source-file.lsp))
+                                          (null (around-compile-hook c))
+                                          (push c files)))
+                     (module (and (member (type-of c) '(module system))
+                                  (null (around-compile-hook c))
+                                  (every #'ok (component-children c))))
+                     (t nil)))))
+      (when (and (not (member (component-name system) '("asdf" "uiop" "quicklisp") :test #'string=))
+                 (every #'ok (component-children system))
+                 (cdr files))
+        (setq files (nreverse files))
+        (let* ((sysfasl (let* ((*clysm-per-file-outputs* t)
+                               (fasl (first (output-files (make-operation 'compile-op) (first files)))))
+                          (make-pathname :name (concatenate 'string (substitute #\_ #\/ (component-name system))
+                                                            "--system")
+                                         :type "fasl" :defaults fasl)))
+               (broken (probe-file (clysm-broken-pathname sysfasl))))
+          ;; (not after it failed to be made, unless a file changed since)
+          (unless (and broken
+                       (let ((date (file-write-date broken)) (asd (system-source-file system)))
+                         (and (or (null asd) (not (probe-file asd)) (<= (file-write-date asd) date))
+                              (every (lambda (c) (let ((src (component-pathname c)))
+                                                   (or (not (probe-file src)) (<= (file-write-date src) date))))
+                                     files))))
+            (cons files sysfasl)))))))
 
 (defun clysm-system-fasl-valid-p (system files sysfasl)
-  "The system fasl SYSFASL was made for FILES, in this order, and is newer
-than their fasls and sources and than the .asd of SYSTEM."
+  "The system fasl SYSFASL was made from FILES and is newer than them and
+than the .asd of SYSTEM."
   (let ((date (and (probe-file sysfasl) (file-write-date sysfasl)))
         (list-file (make-pathname :type "files" :defaults sysfasl)))
     (and date (probe-file list-file)
-         (equal (uiop:read-file-forms list-file)
-                (list (mapcar (lambda (c) (namestring (component-pathname c))) files)))
+         (let ((made (ignore-errors (uiop:read-file-form list-file)))
+               (now (mapcar (lambda (c) (namestring (component-pathname c))) files)))
+           (and (= (length made) (length now)) (subsetp now made :test #'equal)))
          (let ((asd (system-source-file system)))
            (or (null asd) (not (probe-file asd)) (<= (file-write-date asd) date)))
          (every (lambda (c)
-                  (let ((src (component-pathname c))
-                        (fasl (first (output-files (make-operation 'compile-op) c))))
-                    (and (probe-file fasl) (probe-file src)
-                         (<= (file-write-date src) (file-write-date fasl) date))))
+                  (let ((src (component-pathname c)))
+                    (and (probe-file src) (<= (file-write-date src) date))))
                 files))))
 
-(defun clysm-make-system-fasl (system files sysfasl)
+(defmethod output-files :around ((o compile-op) (c source-file))
+  (multiple-value-bind (files sysfasl)
+      (and (not *clysm-per-file-outputs*) (clysm-system-fasl-files (component-system c)))
+    (if (member c files)
+        (values (list sysfasl) t)
+        (call-next-method))))
+
+(defmethod operation-done-p :around ((o compile-op) (c source-file))
+  (multiple-value-bind (files sysfasl) (clysm-system-fasl-files (component-system c))
+    (and (call-next-method)
+         (or (not (member c files))
+             (let ((pass (gethash (component-system c) *clysm-system-fasl-state*)))
+               (and (clysm-pass-p pass) (third (assoc c (clysm-pass-files pass)))))
+             (clysm-system-fasl-valid-p (component-system c) files sysfasl)))))
+
+;;; The compiling of a system in this image: the unit of its files (NIL when
+;;; they are compiled to fasls of their own: no compiler, or after a file
+;;; failed to compile into it), SU the unit that loads those compiled into it,
+;;; and (file index status) for the files whose
+;;; compile-op was performed, STATUS :COMPILED (into the unit), :LOADED, or
+;;; :OWN (into a fasl of its own).
+(defstruct (clysm-pass (:constructor make-clysm-pass (unit su))) unit su (files nil))
+
+(defmethod perform :around ((o compile-op) (c source-file))
+  (let ((system (component-system c)))
+    (multiple-value-bind (files sysfasl) (clysm-system-fasl-files system)
+      (if (not (member c files))
+          (call-next-method)
+          (let* ((pass (let ((p (gethash system *clysm-system-fasl-state*)))
+                         (if (clysm-pass-p p) p (clysm-system-unit-start system sysfasl))))
+                 (e (assoc c (clysm-pass-files pass))))
+            (if (or e (null (clysm-pass-unit pass)))
+                ;; (a file compiled again after an error: the unit is left,
+                ;; the others are compiled to fasls of their own)
+                (progn (clysm-pass-break pass sysfasl)
+                       (if e (setf (third e) :own) (push (list c nil :own) (clysm-pass-files pass)))
+                       (let ((*clysm-per-file-outputs* t)) (call-next-method)))
+                (let ((e (list c (length (clysm-pass-files pass)) nil)))
+                  (push e (clysm-pass-files pass))
+                  (multiple-value-bind (warnings-p failure-p)
+                      ;; (a file that did not compile into the unit to its
+                      ;; end leaves it: an error, the ACCEPT restart)
+                      (unwind-protect
+                           (multiple-value-prog1
+                               (sys::%system-compile-file (clysm-pass-unit pass) (component-pathname c)
+                                                          :verbose *compile-verbose*)
+                             (setf (third e) :compiled))
+                        (unless (third e) (clysm-pass-break pass sysfasl)))
+                    (when (and (clysm-pass-unit pass) (= (length (clysm-pass-files pass)) (length files)))
+                      (handler-case
+                          (progn
+                            (sys::%system-unit-finish (clysm-pass-unit pass) sysfasl)
+                            ;; (the list last: a system fasl without it is not used)
+                            (with-open-file (out (make-pathname :type "files" :defaults sysfasl)
+                                                 :direction :output :if-exists :supersede)
+                              (with-standard-io-syntax
+                                (prin1 (mapcar (lambda (e) (namestring (component-pathname (car e))))
+                                               (reverse (clysm-pass-files pass)))
+                                       out))))
+                        (error () (clysm-pass-break pass sysfasl))))
+                    (check-lisp-compile-results sysfasl warnings-p failure-p
+                                                "~/asdf-action::format-action/" (list (cons o c)))
+                    (mark-operation-done o c)))))))))
+
+(defun clysm-broken-pathname (sysfasl) (make-pathname :type "broken" :defaults sysfasl))
+
+(defun clysm-pass-break (pass sysfasl)
+  "The files of PASS left are compiled to fasls of their own, and the system
+is not made into a system fasl again until it or its .asd changes (a file
+noting that, next to where the system fasl goes)."
+  (setf (clysm-pass-unit pass) nil)
+  (ignore-errors
+   (with-open-file (out (clysm-broken-pathname sysfasl) :direction :output :if-exists :supersede)
+     (write-line "a file of this system did not compile into its system fasl" out))))
+
+(defun clysm-system-unit-start (system sysfasl)
+  "Begin compiling SYSTEM (its pass)."
   (let ((list-file (make-pathname :type "files" :defaults sysfasl)))
-    (handler-case
-        (progn
-          (when (probe-file list-file) (delete-file list-file))
-          (let ((*package* (find-package :cl-user)))
-            (let ((*standard-output* (make-broadcast-stream)) (*error-output* (make-broadcast-stream)))
-              (handler-bind ((warning #'muffle-warning))
-                (sys::%compile-files (mapcar #'component-pathname files) sysfasl))))
-          ;; (the list last: a system fasl without it is not used)
-          (with-open-file (o list-file :direction :output :if-exists :supersede)
-            (with-standard-io-syntax
-              (prin1 (mapcar (lambda (c) (namestring (component-pathname c))) files) o))))
-      (error ()
-        (ignore-errors (when (probe-file sysfasl) (delete-file sysfasl)))
-        nil))))
+    (when (probe-file list-file) (delete-file list-file))
+    ;; (ASDF notes the date of the output of each compile-op: a fasl that
+    ;; does nothing until the system's is written)
+    (ensure-directories-exist sysfasl)
+    (with-open-file (out sysfasl :direction :output :if-exists :supersede)
+      (write-line ";;; Clysm compiled file" out)))
+  (setf (gethash system *clysm-system-fasl-state*) (let ((su (sys::%system-unit-open))) (make-clysm-pass su su))))
 
-(defmethod perform :around ((o load-op) (c cl-source-file))
-  (let* ((system (component-system c))
-         (state (gethash system *clysm-system-fasl-state*)))
-    ;; (a file whose load is the system fasl's is marked done as a load would)
-    (cond ((eq state :loaded) (mark-operation-done o c))
-          ((eq state :files) (call-next-method))
-          (t
-           (let ((files (clysm-system-fasl-files system)))
-             (if (and files (eq c (first files)))
-                 (let ((sysfasl (clysm-system-fasl-pathname system files)))
-                   (if (clysm-system-fasl-valid-p system files sysfasl)
-                       (progn (setf (gethash system *clysm-system-fasl-state*) :loaded)
-                              (load sysfasl)
-                              (pushnew (component-name system) *clysm-system-fasls-loaded* :test #'string=)
-                              (mark-operation-done o c))
-                       (progn (setf (gethash system *clysm-system-fasl-state*) :files)
-                              (call-next-method))))
-                 (call-next-method)))))))
+(defmethod perform :around ((o load-op) (c source-file))
+  (let ((system (component-system c)))
+    (multiple-value-bind (files sysfasl) (clysm-system-fasl-files system)
+      (let ((state (gethash system *clysm-system-fasl-state*)))
+        (cond ((not (member c files)) (call-next-method))
+              ((eq state :loaded) (mark-operation-done o c))
+              ((clysm-pass-p state)
+               (let ((e (assoc c (clysm-pass-files state))))
+                 (case (third e)
+                   (:loaded nil)
+                   (:compiled
+                    ;; (with those compiled into the unit before it, in order)
+                    (let ((*load-pathname* sysfasl) (*load-truename* sysfasl))
+                      (dolist (x (reverse (clysm-pass-files state)))
+                        (when (eq (third x) :compiled)
+                          (sys::%system-load-file (clysm-pass-su state) (second x))
+                          (setf (third x) :loaded))
+                        (when (eq x e) (return))))
+                    (mark-operation-done o c))
+                   (:own (let ((*clysm-per-file-outputs* t)) (call-next-method)))
+                   (t (mark-operation-done o c)))))
+              (t (setf (gethash system *clysm-system-fasl-state*) :loaded)
+                 (let ((sys::*system-load-readtable* *readtable*)) (load sysfasl))
+                 (pushnew (component-name system) *clysm-system-fasls-loaded* :test #'string=)
+                 (mark-operation-done o c)))))))
 
-(defmethod perform :after ((o load-op) (s system))
-  (let ((state (gethash s *clysm-system-fasl-state*)))
-    (remhash s *clysm-system-fasl-state*)
-    (unless (eq state :loaded)
-      (let ((files (clysm-system-fasl-files s)))
-        (when files
-          (let ((sysfasl (clysm-system-fasl-pathname s files)))
-            (unless (clysm-system-fasl-valid-p s files sysfasl)
-              (clysm-make-system-fasl s files sysfasl))))))))
+;;; (not on SYSTEM: the method above, for Quicklisp, has those specializers)
+(defmethod perform :after ((o load-op) (s parent-component))
+  (let ((pass (gethash s *clysm-system-fasl-state*)))
+    (when (clysm-pass-p pass)
+      (setf (gethash s *clysm-system-fasl-state*) :loaded)
+      ;; (the host forgets the modules that loaded its files)
+      (when (clysm-pass-su pass)
+        (ignore-errors (js:call (js:global) "__clysm_unit_clear" (sys::%su-prefix (clysm-pass-su pass))))))))
 
 ;;; Heap images (runtime/image.lisp): UIOP's hooks of images that are
 ;;; restored (the user's cache, the temporary directory, the command line,

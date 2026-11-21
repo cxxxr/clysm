@@ -1,0 +1,8 @@
+(defpackage :sysfasl (:use :cl) (:export #:use #:scale))
+(in-package :sysfasl)
+;; (compile-time side effects: each must happen once per build)
+(eval-when (:compile-toplevel) (incf (symbol-value (find-symbol "*SYSFASL-CT*" "CL-USER"))))
+(defconstant +k+ 7)
+(defstruct pt x y)
+(defun scale (x) (* x +k+))
+(defvar *loads* 0)

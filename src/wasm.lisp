@@ -215,6 +215,18 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
     (when export (add-export m export :func name))
     f))
 
+(defun adopt-func (m f)
+  "Add F, a defined function of another module, to the module M."
+  (setf (gethash (wasm-func-name f) (wasm-module-func-index-table m))
+        (+ (fill-pointer (wasm-module-imports m)) (fill-pointer (wasm-module-funcs m))))
+  (vector-push-extend f (wasm-module-funcs m))
+  (setf (gethash (wasm-func-name f) (wasm-module-func-table m)) f))
+
+(defun copy-module-types (from to)
+  "Give the module TO the types of the module FROM."
+  (loop for (name . def) across (wasm-module-types from) do (add-type to name def))
+  (setf (wasm-module-base-types to) (wasm-module-base-types from)))
+
 (defun find-func (m name) (gethash name (wasm-module-func-table m)))
 (defun func-defined-p (m name) (nth-value 1 (gethash name (wasm-module-func-table m))))
 

@@ -123,7 +123,13 @@ export function instantiateLinked(state, bytes, codeBase) {
              poll_count: ex.poll_count,
              lisp_throw: ex.lisp_throw, memory: ex.memory,
              codes, code_base: codeBase },
+    // (the modules of the segments of a unit compiled file by file import
+    // the functions and globals of the earlier ones: src/live.lisp)
+    u: state.unitValues ??= {},
   });
+  if (inst.exports.u) {
+    for (const [k, v] of Object.entries(inst.exports)) if (k.startsWith('u:')) state.unitValues[k] = v;
+  }
   if (recording) state.modules.push({ bytes, codeBase, count, instance: inst, source: byteSources.get(bytes) });
   return inst;
 }
@@ -670,5 +676,8 @@ export function makeImports(state, platform) {
   };
   state.imports = imports;
   globalThis.__clysm_save_image = (path, nbytes) => saveImage(state, path, nbytes);
+  globalThis.__clysm_unit_clear = (prefix) => {
+    for (const k of Object.keys(state.unitValues ?? {})) if (k.startsWith(prefix)) delete state.unitValues[k];
+  };
   return imports;
 }
