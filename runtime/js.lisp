@@ -233,7 +233,7 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
 (%defvar-host *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
 
 (%defvar-host *js-make-failure*
-  (js:eval "(message, type, condition, mapStack) => {
+  (js:eval "(message, type, condition, mapStack, nameFrames) => {
   const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
   const error = new Error(message);
   Error.stackTraceLimit = old;
@@ -241,7 +241,8 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
   // ones of this function, SIGNAL or ERROR and the handler; the Lisp frames
   // are named after their functions (without the numbers that tell apart
   // functions of the same name)
-  const lines = String(error.stack).split('\\n');
+  // (a library's functions are named from a file of their own)
+  const lines = (typeof nameFrames === 'function' ? nameFrames(error.stack) : String(error.stack)).split('\\n');
   let first = 1;
   for (let i = 1; i < lines.length; i++) {
     if (/^\\s*at (ERROR|%ERROR\\*|CERROR|SIGNAL|%SIGNAL\\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
@@ -269,7 +270,8 @@ of the place where it was signalled), in the object that tells the host to throw
               (handler-case (prin1-to-string (type-of condition))
                 (error () "ERROR"))
               (%js-wrap-lisp condition)
-              (%js-host 3)))
+              (%js-host 3)
+              (%js-host 4)))
 
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
@@ -715,6 +717,12 @@ call of the host's main thread)."
                        (unwind-protect (js:get (js:new error-class) "stack")
                          (js:set error-class "stackTraceLimit" old)))))
          (names nil))
+    ;; (a library keeps the names of its functions in a file of its own:
+    ;; the host names the frames from it)
+    (let ((name-frames (ignore-errors (%js-host 4))))
+      (when (and (stringp stack) (js:js-value-p name-frames))
+        (let ((named (ignore-errors (js:funcall name-frames stack))))
+          (when (stringp named) (setq stack named)))))
     (when (stringp stack)
       (with-input-from-string (in stack)
         (loop for line = (read-line in nil nil)

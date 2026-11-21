@@ -19,7 +19,9 @@
 #                                         run test programs (see docs/INTERNALS.md)
 #   clysm library [--shake] [--shake-why REPORT] FILE... -o DIR/NAME.wasm
 #                                         compile a library for JavaScript: NAME.wasm,
-#                                         NAME.mjs (the functions of JS:EXPORT), NAME.d.ts
+#                                         NAME.wasm.debug (the names of its functions, for
+#                                         stack traces), NAME.mjs (the functions of
+#                                         JS:EXPORT), NAME.d.ts
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="${NODE:-node}"
@@ -111,5 +113,5 @@ case "$cmd" in
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,/^set -e/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

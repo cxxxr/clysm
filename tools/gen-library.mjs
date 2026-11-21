@@ -3,7 +3,8 @@
 // loads the module once to learn its exports (JS:EXPORT), then writes
 // DIR/NAME.mjs (an ES module whose named exports are the Lisp functions),
 // DIR/NAME.d.ts (their TypeScript types) and copies the host files that
-// they need into DIR/clysm/.
+// they need into DIR/clysm/; the names and places of the functions, for
+// stack traces, are moved from DIR/NAME.wasm to DIR/NAME.wasm.debug.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,29 @@ import { load } from '../host/lib.mjs';
 const wasmPath = path.resolve(process.argv[2]);
 const dir = path.dirname(wasmPath);
 const name = path.basename(wasmPath, '.wasm');
+
+// The names and places of the functions (the custom sections name and
+// clysm.sources, 7 % of a module) go to NAME.wasm.debug, a module of those
+// sections only, which the host reads when it first maps a stack trace
+// (host/lib.mjs): a page or a package can leave it out.
+{
+  const bytes = fs.readFileSync(wasmPath);
+  const leb = (p) => { let x = 0, s = 0, c; do { c = bytes[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return [x >>> 0, p]; };
+  const keep = [bytes.subarray(0, 8)], debug = [bytes.subarray(0, 8)];
+  let p = 8;
+  while (p < bytes.length) {
+    const start = p, id = bytes[p++];
+    let size; [size, p] = leb(p);
+    let section = null;
+    if (id === 0) { const [l, q] = leb(p); section = bytes.subarray(q, q + l).toString(); }
+    (section === 'name' || section === 'clysm.sources' ? debug : keep).push(bytes.subarray(start, p + size));
+    p += size;
+  }
+  if (debug.length > 1) {
+    fs.writeFileSync(wasmPath, Buffer.concat(keep));
+    fs.writeFileSync(`${wasmPath}.debug`, Buffer.concat(debug));
+  }
+}
 const lib = await load(wasmPath, { stdout: () => {}, stderr: (t) => process.stderr.write(t) });
 
 const identifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -62,4 +86,4 @@ fs.mkdirSync(path.join(dir, 'clysm'), { recursive: true });
 for (const f of ['common.mjs', 'jsffi.mjs', 'lib.mjs', 'worker.mjs', 'process.mjs']) {
   if (fs.existsSync(path.join(hostDir, f))) fs.copyFileSync(path.join(hostDir, f), path.join(dir, 'clysm', f));
 }
-console.log(`; wrote ${path.join(dir, name)}.{wasm,mjs,d.ts}: ${entries.length} exports`);
+console.log(`; wrote ${path.join(dir, name)}.{wasm,wasm.debug,mjs,d.ts}: ${entries.length} exports`);

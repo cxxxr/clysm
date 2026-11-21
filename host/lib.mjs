@@ -23,6 +23,10 @@
 //   import    the function that (js:import "specifier") calls; by default
 //             the specifier is resolved from the working directory
 //   fs        the file system (by default node:fs)
+//   debug     the bytes of the names and places of the module's functions
+//             (NAME.wasm.debug, which bin/clysm library writes beside
+//             NAME.wasm and which is read from there when SOURCE is a path
+//             or a URL), for stack traces, or null
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -124,7 +128,16 @@ function defaultImporter(req) {
   };
 }
 
-function instantiate(module, options) {
+// The bytes of NAME.wasm.debug beside the file SOURCE (a path or a file:
+// URL; bin/clysm library writes it), or null: a function, called when the
+// names of the functions are first needed (host/common.mjs installSourceMap).
+function debugFileOf(source, fsys = fs) {
+  if (!(source instanceof URL || typeof source === 'string')) return null;
+  const p = `${source instanceof URL ? fileURLToPath(source) : source}.debug`;
+  return () => (fsys.existsSync(p) ? fsys.readFileSync(p) : null);
+}
+
+function instantiate(module, options, debug = null) {
   installGlobals(options);
   const access = nodeModuleAccess();
   const state = {
@@ -133,7 +146,7 @@ function instantiate(module, options) {
     require: options.require || access.require,
   };
   const imports = makeImports(state, makePlatform(state, options));
-  installSourceMap(state, module);
+  installSourceMap(state, module, options.debug !== undefined ? () => options.debug : debug);
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};
@@ -175,7 +188,7 @@ export async function load(source, options = {}) {
   const module = source instanceof WebAssembly.Module
     ? source
     : await WebAssembly.compile(await bytesOf(source));
-  return instantiate(module, options);
+  return instantiate(module, options, debugFileOf(source));
 }
 
 // The same, synchronously (for CommonJS callers).
@@ -187,5 +200,5 @@ export function loadSync(source, options = {}) {
       : source;
     module = new WebAssembly.Module(bytes);
   }
-  return instantiate(module, options);
+  return instantiate(module, options, debugFileOf(source));
 }
