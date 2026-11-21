@@ -48,6 +48,30 @@
 
 (defun %mag-mul (a b) (%mag-mul-fast a b))
 
+(defun %karatsuba-mul (a b)
+  "A * B for integers of many digits (called by the product helper): with
+B^K the digit base to half the digits, A = A1 B^K + A0 and B = B1 B^K + B0,
+three products of halves, A1 B1, A0 B0 and (A1 + A0)(B1 + B0)."
+  (let* ((sq (eq a b))
+         (neg (not (eq (%int-minusp a) (%int-minusp b))))
+         (a (if (%int-minusp a) (- a) a)) (b (if (%int-minusp b) (- b) b))
+         (ma (%int-mag a)) (mb (%int-mag b))
+         (la (%mag-length ma)) (lb (%mag-length mb))
+         (k (%fxtruncate (%fx+ (if (%fx> la lb) la lb) 1) 2))
+         (sh (%fx* k 32)))
+    (flet ((lo (m l) (if (%fx<= l k) (%make-integer 0 m) (%make-integer 0 (%limbs-prefix m k))))
+           (hi (m l) (if (%fx<= l k) 0 (%make-integer 0 (%mag-shr m sh)))))
+      (let* ((a0 (lo ma la)) (a1 (hi ma la)) (b0 (lo mb lb)) (b1 (hi mb lb))
+             (p (cond (sq (let* ((z2 (* a1 a1)) (z0 (* a0 a0)) (m (+ a1 a0))
+                                 (z1 (- (* m m) z2 z0)))
+                            (+ (ash z2 (%fx* 2 sh)) (ash z1 sh) z0)))
+                      ((eql a1 0) (+ (ash (* a b1) sh) (* a b0)))
+                      ((eql b1 0) (+ (ash (* a1 b) sh) (* a0 b)))
+                      (t (let* ((z2 (* a1 b1)) (z0 (* a0 b0))
+                                (z1 (- (* (+ a1 a0) (+ b1 b0)) z2 z0)))
+                           (+ (ash z2 (%fx* 2 sh)) (ash z1 sh) z0))))))
+        (if neg (- p) p)))))
+
 (defun %mag-divmod (u v)
   "Returns (values quotient-mag remainder-mag)."
   (let ((n (%mag-length v)) (m0 (%mag-length u)))
@@ -812,9 +836,9 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
 (defun %isqrt-big (n)
   (unless (and (integerp n) (>= n 0)) (%type-error n '(integer 0)))
   ;; Newton's iteration from an estimate above the root: the root of the top
-  ;; 62 bits (rounded up) shifted back
-  (let* ((len (integer-length n))
-         (k (ash (max 0 (- len 61)) -1))
+  ;; half of the bits (recursively), rounded up and shifted back, which has
+  ;; half the root's bits right (one or two steps at the full size)
+  (let* ((k (ash (integer-length n) -2))
          (x (ash (+ 1 (isqrt (ash n (- (* 2 k))))) k)))
     (loop
       (let ((y (ash (+ x (values (%int-truncate n x))) -1)))
@@ -1060,7 +1084,32 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
 (defun %integer-to-string (n base)
   ;; (the helpers write integers within 64 bits, and of any size in base 10)
   (or (%int64-to-string n base)
-      (if (eql base 10) (%int-decimal-string n) (%bignum-to-string n base))))
+      (if (eql base 10)
+          (if (%fx> (integer-length n) +%decimal-split-bits+)
+              (%big-decimal-string n)
+              (%int-decimal-string n))
+          (%bignum-to-string n base))))
+
+;;; A large integer is printed in decimal by halves: divided by a power of
+;;; ten of about half its digits, each part printed (recursively) and the low
+;;; one padded with zeros.  The helper's passes by 10^9 are quadratic in
+;;; divisions of an i64 (each pass over the whole number); the divisions here
+;;; cost products of digits.
+(defconstant +%decimal-split-bits+ 3000)
+(defun %big-decimal-string (n)
+  (let ((neg (minusp n)))
+    (let ((s (%big-decimal-digits (if neg (- n) n))))
+      (if neg (concatenate 'string "-" s) s))))
+(defun %big-decimal-digits (n)
+  (if (%fx<= (integer-length n) +%decimal-split-bits+)
+      (%int-decimal-string n)
+      (let ((k (floor (* (integer-length n) 1233) 8192))) ; about half the digits (log10 2 = 0.30103)
+        (multiple-value-bind (q r) (truncate n (expt 10 k))
+          (let* ((hi (%big-decimal-digits q)) (lo (%big-decimal-digits r))
+                 (s (make-string (+ (length hi) k) :initial-element #\0)))
+            (replace s hi)
+            (replace s lo :start1 (- (length s) (length lo)))
+            s)))))
 
 (defun %bignum-to-string (n base)
   "N a bignum (or MOST-NEGATIVE-FIXNUM), BASE in [2, 36].  The digits are

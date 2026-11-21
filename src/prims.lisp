@@ -218,10 +218,23 @@ branching to FAIL when that is not possible.  The leaves are taken from
   "The value of the tree NODE by the generic helpers, from the locals of its leaves."
   (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
          (multiple-value-bind (op a b) (fused-operands node)
-           (if (eq op :ash)
-               `(,@(fused-generic-code a) ,@(cg b) (:call :ash-fx))
-               (let* ((ca (fused-generic-code a)) (cb (fused-generic-code b)))
-                 `(,@ca ,@cb (:call ,(cdr (assoc op *fused-helpers*))))))))
+           (flet ((leaf-p (n) (not (and (fusable-op-node-p n) (not (ty-int64-p (node-ty n))))))
+                  (i64-rec-p (rec) (member (second rec) '(:i64 :const)))
+                  (i64-rec-code (rec)
+                    (if (eq (second rec) :const)
+                        `((:i64.const ,(second (first rec))))
+                        `((:local.get ,(third rec))))))
+             (cond ((eq op :ash)
+                    `(,@(fused-generic-code a) ,@(cg b) (:call :ash-fx)))
+                   ((and (member op '(:add :sub :mul)) (leaf-p a) (leaf-p b)
+                         (i64-rec-p (first *fused-rest*)) (i64-rec-p (second *fused-rest*)))
+                    ;; two i64s: the operation of any size on them, neither boxed
+                    (let ((ra (pop *fused-rest*)) (rb (pop *fused-rest*)))
+                      `(,@(i64-rec-code ra) ,@(i64-rec-code rb)
+                        (:call ,(ecase op (:add :add-ll) (:sub :sub-ll) (:mul :mul-ll))))))
+                   (t
+                    (let* ((ca (fused-generic-code a)) (cb (fused-generic-code b)))
+                      `(,@ca ,@cb (:call ,(cdr (assoc op *fused-helpers*))))))))))
         (t
          (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
            (ecase kind
@@ -1902,9 +1915,36 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                    (:local.get xa) (:local.get xb) ,',op (:call :i64-int) :return)
                 '(:local.get 0) '(:local.get 1)
                 `(:global.get ,(sym-global ',lisp-fn)) '(:call (:callsym 2)))))
-  (logop :logand2 :i64.and clysm-sys::%logand2)
   (logop :logior2 :i64.or clysm-sys::%logior2)
   (logop :logxor2 :i64.xor clysm-sys::%logxor2))
+
+(defun low64-of-big-code (p)
+  "The low 64 bits (two's complement) of parameter P, a bignum of digits."
+  `((:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 1) (:ref.cast! :limbs) (:local.tee m) :array.len
+    (:local.set n)
+    (:local.get n) (:if nil :i64 ((:local.get m) (:i32.const 0) (:array.get :limbs) :i64.extend_i32_u) ((:i64.const 0)))
+    (:local.get n) (:i32.const 1) :i32.gt_u
+    (:if nil :i64 ((:local.get m) (:i32.const 1) (:array.get :limbs) :i64.extend_i32_u (:i64.const 32) :i64.shl)
+         ((:i64.const 0)))
+    :i64.or (:local.set w)
+    (:i64.const 0) (:local.get w) :i64.sub (:local.get w)
+    (:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 0) :select))
+(defhelper :logand2 :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64) (m (:ref :null :limbs)) (n :i32))
+  `(:block slow nil
+     ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
+     ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
+     (:local.get xa) (:local.get xb) :i64.and (:call :i64-int) :return)
+  ;; a bignum of digits under a mask within 64 bits (not negative): the
+  ;; low digits, no bignum made
+  (loop for (p q) in '((0 1) (1 0))
+        collect `(:block no nil
+                   (:local.get ,p) (:ref.test :bignum) :i32.eqz (:br_if no)
+                   (:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null (:br_if no)
+                   ,@(num-decode-code q 'xb nil 'ka 'no nil)
+                   (:local.get xb) (:i64.const 0) :i64.lt_s (:br_if no)
+                   ,@(low64-of-big-code p) (:local.get xb) :i64.and (:return_call :i64-int)))
+  '(:local.get 0) '(:local.get 1)
+  `(:global.get ,(sym-global 'clysm-sys::%logand2)) '(:call (:callsym 2)))
 
 (defhelper :ash-fx :ee-e ((v :i32) (xa :i64) (ka :i32) (c :i32) (r :i64))
   ;; an integer within 64 bits shifted by a fixnum count
@@ -2169,6 +2209,26 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   '(:local.get r2) :ref.as_non_null)
 
 (defhelper :big-add :eei-e ((sa :i32) (sb :i32) (ma :eqref) (mb :eqref) (c :i32) (w :i64) (v :i32) (k :i32))
+  ;; two bignums of digits: their signs and magnitudes straight from the
+  ;; structs (a sum of more than two digits needs no normalizing)
+  `(:block notbig nil
+     (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.and :i32.eqz (:br_if notbig)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee ma) :ref.is_null (:br_if notbig)
+     (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee mb) :ref.is_null (:br_if notbig)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0) (:local.set sa)
+     (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 0) (:local.get 2) :i32.xor (:local.set sb)
+     (:local.get sa) (:local.get sb) :i32.eq
+     (:if nil nil
+          ((:local.get ma) (:local.get mb) (:call :mag-add) (:local.tee ma) (:ref.cast! :limbs) :array.len
+           (:i32.const 2) :i32.gt_u
+           (:if nil nil ((:local.get sa) (:local.get ma) (:ref.cast! :limbs) (:i64.const 0) (:struct.new :bignum)
+                         :return))
+           (:local.get ma) (:local.get sa) (:return_call :make-int)))
+     (:local.get ma) (:local.get mb) (:call :mag-cmp) (:local.tee c) :i32.eqz
+     (:if nil nil ((:i32.const 0) :ref.i31 :return))
+     (:local.get c) (:i32.const 0) :i32.gt_s
+     (:if nil nil ((:local.get ma) (:local.get mb) (:call :mag-sub) (:local.get sa) (:return_call :make-int)))
+     (:local.get mb) (:local.get ma) (:call :mag-sub) (:local.get sb) (:return_call :make-int))
   ;; a bignum of digits and an integer within 64 bits (as the second
   ;; operand, or the first in a sum): the small one is not made digits
   `(:block general nil
@@ -2206,6 +2266,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defprim clysm-sys::%int-sub-big (a b) :value `(,@a ,@b (:i32.const 1) (:call :big-add)))
 
 ;;; A * B (integers of any size)
+(defparameter +karatsuba-limbs+ 80)
 (defhelper :big-mul :ee-e ((v :i32) (s :i32))
   '(:local.get 0) '(:call :int-neg) '(:local.get 1) '(:call :int-neg) :i32.xor '(:local.set s)
   ;; a fixnum (below the digit base): one pass
@@ -2218,6 +2279,10 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                    (:if nil nil ((:i32.const 0) (:local.get v) :i32.sub (:local.set v)))
                    (:local.get ,q) (:call :int-limbs) (:local.get v) :ref.i31 (:call :mag-mul1)
                    (:local.get s) (:call :make-int) :return))
+  ;; two large ones: Karatsuba's three products of halves (in Lisp)
+  `(:local.get 0) '(:call :int-limbs) '(:ref.cast! :limbs) :array.len `(:i32.const ,+karatsuba-limbs+) :i32.ge_u
+  `(:local.get 1) '(:call :int-limbs) '(:ref.cast! :limbs) :array.len `(:i32.const ,+karatsuba-limbs+) :i32.ge_u :i32.and
+  `(:if nil nil ((:local.get 0) (:local.get 1) ,@(lisp-call-instrs 'clysm-sys::%karatsuba-mul 2) :return))
   '(:local.get 0) '(:call :int-limbs) '(:local.get 1) '(:call :int-limbs) '(:call :mag-mul)
   '(:local.get s) '(:call :make-int))
 (defprim clysm-sys::%int-mul-big (a b) :value `(,@a ,@b (:call :big-mul)))
@@ -2363,6 +2428,7 @@ sums LO (low halves) and HI (high halves)."
     (:local.get p) (:i64.const ,+limb-bits+) :i64.shr_u (:local.get hi) :i64.add (:local.set hi)))
 (defun limb-code (arr idx)
   `((:local.get ,arr) ,@idx (:array.get :limbs) :i64.extend_i32_u))
+(defparameter +mag-mul-row-max+ 32)   ; (the columns take a square's products once: 8 for one)
 (defhelper :mag-mul :ee-e ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (r (:ref :null :limbs))
                            (la :i32) (lb :i32) (k :i32) (i :i32) (iend :i32) (lo :i64) (hi :i64) (p :i64)
                            (c :i64))
@@ -2375,6 +2441,29 @@ sums LO (low halves) and HI (high halves)."
   '(:local.get la) :i32.eqz '(:local.get lb) :i32.eqz :i32.or
   '(:if nil nil ((:i32.const 0) (:array.new_default :limbs) :return))
   '(:local.get la) '(:local.get lb) :i32.add '(:array.new_default :limbs) '(:local.set r)
+  ;; a small operand: row by row (a carry chain, little work besides the products)
+  `(:local.get la) `(:local.get lb) :i32.lt_u `(:if nil :i32 ((:local.get la)) ((:local.get lb)))
+  `(:i32.const 8) `(:i32.const ,+mag-mul-row-max+) `(:local.get a) `(:local.get b) :ref.eq :select :i32.le_u
+  `(:if nil nil
+        ((:block rdone nil
+           (:loop rows nil
+             (:local.get k) (:local.get la) :i32.ge_u (:br_if rdone)
+             (:local.get a) (:local.get k) (:array.get :limbs) :i64.extend_i32_u (:local.set p)
+             (:i64.const 0) (:local.set c) (:i32.const 0) (:local.set i)
+             (:block cdone nil
+               (:loop cols nil
+                 (:local.get i) (:local.get lb) :i32.ge_u (:br_if cdone)
+                 (:local.get p) (:local.get b) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.mul
+                 (:local.get r) (:local.get i) (:local.get k) :i32.add (:array.get :limbs) :i64.extend_i32_u :i64.add
+                 (:local.get c) :i64.add (:local.set lo)
+                 (:local.get r) (:local.get i) (:local.get k) :i32.add (:local.get lo) :i32.wrap_i64 (:array.set :limbs)
+                 (:local.get lo) (:i64.const 32) :i64.shr_u (:local.set c)
+                 (:local.get i) (:i32.const 1) :i32.add (:local.set i)
+                 (:br cols)))
+             (:local.get r) (:local.get k) (:local.get lb) :i32.add (:local.get c) :i32.wrap_i64 (:array.set :limbs)
+             (:local.get k) (:i32.const 1) :i32.add (:local.set k)
+             (:br rows)))
+         (:local.get r) :ref.as_non_null :return))
   `(:block done nil
      (:loop outer nil
        (:local.get k) (:local.get la) (:local.get lb) :i32.add (:i32.const 1) :i32.sub :i32.ge_u (:br_if done)
@@ -2465,16 +2554,28 @@ sums LO (low halves) and HI (high halves)."
          (:local.get la) (:local.set i) (:local.get lb) (:local.set la) (:local.get i) (:local.set lb)
          (:i32.const 0) (:local.set i)))
   '(:local.get la) '(:array.new_default :limbs) '(:local.set r)
-  `(:block done nil
-     (:loop again nil
-       (:local.get i) (:local.get lb) :i32.ge_u (:br_if done)
-       (:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u
-       (:local.get b) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.add
-       (:local.get s) :i64.add (:local.set s)
-       (:local.get r) (:local.get i) (:local.get s) :i32.wrap_i64 (:array.set :limbs)
-       (:local.get s) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set s)
-       (:local.get i) (:i32.const 1) :i32.add (:local.set i)
-       (:br again)))
+  (flet ((dstep (off)
+           `((:local.get a) (:local.get i) ,@off (:array.get :limbs) :i64.extend_i32_u
+             (:local.get b) (:local.get i) ,@off (:array.get :limbs) :i64.extend_i32_u :i64.add
+             (:local.get s) :i64.add (:local.set s)
+             (:local.get r) (:local.get i) ,@off (:local.get s) :i32.wrap_i64 (:array.set :limbs)
+             (:local.get s) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set s))))
+    ;; two digits a step
+    `(:block done nil
+       (:loop again nil
+         (:local.get i) (:i32.const 1) :i32.add (:local.get lb) :i32.ge_u (:br_if done)
+         ,@(dstep nil)
+         ,@(dstep '((:i32.const 1) :i32.add))
+         (:local.get i) (:i32.const 2) :i32.add (:local.set i)
+         (:br again))))
+  (flet ((dstep1 ()
+           `((:local.get a) (:local.get i) (:array.get :limbs) :i64.extend_i32_u
+             (:local.get b) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.add
+             (:local.get s) :i64.add (:local.set s)
+             (:local.get r) (:local.get i) (:local.get s) :i32.wrap_i64 (:array.set :limbs)
+             (:local.get s) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set s)
+             (:local.get i) (:i32.const 1) :i32.add (:local.set i))))
+    `((:local.get i) (:local.get lb) :i32.lt_u (:if nil nil ,(dstep1))))
   `(:block done2 nil
      (:loop again2 nil
        (:local.get i) (:local.get la) :i32.ge_u (:br_if done2)
@@ -3561,9 +3662,8 @@ within 64 bits (and not -2^63), else a branch to FAIL.  Uses the locals EE and V
 
 ;;; TRUNCATE / FLOOR / CEILING / ROUND (MODE as for :divmod) of such
 ;;; rationals: the quotient, the remainder as the second value; or null
-(defhelper :ratio-divmod :eei-e ((v :i32) (ee :eqref) (na :i64) (da :i64) (nb :i64) (db :i64) (g :i64)
-                                 (pp :i64) (qq :i64) (dd :i64) (w :i64) (wr :i64) (wt :i64) (wt2 :i64))
-  `(:block fail nil
+(defun ratio-divmod-body (quot-only)
+  `((:block fail nil
      ,@(rat-decode-code 0 'na 'da 'fail)
      ,@(rat-decode-code 1 'nb 'db 'fail)
      (:local.get nb) :i64.eqz (:br_if fail)
@@ -3574,7 +3674,7 @@ within 64 bits (and not -2^63), else a branch to FAIL.  Uses the locals EE and V
      ,@(rat-mul-code 'na 'wt 'pp 'fail)
      (:local.get da) (:local.get g) (:call :div-common) (:local.set da)
      ,@(rat-mul-code 'da 'nb 'qq 'fail)
-     ,@(rat-mul-code 'da 'db 'dd 'fail)
+     ,@(unless quot-only (rat-mul-code 'da 'db 'dd 'fail))
      (:local.get pp) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if fail)
      (:local.get qq) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if fail)
      (:local.get pp) (:local.get qq) :i64.div_s (:local.set w)
@@ -3582,16 +3682,24 @@ within 64 bits (and not -2^63), else a branch to FAIL.  Uses the locals EE and V
      ,@(loop for mode from 1 to 3
              collect `(:local.get 2) collect `(:i32.const ,mode) collect :i32.eq
              collect `(:if nil nil ,(int-divmod-adjust-code :i64 mode 'pp 'qq 'w 'wr 'wt 'wt2)))
-     (:global.get :mv-buf) (:i32.const 0)
-     ;; (with an integer divisor the remainder is in lowest terms as the number was)
-     (:local.get db) (:i64.const 1) :i64.eq
-     (:if nil :eqref
-          ((:local.get wr) (:local.get dd) (:call :make-ratio-reduced))
-          ((:local.get wr) (:local.get dd) (:call :make-ratio64)))
-     (:array.set :vector)
-     (:i32.const 2) (:global.set :mv-count)
+     ,@(unless quot-only
+         `((:global.get :mv-buf) (:i32.const 0)
+           ;; (with an integer divisor the remainder is in lowest terms as the number was)
+           (:local.get db) (:i64.const 1) :i64.eq
+           (:if nil :eqref
+                ((:local.get wr) (:local.get dd) (:call :make-ratio-reduced))
+                ((:local.get wr) (:local.get dd) (:call :make-ratio64)))
+           (:array.set :vector)
+           (:i32.const 2) (:global.set :mv-count)))
      (:local.get w) (:call :i64-int) :return)
-  '(:ref.null :eq))
+    (:ref.null :eq)))
+(defhelper :ratio-divmod :eei-e ((v :i32) (ee :eqref) (na :i64) (da :i64) (nb :i64) (db :i64) (g :i64)
+                                 (pp :i64) (qq :i64) (dd :i64) (w :i64) (wr :i64) (wt :i64) (wt2 :i64))
+  (ratio-divmod-body nil))
+;;; the same, the quotient only
+(defhelper :ratio-quot :eei-e ((v :i32) (ee :eqref) (na :i64) (da :i64) (nb :i64) (db :i64) (g :i64)
+                               (pp :i64) (qq :i64) (dd :i64) (w :i64) (wr :i64) (wt :i64) (wt2 :i64))
+  (ratio-divmod-body t))
 
 ;;; RATIONAL of a float: an integer or m / 2^k within 62 bits; larger ones in Lisp
 (defhelper :rational :e-e ((bits :i64) (m :i64) (ex :i32) (e2 :i32) (tz :i32) (neg :i32))
@@ -3711,6 +3819,23 @@ anything else branches to SLOW.  Uses the i32 local V."
   '(:local.get 0) '(:local.get 1) :i64.xor '(:i64.const 0) :i64.lt_s
   '(:local.get m) '(:i64.const 0) '(:struct.new :bignum))
 
+;;; A + B, A - B, A * B of two i64s, of any size: the generic code of a fused
+;;; tree whose operands are i64s (a product beyond 64 bits made at once, no
+;;; operand boxed)
+(defun ll-op-body (op generic)
+  `((:local.get 0) (:local.set x) (:local.get 1) (:local.set y)
+    (:block fail nil
+      ,@(i64-checked-op-code op 'x 'y 'r 'fail)
+      (:local.get r) (:return_call :i64-int))
+    ,@(when (eq op :mul)
+        `((:local.get x) (:i64.const ,(- (expt 2 63))) :i64.ne
+          (:local.get y) (:i64.const ,(- (expt 2 63))) :i64.ne :i32.and
+          (:if nil nil ((:local.get x) (:local.get y) (:return_call :mul-wide)))))
+    (:local.get x) (:call :i64-int) (:local.get y) (:call :i64-int) (:return_call ,generic)))
+(defhelper :add-ll :ll-e ((x :i64) (y :i64) (r :i64)) (ll-op-body :add :add))
+(defhelper :sub-ll :ll-e ((x :i64) (y :i64) (r :i64)) (ll-op-body :sub :sub))
+(defhelper :mul-ll :ll-e ((x :i64) (y :i64) (r :i64)) (ll-op-body :mul :mul))
+
 (defun arith-helper-body (opcode lisp-fn)
   "OPCODE: 0 + 1 - 2 * 3 /."
   (let ((min64 (- (expt 2 63)))
@@ -3718,7 +3843,14 @@ anything else branches to SLOW.  Uses the i32 local V."
     (flet ((finite-check (r sub zero ne)
              `((:local.get ,r) (:local.get ,r) ,sub ,zero ,ne (:br_if slow))))
       ;; (two fixnums: done by the front helper, which calls this one)
-      `(
+      `(;; a sum or difference of integers of which one is a bignum of
+        ;; digits: the bignum helper at once
+        ,@(when (< opcode 2)
+            `((:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.or
+              (:if nil nil
+                   ((:local.get 0) (:call :integerp) (:local.get 1) (:call :integerp) :i32.and
+                    (:if nil nil ((:local.get 0) (:local.get 1) (:i32.const ,opcode) (:return_call :big-add)))))))
+
         (:block slow nil
           ,@(num-decode-code 0 'xa 'da 'ka 'slow)
           ,@(num-decode-code 1 'xb 'db 'kb 'slow)
@@ -3912,6 +4044,12 @@ f64s in locals DA and DB (it may branch to SLOW)."
                   ((:local.get ,x) (:i64.const ,(expt 2 53)) :i64.add (:i64.const ,(expt 2 54)) :i64.gt_u (:br_if slow)
                    (:local.get ,x) :f64.convert_i64_s (:local.set ,d))))))
     `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,(if (eq iop :i64.lt_s) :i32.lt_s :i32.eq) :return))
+      ;; integers of which one is a bignum of digits: signs, then digits
+      (:block notbig nil
+        (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.or :i32.eqz (:br_if notbig)
+        (:local.get 0) (:call :integerp) (:local.get 1) (:call :integerp) :i32.and :i32.eqz (:br_if notbig)
+        (:local.get 0) (:local.get 1) ,@(lisp-call-instrs 'clysm-sys::%int-cmp-big 2) (:ref.cast :i31) :i31.get_s
+        ,@(if (eq iop :i64.lt_s) '((:i32.const 0) :i32.lt_s) '(:i32.eqz)) :return)
       (:block slow nil
         ,@(num-decode-code 0 'xa 'da 'ka 'slow)
         ,@(num-decode-code 1 'xb 'db 'kb 'slow)
@@ -4565,6 +4703,28 @@ through."
                 (single-divmod-code ,mode)
                 '(:local.get 0) '(:local.get 1) '(:i32.const ,mode) '(:return_call :divmod))))
   (front :divmod0 0) (front :divmod1 1) (front :divmod2 2) (front :divmod3 3))
+
+
+;;; the quotient of a division whose remainder is not wanted (the code for
+;;; one value where an operand may be a ratio): as the front above, with no
+;;; remainder made for rationals
+(macrolet ((front (name mode)
+             `(defhelper ,name :ee-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32)
+                                      (e :eqref))
+                (fixnum-pair-code
+                 `((:local.get y) :i32.eqz :i32.eqz
+                   (:if nil nil
+                        ((:local.get x) (:local.get y) :i32.div_s (:local.set qi)
+                         (:local.get x) (:local.get y) :i32.rem_s (:local.set ri)
+                         ,@(int-divmod-adjust-code :i32 ,mode 'x 'y 'qi 'ri 'ti 'ti2)
+                         (:local.get qi) (:return_call :box-i32)))))
+                '(:local.get 0) '(:ref.test :ratio) '(:local.get 1) '(:ref.test :ratio) :i32.or
+                '(:if nil nil
+                      ((:local.get 0) (:local.get 1) (:i32.const ,mode) (:call :ratio-quot) (:local.tee e)
+                       :ref.is_null :i32.eqz
+                       (:if nil nil ((:local.get e) :return))))
+                '(:local.get 0) '(:local.get 1) '(:return_call ,(intern (format nil "DIVMOD~D" mode) :keyword)))))
+  (front :quot0 0) (front :quot1 1) (front :quot2 2) (front :quot3 3))
 
 (macrolet ((div (name mode)
              `(progn
