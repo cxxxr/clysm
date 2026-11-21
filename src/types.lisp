@@ -73,8 +73,11 @@
 (defun bound-max (a b) (and a b (max a b)))
 
 (defun ty-union (a b)
-  (cond ((ty-bottom-p a) b)
+  (cond ((eq a b) a)
+        ((ty-bottom-p a) b)
         ((ty-bottom-p b) a)
+        ;; (the usual case of joined environments: nothing to make)
+        ((ty-equal a b) a)
         (t (let ((ia (ty-int-p a)) (ib (ty-int-p b)))
              (mkty (logior (ty-bits a) (ty-bits b))
                    (cond ((and ia ib) (bound-min (ty-lo a) (ty-lo b))) (ia (ty-lo a)) (t (ty-lo b)))
