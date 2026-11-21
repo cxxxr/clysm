@@ -5528,6 +5528,9 @@ instructions (FN kind typed-local), which must return or leave nothing."
 (defprim clysm-sys::%simple-set (v i x) :value `(,@v ,@(idx-code i) ,@x (:call :storage-set)))
 (defprim clysm-sys::%storage-length (v) :value `(,@v (:call :storage-len) :ref.i31))
 (defprim clysm-sys::%storage-kind (v) :value `(,@v (:call :storage-kind) :ref.i31))
+;; (a primitive so that a call where the type of V shows the answer is that
+;; answer: KNOWN-TEST-RESULT; ELT of a declared specialized vector)
+(defprim clysm-sys::%simple-array-p (v) :test `(,@v (:call :storage-kind) (:i32.const 0) :i32.ge_s))
 (defprim clysm-sys::%make-typed-storage (code n) :value `(,@(idx-code code) ,@(idx-code n) (:call :make-storage)))
 (defprim clysm-sys::%typed-set (v i x) :test `(,@v ,@(idx-code i) ,@x (:call :typed-set)))
 (defprim clysm-sys::%storage-fill (v x start end) :test

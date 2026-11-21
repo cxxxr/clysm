@@ -301,6 +301,10 @@ they are bound), and the SAFETY of an OPTIMIZE declaration among them."
 (defun integer-decl-test (v spec)
   "A form that is true when the value of the variable V is of the integer type SPEC."
   (flet ((range (lo hi)
+           ;; (exclusive bounds, (N), as the inclusive ones: Alexandria's
+           ;; ARRAY-INDEX is (INTEGER 0 (ARRAY-DIMENSION-LIMIT)))
+           (when (and (consp lo) (integerp (car lo))) (setf lo (1+ (car lo))))
+           (when (and (consp hi) (integerp (car hi))) (setf hi (1- (car hi))))
            (let ((tests (append (and (integerp lo) (list `(<= ,lo ,v)))
                                 (and (integerp hi) (list `(<= ,v ,hi))))))
              (if (and (integerp lo) (integerp hi)
@@ -490,9 +494,27 @@ typed.lisp)."
 (defun declared-notinline (decls)
   (loop for d in decls
         when (and (consp d) (eq (car d) 'notinline)) append (mapcar #'notinline-name (cdr d))))
+(defvar *local-inline* nil
+  "function names declared INLINE in the forms being converted: a NOTINLINE
+proclamation does not keep their inline expansions out there (esrap's
+FIND-CHUNK, declaimed INLINE, defined, declaimed NOTINLINE, and inlined
+where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
+(defun declared-inline (decls)
+  (loop for d in decls
+        when (and (consp d) (eq (car d) 'inline)) append (mapcar #'notinline-name (cdr d))))
+(defun local-notinline-after (decls)
+  "*LOCAL-NOTINLINE* in the scope of DECLS (an INLINE there undoes an outer NOTINLINE)."
+  (let ((n (declared-notinline decls)) (i (declared-inline decls)))
+    (cond ((and (null n) (null i)) *local-notinline*)
+          (t (append n (if i (remove-if (lambda (s) (member s i)) *local-notinline*) *local-notinline*))))))
+(defun local-inline-after (decls)
+  "*LOCAL-INLINE* in the scope of DECLS."
+  (let ((n (declared-notinline decls)) (i (declared-inline decls)))
+    (cond ((and (null n) (null i)) *local-inline*)
+          (t (append i (if n (remove-if (lambda (s) (member s n)) *local-inline*) *local-inline*))))))
 (defmacro with-notinline-decls ((decls) &body body)
-  `(let ((*local-notinline* (let ((n (declared-notinline ,decls)))
-                              (if n (append n *local-notinline*) *local-notinline*))))
+  `(let* ((*local-inline* (local-inline-after ,decls))
+          (*local-notinline* (local-notinline-after ,decls)))
      ,@body))
 
 (defun declared-specials (decls)
@@ -829,8 +851,9 @@ the depth of copies, one more."
   "FORM, a call of a function with an inline expansion, as a copy of its body, or NIL."
   (let* ((op (car form))
          (src (and *live-mode* (symbolp op) (< *inline-expansion-depth* 3)
-                   (not (gethash op *notinline*)) (not (member op *local-notinline*))
-                   (not (get op 'clysm-sys::%notinline))
+                   (not (member op *local-notinline*))
+                   (or (member op *local-inline*)
+                       (and (not (gethash op *notinline*)) (not (get op 'clysm-sys::%notinline))))
                    (get op 'clysm-sys::%inline-expansion))))
     (when (and (consp src) (eq (car src) 'lambda) (consp (cdr src)))
       (inline-lambda-application op (second src) (cddr src) (cdr form) (cdr form) '*inline-expansion-depth*))))
@@ -1024,7 +1047,8 @@ forms whose value is an integer of at most 256 bits."
            (dspecials (declared-specials decls))
            (lam (make-lam :id (incf *lam-counter*) :name name :parent *current-lam*))
            (*current-lam* lam)
-           (*local-notinline* (append (declared-notinline decls) *local-notinline*))
+           (*local-inline* (local-inline-after decls))
+           (*local-notinline* (local-notinline-after decls))
            (env (if dspecials
                     (apply #'env-extend env
                            (loop for s in dspecials
@@ -1254,7 +1278,8 @@ forms whose value is an integer of at most 256 bits."
         (let ((new-env (free-type-decl-env
                         decls (mapcar (lambda (b) (if (consp b) (car b) b)) bindings)
                         (apply #'env-extend env (append (reverse entries) free-specials))))
-              (*local-notinline* (append (declared-notinline decls) *local-notinline*)))
+              (*local-inline* (local-inline-after decls))
+              (*local-notinline* (local-notinline-after decls)))
           (if (null bindings)
               (convert-body forms new-env)
               `(:let ,(mapcar #'cons lvars inits) ,(convert-body forms new-env))))))))
@@ -1535,7 +1560,7 @@ compiling one is a module of its own."
 (defnative clysm-sys::%with-only-variables (form env)
   ;; (%with-only-variables (var...) form): FORM converted in a lexical
   ;; environment with only those variables of the current one
-  (let ((*local-notinline* nil))
+  (let ((*local-notinline* nil) (*local-inline* nil))
     (convert (third form)
              (make-cenv (loop for v in (second form)
                               for e = (env-lookup-var env v)

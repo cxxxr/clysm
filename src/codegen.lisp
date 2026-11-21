@@ -1028,7 +1028,19 @@ layout (REST-LAYOUT-OBJECT), for APPLY in the image (CG-APPLY)."
          `((:ref.func (:kmain ,(lam-id lam))) ,@(const-init-code (key-layout-object (lam-key-layout lam)))))
         ((lam-rest-only-p lam)
          `((:ref.func (:rmain ,(lam-id lam))) ,@(const-init-code (rest-layout-object (length (lam-req lam))))))
+        ((and (lam-simple-p lam) (< +max-fixed-args+ (length (lam-req lam)) (1+ +max-req-layout-args+)))
+         `((:ref.func (:main ,(lam-id lam))) ,@(const-init-code (req-layout-object (length (lam-req lam))))))
         (t `((:ref.null :func) (:ref.null :eq)))))
+
+;;; A function of N required parameters only, N from 5 to
+;;; +MAX-REQ-LAYOUT-ARGS+, has its main function (taking them as Wasm
+;;; parameters) in the kmain field of its code and a "req layout" in
+;;; klayout: a call of N arguments of a function not known where it is
+;;; compiled (another file's, through the symbol, or FUNCALL) compares the
+;;; layout and calls the main function, with no argument vector for entryN to
+;;; take apart (esrap's RECALL, five arguments, called for each rule).
+(defun req-layout-object (n)
+  (intern (format nil "%REQ-LAYOUT ~D" n) (symbol-package 'clysm-sys::%car)))
 
 (defun rest-layout-object (nreq)
   "The object in the klayout field of the code of a function of NREQ
@@ -1091,7 +1103,7 @@ or +CLO-KLAYOUT+)."
 ;;; Calls
 ;;; ------------------------------------------------------------
 
-(defun call-closure-code (closure-code arg-codes mv tail)
+(defun call-closure-code-1 (closure-code arg-codes mv tail)
   "CLOSURE-CODE pushes a (ref $closure)."
   (declare (ignore mv))
   (let ((n (length arg-codes)) (tmp (new-local '(:ref :null :closure))))
@@ -1107,6 +1119,36 @@ or +CLO-KLAYOUT+)."
            (:array.new_fixed :vector ,n)
            (:local.get ,tmp) ,@(clo-field-code +clo-entry-n+)
            (,(if tail :return_call_ref :call_ref) :fN))))))
+
+(defun call-closure-code (closure-code arg-codes mv tail)
+  "CLOSURE-CODE pushes a (ref $closure)."
+  (let ((n (length arg-codes)))
+    (if (or (<= n +max-fixed-args+) (> n +max-req-layout-args+))
+        (call-closure-code-1 closure-code arg-codes mv tail)
+        ;; more arguments: the main function in kmain when the function has the
+        ;; req layout of N (see REQ-LAYOUT-OBJECT), else entryN
+        (let* ((tmp (new-local '(:ref :null :closure)))
+               (temps (loop repeat n collect (new-local)))
+               (gets (loop for tm in temps collect `(:local.get ,tm)))
+               (type (main-type n))
+               (slow (gensym "SLOWN")) (done (gensym "CALLN")))
+          `(,@closure-code (:local.set ,tmp)
+            ,@(loop for code in arg-codes for tm in temps append `(,@code (:local.set ,tm)))
+            (:block ,done :eqref
+              (:block ,slow nil
+                (:local.get ,tmp) ,@(clo-field-code +clo-klayout+)
+                ,@(const-init-code (req-layout-object n)) :ref.eq :i32.eqz (:br_if ,slow)
+                ,@(maybe-checked-call
+                   tail
+                   `((:local.get ,tmp) :ref.as_non_null ,@gets
+                     (:local.get ,tmp) ,@(clo-field-code +clo-kmain+) (:ref.cast! ,type)
+                     (,(if tail :return_call_ref :call_ref) ,type)))
+                (:br ,done))
+              ,@(maybe-checked-call
+                 tail
+                 `((:local.get ,tmp) :ref.as_non_null ,@gets (:array.new_fixed :vector ,n)
+                   (:local.get ,tmp) ,@(clo-field-code +clo-entry-n+)
+                   (,(if tail :return_call_ref :call_ref) :fN)))))))))
 
 (defun maybe-checked-call (tail code)
   (if tail code (checked-call code)))
