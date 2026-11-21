@@ -7694,7 +7694,9 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
   (let ((code (loop for x in (img-load-code)
                     if (and (consp x) (consp (car x))) append x else collect x)))
     ;; (the objects in the local OBJS once the vector is made)
-    (img-inline (loop for x in code
+    ;; (the constant strings of the image are filled as by _start, which
+    ;; does not run)
+    (img-inline (loop for x in (cons '(:call :init-strings) code)
                       append (if (equal x '(:global.set :img-objs))
                                  '((:local.tee objs) (:global.set :img-objs))
                                  (list x))))))

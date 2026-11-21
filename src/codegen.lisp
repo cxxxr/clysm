@@ -123,6 +123,16 @@ runtime (:STRING-HASH in src/prims.lisp)."
 
 (defvar *live-constants* nil "live mode: list of (global-name . object), reversed")
 
+;;; A constant string of characters below 256 is a global made of its length
+;;; only ((array.new_default $string)), whose characters :INIT-STRINGS copies
+;;; from a data segment of one octet a character when the module starts, or
+;;; when a heap image is loaded into it (SET-STRING-TABLE in src/driver.lisp):
+;;; an (:I32.CONST C) a character was two or three octets.
+(defvar *data-strings* nil "((global-name . string) ...) of DATA-STRING-P constants, reversed")
+
+(defun data-string-p (s)
+  (and (simple-string-p s) (every (lambda (c) (< (char-code c) 256)) s)))
+
 (defun const-global (obj)
   (when *live-mode*
     ;; the constant is the live object itself, passed in at instantiation
@@ -137,6 +147,10 @@ runtime (:STRING-HASH in src/prims.lisp)."
         (setf (gethash obj table) name)
         (push (list name (runtime-const-code obj)) *runtime-consts*)
         (return-from const-global name)))
+    (when (and (stringp obj) (not (gethash obj table)) (data-string-p obj))
+      (let ((name (new-const-global `((:i32.const ,(length obj)) (:array.new_default :string)))))
+        (push (cons name obj) *data-strings*)
+        (return-from const-global (setf (gethash obj table) name))))
     (or (gethash obj table)
         (setf (gethash obj table)
               (new-const-global
