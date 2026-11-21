@@ -2589,7 +2589,12 @@ What makes the code fast:
     bignum's i64 for a range beyond the fixnums; `sys::%check-declared-type`
     only for what the inline test does not decide, a bignum beyond 64 bits
     or an array of any rank); a raw copy tests only a class wider than the
-    declaration; an inline copy tests the argument where it binds it
+    declaration; a call of a known function (of the same file or program)
+    whose argument the caller's types prove of the declared type calls a
+    copy that has no test of it (`call-arg-classes`: the class `:checked`,
+    `*proven-params*`; `bench/apps.lisp`, base 669b52c: `a-local-time` 43 →
+    42 ms, 41 before the checks, `a-ppcre-tokens` 46-47 → 44-45, `a-esrap`
+    115 → 109); an inline copy tests the argument where it binds it
     (`inline-checked-arg`, left out where the argument's type decides it);
     a parameter declared a structure class is tested at the start of the
     body (`struct-param-checks`: `typep` of `(sys::%untyped x)`, which the
