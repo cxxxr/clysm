@@ -727,17 +727,57 @@ variable, so it may be evaluated after a variable is read."
                          (some (lambda (cl) (and (not (member (car cl) '(t otherwise)))
                                                  (funcall '%typep-by-code-p (car cl))))
                                clauses))))
-          (values c (mapcar (lambda (cl test)
-                              `(,(if (eq test :none) `(typep ,k ',(car cl)) test) ,@(or (cdr cl) (list nil))))
-                            clauses tests))))))
+          (multiple-value-bind (tests bindings) (%typecase-layout-tests k c clauses tests exhaustive)
+            (values c (mapcar (lambda (cl test)
+                                `(,(if (eq test :none) `(typep ,k ',(car cl)) test) ,@(or (cdr cl) (list nil))))
+                              clauses tests)
+                    bindings))))))
+
+  ;; The clauses of structure names and of classes defined by DEFCLASS or
+  ;; DEFINE-CONDITION, when there are two or more: the layout of an
+  ;; instance is read once, with its class precedence list, and each of
+  ;; them is the comparison of its class with the layout and a search of
+  ;; that list, instead of its own test of the object (the structure's
+  ;; Wasm type and depth table, the class's type cell...).  The tests, and
+  ;; the bindings of the layout and the list.
+  (defun %typecase-layout-tests (k c clauses tests exhaustive)
+    (flet ((kind (type)
+             (cond ((not (and type (symbolp type))) nil)
+                   ((and (not exhaustive) (member type '(t otherwise))) nil)
+                   ((get type '%deftype) nil)
+                   ((let ((d (get type '%struct-description))) (and (consp d) (null (car d)))) :struct)
+                   ((get type '%defclass) :class)
+                   (t nil))))
+      (if (< (count-if (lambda (cl) (kind (car cl))) clauses) 2)
+          (values tests nil)
+          (let ((lay (gensym "LAYOUT")) (cpl (gensym "CPL")) (cc (gensym "CLASS")))
+            (values
+             (mapcar (lambda (cl test)
+                       (let ((type (car cl)))
+                         (case (kind type)
+                           (:struct
+                            `(and ,lay (let ((,cc (load-time-value (find-class ',type))))
+                                         (or (eq ,lay ,cc) (if (%memq ,cc ,cpl) t nil)))))
+                           (:class
+                            `(if ,lay
+                                 (let ((,cc (car (load-time-value (%type-cell ',type)))))
+                                   (if ,cc
+                                       (or (eq ,lay ,cc) (if (%memq ,cc ,cpl) t nil))
+                                       (typep ,k ',type)))
+                                 ;; (a generic function, a funcallable instance)
+                                 (and (%kind-in ,k ,c 512) (typep ,k ',type))))
+                           (t test))))
+                     clauses tests)
+             `((,lay (if (%kind-in ,k ,c 32) (%instance-layout ,k) nil))
+               (,cpl (if (and ,lay (%instancep ,lay)) (%instance-ref ,lay +class-cpl+) nil))))))))
 
   (defun %typecase-form (key clauses exhaustive env)
     (let* ((var (%typecase-key-variable-p key env))
            (k (if var key (gensym "KEY")))
            (fail (when exhaustive `((t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
-      (multiple-value-bind (c code-clauses) (%typecase-code-clauses k clauses exhaustive)
+      (multiple-value-bind (c code-clauses bindings) (%typecase-code-clauses k clauses exhaustive)
         (let ((body (if c
-                        `(let ((,c (%type-code ,k))) (cond ,@code-clauses ,@fail))
+                        `(let* ((,c (%type-code ,k)) ,@bindings) (cond ,@code-clauses ,@fail))
                         `(cond ,@(%case-cond-clauses k clauses exhaustive t) ,@fail))))
           (if var body `(let ((,k ,key)) ,body)))))))
 

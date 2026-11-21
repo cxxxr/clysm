@@ -3136,6 +3136,11 @@ What makes the code fast:
   kept: a site sees many layouts in turn, so the cache missed and was
   written again (`v-typep-class` 155 → 205 ms), while the search of a
   precedence list of three to five classes costs about as much as a hit.
+  A `typecase` of two clauses or more of structure names and such classes
+  reads an instance's layout and its class precedence list once
+  (`%typecase-layout-tests` in `runtime/boot.lisp`), and each of those
+  clauses is a comparison with the layout and a search of the list:
+  `v-typecase-deftype` 145-147 → 136-137 ms (1.52 → 1.37 times SBCL).
   A cache of runtime
   `typep`'s test per symbol (on the plist) was tried and is not kept:
   `v-typep-runtime` 100 → 106-111 ms (a plist lookup and a closure cost
