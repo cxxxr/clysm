@@ -727,6 +727,37 @@ one by one:
   its position, and an error of the compiler makes the forms be evaluated one
   by one, as before. (Only the forms of a file are batched; a stream that
   cannot be read again gets batches of methods only.)
+* A compiled form that is not a definition (a call of the functions, a
+  `defbench`-like macro, a `let` around a `setf`) no longer ends the batch
+  (2026-11-22): the definitions and forms after it are read and compiled
+  into the same module before it has run, so that a function or closure
+  defined before it and called after it (a closure in a `defvar`, a
+  function in a property list, a helper called by the next benchmark) is
+  called within the module. What reading or compiling the forms after it
+  depends on must not change when it runs: `%batch-passable-p` lets it pass
+  only when, processed as the compiler does at top level (`progn`,
+  `eval-when` of `:execute`, macros expanded), it defines no macro, type,
+  structure, class, setf expander, symbol macro, constant or package (those
+  forms end the batch as before) and its code does not mention what changes
+  the reader or the compiler's environment (`%batch-unsafe`:
+  `set-macro-character`, `*package*`, `*read-base*`, `*features*`, `eval`,
+  `load`, `proclaim`, `export`, ...; found by name when first needed, since
+  symbols in a constant would keep `compile-file`, `require` and the
+  defining macros in a program whose unused functions are left out). What it changes anyway, through
+  functions it calls, is seen when it has run: a `(%batch-check k)` after
+  it compares `*package*`, `*readtable*`, the reader's variables, `*features*`
+  and `*env-epoch*`, which `%set-macro-function`, `proclaim` (not
+  `declaim`, which the compiler saw), the readtable's and the packages'
+  functions and `load` count up, with their values when the batch began to
+  run (`%batch-begin`); when one differs it throws, the rest of the batch
+  does not run and the file is read again from after that form. A `#.` in
+  a form read after such a form is not evaluated (`*batch-read-ahead*`):
+  the batch runs and the form is read again. None of the benchmark files
+  stops a batch so. `tests/cases/load-batch-ahead.lisp` checks a macro, the
+  reader's base, a reader macro, a `#.` and a package changed by functions
+  that such a form calls. A `defbench` file is now a few batches of 32
+  forms: `t-throw-closure` in a script 26 → 13 ms (compiled 12),
+  `r-funcall-return` 95 → 50, `g-dderiv` 245 → 178 (compiled 142).
 
 `tests/cases/load-batch.lisp` checks redefinitions of the functions of a
 batch by later forms and by `(setf fdefinition)`, forward calls, `#'f`,
@@ -813,7 +844,28 @@ mostly the same, but
   the objects of a loaded form are promoted before it runs, made
   `t-throw-closure` in a script 26 → 15 ms but `bench/control.lisp` and
   `bench/programs.lisp` slower in both modes (whole programs 1.07 and
-  1.02 times their time, scripts 1.04 and 1.06): not kept.
+  1.02 times their time, scripts 1.04 and 1.06): not kept. (2026-11-22:
+  `t-throw-closure` was no case of it: a full collection before it, a
+  `sleep`, made it no faster, and a store of a symbol read by the same form
+  into an old symbol's value in a loop took the same time as one of an
+  image's symbol. Its thrower is a closure of a `defvar`, compiled in
+  another module than the loop calling it; with both in one batch it
+  takes the compiled program's time.)
+* **The effective methods of `:before` and `:after` methods and of the
+  short method combinations were closures of the runtime** calling the
+  methods (`%standard-fast-emf`, `%short-fast-emf`), so in a script or a
+  fasl the call of each method was a call into another module. The
+  expansion of `defmethod` of a method with one such qualifier now also
+  makes the combining code for the arity of its function
+  (`%combiner-form`: the `:before`/`:after` loops, `progn`, `and`, `or`,
+  `+`, `list`, and `append`, `nconc`, `max`, `min` of two or three methods
+  without a list), noted with the method (`%note-method-combiner`,
+  `*method-combiners*`), and the effective method is made by the combiner
+  of one of its methods of that arity, in their module (2026-11-22; only
+  for methods compiled in the image, `*native-eval-hook*` being set: in a
+  whole program the runtime's closures are in the methods' module):
+  `c-comb-all` in a script 137 → 98 ms (compiled 87), `c-short-combination`
+  61 → 45 (35), `p-method-comb` 88 → 63 (46). `tests/cases/method-combiners.lisp`.
 * What `MODE=script` also shows comes from causes described elsewhere: a
   guarded copy of a fixnum function whose value is assigned back
   (`a-lcg`, `p-hash-fn`'s `xorshift`), a loop at top level in Liftoff.
@@ -2521,7 +2573,21 @@ combination of generic functions: `p-method-comb` 1.9, `c-comb-all` 1.5,
 `v-go-closure` 3.7), the objects of a just-loaded form being young when it
 runs (`t-throw-closure` 2.2: see the write barrier), and `p-equal`'s
 similar string literals, which a compiled file may coalesce and `load` may
-not.
+not. In 2026-11-22, with batches that go on past compiled forms and the
+combining code of effective methods made in the methods' module (see
+"Compiling inside the running image"; script time against the same file
+compiled, best of three, interleaved with the build before, one round):
+`bench/suite.lisp` 1.11 → 1.06, `programs` 1.15 → 1.07, `clos` 1.09 →
+1.06, `control` 1.21 → 1.12, `gabriel` 1.12 → 1.09, `holdout` 1.04 → 1.01
+(`t-throw-closure` 2.0 → 1.08: it was not the write barrier but the
+thrower, a closure of another module; `r-funcall-return` 2.3 → 1.05,
+`c-comb-all` 1.47 → 1.08, `c-short-combination` 1.71 → 1.12,
+`p-method-comb` 1.90 → 1.37); compiled, the same files against SBCL
+unchanged. The REPL image is 39 KB larger (9.90 → 9.93 MB), the module of
+one export 17.5 KB (4.559 → 4.576 MB). Still slow in a script: `p-hash-fn` 2.3
+(the guarded copy of `xorshift`), `v-go-closure` 3.7 (`map` of the
+runtime calling the closure), `p-equal` and `p-coerce` 1.6, `p-signal-warn`
+1.5.
 
 The libraries' own time (Clysm's milliseconds, `tools/bench-libs.sh`, the
 best of two back-to-back runs on the same 4-CPU slot against the build
