@@ -49,6 +49,9 @@ bits; any other value is an i31 (no test of overflow or of the type)."
                 (:i32 (when (typep v '(signed-byte 32)) `((:i32.const ,v))))
                 (:i64 (when (typep v '(signed-byte 64)) `((:i64.const ,v)))))))
     (:lref (let ((lv (second node)))
+             ;; an unboxed double variable typed in a loop's version: its f64
+             (when (and (eq rep :f64) (version-typed-fdual-p lv))
+               (return-from cg-rep-1 `((:local.get ,(fdual-local lv)))))
              ;; an integer accumulator read as an integer: its i64 without making the integer
              (when (and (member rep '(:i64 :i32)) (dual-local lv) (eq (car (get-loc lv)) :local)
                         (if (eq rep :i64) (ty-int64-p (node-ty node)) (ty-int32-p (node-ty node))))
@@ -2200,6 +2203,13 @@ types of its nodes noted), BINDINGS the LET bindings around the IF.  Else NIL."
 integer arithmetic (the fused trees of prims.lisp, here also a single
 operation); NIL otherwise.  EFFECT: no value is left."
   (let* ((lv (second node)) (v (dual-local lv)) (expr (third node)))
+    ;; an unboxed double variable typed in a loop's version: the f64 of the
+    ;; value (a double there) in its f64 local, its eqref local cleared
+    (when (and (version-typed-fdual-p lv) (ty-double-p (node-ty expr)))
+      (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
+        (return-from dual-lset-code
+          `(,@(cg-rep expr :f64) (:local.set ,f) (:ref.null :eq) (:local.set ,b)
+            ,@(unless effect `((:local.get ,f) (:struct.new :double)))))))
     ;; a guarded copy of integer arithmetic: the copy's arithmetic stored
     ;; as the update of the accumulator (its i64), the call of the function
     ;; when the guard fails as any other value

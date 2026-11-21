@@ -2276,19 +2276,91 @@ nothing but the functions guarded (when the guard fails) and primitives; else NI
                                              ,@flags :i32.eqz
                                              (:if nil nil (,@set-pc (:br ,slow-entry))))
                                            '((:call :poll-slow)) (poll-code) :test #'equal)))
+                       (entry nil)
                        (fast (let ((*assumed-guards* keys) (*assumed-guards-fs* *fs*))
-                               (cg-tagbody-1 node nil :pc pc :bare t
-                                             :seg-poll (lambda (k) (funcall fast-poll `((:i32.const ,k) (:local.set ,pc))))
-                                             :dispatch-poll (lambda () (funcall fast-poll nil)))))
+                               ;; the variables that are doubles in this version
+                               (multiple-value-bind (inner outer) (version-typed-vars segments)
+                                 (setf entry (version-entry-code outer))
+                                 (let ((saved (mapcar (lambda (lv) (list lv (lvar-rep lv) (lvar-type lv))) inner))
+                                       (*version-lvar-tys* (mapcar (lambda (lv) (cons lv (mkty +k-double+)))
+                                                                   (append inner outer)))
+                                       (*version-fdual-vars* outer))
+                                   (dolist (lv inner) (setf (lvar-rep lv) :f64 (lvar-type lv) (mkty +k-double+)))
+                                   (unwind-protect
+                                        (cg-tagbody-1 node nil :pc pc :bare t
+                                                      :seg-poll (lambda (k) (funcall fast-poll `((:i32.const ,k) (:local.set ,pc))))
+                                                      :dispatch-poll (lambda () (funcall fast-poll nil)))
+                                     (loop for (lv rep ty) in saved
+                                           do (setf (lvar-rep lv) rep (lvar-type lv) ty)))))))
                        (slow (cg-tagbody-1 node nil :pc pc :bare t :force-dispatch t :no-pc-init t)))
                   `(,@init
                     (:block ,done nil
                       (:block ,slow-entry nil
                         ,@flags
+                        ,@(unless (equal entry '((:i32.const 1))) `(,@entry :i32.and))
                         (:if nil nil (,@fast (:br ,done)) ((:i32.const 0) (:local.set ,pc))))
                       ,@slow)
                     ,@(nil-code)
                     ,@(when mv (mv-one))))))))))
+
+(defun version-typed-fdual-p (lv)
+  (and *version-fdual-vars* (assumed-guards-active-p) (member lv *version-fdual-vars*)
+       (fdual-local lv) (eq (car (get-loc lv)) :local)))
+
+(defun version-typed-vars (segments)
+  "The variables that are doubles in the version of a loop (SEGMENTS) whose
+guards hold (to be called with the guards assumed): (values inner outer),
+INNER the variables bound in the loop (to get an f64 local in that version),
+OUTER the unboxed double variables bound outside it and assigned in it.  The
+types are found by a fixed point: all taken as doubles, a variable dropped
+when its value or one of its assignments is not a double with the others'
+types (the copies' types given by ASSUMED-NODE-TY)."
+  (let ((inits nil) (sets nil) (excluded nil))
+    (labels ((walk (n)
+               (when (consp n)
+                 (case (car n)
+                   (:let (dolist (b (second n)) (push (cons (car b) (cdr b)) inits)))
+                   (:mvbind (dolist (lv (second n)) (push lv excluded)))
+                   (:lset (push (cons (second n) (third n)) sets)))
+                 (map-subnodes #'walk n))))
+      (dolist (seg segments) (mapc #'walk (cdr seg))))
+    (let* ((inner (loop for (lv . nil) in inits
+                        when (and (not (lvar-special lv)) (not (boxed-p lv)) (not (lvar-captured lv))
+                                  (null (lvar-rep lv)) (not (member lv excluded)))
+                          collect lv))
+           (outer (remove-duplicates
+                   (loop for (lv . nil) in sets
+                         when (and (not (assoc lv inits)) (not (lvar-special lv)) (not (boxed-p lv))
+                                   (fdual-local lv) (eq (car (get-loc lv)) :local))
+                           collect lv)))
+           (cands (append (remove-duplicates inner) outer))
+           (double (mkty +k-double+)))
+      (loop
+        (let* ((*version-lvar-tys* (mapcar (lambda (lv) (cons lv double)) cands))
+               (bad (remove-if (lambda (lv)
+                                 (and (let ((i (assoc lv inits))) (or (null i) (ty-double-p (node-ty (cdr i)))))
+                                      (loop for (v . e) in sets
+                                            always (or (not (eq v lv)) (ty-double-p (node-ty e))))))
+                               cands)))
+          (when (or (null bad) (null cands)) (return))
+          (setf cands (set-difference cands bad))))
+      (values (remove-if-not (lambda (lv) (member lv cands)) inner)
+              (remove-if-not (lambda (lv) (member lv cands)) outer)))))
+
+(defun version-entry-code (outer)
+  "An i32: 1 when every variable of OUTER holds a double (its f64 local
+then holds it), else 0."
+  (if (null outer)
+      '((:i32.const 1))
+      (loop for lv in outer for i from 0
+            for b = (cdr (get-loc lv)) for f = (fdual-local lv)
+            append `((:local.get ,b) :ref.is_null
+                     (:if nil :i32 ((:i32.const 1))
+                          ((:local.get ,b) (:ref.test :double)
+                           (:if nil :i32 ((:local.get ,b) (:ref.cast! :double) (:struct.get :double 0)
+                                          (:local.set ,f) (:i32.const 1))
+                                ((:i32.const 0)))))
+                     ,@(when (> i 0) '(:i32.and))))))
 
 (defun poll-code-p () (and (poll-code) t))
 
