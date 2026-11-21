@@ -2302,6 +2302,29 @@ What makes the code fast:
   fixnums, `evenp oddp`, and `(reduce #'+ list)` (and `* max min logand
   logior logxor`) are inline. `bench/arith.lisp` measures this; an n-body
   over undeclared structure slots takes a third of its earlier time.
+* **Division of floats** (`floor ceiling truncate round`, the `f` versions,
+  `mod rem`) computes what SBCL does, in the inline code, the helper
+  `:divmod` and `%float-divmod` alike: the float quotient rounded for the
+  mode (`f64.trunc/floor/ceil/nearest` of `x/y`) and the remainder `x - q*y`
+  (singles: every step rounded to single, an integer operand converted to a
+  single first; a zero quotient of a negative quotient is -0.0 for `ffloor`
+  and the others; checked against SBCL on 40000 lines of random, halfway,
+  near-2^51/2^63, tiny and huge operands, all equal). It was a truncation
+  adjusted by the remainder, which took about 30 instructions more for
+  `round` and gave other low bits of the remainder than SBCL. When only the
+  quotient is used, the remainder is not computed (and the quotient is
+  tested for an infinity or NaN). The integral f64 becomes an i64 by adding
+  1.5 * 2^52 and taking the low bits (below 2^51), not by
+  `i64.trunc_sat_f64_s`: V8 makes that conversion of a scratch register
+  whose upper half each such instruction also reads, so every iteration of
+  a loop waited for the division of the one before (`round` of `x/3` in a
+  loop: 6 ns, now 2.4). The quotient, as a leaf of fused integer arithmetic
+  (`(incf s (round x 3))`) or bound to a variable (`let`, the first variable
+  of `multiple-value-bind`) is kept as an i64 beside a null eqref, like an
+  integer accumulator; `incf` evaluates a division after reading the
+  variable as it does arithmetic, so the update is one tree. The slow
+  branches are hinted unlikely (V8 then keeps the loop's values in
+  registers). `programs.lisp` `p-float-round` 156 → 98 ms (SBCL 56).
 * **Specialized arrays**: every upgraded element type (bit, the integer types
   of 7 to 64 bits, single and double floats, characters) has its own Wasm
   array type; `aref` on an array whose element type is known (from
