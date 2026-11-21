@@ -440,7 +440,12 @@ the heap that they made."
 PARTS, (PROLOGUE RUNTIME-TOPS PROGRAM-TOPS)) to start from the heap that the
 runtime's toplevel forms make (see the beginning of this file)."
   (destructuring-bind (prologue runtime-tops program-tops) parts
-    (let ((words (ph-run-runtime m prologue runtime-tops)))
+    (let ((words (handler-case (ph-run-runtime m prologue runtime-tops)
+                   ;; (the module is then shaken as it was before)
+                   (error (e)
+                     (format *error-output* "~&; warning: the runtime's state could not be made when compiling, ~
+                                             the module runs its toplevel forms: ~A~%" e)
+                     (return-from preinit-shake (shake-module m))))))
       ;; the module the heap was saved by
       (multiple-value-bind (objects mutables) (image-globals m)
         (setf *ph-base-names* (coerce objects 'simple-vector)
