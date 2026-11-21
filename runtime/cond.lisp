@@ -107,6 +107,14 @@
           (unless (or (%plist-key-p r (car l)) (%plist-key-p supplied (car l)))
             (setq r (append r (list (car l) (funcall (cadr l)))))))))))
 
+(defun %condition-class-subtype-p (c x)
+  ;; (a class against a class or its name without SUBTYPEP, which a shaken
+  ;; program may not have: %WEAK-SUBTYPEP)
+  (let ((k (cond ((%class-p x) x) ((symbolp x) (find-class x nil)))))
+    (cond (k (%subclassp c k))
+          ((%weak-subtypep) (values (funcall (the function (%weak-subtypep)) c x)))
+          (t nil))))
+
 (defun %condition-class-for-type (type &optional (errorp t))
   (cond ((%class-p type) type)
         ((symbolp type) (find-class type errorp))
@@ -116,7 +124,8 @@
          (let ((classes (remove nil (mapcar (lambda (x) (%condition-class-for-type x nil))
                                             (cdr type)))))
            (or (and (eq (car type) 'and)
-                    (find-if (lambda (c) (every (lambda (x) (subtypep c x)) (cdr type))) classes))
+                    (dolist (c classes nil)
+                      (when (every (lambda (x) (%condition-class-subtype-p c x)) (cdr type)) (return c))))
                (car classes)
                (if errorp
                    (error 'simple-type-error :datum type :expected-type '(satisfies subtypep-condition)

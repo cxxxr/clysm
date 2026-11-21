@@ -1,0 +1,15 @@
+;;; Element types that only SUBTYPEP or their form can upgrade (a shaken
+;;; program that does not refer to SUBTYPEP upgrades them by their form).
+(deftype small-char () '(member #\a #\b))
+(deftype decimal () '(integer 0 9))
+(print (list (stringp (make-array 2 :element-type '(member #\a #\b) :initial-element #\a))
+             (stringp (make-array 2 :element-type 'small-char :initial-element #\a))
+             (bit-vector-p (make-array 2 :element-type '(or (eql 0) (eql 1)) :initial-element 0))
+             (stringp (make-array 2 :element-type '(or base-char standard-char) :initial-element #\a))
+             (stringp (make-array 2 :element-type '(and character (satisfies graphic-char-p)) :initial-element #\a))
+             (equal (make-string 2 :initial-element #\x :element-type 'small-char) "xx")))
+(print (list (concatenate '(vector character) "ab" "c")
+             (coerce '(#\a #\b) 'string)
+             (map '(vector small-char) #'identity "ab")
+             (concatenate '(and list (satisfies consp)) '(1) '(2))))
+(terpri)

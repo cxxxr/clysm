@@ -426,24 +426,63 @@
          (%int-element-type 0 (- (cadr et) 1)))
         (t (%upgrade-element-type et))))
 
+;;; SUBTYPEP when the program has it: a shaken program that does not refer to
+;;; SUBTYPEP does not carry it (68 KB of code with what it calls) for the
+;;; element types and sequence types that only it can tell; those are then
+;;; upgraded by their form (%SMALL-UPGRADE-ELEMENT-TYPE), to a type that
+;;; holds them, as an upgrade must (perhaps T where SUBTYPEP would tell a
+;;; narrower one).
+(defun %weak-subtypep ()
+  (%symbol-function (%weak-symbol subtypep)))
+
+(defun %small-upgrade-element-type (et)
+  (multiple-value-bind (exp found) (%expand-deftype et)
+    (cond (found (%normalize-element-type exp))
+          ((not (consp et)) t)
+          ((member (car et) '(member eql))
+           (let ((items (if (eq (car et) 'eql) (cdr et) (cdr et))))
+             (cond ((null items) nil)
+                   ((every #'characterp items) 'character)
+                   ((every (lambda (x) (typep x 'bit)) items) 'bit)
+                   ((every #'integerp items)
+                    (%int-element-type (reduce #'min items) (reduce #'max items)))
+                   (t t))))
+          ((eq (car et) 'or)
+           (let ((ups (mapcar #'%normalize-element-type (cdr et))))
+             (setq ups (remove nil ups))
+             (cond ((null ups) nil)
+                   ((every (lambda (u) (equal u (car ups))) ups) (car ups))
+                   (t t))))
+          ;; (a subtype of each member: the upgrade of one that is specialized)
+          ((eq (car et) 'and)
+           (or (find-if-not (lambda (u) (eq u t)) (mapcar #'%normalize-element-type (cdr et))) t))
+          (t t))))
+
 (defun %upgrade-element-type (et)
-  (cond ((subtypep et nil) nil)
-        ((subtypep et 'character) 'character)
-        ((subtypep et 'bit) 'bit)
-        ((subtypep et '(unsigned-byte 7)) '(unsigned-byte 7))
-        ((subtypep et '(unsigned-byte 8)) '(unsigned-byte 8))
-        ((subtypep et '(signed-byte 8)) '(signed-byte 8))
-        ((subtypep et '(unsigned-byte 15)) '(unsigned-byte 15))
-        ((subtypep et '(unsigned-byte 16)) '(unsigned-byte 16))
-        ((subtypep et '(signed-byte 16)) '(signed-byte 16))
-        ((subtypep et '(unsigned-byte 31)) '(unsigned-byte 31))
-        ((subtypep et '(unsigned-byte 32)) '(unsigned-byte 32))
-        ((subtypep et '(signed-byte 32)) '(signed-byte 32))
-        ((subtypep et '(unsigned-byte 63)) '(unsigned-byte 63))
-        ((subtypep et '(unsigned-byte 64)) '(unsigned-byte 64))
-        ((subtypep et '(signed-byte 64)) '(signed-byte 64))
-        ((subtypep et 'single-float) 'single-float)
-        ((subtypep et 'double-float) 'double-float)
+  (let ((f (%weak-subtypep)))
+    (if f
+        (%upgrade-element-type-1 et f)
+        (%small-upgrade-element-type et))))
+
+(defun %upgrade-element-type-1 (et subtypep)
+  (declare (function subtypep))
+  (cond ((funcall subtypep et nil) nil)
+        ((funcall subtypep et 'character) 'character)
+        ((funcall subtypep et 'bit) 'bit)
+        ((funcall subtypep et '(unsigned-byte 7)) '(unsigned-byte 7))
+        ((funcall subtypep et '(unsigned-byte 8)) '(unsigned-byte 8))
+        ((funcall subtypep et '(signed-byte 8)) '(signed-byte 8))
+        ((funcall subtypep et '(unsigned-byte 15)) '(unsigned-byte 15))
+        ((funcall subtypep et '(unsigned-byte 16)) '(unsigned-byte 16))
+        ((funcall subtypep et '(signed-byte 16)) '(signed-byte 16))
+        ((funcall subtypep et '(unsigned-byte 31)) '(unsigned-byte 31))
+        ((funcall subtypep et '(unsigned-byte 32)) '(unsigned-byte 32))
+        ((funcall subtypep et '(signed-byte 32)) '(signed-byte 32))
+        ((funcall subtypep et '(unsigned-byte 63)) '(unsigned-byte 63))
+        ((funcall subtypep et '(unsigned-byte 64)) '(unsigned-byte 64))
+        ((funcall subtypep et '(signed-byte 64)) '(signed-byte 64))
+        ((funcall subtypep et 'single-float) 'single-float)
+        ((funcall subtypep et 'double-float) 'double-float)
         (t t)))
 
 (defun upgraded-array-element-type (type &optional env)
@@ -1107,7 +1146,7 @@ the type is fully described by the other values (otherwise the result is checked
            (t (%seq-type-spec-general type ty))))
         (t (error 'type-error :datum type :expected-type 'sequence))))))
 
-(defun %seq-type-spec-general (type ty)
+(defun %seq-type-spec-general (type ty &aux (st (%weak-subtypep)))
   (multiple-value-bind (exp found) (%expand-deftype ty)
     (cond (found (multiple-value-bind (kind et len) (%seq-type-spec exp) (values kind et len nil)))
           ((and (consp ty) (eq (car ty) 'or) (cdr ty))
@@ -1117,10 +1156,11 @@ the type is fully described by the other values (otherwise the result is checked
                (unless (and (eq (first sp) (first (car specs))) (equal (second sp) (second (car specs))))
                  (error "The sequence type ~S is ambiguous" type)))
              (values (first (car specs)) (second (car specs)) nil nil)))
-          ((subtypep ty nil) (error 'type-error :datum type :expected-type 'sequence))
-          ((subtypep ty 'list) (values :list nil nil nil))
-          ((subtypep ty 'vector)
-           (flet ((sub (x) (multiple-value-bind (r certain) (subtypep ty x) (and r certain))))
+          ((not st) (%small-seq-type-spec type ty))
+          ((funcall st ty nil) (error 'type-error :datum type :expected-type 'sequence))
+          ((funcall st ty 'list) (values :list nil nil nil))
+          ((funcall st ty 'vector)
+           (flet ((sub (x) (multiple-value-bind (r certain) (funcall st ty x) (and r certain))))
              (values :vector
                      (cond ((sub '(vector character)) 'character)
                            ((sub '(vector bit)) 'bit)
@@ -1129,6 +1169,26 @@ the type is fully described by the other values (otherwise the result is checked
                            (t t))
                      nil nil)))
           (t (error 'type-error :datum type :expected-type 'sequence)))))
+
+(defun %small-seq-type-spec (type ty)
+  "%SEQ-TYPE-SPEC-GENERAL of a program without SUBTYPEP (%WEAK-SUBTYPEP): an
+AND by its first member that is a sequence type (the result is checked
+with TYPEP), a class by its superclasses."
+  (cond ((and (consp ty) (eq (car ty) 'and))
+         (dolist (x (cdr ty) (error 'type-error :datum type :expected-type 'sequence))
+           (when (or (member x '(list cons null vector simple-vector string simple-string base-string
+                                 simple-base-string bit-vector simple-bit-vector))
+                     (and (consp x) (member (car x) '(vector simple-vector string simple-string base-string
+                                                      simple-base-string bit-vector simple-bit-vector
+                                                      array simple-array cons))))
+             (let ((r (multiple-value-list (%seq-type-spec x))))
+               (return (values (first r) (second r) (third r) nil))))))
+        ((and (symbolp ty) (find-class ty nil))
+         (let ((c (find-class ty)))
+           (cond ((%subclassp c (find-class 'list)) (values :list nil nil nil))
+                 ((%subclassp c (find-class 'vector)) (values :vector t nil nil))
+                 (t (error 'type-error :datum type :expected-type 'sequence)))))
+        (t (error 'type-error :datum type :expected-type 'sequence))))
 
 (defun %check-result-type (seq type exact)
   (unless (or exact (typep seq type))
