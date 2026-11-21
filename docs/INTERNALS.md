@@ -2994,9 +2994,15 @@ What is not as fast as intended, and why:
   and a literal character as an inline `write-char` (5 KB). A line of ASCII octets is decoded by
   `read-line` in one copying loop (`%utf8-decode`): `read-line` over a 58 KB
   file 3.8 → 1.7 times SBCL's time, which is now mostly the copy of the
-  file's octets from the memory into a Lisp vector when it is opened (0.33
-  ns an octet; SBCL reads its buffer lazily; eight octets a load of 64 bits
-  was slower).
+  file's octets from the memory into a Lisp vector when it is opened
+  (`%mem-get-octets`: four octets a step, 0.30 ns an octet, opening and
+  reading a character of a 78 KB file 25 → 24 µs; eight octets from one
+  load of 64 bits was slower). SBCL reads its buffer lazily (4 µs there);
+  reading the octets lazily here would help only a stream that is not read
+  to its end, while every reader of a file stream (the inline
+  `%fs-fast-char`, `read-line`, `read-sequence`, `file-length`, `listen`,
+  the reader's text) takes the octets up to the fill pointer as the whole
+  file: not done.
 
 What makes the code fast:
 
