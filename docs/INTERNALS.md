@@ -5384,6 +5384,22 @@ loops, as `aref` of a vector of unknown type, need theirs), so the small
 functions keep them. The module of one export: 1,290,161 -> 1,266,522
 bytes (`gzip -9` 390,452 -> 377,083): branch hints 29,969 -> 6,331.
 
+**Names of slots and classes in the code.** A quoted symbol in code keeps
+what the symbol names, its function too, as `(funcall 'f)` needs; a
+symbol that code uses as the name of a slot or a structure's class is not
+called. A slot access by a constant name (`slot-value`, `(setf
+slot-value)`, `slot-boundp` through `%cached-slot-access`, and the
+runtime's `%condition-slot`) now refers to the name by `%weak-symbol`, and
+`(load-time-value (find-class 'name))` of the accessors and predicates of
+structures (`cg-ltv`, `src/codegen.lisp`) too: the class keeps its name
+and its properties (`ph-mark-data-symbol`). The report of `file-error`
+read the slot `pathname`, and `pathnamep` the class `pathname`: they kept
+the parser of namestrings with `position`, `remove` and `substitute`.
+`equal` of two pathnames now compares their components, as CLHS says,
+instead of their namestrings, and `sxhash` hashes the components: neither
+writes namestrings. The module of one export: 1,266,522 -> 1,206,445
+bytes (`gzip -9` 377,083 -> 359,909).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates

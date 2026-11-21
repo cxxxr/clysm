@@ -832,6 +832,12 @@ CONTINUE restart is chosen (the assertion is then tried again)."
   `(%put ',name '%condition-message (lambda (,var) (declare (ignorable ,var)) (list* ,control (list ,@args)))))
 
 (defun %condition-slot (c name) (%slot-value-by-name c name))
+;; (the name of a slot: by a reference that does not keep the function of
+;; that name, as PATHNAME, in a shaken program)
+(define-compiler-macro %condition-slot (&whole form c name)
+  (if (and (consp name) (eq (car name) 'quote) (consp (cdr name)) (symbolp (cadr name)) (null (cddr name)))
+      `(%slot-value-by-name ,c (%weak-symbol ,(cadr name)))
+      form))
 
 (defun %formatted-condition-message (c)
   (list* (or (%condition-slot c 'format-control) "") (%condition-slot c 'format-arguments)))

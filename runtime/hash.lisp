@@ -227,7 +227,10 @@ what ends it, combined in order by a loop (EQUALP: as %EQUALP-HASH, else as
         ((numberp x) (%number-hash x))
         ((stringp x) (%string-hash x))
         ((bit-vector-p x) (let ((h 7)) (dotimes (i (length x) h) (setq h (%mix h (bit x i))))))
-        ((pathnamep x) (%sxhash (namestring x) depth))
+        ;; (by the components that EQUAL compares, %PATHNAME-EQUAL)
+        ((pathnamep x) (%sxhash (list (%pathname-host x) (%pathname-device x) (%pathname-directory x)
+                                      (%pathname-name x) (%pathname-type x))
+                                depth))
         (t (%eq-hash x))))
 
 ;;; Numbers that are = hash alike: an integral value as the integer, another

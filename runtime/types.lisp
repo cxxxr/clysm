@@ -24,8 +24,19 @@
           ((bit-vector-p a)
            (return (and (bit-vector-p b) (= (length a) (length b))
                         (dotimes (i (length a) t) (unless (eql (bit a i) (bit b i)) (return nil))))))
-          ((pathnamep a) (return (and (pathnamep b) (equal (namestring a) (namestring b)))))
+          ((pathnamep a) (return (and (pathnamep b) (%pathname-equal a b))))
           (t (return nil)))))
+
+(defun %pathname-equal (a b)
+  ;; (component by component, CLHS EQUAL: not by their namestrings, whose
+  ;; printer every program comparing lists would carry)
+  (and (eq (%instance-layout a) (%instance-layout b))   ; (both logical or both not)
+       (equal (%pathname-host a) (%pathname-host b))
+       (equal (%pathname-device a) (%pathname-device b))
+       (equal (%pathname-directory a) (%pathname-directory b))
+       (equal (%pathname-name a) (%pathname-name b))
+       (equal (%pathname-type a) (%pathname-type b))
+       (equal (%pathname-version a) (%pathname-version b))))
 
 (defun %equal-2 (a b) (equal a b))
 ;; (EQUAL A B): EQ, and the objects that only EQ makes EQUAL (symbols,

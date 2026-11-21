@@ -3613,7 +3613,10 @@ the four entries of the cache are compared at the call site (also where the
 call site is compiled apart from the runtime, in the image or a fasl, whose
 calls of the runtime's functions are not inlined by the engine)."
     (let ((o (gensym "O")) (c (gensym "C")) (index (gensym "INDEX")) (loc (gensym "LOC"))
-          (v (gensym "V")) (new (gensym "NEW")))
+          (v (gensym "V")) (new (gensym "NEW"))
+          ;; (the name of a slot: by a reference that does not keep the
+          ;; function of that name in a shaken program)
+          (name `(%weak-symbol ,(second name))))
      (flet ((full (object value)
       `(let* ((,o ,object) ,@(when (eq kind :set) `((,new ,value)))
               (,c (load-time-value (%make-slot-cache)))
