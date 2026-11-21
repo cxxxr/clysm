@@ -2640,8 +2640,25 @@ What is not as fast as intended, and why:
   tests of a character class into the closure that loops over them; what
   is left in the character searcher's loop is the special variable
   `*string*` read at each character (its value cell, the map and the
-  bounds of the string), which only a compiler keeping a special variable
-  in a local over a loop without calls would remove.
+  bounds of the string).
+* **Special variables read once around a loop: measured, not kept**
+  (2026-11-21). A loop (a TAGBODY with a GO back) that calls no function
+  but a few of the implementation's (arithmetic, comparisons, `schar`,
+  `car`...), binds no special variable and assigns none read the value
+  cells of the special variables it reads into locals on its entry, each
+  use then testing the local (null: unbound, signalled as before). It
+  applied where expected (cl-ppcre's character searcher keeps `*string*`
+  and `*end-pos*` in registers) but changed no time: the load of a value
+  cell is not what that loop waits for (the string's map and bounds
+  checks and the character checks remain), and the other loops reading
+  special variables call functions (cl-ppcre's matchers call the next
+  matcher, `bench/control.lisp`'s `v-special-*` bind them). Interleaved
+  on one slot against the build without it: `a-ppcre-tokens` 43 → 44 ms,
+  `l-ppcre-scan` 119 → 118, `l-syntax-scan` and `tools/bench-lem.sh`
+  (1.18 → 1.17), `bench/apps.lisp`, `bench/control.lisp` (0.75 → 0.76),
+  `bench/suite.lisp` (0.81) and `bench/programs.lisp` (0.88) within the
+  noise. Within one function between calls there is little to gain
+  either: cl-ppcre's closures read each special variable once per call.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
