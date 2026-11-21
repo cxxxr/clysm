@@ -705,6 +705,12 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
 (defun %type-error (datum expected)
   (error 'type-error :datum datum :expected-type expected))
 
+;; the value of a declared parameter that the inline test of its type does
+;; not decide (src/codegen.lisp, DECL-CHECK-CODE)
+(defun %untyped (x) x)
+(defun %check-declared-type (datum expected)
+  (if (typep datum expected) datum (%type-error datum expected)))
+
 (defun %read-new-value ()
   (format *query-io* "~&Enter a form to evaluate: ")
   (finish-output *query-io*)

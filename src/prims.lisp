@@ -584,6 +584,9 @@ constant unless the product cannot signal."
 (defprim clysm-sys::%signal-type-error (x type) :value
   `(,@x ,@type ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :unreachable))
 (defprim clysm-sys::%bignump (x) :test `(,@x (:ref.test :bignum)))
+;; (sys::%untyped x): X, of a type the compiler does not know (the test of
+;; a declared parameter's type, which the declaration would decide)
+(defprim clysm-sys::%untyped (x) :value x)
 ;; INTEGERP as a test the compiler decides from the type of X (src/typed.lisp)
 ;; where it can: the check of a value given to a variable of an integer type
 (defprim clysm-sys::%integerp (x) :test `(,@x (:call :integerp)))

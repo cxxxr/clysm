@@ -1297,14 +1297,14 @@ with them, replacing the node types of the widened iterations."
 (defun struct-slot-type-spec (node)
   "For a read of a slot (%STRUCT-REF, %STRUCT-IREF, %STRUCT-TREF of a constant
 index) of a structure class known at compile time: the slot's declared type,
-else NIL."
+else NIL; second value, the slot's entry (runtime/struct.lisp)."
   (when (member (prim-name (second node)) '(clysm-sys::%struct-ref clysm-sys::%struct-iref clysm-sys::%struct-tref))
     (let* ((args (cddr node)) (cls (struct-class-node-name (second args))) (i (third args)))
       (when (and cls i (eq (car i) :const) (integerp (second i)))
         (let* ((desc (get cls 'clysm-sys::%struct-description))
                (slot (and (consp desc) (null (car desc)) (listp (second desc))
                           (find (second i) (second desc) :key (lambda (s) (and (consp s) (nth 4 s)))))))
-          (and (consp slot) (third slot)))))))
+          (and (consp slot) (values (third slot) slot)))))))
 
 (defun struct-slot-array-kind (node)
   "For a read of a slot declared a simple array of one kind of storage (a
@@ -1318,14 +1318,18 @@ of SBCL's may be a bignum here."
         (when kind (values kind type ty))))))
 
 (defun struct-slot-node-ty (node)
-  "For a read of a slot declared of the type of a structure class: that type
-(trusted, as that of a variable is); declared a simple array of one kind of
-storage: that type, which the read checks (STRUCT-SLOT-CHECK-CODE: a value
-of another type signals a TYPE-ERROR there, it does not trap where it is
-used), else NIL."
-  (let ((type (struct-slot-type-spec node)))
+  "For a read of a slot declared of the type of a structure class, which the
+constructors and the SETF of the accessors check where they write it (the
+slot's entry says so: runtime/struct.lisp, %SLOT-WITH-CHECK): that type,
+trusted; declared a simple array of one kind of storage: that type, which
+the read checks (STRUCT-SLOT-CHECK-CODE: a value of another type signals a
+TYPE-ERROR there, it does not trap where it is used), else NIL."
+  (multiple-value-bind (type slot) (struct-slot-type-spec node)
     (cond ((null type) nil)
-          ((and (symbolp type) (struct-class-type-p type)) (mkty +k-other+ nil nil type))
+          ((let ((checked (nth 5 slot)))
+             (and checked (symbolp checked) (not (eq checked :array)) (struct-class-type-p checked)))
+           (mkty +k-other+ nil nil (nth 5 slot)))
+          ((and (symbolp type) (struct-class-type-p type)) nil)
           (t (multiple-value-bind (kind spec ty) (struct-slot-array-kind node)
                (declare (ignore spec))
                (and kind ty))))))

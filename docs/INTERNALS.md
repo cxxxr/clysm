@@ -2401,28 +2401,62 @@ What makes the code fast:
 * **Type inference** (`src/types.lisp`) per function, flow-sensitive, with
   integer ranges; loops are iterated to a fixed point and what the earlier
   passes recorded outside a loop is undone. Declared types of variables
-  are trusted, except integer types, whose values are checked where the
-  variable is bound (`checked-value`); a declaration about a variable bound
-  outside the form that holds it (`(let (...) (declare (function next-fn))
-  ...)`, CLHS 3.3.4) applies to the references within that form, which are
-  converted as `(the type var)` — checked there for an integer type
-  (`free-type-decl-env` in `src/frontend.lisp`). A structure class defined
-  by `defstruct` is a declared type too (`(declare (body a))`, `(type body
-  a)`: `struct-class-type-p`), and so is the slot type of a slot declared
-  of one, or of a simple array of one kind of storage (`simple-vector`,
-  `simple-string`, `(simple-array (signed-byte 32) (*))`, a type defined
-  by `deftype` as one, `struct-slot-node-ty`; not integer types, since a
-  `fixnum` of SBCL's may be a bignum here). Such a value never traps at a
-  cast: the constructors and the SETF of the accessors (the function and
-  its inline expansion) check it where it is written, as SBCL does
-  (`%slot-type-check-form`: `simple-array`, `simple-vector`,
+  are those of their values from where they are bound, and at `(safety 1)`
+  and more every declaration the code relies on is checked where the value
+  is given, as SBCL checks it, so that a wrong value is a `type-error`, never
+  a Wasm trap at a cast (2026-11-21; before, only integer types were
+  checked, and a `double-float`, `simple-vector`, `cons`, `function` or
+  structure parameter given another object, or a `fixnum` parameter of a
+  function called from code loaded into the image, trapped):
+  * a parameter: the prologue tests the object before it is unboxed
+    (`param-check-code`, `decl-check-code` in `src/codegen.lisp`: one
+    `ref.test` of the storage kind, or the fixnum test and the range, or a
+    bignum's i64 for a range beyond the fixnums; `sys::%check-declared-type`
+    only for what the inline test does not decide, a bignum beyond 64 bits
+    or an array of any rank); a raw copy tests only a class wider than the
+    declaration; an inline copy tests the argument where it binds it
+    (`inline-checked-arg`, left out where the argument's type decides it);
+    a parameter declared a structure class is tested at the start of the
+    body (`struct-param-checks`: `typep` of `(sys::%untyped x)`, which the
+    declaration does not decide);
+  * a `let`, `setq`, a free declaration's reference, a special variable of
+    a proclaimed type, and `(the type x)` whose value is used but not
+    returned (`checked-value`, `checked-the-form`; the test is left out
+    where the type of the value shows it holds, so `(the fixnum (+ a b))`
+    of small ranges and a variable bound to a constructor cost nothing);
+  * the types tested are those `checked-decl-p` gives: integer types,
+    structure classes, and the types `decl-check-ty` says the code relies
+    on (floats, characters, symbols, lists and conses, functions, simple
+    arrays of a storage kind; not types with other objects, `vector` or
+    `(or null hash-table)`, whose values the code handles generically).
+  A slot declared of a structure class or of a simple array of one kind of
+  storage (`simple-vector`, `simple-string`, `(simple-array (signed-byte
+  32) (*))`, a type defined by `deftype` as one) is checked where it is
+  written: by the constructors, the SETF of the accessors (the function and
+  its inline expansion), `(setf slot-value)` (`sys::%struct-slot-store-check`;
+  a structure's slot locations are not cached by `slot-value`'s inline
+  cache), as SBCL does (`%slot-store-check-form` in `runtime/struct.lisp`:
+  the structure's predicate test, or `simple-array`, `simple-vector`,
   `simple-string` and `(simple-array * dims)`, the element type left out
-  since `typep` of `(or (eql 0) chunk)` asks `subtypep` at run time), and
-  the compiled read tests the storage kind and signals a `type-error` for
-  anything else (`struct-slot-check-code`, nothing at `(safety 0)`) —
-  which also covers the writes that check nothing (`(setf slot-value)`,
-  the evaluator's, a type defined by `deftype` after the structure;
-  `tests/cases/struct-array-slots.lisp`); an accessor of an object known to be of its class (by such a
+  since `typep` of `(or (eql 0) chunk)` asks `subtypep` at run time; at
+  `(safety 0)` nothing). The slot's entry in the structure's description
+  records the check (`%slot-with-check`: the kind and the type checked; an
+  included slot whose type is restated keeps the included one's check), and
+  only a checked structure-class slot is read as of its class
+  (`struct-slot-node-ty`; a slot of a structure defined later is not); the
+  compiled read of an array slot tests the storage kind too and signals a
+  `type-error` for anything else (`struct-slot-check-code`, nothing at
+  `(safety 0)`), which also covers a type defined by `deftype` after the
+  structure (`tests/cases/struct-array-slots.lisp`,
+  `tests/cases/struct-class-slots.lisp`, `tests/cases/declared-checks.lisp`).
+  Integer slot types are not trusted (a `fixnum` of SBCL's may be a bignum
+  here), so they are not checked. What the checks cost (2026-11-21, against
+  ee61f08 on the same slot, alternately): `bench/apps.lisp` 1.30-1.33 both
+  (`a-local-time` 41 → 43 ms, `a-ppcre-tokens` 46 → 46-47, a fixnum
+  parameter's test inline rather than a call of `$fixnump`: 49-50 with the
+  call), `bench/declared.lisp` (`safety 0`) 1.05 both, `bench/alloc.lisp`
+  1.13 both, `bench/programs.lisp` 0.91 both, Lem (`tools/bench-lem.sh`)
+  1.47 → 1.43 (noise). An accessor of an object known to be of its class (by such a
   declaration, by a constructor, a type test or an access before) is the
   `struct.get`/`struct.set` of the field — no load of the class, no layout
   comparison. A variable declared of the type and bound once has a
@@ -2430,13 +2464,11 @@ What makes the code fast:
   object cast, or null for an instance of an including structure that has
   a slot vector, which then takes the call of the function; a variable
   bound to one with a shadow, as SETF's, copies it), and its accessors
-  test the shadow for null (`struct-shadow-init-code`; a value not of the
-  type declared takes the function, which signals the `type-error` at
-  safety 1); other declared objects are tested with `ref.test` at each
+  test the shadow for null (`struct-shadow-init-code`); other declared objects are tested with `ref.test` at each
   access, and so are the objects of a structure of typed slots, whose
   instances may have a slot vector. An object of a structure of field
   slots whose class is proved (by an access before, a constructor, a type
-  test), or declared at `(safety 0)`, is cast, as every instance of its
+  test, a checked declaration or slot), or declared at `(safety 0)`, is cast, as every instance of its
   class is of its Wasm type (big structures, above; before them an
   including structure of more than 32 slots had a slot vector, and the
   cast trapped on it, `tests/cases/big-structs.lisp`). An inline copy of
@@ -3369,7 +3401,8 @@ Clysm reads `safety` as SBCL does: `(declaim (optimize (safety N)))`
 compiler and by `compile-file`, as SBCL's policy), and `(declare (optimize
 (safety N)))` in any body with declarations (an entry `(:safety N)` of the
 compiler's environment, `policy-safety`; `lam-safety` for the code
-generator). At safety 1 to 3 nothing changes. At safety 0 declarations are
+generator). At safety 1 to 3 declarations are checked (see "Type inference"
+above). At safety 0 declarations are
 trusted (`trust-types-p`):
 
 * the value bound or assigned to a variable declared of an integer type,

@@ -415,7 +415,13 @@ grows when CLASS has more instance slots)."
 
 (defun %set-slot-value-by-name (instance name value)
   (let ((loc (if (%instancep instance) (%slot-location instance name) nil)))
-    (cond ((fixnump loc) (%set-instance-gref instance loc value))
+    (cond ((fixnump loc)
+           ;; (a slot of a structure of a type its compiled reads trust is
+           ;; checked: runtime/struct.lisp)
+           (let ((class (%instance-layout instance)))
+             (when (and (%instancep class) (eq (%class-slot class +class-kind+) :structure))
+               (%struct-slot-store-check class name value)))
+           (%set-instance-gref instance loc value))
           ((consp loc) (setf (cdr loc) value))
           (t (%slot-missing instance name 'setf value)))
     value))
