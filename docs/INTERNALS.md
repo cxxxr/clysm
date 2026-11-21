@@ -1036,9 +1036,13 @@ the copy with the same closure, which is analysed with those types
 the copy and restores them) and copies those free variables into unboxed
 locals on entry (`*clone-free-reps*`, `setup-free-vars`). A body with a
 lambda or local function of its own still gets none (it would be compiled
-twice). Direct calls do not choose a copy (only the entry does), so a
-recursive local function passes its boxed arguments to its general version,
-which tests them again. An element access to an array of unknown type
+twice). Other direct calls do not choose a copy (only the entry does); in the
+copy itself, a call of the function with its own closure (a recursive local
+function) calls the copy directly when the arguments are of its classes
+(`self-clone-call-code`, `*spec-self*`): a fixnum or double by type, a
+32-bit integer (`(1+ row)` of a fixnum) after an inline test of the fixnum
+range, else the general version (`p-queens` 219 → 209 ms, five interleaved
+rounds). An element access to an array of unknown type
 whose subscript is a 32-bit integer not known to be a fixnum (`(+ row c)`
 of two fixnums) takes the i32 as it is (`speculative-locate-code-1`: out of
 range it is beyond every dimension compared unsigned), boxed only for the
