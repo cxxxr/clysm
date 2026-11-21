@@ -708,8 +708,8 @@ spread arguments that are not just its required ones, else NIL."
 
 (defun %gf-arg-error (info control &rest args)
   (error 'simple-program-error
-         :format-control "~S: ~A"
-         :format-arguments (list (%gf-slot info +gf-name+) (apply #'format nil control args))))
+         :format-control "~S: ~?"
+         :format-arguments (list (%gf-slot info +gf-name+) control args)))
 
 ;;; Obsolete instances (made before their class was redefined with other
 ;;; slots, see %ENSURE-CURRENT-INSTANCE) exist only for the classes that
@@ -3407,8 +3407,17 @@ specification (or a slot definition)."
       (lambda (class changedp)
         (declare (ignore class))
         (when changedp
-          (dolist (info *generic-function-infos*) (%gf-reset-cache info)))
+          (dolist (info *generic-function-infos*) (%gf-reset-cache info))
+          (dolist (s (%printer-gf-symbols))
+            (let ((info (get s '%gf-info))) (when info (%gf-reset-cache info)))))
         (%clear-initarg-caches)))
+
+(defun %printer-gf-symbols ()
+  "The generic functions that only the printer and DESCRIBE call: a shaken
+program keeps them only when it refers to them (%PREINIT-SAVE, image.lisp
+takes them out of *GENERIC-FUNCTION-INFOS* and puts each on the plist of
+its name, which a program keeps only if it refers to the name)."
+  (list (%weak-symbol print-object) (%weak-symbol describe-object)))
 
 ;;; ------------------------------------------------------------
 ;;; slots

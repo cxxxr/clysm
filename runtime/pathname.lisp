@@ -194,7 +194,7 @@ backslashes are slashes) and the rest of S; otherwise NIL and S."
     (let ((v (pathname-version p)))
       (when (and v (not (eq v :unspecific)))
         (write-char #\. s)
-        (write-string (case v (:newest "NEWEST") (:wild "*") (t (princ-to-string v))) s)))))
+        (write-string (case v (:newest "NEWEST") (:wild "*") (t (if (integerp v) (%integer-to-string v 10) (string v)))) s)))))
 
 (defun namestring (x)
   (let ((p (pathname x)))

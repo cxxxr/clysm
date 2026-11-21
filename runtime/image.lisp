@@ -461,6 +461,19 @@ function of the module from which the compiler builds a shaken program
       (let ((v (make-array (hash-table-count (%package-ref p i)))) (k 0))
         (maphash (lambda (name s) (declare (ignore name)) (setf (svref v k) s) (incf k)) (%package-ref p i))
         (%set-package-ref p i v))))
+  ;; (the methods of the generic functions that only the printer and
+  ;; DESCRIBE call stay with their generic functions, which a program keeps
+  ;; only if it refers to them, and not with the tables of the functions of
+  ;; all the methods, which every call of a generic function keeps: the
+  ;; dispatch then finds their functions in the methods themselves)
+  (dolist (s (%printer-gf-symbols))
+    (let ((info (%gf-info (fdefinition s))))
+      (setq *generic-function-infos* (remove info *generic-function-infos*))
+      (%put s '%gf-info info)
+      (dolist (m (generic-function-methods (fdefinition s)))
+        (dolist (table (list *method-fast-functions* *method-fast-makers* *method-keyed-makers* *method-constants*))
+          (remhash m table))
+        (dolist (sp (%method-specializers m)) (remove-direct-method sp m)))))
   (let ((*img-describe-base* t))
     (save-image (%getenv "CLYSM_PREINIT_FILE") nil)))
 

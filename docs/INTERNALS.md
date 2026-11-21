@@ -4812,7 +4812,7 @@ with `--shake`: 4.85 -> 3.81 MB. Loading the module of one export in a new
 Node.js process: compiling it 13 -> 10 ms, instantiating it and its start
 function 40-46 -> 14-20 ms. The definers are now reached only through what
 needs them at run time: the expanders of `defstruct`, `define-condition`,
-`defpackage`... (kept because the reader is: the printer refers to
+`defpackage`... (kept because the reader was: the printer refers to
 `*standard-readtable*`, whose functions are the reader's), and the dispatch
 of a generic function, which fills its caches when it is called. What keeps
 the rest of the code is the printer (issue #30's item 1), the methods of
@@ -4821,6 +4821,62 @@ item 2) and `eval_string`'s reader and evaluator (item 4). A function that
 only the runtime's toplevel forms called is no longer there for `eval` of
 new code (`eval_string` of `(symbol-package 'car)`), as the definitions
 that nothing names were not before.
+
+**The message of an unhandled error without the printer** (issue #30's item
+1). An error that reaches JavaScript (a `LispError`) or ends a program is
+reported with its message and its type; they were `princ-to-string` and
+`prin1-to-string`, which kept the printer, the pretty printer and its
+dispatch table, `format`, and the reader (`%output-symbol` refers to
+`*standard-readtable*`, whose functions are the reader's) in every module.
+Now `%condition-message` and `%condition-type-string` (`runtime/cond.lisp`)
+call them only when the program has them anyway, and otherwise a small
+printer of their own: strings, symbols (with their packages and `|...|`),
+numbers, characters, lists and vectors (eight levels, fifty elements),
+structures as `#S(...)`, other objects `#<TYPE {id}>`, and a `format` of
+the directives that messages use (`~A ~S ~D ~B ~O ~X ~C ~% ~& ~~ ~P ~* ~?
+~^`, `~[...~]`, `~(...~)`, `~{...~}`; one it does not know is written as it
+is). Whether the program has them is told by the plist of `PRINT-OBJECT`,
+to which `print.lisp` gives the full printer's functions (`%full-message`,
+`%full-prin1`, `%full-format`): a shaken program keeps a symbol's plist only
+if it refers to the symbol, as the printer does (`*print-object-hook*`) and
+a program that defines methods of `print-object`; `%condition-message` reads
+it through `sys:%weak-symbol`, a reference to a symbol that `shake-module`
+and the heap do not follow (`(:global.get (:sym S) :weak)`). The reports of
+the standard conditions are `%condition-message` properties (a function of
+the condition returning a control and its arguments) rather than report
+functions that called `format`, so that both printers use them;
+`define-condition`'s `:report` is as before, and a program's report
+function is called by either. `warn` writes the message the same way, and
+the reports of the runtime's restarts use `%message-format`.
+
+What else kept the printer in the module of one export: the methods of
+`print-object` and `describe-object` (kept by the tables of the functions
+of all methods, `*specializer-methods*` and `*generic-function-infos*`,
+which every module has: `%preinit-save` takes them out of those, so that
+they stay with their generic functions, which only the printer refers to;
+`*class-finalization-hook*` empties their caches through their names'
+plists; the dispatch then finds their functions in the methods); the print
+functions of the structures `thread` and `readtable` (now methods of
+`print-object`); the interactive functions of the runtime's `use-value` and
+`store-value` restarts, which read and evaluate a form (now called by
+`invoke-restart-interactively`, the restarts naming them by
+`%weak-symbol`); `%gf-arg-error` (`format nil`); the version of a logical
+pathname (`princ-to-string`); the stream functions that write to a pretty
+stream, which reached its line breaking (`%maybe-output`, now called
+through the stream's `output` slot, which the pretty printer fills when it
+makes the stream); and `eval_string`, whose reader, evaluator and printer a
+shaken module now has only when it is compiled with `--eval-string`
+(without it `eval_string` returns `; Error: this module has no
+evaluator...`; a module without `--shake` has them as before). The messages
+are those of the full printer: `tests/lib/messages.lisp`, compiled with
+`--shake`, must print `tests/lib/messages.expected` (`make test-lib`). The
+module of one export: 3,628,248 -> 2,469,838 bytes (`gzip -9` 920,048 ->
+618,266): of code, `pprint.lisp` 204 -> 28 KB, `format.lisp` 199 -> 0,
+`read.lisp` 103 -> 1, `print.lisp` 88 -> 16, `loop.lisp` 48 -> 0,
+`clos.lisp` 535 -> 397; the small printer is 30 KB. What keeps most of the
+rest is CLOS: the tables of all methods' functions and
+`*generic-function-infos*` keep every generic function and method (item 2),
+and through the method combinations the evaluator.
 
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals

@@ -1,14 +1,16 @@
 #!/bin/sh
 # Clysm — a Common Lisp implementation targeting WebAssembly GC.
 #
-#   clysm compile [--shake] [--shake-symbols] [--shake-why REPORT] FILE... [-o OUT.wasm]
+#   clysm compile [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] FILE... [-o OUT.wasm]
 #                                         compile Lisp sources (with the runtime) to a Wasm module;
 #                                         --shake leaves out the functions nothing refers to;
 #                                         --shake-symbols (implies --shake) the symbols too: the
 #                                         program does not look up by name (INTERN, FIND-SYMBOL,
 #                                         READ) symbols its code does not refer to;
 #                                         --shake-why (implies --shake) writes the size of each
-#                                         kept function and what kept it to REPORT
+#                                         kept function and what kept it to REPORT; --eval-string
+#                                         keeps the reader and evaluator for the host's eval_string
+#                                         (a module without --shake always has them)
 #   clysm run FILE... [-- ARGS]           compile and run on Node.js
 #   clysm repl [--interp] [--no-userinit] start the REPL (runs in Wasm; each form is compiled
 #                                         to a new Wasm module, or interpreted with --interp);
@@ -20,7 +22,7 @@
 #   clysm exec OUT.wasm [ARGS]            run a compiled module
 #   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE]] FILE...
 #                                         run test programs (see docs/INTERNALS.md)
-#   clysm library [--shake] [--shake-symbols] [--shake-why REPORT] FILE... -o DIR/NAME.wasm
+#   clysm library [--shake] [--shake-symbols] [--shake-why REPORT] [--eval-string] FILE... -o DIR/NAME.wasm
 #                                         compile a library for JavaScript: NAME.wasm,
 #                                         NAME.wasm.debug (the names of its functions, for
 #                                         stack traces), NAME.mjs (the functions of
@@ -75,7 +77,8 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
-                   --shake-why) shake="$shake --shake-why $2"; shift 2;; *) files="$files $1"; shift;; esac
+                   --shake-why) shake="$shake --shake-why $2"; shift 2;;
+                   --eval-string) shake="$shake --eval-string"; shift;; *) files="$files $1"; shift;; esac
     done
     exec sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
   library)
@@ -83,7 +86,8 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
-                   --shake-why) shake="$shake --shake-why $2"; shift 2;; *) files="$files $1"; shift;; esac
+                   --shake-why) shake="$shake --shake-why $2"; shift 2;;
+                   --eval-string) shake="$shake --eval-string"; shift;; *) files="$files $1"; shift;; esac
     done
     [ -n "$out" ] || { echo "clysm library: -o DIR/NAME.wasm is needed" >&2; exit 1; }
     mkdir -p "$(dirname "$out")"

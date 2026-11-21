@@ -6308,9 +6308,16 @@ rounded to odd (Schubfach's rop)."
   `(:wasm :eqref ,(convert-args (cdr form) env)
           ((:array.new_fixed :vector ,(length (cdr form))))))
 
+(defvar *eval-string* nil
+  "True when a shaken program keeps the reader and the evaluator for the
+host's eval_string (bin/clysm --eval-string); without it, eval_string of a
+shaken program says that it has none.")
 (defhelper :eval-string :x-x ()
   '(:local.get 0) '(:struct.new :foreign)
-  `(:global.get ,(sym-global 'clysm-sys::%host-eval-string)) '(:call (:callsym 1))
+  `(:global.get ,(sym-global (if (and *shake* (not *eval-string*))
+                                 'clysm-sys::%host-no-eval-string
+                                 'clysm-sys::%host-eval-string)))
+  '(:call (:callsym 1))
   '(:ref.cast :foreign) '(:struct.get :foreign 0))
 
 ;;; ------------------------------------------------------------

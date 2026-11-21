@@ -15,10 +15,7 @@
 (defvar *read-suppress* nil)
 
 (defstruct (readtable (:constructor %make-readtable) (:predicate readtablep) (:copier nil)
-                      (:conc-name %rt-)
-                      (:print-function (lambda (rt stream depth)
-                                         (declare (ignore depth))
-                                         (print-unreadable-object (rt stream :type t :identity t)))))
+                      (:conc-name %rt-))
   (ascii (make-array 128 :initial-element :constituent)) ; syntax types of char codes < 128
   (syntax (make-hash-table))          ; syntax types of other characters (absent = constituent)
   (macros (make-hash-table))          ; char -> reader macro function
@@ -27,6 +24,9 @@
   ;; the entries of MACROS for char codes < 128, filled in when looked up:
   ;; NIL (not looked up yet), :NONE (no reader macro) or the function
   (mcache (make-array 128 :initial-element nil)))
+
+(defmethod print-object ((rt readtable) stream)
+  (print-unreadable-object (rt stream :type t :identity t)))
 
 (defvar *readtable* nil)
 (defvar *standard-readtable* nil)
