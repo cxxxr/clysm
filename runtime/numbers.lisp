@@ -468,6 +468,10 @@ SORT and the like make no argument list)."
   (cond ((null more) form)
         ((null (cdr more)) (let ((a (gensym "A")) (b (gensym "B"))) `(let ((,a ,n) (,b ,(car more))) (if (< ,b ,a) ,b ,a))))
         (t `(min (min ,n ,(car more)) ,@(cdr more)))))
+;;; the entries of MAX and MIN for two arguments (FUNCALL #'MAX, REDUCE: see
+;;; *ARITY-ENTRIES* in src/codegen.lisp)
+(defun %max-2 (a b) (max a b))
+(defun %min-2 (a b) (min a b))
 
 ;;; ABS is a primitive (fixnums, integers within 64 bits and doubles in Wasm)
 (defun abs (x) (abs x))

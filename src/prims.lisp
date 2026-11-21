@@ -827,7 +827,11 @@ helper signals the type error)."
       (:local.get ,tg) ,@(clo-field-code 3)
       (:local.get ,tg) ,@(clo-field-code 4)
       (:local.get ,tg) ,@(clo-field-code +clo-entry-n+)
-      (:ref.null :func) (:ref.null :eq) (:ref.func :apply-generic)
+      ;; (G's entry for APPLY and main function: (APPLY #'+ list) takes
+      ;; the list as the rest list)
+      (:local.get ,tg) ,@(clo-field-code +clo-kmain+)
+      (:local.get ,tg) ,@(clo-field-code +clo-klayout+)
+      (:local.get ,tg) ,@(clo-field-code +clo-entry-a+)
       (:struct.new :code)
       (:local.set ,tc) (:local.get ,tg) (:local.get ,tc) (:call :closure-with-code) (:ref.cast :closure))))
 ;; %MAKE-GF-CLOSURE4 with the keyed main function and the key layout of K
