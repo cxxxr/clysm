@@ -950,15 +950,29 @@ noisy): `bench/suite.lisp` 1.14 → 1.09, `bench/arith.lisp` 1.16 → 1.14,
 What remains:
 
 * A guarded copy of a function of fixnums: its value is still boxed as an
-  `i31` where it is assigned to a variable, and a variable assigned the
-  value of a copy (`(setq x (lcg x))`) has the copy's type joined with
-  anything, so the copy's body sees an argument of unknown type: `a-lcg`
-  in the image 26 ms, 6 as a whole program; the fixnum helpers 5-6 against
-  3. The types of the loop's version come from the inference of the whole
-  function, in which the else branches exist; inferring the version again
-  with the guards true (as `compile-spec-clone` does for a function) would
-  type such variables, but the variables would then need representations of
-  their own in that version, converted where it hands over to the other.
+  `i31` where it is assigned to a variable (the fixnum helpers 5-6 ms
+  against 3). The types of the loop's version come from the inference of
+  the whole function, in which the else branches exist; inferring the
+  version again with the guards true (as `compile-spec-clone` does for a
+  function) would type such variables, but the variables would then need
+  representations of their own in that version, converted where it hands
+  over to the other. For the commonest case the integer accumulators do
+  without it (2026-11-21): a variable assigned the value of a guarded copy
+  called on it, `(setq x (lcg x))`, whose copy ends in integer arithmetic
+  of the fused trees under `let`s binding only the variable itself
+  (`guarded-int-copy` in `src/typed.lisp`), counts that arithmetic as an
+  update (`dual-uses`), so the variable gets an i64 beside its eqref local
+  in both versions of the loop, which share it; `dual-lset-code` stores
+  the copy's arithmetic (with the copy's parameters replaced by the
+  variable, whose i64 is read) into the i64, and the call made when the
+  guard fails into the eqref local. `a-lcg` in the image 18 → 4 ms (as a
+  whole program, 4; it was 26 before the integers beyond the fixnums
+  stayed in i64), `bench/arith.lisp` in the image 0.875 of its time
+  before; the other files unchanged. Doubles assigned from copies inside
+  other arithmetic (`(setq v (+ (decay v) 0.001d0))`) are unboxed double
+  variables already, but their reads still test for a box (38 ms in the
+  image against 18 as a whole program): that needs the variables typed in
+  the loop's version, as above.
 * A loop at top level runs once, in Liftoff: 14 ms against 7 with
   `--no-liftoff` (as in a whole program, whose `main` also runs once).
   Outlining the loop into chunks called repeatedly was measured by hand and
