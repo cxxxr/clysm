@@ -490,7 +490,7 @@ is too large for the buffer."
   (cond ((and (fixnump n) (not (eql n most-negative-fixnum)))
          (%fixnum-digits (if (< n 0) (- n) n) base buf (%string-length buf)))
         ;; in base 10, a Wasm helper (an i64 divided by 10, or limbs by 10^9)
-        ((eql base 10)
+        ((and (eql base 10) (%fx<= (integer-length n) +%decimal-split-bits+))
          (let ((i (%integer-decimal-into n buf)))
            (declare (fixnum i))
            (if (< i 0) nil i)))

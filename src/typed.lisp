@@ -1647,6 +1647,14 @@ computed for a division by 1 unless NEED-REM)."
   (let ((name (node-op-name node)))
     (cond ((and (not mv) (member name '(floor truncate ceiling round)) (float-divmod-node-p node))
            (values (typed-float-divmod node :quotient)))
+          ((and (not mv) (member name '(floor truncate ceiling round)) (<= 1 (length (cddr node)) 2)
+                ;; (a constant divisor has its own code, inline)
+                (not (and (cdddr node) (eq (car (fourth node)) :const)))
+                (some (lambda (a) (logtest (ty-bits (node-ty a)) +k-ratio+)) (cddr node)))
+           ;; the quotient of a rational: no remainder made
+           (destructuring-bind (a &optional b) (cddr node)
+             `(,@(cg a) ,@(if b (cg b) (fixnum-code 1))
+               (:call ,(intern (format nil "QUOT~D" (cdr (assoc name *divmod-modes*))) :keyword)))))
           (t nil))))
 
 (defun numeric-f64-op-code (node)
