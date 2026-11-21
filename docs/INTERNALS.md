@@ -3745,7 +3745,21 @@ What makes the code fast:
   (SBCL 4). Tried and not kept: as many chains as entries
   instead of twice as many (less to allocate when a table grows) changed
   nothing measurable on `b-hash` and made `b-hash-string` 1.08 times
-  slower.
+  slower. An identity hash in every cons (a third field, given from a
+  counter by `identity-hash`, no host call): an `eq` table keyed by
+  conses fills at 47 ns a key instead of 772 and finds one in 16 ns
+  instead of 27, but a cons grows from 32 to 40 bytes and code that makes
+  lists pays for it everywhere (`s-build-list` 1.31 times slower,
+  `s-ring` 1.45, `a-list-churn` 1.22; `bench/gabriel.lisp` 1.06,
+  `bench/programs.lisp` 1.04, `bench/alloc.lisp` 1.02). The host's
+  `WeakMap` replaced by a strong `Map` (an upper bound for any table on
+  the host's side, such as one per hash table): new keys 695 → 256 ns,
+  lookups unchanged, and the self-hosted compiler compiling
+  `bench/suite.lisp` (whose type inference keys an `eq` table by
+  conses; `identity_hash` is 210 ms of its 5.5 s) unchanged within the
+  noise (with the `Map` 5.4–5.8 s, with the `WeakMap` 5.5–6.1). Eight lanes in the string hash
+  from 32 characters on: no faster (the four lanes are bound by the
+  loads; 1000 characters 306 → 311 ns).
   The pretty printer prints a
   list or vector of data (numbers, characters, symbols, strings and lists
   and vectors of them) in the fill style without a pretty stream: each
