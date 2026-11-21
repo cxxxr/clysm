@@ -799,7 +799,9 @@ that kind; everything else goes to the helper, which handles every array."
 (defun speculative-locate-code-1 (name kind a sub slow)
   (let* ((header (member name '(clysm-sys::%aref1 clysm-sys::%aset1 char clysm-sys::%charset)))
          (e (new-local)) (d (new-local `(:ref :null ,kind))) (k (new-local :i32)) (k0 (new-local :i32))
-         (fx (fx-arg-p sub)) (ie (unless fx (new-local)))
+         ;; (a subscript known to be a 32-bit integer, (+ i j) of fixnums: as
+         ;; an i32; out of range it is beyond any dimension compared unsigned)
+         (fx (i32-arg-p sub)) (ie (unless fx (new-local)))
          (m (new-local '(:ref :null :mdarray))) (s (new-local)) (hit (gensym "HIT")))
     (progn
       (values `(,@(cg a) (:local.set ,e)
@@ -827,7 +829,7 @@ that kind; everything else goes to the helper, which handles every array."
                 (:local.get ,k) (:local.get ,d) :array.len :i32.lt_u :i32.eqz (:hint 0) (:br_if ,slow))
               kind d k
               (if fx
-                  `((:local.get ,e) (:local.get ,k0) :ref.i31)
+                  `((:local.get ,e) ,@(subscript-box-code sub k0))
                   `((:local.get ,e) (:local.get ,ie)))))))
 
 (defun array-slow-returns-p (name args)
