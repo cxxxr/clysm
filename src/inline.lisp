@@ -131,6 +131,10 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
 (defun inline-candidate (node)
   (let* ((sym (second node)) (lam (known-global-lam sym)))
     (and lam (= (length (cddr node)) (length (lam-req lam)))
+         ;; not a function that signals (%TYPE-ERROR, an error helper): its
+         ;; call is on a path not expected to be taken, where a copy (the
+         ;; list of ERROR's arguments made inline) only makes the code larger
+         (not (cold-function-p sym))
          (inlinable-lam-p lam sym)
          ;; a function whose own calls were copied into it since it was found
          ;; small: still not much larger (mutually recursive functions would

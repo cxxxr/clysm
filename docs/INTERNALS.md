@@ -2823,6 +2823,29 @@ What is not as fast as intended, and why:
   (it took the list's length first: 4 → 1 ns an element) and `replace`
   between a simple vector and a list reads or writes the vector with
   `svref` (0.7 of the time).
+* **Error helpers are not copied into their callers** (2026-11-22). The
+  small functions copied into callers (`src/inline.lisp`) included
+  `%type-error`, whose body made the list of ERROR's arguments (four conses)
+  inline at every path that signals: every `%endp` of a list loop, every
+  checked `the`. A function of `cold-function-p` (`%type-error`, `error`,
+  a function that never returns) is now called: the REPL image 9.78 → 9.59
+  MB, the module of one export 4480382 → 4404741 octets, the time the same
+  (interleaved, five rounds: `bench/gabriel.lisp` 0.99, `bench/suite.lisp`
+  1.00, `bench/library.lisp` 0.98).
+* **Handler clusters and grown vectors: measured, not kept** (2026-11-22).
+  `v-hb-nosignal` (a `handler-bind` of two closures in a loop, 8 ns a pass,
+  SBCL 5) spends most of its time in V8's `RecordWrite` (the slow write
+  barrier): the new cluster, a young object, is stored into the old symbol
+  `*handler-clusters*`. A cluster kept per site and reused while its parent
+  and functions stay the same (closures reused when their captured cells
+  and values are EQ) was reused but no faster (a `handler-bind` of global
+  functions 71 → 68 ms, the one of closures 80 → 103 with the tests):
+  nothing is allocated in the loop, so no scavenge promotes the kept
+  cluster, which stays young and takes the barrier at each store all the
+  same. A vector grown by `vector-push-extend` made with
+  `array.new_default`, the old elements copied and only the rest filled
+  with NIL (instead of `array.new` filled with NIL, then the copy) was 1.10
+  times slower: V8 clears the new array anyway, so it is one more pass.
 * **Checked casts in Lem's `char-width`** (2026-11-21; `char-width` and
   what it calls are 40% of the busy time of `l-line-down`). A checked
   cast (`(:ref.cast T)`, which signals a TYPE-ERROR instead of trapping)
