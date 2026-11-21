@@ -2428,17 +2428,20 @@ tag in *CATCH-TAGS* (SYS:%THROW does not look for it)."
 (defun cg-mvcall (node mv tail)
   (declare (ignore mv))
   (destructuring-bind (fnode &rest args) (cdr node)
+    ;; the values of the arguments are appended to a vector of them, given
+    ;; to the function's entry of any number of arguments
     (let ((ftmp (new-local '(:ref :null :closure)))
           (acc (new-local)))
       `(,@(coerce-function-code (cg fnode)) (:local.set ,ftmp)
-        ,@(nil-code) (:local.set ,acc)
+        (:ref.null :eq) (:local.set ,acc)
         ,@(loop for a in args
-                append `(,@(cg a t) (:call :mv-to-list) (:local.get ,acc) (:call :revappend-onto)
-                         (:local.set ,acc)))
+                append `(,@(cg a t) (:local.get ,acc) (:call :mv-append) (:local.set ,acc)))
         ,@(maybe-checked-call
            tail
            `((:local.get ,ftmp) (:ref.as_non_null)
-             (:local.get ,acc) (:call :reverse-list-to-vector)
+             ,@(if args
+                   `((:local.get ,acc) (:ref.cast :vector))
+                   '((:i32.const 0) (:array.new_default :vector)))
              (:local.get ,ftmp) ,@(clo-field-code +clo-entry-n+)
              (,(if tail :return_call_ref :call_ref) :fN)))))))
 

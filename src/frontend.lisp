@@ -1374,7 +1374,8 @@ unboxed (PARAM-CHECK-CODE)."
       (throw `(:throw ,(convert (second form) env) ,(convert (third form) env)))
       (unwind-protect `(:unwind-protect ,(convert (second form) env)
                                         ,(convert-body (cddr form) env)))
-      (multiple-value-call `(:mvcall ,(convert (second form) env) ,@(convert-args (cddr form) env)))
+      (multiple-value-call (or (fixed-mvcall-form form env)
+                               `(:mvcall ,(convert (second form) env) ,@(convert-args (cddr form) env))))
       (multiple-value-prog1 `(:mvprog1 ,(convert (second form) env) ,(convert-body (cddr form) env)))
       (the `(:the ,(second form) ,(convert (third form) env) ,@(the-trust env)))
       (eval-when (if (intersection (second form) '(:execute eval))
@@ -1618,6 +1619,83 @@ compiling one is a module of its own."
       (convert-locally decls forms new-env))))
 
 ;;; BLOCK / RETURN-FROM
+
+;;; MULTIPLE-VALUE-CALL (and MULTIPLE-VALUE-LIST, NTH-VALUE...) of forms
+;;; whose number of values is known when the form is compiled: a constant or
+;;; a variable, (VALUES ...), a call of a function of the file whose every
+;;; tail returns the same number of values.  The values are bound to
+;;; variables and the function called with them (a direct call, inline
+;;; arithmetic for #'+), instead of collecting them in a list and calling
+;;; the function's entry of any number of arguments with a vector of them.
+
+(defun ast-nvalues (node &optional (depth 0))
+  "The number of values NODE always returns, or NIL if not known."
+  (case (car node)
+    ((:const :lref :sref :fref :lset :sset :lambda) 1)
+    (:values (length (cdr node)))
+    (:progn (if (cdr node) (ast-nvalues (car (last node)) depth) 1))
+    ((:let :flet :labels) (ast-nvalues (third node) depth))
+    (:mvbind (ast-nvalues (fourth node) depth))
+    (:the (ast-nvalues (third node) depth))
+    (:if (let ((a (ast-nvalues (third node) depth)))
+           (and a (eql a (ast-nvalues (fourth node) depth)) a)))
+    (:block (and (not (blk-nonlocal (second node)))
+                 (not (block-returned-to-p (second node) (third node)))
+                 (ast-nvalues (third node) depth)))
+    (:call (and (< depth 3) (known-call-nvalues (second node) (1+ depth))))
+    (t nil)))
+
+(defun known-call-nvalues (sym depth)
+  (let ((lam (and (symbolp sym) (known-global-lam sym))))
+    (and lam (ast-nvalues (lam-body lam) depth))))
+
+(defparameter *cl-nvalues*
+  '((floor . 2) (ceiling . 2) (truncate . 2) (round . 2) (ffloor . 2) (fceiling . 2) (ftruncate . 2)
+    (fround . 2) (gethash . 2) (parse-integer . 2) (read-from-string . 2) (decode-float . 3)
+    (integer-decode-float . 3) (find-symbol . 2) (intern . 2) (get-decoded-time . 9)
+    (decode-universal-time . 9) (macroexpand . 2) (macroexpand-1 . 2) (get-properties . 3)
+    (+ . 1) (- . 1) (* . 1) (/ . 1) (1+ . 1) (1- . 1) (car . 1) (cdr . 1) (cons . 1) (list . 1)
+    (list* . 1) (length . 1) (aref . 1) (svref . 1) (char . 1) (schar . 1) (elt . 1) (nth . 1)
+    (first . 1) (second . 1) (third . 1) (rest . 1) (not . 1) (null . 1) (eq . 1) (eql . 1)
+    (equal . 1) (vector . 1) (make-list . 1) (reverse . 1) (append . 1) (gensym . 1)
+    (symbol-name . 1) (string . 1) (format . 1) (max . 1) (min . 1) (abs . 1) (mod . 1) (rem . 1)
+    (ash . 1) (logand . 1) (logior . 1) (logxor . 1) (= . 1) (< . 1) (> . 1) (<= . 1) (>= . 1)
+    (zerop . 1) (plusp . 1) (minusp . 1) (evenp . 1) (oddp . 1) (consp . 1) (atom . 1)
+    (symbolp . 1) (numberp . 1) (integerp . 1) (stringp . 1) (assoc . 1) (member . 1)
+    (find . 1) (position . 1) (sqrt . 1) (float . 1) (code-char . 1) (char-code . 1))
+  "Numbers of values of standard functions, which a program may not redefine.")
+
+(defun form-nvalues (form env)
+  "The number of values FORM (macroexpanded) always returns, or NIL."
+  (progn
+    (cond ((symbolp form) 1)            ; (symbol macros are expanded)
+          ((atom form) 1)
+          ((member (car form) '(quote function)) 1)
+          ((not (symbolp (car form))) nil)
+          ((env-lookup-fun env (car form)) nil)
+          ((eq (car form) 'values) (length (cdr form)))
+          ((assoc (car form) *cl-nvalues*) (cdr (assoc (car form) *cl-nvalues*)))
+          ((and (not (special-operator-p (car form))) (not (member (car form) *special-forms*)))
+           (known-call-nvalues (car form) 0))
+          (t nil))))
+
+(defun fixed-mvcall-form (form env)
+  "The AST of (MULTIPLE-VALUE-CALL f . args) as a call of f with variables
+bound to the values of ARGS, when their number is known; else NIL."
+  (destructuring-bind (f &rest args) (cdr form)
+    (let* ((args (mapcar (lambda (a) (cmacroexpand a env)) args))
+           (counts (mapcar (lambda (a) (form-nvalues a env)) args)))
+      (when (and (every #'identity counts) (<= (reduce #'+ counts) 16))
+        (let* ((fvar (unless (and (consp f) (eq (car f) 'function)) (gensym "F")))
+               (vars (mapcar (lambda (n) (loop repeat n collect (gensym "V"))) counts))
+               (call `(funcall ,(or fvar f) ,@(apply #'append vars)))
+               (body (reduce (lambda (a+vs inner)
+                               (destructuring-bind (a . vs) a+vs
+                                 (if vs
+                                     `(multiple-value-bind ,vs ,a ,inner)
+                                     `(progn ,a ,inner))))
+                             (mapcar #'cons args vars) :from-end t :initial-value call)))
+          (convert (if fvar `(let ((,fvar ,f)) ,body) body) env))))))
 
 (defun convert-block (name body env)
   (let* ((blk (make-blk :name name :lam *current-lam*))

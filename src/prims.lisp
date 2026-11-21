@@ -3887,6 +3887,23 @@ f64s in locals DA and DB (it may branch to SLOW)."
        (:br again)))
   '(:local.get 0) '(:local.get l) '(:struct.new :cons))
 
+(defhelper :mv-append :ee-e ((acc (:ref :null :vector)) (v (:ref :null :vector)) (n :i32) (m :i32))
+  ;; a new vector: the vector ACC (or none: null) then primary + mv-buf
+  ;; (MULTIPLE-VALUE-CALL's arguments)
+  '(:global.get :mv-count) '(:local.set n)
+  '(:local.get 1) '(:ref.cast :null :vector) '(:local.tee acc) :ref.is_null :i32.eqz
+  '(:if nil nil ((:local.get acc) :array.len (:local.set m)))
+  '(:local.get m) '(:local.get n) :i32.add '(:array.new_default :vector) '(:local.set v)
+  '(:local.get m) '(:if nil nil ((:local.get v) (:i32.const 0) (:local.get acc) (:i32.const 0) (:local.get m)
+                                 (:array.copy :vector :vector)))
+  '(:local.get n)
+  '(:if nil nil ((:local.get v) (:local.get m) (:local.get 0) (:array.set :vector)
+                 (:local.get n) (:i32.const 1) :i32.gt_s
+                 (:if nil nil ((:local.get v) (:local.get m) (:i32.const 1) :i32.add (:global.get :mv-buf)
+                               (:i32.const 0) (:local.get n) (:i32.const 1) :i32.sub
+                               (:array.copy :vector :vector)))))
+  '(:local.get v))
+
 (defhelper :values-list :e-e ((l :eqref) (i :i32) (first :eqref))
   '(:local.get 0) '(:ref.test :cons) :i32.eqz
   `(:if nil nil ((:local.get 0) ,@(nil-code) :ref.eq :i32.eqz

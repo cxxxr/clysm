@@ -68,7 +68,18 @@ bits; any other value is an i31 (no test of overflow or of the type)."
     (:the (if (and (eq rep :i32) (eq (fourth node) :trust) (ty-fixnum-p (node-ty node))
                    (not (ty-int32-p (node-ty (third node)))))
               (trusted-fixnum-code (third node))
-              (cg-rep (third node) rep)))
+              (or (cg-rep-1 (third node) rep)
+                  ;; (THE FIXNUM x) of a value of unknown type (read from
+                  ;; data): its i31 inline, the general conversion otherwise
+                  (if (and (member rep '(:i32 :i64)) (ty-fixnum-p (node-ty node))
+                           (not (ty-int32-p (node-ty (third node)))))
+                      (let ((tmp (new-local)))
+                        `(,@(cg (third node)) (:local.tee ,tmp) (:ref.test :i31)
+                          (:if nil ,rep
+                               ((:local.get ,tmp) (:ref.cast! :i31) :i31.get_s
+                                ,@(when (eq rep :i64) '(:i64.extend_i32_s)))
+                               ((:local.get ,tmp) (:call :int-i64) ,@(when (eq rep :i32) '(:i32.wrap_i64))))))
+                      `(,@(cg (third node)) ,@(unbox-rep-code rep (node-ty (third node))))))))
     (:progn (when (cdr node)
               `(,@(loop for n in (butlast (cdr node)) append (cg-effect n))
                 ,@(cg-rep (car (last node)) rep))))
