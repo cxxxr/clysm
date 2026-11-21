@@ -859,8 +859,8 @@ mostly the same, but
   makes the combining code for the arity of its function
   (`%combiner-form`: the `:before`/`:after` loops, `progn`, `and`, `or`,
   `+`, `list`, and `append`, `nconc`, `max`, `min` of two or three methods
-  without a list), noted with the method (`%note-method-combiner`,
-  `*method-combiners*`), and the effective method is made by the combiner
+  without a list), noted with the method (`%note-method-combiner`, in
+  the method's `%extra`), and the effective method is made by the combiner
   of one of its methods of that arity, in their module (2026-11-22; only
   for methods compiled in the image, `*native-eval-hook*` being set: in a
   whole program the runtime's closures are in the methods' module):
@@ -3884,7 +3884,7 @@ What makes the code fast:
   `max` and `min` method combinations of two or three methods make no list
   of the values. A primary method of required parameters whose body is a
   literal (`(defmethod kind ((x integer)) :integer)`) is noted
-  (`*method-constants*`); when it alone makes the effective method (no
+  (`%note-method-constant`); when it alone makes the effective method (no
   `:before`, `:after` or `:around` method applies), that is a function
   named `%constant-emf` holding the value, which the dispatch inlined in
   the function of the generic function returns without calling it
@@ -5269,6 +5269,21 @@ of the heap and of the vector of the package's symbols (the symbols that
 shadow others stay), and `%image-start` sets `*%dropped-symbols*`. The
 module of one export: 2,034,879 bytes (`gzip -9` 571,412), 2,037,301 with
 `--shake-symbols` (558,841); main before them 4,107,539 (979,112).
+
+**What the dispatch knows of a method is in the method.** The function of
+a method's spread arguments, the maker of one from its next method, the
+maker of its function of keyed arguments, the value of a constant body,
+the slot of a reader or writer that `defclass` made and the combiner of a
+qualified method were in six hash tables keyed by the method
+(`*method-fast-functions*`...), which the dispatch reads when it fills a
+cache: any call of a generic function kept the tables, and so the
+functions of every method of every generic function. They are now a
+vector in a slot of the method, `%extra` (`%method-extra`,
+`runtime/clos.lisp`), kept with the method, which its generic function
+keeps, which its name keeps. Nothing else changes (a lookup is a slot
+read instead of a `gethash`). The module of one export: 2,041,819 ->
+1,801,118 bytes (`gzip -9` 575,060 -> 522,771): `clos.lisp` 378 -> 258 KB
+of code, `class0.lisp` 25 -> 12, `gray.lisp` 16 -> 6.
 
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
