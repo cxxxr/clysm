@@ -32,8 +32,18 @@
 (defconstant +ht-last-key+ 13)
 (defconstant +ht-last-index+ 14)
 (defconstant +ht-last-tkey+ 15)
+;;; The number of entries the table was made for: its vectors are made when
+;;; the first entry is added (MAKE-HASH-TABLE makes none: SBCL makes a table
+;;; in 25 ns, a JSON reader one for every object).
+(defconstant +ht-size+ 16)
+(defconstant +ht-slots+ 17)
 
 (defvar *hash-table-class* (find-class 'hash-table))
+;;; the vectors of a table without any: shared, never written (an entry is
+;;; added after the vectors are made with room for it; the one chain is empty)
+(defvar *ht-empty-vector* (%make-simple-vector 0 nil))
+(defvar *ht-empty-limbs* (%make-limbs 0))
+(defvar *ht-empty-buckets* (%make-limbs 1))
 
 ;; (no LOAD-TIME-VALUE: code compiled in the image then has a copy of it,
 ;; the test inline, as code walking JSON objects calls it for every value)
@@ -57,26 +67,26 @@
   (declare (ignore synchronized))
   (let* ((kind (%ht-kind-of test))
          (cap (max 8 size))
-         (h (%make-instance *hash-table-class* (%make-simple-vector 16 nil))))
+         (h (%make-instance *hash-table-class* (%make-simple-vector +ht-slots+ nil))))
     (%ht-set h +ht-test+ (svref #(eq eql equal equalp) kind))
     (%ht-set h +ht-kind+ kind)
     (%ht-set h +ht-rehash-size+ rehash-size)
     (%ht-set h +ht-rehash-threshold+ rehash-threshold)
     (%ht-set h +ht-weakness+ weakness)
-    (%ht-init-storage (%instance-slots h) cap)
+    (%ht-init-empty (%instance-slots h) cap)
     h))
 
 ;;; MAKE-HASH-TABLE with a test written as a constant and no option but
 ;;; :SIZE: the table made without parsing keywords and finding the test
 ;;; (a JSON reader makes one for every object).
 (defun %make-hash-table-of-kind (kind size)
-  (let ((h (%make-instance *hash-table-class* (%make-simple-vector 16 nil))))
+  (let ((h (%make-instance *hash-table-class* (%make-simple-vector +ht-slots+ nil))))
     (%ht-set h +ht-test+ (svref #(eq eql equal equalp) kind))
     (%ht-set h +ht-kind+ kind)
     (%ht-set h +ht-rehash-size+ 1.5)
     (%ht-set h +ht-rehash-threshold+ 1)
     (%ht-set h +ht-weakness+ nil)
-    (%ht-init-storage (%instance-slots h) (if (fixnump size) (if (%fx> size 8) size 8) (max 8 size)))
+    (%ht-init-empty (%instance-slots h) (if (fixnump size) (if (%fx> size 8) size 8) (max 8 size)))
     h))
 
 (define-compiler-macro make-hash-table (&whole form &rest keys)
@@ -106,6 +116,19 @@
     (%set-svref sv +ht-buckets+ (%make-limbs nb))
     (%set-svref sv +ht-shift+ bits)))
 
+(defun %ht-init-empty (sv cap)
+  "The table of slot vector SV without vectors, made for CAP entries."
+  (%set-svref sv +ht-count+ 0)
+  (%set-svref sv +ht-fill+ 0)
+  (%set-svref sv +ht-last-index+ -1)
+  (%set-svref sv +ht-keys+ *ht-empty-vector*)
+  (%set-svref sv +ht-vals+ *ht-empty-vector*)
+  (%set-svref sv +ht-next+ *ht-empty-limbs*)
+  (%set-svref sv +ht-hashes+ *ht-empty-limbs*)
+  (%set-svref sv +ht-buckets+ *ht-empty-buckets*)
+  (%set-svref sv +ht-shift+ 0)
+  (%set-svref sv +ht-size+ cap))
+
 (defmacro %ht-bucket (hash bits)
   "The index of the chain of HASH among 2^BITS chains: the low BITS bits of
 the hash plus odd multiples of its two higher pieces of BITS bits.
@@ -122,7 +145,7 @@ bit pattern do not cancel."
 (defmacro %check-ht (h) `(unless (hash-table-p ,h) (%type-error ,h 'hash-table)))
 (defun hash-table-count (h) (%check-ht h) (%ht h +ht-count+))
 (defun hash-table-test (h) (%check-ht h) (%ht h +ht-test+))
-(defun hash-table-size (h) (%check-ht h) (%svlength (%ht h +ht-keys+)))
+(defun hash-table-size (h) (%check-ht h) (max (%svlength (%ht h +ht-keys+)) (%ht h +ht-size+)))
 (defun hash-table-rehash-size (h) (%check-ht h) (%ht h +ht-rehash-size+))
 (defun hash-table-rehash-threshold (h) (%check-ht h) (%ht h +ht-rehash-threshold+))
 (defun hash-table-weakness (h) (%check-ht h) (%ht h +ht-weakness+))
@@ -146,7 +169,7 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
   (cond ((fixnump x) (%fxlogand x 536870911))
         ;; (over the base 2^28 digits, in Wasm: no limbs are made for an integer within 64 bits)
         ((%bignump x) (%bignum-hash x))
-        ((%ratiop x) (%fxlogxor (%number-hash (%ratio-num x)) (%number-hash (%ratio-den x))))
+        ((%ratiop x) (%mix (%number-hash (%ratio-num x)) (%number-hash (%ratio-den x))))
         ((%double-float-p x)
          ;; the bits that differ between doubles of the same magnitude are
          ;; the high bits of the mantissa: scramble them over the hash
@@ -173,8 +196,10 @@ with a shift and XOR, which the folding of %HT-BUCKET could undo)."
 what ends it, combined in order by a loop (EQUALP: as %EQUALP-HASH, else as
 %SXHASH)."
   (declare (fixnum depth))
-  (if (%fx<= depth 0)
-      17
+  (cond ((%fx<= depth 0) 17)
+        ;; (the same loop in Wasm: :EQUAL-LIST-HASH)
+        ((not equalp) (%equal-list-hash x depth))
+        (t
       (let ((h 7) (l x) (k depth) (d (%fx- depth 1)))
         (declare (fixnum h k))
         (loop
@@ -186,9 +211,10 @@ what ends it, combined in order by a loop (EQUALP: as %EQUALP-HASH, else as
                                   (equalp (%equalp-hash e d))
                                   (t (%sxhash e d)))))
                 l (cdr l) k (%fx- k 1)))
-        (%mix h (cond ((null l) 3) ((consp l) 17) (equalp (%equalp-hash l d)) (t (%sxhash l d)))))))
+        (%mix h (cond ((null l) 3) ((consp l) 17) (equalp (%equalp-hash l d)) (t (%sxhash l d))))))))
 
-(defun sxhash (x) (%sxhash x 4))
+(defun sxhash (x) (%sxhash-fast x 4))
+(define-compiler-macro sxhash (x) `(%sxhash-fast ,x 4))
 (defun %sxhash (x depth)
   ;; the tests that are a type test of the reference first
   (declare (fixnum depth))
@@ -292,7 +318,7 @@ every test, characters for every test but EQUALP, without a call."
                         ;; (an integer beyond the fixnums: as %NUMBER-HASH, without its calls)
                         ((and (%fx< ,k 3) (%bignump ,x)) (%bignum-hash ,x))
                         ((%fx= ,k 1) (%eql-hash ,x))
-                        ((%fx= ,k 2) (%sxhash ,x 4))
+                        ((%fx= ,k 2) (%sxhash-fast ,x 4))
                         (t (%equalp-hash ,x 4)))))))))
 
 (defun %simple-string-ci= (a b)
@@ -401,8 +427,9 @@ variable; checked), or -1."
         (values (%svref (%svref (%instance-slots h) +ht-vals+) i) t))))
 
 ;; a fixnum, a character or a symbol: looked up by one helper call, which
-;; tests the table too (:HT-GET), so that the call site is small; any other
-;; key calls %GETHASH-MARKED (and so does a key the helper cannot look up)
+;; tests the table too (:HT-GET), so that the call site is small; a simple
+;; string or a list by another (:HT-GET-EQUAL: in an EQUAL table); any other key calls
+;; %GETHASH-MARKED (and so does a key the helpers cannot look up)
 (define-compiler-macro gethash (key table &optional (default nil defaultp))
   (let ((k (gensym "KEY")) (h (gensym "H")) (d (gensym "DEFAULT")) (v (gensym "V")))
     `(let* ((,k ,key) (,h ,table) ,@(when defaultp `((,d ,default))))
@@ -413,17 +440,30 @@ variable; checked), or -1."
 
 (defun %gethash-marked (key h)
   "The value of KEY in H, or +DELETED+ when it has none."
+  ;; a string or a list (an EQUAL table: by its contents; EQ or EQL: by
+  ;; EQ), an instance (EQ or EQL): by a helper
+  (cond ((or (%simple-string-p key) (consp key)) (%ht-get-equal h key (%gethash-marked-1 key h)))
+        ((%instancep key) (%ht-get-id h key (%gethash-marked-1 key h)))
+        (t (%gethash-marked-1 key h))))
+(defun %gethash-marked-1 (key h)
   (let ((i (%gethash-index key h)))
     (if (%fx< i 0) +deleted+ (%svref (%svref (%instance-slots h) +ht-vals+) i))))
+(defun %ht-put-other (h key value)
+  "(SETF GETHASH) of a key that is not a fixnum, a character or a symbol."
+  (cond ((or (%simple-string-p key) (consp key)) (%ht-put-equal h key value (%ht-put-slow h key value)))
+        ((%instancep key) (%ht-put-id h key value (%ht-put-slow h key value)))
+        (t (%ht-put-slow h key value))))
 
-;; a fixnum, a character or a symbol already in the table: the value is
-;; stored by one helper call (:HT-PUT-OLD); anything else calls %HT-PUT-SLOW
+;; a fixnum, a character or a symbol: the value is stored, or a new entry
+;; made when there is room, by one helper call (:HT-PUT); anything else
+;; (and a table that must grow) calls %HT-PUT-SLOW; a simple string or a
+;; list in an EQUAL table is stored by :HT-PUT-EQUAL
 (define-compiler-macro %ht-put (table key value)
   (let ((k (gensym "KEY")) (h (gensym "H")) (v (gensym "VALUE")))
     `(let* ((,h ,table) (,k ,key) (,v ,value))
        (if (%immediate-or-symbol-p ,k)
-           (%ht-put-old ,h ,k ,v (%ht-put-slow ,h ,k ,v))
-           (%ht-put-slow ,h ,k ,v)))))
+           (%ht-put-imm ,h ,k ,v (%ht-put-slow ,h ,k ,v))
+           (%ht-put-other ,h ,k ,v)))))
 
 (defun %gethash-hashed (key h hash)
   "GETHASH of KEY in H (an EQUAL table) whose hash HASH was computed already."
@@ -440,12 +480,12 @@ variable; checked), or -1."
     value))
 
 (defun %ht-put-slow (h key value)
-  "(SETF GETHASH) after :HT-PUT-OLD found no entry to store in: H is any
-object."
+  "(SETF GETHASH) after :HT-PUT found no entry to store in and no room for
+a new one, or of another key: H is any object."
   (%check-ht h)
   (let ((sv (%instance-slots h)))
     (cond ((and (%immediate-or-symbol-p key) (or (symbolp key) (%fx< (%svref sv +ht-kind+) 3)))
-           ;; a key that :HT-PUT-OLD looked for: it has no entry
+           ;; a key that :HT-PUT looked for: it has no entry
            (%ht-add sv key value (%ht-hash h key)))
           ((and (not (or (fixnump key) (symbolp key)))
                 ;; the entry GETHASH has just found (never one of a fixnum or a symbol)
@@ -485,9 +525,9 @@ object."
 over the removed ones when they are less than half full, else the table
 grows to twice the size."
   (let* ((keys (%svref sv +ht-keys+)) (count (%svref sv +ht-count+)) (cap (%svlength keys)))
-    (if (%fx< count (%fxash-right cap 1))
-        (%ht-compact sv)
-        (%ht-rebuild sv (* 2 cap)))))
+    (cond ((eql cap 0) (%ht-rebuild sv (%svref sv +ht-size+)))   ; (the first entry)
+          ((%fx< count (%fxash-right cap 1)) (%ht-compact sv))
+          (t (%ht-rebuild sv (* 2 cap))))))
 
 (defun %ht-rebuild (sv new-cap)
   (let* ((keys (%svref sv +ht-keys+)) (vals (%svref sv +ht-vals+)) (fill (%svref sv +ht-fill+))
@@ -548,6 +588,10 @@ allocation), and chain them again."
     (%set-svref sv +ht-last-index+ -1)))
 
 (defun remhash (key h)
+  ;; one helper for the keys found by EQ (fixnums, characters, symbols; in an
+  ;; EQ or EQL table instances, lists, strings), the function for the others
+  (%ht-rem-imm h key (%remhash-general key h)))
+(defun %remhash-general (key h)
   (%check-ht h)
   (let* ((hash (%ht-hash h key))
          (buckets (%ht h +ht-buckets+))
@@ -577,16 +621,24 @@ allocation), and chain them again."
         (setq prev i i (%lref next j))))))
 
 (defun clrhash (h)
+  ;; the vectors kept, emptied (the entries' hashes and links are written
+  ;; again when they are used)
   (%check-ht h)
-  (%ht-init-storage (%instance-slots h) (%svlength (%ht h +ht-keys+)))
+  (let* ((sv (%instance-slots h)) (fill (%svref sv +ht-fill+)))
+    (declare (fixnum fill))
+    (unless (eql fill 0)
+      (let ((keys (%svref sv +ht-keys+)) (vals (%svref sv +ht-vals+)) (buckets (%svref sv +ht-buckets+)))
+        (dotimes (i fill) (%set-svref keys i nil) (%set-svref vals i nil))
+        (dotimes (b (%llen buckets)) (%lset buckets b 0))))
+    (%set-svref sv +ht-count+ 0)
+    (%set-svref sv +ht-fill+ 0)
+    (%set-svref sv +ht-last-index+ -1))
   h)
 
 (defmacro %ht-scan (keys fill del start)
   "The index of the first entry at START or after it in the key vector KEYS
 filled up to FILL (DEL is +DELETED+), or -1."
-  (let ((j (gensym "J")))
-    `(do ((,j ,start (%fx+ ,j 1))) ((%fx>= ,j ,fill) -1)
-       (unless (eq (%svref ,keys ,j) ,del) (return ,j)))))
+  `(%ht-scan-prim ,keys ,fill ,del ,start))
 
 (defmacro %with-ht-vectors ((h keys vals fill del) &body body)
   "Binds the key and value vectors of the hash table H (checked), the number

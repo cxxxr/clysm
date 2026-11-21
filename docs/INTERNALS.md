@@ -3643,7 +3643,7 @@ What makes the code fast:
   the reader reads string streams without the accessors' type tests;
   `find-package` of a symbol remembers the last one found. `gethash` and
   `(setf gethash)` of an existing entry are one call each of a Wasm helper
-  (`ht-get`, `ht-put-old`) that tests that the object is a hash table, finds
+  (`ht-get`, `ht-put`; see below) that tests that the object is a hash table, finds
   the entry of a fixnum, a character or a symbol (`ht-fast-index`, which
   casts the table's arrays once: a cast at each access cost about a third of
   the time) and reads or stores the value; it returns null for anything
@@ -3678,7 +3678,70 @@ What makes the code fast:
   `with-hash-table-iterator` read the key and value vectors), `(setf
   gethash)` right after `gethash` of the same key in an `equal`/`equalp`
   table does not hash it again (`(incf (gethash k h 0))`), and a table
-  with removed entries compacts in place. The pretty printer prints a
+  with removed entries compacts in place.
+  **Hash tables in Wasm helpers (2026-11-21).** What was left of a
+  hash-table operation was the Lisp code around the helpers (each slot of
+  the table's slot vector read with a cast, fixnums tested by a call, a
+  dispatch on the test and the key's type), so the common paths are now
+  whole helpers in `src/prims.lisp`: `(setf gethash)` of a fixnum,
+  character or symbol stores or adds the entry (`ht-put`: the add of
+  `%ht-add` when there is room; only growing calls Lisp), `remhash` of
+  one unlinks it (`ht-rem`); a simple string or a list in an `equal` table
+  is hashed, found (stored hashes first, then the characters, or `equal`
+  of lists of the same hash) and read or stored (`ht-get-equal`,
+  `ht-put-equal`, which also remember the entry for the `(setf gethash)`
+  after it), and so is a string of ASCII characters in an `equalp` table;
+  an instance in an `eq`/`eql` table (`ht-get-id`, `ht-put-id`) and a
+  string or list in one are found by their identity hash. `sxhash` and
+  the hashing of `equal` tables are `sxhash-fast` (fixnums, characters,
+  symbols, strings, doubles) and `equal-list-hash` (the loop of
+  `%list-hash` over a list's elements without a call per element); the
+  scan of the entries by `maphash`, `loop`'s `hash-keys` and
+  `with-hash-table-iterator` is a loop of its own (`%ht-scan-prim`: the
+  `do` cost a block per step). `make-hash-table` makes no vectors: an
+  empty table shares empty ones (never written: an entry is only added
+  after the room for it is made) and the first entry makes them for the
+  size asked for (25 ns in SBCL, 70 before; JSON readers make a table for
+  every object); `clrhash` empties the vectors instead of making new ones.
+  The helpers that every call site of `gethash`/`(setf gethash)` reaches
+  (`ht-get`, `ht-put`, for fixnums, characters and symbols) and the call
+  site itself (one type test, the helper, the function) are kept as small
+  as before: the other keys go through `%gethash-marked`/`%ht-put-other`,
+  which try the other helpers first (a first version with the identity
+  hash in `ht-get`'s index helper and three helpers at each call site was
+  as fast on these benchmarks, and Lem's `l-string-width`, an `eql` table
+  of characters, took 141 and 133 ms in two runs against 135; the small
+  call site was kept). `tools/bench-lem.sh`: 1.53 and 1.49 before, 1.51
+  and 1.51 after (measure it with the same
+  FILE for both builds: by default it reads the tree's own
+  `src/prims.lisp`, which this change made 6% longer, and the build
+  after then looks 10% slower). Measured (`tools/bench.sh`, against SBCL, before → after, one
+  slot): `p-hash-misc` 1.67–1.89 → 1.20–1.29, `k-memoize` 1.79–1.84 →
+  1.44–1.53, `v-hash-churn` 1.68–1.80 → 1.21, `v-hash-mixed-keys`
+  1.23–1.70 → 0.96–1.28, `v-sxhash` 1.44–1.48 → 1.03–1.07, `b-hash` 1.43
+  → 1.20–1.25, `v-hash-equalp` 1.69 → 1.40–1.46, `f-memo-lists` 2.0 →
+  1.0, `f-equal-hash` 1.55 → 0.88, `p-word-count` 1.43 → 1.14; files:
+  `bench/library.lisp` 0.92 → 0.85, `bench/functional.lisp` 1.16 →
+  1.10, `bench/closures.lisp` 1.05 → 1.01, `suite`, `programs`,
+  `holdout`, `control`, `arith` unchanged (within ±3%); in the image
+  (`MODE=script`) the same. Probes (ns per operation, Clysm before →
+  after, SBCL): new fixnum keys in a table made for them 23 → 10 (8.5);
+  `setf` then `remhash` of a fixnum 31 → 18 (7.7); `gethash` of a
+  two-element list in an `equal` table 38 → 17 (21), of a short string 22
+  → 17 (16); a structure in an `eq` table 15.7 → 12 (5), a list 44 → 26
+  (5). Still slow: `a-hash-counts` 1.6 (its values pass the fixnums of 31
+  bits and are boxed), `v-hash-iterate` 1.8 (`with-hash-table-iterator`'s
+  `(values t k v)` goes through the values buffer into
+  `multiple-value-bind`; `loop`'s `hash-keys` 1.5 per entry of SBCL's),
+  `k-memoize` (hashing two strings of 50 characters is two thirds of
+  its time: about 0.5 ns a character), and an `eq` table keyed by
+  conses, whose identity hash is the host's `WeakMap` (a new key costs
+  about 500 ns against 31 in SBCL: the map's insertion and its ephemeron
+  table in each scavenge). Tried and not kept: as many chains as entries
+  instead of twice as many (less to allocate when a table grows) changed
+  nothing measurable on `b-hash` and made `b-hash-string` 1.08 times
+  slower.
+  The pretty printer prints a
   list or vector of data (numbers, characters, symbols, strings and lists
   and vectors of them) in the fill style without a pretty stream: each
   element plainly, a line break before an element that does not fit, as
