@@ -14,6 +14,7 @@
 ;;; the calls between its files still see a redefinition
 (push (merge-pathnames "twofiles/" (uiop:pathname-directory-pathname *load-truename*))
       asdf:*central-registry*)
+(setf asdf::*clysm-system-fasls* t)           ; (opt-in)
 (asdf:load-system "twofiles" :force t)
 (format t "~A ~A~%" (twofiles:total 10) (symbol-value (find-symbol "*LOADS*" "TWOFILES")))
 (asdf:clear-system "twofiles")
@@ -23,3 +24,4 @@
 (eval '(defun twofiles:g (x) (- x)))
 (eval '(defun twofiles:h (x) (* x 100)))
 (format t "~A ~A~%" (twofiles:total 10) (twofiles:f 3))
+(setf asdf::*clysm-system-fasls* nil)

@@ -120,9 +120,11 @@ named BEFORE (at the end without it)."
 ;;; loads the system fasl, which runs the files in order, and the loads of
 ;;; the others do nothing.  Only systems whose components are plain Lisp
 ;;; source files (in modules, with static files) and that have no
-;;; around-compile hooks are made so; *CLYSM-SYSTEM-FASLS* NIL turns it off.
+;;; around-compile hooks are made so.  Opt-in: (setf asdf::*clysm-system-fasls* t)
+;;; (the build re-runs the system's compile-time side effects in the image,
+;;; compiles it twice and keeps it twice in the cache).
 
-(defvar *clysm-system-fasls* t "Make and load system fasls (see above).")
+(defvar *clysm-system-fasls* nil "Make and load system fasls (see above); off by default.")
 (defvar *clysm-system-fasls-loaded* nil "The names of the systems loaded from their system fasls.")
 (defvar *clysm-system-fasl-state* (make-hash-table :test 'eq)
   "system -> :LOADED when its system fasl was loaded in this image, :FILES when its files are loaded one by one")
