@@ -1002,6 +1002,19 @@ expected to be taken, so that the engine lays it out of the way of the other."
          (:let (or-let-p c))
          (:prim (and (member (prim-name (second c)) '(not null)) (compound-test-p (third c)))))))
 
+(defun effect-branch-test-p (c)
+  "C, the test of an IF for effect, is compiled by BRANCH-CODE: a test of
+COMPOUND-TEST-P whose own first test is one too (an OR of %ENDPs, as in
+MAPC over two lists). The end test of a loop over one list, (%ENDP L),
+keeps the IF of an i32: V8 peels the first iteration of such a loop when
+it is compiled as branches, which made short loops around a call slower
+(b-deriv 1.08 times its time)."
+  (and (compound-test-p c)
+       (case (car c)
+         (:let t)
+         (:if (compound-test-p (second c)))
+         (t (effect-branch-test-p (third c))))))
+
 (defun flip-hint (hint)
   (cond ((equal hint '((:hint 0))) '((:hint 1)))
         ((equal hint '((:hint 1))) '((:hint 0)))))
@@ -1096,14 +1109,14 @@ likely THEN is."
                  (or (dual-lset-code node t)
                      (var-set-code lv (cg (third node)))))))
     (:progn (loop for n in (cdr node) append (cg-effect n)))
-    (:if (when (compound-test-p (second node))
+    (:if (when (effect-branch-test-p (second node))
            (return-from cg-effect
-             (let ((lf (gensym "ELSE")) (end (gensym "IF")))
-               `((:block ,end nil
-                   (:block ,lf nil
-                     ,@(branch-code (second node) :next lf (if-branch-hint (third node) (fourth node)))
-                     ,@(cg-effect (third node)) (:br ,end))
-                   ,@(cg-effect (fourth node)))))))
+             (let* ((lf (gensym "ELSE")) (end (gensym "IF"))
+                    (b (cg-effect (fourth node)))
+                    (a `(:block ,lf nil
+                          ,@(branch-code (second node) :next lf (if-branch-hint (third node) (fourth node)))
+                          ,@(cg-effect (third node)) ,@(when b `((:br ,end))))))
+               (if b `((:block ,end nil ,a ,@b)) (list a)))))
          (let ((test (cg-test (second node))))
            (cond ((equal test '((:i32.const 1))) (cg-effect (third node)))
                  ((equal test '((:i32.const 0))) (cg-effect (fourth node)))
