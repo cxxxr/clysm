@@ -165,14 +165,25 @@ the default value of its type (and no declaration when there is none)."
              (%loop-step s `(setq ,g ,(if step-fn `(funcall ,step-fn ,g) `(cdr ,g))))
              (%loop-step-test s (if (%lkw kw "IN") `(endp ,g) `(atom ,g)))))
           ((%lkw kw "ACROSS")
-           (let ((vec (gensym "VEC")) (i (gensym "I")))
+           ;; a simple string or a simple vector is read inline (the element
+           ;; read of an array of unknown type is inline for a simple vector
+           ;; only), anything else by AREF: the tests of the vector, which
+           ;; is not assigned, are type tests of a local (and nothing for a
+           ;; vector of a known type); its length is taken once, as the
+           ;; vector may not change while it is traversed (CLHS 3.6)
+           (let ((vec (gensym "VEC")) (i (gensym "I")) (len (gensym "LEN")))
              (%loop-add-binding s vec (%loop-pop s))
+             (%loop-add-binding s len `(length ,vec))
              (%loop-add-binding s i 0)
              (%loop-bind-pattern s var)
-             (%loop-end-test s `(>= ,i (length ,vec)))
-             (dolist (f (%loop-destructure-setq var `(aref ,vec ,i))) (%loop-pre s f))
+             (%loop-end-test s `(>= ,i ,len))
+             (dolist (f (%loop-destructure-setq
+                         var `(if (%simple-string-p ,vec)
+                                  (schar ,vec ,i)
+                                  (if (simple-vector-p ,vec) (svref ,vec ,i) (aref ,vec ,i)))))
+               (%loop-pre s f))
              (%loop-step s `(setq ,i (+ ,i 1)))
-             (%loop-step-test s `(>= ,i (length ,vec)))))
+             (%loop-step-test s `(>= ,i ,len))))
           ((%lkw kw "=")
            (setf (%ls s 16) t)
            (let ((init (%loop-pop s)))

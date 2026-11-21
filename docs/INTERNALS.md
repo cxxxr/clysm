@@ -2525,6 +2525,16 @@ What makes the code fast:
   array type; `aref` on an array whose element type is known (from
   `make-array` or a declaration) is inline with a bounds check, and the
   generic function is only called to signal the error.
+* **`loop for x across v`** takes the length of V once (V may not change
+  while it is traversed, CLHS 3.6) and reads an element as `(if
+  (%simple-string-p v) (schar v i) (if (simple-vector-p v) (svref v i)
+  (aref v i)))`: V is not assigned, so each branch knows its type and the
+  read is inline for a simple string too (the element read of an array of
+  unknown type tests a simple vector only, and called `aref1` for each
+  character of a string), and for a vector of a known type the tests fold
+  (`known-test-result` decides `%simple-string-p` and `simple-vector-p`).
+  An FNV hash of a string of unknown type: 66 -> 27 ms (SBCL 47),
+  `p-hash-fn` 67 -> 43.
 * **Arrays of unknown type** (a parameter without declarations) are tried
   inline for the usual kind before the helper that handles every array
   (`speculative-locate-code` in `src/typed.lisp`): `aref`, `svref` and
