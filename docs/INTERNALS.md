@@ -1364,7 +1364,7 @@ A program can be a library that JavaScript loads once and calls many times:
 
 ```
 $ bin/clysm library outline.lisp -o dist/outline.wasm
-; wrote dist/outline.{wasm,mjs,d.ts}: 2 exports
+; wrote dist/outline.{wasm,wasm.debug,mjs,d.ts}: 2 exports
 ```
 
 ```js
@@ -1376,12 +1376,18 @@ await Promise.all(files.map(summarize));
 `bin/clysm library` compiles the program, loads it once to read its exports,
 and writes `NAME.mjs` (an ES module whose named exports are the Lisp
 functions; `create(options)` makes another instance), `NAME.d.ts` (the types
-given with `:type`) and the host files in `clysm/`. `host/lib.mjs` is the
+given with `:type`) and the host files in `clysm/`. The names and places of
+the module's functions (its custom sections `name` and `clysm.sources`, 7 %
+of it) are moved to `NAME.wasm.debug`, a module of those sections only: the
+loader reads it beside `NAME.wasm` when it first names the frames of a stack
+trace (the `debug` option gives its bytes when the module is not loaded from
+a file), and a page or a package can leave it out, the frames then being
+`wasm-function[N]`. `host/lib.mjs` is the
 loader: `load(path, options)` instantiates the module in the calling thread
 (Node.js, Electron's main process), runs its toplevel forms, and returns
 `{ instance, exports, eval }`; the instance lives on between calls. Options
 are `args`, `stdout`/`stderr` (functions of a string), `stdin` (a function
-returning the next line), `modules`, `import`, `require` and `fs`.
+returning the next line), `modules`, `import`, `require`, `fs` and `debug`.
 `loadSync` does the same synchronously, for CommonJS.
 
 The thread of the caller has the stack of that thread (about 1 MB in

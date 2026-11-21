@@ -126,12 +126,14 @@ export function makeJsImports(state) {
         });
       },
       // what the host gives the Lisp side: 0 the modules of (js:module name),
-      // 1 the function of (js:import specifier), 2 that of (js:require specifier)
+      // 1 the function of (js:import specifier), 2 that of (js:require specifier),
+      // 3 the host's mapStack, 4 its nameFrames (host/common.mjs installSourceMap)
       host: (k) => {
         if (k === 0) return (state.jsModules ??= {});
         if (k === 1) return state.importer || ((specifier) => import(specifier));
         if (k === 2) return state.require;
         if (k === 3) return state.mapStack;
+        if (k === 4) return state.nameFrames;
         return undefined;
       },
       // a string of the code units at the start of the memory: INFO is their

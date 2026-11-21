@@ -3,7 +3,7 @@
 // The compiler is the self-hosted one, build/clysmc.wasm, run on Node.js.
 //
 //   clysm compile [--shake] FILE... [-o OUT.wasm]
-//   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.mjs, NAME.d.ts too)
+//   clysm library [--shake] FILE... -o DIR/NAME.wasm   (NAME.wasm.debug, NAME.mjs, NAME.d.ts too)
 //   clysm run [--shake] FILE... [-- ARGS]
 //   clysm exec OUT.wasm [ARGS]
 //   clysm test [--watch] [-j N] [--dom] [--system NAME [--asd FILE.asd]] FILE...

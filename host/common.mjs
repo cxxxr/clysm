@@ -5,28 +5,65 @@ import { makeJsImports } from './jsffi.mjs';
 // written by the compiler): state.sourceOf(index) is "file:line" or
 // undefined, and state.mapStack(stack) rewrites the Wasm frames of a stack
 // trace, "at NAME#12 (wasm://wasm/…:wasm-function[INDEX]:0x…)", as
-// "at NAME (file:line)".
-export function installSourceMap(state, module) {
+// "at NAME (file:line)".  A library (bin/clysm library) keeps its name and
+// clysm.sources sections in a file of their own, NAME.wasm.debug: DEBUG is
+// then a function that returns its bytes (or null), called when a stack is
+// first mapped, and state.nameFrames(stack) gives the frames without a name,
+// "at wasm://wasm/…:wasm-function[INDEX]:0x…", the name of the function.
+export function installSourceMap(state, module, debug = null) {
   // (read when first asked: the places of the REPL image's 18000 functions
   // are 3 MB of strings, made in 2 ms, which every start paid for)
-  let sources = null;
-  const read = () => {
-    sources = new Map();
-    try {
-      for (const section of WebAssembly.Module.customSections(module, 'clysm.sources')) {
-        const b = new Uint8Array(section);
-        let p = 0;
-        const u32 = () => { let x = 0, s = 0, c; do { c = b[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return x >>> 0; };
-        const dec = new TextDecoder();
-        const files = [];
-        for (let n = u32(); n > 0; n--) { const len = u32(); files.push(dec.decode(b.subarray(p, p + len))); p += len; }
-        for (let n = u32(); n > 0; n--) { const i = u32(), f = u32(), line = u32(); sources.set(i, `${files[f]}:${line}`); }
-      }
-    } catch (e) { /* no section */ }
-    return sources;
+  let sources = null, names = null;
+  const u32reader = (b, p0) => {
+    let p = p0;
+    const u32 = () => { let x = 0, s = 0, c; do { c = b[p++]; x |= (c & 127) << s; s += 7; } while (c & 128); return x >>> 0; };
+    return { u32, text: (len) => { const t = new TextDecoder().decode(b.subarray(p, p + len)); p += len; return t; },
+             skip: (n) => { p += n; }, at: () => p };
   };
-  state.sourceOf = (index) => (sources || read()).get(index);
-  state.mapStack = (stack) => String(stack).replace(
+  const debugModule = () => {
+    if (debug === null) return null;
+    try { const bytes = debug(); debug = null; return bytes ? new WebAssembly.Module(bytes) : null; }
+    catch (e) { debug = null; return null; }
+  };
+  const read = () => {
+    sources = new Map(); names = new Map();
+    let found = false;
+    const readSources = (m) => {
+      for (const section of WebAssembly.Module.customSections(m, 'clysm.sources')) {
+        found = true;
+        const r = u32reader(new Uint8Array(section), 0);
+        const files = [];
+        for (let n = r.u32(); n > 0; n--) files.push(r.text(r.u32()));
+        for (let n = r.u32(); n > 0; n--) { const i = r.u32(), f = r.u32(), line = r.u32(); sources.set(i, `${files[f]}:${line}`); }
+      }
+    };
+    try { readSources(module); } catch (e) { /* no section */ }
+    if (!found) {
+      const m = debugModule();
+      if (m) {
+        try { readSources(m); } catch (e) { /* none */ }
+        try {
+          for (const section of WebAssembly.Module.customSections(m, 'name')) {
+            const b = new Uint8Array(section), r = u32reader(b, 0);
+            while (r.at() < b.length) {
+              const id = b[r.at()]; r.skip(1); const size = r.u32(), end = r.at() + size;
+              if (id === 1) for (let n = r.u32(); n > 0; n--) { const i = r.u32(); names.set(i, r.text(r.u32())); }
+              r.skip(end - r.at());
+            }
+          }
+        } catch (e) { /* none */ }
+      }
+    }
+  };
+  state.sourceOf = (index) => { if (!sources) read(); return sources.get(index); };
+  state.nameFrames = (stack) => {
+    if (!sources) read();
+    if (!names.size) return String(stack);
+    return String(stack).replace(
+      /at (wasm:\/\/[^\s()]*?:wasm-function\[(\d+)\]:0x[0-9a-f]+)$/gm,
+      (all, where, index) => { const name = names.get(Number(index)); return name ? `at ${name} (${where})` : all; });
+  };
+  state.mapStack = (stack) => state.nameFrames(stack).replace(
     /at ([^\n]*?) \(wasm:\/\/[^\n]*?:wasm-function\[(\d+)\]:0x[0-9a-f]+\)/g,
     (all, name, index) => {
       const where = state.sourceOf(Number(index));
@@ -557,7 +594,8 @@ export function makeCommonEnv(state) {
     backtrace(fd) {
       // Lisp frames appear in the JS stack with the names from the wasm name section
       const old = Error.stackTraceLimit; Error.stackTraceLimit = 60;
-      const frames = (new Error().stack || '').split('\n').slice(1);
+      const stack = new Error().stack || '';
+      const frames = (state.nameFrames ? state.nameFrames(stack) : stack).split('\n').slice(1);
       Error.stackTraceLimit = old;
       const names = [];
       for (const f of frames) {
@@ -624,6 +662,7 @@ const mathImports = {
 export function makeImports(state, platform) {
   state.sourceOf ??= () => undefined;
   state.mapStack ??= (stack) => stack;
+  state.nameFrames ??= (stack) => String(stack);
   const imports = {
     js: makeJsImports(state),
     env: { ...makeCommonEnv(state), ...platform },

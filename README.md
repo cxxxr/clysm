@@ -77,7 +77,7 @@ A program can also be a library for JavaScript: functions exported with
 `js:export` become the named exports of an ES module, with a `.d.ts`.
 
 ```
-$ bin/clysm library outline.lisp -o dist/outline.wasm     # dist/outline.{wasm,mjs,d.ts}
+$ bin/clysm library outline.lisp -o dist/outline.wasm     # dist/outline.{wasm,wasm.debug,mjs,d.ts}
 ```
 
 ```js
