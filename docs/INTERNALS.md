@@ -5808,10 +5808,12 @@ in one process. What it found, by item:
   stays in the cache only in the tight loop; SBCL's is about four),
   `create-logical-line` 1.8 and `create-drawing-objects` 1.5 (large
   functions holding many inline copies; the ticks are spread over them),
-  the highlighting of the edited line (cl-ppcre) 2.0, the mode line 1.85,
-  Lem's `variable-value` 2.0 (a generic function with an EQL specializer
-  and an `&optional` parameter, dispatched by its generic function: the
-  classes of its arguments computed out of line, then the EQL table).
+  the highlighting of the edited line (cl-ppcre) 2.0, the mode line 1.85.
+  (Lem's `variable-value`, a generic function with an EQL specializer
+  and an `&optional` parameter, looked like 2.0 in a profile whose
+  anonymous functions were named after their toplevel form, which
+  lumped its methods with everything else of the file; it is 1.5% of the
+  redisplay, see the call sites below.)
 * `l-syntax-scan`: cl-ppcre's character-class tests take what SBCL's take;
   the matchers' closures (`create-matcher-aux`, the character searcher,
   the scanner) twice SBCL's time, in the code around the calls of the next
@@ -5854,9 +5856,25 @@ The actions themselves were unchanged within the runs' spread (two
 interleaved rounds each: geometric mean 1.16 and 1.15 before, 1.16 and
 1.15 after; `l-line-down` 1.34–1.38 → 1.29). What would gain more: a hash
 table as a struct of its own with typed fields (the chain of loads above:
-the slot vector and the casts of its elements go), EQL dispatch at the call
-site for generic functions with optional parameters, and the matchers'
-closures of cl-ppcre.
+the slot vector and the casts of its elements go; done since, see "A hash
+table is a structure of field slots") and the matchers' closures of cl-ppcre.
+
+Measured and not kept (2026-11-22): call-site caches for generic functions
+of one or two required parameters and `&optional`, `&rest` or `&key`
+ones (at most four spread arguments), at a call passing the required
+arguments alone: the four entries keyed on the required arguments' classes
+as the sites of one or two arguments, the entry a function of the spread
+arguments (the unbound marker for each optional one, NIL for the rest),
+the misses out of line through `%gf-find-n-k`. Correct (EQL specializers,
+methods added, keyword methods), but the function of such a generic
+function already has its dispatch inline (`%gf-scall`): a probe of
+`(vv obj :default)` with EQL methods 167–169 ms either way in a script
+(SBCL 87); `render`/`configure` of bench/clos.lisp in a loop compiled as a
+program 103–142 → 155–166 ms (slower: the engine inlines the generic
+function's own dispatch into the caller of a whole program), in a script
+within the noise; `bench/clos.lisp` 1.08–1.09 both compiled, 1.07 → 1.06
+in a script; Lem's redisplay probe 1356–1390 against 1371–1385 ms; the
+REPL image +16.8 KB.
 
 ## Building and distributing
 
