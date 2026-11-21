@@ -2684,19 +2684,18 @@ instances."
               `(let* ((,a ,(car args))
                       (,k ,(%gf-site-key-form a accessor))
                       ;; the value of the entry: the function to call, or the
-                      ;; location of the slot that a reader reads
-                      (,f (cond ((eq ,k (%svref ',c 1)) (%svref ',c 2))
-                                ((eq ,k (%svref ',c 3)) (%svref ',c 4))
-                                ((eq ,k (%svref ',c 5)) (%svref ',c 6))
-                                ((eq ,k (%svref ',c 7)) (%svref ',c 8))
-                                (t nil))))
+                      ;; location of the slot that a reader reads (null:
+                      ;; none, %SITE-KEY-ENTRY1)
+                      (,f (%site-key-entry1 ,k ',c)))
                  (block ,blk
                    ;; (a hit returns; the rest, out of the way (%COLD), is
                    ;; a miss)
-                   (if (%i31p ,f)
-                       (let ((,v (%instance-ref ,a ,f)))
-                         (if (%unboundp ,v) (%cold) (return-from ,blk ,v)))
-                       (if ,f (return-from ,blk (funcall (the function ,f) ,a)) (%cold)))
+                   (if (%unboundp ,f)
+                       (%cold)
+                       (if (%i31p ,f)
+                           (let ((,v (%instance-ref ,a ,f)))
+                             (if (%unboundp ,v) (%cold) (return-from ,blk ,v)))
+                           (return-from ,blk (funcall (the function ,f) ,a))))
                    (if (eq (%svref ',c 0) -1)
                        ;; a site that is not cached (-1): the usual call
                        (locally (declare (notinline ,name)) (,name ,a))
@@ -2716,13 +2715,10 @@ instances."
                             (,kb (if (eq (%svref ',c 2) 0) 0 ,(%gf-site-key-form b accessor)))
                             ;; the value of the entry: the function to call, or the
                             ;; location of the slot that a writer writes
-                            (,f (cond ,@(loop for i in '(1 4 7 10)
-                                              collect `((and (eq (%svref ',c ,i) ,k) (eq (%svref ',c ,(+ i 1)) ,kb))
-                                                        (%svref ',c ,(+ i 2))))
-                                      (t nil))))
-                       (cond ((%i31p ,f) (%set-instance-ref ,b ,f ,a) ,a)
-                             (,f (funcall (the function ,f) ,a ,b))
-                             (t (%cold) (%gf-site-other2 ',c ,a ,b)))))))))))
+                            (,f (%site-key-entry2 ,k ,kb ',c)))
+                       (cond ((%unboundp ,f) (%cold) (%gf-site-other2 ',c ,a ,b))
+                             ((%i31p ,f) (%set-instance-ref ,b ,f ,a) ,a)
+                             (t (funcall (the function ,f) ,a ,b)))))))))))
 
   (defun %gf-site-macro-forms (name lambda-list &optional accessor)
     "Forms defining the compiler macro of the generic function NAME that
