@@ -5306,6 +5306,35 @@ the file is not there). `tests/lib/messages.lisp` prints named characters.
 The module of one export: 1,755,743 -> 1,732,962 bytes (`gzip -9` 511,904
 -> 504,757).
 
+**Names in the class system's data are not calls.** A symbol that a kept
+object of the heap refers to keeps what it names, its function too; the
+classes refer to many symbols as names: of slots (a file stream's slot
+`pathname`, the slot `close` of a directive of `format`, a pathname's
+`directory`, `count`...), of classes, of accessors, and in the initforms
+and types of slots, whose functions the class has compiled. Those kept the
+functions `pathname`, `close` (with its generic function and methods),
+`directory` and `count` in every shaken module. `ph-class-data-objects`
+(`src/preinit.lisp`) finds that data from the class `t` through the
+subclasses: each class's slot vector, the lists of its superclasses,
+subclasses, precedence list, slots and slot locations, its slot
+definitions (their slot vectors, initforms, types, initargs, readers and
+writers; a structure's slots are lists), the forms of its default
+initargs, and the properties `%struct-description` and `%struct-slots`
+of a structure's name (`*preinit-data-properties*`). A symbol such an
+object refers to is kept with its value and properties but not its
+function (`ph-mark-data-symbol`; its record is written without the
+function), unless something else refers to it; a constant global that it
+refers to is marked `:data-global`, and `shake-module` walks that global's
+initializer with `*shake-data-context*`, its symbols then passed to the
+heap's hook as `:data-symbol`, until something else refers to the global
+(`src/wasm.lisp`). As for a function called by a name made at run time, a
+function that only the name of a slot or class names is not there for
+`(funcall (slot-definition-name ...))`. `--shake-why` names the class of
+an instance of the heap, and the instance's name when it has one
+(`<STRUCTURE-CLASS PATHNAME>`, `<STANDARD-GENERIC-FUNCTION CLOSE>`).
+The module of one export: 1,732,962 -> 1,605,008 bytes (`gzip -9` 504,757
+-> 466,857).
+
 `--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
 writes what keeps the code: its size by source file; the functions, globals
 and symbols that the most code would go with, which is what each dominates
