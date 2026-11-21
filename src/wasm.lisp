@@ -934,6 +934,22 @@ nothing would change."
 (defvar *name-octets* (make-hash-table :test 'equal)
   "Function names that are not strings -> the octets of their printed form.")
 
+;;; V8 scales the inlining budget of the optimizing tier by the share of
+;;; small functions (bodies under 50 octets) in a module: none at a quarter
+;;; or less, the whole budget at a half or more (BudgetScaleFactor,
+;;; src/wasm/inlining-tree.h; a function may then grow by a factor of 5 up to
+;;; 7000 octets, else by 2 up to 700).  A whole program has the runtime's many
+;;; small functions; a module made in the image (a form, a file given to
+;;; COMPILE-FILE) has mostly large ones (a function's entries and typed
+;;; copies), so the engine inlined almost nothing in it: TAK's three
+;;; recursive calls of its typed copy were inlined in a program and not in a
+;;; script.  Such a module gets as many filler functions (never called, four
+;;; octets each) as it needs to be half small.
+(defun small-function-fillers (bodies)
+  (let ((n 0) (small 0))
+    (dolist (b bodies) (incf n) (when (< (length b) 50) (incf small)))
+    (max 0 (- n (* 2 small)))))
+
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
@@ -948,6 +964,7 @@ nothing would change."
                                 (incf i)))
                      (setf hints (nreverse hints))
                      (nreverse r)))
+           (fillers (small-function-fillers bodies))
            ;; the globals (before the table, whose size counts the functions
            ;; that their initializers refer to)
            (globals-section
@@ -1007,11 +1024,14 @@ nothing would change."
                 do (emit-name b module) (emit-name b field)
                    (emit-byte b 4) (emit-byte b 0) (emit-u32 b (type-index m type)))
           (emit-section out 2 b)))
-      ;; function section
+      ;; function section (and the fillers of SMALL-FUNCTION-FILLERS)
       (let ((b (make-buf)))
-        (emit-u32 b (length (wasm-module-funcs m)))
+        (emit-u32 b (+ (length (wasm-module-funcs m)) fillers))
         (loop for f across (wasm-module-funcs m)
               do (emit-u32 b (type-index m (wasm-func-type f))))
+        (when (plusp fillers)
+          (let ((ti (type-index m (wasm-func-type (aref (wasm-module-funcs m) 0)))))
+            (loop repeat fillers do (emit-u32 b ti))))
         (emit-section out 3 b))
       ;; table
       (when (eq (car (wasm-module-table m)) :define)
@@ -1085,8 +1105,10 @@ nothing would change."
           (emit-section out 0 b)))
       ;; code
       (let ((b (make-buf)))
-        (emit-u32 b (length bodies))
+        (emit-u32 b (+ (length bodies) fillers))
         (dolist (body bodies) (emit-vec-buf b body))
+        ;; (a filler: no locals, UNREACHABLE, END)
+        (loop repeat fillers do (emit-bytes b #(3 0 0 11)))
         (emit-section out 10 b))
       ;; data (passive)
       (when (plusp (length (wasm-module-data m)))

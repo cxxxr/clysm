@@ -814,33 +814,64 @@ host cannot decode its text."
 
 (defparameter %load-batch-max 32)
 
+(defvar *native-batch-final-p-hook* nil
+  "When the compiler is part of the image: a function telling whether a
+toplevel form may end a batch of LOAD (%LOAD-BATCH): one that is compiled
+(not one evaluated without the compiler, SIMPLE-FORM).")
+
 (defun %method-definition-p (form)
   (and (consp form) (member (car form) '(defmethod defgeneric)) (consp (cdr form))))
 
-(defun %load-method-batch (stream file form)
-  "Evaluate the DEFMETHOD or DEFGENERIC FORM, read from the source file STREAM,
-with the definitions of methods and generic functions that follow it, in one
-module: the methods of a generic function, which call each other
-(CALL-NEXT-METHOD) and are called through it, are then in one module, whose
-calls the engine can inline (it cannot inline a call into another module:
-p-cnm in a script 0.75 of its time).  Unlike DEFUNs (see docs/INTERNALS.md),
-a method is only reached through its generic function, so the batch means
-what the forms one by one do.  Returns the form read after them (or the
-end-of-file marker) and the position where it starts."
-  (let ((forms (list form)) (next nil) (start nil))
+(defun %batch-definition-p (form)
+  (and (consp form) (member (car form) '(defun defmethod defgeneric)) (consp (cdr form))))
+
+(defun %load-batch (stream file form)
+  "Evaluate the DEFUN, DEFMETHOD or DEFGENERIC FORM, read from the source file
+STREAM, with the definitions of functions, methods and generic functions
+that follow it (and the form after them, when it is compiled: a call of
+them), in one module.  The engine inlines calls within a module, never into
+another, and the compiler makes the calls between the functions of a module
+direct, with the types of their arguments and values: a call of a function
+defined by another form of the batch is guarded by a comparison of the
+function of its name with that definition, so that a redefinition (by a
+later form, at the REPL, by TRACE) is seen as when the forms are compiled one
+by one (*BATCH-FORMS*, src/frontend.lisp).  The forms are evaluated in their
+order; reading a form before the definitions before it have run makes a
+difference only to a #. calling them (the forms are then read again after
+the definitions, when STREAM is a file: a reader error makes the batch run
+first).  Returns the form read after the batch, the position where it
+starts and whether there is one (NIL when the batch took the last form it
+read, or the stream was positioned to read it again)."
+  (let ((forms (list form)) (next nil) (start nil) (pending t))
     (loop
       (setq start (and file (%form-start stream)))
-      (setq next (read stream nil %eof-marker))
-      (unless (and (%method-definition-p next) (< (length forms) %load-batch-max))
-        (return))
+      (let ((failed nil))
+        (handler-case (setq next (read stream nil %eof-marker))
+          (error (c) (setq failed c)))
+        (when failed
+          ;; (the definitions before it run first; the form is read again
+          ;; after them, or the error is signaled again)
+          (setq forms (nreverse forms))
+          (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
+            (dolist (f forms) (%eval-toplevel f)))
+          (unless start (error failed))
+          (file-position stream start)
+          (return-from %load-batch (values nil nil nil))))
+      (cond ((eq next %eof-marker) (return))
+            ((>= (length forms) %load-batch-max) (return))
+            ((%batch-definition-p next))
+            ((and *native-batch-final-p-hook* (funcall *native-batch-final-p-hook* next))
+             (setq pending nil))
+            (t (return)))
       (when start
         (let ((dspec (%definition-spec next)))
           (when dspec (%note-source dspec file start))))
-      (push next forms))
+      (push next forms)
+      (unless pending (return)))
     (setq forms (nreverse forms))
     (unless (and (cdr forms) (funcall *native-eval-forms-hook* forms))
       (dolist (f forms) (%eval-toplevel f)))
-    (values next start)))
+    (values next start pending)))
 
 (defun %load-forms (stream in fasl file print)
   "Evaluate the forms read from IN, those of STREAM: a compiled file when FASL
@@ -856,10 +887,12 @@ native name FILE, if any)."
         (when start
           (let ((dspec (%definition-spec form)))
             (when dspec (%note-source dspec file start))))
-        (if (and (not fasl) (not print) *native-eval-forms-hook* (%method-definition-p form))
-            ;; (consecutive method definitions in one module)
-            (multiple-value-bind (next next-start) (%load-method-batch stream file form)
-              (setq pending (list next) pending-start next-start))
+        (if (and (not fasl) (not print) *native-eval-forms-hook* (%batch-definition-p form)
+                 ;; (DEFUNs from a file, whose forms can be read again)
+                 (or file (%method-definition-p form)))
+            ;; (consecutive definitions in one module)
+            (multiple-value-bind (next next-start pendingp) (%load-batch stream file form)
+              (when pendingp (setq pending (list next) pending-start next-start)))
             (let ((vals (multiple-value-list
                          (cond ((and fasl *fasl-modules* (consp form) (eq (car form) '%fasl-wasm))
                                 (%load-fasl-entry form stream))

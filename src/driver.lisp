@@ -343,6 +343,7 @@ destructuring-bind (defined by the runtime)."
                   (cons sym (param-decl-specs (third (second fn-form))
                                               (parse-body (cdddr (second fn-form)))))))
            (fnode (convert (ftype-checked-function sym fn-form) env)))
+      (note-batch-defun sym)
       (when (and (eq (car fnode) :lambda) (null (lam-free-vars (second fnode))))
         (setf (lam-static-p (second fnode)) t)
         (push (second fnode) (gethash sym *global-defuns*))
@@ -451,6 +452,8 @@ destructuring-bind (defined by the runtime)."
 S names a statically known function (not in a compilation unit of COMPILE-FILE,
 whose functions run after the segment that defines them, src/live.lisp)."
   (when *unit-env* (return-from directify-helper-calls instrs))
+  ;; (nor in a batch of LOAD, whose functions may be redefined)
+  (when *batch-forms* (return-from directify-helper-calls instrs))
   (let ((out nil))
     (loop while instrs
           do (let ((i (pop instrs)))

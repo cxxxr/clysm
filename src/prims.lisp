@@ -877,6 +877,18 @@ symbol (which has the type)."
       `(,@code (:ref.cast :symbol))))
 (defprim clysm-sys::%function-cell-eq (sym f) :test
   `(,@(symbol-ref-code sym) (:struct.get :symbol ,+sym-function+) ,@f :ref.eq))
+;; the function of a symbol is the closure of its definition in this module
+;; (a guarded direct call between the forms of a batch: *BATCH-FORMS*)
+(defprim clysm-sys::%defun-guard (sym) :test
+  (let* ((name (and (= (length sym) 1) (consp (car sym)) (eq (caar sym) :global.get)
+                    (consp (second (car sym))) (eq (car (second (car sym))) :sym)
+                    (second (second (car sym)))))
+         (lam (and name (known-global-lam name))))
+    (if lam
+        (progn (ensure-lam-compiled lam)
+               `(,@sym (:struct.get :symbol ,+sym-function+)
+                 (:global.get ,(static-closure-global lam)) :ref.eq))
+        '((:i32.const 0)))))
 ;; the function of a symbol is the one of the definition that a fasl
 ;; recorded with the mark MARK (a guarded copy of its body, LIVE-INLINE-CALL):
 ;; it is compared with a global of the module, one for each function and
@@ -3758,10 +3770,20 @@ f64s in locals DA and DB (it may branch to SLOW)."
   '(:global.get :dyn) '(:struct.get :dynstate 1) :array.len :i32.gt_u
   '(:if nil nil ((:call :grow-bstack)))
   '(:global.get :dyn) '(:struct.get :dynstate 1) '(:local.set st)
-  '(:local.get st) '(:local.get sp) '(:local.get 0) '(:array.set :vector)
-  '(:local.get st) '(:local.get sp) '(:i32.const 1) :i32.add
-  '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:array.set :vector)
-  '(:local.get 0) '(:ref.cast! :symbol) '(:local.get 1) `(:struct.set :symbol ,+sym-value+)
+  ;; (each slot is stored only when it holds another object: a store of an
+  ;; object made after the engine's last full collection (a symbol of code
+  ;; just loaded, a CATCH tag) into an old one (the binding stack, a symbol
+  ;; of the image) takes the slow path of the write barrier, and a binding in
+  ;; a loop or a recursion finds the same objects there: BIND-SPECIALS-CODE)
+  '(:local.get st) '(:local.get sp) '(:array.get :vector) '(:local.get 0) :ref.eq
+  '(:if nil nil nil ((:local.get st) (:local.get sp) (:local.get 0) (:array.set :vector)))
+  '(:local.get st) '(:local.get sp) '(:i32.const 1) :i32.add '(:array.get :vector)
+  '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) :ref.eq
+  `(:if nil nil nil
+    ((:local.get st) (:local.get sp) (:i32.const 1) :i32.add
+     (:local.get 0) (:ref.cast! :symbol) (:struct.get :symbol ,+sym-value+) (:array.set :vector)))
+  '(:local.get 0) '(:ref.cast! :symbol) `(:struct.get :symbol ,+sym-value+) '(:local.get 1) :ref.eq
+  `(:if nil nil nil ((:local.get 0) (:ref.cast! :symbol) (:local.get 1) (:struct.set :symbol ,+sym-value+)))
   '(:global.get :dyn) '(:local.get sp) '(:i32.const 2) :i32.add '(:struct.set :dynstate 0))
 
 (defhelper :unbind-to :i-v ((sp :i32) (st (:ref :null :vector)))
@@ -3771,10 +3793,13 @@ f64s in locals DA and DB (it may branch to SLOW)."
      (:loop again nil
        (:local.get sp) (:local.get 0) :i32.le_s (:br_if done)
        (:local.get sp) (:i32.const 2) :i32.sub (:local.set sp)
-       ;; sym.value = old
-       (:local.get st) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
-       (:local.get st) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
-       (:struct.set :symbol 2)
+       ;; sym.value = old (unless it is that already: see :BIND)
+       (:local.get st) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol) (:struct.get :symbol 2)
+       (:local.get st) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector) :ref.eq
+       (:if nil nil nil
+        ((:local.get st) (:local.get sp) (:array.get :vector) (:ref.cast! :symbol)
+         (:local.get st) (:local.get sp) (:i32.const 1) :i32.add (:array.get :vector)
+         (:struct.set :symbol 2)))
        ;; (the popped entries are not cleared: the next bindings overwrite them)
        (:br again)))
   '(:global.get :dyn) '(:local.get sp) '(:struct.set :dynstate 0))

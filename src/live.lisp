@@ -70,22 +70,44 @@ modules for SAVE-IMAGE (a module of a fasl may be loaded into one that does).")
 (defun live-compile-forms (forms)
   "Compile FORMS into a module linked with the running image.
 Returns (values bytes constants-vector)."
-  (let ((*live-mode* t)
+  (let* ((*live-mode* t)
         (*live-packages* t)
         (*read-package* *package*)
         (*warnings* nil)
         (*unit-env* nil)
         (*live-toplevel-loop-p* (some #'form-has-loop-p forms))
-        (*error-output* (make-broadcast-stream)))
+        (*error-output* (make-broadcast-stream))
+        ;; several forms (a batch of LOAD): the calls between them are guarded
+        (*batch-forms* (and (cdr forms) (batch-defun-table forms)))
+        (*batch-unknown-calls* (and (cdr forms) (make-hash-table :test 'eq)))
+        (*batch-no-direct* (and (cdr forms) (make-hash-table :test 'eq)))
+        (*batch-form-index* 0))
     (with-fresh-codegen-state ()
       (let ((env (make-cenv)))
-        (dolist (f forms) (process-toplevel f env)))
+        (loop for f in forms for k from 0
+              do (let ((*batch-form-index* k)) (process-toplevel f env))))
       (when *current-toplevel*
         ;; keep the value of the last form
         (setf (lam-body *current-toplevel*) `(:progn (:const nil) ,@(reverse *toplevel-nodes*)))
         (push *current-toplevel* *toplevel-lams*)
         (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0))
       (build-live-module))))
+
+(defun batch-defun-table (forms)
+  "*BATCH-FORMS* for the toplevel FORMS of a batch: the functions that they
+define as (DEFUN name ...), with the index of their form (the definitions in
+the expansions of other macros are noted when they are converted)."
+  (let ((table (make-hash-table :test 'eq)))
+    (loop for f in forms for k from 0
+          do (when (and (consp f) (eq (car f) 'defun) (consp (cdr f)))
+               (let* ((name (second f))
+                      (sym (cond ((and name (symbolp name)) name)
+                                 ((and (consp name) (eq (car name) 'setf) (consp (cdr name))
+                                       (symbolp (second name)))
+                                  (setf-function-symbol (second name))))))
+                 ;; (a function defined by two forms is not a known one)
+                 (when sym (unless (nth-value 1 (gethash sym table)) (setf (gethash sym table) k))))))
+    table))
 
 (defun live-used-globals (tops)
   "The names of the globals (and functions) that the code of a live module
