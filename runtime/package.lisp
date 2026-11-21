@@ -27,6 +27,8 @@
 ;; (see %DROPPED-SYMBOL-CHECK)
 (defvar *%dropped-symbols* nil)
 (defvar *%dropped-symbol-packages* nil)
+(defvar *%table-packages* nil
+  "The packages in the order of the compiler's package table (for %IMAGE-START).")
 
 ;;; The symbol FIND-PACKAGE last found a package by, and the package
 ;;; (:KEYWORD, :CL-USER in (INTERN NAME :KEYWORD) and the like); the entry is
@@ -653,6 +655,7 @@ which leaves out the symbols that its code does not refer to"
       (setq *keyword-package* (find-package "KEYWORD"))
       (setq *cl-package* (find-package "COMMON-LISP"))
       (setq *system-package* (find-package "SYSTEM"))
+      (setq *%table-packages* pkgs)
       (when dropped
         (setq *%dropped-symbols* dropped *%dropped-symbol-packages* pkgs))
       (dotimes (chunk-index (%svlength symtab))
