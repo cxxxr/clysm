@@ -903,7 +903,38 @@ written into its buffer at once."
     (%fmt-cardinal s n)
     (%scratch-string-result s)))
 
+(defun %fmt-ordinal-in-place (stream n)
+  "%FMT-ORDINAL to a :STRING-OUT stream: the cardinal is written to its
+buffer (with room made first, so that it stays in that buffer) and its last
+word changed there."
+  (%string-out-grow stream 100)
+  (let ((start (%instance-ref stream +stream-index-slot+)))
+    (declare (fixnum start))
+    (%fmt-cardinal stream n)
+    (let* ((buf (%instance-ref stream +stream-buffer-slot+))
+           (end (%instance-ref stream +stream-index-slot+))
+           (wstart (do ((i (- end 1) (- i 1))) ((< i start) start)
+                     (declare (fixnum i))
+                     (let ((c (%schar buf i)))
+                       (when (or (eq c #\Space) (eq c #\-)) (return (+ i 1))))))
+           (e (dolist (x '(("one" . "first") ("two" . "second") ("three" . "third") ("five" . "fifth")
+                           ("eight" . "eighth") ("nine" . "ninth") ("twelve" . "twelfth")) nil)
+                (let ((w (car x)))
+                  (when (and (eql (%string-length w) (- end wstart))
+                             (do ((k 0 (+ k 1))) ((>= k (%string-length w)) t)
+                               (unless (eq (%schar w k) (%schar buf (+ wstart k))) (return nil))))
+                    (return x))))))
+      (declare (fixnum end wstart))
+      (cond (e (%set-instance-ref stream +stream-index-slot+ wstart)
+               (write-string (cdr e) stream))
+            ((eq (%schar buf (- end 1)) #\y)
+             (%set-instance-ref stream +stream-index-slot+ (- end 1))
+             (write-string "ieth" stream))
+            (t (write-string "th" stream))))))
+
 (defun %fmt-ordinal (stream n)
+  (when (and (%string-out-p stream) (fixnump n) (< -1000000 n 1000000))
+    (return-from %fmt-ordinal (%fmt-ordinal-in-place stream n)))
   (let* ((s (%fmt-cardinal-string n))
          (len (%string-length s))
          ;; the last word starts after the last space or hyphen
@@ -1332,7 +1363,8 @@ position.  In static mode they must all take the same number of arguments."
 (defun %fmtc-literal (string)
   (let ((s *fmtc-stream*))
     (if (= (length string) 1)
-        (list `(%stream-write-char ,s ,(char string 0)))
+        ;; (WRITE-CHAR: a store at the call site into a string output stream)
+        (list `(write-char ,(char string 0) ,s))
         (list `(%fmt-put ,s ,string)))))
 
 (defun %fmtc-node (node)
@@ -1409,7 +1441,7 @@ position.  In static mode they must all take the same number of arguments."
        (when (or colon at) (%fmtc-fail))
        (multiple-value-bind (b v) (%fmtc-params dir '((:int 1)))
          (let ((c (if (char= char #\|) (code-char 12) #\~)))
-           (%fmtc-with b (if (eql (car v) 1) `(%stream-write-char ,s ,c) `(%write-chars ,s ,c ,(car v)))))))
+           (%fmtc-with b (if (eql (car v) 1) `(write-char ,c ,s) `(%write-chars ,s ,c ,(car v)))))))
       (#\Newline
        (%fmtc-params dir '())
        (when (and colon at) (%fmtc-fail))

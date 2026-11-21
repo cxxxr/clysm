@@ -356,18 +356,29 @@ after the call."
 ;;; PRINC-TO-STRING ...): one stream is kept for reuse.  When the output
 ;;; function is left by a non-local exit, the stream is simply not put back.
 (defvar *%scratch-string-stream* nil)
+;; a second one, for such a call made while the first is in use (FORMAT NIL
+;; of ~R, ~:R: the cardinal is made in a string; PRINC-TO-STRING in a
+;; PRINT-OBJECT method)
+(defvar *%scratch-string-stream-2* nil)
 
 (defun %scratch-string-stream ()
   (let ((s *%scratch-string-stream*))
     (if s
         (progn (setq *%scratch-string-stream* nil) s)
-        (%make-string-out))))
+        (let ((s2 *%scratch-string-stream-2*))
+          (if s2
+              (progn (setq *%scratch-string-stream-2* nil) s2)
+              (%make-string-out))))))
 
 (defun %scratch-string-result (s)
   "The contents of the scratch stream S, which is given back."
   (let ((r (%string-out-contents s)))
-    (when (and (<= (%string-length (stream-buffer s)) 4096) (stream-open s))
-      (setq *%scratch-string-stream* s))
+    ;; (its slots read without the accessors: this is inline in FORMAT NIL)
+    (when (and (<= (%string-length (%instance-ref s +stream-buffer-slot+)) 4096)
+               (%instance-ref s +stream-open-slot+))
+      (if *%scratch-string-stream*
+          (setq *%scratch-string-stream-2* s)
+          (setq *%scratch-string-stream* s)))
     r))
 
 (defun make-string-input-stream (string &optional (start 0) end)

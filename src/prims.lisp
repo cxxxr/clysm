@@ -6066,7 +6066,8 @@ rounded to odd (Schubfach's rop)."
          (c (new-local :i32)) (k (new-local :i32)) (more (new-local :i32))
          (str (new-local '(:ref :null :string))) (pass (new-local :i32)) (j (new-local :i32)) (s0 (new-local :i32))
          (done (gensym "DONE")) (again (gensym "AGAIN")) (inner (gensym "INNER")) (inner-done (gensym "IDONE"))
-         (passes (gensym "PASSES")) (passes-done (gensym "PDONE")))
+         (passes (gensym "PASSES")) (passes-done (gensym "PDONE"))
+         (ascii (gensym "ASCII")) (ascii-done (gensym "ADONE")) (copy (gensym "COPY")) (copy-done (gensym "CDONE")))
     (labels ((lead (limit count mask else)
                ;; a first octet of COUNT continuations: keep its MASK bits
                `((:local.get ,c) (:i32.const ,limit) :i32.ge_u
@@ -6107,7 +6108,30 @@ rounded to odd (Schubfach's rop)."
         `(,@bytes (:ref.cast :bytes) (:local.set ,b)
           ,@(idx-code start) (:local.set ,s0) ,@(idx-code end) (:local.set ,e)
           (:i32.const 0) (:local.set ,pass)
+          ;; octets all ASCII (a line of most text files): copied in one
+          ;; loop, without the passes that count and decode
+          (:local.get ,s0) (:local.set ,i)
+          (:block ,ascii-done nil
+            (:loop ,ascii nil
+              (:local.get ,i) (:local.get ,e) :i32.ge_u (:br_if ,ascii-done)
+              (:local.get ,b) (:local.get ,i) (:array.get_u :bytes) (:i32.const #x80) :i32.ge_u (:br_if ,ascii-done)
+              (:local.get ,i) (:i32.const 1) :i32.add (:local.set ,i)
+              (:br ,ascii)))
+          (:local.get ,i) (:local.get ,e) :i32.ge_u
+          (:if nil nil
+               ((:local.get ,e) (:local.get ,s0) :i32.sub (:local.tee ,n) (:array.new_default :string) (:local.set ,str)
+                (:i32.const 0) (:local.set ,j)
+                (:block ,copy-done nil
+                  (:loop ,copy nil
+                    (:local.get ,j) (:local.get ,n) :i32.ge_u (:br_if ,copy-done)
+                    (:local.get ,str) (:local.get ,j)
+                    (:local.get ,b) (:local.get ,s0) (:local.get ,j) :i32.add (:array.get_u :bytes)
+                    (:array.set :string)
+                    (:local.get ,j) (:i32.const 1) :i32.add (:local.set ,j)
+                    (:br ,copy)))
+                (:i32.const 1) (:local.set ,pass)))
           (:block ,passes-done nil
+            (:local.get ,pass) (:br_if ,passes-done)
             (:loop ,passes nil
               (:local.get ,s0) (:local.set ,i) (:i32.const 0) (:local.set ,n)
               (:block ,done nil

@@ -2971,6 +2971,23 @@ What is not as fast as intended, and why:
   1.09–1.24 (`terpri` and `fresh-line` of a string output stream at the
   call site, `get-output-stream-string` without earlier chunks one copy).
   In `clysm script` the same benchmarks take 0.70–0.85 of their time.
+* **Printing and FORMAT**: `output-object` writes a number at once (no
+  circularity, no standard pretty printing: `prin1-to-string` of a float,
+  `write-to-string` with `:base`), `princ` of a symbol in the standard
+  cases writes its name, a literal character of a control string is a
+  `write-char` (a store at the call site into the string stream of `format
+  nil`, a call each before), `~:R` writes the cardinal into a string output
+  stream and changes its last word there, and a second scratch string
+  stream serves a `format nil` or `princ-to-string` made while the first is
+  in use (`~R` made a new stream each time). `i-print-numbers` 1.36–1.45 →
+  1.09–1.16, `i-format-english` 1.14 → 1.0, `i-format-justify` 1.43 → 1.3
+  (the pretty stream skips the expansion of tabs when none was queued);
+  `bench/io.lisp` 0.89 → 0.82. A line of ASCII octets is decoded by
+  `read-line` in one copying loop (`%utf8-decode`): `read-line` over a 58 KB
+  file 3.8 → 1.7 times SBCL's time, which is now mostly the copy of the
+  file's octets from the memory into a Lisp vector when it is opened (0.33
+  ns an octet; SBCL reads its buffer lazily; eight octets a load of 64 bits
+  was slower).
 
 What makes the code fast:
 

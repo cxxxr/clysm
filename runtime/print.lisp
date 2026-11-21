@@ -147,6 +147,11 @@ temporaries-bindings special-bindings stream-form), else NIL."
         ((and (stringp object) (not *print-circle*)
               (not (and *print-pretty* (%ppd-user-entries-p))))
          (write-string object (%output-stream stream)))
+        ;; a symbol without escapes in the standard cases: its name
+        ((and (symbolp object) (eq *print-case* :upcase) (not *print-readably*)
+              (eq (%rt-case (or *readtable* *standard-readtable*)) :upcase)
+              (not (%ppd-user-entries-p)))
+         (write-string (symbol-name object) (%output-stream stream)))
         ((or *print-escape* *print-readably*)
          (let ((*print-escape* nil) (*print-readably* nil)) (output-object object (%output-stream stream))))
         (t (output-object object (%output-stream stream))))
@@ -260,7 +265,10 @@ label (positive, when ASSIGN), T (shared, not yet labelled) or minus the label."
          nil)))
 
 (defun output-object (x stream)
-  (cond ((or (not *print-circle*) (%uniquely-identified-by-print-p x))
+  (cond ((and (numberp x) (not (%ppd-user-entries-p)))
+         ;; (a number: no circularity, no standard pretty printing)
+         (%write-number x stream))
+        ((or (not *print-circle*) (%uniquely-identified-by-print-p x))
          (%print-dispatched x stream))
         (*circularity-hash-table*
          (let ((marker (%check-for-circularity x t)))
