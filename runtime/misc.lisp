@@ -119,9 +119,13 @@
 (defvar *features* '(:clysm :common-lisp :ansi-cl :wasm :ieee-floating-point :package-local-nicknames))
 (defvar *modules* nil)
 (defun provide (name) (pushnew (string name) *modules* :test #'string=) t)
-(defvar *module-provider-functions* '(%module-provide-contrib)
+(defvar *module-provider-functions* nil
   "Functions called by REQUIRE (without pathnames) with the module name; one
-that returns true has provided the module.  ASDF adds its own provider.")
+that returns true has provided the module.  ASDF adds its own provider.
+%MODULE-PROVIDE-CONTRIB is put at its end by the first REQUIRE (so that a
+whole program that does not call REQUIRE leaves out LOAD and COMPILE-FILE,
+which the contribs are loaded with).")
+(defvar %contrib-provider-added nil)
 
 (%defvar-host %decode-host-octets nil)
 (%defvar-host %fasl-head-function nil)
@@ -291,8 +295,13 @@ support)."
       (cond (pathnames
              (dolist (p (if (listp pathnames) pathnames (list pathnames)))
                (load p)))
-            ((dolist (f *module-provider-functions* nil)
-               (when (funcall f name) (return t))))
+            ((progn
+               (unless %contrib-provider-added
+                 (setq %contrib-provider-added t
+                       *module-provider-functions*
+                       (append *module-provider-functions* (list '%module-provide-contrib))))
+               (dolist (f *module-provider-functions* nil)
+                 (when (funcall f name) (return t)))))
             (t (error "REQUIRE: don't know how to load module ~S" name))))
     nil))
 
