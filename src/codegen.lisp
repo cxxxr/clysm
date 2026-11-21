@@ -553,6 +553,20 @@ them from the header again, in a loop), else NIL."
 
 (defun mv-one () '((:i32.const 1) (:global.set :mv-count)))
 
+(defun struct-slot-check-code (node)
+  "After the code of NODE, a read of a structure slot declared a simple
+array of one kind of storage, whose value the inferred types take to be
+one (STRUCT-SLOT-NODE-TY): the test of its storage kind, a TYPE-ERROR when
+it is another (a slot written by code that did not check it), so that the
+casts of the code using it never trap.  Nothing at (SAFETY 0)."
+  (multiple-value-bind (kind spec) (struct-slot-array-kind node)
+    (when (and kind (not (eql (cg-safety) 0)))
+      (let ((tmp (new-local)))
+        `((:local.tee ,tmp) (:ref.test ,kind)
+          (:if nil :eqref ((:local.get ,tmp))
+               ((:local.get ,tmp) ,@(const-init-code spec)
+                (:global.get ,(sym-global 'clysm-sys::%type-error)) (:call (:callsym 2)) :unreachable)))))))
+
 (defun cg-safety ()
   "The SAFETY of the function being compiled (its LAM-SAFETY; 1 by default)."
   (let ((lam (and *fs* (fstate-lam *fs*))))
@@ -621,7 +635,7 @@ values (mv-count must be valid).  TAIL: value is returned from the function."
       (:call (or (typed-cg node mv) (cg-global-call (second node) (cddr node) mv tail)))
       (:funcall (cg-funcall (second node) (cddr node) mv tail))
       (:lcall (cg-local-call (second node) (cddr node) mv tail))
-      (:prim (or (typed-cg node mv) (cg-prim (second node) (cddr node) mv)))
+      (:prim `(,@(or (typed-cg node mv) (cg-prim (second node) (cddr node) mv)) ,@(struct-slot-check-code node)))
       ((:flet :labels) (cg-flet node mv tail))
       (:block (cg-block node mv tail))
       (:return-from (cg-return-from node))
