@@ -1115,7 +1115,8 @@ nothing would change."
       ;; functions are compiled by Liftoff with the module (the hint 0x12:
       ;; eager, Liftoff; withEagerHints in host/common.mjs)
       (when (wasm-module-eager-funcs m)
-        (let ((hints (make-array (length bodies) :element-type '(unsigned-byte 8) :initial-element 0))
+        ;; (one hint for each function of the code section, the fillers too)
+        (let ((hints (make-array (+ (length bodies) fillers) :element-type '(unsigned-byte 8) :initial-element 0))
               (nimports (length (wasm-module-imports m))))
           (dolist (name (wasm-module-eager-funcs m))
             (let ((i (gethash name (wasm-module-func-index-table m))))
