@@ -3308,6 +3308,31 @@ or object."
         (:ref.null :eq)))))
 (defprim clysm-sys::%cached-slot-read (x c idx) :value (cached-slot-code x c (idx-code idx) nil))
 (defprim clysm-sys::%cached-slot-write (x v c idx) :value (cached-slot-code x c (idx-code idx) v))
+;;; The entries of the cache C of a call site of a generic function of one
+;;; required argument (see %GF-SITE-EXPANSION in runtime/clos.lisp) whose
+;;; key is K: the value of the entry (a function, or the index of a slot),
+;;; else null.  The cache is cast once (as %SITE-SLOT-READ does).
+(defprim clysm-sys::%site-key-entry1 (k c) :value
+  (let ((key (new-local)) (cv (new-local '(:ref :null :vector))))
+    `(,@k (:local.set ,key) ,@c (:ref.cast! :vector) (:local.set ,cv)
+      ,@(labels ((entry (i)
+                   `((:local.get ,key) (:local.get ,cv) (:i32.const ,i) (:array.get :vector) :ref.eq
+                     (:if nil :eqref ((:local.get ,cv) (:i32.const ,(1+ i)) (:array.get :vector))
+                          ,(if (< i 7) (entry (+ i 2)) '((:ref.null :eq)))))))
+          (entry 1)))))
+;;; The same for two arguments, whose keys are K and KB (entries of three
+;;; elements from 1).
+(defprim clysm-sys::%site-key-entry2 (k kb c) :value
+  (let ((key (new-local)) (keyb (new-local)) (cv (new-local '(:ref :null :vector))))
+    `(,@k (:local.set ,key) ,@kb (:local.set ,keyb) ,@c (:ref.cast! :vector) (:local.set ,cv)
+      ,@(labels ((entry (i)
+                   `((:local.get ,key) (:local.get ,cv) (:i32.const ,i) (:array.get :vector) :ref.eq
+                     (:if nil :i32 ((:local.get ,keyb) (:local.get ,cv) (:i32.const ,(1+ i)) (:array.get :vector)
+                                    :ref.eq)
+                          ((:i32.const 0)))
+                     (:if nil :eqref ((:local.get ,cv) (:i32.const ,(+ i 2)) (:array.get :vector))
+                          ,(if (< i 10) (entry (+ i 3)) '((:ref.null :eq)))))))
+          (entry 1)))))
 ;;; (%COLD): NIL, and a mark on the branch of an IF it begins that the branch
 ;;; is not expected to be taken (a branch hint: see COLD-BRANCH-P)
 (defprim clysm-sys::%cold () :value (nil-code))

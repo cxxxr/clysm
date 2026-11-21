@@ -2462,6 +2462,12 @@ What is not as fast as intended, and why:
   so that reading an element checks the bounds only. A reader's site is
   about 25 instructions of machine code: `%point<` 2.9 KB,
   `point-change-line` 6.5 KB, `%move-to-position` 6 KB instead of 9.
+  A site of another generic function of one or two arguments compares
+  its key (or keys) with the four entries in the same way
+  (`%site-key-entry1`/`2`: the cache cast once, the value of the entry
+  or null): `h-fib-generic` 0.96 of its time, `tools/bench-lem.sh`
+  1.25-1.26 → 1.24, `bench/apps.lisp` 1.29 → 1.27, `bench/clos.lisp`
+  the same.
   The steps, `tools/bench-lem.sh` (geometric mean, SBCL's time 1): 1.46
   before; branch hints alone (below) 1.45; only the first entry inline
   (the rest in `%gf-site-other1`) 1.43; with the typed constants and the
