@@ -1398,9 +1398,22 @@ type, where the type of the value shows it holds), else NIL."
       ((char= char/=)
        ;; two characters (known: a declared character, a constant): the
        ;; same immediates, no check
-       (when (and (= (length args) 2) (ty-only-p (node-ty a) +k-char+) (ty-only-p (node-ty b) +k-char+))
-         (or (char-codes-eq-code a b (eq name 'char/=))
-             `(,@(cg a) ,@(cg b) :ref.eq ,@(when (eq name 'char/=) '(:i32.eqz))))))
+       (when (= (length args) 2)
+         (let ((ka (ty-only-p (node-ty a) +k-char+)) (kb (ty-only-p (node-ty b) +k-char+)))
+           (cond ((and ka kb)
+                  (or (char-codes-eq-code a b (eq name 'char/=))
+                      `(,@(cg a) ,@(cg b) :ref.eq ,@(when (eq name 'char/=) '(:i32.eqz)))))
+                 ;; one known to be a character (a character read from a
+                 ;; string, a declared one): its code against the other's,
+                 ;; which is tested inline (a character searcher's variable
+                 ;; captured from a function's parameter: per element)
+                 ((or ka kb)
+                  (flet ((code (n known)
+                           (if known
+                               (or (schar-code-node-code n) (char-code-elt-code n)
+                                   `(,@(cg n) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.sub))
+                               `(,@(inline-char-payload (cg n)) (:i32.const ,+char-tag+) :i32.sub))))
+                    `(,@(code a ka) ,@(code b kb) ,(if (eq name 'char/=) :i32.ne :i32.eq))))))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
                                                   (plusp '((:i32.const 0) :i32.gt_s))
