@@ -3992,6 +3992,16 @@ conditions) and the names of the symbols (the global section, 0.6 MB).
 For pages, the module is best served as a file of its own, which the browser
 caches for every page that uses it.
 
+`--shake-why REPORT` (with `compile` or `library`; it implies `--shake`)
+writes what keeps the code: its size by source file; the functions, globals
+and symbols that the most code would go with, which is what each dominates
+in the graph of references from the roots (the exports, the start function,
+the globals kept whatever refers to them); and each kept function, largest
+first, with the first chain of references that reached it. `make test-lib`
+compiles the module of one export (`tests/lib/one.lisp`) and fails when it
+is larger than `tests/lib/one.max-bytes`, lowered as the runtime a library
+carries is made smaller (issue #30).
+
 `tools/prof.sh FILE` (and `tools/prof-script.sh` for a file loaded into the
 image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions. For code compiled in the
