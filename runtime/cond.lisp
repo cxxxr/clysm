@@ -934,6 +934,16 @@ printer prints."
 
 (defvar *%small-depth* 0)
 
+;;; CHAR-NAME when the program has it; otherwise the names of the first 256
+;;; characters and U+XXXX: CHAR-NAME of a character above Latin-1 reads
+;;; the names of Unicode from a file (%UNICODE-NAMES), which would keep
+;;; pathnames, OPEN and the reader of lines in every shaken module.
+(defun %small-char-name (c)
+  (let ((f (%symbol-function (%weak-symbol char-name))) (code (char-code c)))
+    (cond (f (funcall (the function f) c))
+          ((< code 256) (svref *char-names* code))
+          (t (concatenate 'string "U+" (%integer-to-string code 16))))))
+
 (defun %small-print-1 (x out escape)
   (let ((*%small-depth* (+ *%small-depth* 1))) (%small-print x out escape)))
 
@@ -965,7 +975,7 @@ usual settings, without the printer: lists and vectors to a few levels."
                (write-string name out))))
         ((characterp x)
          (if escape
-             (let ((name (and (not (graphic-char-p x)) (char-name x))))
+             (let ((name (and (not (graphic-char-p x)) (%small-char-name x))))
                (write-string "#\\" out)
                (if name (write-string name out) (write-char x out)))
              (write-char x out)))
@@ -1103,7 +1113,7 @@ left, and true if ~^ ended it."
                      (if (and (characterp a) (or colon at))
                          (if at
                              (%small-print a out t)
-                             (write-string (or (and (not (graphic-char-p a)) (char-name a)) (string a)) out))
+                             (write-string (or (and (not (graphic-char-p a)) (%small-char-name a)) (string a)) out))
                          (%small-print a out nil))))
               (#\% (dotimes (k (or (first params) 1)) (terpri out)))
               (#\& (fresh-line out) (dotimes (k (- (or (first params) 1) 1)) (terpri out)))
