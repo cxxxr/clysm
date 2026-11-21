@@ -1368,6 +1368,11 @@ type, where the type of the value shows it holds), else NIL."
                ((dual-cmp-code node))
                ((spec-cmp-code node))
                ((wide-cmp-code node)))))
+      ((char= char/=)
+       ;; two characters (known: a declared character, a constant): the
+       ;; same immediates, no check
+       (when (and (= (length args) 2) (ty-only-p (node-ty a) +k-char+) (ty-only-p (node-ty b) +k-char+))
+         `(,@(cg a) ,@(cg b) :ref.eq ,@(when (eq name 'char/=) '(:i32.eqz)))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
                                                   (plusp '((:i32.const 0) :i32.gt_s))

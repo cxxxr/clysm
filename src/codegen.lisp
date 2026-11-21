@@ -182,7 +182,10 @@ runtime (:STRING-HASH in src/prims.lisp)."
                                             (:struct.new :complex-s)))
                             (t `(,@(const-init-code (realpart obj)) ,@(const-init-code (imagpart obj))
                                  (:struct.new :complex)))))
-                 (t (error "cannot compile constant ~S" obj))))))))
+                 (t (error "cannot compile constant ~S" obj)))
+               ;; a simple vector of its type (an element read only checks
+               ;; the bounds: the caches of call sites of readers)
+               (if (simple-vector-p obj) '(:ref :vector) :eqref))))))
 
 (defun cg-const (obj) (const-init-code obj))
 
