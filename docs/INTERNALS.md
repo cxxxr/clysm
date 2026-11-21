@@ -2409,7 +2409,12 @@ What makes the code fast:
   (`free-type-decl-env` in `src/frontend.lisp`). A structure class defined
   by `defstruct` is a declared type too (`(declare (body a))`, `(type body
   a)`: `struct-class-type-p`), and so is the slot type of a slot declared
-  of one; an accessor of an object known to be of its class (by such a
+  of one, or of a simple array of one kind of storage (`simple-vector`,
+  `simple-string`, `(simple-array (signed-byte 32) (*))`, a type defined
+  by `deftype` as one, `struct-slot-node-ty`: SBCL checks a slot's type
+  where it is written, so a value of another type is a bug that traps here
+  at the cast; not integer types, since a `fixnum` of SBCL's may be a
+  bignum here); an accessor of an object known to be of its class (by such a
   declaration, by a constructor, a type test or an access before) is the
   `struct.get`/`struct.set` of the field — no load of the class, no layout
   comparison. A variable declared of the type and bound once has a
@@ -3135,6 +3140,35 @@ What makes the code fast:
   cross-file call of three arguments 5.3 ns, SBCL 3.4) and the class tests
   of its included structures; cl-json's decoding in the collection of the
   data it keeps.
+* **local-time and esrap, second round** (2026-11-21, `sb-sprof` against
+  the V8 profile, the Wasm read): local-time's time-zone lookup
+  (`%subzone-as-of`, `transition-position`) read its tables through
+  `storage-kind` and `typed-ref` and allocated a bignum per probe of the
+  binary search. Now a slot declared a simple array of one storage kind
+  (the zone's `(simple-array (signed-byte 32) (*))` and `simple-vector`)
+  gives its reads that type (`struct-slot-node-ty`); an array element type
+  with objects that are no numbers or characters (`(or (eql 0) chunk)`,
+  esrap's chunk arrays) upgrades to T at compile time as at run time
+  (`element-type-needs-t-p`); a test the argument types decide leaves the
+  other branch out of the type of the `if` (`ti-cond`: `elt`'s
+  `%simple-array-p` of a declared vector, so the element read is of the
+  element type); a comparison of an integer known within 64 bits but not a
+  fixnum (an `(signed-byte 32)` element) with an integer of unknown type is
+  in i64, the other side decoded inline or by one call (`wide-cmp-code`),
+  with no bignum made; `find`/`position` with `:start`/`:end` (and a
+  `:test`/`:test-not`, constant `:from-end`) scan a simple string or simple
+  vector at the call site, a known test called inline
+  (`%bounded-find-expansion`: a probe of two bounded searches of a string
+  205 → 148 ms, SBCL 189). `tools/bench-libs.sh bench/apps.lisp`, base and
+  new alternately on one slot, four rounds: `a-local-time` 43–45 → 38–39 ms
+  (1.29–1.33 → 1.12–1.15 times SBCL), the file 1.31–1.33 → 1.27–1.29;
+  `a-esrap` unchanged (1.91–2.00). `bench/suite`, `holdout`, `library`,
+  `programs` (compiled and in a script) and Lem's comparator unchanged.
+  esrap's remaining factor is its calls: probes of one call of a
+  notinline function, of a function given as argument and funcalled, and
+  of the dynamic-extent closure of its `with-cached-result` take 2–3 times
+  SBCL's time, and the closure's allocation is not the cost (the same
+  probe with a global function instead is as slow).
 
 ### Declared code, and SBCL at its best policy
 

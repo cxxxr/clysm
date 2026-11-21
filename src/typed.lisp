@@ -1312,7 +1312,8 @@ type, where the type of the value shows it holds), else NIL."
                 `(,@(f64-arg-code a) ,@(f64-arg-code b)
                   ,(ecase name (< :f64.lt) (> :f64.gt) (<= :f64.le) (>= :f64.ge) (= :f64.eq) (/= :f64.ne))))
                ((dual-cmp-code node))
-               ((spec-cmp-code node)))))
+               ((spec-cmp-code node))
+               ((wide-cmp-code node)))))
       ((zerop plusp minusp)
        (cond ((i32-arg-p a) `(,@(cg-rep a :i32) ,@(ecase name (zerop '(:i32.eqz))
                                                   (plusp '((:i32.const 0) :i32.gt_s))
@@ -1409,6 +1410,45 @@ doubles, else the generic comparison; or NIL."
                   ,(ecase name (< :i64.lt_s) (> :i64.gt_s) (<= :i64.le_s) (>= :i64.ge_s) (= :i64.eq) (/= :i64.ne))
                   (:br ,done))
                 ,@(funcall (prim-fn p) (list (dual-materialize-code ba va) (dual-materialize-code bb vb)))))))))))
+
+;;; A comparison of an integer known to be within 64 bits but not to be a
+;;; fixnum (an element of a vector of (signed-byte 32) or (unsigned-byte
+;;; 32), an i64 value) with a number of unknown type: in i64 when the other
+;;; is an integer within 64 bits (a fixnum inline, a bignum by one call that
+;;; reads its value), so that the known side is not boxed (a bignum
+;;; allocated to compare a Unix time with a table of transitions); the
+;;; generic comparison otherwise.
+(defun wide-cmp-code (node)
+  (let* ((name (node-op-name node)) (args (cddr node)) (a (first args)) (b (second args)))
+    (when (and (spec-cmp-node-p node) (not *no-fuse*)
+               (logtest (ty-bits (node-ty a)) +k-int+) (logtest (ty-bits (node-ty b)) +k-int+)
+               (or (and (i64-arg-p a) (not (ty-fixnum-p (node-ty a))) (not (i64-arg-p b)))
+                   (and (i64-arg-p b) (not (ty-fixnum-p (node-ty b))) (not (i64-arg-p a)))))
+      (let ((slow (gensym "SLOW")) (done (gensym "CMP"))
+            (ba (new-local)) (va (new-local :i64)) (bb (new-local)) (vb (new-local :i64))
+            (p (if (eq (car node) :prim) (second node) (find-primitive name 2))))
+        (when p
+          (flet ((operand (n bl vl)
+                   (if (i64-arg-p n)
+                       `(,@(cg-rep n :i64) (:local.set ,vl))
+                       `(,@(cg n) (:local.set ,bl))))
+                 (decode (n bl vl)
+                   (unless (i64-arg-p n)
+                     `(,@(i64-decode-code `((:local.get ,bl)) slow) (:local.set ,vl))))
+                 (box (n bl vl)
+                   (if (i64-arg-p n)
+                       `((:local.get ,vl) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+))
+                         :i64.lt_u
+                         (:if nil :eqref ((:local.get ,vl) :i32.wrap_i64 :ref.i31) ((:local.get ,vl) (:call :i64-int))))
+                       `((:local.get ,bl)))))
+            `(,@(operand a ba va) ,@(operand b bb vb)
+              (:block ,done :i32
+                (:block ,slow nil
+                  ,@(decode a ba va) ,@(decode b bb vb)
+                  (:local.get ,va) (:local.get ,vb)
+                  ,(ecase name (< :i64.lt_s) (> :i64.gt_s) (<= :i64.le_s) (>= :i64.ge_s) (= :i64.eq) (/= :i64.ne))
+                  (:br ,done))
+                ,@(funcall (prim-fn p) (list (box a ba va) (box b bb vb)))))))))))
 
 (defun typed-divmod-code (node)
   "For (FLOOR x y) / (TRUNCATE x y) of fixnums: code leaving the quotient (a

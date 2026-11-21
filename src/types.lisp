@@ -1261,7 +1261,14 @@ with them, replacing the node types of the widened iterations."
                 (rule (and (symbolp name) (gethash name *ti-test-rules*)))
                 (args (cddr node)))
            (if (null rule)
-               (progn (ti node) (values (env-copy *env*) (env-copy *env*)))
+               (progn (ti node)
+                      ;; a test the types of its arguments decide (%SIMPLE-ARRAY-P
+                      ;; of a declared vector in ELT's expansion): the other
+                      ;; branch is not reached, and is not in the type of the IF
+                      (case (and (not (eq *env* :bottom)) (known-test-result name args))
+                        (:true (values (env-copy *env*) :bottom))
+                        (:false (values :bottom (env-copy *env*)))
+                        (t (values (env-copy *env*) (env-copy *env*)))))
                (let ((tys (ti-args args)))
                  (note-ty node *ty-bool*)
                  (if (eq *env* :bottom)
@@ -1298,8 +1305,16 @@ type is trusted, as that of a variable is)."
                (slot (and (consp desc) (null (car desc)) (listp (second desc))
                           (find (second i) (second desc) :key (lambda (s) (and (consp s) (nth 4 s))))))
                (type (and (consp slot) (third slot))))
-          (and type (symbolp type) (struct-class-type-p type)
-               (mkty +k-other+ nil nil type)))))))
+          (cond ((null type) nil)
+                ((and (symbolp type) (struct-class-type-p type)) (mkty +k-other+ nil nil type))
+                ;; a simple array of one kind of storage (a SIMPLE-VECTOR,
+                ;; a SIMPLE-STRING, a (SIMPLE-ARRAY (SIGNED-BYTE 32) (*))):
+                ;; its accesses are inline (a value of another type traps
+                ;; at the cast; SBCL checks the slot's type when it is
+                ;; written).  Not integers: a FIXNUM of SBCL's may be a
+                ;; bignum here.
+                (t (let ((ty (ignore-errors (declared-ty type))))
+                     (and ty (or (ty-vec-kind ty) (ty-md2-kind ty)) ty)))))))))
 
 (defun struct-class-node-name (node)
   "NODE is (LOAD-TIME-VALUE (FIND-CLASS 'NAME)): NAME."

@@ -99,7 +99,30 @@ when ET is not one of the specifiers recognized at compile time."
                        (if (and (consp hi) (integerp (car hi))) (1- (car hi)) hi))))
           ((and (consp et) (eq (car et) 'mod) (integerp (cadr et)) (plusp (cadr et)) (null (cddr et)))
            (int-kind 0 (1- (cadr et))))
+          ;; a type with objects that are no numbers or characters (an
+          ;; array, a structure, (OR (EQL 0) CHUNK)): only T holds them
+          ((or (element-type-needs-t-p et)
+               (and (consp et) (eq (car et) 'or) (some #'element-type-needs-t-p (cdr et))))
+           :vector)
           (t nil))))
+
+(defun element-type-needs-t-p (et)
+  "ET (a type specifier) has elements that are no numbers or characters, so
+that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
+  (let ((et (ignore-errors (expand-deftypes et))))
+    (cond ((symbolp et)
+           (or (member et '(t symbol null keyword cons list function sequence atom string simple-string
+                            base-string simple-base-string vector simple-vector array simple-array
+                            bit-vector simple-bit-vector hash-table stream package pathname
+                            structure-object standard-object))
+               (struct-class-type-p et)))
+          ((consp et)
+           (case (car et)
+             ((simple-array array vector simple-vector string simple-string base-string simple-base-string
+               cons function bit-vector simple-bit-vector)
+              t)
+             ((member eql) (some (lambda (x) (not (or (numberp x) (characterp x)))) (cdr et)))
+             (t nil))))))
 
 (defun envclo-type (n)
   "The type of a closure with N (> 0) free variables."
