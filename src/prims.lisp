@@ -4217,10 +4217,40 @@ signal, as in SBCL where it is dead code); the quotient is tested instead."
   '(:local.get 0) '(:local.get 1) '(:local.get 2) :ref.i31
   `(:global.get ,(sym-global 'clysm-sys::%divmod-slow)) '(:call (:callsym 3)))
 
+(defun single-divmod-code (mode)
+  "For the front of a division: when one argument is a single and the other a
+single or a fixnum, the division in f32 (what the general helper computes
+with each step rounded to single: the f32 operations are correctly rounded),
+returning; a value that is not finite or a quotient of 2^51 or more falls
+through."
+  (flet ((operand (i f)
+           `((:local.get ,i) (:ref.test :single)
+             (:if nil nil
+                  ((:local.get ,i) (:ref.cast! :single) (:struct.get :single 0) (:local.set ,f))
+                  ((:local.get ,i) (:ref.test :i31) :i32.eqz (:br_if nosingle)
+                   (:local.get ,i) (:ref.cast! :i31) :i31.get_s (:local.tee x)
+                   (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if nosingle)
+                   (:local.get x) :f32.convert_i32_s (:local.set ,f))))))
+    `((:block nosingle nil
+        (:local.get 0) (:ref.test :single) (:local.get 1) (:ref.test :single) :i32.or :i32.eqz (:br_if nosingle)
+        ,@(operand 0 'fa) ,@(operand 1 'fb)
+        (:local.get fa) (:local.get fb) :f32.div ,(ecase mode (0 :f32.trunc) (1 :f32.floor) (2 :f32.ceil) (3 :f32.nearest))
+        (:local.tee fq) :f32.abs (:f32.const 2251799813685248.0) :f32.lt :i32.eqz (:br_if nosingle)
+        ;; remainder: the number - the integer quotient (0.0 for -0.0) times the divisor
+        (:local.get fa) (:local.get fq) (:f32.const 0.0) :f32.add (:local.get fb) :f32.mul :f32.sub (:local.tee fr)
+        (:local.get fr) :f32.sub (:f32.const 0.0) :f32.ne (:br_if nosingle)
+        (:global.get :mv-buf) (:i32.const 0) (:local.get fr) (:struct.new :single) (:array.set :vector)
+        (:i32.const 2) (:global.set :mv-count)
+        (:local.get fq) :f64.promote_f32 (:local.set fd)
+        (:local.get fd) (:f64.const 6755399441055744d0) :f64.add :i64.reinterpret_f64
+        (:i64.const #x4338000000000000) :i64.sub (:call :i64-int) :return))))
+
 ;;; the front of each division: two fixnums inline (small enough for the
-;;; engine to copy into the caller), the general helper otherwise
+;;; engine to copy into the caller), one single and a single or a fixnum in
+;;; f32, the general helper otherwise
 (macrolet ((front (name mode)
-             `(defhelper ,name :ee-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32))
+             `(defhelper ,name :ee-e ((x :i32) (y :i32) (qi :i32) (ri :i32) (ti :i32) (ti2 :i32)
+                                      (fa :f32) (fb :f32) (fq :f32) (fr :f32) (fd :f64))
                 (fixnum-pair-code
                  `((:local.get y) :i32.eqz :i32.eqz
                    (:if nil nil
@@ -4230,6 +4260,7 @@ signal, as in SBCL where it is dead code); the quotient is tested instead."
                          (:global.get :mv-buf) (:i32.const 0) (:local.get ri) :ref.i31 (:array.set :vector)
                          (:i32.const 2) (:global.set :mv-count)
                          (:local.get qi) (:call :box-i32) :return))))
+                (single-divmod-code ,mode)
                 '(:local.get 0) '(:local.get 1) '(:i32.const ,mode) '(:return_call :divmod))))
   (front :divmod0 0) (front :divmod1 1) (front :divmod2 2) (front :divmod3 3))
 
