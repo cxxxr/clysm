@@ -149,6 +149,15 @@ const entryCondition = (value) => {
   if (op === 'function' && args.length === 1) return `(typeof ${entryCondition(args[0])} === 'function')`;
   throw new Error(`invalid JS:ENTRYPOINT condition operator ${JSON.stringify(op)}`);
 };
+const entryMessage = (value) => {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (!Array.isArray(value) || !value.length) throw new Error('invalid JS:ENTRYPOINT check message');
+  const [op, ...args] = value;
+  if (op === 'global' && args.length && args.every((a) => typeof a === 'string'))
+    return `String(${entryCondition(value)})`;
+  if (op === 'concat' && args.length) return `(${args.map(entryMessage).join(' + ')})`;
+  throw new Error('invalid JS:ENTRYPOINT check message');
+};
 const entryInitializers = new Map();
 for (const spec of entrypoints) {
   if (!info.options?.lazy || typeof spec.entry !== 'string' || typeof spec.run !== 'function')
@@ -163,6 +172,15 @@ for (const spec of entrypoints) {
       || new Set(spec.environment).size !== spec.environment.length)
     throw new Error('JS:ENTRYPOINT environment names must be unique identifiers');
   if (![null, 'stderr'].includes(spec.errors)) throw new Error('invalid JS:ENTRYPOINT error policy');
+  spec.checks ??= [];
+  spec.loadErrors ??= [];
+  if (!Array.isArray(spec.checks) || spec.checks.some((c) => !Array.isArray(c) || c.length !== 2))
+    throw new Error('JS:ENTRYPOINT checks need predicate/message pairs');
+  for (const [condition, message] of spec.checks) { entryCondition(condition); entryMessage(message); }
+  if (!Array.isArray(spec.loadErrors) || spec.loadErrors.some((e) => !Array.isArray(e) || e.length !== 2
+      || typeof e[0] !== 'string' || !e[0].length || typeof e[1] !== 'string')
+      || new Set(spec.loadErrors.map((e) => e[0])).size !== spec.loadErrors.length)
+    throw new Error('JS:ENTRYPOINT load errors need unique code/message string pairs');
   entryCondition(spec.condition);
   entryInitializers.set(spec.entry, spec);
 }
@@ -296,8 +314,21 @@ ${lines.join('\n')}
       const imported = init.imports.map(([specifier], i) => `import * as __clysm_entry_module${i} from ${JSON.stringify(specifier)};`).join('\n');
       const modules = init.imports.map(([specifier, selected], i) => `[${JSON.stringify(specifier)}]: __clysm_entry_module${i}${selected === '*' ? '' : `[${JSON.stringify(selected)}]`}`).join(', ');
       const environment = init.environment.map((v) => `[${JSON.stringify(v)}]: process.env.${v}`).join(', ');
+      const checks = init.checks.map(([condition, message]) => `if (!(${entryCondition(condition)})) throw new Error(${entryMessage(message)});`).join('\n');
+      const load = init.loadErrors.length ? `let __clysm_loaded;
+try { __clysm_loaded = __clysm_library(); } catch (error) {
+  let code;
+  try { code = error?.code; } catch { /* Preserve an error whose properties throw. */ }
+  const mapped = ${JSON.stringify(init.loadErrors)}.find(([name]) => name === code);
+  if (mapped) throw new Error(mapped[1]);
+  throw error;
+}` : 'const __clysm_loaded = __clysm_library();';
       const start = `const __clysm_context = __clysm_register_entry(${JSON.stringify(entry)}, { url: __clysm_url, modules: { ${modules} }, environment: { ${environment} } });
-if (${entryCondition(init.condition)}) __clysm_library().library.entrypoints.find((e) => e.entry === ${JSON.stringify(entry)}).run(__clysm_context);`;
+if (${entryCondition(init.condition)}) {
+${checks}
+${load}
+__clysm_loaded.library.entrypoints.find((e) => e.entry === ${JSON.stringify(entry)}).run(__clysm_context);
+}`;
       // Keep host globals in a helper's scope: an entry may export names such
       // as process, Error, or globalThis. process.env.KEY stays literal here
       // so bundlers can substitute a deployment's value at build time.

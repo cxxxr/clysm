@@ -6,6 +6,10 @@
                 :entry (if (equal mode "name") "../outside" "start")
                 :when condition
                 :imports (when (equal mode "imports") '(("node:path" "bad-name")))
+                :checks (cond ((equal mode "checks") '((t)))
+                              ((equal mode "message") '((t (:source "not code")))))
+                :load-errors (cond ((equal mode "load-errors") '(("ENOENT" 1)))
+                                   ((equal mode "load-duplicates") '(("ENOENT" "one") ("ENOENT" "two"))))
                 :environment (when (equal mode "environment") '("BAD-NAME")))
   (when (equal mode "duplicate")
     (js:entrypoint (lambda (context) (declare (ignore context))) :entry "start")))
