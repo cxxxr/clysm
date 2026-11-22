@@ -1470,7 +1470,7 @@ with DEFCLASS whose superclasses include a structure class)."
 (defprim clysm-sys::%ht-keys-vector (x) :value
   `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 2)) (:ref.cast :vector)))
 (defprim clysm-sys::%ht-vals-vector (x) :value
-  `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 3)) (:ref.cast :vector)))
+  `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 2)) (:ref.cast :vector)))
 (defprim clysm-sys::%ht-set! (x i v) :value
   (let ((k (struct-iref-index i)) (tmp (new-local)))
     (if (and k (< -1 k 17))
@@ -3649,7 +3649,7 @@ y*40503 + (y >> bits)*31153) & (2^bits - 1), y = hash >> bits (Y a local i32)."
      (:loop again nil
        (:local.get i) :i32.eqz (:br_if done)
        (:local.get i) (:i32.const 1) :i32.sub (:local.set j)
-       (:local.get keys) (:local.get j) (:array.get :vector) (:local.get 1) :ref.eq
+       (:local.get keys) (:local.get j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.get 1) :ref.eq
        (:if nil nil ((:local.get j) :ref.i31 :return))
        (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
        (:br again)))
@@ -3741,14 +3741,14 @@ or object."
   (ht-index-code 0 1 'i)
   '(:local.get i) '(:i32.const 0) :i32.lt_s
   `(:if nil nil ((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+) :return))
-  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 6)
-  '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
+  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 5)
+  '(:ref.cast! :vector) '(:local.get i) '(:i32.const 1) :i32.shl '(:i32.const 1) :i32.add '(:array.get :vector))
 (defhelper :ht-get-id :ee-e ((i :i32))
   (ht-index-code 0 1 'i :ht-id-index)
   '(:local.get i) '(:i32.const 0) :i32.lt_s
   `(:if nil nil ((:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+) :return))
-  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 6)
-  '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
+  '(:local.get 0) '(:ref.cast! :si17) '(:struct.get :si17 5)
+  '(:ref.cast! :vector) '(:local.get i) '(:i32.const 1) :i32.shl '(:i32.const 1) :i32.add '(:array.get :vector))
 (defun ht-table-test-code (h fail)
   "Code doing FAIL unless the parameter H is a hash table."
   `((:local.get ,h) (:ref.test :si17) :i32.eqz (:if nil nil ,fail)
@@ -3761,12 +3761,12 @@ hash HASH, at the end of the vectors of the table whose slot vector is the
 local V when there is room (as %HT-ADD), else returning null.  Uses the
 locals KEYS FILL BK B BITS Y."
   `(;; a new entry, at the end of the vectors when there is room
-    (:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.tee keys) :array.len
+    (:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.tee keys) :array.len (:i32.const 1) :i32.shr_u
     (:local.get v) (:struct.get :si17 10) (:ref.cast! :i31) :i31.get_s (:local.tee fill)
     :i32.le_s (:if nil nil ((:ref.null :eq) :return))
-    (:local.get keys) (:local.get fill) (:local.get ,key) (:array.set :vector)
-    (:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
-    (:local.get fill) (:local.get ,value) (:array.set :vector)
+    (:local.get keys) (:local.get fill) (:i32.const 1) :i32.shl (:local.get ,key) (:array.set :vector)
+    (:local.get v) (:struct.get :si17 5) (:ref.cast! :vector)
+    (:local.get fill) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add (:local.get ,value) (:array.set :vector)
     (:local.get v) (:struct.get :si17 8) (:ref.cast! :limbs)
     (:local.get fill) (:local.get hash) (:array.set :limbs)
     (:local.get v) (:struct.get :si17 15) (:ref.cast! :i31) :i31.get_s (:local.set bits)
@@ -3792,8 +3792,8 @@ locals KEYS FILL BK B BITS Y."
   '(:local.get v) '(:local.get 1) '(:local.get hash) '(:call :ht-eq-index)
   '(:ref.cast! :i31) ':i31.get_s '(:local.tee i) '(:i32.const 0) ':i32.ge_s
   '(:if nil nil
-       ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
-        (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
+       ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector)
+        (:local.get i) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   (ht-add-code 1 2)
   '(:local.get 2))
         if (and (consp x) (consp (car x))) append x else collect x))
@@ -3824,7 +3824,7 @@ locals KEYS FILL BK B BITS Y."
      (:loop again nil
        (:local.get i) :i32.eqz (:br_if done)
        (:local.get i) (:i32.const 1) :i32.sub (:local.set j)
-       (:local.get keys) (:local.get j) (:array.get :vector) (:local.get 1) :ref.eq
+       (:local.get keys) (:local.get j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.get 1) :ref.eq
        (:if nil nil
             (;; unlinked from its chain
              (:local.get prev) :i32.eqz
@@ -3832,10 +3832,10 @@ locals KEYS FILL BK B BITS Y."
                   ((:local.get bk) (:local.get b) (:local.get next) (:local.get j) (:array.get :limbs) (:array.set :limbs))
                   ((:local.get next) (:local.get prev) (:i32.const 1) :i32.sub
                    (:local.get next) (:local.get j) (:array.get :limbs) (:array.set :limbs)))
-             (:local.get keys) (:local.get j)
+             (:local.get keys) (:local.get j) (:i32.const 1) :i32.shl
              (:global.get ,(sym-global 'clysm-sys::+deleted+)) (:struct.get :symbol ,+sym-value+)
              (:array.set :vector)
-             (:local.get v) (:struct.get :si17 6) (:ref.cast! :vector) (:local.get j) ,@(nil-code)
+             (:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.get j) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add ,@(nil-code)
              (:array.set :vector)
              (:local.get v)
              (:local.get v) (:struct.get :si17 4) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.sub :ref.i31
@@ -3862,7 +3862,7 @@ locals KEYS FILL BK B BITS Y."
        (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
        (:local.get hashes) (:local.get j) (:array.get :limbs) (:local.get 2) :i32.eq
        (:if nil nil
-            ((:local.get keys) (:local.get j) (:array.get :vector) (:local.tee k) (:local.get 1) :ref.eq
+            ((:local.get keys) (:local.get j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.tee k) (:local.get 1) :ref.eq
              (:if nil nil ((:local.get j) :ref.i31 :return))
              ;; (only a list is EQUAL to a list)
              (:local.get k) (:ref.test :cons)
@@ -3915,7 +3915,7 @@ ASCII letter)."
        (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
        (:local.get hashes) (:local.get j) (:array.get :limbs) (:local.get 2) :i32.eq
        (:if nil nil
-            ((:local.get keys) (:local.get j) (:array.get :vector) (:local.tee k)
+            ((:local.get keys) (:local.get j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.tee k)
              (:ref.test :string) :i32.eqz (:if nil nil ((:i32.const -2) :ref.i31 :return))
              (:local.get k) (:ref.cast! :string) (:local.tee ks) :array.len (:local.get n) :i32.ne (:br_if again)
              (:i32.const 0) (:local.set c)
@@ -3980,9 +3980,9 @@ not a string (left to EQUAL)."
   '(:local.get v) '(:local.get 1) '(:struct.set :si17 16)
   '(:local.get v) '(:local.get i) :ref.i31 '(:struct.set :si17 17)
   '(:local.get v)
-  '(:local.get v) '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector)
+  '(:local.get v) '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.get i) '(:i32.const 1) :i32.shl '(:array.get :vector)
   '(:struct.set :si17 18)
-  '(:local.get v) '(:struct.get :si17 6) '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
+  '(:local.get v) '(:struct.get :si17 5) '(:ref.cast! :vector) '(:local.get i) '(:i32.const 1) :i32.shl '(:i32.const 1) :i32.add '(:array.get :vector))
 ;;; (SETF GETHASH) of a simple string or a list in an EQUAL table (as :HT-PUT): the
 ;;; entry GETHASH has just found for the same key, else the entry of the
 ;;; key, else a new entry when there is room; null for another key or
@@ -3997,16 +3997,16 @@ not a string (left to EQUAL)."
        ((:local.get v) (:struct.get :si17 17) (:ref.cast! :i31) :i31.get_s (:local.tee i)
         (:local.get v) (:struct.get :si17 10) (:ref.cast! :i31) :i31.get_s :i32.lt_u
         (:if nil nil
-             ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.get i) (:array.get :vector)
+             ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector) (:local.get i) (:i32.const 1) :i32.shl (:array.get :vector)
               (:local.get v) (:struct.get :si17 18) :ref.eq
               (:if nil nil
-                   ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
-                    (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))))))
+                   ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector)
+                    (:local.get i) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add (:local.get 2) (:array.set :vector) (:local.get 2) :return))))))
   (ht-equal-index-code 1 '((:ref.null :eq) :return))
   '(:local.get i) '(:i32.const 0) :i32.ge_s
   '(:if nil nil
-       ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
-        (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
+       ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector)
+        (:local.get i) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add (:local.get 2) (:array.set :vector) (:local.get 2) :return))
   (ht-add-code 1 2)
   '(:local.get 2))
 (defprim clysm-sys::%ht-get-equal (h key slow) :value
@@ -4028,7 +4028,7 @@ not a string (left to EQUAL)."
       (:block ,done :i32
         (:loop ,lp nil
           (:local.get ,j) (:local.get ,n) :i32.ge_s (:if nil nil ((:i32.const -1) (:br ,done)))
-          (:local.get ,kv) (:local.get ,j) (:array.get :vector) (:local.get ,d) :ref.eq :i32.eqz
+          (:local.get ,kv) (:local.get ,j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.get ,d) :ref.eq :i32.eqz
           (:if nil nil ((:local.get ,j) (:br ,done)))
           (:local.get ,j) (:i32.const 1) :i32.add (:local.set ,j)
           (:br ,lp))
@@ -4084,7 +4084,7 @@ not a string (left to EQUAL)."
        (:local.get next) (:local.get j) (:array.get :limbs) (:local.set i)
        (:local.get hashes) (:local.get j) (:array.get :limbs) (:local.get 2) :i32.eq
        (:if nil nil
-            ((:local.get keys) (:local.get j) (:array.get :vector) (:local.tee k)
+            ((:local.get keys) (:local.get j) (:i32.const 1) :i32.shl (:array.get :vector) (:local.tee k)
              (:ref.test :string)
              (:if nil nil
                   ((:local.get k) (:ref.cast! :string) (:local.set ks) (:i32.const 0) (:local.set koff)
@@ -4118,6 +4118,7 @@ not a string (left to EQUAL)."
       (:local.get ,k) (:ref.cast! :string) :array.len (:call :ht-region-index))))
 (defprim clysm-sys::%ht-region-index (sv d hash off n) :value
   `(,@sv ,@d ,@(idx-code hash) ,@(idx-code off) ,@(idx-code n) (:call :ht-region-index)))
+
 ;;; The entries of the cache C (a simple vector, see %GF-SITE-EXPANSION in
 ;;; runtime/clos.lisp) of a call site of a slot reader: when X is an
 ;;; instance whose layout is that of an entry and the entry's value is the
@@ -7869,7 +7870,7 @@ those the code calls (modules made at run time call few of them)."
 ;;; then the roots (a simple vector).
 
 (defconstant +img-magic+ #x494D4C43)    ; "CLMI"
-(defconstant +img-version+ 6)
+(defconstant +img-version+ 7)
 ;; (the heap of a shaken program's runtime, src/preinit.lisp: records of
 ;; symbols without names, IMG-FILL-CODE)
 (defconstant +img-preinit-version+ 1006)
