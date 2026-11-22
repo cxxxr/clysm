@@ -117,8 +117,17 @@ export function instantiateLinked(state, bytes, codeBase) {
     state.helperImports = {};
     for (const k of Object.keys(ex)) if (k.startsWith('h:')) state.helperImports[k] = ex[k];
   }
+  // the entries of the functions that the module calls directly
+  // (LIVE-DIRECT-CALL-CODE, src/codegen.lisp)
+  let direct;
+  if (ex['h:direct-entry']) {
+    for (const imp of WebAssembly.Module.imports(mod)) {
+      if (imp.module === 'd') (direct ??= {})[imp.name] = ex['h:direct-entry'](Number(imp.name));
+    }
+  }
   const inst = new WebAssembly.Instance(mod, {
     ...state.imports,
+    d: direct,
     clysm: { ...state.helperImports, mv_count: ex.mv_count, mv_buf: ex.mv_buf, empty_slots: ex.empty_slots, dyn: ex.dyn, nil_symbol: ex.nil_symbol,
              poll_count: ex.poll_count, ih_next: ex.ih_next,
              lisp_throw: ex.lisp_throw, memory: ex.memory,

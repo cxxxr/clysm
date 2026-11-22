@@ -256,6 +256,8 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:x-e       (:func (:externref) (:eqref)))
     ;; the RUN function of a module compiled in the image (host instantiate_module)
     (:x-run     (:func (:externref) ((:ref :null :x-e))))
+    ;; an entry of a function of the image for a module compiled in it (:DIRECT-ENTRY)
+    (:i-fr      (:func (:i32) (:funcref)))
     (:e-l       (:func (:eqref) (:i64)))
     (:l-e       (:func (:i64) (:eqref)))
     (:eei-e     (:func (:eqref :eqref :i32) (:eqref)))

@@ -1298,20 +1298,44 @@ the differences are made of:
   benchmark's own function, in the script in the functions of the image.
   The call costs 2 to 3 ns more than the inlined code (`b-format`: 36
   million calls, 84 against 16 ms of self time in the benchmark's function).
-  *How the call is made is little of it*: with each such call of up to four
-  arguments made a call of an imported function (the image's entry for that
-  number of arguments, which the host asked the image for, from the closure,
-  when it instantiated the module; guarded by one `ref.eq` of the symbol's
-  function with that closure, a constant of the module) in place of the
-  call through the symbol's function cell, the closure's code and its
-  entry, `bench/suite.lisp` took 0.993 of its time, `library` 0.982 and
-  `programs` 0.992 (four rounds, the order of the two alternating;
-  `v-typep-runtime`, `p-clos-app`, `v-check-type` 0.89, `p-calc`,
-  `p-signal-warn` 0.92). Not kept for one percent: it needs a helper
-  exported by the image, a function type more in every module, the host
-  reading each module's imports, and works only for modules evaluated at
-  once (a module of a fasl or of a heap image has its imports resolved by
-  name). The engine inlines no imported function either.
+  *How the call is made is a small part of it*: a call of up to four
+  arguments of a function of another module is now a call of an imported
+  function in a module evaluated at once (the REPL, `load` of a source
+  file; `live-direct-call-code`, `src/codegen.lisp`): the image's entry of
+  that function for the number of arguments, which the host asks the image
+  for (the exported helper `:direct-entry`, from the closures that the
+  compiler returns with the module, `sys::*direct-closures*`) when it
+  instantiates the module. The call is guarded by one `ref.eq` of the
+  symbol's function with the closure it had when the call was compiled, a
+  constant of the module; when it differs (a redefinition, `trace`, `(setf
+  fdefinition)`, `fmakunbound`) the call goes through the function cell as
+  before (`(:callsym k)`). `bench/library.lisp` 0.976 of its script time,
+  `suite` 0.987, `programs` 0.990, `control` 0.992, `clos` 0.994 (four
+  rounds, the order alternating). `tests/cases/direct-entries.lisp`. Not
+  for a module of a fasl or one that a heap image may hold
+  (`*live-snapshots*`): their imports are resolved by name when a heap
+  image is linked (`host/link.mjs`), and a unit's code is shared with the
+  modules that run its segments. For fasls it would take the symbols of
+  the imported functions written with the module, resolved by `load`, the
+  same imports in the modules of the segments, and no such module in an
+  image that records its modules. The engine inlines no imported function
+  either: what the whole program gains by inlining stays.
+  **Copies of the runtime's leaf functions** were measured for that
+  (2026-11-23) and not kept: the small functions with a loop whose code
+  calls only themselves, each other, functions with an inline source and
+  functions that signal (66 of 194 with a loop and at most 150 conses:
+  `getf`, `sys::%putf`, `sys::%assoc-eql`, `sys::%member-eql`, `nth`,
+  `nthcdr`, `remprop`, `get-properties`, `copy-list`, `butlast`...; +33 KB
+  of sources in the image) copied as a local function (`labels`) into a
+  caller that calls them in a loop, under the guard of the symbol's
+  function (in a fasl against the image's function, kept as a property).
+  On top of the imported entries: `library` 0.99 (`v-plist` 186 → 154 ms
+  with both, the whole program 107), the other files unchanged, and
+  `p-generic-2d` 83 → 148 ms: a local function in a loop keeps the loop
+  from the versions that the image's loops get (guards hoisted, arrays of
+  two dimensions). `bench/libs.lisp` and `bench/apps.lisp` (fasls) 1.003
+  (both orders). Such copies would have to be functions of the module that
+  the loop optimizations know as calls without effects on the guards.
 * **`#'1+` given to a function of the file** (`k-church` 2.5,
   `k-generators` 1.2): the `funcall` of it is a `call_ref` whose target the
   engine inlines in a whole program and cannot in a script (`1+` of the
@@ -1386,9 +1410,10 @@ of the dispatch, see above), `p-seq-vector` 42 → 47. Whole programs are the
 same octets as before; `bench/libs.lisp` and `bench/apps.lisp`, whose
 libraries are fasls, 1.005 of their time (the later of two runs). The REPL
 image is 9.4 KB larger (8,875,571 → 8,884,982 octets), the module of one
-export unchanged (925,558). On top of it the imported entries above gave
-`library` 0.976, `suite` 0.987, `programs` 0.990, `control` 0.992, `clos`
-0.994 (same measure).
+export unchanged (925,558). With the imported entries (the next commit) all 251 are at 1.047 of
+the compiled time in the measure that had the leaf copies too (`library`
+1.08, `closures` 1.125, `clos` 1.06, `control` 1.07, `programs` 1.07; the
+REPL image 15 KB larger again, 8,899,983 octets).
 
 **`compile-file` compiles a whole file into one module** (`src/live.lisp`,
 "Compilation units"; CLHS 3.2.2.3 lets the file compiler assume that a call

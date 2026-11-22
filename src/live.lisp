@@ -49,6 +49,7 @@
     (*spec-clones* (make-hash-table :test 'equal))
     (*raw-clones* (make-hash-table :test 'equal))
     (*catch-clones* (make-hash-table :test 'equal))
+    (*direct-closures* nil)
     (*macros-ready* t))
   "The per-module code generation state, with the initial values of a new module."))
 
@@ -75,7 +76,7 @@ modules for SAVE-IMAGE (a module of a fasl may be loaded into one that does).")
 
 (defun live-compile-forms (forms)
   "Compile FORMS into a module linked with the running image.
-Returns (values bytes constants-vector)."
+Returns (values bytes constants-vector direct-closures)."
   (let* ((*live-mode* t)
         (*live-packages* t)
         (*read-package* *package*)
@@ -223,7 +224,9 @@ DEFINE-CHECKED-CASTS)."
           (tops (reverse *toplevel-lams*)))
       (live-compile-tops tops)
       (multiple-value-bind (octets vectors) (live-module-finish (list tops) castfns nil)
-        (values octets (first vectors))))))
+        ;; (and the functions of its direct imports: LIVE-DIRECT-CALL-CODE)
+        (values octets (first vectors)
+                (and *direct-closures* (coerce (reverse *direct-closures*) 'simple-vector)))))))
 
 (defun live-module-begin ()
   "The types, imports and standard helpers of a module compiled in the image

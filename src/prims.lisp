@@ -1918,6 +1918,21 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
      (:local.get 0) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ok)
      (:local.get 0) (:call :undefined-function)))
 
+;; The entry for K arguments of the J-th function of SYS::*DIRECT-CLOSURES*
+;; (the argument is 8 J + K): what a module compiled in the image imports
+;; to call a function of the image directly (LIVE-DIRECT-CALL-CODE,
+;; src/codegen.lisp; the host asks for it when it instantiates the module).
+(defhelper :direct-entry :i-fr ((code (:ref :null :code)) (k :i32))
+  `(:global.get ,(sym-global 'clysm-sys::*direct-closures*)) `(:struct.get :symbol ,+sym-value+)
+  '(:ref.cast! :vector) '(:local.get 0) '(:i32.const 3) :i32.shr_u '(:array.get :vector)
+  '(:ref.cast! :closure) `(:struct.get :closure ,+clo-code+) '(:local.set code)
+  '(:local.get 0) '(:i32.const 7) :i32.and '(:local.set k)
+  (loop for i from 0 below +max-fixed-args+
+        collect `(:block next nil
+                   (:local.get k) (:i32.const ,i) :i32.ne (:br_if next)
+                   (:local.get code) (:struct.get :code ,i) :return))
+  '(:local.get code) `(:struct.get :code ,+max-fixed-args+))
+
 (defhelper :undefined-function :sym-clo ((name (:ref :null :string)) (i :i32))
   ;; call the Lisp error function; it may return a function (via a restart)
   `(:block fail nil
