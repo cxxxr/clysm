@@ -780,7 +780,7 @@ two images (but the image's id and the marks of time):
   ms each, 40 ns an instruction, because the instructions of a whole
   program are by then cold memory in the order the collector left them
   (below). `wasm-func-uses` walks a body once and keeps the names it calls,
-  reads and sets, in order, for that body; with `*eager-func-uses*`
+  reads and sets, in order, for that body; in a whole program
   (`build-module`) it does so when the function is added, while the
   instructions are in the processor's caches: 70 ms for all of them. The
   three passes read those lists. (Tried and not kept: the walk of
@@ -903,7 +903,7 @@ identity hashes of the remaining nodes (0.2 s).
 **The functions of a whole program are encoded when they are compiled
 (2026-11-23).** `add-func` encodes the body of a function at once
 (`encode-function-early`, src/wasm.lisp) when the module is a whole
-program that is not shaken (`*encode-early*`, bound by `build-module`),
+program that is not shaken (the module's `early` slot, `build-module`),
 and drops its instructions. What is not known then is left out of the
 octets and noted as a relocation, (position, kind, nref) in a vector: the
 index of a function (a call, a `ref.func`, the call where a checked cast
@@ -961,6 +961,104 @@ Wasm 4025, 3751 -> 2713, 2543 ms, on SBCL 2519, 2500 -> 2181, 2159,
 in the image (the best of six): cl-ppcre 1503 -> 1391 ms, alexandria 693
 -> 681 (the modules made in the image are not encoded early). The REPL
 image 8875825 -> 8930905 octets with all of it.
+
+**The modules made in the image are encoded early too (2026-11-23).**
+`add-func` acts by the module's `early` slot: `:program` as above; `:live`
+for the modules of src/live.lisp (a form, the unit of a file or of a
+system, the module of each segment of a system compiled file by file),
+which first makes the function's list of `wasm-func-refs` (the functions,
+globals and cast types it refers to, each once in the order of the code:
+what `add-called-helpers`, `live-used-globals`, `global-segments`, the
+units' imports and now `remove-unreachable-functions` go by), then encodes
+it and drops the instructions; `:uses` for a shaken program. A function of
+a unit is encoded once and its relocations written for each module it is
+put in (its segment's and the unit's): the index an nref holds is marked
+with the encoding it is for (`*encode-token*`). Not with `*live-dump*`,
+which prints the instructions. The fasls are the same: `compile-file` of
+ASDF, `bench/suite.lisp` and `bench/programs.lisp`, and the system fasls
+of alexandria, cl-ppcre, babel and split-sequence with Quicklisp's own
+files, compared with those the image before made (all but the image's id
+and the marks of time). `compile-file` of ASDF 2925 -> 2727 ms, of
+`bench/programs.lisp` 853 -> 738; first builds with Quicklisp (the best of
+eight): cl-ppcre 1376 -> 1246 ms, babel 1231 -> 1174, alexandria 655 ->
+663.
+
+**The body of an interpreted function is made closures (2026-11-23,
+runtime/eval.lisp).** The compiler in Wasm runs the expanders of the
+macros of the program it compiles in the image's evaluator (the compiler
+in the REPL image compiles one after a few uses; SBCL compiles them all),
+and `%eval` walks a form every time: it finds the operator, looks each
+variable up by name in the environment, and expands the macros of the
+expander's own body again at every call (the backquote 37 ms,
+`destructuring-bind` 24 ms: 276 ms of the 2.3 s of `l-selfhost-compile`
+were interpretation). From its second call on, an interpreted function
+runs closures made of its body (`%cc`: a function of the environment for
+each form, macros expanded once, a lexical variable taken from its place
+in the environment). The environment stays `%eval`'s list with the same
+entries, so a form `%cc` does not take apart is left to `%eval` in it
+(bindings of special variables, `flet`, `labels`, `macrolet`, symbol
+macros, `progv`); the static environment is the environment of the call
+that makes the closures, extended as they will extend it. A function
+whose parameters are all required and not special binds them without the
+walk of its lambda list (one function for the two cases, with the same
+free variables: the functions of a generic function that interpreted code
+defines are put together into one closure, `%make-gf-closure`, which takes
+them to have one layout; ASDF's `find-component` trapped otherwise).
+`*eval-closures*` NIL gives the evaluator as it was. Interpretation in `l-selfhost-compile` 276 -> 26 ms, the allocation
+of the compilation 2374 -> about 1900 MB (with the next change);
+`(fib 22)` interpreted 13 -> 6 ms. The macros of an expander's body are
+expanded once, as when it is compiled: the constants of its backquotes
+are then the same objects in every expansion (they were made again at each
+call), and the compiler in Wasm merges them as the compiler on SBCL
+always did: its module of the runtime with `bench/suite.lisp` is 4.7 KB
+smaller (17 globals less), no longer the octets it made before (the
+compiler on SBCL makes the same octets as before).
+
+**The type of a constant is the type of its value (2026-11-23).**
+`node-type` of a `:const` node is `const-ty` of the value, not a note in
+`*node-types*`: 518000 lookups by the identity of a cons less (the
+constants were most of what was left in the tables), `l-selfhost-compile`
+2447 -> 2346 ms (medians 2516 -> 2423). A constant that the inference did
+not visit (one the code generator made) now has its type where it had
+none, so the code differs in places (a library shaken with its symbols 21
+octets smaller). The benchmark files against the tree before, two rounds
+each in turn: `suite` 0.71, 0.70 -> 0.70, 0.71; `programs` 0.78, 0.78 ->
+0.78, 0.79; `declared` 0.94, 0.94 -> 0.94, 0.93; `gabriel` 0.87, 0.81 ->
+0.85, 0.87; `library` 0.74, 0.74 -> 0.75, 0.74; `control` 0.73, 0.75 ->
+0.75, 0.72; `alloc` 1.37, 1.33 -> 1.37, 1.33; `clos` 1.08, 1.08 -> 1.06,
+1.09; no item moved beyond the noise.
+
+**What the code generator allocates (2026-11-23).** `sb-sprof :alloc` of
+the compilation after the changes above, 1.75 GB on SBCL: lists 470 MB,
+of which `append` (the splices of backquotes copying the code of the
+parts into that of the whole) is 80 MB, 5% of all; the rest of the lists
+is the instructions themselves, made once each by some hundred
+functions, none more than a few megabytes. So splicing without copying, or
+shared `(:local.get n)` instructions, would save a few percent of the
+allocation at most; writing octets instead of instructions would save the
+lists, and is a rewrite of how every `cg` function returns its code. The
+larger allocators were elsewhere: the copies of the inference's
+environments (225 MB: `ti-exit` 70, which copied the environment at every
+`return-from` and `go` before joining it with the exit's; it joins the
+environment itself now), the types (122 MB before `kinds-ty`), the
+evaluator (above). Time in scavenges for `l-selfhost-compile`: 286 ->
+255-263 ms, allocation 2374 -> 1905-1936 MB.
+
+With all of it, against main before any of these changes
+(`tools/bench-libs.sh`, the best of three, twice, in turn on one slot,
+2026-11-23): the compiler in Wasm 3883, 3669 -> 2488, 2331 ms; on SBCL
+2510, 2440 -> 2181, 2160; `l-selfhost-compile` 1.55, 1.50 -> 1.14, 1.08;
+the other items of `bench/libs.lisp` and `tools/bench-startup.sh` as
+before or a little lower. First builds with Quicklisp and an empty cache
+(the best of six, in turn): cl-ppcre 1800 -> 1426 ms, babel 1247 -> 1132,
+alexandria 879 -> 803; Quicklisp's setup, which compiles ASDF, 3240 ->
+2640 (the best of three). In the 2.1 s that the compiler in Wasm now
+takes for the benchmark (a profile on a quiet slot): garbage collection
+275 ms (SBCL 40), the notes of nodes 230 ms (`node-note`, `set-node-note`,
+`node-key-lvar` 136, `identity_hash` 76 for the nodes that lead to no
+variable), the walk of `inline-calls` over every function 100 ms,
+`map-subnodes` 93 ms of its own in all the walks that use it; the rest is
+flat (no function above 2.5%).
 
 **Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
 `case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the
