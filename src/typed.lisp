@@ -2595,6 +2595,18 @@ operation); NIL otherwise.  EFFECT: no value is left."
                               (:if nil :eqref ((:local.get ,v) :i32.wrap_i64 :ref.i31)
                                    ((:local.get ,v) (:call :i64-int) (:local.tee ,b) :ref.as_non_null))))
                       (:br ,done))
+                    ;; the box of an integer within 64 bits (a sum of times,
+                    ;; sizes, products): its value added here, after the
+                    ;; fixnum's tests failed, before any call
+                    ,@(let ((nb (gensym "NOTBOX")) (y (new-local :i64)) (w (new-local :i64)))
+                        `((:block ,nb nil
+                            (:local.get ,lb) :ref.is_null :i32.eqz (:br_if ,nb)
+                            (:local.get ,lx) (:ref.test :ibox) :i32.eqz (:br_if ,nb)
+                            (:local.get ,lx) (:ref.cast! :ibox) (:struct.get :ibox 0) (:local.set ,y)
+                            ,@(i64-checked-op-code (if sub :sub :add) lv64 y w nb)
+                            (:local.get ,w) (:local.set ,v) (:ref.null :eq) (:local.set ,b)
+                            ,@(unless effect (dual-materialize-code b v))
+                            (:br ,done))))
                     ;; (a double, as the sum of doubles from 0 has at each
                     ;; step: the generic sum at once)
                     (:local.get ,lx) (:ref.test :double)
