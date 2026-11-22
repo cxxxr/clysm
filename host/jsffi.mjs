@@ -95,6 +95,86 @@ globalThis.__clysm_define_class ??= defineClass;
 
 const utf16 = new TextDecoder('utf-16le', { ignoreBOM: true });
 
+// The functions of JavaScript that the runtime calls (runtime/js.lisp, misc.lisp,
+// thread.lisp, process.lisp), by name: (%js-helper "name").  They are written
+// here, not made from text by eval, which a page's Content-Security-Policy
+// forbids without 'unsafe-eval'.
+const runtimeHelpers = {
+  // the Error of a Lisp condition (%JS-FAILURE): its stack has the Lisp frames
+  // from the function that signalled the condition, without the ones of this
+  // function, SIGNAL or ERROR and the handler; the Lisp frames are named after
+  // their functions (without the numbers that tell apart functions of the same
+  // name; a library's functions are named from a file of their own)
+  makeFailure(message, type, condition, mapStack, nameFrames) {
+    const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
+    const error = new Error(message);
+    Error.stackTraceLimit = old;
+    const lines = (typeof nameFrames === 'function' ? nameFrames(error.stack) : String(error.stack)).split('\n');
+    let first = 1;
+    for (let i = 1; i < lines.length; i++) {
+      if (/^\s*at (ERROR|%ERROR\*|CERROR|SIGNAL|%SIGNAL\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
+    }
+    if (first === 1) {
+      // (a frame of Wasm, named or not: "at NAME (wasm://...)" or "at wasm://...")
+      while (first < lines.length && !/wasm:/.test(lines[first])) first++;
+    }
+    // (the host names the places of the Lisp frames: file and line)
+    error.stack = ['LispError: ' + message]
+      .concat(lines.slice(first).map((l) => (typeof mapStack === 'function' ? mapStack(l)
+                                           : l.replace(/at ([^ ]+?)#\d+((?:\/[a-z,]+)*) \(/, 'at $1$2 ('))))
+      .join('\n');
+    error.name = 'LispError';
+    error.lispType = type;
+    error.lispCondition = condition;
+    return { __clysm_failure__: error };
+  },
+  // the head of a compiled file (misc.lisp): "LENGTH-OF-HEAD WASM-SIZE FILE-SIZE", or null
+  faslHead(read, fs, path) {
+    const size = fs.statSync(path).size;
+    const b = read(path, 0, Math.min(size, 64));
+    let s = '';
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    const m = /^;;; Clysm compiled file\n;;; wasm (\d+)\n/.exec(s);
+    return m ? m[0].length + ' ' + m[1] + ' ' + size : null;
+  },
+  decodeOctets(read, path, offset, length) {
+    return new TextDecoder().decode(read(path, offset, length));
+  },
+  // the instances of classes, held by WeakRefs (js.lisp, %INSTANCE-TRACKER)
+  newInstanceTracker() {
+    return {
+      refs: new WeakMap(),
+      add(cls, obj) {
+        let e = this.refs.get(cls);
+        if (!e) this.refs.set(cls, e = { list: [], limit: 64 });
+        e.list.push(new WeakRef(obj));
+        if (e.list.length > e.limit) {
+          e.list = e.list.filter((r) => r.deref() !== undefined);
+          e.limit = Math.max(64, e.list.length * 2);
+        }
+      },
+      live(cls) {
+        const e = this.refs.get(cls);
+        return e ? e.list.map((r) => r.deref()).filter((o) => o !== undefined) : [];
+      },
+    };
+  },
+  deleteProperty(o, k) { delete o[k]; },
+  // [promise, end] (thread.lisp): END ends the wait (the promise is resolved with 0),
+  // and after MS milliseconds (unless MS is negative) the promise is resolved with 1
+  deferred(ms) {
+    let end, timer;
+    const p = new Promise((resolve) => {
+      end = (v) => { if (timer !== undefined) clearTimeout(timer); resolve(v === 1 ? 1 : 0); };
+      if (ms >= 0) timer = setTimeout(() => end(1), ms);
+    });
+    return [p, end];
+  },
+  yieldTurn() { return new Promise((resolve) => (globalThis.setImmediate || setTimeout)(resolve)); },
+  withEnvironment(e) { return { ...process.env, ...e }; },
+};
+globalThis.__clysm_runtime ??= runtimeHelpers;
+
 export function makeJsImports(state) {
   let promisingApply = null;
   // strings and octets cross through the memory the module exports

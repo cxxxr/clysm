@@ -14,6 +14,11 @@ const lazy = mode === 'lazy' || embedded;
 // (the lazy library's modules are .js: tests/lib/lazy.lisp)
 const ext = lazy ? '.js' : '.mjs';
 
+// (a page whose Content-Security-Policy has no 'unsafe-eval' has no eval: the runtime asks for none)
+if (embedded) {
+  globalThis.eval = () => { throw new EvalError('eval is not allowed here (no unsafe-eval)'); };
+}
+
 let loaded = null;
 if (lazy) {
   // importing the modules loads nothing: the constants and classes are there

@@ -270,35 +270,14 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
 (%note-host-variable '*track-instance-hook* (lambda () nil))
 (%defvar-host *js-suspending* :unknown "Whether the JavaScript engine can suspend WebAssembly.")
 
+(defun %js-helper (name)
+  "The function NAME of JavaScript that the runtime calls, of the host
+\(host/jsffi.mjs): none is made from text by eval, which a page's
+Content-Security-Policy forbids."
+  (js:get (js:global "__clysm_runtime") name))
+
 (%defvar-host *js-make-failure*
-  (js:eval "(message, type, condition, mapStack, nameFrames) => {
-  const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
-  const error = new Error(message);
-  Error.stackTraceLimit = old;
-  // the frames from the function that signalled the condition: without the
-  // ones of this function, SIGNAL or ERROR and the handler; the Lisp frames
-  // are named after their functions (without the numbers that tell apart
-  // functions of the same name)
-  // (a library's functions are named from a file of their own)
-  const lines = (typeof nameFrames === 'function' ? nameFrames(error.stack) : String(error.stack)).split('\\n');
-  let first = 1;
-  for (let i = 1; i < lines.length; i++) {
-    if (/^\\s*at (ERROR|%ERROR\\*|CERROR|SIGNAL|%SIGNAL\\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
-  }
-  if (first === 1) {
-    // (a frame of Wasm, named or not: \"at NAME (wasm://...)\" or \"at wasm://...\")
-    while (first < lines.length && !/wasm:/.test(lines[first])) first++;
-  }
-  // (the host names the places of the Lisp frames: file and line)
-  error.stack = ['LispError: ' + message]
-    .concat(lines.slice(first).map((l) => (typeof mapStack === 'function' ? mapStack(l)
-                                         : l.replace(/at ([^ ]+?)#\\d+((?:\\/[a-z,]+)*) \\(/, 'at $1$2 ('))))
-    .join('\\n');
-  error.name = 'LispError';
-  error.lispType = type;
-  error.lispCondition = condition;
-  return { __clysm_failure__: error };
-}")
+  (%js-helper "makeFailure")
   "Makes the JavaScript Error for a Lisp condition (its stack has the Lisp frames
 of the place where it was signalled), in the object that tells the host to throw it.")
 
@@ -665,22 +644,7 @@ functions are given their arguments unconverted (see JS:EXPORT)."
 (defun %instance-tracker ()
   (or *instance-tracker*
       (setq *instance-tracker*
-            (js:eval "({
-  refs: new WeakMap(),
-  add(cls, obj) {
-    let e = this.refs.get(cls);
-    if (!e) this.refs.set(cls, e = { list: [], limit: 64 });
-    e.list.push(new WeakRef(obj));
-    if (e.list.length > e.limit) {
-      e.list = e.list.filter((r) => r.deref() !== undefined);
-      e.limit = Math.max(64, e.list.length * 2);
-    }
-  },
-  live(cls) {
-    const e = this.refs.get(cls);
-    return e ? e.list.map((r) => r.deref()).filter((o) => o !== undefined) : [];
-  },
-})"))))
+            (js:funcall (%js-helper "newInstanceTracker")))))
 
 (defun track-instances (&optional (on t))
   "While ON, the instances made by ALLOCATE-INSTANCE are tracked: when a class
@@ -785,7 +749,7 @@ when VALUE is NIL."
     (when process
       (if value
           (js:set (js:get process "env") name value)
-          (js:funcall (js:eval "(o, k) => { delete o[k]; }") (js:get process "env") name))))
+          (js:funcall (%js-helper "deleteProperty") (js:get process "env") name))))
   value)
 
 (defvar *%cwd* nil

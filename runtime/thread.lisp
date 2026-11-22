@@ -91,14 +91,7 @@ resolved with 0), and after MS milliseconds (unless MS is negative) the
 promise is resolved with 1."
   (js:funcall (or *js-deferred*
                   (setq *js-deferred*
-                        (js:eval "(ms) => {
-  let end, timer;
-  const p = new Promise((resolve) => {
-    end = (v) => { if (timer !== undefined) clearTimeout(timer); resolve(v === 1 ? 1 : 0); };
-    if (ms >= 0) timer = setTimeout(() => end(1), ms);
-  });
-  return [p, end];
-}")))
+                        (%js-helper "deferred")))
               ms))
 
 (defun %wait (&optional timeout what)
@@ -150,7 +143,7 @@ its value."
     (let ((th (current-thread)))
       (js:await (js:funcall (or *js-yield*
                                 (setq *js-yield*
-                                      (js:eval "() => new Promise((resolve) => (globalThis.setImmediate || setTimeout)(resolve))")))))
+                                      (%js-helper "yieldTurn")))))
       (%resumed)
       (%run-interrupts th)))
   nil)
@@ -228,7 +221,7 @@ its value."
                  ;; the thread that made it goes on first
                  (js:await (js:funcall (or *js-yield*
                                            (setq *js-yield*
-                                                 (js:eval "() => new Promise((resolve) => (globalThis.setImmediate || setTimeout)(resolve))")))))
+                                                 (%js-helper "yieldTurn")))))
                  (%resumed)
                  (setf (thread-state th) :running)
                  (%run-thread th))
