@@ -736,6 +736,10 @@ surely not of them (for the branch where the test is false)."
     (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
       (multiple-value-bind (in out) (type-code-mask-tys (ty-lo m))
         (list (list 0 in out))))))
+(def-ti-test clysm-sys::%kind-is (a)
+  (let ((m (second a)))
+    (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
+      (list (list 0 (type-code-mask-tys (ty-lo m)) *ty-top*)))))
 (def-ti-test clysm-sys::fixnump (a) (list (list 0 *ty-fixnum* *ty-top*)))
 
 ;;; ------------------------------------------------------------

@@ -121,7 +121,10 @@ at SAFETY 1 and more, the test left out where the type of ARG decides it)."
         (let* ((sym (gensym "V"))
                (lv (make-lvar :name sym :owner *inline-caller*))
                (env (env-extend (make-cenv) (list :var sym lv)))
-               (test (convert (type-test-form sym spec) env))
+               ;; (converted as code of the caller: a block of the test's
+               ;; expansion, TYPEP by the kind, is the caller's, and an
+               ;; exit to it a branch)
+               (test (let ((*current-lam* *inline-caller*)) (convert (type-test-form sym spec) env)))
                (err (convert `(clysm-sys::%signal-type-error ,sym ',spec) env)))
           `(:let ((,lv . ,arg)) (:if ,test ,(convert sym env) ,err)))
         arg)))

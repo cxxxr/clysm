@@ -777,7 +777,9 @@ variable, so it may be evaluated after a variable is read."
            (fail (when exhaustive `((t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
       (multiple-value-bind (c code-clauses bindings) (%typecase-code-clauses k clauses exhaustive)
         (let ((body (if c
-                        `(let* ((,c (%type-code ,k)) ,@bindings) (cond ,@code-clauses ,@fail))
+                        (if (fboundp '%typecase-fused-form)
+                            (funcall '%typecase-fused-form k c code-clauses bindings fail)
+                            `(let* ((,c (%type-code ,k)) ,@bindings) (cond ,@code-clauses ,@fail)))
                         `(cond ,@(%case-cond-clauses k clauses exhaustive t) ,@fail))))
           (if var body `(let ((,k ,key)) ,body)))))))
 
