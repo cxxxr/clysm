@@ -23,15 +23,19 @@
 //             lazy library made before loading it (they get their functions)
 import { makeImports, installSourceMap } from '../common.mjs';
 
+// (a line is given to SINK when it ends: only the text written is looked at for its end,
+// and what came before it is joined once then)
 function lines(sink) {
-  let pending = '';
+  let pending = [];
   return {
     write(text) {
-      pending += text;
-      const end = pending.lastIndexOf('\n');
-      if (end >= 0) { sink(pending.slice(0, end)); pending = pending.slice(end + 1); }
+      const end = text.lastIndexOf('\n');
+      if (end < 0) { pending.push(text); return; }
+      pending.push(text.slice(0, end));
+      sink(pending.join(''));
+      pending = end + 1 < text.length ? [text.slice(end + 1)] : [];
     },
-    flush() { if (pending !== '') { sink(pending); pending = ''; } },
+    flush() { if (pending.length) { sink(pending.join('')); pending = []; } },
   };
 }
 
