@@ -133,6 +133,7 @@ assert.deepEqual(lib.parsePart(`x${'y'.repeat(100000)}{"a":[1,2]}z`, 100001, 100
 assert.equal(await lib.awaitKind(Promise.resolve(undefined)), 'undefined');
 assert.equal(await lib.awaitKind(Promise.resolve(false)), 'boolean');
 assert.equal(await lib.awaitLisp(), 42);
+assert.equal(await lib.awaitLispObject(), true);
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 console.log(`lib: package (${mode}) ok`);

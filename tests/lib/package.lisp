@@ -155,3 +155,6 @@ export type Places = Place[];" :entry "places")
            :async t :type "(promise: Promise<unknown>) => Promise<string>")
 (js:export "awaitLisp" (lambda () (js:await-raw (js:async (lambda () 42)))) :async t
            :type "() => Promise<number>")
+(js:export "awaitLispObject"
+           (lambda () (js:js-value-p (js:await-raw (js:call (js:global "Promise") "resolve" (js:to-js (make-hash-table))))))
+           :async t :type "() => Promise<boolean>")

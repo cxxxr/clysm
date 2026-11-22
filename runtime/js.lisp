@@ -453,8 +453,12 @@ of a computation of JS:ASYNC is its Lisp value all the same."
       (%resume-computation computation)
       (if raw
           (let ((value (%js-result-raw result)))
-            ;; (a Lisp value, of JS:ASYNC: as JS:AWAIT gives it)
-            (if (eql (%js-typeof value) 9) (%js-async-value (js:to-lisp value)) value))
+            ;; (the value of a computation of JS:ASYNC: as JS:AWAIT gives it; another Lisp
+            ;; object stays as JavaScript has it)
+            (if (eql (%js-typeof value) 9)
+                (let ((lisp (js:to-lisp value)))
+                  (if (and (consp lisp) (eq (car lisp) *js-async-value*)) (cdr lisp) value))
+                value))
           (%js-async-value (%js-result result))))))
 
 (defun js:async (function &rest args)
