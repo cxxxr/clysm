@@ -1150,8 +1150,9 @@ the structure class (local C) or one including it."
 (defun struct-class-known-p (x cls)
   "The object (node X) is known to be of the structure class whose node is
 CLS (a declaration of the variable, a test, a slot access before)."
-  (let ((name (struct-class-node-name cls)))
-    (and name (eq (ty-cls (node-ty x)) name))))
+  (let ((name (struct-class-node-name cls)) (xcls (ty-cls (node-ty x))))
+    ;; (or of a structure including it)
+    (and name (or (eq xcls name) (struct-class-includes-p xcls name)))))
 
 (defun struct-class-shape-type (name)
   "The Wasm type of the instances of the structure class NAME when its slots
@@ -1240,6 +1241,9 @@ shadows as INITS, the code of STRUCT-SHADOW-INIT-CODE, sets them)."
       (and (consp e) (eq (car e) ty)
            (eq (car (get-loc (second x))) :local)
            (cdr e)))))
+
+(defun tree-member-p (x tree)
+  (if (atom tree) (eq x tree) (or (tree-member-p x (car tree)) (tree-member-p x (cdr tree)))))
 
 (defun known-struct-check-code (o ty s slow &optional x)
   "For an object (local O) known to be of the structure class: code leaving
@@ -1374,19 +1378,35 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
       (multiple-value-bind (x cls i v size vp) (struct-iref-args node)
         (let* ((name (struct-class-node-name cls)) (k (const-int-node i))
                (n (let ((s (const-int-node size))) (and s (mod s 64))))
-               (ty (and k n (< -1 k n) (<= n +struct-inline-max+) (sinst-type n))))
-          (when (and ty name (eq (ty-cls (node-ty x)) name))
+               (ty (and k n (< -1 k n) (<= n +struct-inline-max+) (sinst-type n)))
+               (xcls (ty-cls (node-ty x))))
+          ;; an object known to be of a structure including the accessor's:
+          ;; as its own Wasm type (the engine's test of the exact type of an
+          ;; object is one comparison; of a supertype, three loads more)
+          (when (and ty name (not (eq xcls name)) (struct-class-includes-p xcls name))
+            (let ((d (get xcls 'clysm-sys::%struct-description)))
+              (setq ty (and (eq (nth 6 d) :fields) (integerp (third d)) (<= n (third d) +struct-inline-max+)
+                            (sinst-type (third d)))
+                    name (and ty xcls))))
+          (when (and ty name (eq xcls name))
             ;; (an instance of a structure including it that has a slot vector: the function)
-            (let ((o (new-local)) (s (new-local `(:ref :null ,ty))) (tmp (new-local))
-                  (slow (gensym "SLOW")) (done (gensym "SREF")))
+            (let* ((o (new-local)) (s (new-local `(:ref :null ,ty))) (tmp (new-local))
+                   (slow (gensym "SLOW")) (done (gensym "SREF"))
+                   (check (known-struct-check-code o ty s slow x))
+                   (access `((:local.get ,s)
+                             ,@(if vp
+                                   `((:local.get ,tmp) (:struct.set ,ty ,(sinst-field k)) (:local.get ,tmp))
+                                   `((:struct.get ,ty ,(sinst-field k)))))))
+              ;; (a cast that cannot fail: no other way)
+              (unless (tree-member-p slow check)
+                (return-from typed-struct-code
+                  `(,@(cg x) (:local.set ,o) ,@(when vp `(,@(cg v) (:local.set ,tmp)))
+                    ,@check ,@access)))
               `(,@(cg x) (:local.set ,o) ,@(when vp `(,@(cg v) (:local.set ,tmp)))
                 (:block ,done :eqref
                   (:block ,slow nil
-                    ,@(known-struct-check-code o ty s slow x)
-                    (:local.get ,s)
-                    ,@(if vp
-                          `((:local.get ,tmp) (:struct.set ,ty ,(sinst-field k)) (:local.get ,tmp))
-                          `((:struct.get ,ty ,(sinst-field k))))
+                    ,@check
+                    ,@access
                     (:br ,done))
                   (:local.get ,o) ,@(cg cls) (:i32.const ,k) :ref.i31
                   ,@(if vp
@@ -1397,7 +1417,7 @@ it in S as the Wasm type TY, branching to SLOW where it may not be of it."
       (let ((args (cddr node)))
         (if (= (length args) (if (eq (node-op-name node) 'clysm-sys::%struct-set) 5 4)) (butlast args) args))
     (let ((name (struct-class-node-name cls)))
-      (when (and name (eq (ty-cls (node-ty x)) name) (fx-arg-p i))
+      (when (and name (struct-class-known-p x cls) (fx-arg-p i))
         (if vp
             (let ((tmp (new-local)))
               `(,@(cg x) (:ref.cast! :instance) (:struct.get :instance 1) ,@(cg-rep i :i32)
@@ -1426,6 +1446,16 @@ type, where the type of the value shows it holds), else NIL."
                          ((clysm-sys::%double-float-p clysm-sys::double-float-p) +k-double+))))
              (cond ((ty-only-p ty mask) :true)
                    ((not (logtest (ty-bits ty) mask)) :false)))))
+        ;; the predicate of a structure on an object known (not by a
+        ;; declaration) to be of it or of one including it
+        (clysm-sys::%structure-typep
+         (let ((x (first args)) (cls (and (cdr args) (struct-class-node-name (second args))))
+               (ty (first tys)))
+           (when (and cls (eq (car x) :lref) (not (lvar-decl (second x)))
+                      (ty-only-p ty +k-other+) (ty-cls ty) (symbolp (ty-cls ty))
+                      (struct-class-type-p (ty-cls ty))
+                      (or (eq (ty-cls ty) cls) (struct-class-includes-p (ty-cls ty) cls)))
+             :true)))
         ((clysm-sys::fixnump) (when (and (= (length tys) 1) (ty-fixnum-p (first tys))) :true))
         ((integerp clysm-sys::%integerp) (when (= (length tys) 1)
                     (cond ((ty-only-p (first tys) +k-int+) :true)
