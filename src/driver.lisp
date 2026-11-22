@@ -965,7 +965,8 @@ module and *PREINIT-PARTS*.")
   "NIL, or the file that BUILD-MODULE writes WRITE-SHAKE-WHY's report to.")
 
 (defun build-module (&key (entry "_start"))
-  (let ((*m* (make-wasm-module)))
+  (let ((*m* (make-wasm-module))
+        (*eager-func-uses* t))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
     (setf (wasm-module-base-types *m*) (length *type-defs*))
     (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
@@ -1173,7 +1174,9 @@ REPL image, 59000 were the conses of constant lists."
       ;; (the strings that :INIT-STRINGS fills are globals of their own)
       (dolist (d *data-strings*) (setf (gethash (car d) pinned) 1))
       ;; what refers to them otherwise: the code, the other globals
-      (loop for f across (wasm-module-funcs *m*) do (walk (wasm-func-body f) pinned))
+      (loop for f across (wasm-module-funcs *m*)
+            do (dolist (name (nth-value 1 (wasm-func-uses f)))
+                 (when (gethash name names) (incf (gethash name pinned 0)))))
       (loop for g across (wasm-module-globals *m*) do (walk (fourth g) pinned))
       (dolist (g *closure-globals*) (walk (third g) pinned))
       (dolist (g *misc-globals*) (walk (fourth g) pinned))
@@ -1196,9 +1199,11 @@ REPL image, 59000 were the conses of constant lists."
   "BYTES with a custom section clysm.build at the end that names the image by
 a hash of its octets: a heap image (runtime/image.lisp) is valid only for
 the image it names."
+  ;; (BYTES declared where it is bound: a declaration of it in the LET below
+  ;; is a free one, and each reference in the loop would test the type)
+  (declare (type (simple-array (unsigned-byte 8) (*)) bytes))
   (let ((a 2166136261) (b 3735928559) (n (length bytes)))
-    (declare (type (unsigned-byte 32) a b) (fixnum n)
-             (type (simple-array (unsigned-byte 8) (*)) bytes))
+    (declare (type (unsigned-byte 32) a b) (fixnum n))
     (dotimes (i n)
       (let ((x (aref bytes i)))
         (setf a (ldb (byte 32 0) (* (logxor a x) 16777619))

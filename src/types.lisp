@@ -756,11 +756,95 @@ variables (FDUAL-LOCAL) bound outside the loop that are doubles there; their
 f64 local holds the value throughout the version (normalised on entry, every
 store writes it and clears the eqref local).")
 
+;;; What the compiler notes about a node (its type in *NODE-TYPES*; what
+;;; COLD-BRANCH-P and ARM-RECURSES of codegen.lisp found) is in EQ hash tables
+;;; keyed by the node, a cons: its hash is the object's identity, which costs
+;;; a call to the host and an entry in the host's table of identities on
+;;; Clysm (a third of the inference's time went there; a new entry is 0.3 to
+;;; 2 microseconds as that table grows), and an address that the collector
+;;; changes on SBCL.  The nodes that name a variable (a reference, an
+;;; assignment, the LET that binds it first: 44% of all nodes) keep theirs in
+;;; the variable instead, in a short list (node . value)... for each table:
+;;; (key count (node . value)...), where KEY names the table (the table
+;;; itself for the types; the tables of the copies of a function for given
+;;; types, codegen.lisp, are dropped with the copy: DROP-LVAR-NODE-TYPES).
+;;; The first +LVAR-NODE-NOTES-MAX+ nodes of a variable are there, the others
+;;; in the table as before.
+(defconstant +lvar-node-notes-max+ 16)
+
+(declaim (inline node-key-lvar lvar-node-record node-note-entry))
+(defun node-key-lvar (node)
+  "The variable that keeps what is noted about NODE, or NIL."
+  (and (consp node)
+       (let ((lv (case (car node)
+                   ((:lref :lset) (second node))
+                   (:let (let ((b (second node))) (and (consp b) (consp (car b)) (car (car b))))))))
+         (and (lvar-p lv) lv))))
+
+(defun node-note-entry (node alist)
+  "(ASSOC NODE ALIST :TEST #'EQ)."
+  (do ((l alist (cdr l))) ((null l) nil)
+    (when (eq (car (car l)) node) (return (car l)))))
+
+(defun lvar-node-record (lv key)
+  "The record (key count . alist) of LV for the table named by KEY, or NIL."
+  (do ((r (lvar-ntys lv) (cdr r))) ((null r) nil)
+    (when (eq (car (car r)) key) (return (car r)))))
+
+(defun node-note (node key table)
+  "What is noted about NODE in TABLE (named by KEY), or NIL."
+  (let ((lv (node-key-lvar node)))
+    (if lv
+        (let ((rec (lvar-node-record lv key)))
+          (and rec
+               (let ((e (node-note-entry node (cddr rec))))
+                 (cond (e (cdr e))
+                       ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (values (gethash node table)))
+                       (t nil)))))
+        (values (gethash node table)))))
+
+(defun set-node-note (node key table value)
+  (let ((lv (node-key-lvar node)))
+    (if lv
+        (let ((rec (lvar-node-record lv key)))
+          (if rec
+              (let ((e (node-note-entry node (cddr rec))))
+                (cond (e (setf (cdr e) value))
+                      ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (setf (gethash node table) value))
+                      (t (setf (cddr rec) (cons (cons node value) (cddr rec))
+                               (cadr rec) (1+ (the fixnum (cadr rec))))
+                         value)))
+              (progn (push (list key 1 (cons node value)) (lvar-ntys lv)) value)))
+        (setf (gethash node table) value))))
+
+(defun node-type (node)
+  "The type noted for NODE in *NODE-TYPES*, or NIL."
+  (node-note node *node-types* *node-types*))
+
+(defun set-node-type (node ty)
+  (set-node-note node *node-types* *node-types* ty))
+
+(defun clear-node-type (node)
+  (let ((lv (node-key-lvar node)))
+    (if lv
+        (let ((rec (lvar-node-record lv *node-types*)))
+          (when rec
+            (let ((e (node-note-entry node (cddr rec))))
+              (cond (e (setf (cdr e) nil))
+                    ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (remhash node *node-types*))))))
+        (remhash node *node-types*))))
+
+(defun drop-lvar-node-types (lvars table)
+  "Forget the node types that LVARS keep for TABLE, which is dropped."
+  (dolist (lv lvars)
+    (when (lvar-ntys lv)
+      (setf (lvar-ntys lv) (delete table (lvar-ntys lv) :key #'car :test #'eq)))))
+
 (defun node-ty (node)
   (when (and *version-lvar-tys* (consp node) (eq (car node) :lref) (assumed-guards-active-p))
     (let ((e (assoc (second node) *version-lvar-tys*)))
       (when e (return-from node-ty (cdr e)))))
-  (let ((ty (or (gethash node *node-types*) *ty-top*)))
+  (let ((ty (or (node-type node) *ty-top*)))
     (if (and (consp node) (member (car node) '(:if :let :block :progn :the :prim))
              (assumed-guards-active-p))
         (assumed-node-ty node ty)
@@ -791,8 +875,8 @@ forms ending in one."
     (if refined (ty-intersect ty refined) ty)))
 
 (defun note-ty (node ty)
-  (let ((old (gethash node *node-types*)))
-    (setf (gethash node *node-types*) (if old (ty-union old ty) ty))))
+  (let ((old (node-type node)))
+    (set-node-type node (if old (ty-union old ty) ty))))
 
 (defun env-copy (env) (if (eq env :bottom) :bottom (copy-seq env)))
 (defun env-join (a b)
@@ -800,6 +884,11 @@ forms ending in one."
         ((eq b :bottom) (env-copy a))
         (t (let ((r (make-array (length a))))
              (dotimes (i (length a) r) (setf (svref r i) (ty-union (svref a i) (svref b i))))))))
+(defun env-njoin (a b)
+  "ENV-JOIN of two environments that nothing else refers to: A is changed in place."
+  (cond ((eq a :bottom) b)
+        ((eq b :bottom) a)
+        (t (dotimes (i (length a) a) (setf (svref a i) (ty-union (svref a i) (svref b i)))))))
 (defun env-equal (a b)
   (cond ((eq a :bottom) (eq b :bottom))
         ((eq b :bottom) nil)
@@ -1014,7 +1103,7 @@ value, keeps its type, so that the code after is not taken to be unreachable)."
            (let* ((ta (ti (third node))) (ea *env*))
              (setf *env* ef)
              (let ((tb (ti (fourth node))))
-               (setf *env* (env-join ea *env*))
+               (setf *env* (env-njoin ea *env*))
                (ty-union ta tb)))))
     (:progn (let ((ty (mkty +k-null+))) (dolist (n (cdr node) ty) (setf ty (ti n)))))
     (:let (let ((tys (loop for b in (second node) collect (ti (cdr b)))))
@@ -1054,13 +1143,13 @@ value, keeps its type, so that the code after is not taken to be unreachable)."
                                   clysm-sys::%struct-tref clysm-sys::%struct-tset))
                (let ((x (third node)) (cls (struct-class-node-name (fourth node))))
                  (when (and cls (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
-                   (setf *env* (refine-env *env* (ti-slot (second x)) (mkty +k-other+ nil nil cls))))))
+                   (setf *env* (nrefine-env *env* (ti-slot (second x)) (mkty +k-other+ nil nil cls))))))
              (let ((asserts (gethash name *ti-asserts*)))
                (when asserts
                  (loop for (i . ty) in asserts
                        do (let ((x (nth i (cddr node))))
                             (when (and x (eq (car x) :lref) (ti-slot (second x)) (not (eq *env* :bottom)))
-                              (setf *env* (refine-env *env* (ti-slot (second x)) ty)))))))
+                              (setf *env* (nrefine-env *env* (ti-slot (second x)) ty)))))))
              (cond ((eq (prim-kind (second node)) :test) *ty-bool*)
                    ((gethash name *ti-noreturn*) (setf *env* :bottom) *ty-bottom*)
                    ;; the square of a double is not MINUSP (so its square root is a double)
@@ -1177,7 +1266,7 @@ analyzed once, not again for every copy of a function that calls it.")
              (let ((*ti-in-progress* (cons *ti-lam* *ti-in-progress*)))
                (inline-calls lam)
                (infer-lam lam)))
-           (or (gethash (lam-body lam) *node-types*) *ty-top*))))
+           (or (node-type (lam-body lam)) *ty-top*))))
 
 (defun mv-types (node)
   "Types of the values of NODE when known (a list), else NIL."
@@ -1272,7 +1361,7 @@ analyzed once, not again for every copy of a function that calls it.")
 
 (defun clear-node-types (node)
   (when (consp node)
-    (remhash node *node-types*)
+    (clear-node-type node)
     (map-subnodes #'clear-node-types node)))
 
 (defun ti-tagbody-narrow (node rec entry region heads saved)
@@ -1302,11 +1391,15 @@ with them, replacing the node types of the widened iterations."
              (dolist (f forms) (ti f)))))
 
 (defun ti-cond (node)
-  "Analyze NODE as a test; returns the environments when it is true and false."
+  "Analyze NODE as a test; returns the environments when it is true and false.
+They are the caller's own (it stores into them), and the environment on entry
+is one of them where it can be (not a copy of it: the copies of the
+environments were 600 MB of a compilation of the runtime, three to five for
+each IF): the callers set *ENV* next."
   (if (eq *env* :bottom)
       (values :bottom :bottom)
       (case (car node)
-        (:const (if (second node) (values (env-copy *env*) :bottom) (values :bottom (env-copy *env*))))
+        (:const (if (second node) (values *env* :bottom) (values :bottom *env*)))
         (:if (destructuring-bind (c a b) (cdr node)
                (multiple-value-bind (ct cf) (ti-cond c)
                  (setf *env* ct)
@@ -1314,11 +1407,11 @@ with them, replacing the node types of the widened iterations."
                    (setf *env* cf)
                    (multiple-value-bind (bt bf) (ti-cond b)
                      (setf *env* :bottom)
-                     (values (env-join at bt) (env-join af bf)))))))
+                     (values (env-njoin at bt) (env-njoin af bf)))))))
         (:progn (if (cdr node)
                     (progn (dolist (n (butlast (cdr node))) (ti n))
                            (ti-cond (car (last node))))
-                    (values :bottom (env-copy *env*))))
+                    (values :bottom *env*)))
         (:let
          ;; (or a b) is (let ((g a)) (if g g b))
          (let ((b (second node)) (body (third node)))
@@ -1332,14 +1425,14 @@ with them, replacing the node types of the widened iterations."
                    (multiple-value-bind (bt bf) (ti-cond (fourth body))
                      (setf *env* :bottom)
                      (note-ty (third body) *ty-top*) (note-ty (second body) *ty-top*)
-                     (values (env-join at bt) bf))))
-               (let ((ty (ti node))) (declare (ignore ty)) (values (env-copy *env*) (env-copy *env*))))))
+                     (values (env-njoin at bt) bf))))
+               (let ((ty (ti node))) (declare (ignore ty)) (values *env* (env-copy *env*))))))
         (:lref (let ((ty (ti node)) (k (ti-slot (second node))))
                  (declare (ignore ty))
                  (if k
-                     (values (refine-env *env* k (ty-remove *ty-top* +k-null+))
-                             (refine-env *env* k (mkty +k-null+)))
-                     (values (env-copy *env*) (env-copy *env*)))))
+                     (let ((ef (refine-env *env* k (mkty +k-null+))))
+                       (values (nrefine-env *env* k (ty-remove *ty-top* +k-null+)) ef))
+                     (values *env* (env-copy *env*)))))
         ((:prim :call)
          (let* ((name (if (eq (car node) :prim) (prim-name (second node)) (second node)))
                 (rule (and (symbolp name) (gethash name *ti-test-rules*)))
@@ -1350,33 +1443,33 @@ with them, replacing the node types of the widened iterations."
                       ;; of a declared vector in ELT's expansion): the other
                       ;; branch is not reached, and is not in the type of the IF
                       (case (and (not (eq *env* :bottom)) (known-test-result name args))
-                        (:true (values (env-copy *env*) :bottom))
-                        (:false (values :bottom (env-copy *env*)))
-                        (t (values (env-copy *env*) (env-copy *env*)))))
+                        (:true (values *env* :bottom))
+                        (:false (values :bottom *env*))
+                        (t (values *env* (env-copy *env*)))))
                (let ((tys (ti-args args)))
                  (note-ty node *ty-bool*)
                  (if (eq *env* :bottom)
                      (values :bottom :bottom)
-                     (let ((et (env-copy *env*)) (ef (env-copy *env*)))
+                     (let ((ef (env-copy *env*)) (et *env*))
                        (when (and (member name '(eq eql)) (= (length args) 2))
                          ;; (eq x 'const)
                          (loop for i from 0 for a in args for other in (reverse args)
                                do (when (and (eq (car a) :lref) (ti-slot (second a)) (eq (car other) :const))
-                                    (setf et (refine-env et (ti-slot (second a)) (const-ty (second other))))
+                                    (setf et (nrefine-env et (ti-slot (second a)) (const-ty (second other))))
                                     (when (null (second other))
-                                      (setf ef (refine-env ef (ti-slot (second a)) (ty-remove *ty-top* +k-null+)))))))
+                                      (setf ef (nrefine-env ef (ti-slot (second a)) (ty-remove *ty-top* +k-null+)))))))
                        (when (and (eq name 'clysm-sys::%structure-typep) (eq (car (first args)) :lref)
                                   (ti-slot (second (first args))) (struct-class-node-name (second args)))
-                         (setf et (refine-env et (ti-slot (second (first args)))
-                                              (mkty +k-other+ nil nil (struct-class-node-name (second args))))))
+                         (setf et (nrefine-env et (ti-slot (second (first args)))
+                                               (mkty +k-other+ nil nil (struct-class-node-name (second args))))))
                        (dolist (r (funcall rule tys))
                          (let ((a (nth (first r) args)))
                            (when (and a (eq (car a) :lref) (ti-slot (second a)))
                              (let ((k (ti-slot (second a))))
-                               (setf et (refine-env et k (second r))
-                                     ef (refine-env ef k (third r)))))))
+                               (setf et (nrefine-env et k (second r))
+                                     ef (nrefine-env ef k (third r)))))))
                        (values et ef)))))))
-        (t (ti node) (values (env-copy *env*) (env-copy *env*))))))
+        (t (ti node) (values *env* (env-copy *env*))))))
 
 (defun struct-slot-type-spec (node)
   "For a read of a slot (%STRUCT-REF, %STRUCT-IREF, %STRUCT-TREF of a constant
@@ -1432,6 +1525,14 @@ TYPE-ERROR there, it does not trap where it is used), else NIL."
          (and (eq (car f) :call) (eq (second f) 'find-class) (= (length f) 3)
               (eq (car (third f)) :const) (symbolp (second (third f)))
               (second (third f))))))
+
+(defun nrefine-env (env k ty)
+  "REFINE-ENV of an environment that is the caller's own: changed in place."
+  (if (eq env :bottom) :bottom
+      (let ((new (ty-intersect (svref env k) ty)))
+        (if (ty-bottom-p new)
+            :bottom
+            (progn (setf (svref env k) new) env)))))
 
 (defun refine-env (env k ty)
   (if (eq env :bottom) :bottom

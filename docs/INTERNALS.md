@@ -735,6 +735,154 @@ instantiating the module); a third of the code of a small module is its
 `RUN`, `SNAP` and `RESTORE`, the last two needed only by images that record
 modules for `save-image`.
 
+**The compiler in Wasm against the same compiler on SBCL (2026-11-22).**
+`l-selfhost-compile` (the runtime and `bench/suite.lisp`, 30000 lines) was
+1.5 times the compiler on SBCL. Profiles of both (`node --cpu-prof`, its
+call tree summed by function; `sb-sprof` in `:cpu` and `:alloc` modes on
+the same compilation) put the difference after the front end: reading,
+macro expansion and conversion take 0.6 s in Wasm and 1.0 s on SBCL (which
+compiles the macros' expanders), `build-module` (inference, code
+generation, encoding) 3.1 s against 1.2 s, of it 0.55 s of garbage
+collection against 0.04. What was found and done, all in the compiler's
+own code unless said; its output is the same octets as before for the
+runtime with `bench/suite.lisp`, a shaken program, a library shaken with
+its symbols, the compiler itself and the REPL image (compiled on SBCL by
+the compiler before and after, on the same sources), for `bench/suite.lisp`
+compiled by the two compilers in Wasm, and for the fasls of ASDF,
+`bench/suite.lisp` and `bench/programs.lisp` made by `compile-file` in the
+two images (but the image's id and the marks of time):
+
+* **A declaration of a variable bound outside was checked at every
+  reference.** `with-build-section` hashes the 5.5 MB of the module in a
+  loop under `(declare (type (simple-array (unsigned-byte 8) (*)) bytes))`
+  written in the `let` after the parameter's binding: a free declaration,
+  whose references are each `(the type (checked-value ...))`, and the check
+  of that type was a call of `%array-type-match` (it finds the element type
+  of the object and compares it with the normalized element type of the
+  specifier): 266 ms of the 3.9 s, 8 on SBCL. The declaration is now where
+  the parameter is bound, and `typep` of a simple vector of a kind of
+  storage, `(simple-array (unsigned-byte 8) (*))` and the like with the
+  element types of `*storage-kinds*` written as such, is the test of the
+  object's kind (`%typep-expansion`, runtime/types.lisp: `ref.test` of the
+  octets, else `%storage-kind` compared with the kind's code; an array with
+  a header goes to the general test as before). `typep` of an octet vector
+  over a list of mixed objects 89 -> 9 ns an object (SBCL 4), an `etypecase`
+  of octets, strings and lists 42 -> 10 ns (SBCL 4), the loop under the
+  free declaration 241 -> 11 ms for 6 MB (SBCL 6; 5 with the declaration at
+  the binding).
+* **`write-sequence` of octets to a file put them one by one**
+  (`%fs-put-octet`, 76 ms for the module): they are copied at once
+  (`%fs-put-octets` with a start and an end, `array.copy`).
+* **Three walks of all the instructions before the module is encoded**:
+  `inline-single-use-constants` looked for the constants that code refers
+  to, and `order-functions-by-use` counted the calls of each function and
+  then the uses of each global, each over the bodies of every function: 190
+  ms each, 40 ns an instruction, because the instructions of a whole
+  program are by then cold memory in the order the collector left them
+  (below). `wasm-func-uses` walks a body once and keeps the names it calls,
+  reads and sets, in order, for that body; with `*eager-func-uses*`
+  (`build-module`) it does so when the function is added, while the
+  instructions are in the processor's caches: 70 ms for all of them. The
+  three passes read those lists. (Tried and not kept: the walk of
+  `coalesce-locals` made then too. It took half its time, and the encoding
+  that follows it at the end took that much more: the first of the two to
+  walk a function there pays for the memory. Encoding a function when it
+  is added would save both, with the indexes of functions and globals left
+  as relocations; see the negative result above for the fasls.)
+* **The tables keyed by nodes.** The types of nodes (`*node-types*`), and
+  what `cold-branch-p` and `arm-recurses` found (`*cold-cache*`,
+  `*recurse-cache*`), are EQ hash tables keyed by conses: 865000 nodes,
+  2.8 million lookups, each a call to the host for the identity hash, and a
+  new entry of the host's `WeakMap` for each node (0.3 to 2 microseconds as
+  that table grows; `identity_hash` and its transitions were 330 ms, 8.5%;
+  SBCL spends 12% of the compilation in its own address-based EQ tables).
+  The nodes that name a variable (`:lref`, `:lset`, and a `:let` by the
+  first variable it binds: 44% of the nodes) now keep what is noted about
+  them in the variable (`lvar-ntys`: for each table a short list of (node .
+  value), the first 16 nodes of a variable, the rest in the table as
+  before; `node-note`, `set-node-note` in src/types.lisp). A copy of a
+  function compiled for given types has a table of its own and so a record
+  of its own in the variables, dropped with it. The caches of
+  `cold-branch-p` and `arm-recurses` count their entries themselves and
+  are emptied at the same points as before (their answers can depend on
+  when they are asked: whether a called function was found never to
+  return). Not done for the other nodes (`:prim` 19%, `:const` 15%, `:if`
+  8%): they have nothing cheap to hash in them; an id in every node would
+  need the nodes to be something else than lists.
+* **An instance's identity hash is a number from a counter** (runtime:
+  the `:identity-hash` helper, src/prims.lisp). A structure or an object of
+  a class keeps its hash in its third field; it was the host's identity
+  hash, asked when the instance was first hashed: a call to the host and
+  an entry in its `WeakMap` for every variable, block and function of the
+  compiler, and for every structure a program puts in an EQ or EQL table.
+  It is now the next value of `:ih-next`, a global that the image exports
+  and the modules compiled in it import (`ih_next`, as `poll_count`): 200000
+  new structures and objects put in an EQ table and looked up again, five
+  times, 2690 -> 290-360 ms (SBCL 52). The number is not saved with a heap
+  image (the instances' hashes are): a restored image counts again from 1,
+  so two instances may share a hash, which a table tolerates.
+* **Environments of the inference.** `ti-cond` returned two fresh copies
+  of the environment (a vector of the types of all the variables of the
+  function), `refine-env` copied one again for each refinement, and the
+  join after the branches made another: 600 MB of the 1.6 GB the compiler
+  allocates for this compilation (`sb-sprof :alloc`). The environment on
+  entry is now one of the two that `ti-cond` returns (every caller sets
+  `*env*` next and nothing else holds it), refinements of an environment
+  the caller owns are made in place (`nrefine-env`), and so is the join of
+  two environments that are dropped (`env-njoin`).
+* `md2-version-body-p` made a closure for every node it walked (150 MB):
+  two functions made once. `tree-member`, which looks for `(:br label)` in
+  the code of every function that has an exit through its cleanups,
+  called `equal` on every part of the code (3% of the compilation on
+  SBCL): the conses that begin with the operator are compared.
+
+`l-selfhost-compile` (`tools/bench-libs.sh`, the best of three, twice, the
+tree before and the tree after in turn on one slot; ms):
+
+| | before | after |
+|---|---|---|
+| the compiler on SBCL | 2673, 2633 | 2710, 2536 |
+| the compiler in Wasm | 4112, 4046 | 3387, 3332 |
+| ratio | 1.54, 1.54 | 1.25, 1.31 |
+
+(Ten rounds of the four in turn while the other slots and the test CPUs
+were busy, minimum and median: on SBCL 2881, 3031 -> 2739, 3006; in Wasm
+4554, 4828 -> 3622, 3970; 1.58 -> 1.32.) The other items of
+`tools/bench-libs.sh` and those of `tools/bench-startup.sh` are as before
+(`s-ql-alexandria` 335-343 -> 328-332 ms, `s-ql-cl-ppcre` 350-361 ->
+331-349, `s-require-asdf` 182-193 -> 181-182, `s-start` 71-72 -> 67-69).
+
+First builds in the image with an empty fasl cache (a whole process each,
+the original tree and the new one in turn on one slot): loading Quicklisp's
+setup, which compiles ASDF, 4.07 -> 3.54 s (median of three; 3.54 -> 3.32
+the best); `(ql:quickload :cl-ppcre)` 2.00 -> 1.85 s and `:alexandria` 0.89
+-> 0.86 s (the best of eight; medians 2.04 -> 1.96 and 0.94 -> 0.92; SBCL
+0.92 and 0.45). The small ones are mostly the cold compiler (V8 compiling
+the image's functions as they first run), which these changes do not
+touch. `bench/suite.lisp`, `alloc`, `clos`, `programs` and `library`: the
+geometric means within 0.02 of before over two rounds each, no item
+outside the noise. Size: the REPL image 8875825 -> 8892569 octets (the
+compiler's new functions, the tests of kinds where `typep` called a
+function), the shaken module of one export (`make test-lib`) 925558 ->
+924453.
+
+What remains of the difference (profile after the changes): garbage
+collection, 0.5 s on a quiet machine and over 1 s when the other cores use
+the memory, against 0.04 s on SBCL: 2.8 GB are allocated and 450 MB are
+alive at the end (the nodes and the instructions of the whole program,
+whose conses are 32 octets against 16), and each scavenge copies what is
+alive of the last 16-32 MB; walking instructions and nodes that the
+scavenger has laid out (encoding 0.45 s against 0.15; a walk of fresh
+instructions is 5 ns an instruction, of scavenged ones 40: no scavenge at
+all, a young generation of 1 GB, makes `wasm-func-uses` 41 ms instead of
+242, but the process is no faster for it, it pays in page faults); and the
+identity hashes of the remaining nodes (0.2 s). `case` of a symbol is a
+chain of comparisons in Clysm and a jump table in SBCL: the dispatch of
+`map-subnodes`, `ti-1` and `emit-instr` on the kind of a node is up to 40
+comparisons (not measured apart). Next: the functions encoded as they are
+compiled (no instruction list kept: fewer live conses, no cold walk), and
+a `case` of many symbols compiled as a search by the symbols' hashes.
+
 **Loading a source file compiles consecutive definitions into one module**
 (`%load-batch`, `runtime/eval.lisp`): a `defun`, `defmethod` or
 `defgeneric` form read from a file is compiled with the definitions that

@@ -2560,7 +2560,7 @@ types of its nodes noted), BINDINGS the LET bindings around the IF.  Else NIL."
                                 ((fusable-op-node-p n) (list* (first n) (second n) (mapcar #'subst-tree (cddr n))))
                                 ((and (eq (car n) :lref)) n)
                                 (t (return-from guarded-int-copy nil)))))
-                 (unless (eq new n) (setf (gethash new *node-types*) (gethash n *node-types*)))
+                 (unless (eq new n) (set-node-type new (node-type n)))
                  new)))
       (when (and (or (not dual-p) (dual-local v)) (not *no-fuse*))
         (let ((if (unwrap-lets expr t)))

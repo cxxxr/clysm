@@ -468,6 +468,10 @@ loop, nothing that may not be compiled twice, and not many nodes."
     (labels ((arr-p (node)
                (loop while (eq (car node) :the) do (setf node (third node)))
                (and (eq (car node) :lref) (member (second node) vars)))
+             ;; (the two functions given to MAP-SUBNODES: a closure made for
+             ;; each node was 150 MB of a compilation of the runtime)
+             (walk-in-loop (node) (walk node t))
+             (walk-outside (node) (walk node nil))
              (walk (node in-loop)
                (when (> (incf n) *md2-version-max-nodes*) (return-from md2-version-body-p nil))
                (case (car node)
@@ -480,7 +484,7 @@ loop, nothing that may not be compiled twice, and not many nodes."
                   (when (and in-loop (member (node-op-name node) '(clysm-sys::%aref2 clysm-sys::%aset2))
                          (arr-p (third node)))
                     (setf found t))))
-               (map-subnodes (lambda (x) (walk x in-loop)) node)))
+               (map-subnodes (if in-loop #'walk-in-loop #'walk-outside) node)))
       (walk body nil))
     found))
 
@@ -1025,7 +1029,10 @@ spilling what lives across the call there only.")
 
 (defvar *cold-cache* (make-hash-table :test 'eq)
   "Node -> :YES / :NO, what COLD-BRANCH-P found (each node walked once: the
-branches of nested IFs are asked again).")
+branches of nested IFs are asked again).  (Through NODE-NOTE, types.lisp:
+the nodes that name a variable are noted in the variable, under *COLD-CACHE-KEY*.)")
+(defvar *cold-cache-key* (list :cold) "names the notes of *COLD-CACHE* since it was last emptied")
+(defvar *cold-cache-count* 0 "the number of nodes noted since *COLD-CACHE* was last emptied")
 
 (defun cold-function-p (sym)
   (and (symbolp sym)
@@ -1040,10 +1047,12 @@ is marked with %COLD on every way through it: the branch is not expected to
 be taken.  An IF counts when its test does or both its branches do; any
 other node when one of its parts does (not exact for blocks and loops,
 but close)."
-  (when (> (hash-table-count *cold-cache*) 200000) (clrhash *cold-cache*))
+  (when (> *cold-cache-count* 200000)
+    (clrhash *cold-cache*)
+    (setf *cold-cache-key* (list :cold) *cold-cache-count* 0))
   (labels ((cold (n)
              (and (consp n)
-                  (let ((c (gethash n *cold-cache*)))
+                  (let ((c (node-note n *cold-cache-key* *cold-cache*)))
                     (if c
                         (eq c :yes)
                         (let ((r (case (car n)
@@ -1051,7 +1060,8 @@ but close)."
                                    (:prim (or (eq (prim-name (second n)) 'clysm-sys::%cold) (some-sub n)))
                                    (:if (or (cold (second n)) (and (cold (third n)) (cold (fourth n)))))
                                    (t (some-sub n)))))
-                          (setf (gethash n *cold-cache*) (if r :yes :no))
+                          (set-node-note n *cold-cache-key* *cold-cache* (if r :yes :no))
+                          (incf *cold-cache-count*)
                           r)))))
            (some-sub (n)
              (block sub
@@ -1060,18 +1070,23 @@ but close)."
     (cold node)))
 
 (defvar *recurse-cache* (make-hash-table :test 'eq)
-  "Node -> what ARM-RECURSES found (:EXIT, :CALL or :NONE).")
+  "Node -> what ARM-RECURSES found (:EXIT, :CALL or :NONE).  (As *COLD-CACHE*.)")
+(defvar *recurse-cache-key* (list :recurse))
+(defvar *recurse-cache-count* 0)
 
 (defun arm-recurses (node lam)
   "What NODE, a branch of an IF in LAM, does: :EXIT when it may leave the
 code around it (a RETURN-FROM, a GO, a THROW), else :CALL when it calls LAM
 itself (by its global name or as a local function), else NIL."
-  (when (> (hash-table-count *recurse-cache*) 200000) (clrhash *recurse-cache*))
+  (when (> *recurse-cache-count* 200000)
+    (clrhash *recurse-cache*)
+    (setf *recurse-cache-key* (list :recurse) *recurse-cache-count* 0))
   (labels ((walk (n)
              (if (not (consp n))
                  :none
-                 (or (gethash n *recurse-cache*)
-                     (setf (gethash n *recurse-cache*)
+                 (or (node-note n *recurse-cache-key* *recurse-cache*)
+                     (note-arm
+                           n
                            (case (car n)
                              ((:return-from :go :throw) :exit)
                              (:lambda :none)
@@ -1083,7 +1098,10 @@ itself (by its global name or as a local function), else NIL."
                                                     (cond ((eq v :exit) (setf r :exit))
                                                           ((and (eq v :call) (eq r :none)) (setf r :call)))))
                                                 n)
-                                  r))))))))
+                                  r)))))))
+           (note-arm (n v)
+             (incf *recurse-cache-count*)
+             (set-node-note n *recurse-cache-key* *recurse-cache* v)))
     (let ((v (walk node))) (if (eq v :none) nil v))))
 
 (defun if-branch-hint (a b &optional test)
@@ -2521,8 +2539,24 @@ an exit pending returns null in turn."
           code))))
 
 (defun tree-member (x tree)
-  (cond ((equal x tree) t)
-        ((consp tree) (or (tree-member x (car tree)) (tree-member x (cdr tree))))))
+  "Whether X is EQUAL to TREE or to a part of it (the CAR or the CDR of a
+cons of it, and so on)."
+  (if (and (consp x) (symbolp (car x)) (consp (cdr x)) (null (cddr x)) (atom (cadr x)))
+      ;; an instruction with one operand, (:BR LABEL): the conses that begin
+      ;; with its operator are compared (EQUAL of X and every part of the
+      ;; code of every function with an exit was 3% of a compilation)
+      (let ((op (car x)) (arg (cadr x)))
+        (labels ((walk (tree)
+                   (loop
+                     (when (atom tree) (return nil))
+                     (when (and (eq (car tree) op)
+                                (let ((d (cdr tree))) (and (consp d) (null (cdr d)) (equal (car d) arg))))
+                       (return t))
+                     (when (and (consp (car tree)) (walk (car tree))) (return t))
+                     (setq tree (cdr tree)))))
+          (walk tree)))
+      (cond ((equal x tree) t)
+            ((consp tree) (or (tree-member x (car tree)) (tree-member x (cdr tree)))))))
 
 (defun flagged-exit-code (tag-code value-code)
   "Leave the function being compiled with a pending exit (TAG-CODE: code
@@ -2607,7 +2641,7 @@ so that it returns at all is an exit."
   "LAM never returns normally: a global function the type inference found
 returns no value (every way out of it is an error or an exit), or ERROR."
   (or (and (symbolp (lam-name lam)) (gethash (lam-name lam) *ti-noreturn*))
-      (let ((ty (gethash (lam-body lam) *node-types*)))
+      (let ((ty (node-type (lam-body lam))))
         (and ty (ty-bottom-p ty)))))
 
 (defun take-pending-code (val)
@@ -3755,14 +3789,15 @@ into locals of that representation on entry).")
          (fv-classes (loop for fv in (entry-clone-free-vars lam) for c in (nthcdr n sig)
                            when c collect (cons fv c)))
          (lvars (append (lam-all-lvars lam) (mapcar #'car fv-classes)))
-         (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars)))
+         (saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) lvars))
+         (table (make-hash-table :test 'eq)))
     (dolist (lv lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))
     ;; the free variables tested on entry: of that type in the copy
     (loop for (fv . c) in fv-classes
           do (setf (lvar-type fv) (class-ty c) (lvar-rep fv) (class-rep c)))
     (unwind-protect
          (let ((*ti-shared* (cons *node-types* *ti-analyzed*))
-               (*node-types* (make-hash-table :test 'eq))
+               (*node-types* table)
                (*ti-analyzed* (make-hash-table :test 'eq))
                (*catching-tag* nil)
                (*clone-free-reps* (loop for (fv . c) in fv-classes collect (cons fv (class-rep c))))
@@ -3773,6 +3808,7 @@ into locals of that representation on entry).")
                                 (format nil "~A/~{~(~A~)~^,~}~:[~;/flag~]" (lam-display-name lam)
                                         (mapcar (lambda (c) (or c "t")) sig) flag)
                                 flag)))
+      (drop-lvar-node-types lvars table)
       (loop for lv in lvars for (ty . rep) in saved
             do (setf (lvar-type lv) ty (lvar-rep lv) rep)))))
 
@@ -4077,17 +4113,19 @@ the keys).  (KENTRY-P: the keyword arguments are even in number.)"
 (defmacro with-clone-inference ((lam sig) &body body)
   "Run BODY with LAM's types inferred for arguments of the classes SIG (as
 COMPILE-SPEC-CLONE does); the types before are restored after."
-  (let ((lvars (gensym "LVARS")) (saved (gensym "SAVED")) (l (gensym "LAM")))
+  (let ((lvars (gensym "LVARS")) (saved (gensym "SAVED")) (l (gensym "LAM")) (table (gensym "TABLE")))
     `(let* ((,l ,lam)
             (,lvars (lam-all-lvars ,l))
-            (,saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) ,lvars)))
+            (,saved (mapcar (lambda (lv) (cons (lvar-type lv) (lvar-rep lv))) ,lvars))
+            (,table (make-hash-table :test 'eq)))
        (dolist (lv ,lvars) (setf (lvar-type lv) nil (lvar-rep lv) nil))
        (unwind-protect
             (let ((*ti-shared* (cons *node-types* *ti-analyzed*))
-                  (*node-types* (make-hash-table :test 'eq))
+                  (*node-types* ,table)
                   (*ti-analyzed* (make-hash-table :test 'eq)))
               (infer-lam ,l (mapcar #'class-ty ,sig))
               ,@body)
+         (drop-lvar-node-types ,lvars ,table)
          (loop for lv in ,lvars for (ty . rep) in ,saved
                do (setf (lvar-type lv) ty (lvar-rep lv) rep))))))
 

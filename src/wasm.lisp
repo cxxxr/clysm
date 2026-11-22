@@ -105,7 +105,34 @@
   (ref-list :unknown)
   ;; (map new-types) of COALESCE-LOCALS, once the function has been encoded
   ;; (a function of a unit compiled file by file is encoded twice)
-  (coalesced :unknown))
+  (coalesced :unknown)
+  ;; (body calls global-gets global-sets) of WASM-FUNC-USES, for that body
+  (use-lists nil))
+
+(defun wasm-func-uses (f)
+  "Every occurrence in the body of the function F, in order: the names of
+the functions it calls or takes the reference of, of the globals it reads,
+and of those it sets (three values).  The body is walked once (the passes
+over the whole module that count them, ORDER-FUNCTIONS-BY-USE and the
+compiler's INLINE-SINGLE-USE-CONSTANTS, each walked all the code: the
+instructions of a whole program are memory that is cold by then, 40 ns an
+instruction); again if the function is given another body."
+  (let ((u (wasm-func-use-lists f)) (body (wasm-func-body f)))
+    (unless (and u (eq (car u) body))
+      (let ((calls nil) (gets nil) (sets nil))
+        (labels ((walk (x)
+                   (let ((head (car x)))
+                     (when (consp (cdr x))
+                       (case head
+                         ((:call :return_call :ref.func) (push (second x) calls))
+                         (:global.get (push (second x) gets))
+                         (:global.set (push (second x) sets)))))
+                   (do ((l x (cdr l))) ((atom l))
+                     (let ((e (car l))) (when (consp e) (walk e))))))
+          (when (consp body) (walk body)))
+        (setf u (list body (nreverse calls) (nreverse gets) (nreverse sets))
+              (wasm-func-use-lists f) u)))
+    (values (second u) (third u) (fourth u))))
 
 (defun body-refs (body)
   "What the code BODY refers to, in the order of first occurrence, each once:
@@ -375,6 +402,11 @@ and with the tests of constants decided; BODY itself when nothing changes."
                      (t (values ins nil))))))
       (values (walk-list body)))))
 
+(defvar *eager-func-uses* nil
+  "True when the functions added to a module are asked what they refer to
+(WASM-FUNC-USES) as they are added: a whole program, whose module is put in
+order by ORDER-FUNCTIONS-BY-USE.")
+
 (defun add-func (m name type &key locals local-names body export param-names display)
   (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names :display display
                             :params-names param-names :body (if *prune-dead-code* (prune-dead-code body) body)
@@ -384,6 +416,15 @@ and with the tests of constants decided; BODY itself when nothing changes."
     (vector-push-extend f (wasm-module-funcs m))
     (setf (gethash name (wasm-module-func-table m)) f)
     (when export (add-export m export :func name))
+    ;; With *EAGER-FUNC-USES*, what the body refers to is found now
+    ;; (WASM-FUNC-USES), while the instructions the compiler has just made
+    ;; are in the processor's caches: at the end of a compilation the
+    ;; instructions of a whole program are cold memory, in the order the
+    ;; collector left them (that walk took 250 ms then, 70 here).  (The
+    ;; walk of COALESCE-LOCALS made here too took half the time, and the
+    ;; encoding after it that much more: the first of the two to walk a
+    ;; function at the end pays for the memory.)
+    (when (and body *eager-func-uses*) (wasm-func-uses f))
     f))
 
 (defun adopt-func (m f)
@@ -417,7 +458,8 @@ arguments, :APPLY-GENERIC, the casts) thousands of times."
                  (when (and (member (car x) '(:call :return_call :ref.func)) (consp (cdr x)))
                    (incf (gethash (second x) uses 0)))
                  (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
-      (loop for f across (wasm-module-funcs m) do (walk (wasm-func-body f)))
+      (loop for f across (wasm-module-funcs m)
+            do (dolist (name (wasm-func-uses f)) (incf (gethash name uses 0))))
       (loop for g across (wasm-module-globals m) do (walk (fourth g))))
     ;; (only those that get an index below 128, one octet: the others keep
     ;; their order, the order of the source, which gzip compresses better)
@@ -450,7 +492,11 @@ arguments, :APPLY-GENERIC, the casts) thousands of times."
                                  (or (and (eq (car x) :global.get) (consp (cdr x)) (gethash (second x) defined))
                                      (some #'refers x)))))
                    (not (some #'refers init)))))
-        (loop for f across (wasm-module-funcs m) do (walk (wasm-func-body f)))
+        (loop for f across (wasm-module-funcs m)
+              do (multiple-value-bind (calls gets sets) (wasm-func-uses f)
+                   (declare (ignore calls))
+                   (dolist (name gets) (incf (gethash name guses 0)))
+                   (dolist (name sets) (incf (gethash name guses 0)))))
         (loop for g across (wasm-module-globals m) do (walk (fourth g)) (setf (gethash (first g) defined) t))
         (let* ((globals (coerce (wasm-module-globals m) 'list))
                (room (max 0 (- 128 (fill-pointer (wasm-module-global-imports m)))))
