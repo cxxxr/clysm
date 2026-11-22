@@ -2771,7 +2771,9 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
 ;;; there), and a call the tree does not take goes to the generic function's
 ;;; own function of the spread arguments (the cell CORE-CELL).
 ;;;   descriptor: (name n methods checks combination shape keys-cell
-;;;   core-cell), METHODS with the keywords of each as a fourth element
+;;;   core-cell remade), REMADE true of a function made in the image for a
+;;;   dead tree (it is not replaced in turn); METHODS with the keywords of
+;;;   each as a fourth element
 ;;;   when KEYS-CELL; COMBINATION NIL (the
 ;;;   standard one) or (operator . options) of a short one whose methods the
 ;;;   leaves combine with the operator; METHODS ((qualifiers specializers
@@ -2811,6 +2813,10 @@ function of CELLS calls."
                 (%set-svref cells 0 :dead)
                 (push cells *gf-discs*)
                 (cond ((%gf-disc-valid-p cells (funcall thunk)) (%set-svref cells 0 t))
+                      ;; (not a function that was itself made so: it would
+                      ;; be given itself, the one made for the methods as
+                      ;; they are, and call itself without end)
+                      ((nth 8 (%svref cells 1)) nil)
                       ((and (boundp '*native-eval-hook*) (symbol-value '*native-eval-hook*))
                        (%set-svref cells 0 -500))))))))))
 
@@ -2840,6 +2846,8 @@ and classes as they are (the property %GF-DISC-REPLACEMENT of NAME,
            (let* ((epoch *clos-epoch*)
                   (d (make-symbol "DISCRIMINATOR"))
                   (forms (let ((*gf-unit* (%make-gf-unit)))
+                           ;; (-1: the descriptor says that the function was made here)
+                           (setf (svref *gf-unit* 3) -1)
                            (%gf-disc-form *gf-unit* name d (lambda (s) (declare (ignore s)) nil))))
                   (f (and forms
                           (ignore-errors
@@ -2879,7 +2887,8 @@ list) of the shape (NREQ NOPT MORE) that its tree does not take."
         (apply f (%unspread nreq nopt more spread)))))
 
 (defun %gf-disc-valid-p (cells fns)
-  (destructuring-bind (name n methods checks &optional comb shape keys-cell core-cell) (%svref cells 1)
+  (destructuring-bind (name n methods checks &optional comb shape keys-cell core-cell remade) (%svref cells 1)
+    (declare (ignore remade))
     (let* ((info (and (fboundp name) (%gf-info (fdefinition name))))
            (top (find-class t))
            (actual (and info (%gf-slot info +gf-methods+))))
@@ -2911,8 +2920,15 @@ list) of the shape (NREQ NOPT MORE) that its tree does not take."
                       (eq (%instance-ref mc 0) (car comb))
                       (eq (and (member :most-specific-last (%instance-ref mc 1)) t)
                           (and (member :most-specific-last (cdr comb)) t))
-                      (equal (get (car comb) '%method-combination)
-                             (list :short (car comb) (not (eq (car comb) 'list)))))
+                      ;; (a leaf calls one method alone without the
+                      ;; operator, but for LIST: as the combination does
+                      ;; with :IDENTITY-WITH-ONE-ARGUMENT, and as APPEND and
+                      ;; NCONC of one list do anyway)
+                      (let ((d (get (car comb) '%method-combination)))
+                        (and (eq (car d) :short) (eq (cadr d) (car comb))
+                             (if (caddr d)
+                                 (not (eq (car comb) 'list))
+                                 (member (car comb) '(list append nconc))))))
                  (eq mc *standard-method-combination*)))
            (null (%gf-slot info +gf-apo+))
            (or (null *the-standard-generic-function-class*)
