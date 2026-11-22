@@ -262,27 +262,78 @@
   (conditions nil)                      ; the conditions it is associated with
   (index 0) (tag nil))
 
-;;; *RESTART-CLUSTERS* is a chain of simple vectors, innermost first:
-;;;   #(next clauses chosen restarts function...)
-;;; A cluster of RESTART-BIND has CLAUSES = :BIND and its RESTARTS (a list).
-;;; A cluster of RESTART-CASE is all that entering it makes (a restart that
-;;; is not asked for costs nothing): CLAUSES, a constant vector of
-;;; #(name report interactive test) (REPORT a string, or like INTERACTIVE and
-;;; TEST NIL or the index in the cluster of the function given), CHOSEN the
-;;; index of the clause INVOKE-RESTART chose, and the functions; RESTARTS is
-;;; made when the restarts are first asked for (%CLUSTER-RESTARTS).
-(defvar *restart-clusters* nil)
+;;; The restarts in effect are, like the handlers (see *HANDLER-FRAMES*
+;;; below), frames that stay in a vector: the first *RESTART-CLUSTERS* (a
+;;; fixnum) elements of *RESTART-FRAMES*, the innermost last, each a simple
+;;; vector #(clauses chosen restarts function...).  RESTART-CASE fills the
+;;; frame at the current depth and binds the depth to one more: entering it
+;;; allocates nothing (but the closures of its report, interactive and test
+;;; functions that are not the ones the frame holds).  The frame is all
+;;; that entering makes (a restart that is not asked for costs nothing):
+;;; CLAUSES, a constant vector of #(name report interactive test) (REPORT a
+;;; string, or like INTERACTIVE and TEST NIL or the index in the frame of
+;;; the function given), CHOSEN the index of the clause INVOKE-RESTART
+;;; chose, and the functions; RESTARTS is made when the restarts are first
+;;; asked for (%CLUSTER-RESTARTS) and emptied when the frame is entered
+;;; again: a restart object kept from an earlier use of the frame is not
+;;; among them, and so not active.  The frame is the tag of the %CATCH.
+;;; A frame of RESTART-BIND has CLAUSES = :BIND and its RESTARTS (a list).
+;;; CLAUSES = (frames . depth): the restarts continue in another vector
+;;; (those around a computation of JS:ASYNC-FUNCTION).
+(defun %make-restart-frames (n old)
+  (let ((new (%make-simple-vector n nil)) (m (if old (%svlength old) 0)))
+    (do ((i 0 (+ i 1))) ((>= i n) new)
+      (%set-svref new i (if (< i m) (%svref old i) (%make-simple-vector 9 nil))))))
+(defvar *restart-clusters* 0)
+(declaim (type fixnum *restart-clusters*))
+(defvar *restart-frames* (%make-restart-frames 16 nil))
 (defvar *condition-restarts* nil)
 
+(defun %grow-restart-frames (d)
+  (let ((new (%make-restart-frames (* 2 (+ d 8)) *restart-frames*)))
+    (setq *restart-frames* new)
+    (%svref new d)))
+
+;;; the frame at DEPTH with CLAUSES in it and no restarts made: the helper
+;;; :RESTART-FRAME of src/prims.lisp
+(defun %restart-frame (depth clauses) (%restart-frame depth clauses))
+
+(defun %wide-restart-frame (depth clauses n)
+  "The frame at DEPTH for a RESTART-CASE of more functions than a frame has room for."
+  (let ((frame (%restart-frame depth clauses)))
+    (if (< (%svlength frame) n)
+        (let ((new (%make-simple-vector n nil)))
+          (%set-svref new 0 clauses)
+          (%set-svref *restart-frames* depth new)
+          new)
+        frame)))
+
+(defun %linked-restart-frames ()
+  (let ((frames (%make-restart-frames 8 nil)))
+    (%set-svref (%svref frames 0) 0 (cons *restart-frames* *restart-clusters*))
+    frames))
+
+;;; BODY with FRAME bound to each frame in effect, the innermost first
+(defmacro %do-restart-frames ((frame &optional result) &body body)
+  `(let ((frames *restart-frames*))
+     (do ((i *restart-clusters*)) ((<= i 0) ,result)
+       (setq i (- i 1))
+       (let ((,frame (%svref frames i)))
+         (if (consp (%svref ,frame 0))
+             (let ((link (%svref ,frame 0))) (setq frames (car link) i (cdr link)))
+             (progn ,@body))))))
+
+(defun %innermost-restart-frame ()
+  (%do-restart-frames (frame nil) (return frame)))
+
 (defun %cluster-restarts (cluster)
-  "The restarts of CLUSTER, an element of *RESTART-CLUSTERS* (in order), or
-of no cluster (NIL)."
-  (let ((clauses (and cluster (%svref cluster 1))))
+  "The restarts of CLUSTER, a restart frame (in order), or of no frame (NIL)."
+  (let ((clauses (and cluster (%svref cluster 0))))
     (if (or (null cluster) (eq clauses :bind))
-        (and cluster (%svref cluster 3))
-        (or (%svref cluster 3)
+        (and cluster (%svref cluster 2))
+        (or (%svref cluster 2)
             (%set-svref
-             cluster 3
+             cluster 2
              (let ((r nil))
                (dotimes (i (length clauses) (nreverse r))
                  (let* ((c (%svref clauses i))
@@ -302,20 +353,20 @@ of no cluster (NIL)."
 
 (defun compute-restarts (&optional condition)
   (let ((r nil))
-    (do ((cluster *restart-clusters* (%svref cluster 0))) ((null cluster) (nreverse r))
+    (%do-restart-frames (cluster (nreverse r))
       (dolist (restart (%cluster-restarts cluster))
         (when (%restart-visible-p restart condition)
           (push restart r))))))
 
 (defun %cluster-has-name-p (cluster name)
-  (let ((clauses (%svref cluster 1)))
+  (let ((clauses (%svref cluster 0)))
     (or (eq clauses :bind)
         (dotimes (i (length clauses) nil)
           (when (eq (%svref (%svref clauses i) 0) name) (return t))))))
 
 (defun find-restart (name &optional condition)
   (if (restart-p name) name
-      (do ((cluster *restart-clusters* (%svref cluster 0))) ((null cluster) nil)
+      (%do-restart-frames (cluster nil)
         ;; (the restarts of a RESTART-CASE are made only if one has the name)
         (when (%cluster-has-name-p cluster name)
           (dolist (restart (%cluster-restarts cluster))
@@ -324,7 +375,7 @@ of no cluster (NIL)."
 
 (defun %find-active-restart (restart)
   (let ((r (if (restart-p restart)
-               (do ((cluster *restart-clusters* (%svref cluster 0))) ((null cluster) nil)
+               (%do-restart-frames (cluster nil)
                  (when (member restart (%cluster-restarts cluster)) (return restart)))
                (find-restart restart))))
     (unless r
@@ -337,7 +388,7 @@ of no cluster (NIL)."
     (if f
         (apply f args)
         (let ((tag (restart-tag r)))
-          (%set-svref tag 2 (restart-index r))
+          (%set-svref tag 1 (restart-index r))
           (%throw tag args)))))
 
 (defun invoke-restart-interactively (restart)
@@ -350,13 +401,16 @@ of no cluster (NIL)."
                  (t (funcall f))))))
 
 (defmacro restart-bind (bindings &body body)
-  `(let ((*restart-clusters*
-           (vector *restart-clusters* :bind nil
+  (let ((depth (gensym "DEPTH")) (frame (gensym "FRAME")))
+    `(let* ((,depth *restart-clusters*)
+            (,frame (%restart-frame ,depth :bind)))
+       (%set-svref ,frame 2
                    (list ,@(mapcar (lambda (b)
                                      (destructuring-bind (name fn &key report-function interactive-function test-function) b
                                        `(%make-restart ',name ,fn ,report-function ,interactive-function ,test-function)))
-                                   bindings)))))
-     ,@body))
+                                   bindings)))
+       (let ((*restart-clusters* (+ ,depth 1)))
+         ,@body))))
 
 (defun %associate-restarts (condition restarts)
   "Associate RESTARTS with CONDITION for the rest of their extent."
@@ -388,7 +442,7 @@ the restarts are associated with the condition being signaled."
                         (%coerce-to-condition ,datum (list ,@args)
                                               ',(case (car exp) (signal 'simple-condition)
                                                   (warn 'simple-warning) (t 'simple-error)))
-                        (%cluster-restarts *restart-clusters*))))
+                        (%cluster-restarts (%innermost-restart-frame)))))
                ,(if (eq (car exp) 'cerror)
                     `(cerror ,fmt ,c ,@args)
                     `(,(car exp) ,c)))))
@@ -398,12 +452,13 @@ the restarts are associated with the condition being signaled."
   (setq form (%restart-case-signal-form form env))
   (if (null clauses)
       form
-      (let* ((block (gensym "RC")) (args (gensym "ARGS")) (first (gensym "CLUSTER"))
-             ;; the functions of the clauses, from slot 4 of the cluster
+      (let* ((block (gensym "RC")) (args (gensym "ARGS")) (first (gensym "CLUSTER")) (depth (gensym "DEPTH"))
+             (fn (gensym "FN"))
+             ;; the functions of the clauses, from slot 3 of the frame
              (functions nil)
              (slot (lambda (form)
                      (push form functions)
-                     (+ 3 (length functions))))
+                     (+ 2 (length functions))))
              (descriptions
                (mapcar (lambda (c)
                          (let* ((name (car c)) (rest (cddr c))
@@ -436,18 +491,30 @@ the restarts are associated with the condition being signaled."
                              clauses)))
         ;; the cluster is the tag of the %CATCH: INVOKE-RESTART throws the
         ;; arguments to it after storing the clause number in it
+        ;; (a function is the closure the frame holds when that is one of
+        ;; the same function over the same cells and values, as HANDLER-BIND's)
         `(block ,block
-           (let* ((,first (vector *restart-clusters* ',(coerce descriptions 'simple-vector) nil nil
-                                  ,@(reverse functions)))
-                  (,args (%catch ,first
-                           (return-from ,block
-                             (let ((*restart-clusters* ,first))
-                               ,form)))))
+           (let* ((,depth *restart-clusters*)
+                  (,first ,(if (> (length functions) 6)
+                               `(%wide-restart-frame ,depth ',(coerce descriptions 'simple-vector)
+                                                     ,(+ 3 (length functions)))
+                               `(%restart-frame ,depth ',(coerce descriptions 'simple-vector))))
+                  (,args (progn
+                           ,@(let ((k 2))
+                               (mapcar (lambda (f)
+                                         (setq k (+ k 1))
+                                         `(let ((,fn (%reuse-closure (%svref ,first ,k) ,f)))
+                                            (if (eq ,fn (%svref ,first ,k)) nil (%set-svref ,first ,k ,fn))))
+                                       (reverse functions)))
+                           (%catch ,first
+                             (return-from ,block
+                               (let ((*restart-clusters* (+ ,depth 1)))
+                                 ,form))))))
              (declare (ignorable ,args))
              ,(if (null (cdr bodies))
                   (car bodies)
                   (let ((i -1))
-                    `(case (%svref ,first 2)
+                    `(case (%svref ,first 1)
                        ,@(mapcar (lambda (b) (list (if (cdr (member b bodies)) (setq i (+ i 1)) t) b))
                                  bodies)))))))))
 
@@ -631,7 +698,7 @@ with the handlers in effect now."
   (when (or (> *error-depth* 4) (null (get 'simple-error '%class))) (%error-panic datum args))
   (let ((c (%coerce-to-condition datum args 'simple-error t)))
     (restart-case (progn
-                    (%associate-restarts c (%cluster-restarts *restart-clusters*))
+                    (%associate-restarts c (%cluster-restarts (%innermost-restart-frame)))
                     (let ((*error-depth* (+ *error-depth* 1)) (*erroring* c))
                       (%signal-condition c))
                     (invoke-debugger c))

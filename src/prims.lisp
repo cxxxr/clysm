@@ -1136,6 +1136,7 @@ bounds of the array either way."
 ;; frame, and a loop makes none; a store of a new closure into the old frame
 ;; would take the slow path of the engine's write barrier each time)
 (defprim clysm-sys::%handler-frame (depth types) :value `(,@depth ,@types (:call :handler-frame)))
+(defprim clysm-sys::%restart-frame (depth clauses) :value `(,@depth ,@clauses (:call :restart-frame)))
 (defprim clysm-sys::%reuse-closure (old new) :value
   (let* ((last (car (last new)))
          (type (and (consp last) (eq (car last) :struct.new) (second last)))
@@ -5083,6 +5084,23 @@ f64s in locals DA and DB (it may branch to SLOW)."
          (:ref.cast! :vector)))
   '(:local.tee f) '(:i32.const 0) '(:array.get :vector) '(:local.get 1) :ref.eq
   '(:if nil nil nil ((:local.get f) (:i32.const 0) (:local.get 1) (:array.set :vector)))
+  '(:local.get f))
+
+;;; The restart frame at the depth with the clauses in it and no restarts
+;;; made (runtime/cond.lisp), as :HANDLER-FRAME.
+(defhelper :restart-frame :ee-e ((fs (:ref :null :vector)) (d :i32) (f (:ref :null :vector)))
+  `(:global.get ,(sym-global 'clysm-sys::*restart-frames*)) `(:struct.get :symbol ,+sym-value+)
+  '(:ref.cast! :vector) '(:local.set fs)
+  '(:local.get 0) '(:ref.cast! :i31) :i31.get_s '(:local.tee d)
+  '(:local.get fs) :array.len :i32.lt_u '(:hint 1)
+  `(:if nil (:ref :null :vector)
+        ((:local.get fs) (:local.get d) (:array.get :vector) (:ref.cast! :vector))
+        ((:local.get 0) (:global.get ,(sym-global 'clysm-sys::%grow-restart-frames)) (:call (:callsym 1))
+         (:ref.cast! :vector)))
+  '(:local.tee f) '(:i32.const 0) '(:array.get :vector) '(:local.get 1) :ref.eq
+  '(:if nil nil nil ((:local.get f) (:i32.const 0) (:local.get 1) (:array.set :vector)))
+  '(:local.get f) '(:i32.const 2) '(:array.get :vector) `(:global.get ,(sym-global nil)) :ref.eq
+  `(:if nil nil nil ((:local.get f) (:i32.const 2) (:global.get ,(sym-global nil)) (:array.set :vector)))
   '(:local.get f))
 
 ;;; catch tags

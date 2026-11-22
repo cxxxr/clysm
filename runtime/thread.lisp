@@ -216,7 +216,8 @@ its value."
                (let ((*current-thread* th)
                      (*handler-frames* (%make-handler-frames 8 nil))
                      (*handler-clusters* 0)
-                     (*restart-clusters* nil)
+                     (*restart-frames* (%make-restart-frames 8 nil))
+                     (*restart-clusters* 0)
                      (*condition-restarts* nil)
                      (*debug-frame-stack* nil))
                  ;; the thread that made it goes on first
