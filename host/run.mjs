@@ -25,8 +25,81 @@ async function importMainModules() {
   ({ makeProcessManager } = await import('./process.mjs'));
 }
 
+// CLYSM_TRACE_START=1: the times of the steps of starting (milliseconds
+// since the process started), on stderr when the process exits
+const marks = process.env.CLYSM_TRACE_START ? [['run.mjs', performance.now()]] : null;
+const mark = (name) => { if (marks) marks.push([name, performance.now()]); };
+if (marks) process.on('exit', () => {
+  mark('exit');
+  let last = 0;
+  console.error(marks.map(([n, t]) => { const d = t - last; last = t; return `${n} ${t.toFixed(1)} (+${d.toFixed(1)})`; }).join('\n'));
+});
+
+// The end of the process.  When the program has returned, Node.js first
+// runs the tasks that the engine has queued for the main thread, among them
+// the steps of a collection of the old generation that had begun (loading
+// ASDF reaches the heap's first limit: 8 to 12 ms, every time), and when the
+// event loop is empty it tears down the environment and the heap (5 ms
+// after `--eval t`).  Neither is of use to a process that ends:
+// * when the exit event has run its listeners, the process ends at once
+//   (as process.exit() does), unless a listener was added after this one;
+// * when the program's main function has returned (__clysm_main_done,
+//   called by SYS::%MAIN-DONE) and the promise jobs queued have run, the
+//   process exits if nothing is left that would run later: nothing keeps
+//   the event loop alive (a timer, a socket, a file being read, a process),
+//   no beforeExit listener is there, and the engine owes the program no
+//   promise that the event loop does not know of (a module being compiled,
+//   Atomics.waitAsync).
+// CLYSM_SLOW_EXIT=1 leaves both to Node.js.  (In the process's main thread:
+// a worker's end is its own.)
+const slowExit = !!process.env.CLYSM_SLOW_EXIT;
+if (!slowExit && isMainThread && typeof process.reallyExit === 'function') {
+  const atExit = (code) => {
+    const listeners = process.listeners('exit');
+    if (listeners[listeners.length - 1] === atExit) process.reallyExit(process.exitCode ?? code);
+  };
+  process.on('exit', atExit);
+}
+let enginePromises = 0;
+function countEnginePromises() {
+  const counted = (p) => { enginePromises++; const done = () => { enginePromises--; }; p.then(done, done); };
+  for (const name of ['compile', 'instantiate', 'compileStreaming', 'instantiateStreaming']) {
+    const f = WebAssembly[name];
+    if (typeof f === 'function') WebAssembly[name] = function (...args) { const p = f.apply(this, args); counted(p); return p; };
+  }
+  const waitAsync = Atomics.waitAsync;
+  if (typeof waitAsync === 'function') {
+    Atomics.waitAsync = function (...args) { const r = waitAsync.apply(this, args); if (r.async) counted(r.value); return r; };
+  }
+}
+function installMainDone(state) {
+  if (slowExit) return;
+  countEnginePromises();
+  const nothingLeft = () => {
+    if (enginePromises !== 0 || process.listenerCount('beforeExit') !== 0) return false;
+    const active = process.getActiveResourcesInfo();
+    // (but the host's own flush of what the program wrote in this turn: nodePlatform)
+    return active.length === 0 || (active.length === 1 && active[0] === 'Immediate' && state.flushPending());
+  };
+  let checking = false;
+  globalThis.__clysm_main_done = () => {
+    if (checking) return;
+    checking = true;
+    // Node.js runs the functions of process.nextTick when the queue of
+    // promise jobs is empty, before it goes on to the engine's tasks and
+    // the event loop: what the program left to run in this turn has run
+    // then (twice: a job may have asked for a tick itself)
+    process.nextTick(() => process.nextTick(() => {
+      checking = false;
+      if (nothingLeft()) { mark('nothing left'); state.flush(); writeTrace(); process.exit(); }
+    }));
+  };
+}
+
 // the program's file, arguments and whether its input is a terminal
 let programData = null;
+// whether the program runs in the process's main thread (and ends the process)
+let inProcessThread = false;
 
 // file system access for the Lisp side (pathnames, directories)
 globalThis.__clysm_fs = fs;
@@ -89,6 +162,7 @@ function nodePlatform(state, args) {
     if (!flushScheduled) { flushScheduled = true; setImmediate(() => { flushScheduled = false; flush(); }); }
   };
   state.flush = flush;
+  state.flushPending = () => flushScheduled;
   state.writeText = (fd, text) => { flush(); fs.writeSync(fd, text); };
   const stdinBuf = Buffer.alloc(1);
   // octets read ahead by stdinWait (a thread that waits for input without
@@ -218,7 +292,10 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
                                                    training = null } = {}) {
   await importWorkerModules();
   const state = { ...nodeModuleAccess() };
+  mark('worker modules imported');
+  if (inProcessThread) installMainDone(state);
   const imports = makeImports(state, nodePlatform(state, args));
+  mark('imports made');
   // (the image itself, for SAVE-IMAGE, which saves it as it starts from the heap image)
   if (process.env.CLYSM_SAVE_IMAGE) state.imageBytes = bytes;
   const modules = header && compileImageModules(file, header, undefined, (p) => fs.readFileSync(p));
@@ -228,6 +305,7 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
     let module;
     try {
       module = await (compiled || WebAssembly.compile(bytes));
+      mark('image compiled');
     } catch (e) {
       // (the octets of the heap image are not the image's: the image itself)
       if (bytes) throw e;
@@ -235,6 +313,7 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
       module = await WebAssembly.compile(bytes);
     }
     instance = await WebAssembly.instantiate(module, imports);
+    mark('image instantiated');
     installSourceMap(state, module);
     state.instance = instance;
     state.module = module;
@@ -265,6 +344,7 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
   if (header) {
     try {
       await loadImage(state, file, header, await modules);
+      mark('heap image loaded');
       restored = true;
     } catch (e) {
       console.error(';; the heap image could not be loaded:', e.message);
@@ -287,6 +367,7 @@ export async function runModule(path, args = [], { bytes = null, compiled = null
     }
     process.exit(2);
   }
+  mark('program done');
   state.flush();
 }
 
@@ -616,6 +697,7 @@ async function runProgram(data, port, netBuffer) {
     v8.setFlagsFromString('--wasm-stack-switching-stack-size=' + kb);
     v8.setFlagsFromString('--stack-size=' + kb);
   } catch (e) {}
+  mark('flags set');
   // with CLYSM_IMAGE=FILE, the image starts from the heap image FILE if it
   // was saved by this build of the image (otherwise as usual); the image is
   // then compiled from the octets that FILE has of it (readHeapImage), and
@@ -637,9 +719,12 @@ async function runProgram(data, port, netBuffer) {
   }
   // the module compiles in V8's threads while this one reads the heap and
   // imports the rest
+  mark('image octets read');
   let compiled = WebAssembly.compile(image?.octets || bytes);
+  mark('compile started');
   compiled.catch(() => {});
   const file = image && image.rest();
+  mark('heap read');
   let header = null;
   if (file) {
     await importCommon();
@@ -651,6 +736,7 @@ async function runProgram(data, port, netBuffer) {
     compiled = WebAssembly.compile(bytes);
     compiled.catch(() => {});
   }
+  mark('header');
   await importWorkerModules();
   installNetClient(port, netBuffer);
   // the program may run as a computation that can wait (sys::main, threads)
@@ -680,9 +766,23 @@ async function runProgram(data, port, netBuffer) {
 }
 
 if (isMainThread && process.argv[1] === selfPath) {
-  const data = { file: process.argv[2], args: process.argv.slice(3), tty: process.stdin.isTTY };
+  // (whether the input is a terminal is asked for when the REPL starts
+  // without arguments: process.stdin makes the stream and its handle, 1.7
+  // ms, and the handle of a pipe or a terminal would be among the active
+  // resources at the end; tty.isatty makes none)
+  const data = {
+    file: process.argv[2], args: process.argv.slice(3),
+    get tty() {
+      const tty = process.getBuiltinModule?.('node:tty');
+      const value = tty ? tty.isatty(0) : process.stdin.isTTY;
+      Object.defineProperty(data, 'tty', { value, enumerable: true });
+      return value;
+    },
+  };
   if (await inMainThread()) {
+    mark('main thread chosen');
     programData = data;
+    inProcessThread = true;
     // (as the worker's 'error' below)
     const fail = (e) => { console.error(';; worker error:', e); process.exit(2); };
     process.on('uncaughtException', fail);
