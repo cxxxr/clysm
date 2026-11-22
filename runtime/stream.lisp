@@ -1131,8 +1131,7 @@ octet of a character input file when it is ASCII, else the call FALLBACK."
           (sl (gensym "SLOTS")))
       (declare (ignore p b sl))
       `(let ((,s ,stream) (,e ,eof-error-p) (,v ,eof-value))
-         (or (%fs-fast-char ,s ,advance)
-             (,fallback ,s ,e ,v))))))
+         (%fs-fast-char-or ,s ,advance (,fallback ,s ,e ,v))))))
 
 (define-compiler-macro read-char (&whole form &optional (stream nil) (eof-error-p t) eof-value
                                          (recursive-p nil recursive-p-p))
