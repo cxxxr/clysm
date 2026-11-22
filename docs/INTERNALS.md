@@ -3983,6 +3983,12 @@ What makes the code fast:
   read into either type (`:make-big`). A list of 300 000 squares made
   and summed (`f-sq-list` of the probes): 109 -> 61 ms; `f-generators`
   0.93.
+* **A sum stepped by a boxed integer** (2026-11-23). The step of an
+  accumulator (above) took its helper when the value was not a fixnum; a
+  box is now added inline after the fixnum's tests (`ref.test $ibox`, its
+  value, the checked sum): a list of 10 000 integers beyond the fixnums
+  summed, `(dolist (x l) (incf s x))`, 3.6 -> 1.3 ns an element (SBCL
+  1.05; 73 -> 27 ms for 2000 runs), `loop`'s `sum` the same.
 * **Numeric items still behind SBCL, and why** (2026-11-23; each profiled
   by instruction: `node --prof --prof-sampling-interval=100 --perf-prof`,
   the ticks placed on the code read from the jitdump with `objdump`, and
