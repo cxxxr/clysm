@@ -49,6 +49,8 @@ NODE="${NODE:-node}"
 # is 64; CLYSM_NURSERY_MB names another size): see host/run.mjs, which gives
 # it to the worker a compiled program runs in; the main thread, where the REPL
 # image runs, takes it from the command line.
+# compile/library --shake --preinit-through FILE runs the program's toplevel
+# forms through FILE during compilation; later files still run when loaded.
 NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"
 # The compiler runs on SBCL, whose heap is 1 GB (or 8 GB, as it was built) unless it is told:
 # a large program (a system of some hundred files, with --shake) needs more than 1 GB.
@@ -98,6 +100,7 @@ case "$cmd" in
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
                    --shake-why) shake="$shake --shake-why $2"; shift 2;;
+                   --preinit-through) [ $# -ge 2 ] || { echo "--preinit-through needs a source file" >&2; exit 1; }; shake="$shake --preinit-through $2"; shift 2;;
                    --eval-string) shake="$shake --eval-string"; shift;; *) files="$files $1"; shift;; esac
     done
     exec sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" $shake "$out" $files ;;
@@ -107,6 +110,7 @@ case "$cmd" in
       case "$1" in -o) out="$2"; shift 2;; --shake) shake="--shake $shake"; shift;;
                    --shake-symbols) shake="--shake-symbols $shake"; shift;;
                    --shake-why) shake="$shake --shake-why $2"; shift 2;;
+                   --preinit-through) [ $# -ge 2 ] || { echo "--preinit-through needs a source file" >&2; exit 1; }; shake="$shake --preinit-through $2"; shift 2;;
                    --eval-string) shake="$shake --eval-string"; shift;; *) files="$files $1"; shift;; esac
     done
     [ -n "$out" ] || { echo "clysm library: -o DIR/NAME.wasm is needed" >&2; exit 1; }

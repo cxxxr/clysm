@@ -1,0 +1,13 @@
+(defpackage :preinit-demo (:use :cl))
+(in-package :preinit-demo)
+(defvar *values* (let ((h (make-hash-table :test 'equal)))
+                  (setf (gethash "answer" h) 42) h))
+(defvar *initializations* 0)
+(incf *initializations*)
+(defclass box () ((value :initarg :value :reader box-value)))
+(defgeneric answer (x))
+(defmethod answer ((x box)) (box-value x))
+(defvar *box* (make-instance 'box :value (gethash "answer" *values*)))
+(defun result () (answer *box*))
+;; Pure initialization runs during compilation, not when a module loads.
+(write-line "preinitialized definitions")
