@@ -7225,6 +7225,60 @@ What makes the code fast:
   applies only to the compiler-generated read of the immutable literal,
   not to any user expression or the loop body.
 
+* **Bounded sums of fixnums use i32 (2026-11-23).** `fused-i32-range`
+  computes bounds for every intermediate addition/subtraction assuming
+  fixnum leaves. If all intermediates fit signed i32 and the leaves are
+  constants or boxed values, `fused-code` checks the leaves and emits i32
+  operations without an overflow test after each addition. The final
+  fixnum range check is inline; an i32 outside the fixnums is boxed by
+  `box-i32`. Other values use the existing double/generic fallback from
+  the already evaluated operands. Wider trees and unboxed i64/dual leaves
+  retain the i64 path. This covers three- and four-operand sums and
+  differences without depending on MAPCAR or the source of their operands.
+  `bounded-sums.lisp` exercises fixnum/i32/i64 boundaries, bignums, ratios,
+  floats, complex numbers, characters, and evaluation order on errors.
+  Five interleaved rounds with this change disabled/enabled in otherwise
+  identical builds: three-list MAPCAR 39 -> 35 ms (0.90), all mapping
+  probes 0.965 geometric mean. Three rounds of other files give
+  `programs` 0.994, `library` 1.011, `arith` 0.938. The combined
+  `v-mapping` benchmark remains about the same: allocation dominates.
+  Substitution is a counterexample: in those diagnostic library runs,
+  `v-substitute` is 74 -> 85 ms; the combined build against `a0be620`
+  is 72.5 -> 78.5 over eight rounds. Calling `box-i32` even for a
+  fixnum result was tried first and not kept (`v-mapping` 42 -> 44 ms);
+  the retained path boxes a fixnum inline.
+
+* **The four list changes together (2026-11-23, final build).** Node.js
+  24.21.0, SBCL 2.6.0.debian; eight interleaved rounds per build against
+  `a0be620`, holding a benchmark-slot lock throughout, alternating which
+  build runs first. These are medians of process times; geometric means
+  use all nonzero items of each file. The compiler-cost cleanup and the
+  restriction on LOOP's BY clauses are included.
+
+  | File | Items | New/base geometric mean |
+  |---|---:|---:|
+  | suite | 24 | 0.995 |
+  | library | 32 | 1.000 |
+  | gabriel | 10 | 0.995 |
+  | programs | 63 | 0.991 |
+  | arith | 13 | 0.968 |
+
+  `v-coerce-general` 127 -> 91 ms (SBCL 107 in one reference run),
+  `p-typecase` 91.5 -> 73.5, `p-loop-macros` 66 -> 67. The combined
+  `v-mapping` remains allocation-limited and is slower, 34 -> 37 ms,
+  despite the isolated three-list sum's improvement. Other increases
+  above 4%: `b-sieve` 36 -> 37.5, `v-coerce-num` 21 -> 22.5,
+  `v-remove` 103 -> 108, `v-search-mismatch` 25 -> 26.5, `v-sort`
+  89 -> 94, `v-substitute` 73 -> 76.5, `v-typep-class` 135.5 -> 141,
+  `a-int-funcs` 108.5 -> 113. These modest changes are reported without
+  claiming they exceed run-to-run noise; earlier 7-10% regressions in
+  `p-json`, `p-wrap` and `a-mixed-poly` did not recur in the final set.
+  The module of one export is 905,872 bytes against 907,520; the REPL
+  image 8,541,468 against 8,567,288 (the baseline rebuilt in a source
+  snapshot, whose path metadata is slightly different). No size budget
+  or engine flags were changed. The full ANSI run is 21931/21932, only
+  the known SUBTYPEP-COMPLEX.8 failure, with no crashes.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
