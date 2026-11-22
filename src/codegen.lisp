@@ -1375,8 +1375,8 @@ init)), one tree whose result is tested once (F64-TREE-CODE).  Else NIL."
                    (not (member v (assigned-lvars init))))
           (let* ((new-e (list :prim (second e) (third e) init))
                  (new (list :lset v new-e)))
-            (setf (gethash new-e *node-types*) (gethash e *node-types*)
-                  (gethash new *node-types*) (gethash body *node-types*))
+            (set-node-type new-e (node-type e))
+            (set-node-type new (node-type body))
             new))))))
 
 (defun cg-let (node mv tail &optional (rep :eqref))
