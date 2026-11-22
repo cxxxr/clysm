@@ -1358,8 +1358,13 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
     (setf *runtime-top-count* (length *toplevel-lams*)
           *preinit-root* (merge-pathnames "../" (make-pathname :name nil :type nil :version nil
                                                                :defaults runtime-dir))))
-  (let ((*host-load-defuns* t))
-    (dolist (f files) (compile-source-file f)))
+  (let ((*host-load-defuns* t)
+        ;; (the program's generic functions: the runtime's call sites and
+        ;; methods stay as they are, so that a program without generic
+        ;; functions of its own carries no dispatch)
+        (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
+    (dolist (f files) (compile-source-file f))
+    (gf-unit-flush (make-cenv)))
   (let ((bytes (let ((*shake-why* (and *shake-why-file* (make-hash-table :test 'equal)))
                       (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal)))
                       ;; (no branch hints in the runtime's large functions)

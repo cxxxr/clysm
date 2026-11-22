@@ -4651,6 +4651,147 @@ What makes the code fast:
   generic function through `funcall` 1.11-1.16 times their time and
   `c-eql-dispatch` 1.18, at call sites `op` 1.10 and `h-fib-generic`
   1.02-1.03 (a first measure of 0.97 was noise); reverted.
+* **Dispatch compiled as code** (2026-11-22; `runtime/clos.lisp`, "Dispatch
+  compiled as code"). The caches above end in an indirect call of an
+  effective method, which the engine does not inline; a generic function
+  whose methods the compiler can see is now dispatched by a function of its
+  own made from them. The compiler keeps, for the unit it is compiling (a
+  whole program, the forms of a batch of `load`, a file given to
+  `compile-file`, the files of a system's fasl: `*gf-unit*`,
+  `%make-gf-unit`), the methods that `defmethod` defines there
+  (`%gf-unit-note-method`) and the classes of `defclass`
+  (`%gf-unit-note-class`); in the image it also looks at the generic
+  functions, methods and classes defined before the unit (`%ct-live-gf`,
+  `%ct-live-methods`, `%ct-live-class`). A call of a generic function of one
+  to four required parameters and no others (a symbol outside the
+  implementation's packages; not a reader or writer of `defclass`, whose
+  sites read and write the slots) is
+  `(if (%static-known-p d) (%static-call d arg...) the-call-as-before)`
+  (`%gf-unit-site`, from the compiler macro of the call sites of one or two
+  arguments and from `convert-compound` for three and four), `d` being a
+  symbol that names the *discriminating function* of the generic function in
+  this unit. The functions are made when the unit (or a segment of it, a
+  file of a system) ends (`gf-unit-flush`, `%gf-unit-flush`,
+  `%gf-disc-form`), so they know the methods defined after the call too; the
+  test is decided when the code is generated, and only one arm is compiled.
+  Three operators of the compiler carry this (`src/frontend.lisp`):
+  `(%static-lambda sym (lambda ...))` is the function, known as `sym` to
+  `(%static-call sym arg...)`, a direct call, when it closes over nothing
+  (the symbols are uninterned and name nothing at run time);
+  `(%static-function sym)` is its closure. The expansion of `defmethod`
+  gives the function of the method such a name: the function of the
+  arguments of a method without `call-next-method`, and for one with it a
+  function of the next method (a function of the arguments), the cell and
+  the arguments, which the function that `%fast-method-maker` makes calls
+  (`+method-static+`, the seventh of a method's extras, holds it).
+
+  The discriminating function is a decision tree over the specialized
+  arguments in turn, among the methods still applicable: the objects of
+  EQL specializers first (fixnums, characters and symbols written in the
+  `defmethod`, compared with `eq`; a generic function with another EQL
+  object has no tree), then the built-in classes by the tests of their
+  representations (`%ct-kinds`: fixnum, character, null, keyword, symbol,
+  cons, simple string, double, single, simple vector, bignum, ratio, other
+  strings, complex; kinds with the same subtree share one test, and
+  `symbolp`, `integerp`, `floatp`, `stringp` and `listp` stand for their
+  groups), then the classes whose instances are told by the identity of
+  their class (those of the unit under a specializer, and in the image the
+  class named by the specializer and up to 12 of its subclasses), each
+  compared with a cell of the function's vector; when every class
+  specializer at the position is one whose objects are all of the known
+  kinds (`%ct-closed-classes`), any other object takes the methods
+  unspecialized there, otherwise it leaves the tree. A leaf is the
+  effective method of the standard method combination written out: the
+  `:before` methods, the primary method and the `:after` methods called
+  directly (`%static-call`; a method defined before the unit through a cell
+  holding its function); the next method of a method with
+  `call-next-method` (an `:around` method, a primary one) is a function
+  calling the rest, made once for the methods it calls and shared by the
+  leaves (so the call of the next method in a method's function sees one
+  target when the hierarchy is linear). A leaf needing a function that is
+  not known (a method evaluated rather than compiled, one declared
+  `(safety 3)`, whose `call-next-method` checks its arguments, a last
+  primary method that calls `call-next-method`) is left out, as is a tree of
+  more than 48 leaves or 40 methods.
+
+  The tree is right for the methods and class precedence lists the compiler
+  assumed, and it is used only while the generic function has exactly those
+  (`%gf-disc-valid-p`): the standard method combination and class, no
+  argument precedence order, each method of the tree a method of the
+  generic function with the same qualifiers and specializers and, for those
+  of the unit, the very function the tree calls (a method redefined later,
+  by another file or at the REPL, has another), no other method; and for
+  each key of the tree (an EQL object, a kind, a class) the class
+  specializers of the methods at that position that its class has in its
+  precedence list are, in order, the ones assumed (a class for which this
+  fails has an empty cell: its instances leave the tree). The comparison is
+  made at the fourth call that falls out of the tree since the methods or
+  classes last changed (`%gf-disc-arm`; a program being loaded changes them
+  at every definition); `%bump-clos-epoch`, which every change of a method
+  or class calls, empties the cells of the trees compared since and makes
+  them compare again. The hot path is one read of the state, the tests, and
+  the call. A call that leaves the tree is the call as it was before (the
+  cache of the call site for one and two arguments, there in the
+  discriminating function, or the generic function); a unit compiled
+  before a later unit added a method keeps calling that way (its tree is
+  dead: the later unit's has the method). The evaluator has macros for the
+  three operators (a form of a unit evaluated when it is compiled).
+
+  Measured (interleaved on one slot, against the commit before; ms):
+
+  | | before | after | SBCL |
+  |---|---|---|---|
+  | `c-builtin-eql` | 99 | 31 | 39 |
+  | `c-eql-dispatch` | 58 | 20 | 29 |
+  | `c-megamorphic` (20 classes in turn) | 120 | 57 | 69 |
+  | `c-gf3` | 133 | 67 | 101 |
+  | `c-gf4` (`:before`, `call-next-method`) | 148 | 96 | 121 |
+  | `c-cnm4-args` (three arguments) | 62 | 32 | 49 |
+  | `c-comb-all` (`:around`, `:before`, `:after`) | 78 | 39 | 92 |
+  | `c-cnm4` | 27 | 26 | 54 |
+  | `h-fib-generic` | 310 | 155 | 198 |
+  | `p-builtin-dispatch` | 222 | 74 | 88 |
+  | `p-clos-app` | 73 | 52 | 50 |
+  | `h-clos-methods` | 93 | 61 | |
+  | `p-method-comb` | 48 | 39 | |
+  | `b-clos` | 105 | 87 | 113 |
+
+  `bench/clos.lisp` 1.07 → 0.74 compiled (in a script the same items take
+  0.24–0.59 of their time: `c-builtin-eql` 124 → 30 ms, `c-eql-dispatch`
+  82 → 21, `c-gf3` 162 → 72, `c-megamorphic` 148 → 87, the methods of an
+  earlier batch being called through cells; the others within 3%),
+  `bench/programs.lisp` 0.78 → 0.76, `bench/holdout.lisp` 0.75 → 0.70,
+  `bench/suite.lisp` 0.72 → 0.70, Lem's buffer code
+  (`tools/bench-lem.sh`) 0.99 and 1.02 before, 1.02 and 1.02 after (two
+  interleaved rounds; `l-forms-forward` 156 → 145 ms, `l-type-autodoc`
+  188 → 172, the others the same), `bench/apps.lisp` 1.16 and 1.18 before,
+  1.22 and 1.18 after (within the runs' spread), start-up the same within
+  2% (`s-start` 68, 70 → 69, 73 ms; the others mixed).
+  Forty classes at one site in random order (2000 objects): 68 ms for ten
+  million calls against 214 with the caches (SBCL 151); ten classes 48
+  against 100; four 44 against 39 (the site's own cache of four was
+  enough). Sizes: the REPL image 8,876,297 → 8,948,930 bytes (the making
+  of the trees); the shaken module of one export 925,558 → 927,705 (174
+  bytes of code, in `%bump-clos-epoch`, the rest the names of the new
+  functions and variables: it has no tree, and `tests/lib/nodispatch.lisp`
+  still no dispatch); the fasls of Lem and its libraries 53.18 → 53.45 MB
+  (`lem_core--system.fasl` 16.13 → 16.37).
+
+  Measured on the way, not kept: an index from a perfect hash of the
+  class's identity hash (a multiplier found when the tree is compared,
+  the class and the leaf number read from a table, then `case` on the
+  number) instead of the chain of comparisons, by hand for the 20 classes
+  of `c-megamorphic`: 76–85 ms against 52 for the chain (the compiler's
+  `case` is itself a chain of comparisons: a `br_table` there was not
+  tried, the chain of 40 being at SBCL's time already). Not done:
+  generic functions with `&optional`, `&rest` or `&key` parameters
+  (`c-gf-lambda-lists` 1.18), other method combinations
+  (`c-short-combination` 1.14), `(setf name)` generic functions, and
+  `make-instance` (`b-make-instance` 1.39, `c-make-instance-plain` 1.21:
+  the constructor copies a template and runs three plans in loops; with
+  the class known in the unit the instance could be made by code that
+  stores each slot, compared with the class's plan as the trees are with
+  the methods).
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm

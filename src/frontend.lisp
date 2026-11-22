@@ -1009,6 +1009,15 @@ the depth of copies, one more."
                          (handler-case (funcall cm form env) (error () form))))))
           (unless (eq new form)
             (return-from convert-compound (convert new env))))))
+    ;; a call of a generic function whose methods the unit being compiled
+    ;; defines or that was defined before: a call of its discriminating
+    ;; function (runtime/clos.lisp, "Dispatch compiled as code"; the
+    ;; generic functions of one or two arguments with a compiler macro for
+    ;; their call sites get there from it)
+    (when (and clysm-sys::*gf-unit* (symbolp op) (not (gethash op *notinline*))
+               (not (member op *local-notinline*)))
+      (let ((new (clysm-sys::%gf-unit-site form)))
+        (when new (return-from convert-compound (convert new env)))))
     (let ((tr (and (symbolp op) (get op 'clysm-transform))))
       (when tr
         (let ((new (funcall tr form)))
@@ -1773,6 +1782,52 @@ bound to the values of ARGS, when their number is known; else NIL."
 
 (defmacro defnative (name (form env) &body body)
   `(setf (get ',name 'clysm-native) (lambda (,form ,env) (declare (ignorable ,env)) ,@body)))
+
+;;; Functions of a compilation unit known by a symbol that names nothing at
+;;; run time (the functions of methods and the discriminating functions of
+;;; generic functions, runtime/clos.lisp): (%STATIC-LAMBDA sym (lambda ...))
+;;; is the function, known as SYM to (%STATIC-CALL sym arg...), a direct
+;;; call, when it closes over nothing; (%STATIC-KNOWN-P sym) is decided when
+;;; the code is generated (the function may be defined by a later form), and
+;;; (%STATIC-FUNCTION sym) is the function, or NIL.
+(defvar clysm-sys::*gf-unit* nil
+  "The generic functions, methods and classes of the unit being compiled
+(SYS::%MAKE-GF-UNIT), or NIL.")
+
+(defnative clysm-sys::%static-lambda (form env)
+  (let ((node (convert (third form) env)))
+    (when (and (eq (car node) :lambda) (null (lam-free-vars (second node))))
+      (setf (lam-static-p (second node)) t)
+      (push (second node) (gethash (second form) *global-defuns*)))
+    node))
+
+(defnative clysm-sys::%static-call (form env)
+  `(:call ,(second form) ,@(convert-args (cddr form) env)))
+
+(defnative clysm-sys::%static-known-p (form env)
+  (let ((sym (second form)))
+    `(:prim ,(make-prim :name 'clysm-sys::%static-known-p :nargs 0 :kind :test
+                        :fn (lambda (argv) (declare (ignore argv))
+                              (if (known-global-lam sym) (list (list :i32.const 1)) (list (list :i32.const 0))))))))
+
+(defnative clysm-sys::%static-function (form env)
+  (let ((sym (second form)))
+    `(:prim ,(make-prim :name 'clysm-sys::%static-function :nargs 0 :kind :value
+                        :fn (lambda (argv) (declare (ignore argv))
+                              (let ((lam (known-global-lam sym)))
+                                (if lam (cg-closure lam) (nil-code))))))))
+
+(defun gf-unit-flush (env)
+  "Process the definitions of the discriminating functions that the forms
+converted so far call (the end of a unit, or of a part of it)."
+  (when clysm-sys::*gf-unit*
+    (let ((forms (clysm-sys::%gf-unit-flush (lambda (sym) (and (known-global-lam sym) t)))))
+      ;; (the functions are known by their symbols, and compiled when a
+      ;; call refers to them: no code of a toplevel form)
+      (let ((clysm-sys::*gf-unit* nil))
+        (dolist (f forms)
+          (let ((*current-lam* (ensure-toplevel-lam)))
+            (convert f env)))))))
 
 ;; (a guarded call of a function of another form of a batch, BATCH-GUARDED-P)
 (defnative clysm-sys::%batch-direct-call (form env)

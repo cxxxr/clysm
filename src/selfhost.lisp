@@ -39,8 +39,11 @@
           (when version
             (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv))))
         (finish-runtime))
-      (let ((*host-load-defuns* t))
-        (dolist (f sources) (compile-source-file f)))
+      (let ((*host-load-defuns* t)
+            ;; (the program's generic functions, as COMPILE-PROGRAM-1)
+            (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
+        (dolist (f sources) (compile-source-file f))
+        (gf-unit-flush (make-cenv)))
       (let ((bytes (build-module)))
         (with-open-file (o out :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
           (write-sequence bytes o))

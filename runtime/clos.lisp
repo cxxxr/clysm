@@ -98,18 +98,25 @@ it still waits where it waits.")
 ;;; next method, 2 the maker of its function of the keyed spread arguments,
 ;;; 3 (value) of a primary method whose body is a constant, 4 (slot-name
 ;;; . writerp) of a reader or writer made by DEFCLASS, 5 (n kind . function)
-;;; of its combiner.
+;;; of its combiner, 6 its function of the next method, a cell and the
+;;; arguments, which the discriminating functions of its unit call
+;;; (%NOTE-METHOD-STATIC).
+(defconstant +method-static+ 6)
 (defconstant +method-fast-function+ 0) (defconstant +method-fast-maker+ 1)
 (defconstant +method-keyed-maker+ 2) (defconstant +method-constant+ 3)
 (defconstant +method-accessor+ 4) (defconstant +method-combiner+ 5)
 (defun %method-extra (m i)
-  (let ((v (%instance-ref m 7))) (if (simple-vector-p v) (svref v i) nil)))
+  (let ((v (%instance-ref m 7))) (if (and (simple-vector-p v) (< i (length v))) (svref v i) nil)))
 ;; (not copied into the toplevel form of each DEFMETHOD that notes something)
 (declaim (notinline %set-method-extra))
 (defun %set-method-extra (m i x)
   (let ((v (%instance-ref m 7)))
     ;; (NIL, or unbound in a method made by MAKE-INSTANCE)
     (unless (simple-vector-p v) (setq v (vector nil nil nil nil nil nil)) (%set-instance-ref m 7 v))
+    ;; (only the methods compiled in a unit have the seventh, +METHOD-STATIC+)
+    (when (>= i (length v))
+      (setq v (replace (make-array (+ i 1) :initial-element nil) v))
+      (%set-instance-ref m 7 v))
     (setf (svref v i) x)
     m))
 
@@ -254,6 +261,21 @@ it still waits where it waits.")
   (%gf-reset-cache info))
 
 (defvar *the-standard-generic-function-class* nil)
+
+(defvar *gf-unit* nil
+  "The generic functions, methods and classes of the unit that the compiler
+is compiling (%MAKE-GF-UNIT, see \"Dispatch compiled as code\"), or NIL.")
+
+;;; What the compiler's operators for the functions of a unit (%STATIC-LAMBDA
+;;; and the others, src/frontend.lisp) are to the evaluator, which is given
+;;; the forms of a unit that are evaluated when it is compiled (EVAL-WHEN)
+;;; or that the compiler could not compile: there are no such functions.
+(defmacro %static-lambda (symbol lambda) (declare (ignore symbol)) lambda)
+(defmacro %static-known-p (symbol) (declare (ignore symbol)) nil)
+(defmacro %static-function (symbol) (declare (ignore symbol)) nil)
+(defmacro %static-call (symbol &rest args)
+  (declare (ignore symbol args))
+  '(error "A function of a compilation unit is called in code that was not compiled in it."))
 
 ;;; A function of the info making the function of a generic function, given
 ;;; by the expansions of DEFGENERIC and DEFMETHOD so that each generic
@@ -1682,6 +1704,8 @@ spread form, or the general call when their number does not fit SHAPE."
   (%set-method-extra m +method-fast-function+ f))
 (defun %note-method-fast-maker (m f)
   (%set-method-extra m +method-fast-maker+ f))
+(defun %note-method-static (m f)
+  (%set-method-extra m +method-static+ f))
 
 ;;; The code combining the methods of an effective method of :BEFORE or
 ;;; :AFTER methods, or of a short-form method combination, is made by the
@@ -2389,10 +2413,13 @@ the applicable methods of the original ones."
                     (%no-next-method ,cell (list ,@new))))))
           (t `(%call-next-method-fast (list ,@vars) ,next (list ,@cnm-args) ,cell))))
 
-  (defun %fast-method-maker (name plain-ll body cell)
+  (defun %fast-method-maker (name plain-ll body cell &optional msym sf)
     "A form for a function making, from the next method, the function of the
 arguments of a method with the required parameters PLAIN-LL whose BODY uses
-CALL-NEXT-METHOD or NEXT-METHOD-P."
+CALL-NEXT-METHOD or NEXT-METHOD-P.  With MSYM (in a unit, see \"Dispatch
+compiled as code\"), the second value is the form of the method's function
+of the next method, the cell and the arguments, known as MSYM, which the
+function made calls; SF is the variable that will hold it."
     (multiple-value-bind (decls doc forms) (%parse-body body t)
       (declare (ignore doc))
       (let* ((next (gensym "NEXT")) (unspec (gensym "UNSPEC")) (check (%safety-3-p decls))
@@ -2401,19 +2428,32 @@ CALL-NEXT-METHOD or NEXT-METHOD-P."
                        ,@decls
                        (declare (ignorable ,@plain-ll))
                        (block ,(if (consp name) (cadr name) name) ,@forms))))
-        `(lambda (,next ,unspec)
-           (declare (ignorable ,unspec))
-           (lambda ,vars
-             ,(if (%only-operators-p (cons 'progn body) '(call-next-method next-method-p))
-                  `(macrolet ((call-next-method (&rest cnm-args)
-                                (%expand-fast-cnm cnm-args ',vars ',next ',cell ',unspec ',check))
-                              (next-method-p () '(not (null ,next))))
-                     ,inner)
-                  `(flet ((call-next-method (&rest cnm-args)
-                            (,(if check '%call-next-method-fast '%call-next-method-fast-unchecked)
-                             (list ,@vars) ,next cnm-args ,cell))
-                          (next-method-p () (not (null ,next))))
-                     ,inner))))))))
+        (flet ((code (cell)
+                 (if (%only-operators-p (cons 'progn body) '(call-next-method next-method-p))
+                     `(macrolet ((call-next-method (&rest cnm-args)
+                                   (%expand-fast-cnm cnm-args ',vars ',next ',cell ',unspec ',check))
+                                 (next-method-p () '(not (null ,next))))
+                        ,inner)
+                     `(flet ((call-next-method (&rest cnm-args)
+                               (,(if check '%call-next-method-fast '%call-next-method-fast-unchecked)
+                                (list ,@vars) ,next cnm-args ,cell))
+                             (next-method-p () (not (null ,next))))
+                        ,inner))))
+          (if (and msym (not check))
+              (let ((c2 (gensym "CELL")))
+                (values `(lambda (,next ,unspec)
+                           (declare (ignorable ,unspec))
+                           (lambda ,vars
+                             (if (%static-known-p ,msym)
+                                 (%static-call ,msym ,next ,cell ,@vars)
+                                 (funcall (the function ,sf) ,next ,cell ,@vars))))
+                        `(%static-lambda ,msym
+                           (lambda (,next ,c2 ,@vars)
+                             (declare (ignorable ,next ,c2))
+                             ,(code c2)))))
+              `(lambda (,next ,unspec)
+                 (declare (ignorable ,unspec))
+                 (lambda ,vars ,(code cell)))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %spread-bindings (ll vars)
@@ -2665,6 +2705,590 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
         (and (boundp '*native-eval-hook*) (symbol-value '*native-eval-hook*) (%combiner-form quals n))
       (if kind `(%note-method-combiner ,registration ,n ',kind ,form) registration))))
 
+;;; ------------------------------------------------------------
+;;; Dispatch compiled as code
+;;; ------------------------------------------------------------
+;;; The compiler knows the methods that the unit it is compiling defines (a
+;;; whole program, the forms of a batch of LOAD, a file given to
+;;; COMPILE-FILE, the files of a system's fasl): *GF-UNIT* holds them
+;;; (%GF-UNIT-NOTE-METHOD, from the expansion of DEFMETHOD) and the classes
+;;; that DEFCLASS defines there; in the image it also sees the generic
+;;; functions, methods and classes defined before (%CT-LIVE-GF).  A call of a
+;;; generic function of one to four required parameters is then a direct call
+;;; of a discriminating function made at the end of the unit (%GF-UNIT-SITE,
+;;; %GF-UNIT-FLUSH): a decision tree on the arguments (the objects of EQL
+;;; specializers compared with EQ, the built-in classes by the tests of
+;;; their representations, the other classes by the identity of the
+;;; instance's class, read from a cell) whose leaves call the functions of
+;;; the methods: directly those of the unit (%STATIC-LAMBDA, %STATIC-CALL),
+;;; which the engine inlines, through a cell those defined before.  :BEFORE
+;;; and :AFTER methods are called in turn there, and the next method of a
+;;; method with CALL-NEXT-METHOD (an :AROUND method, a primary one) is a
+;;; function calling the rest, made once for the methods it calls.
+;;; The tree is what the methods and classes known when it was compiled
+;;; give; it is used while the generic function has exactly those methods
+;;; (%GF-DISC-ARM compares them, and the precedence of the classes among the
+;;; specializers, when a call first falls out of the tree; %BUMP-CLOS-EPOCH,
+;;; any change of a method or class, makes it do so again).  Until then, and
+;;; for arguments the tree does not know (a class defined later, a method
+;;; whose function is not known), the call is the one made before: the cache
+;;; of the call site, or the generic function.
+;;;   cells: #(state descriptor c function... class...)  STATE: T (the tree
+;;;   is valid), NIL or the number of calls since (not compared yet) or :DEAD
+;;;   (the methods are others); C: the index of the first class
+;;;   descriptor: (name n methods checks), METHODS ((qualifiers specializers
+;;;   ref) ...), REF the index of the method's function among those of the
+;;;   unit, (cell . kind) for a method defined before, or NIL; CHECKS
+;;;   ((position key assumed) ...): the class specializers of the methods at
+;;;   POSITION that the class of KEY has in its precedence list, in that
+;;;   order, are the classes named ASSUMED; KEY: (:eql object), (:kind class)
+;;;   or (:class name cell).
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %make-gf-unit ()
+    "#(methods classes sites count): name -> ((qualifiers specializers
+lambda-list function-symbol...) ...), name -> (index . superclasses), and
+((name . symbol) ...) of the discriminating functions to make."
+    (vector (make-hash-table :test 'eq) (make-hash-table :test 'eq) nil 0))
+
+  (defun %gf-unit-note-method (name quals specs ll &optional nextp)
+    "Note a method that the unit defines; returns the symbol its function is
+known by (%STATIC-LAMBDA), or NIL outside a unit.  NEXTP: the function takes
+the next method (a function of the arguments, or NIL) and a cell before the
+arguments."
+    (let ((u *gf-unit*))
+      (when (and u (symbolp name) name)
+        (let* ((tb (svref u 0))
+               (old (find-if (lambda (r) (and (equal (first r) quals) (equal (second r) specs))) (gethash name tb)))
+               (sym (make-symbol (if nextp "NEXT-METHOD" "METHOD"))))
+          (if old
+              ;; (a form expanded again: either function may be the one compiled)
+              (setf (third old) ll (cdddr old) (cons sym (cdddr old)))
+              (push (list quals specs ll sym) (gethash name tb)))
+          sym))))
+
+  (defun %gf-unit-note-class (name supers)
+    (let ((u *gf-unit*))
+      (when (and u (symbolp name) (listp supers))
+        (setf (svref u 3) (+ (svref u 3) 1))
+        (setf (gethash name (svref u 1)) (cons (svref u 3) supers)))))
+
+  (defun %ct-live-p ()
+    "True in the image: the generic functions and classes defined before the
+unit are there to be looked at."
+    (and (boundp '*native-eval-hook*) (symbol-value '*native-eval-hook*) t))
+
+  (defun %ct-live-gf (name n)
+    "The metaobject of the generic function NAME defined in the image, when it
+has N required parameters and no others, or NIL."
+    (and (%ct-live-p) (fboundp name) (not (macro-function name)) (not (special-operator-p name))
+         (let ((info (%gf-info (fdefinition name))))
+           (and info
+                (eq (%svref (%gf-slot info +gf-cache+) 1) n)
+                (eql (%gf-slot info +gf-nreq+) n)
+                info))))
+
+  (defun %ct-live-methods (info n)
+    "The methods of the generic function INFO as (qualifiers specializers
+kind), KIND :PLAIN (its function of the arguments is known), :NEXT (that of
+the next method, a cell and the arguments) or NIL; :BAD when a specializer
+cannot be named here."
+    (let ((r nil) (top (find-class t)))
+      (dolist (m (%gf-slot info +gf-methods+) (nreverse r))
+        (let ((specs (mapcar (lambda (s)
+                               (cond ((consp s)
+                                      (or (%ct-eql-spec (list 'eql (list 'quote (cadr s))))
+                                          (return-from %ct-live-methods :bad)))
+                                     ((eq s top) t)
+                                     (t (let ((nm (class-name s)))
+                                          (if (and nm (symbolp nm) (eq (find-class nm nil) s))
+                                              nm
+                                              (return-from %ct-live-methods :bad))))))
+                             (%method-specializers m))))
+          (unless (eql (length specs) n) (return-from %ct-live-methods :bad))
+          (push (list (%method-qualifiers m) specs
+                      (cond ((%method-extra m +method-static+) :next)
+                            ((%method-extra m +method-fast-function+) :plain)
+                            (t nil)))
+                r)))))
+
+  (defun %gf-unit-site (form)
+    "The call FORM of a generic function with methods in the unit, or defined
+before with methods whose functions are known, as a call of its
+discriminating function, or NIL."
+    (let* ((u *gf-unit*) (name (car form))
+           (n (do ((l (cdr form) (cdr l)) (i 0 (+ i 1))) ((atom l) (if (null l) i -1)))))
+      (when (and u (<= 1 n 4) (symbolp name) name)
+        (let ((recs (gethash name (svref u 0))))
+          (when (and (if recs
+                         (every (lambda (r) (eql (%fast-arity (third r)) n)) recs)
+                         (let ((info (%ct-live-gf name n)))
+                           (and info
+                                (some (lambda (m) (or (%method-extra m +method-fast-function+)
+                                                      (%method-extra m +method-static+)))
+                                      (%gf-slot info +gf-methods+)))))
+                     (symbol-package name)
+                     (not (member (package-name (symbol-package name)) '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD")
+                                  :test #'string=)))
+            (let* ((e (assoc name (svref u 2)))
+                   (d (if e (cdr e) (let ((s (make-symbol "DISCRIMINATOR"))) (push (cons name s) (svref u 2)) s)))
+                   (vars (let ((r nil)) (dotimes (i n r) (push (gensym "A") r)))))
+              `(let ,(mapcar #'list vars (cdr form))
+                 (if (%static-known-p ,d)
+                     (%static-call ,d ,@vars)
+                     ,(%gf-unit-fallback name vars)))))))))
+
+  (defun %gf-unit-fallback (name vars)
+    "The call of the generic function NAME as it is made without a tree."
+    (let ((n (length vars)))
+      (if (and (<= n 2) (eql (get name '%gf-site-macro) n))
+          (%gf-site-expansion-1 (cons name vars) vars name n)
+          `(locally (declare (notinline ,name)) (,name ,@vars)))))
+
+  (defun %gf-unit-flush (known)
+    "The forms defining the discriminating functions that the sites of the
+unit converted so far call; KNOWN tells whether a symbol of
+%GF-UNIT-NOTE-METHOD names a function that can be called directly."
+    (let ((u *gf-unit*) (forms nil))
+      (when u
+        (dolist (d (svref u 2))
+          (dolist (f (%gf-disc-form u (car d) (cdr d) known)) (push f forms)))
+        (setf (svref u 2) nil))
+      forms))
+
+  ;; the built-in classes told by a test of the representation: (class test
+  ;; precedence-list sample), the sample :CLASS when the class is the one
+  ;; of that name (CLASS-OF gives every string that is not simple the class
+  ;; STRING, every complex number COMPLEX); the tests exclude each other
+  (defun %ct-kinds ()
+    '((fixnum (fixnump :x) (fixnum integer rational real number) 0)
+      (character (characterp :x) (character) #\a)
+      (null (null :x) (null symbol list sequence) nil)
+      (keyword (and (symbolp :x) :x (eq (%symbol-package :x) *keyword-package*)) (keyword symbol) :k)
+      (symbol (and (symbolp :x) :x (not (eq (%symbol-package :x) *keyword-package*))) (symbol) t)
+      (cons (consp :x) (cons list sequence) (nil))
+      (simple-string (%simple-string-p :x) (simple-string string vector array sequence) "")
+      (double-float (%double-float-p :x) (double-float float real number) 1d0)
+      (single-float (%single-float-p :x) (single-float float real number) 1f0)
+      (simple-vector (%simple-vector-p :x) (simple-vector vector array sequence) #())
+      (bignum (%bignump :x) (bignum integer rational real number) 1208925819614629174706176)
+      (ratio (%ratiop :x) (ratio rational real number) 1/2)
+      (string (and (stringp :x) (not (%simple-string-p :x))) (string vector array sequence) :class)
+      (complex (complexp :x) (complex number) :class)))
+
+  ;; a group of kinds with one test
+  (defun %ct-kind-groups ()
+    '(((null keyword symbol) (symbolp :x))
+      ((fixnum bignum) (integerp :x))
+      ((double-float single-float) (floatp :x))
+      ((simple-string string) (stringp :x))
+      ((null cons) (listp :x))))
+
+  ;; the classes all of whose objects are of the kinds of %CT-KINDS
+  (defun %ct-closed-classes ()
+    '(fixnum bignum integer ratio rational single-float double-float float real complex number
+      symbol keyword null list cons character simple-string string))
+
+  (defun %ct-live-class (name)
+    "The class named NAME in the image whose instances are told by their
+class (not a built-in class), or NIL."
+    (and (%ct-live-p) (symbolp name)
+         (let ((c (find-class name nil)))
+           (and c (%class-p c) (not (eq (class-of c) (find-class 'built-in-class)))
+                (%class-cpl c)
+                c))))
+
+  (defun %ct-class-cpl (u name &optional (depth 0))
+    "What is known of the precedence list of the class NAME (names, without
+T): from the unit, or from the image; or NIL."
+    (multiple-value-bind (e found) (gethash name (svref u 1))
+      (cond ((and found (< depth 40))
+             (let ((r (list name)))
+               (dolist (s (cdr e))
+                 (setq r (append r (or (%ct-class-cpl u s (+ depth 1)) (list s)))))
+               (setq r (remove-duplicates r))
+               (if (or (member 'standard-object r) (member 'structure-object r))
+                   r
+                   (append r (list 'standard-object)))))
+            (found nil)
+            (t (let ((c (%ct-live-class name)))
+                 (and c (remove t (mapcar #'class-name (%class-cpl c)))))))))
+
+  (defun %ct-live-subclasses (name limit)
+    "The names of the class NAME of the image and of its subclasses there, at most LIMIT."
+    (let ((c (%ct-live-class name)) (r nil) (count 0))
+      (when c
+        (let ((queue (list c)))
+          (loop
+            (when (or (null queue) (>= count limit)) (return))
+            (let* ((x (pop queue)) (nm (class-name x)))
+              (when (and nm (symbolp nm) (eq (find-class nm nil) x) (not (member nm r)))
+                (push nm r)
+                (setq count (+ count 1))
+                (setq queue (append queue (class-direct-subclasses x))))))))
+      (nreverse r)))
+
+  (defun %ct-key-cpl (u key)
+    (cond ((atom key) nil)
+          ((eq (car key) :kind) (third (assoc (cadr key) (%ct-kinds))))
+          ((eq (car key) :class) (%ct-class-cpl u (cadr key)))
+          (t (let ((o (cadr key)))
+               (third (assoc (cond ((integerp o) 'fixnum) ((characterp o) 'character) ((null o) 'null)
+                                   ((keywordp o) 'keyword) (t 'symbol))
+                             (%ct-kinds)))))))
+
+  (defun %ct-eql-spec (s)
+    "The specializer (EQL form) as (EQL object) when the object is known
+here and compared with EQ, else NIL."
+    (let ((form (cadr s)))
+      (cond ((and (integerp form) (<= -536870912 form 536870911)) (list 'eql form))
+            ((characterp form) (list 'eql form))
+            ((or (null form) (eq form t) (keywordp form)) (list 'eql form))
+            ((and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
+                  (let ((o (cadr form)))
+                    (or (symbolp o) (characterp o) (and (integerp o) (<= -536870912 o 536870911)))))
+             (list 'eql (cadr form)))
+            (t nil))))
+
+  (defun %ct-spec-admits-p (u spec key)
+    (cond ((eq spec t) t)
+          ((consp spec) (and (consp key) (eq (car key) :eql) (eql (cadr key) (cadr spec))))
+          (t (and (member spec (%ct-key-cpl u key)) t))))
+
+  (defun %ct-substitute (tree x)
+    (cond ((eq tree :x) x)
+          ((atom tree) tree)
+          (t (cons (%ct-substitute (car tree) x) (%ct-substitute (cdr tree) x)))))
+
+  (defun %ct-mentions-p (tree sym)
+    (cond ((eq tree sym) t)
+          ((atom tree) nil)
+          (t (or (%ct-mentions-p (car tree) sym) (%ct-mentions-p (cdr tree) sym)))))
+
+  (defun %gf-disc-form (u name dsym known)
+    "The forms defining the discriminating function DSYM of the generic
+function NAME from the methods of the unit U and those defined before, or
+NIL when there is nothing it could call."
+    (let* ((recs (gethash name (svref u 0)))
+           (n (if recs
+                  (%fast-arity (third (car recs)))
+                  (do ((i 1 (+ i 1))) ((> i 4) nil) (when (%ct-live-gf name i) (return i)))))
+           (info (and n (%ct-live-gf name n)))
+           (methods nil) (fsyms nil) (index 0) (nfns 0)
+           (vars (let ((r nil)) (dotimes (i (or n 0) r) (push (gensym "A") r))))
+           (disc (gensym "DISC")) (tree (gensym "TREE")) (cells-var (gensym "CELLS")) (state (gensym "STATE"))
+           (checks nil) (class-cells nil) (nclasses 0) (leaves 0) (tails nil) (tail-forms nil))
+      (unless (and n (<= 1 n 4) (<= (length recs) 40)) (return-from %gf-disc-form nil))
+      ;; METHODS: #(qualifiers specializers symbol function-index kind cell)
+      (dolist (r recs)
+        (unless (eql (%fast-arity (third r)) n) (return-from %gf-disc-form nil))
+        (let ((specs (mapcar (lambda (s)
+                               (cond ((and (consp s) (eq (car s) 'eql) (consp (cdr s)) (null (cddr s)))
+                                      (or (%ct-eql-spec s) (return-from %gf-disc-form nil)))
+                                     ((and (symbolp s) s) s)
+                                     (t (return-from %gf-disc-form nil))))
+                             (second r)))
+              (sym (find-if known (cdddr r))))
+          (unless (eql (length specs) n) (return-from %gf-disc-form nil))
+          (push (vector (first r) specs sym (and sym index)
+                        (cond ((null sym) nil) ((string= (symbol-name sym) "NEXT-METHOD") :next) (t :plain))
+                        nil)
+                methods)
+          (when sym (push sym fsyms) (setq index (+ index 1)))))
+      (setq fsyms (nreverse fsyms))
+      ;; the methods defined before that the unit does not define again
+      (when info
+        (let ((live (%ct-live-methods info n)))
+          (when (eq live :bad) (return-from %gf-disc-form nil))
+          (dolist (l live)
+            (unless (find-if (lambda (m) (and (equal (svref m 0) (first l)) (equal (svref m 1) (second l)))) methods)
+              (push (vector (first l) (second l) nil nil (third l) (and (third l) (+ 3 nfns))) methods)
+              (when (third l) (setq nfns (+ nfns 1)))))))
+      (unless (and methods (<= (length methods) 40)) (return-from %gf-disc-form nil))
+      (labels ((spec (m p) (nth p (svref m 1)))
+               (class-specs (ms p)
+                 (let ((r nil))
+                   (dolist (m ms (nreverse r))
+                     (let ((s (spec m p))) (when (and (symbolp s) (not (eq s t))) (pushnew s r))))))
+               (note-check (p key)
+                 ;; (the class specializers of all the methods at P)
+                 (let ((assumed (remove-if-not (lambda (c) (member c (class-specs methods p))) (%ct-key-cpl u key))))
+                   (pushnew (list p key assumed) checks :test #'equal)))
+               (class-cell (p cname)
+                 (let ((e (assoc (cons p cname) class-cells :test #'equal)))
+                   (if e
+                       (cdr e)
+                       (let ((i (+ 3 nfns nclasses)))
+                         (setq nclasses (+ nclasses 1))
+                         (push (cons (cons p cname) i) class-cells)
+                         (note-check p (list :class cname i))
+                         i))))
+               (rank (s key)
+                 (cond ((consp s) 0)
+                       ((eq s t) 1000000)
+                       (t (+ 1 (or (position s (%ct-key-cpl u key)) 999998)))))
+               (more-specific-p (m1 m2 keys)
+                 (do ((p 0 (+ p 1)) (ks keys (cdr ks))) ((>= p n) nil)
+                   (let ((r1 (rank (spec m1 p) (car ks))) (r2 (rank (spec m2 p) (car ks))))
+                     (cond ((< r1 r2) (return t)) ((> r1 r2) (return nil))))))
+               (nextp (m) (eq (svref m 4) :next))
+               (call (m args)
+                 (if (svref m 2)
+                     `(%static-call ,(svref m 2) ,@args)
+                     `(funcall (the function (%svref ,cells-var ,(svref m 5))) ,@args)))
+               (fn (m)
+                 (if (svref m 2) `(%static-function ,(svref m 2)) `(%svref ,cells-var ,(svref m 5))))
+               (tail (key maker)
+                 ;; the form of the function of the arguments that KEY names
+                 ;; (methods called in turn), defined once
+                 (let ((e (assoc key tails :test #'equal)))
+                   (unless e
+                     (let ((sym (make-symbol "NEXT")) (vs (mapcar (lambda (v) (declare (ignore v)) (gensym "A")) vars)))
+                       (setq e (cons key sym))
+                       (push e tails)
+                       (push (list sym vs (funcall maker vs)) tail-forms)))
+                   `(%static-function ,(cdr e))))
+               (leaf (ms keys)
+                 ;; the forms calling the effective method of MS, or NIL: the
+                 ;; next method of a method with CALL-NEXT-METHOD is a function
+                 ;; calling the rest of the methods (TAIL)
+                 (let ((sorted (sort (copy-list ms) (lambda (a b) (more-specific-p a b keys))))
+                       (primary nil) (before nil) (after nil) (around nil))
+                   (dolist (m sorted)
+                     (let ((q (svref m 0)))
+                       (cond ((null q) (push m primary))
+                             ((equal q '(:before)) (push m before))
+                             ((equal q '(:after)) (push m after))
+                             ((equal q '(:around)) (push m around))
+                             (t (return-from leaf nil)))))
+                   (setq primary (nreverse primary) before (nreverse before) around (nreverse around))
+                   (when (or (null primary) (some #'nextp before) (some #'nextp after))
+                     (return-from leaf nil))
+                   ;; the functions of the methods that are called must be
+                   ;; known: up to the first without CALL-NEXT-METHOD
+                   (flet ((upto (ms) (let ((r nil)) (dolist (m ms (nreverse r)) (push m r) (unless (nextp m) (return (nreverse r)))))))
+                     (unless (every (lambda (m) (svref m 4))
+                                    (if (and around (notevery #'nextp around))
+                                        (upto around)
+                                        (append around before after (upto primary))))
+                       (return-from leaf nil)))
+                   (labels ((primary-call (ps args)
+                              (cond ((not (nextp (car ps))) (call (car ps) args))
+                                    ((null (cdr ps)) (return-from leaf nil))
+                                    (t (call (car ps) (list* (primary-fn (cdr ps)) nil args)))))
+                            (primary-fn (ps)
+                              (if (nextp (car ps))
+                                  (tail (cons :primary ps) (lambda (vs) (primary-call ps vs)))
+                                  (fn (car ps))))
+                            (core-call (args)
+                              (cond ((and (null before) (null after)) (primary-call primary args))
+                                    ((null after)
+                                     `(progn ,@(mapcar (lambda (m) (call m args)) before) ,(primary-call primary args)))
+                                    (t `(progn ,@(mapcar (lambda (m) (call m args)) before)
+                                               (multiple-value-prog1 ,(primary-call primary args)
+                                                 ,@(mapcar (lambda (m) (call m args)) after))))))
+                            (core-fn ()
+                              (if (and (null before) (null after))
+                                  (primary-fn primary)
+                                  (tail (list :core before primary after) #'core-call)))
+                            (around-call (as args)
+                              (cond ((null as) (core-call args))
+                                    ((not (nextp (car as))) (call (car as) args))
+                                    (t (call (car as) (list* (around-fn (cdr as)) nil args)))))
+                            (around-fn (as)
+                              (cond ((null as) (core-fn))
+                                    ((not (nextp (car as))) (fn (car as)))
+                                    (t (tail (list :around as before primary after)
+                                             (lambda (vs) (around-call as vs)))))))
+                     (let ((form (around-call around vars)))
+                       (setq leaves (+ leaves 1))
+                       (list `(return-from ,disc ,form))))))
+               (build (p ms keys)
+                 ;; the forms dispatching on the arguments from P on, among
+                 ;; the methods MS; KEYS: the keys of the arguments before, reversed
+                 (cond ((null ms) nil)
+                       ((>= p n) (leaf ms (reverse keys)))
+                       ((every (lambda (m) (eq (spec m p) t)) ms) (build (+ p 1) ms (cons :any keys)))
+                       (t
+                        (let* ((x (nth p vars))
+                               (cspecs (class-specs ms p))
+                               (closed (every (lambda (c) (member c (%ct-closed-classes))) cspecs))
+                               (forms nil))
+                          (flet ((sub (key)
+                                   (build (+ p 1)
+                                          (remove-if-not (lambda (m) (%ct-spec-admits-p u (spec m p) key)) ms)
+                                          (cons key keys)))
+                                 (branch (test sub)
+                                   (push `(when ,test ,@sub (return-from ,tree nil)) forms)))
+                            (let ((other (and closed (sub :other))))
+                              ;; the objects of EQL specializers
+                              (let ((seen nil))
+                                (dolist (m ms)
+                                  (let ((s (spec m p)))
+                                    (when (and (consp s) (not (member (cadr s) seen)))
+                                      (push (cadr s) seen)
+                                      (let ((key (list :eql (cadr s))))
+                                        (note-check p key)
+                                        (branch `(eq ,x ',(cadr s)) (sub key)))))))
+                              ;; the built-in classes
+                              (let ((subs nil))
+                                (dolist (k (%ct-kinds))
+                                  (when (some (lambda (c) (member c (third k))) cspecs)
+                                    (let* ((key (list :kind (car k))) (s (sub key)))
+                                      (note-check p key)
+                                      (unless (or (and closed (equal s other)) (and (not closed) (null s)))
+                                        (let ((e (assoc s subs :test #'equal)))
+                                          (if e (push (car k) (cdr e)) (push (list s (car k)) subs)))))))
+                                (dolist (e (reverse subs))
+                                  (let* ((kinds (reverse (cdr e)))
+                                         (tests nil))
+                                    (dolist (g (%ct-kind-groups))
+                                      (when (every (lambda (k) (member k kinds)) (car g))
+                                        (push (%ct-substitute (cadr g) x) tests)
+                                        (setq kinds (remove-if (lambda (k) (member k (car g))) kinds))))
+                                    (dolist (k kinds)
+                                      (push (%ct-substitute (second (assoc k (%ct-kinds))) x) tests))
+                                    (branch (if (cdr tests) `(or ,@(reverse tests)) (car tests)) (car e)))))
+                              ;; the classes of the unit, then those defined before
+                              (let ((subs nil) (l (gensym "L")) (classes nil) (names nil))
+                                (maphash (lambda (cname e)
+                                           (when (some (lambda (c) (member c (%ct-class-cpl u cname))) cspecs)
+                                             (push (cons (car e) cname) classes)))
+                                         (svref u 1))
+                                (setq names (mapcar #'cdr (sort classes (lambda (a b) (< (car a) (car b))))))
+                                (dolist (c cspecs)
+                                  (dolist (nm (%ct-live-subclasses c 12))
+                                    (unless (or (member nm names) (nth-value 1 (gethash nm (svref u 1))))
+                                      (setq names (append names (list nm))))))
+                                (dolist (c names)
+                                  (let ((s (sub (list :class c))))
+                                    (when s
+                                      (let ((e (assoc s subs :test #'equal))
+                                            (cell (class-cell p c)))
+                                        (if e (push cell (cdr e)) (push (list s cell) subs))))))
+                                (when subs
+                                  (push `(when (%instancep ,x)
+                                           (let ((,l (%instance-layout ,x)))
+                                             ,@(mapcar (lambda (e)
+                                                         (let ((tests (mapcar (lambda (cell) `(eq ,l (%svref ,cells-var ,cell)))
+                                                                              (reverse (cdr e)))))
+                                                           `(when ,(if (cdr tests) `(or ,@tests) (car tests))
+                                                              ,@(car e) (return-from ,tree nil))))
+                                                       (reverse subs))))
+                                        forms)))
+                              ;; any other object
+                              (when other (setq forms (append (reverse other) forms)))
+                              (nreverse forms))))))))
+        (let ((forms (build 0 methods nil)))
+          (when (and forms (> leaves 0) (<= leaves 48))
+            (let ((cells (make-array (+ 3 nfns nclasses) :initial-element 0)))
+              (setf (svref cells 0) nil
+                    (svref cells 1) (list name n
+                                          (mapcar (lambda (m)
+                                                    (list (svref m 0) (svref m 1)
+                                                          (cond ((svref m 2) (svref m 3))
+                                                                ((svref m 5) (cons (svref m 5) (svref m 4)))
+                                                                (t nil))))
+                                                  methods)
+                                          checks)
+                    (svref cells 2) (+ 3 nfns))
+              (cons `(%static-lambda ,dsym
+                       (lambda ,vars
+                         (block ,disc
+                           (let* ((,cells-var ',cells) (,state (%svref ,cells-var 0)))
+                             (if (eq ,state t)
+                                 (block ,tree ,@forms)
+                                 (unless (eq ,state :dead)
+                                   (%gf-disc-arm ,cells-var
+                                                 (lambda () (vector ,@(mapcar (lambda (s) `(%static-function ,s)) fsyms)))))))
+                           ,(%gf-unit-fallback name vars))))
+                    (mapcar (lambda (tf)
+                              (destructuring-bind (sym vs body) tf
+                                `(%static-lambda ,sym
+                                   (lambda ,vs
+                                     ,(if (%ct-mentions-p body cells-var)
+                                          `(let ((,cells-var ',cells)) ,body)
+                                          body)))))
+                            tail-forms)))))))))
+
+(defun %gf-disc-arm (cells thunk)
+  "Compare what the discriminating function of CELLS was compiled from with
+the generic function as it is now, and let it use its tree when they agree:
+at the fourth call since the methods or classes last changed (a program being
+loaded changes them at every definition, and calls most generic functions a
+few times, if at all, in between)."
+  (let ((s (%svref cells 0)))
+    (cond ((null s) (%set-svref cells 0 1))
+          ((and (fixnump s) (%fx< s 3)) (%set-svref cells 0 (%fx+ s 1)))
+          ((fixnump s)
+           (%call-with-world-lock
+            (lambda ()
+              (when (fixnump (%svref cells 0))
+                (%set-svref cells 0 :dead)
+                (push cells *gf-discs*)
+                (when (%gf-disc-valid-p cells (funcall thunk))
+                  (%set-svref cells 0 t)))))))))
+
+(defun %gf-disc-valid-p (cells fns)
+  (destructuring-bind (name n methods checks) (%svref cells 1)
+    (let* ((info (and (fboundp name) (%gf-info (fdefinition name))))
+           (top (find-class t))
+           (actual (and info (%gf-slot info +gf-methods+))))
+      (and info
+           (eq (%svref (%gf-slot info +gf-cache+) 1) n)
+           (eql (%gf-slot info +gf-nreq+) n)
+           (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
+           (null (%gf-slot info +gf-apo+))
+           (or (null *the-standard-generic-function-class*)
+               (eq (%instance-layout info) *the-standard-generic-function-class*))
+           (eql (length actual) (length methods))
+           ;; each method the tree was made from is a method of the generic
+           ;; function, with the function that the tree calls
+           (every (lambda (e)
+                    (let ((m (find-if (lambda (m)
+                                        (and (equal (%method-qualifiers m) (first e))
+                                             (do ((ss (%method-specializers m) (cdr ss)) (es (second e) (cdr es)))
+                                                 ((or (null ss) (null es)) (and (null ss) (null es)))
+                                               (let ((s (car ss)) (x (car es)))
+                                                 (unless (cond ((consp x) (and (consp s) (eql (cadr s) (cadr x))))
+                                                               ((eq x t) (eq s top))
+                                                               (t (and (not (consp s)) (eq s (find-class x nil)))))
+                                                   (return nil))))))
+                                      actual))
+                          (ref (third e)))
+                      (and m
+                           (cond ((null ref) t)
+                                 ((consp ref)
+                                  ;; a method defined before the unit: its function, in its cell
+                                  (let ((f (%method-extra m (if (eq (cdr ref) :next) +method-static+ +method-fast-function+))))
+                                    (and f (progn (%set-svref cells (car ref) f) t))))
+                                 (t (let ((f (%svref fns ref)))
+                                      (and f (or (eq f (%method-extra m +method-fast-function+))
+                                                 (eq f (%method-extra m +method-static+))))))))))
+                  methods)
+           ;; the classes of the keys of the tree have the precedence it assumed
+           (every (lambda (c)
+                    (destructuring-bind (p key assumed) c
+                      (let* ((class (case (car key)
+                                      (:eql (class-of (cadr key)))
+                                      (:kind (let ((sample (fourth (assoc (cadr key) (%ct-kinds)))))
+                                               (if (eq sample :class) (find-class (cadr key) nil) (class-of sample))))
+                                      (t (find-class (cadr key) nil))))
+                             (ok (and class
+                                      (let ((l assumed))
+                                        (dolist (s (%class-cpl class) (null l))
+                                          (when (and (not (eq s top))
+                                                     (some (lambda (m) (eq (nth p (%method-specializers m)) s)) actual))
+                                            (unless (and l (eq s (find-class (car l) nil))) (return nil))
+                                            (setq l (cdr l))))))))
+                        (cond ((eq (car key) :class)
+                               ;; (a class that is not as assumed has no cell: its
+                               ;; instances are not known to the tree)
+                               (when ok (%set-svref cells (third key) class))
+                               t)
+                              (t ok)))))
+                  checks)))))
+
 (defmacro %defmethod-1 (name &rest args)
   (multiple-value-bind (quals ll body) (%split-method-args args)
     (let ((cell (gensym "CELL")) (fast (gensym "FAST")))
@@ -2678,6 +3302,7 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
                        `(%gf-function-maker ,(%fast-shape plain-ll) ,(nth-value 4 (%ll-info plain-ll)))))
               (shape (%fast-shape plain-ll)))
           (cond ((and shape (not (%fast-arity plain-ll)))
+                 (%gf-unit-note-method name quals specs plain-ll)
                  ;; optional or rest/keyword parameters: the method is also
                  ;; known as a function of the spread arguments (%FAST-SHAPE)
                  (multiple-value-bind (form cnm-p) (%spread-method-forms name plain-ll body cell shape)
@@ -2701,6 +3326,9 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
                  (multiple-value-bind (decls doc2 forms) (%parse-body body t)
                    (declare (ignore doc2))
                    (let* ((args-var (gensym "ARGS")) (next (gensym "NEXT"))
+                          ;; (in a unit: the function is known to the
+                          ;; discriminating functions of the unit)
+                          (msym (%gf-unit-note-method name quals specs plain-ll))
                           (note `(%note-method-fast-function
                                   (%defmethod ',name ',quals ,specs-form ',plain-ll
                                               (lambda (,args-var ,next) (declare (ignore ,next))
@@ -2713,22 +3341,27 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
                        (setq note `(%note-method-constant ,note ,(car forms))))
                      `(let ((,cell (list nil))
                             (*gf-function-maker* ,maker)
-                            (,fast (lambda ,plain-ll
-                                     ,@decls
-                                     (declare (ignorable ,@plain-ll))
-                                     (block ,(if (consp name) (cadr name) name) ,@forms))))
+                            (,fast ,(let ((lam `(lambda ,plain-ll
+                                                  ,@decls
+                                                  (declare (ignorable ,@plain-ll))
+                                                  (block ,(if (consp name) (cadr name) name) ,@forms))))
+                                      (if msym `(%static-lambda ,msym ,lam) lam))))
                         ,(%with-combiner note quals (length plain-ll))))))
                 ((%fast-arity plain-ll)
                  ;; CALL-NEXT-METHOD calls the next method, a function of the arguments
-                 `(let* ((,cell (list nil))
-                         (*gf-function-maker* ,maker)
-                         (,fast ,(%fast-method-maker name plain-ll body cell)))
-                    ,(%with-combiner
-                      `(%note-method-fast-maker
-                        (%defmethod ',name ',quals ,specs-form ',plain-ll (%maker-method-function ,fast) ,doc ,cell)
-                        ,fast)
-                      quals (length plain-ll))))
+                 (let ((msym (%gf-unit-note-method name quals specs plain-ll t)) (sf (gensym "STATIC")))
+                   (multiple-value-bind (maker-form static-form) (%fast-method-maker name plain-ll body cell msym sf)
+                     (let ((def `(%defmethod ',name ',quals ,specs-form ',plain-ll (%maker-method-function ,fast)
+                                             ,doc ,cell)))
+                       `(let* ((,cell (list nil))
+                               (*gf-function-maker* ,maker)
+                               ,@(when static-form `((,sf ,static-form)))
+                               (,fast ,maker-form))
+                          ,(%with-combiner
+                            `(%note-method-fast-maker ,(if static-form `(%note-method-static ,def ,sf) def) ,fast)
+                            quals (length plain-ll)))))))
                 (t
+                 (%gf-unit-note-method name quals specs plain-ll)
                  `(let ((,cell (list nil)) (*gf-function-maker* ,maker))
                     (%defmethod ',name ',quals ,specs-form ',plain-ll (function ,lam) ,doc ,cell)))))))))
 
@@ -2781,6 +3414,13 @@ instances."
                (or (and (%fx>= i 0) (%svref *builtin-classes* i)) -1)))))
 
   (defun %gf-site-expansion (form args name n &optional accessor)
+    ;; (in a unit: a call of the discriminating function, with the site
+    ;; below for the calls it is not used for; not a reader or writer of
+    ;; DEFCLASS, whose sites read and write the slots)
+    (or (and (not accessor) (%gf-unit-site form))
+        (%gf-site-expansion-1 form args name n accessor)))
+
+  (defun %gf-site-expansion-1 (form args name n &optional accessor)
     (if (not (= (length args) n))
         form
         (let ((c (if (eql n 1)
@@ -3286,6 +3926,7 @@ CLASS-NAME, as DEFMETHOD would."
     (unless (and (listp supers) (every #'symbolp supers))
       (%program-error "DEFCLASS ~S: invalid superclass list ~S" name supers))
     (unless (listp slots) (%program-error "DEFCLASS ~S: invalid slot list ~S" name slots))
+    (%gf-unit-note-class name supers)
     (dolist (s slots)
       (multiple-value-bind (form readers writers sname) (%defclass-slot name s)
         (when (member sname slot-names) (%program-error "DEFCLASS ~S: duplicate slot name ~S" name sname))

@@ -87,11 +87,13 @@ Returns (values bytes constants-vector)."
         (*batch-forms* (and (cdr forms) (batch-defun-table forms)))
         (*batch-unknown-calls* (and (cdr forms) (make-hash-table :test 'eq)))
         (*batch-no-direct* (and (cdr forms) (make-hash-table :test 'eq)))
-        (*batch-form-index* 0))
+        (*batch-form-index* 0)
+        (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
     (with-fresh-codegen-state ()
       (let ((env (make-cenv)))
         (loop for f in forms for k from 0
-              do (let ((*batch-form-index* k)) (process-toplevel f env))))
+              do (let ((*batch-form-index* k)) (process-toplevel f env)))
+        (gf-unit-flush env))
       (when *current-toplevel*
         ;; keep the value of the last form
         (setf (lam-body *current-toplevel*) `(:progn (:const nil) ,@(reverse *toplevel-nodes*)))
@@ -471,7 +473,8 @@ a form being that of its file: UNIT-BEGIN-FILE)."
         (*batch-forms* (and files (make-hash-table :test 'eq)))
         (*batch-unknown-calls* (and files (make-hash-table :test 'eq)))
         (*batch-no-direct* (and files (make-hash-table :test 'eq)))
-        (*batch-form-index* 0))
+        (*batch-form-index* 0)
+        (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
     (with-fresh-codegen-state ()
       (let ((*m* (make-wasm-module)) (*unit-env* (make-cenv)) (*unit-segments* nil) (*unit-castfns* nil))
         (clysm-sys::%call-with-world-lock
@@ -518,6 +521,7 @@ the symbol, so the function may be known to the files after it)."
 when it has no forms."
   (let ((*error-output* (make-broadcast-stream))
         (*func-segment* (length *unit-segments*)))
+    (gf-unit-flush *unit-env*)
     (close-live-toplevel)
     (let ((tops (reverse *toplevel-lams*)))
       (when tops
@@ -561,7 +565,7 @@ it was last filled).")
 (defparameter *unit-state-variables*
   (append '(*live-mode* *live-packages* *warnings* *batch-forms* *batch-unknown-calls*
             *batch-no-direct* *batch-form-index* *m* *unit-env* *unit-segments* *unit-castfns*
-            *unit-owners* *unit-export-prefix* *unit-index*)
+            *unit-owners* *unit-export-prefix* *unit-index* clysm-sys::*gf-unit*)
           (mapcar #'car *codegen-state-bindings*)))
 
 (defun unit-open (prefix)
