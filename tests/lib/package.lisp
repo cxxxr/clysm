@@ -104,3 +104,18 @@ export type Places = Place[];" :entry "places")
 (js:export "lib" "a constant named lib" :entry "places" :type "string")
 ;; written to the standard output: on the standard error, with :output :error
 (js:export "say" (lambda (text) (write-line text) (finish-output) nil) :type "(text: string) => null")
+
+;; Arguments as JavaScript has them (:RAW): undefined, null and false told apart, a string read
+;; where it is, a value handed back as it came.
+(js:export "kinds" (lambda (&rest values)
+                     (mapcar (lambda (v) (string-downcase (symbol-name (js:typeof v)))) values))
+           :raw t :type "(...values: unknown[]) => string[]")
+(js:export "indexIn" (lambda (text needle) (js:call text "indexOf" needle)) :raw t
+           :type "(text: string, needle: string) => number")
+(js:export "identity" (lambda (value) value) :raw t :type "<T>(value: T) => T")
+(js:export "identityLater" (lambda (value) (js:await (js:call (js:global "Promise") "resolve" 1)) value)
+           :raw t :async t :type "<T>(value: T) => Promise<T>")
+(js:export "Box" (js:define-class "Box" :raw t
+                                  :constructor (lambda (this value) (js:set this "kind" (string-downcase (symbol-name (js:typeof value)))))
+                                  :methods (list "same" (lambda (this value) (declare (ignore this)) value))
+                                  :type "declare class Box { readonly kind: string; same<T>(value: T): T }"))

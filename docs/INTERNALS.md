@@ -1596,6 +1596,11 @@ JavaScript written for it (`tests/lib/package.lisp`):
   JavaScript the same way: the caller gets the very value that was thrown
   (`undefined` and `false` too), not a LispError. A Lisp error that no
   handler takes is still a LispError.
+- `:raw t` (of `JS:EXPORT` and `JS:DEFINE-CLASS`) gives a function its
+  arguments as JavaScript has them, not converted by `JS:TO-LISP`: values
+  of JavaScript whose `JS:TYPEOF` tells `undefined`, `null` and `false`
+  apart, and a long string that Lisp reads a part of with `JS:CALL` of its
+  methods (`indexOf`, `slice`) without having it copied.
 - `JS:DECLARE-TYPES` adds declarations (interfaces, types) to the `.d.ts`
   of the library or of an entry; `:type` of an export or a class is its own
   declaration there.

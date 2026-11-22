@@ -108,6 +108,16 @@ assert.ok(fs.existsSync(path.join(dir, `types${ext}`)));
 assert.equal(new lib.Widget(3).n, 3);
 assert.match(dts, /export declare class Widget \{\n  constructor\(\.\.\.args: any\[\]\);/);
 
+assert.deepEqual(lib.kinds(undefined, null, false, 0, 's', {}, () => 1),
+                 ['undefined', 'null', 'boolean', 'number', 'string', 'object', 'function']);
+assert.equal(lib.indexIn('a'.repeat(100000) + 'needle', 'needle'), 100000);
+for (const v of [undefined, null, false, 0, '', 'text']) assert.equal(lib.identity(v), v);
+const o = {};
+assert.equal(lib.identity(o), o);
+assert.equal(await lib.identityLater(undefined), undefined);
+assert.equal(await lib.identityLater(false), false);
+assert.equal(new lib.Box(undefined).kind, 'undefined');
+assert.equal(new lib.Box(null).same(false), false);
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 console.log(`lib: package (${mode}) ok`);

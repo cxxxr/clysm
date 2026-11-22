@@ -281,12 +281,25 @@ of the place where it was signalled), in the object that tells the host to throw
               (%js-host 3)
               (%js-host 4)))
 
+(defvar *js-raw-functions* nil
+  "The functions given their arguments as JavaScript has them (JS:EXPORT's
+:RAW): an EQ table of them, made with the first.")
+
+(defun %js-raw-function (function)
+  "Makes JavaScript give FUNCTION its arguments unconverted; returns it."
+  (setf (gethash function (or *js-raw-functions*
+                              (setq *js-raw-functions* (make-hash-table :test 'eq))))
+        t)
+  function)
+
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
+         (raw (and *js-raw-functions* (gethash f *js-raw-functions*)))
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
-                        (push (js:to-lisp (%js-get args (%js-number (%to-double i)))) r))))
+                        (let ((a (%js-get args (%js-number (%to-double i)))))
+                          (push (if raw a (js:to-lisp a)) r)))))
          (*js-running* t)
          (*js-can-await* async))
     (block run
@@ -478,7 +491,7 @@ exports, the types they name, its classes and how it is loaded.")
                     (js:set (js:global) "__clysm_library" o)
                     o))))))
 
-(defun js:export (name value &key async type entry)
+(defun js:export (name value &key async type entry raw)
   "Export VALUE to JavaScript as NAME (a string) in the exports of the
 library (host/lib.mjs).  A function is called with its arguments converted
 by JS:TO-LISP and gives its value converted by JS:TO-JS; an error that it
@@ -488,7 +501,12 @@ Another value is converted by JS:TO-JS once: a constant, or a class of
 JS:DEFINE-CLASS.  TYPE is its TypeScript type for the generated .d.ts (by
 default (...args: any[]) => any, or a Promise of any, for a function).
 ENTRY names the module of the library that exports it (ENTRY.mjs beside
-NAME.mjs), by default the library's own (NAME.mjs)."
+NAME.mjs), by default the library's own (NAME.mjs).  With RAW, a function
+is given its arguments as JavaScript has them, not converted: values of
+JavaScript (JS:JS-VALUE-P) for which JS:TYPEOF tells undefined, null and
+false apart, and a long string that Lisp reads a part of (JS:CALL of its
+methods) without having it copied; JS:TO-LISP converts one."
+  (when (and raw (functionp value)) (%js-raw-function value))
   (let ((v (cond (async (js:async-function value))
                  (t (js:to-js value)))))
     (when (and type (functionp value)) (js:set v "clysmType" type))
@@ -544,7 +562,7 @@ NAME.d.mts)."
       (js:set o (car l) (cadr l)))))
 
 (defun js:define-class (name &key extends super-arguments constructor methods getters
-                                   static type)
+                                   static type raw)
   "A JavaScript class NAME (a string), whose constructor and methods are Lisp
 functions, and which a library exports with JS:EXPORT.  EXTENDS names the
 class it extends: a global (\"Error\") or a class of JS:DEFINE-CLASS
@@ -554,7 +572,11 @@ its message).  CONSTRUCTOR is called with the new object and the arguments,
 after it.  METHODS and GETTERS are plists of names and functions called with
 the object and the arguments; STATIC a plist of the class's own functions.
 TYPE is its TypeScript declaration for the .d.ts (\"declare class NAME
-...\"; by default one that says nothing of its members)."
+...\"; by default one that says nothing of its members).  With RAW, the
+functions are given their arguments unconverted (see JS:EXPORT)."
+  (when raw
+    (dolist (f (list* constructor (loop for (nil f) on (append methods getters static) by #'cddr collect f)))
+      (when (functionp f) (%js-raw-function f))))
   (let ((spec (js:object "name" name "extends" (or extends :null)
                          "superArguments" (if super-arguments (coerce super-arguments 'vector) :null)
                          "methods" (coerce (loop for (n) on methods by #'cddr collect n) 'vector)
