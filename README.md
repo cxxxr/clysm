@@ -219,6 +219,41 @@ Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole
 program. The slow cases and their causes are in
 [docs/INTERNALS.md](docs/INTERNALS.md#performance).
 
+**Against TypeScript.** `bench/typescript/bench.ts` has 22 of these
+benchmarks (16 of `bench/suite.lisp`, 6 of `bench/declared.lisp`) written
+as ordinary TypeScript: the same algorithms, sizes and repetitions, with
+classes, `Map` and typed arrays. Both run on the same Node.js 24, so both
+are compiled by V8 (`tools/bench-ts.sh`, best of three, every result the
+same; measured on 2026-11-23). Time of Clysm relative to TypeScript:
+geometric mean **0.92**.
+
+| Benchmark | TypeScript ms | Clysm ms | Ratio |
+|---|---|---|---|
+| `d-nbody` (structures of doubles) | 1927 | 226 | 0.12 |
+| `d-tak` (declared recursion) | 465 | 77 | 0.17 |
+| `b-list` (`mapcar`, `remove-if`, `reverse` / array methods) | 401 | 118 | 0.29 |
+| `b-deriv` (symbolic differentiation, lists / arrays) | 431 | 148 | 0.34 |
+| `b-fib` | 36 | 17 | 0.47 |
+| `b-hash` (integer keys, `Map`) | 232 | 134 | 0.58 |
+| `d-fannkuch` | 172 | 137 | 0.80 |
+| `d-spectral-norm` | 138 | 138 | 1.00 |
+| `d-mandelbrot` | 177 | 177 | 1.00 |
+| `d-binary-trees` | 186 | 199 | 1.07 |
+| `b-hash-string` (string keys, `Map`) | 107 | 120 | 1.12 |
+| `b-struct` (a structure's slots / an object's fields) | 51 | 93 | 1.82 |
+| `b-matmul` (an undeclared 2-D array / arrays of arrays) | 39 | 97 | 2.49 |
+| `b-clos` (generic function / method call) | 25 | 94 | 3.76 |
+| `b-make-instance` (`make-instance` / `new`) | 1 | 51 | 51 |
+
+Clysm is ahead where its compiler keeps numbers raw (V8 keeps a double
+field of a JavaScript object in a box of its own, so `d-nbody` is the
+largest gap; a Wasm GC struct holds an `f64`) and on lists, where
+TypeScript's array methods copy the array at each step. TypeScript is ahead
+on objects: V8's inline caches make a method call cheap, and its escape
+analysis removes the allocation of `new Circle(...)` in `b-make-instance`
+altogether, where `make-instance` goes through the initialization protocol
+of CLOS. The other benchmarks are in the output of `tools/bench-ts.sh`.
+
 **System fasls.** ASDF compiles each system of plain Lisp files into one
 fasl of one module (`NAME--system.fasl` in the fasl cache, instead of a fasl
 for each file) as it compiles and loads the system's files, so calls between
