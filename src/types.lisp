@@ -718,6 +718,8 @@ surely not of them (for the branch where the test is false)."
 (def-ti-rule clysm-sys::%type-code (a) (int-ty 0 17))
 ;; (the index of an entry of a hash table, or -1)
 (def-ti-rule clysm-sys::%ht-scan-prim (a) (int-ty -1 536870911))
+(def-ti-rule clysm-sys::%ht-fill-count (a) (int-ty 0 536870911))
+(def-ti-rule (clysm-sys::%ht-keys-vector clysm-sys::%ht-vals-vector) (a) (mkty +k-svec+))
 (def-ti-test clysm-sys::%kind-in (a)
   (let ((m (third a)))
     (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
