@@ -5596,8 +5596,7 @@ What makes the code fast:
   Invalid NTH indices retain the ordinary NTH path; a type-error datum is
   reconstructed on the error path, rather than replaced with NIL. Captured,
   special, declared, escaped or destructively modified lists retain their
-  representation. The inherited implementation's error-datum replacement
-  was corrected before keeping it. `tests/cases/rest-list-elements.lisp`
+  representation. `tests/cases/rest-list-elements.lisp`
   covers ordering, aliases, cursor mutation, closures, escaping lists,
   nested loops and variable indices.
 
@@ -5613,7 +5612,7 @@ What makes the code fast:
   is unchanged (354/337 -> 357/345). In that combined probe, LENGTH of an
   ordinary preexisting list regresses 203/203 -> 236/227. Its Wasm and the
   LENGTH helpers are unchanged apart from ordering and labels; alone it
-  does not reproduce the slowdown (see the report's control runs). Keep
+  does not reproduce the slowdown (234/216 -> 222/225 ms). Keep
   that observed regression with the result, rather than claiming every
   list operation benefits.
 
@@ -5647,6 +5646,22 @@ What makes the code fast:
   they are suite 0.628/0.616, CLOS 0.698/0.692, programs 0.689/0.679.
   These are limited call-site optimizations; the generic-function rest
   list and the generic constructor path are not eliminated.
+
+  *Continuation validation and sizes* (2026-11-23). The final script-mode
+  CLOS run completes all 18 items. Full ANSI is 21931/21932, with only
+  SUBTYPEP-COMPLEX.8. The compiled, interpreted, native-image and self-hosted
+  case suites each pass 120/121: PROCESS fails on both the base and new
+  code in this sandbox (a direct Node subprocess control reports
+  `spawnSync sh EPERM`). Thus `make test-all` cannot be reported green in
+  this environment. Its remaining components were run individually:
+  test-lib, ASDF and the self-host compiler build pass, and all case modes
+  have only that process failure. No test was disabled.
+
+  Relative to `04a79e5`, the shaken one-export module is 908284 -> 908947
+  bytes (+663, below the 970000-byte budget), the REPL image 8631272 ->
+  8681448 (+50176, 0.58%). The generic rest probe remains 61/60 -> 60/62 ms
+  (SBCL 53): removing its list needs scalar arguments across the guarded
+  dispatch and next-method boundary, not just an inline consumer.
 
   Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
   making of the spread trees, the constructors' `:after` paths: nine
