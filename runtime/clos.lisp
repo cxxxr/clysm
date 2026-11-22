@@ -2738,7 +2738,9 @@ the REPL: in a whole program the runtime's code is in the methods' module)."
 ;;;   (the methods are others), a negative number (the same, counting the
 ;;;   calls until a function is made for the methods as they are) or that
 ;;;   function; C: the index of the first class
-;;;   descriptor: (name n methods checks), METHODS ((qualifiers specializers
+;;;   descriptor: (name n methods checks combination), COMBINATION NIL (the
+;;;   standard one) or (operator . options) of a short one whose methods the
+;;;   leaves combine with the operator; METHODS ((qualifiers specializers
 ;;;   ref) ...), REF the index of the method's function among those of the
 ;;;   unit, (cell . kind) for a method defined before, or NIL; CHECKS
 ;;;   ((position key assumed) ...): the class specializers of the methods at
@@ -2799,14 +2801,24 @@ and classes as they are (the property %GF-DISC-REPLACEMENT of NAME,
                f))))))
 
 (defun %gf-disc-valid-p (cells fns)
-  (destructuring-bind (name n methods checks) (%svref cells 1)
+  (destructuring-bind (name n methods checks &optional comb) (%svref cells 1)
     (let* ((info (and (fboundp name) (%gf-info (fdefinition name))))
            (top (find-class t))
            (actual (and info (%gf-slot info +gf-methods+))))
       (and info
            (eq (%svref (%gf-slot info +gf-cache+) 1) n)
            (eql (%gf-slot info +gf-nreq+) n)
-           (eq (%gf-slot info +gf-combination+) *standard-method-combination*)
+           ;; the standard method combination, or the short one of the tree
+           ;; (COMB: (operator . options)) with the order of its methods
+           (let ((mc (%gf-slot info +gf-combination+)))
+             (if comb
+                 (and (not (eq mc *standard-method-combination*))
+                      (eq (%instance-ref mc 0) (car comb))
+                      (eq (and (member :most-specific-last (%instance-ref mc 1)) t)
+                          (and (member :most-specific-last (cdr comb)) t))
+                      (equal (get (car comb) '%method-combination)
+                             (list :short (car comb) (not (eq (car comb) 'list)))))
+                 (eq mc *standard-method-combination*)))
            (null (%gf-slot info +gf-apo+))
            (or (null *the-standard-generic-function-class*)
                (eq (%instance-layout info) *the-standard-generic-function-class*))
@@ -3262,6 +3274,7 @@ keeps missing (more classes than entries) stops caching."
             (%program-error "DEFGENERIC ~S: invalid argument precedence order ~S" name (car apo))))))
     (let ((gf (gensym "GF")))
       (%note-key-layout name lambda-list t)
+      (when *gf-unit* (%gf-unit-note-combination name combination))
       `(let* ((*gf-function-maker* (%gf-function-maker ,(%fast-shape lambda-list)
                                                        ,(nth-value 4 (%ll-info lambda-list))))
               (,gf (%defgeneric ',name ',lambda-list ',combination ,doc ',apo ',gfclass ',mclass ',decls)))
