@@ -208,12 +208,31 @@ ahead of time (`tools/bench.sh FILE`, best of three runs):
 
 Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole
 program. The slow cases and their causes are in
-[docs/INTERNALS.md](docs/INTERNALS.md#performance). With
-`(setf asdf::*clysm-system-fasls* t)` or `CLYSM_SYSTEM_FASLS=1` (opt-in) ASDF
-compiles each system of plain Lisp files into one module as it compiles and
-loads its files, whose calls between files can be inlined (esrap: 1.9 → 1.8
-times SBCL, Lem 1.12 → 1.06), each file compiled once, at the cost of about
-a tenth more time on the first build (see [ASDF](docs/INTERNALS.md#asdf)).
+[docs/INTERNALS.md](docs/INTERNALS.md#performance).
+
+**System fasls.** ASDF compiles each system of plain Lisp files into one
+fasl of one module (`NAME--system.fasl` in the fasl cache, instead of a fasl
+for each file) as it compiles and loads the system's files, so calls between
+the files can be inlined by the engine: esrap 1.9 → 1.8 times SBCL, Lem's
+benchmarks 1.12 → 1.06, Lem's warm load 1.5 → 1.1 s, a cache about a tenth
+smaller; the first build takes a tenth to a fifth longer. Each file is still
+compiled once, with the files before it loaded, as with a fasl of its own,
+and a redefinition of a function (at the REPL, by `trace`) is seen by the
+other files. It falls back to fasls of each file for a system:
+* **being developed**: when a file of a system changed after its system fasl
+  was made, the system is compiled file by file from then on (an edit
+  compiles that file, not the whole system); `(asdf::clysm-system-fasl-reset
+  "name")` makes it a system fasl again;
+* whose files are not plain Lisp source files, or that has around-compile
+  hooks, or whose code has objects a fasl cannot hold, or a file of which
+  failed to compile (noted next to the fasl until a file changes);
+* in an image recording itself for a heap image (`CLYSM_SAVE_IMAGE`).
+
+`CLYSM_SYSTEM_FASLS=0` in the environment or `(setf
+asdf::*clysm-system-fasls* nil)` turns it off, `t` makes every qualifying
+system one even while it is edited, and `asdf::*clysm-system-fasl-modes*`
+(`(("name" . nil) ...)`) chooses for single systems (see
+[ASDF](docs/INTERNALS.md#asdf)).
 
 ## Limitations
 
