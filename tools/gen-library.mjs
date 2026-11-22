@@ -56,8 +56,8 @@ const classOf = (k, v) => {
 // The name a class is declared under in a module of the exports MINE: its own when it is exported
 // under it there, else one of its own (see declarationOf; unnamedClasses declares it as it is).
 const localClassName = (spec, mine) =>
-  mine.some(([n, v]) => n === spec.name && classOf(n, v) === spec) || !mine.some(([n, v]) => classOf(n, v) === spec)
-    ? spec.name : `__clysm_${spec.name}`;
+  mine.some(([n]) => n === spec.name) && !mine.some(([n, v]) => n === spec.name && classOf(n, v) === spec)
+    ? `__clysm_${spec.name}` : spec.name;
 
 // The declaration of a class of no TYPE: any arguments, any members.
 const fallbackDeclaration = (name) => `declare class ${name} {\n  constructor(...args: any[]);\n  [key: string]: any;\n}`;
@@ -74,11 +74,12 @@ const typeOf = (k, f) => {
 const declarationsOfExports = (mine) => {
   const ownNamed = new Set(mine.filter(([k, f]) => classOf(k, f)?.name === k).map(([k]) => k));
   const declared = new Set();
-  return mine.map(([k, f]) => declarationOf(k, f, ownNamed, declared)).join('\n');
+  const names = new Set(mine.map(([k]) => k));
+  return mine.map(([k, f]) => declarationOf(k, f, ownNamed, declared, names)).join('\n');
 };
 // (OWN-NAMED: the classes exported under their own names in the module, declared so; DECLARED:
 // those declared under a name of their own, once)
-const declarationOf = (k, f, ownNamed = new Set(), declared = new Set()) => {
+const declarationOf = (k, f, ownNamed = new Set(), declared = new Set(), names = new Set()) => {
   const spec = classOf(k, f);
   // (a type JS:EXPORT gave a class is its declaration: that of the class itself is not needed)
   if (spec && !info.exports[k]?.type) {
@@ -87,9 +88,13 @@ const declarationOf = (k, f, ownNamed = new Set(), declared = new Set()) => {
     if (ownNamed.has(spec.name)) return `export { ${spec.name} as ${k} };`;
     const first = !declared.has(spec.name);
     declared.add(spec.name);
-    // (the class's own name may be another export's: it is declared under one of its own)
-    const local = `__clysm_${spec.name}`;
-    const renamed = text.replace(new RegExp(`\\bclass\\s+${spec.name.replace(/\$/g, '\\$')}\\b`), `class ${local}`);
+    // (when the class's own name is another export's, it is declared under one of its own, and
+    // its declaration names it so throughout)
+    const taken = names.has(spec.name);
+    const local = taken ? `__clysm_${spec.name}` : spec.name;
+    const renamed = taken
+      ? text.replace(new RegExp(`(?<![\\w$])${spec.name.replace(/\$/g, '\\$')}(?![\\w$])`, 'g'), local)
+      : text;
     return `${first ? `${renamed}\n` : ''}export { ${local} as ${k} };`;
   }
   return `export declare const ${k}: ${typeOf(k, f)};`;
