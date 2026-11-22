@@ -2166,6 +2166,15 @@ JavaScript written for it (`tests/lib/package.lisp`):
   `JS:TO-JS` once) or a class. `:entry` puts it in a module of its own,
   `ENTRY.mjs` beside `NAME.mjs` (with `ENTRY.d.ts`), for a package's
   subpath (`"./places"` of its `exports`); the instance is the same.
+- `JS:LIBRARY-OPTIONS :locations '("./lib.wasm" "../assets/lib.wasm")`
+  lets a non-embedded library name the places its Wasm can be shipped, in
+  order, relative to the generated loader. The first existing path is
+  passed to the normal loader, so `JS:LIBRARY-LOCATION` and module-relative
+  imports describe that actual file. If none exists, loading the first
+  path reports the normal file error. Lazy libraries search on first use;
+  `useLibrary` still overrides the source and loader options. With no
+  locations, the existing sibling-Wasm default is unchanged. Eager libraries
+  resolve once during import, and `create()` uses that same file.
 - `JS:REEXPORT` describes a public entry made from named exports of other
   modules, without adding runtime exports or handwritten JavaScript:
   `(js:reexport '("firstPlace") :from "./places.js" :entry "public")`.

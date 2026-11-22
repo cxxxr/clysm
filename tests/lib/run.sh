@@ -107,6 +107,15 @@ if NODE=/bin/false bin/clysm compile --shake --preinit-through tests/lib/preinit
   -o build/lib-test/preinit-bad.wasm > build/lib-test.log 2>&1; then
   echo 'lib: failed explicit preinitialization silently fell back'; exit 1
 fi
+# generated loaders find the module in a relocated package or a bundle's assets
+bin/clysm library --shake tests/lib/locations.lisp -o build/lib-locations/locations.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+for mode in first second missing override; do
+  node tests/lib/locations.mjs build/lib-locations "$mode" || exit 1
+done
+bin/clysm library --shake tests/lib/locations.lisp tests/lib/locations-eager.lisp -o build/lib-locations-eager/locations.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/locations-eager.mjs build/lib-locations-eager || exit 1
 # a public entry composed of generated values, external values, and type-only exports
 bin/clysm library --shake tests/lib/reexports.lisp -o build/lib-reexports/reexports.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

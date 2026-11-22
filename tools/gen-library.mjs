@@ -166,6 +166,13 @@ const outputOptions = toStderr
 // (JS:LIBRARY-OPTIONS :EMBED: the module's bytes are in its modules, which load it with the host
 // of host/web/lib.mjs, of no Node.js: a page, a browser's worker, Electron's renderer, Node.js)
 const embed = info.options?.embed === true;
+const locations = info.options?.locations ?? [];
+if (!Array.isArray(locations) || locations.some((p) => typeof p !== 'string' || !p.length)
+    || (embed && locations.length)) throw new Error('library locations must be nonempty paths of a non-embedded library');
+const locationHelper = locations.length ? `import { existsSync as __clysm_exists } from 'node:fs';
+const __clysm_locations = ${JSON.stringify(locations)}.map((p) => new URL(p, import.meta.url));
+const __clysm_module_file = () => __clysm_locations.find((p) => __clysm_exists(p)) ?? __clysm_locations[0];
+` : '';
 const compressed = embed && info.options?.compression === 'gzip';
 const embedded = embed ? (compressed ? gzipSync(compiled, { level: 9 }) : compiled).toString('base64') : null;
 const embeddedHost = compressed ? './clysm/web/compressed.mjs' : './clysm/web/lib.mjs';
@@ -195,14 +202,14 @@ if (info.options?.lazy) {
 // useLibrary() gives another module (or the same with other options of load()
 // in clysm/lib.mjs) before that.
 ${loaderImport}
-import { makeClass } from './clysm/jsffi.mjs';
+${locationHelper}import { makeClass } from './clysm/jsffi.mjs';
 
-${embed ? `// The module, ${compressed ? 'gzipped then ' : ''}in base64 (${compiled.length} decoded bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : `let source = new URL('./${name}.wasm', import.meta.url);`}
+${embed ? `// The module, ${compressed ? 'gzipped then ' : ''}in base64 (${compiled.length} decoded bytes, with the names of its functions).\nconst embedded = '${embedded}';\nlet source = null;` : (locations.length ? 'let source = null;' : `let source = new URL('./${name}.wasm', import.meta.url);`)}
 let given = {};
 let lib = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
 export function library() {
-  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : 'source'}, { ...__clysm_defaults, ...given, classes });
+  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ...given, classes });
   return lib;
 }
 
@@ -261,7 +268,7 @@ const __clysm_module = __clysm_module_of('${embedded}');
 const __clysm_lib = __clysm_load(__clysm_module, __clysm_defaults);
 export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_defaults, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';
 
-${outputOptions}const __clysm_url = new URL('./${name}.wasm', import.meta.url);
+${outputOptions}${locationHelper}const __clysm_url = ${locations.length ? '__clysm_module_file()' : `new URL('./${name}.wasm', import.meta.url)`};
 const __clysm_lib = await __clysm_load(__clysm_url, __clysm_defaults);
 export const create = (options) => __clysm_load(__clysm_url, { ...__clysm_defaults, ...options });`}
 ${own.length ? `export const { ${own.map(([k]) => k).join(', ')} } = __clysm_lib.exports;\n` : ''}export default __clysm_lib;

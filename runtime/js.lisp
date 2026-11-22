@@ -622,7 +622,7 @@ and types belong to several generated entries or external modules."
                         "from" from "entry" entry "typeOnly" (if type-only t :false))))
   nil)
 
-(defun js:library-options (&key lazy (output :output) (extension ".mjs") embed compression)
+(defun js:library-options (&key lazy (output :output) (extension ".mjs") embed compression locations)
   "How the library is loaded by the modules bin/clysm library writes.  With
 LAZY, importing a module of the library does not load it: the first call of
 an export, or the first use of one of its classes, does, in the calling
@@ -637,12 +637,22 @@ with the host of host/web/lib.mjs, which imports no module of Node.js: a
 library for a page, a browser's worker or Electron's renderer (and Node.js
 too), which has no files, processes or command line.  :OUTPUT :ERROR is then
 console.error.  COMPRESSION may be :GZIP with EMBED: the bytes are compressed
-before encoding, and decompressed synchronously by the bundled web loader."
+before encoding, and decompressed synchronously by the bundled web loader.
+LOCATIONS, for a non-embedded library, is a list/vector of nonempty module
+paths relative to the generated loader. The first existing file is loaded;
+when none exists, loading the first path reports the ordinary file error.
+A lazy library searches only on first use, and USELIBRARY overrides it."
   (unless (member compression '(nil :gzip))
     (error "JS:LIBRARY-OPTIONS: COMPRESSION is NIL or :GZIP"))
   (when (and compression (not embed))
     (error "JS:LIBRARY-OPTIONS: COMPRESSION requires EMBED"))
+  (unless (and (or (listp locations) (and (vectorp locations) (not (stringp locations))))
+               (every (lambda (path) (and (stringp path) (plusp (length path)))) locations))
+    (error "JS:LIBRARY-OPTIONS: LOCATIONS is a list or vector of nonempty strings"))
+  (when (and embed (plusp (length locations)))
+    (error "JS:LIBRARY-OPTIONS: LOCATIONS requires a non-embedded library"))
   (let ((options (js:get (%js-library) "options")))
+    (js:set options "locations" (coerce locations 'vector))
     (js:set options "compression" (if compression "gzip" :null))
     (js:set options "embed" (if embed t :false))
     (js:set options "extension" extension)
