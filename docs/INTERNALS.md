@@ -314,7 +314,10 @@ on a global binding stack. Every exit point (normal return, `catch`,
 `unwind-protect` cleanup, non-local `return-from`/`go`) restores the binding
 stack to its saved depth. A `let` of up to six special variables writes its
 stack entries inline with one check of the stack size, and stores the old
-values back from their known positions at the normal exit.
+values back from their known positions at the normal exit. The call that
+grows the stack is hinted unlikely: without the hint the engine saved the
+values live across it on every entry (a function of two special parameters,
+`v-sp-param` of `bench/control.lisp`, 5.1 -> 3.9 ns a call).
 
 The stack's top and its vector are the two fields of one structure (type
 `:dynstate`), which the image holds in an immutable global, `dyn`, and every
@@ -405,11 +408,30 @@ signals `control-error`. A module compiled in the image returns null from
 its `run` when a form leaves with an exit pending, and `sys::%compile-module`
 tests it like a call.
 
-`handler-case` is one `sys:%catch` (a `catch` whose tag is not recorded in
-the list of active tags) whose tag is the handler cluster itself, a small
-vector `#(next types clause-number)` bound to the list of clusters; `signal`
-stores the number of the clause and leaves for it with the condition, and the
-clauses are inline code after the catch. `restart-case` is built the same way
+The handlers in effect are *frames* that stay in their places: the first
+`*handler-clusters*` (a fixnum, the depth) elements of the simple vector
+`*handler-frames*`, each a vector `#(types clause function)`. `handler-bind`
+and `handler-case` fill the frame at the current depth (the helper
+`:handler-frame`, which stores the constant vector of their types only when
+the frame holds another) and bind `*handler-clusters*` to one more, so that
+entering one allocates nothing and stores no new object into an old one (see
+"Handler frames" under Performance for why). `handler-case` is one
+`sys:%catch` (a `catch` whose tag is not recorded in the list of active tags)
+whose tag is its frame; `signal` goes down the frames, stores the number of
+the clause in the frame and leaves for it with the condition, and the clauses
+are inline code after the catch. A `handler-bind` stores its function in the
+frame: of one handler the function itself, of more one closure of the index
+of the type and the condition; `sys::%reuse-closure` gives it the closure
+the frame holds when that is a closure of the same function over the same
+cells and values, so that a `handler-bind` in a loop makes none. `signal`
+calls a handler with the handlers below its frame: it writes the index of
+that frame as the TYPES of the frame at the depth it was called at (a frame
+that says "skip down to I") and binds the depth to one more, since the
+frames in between are still in use by the code that signalled. A
+computation of `js:async-function` has frames of its own (the code outside
+goes on, with its frames, while the computation waits), whose first frame
+continues with the frames and depth around it (TYPES is `(frames . depth)`);
+a thread starts with none. `restart-case` is built the same way
 around its cluster: entering it makes one simple vector, `#(next clauses
 chosen restarts function...)` in the chain `*restart-clusters*`, where
 CLAUSES is a constant vector that names the restarts and says where their
@@ -420,10 +442,7 @@ its names, a condition associated with them: `%cluster-restarts`), and
 restart structure for each clause, a list of them and a cons, and set the
 tag of each: `v-restart-nosignal` (a `restart-case` of two restarts and a
 `with-simple-restart` that are not used) took 2.0 times SBCL's time, 1.3
-now. A `handler-bind` whose handlers are all `lambda` forms makes one
-closure, of the number of the type and the condition, instead of one for
-each handler (kind `:one` in the cluster): a closure is a structure of ten
-fields and its environment a vector. `assert` and `check-type` establish
+now. `assert` and `check-type` establish
 their restarts only when the assertion fails (in the expansion, after the
 test).
 
@@ -3122,20 +3141,98 @@ What is not as fast as intended, and why:
   MB, the module of one export 4480382 → 4404741 octets, the time the same
   (interleaved, five rounds: `bench/gabriel.lisp` 0.99, `bench/suite.lisp`
   1.00, `bench/library.lisp` 0.98).
-* **Handler clusters and grown vectors: measured, not kept** (2026-11-22).
-  `v-hb-nosignal` (a `handler-bind` of two closures in a loop, 8 ns a pass,
-  SBCL 5) spends most of its time in V8's `RecordWrite` (the slow write
-  barrier): the new cluster, a young object, is stored into the old symbol
-  `*handler-clusters*`. A cluster kept per site and reused while its parent
-  and functions stay the same (closures reused when their captured cells
-  and values are EQ) was reused but no faster (a `handler-bind` of global
-  functions 71 → 68 ms, the one of closures 80 → 103 with the tests):
-  nothing is allocated in the loop, so no scavenge promotes the kept
-  cluster, which stays young and takes the barrier at each store all the
-  same. A vector grown by `vector-push-extend` made with
+* **Handler frames** (2026-11-22; `runtime/cond.lisp`, the helper
+  `:handler-frame` and `sys::%reuse-closure` in `src/prims.lisp`).
+  `handler-bind` and `handler-case` made a cluster (a vector with the
+  enclosing cluster, the types and the functions) at each entry and bound
+  `*handler-clusters*` to it: a store of a young object into an old symbol,
+  which takes the slow path of V8's write barrier (`RecordWrite`) every
+  time, on top of the allocations. `v-hb-nosignal` (a `handler-bind` of
+  two closures in a loop) took 8 ns a pass against SBCL's 5, most of it
+  there. A cluster kept per site and used again while its parent and
+  functions stay the same had been measured and not kept (a `handler-bind`
+  of global functions 71 -> 68 ms, the one of closures 80 -> 103 with the
+  tests): nothing is allocated in the loop, so no scavenge promotes the
+  kept cluster, which stays young and takes the barrier at each store all
+  the same. What is different now: nothing that is stored at an entry is
+  new. The handlers are frames that stay in a vector (see "Non-local
+  exits"), the variable holds the depth (a fixnum: no barrier), the types
+  are a constant stored only when the frame holds other ones, and the
+  closure of a `handler-bind` is the one the frame holds when it is of the
+  same function over the same cells and values (`%reuse-closure`: its
+  code compares the fields of the old closure with the values the new one
+  would get, and makes it only when they differ), stored only when it is
+  another. Entering a `handler-case` in a loop: three loads and compares
+  and the binding of the depth, no allocation. Per pass, interleaved on
+  one slot (ns; SBCL): `handler-case` around an inline form 7.8 -> 3.2
+  (5.2), around a call 7.0 -> 3.2 (6.2), `handler-bind` of two closures
+  9.2 -> 4.5 (5.1), of one 8.8 -> 4.4 (4.8). `bench/control.lisp`
+  `v-hb-nosignal` 78 -> 47 ms (SBCL 47), `v-hc-nosignal` 61 -> 38,
+  `v-hb-nested` 76 -> 61, `bench/programs.lisp` `p-handler-case-noerror`
+  65 -> 38 (SBCL 47), `p-handler-case` 38 -> 34, `bench/holdout.lisp`
+  `h-conditions` 101 -> 82. The frame is found by a function of the
+  module (`:handler-frame`: the vector, the frame or the call that grows
+  the vector, the store of the types) rather than by that code at each of
+  the 85 sites of the runtime: V8 copies it into the hot callers, and the
+  REPL image is 15 KB smaller than with the code inline, and faster
+  (`handler-case` 3.9 -> 3.2 ns: its casts need no checks).
+  Signalling is as before (`t-error-3-calls` 27 -> 24 ms, `v-cerror-warn`
+  78 -> 82).
+* **Grown vectors: measured, not kept** (2026-11-22). A vector grown by `vector-push-extend` made with
   `array.new_default`, the old elements copied and only the rest filled
   with NIL (instead of `array.new` filled with NIL, then the copy) was 1.10
   times slower: V8 clears the new array anyway, so it is one more pass.
+* **Integer accumulators fed by values of unknown types** (2026-11-22).
+  A fixnum is 30 bits here (62 in SBCL), so a sum of a loop often leaves
+  the fixnums, and a variable that is no integer accumulator then makes a
+  boxed integer at each step. `v-special-misc` (`(incf s (v-sp-param i
+  1))` and `(incf s (logand (v-read6) 15))` in one loop) spent a third of
+  its time in the generic `+` and the integers it made (329 of 1060 ticks
+  in `:add`), although each of its two halves alone was at SBCL's time: a
+  variable updated by values of unknown types was no accumulator
+  (`note-dual-var` wanted every update in a loop to have an operand known
+  to be an integer). One such update is enough now: `v-special-misc` 114
+  -> 82 ms (1.36 -> 1.0 of SBCL). `b-catch`, whose four updates of `s`
+  include one of unknown type, pays for it as measured before (37 -> 40
+  ms; 0.45 -> 0.5 of SBCL); that every accumulator of numbers of unknown
+  types becomes one (no update with a known integer) was measured and is
+  not kept (`bench/control.lisp` 1.02: `r-mapcar-return` 67 -> 99,
+  `r-mapc-go` 57 -> 78). The cleanup forms of `unwind-protect` are
+  compiled for effect (they were compiled for their value, dropped: an
+  `incf` of an accumulator there made its integer for nothing).
+* **Two fixnum tests, one branch each** (2026-11-22;
+  `inline-fixnum-pair-code`). The inline path of `(+ a b)` and the like
+  with both operands of unknown type tested them with `ref.test i31` of
+  each, `i32.and`, one `br_if`. V8 then makes a flag of each test
+  (`test`, `setz`), tests their AND, and tests each flag again where the
+  `i31` is taken out (it does not know which test held): eight
+  instructions more than `test`/`jnz` twice, which is what a `br_if` on
+  each test gives (the type of the operand is known after its own
+  branch). Interleaved on one slot: `bench/suite.lisp` 0.980 (`b-matmul`
+  0.84, `b-fib`, `b-tak` 0.88), `programs` 0.984, `holdout` 0.984,
+  `gabriel` 0.993, `arith` 0.994; the REPL image 9 KB larger.
+* **`loop`: the termination tests of the first iteration** (2026-11-22;
+  `runtime/loop.lisp`). A `for` clause over a list, a vector or numbers
+  tests for the end among the forms at the head of the body and again
+  right after its step (so that the clauses after it are not stepped when
+  it ends the loop): two tests an iteration. The tests at the head that
+  are made again after their steps are now made before the first
+  iteration only (nothing is evaluated between the test after the step
+  and the head of the next iteration; not with a `for =` clause, whose
+  step is among the forms of the head). V8 had merged the two in the
+  loops measured (no change in time); the code is smaller.
+* **Hints on every branch to the generic path: measured, not kept**
+  (2026-11-22). The 42 `br_if`s to the slow paths of the fused integer
+  trees and of the accumulators that have no hint, hinted unlikely:
+  `bench/suite.lisp` 1.035 (`b-sort` 1.18, `b-struct` 1.11, `b-matmul`
+  1.09), `arith` 0.994, the REPL image 38 KB larger. The same for
+  `read-char` of a file inline (every branch to the call hinted, the call
+  inside the primitive instead of an `or` around it): `i-file-roundtrip`'s
+  `read-char` loop the same (2.1 ns a character; SBCL 1.3).
+  `i-file-roundtrip` makes the same system calls as SBCL (one `write` per
+  file, one `pread` per open for reading; `strace -c`): its time is the
+  loops (`read-char` 137 against 73 µs for 56 K characters, `peek-char`
+  and `read-char` 213 against 113, the writes 220 against 197).
 * **Checked casts in Lem's `char-width`** (2026-11-21; `char-width` and
   what it calls are 40% of the busy time of `l-line-down`). A checked
   cast (`(:ref.cast T)`, which signals a TYPE-ERROR instead of trapping)
@@ -3219,6 +3316,26 @@ What is not as fast as intended, and why:
   `*end-pos*` with their declared types checked and calling the next
   matcher through `funcall`. The one-export module +162 bytes, the REPL
   image +9.9 KB.
+* **A closure's variables in a loop that calls functions** (2026-11-22;
+  `sref-loop-symbols`). The variables of the closure's environment that
+  are never assigned (not in cells) cannot change, whatever the loop
+  calls; yet they were read once on entry only in loops without calls,
+  the rule of the special variables. The fields of a closure are mutable
+  to the engine (LABELS stores the closures of the other functions into
+  them after making them), so V8 reads a field again after every call,
+  and with it tests its type again where it is used as a vector:
+  `p-queens` (a local function with three vectors and `n` from its
+  environment, a loop over the columns that calls itself) tested null,
+  fixnum and map of each of the three vectors at every column, fifteen
+  instructions each (instruction-level profile: half of the loop's
+  ticks). In a loop that calls functions the variables it refers to more
+  than once are now read on entry too: `p-queens` 80 -> 68 ms (1.28 ->
+  1.08 of SBCL). Those referred to once are not (they would only be
+  kept in the frame across the calls; reading every variable on entry
+  measured the same, `p-queens` 69 ms with either). The other files, four
+  rounds of the three builds interleaved on one slot: `holdout` 80.7 ->
+  81.9 (geometric mean of the times, ms), `library` 62.2 -> 62.1,
+  `functional` 25.6 -> 24.9, `programs` 52.1 -> 51.4.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
@@ -3618,7 +3735,23 @@ What makes the code fast:
   object cast, or null for an instance of an including structure that has
   a slot vector, which then takes the call of the function; a variable
   bound to one with a shadow, as SETF's, copies it), and its accessors
-  test the shadow for null (`struct-shadow-init-code`); other declared objects are tested with `ref.test` at each
+  test the shadow for null (`struct-shadow-init-code`). The body of the
+  `let` that binds such variables, or of the function whose parameters
+  they are, is compiled in two arms of one test of the objects' types
+  (`shadow-version-code`; a body of up to `*shadow-version-max*`, 4000,
+  instructions and operands): in the arm where the shadows are the cast
+  objects the engine's type analysis drops each accessor's null test and
+  the call of the function behind it, and with no call joining after each
+  access it keeps what it knows of the loaded fields in registers; the
+  other arm is the same code, where a null shadow takes the functions (an
+  instance with a slot vector, or an object not of the type, which
+  signals). `d-particles` 201 -> 156 ms (1.38 -> 1.08 of SBCL; the null
+  tests alone, in one arm, were 5% of it), `d-nbody` 231 -> 203. What is
+  left of `d-particles` is its first loop (two sums over the particles: 1.5
+  ns an element against 0.7): the type test of each element read from the
+  simple vector (null, fixnum, map: seven instructions; Wasm has no
+  unchecked cast), the bounds test and the loop's stack check, beside the
+  two additions SBCL's loop is. Other declared objects are tested with `ref.test` at each
   access, and so are the objects of a structure of typed slots, whose
   instances may have a slot vector. An object of a structure of field
   slots whose class is proved (by an access before, a constructor, a type
@@ -3669,12 +3802,13 @@ What makes the code fast:
   not captured, with an i64 beside its eqref local, null while the i64
   holds the value) is a variable known to hold integers that is updated by
   integer arithmetic at least as often as it is otherwise looked at, or
-  (`note-dual-var`) a number of unknown type updated in a loop only by
-  arithmetic with an operand known to be an integer, more often than it is
-  looked at there: a counter from a value of unknown type, `(loop for k
-  from start ...)` (one also updated by values of unknown types is not:
-  they are fixnums most often, and the i64 and f64 attempts of each update
-  made `b-catch` 8% slower). Its references as leaves of arithmetic read the i64
+  (`note-dual-var`) a number of unknown type updated in a loop by
+  arithmetic, at least once with an operand known to be an integer, more
+  often than it is looked at there: a counter from a value of unknown
+  type, `(loop for k from start ...)`, a sum of the values of calls (one
+  updated only by values of unknown types is not: they are fixnums most
+  often, and the i64 and f64 attempts of each update cost; see "Integer
+  accumulators fed by values of unknown types" under Performance). Its references as leaves of arithmetic read the i64
   (they do not count as uses), a comparison with it is done in i64
   (`dual-cmp-code`), and its update tries doubles after integers when it
   may hold one. A variable that may be something other than a number (the
@@ -5417,6 +5551,12 @@ board an i32 representation behind the program's back (lead 1 of the
 notes: a simple vector proven to hold only fixnums) would need every
 function that sees the vector, here a global function its caller passes it
 to, to agree on it; not done.
+Loading `over[m]` and `to[m]` only after the test of the element before
+(the `let` of the three written as nested `let`s and `when`s, by hand)
+changes nothing here (192 ms against 182-203) and makes SBCL's faster (126
+against 139): the loop runs at 0.8 ns an iteration, three cycles for its
+seventeen instructions, and is not bound by their number.
+
 Specialized vectors in the linear memory instead of Wasm GC arrays were
 measured (2026-11-22) and not done. The idea: a Wasm GC `array.get`/`set`
 always tests the index against the length (V8 never removes it), while on
