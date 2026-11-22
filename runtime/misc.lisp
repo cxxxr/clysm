@@ -141,14 +141,7 @@ if it is not one or the host cannot tell."
      (when (and (js:js-value-p read) (js:js-value-p fs))
        (let ((head (js:funcall (or %fasl-head-function
                                    (setq %fasl-head-function
-                                         (js:eval "(read, fs, path) => {
-                                                     const size = fs.statSync(path).size;
-                                                     const b = read(path, 0, Math.min(size, 64));
-                                                     let s = '';
-                                                     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
-                                                     const m = /^;;; Clysm compiled file\\n;;; wasm (\\d+)\\n/.exec(s);
-                                                     return m ? m[0].length + ' ' + m[1] + ' ' + size : null;
-                                                   }")))
+                                         (%js-helper "faslHead")))
                                read fs native)))
          (when (stringp head)
            (let* ((a (position #\Space head)) (b (position #\Space head :start (1+ a))))
@@ -165,8 +158,7 @@ and TextDecoder), or NIL if it cannot."
      (when (js:js-value-p read)
        (let ((text (js:funcall (or %decode-host-octets
                                    (setq %decode-host-octets
-                                         (js:eval "(read, path, offset, length) =>
-                                                     new TextDecoder().decode(read(path, offset, length))")))
+                                         (%js-helper "decodeOctets")))
                                read path offset length)))
          (and (stringp text) text))))))
 

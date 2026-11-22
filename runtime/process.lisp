@@ -70,7 +70,7 @@ number if a signal ended it)."
     (when (stringp input) (js:set options "input" input))
     (when directory (js:set options "cwd" (%native-name (pathname directory))))
     (when env
-      (js:set options "env" (js:funcall (js:eval "(e) => ({ ...process.env, ...e })") env)))
+      (js:set options "env" (js:funcall (%js-helper "withEnvironment") env)))
     (let ((r (if (stringp command)
                  (progn (js:set options "shell" t)
                         (js:call cp "spawnSync" command options))
