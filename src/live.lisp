@@ -210,8 +210,15 @@ DEFINE-CHECKED-CASTS)."
     (push *current-toplevel* *toplevel-lams*)
     (setf *current-toplevel* nil *toplevel-nodes* nil *toplevel-weight* 0)))
 
+(defvar *live-dump*)
+
+(defun make-live-module ()
+  "A module made in the image: its functions are encoded as they are added
+(not when their instructions are to be printed, *LIVE-DUMP*)."
+  (make-wasm-module :early (if (or *live-dump* *keep-instructions*) nil :live)))
+
 (defun build-live-module ()
-  (let ((*m* (make-wasm-module)))
+  (let ((*m* (make-live-module)))
     (let ((castfns (live-module-begin))
           (tops (reverse *toplevel-lams*)))
       (live-compile-tops tops)
@@ -477,7 +484,7 @@ a form being that of its file: UNIT-BEGIN-FILE)."
         (*batch-form-index* 0)
         (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
     (with-fresh-codegen-state ()
-      (let ((*m* (make-wasm-module)) (*unit-env* (make-cenv)) (*unit-segments* nil) (*unit-castfns* nil))
+      (let ((*m* (make-live-module)) (*unit-env* (make-cenv)) (*unit-segments* nil) (*unit-castfns* nil))
         (clysm-sys::%call-with-world-lock
          (lambda ()
            (let ((*error-output* (make-broadcast-stream)))
@@ -647,7 +654,7 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
           (dolist (f own) (push (wasm-func-refs f) queue))
           (dolist (l tops) (ref (cons :global (static-closure-global l))))
           (loop while queue do (mapc #'ref (pop queue)))))
-      (let ((*m* (make-wasm-module)) (*live-snapshots* nil) (*func-segment* 0))
+      (let ((*m* (make-live-module)) (*live-snapshots* nil) (*func-segment* 0))
         (copy-module-types um *m*)
         (live-module-imports)
         (loop for (name . field) in fimports
