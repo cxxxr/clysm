@@ -172,10 +172,14 @@
 (defun butlast (list &optional (n 1))
   (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
   (let ((len (%dotted-length list)))
+    (declare (fixnum len))
     (if (<= len n) nil
-        (let ((result nil) (l list))
-          (dotimes (i (- len n)) (push (car l) result) (setq l (cdr l)))
-          (nreverse result)))))
+        ;; (N is a fixnum below LEN here) the list is made in order
+        (let* ((k (%fx- (%fx- len n) 1)) (head (cons (car list) nil)) (tail head) (l (cdr list)))
+          (declare (fixnum k))
+          (dotimes (i k head)
+            (let ((c (cons (car l) nil))) (%setcdr tail c) (setq tail c))
+            (setq l (cdr l)))))))
 
 (defun nbutlast (list &optional (n 1))
   (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
@@ -188,6 +192,15 @@
       (let* ((head (cons (car list) nil)) (tail head))
         (do ((l (cdr list) (cdr l))) ((atom l) (%setcdr tail l) head)
           (let ((c (cons (car l) nil))) (%setcdr tail c) (setq tail c))))))
+
+(defun %loop-append-after (tail list)
+  "Copies LIST (as COPY-LIST: a dotted end is kept) onto the cons TAIL;
+returns the last cons of the copy (LOOP's APPEND)."
+  (if (atom list)
+      (progn (%setcdr tail list) (last list))
+      (let ((tl tail))
+        (do ((l list (cdr l))) ((atom l) (%setcdr tl l) tl)
+          (let ((c (cons (car l) nil))) (%setcdr tl c) (setq tl c))))))
 
 (defun copy-alist (alist)
   (mapcar (lambda (x) (if (consp x) (cons (car x) (cdr x)) x)) alist))
@@ -244,8 +257,11 @@
     (when (eql l object) (return t))))
 
 (defun make-list (n &key initial-element)
-  (unless (and (integerp n) (>= n 0)) (%type-error n 'unsigned-byte))
-  (let ((r nil)) (dotimes (i n r) (setq r (cons initial-element r)))))
+  (unless (and (fixnump n) (>= n 0))
+    (%type-error n (if (and (integerp n) (>= n 0)) 'fixnum 'unsigned-byte)))
+  (let ((r nil))
+    (declare (fixnum n))
+    (dotimes (i n r) (setq r (cons initial-element r)))))
 
 (defun %test-fn (test test-not)
   (cond (test (if (functionp test) test (fdefinition test)))
@@ -568,11 +584,12 @@ test is not one a hash table has."
 
 ;;; mapping
 (defun %map1 (f list collect)
-  (let* ((head (cons nil nil)) (tail head))
+  (let ((head nil) (tail nil))
     (do ((l list (cdr l))) ((%endp l))
       (let ((v (funcall f (car l))))
-        (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c)))))
-    (cdr head)))
+        (when collect
+          (let ((c (cons v nil))) (if tail (%setcdr tail c) (setq head c)) (setq tail c)))))
+    head))
 
 (defun %mapn (f lists collect on-tails)
   (let* ((head (cons nil nil)) (tail head) (ls (copy-list lists))
@@ -588,17 +605,18 @@ test is not one a hash table has."
 
 (defun %map2 (f l1 l2 collect)
   "F on the elements of two lists in step, without an argument list."
-  (let* ((head (cons nil nil)) (tail head))
-    (do ((a l1 (cdr a)) (b l2 (cdr b))) ((or (%endp a) (%endp b)) (cdr head))
+  (let ((head nil) (tail nil))
+    (do ((a l1 (cdr a)) (b l2 (cdr b))) ((or (%endp a) (%endp b)) head)
       (let ((v (funcall f (car a) (car b))))
-        (when collect (let ((c (cons v nil))) (%setcdr tail c) (setq tail c)))))))
+        (when collect
+          (let ((c (cons v nil))) (if tail (%setcdr tail c) (setq head c)) (setq tail c)))))))
 
 (defun mapcar (f list &rest more)
   (cond ((null more)
-         (let* ((head (cons nil nil)) (tail head))
-           (do ((l list (cdr l))) ((%endp l) (cdr head))
+         (let ((head nil) (tail nil))
+           (do ((l list (cdr l))) ((%endp l) head)
              (let ((c (cons (funcall f (car l)) nil)))
-               (%setcdr tail c) (setq tail c)))))
+               (if tail (%setcdr tail c) (setq head c)) (setq tail c)))))
         ((null (cdr more)) (%map2 f list (car more) t))
         (t (%mapn f (cons list more) t nil))))
 ;;; The mapping functions with a function and lists written at the call
@@ -635,16 +653,21 @@ MAPL: the value is the first list)."
     (let ((fn (gensym "F")) (l0 (gensym "L0")) (head (gensym "HEAD")) (tail (gensym "TAIL"))
           (v (gensym "V")) (vars (loop for nil in lists collect (gensym "L"))))
       `(let* (,@(%function-binding fn f) (,l0 ,(car lists))
-              ,@(when accumulate `((,head (cons nil nil)) (,tail ,head))))
+              ;; (no header cell: TAIL is NIL or the last cons, as LOOP's
+              ;; COLLECT; a list of two or three elements, the arguments
+              ;; of a form, is the common case)
+              ,@(when accumulate `((,head nil) (,tail nil))))
          (%do ((,(car vars) ,l0 (cdr ,(car vars)))
               ,@(loop for var in (cdr vars) for l in (cdr lists) collect `(,var ,l (cdr ,var))))
-             ((or ,@(loop for var in vars collect `(%endp ,var))) ,(if accumulate `(cdr ,head) l0))
+             ((or ,@(loop for var in vars collect `(%endp ,var))) ,(if accumulate head l0))
            ,(let ((call (%literal-call f fn (loop for var in vars collect (if on-tails var `(car ,var))))))
               (case accumulate
-                (:list `(let ((,v (cons ,call nil))) (%setcdr ,tail ,v) (setq ,tail ,v)))
+                (:list `(let ((,v (cons ,call nil)))
+                          (if ,tail (%setcdr ,tail ,v) (setq ,head ,v))
+                          (setq ,tail ,v)))
                 (:nconc `(let ((,v ,call))
                            (when ,v
-                             (%setcdr ,tail ,v)
+                             (if ,tail (%setcdr ,tail ,v) (setq ,head ,v))
                              (when (consp ,v)
                                (setq ,tail ,v)
                                (do () ((atom (cdr ,tail))) (setq ,tail (cdr ,tail)))))))
