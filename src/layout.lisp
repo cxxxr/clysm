@@ -274,6 +274,9 @@ that UPGRADED-ARRAY-ELEMENT-TYPE makes it T."
     (:eeei-e    (:func (:eqref :eqref :eqref :i32) (:eqref)))
     (:ll-l      (:func (:i64 :i64) (:i64)))
     (:eli-e     (:func (:eqref :i64 :i32) (:eqref)))
+    ;; the steps of integer accumulators (:acc-add64, :acc-add)
+    (:ele-l     (:func (:eqref :i64 :eqref) (:i64)))
+    (:ele-e     (:func (:eqref :i64 :eqref) (:eqref)))
     (:eeeee-e   (:func (:eqref :eqref :eqref :eqref :eqref) (:eqref)))
     ;; heap images: a function's index in the table of functions
     (:fr-i      (:func ((:ref :null :func)) (:i32)))

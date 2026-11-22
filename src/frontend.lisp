@@ -1086,13 +1086,18 @@ function of this compilation, whose code takes them so unchecked)."
         args)))
 
 (defparameter *foldable-integer-functions*
-  '(+ - * expt ash 1+ 1- logand logior logxor lognot abs min max integer-length))
+  '(+ - * expt ash 1+ 1- logand logior logxor lognot abs min max integer-length
+    mod rem gcd lcm isqrt logcount))
+
+(defconstant +fold-integer-bits+ 4096
+  "The longest integer made by folding arithmetic on constants (512 octets
+of a module's data; SBCL folds any).")
 
 (defun constant-integer-form (form env)
   "(values N T) when FORM is an integer known when it is compiled: a literal,
 a constant variable, or a call of one of *FOLDABLE-INTEGER-FUNCTIONS* on such
-forms whose value is an integer of at most 256 bits."
-  (flet ((small (n) (and (integerp n) (<= (integer-length n) 256))))
+forms whose value is an integer of at most +FOLD-INTEGER-BITS+ bits."
+  (flet ((small (n) (and (integerp n) (<= (integer-length n) +fold-integer-bits+))))
     (cond ((integerp form) (values form t))
           ((and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form))
                 (integerp (second form)))
@@ -1118,8 +1123,14 @@ forms whose value is an integer of at most 256 bits."
                  (unless (and found (small v)) (return-from constant-integer-form (values nil nil)))
                  (push v args)))
              (setf args (nreverse args))
-             ;; (no huge powers or shifts)
-             (when (and (member (car form) '(expt ash)) (not (and (= (length args) 2) (<= (abs (second args)) 256))))
+             ;; (no huge powers or shifts: the length of the result is
+             ;; bounded before it is computed)
+             (when (and (member (car form) '(expt ash))
+                        (not (and (= (length args) 2)
+                                  (<= (abs (second args)) +fold-integer-bits+)
+                                  (or (eq (car form) 'ash)
+                                      (<= (* (integer-length (first args)) (abs (second args)))
+                                          +fold-integer-bits+)))))
                (return-from constant-integer-form (values nil nil)))
              (let ((v (handler-case (apply (car form) args) (error () nil))))
                (if (small v) (values v t) (values nil nil)))))

@@ -1338,10 +1338,36 @@ BINDINGS, a list of (symbol . local holding the new value), in order."
 ;;; LET
 ;;; ------------------------------------------------------------
 
+(defun f64-step-rewrite (node)
+  "NODE is (LET ((d init)) (SETQ v (op v d))), as INCF and DECF expand, with
+V an unboxed double variable and INIT a sum, difference or product in f64
+that does not assign V (nothing else can: V is not captured): (SETQ v (op v
+init)), one tree whose result is tested once (F64-TREE-CODE).  Else NIL."
+  (destructuring-bind (bindings body) (cdr node)
+    (when (and bindings (null (cdr bindings)) (eq (car body) :lset))
+      (let* ((d (car (first bindings))) (init (cdr (first bindings))) (v (second body)) (e (third body)))
+        (when (and (not (lvar-special d)) (not (lvar-mutated d)) (not (lvar-captured d)) (eql (lvar-refs d) 1)
+                   (eq (lvar-rep v) :f64) (not (boxed-p v)) (not (lvar-special v)) (not (lvar-captured v))
+                   (eq (car e) :prim) (member (prim-name (second e)) '(+ - *)) (= (length (cddr e)) 2)
+                   (eq (car (third e)) :lref) (eq (second (third e)) v)
+                   (eq (car (fourth e)) :lref) (eq (second (fourth e)) d)
+                   (not (eql (cg-safety) 0))
+                   (f64-tree-op-p init) (f64-tree-op-p e)
+                   (not (member v (assigned-lvars init))))
+          (let* ((new-e (list :prim (second e) (third e) init))
+                 (new (list :lset v new-e)))
+            (setf (gethash new-e *node-types*) (gethash e *node-types*)
+                  (gethash new *node-types*) (gethash body *node-types*))
+            new))))))
+
 (defun cg-let (node mv tail &optional (rep :eqref))
   "REP: :eqref (the value as usual), :f64 / :i32 (the value in that
 representation), :effect (no value) or :test (an i32 that is 0 for false,
 as CG-TEST; only without special variables)."
+  (let ((step (and (member rep '(:eqref :f64 :effect)) (f64-step-rewrite node))))
+    (when step
+      (return-from cg-let
+        (case rep (:effect (cg-effect step)) (:f64 (cg-rep step :f64)) (t (cg step mv tail))))))
   (destructuring-bind (bindings body) (cdr node)
     (let ((code nil) (specials nil) (shadows0 *tested-shadows*))
       ;; evaluate inits in order
@@ -1398,7 +1424,15 @@ as CG-TEST; only without special variables)."
                    (remhash lv *fdual-vars*)
                    (setf (gethash lv *dual-vars*) v)))
                 (t (remhash lv *fdual-vars*)
-                   (setf code (append code (let ((*binding-init* init)) (bind-new-var-code lv (cg init)))))))
+                   (setf code (append code (let ((*binding-init* init)) (bind-new-var-code lv (cg init)))))
+                   ;; an integer accumulator bound to a constant starts in
+                   ;; its i64 (typed.lisp: its first update is then the
+                   ;; inline one, not the helper's decoding its eqref)
+                   (let ((dv (dual-local lv)))
+                     (when (and dv (eq (car init) :const) (typep (second init) '(signed-byte 64))
+                                (eq (car (get-loc lv)) :local))
+                       (setf code (append code `((:i64.const ,(second init)) (:local.set ,dv)
+                                                 (:ref.null :eq) (:local.set ,(cdr (get-loc lv))))))))))
           ;; (bound to a special variable whose array is cached: SREF-MD2-WRAP)
           (when (and *sref-md2-caches* (not (lvar-mutated lv)) (not (lvar-special lv)) (null (lvar-rep lv))
                      (let ((a (strip-the init))) (and (eq (car a) :sref) (assoc (second a) *sref-md2-caches*))))

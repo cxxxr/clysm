@@ -2786,7 +2786,10 @@ tests a product or quotient only for being finite: its exponent compared
 with all ones (`f64-not-finite-code`; the subtraction `x - x != 0` that a
 sum is tested with made `d-mandelbrot` at `(safety 1)` 1.29 times as long,
 V8 compiling that comparison into two branches), with no test of a zero
-and of the operands after it. `(expt float -n)` whose `float^n` is past the floats
+and of the operands after it. A tree of sums, differences and products is
+tested once, at its root (`f64-tree-code`: an infinity or a NaN among its
+steps makes the result one), and computed again step by step when that
+fails, so the condition and the operation that signals it are the same. `(expt float -n)` whose `float^n` is past the floats
 takes the host's `pow` (`(expt 10d0 -400)` is 0, `(expt 2d0 -1074)` the
 least denormalized double), as SBCL's does. Compared with SBCL 2.6 on a
 probe of underflowing operations (products, quotients, sums of
@@ -3197,7 +3200,9 @@ What is not as fast as intended, and why:
   ms; 0.45 -> 0.5 of SBCL); that every accumulator of numbers of unknown
   types becomes one (no update with a known integer) was measured and is
   not kept (`bench/control.lisp` 1.02: `r-mapcar-return` 67 -> 99,
-  `r-mapc-go` 57 -> 78). The cleanup forms of `unwind-protect` are
+  `r-mapc-go` 57 -> 78; since 2026-11-23 a variable stepped by one value
+  of unknown type is one, with a step of its own that does not have those
+  costs: "Sums of values of unknown type" below). The cleanup forms of `unwind-protect` are
   compiled for effect (they were compiled for their value, dropped: an
   `incf` of an accumulator there made its integer for nothing).
 * **Two fixnum tests, one branch each** (2026-11-22;
@@ -3803,11 +3808,12 @@ What makes the code fast:
   holds the value) is a variable known to hold integers that is updated by
   integer arithmetic at least as often as it is otherwise looked at, or
   (`note-dual-var`) a number of unknown type updated in a loop by
-  arithmetic, at least once with an operand known to be an integer, more
-  often than it is looked at there: a counter from a value of unknown
-  type, `(loop for k from start ...)`, a sum of the values of calls (one
-  updated only by values of unknown types is not: they are fixnums most
-  often, and the i64 and f64 attempts of each update cost; see "Integer
+  arithmetic, at least once with an operand known to be an integer or
+  (2026-11-23) by a step by one value of unknown type (`(incf s x)`,
+  `(setq s (- s (f y)))`, `loop`'s `sum`: see "Sums of values of unknown
+  type" below), more often than it is looked at there: a counter from a
+  value of unknown type, `(loop for k from start ...)`, a sum of the
+  values of calls or of a list's elements (see also "Integer
   accumulators fed by values of unknown types" under Performance). Its references as leaves of arithmetic read the i64
   (they do not count as uses), a comparison with it is done in i64
   (`dual-cmp-code`), and its update tries doubles after integers when it
@@ -3819,6 +3825,212 @@ What makes the code fast:
   fixnums, `evenp oddp`, and `(reduce #'+ list)` (and `* max min logand
   logior logxor`) are inline. `bench/arith.lisp` measures this; an n-body
   over undeclared structure slots takes a third of its earlier time.
+* **Sums of values of unknown type** (2026-11-23; `acc-step-p`,
+  `dual-lset-code` in `src/typed.lisp`, the helpers `:acc-add64` and
+  `:acc-add` in `src/prims.lisp`). A sum that leaves the fixnums (2^29:
+  of sizes, times, products, squares) was an integer made at each step:
+  `(incf n (fourth (coerce-all i)))`, `(incf s v)` of what a closure
+  returns, `(dolist (x l) (incf s x))` each called `:add` and allocated 40
+  octets once the sum was beyond 2^29 (`p-coerce` spent 15% of its time
+  there, `f-generators` twice the time of the same pipeline over fixnums).
+  Such a variable (not captured, a number or of unknown type, stepped in a
+  loop by `(+ var x)`, `(+ x var)` or `(- var x)` with X one value, and
+  looked at there less often than it is updated) is now an integer
+  accumulator, as one with an update by a known integer is (the rule of
+  "Integer accumulators fed by values of unknown types": one such update
+  in the loop is enough, the other updates take the general code), and
+  its step is:
+  * *inline*, the case of every step of most sums: the accumulator is in
+    its i64 (its eqref local null) and within 2^62, X is a fixnum (so the
+    sum is within 64 bits: no test of its overflow): four tests, each
+    hinted unlikely, and the addition.
+    Nothing is called in it, so V8 keeps the loop's values in registers;
+  * *else* `:acc-add64` (the accumulator and X decoded whatever holds them,
+    a fixnum or a bignum holding its value; the sum as an i64, with no
+    integer made; V8 copies it into loops that take it often), and when
+    that cannot be (-2^63: a double, a ratio, a sum beyond 64 bits, what is
+    not a number) `:acc-add`, the generic sum, whose result stays in the
+    eqref local until a step finds an integer there again. A double X goes
+    to `:acc-add` at once (a sum of doubles started from 0 takes one call
+    a step, as before), and a variable X that may hold an unboxed double
+    (the value of a function copied in, `(incf s (dist p q))`) is added in
+    f64 to an accumulator that holds a double before it is made an object
+    (as the tree of doubles did: `a-points` unchanged).
+  What made the same idea slower when it was first tried (above: `b-catch`)
+  and again in this work, each found in the machine code:
+  * *Three copies of the update* (an attempt for fixnums, the i64 attempt
+    with its `:wide-i64` calls, the f64 attempt, the generic call) made
+    `sum-until` of `bench/control.lisp` too large for V8 to copy into its
+    caller: `r-mapcar-return` 67 -> 100 ms, `r-mapc-go` 55 -> 75, `b-catch`
+    35 -> 42. Hence the two helpers: the step is about the size of the
+    inline fixnum addition it replaces.
+  * *The first step of each call took the helper*: the variable started as
+    the fixnum 0 in its eqref local. One bound to a constant starts in its
+    i64 (`cg-let`); `r-mapc-go` back to its time.
+  * *A step whose value is used* (`mapcar` collecting `(incf s x)`) made
+    the integer after the paths had joined, with a test of the eqref local
+    V8 could not remove and a spill: the fixnum of the sum is now made in
+    the inline path (`r-mapcar-return` 1.36 -> 0.99 of its time before).
+    That is still the integer made at each step, with the accumulator's
+    tests on top: against the build with the mapping functions of wave 39
+    (no header cons) the same item was 62 -> 73 ms. So a step whose value
+    is used does not make a variable an accumulator (`dual-uses` follows
+    which forms are for effect: the statements of a `tagbody`, the forms of
+    a `progn` but the last, down the branches of `if`, the bodies of `let`,
+    `multiple-value-bind`, `block`); `r-mapcar-return` 61 -> 60.
+  * *A fixnum made for another use was kept in the eqref local*, so the
+    next step decoded it: `dual-materialize-code` now keeps there only an
+    integer beyond the fixnums (which it would have to allocate again).
+  * *An accumulator returned from its loop* (`(return s)` inside the
+    `loop` of a generator's consumer) counted as looked at in the loop at
+    each step, so it was not one: a variable that is the value of a
+    `return-from` out of the loops is looked at once (`dual-uses`).
+  Also with it: the reads of an accumulator and of a float quotient in
+  the update of another (`(incf s (floor x))`) are hinted to be in their
+  i64, and the overflow tests of all fused i64 arithmetic unlikely. V8
+  then keeps the values of the loop in registers across the cold calls
+  (`:wide-i64`, `:add`, `:divmod`): the loop of `p-float-round` had its
+  counter, its sum and the double on the stack, 10.6 ns an iteration, now
+  6.2 (SBCL 5.7). Hinting the fixnum test of every fused tree as well
+  (not only in the updates of accumulators) was measured again and again
+  gains nothing: `suite` 1.00, `programs` 0.99, `arith` 1.01 (`b-special`
+  0.79, `a-mixed-poly` 1.10); not kept.
+  Rebased on wave 39 (2026-11-23), whose control work had made a sum an
+  accumulator when one of its updates in the loop has an operand known to
+  be an integer: the two rules are one (`note-dual-var`: an update by a
+  known integer or a step for effect by one value, the other updates
+  taking the general code). Interleaved against that build (d60362f):
+  `suite` 0.98 (`b-catch` 39 -> 33 ms: its step of unknown type is the
+  short one now), `control` 0.96 (`v-special-misc` 84 -> 75,
+  `v-unwind-protect` 39 -> 31), `programs` 0.96 (`p-float-round` 88 -> 56,
+  `p-double-2d` 58 -> 43, `p-ratio-misc` 68 -> 54, `p-coerce` 47 -> 42
+  after the library work's own paths), `functional` 0.98, `holdout` 0.97,
+  `arith` 0.98.
+  Measured (interleaved against the build before, e5669e1, best of four
+  on one slot while other work ran on the machine, ms): `p-coerce` 113 ->
+  77 (with the changes of "Numeric items" below; the sum alone 104 -> 79),
+  `p-float-round` 95 -> 59 (SBCL 61–67), `b-int64` 117 -> 96 for 100 runs
+  (SBCL 117), `f-generators` 161 -> 144 for 30 runs (SBCL 78–86: the
+  squares are still made, 40 octets each, and `evenp` of one is a call),
+  `b-matmul` 106 -> 96 (SBCL 80), `p-vector-push` 156 -> 109,
+  `a-int-funcs` 138 -> 115, `v-special-misc` 122 -> 93, `v-unwind-protect`
+  41 -> 34, `v-catch-dynamic` 15 -> 9, `r-mapcar-return` 73 -> 75 and
+  `b-catch` 38 -> 39 (the two that the first versions made slower).
+  Geometric means of the whole of this work (new / before): `suite` 0.97,
+  `programs` 0.955, `holdout` 0.97, `arith` 0.96, `arrays` 0.93
+  (`a-nbody-typed` 0.66, `a-fp-stack` 0.76: the float trees below),
+  `vectors` 0.97, `control` 0.95, `functional` 0.99, `gabriel` 1.00,
+  `declared` 1.00 at its `(safety 0)` and 0.98 at `(safety 1)` (`d-nbody`
+  0.78, `d-matmul` 0.81, `d-mandelbrot` 0.88); nothing slower beyond the
+  noise of a run (`p-print-object` 35 -> 40, `g-div2` 75 -> 81 in one
+  round). Against SBCL after it: `suite` 0.69, `programs` 0.76, `holdout`
+  0.75, `arith` 0.48, `arrays` 0.62, `vectors` 0.41, `functional` 0.98,
+  `declared` 0.93. Loaded into the image (`clysm script`, the two
+  images alternately): `suite` 0.97, `programs` 0.97 (`p-float-round` 86
+  -> 56 ms, `p-coerce` 150 -> 105, `p-double-2d` 58 -> 44). The REPL image grows by 42 KB (0.5%), the shaken module
+  of one export by 3.1 KB (925.6 -> 928.6 KB).
+* **A sum, difference or product of doubles is tested once**
+  (`f64-tree-code`, `f64-step-rewrite`, `fused-f64-code`). Every float
+  operation is tested for an infinity or a NaN (see "Floating-point
+  conditions"), and `(incf s (* (aref a i k) (aref b k j)))` tested the
+  product (five instructions) and the sum (three with two branches) in a
+  loop of twenty. A sum, a difference or a product of an infinity or a NaN
+  is one, so the last result of a tree of `+ - *` tells for every step:
+  the tree is computed without tests, and when its result is not finite it
+  is computed again from the values of its leaves with the test of each
+  step, whose generic function signals what the step signals. Only a step
+  after which nothing but variables and constants is evaluated is put off
+  so (`(+ (* a a) (svref v 5))` signals the overflow before the index
+  error, as before; `tests/cases/accumulators.lisp`); a division is never
+  inside (`x / infinity` is 0). `incf` and `decf` of an unboxed double
+  variable by such a tree, which they expand into a `let` of the delta,
+  are one tree with the update when the delta does not assign the variable
+  (`f64-step-rewrite`); the trees of doubles of unknown type that the
+  fused arithmetic tries (`fused-f64-code`: only `+ - *`, all leaves
+  evaluated before) test their root alone. `h-matmul-double` 138 -> 107 ms
+  (SBCL 108), `p-double-2d` 59 -> 46 (SBCL 42), `p-double-vector` 104 -> 92
+  (SBCL 54; the rest is its two vectors of 1.6 MB, below), `a-nbody-typed`
+  358 -> 237; `bench/declared.lisp` unchanged (it has no tests: `(safety
+  0)`), 0.98 with its `declaim` of the policy removed. Testing the root of
+  a sum by its exponent, as a product is, instead of by the subtraction,
+  was no better (the same file 1.01, `h-matmul-double` 1.06): the root
+  keeps the test of its own operation.
+* **Numeric items still behind SBCL, and why** (2026-11-23; each profiled
+  by instruction: `node --prof --prof-sampling-interval=100 --perf-prof`,
+  the ticks placed on the code read from the jitdump with `objdump`, and
+  the ticks outside it on the symbols of the `node` binary):
+  * **Bignums: no 64-bit digits.** V8 13.6 (Node.js 24.21) has no
+    multiplication of 64 bits into 128: the wide-arithmetic proposal's
+    `i64.mul_wide_u` (0xFC 0x16) does not validate, and there is no flag
+    for it (`--experimental-wasm-wide-arithmetic` is not a flag of this
+    V8; `node --v8-options` lists none), so the kernels of 64-bit digits
+    could not be measured; they would need four 32-bit products a digit
+    pair as now. What the passes cost as they are: an addition is 9
+    instructions a 32-bit digit (two loads, two additions, the store and
+    the shift, and three bounds checks of two instructions, which V8 does
+    not remove or hoist), a product by a fixnum 8, against SBCL's 4 to 6 a
+    64-bit digit. Probes of each operation on operands SBCL cannot fold
+    (special variables; times SBCL): the Fibonacci sum of
+    `p-bignum-misc` (3000 additions up to 2080 bits) 1.37, 300 products by
+    a fixnum 1.8, `expt` of 3 to 2000 2.0, products of 7900 by 8400 bits
+    3.2, squares 1.8, `floor` of 7900 by 4200 bits 2.8, `isqrt` of 10^400
+    4.6, `ash` 2.2, comparisons 1.7, `gcd` 0.5, printing 3^2000 1.1,
+    `parse-integer` 1.5. `b-bignum` (the factorial of 2000, 0.34 ms) is
+    1.1 to 1.5 over 500 runs and 1.55 over the 50 of the suite, which end
+    before the kernels have left Liftoff.
+  * **`p-bignum-misc` was mostly arithmetic on constants**, which SBCL
+    does when it compiles: `(expt 3 2000)`, `(mod (expt 7 500) 1000007)`,
+    `(gcd (expt 6 300) (expt 15 200))`, `(isqrt (expt 10 400))`. The
+    folding of integer arithmetic on constants (`constant-integer-form`)
+    stopped at 256 bits and at `expt` and `ash` by 256; it now makes
+    integers up to 4096 bits (512 octets of a module's data; the length
+    of a power is bounded before it is computed) and folds `mod rem gcd
+    lcm isqrt logcount` too. What is left of the item is its 3000 bignum
+    additions, the printing, and 300 products: 1.59–1.79 -> 1.5 (84 ->
+    72 ms).
+  * **Integers between 64 and 128 bits** (`a-sum-overflow`, 1.35: a sum
+    of fourth powers): each step is a product of i64s made a bignum of
+    three digits (`:mul-wide`) and a sum of two bignums (`:add-gen`,
+    `:big-add`, `:mag-add`), four objects where SBCL makes two; not
+    changed.
+  * **Vectors above 128 KB** are large objects for V8, each in pages of
+    its own that are mapped when it is made and unmapped when it dies:
+    `(make-array 20000 :element-type 'double-float)` takes 27 µs (SBCL
+    5.8), one of 200 000 elements 0.27 ms (SBCL 0.09), of 2000 elements
+    0.3 µs (SBCL 0.7). Half of the time is in the kernel (`munmap`,
+    `mmap`, the page faults of the fill, by `--prof`'s ticks in libc and
+    the binary), and no flag of the engine changes it (measured:
+    `--minor-ms` 1.0–1.5 times the time, `--no-concurrent-sweeping`,
+    `--no-memory-reducer`, `--single-threaded-gc`, `--no-page-promotion`
+    1.0, `--semi-space-growth-factor=4`, `--min-semi-space-size=16`,
+    `--scavenger-max-new-space-capacity-mb=64` 1.1–1.3). It is what is
+    left of `p-double-vector` (two vectors of 1.6 MB a run: 38% of its
+    time, its loop of products now at SBCL's whole time), `p-u32-vector`
+    (2 MB: its two loops are SBCL's instructions with a bounds check) and
+    the sieves.
+  * **Ratios** (`p-ratio-misc` 1.33–1.45, now 1.1): 25 ns an operation in
+    `:ratio-op`, spread over its decoding, checked products and the two
+    gcds; nothing stands out. The gcd of i64s (`:gcd64`, binary) takes the
+    count of low zero bits from the difference before its absolute value,
+    a step four instructions deep where it was six, and `gcd` of integers
+    within 64 bits uses it instead of Euclid's divisions: `gcd` of two
+    24-bit integers 47 -> 24 ns, of 40-bit ones 72 -> 36 (SBCL 49 and 72);
+    a sum of ratios in a loop 0.85 of its time (1.37 times SBCL),
+    `p-ratio-misc` 0.79 (211 -> 166 ms for 90 runs). When one operand is
+    8 bits or more longer than the other it takes one remainder first:
+    without it `(gcd x 360)` took the binary steps a bit at a time and
+    `p-integer-math` was 1.33 times its time before (51 -> 68 ms; 0.97
+    with the remainder).
+  * **`p-coerce`** (2.1 -> 1.4): after its sum (above), `(coerce "abc"
+    'list)` (25%: `%seq-to-list` read each element through the generic
+    storage access; the library work of the same wave reads a simple
+    string or vector inline),
+    `(truncate x)` of a fixnum (the general `:divmod` with a divisor of 1:
+    a division with one argument now returns a fixnum as it is,
+    `:divmod-one`, `:quot-one`), and the lists and floats it makes.
+  * **`p-calc`** (1.2) is `intern` of one-character strings (20%),
+    `find-package` of `:keyword` at each call (5%), `sxhash` and the write
+    barrier of its token list; not arithmetic.
 * **Division of floats** (`floor ceiling truncate round`, the `f` versions,
   `mod rem`) computes what SBCL does, in the inline code, the helper
   `:divmod` and `%float-divmod` alike: the float quotient rounded for the
@@ -6260,7 +6472,8 @@ compiled). A first `defun` in the REPL ran 1.23 MB of the image's code
   `bench/suite.lisp` slower, so the runtime and programs keep theirs.
 * Integer arithmetic on constants is folded when compiling
   (`constant-integer-form`): `ty-int32-p` computed `(- (expt 2 31))` each
-  time.
+  time. (Up to 256 bits then; 4096 since 2026-11-23, with `mod rem gcd lcm
+  isqrt logcount`: see "Numeric items still behind SBCL".)
 
 `clysm script` of a `defun` and a call 168 -> 135 ms, `s-quicklisp` 426 ->
 397, `s-ql-*` 15 to 20 ms less; compiling small `defun`s warm is no slower.
