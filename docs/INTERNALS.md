@@ -6999,6 +6999,36 @@ What makes the code fast:
   representation, package accesses, iterators and heap-image changes are
   reverted. The small store helper and EQUALP/EQL improvements remain.
 
+* **Retained tree against 2878b0c (2026-11-23).** Two alternating
+  baseline/new rounds on one benchmark slot, each using the scripts'
+  best of three runs; four rounds for script mode because early CLOS
+  timings were bimodal. Geometric means from each item's best measured
+  time (Clysm/SBCL): library 0.663 -> 0.652, control 0.657 -> 0.626,
+  programs 0.679 -> 0.677, suite 0.639 -> 0.641, apps 1.096 -> 1.117,
+  libraries 1.028 -> 1.016, Lem with the supplied input 1.054 -> 1.019.
+  Script/compiled: library 1.120 -> 1.120, programs 1.085 -> 1.090.
+  Clysm-only time ratios, new/baseline, are respectively 0.990, 0.963,
+  1.041, 1.030, 1.043, 1.017, 0.959; script library 1.003 and programs
+  1.004. Small aggregate differences are not established speedups.
+  No retained broad-suite item is slower by more than 15% in these
+  best-time comparisons. `v-hash-iterate` is 9 -> 10 ms compiled
+  (9 -> 9 script); longer focused iteration probes are unchanged.
+  `t-return-maphash` 45 -> 45, `v-equalp-mixed` 134 -> 128,
+  `v-hash-equalp` 15 -> 15, Lem redisplay 43 -> 42 ms. Three alternating
+  focused rounds confirm structure EQUALP 253 -> 196 ms; simple-vector
+  hash stores 17 -> 16 and reads 18 -> 19 remain noise. Three-table
+  construction/insertion is 50 -> 51 ms. The retained EQUAL store helper
+  is 438 bytes, with a 243-byte insertion helper. The one-export module
+  shrinks 910,925 -> 907,730 bytes (budget unchanged at 970,000), and
+  the REPL image 8,490,379 -> 8,476,185. Library/ASDF checks and the
+  self-hosted compiler build pass. The process test is blocked by this
+  sandbox's Node `spawnSync` returning EPERM even with exit status 0;
+  the same failure reproduces on 2878b0c and cached main 1b02cb3e.
+  Final compiled, interpreted, native-script and self-hosted test runs
+  each pass 118/119 files, with only that process failure. `make test-all`
+  stops there; its remaining components were run separately. Full ANSI
+  passes 21,931/21,932, with only the known SUBTYPEP-COMPLEX.8 failure.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
