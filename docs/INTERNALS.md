@@ -5511,13 +5511,52 @@ What makes the code fast:
     structure (the engine's test of an object's exact type is one
     comparison, of a supertype three loads more) with no test of the
     class, and its predicates are decided (`known-test-result`).
+  * The inline `aref` and `char` of an array of unknown type read a simple
+    vector or string in place and, for the others, took the storage of a
+    one-dimensional array header (a fill pointer, adjustable, displaced)
+    in place too, 40 octets at each access: the helper `(:hdr-locate
+    KIND)` gives the storage and the index there, or null for the general
+    function (`speculative-locate-code-1`; `tests/cases/aref-headers.lisp`).
+    Against the build before: `bench/arrays.lisp` 0.96 and 0.99 of the
+    time, `holdout` 0.97 and 1.00, `p-vector-push` (AREF of a vector with
+    a fill pointer in a loop) 141-153 ms for both.
+  * A declared integer range within the fixnums is one unsigned
+    comparison of the distance from its lower bound (`decl-test-code`),
+    8 octets less at each declared parameter.
+  * `funcall` in a function of at most 40 nodes keeps the symbol's case in
+    place (`*small-caller-nodes*`). V8 lets a function grow by inlining to
+    five times its own size, so the shorter code took budget from short
+    higher-order functions: `my-map` of `bench/closures.lisp` went from
+    175 to 150 octets, its budget from 875 to 750, and the inlining of the
+    functions it calls through `funcall` stopped two octets short (750
+    against 752, `--trace-wasm-inlining`): `k-higher-order` 137 → 150 ms,
+    `k-church` 26 → 29, `f-pipeline` 43 → 50. With the rule they are at
+    137-149, 27-28 and 44-51 again (and `k-generators`, which the shorter
+    code had taken from 100 to 84, at 104: the same budget the other
+    way). With these three, against the build before them: `closures`
+    1.015, `functional` 0.96, `programs` 0.97, `apps` 1.00, Lem 0.995;
+    and all of it against the build before any: `apps` 0.954 (`a-esrap`
+    98 → 86 ms, 1.56 times SBCL; `a-ppcre-tokens` 46 → 40, 1.05), `libs`
+    0.987.
+  What is still not inlined in esrap, and why (the trace after the
+  changes): its small callers have small budgets, five times their own
+  size (a lambda of 48 octets calls `successful-parse-production`, 270
+  octets, 54 000 times in the run: 318 is over 240; the stub of a `&rest`
+  function, 14 octets, cannot take the 521 of `text`); `cached` and
+  `(setf cached)` are 856 and 2232 octets with their three
+  representations of a cell (SBCL does not inline them either), each
+  called through its entry that unboxes the position; `rule/transform`
+  is 4502. In cl-ppcre four calls are refused, of lambdas of 501 to 1567
+  octets, a few thousand calls each: its hot calls are those of the
+  matchers through `funcall`, which the engine inlines where one site
+  sees one closure.
   esrap's functions, before and after, in octets: `result-position` 565
   → 321, `successful-parse-production` 656 → 270, `find-chunk` 516 →
   317, `result-unsatisfied-predicate-p` 799 → 438, the lambda of
   `compile-sequence` 1688 → 967, `rule/transform` 7853 → 4502; the code
-  of its module 547 → 476 KB. The REPL image 8,875,824 → 8,285,631
+  of its module 547 → 476 KB. The REPL image 8,875,824 → 8,270,547
   octets (its heap image 11.06 → 10.46 MB), the one-export module 925,558
-  → 883,485, the self-hosted compiler 9,171,099 → 8,512,478.
+  → 887,235, the self-hosted compiler 9,171,099 → 8,495,628.
   Interleaved with the build before on one slot (the best of two rounds
   of three runs each): `tools/bench-libs.sh bench/apps.lisp` `a-esrap` 99
   → 90 ms (1.77 → 1.61 times SBCL), `a-ppcre-tokens` 46 → 41 (1.18 →
@@ -5566,16 +5605,31 @@ What makes the code fast:
     libraries, the chain before `call_ref` 4-6%).
   * *The cast of a closure.* `ref.cast $closure` of a closure with free
     variables (a subtype) is the engine's slow path: the map, its type
-    information, the supertype at depth 0. It is 13.5% of the ticks in
-    cl-ppcre's matchers (each reads `next-fn`, declared `function`, from
-    its closure and casts it), 5.4% in esrap with the `functionp` tests
-    of its lazy productions. A field of the closure typed `(ref
-    $closure)` would need closure types by the kinds of their fields,
-    which the entries of a function, heap images and the operations on
-    closures of any shape would all have to know; testing the final
-    types one after the other (`br_on_cast` of `$envclo1`, `$envclo2`,
-    ...) is a comparison each and no load, but 6 octets each at every
-    call. Not done; the first is what would remove the cost.
+    information, the supertype at depth 0. The ticks of that path are
+    13.5% of cl-ppcre's matchers (each reads `next-fn`, declared
+    `function`, from its closure and casts it) and 5.4% of esrap's, which
+    read as the cost of the cast. They are not: with the final types
+    tested first at the call (`br_on_cast` of `$envclo2`, `$envclo1`, ...
+    then the cast: one comparison of the map for the closures cl-ppcre
+    makes, no load) the chain of eight closures takes the same 47-49 ms
+    and cl-ppcre's probes the same (tokens 20.0-20.5 ms, scan 20.0-20.2,
+    replace 27.2-27.8, alternation 12.8-13.0, against 19.8-21.0, 20.5,
+    27.5-30.0, 12.5-13.0), and through a helper the chain takes 56. The
+    ticks are the wait for the closure object itself, which the call
+    needs next whatever tests it: the engine starts the loads of the
+    cast and of the `$code` together. Every cast of every kind taken out
+    (`--experimental-wasm-assume-ref-cast-succeeds`, measured again after
+    the changes above) is 6% of the tokens, 3% of the scan, 4% of the
+    replacement and 10% of the alternation, of which the closure casts
+    are a part. So closures with typed environments (fields `(ref
+    $closure)` for the variables declared `function`: a closure type for
+    each count of such fields, which the entries of a function, heap
+    images and the operations on closures of any shape would have to
+    know) were not built: what they remove measures as nothing. A
+    closure is still `{code, name, free variables...}`, a final subtype
+    `$envcloN` of `$closure` with N mutable `eqref` fields (immutable
+    fields for closures that LABELS does not patch were evaluated on
+    another branch at the same time, and not done there either).
   * *The type tests of included structures.* A list of 1000 structures
     of two structures including a third, walked with the accessors and a
     predicate of the included one (`build/p/clo.lisp`), takes 88 ms for
