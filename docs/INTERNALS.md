@@ -2126,8 +2126,10 @@ once per image build (`~/.cache/common-lisp/clysm-asdf/NAME-IMAGEID.fasl`,
 `%load-compiled-bundled`); the fasls of other images are deleted only when a
 month old, since several images (the REPL's, an application's) may be in
 use: deleting them made the other image compile ASDF again, ten seconds.
-**System fasls** (opt-in: `(setf asdf::*clysm-system-fasls* t)` after
-`(require :asdf)`, or `CLYSM_SYSTEM_FASLS=1` in the environment). A
+**System fasls** (on by default since 2026-11-22: `asdf::*clysm-system-fasls*`
+is `:auto`; `t` for every qualifying system, `nil` or `CLYSM_SYSTEM_FASLS=0`
+off, `CLYSM_SYSTEM_FASLS=1` is `t`; `asdf::*clysm-system-fasl-modes*`, an
+alist of system names and modes, chooses for single systems). A
 system's files can be compiled into one fasl of one module
 (`contrib/asdf-hooks.lisp`; `sys::%system-compile-file` and the functions
 after it in `runtime/eval.lisp`; "A unit compiled file by file" in
@@ -2185,7 +2187,14 @@ ASDF session (`*clysm-system-fasl-valid*`: ASDF asks for every file, Lem's
 a macro's expansion, whose `make-load-form` the compiler does not see:
 log4cl's `make-logger`) make the segment load from its source forms, as
 `compile-file` writes them, and the system is not made into a system fasl.
-A file that fails to compile into the unit (an
+With `:auto`, a system being developed is compiled file by
+file: when a source file of a system is newer than its (complete) system
+fasl, `NAME--system.dev` is written next to it and the system fasl
+deleted, and from then on its files have fasls of their own, so an edit
+compiles that file (and those ASDF finds depending on it), not the whole
+system again (lem/core: some 15 s); a change of the `.asd` or of a
+dependency does not count. `asdf::clysm-system-fasl-reset` forgets the
+notes and the system fasl. A file that fails to compile into the unit (an
 error, ASDF's `retry` or `accept`) leaves it: the files after it are
 compiled to fasls of their own, and `NAME--system.broken` keeps the system
 from being tried again until a file or the `.asd` changes. The methods are
@@ -2195,7 +2204,24 @@ a library's method with those specializers (asdf-flv's `perform :around` of
 its system fasl and redefines functions of one file that the other calls;
 `tests/asdf/sysfasl` checks that each file's compile-time side effects
 happen once per build, that a macro of one file can call a function of the
-file before, and that a changed file makes the system fasl again.
+file before (and makes an object of a class whose `make-load-form` is in
+the file before), that the first build loads no file from source forms and
+that a changed file makes the system fasl again (with `t`);
+`tests/asdf/sysdev` that with `:auto` an edit switches the system to fasls
+of each file with the same results, that a second edit compiles that file
+alone, and that a reset makes the system fasl again.
+
+A survey of 100 Quicklisp systems (2026-11-22, by another agent, on the
+version before the development mode): the compile-time side effects happen
+once, the fingerprints of what the systems define are those of fasls of
+each file in 98 of them (iterate, trivia and cl-pdf among them), asdf-flv
+and fiveam load from system fasls, the test suites give the same results;
+log4cl fell back (an object a fasl cannot hold, now noted). On Lem (its
+systems through ASDF, lem/core and 30 others as system fasls): first build
+19.4–20.1 → 22.3–23.3 s (encoding each function twice, for the modules
+that load each file in the first image and for the system fasl, and the
+engine compiling those modules), warm load 1.48–1.55 → 1.08–1.14 s, cache
+62 → 56 MB.
 
 The first version (2026-11-21) made the system fasl after the system was
 loaded, by compiling its files again from source in the loaded image: the
@@ -3070,7 +3096,7 @@ What is not as fast as intended, and why:
   :test #'string-equal :key #'car` 83 → 56 (40), `remove :test #'equal` 38
   → 33 (26). (`equalp` is left out: its inline expansion is 6 KB a loop; the
   image grew by 47 KB.)
-  With system fasls (opt-in, see ASDF), the calls between a system's files are
+  With system fasls (on by default, see ASDF), the calls between a system's files are
   guarded direct calls in one module. Made by the compile itself (2026-11-22,
   feature off and on alternately on one slot, two rounds each):
   `tools/bench-libs.sh bench/apps.lisp` `a-esrap` 1.89–1.96 → 1.76–1.80
