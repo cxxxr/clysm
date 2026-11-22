@@ -1,0 +1,25 @@
+;;; COMPILE-FILE and whole programs may coalesce similar constants; EVAL,
+;;; COMPILE and source LOAD must retain the identity of source literals.
+(let* ((a (read-from-string "'(alpha (beta gamma))"))
+       (b (read-from-string "'(alpha (beta gamma))"))
+       (x (eval a)) (y (eval b)))
+  (print (list (eq x (second a)) (eq y (second b)) (not (eq x y))
+               (not (eq (second x) (second y))) (equal x y)))
+  (let ((f (compile nil (list 'lambda nil a)))
+        (g (compile nil (list 'lambda nil b))))
+    (print (list (eq (funcall f) x) (eq (funcall g) y)
+                 (not (eq (funcall f) (funcall g)))))))
+(with-open-file (s "build/literal-cons-source.lisp" :direction :output
+                   :if-exists :supersede)
+  (write-line "(defun literal-source-a () '(alpha (beta gamma)))" s)
+  (write-line "(defun literal-source-b () '(alpha (beta gamma)))" s))
+(load "build/literal-cons-source.lisp" :verbose nil :print nil)
+(let ((x (funcall 'literal-source-a)) (y (funcall 'literal-source-b)))
+  (print (list (equal x y) (not (eq x y))
+               (not (eq (second x) (second y))))))
+;;; Identity is deliberately unspecified for file compilation.
+(let ((*compile-verbose* nil) (*compile-print* nil))
+  (load (compile-file "build/literal-cons-source.lisp") :verbose nil :print nil))
+(print (equal (funcall 'literal-source-a) (funcall 'literal-source-b)))
+(delete-file "build/literal-cons-source.lisp")
+(delete-file "build/literal-cons-source.fasl")

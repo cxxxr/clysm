@@ -21,6 +21,7 @@
   "(FILE . LINE) of the toplevel form being compiled, or NIL: where the
 functions made from it are, for the clysm.sources section (stack traces).")
 
+(defvar *check-declared-integers*)
 (defstruct (lam (:print-function (lambda (l s d) (declare (ignore d))
                                    (format s "#<LAM ~S ~D>" (lam-name l) (lam-id l)))))
   id name parent
@@ -31,6 +32,7 @@ functions made from it are, for the clysm.sources section (stack traces).")
   (static-p nil)          ; closure object is a module constant
   (may-exit :unknown)     ; NIL when no call of it can return with an exit pending (codegen.lisp)
   (safety nil)            ; the SAFETY of its body (POLICY-SAFETY), NIL for the default
+  (program-p *check-declared-integers*)   ; of a program's code, not the runtime's (set after FINISH-RUNTIME)
   (self nil))             ; the variable of a LABELS function referred to in its own body: its closure
 
 (defun lam-simple-p (l)
