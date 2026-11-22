@@ -6914,7 +6914,7 @@ What makes the code fast:
   distinct literals from source LOAD, and equality after COMPILE-FILE.
   It passes in both whole-program and native script modes.
 
-* **Adjacent hash entries (2026-11-23).** Keys and values occupy cells
+* **Adjacent hash entries (2026-11-23; experiment, reverted below).** Keys and values occupy cells
   2I and 2I+1 of one vector. Chain links and saved lookup indices still
   count entries; the former value-vector field holds capacity. Growth,
   compaction, package lookup, all Wasm probes, iteration and heap-image
@@ -6976,7 +6976,7 @@ What makes the code fast:
   14 -> 15, LOOP keys/values 13 -> 14, LOOP values 12 -> 14, early return
   46 -> 44 ms. One fewer allocation is useful, but iteration is not a
   demonstrated improvement. Longer iteration probes (100 repetitions,
-  three interleaved rounds; baseline 2878b0c / retained interleaving /
+  three interleaved rounds; baseline 2878b0c / interleaving candidate /
   experimental direct cell offsets): MAPHASH 99 / 93 / 99 ms, explicit
   iterator 147 / 157 / 152, LOOP key/value 143 / 149 / 154, LOOP values
   137 / 137 / 142, early-return MAPHASH 490 / 456 / 462. Direct offsets
@@ -6984,6 +6984,20 @@ What makes the code fast:
   Splitting insertion out of the EQUAL store helper, three alternating
   rounds, changes equal-list stores 44 -> 40 ms and reads 43 -> 45 ms;
   the code-size reduction is established, these small time changes are not.
+
+* **Interleaving rejected on real applications (2026-11-23).** The
+  retained tree uses separate key/value vectors and image version 6.
+  Four alternating rounds against 2878b0c put ESRAP 83 -> 97 ms and Yason
+  parsing 91 -> 107 ms with interleaving. An isolated comparison retaining
+  the equality changes and the small EQUAL store helper confirms the
+  layout's cost (two alternating rounds): interleaved ESRAP 100, 101 ms,
+  separate vectors 86, 91; Yason 109, 118 versus 99, 102. SBCL times in
+  those rounds are essentially unchanged. Keeping insertion in the larger
+  store helper does not recover the loss (ESRAP 97, 100; Yason 121, 125).
+  The reduced allocation in the construction probe does not compensate
+  for the application regressions or remove the two bounds checks. The
+  representation, package accesses, iterators and heap-image changes are
+  reverted. The small store helper and EQUALP/EQL improvements remain.
 
 ### Declared code, and SBCL at its best policy
 

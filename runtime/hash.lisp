@@ -3,7 +3,7 @@
 ;;;; Open hashing with index chains; entries are kept in insertion order
 ;;;; (as SBCL does), so MAPHASH iterates in insertion order.
 ;;;;
-;;;; The entry I has its key and value in adjacent cells of one simple vector, and its hash and
+;;;; The entry I has its key and value in two simple vectors, and its hash and
 ;;;; the next entry of its chain in two vectors of 32-bit integers (the kind
 ;;;; bignums keep their digits in: they are made zeroed and the collector does
 ;;;; not scan them).  BUCKETS, of the same kind, has a power of two of chain
@@ -13,7 +13,7 @@
 (defconstant +ht-test+ 0)
 (defconstant +ht-count+ 1)
 (defconstant +ht-keys+ 2)
-(defconstant +ht-capacity+ 3)
+(defconstant +ht-vals+ 3)
 (defconstant +ht-next+ 4)
 (defconstant +ht-hashes+ 5)
 (defconstant +ht-buckets+ 6)
@@ -48,12 +48,6 @@
 ;; (no LOAD-TIME-VALUE: code compiled in the image then has a copy of it,
 ;; the test inline, as code walking JSON objects calls it for every value)
 (defun hash-table-p (x) (and (%instancep x) (eq (%instance-layout x) *hash-table-class*)))
-
-;;; Entry I occupies two adjacent cells. Chain links still count entries.
-(defmacro %ht-key-ref (entries i) `(%svref ,entries (%fx* ,i 2)))
-(defmacro %ht-value-ref (entries i) `(%svref ,entries (%fx+ (%fx* ,i 2) 1)))
-(defmacro %ht-set-key (entries i value) `(%set-svref ,entries (%fx* ,i 2) ,value))
-(defmacro %ht-set-value (entries i value) `(%set-svref ,entries (%fx+ (%fx* ,i 2) 1) ,value))
 
 (defmacro %ht (h i) `(%ht-ref ,h ,i))
 (defmacro %ht-set (h i v) `(%ht-set! ,h ,i ,v))
@@ -115,8 +109,8 @@
     (%ht-set! sv +ht-count+ 0)
     (%ht-set! sv +ht-fill+ 0)
     (%ht-set! sv +ht-last-index+ -1)
-    (%ht-set! sv +ht-keys+ (%make-simple-vector (* cap 2) nil))
-    (%ht-set! sv +ht-capacity+ cap)
+    (%ht-set! sv +ht-keys+ (%make-simple-vector cap nil))
+    (%ht-set! sv +ht-vals+ (%make-simple-vector cap nil))
     (%ht-set! sv +ht-next+ (%make-limbs cap))
     (%ht-set! sv +ht-hashes+ (%make-limbs cap))
     (%ht-set! sv +ht-buckets+ (%make-limbs nb))
@@ -128,7 +122,7 @@
   (%ht-set! sv +ht-fill+ 0)
   (%ht-set! sv +ht-last-index+ -1)
   (%ht-set! sv +ht-keys+ *ht-empty-vector*)
-  (%ht-set! sv +ht-capacity+ 0)
+  (%ht-set! sv +ht-vals+ *ht-empty-vector*)
   (%ht-set! sv +ht-next+ *ht-empty-limbs*)
   (%ht-set! sv +ht-hashes+ *ht-empty-limbs*)
   (%ht-set! sv +ht-buckets+ *ht-empty-buckets*)
@@ -151,7 +145,7 @@ bit pattern do not cancel."
 (defmacro %check-ht (h) `(unless (hash-table-p ,h) (%type-error ,h 'hash-table)))
 (defun hash-table-count (h) (%check-ht h) (%ht h +ht-count+))
 (defun hash-table-test (h) (%check-ht h) (%ht h +ht-test+))
-(defun hash-table-size (h) (%check-ht h) (max (%ht h +ht-capacity+) (%ht h +ht-size+)))
+(defun hash-table-size (h) (%check-ht h) (max (%svlength (%ht h +ht-keys+)) (%ht h +ht-size+)))
 (defun hash-table-rehash-size (h) (%check-ht h) (%ht h +ht-rehash-size+))
 (defun hash-table-rehash-threshold (h) (%check-ht h) (%ht h +ht-rehash-threshold+))
 (defun hash-table-weakness (h) (%check-ht h) (%ht h +ht-weakness+))
@@ -341,7 +335,7 @@ every test, characters for every test but EQUALP, without a call."
     (do () ((%fx= i 0) -1)
       (let ((j (%fx- i 1)))
         (when (and (%fx= (%lref hashes j) hash)
-                   (let ((k (%ht-key-ref keys j)))
+                   (let ((k (%svref keys j)))
                      (or (eq k key)
                          (cond ((%fx= kind 0) nil)
                                ((%fx= kind 1) (eql k key))
@@ -400,7 +394,7 @@ simple string (a reader's buffer) is compared over its storage."
   ;; a fixnum, a character or a symbol: looked up by one helper
   (when (and (%immediate-or-symbol-p key) (%instancep h) (eq (%instance-layout h) (load-time-value *hash-table-class*)))
     (let* ((sv h) (i (%ht-fast-index sv key)))
-      (cond ((%fx>= i 0) (return-from gethash (values (%ht-value-ref (%ht-ref sv +ht-keys+) i) t)))
+      (cond ((%fx>= i 0) (return-from gethash (values (%svref (%ht-ref sv +ht-vals+) i) t)))
             ((eql i -1) (return-from gethash (values default nil))))))
   (%gethash-general key h default))
 
@@ -418,7 +412,7 @@ variable; checked), or -1."
                (not (or (fixnump ,key) (symbolp ,key) (characterp ,key) (%fx< (%ht-ref sv +ht-kind+) 2))))
       (%ht-set! sv +ht-last-key+ ,key)
       (%ht-set! sv +ht-last-index+ i)
-      (%ht-set! sv +ht-last-tkey+ (%ht-key-ref (%ht-ref sv +ht-keys+) i)))
+      (%ht-set! sv +ht-last-tkey+ (%svref (%ht-ref sv +ht-keys+) i)))
     i)))
 
 (defun %gethash-general (key h default)
@@ -426,7 +420,7 @@ variable; checked), or -1."
   (let ((i (%gethash-index key h)))
     (if (%fx< i 0)
         (values default nil)
-        (values (%ht-value-ref (%ht-ref h +ht-keys+) i) t))))
+        (values (%svref (%ht-ref h +ht-vals+) i) t))))
 
 ;; a fixnum, a character or a symbol: looked up by one helper call, which
 ;; tests the table too (:HT-GET), so that the call site is small; a simple
@@ -449,7 +443,7 @@ variable; checked), or -1."
         (t (%gethash-marked-1 key h))))
 (defun %gethash-marked-1 (key h)
   (let ((i (%gethash-index key h)))
-    (if (%fx< i 0) +deleted+ (%ht-value-ref (%ht-ref h +ht-keys+) i))))
+    (if (%fx< i 0) +deleted+ (%svref (%ht-ref h +ht-vals+) i))))
 (defun %ht-put-other (h key value)
   "(SETF GETHASH) of a key that is not a fixnum, a character or a symbol."
   (cond ((or (%simple-string-p key) (consp key)) (%ht-put-equal h key value (%ht-put-slow h key value)))
@@ -473,7 +467,7 @@ variable; checked), or -1."
       (values nil nil)                  ; e.g. the external symbols of a package without any
       (let ((i (if (%simple-string-p key) (%ht-string-index h key hash) -2)))
         (when (eql i -2) (setq i (%ht-find-general h key hash 2)))
-        (if (%fx< i 0) (values nil nil) (values (%ht-value-ref (%ht h +ht-keys+) i) t)))))
+        (if (%fx< i 0) (values nil nil) (values (%svref (%ht h +ht-vals+) i) t)))))
 
 (defun %puthash (key h &rest rest)
   ;; (setf (gethash key h [default]) value): value is the last argument
@@ -493,13 +487,13 @@ a new one, or of another key: H is any object."
                 ;; the entry GETHASH has just found (never one of a fixnum or a symbol)
                 (let ((li (%ht-ref sv +ht-last-index+)))
                   (and (eq key (%ht-ref sv +ht-last-key+)) (%fx>= li 0) (%fx< li (%ht-ref sv +ht-fill+))
-                       (eq (%ht-key-ref (%ht-ref sv +ht-keys+) li) (%ht-ref sv +ht-last-tkey+))
-                       (progn (%ht-set-value (%ht-ref sv +ht-keys+) li value) t)))))
+                       (eq (%svref (%ht-ref sv +ht-keys+) li) (%ht-ref sv +ht-last-tkey+))
+                       (progn (%set-svref (%ht-ref sv +ht-vals+) li value) t)))))
           (t (let* ((string-key (%ht-string-key-p sv key))
                     (hash (if string-key (%string-hash key) (%ht-hash h key)))
                     (i (if string-key (%ht-string-lookup sv key hash) (%ht-lookup sv key hash))))
                (if (%fx>= i 0)
-                   (%ht-set-value (%ht-ref sv +ht-keys+) i value)
+                   (%set-svref (%ht-ref sv +ht-vals+) i value)
                    (%ht-add sv key value hash)))))
     value))
 
@@ -508,13 +502,13 @@ a new one, or of another key: H is any object."
   (declare (fixnum hash))
   (let ((n (%ht-ref sv +ht-fill+)))
     (declare (fixnum n))
-    (when (%fx>= n (%ht-ref sv +ht-capacity+))
+    (when (%fx>= n (%svlength (%ht-ref sv +ht-keys+)))
       (%ht-grow sv)
       (setq n (%ht-ref sv +ht-fill+)))
     (let* ((buckets (%ht-ref sv +ht-buckets+))
            (b (%ht-bucket hash (the fixnum (%ht-ref sv +ht-shift+)))))
-      (%ht-set-key (%ht-ref sv +ht-keys+) n key)
-      (%ht-set-value (%ht-ref sv +ht-keys+) n value)
+      (%set-svref (%ht-ref sv +ht-keys+) n key)
+      (%set-svref (%ht-ref sv +ht-vals+) n value)
       (%lset (%ht-ref sv +ht-hashes+) n hash)
       (%lset (%ht-ref sv +ht-next+) n (%lref buckets b))
       (%lset buckets b (%fx+ n 1))
@@ -526,23 +520,24 @@ a new one, or of another key: H is any object."
   "Make room for an entry: the entries are moved to the front of the vectors
 over the removed ones when they are less than half full, else the table
 grows to twice the size."
-  (let* ((count (%ht-ref sv +ht-count+)) (cap (%ht-ref sv +ht-capacity+)))
+  (let* ((keys (%ht-ref sv +ht-keys+)) (count (%ht-ref sv +ht-count+)) (cap (%svlength keys)))
     (cond ((eql cap 0) (%ht-rebuild sv (%ht-ref sv +ht-size+)))   ; (the first entry)
           ((%fx< count (%fxash-right cap 1)) (%ht-compact sv))
           (t (%ht-rebuild sv (* 2 cap))))))
 
 (defun %ht-rebuild (sv new-cap)
-  (let* ((keys (%ht-ref sv +ht-keys+)) (fill (%ht-ref sv +ht-fill+))
+  (let* ((keys (%ht-ref sv +ht-keys+)) (vals (%ht-ref sv +ht-vals+)) (fill (%ht-ref sv +ht-fill+))
          (count (%ht-ref sv +ht-count+)) (old-hashes (%ht-ref sv +ht-hashes+)) (del +deleted+))
     (declare (fixnum fill count))
     (%ht-init-storage sv new-cap)
-    (let* ((nk (%ht-ref sv +ht-keys+)) (nh (%ht-ref sv +ht-hashes+))
+    (let* ((nk (%ht-ref sv +ht-keys+)) (nv (%ht-ref sv +ht-vals+)) (nh (%ht-ref sv +ht-hashes+))
            (nn (%ht-ref sv +ht-next+)) (nb (%ht-ref sv +ht-buckets+)) (bits (%ht-ref sv +ht-shift+)) (j 0))
       (declare (fixnum j bits))
       (if (eql count fill)
           ;; no removed entries: the arrays copied at once, and the chains made
           (progn
-            (%sv-copy nk 0 keys 0 (%fx* fill 2))
+            (%sv-copy nk 0 keys 0 fill)
+            (%sv-copy nv 0 vals 0 fill)
             (%limbs-copy nh 0 old-hashes 0 fill)
             (dotimes (i fill)
               (let ((b (%ht-bucket (%lref nh i) bits)))
@@ -551,11 +546,11 @@ grows to twice the size."
             (setq j fill))
           ;; reinsert with the stored hashes (the keys are distinct)
           (dotimes (i fill)
-            (let ((k (%ht-key-ref keys i)))
+            (let ((k (%svref keys i)))
               (unless (eq k del)
                 (let* ((hash (%lref old-hashes i)) (b (%ht-bucket hash bits)))
-                  (%ht-set-key nk j k)
-                  (%ht-set-value nk j (%ht-value-ref keys i))
+                  (%set-svref nk j k)
+                  (%set-svref nv j (%svref vals i))
                   (%lset nh j hash)
                   (%lset nn j (%lref nb b))
                   (setq j (%fx+ j 1))
@@ -566,24 +561,24 @@ grows to twice the size."
 (defun %ht-compact (sv)
   "Move the entries of H over its removed ones, in the same vectors (no
 allocation), and chain them again."
-  (let ((keys (%ht-ref sv +ht-keys+)) (hashes (%ht-ref sv +ht-hashes+))
+  (let ((keys (%ht-ref sv +ht-keys+)) (vals (%ht-ref sv +ht-vals+)) (hashes (%ht-ref sv +ht-hashes+))
         (next (%ht-ref sv +ht-next+)) (buckets (%ht-ref sv +ht-buckets+)) (bits (%ht-ref sv +ht-shift+))
         (fill (%ht-ref sv +ht-fill+)) (del +deleted+) (j 0))
     (declare (fixnum fill j bits))
     (dotimes (b (%llen buckets)) (%lset buckets b 0))
     (dotimes (i fill)
-      (let ((k (%ht-key-ref keys i)))
+      (let ((k (%svref keys i)))
         (unless (eq k del)
           (let* ((hash (%lref hashes i)) (b (%ht-bucket hash bits)))
-            (%ht-set-key keys j k)
-            (%ht-set-value keys j (%ht-value-ref keys i))
+            (%set-svref keys j k)
+            (%set-svref vals j (%svref vals i))
             (%lset hashes j hash)
             (%lset next j (%lref buckets b))
             (setq j (%fx+ j 1))
             (%lset buckets b j)))))
     (do ((i j (%fx+ i 1))) ((%fx>= i fill))
-      (%ht-set-key keys i nil)
-      (%ht-set-value keys i nil))
+      (%set-svref keys i nil)
+      (%set-svref vals i nil))
     (%ht-set! sv +ht-fill+ j)
     (%ht-set! sv +ht-count+ j)
     (%ht-set! sv +ht-last-index+ -1)))
@@ -606,7 +601,7 @@ allocation), and chain them again."
     (do () ((%fx= i 0) nil)
       (let ((j (%fx- i 1)))
         (when (and (%fx= (%lref hashes j) hash)
-                   (let ((k (%ht-key-ref keys j)))
+                   (let ((k (%svref keys j)))
                      (or (eq k key)
                          (cond ((%fx= kind 0) nil)
                                ((%fx= kind 1) (eql k key))
@@ -615,8 +610,8 @@ allocation), and chain them again."
           (if (%fx= prev 0)
               (%lset buckets b (%lref next j))
               (%lset next (%fx- prev 1) (%lref next j)))
-          (%ht-set-key keys j +deleted+)
-          (%ht-set-value (%ht h +ht-keys+) j nil)
+          (%set-svref keys j +deleted+)
+          (%set-svref (%ht h +ht-vals+) j nil)
           (%ht-set h +ht-count+ (%fx- (%ht h +ht-count+) 1))
           (return t))
         (setq prev i i (%lref next j))))))
@@ -628,8 +623,8 @@ allocation), and chain them again."
   (let* ((sv h) (fill (%ht-ref sv +ht-fill+)))
     (declare (fixnum fill))
     (unless (eql fill 0)
-      (let ((keys (%ht-ref sv +ht-keys+)) (buckets (%ht-ref sv +ht-buckets+)))
-        (dotimes (i fill) (%ht-set-key keys i nil) (%ht-set-value keys i nil))
+      (let ((keys (%ht-ref sv +ht-keys+)) (vals (%ht-ref sv +ht-vals+)) (buckets (%ht-ref sv +ht-buckets+)))
+        (dotimes (i fill) (%set-svref keys i nil) (%set-svref vals i nil))
         (dotimes (b (%llen buckets)) (%lset buckets b 0))))
     (%ht-set! sv +ht-count+ 0)
     (%ht-set! sv +ht-fill+ 0)
@@ -648,7 +643,7 @@ place needs: the vectors are only replaced when an entry is added, which is
 not allowed while iterating."
   ;; (the vectors and the count as the table holds them, of types the
   ;; inference knows: %HT-KEYS-VECTOR, %HT-FILL-COUNT in src/prims.lisp)
-  `(let* ((,keys (%ht-keys-vector ,h)) (,vals ,keys)
+  `(let ((,keys (%ht-keys-vector ,h)) (,vals (%ht-vals-vector ,h))
          (,fill (%ht-fill-count ,h)) (,del +deleted+))
      (declare (ignorable ,vals))
      ,@body))
@@ -658,9 +653,9 @@ not allowed while iterating."
   (let ((fn (%fn fn)))
     (%with-ht-vectors (h keys vals fill del)
       (dotimes (i fill nil)
-        (let ((k (%ht-key-ref keys i)))
+        (let ((k (%svref keys i)))
           (unless (eq k del)
-            (funcall (the function fn) k (%ht-value-ref keys i))))))))
+            (funcall (the function fn) k (%svref vals i))))))))
 
 ;; with a function written in place: a loop, so that the function is called
 ;; there (a lambda is inline) and an exit out of it (RETURN-FROM, GO) is a
@@ -674,8 +669,8 @@ not allowed while iterating."
            (%check-ht ,h)
            (%with-ht-vectors (,h ,keys ,vals ,fill ,del)
              (%do ((,i 0 (1+ ,i))) ((>= ,i ,fill) nil)
-               (let ((,k (%ht-key-ref ,keys ,i)))
-                 (unless (eq ,k ,del) ,(%literal-call fn f `(,k (%ht-value-ref ,vals ,i)))))))))))
+               (let ((,k (%svref ,keys ,i)))
+                 (unless (eq ,k ,del) ,(%literal-call fn f `(,k (%svref ,vals ,i)))))))))))
 
 (defun %ht-next-index (h i)
   "The index of the first entry of H at I or after it, or -1."
@@ -683,8 +678,8 @@ not allowed while iterating."
     (%ht-scan keys fill del (the fixnum i))))
 
 (defun %ht-checked (h) (%check-ht h) h)
-(defun %ht-key-at (h i) (%ht-key-ref (%ht h +ht-keys+) i))
-(defun %ht-value-at (h i) (%ht-value-ref (%ht h +ht-keys+) i))
+(defun %ht-key-at (h i) (%svref (%ht h +ht-keys+) i))
+(defun %ht-value-at (h i) (%svref (%ht h +ht-vals+) i))
 
 (defmacro with-hash-table-iterator ((name table) &body body)
   (let ((h (gensym "H")) (i (gensym "I")) (j (gensym "J")) (keys (gensym "KEYS")) (vals (gensym "VALS"))
@@ -696,5 +691,5 @@ not allowed while iterating."
                                  (if (%fx< ,j 0)
                                      nil
                                      (progn (setq ,i (%fx+ ,j 1))
-                                            (values t (%ht-key-ref ,keys ,j) (%ht-value-ref ,vals ,j)))))))
+                                            (values t (%svref ,keys ,j) (%svref ,vals ,j)))))))
            ,@body)))))
