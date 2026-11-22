@@ -180,9 +180,22 @@ pathname of the fasl; else NIL."
                                      files))))
             (cons files sysfasl)))))))
 
+(defvar *clysm-system-fasl-valid* (make-hash-table :test 'eq)
+  "system -> (ASDF session . CLYSM-SYSTEM-FASL-VALID-P), as it was found in that session.")
+
 (defun clysm-system-fasl-valid-p (system files sysfasl)
   "The system fasl SYSFASL was made from FILES and is newer than them and
-than the .asd of SYSTEM."
+than the .asd of SYSTEM (found once in an ASDF session, which also takes the
+dates of files once)."
+  (let ((e (gethash system *clysm-system-fasl-valid*))
+        (session (asdf/session:toplevel-asdf-session)))
+    (if (and e session (eq (car e) session))
+        (cdr e)
+        (let ((valid (clysm-system-fasl-valid-p-1 system files sysfasl)))
+          (setf (gethash system *clysm-system-fasl-valid*) (cons session valid))
+          valid))))
+
+(defun clysm-system-fasl-valid-p-1 (system files sysfasl)
   (let ((date (and (probe-file sysfasl) (file-write-date sysfasl)))
         (list-file (make-pathname :type "files" :defaults sysfasl)))
     (and date (probe-file list-file)
@@ -244,10 +257,12 @@ than the .asd of SYSTEM."
                                                           :verbose *compile-verbose*)
                              (setf (third e) :compiled))
                         (unless (third e) (clysm-pass-break pass sysfasl)))
+                    (when (sys::%su-broken (clysm-pass-su pass)) (clysm-pass-break pass sysfasl))
                     (when (and (clysm-pass-unit pass) (= (length (clysm-pass-files pass)) (length files)))
                       (handler-case
                           (progn
                             (sys::%system-unit-finish (clysm-pass-unit pass) sysfasl)
+                            (remhash system *clysm-system-fasl-valid*)
                             ;; (the list last: a system fasl without it is not used)
                             (with-open-file (out (make-pathname :type "files" :defaults sysfasl)
                                                  :direction :output :if-exists :supersede)
@@ -273,6 +288,7 @@ noting that, next to where the system fasl goes)."
 
 (defun clysm-system-unit-start (system sysfasl)
   "Begin compiling SYSTEM (its pass)."
+  (remhash system *clysm-system-fasl-valid*)
   (let ((list-file (make-pathname :type "files" :defaults sysfasl)))
     (when (probe-file list-file) (delete-file list-file))
     ;; (ASDF notes the date of the output of each compile-op: a fasl that

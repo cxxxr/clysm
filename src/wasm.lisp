@@ -102,7 +102,10 @@
   (source *func-source*)
   (segment *func-segment*)
   ;; what the body refers to (WASM-FUNC-REFS), once it has been asked
-  (ref-list :unknown))
+  (ref-list :unknown)
+  ;; (map new-types) of COALESCE-LOCALS, once the function has been encoded
+  ;; (a function of a unit compiled file by file is encoded twice)
+  (coalesced :unknown))
 
 (defun body-refs (body)
   "What the code BODY refers to, in the order of first occurrence, each once:
@@ -1149,8 +1152,12 @@ nothing would change."
           when n do (setf (gethash n *locals-map*) i))
     (loop for n in (wasm-func-local-names f) for i from nparams
           when n do (setf (gethash n *locals-map*) i))
-    (multiple-value-bind (map new-types)
-        (coalesce-locals (wasm-func-body f) nparams locals *locals-map*)
+    (destructuring-bind (&optional map new-types)
+        (let ((c (wasm-func-coalesced f)))
+          (if (eq c :unknown)
+              (setf (wasm-func-coalesced f)
+                    (multiple-value-list (coalesce-locals (wasm-func-body f) nparams locals *locals-map*)))
+              c))
       (when map (setq *local-remap* map locals new-types)))
     ;; locals: run-length encode
     (let ((groups nil))

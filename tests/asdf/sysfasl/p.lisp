@@ -6,3 +6,4 @@
 (defstruct pt x y)
 (defun scale (x) (* x +k+))
 (defvar *loads* 0)
+(defmethod make-load-form ((p pt) &optional env) (make-load-form-saving-slots p :environment env))
