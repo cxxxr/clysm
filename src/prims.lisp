@@ -741,17 +741,17 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defprim clysm-sys::%cdr (x) :value `(,@x (:ref.cast :cons) (:struct.get :cons 1)))
 (defprim rplaca (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:local.tee ,tmp) (:call :check-cons) ,@v (:struct.set :cons 0) (:local.get ,tmp))))
+    `(,@c (:local.tee ,tmp) (:ref.cast :cons) ,@v (:struct.set :cons 0) (:local.get ,tmp))))
 (defprim rplacd (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:local.tee ,tmp) (:call :check-cons) ,@v (:struct.set :cons 1) (:local.get ,tmp))))
+    `(,@c (:local.tee ,tmp) (:ref.cast :cons) ,@v (:struct.set :cons 1) (:local.get ,tmp))))
 ;; (setf car) helpers: return the new value
 (defprim clysm-sys::%setcar (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:call :check-cons) ,@v (:local.tee ,tmp) (:struct.set :cons 0) (:local.get ,tmp))))
+    `(,@c (:ref.cast :cons) ,@v (:local.tee ,tmp) (:struct.set :cons 0) (:local.get ,tmp))))
 (defprim clysm-sys::%setcdr (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:call :check-cons) ,@v (:local.tee ,tmp) (:struct.set :cons 1) (:local.get ,tmp))))
+    `(,@c (:ref.cast :cons) ,@v (:local.tee ,tmp) (:struct.set :cons 1) (:local.get ,tmp))))
 
 ;;; ------------------------------------------------------------
 ;;; Fixnum / numbers

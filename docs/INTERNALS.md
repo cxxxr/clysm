@@ -7049,6 +7049,113 @@ What makes the code fast:
   each pass 118/119 files, with only that process failure. `make test-all`
   stops there; its remaining components were run separately. Full ANSI
   passes 21,931/21,932, with only the known SUBTYPEP-COMPLEX.8 failure.
+* **Lists and mapping, third pass (2026-11-23): checked casts where a
+  cons is certain, and loops per kind of sequence.** Instruction-level
+  profiles (`node --prof --prof-sampling-interval=100` with
+  `--print-wasm-code`, the ticks placed on the TurboFan listing) and
+  `--trace-gc` of the list items still behind SBCL.
+  - *CAR and CDR of a value known not to be NIL* (`typed-access-code`,
+    `src/typed.lisp`): after `(null x)` was false, `(car x)` was a test
+    of cons, the field on one arm and the call of the helper (which
+    signals) on the other; V8 keeps that call as a path that returns, and
+    knows nothing of `x` after it. It is a `br_on_cast` over the helper's
+    call followed by `unreachable` (the helper signals the error of type
+    LIST and does not return; a plain checked cast would say CONS), after
+    which the engine drops the casts of the later reads of the same
+    variable.
+    `browse-match` of `g-browse` (three clauses that read `(car pat)`,
+    `(car dat)`, `(cdr dat)` after two `null` tests): 162-164 → 116-118 ms
+    (SBCL 139-140: 1.20 → 0.87). `rplaca`, `rplacd` and the SETFs of CAR
+    and CDR checked their cons with a call of `:check-cons`; they are the
+    checked cast `ref.cast :cons` (`g-destru` 80 → 74 ms, 1.07 → 1.00).
+  - *`%endp` of the variable itself.* LOOP's `for x in` tested its list
+    with `(endp g)`, whose compiler macro binds its argument: what the
+    test learnt was of that binding, and `(car g)`, `(cdr g)` tested the
+    cons again with the helper's call behind. LOOP uses `%endp` of its own
+    variable (the macro is in `runtime/boot.lisp` now, before
+    `loop.lisp`): `loop for x in l always`, 8 elements, 16 → 12 ms for
+    1.5 million (SBCL 4), `maximize` 70 → 61 (19).
+  - *LOOP's NCONC, and APPEND of a fresh `(list ...)`*, called `last` of
+    the tail before linking each list and `last` of the list after it:
+    the tail variable is the last cons so far, as for COLLECT, and the
+    list is followed to its end in place (no call). `nconc (list i i)`
+    188-203 → 141-154 ms (SBCL 93), `for (a . b) in ... append (list a b)`
+    61-67 → 47 (26), `collect ... into` with `append ... into` 85-95 →
+    66 (47). `p-loop-macros` itself is within the noise (its time is the
+    sum and collect clauses, already at or below SBCL: each clause kind
+    alone is 0.4-1.0 of SBCL except these and `always`/`maximize` over a
+    constant list of 8, 3-4 times: the entry of the loop, 6 ns).
+  - *MAP, MAP-INTO, EVERY, SOME, NOTANY, NOTEVERY of `#'name` over two
+    sequences (and MAP to a vector of one): a loop for each mix of kinds*
+    (`%kind-loops-expansion`, `runtime/seq.lisp`): lists and simple
+    vectors in any mix, two simple strings, and the cursor loop for the
+    rest, chosen by tests of the kinds at the call site. This is the
+    design measured and not built before (above) because of the call
+    site's size; what is different: only for `#'name` (the call copied
+    into each loop is a primitive or a direct call, not a lambda's body),
+    so a site is five or six short loops. As out-of-line local functions
+    (`flet` with `notinline`, which needed a mark on the function for
+    `local-inlinable-p`) the same loops ran no faster than inline and the
+    module was 50 KB larger for the two uses in the runtime (each local
+    function has an entry, a closure constant and its locals); inline
+    they are 9 KB there. Ten thousand elements, 100 times, ms before →
+    after (SBCL): `map-into` a vector from a vector and a list 28-30 →
+    15-16 (12), from itself 14-15 → 9-10 (8), `some #'>` of a vector and
+    a list 17-18 → 12-13 (10), `every #'<=` of a list and a vector 14-16
+    → 12-13 (26), `map 'vector #'+` of a list and a vector 33-37 → 32-34
+    (32); `map 'list #'cons` of a list and a string unchanged (66-72, SBCL
+    38: allocation). `v-map-every` 0.92 of its time with 100 repetitions
+    of its body, 0.94-1.00 as the benchmark runs it (10 repetitions: a fifth
+    of its ticks are in Liftoff's code of the function and 20% in the
+    collector, see Tiering of the engine).
+  - *Not gained, with the reason.*
+    `v-mapping` (1.6): of 360 ticks, 177 are the TurboFan code of the
+    function, 32 Liftoff's, 80-100 the collector. Each form alone, 120
+    repetitions (ms, SBCL): `mapc` of a lambda over two lists 10 (9),
+    `mapcar #'+` 29 (26), `mapcar #'cons` 37 (28), `mapcan` of one list
+    18 (13), of two 30 (24), `mapcar` of a lambda over three 34 (22). The
+    lambda is inline (no closure, no call), the end tests are one
+    `ref.test` a list, the tail's store has no write barrier on its path
+    (a test of the page's flag, not taken for young objects); what is
+    left an element is the allocation (five stores for a cons of 32
+    octets, SBCL three for 16), a load-use stall on the car of the second
+    list (the lists are 160 KB each and the young generation moves them),
+    and `(+ x y z)` as two i64 additions with their overflow tests.
+    The young generation's size decides the rest: with semi-spaces of 2
+    or 4 MB (`CLYSM_NURSERY_MB`) `v-mapping` is 31-32 ms instead of 38-45
+    (the nursery stays in the second-level cache), but `bench/alloc.lisp`
+    is then 2.07 times slower (`s-ring` 8.6, `s-build-list` 4.4) and
+    `suite` and `library` 1.03: not a setting to change.
+    `a-list-churn`, `s-build-list`, `s-ring` (1.2-1.4): allocation and
+    scavenges only (`s-build-list`: 1336 of 2027 ticks in the collector;
+    `s-ring`: `length` of lists the scavenger moved, 623 of 1628); the
+    floor of 32-octet conses.
+    `g-traverse` (1.13): `travers` spends its ticks on the map compare
+    after the first load of each node and each cons of the list of sons
+    (cache misses on 120- and 32-octet objects); `g-dderiv`, `b-deriv`
+    (1.1): allocation and 10% in the collector, the rest `get`/`getf`
+    and the `call_ref` of the property's function. Property lists as a
+    hash for hot symbols were not tried: the lists here are of one or two
+    properties.
+    `i-format-justify` (1.2): flat, no function above 8% (the
+    justification's padding, the string streams, the pretty printer's
+    queue for the logical block; 13% in the engine's runtime).
+    `p-queens`, `d-triangle`: one function each, bounds checks (see
+    "`d-triangle`, instruction by instruction").
+    `v-find-list-key` (1.15-1.2): 161 of 440 ticks are `%list-chunks`
+    (the lists read from their end), as measured before.
+  Interleaved with the commit before on one slot (`bench/*.lisp`
+  compiled, best of 5 rounds, time against the base's): `gabriel` 0.94-0.96
+  (`g-browse` 0.72, `g-destru` 0.93, `g-takl` 0.88-0.90), `alloc` 0.97,
+  `holdout` 0.98, `control` 0.99, `programs`, `suite`, `io` 1.00,
+  `declared` 1.01, `library` 0.99-1.015 (two runs of 5 and 8 rounds: no
+  item differs twice); in `clysm script` `gabriel` 0.98 (`g-browse`
+  0.80), `suite` 1.00, `programs` 0.97-1.02, `library` 1.02 (one run of 3
+  rounds, the machine loaded). The REPL image is 30 KB smaller (8,596,609
+  → 8,566,898 bytes: the cast is shorter than the test, the two arms and
+  the helper's call), a compiled program 2-5 KB larger (the kind loops of
+  the runtime's two `every` of two sequences), the module of one export
+  106 bytes (907,414 → 907,520).
 
 ### Declared code, and SBCL at its best policy
 

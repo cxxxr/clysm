@@ -2609,6 +2609,78 @@ LIST-ENDS stops at its end, without measuring it first)."
     "The number of elements a mapping function visits in the sequences in SVARS
 (a type error for one that is no sequence)."
     `(min ,@(loop for sv in svars collect `(%map-length ,sv))))
+  (defun %kind-loops-expansion (f svars mode r n)
+    "The loops of a mapping function over the sequences in the variables SVARS
+(one or two), chosen by the kinds found: one for each mix of lists and simple
+vectors, one for simple strings, and one over cursors (%CURSOR-LOOP-EXPANSION)
+for any other sequences.  F is #'NAME: the copies of its call are small.
+MODE: :NONE or :LIST (MAP to NIL, to a list), :EVERY, :SOME, :INTO (MAP-INTO
+the simple vector in the variable R), :VECTOR or :STRING (MAP to the fresh
+vector in R, of the length in the variable N, the number of elements to
+visit)."
+    (let* ((counted (member mode '(:vector :string)))
+           (i (gensym "I")) (head (gensym "HEAD")) (tail (gensym "TAIL")) (c (gensym "C")) (v (gensym "V"))
+           (done (gensym "DONE")))
+      (labels ((step-form (elts)
+                 (let ((call (%literal-call f nil elts)))
+                   (ecase mode
+                     (:none call)
+                     (:list `(let ((,c (cons ,call nil)))
+                               (if ,tail (%setcdr ,tail ,c) (setq ,head ,c))
+                               (setq ,tail ,c)))
+                     ((:vector :into) `(%set-svref ,r ,i ,call))
+                     (:string `(setf (schar ,r ,i) ,call))
+                     (:every `(unless ,call (return-from ,done nil)))
+                     (:some `(let ((,v ,call)) (when ,v (return-from ,done ,v)))))))
+               (result-form ()
+                 (ecase mode (:none nil) (:list head) ((:vector :string :into) r) (:every t) (:some nil)))
+               (kinds-loop (kinds)
+                 ;; (a list is followed in a variable of the same name)
+                 (let* ((indexed (or (member :vector kinds) (member :string kinds)
+                                     (member mode '(:vector :string :into))))
+                        (bounds (append (when (eq mode :into) `((%svlength ,r)))
+                                        (loop for k in kinds for sv in svars
+                                              when (eq k :vector) collect `(%svlength ,sv)
+                                              when (eq k :string) collect `(%string-length ,sv))))
+                        (loop-form
+                          `(%do (,@(when indexed `((,i 0 (%fx+ ,i 1))))
+                                 ,@(loop for k in kinds for sv in svars
+                                         when (eq k :list) collect `(,sv ,sv (cdr ,sv))))
+                                ((or ,@(when indexed `((%fx>= ,i ,n)))
+                                     ,@(unless counted
+                                         (loop for k in kinds for sv in svars
+                                               when (eq k :list) collect `(%endp ,sv))))
+                                 (return-from ,done ,(result-form)))
+                             ,@(when indexed `((declare (fixnum ,i))))
+                             ,(step-form (loop for k in kinds for sv in svars
+                                               collect (ecase k
+                                                         (:list `(car ,sv))
+                                                         (:vector `(%svref ,sv ,i))
+                                                         (:string `(%schar ,sv ,i))))))))
+                   (if (and indexed (not counted))
+                       `(let ((,n ,(if (cdr bounds) `(min ,@bounds) (car bounds))))
+                          (declare (fixnum ,n))
+                          ,loop-form)
+                       loop-form)))
+               (dispatch (rest kinds)
+                 (if (null rest)
+                     (kinds-loop (reverse kinds))
+                     `(cond ((listp ,(car rest)) ,(dispatch (cdr rest) (cons :list kinds)))
+                            ((%simple-vector-p ,(car rest)) ,(dispatch (cdr rest) (cons :vector kinds)))
+                            ;; (simple strings with each other only)
+                            ,@(when (null kinds)
+                                `(((and ,@(loop for sv in svars collect `(%simple-string-p ,sv)))
+                                   ,(kinds-loop (loop for nil in svars collect :string)))))))))
+        `(let (,@(when (eq mode :list) `((,head nil) (,tail nil))))
+           (block ,done
+             ,(dispatch svars nil)
+             ;; sequences of other kinds
+             (let ((,n ,(cond (counted n)
+                              ((eq mode :into) `(min (%svlength ,r) ,(%lazy-count-form svars)))
+                              (t (%lazy-count-form svars)))))
+               (declare (fixnum ,n))
+               ,(%cursor-loop-expansion svars n i #'step-form (not counted))
+               ,(result-form)))))))
   (defun %quantifier-lists-expansion (form mode negate pred seq more)
     "With several sequences and a function written in place: a loop at the
 call site when they are all lists (the usual case), else the function out of
@@ -2626,6 +2698,10 @@ line with the function as a closure (#'NAME as a lambda of known arity)."
                    `(unless ,call (return-from ,b nil))
                    `(let ((,v ,call)) (when ,v (return-from ,b ,v))))))
       (let ((test
+             (if (and (= n 2) (%arity-lambda pred 2))
+              ;; #'NAME and two sequences: a loop for each pair of kinds
+              `(let (,@(loop for sv in svars for x in (cons seq more) collect (list sv x)))
+                 ,(%kind-loops-expansion pred svars (if (eql mode 0) :every :some) nil e))
               `(let (,@(%function-binding f pred)
                      ,@(loop for sv in svars for x in (cons seq more) collect (list sv x)))
                  (cond ((and ,@(loop for sv in svars collect `(listp ,sv)))
@@ -2651,7 +2727,7 @@ line with the function as a closure (#'NAME as a lambda of known arity)."
                                       svars e i (lambda (elts) (qstep (%literal-call pred f elts))) t)
                                     ,(eql mode 0))))
                             `(t (%quantify ,mode ,(if (%direct-function-form-p pred) fn f)
-                                           ,(car svars) (list ,@(cdr svars)))))))))
+                                           ,(car svars) (list ,@(cdr svars))))))))))
         (if negate `(not ,test) test)))))
   (defun %quantifier-expansion (form mode negate pred seq more)
     ;; MODE 0: EVERY, 1: SOME
@@ -2692,6 +2768,15 @@ cursors), a simple vector or a string (:VECTOR, :STRING: cursors)."
                    (:vector `(%set-svref ,r ,i ,call))
                    (:string `(setf (schar ,r ,i) ,call)))))
              (result () (case kind (:none nil) (:list `(cdr ,head)) (t r))))
+        ;; #'NAME: a loop for each kind of sequence, out of line
+        (when (and (%arity-lambda f (length seqs)) (or (cdr seqs) (eq kind :vector)))
+          (return-from %map-cursor-expansion
+            `(let* (,@(loop for sv in svars for x in seqs collect (list sv x))
+                    ,@(case kind
+                        (:vector `((,n ,(%map-count-form svars)) (,r (%make-simple-vector ,n 0))))
+                        (:string `((,n ,(%map-count-form svars)) (,r (make-string ,n))))))
+               ,@(when (member kind '(:vector :string)) `((declare (fixnum ,n))))
+               ,(%kind-loops-expansion f svars kind (if (member kind '(:vector :string)) r nil) n))))
         (let ((cursors `(let* ((,n ,(if (member kind '(:none :list)) (%lazy-count-form svars) (%map-count-form svars)))
                                ,@(case kind
                                    (:vector `((,r (%make-simple-vector ,n 0))))
@@ -2756,11 +2841,13 @@ cursors), a simple vector or a string (:VECTOR, :STRING: cursors)."
               (svars (loop for nil in seqs collect (gensym "S"))))
           `(let (,@(list (list r result)) ,@(loop for sv in svars for x in seqs collect (list sv x)))
              (if (%simple-vector-p ,r)
-                 (let ((,n (min (%svlength ,r) ,(%map-count-form svars))))
+                ,(if l
+                  (%kind-loops-expansion f svars :into r n)
+                 `(let ((,n (min (%svlength ,r) ,(%map-count-form svars))))
                    (declare (fixnum ,n))
                    ,(%cursor-loop-expansion svars n i
                                             (lambda (elts) `(%set-svref ,r ,i ,(%literal-call f nil elts))))
-                   ,r)
+                   ,r))
                  (let ((,g ,(or l f))) (map-into ,r ,g ,@svars)))))
         (if l `(map-into ,result ,l ,@seqs) form))))
 

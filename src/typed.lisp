@@ -1083,6 +1083,16 @@ overlapping ranges as if through a buffer), else NIL."
                   `(,@(cg a) (:local.tee ,tmp) (:ref.test :cons)
                     (:if nil :eqref ((:local.get ,tmp) (:ref.cast! :cons) (:struct.get :cons ,field))
                          ,(nil-code)))))
+               ;; not NIL: a cons, or the helper's type error (of LIST), which
+               ;; does not return: a cast that branches over the call (the
+               ;; engine then knows a variable to be a cons from there on,
+               ;; and drops the casts of its later reads)
+               ((and (not (ty-bottom-p aty)) (zerop (logand (ty-bits aty) +k-null+)))
+                (let ((ok (gensym "CONS")))
+                  `((:block ,ok (:ref :cons)
+                      ,@(cg a) (:br_on_cast ,ok :eqref (:ref :cons))
+                      (:call ,(if (= field 0) :car :cdr)) :unreachable)
+                    (:struct.get :cons ,field))))
                (t
                 ;; a cons inline, anything else by the helper (NIL, or the type error)
                 (let ((tmp (new-local)))

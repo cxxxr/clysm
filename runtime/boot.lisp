@@ -116,6 +116,13 @@ the declarations (when forms follow it)."
           ((and (stringp (car body)) (cdr body)) (%split-doc-decls (cdr body)))
           (t (values nil body)))))
 
+;;; strict end-of-list test: a non-NIL atom where a list was expected is an
+;;; error.  X is a variable: the tests are of the variable itself, which is
+;;; then known to be a cons where the test was false (ENDP binds its argument,
+;;; and what is learnt is of that binding only).
+(defmacro %endp (x)
+  `(cond ((consp ,x) nil) ((null ,x) t) (t (%type-error ,x 'list))))
+
 (defmacro dolist ((var list &optional result) &body body)
   (let ((l (gensym "LIST")) (top (gensym "TOP")))
     (multiple-value-bind (decls forms) (%split-decls body)

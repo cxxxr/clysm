@@ -84,9 +84,7 @@
 (defun apply (f &rest args)
   (apply f (apply #'list* args)))
 
-;;; strict end-of-list test: a non-NIL atom where a list was expected is an error
-(defmacro %endp (x)
-  `(cond ((consp ,x) nil) ((null ,x) t) (t (%type-error ,x 'list))))
+;;; (%ENDP, the strict end-of-list test, is in boot.lisp)
 
 ;;; ------------------------------------------------------------
 ;;; Early error support (replaced by the condition system later)
