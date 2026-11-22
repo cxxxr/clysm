@@ -1170,7 +1170,9 @@ function itself, or NIL."
   (and (not (assumed-guard-p c)) (not (hoisted-guard-local c))
        (case (car c)
          (:if t)
-         (:let (or-let-p c))
+         (:let (or (or-let-p c)
+                   (and (notany (lambda (b) (lvar-special (car b))) (second c))
+                        (compound-test-p (third c)))))
          (:prim (and (member (prim-name (second c)) '(not null)) (compound-test-p (third c)))))))
 
 (defun effect-branch-test-p (c)
@@ -1182,7 +1184,7 @@ it is compiled as branches, which made short loops around a call slower
 (b-deriv 1.08 times its time)."
   (and (compound-test-p c)
        (case (car c)
-         (:let t)
+         (:let (or (or-let-p c) (effect-branch-test-p (third c))))
          (:if (compound-test-p (second c)))
          (t (effect-branch-test-p (third c))))))
 
@@ -1211,8 +1213,10 @@ likely THEN is."
                    ((eq then :next) `(,@(leaf-branch-test `(,@test :i32.eqz)) ,@(flip-hint hint) (:br_if ,else)))
                    (t `(,@(leaf-branch-test test) ,@hint (:br_if ,then) (:br ,else)))))))
         ((eq (car node) :prim) (branch-code (third node) else then (flip-hint hint)))
-        ((eq (car node) :let)           ; (or x y): (if x t y)
-         (branch-if-code (cdr (first (second node))) '(:const t) (fourth (third node)) then else hint))
+        ((eq (car node) :let)
+         (if (or-let-p node)           ; (or x y): (if x t y)
+             (branch-if-code (cdr (first (second node))) '(:const t) (fourth (third node)) then else hint)
+             (cg-let node nil nil (list :branch then else hint))))
         (t (destructuring-bind (c a b) (cdr node) (branch-if-code c a b then else hint)))))
 
 (defun branch-if-code (c a b then else hint)
@@ -1411,7 +1415,8 @@ init)), one tree whose result is tested once (F64-TREE-CODE).  Else NIL."
 (defun cg-let (node mv tail &optional (rep :eqref))
   "REP: :eqref (the value as usual), :f64 / :i32 (the value in that
 representation), :effect (no value) or :test (an i32 that is 0 for false,
-as CG-TEST; only without special variables)."
+as CG-TEST; only without special variables), or (:BRANCH then else hint)
+for a lexical LET whose body is compiled by BRANCH-CODE."
   (let ((step (and (member rep '(:eqref :f64 :effect)) (f64-step-rewrite node))))
     (when step
       (return-from cg-let
@@ -1499,6 +1504,8 @@ as CG-TEST; only without special variables)."
                (cond ((eq rep :eqref) (cg body mv tail))
                      ((eq rep :effect) (cg-effect body))
                      ((eq rep :test) (cg-test body))
+                     ((and (consp rep) (eq (car rep) :branch))
+                      (branch-code body (second rep) (third rep) (fourth rep)))
                      ;; (:mvinto tmps): the values into locals (CG-MV-INTO)
                      ((and (consp rep) (eq (car rep) :mvinto)) (cg-mv-into body (second rep)))
                      ;; (:dual b f): into a pair of locals (CG-DUAL-F64, typed.lisp)

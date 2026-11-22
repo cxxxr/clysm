@@ -7173,6 +7173,40 @@ What makes the code fast:
   (median per build, 0.71 of its time); five rounds with the other list
   changes give 130 -> 91 ms. The tests are in `coerce-storage.lisp`.
 
+* **Refinements through LET copies (2026-11-23).** Type inference records
+  copies whose source and destination cannot change while the binding is
+  active. The source must also be unchanged by the other initializers:
+  `(let ((v x) (ignored (setq x nil))) ...)` is not an alias. Boxed and
+  special variables are excluded. Each copy records the environment slot
+  of its root, so a test's two environments are refined into the roots,
+  then back out to the copies; chains and siblings share what a predicate
+  establishes. A lexical LET
+  used as a test analyzes its body as a test. This carries ENDP's cons
+  refinement out of the temporary introduced by its compiler macro.
+  `compound-test-p` and `branch-code` also see through lexical LETs;
+  `cg-let` binds their variables before emitting the body's branches.
+  The earlier exception for single-list loop end tests remains: this does
+  not turn every effect IF into branches (the negative result above).
+  Three interleaved rounds against `a0be620`: a two-list ENDP loop
+  472 -> 387 ms (0.82); a single-list XOR loop 482 -> 499 and a tail
+  recursive one 545 -> 548, within the spread. Pure scans and copies
+  inside DOLIST, five rounds, gained only 1-4%; this is not a universal
+  10-25% list-loop improvement. Without the lexical LET branch generation,
+  the recursive probe regressed from 548 to 619 ms; the compiler's known
+  cons still needed a cast after the materialized boolean. The regression
+  cases in `let-refinement.lisp` include initializer/body mutation,
+  closures, cleanup, GO, copied tests, and improper lists.
+  Compile-time cost matters too: recording variables rather than slots,
+  scanning every copy's body for assignments, and intersecting equal types
+  at every test made in-image compilation about twice as slow in an initial
+  three-round probe. Root slots remove the hash lookups and reverse-list
+  allocation; immutable originals need no assignment scan; equal type
+  objects are reused. With three warmups followed by ten compilations of
+  `bench/suite.lisp`, five interleaved processes per build: baseline 1654 ms,
+  revised 1614 ms (medians; individual processes 1522-2024 and 1491-3342 ms).
+  The small difference is not a claimed compiler speedup; the large
+  regression of the first implementation is gone.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
