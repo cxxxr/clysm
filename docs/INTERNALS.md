@@ -2180,6 +2180,12 @@ JavaScript written for it (`tests/lib/package.lisp`):
   JavaScript the same way: the caller gets the very value that was thrown
   (`undefined` and `false` too), not a LispError. A Lisp error that no
   handler takes is still a LispError.
+  `(js:throw value :message fallback)` supplies a string for the Lisp
+  condition's message when the value has no string `message` property.
+  An existing string message (including an empty one) takes precedence;
+  the value thrown to JavaScript is unchanged. Without `:message` the
+  fallback remains the Lisp printed representation of the value. Direct
+  calls with `:message` can be shaken without retaining the Lisp printer.
 - `:raw t` (of `JS:EXPORT` and `JS:DEFINE-CLASS`) gives a function its
   arguments as JavaScript has them, not converted by `JS:TO-LISP`: values
   of JavaScript whose `JS:TYPEOF` tells `undefined`, `null` and `false`

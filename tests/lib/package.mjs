@@ -92,6 +92,12 @@ assert.throws(() => lib.parseLine('0'), (err) => err.constructor === Error && er
 const thrown = Object.assign(new Error('from JavaScript'), { code: 'ENOENT' });
 assert.throws(() => lib.callThrough(() => { throw thrown; }), (err) => err === thrown);
 assert.equal(lib.callHandled(() => { throw thrown; }), 'handled: from JavaScript');
+assert.equal(lib.defaultThrowMessage(7), '7');
+assert.equal(lib.defaultThrowMessage('text'), 'text');
+assert.equal(lib.defaultThrowMessage(new Error('original')), 'original');
+assert.equal(lib.indirectThrowMessage(7, 'fallback'), 'fallback');
+assert.equal(lib.indirectThrowMessage(new Error('original'), 'fallback'), 'original');
+assert.equal(lib.indirectThrowMessage({message: ''}, 'fallback'), '');
 const notAnError = { why: 'a value' };
 assert.throws(() => lib.callThrough(() => { throw notAnError; }), (err) => err === notAnError);
 for (const [kind, value] of [['undefined', undefined], ['false', false], ['7', 7]]) {
