@@ -17,8 +17,13 @@ bin/clysm exec $out/geom-shake.wasm > $out/run-shake.out 2> $out/run-shake.err
 if ! cmp -s tests/static/run.expected $out/run-shake.out; then
   diff tests/static/run.expected $out/run-shake.out; cat $out/run-shake.err; echo "static: FAIL (--shake)"; exit 1
 fi
-if [ "$(wc -c < $out/geom-shake.wasm)" -ge "$(wc -c < $out/geom.wasm)" ]; then
-  echo "static: the module built with --shake is not smaller"; exit 1
+# (it starts from the heap of the runtime made when it was built, src/preinit.lisp:
+# less than two thirds of the module)
+if grep -q 'could not be made when compiling' $out/build-shake.log; then
+  cat $out/build-shake.log; echo "static: the runtime's heap was not made for --shake"; exit 1
+fi
+if [ "$(($(wc -c < $out/geom-shake.wasm) * 3))" -ge "$(($(wc -c < $out/geom.wasm) * 2))" ]; then
+  echo "static: the module built with --shake is not two thirds of the size"; exit 1
 fi
 # --main and --image: the program starts from the heap saved after its toplevel forms ran
 bin/clysm build --asd tests/static/geom.asd --system geom tests/static/main.lisp --main geom:main --image \
