@@ -33,6 +33,12 @@
           (and (symbolp s) (fboundp s) (not (macro-function s)) (not (special-operator-p s))
                (let ((f (symbol-function s)))
                  (and (functionp f) (sys::%closure-key-layout f))))))
+  ;; calls of the functions of other modules are calls of imported functions (guarded)
+  (setf *live-direct-closure-hook*
+        (lambda (s)
+          (and (symbolp s) (fboundp s) (not (macro-function s)) (not (special-operator-p s))
+               (let ((f (symbol-function s)))
+                 (and (functionp f) f)))))
   ;; small functions defined in the image are copied into later callers (guarded)
   (setf *live-inline-closure-hook*
         (lambda (s)
@@ -157,7 +163,7 @@ error, the form is evaluated by the interpreter instead (so the error, if
 any, happens at run time)."
   (let ((tree (ignore-errors (simple-form form))))
     (when tree (return-from native-eval (simple-eval tree))))
-  (multiple-value-bind (bytes consts)
+  (multiple-value-bind (bytes consts direct)
       (handler-case (let ((*live-inline-ok* t)
                           ;; (only an image started with CLYSM_SAVE_IMAGE
                           ;; records its modules for SAVE-IMAGE: host/run.mjs)
@@ -167,17 +173,17 @@ any, happens at run time)."
         (error (e)
           (setq *native-eval-failure* e)
           (return-from native-eval (eval form))))
-    (native-run-octets bytes consts)))
+    (native-run-octets bytes consts direct)))
 
 (defun native-eval-forms (forms)
   "Compile the toplevel FORMS into one module linked with this image and run
 it: T, or NIL when the compiler signals an error (nothing has run then)."
-  (multiple-value-bind (bytes consts)
+  (multiple-value-bind (bytes consts direct)
       (handler-case (let ((*live-inline-ok* t)
                           (*live-snapshots* (and (sys::%getenv "CLYSM_SAVE_IMAGE") t)))
                       (sys::%call-with-world-lock (lambda () (live-compile-forms forms))))
         (error () (return-from native-eval-forms nil)))
-    (native-run-octets bytes consts)
+    (native-run-octets bytes consts direct)
     t))
 
 (defun native-compile (name definition)
@@ -213,11 +219,16 @@ it: T, or NIL when the compiler signals an error (nothing has run then)."
                                        (lambda () (live-compile-forms (list form))))
     (values (coerce bytes '(simple-array (unsigned-byte 8) (*))) consts)))
 
-(defun native-run-octets (octets consts)
-  "Run a module made by NATIVE-COMPILE-FORM."
+(defun native-run-octets (octets consts &optional direct)
+  "Run a module made by NATIVE-COMPILE-FORM.  DIRECT: the functions whose
+entries it imports (LIVE-DIRECT-CALL-CODE), which the host asks for while it
+instantiates the module."
   ;; (a Uint8Array, made at once through the memory: octet by octet, through
   ;; put_char_buf, it took a tenth of the time of compiling a small DEFUN)
-  (sys::%compile-module (js:from-octets octets) (sys::%js-wrap-lisp consts)))
+  (let ((bytes (js:from-octets octets)) (wrapped (sys::%js-wrap-lisp consts)))
+    (if direct
+        (sys::%run-module-direct bytes wrapped direct)
+        (sys::%compile-module bytes wrapped))))
 
 (defun native-run-module (file offset length consts)
   "Run the module stored in FILE (a native file name) at OFFSET."

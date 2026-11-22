@@ -919,6 +919,14 @@ a module made by *NATIVE-COMPILE-FORM-HOOK* (octets, constants).")
 (defvar *native-run-octets-hook* nil
   "When the compiler is part of the image: a function instantiating and running
 a module made by *NATIVE-COMPILE-FORM-HOOK* from its octets and constants.")
+(defvar *direct-closures* nil
+  "While a module compiled in the image is instantiated: the functions whose
+entries it imports (the helper :DIRECT-ENTRY reads it, src/prims.lisp).")
+(defun %run-module-direct (bytes consts direct)
+  ;; (set, not bound: the module's code runs in the same call, after the
+  ;; host has instantiated it, and must not see a binding)
+  (setq *direct-closures* direct)
+  (%compile-module bytes consts))
 (defvar *image-id* nil
   "Identifies the image build; compiled modules in fasls are only valid for it.")
 (defvar *native-unit-hooks* nil

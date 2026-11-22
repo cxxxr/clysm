@@ -431,6 +431,21 @@ and with the tests of constants decided; BODY itself when nothing changes."
 (defvar *keep-instructions* nil
   "True to keep the instructions of the functions (tools/dump-func.lisp).")
 
+;;; An import added while the functions of the module are being made (a
+;;; function of the image that code compiled in it calls directly): the
+;;; functions are numbered again before the module is encoded
+;;; (REMOVE-UNREACHABLE-FUNCTIONS).
+(defun add-late-import-func (m name type module field)
+  (let ((f (%make-wasm-func :name name :type type :import-module module :import-name field)))
+    (vector-push-extend f (wasm-module-imports m))
+    (setf (gethash name (wasm-module-func-table m)) f)
+    (let ((index (wasm-module-func-index-table m)) (i 0))
+      (loop for g across (wasm-module-imports m)
+            do (setf (gethash (wasm-func-name g) index) i) (incf i))
+      (loop for g across (wasm-module-funcs m)
+            do (setf (gethash (wasm-func-name g) index) i) (incf i)))
+    f))
+
 (defun add-func (m name type &key locals local-names body export param-names display)
   (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names :display display
                             :params-names param-names :body (if *prune-dead-code* (prune-dead-code body) body)

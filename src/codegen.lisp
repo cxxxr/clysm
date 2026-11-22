@@ -2046,6 +2046,7 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
           (when (and lam (not (lam-accepts-p lam (length args))))
             (cwarn "~S called with ~D arguments" sym (length args)))
           (or (and (null lam) (live-keyed-call-code sym args arg-codes tail))
+              (and (null lam) (live-direct-call-code sym arg-codes tail))
               ;; (a call of ERROR: what follows it is not reached when it
               ;; returns, so that nothing the function computed before is
               ;; kept across the call; V8 otherwise spills the variables of
@@ -2065,6 +2066,66 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                          (:global.get ,(sym-global sym))
                          (,(if tail :return_call :call) (:cellcall ,(length args))))))
                     (call-closure-code (fdef-code sym) arg-codes mv tail))))))))
+
+;;; In a module evaluated at once in the image (the REPL, LOAD of a source
+;;; file), a call of a global function that another module defines (the
+;;; image's runtime, an earlier form) with up to +MAX-FIXED-ARGS+ arguments
+;;; calls the entry of that function for the number of arguments as an
+;;; imported function, as long as the symbol's function is the one it had
+;;; when the call was compiled (one REF.EQ with the closure, a constant of
+;;; the module); otherwise it calls through the function cell as before
+;;; ((:CALLSYM k)).  The call through the cell reads the symbol, its
+;;; function, the function's code and the entry, each from the one before,
+;;; before the engine can call; the imported function's address is in the
+;;; instance.  The host resolves the import "d" "8 j + k" when it
+;;; instantiates the module, with the image's :DIRECT-ENTRY, from the J-th
+;;; closure of the vector that the compiler returns with the module
+;;; (SYS::*DIRECT-CLOSURES* then).  Not in a module that a heap image may
+;;; hold or in a fasl: their imports are resolved by name.
+(declaim (special *live-snapshots* *live-helper-imports*))
+(defvar *live-direct-closure-hook* nil
+  "symbol -> its global function when a call may call it directly (a closure
+that is no generic function), or NIL")
+(defvar *direct-closures* nil "the closures of the direct imports of the module, last first")
+(defvar *live-direct-calls* t)
+
+(defun direct-entry-import (closure n)
+  "The name of the imported function that is CLOSURE's entry for N arguments."
+  (let* ((j (or (position closure (reverse *direct-closures*) :test #'eq)
+                (prog1 (length *direct-closures*) (push closure *direct-closures*))))
+         (name (list :direct j n)))
+    (unless (func-defined-p *m* name)
+      (clysm-wasm::add-late-import-func *m* name (fixed-entry-type n) "d" (format nil "~D" (+ (* 8 j) n))))
+    name))
+
+(defun live-direct-call-code (sym arg-codes tail)
+  (let ((n (length arg-codes)))
+    (when (and *live-mode* *live-direct-calls* *live-direct-closure-hook* *live-helper-imports*
+               (not *live-snapshots*) (null *unit-env*)
+               (<= n +max-fixed-args+)
+               (not (gethash sym *notinline*)) (not (member sym *local-notinline*))
+               (not (gethash sym *ti-noreturn*))
+               (not (gethash sym *global-defuns*))
+               (not (and *batch-forms* (nth-value 1 (gethash sym *batch-forms*)))))
+      (let ((closure (funcall *live-direct-closure-hook* sym)))
+        (when closure
+          (setf (gethash sym *called-functions*) t)
+          (let* ((entry (direct-entry-import closure n))
+                 (clo (const-init-code closure))
+                 (temps (loop repeat n collect (new-local)))
+                 (gets (loop for tm in temps collect `(:local.get ,tm)))
+                 (slow (gensym "DSLOW")) (done (gensym "DCALL")))
+            `(,@(loop for code in arg-codes for tm in temps append `(,@code (:local.set ,tm)))
+              (:block ,done :eqref
+                (:block ,slow nil
+                  (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+)
+                  ,@clo :ref.eq :i32.eqz (:br_if ,slow)
+                  ,@(maybe-checked-call
+                     tail
+                     `((:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) :ref.as_non_null
+                       ,@gets (,(if tail :return_call :call) ,entry)))
+                  ,@(unless tail `((:br ,done))))
+                ,@gets (:global.get ,(sym-global sym)) (:call (:callsym ,n))))))))))
 
 ;;; In the image, a call with constant keywords of a global function that has
 ;;; keyword parameters passes the arguments in the fixed slots of the
