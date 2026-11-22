@@ -121,8 +121,9 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
     (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
       (when (eql (%js-typeof msg) 4)
         (let* ((value (%js-get r (%js-string "value")))
-               (condition (and (member (%js-typeof value) '(5 6))
-                               (%js-get value (%js-string "lispCondition")))))
+               ;; The host only exposes a condition originating in this
+               ;; instance. Foreign LispErrors remain JavaScript exceptions.
+               (condition (%js-get r (%js-string "lispCondition"))))
           (if (and condition (eql (%js-typeof condition) 9))
               (error (%js-unwrap-lisp condition))
               (error 'js:js-error

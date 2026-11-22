@@ -1,11 +1,20 @@
 // JavaScript FFI imports shared by the Node.js and browser hosts.
 // JS values cross the boundary as externref; Lisp wraps them in $foreign structs.
+// Libraries may load different copies of this host. Share provenance across
+// those copies, without changing the thrown Error or keeping it alive.
+const errorOwners = globalThis[Symbol.for('clysm.errorOwners')] ??= new WeakMap();
 class JsError {
-  constructor(e) { this.__clysm_js_error = String((e && e.message) || e); this.value = e; }
+  constructor(e, state) {
+    this.__clysm_js_error = String((e && e.message) || e);
+    this.value = e;
+    // A condition belongs to its originating instance's packages and classes.
+    // Another instance must see the Error as JS:JS-ERROR, not unwrap that heap.
+    this.lispCondition = state && errorOwners.get(e) === state ? e.lispCondition : undefined;
+  }
 }
-function boxError(e) {
+function boxError(e, state) {
   if (e instanceof WebAssembly.Exception) throw e;
-  return new JsError(e);
+  return new JsError(e, state);
 }
 
 // JavaScript Promise Integration: a Lisp function called through
@@ -17,8 +26,15 @@ const jspi = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.
 // runtime/js.lisp) when it signals an error that it does not handle: the
 // call throws the Error in it.
 // (what was thrown may be undefined: JS:THROW of a value of JavaScript)
-function lispResult(r) {
-  if (r !== null && typeof r === 'object' && Object.hasOwn(r, '__clysm_failure__')) throw r.__clysm_failure__;
+function lispResult(r, state) {
+  if (r !== null && typeof r === 'object' && Object.hasOwn(r, '__clysm_failure__')) {
+    const error = r.__clysm_failure__;
+    if (error !== null && (typeof error === 'object' || typeof error === 'function')
+        && Object.hasOwn(error, 'lispCondition') && !errorOwners.has(error)) {
+      errorOwners.set(error, state);
+    }
+    throw error;
+  }
   return r;
 }
 
@@ -205,10 +221,10 @@ export function makeJsImports(state) {
       // a JavaScript exception is returned as a JsError box, which the Lisp
       // side turns into a Lisp error (Lisp non-local exits pass through)
       apply: (f, t, a) => {
-        try { return Reflect.apply(f, t, a); } catch (e) { return boxError(e); }
+        try { return Reflect.apply(f, t, a); } catch (e) { return boxError(e, state); }
       },
       construct: (f, a) => {
-        try { return Reflect.construct(f, a); } catch (e) { return boxError(e); }
+        try { return Reflect.construct(f, a); } catch (e) { return boxError(e, state); }
       },
       array: () => [],
       push: (a, v) => { a.push(v); },
@@ -244,12 +260,12 @@ export function makeJsImports(state) {
           }
           throw e;
         }
-        return lispResult(r);
+        return lispResult(r, state);
       },
       // (the Lisp side calls it only inside a function of wrap_async_fn)
       await: jspi
         ? new WebAssembly.Suspending(async (promise) => {
-            try { return await promise; } catch (e) { return boxError(e); }
+            try { return await promise; } catch (e) { return boxError(e, state); }
           })
         : () => new JsError('this JavaScript engine cannot suspend WebAssembly (JSPI)'),
       // a function that returns a promise; the Lisp function runs as a
@@ -258,7 +274,7 @@ export function makeJsImports(state) {
         const ex = state.instance.exports;
         if (!jspi) {
           const bsp = ex.get_bsp();
-          try { return Promise.resolve(lispResult(ex.lisp_apply_async(closure, args))); }
+          try { return Promise.resolve(lispResult(ex.lisp_apply_async(closure, args), state)); }
           catch (e) {
             if (!(e instanceof WebAssembly.Exception)) ex.lisp_recover(bsp);
             return Promise.reject(e);
@@ -272,7 +288,7 @@ export function makeJsImports(state) {
         let recovered = false;
         const p = promisingApply(closure, args);
         if (ex.get_bstack() !== stack) { ex.lisp_recover(-1); recovered = true; }
-        return p.then(lispResult, (e) => {
+        return p.then((r) => lispResult(r, state), (e) => {
           if (!recovered && !(e instanceof WebAssembly.Exception)) ex.lisp_recover(-1);
           throw e;
         });
