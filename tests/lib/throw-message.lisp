@@ -1,0 +1,12 @@
+;;; Explicit messages need no Lisp printer, and preserve the thrown JS value.
+(js:export "throwValue" (lambda (value message)
+                          (js:throw value :message (js:to-lisp message))) :raw t)
+(js:export "caught" (lambda (value message)
+                      (handler-case (js:throw value :message (js:to-lisp message))
+                        (js:js-error (e)
+                          (js:object "message" (js:js-error-message e)
+                                     "name" (js:js-error-name e)
+                                     "thrown" (js:js-error-thrown e))))) :raw t)
+(js:export "ordered" (lambda (get-value get-message)
+                       (js:throw (js:funcall-raw get-value)
+                                 :message (js:funcall get-message))))

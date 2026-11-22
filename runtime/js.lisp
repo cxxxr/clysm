@@ -561,17 +561,36 @@ methods) without having it copied; JS:TO-LISP converts one."
     (js:set (%js-exports) name v)
     name))
 
-(defun js:throw (value)
-  "Throw the JavaScript VALUE (an Error, usually) from the call of an export
-or of a callback that Lisp runs: the call of JavaScript gets it as it is.  In
-Lisp it is a JS:JS-ERROR, which a handler can take."
+(defun %js-throw-with-message (value fallback)
+  (unless (stringp fallback) (%type-error fallback 'string))
   (let* ((value (js:to-js value))
          (object (member (%js-typeof value) '(5 6)))
          (name (and object (js:get value "name")))
          (message (and object (js:get value "message"))))
     (error 'js:js-error :value (js:to-lisp value) :thrown value
                         :name (and (stringp name) name)
-                        :message (if (stringp message) message (princ-to-string (js:to-lisp value))))))
+                        :message (if (stringp message) message fallback))))
+
+(defun js:throw (value &key (message nil message-p))
+  "Throw the JavaScript VALUE (an Error, usually) from the call of an export
+or of a callback that Lisp runs: the call of JavaScript gets it as it is.  In
+Lisp it is a JS:JS-ERROR, which a handler can take.  MESSAGE, when supplied,
+is a string to use when VALUE has no string message property, instead of
+printing VALUE.  Such a call need not retain the Lisp printer."
+  (if message-p
+      (%js-throw-with-message value message)
+      (let* ((value (js:to-js value))
+             (object (member (%js-typeof value) '(5 6)))
+             (name (and object (js:get value "name")))
+             (message (and object (js:get value "message"))))
+        (error 'js:js-error :value (js:to-lisp value) :thrown value
+                            :name (and (stringp name) name)
+                            :message (if (stringp message) message (princ-to-string (js:to-lisp value)))))))
+
+(define-compiler-macro js:throw (&whole form value &rest options)
+  (if (and (= (length options) 2) (eq (first options) :message))
+      `(%js-throw-with-message ,value ,(second options))
+      form))
 
 (defun js:library-location ()
   "The URL (a string) of the file the library's module was loaded from
