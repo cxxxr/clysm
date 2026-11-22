@@ -9967,6 +9967,59 @@ loaded is then done when the image is saved, on the machine that builds: a
 program that reads its environment in a toplevel form (a path, the time,
 a file) has what it read then, as with any saved image.
 
+**What a closed world does not give `a-esrap` and `a-cl-json-decode`**
+(2026-11-23; measured and not kept). Alone in a built module, 20
+repetitions: esrap 745-800 ms against SBCL's 571-589 (1.31), cl-json's
+decoder 900-1100 against 673 (1.35-1.6).
+* The calls are not it. In the built program a call of a global function
+  is already a direct call without a guard on the cell, and esrap's
+  closures in structure slots are `funcall`ed through one `call_ref`
+  (`funcall` of a closure 118 ms where SBCL takes 127; a constructor 56
+  against 103; an accessor 86 against 85; a sequence combinator of
+  closures 259 against 297). The instruction profile (`--prof
+  --perf-prof`) of esrap is flat: `rule/transform` 14%, the sequence
+  closure 12%, `(setf cached)` 11% (the `equal` hash table: as SBCL's),
+  `successful-parse-production` 10%, the collector 5%.
+* The checks of types are 13% of esrap at most: every file of esrap with
+  `(declaim (optimize (safety 0)))` (the runtime as it is) takes 644-672
+  ms. One operation alone is slower than SBCL's: the predicate of a
+  structure that others `:include` (31 against 10 ms for 10^7 calls: the
+  class by its global, `ref.test $siN`, the layout, then the vector of
+  included classes at the class's depth).
+* **A Wasm type for each structure class** was implemented for built
+  programs and reverted: a final type `$SC-n <: $siN` of the same fields
+  for each class with a constructor (a rec group with a marker type, or
+  the engine makes classes of the same size one type; `(:group n def)` in
+  the type section), allocated by the constructors, and predicates,
+  accessors, casts and the shadows of typed variables testing the types of
+  the class and of the classes that include it (`ref.test` of a final
+  type is one comparison of maps, the cast then gives the fields) before
+  the path of today. The module was valid and the tests passed; esrap
+  took 814-879 ms (752-800 without: 7% *slower*), the predicate of the
+  included structure the same 34 ms, the module 26 KB more. Why: (1) the
+  classes that include a structure are known only when all files are
+  compiled, and esrap's `result-position` is compiled before any of the
+  structures including `result`: no type to test there; (2) an object of
+  a class type is no longer exactly a `$siN`, so every test or cast of
+  `$siN` that remains (generic slot access, the paths without candidates)
+  is the engine's walk of supertypes (three loads more) instead of one
+  comparison; (3) a predicate that answers false cannot be decided by the
+  types of the class's own family.
+  What would work is the classes as true subtypes (`$C <: $P`, so that
+  `ref.test $P` alone decides, and code compiled before `C` exists needs
+  nothing): then an instance with more slots than its parent is not a
+  `$siN` of its size, and all generic access to slots (`%struct-ref`,
+  `copy-structure`, `equalp`, the printer, heap images) must go through
+  operations of the class, as the structures with unboxed `double-float`
+  slots do. Its ceiling on esrap is under the 13% above.
+* cl-json's decoder conses as much as on SBCL (38 MB for a document of
+  580 KB there), and a fifth of its time is the scavenger (a scavenge at
+  every repetition, 1-19 ms by how much of the tree being built is alive
+  then; the nursery is the subject of "The young generation's limit");
+  the rest is flat (`decode-json-object` 8%, the benchmark's own walk of
+  the result 10%, the string streams of the tokens, `intern`,
+  `camel-case-split`).
+
 Next: the heap of a shaken built program made beforehand (preinit in the
 image); the linked image and compilation hints for the start of a built
 program (as Lem's desktop application has); the module in a browser page
