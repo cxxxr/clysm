@@ -3989,6 +3989,59 @@ What makes the code fast:
   value, the checked sum): a list of 10 000 integers beyond the fixnums
   summed, `(dolist (x l) (incf s x))`, 3.6 -> 1.3 ns an element (SBCL
   1.05; 73 -> 27 ms for 2000 runs), `loop`'s `sum` the same.
+* **A sum of doubles from 0 is an unboxed double** (2026-11-23;
+  `*dual-fvars*`, `dual-lset-code`, `:acc-step`). `(let ((s 0)) (dolist
+  (x l) (incf s x)) s)` over doubles made a double at each step (as SBCL
+  does: 4.5 ns an element in both). An accumulator that may hold a double
+  (not one known to hold integers) has an f64 local beside its i64; while
+  the f64 holds the value its eqref local is a *mark*, an i31 below the
+  fixnums that no Lisp object is (`dual-mark-code`). The step adds a
+  double to it inline (the mark's test, `ref.test` of the double, the
+  sum, the test that it is finite), a variable's unboxed double (`(incf s
+  (dist p q))`) the same; the first double added to the integer 0, a
+  fixnum added to the double, and every other case go through one helper,
+  `:acc-step`, which returns the accumulator's new eqref (null, the mark
+  or the object of the generic sum) and leaves the i64 or the bits of the
+  f64 in a global (`:acc-bits`): one call and one result keep the step
+  short. Every other use of the variable makes the double an object
+  first and keeps it (`dual-b-code`, `dual-materialize-code`: a read, a
+  comparison, another update). Per element, ns (SBCL): a list of doubles
+  summed 4.1 -> 1.4 (4.5), `loop`'s `sum` 4.6 -> 2.6 (3.6), a simple
+  vector 3.4 -> 2.5 (3.6), a structure's slot over a list 4.2 -> 2.6
+  (3.6), a sum and a sum of squares 6.8 -> 4.8 (10.6).
+  *The size of the step and the engine's limit.* V8 copies a function
+  into its callers only when its body is at most 500 octets
+  (`--wasm-inlining-max-size`), and the step is now 226 octets longer
+  than the inline fixnum addition it replaced (the accumulator's own
+  path 96, a boxed integer 59, the double 71): `go-lambda` of
+  `bench/control.lisp` went 411 -> 470 -> 541 octets and was no longer
+  copied into its caller (`r-mapc-go` 1.23 times its time; the same
+  cause as `r-mapcar-return` above). Measured: both fast paths only in
+  the helper (410 octets: `r-mapc-go` 0.89, but the engine's copy of the
+  helper in the loop spills the loop's values and stores the result
+  through the global: a list of boxed integers 1.3 -> 2.5 ns an element,
+  a vector of doubles no faster than the generic sum); the node count of
+  a function as an estimate of its size (16 nodes are 364 octets in one
+  function, 56 are 1407 in another: no use). Kept: the paths inline, and
+  the host sets the engine's limit to 640 octets (`host/run.mjs`,
+  `CLYSM_WASM_INLINE_MAX`), which gives the functions that the steps
+  pushed past 500 their place back, and is faster by itself: with one
+  build, 640 against 500, interleaved: `suite` 0.95 (`b-clos` 82 -> 61
+  ms, `b-fib` 17 -> 15, `b-tak` 49 -> 45), `control` 0.98 (`r-mapc-go` 73
+  -> 57), `gabriel` 0.98 (`g-traverse` 133 -> 117), `programs` 1.00
+  (`p-cnm-args` 32 -> 22, `p-specials` 39 -> 28), `library`, `holdout`,
+  `functional`, `arith`, `clos`, `closures` 0.995–1.006
+  (`c-cnm-function` 23 -> 28, `p-print-object` 31 -> 35 the slower
+  ones). 800 was worse for the one item tried (`r-mapc-go` 269 -> 349).
+  A host that cannot set the flag (a browser) copies fewer of those
+  functions. Against the commit before (the box and its step), with the
+  flag in both: `suite`, `control`, `programs`, `gabriel`, `library`
+  1.00, `arith` 0.98 (`a-stats-double` 45 -> 41), `functional` 1.02,
+  `holdout` 1.03 (items of under 10 ms); `b-catch` 34 -> 36 (its
+  accumulator's reads test the mark; 39–41 before the rebase), and a
+  list of boxed integers 1.3 -> 2.2 ns an element (the same inline
+  path, placed worse by the engine with the double's beside it; 3.6
+  before the box).
 * **Numeric items still behind SBCL, and why** (2026-11-23; each profiled
   by instruction: `node --prof --prof-sampling-interval=100 --perf-prof`,
   the ticks placed on the code read from the jitdump with `objdump`, and
