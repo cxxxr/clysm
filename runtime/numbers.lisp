@@ -833,17 +833,32 @@ rounded toward zero is, and the remainder number - (-0.0 * divisor) then."
 
 ;;; ISQRT is a primitive (integers within 64 bits in Wasm)
 (defun isqrt (n) (isqrt n))
+;;; The root of an integer beyond 64 bits is Zimmermann's ("Karatsuba Square
+;;; Root"; Brent and Zimmermann, Modern Computer Arithmetic, algorithm 1.12,
+;;; with digits of two bits, so that every operand is normalized): the root
+;;; S1 and remainder R1 of the top half of the bits, then one division of
+;;; (R1, the next quarter) by 2 S1, whose quotient Q is the low half of the
+;;; root, at most one too large, which the sign of the remainder with the
+;;; last quarter less Q^2 tells.  One division of half the size and one
+;;; square a level, where Newton's iteration (as SBCL's) takes two divisions
+;;; of the full size.
+(defun %isqrt-rem (n)
+  "The integer square root of N > 0 and N less its square."
+  (let ((bits (integer-length n)))
+    (if (<= bits 62)
+        (let ((s (isqrt n))) (values s (- n (* s s))))
+        (let* ((kb (* 2 (ash (ash (+ bits 1) -1) -2)))
+               (mask (- (ash 1 kb) 1)))
+          (multiple-value-bind (s1 r1) (%isqrt-rem (ash n (- (* 2 kb))))
+            (multiple-value-bind (q u) (floor (+ (ash r1 kb) (logand (ash n (- kb)) mask)) (ash s1 1))
+              (let ((s (+ (ash s1 kb) q))
+                    (r (- (+ (ash u kb) (logand n mask)) (* q q))))
+                (if (minusp r)
+                    (values (- s 1) (+ r (ash s 1) -1))
+                    (values s r)))))))))
 (defun %isqrt-big (n)
   (unless (and (integerp n) (>= n 0)) (%type-error n '(integer 0)))
-  ;; Newton's iteration from an estimate above the root: the root of the top
-  ;; half of the bits (recursively), rounded up and shifted back, which has
-  ;; half the root's bits right (one or two steps at the full size)
-  (let* ((k (ash (integer-length n) -2))
-         (x (ash (+ 1 (isqrt (ash n (- (* 2 k))))) k)))
-    (loop
-      (let ((y (ash (+ x (values (%int-truncate n x))) -1)))
-        (when (>= y x) (return x))
-        (setq x y)))))
+  (values (%isqrt-rem n)))
 
 (defun exp (x) (exp x))
 (defun %exp-slow (x)

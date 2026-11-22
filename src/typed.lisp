@@ -2762,8 +2762,17 @@ operation); NIL otherwise.  EFFECT: no value is left."
           `(,@leaves
             (:block ,done nil
               (:block ,fail nil
-                ,@(let ((*hint-i64-decode* t)) (funcall i64-code fail))
-                (:local.set ,v) (:ref.null :eq) (:local.set ,b)
+                ,@(let* ((*fused-unsigned-root* nil)
+                         (code (let ((*hint-i64-decode* t) (*fused-unsigned-ok* t)) (funcall i64-code fail)))
+                         (w (new-local :i64)))
+                    (if *fused-unsigned-root*
+                        ;; an unsigned i64 (a tree under a mask of 64 bits):
+                        ;; from 2^63 its integer, in the eqref local
+                        `(,@code (:local.tee ,w) (:i64.const 0) :i64.lt_s
+                          (:if nil nil
+                               ((:local.get ,w) (:call :u64-int) (:local.set ,b))
+                               ((:local.get ,w) (:local.set ,v) (:ref.null :eq) (:local.set ,b))))
+                        `(,@code (:local.set ,v) (:ref.null :eq) (:local.set ,b))))
                 (:br ,done))
               ;; doubles (an accumulator that is not an integer)
               ,@(let ((code (let ((*fused-rest* recs)) (fused-f64-code expr fail2 t))))
