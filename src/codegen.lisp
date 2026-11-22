@@ -322,12 +322,12 @@ catch non-local exits, innermost first: (:block blk), (:tagbody tb) or
 (defun sref-loop-symbols (node)
   "The special variables NODE (a TAGBODY) reads that it cannot change, or NIL;
 and the variables of the closure's environment it reads (never assigned)."
-  (let ((syms nil) (envs nil))
+  (let ((syms nil) (envs nil) (changed nil) (uses (make-hash-table :test 'eq)))
     (labels ((walk (n)
                (case (car n)
                  ((:call :funcall :lcall :mvcall :apply :sset :progv :wasm :wasm-test :defun :throw
                    :flet :labels :ltv)
-                  (return-from sref-loop-symbols nil))
+                  (setf changed t))
                  (:sref (let ((sym (second n)))
                           (when (and (symbolp sym) (symbol-package sym)
                                      (not (member (package-name (symbol-package sym))
@@ -338,17 +338,25 @@ and the variables of the closure's environment it reads (never assigned)."
                  (:lref (let ((lv (second n)))
                           (when (and (not (boxed-p lv)) (eq (car (gethash lv (fstate-locs *fs*))) :env)
                                      (not (let ((h (assoc lv *env-loop-locals*))) (and h (eq (cddr h) *fs*)))))
+                            (incf (gethash lv uses 0))
                             (pushnew lv envs))))
                  ((:let :mvbind)
                   (when (some #'lvar-special (if (eq (car n) :let) (mapcar #'car (second n)) (second n)))
-                    (return-from sref-loop-symbols nil)))
+                    (setf changed t)))
                  (:prim (when (member (prim-name (second n))
                                       '(set clysm-sys::%set-symbol-value makunbound clysm-sys::%makunbound
                                         symbol-value clysm-sys::%progv-bind))
-                          (return-from sref-loop-symbols nil))))
+                          (setf changed t))))
                (map-subnodes #'walk n)))
       (walk node))
-    (values syms envs)))
+    ;; (the variables of the closure's environment that are not assigned
+    ;; never change: those the loop refers to more than once are also read
+    ;; once when the loop calls functions, as the loop of a local function
+    ;; that calls itself; the engine reads a field of the closure again
+    ;; after every call, with the test of its type.  One the loop refers to
+    ;; once would only be kept in the frame across the calls.)
+    (values (and (not changed) syms)
+            (if changed (remove-if (lambda (lv) (< (gethash lv uses 0) 2)) envs) envs))))
 
 (defun sref-loop-wrap (node body-fn)
   (multiple-value-bind (syms envs) (and *fs* (sref-loop-symbols node))
