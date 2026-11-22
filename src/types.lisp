@@ -1340,18 +1340,23 @@ analyzed once, not again for every copy of a function that calls it.")
   "Record the current environment as flowing to TARGET (a blk, or a tb with tag IDX)."
   (let ((rec (gethash target *ti-exits*)))
     (when rec
-      (let ((env (env-copy *env*)))
+      ;; (the environment itself where it is only joined, which makes a new
+      ;; one: a copy at every exit was 70 MB of a compilation of the runtime)
+      (let ((env *env*) (own nil))
         ;; unwind-protect cleanups between here and the target may assign variables
         (dolist (u *ti-uwps*)
           (when (> (car u) (texit-depth rec))
             (unless (eq env :bottom)
               (dolist (lv (cdr u))
-                (let ((k (ti-slot lv))) (when k (setf (svref env k) *ty-top*)))))))
+                (let ((k (ti-slot lv)))
+                  (when k
+                    (unless own (setq env (env-copy env) own t))
+                    (setf (svref env k) *ty-top*)))))))
         (if idx
             (let ((cell (assoc idx (texit-tags rec))))
               (if cell
                   (setf (cdr cell) (env-join (cdr cell) env))
-                  (push (cons idx env) (texit-tags rec))))
+                  (push (cons idx (if own env (env-copy env))) (texit-tags rec))))
             (setf (texit-env rec) (env-join (texit-env rec) env)
                   (texit-ty rec) (ty-union (texit-ty rec) ty)))))))
 
