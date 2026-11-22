@@ -214,7 +214,8 @@ its value."
                ;; made it: the handlers and restarts around the start of the
                ;; computation are those of the creator
                (let ((*current-thread* th)
-                     (*handler-clusters* nil)
+                     (*handler-frames* (%make-handler-frames 8 nil))
+                     (*handler-clusters* 0)
                      (*restart-clusters* nil)
                      (*condition-restarts* nil)
                      (*debug-frame-stack* nil))
