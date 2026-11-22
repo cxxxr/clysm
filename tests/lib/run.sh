@@ -132,6 +132,17 @@ done
 bin/clysm compile --shake tests/lib/reexports-invalid.lisp -o build/lib-reexports/invalid.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/reexports-invalid.mjs build/lib-reexports/invalid.wasm || exit 1
+# generated initializers preserve lazy imports, entry URLs and bundled inputs
+bin/clysm library --shake tests/lib/entrypoints.lisp -o build/lib-entrypoints/entrypoints.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/entrypoints.mjs build/lib-entrypoints || exit 1
+bin/clysm library --shake tests/lib/entrypoints.lisp tests/lib/entrypoints-embed.lisp \
+  -o build/lib-entrypoints-embed/entrypoints.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/entrypoints.mjs build/lib-entrypoints-embed || exit 1
+bin/clysm compile --shake tests/lib/entrypoints-invalid.lisp -o build/lib-entrypoints/invalid.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/entrypoints-invalid.mjs build/lib-entrypoints/invalid.wasm || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

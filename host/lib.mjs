@@ -162,7 +162,7 @@ function instantiate(module, options, debug = null) {
   // what the library says of itself (JS:EXPORT, JS:DEFINE-CLASS, JS:DECLARE-TYPES,
   // JS:LIBRARY-OPTIONS), and the classes its modules made before it was loaded
   const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {},
-                    location: options.location ?? null };
+                    location: options.location ?? null, entryContexts: options.entryContexts ?? Object.create(null) };
   const saved = globalThis.__clysm_exports, savedLibrary = globalThis.__clysm_library;
   globalThis.__clysm_exports = exportsObject;
   globalThis.__clysm_library = library;

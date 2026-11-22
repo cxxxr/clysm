@@ -49,6 +49,7 @@ const named = entries.filter(([k]) => identifier.test(k));
 const info = lib.library ?? { exports: {}, declarations: [], classes: {}, options: {}, defined: {} };
 const defined = info.defined ?? {};
 const reexports = info.reexports ?? [];
+const entrypoints = info.entrypoints ?? [];
 const entryOf = (k) => info.exports[k]?.entry ?? null;
 // (by the class itself: a class may be exported under another name than its own)
 const classOf = (k, v) => {
@@ -127,10 +128,43 @@ const unnamedClasses = (mine) => {
 // The modules of the entries (JS:EXPORT's ENTRY), each with the exports
 // given to it: those of no entry are NAME.mjs's.
 // (an entry of declarations alone, a subpath of types, is one too)
-const entryNames = [...new Set([...named.map(([k]) => entryOf(k)), ...info.declarations.map((d) => d.entry ?? null), ...reexports.map((r) => r.entry)]
+const entryNames = [...new Set([...named.map(([k]) => entryOf(k)), ...info.declarations.map((d) => d.entry ?? null), ...reexports.map((r) => r.entry), ...entrypoints.map((e) => e.entry)]
   .filter((e) => e !== null))];
 for (const e of entryNames) {
   if (typeof e !== 'string' || !identifier.test(e.replace(/-/g, '_')) || e === name) throw new Error(`the entry ${JSON.stringify(e)} is no name of a module beside ${name}.mjs`);
+}
+// A small expression grammar, not JavaScript source supplied by the library.
+// Optional property access makes a predicate safe when a host global is absent.
+const entryCondition = (value) => {
+  if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) return JSON.stringify(value);
+  if (!Array.isArray(value) || !value.length) throw new Error('invalid JS:ENTRYPOINT condition');
+  const [op, ...args] = value;
+  if (op === 'global' && args.length && args.every((a) => typeof a === 'string'))
+    return `globalThis${args.map((a) => `?.[${JSON.stringify(a)}]`).join('')}`;
+  if ((op === 'and' || op === 'or') && args.length)
+    return `(${args.map(entryCondition).join(op === 'and' ? ' && ' : ' || ')})`;
+  if (op === 'not' && args.length === 1) return `(!${entryCondition(args[0])})`;
+  if (op === 'equal' && args.length === 2) return `(${entryCondition(args[0])} === ${entryCondition(args[1])})`;
+  if (op === 'present' && args.length === 1) return `(${entryCondition(args[0])} != null)`;
+  if (op === 'function' && args.length === 1) return `(typeof ${entryCondition(args[0])} === 'function')`;
+  throw new Error(`invalid JS:ENTRYPOINT condition operator ${JSON.stringify(op)}`);
+};
+const entryInitializers = new Map();
+for (const spec of entrypoints) {
+  if (!info.options?.lazy || typeof spec.entry !== 'string' || typeof spec.run !== 'function')
+    throw new Error('JS:ENTRYPOINT needs a named entry and a function in a lazy library');
+  if (entryInitializers.has(spec.entry)) throw new Error(`the entry ${spec.entry} has more than one initializer`);
+  if (!Array.isArray(spec.imports) || spec.imports.some((i) => !Array.isArray(i) || i.length !== 2
+      || typeof i[0] !== 'string' || !i[0].length || typeof i[1] !== 'string'
+      || (i[1] !== '*' && !identifier.test(i[1])))
+      || new Set(spec.imports.map((i) => i[0])).size !== spec.imports.length)
+    throw new Error('JS:ENTRYPOINT imports need unique module specifiers and export names (or *)');
+  if (!Array.isArray(spec.environment) || spec.environment.some((v) => typeof v !== 'string' || !identifier.test(v))
+      || new Set(spec.environment).size !== spec.environment.length)
+    throw new Error('JS:ENTRYPOINT environment names must be unique identifiers');
+  if (![null, 'stderr'].includes(spec.errors)) throw new Error('invalid JS:ENTRYPOINT error policy');
+  entryCondition(spec.condition);
+  entryInitializers.set(spec.entry, spec);
 }
 const exportsOf = (entry) => named.filter(([k]) => entryOf(k) === entry);
 // Explicit named re-exports keep a public entry narrow without handwritten glue.
@@ -209,7 +243,7 @@ let given = {};
 let lib = null;
 ${embed ? `const __clysm_defaults = ${embeddedOptions};\n` : outputOptions}
 export function library() {
-  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ...given, classes });
+  lib ??= loadSync(${embed ? 'source ?? bytesOfBase64(embedded)' : locations.length ? 'source ?? __clysm_module_file()' : 'source'}, { ...__clysm_defaults, ...given, classes${entrypoints.length ? ', modules: { ...entryModules, ...given.modules }, entryContexts' : ''} });
   return lib;
 }
 
@@ -220,6 +254,15 @@ export function useLibrary(module, options = {}) {
 }
 
 export const classes = {};
+${entrypoints.length ? `const entryContexts = Object.create(null);
+const entryModules = Object.create(null);
+export function registerEntry(name, context) {
+  if (lib && Object.keys(context.modules).length) throw new Error('entry imports must be registered before the library is loaded');
+  Object.assign(entryModules, context.modules);
+  entryContexts[name] = context;
+  return context;
+}
+` : ''}
 ${classes.map(([k, spec]) => `classes[${JSON.stringify(k)}] = makeClass(${JSON.stringify({ ...spec, type: undefined })}, library, classes);\n`).join('')}`);
   write(`${name}.library.d.ts`, `// Generated by Clysm (bin/clysm library) from ${name}.wasm.
 export interface Library {
@@ -229,9 +272,11 @@ export interface Library {
 export declare function library(): Library;
 export declare function useLibrary(module: ${embed ? 'Uint8Array | WebAssembly.Module' : 'string | URL | Uint8Array | WebAssembly.Module'}, options?: Record<string, unknown>): void;
 export declare const classes: Record<string, any>;
+${entrypoints.length ? 'export declare function registerEntry(name: string, context: { url: string; modules: Record<string, unknown>; environment: Record<string, string | undefined> }): unknown;\n' : ''}
 `);
   for (const entry of [null, ...entryNames]) {
     const file = entry ?? name;
+    const init = entryInitializers.get(entry);
     const lines = exportsOf(entry).map(([k, v]) => {
       if (classOf(k, v)) return `export const ${k} = __clysm_classes[${JSON.stringify(classOf(k, v).name)}];`;
       if (typeof v === 'function') return `export const ${k} = (...args) => __clysm_library().exports.${k}(...args);`;
@@ -240,13 +285,34 @@ export declare const classes: Record<string, any>;
         ? `export const ${k} = __clysm_json(${JSON.stringify(JSON.stringify(v))});`
         : `export const ${k} = ${JSON.stringify(v)};`;
     });
-    write(`${file}${ext}`, `// Generated by Clysm (bin/clysm library) from the exports of ${name}.wasm${entry ? ` for its entry ${entry}` : ''}.
-// Importing it loads nothing: ./${name}.library${ext} loads the module when it is first used.
+    write(`${file}${ext}`, `${init?.shebang ? '#!/usr/bin/env node\n' : ''}// Generated by Clysm (bin/clysm library) from the exports of ${name}.wasm${entry ? ` for its entry ${entry}` : ''}.
+// ${init ? 'Its initializer runs on import when its predicate holds.' : `Importing it loads nothing: ./${name}.library${ext} loads the module when it is first used.`}
 import { classes as __clysm_classes, library as __clysm_library } from './${name}.library${ext}';
 import { jsonConstant as __clysm_json } from './clysm/jsffi.mjs';
 
 ${lines.join('\n')}
 `);
+    if (init) {
+      const imported = init.imports.map(([specifier], i) => `import * as __clysm_entry_module${i} from ${JSON.stringify(specifier)};`).join('\n');
+      const modules = init.imports.map(([specifier, selected], i) => `[${JSON.stringify(specifier)}]: __clysm_entry_module${i}${selected === '*' ? '' : `[${JSON.stringify(selected)}]`}`).join(', ');
+      const environment = init.environment.map((v) => `[${JSON.stringify(v)}]: process.env.${v}`).join(', ');
+      const start = `const __clysm_context = __clysm_register_entry(${JSON.stringify(entry)}, { url: __clysm_url, modules: { ${modules} }, environment: { ${environment} } });
+if (${entryCondition(init.condition)}) __clysm_library().library.entrypoints.find((e) => e.entry === ${JSON.stringify(entry)}).run(__clysm_context);`;
+      // Keep host globals in a helper's scope: an entry may export names such
+      // as process, Error, or globalThis. process.env.KEY stays literal here
+      // so bundlers can substitute a deployment's value at build time.
+      write(`${file}.entry${ext}`, `// Generated by Clysm: initialization of ${file}${ext}.
+${imported}
+export function initialize(__clysm_url, __clysm_library, __clysm_register_entry) {
+${init.errors === 'stderr' ? `try {\n${start}\n} catch (error) {\n  process.stderr.write(String(error instanceof Error ? error.message : error) + '\\n');\n  process.exitCode = 1;\n}` : start}
+}
+`);
+      fs.appendFileSync(path.join(dir, `${file}${ext}`), `import { registerEntry as __clysm_register_entry } from './${name}.library${ext}';
+import { initialize as __clysm_initialize } from './${file}.entry${ext}';
+__clysm_initialize(import.meta.url, __clysm_library, __clysm_register_entry);
+`);
+      if (init.shebang) fs.chmodSync(path.join(dir, `${file}${ext}`), 0o755);
+    }
     write(`${file}.d.ts`, `// Generated by Clysm (bin/clysm library) from the exports of ${name}.wasm${entry ? ` for its entry ${entry}` : ''}.
 ${declarationsOf(entry)}${declarationsOfExports(exportsOf(entry))}
 export {};
