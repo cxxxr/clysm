@@ -243,6 +243,7 @@ DEFINE-CHECKED-CASTS)."
   (add-import-global *m* :dyn '(:ref :dynstate) nil "clysm" "dyn")
   (add-import-global *m* :nil-symbol '(:ref :symbol) nil "clysm" "nil_symbol")
   (add-import-global *m* :poll-count :i32 t "clysm" "poll_count")
+  (add-import-global *m* :ih-next :i32 t "clysm" "ih_next")
   (add-import-tag *m* :lisp-throw :exn "clysm" "lisp_throw")
   (setf (wasm-module-memory-import *m*) (list "clysm" "memory" 1))
   ;; its functions are placed in the image's table of functions, from
