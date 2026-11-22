@@ -7749,7 +7749,7 @@ semi-spaces are of 32 MB or more, and, once there is nothing to decide
 generation gains a tenth of a semi-space between two runs and one run in
 twenty: recording the heap at every scavenge was 5% of the time of a
 program whose garbage dies young in semi-spaces of 64 MB (`a-list-churn`
-70 → 75 ms). `CLYSM_NURSERY_ADAPT=0` leaves the engine alone,
+70 → 75 ms). It is opt-in (`CLYSM_NURSERY_ADAPT=1`; off by default, decided at integration: it opens an inspector session into the worker and gives back half of the list-building gain),
 `CLYSM_NURSERY_TRACE=1` prints each decision.
 
 Interleaved in one slot (the machine loaded; engine's 64 MB, the limit of

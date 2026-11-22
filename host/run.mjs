@@ -655,7 +655,8 @@ const nurseryMb = () => Number(process.env.CLYSM_NURSERY_MB || 256);
 //     growth was of no use (the part kept is more than 0.7 of what it was
 //     at the size before), which holds until they keep 25 points more than
 //     they did then (the program does something else).
-// CLYSM_NURSERY_ADAPT=0: the engine decides alone.
+// Opt-in: CLYSM_NURSERY_ADAPT=1 (off by default: the control opens an inspector
+// session into the worker, and it gives back half of what list building gains).
 const NURSERY_EARNED = 64 << 20;
 function nurseryControl(v8) {
   let profiler = null, size = 0, kept = 0, count = 0, keptBefore = -1, useless = false, keptUseless = 0, factor = 2, runs = 0, oldBefore = 0;
@@ -734,7 +735,7 @@ async function superviseNursery() {
     session.post('NodeWorker.enable', { waitForDebuggerOnStart: false });
   } catch (e) {}
 }
-const nurseryAdapts = () => process.env.CLYSM_NURSERY_ADAPT !== '0' && nurseryMb() > 64;
+const nurseryAdapts = () => process.env.CLYSM_NURSERY_ADAPT === '1' && nurseryMb() > 64;
 
 async function inMainThread() {
   const env = process.env;
