@@ -286,7 +286,8 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
     if (/^\\s*at (ERROR|%ERROR\\*|CERROR|SIGNAL|%SIGNAL\\*|%SIGNAL-CONDITION|%TYPE-ERROR|%CHECK-TYPE-ERROR|INVOKE-DEBUGGER)[#( ]/.test(lines[i])) first = i + 1;
   }
   if (first === 1) {
-    while (first < lines.length && !/\\(wasm:/.test(lines[first])) first++;
+    // (a frame of Wasm, named or not: \"at NAME (wasm://...)\" or \"at wasm://...\")
+    while (first < lines.length && !/wasm:/.test(lines[first])) first++;
   }
   // (the host names the places of the Lisp frames: file and line)
   error.stack = ['LispError: ' + message]
@@ -593,7 +594,7 @@ module ENTRY of the library (its own by default; see JS:EXPORT)."
            (js:object "text" text "entry" (or entry :undefined)))
   nil)
 
-(defun js:library-options (&key lazy (output :output) (extension ".mjs"))
+(defun js:library-options (&key lazy (output :output) (extension ".mjs") embed)
   "How the library is loaded by the modules bin/clysm library writes.  With
 LAZY, importing a module of the library does not load it: the first call of
 an export, or the first use of one of its classes, does, in the calling
@@ -603,8 +604,13 @@ output of the process) or :ERROR (its standard error, for a program whose
 standard output is a protocol).  EXTENSION is that of the modules: \".js\"
 for a package whose package.json says \"type\": \"module\", where TypeScript
 finds NAME.d.ts for an import of NAME.js (for NAME.mjs it looks for
-NAME.d.mts)."
+NAME.d.mts).  With EMBED, the modules hold the module's bytes, and load it
+with the host of host/web/lib.mjs, which imports no module of Node.js: a
+library for a page, a browser's worker or Electron's renderer (and Node.js
+too), which has no files, processes or command line.  :OUTPUT :ERROR is then
+console.error."
   (let ((options (js:get (%js-library) "options")))
+    (js:set options "embed" (if embed t :false))
     (js:set options "extension" extension)
     (js:set options "lazy" (if lazy t :false))
     (js:set options "output" (string-downcase (symbol-name output))))
