@@ -2716,14 +2716,13 @@ both sides); the column "Before" is the table as it was, measured at
 various times up to 2026-11-21, before most of the work of 2026-11-21 and
 22 (structure-typed variables, raw clones, the base case copied into
 recursive calls, sequence functions looping at the call site).
-`bench/libs.lisp` was not run again.
 
 | File | Programs | Geometric mean | Before | Slowest | Fastest |
 |---|---|---|---|---|---|
 | `bench/suite.lisp` | 24, used for tuning | 0.76 | 0.94 | `b-deriv` 1.44 (`b-bignum` 1.38, was 1.91) | `b-mandel` 0.08 |
 | `bench/gabriel.lisp` | 10 Gabriel benchmarks, used for tuning | 0.96 | 1.01 | `g-traverse` 1.48 | `g-fft` 0.38 (`g-ctak` 0.59) |
 | `bench/holdout.lisp` | 17 ordinary programs written after the first two files | 0.78 | 1.06 | `h-fib-generic` 1.46 (`h-clos-methods` 1.02, was 1.68) | `h-mandel-complex` 0.09 |
-| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | — | 1.2 | `l-babel` 2.2 (`l-ppcre-replace` 1.5) | `l-alexandria-tests` 0.2–0.5 |
+| `bench/libs.lisp` (`tools/bench-libs.sh`) | cl-ppcre, Alexandria (its test suite and utilities), split-sequence, Babel from Quicklisp; the self-hosted compiler compiling `bench/suite.lisp` | 1.13 | 1.2 | `l-selfhost-compile` 1.51, `l-ppcre-replace` 1.50 (`l-babel` 1.39, was 2.2) | `l-alexandria-tests` 0.29 |
 | `bench/programs.lisp` | 63 more programs | 0.84 | 1.19 | `p-builtin-dispatch` 2.61 (`p-bignum-misc` 1.66) | `p-remove-duplicates` 0.03 |
 | `bench/arith.lisp` | 13 probes of arithmetic in undeclared code (numbers in slots, lists, vectors, hash tables) | 0.53 | 0.56 | `a-hash-counts` 1.42 (`a-sum-overflow`, bignums beyond 2^63, was 2.33) | `a-simpson` 0.10 |
 | `bench/vectors.lisp` | 13 probes of algorithmic code over simple vectors without declarations | 0.51 | 0.43 | `x-fannkuch` 1.09 | `x-list-to-vector` 0.06 |

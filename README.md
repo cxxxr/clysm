@@ -203,15 +203,17 @@ turn both off for the code compiled afterwards.
 ## Performance
 
 Time relative to SBCL 2.6 on Node.js 24 (x86-64), whole programs compiled
-ahead of time (`tools/bench.sh FILE`, best of three runs):
+ahead of time (`tools/bench.sh FILE`, best of three runs; measured on
+2026-11-23):
 
 | File | Programs | Geometric mean | Slowest | Fastest |
 |---|---|---|---|---|
-| `bench/suite.lisp` | 24, used for tuning | 0.94 | 1.91 | 0.08 |
-| `bench/gabriel.lisp` | 10 Gabriel benchmarks | 1.01 | 1.54 | 0.71 |
-| `bench/holdout.lisp` | 17 programs written after the tuning | 1.06 | 1.68 | 0.08 |
-| `bench/programs.lisp` | 63 more programs | 1.19 | 3.15 | 0.03 |
-| `bench/libs.lisp` | libraries from Quicklisp | 1.79 | 2.92 | 0.32 |
+| `bench/suite.lisp` | 24, used for tuning | 0.76 | 1.44 | 0.08 |
+| `bench/gabriel.lisp` | 10 Gabriel benchmarks | 0.96 | 1.48 | 0.38 |
+| `bench/holdout.lisp` | 17 programs written after the tuning | 0.78 | 1.46 | 0.09 |
+| `bench/programs.lisp` | 63 more programs | 0.84 | 2.61 | 0.03 |
+| `bench/declared.lisp` | 19 programs declared for speed, at `(speed 3) (safety 0)` on both sides | 0.94 | 1.41 | 0.37 |
+| `bench/libs.lisp` | libraries from Quicklisp, loaded through ASDF (`tools/bench-libs.sh`) | 1.13 | 1.51 | 0.29 |
 
 Code loaded form by form (the REPL, `load`, ASDF) is slower than a whole
 program. The slow cases and their causes are in
