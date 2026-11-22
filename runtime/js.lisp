@@ -11,7 +11,7 @@
            "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P" "ASYNC" "AWAIT-ALL"
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
-           "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"
+           "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "REEXPORT" "LIBRARY-OPTIONS"
            "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW" "JS-ERROR-THROWN"
            "LIBRARY-LOCATION"))
 
@@ -605,6 +605,21 @@ ships beside the module is found from it."
 module ENTRY of the library (its own by default; see JS:EXPORT)."
   (js:call (js:get (%js-library) "declarations") "push"
            (js:object "text" text "entry" (or entry :undefined)))
+  nil)
+
+(defun js:reexport (names &key from entry type-only)
+  "Re-export NAMES from the JavaScript module FROM in the generated module
+ENTRY, without changing the library's runtime exports. NAMES is a string
+or a list/vector of strings. FROM is the module specifier as written in an
+import (including its extension). TYPE-ONLY writes only the .d.ts export.
+A facade can thus preserve a package's public surface while its functions
+and types belong to several generated entries or external modules."
+  (let* ((library (%js-library))
+         (items (or (js:get library "reexports")
+                    (js:set library "reexports" (js:array)))))
+    (js:call items "push"
+             (js:object "names" (if (stringp names) (vector names) (coerce names 'vector))
+                        "from" from "entry" entry "typeOnly" (if type-only t :false))))
   nil)
 
 (defun js:library-options (&key lazy (output :output) (extension ".mjs") embed compression locations)

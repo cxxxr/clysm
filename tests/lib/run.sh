@@ -116,6 +116,18 @@ done
 bin/clysm library --shake tests/lib/locations.lisp tests/lib/locations-eager.lisp -o build/lib-locations-eager/locations.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/locations-eager.mjs build/lib-locations-eager || exit 1
+# a public entry composed of generated values, external values, and type-only exports
+bin/clysm library --shake tests/lib/reexports.lisp -o build/lib-reexports/reexports.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/reexports.mjs build/lib-reexports || exit 1
+for variant in eager embed; do
+  bin/clysm library --shake tests/lib/reexports.lisp tests/lib/reexports-$variant.lisp -o build/lib-reexports-$variant/reexports.wasm > build/lib-test.log 2>&1 \
+    || { cat build/lib-test.log; exit 1; }
+  node tests/lib/reexports.mjs build/lib-reexports-$variant || exit 1
+done
+bin/clysm compile --shake tests/lib/reexports-invalid.lisp -o build/lib-reexports/invalid.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/reexports-invalid.mjs build/lib-reexports/invalid.wasm || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
