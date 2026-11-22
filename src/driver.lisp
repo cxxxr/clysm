@@ -1486,7 +1486,25 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
          (*runtime-copy-limit* (and runtime-prefix (list runtime-prefix 5 300))))
     (compile-program-1 files output runtime-dir runtime-prefix)))
 
+(defvar clysm-sys::%program-key-layout-hook nil
+  "While the files of a whole program are compiled on the host: called by
+the expansions of DEFGENERIC and DEFMETHOD (SYS::%NOTE-KEY-LAYOUT) with the
+name of a generic function, the layout (nreq nopt . keywords) of its keyed
+main function and whether the form is a DEFGENERIC.")
+
 (defun compile-program-1 (files output runtime-dir runtime-prefix)
+  ;; A call with keywords of a generic function of the program passes its
+  ;; arguments in the slots of the function's keyed entry, its layout tested
+  ;; when the call runs, as code compiled in the image does
+  ;; (LIVE-KEYED-CALL-CODE); it made a vector of them for the generic
+  ;; entry, which searched it.  The layouts are those the program's own
+  ;; DEFGENERIC and DEFMETHOD forms give (the runtime's are not noted: its
+  ;; code is as before).
+  (let ((*compiled-key-layouts* (make-hash-table :test 'eq))
+        (*live-key-layout-hook* (lambda (sym) (declare (ignore sym)) nil)))
+    (compile-program-2 files output runtime-dir runtime-prefix)))
+
+(defun compile-program-2 (files output runtime-dir runtime-prefix)
   (let ((*read-package* (find-target-package "SYSTEM")))
     (dolist (f (runtime-source-files runtime-dir)) (compile-source-file f))
     (let ((version (clysm-version runtime-dir)))
@@ -1500,6 +1518,10 @@ refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept
           *preinit-root* (merge-pathnames "../" (make-pathname :name nil :type nil :version nil
                                                                :defaults runtime-dir))))
   (let ((*host-load-defuns* t)
+        (clysm-sys::%program-key-layout-hook
+          (lambda (name layout defgeneric-p)
+            (when (or defgeneric-p (not (gethash name *compiled-key-layouts*)))
+              (setf (gethash name *compiled-key-layouts*) (key-layout-object layout)))))
         ;; (the program's generic functions: the runtime's call sites and
         ;; methods stay as they are, so that a program without generic
         ;; functions of its own carries no dispatch)
