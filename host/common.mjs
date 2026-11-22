@@ -675,6 +675,30 @@ export function makeImports(state, platform) {
     math: mathImports,
   };
   state.imports = imports;
+  // PROBE-FILE and FILE-WRITE-DATE in one call each, with Node.js's file
+  // system (runtime/pathname.lisp, which asks the file system object itself
+  // when these say 0 or "?": another host's): the file's true name (a
+  // directory's ends with a slash) or null, and the time it was written, in
+  // milliseconds, or null.  ASDF asks for the true name of a file each time
+  // it looks up the file's date, and fs.realpathSync, written in
+  // JavaScript, looks at every directory of the path (60 µs; the system's
+  // own, fs.realpathSync.native, 6).
+  const noThrow = { throwIfNoEntry: false };
+  globalThis.__clysm_fs_probe ??= (name) => {
+    const fs = globalThis.__clysm_fs;
+    if (typeof fs?.realpathSync?.native !== 'function') return 0;
+    let stat;
+    try { stat = fs.statSync(name, noThrow); } catch (e) { return null; }
+    if (!stat) return null;
+    let real = name;
+    try { real = fs.realpathSync.native(name); } catch (e) {}
+    return stat.isDirectory() && !real.endsWith('/') ? real + '/' : real;
+  };
+  globalThis.__clysm_fs_mtime ??= (name) => {
+    const fs = globalThis.__clysm_fs;
+    if (typeof fs?.realpathSync?.native !== 'function') return '?';
+    try { const stat = fs.statSync(name, noThrow); return stat ? stat.mtimeMs : null; } catch (e) { return null; }
+  };
   globalThis.__clysm_save_image = (path, nbytes) => saveImage(state, path, nbytes);
   globalThis.__clysm_unit_clear = (prefix) => {
     for (const k of Object.keys(state.unitValues ?? {})) if (k.startsWith(prefix)) delete state.unitValues[k];

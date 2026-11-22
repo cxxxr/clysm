@@ -502,12 +502,18 @@ which leaves out the symbols that its code does not refer to"
     (unless (eq kind :external)
       (maphash (lambda (k s) (declare (ignore k)) (push s r)) (%package-internals p))
       (when (eq kind :all)
+        ;; (an external symbol of a package P uses is inherited unless a
+        ;; symbol of its name is present in P, a shadowing symbol or
+        ;; itself: two tables looked up with the hash the symbol has of
+        ;; its name, where FIND-SYMBOL hashed the name again and went on
+        ;; through the packages used; UIOP:DEFINE-PACKAGE iterates over
+        ;; all the symbols of every package it defines)
         (dolist (u (%pkg p 2))
-          (maphash (lambda (k s) (declare (ignore k))
-                     (unless (member s (%pkg p 6))
-                       (multiple-value-bind (found st) (find-symbol (symbol-name s) p)
-                         (declare (ignore found))
-                         (when (eq st :inherited) (push s r)))))
+          (maphash (lambda (k s)
+                     (unless (if (symbolp s)
+                                 (nth-value 1 (%present k p (%symbol-hash s)))
+                                 (nth-value 1 (%present k p)))
+                       (push s r)))
                    (%package-externals u)))))
     (nreverse r)))
 
