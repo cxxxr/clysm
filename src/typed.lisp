@@ -2115,13 +2115,20 @@ fixnums (characters are above them)."
 (defvar *dual-u64-fs* nil)
 (defvar *dual-u64-enabled* nil)
 (defun dual-u64-enabled-p ()
-  "Only functions containing logical arithmetic can create the unsigned mark."
+  "Only a function with a logical operation whose value may be 2^63 or more
+can create the unsigned mark: not a LOGAND with an operand known to be below
+2^63 (a mask as #xFFFFFF), nor a LOGIOR or LOGXOR of such operands.  (The
+update of an accumulator leaves an unsigned root only when this holds:
+DUAL-LSET-CODE.)"
   (unless (eq *dual-u64-fs* *fs*)
     (setf *dual-u64-fs* *fs* *dual-u64-enabled* nil)
     (labels ((walk (n)
                (when (consp n)
                  (when (and (eq (car n) :prim)
-                            (member (prim-name (second n)) '(logand logior logxor)))
+                            (let ((name (prim-name (second n))) (args (cddr n)))
+                              (case name
+                                (logand (notany #'fused-mask-p args))
+                                ((logior logxor) (notevery #'fused-mask-p args)))))
                    (setf *dual-u64-enabled* t))
                  (unless *dual-u64-enabled* (map-subnodes #'walk n)))))
       (walk (lam-body (fstate-lam *fs*)))))
@@ -2788,7 +2795,8 @@ operation); NIL otherwise.  EFFECT: no value is left."
             (:block ,done nil
               (:block ,fail nil
                 ,@(let* ((*fused-unsigned-root* nil)
-                         (code (let ((*hint-i64-decode* t) (*fused-unsigned-ok* t)) (funcall i64-code fail))))
+                         (code (let ((*hint-i64-decode* t) (*fused-unsigned-ok* (dual-u64-enabled-p)))
+                                 (funcall i64-code fail))))
                     (if *fused-unsigned-root*
                         ;; Keep all 64 bits, including the unsigned half,
                         ;; until an object is required or signed arithmetic fails.

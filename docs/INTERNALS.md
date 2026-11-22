@@ -4950,6 +4950,29 @@ What makes the code fast:
   transitions, every short product size, long carries, signs, shifts across
   the 64-bit boundary, quotient/remainder signs, odd/even exact divisors,
   and the remainder chunk boundary at 65536 across 2–70 digit magnitudes.
+  **The mark only where it can arise (2026-11-23, after the port onto the
+  list work).** `dual-u64-enabled-p` was true for any function with a
+  LOGAND, LOGIOR or LOGXOR, so every accumulator of such a function tested
+  the mark at its reads and updates; ordinary loops that keep a sum small
+  with `(logand s #xFFFFFF)` paid for it: against the base without the
+  bignum work, 13 interleaved rounds, `p-specials` 26 -> 29 ms,
+  `p-call-conv` 41 -> 45, `b-call` 49 -> 52, `p-accessor` 69 -> 73. The
+  mark is now enabled only by a logical operation whose value may be 2^63
+  or more: a LOGAND none of whose operands is known to be within
+  [0, 2^63), a LOGIOR or LOGXOR with an operand not known to be. The
+  update of an accumulator leaves an unsigned root only under the same
+  predicate (`*fused-unsigned-ok*` is bound to it in `dual-lset-code`), so
+  a function without the tests cannot make the mark whatever its trees
+  are: a result from 2^63 there takes the generic code, as before the
+  mark existed. Ten interleaved rounds of base / before / after on one
+  slot (ms): `p-specials` 27 / 30 / 26, `p-call-conv` 44 / 47 / 44,
+  `b-call` 53 / 56 / 53, `p-accessor` 73 / 75 / 73, `p-simple-error`
+  52 / 54 / 53; `b-ratio` 84 / 71 / 69 and `a-sum-overflow` 78 / 70 / 72
+  keep their gains; geometric means against the base `suite` 1.004,
+  `programs` 1.002, `arith` 0.960. The module of the FNV-1a, xorshift64
+  and splitmix64 loops of `u64-trees.lisp` is byte for byte the same
+  before and after (their masks are of 64 bits). `u64-bounded-sums.lisp`
+  has both kinds of function with operands across 2^63 and 2^64.
 
 * **Division of floats** (`floor ceiling truncate round`, the `f` versions,
   `mod rem`) computes what SBCL does, in the inline code, the helper
