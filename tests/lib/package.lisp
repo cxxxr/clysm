@@ -122,3 +122,10 @@ export type Places = Place[];" :entry "places")
 
 ;; a class exported with a type of its own
 (js:export "Typed" (js:define-class "Typed") :type "{ new (n: number): { n: number }; readonly kind: 'typed' }")
+
+;; one function exported converting its arguments and not (:RAW makes a function of its own)
+(let ((f (lambda (x) (if (numberp x) "number" "other"))))
+  (js:export "converted" f :type "(x: unknown) => string")
+  (js:export "unconverted" f :raw t :type "(x: unknown) => string"))
+;; a constant of a key __proto__
+(js:export "protoData" (js:call (js:global "JSON") "parse" "{\"__proto__\":{\"enabled\":true}}") :type "object")

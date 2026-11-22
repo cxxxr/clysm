@@ -286,11 +286,13 @@ of the place where it was signalled), in the object that tells the host to throw
 :RAW): an EQ table of them, made with the first.")
 
 (defun %js-raw-function (function)
-  "Makes JavaScript give FUNCTION its arguments unconverted; returns it."
-  (setf (gethash function (or *js-raw-functions*
-                              (setq *js-raw-functions* (make-hash-table :test 'eq))))
-        t)
-  function)
+  "A function of its own that calls FUNCTION, and that JavaScript gives its
+arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
+  (let ((raw (lambda (&rest arguments) (apply function arguments))))
+    (setf (gethash raw (or *js-raw-functions*
+                           (setq *js-raw-functions* (make-hash-table :test 'eq))))
+          t)
+    raw))
 
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
@@ -506,7 +508,7 @@ is given its arguments as JavaScript has them, not converted: values of
 JavaScript (JS:JS-VALUE-P) for which JS:TYPEOF tells undefined, null and
 false apart, and a long string that Lisp reads a part of (JS:CALL of its
 methods) without having it copied; JS:TO-LISP converts one."
-  (when (and raw (functionp value)) (%js-raw-function value))
+  (when (and raw (functionp value)) (setq value (%js-raw-function value)))
   (let ((v (cond (async (js:async-function value))
                  (t (js:to-js value)))))
     (when (and type (functionp value)) (js:set v "clysmType" type))
@@ -575,8 +577,10 @@ TYPE is its TypeScript declaration for the .d.ts (\"declare class NAME
 ...\"; by default one that says nothing of its members).  With RAW, the
 functions are given their arguments unconverted (see JS:EXPORT)."
   (when raw
-    (dolist (f (list* constructor (loop for (nil f) on (append methods getters static) by #'cddr collect f)))
-      (when (functionp f) (%js-raw-function f))))
+    (flet ((raw (f) (if (functionp f) (%js-raw-function f) f))
+           (raw-plist (plist) (loop for (n f) on plist by #'cddr collect n collect (if (functionp f) (%js-raw-function f) f))))
+      (setq constructor (raw constructor)
+            methods (raw-plist methods) getters (raw-plist getters) static (raw-plist static))))
   (let ((spec (js:object "name" name "extends" (or extends :null)
                          "superArguments" (if super-arguments (coerce super-arguments 'vector) :null)
                          "methods" (coerce (loop for (n) on methods by #'cddr collect n) 'vector)
