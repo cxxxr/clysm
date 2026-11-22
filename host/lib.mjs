@@ -21,7 +21,9 @@
 //   modules   an object of JavaScript modules that Lisp gets with
 //             (js:module "name"), e.g. { typescript: ts }
 //   import    the function that (js:import "specifier") calls; by default
-//             the specifier is resolved from the working directory
+//             the specifier is resolved from the directory of the module when
+//             it was loaded from a file (`location`), else from the working
+//             directory (so is (js:require "specifier"))
 //   fs        the file system (by default node:fs)
 //   location  the URL the module is from, which JS:LIBRARY-LOCATION gives (by
 //             default that of SOURCE, when it is a path or a URL)
@@ -143,7 +145,10 @@ function debugFileOf(source, fsys = fs) {
 
 function instantiate(module, options, debug = null) {
   installGlobals(options);
-  const access = nodeModuleAccess();
+  // (a library finds the modules it imports from where its module is, as a module of
+  // JavaScript does: a program that loads it may run in any directory)
+  const located = typeof options.location === 'string' && options.location.startsWith('file:');
+  const access = nodeModuleAccess(located ? path.dirname(fileURLToPath(options.location)) : process.cwd());
   const state = {
     jsModules: options.modules || {},
     importer: options.import || access.importer,

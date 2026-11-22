@@ -153,6 +153,16 @@ assert.equal(lib.thrownKind(() => { throw undefined; }), 'undefined');
 assert.equal(lib.thrownKind(() => { throw false; }), 'boolean');
 // where the module was read from (an embedded one, given as bytes, has no place)
 assert.equal(lib.location(), embedded ? null : pathToFileURL(path.join(dir, 'package.wasm')).href);
+if (!embedded) {
+  // (a package beside the module, found also when the program runs elsewhere)
+  const modules = path.join(dir, 'node_modules', 'beside-the-library');
+  fs.mkdirSync(modules, { recursive: true });
+  fs.writeFileSync(path.join(modules, 'package.json'), '{ "name": "beside-the-library", "main": "index.cjs" }');
+  fs.writeFileSync(path.join(modules, 'index.cjs'), 'module.exports = { answer: 42 };');
+  const cwd = process.cwd();
+  process.chdir(fs.mkdtempSync(path.join((await import('node:os')).tmpdir(), 'elsewhere-')));
+  try { assert.equal(lib.requireBeside('beside-the-library'), 42); } finally { process.chdir(cwd); }
+}
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 if (embedded) {
