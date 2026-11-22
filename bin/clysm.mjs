@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runHost = path.join(root, 'host', 'run.mjs');
 const node = process.execPath;
+// as bin/clysm: the young generation of the main thread, where the REPL image runs
+const nursery = '--max-semi-space-size=' + (process.env.CLYSM_NURSERY_MB || 256);
 
 function find(...candidates) {
   for (const c of candidates) if (fs.existsSync(c)) return c;
@@ -203,7 +205,7 @@ switch (cmd) {
     // (clysm eval [--no-userinit] FORM...)
     const forms = cmd === 'eval' && args[0] === '--no-userinit' ? ['--no-userinit', '--eval', ...args.slice(1)]
       : cmd === 'eval' ? ['--eval', ...args] : args;
-    process.exit(run([runHost, replImage, ...forms], { env: replEnv() }));
+    process.exit(run([nursery, runHost, replImage, ...forms], { env: replEnv() }));
     break;
   }
   case 'swank': {
@@ -214,7 +216,7 @@ switch (cmd) {
       else { console.error(`clysm swank: unknown option ${args[i]}`); process.exit(1); }
     }
     if (!Number.isInteger(port)) { console.error('clysm swank: --port needs a number'); process.exit(1); }
-    process.exit(run([runHost, replImage, path.join(root, 'contrib', 'swank', 'start.lisp')],
+    process.exit(run([nursery, runHost, replImage, path.join(root, 'contrib', 'swank', 'start.lisp')],
                      { env: replEnv({ ...process.env, CLYSM_SWANK_PORT: String(port) }) }));
     break;
   }

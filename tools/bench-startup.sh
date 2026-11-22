@@ -10,6 +10,7 @@
 set -e
 export LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 RUNS="${BENCH_RUNS:-5}"
 export XDG_CACHE_HOME="${BENCH_CACHE:-$ROOT/build/bench-cache}"
 mkdir -p "$XDG_CACHE_HOME"
@@ -36,30 +37,30 @@ items() {
 ms() { echo $(( $(date +%s%N) / 1000000 )); }   # (uutils date: %3N is not zero-padded)
 # warm the caches (ASDF and the libraries are compiled once)
 items | while IFS='|' read -r name a b; do
-  if [ -n "$b" ]; then node "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" "$b" </dev/null >/dev/null 2>&1 || true
+  if [ -n "$b" ]; then node $NURSERY "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" "$b" </dev/null >/dev/null 2>&1 || true
                        sbcl --noinform --no-userinit --non-interactive --eval "$a" --eval "$b" </dev/null >/dev/null 2>&1 || true
-  else node "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" </dev/null >/dev/null 2>&1 || true
+  else node $NURSERY "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" </dev/null >/dev/null 2>&1 || true
        sbcl --noinform --no-userinit --non-interactive --eval "$a" </dev/null >/dev/null 2>&1 || true; fi
 done
-node "$ROOT/host/run.mjs" "$IMG" "$TMP/script.lisp" </dev/null >/dev/null 2>&1 || true
+node $NURSERY "$ROOT/host/run.mjs" "$IMG" "$TMP/script.lisp" </dev/null >/dev/null 2>&1 || true
 i=0
 while [ $i -lt "$RUNS" ]; do
   items | while IFS='|' read -r name a b; do
     if [ -n "$b" ]; then
       t0=$(ms); sbcl --noinform --no-userinit --non-interactive --eval "$a" --eval "$b" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
       echo "$name $((t1 - t0)) $s" >> "$TMP/a.raw"
-      t0=$(ms); node "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" "$b" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
+      t0=$(ms); node $NURSERY "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" "$b" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
       echo "$name $((t1 - t0)) $s" >> "$TMP/b.raw"
     else
       t0=$(ms); sbcl --noinform --no-userinit --non-interactive --eval "$a" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
       echo "$name $((t1 - t0)) $s" >> "$TMP/a.raw"
-      t0=$(ms); node "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
+      t0=$(ms); node $NURSERY "$ROOT/host/run.mjs" "$IMG" --no-userinit --eval "$a" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
       echo "$name $((t1 - t0)) $s" >> "$TMP/b.raw"
     fi
   done
   t0=$(ms); sbcl --script "$TMP/script.lisp" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
   echo "s-script $((t1 - t0)) $s" >> "$TMP/a.raw"
-  t0=$(ms); node "$ROOT/host/run.mjs" "$IMG" "$TMP/script.lisp" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
+  t0=$(ms); node $NURSERY "$ROOT/host/run.mjs" "$IMG" "$TMP/script.lisp" </dev/null >/dev/null 2>&1 && s=ok || s=FAIL; t1=$(ms)
   echo "s-script $((t1 - t0)) $s" >> "$TMP/b.raw"
   i=$((i+1))
 done

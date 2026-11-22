@@ -26,6 +26,7 @@
 # Each side runs BENCH_RUNS times (default 3); the best time is used.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 FILE="$(cd "$(dirname "${1:-$ROOT/src/prims.lisp}")" && pwd)/$(basename "${1:-$ROOT/src/prims.lisp}")"
 if [ -z "$LEM_DIR" ]; then
   if [ -d "$ROOT/build/lem/build/clysm/deps" ]; then LEM_DIR=$ROOT/build/lem; else LEM_DIR=$HOME/src/clysm-lem; fi
@@ -51,7 +52,7 @@ cat > "$TMP/clysm.lisp" <<EOF
 EOF
 IMAGE="$("$ROOT/bin/clysm" image-native)"
 # (the first run compiles what is missing)
-node "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" > "$TMP/first.txt" 2>&1 ||
+node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" > "$TMP/first.txt" 2>&1 ||
   { tail -20 "$TMP/first.txt"; exit 1; }
 i=0
 while [ $i -lt "$RUNS" ]; do
@@ -59,7 +60,7 @@ while [ $i -lt "$RUNS" ]; do
        --eval '(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))' \
        --load "$ROOT/tests/lem/load-lem.lisp" --eval "(lem-buffer-bench:main \"$FILE\")" 2>&1 |
     grep '^l-' >> "$TMP/a.raw"
-  node "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" 2>&1 | grep '^l-' >> "$TMP/c.raw"
+  node $NURSERY "$ROOT/host/run.mjs" "$IMAGE" "$TMP/clysm.lisp" 2>&1 | grep '^l-' >> "$TMP/c.raw"
   i=$((i+1))
 done
 best "$TMP/a.raw" > "$TMP/a.txt"; best "$TMP/c.raw" > "$TMP/b.txt"
