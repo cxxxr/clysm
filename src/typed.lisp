@@ -2055,7 +2055,7 @@ an accumulator when its assignments are integer arithmetic."
                       ;; nor one that may be something else, as the NIL a
                       ;; LOOP's FOR J = starts with: p-loop-macros 66 -> 78 ms.)
                       (and (or (null ty) (= (ty-bits ty) +k-all+) (and (logtest (ty-bits ty) +k-int+) (ty-only-p ty +k-number+)))
-                           (> (svref uses 2) 0) (= (svref uses 4) (svref uses 2)) (< (svref uses 3) (svref uses 2)))))))
+                           (> (svref uses 2) 0) (> (svref uses 4) 0) (< (svref uses 3) (svref uses 2)))))))
       (setf (gethash lv *dual-vars*) (new-local :i64))
       (remhash lv *dual-vars*)))
 
