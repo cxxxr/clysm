@@ -12,7 +12,7 @@
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
            "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"
-           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW"))
+           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW" "JS-ERROR-THROWN"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -97,11 +97,13 @@ vector OCTETS from START to END."
    (message :initarg :message :initform "" :reader js:js-error-message)
    ;; what was thrown, as JavaScript has it (not converted: undefined, null
    ;; and false are told apart), or NIL when not known
-   (thrown :initarg :thrown :initform nil))
+   (thrown :initarg :thrown :initform nil :reader js:js-error-thrown))
   (:documentation "A JavaScript exception thrown by a function called through
 the JS package, the rejection of a promise awaited by JS:AWAIT, or the value
 given to JS:THROW.  VALUE is what was thrown (usually an Error), NAME and
-MESSAGE its name and message.  When no Lisp handler takes it, the call from
+MESSAGE its name and message; JS:JS-ERROR-THROWN is what was thrown as
+JavaScript has it (undefined, null and false told apart), or NIL when it is
+not known.  When no Lisp handler takes it, the call from
 JavaScript that it leaves throws what was thrown, as it was."))
 (%define-condition-message js:js-error (c)
   "JavaScript error: ~@[~A: ~]~A" (%condition-slot c 'name) (%condition-slot c 'message))

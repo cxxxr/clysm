@@ -158,3 +158,8 @@ export type Places = Place[];" :entry "places")
 (js:export "awaitLispObject"
            (lambda () (js:js-value-p (js:await-raw (js:call (js:global "Promise") "resolve" (js:to-js (make-hash-table))))))
            :async t :type "() => Promise<boolean>")
+(js:export "thrownKind"
+           (lambda (f)
+             (handler-case (progn (js:funcall f) "nothing")
+               (js:js-error (e) (string-downcase (symbol-name (js:typeof (js:js-error-thrown e)))))))
+           :type "(f: () => unknown) => string")

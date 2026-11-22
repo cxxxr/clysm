@@ -134,6 +134,8 @@ assert.equal(await lib.awaitKind(Promise.resolve(undefined)), 'undefined');
 assert.equal(await lib.awaitKind(Promise.resolve(false)), 'boolean');
 assert.equal(await lib.awaitLisp(), 42);
 assert.equal(await lib.awaitLispObject(), true);
+assert.equal(lib.thrownKind(() => { throw undefined; }), 'undefined');
+assert.equal(lib.thrownKind(() => { throw false; }), 'boolean');
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 console.log(`lib: package (${mode}) ok`);
