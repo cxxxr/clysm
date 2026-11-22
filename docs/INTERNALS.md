@@ -1060,6 +1060,22 @@ variable), the walk of `inline-calls` over every function 100 ms,
 `map-subnodes` 93 ms of its own in all the walks that use it; the rest is
 flat (no function above 2.5%).
 
+On the tree of 2026-11-23 that has the pass leaving out dead code
+(`prune-dead-code`, which early encoding encodes the result of) and the
+other changes of that day, the same comparison (before: that tree without
+these commits): the compiler in Wasm 4309, 4086 -> 2507, 2630 ms; on SBCL
+2784, 2665 -> 2259, 2354; `l-selfhost-compile` 1.55, 1.53 -> 1.11, 1.12.
+First builds (the best of six): cl-ppcre 1613 -> 1370 ms, babel 1486 ->
+1315, alexandria 738 -> 719. The octets are those of that tree's compiler
+with the two changes that are meant to change them (the identity hash of
+instances, the types of constants): runtime + `bench/suite.lisp`,
+`bench/programs.lisp` shaken, a library shaken with its symbols, the
+compiler, the REPL image, and `bench/suite.lisp` by the compiler in Wasm.
+(A place that wrote a node's type into `*node-types*` itself, added that
+day in `cg-let`, lost the type of a node kept in its variable: the types
+of nodes are read and written through `node-type` and `set-node-type`
+only.)
+
 **Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
 `case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the
 dispatch of `map-subnodes`, `ti-1` and `emit-instr` on the kind of a node
