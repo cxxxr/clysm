@@ -59,6 +59,10 @@ cat build/lib-test/embedded.out
 if ! grep -qx 'to the standard error' build/lib-test/embedded.err || grep -q 'to the standard error' build/lib-test/embedded.out; then
   echo "lib: what the embedded library of :output :error writes to its standard output is not on the standard error output"; exit 1
 fi
+# the printer without the reader's macro functions
+bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/print-only.mjs build/lib-test/print-only.mjs || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

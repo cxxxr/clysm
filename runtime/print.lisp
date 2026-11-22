@@ -51,6 +51,7 @@ package: then the same name in it is the same symbol).")
 (defvar *print-object-hook* nil)
 (defvar *readtable* nil)
 (defvar *standard-readtable* nil)
+(defvar *print-default-readtable* nil)
 
 (defmacro print-unreadable-object ((object stream &key type identity) &body body)
   ;; the body is called with the stream actually printed to (a pretty
@@ -149,7 +150,7 @@ temporaries-bindings special-bindings stream-form), else NIL."
          (write-string object (%output-stream stream)))
         ;; a symbol without escapes in the standard cases: its name
         ((and (symbolp object) (eq *print-case* :upcase) (not *print-readably*)
-              (eq (%rt-case (or *readtable* *standard-readtable*)) :upcase)
+              (eq (%rt-case (%print-current-readtable)) :upcase)
               (not (%ppd-user-entries-p)))
          (write-string (symbol-name object) (%output-stream stream)))
         ((or *print-escape* *print-readably*)
@@ -860,8 +861,20 @@ exponent negative-p) with |x| = 0.d1d2.. * 10^exponent."
         (write-char #\| stream))
       (%output-symbol-name-cased name stream readtable)))
 
+;;; A program that only prints needs the standard syntax but not the
+;;; reader's functions.  Keep the actual tables when the reader or the
+;;; program refers to them, including bindings of *READTABLE*.  Otherwise
+;;; use the syntax-only table made by %INIT-STANDARD-READTABLE.
+(defun %print-standard-readtable ()
+  (let ((symbol (%weak-symbol *standard-readtable*)))
+    (or (and (boundp symbol) (symbol-value symbol)) *print-default-readtable*)))
+
+(defun %print-current-readtable ()
+  (let ((symbol (%weak-symbol *readtable*)))
+    (or (and (boundp symbol) (symbol-value symbol)) (%print-standard-readtable))))
+
 (defun %print-readtable ()
-  (if *print-readably* *standard-readtable* (or *readtable* *standard-readtable*)))
+  (if *print-readably* (%print-standard-readtable) (%print-current-readtable)))
 
 (defun %output-symbol (s stream)
   (let ((name (symbol-name s)))
@@ -890,7 +903,7 @@ exponent negative-p) with |x| = 0.d1d2.. * 10^exponent."
                          (declare (ignore f2))
                          (write-string (if (eq st2 :external) ":" "::") stream))))))
           (%output-symbol-token name stream rt))
-        (%output-symbol-name-cased name stream (or *readtable* *standard-readtable*)))))
+        (%output-symbol-name-cased name stream (%print-current-readtable)))))
 
 (defun %write-symbol (s stream) (%output-symbol s stream))
 
