@@ -6937,6 +6937,18 @@ What makes the code fast:
   comparisons, Unicode and vector/string keys. The probe module shrinks
   3,082 bytes because field fallback code is shared.
 
+* **Empty hash-table prototypes, measured and not kept (2026-11-23).**
+  Four empty tables (one per test) were copied by a Wasm helper loading
+  their 17 fields into a fresh struct with a fresh identity hash. Generic
+  construction replaced requested options; constant-test construction
+  only replaced size. The three-table creation/insertion probe, three
+  alternating runs on one slot: ordinary 46, 56, 42 ms; copies 104, 44,
+  47 ms. Best 42 -> 44 ms, no gain, and the probe module grew 5,246 bytes.
+  Hash-model and native tests passed. Reverted: copying the fields adds
+  loads where initialization already has constants; allocating first-entry
+  storage is still needed. Avoid repeating this without eliminating those
+  loads or changing how the first entry is allocated.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
