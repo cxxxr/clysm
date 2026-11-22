@@ -3,6 +3,7 @@
 (load (merge-pathnames "../load.lisp" *load-truename*))
 (in-package :clysm)
 (defvar *dump-module* nil)
+(setq clysm-wasm:*keep-instructions* t)
 (sb-int:encapsulate 'clysm-wasm:encode-module 'dump
                     (lambda (f m &rest r) (setq *dump-module* m) (apply f m r)))
 (let* ((args (cdr sb-ext:*posix-argv*)) (file (first args)) (names (rest args)))

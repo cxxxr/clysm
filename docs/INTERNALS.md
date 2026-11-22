@@ -898,9 +898,58 @@ scavenger has laid out (encoding 0.45 s against 0.15; a walk of fresh
 instructions is 5 ns an instruction, of scavenged ones 40: no scavenge at
 all, a young generation of 1 GB, makes `wasm-func-uses` 41 ms instead of
 242, but the process is no faster for it, it pays in page faults); and the
-identity hashes of the remaining nodes (0.2 s). Next: the functions
-encoded as they are compiled (no instruction list kept: fewer live conses,
-no cold walk).
+identity hashes of the remaining nodes (0.2 s).
+
+**The functions of a whole program are encoded when they are compiled
+(2026-11-23).** `add-func` encodes the body of a function at once
+(`encode-function-early`, src/wasm.lisp) when the module is a whole
+program that is not shaken (`*encode-early*`, bound by `build-module`),
+and drops its instructions. What is not known then is left out of the
+octets and noted as a relocation, (position, kind, nref) in a vector: the
+index of a function (a call, a `ref.func`, the call where a checked cast
+fails) and the index of a global, since `order-functions-by-use` puts both
+in order at the end; whether a global read is followed by
+`ref.as_non_null` (the closure's global may be made after); and the
+functions that `ref.func` declares, whose order is that of the table of
+functions. `encode-function-body` then copies the octets between the
+relocations and writes the indexes, and moves the offsets of the branch
+hints by what was written before them (a hint at the position of a
+relocation is of the instruction after it). An nref is the record of a
+name the encoded functions refer to, found by one hash of the name when
+the function is encoded: it counts the calls, reads and writes as they are
+encoded, which is what `order-functions-by-use` and
+`inline-single-use-constants` asked of each function's instructions (no
+walk for them at all now), and holds the index while the module is
+encoded, so that the name is not hashed again for each reference. A
+function that cannot be encoded yet (a type not yet in the module) keeps
+its instructions and is encoded with the module as before; so are the
+functions of a shaken program, which `shake-module` and src/preinit.lisp
+walk and rewrite, and those of modules made in the image (src/live.lisp,
+which finds the helpers a module needs from the instructions and encodes
+a unit's functions twice). `tools/dump-func.lisp` keeps the instructions
+(`*keep-instructions*`).
+
+The octets of the modules are the same (runtime + `bench/suite.lisp`, the
+compiler, the REPL image, on SBCL and in Wasm; the shaken ones do not take
+this path). The instructions were 200 MB of conses alive until the end of
+the compilation, which every scavenge until their promotion had copied,
+and cold when the encoder walked them: the heap at the end 407 -> 240 MB,
+the process 770 -> 606 MB, the time in scavenges 1743 -> 1067 ms (on a
+busy machine). `l-selfhost-compile`, ten rounds in turn (minimum, median;
+ms):
+
+| | notes in variables | encoded early | with nrefs |
+|---|---|---|---|
+| the compiler in Wasm | 2950, 3059 | 2586, 2841 | 2543, 2700 |
+| the compiler on SBCL | 2337, 2509 | | 2177, 2302 |
+
+The earlier attempt at this (above: each segment of a file's unit encoded
+when the segment ended, no faster) was in the image, where a unit's
+instructions are a few megabytes that are encoded soon after; here they
+are the whole program's. Both hosts gain, so the ratio moves less than
+the times: 1.26 -> 1.17. What is the compiler's own in the remaining
+difference: the scavenges (2.4 GB allocated, 240 MB alive at the end),
+and the host's identity hash for the nodes that lead to no variable.
 
 **Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
 `case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the

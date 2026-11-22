@@ -107,7 +107,10 @@
   ;; (a function of a unit compiled file by file is encoded twice)
   (coalesced :unknown)
   ;; (body calls global-gets global-sets) of WASM-FUNC-USES, for that body
-  (use-lists nil))
+  (use-lists nil)
+  ;; (octets relocations hints) once the body is encoded before the module
+  ;; is (ENCODE-FUNCTION-EARLY); the body is then NIL
+  (encoded nil))
 
 (defun wasm-func-uses (f)
   "Every occurrence in the body of the function F, in order: the names of
@@ -118,7 +121,7 @@ compiler's INLINE-SINGLE-USE-CONSTANTS, each walked all the code: the
 instructions of a whole program are memory that is cold by then, 40 ns an
 instruction); again if the function is given another body."
   (let ((u (wasm-func-use-lists f)) (body (wasm-func-body f)))
-    (unless (and u (eq (car u) body))
+    (unless (and u (or (eq (car u) body) (and (null body) (wasm-func-encoded f))))
       (let ((calls nil) (gets nil) (sets nil))
         (labels ((walk (x)
                    (let ((head (car x)))
@@ -177,6 +180,15 @@ instruction); again if the function is given another body."
         (setf (wasm-func-ref-list f) (body-refs (wasm-func-body f)))
         r)))
 
+;;; What the functions encoded early refer to by NAME (a function or a
+;;; global): how many times (CALLS: calls and REF.FUNCs of the function;
+;;; GETS and SETS of the global), counted as each function is encoded, and,
+;;; while the module is encoded, its index (and whether the global is read
+;;; as non-null).  A relocation names the nref, so that the name is hashed
+;;; once for each reference when the function is encoded, and not again by
+;;; each pass over the module that counts the references or writes the index.
+(defstruct nref name (calls 0) (gets 0) (sets 0) (index nil) (nonnull nil))
+
 (defstruct wasm-module
   (types (make-array 0 :adjustable t :fill-pointer 0))   ; vector of (name . def)
   (type-table (make-hash-table :test 'equal))
@@ -212,6 +224,10 @@ instruction); again if the function is given another body."
   ;; (a module's toplevel forms, which run once each when it is loaded):
   ;; its compilationHints section, see withEagerHints in host/common.mjs
   (eager-funcs nil)
+  ;; the functions and the globals that the functions encoded early refer
+  ;; to: name -> nref (ENCODE-FUNCTION-EARLY)
+  (func-refs (make-hash-table :test 'equal))
+  (global-refs (make-hash-table :test 'equal))
   (cast-rewrites nil))                                  ; heap type -> function replacing ref.cast     ; nullable globals read as non-null
 
 (defun add-type (m name def)
@@ -407,6 +423,14 @@ and with the tests of constants decided; BODY itself when nothing changes."
 (WASM-FUNC-USES) as they are added: a whole program, whose module is put in
 order by ORDER-FUNCTIONS-BY-USE.")
 
+(defvar *encode-early* nil
+  "True when the functions added to a module are encoded as they are added
+and their instructions dropped (ENCODE-FUNCTION-EARLY, below): a whole
+program that is not shaken.  (With *EAGER-FUNC-USES*.)")
+
+(defvar *keep-instructions* nil
+  "True to keep the instructions of the functions (tools/dump-func.lisp).")
+
 (defun add-func (m name type &key locals local-names body export param-names display)
   (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names :display display
                             :params-names param-names :body (if *prune-dead-code* (prune-dead-code body) body)
@@ -424,7 +448,9 @@ order by ORDER-FUNCTIONS-BY-USE.")
     ;; walk of COALESCE-LOCALS made here too took half the time, and the
     ;; encoding after it that much more: the first of the two to walk a
     ;; function at the end pays for the memory.)
-    (when (and body *eager-func-uses*) (wasm-func-uses f))
+    (when (and body *eager-func-uses*)
+      (unless (and *encode-early* (encode-function-early m f))
+        (wasm-func-uses f)))
     f))
 
 (defun adopt-func (m f)
@@ -460,6 +486,10 @@ arguments, :APPLY-GENERIC, the casts) thousands of times."
                  (do ((l x (cdr l))) ((atom l)) (walk (car l))))))
       (loop for f across (wasm-module-funcs m)
             do (dolist (name (wasm-func-uses f)) (incf (gethash name uses 0))))
+      ;; (and of the functions encoded early, counted then)
+      (maphash (lambda (name ref)
+                 (when (plusp (nref-calls ref)) (incf (gethash name uses 0) (nref-calls ref))))
+               (wasm-module-func-refs m))
       (loop for g across (wasm-module-globals m) do (walk (fourth g))))
     ;; (only those that get an index below 128, one octet: the others keep
     ;; their order, the order of the source, which gzip compresses better)
@@ -497,6 +527,10 @@ arguments, :APPLY-GENERIC, the casts) thousands of times."
                    (declare (ignore calls))
                    (dolist (name gets) (incf (gethash name guses 0)))
                    (dolist (name sets) (incf (gethash name guses 0)))))
+        (maphash (lambda (name ref)
+                   (let ((n (+ (nref-gets ref) (nref-sets ref))))
+                     (when (plusp n) (incf (gethash name guses 0) n))))
+                 (wasm-module-global-refs m))
         (loop for g across (wasm-module-globals m) do (walk (fourth g)) (setf (gethash (first g) defined) t))
         (let* ((globals (coerce (wasm-module-globals m) 'list))
                (room (max 0 (- 128 (fill-pointer (wasm-module-global-imports m)))))
@@ -976,6 +1010,39 @@ function's body that its checked casts of TYPE branch to when they fail.")
                (or (gethash x *locals-map*) (error "wasm: unknown local ~S" x)))))
     (if *local-remap* (aref *local-remap* i) i)))
 
+;;; A function of a whole program is encoded when it is added to the module
+;;; (ENCODE-FUNCTION-EARLY), while its instructions are in the processor's
+;;; caches, and the instructions are dropped: kept until the module is
+;;; encoded they were 200 MB of live conses that each scavenge had copied,
+;;; cold and out of order by then (40 ns an instruction to walk, 5 now).
+;;; What is not known yet is left out of the octets and noted as a
+;;; relocation (position, kind, name): the index of a function (the module
+;;; is put in order at the end, ORDER-FUNCTIONS-BY-USE) or of a global (and
+;;; whether a global read is non-null), and the functions that REF.FUNC
+;;; declares, in order (the places of the table of functions).
+;;; ENCODE-FUNCTION-BODY writes them when the module is encoded.
+(defvar *relocations* nil
+  "NIL, or while a function is encoded early a cons whose CAR is the list of
+its relocations, latest first: (position kind . name).")
+(defconstant +reloc-func+ 0)       ; the index of the function NAME, a call or a REF.FUNC in the instructions
+(defconstant +reloc-global-get+ 1) ; the index of the global NAME, and ref.as_non_null for a non-null one
+(defconstant +reloc-global-set+ 2) ; the index of the global NAME
+(defconstant +reloc-declare+ 3)    ; no octets: NAME is referred to by REF.FUNC
+(defconstant +reloc-cast-func+ 4)  ; the index of the function NAME, called where a checked cast fails
+
+(defun func-nref (m name)
+  (let ((table (wasm-module-func-refs m)))
+    (or (gethash name table) (setf (gethash name table) (make-nref :name name)))))
+
+(defun global-nref (m name)
+  (let ((table (wasm-module-global-refs m)))
+    (or (gethash name table) (setf (gethash name table) (make-nref :name name)))))
+
+(defun emit-func-index (buf m name &optional (kind +reloc-func+))
+  (if *relocations*
+      (push (list* (length buf) kind (func-nref m name)) (car *relocations*))
+      (emit-u32 buf (func-index m name))))
+
 (defvar *branch-hints* nil
   "The branch hints of the function being encoded: (offset . value), latest first.")
 
@@ -1057,17 +1124,23 @@ in one table: op -> code, or (prefix . code).")
            (emit-u32 buf (label-depth default))))
         (:br_on_null (emit-byte buf #xD5) (emit-u32 buf (label-depth (first args))))
         (:br_on_non_null (emit-byte buf #xD6) (emit-u32 buf (label-depth (first args))))
-        (:call (emit-byte buf #x10) (emit-u32 buf (func-index m (first args))))
-        (:return_call (emit-byte buf #x12) (emit-u32 buf (func-index m (first args))))
+        (:call (emit-byte buf #x10) (emit-func-index buf m (first args)))
+        (:return_call (emit-byte buf #x12) (emit-func-index buf m (first args)))
         (:call_ref (emit-byte buf #x14) (emit-u32 buf (type-index m (first args))))
         (:return_call_ref (emit-byte buf #x15) (emit-u32 buf (type-index m (first args))))
         (:throw (emit-byte buf #x08) (emit-u32 buf (tag-index m (first args))))
         (:local.get (emit-byte buf #x20) (emit-u32 buf (local-index (first args))))
         (:local.set (emit-byte buf #x21) (emit-u32 buf (local-index (first args))))
         (:local.tee (emit-byte buf #x22) (emit-u32 buf (local-index (first args))))
-        (:global.get (emit-byte buf #x23) (emit-u32 buf (global-index m (first args)))
-         (when (gethash (first args) (wasm-module-nonnull-globals m)) (emit-byte buf #xD4)))
-        (:global.set (emit-byte buf #x24) (emit-u32 buf (global-index m (first args))))
+        (:global.get (emit-byte buf #x23)
+         (cond (*relocations*
+                (push (list* (length buf) +reloc-global-get+ (global-nref m (first args))) (car *relocations*)))
+               (t (emit-u32 buf (global-index m (first args)))
+                  (when (gethash (first args) (wasm-module-nonnull-globals m)) (emit-byte buf #xD4)))))
+        (:global.set (emit-byte buf #x24)
+         (if *relocations*
+             (push (list* (length buf) +reloc-global-set+ (global-nref m (first args))) (car *relocations*))
+             (emit-u32 buf (global-index m (first args)))))
         ;; the table of functions (the one table, index 0)
         (:table.get (emit-byte buf #x25) (emit-u32 buf 0))
         ;; linear memory (the one memory, index 0): (:i32.load16_u offset) etc.
@@ -1095,8 +1168,11 @@ in one table: op -> code, or (prefix . code).")
                        (if (integerp v) v (float-bits (coerce v 'single-float) 23 8)))))
            (dotimes (i 4) (emit-byte buf (ldb (byte 8 (* 8 i)) bits)))))
         (:ref.null (emit-byte buf #xD0) (emit-heap-type m buf (first args)))
-        (:ref.func (emit-byte buf #xD2) (declare-func-ref m (first args))
-         (emit-u32 buf (func-index m (first args))))
+        (:ref.func (emit-byte buf #xD2)
+         (if *relocations*
+             (push (list* (length buf) +reloc-declare+ (func-nref m (first args))) (car *relocations*))
+             (declare-func-ref m (first args)))
+         (emit-func-index buf m (first args)))
         ;; GC with immediates
         ((:struct.new :struct.new_default)
          (emit-byte buf #xFB) (emit-u32 buf (if (eq op :struct.new) 0 1))
@@ -1142,7 +1218,7 @@ in one table: op -> code, or (prefix . code).")
              (emit-byte buf #x02) (emit-sleb buf (type-index m (list :cast-bt (first args))))
              (emit-byte buf #xFB) (emit-u32 buf 24) (emit-byte buf 1) (emit-u32 buf 0)
              (emit-heap-type m buf :eq) (emit-heap-type m buf (first args))
-             (emit-byte buf #x10) (emit-u32 buf (func-index m fn))
+             (emit-byte buf #x10) (emit-func-index buf m fn +reloc-cast-func+)
              (emit-byte buf #x00)
              (emit-byte buf #x0B)
              (return-from emit-instr)))
@@ -1213,7 +1289,7 @@ the error must be signalled inside the try_table that may catch it."
       (emit-byte buf #x0F)                ; return
       (dolist (type (reverse types))
         (emit-byte buf #x0B)
-        (emit-byte buf #x10) (emit-u32 buf (func-index m (cdr (assoc type (wasm-module-cast-rewrites m)))))
+        (emit-byte buf #x10) (emit-func-index buf m (cdr (assoc type (wasm-module-cast-rewrites m))) +reloc-cast-func+)
         (emit-byte buf #x00)))           ; unreachable
     (emit-byte buf #x0B)))
 
@@ -1352,7 +1428,83 @@ nothing would change."
                     when (>= j nparams) do (setf (aref map i) (aref perm (- j nparams))))
               (values map (nreverse sorted))))))))
 
+(defvar *quiet-encode-errors* nil)
+
 (defun encode-function-body (m f)
+  "The octets of the body of F (its locals and code) and its branch hints
+(offset . value)..., from its instructions, or from what
+ENCODE-FUNCTION-EARLY made of them."
+  (let ((e (wasm-func-encoded f)))
+    (if (and e (null (wasm-func-body f)))
+        (destructuring-bind (octets relocations hints) e
+          (declare (simple-vector relocations))
+          (let ((buf (make-buf)) (pos 0) (shift 0) (out-hints nil))
+            (declare (fixnum pos shift))
+            (flet ((copy-to (end)
+                     (when (< pos end)
+                       (let* ((start (fill-pointer buf)) (new (+ start (- end pos))))
+                         (when (> new (array-dimension buf 0))
+                           (adjust-array buf (max new (* 2 (array-dimension buf 0)))))
+                         (setf (fill-pointer buf) new)
+                         (replace buf octets :start1 start :start2 pos :end2 end))
+                       (setq pos end)))
+                   (hints-to (end)
+                     ;; (the hints before the relocation at END: one at END
+                     ;; itself is of the instruction after the relocation,
+                     ;; which has no octets here)
+                     (loop while (and hints (< (car (first hints)) end))
+                           do (let ((h (pop hints))) (push (cons (+ (car h) shift) (cdr h)) out-hints)))))
+              (loop for i from 0 below (length relocations) by 3
+                    do (let ((at (svref relocations i)) (kind (svref relocations (+ i 1)))
+                             (ref (svref relocations (+ i 2))))
+                         (declare (fixnum at kind))
+                         (hints-to at)
+                         (copy-to at)
+                         (let ((before (fill-pointer buf)))
+                           (cond ((or (= kind +reloc-func+) (= kind +reloc-cast-func+))
+                                  (emit-u32 buf (or (nref-index ref)
+                                                    (setf (nref-index ref) (func-index m (nref-name ref))))))
+                                 ((or (= kind +reloc-global-get+) (= kind +reloc-global-set+))
+                                  (unless (nref-index ref)
+                                    (setf (nref-index ref) (global-index m (nref-name ref))
+                                          (nref-nonnull ref)
+                                          (and (gethash (nref-name ref) (wasm-module-nonnull-globals m)) t)))
+                                  (emit-u32 buf (nref-index ref))
+                                  (when (and (= kind +reloc-global-get+) (nref-nonnull ref)) (emit-byte buf #xD4)))
+                                 (t (declare-func-ref m (nref-name ref))))
+                           (setq shift (+ shift (- (fill-pointer buf) before))))))
+              (hints-to (+ (length octets) 1))
+              (copy-to (length octets)))
+            (values buf (nreverse out-hints))))
+        (encode-function-body-now m f))))
+
+(defun encode-function-early (m f)
+  "Encode the body of F now, with relocations, and drop its instructions.
+(Not when something of it is not known yet, a type: it is then encoded with
+the module as before.)"
+  (let ((*module* m) (*relocations* (list nil)) (*quiet-encode-errors* t))
+    (multiple-value-bind (buf hints)
+        (handler-case (encode-function-body-now m f)
+          (error () (return-from encode-function-early nil)))
+      (let* ((relocs (nreverse (car *relocations*)))
+             (v (make-array (* 3 (length relocs)))) (i 0))
+        (dolist (r relocs)
+          (setf (svref v i) (car r) (svref v (+ i 1)) (cadr r) (svref v (+ i 2)) (cddr r))
+          (incf i 3))
+        ;; what it refers to is counted in the nrefs (WASM-FUNC-USES, which
+        ;; lists it for a function that has its instructions, has none for it)
+        (dolist (r relocs)
+          (let ((kind (cadr r)) (ref (cddr r)))
+            (declare (fixnum kind))
+            (cond ((= kind +reloc-func+) (incf (nref-calls ref)))
+                  ((= kind +reloc-global-get+) (incf (nref-gets ref)))
+                  ((= kind +reloc-global-set+) (incf (nref-sets ref))))))
+        (setf (wasm-func-encoded f) (list (subseq buf 0) v hints)
+              (wasm-func-body f) nil
+              (wasm-func-use-lists f) (list nil nil nil nil))
+        t))))
+
+(defun encode-function-body-now (m f)
   (let* ((*current-func* f)
          (*branch-hints* nil)
          (buf (make-buf))
@@ -1385,8 +1537,9 @@ nothing would change."
         (emit-u32 buf (car g))
         (emit-valtype m buf (cdr g))))
     (handler-bind ((error (lambda (c)
-                            (format *error-output* "~&;; wasm encode error in function ~S: ~A~%"
-                                    (wasm-func-name f) c))))
+                            (unless *quiet-encode-errors*
+                              (format *error-output* "~&;; wasm encode error in function ~S: ~A~%"
+                                      (wasm-func-name f) c)))))
       (emit-function-code buf (wasm-func-body f) m (wasm-func-name f)))
     (values buf (nreverse *branch-hints*))))
 
@@ -1435,6 +1588,10 @@ DIRECTORY (the runtime's) whose bodies are larger than OCTETS get no branch hint
 (defun encode-module (m)
   (let ((out (make-buf))
         (*module* m))
+    ;; (the indexes of the nrefs are those of this encoding)
+    (flet ((forget (name ref) (declare (ignore name)) (setf (nref-index ref) nil)))
+      (maphash #'forget (wasm-module-func-refs m))
+      (maphash #'forget (wasm-module-global-refs m)))
     (emit-bytes out #(#x00 #x61 #x73 #x6D #x01 #x00 #x00 #x00))
     ;; Encode function bodies first, so that ref.func declarations are collected.
     (let* ((hints nil)
