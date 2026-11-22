@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 
 const [dir, mode] = [path.resolve(process.argv[2]), process.argv[3]];
 const url = (file) => pathToFileURL(path.join(dir, file)).href;
-const lazy = mode === 'lazy';
+const embedded = mode === 'embedded';
+const lazy = mode === 'lazy' || embedded;
 // (the lazy library's modules are .js: tests/lib/lazy.lisp)
 const ext = lazy ? '.js' : '.mjs';
 
@@ -25,7 +26,8 @@ const places = await import(url(`places${ext}`));
 if (lazy) {
   // nothing is loaded yet: the library can still be given another module
   const { useLibrary } = await import(url(`package.library${ext}`));
-  useLibrary(new URL(url('package.wasm')));
+  // (an embedded library is given another module as its bytes)
+  useLibrary(embedded ? fs.readFileSync(path.join(dir, 'package.wasm')) : new URL(url('package.wasm')));
 }
 assert.equal(lib.version, 113);
 assert.deepEqual([...lib.names], ['a', 'b']);
@@ -138,4 +140,23 @@ assert.equal(lib.thrownKind(() => { throw undefined; }), 'undefined');
 assert.equal(lib.thrownKind(() => { throw false; }), 'boolean');
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
+if (embedded) {
+  // what the modules import is of no Node.js
+  const imported = (file) => [...fs.readFileSync(path.join(dir, file), 'utf8').split('\n')
+    .filter((line) => !line.trimStart().startsWith('//')).join('\n').matchAll(/from '([^']+)'|import\('([^']+)'\)/g)]
+    .map((m) => m[1] ?? m[2]);
+  const seen = new Set();
+  const walk = (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const spec of imported(file)) {
+      assert.ok(spec.startsWith('.'), `${file} imports ${spec}`);
+      walk(path.join(path.dirname(file), spec));
+    }
+  };
+  walk('package.js');
+  walk('places.js');
+  assert.ok(seen.has('clysm/web/lib.mjs'));
+  assert.ok(!fs.existsSync(path.join(dir, 'clysm/lib.mjs')));
+}
 console.log(`lib: package (${mode}) ok`);

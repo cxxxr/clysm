@@ -51,6 +51,14 @@ cat build/lib-test/lazy.out
 if ! grep -qx 'to the standard error' build/lib-test/lazy.err || grep -q 'to the standard error' build/lib-test/lazy.out; then
   echo "lib: what the lazy library writes to its standard output is not on the standard error output"; exit 1
 fi
+bin/clysm library --shake tests/lib/embed.lisp tests/lib/package.lisp -o build/lib-test/embedded/package.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+echo '{ "type": "module" }' > build/lib-test/embedded/package.json
+node tests/lib/package.mjs build/lib-test/embedded embedded > build/lib-test/embedded.out 2> build/lib-test/embedded.err || { cat build/lib-test/embedded.out build/lib-test/embedded.err; exit 1; }
+cat build/lib-test/embedded.out
+if ! grep -qx 'to the standard error' build/lib-test/embedded.err || grep -q 'to the standard error' build/lib-test/embedded.out; then
+  echo "lib: what the embedded library of :output :error writes to its standard output is not on the standard error output"; exit 1
+fi
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

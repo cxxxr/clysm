@@ -1622,6 +1622,15 @@ JavaScript written for it (`tests/lib/package.lisp`):
   have no `create` or `default`. A constant is a copy there, not the value
   the loaded library has: an object that Lisp changes later is better a
   function's value.
+- `(js:library-options :embed t)`: the modules hold the module's bytes (in
+  base64) and load it with `host/web/lib.mjs`, which imports no module of
+  Node.js: a library for a page, a browser's worker or Electron's renderer,
+  and for Node.js as well. Such a program has no files, processes or
+  command line; its standard output is `console.log` (a line at a time) and
+  its error output `console.error`. It is loaded at once, in the calling
+  thread (`new WebAssembly.Module`): Chrome compiles a module of up to 8 MB
+  so on a page's main thread, Firefox and Safari any. `useLibrary` takes
+  another module as its bytes or a `WebAssembly.Module`.
 - A class's declaration (`:type`) names what it extends; a class it
   extends that the library does not export is declared with
   `JS:DECLARE-TYPES`.
