@@ -9939,15 +9939,45 @@ application of two systems and a file: macros and a function of
 function, `intern` at run time and a `notinline` function redefined.
 
 **`--shake`** leaves the functions that nothing refers to out of the built
-module (`shake-module`, as `clysm compile --shake` in the compiler compiled
-by itself: without the heap made beforehand, `src/preinit.lisp`, which
-only the compiler on SBCL has): `tests/hello.lisp` 5.25 -> 3.90 MB,
-`tests/static`'s application 5.33 -> 3.98 MB, the seven systems of
-`bench/libs.lisp` with the benchmarks 9.10 -> 7.61 MB (the build 11 -> 18
-s). The contract is that of `--shake`: of the library benchmarks only
-Alexandria's own tests fail it (rt evaluates the forms of the tests, kept
-as data, when it runs: the functions they name are not referred to by
-code).
+module (`shake-module`), and the module starts from the heap of the
+runtime made when it is built, as `clysm compile --shake` on SBCL
+(`src/preinit.lisp`, "Size and start-up"; 2026-11-23). At first the image
+had only the shaking: `tests/hello.lisp` 5.25 -> 3.90 MB, where SBCL's
+compiler made 1.90 MB, the runtime's toplevel forms keeping their definers
+and all that those reach. `src/preinit.lisp` is now compiled into the
+image too. What it took from SBCL is the environment and the process that
+runs the module of the runtime's toplevel forms (`ph-getenv`,
+`ph-run-node`: `sb-ext:run-program` there, `sys::%run-program-sync`,
+node's `spawnSync`, in the image, where the variables the child must not
+see are given empty); `static-open` records how many toplevel functions
+the runtime has (`*runtime-top-count*`) and names `preinit-shake` for
+`build-module`, in the state of the program being built, so that nothing
+changes for the image's other compilations (`CLYSM_NO_PREINIT=1`: the
+module runs its toplevel forms, as before). The heap is that of the
+runtime alone: the toplevel forms of the systems run when the program
+starts.
+
+| | whole | `--shake` before | `--shake` now |
+|---|---|---|---|
+| `tests/hello.lisp` | 5.25 MB | 3.91 MB | 1.90 MB (SBCL's compiler: 1.90) |
+| its start (`node host/run.mjs`, best of 15) | | 136 ms | 55 ms (SBCL's: 54) |
+| `tests/static`'s application | 5.34 MB, 151 ms | 3.98 MB | 2.95 MB, 121 ms |
+| `bench/libs.lisp`, seven systems | 9.12 MB | 7.61 MB | 6.64 MB |
+| `bench/apps.lisp`, five systems | 11.24 MB | 9.73 MB | 8.97 MB |
+
+The benchmarks of both files give the same results shaken either way
+(of the library benchmarks only Alexandria's own tests fail the contract
+of `--shake`: rt evaluates the forms of the tests, kept as data, when it
+runs, and the functions they name are not referred to by code). The build
+takes longer (libs 14 s whole, 17 s shaken, 19 s with the heap; apps 17 and
+30 s: the module of the runtime's forms is encoded and run, and the heap
+walked), and the REPL image is 239 KB larger (8,676,800 -> 8,915,413
+octets: `src/preinit.lisp`, which only a build with `--shake` calls; it
+could instead be loaded when such a build asks for it). `tests/static`
+checks that the heap was made and that the shaken module is under two
+thirds of the whole one. `--image` with `--shake` is refused by
+`bin/clysm`: a shaken module has no loader of heap images of its own (the
+image was saved and then not loaded, before this too).
 
 **A heap image of a built program** (`--main FUNCTION --image`). The
 mechanism of the REPL image (Heap images) serves a built program as it is:
@@ -10020,8 +10050,9 @@ decoder 900-1100 against 673 (1.35-1.6).
   the result 10%, the string streams of the tokens, `intern`,
   `camel-case-split`).
 
-Next: the heap of a shaken built program made beforehand (preinit in the
-image); the linked image and compilation hints for the start of a built
+Next: the heap of a shaken program after the *systems'* toplevel forms
+(`--preinit-through`, which `clysm compile` has: the definers of the
+program's classes and packages then go too); the linked image and compilation hints for the start of a built
 program (as Lem's desktop application has); the module in a browser page
 (`host/web`).
 

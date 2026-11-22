@@ -51,7 +51,8 @@
     *live-direct-closure-hook* *live-key-layout-hook*
     *unit-env* *batch-forms* *batch-unknown-calls* *batch-no-direct* *batch-form-index*
     *host-load-defuns* *runtime-package-names* *shake* *shake-symbols* *eval-string*
-    *runtime-top-count* *preinit-parts* *preinit-table-check* *m* *source-root* *current-source*
+    *runtime-top-count* *preinit-parts* *preinit-table-check* *preinit-function* *preinit-root*
+    *preinit-through* *m* *source-root* *current-source*
     *record-definitions* *redefinable-functions* *live-inline-ok* *live-toplevel-loop-p*
     *export-live-helpers* *runtime-copy-limit* *install-counter*
     clysm-sys::*gf-unit* clysm-sys::*proclaimed-safety*)
@@ -83,8 +84,9 @@ keeps what THUNK changes."
 installation ROOT, a directory name) is compiled.  The program, for
 STATIC-ADD-FILE, STATIC-ADD-FORM and STATIC-FINISH.  SHAKE: the functions
 that nothing of the program refers to are left out of its module, as with
-`clysm compile --shake` (without the heap made beforehand, src/preinit.lisp,
-which the compiler on SBCL makes)."
+`clysm compile --shake`, and the module starts from the heap that the
+runtime's toplevel forms make, made when the program is built
+(src/preinit.lisp; not with CLYSM_NO_PREINIT in the environment)."
   (when *static-build* (error "A program is being built in this image already."))
   (let* ((vars *static-state-variables*)
          (live (mapcar (lambda (v) (cons v (and (boundp v) (symbol-value v)))) vars))
@@ -110,6 +112,7 @@ which the compiler on SBCL makes)."
                  *unit-env* nil *batch-forms* nil *batch-unknown-calls* nil *batch-no-direct* nil
                  *batch-form-index* 0 *host-load-defuns* nil *shake* nil *shake-symbols* nil
                  *eval-string* nil *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil
+                 *preinit-function* nil *preinit-root* nil *preinit-through* nil
                  *source-root* (pathname root) *current-source* nil *record-definitions* nil
                  *redefinable-functions* nil *live-inline-ok* nil *live-toplevel-loop-p* nil
                  *export-live-helpers* nil *runtime-copy-limit* nil
@@ -134,6 +137,12 @@ which the compiler on SBCL makes)."
              (when version
                (process-toplevel `(setq clysm-sys::*clysm-version* ,version) (make-cenv)))
              (finish-runtime))
+           ;; (the runtime's toplevel functions, which src/preinit.lisp runs
+           ;; when the program is built)
+           (when (and *shake* (not (ph-getenv "CLYSM_NO_PREINIT")))
+             (flush-toplevel)
+             (setq *preinit-function* 'preinit-shake *preinit-root* (pathname root)
+                   *runtime-top-count* (length *toplevel-lams*)))
            ;; the program's files: what the image knows of the systems loaded
            ;; into it (their macros, special variables, constants) is known
            (setq *static-image* :user
