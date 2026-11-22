@@ -594,8 +594,10 @@ async function runProgram(data, port, netBuffer) {
     v8.setFlagsFromString('--experimental-wasm-branch-hinting');
     // a function is validated when it is first compiled, as it is compiled
     // then (most of the image's functions and of a fasl's never run): the
-    // image compiles in 17 ms instead of 30
-    v8.setFlagsFromString('--wasm-lazy-validation');
+    // image compiles in 17 ms instead of 30 (CLYSM_EAGER_VALIDATION=1:
+    // every function of every module is validated when the module is
+    // made, to check the compiler's code)
+    if (!process.env.CLYSM_EAGER_VALIDATION) v8.setFlagsFromString('--wasm-lazy-validation');
     // the functions that a heap image's image names (its compilationHints
     // section: see training below) are compiled with the module
     v8.setFlagsFromString('--experimental-wasm-compilation-hints');
