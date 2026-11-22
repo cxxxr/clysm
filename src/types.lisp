@@ -45,17 +45,28 @@
 (defstruct (ty (:constructor %ty (bits lo hi &optional cls))) (bits 0) (lo nil) (hi nil)
   (cls nil))   ; for instances only: the name of a structure class they belong to
 
+;;; Types are not changed once made, and most of those made are of a few
+;;; kinds with no range and no class (the type of NIL, of a symbol, of
+;;; anything but NIL...: 3 million a compilation of the runtime): one object
+;;; for each set of kinds.
+(defvar *kinds-types* (make-hash-table) "bits -> the type of those kinds, no range, no class")
+
+(defun kinds-ty (bits)
+  (or (gethash bits *kinds-types*)
+      (setf (gethash bits *kinds-types*) (%ty bits nil nil))))
+
 (defun mkty (bits &optional lo hi cls)
   (if (logtest bits +k-int+)
       (if (and lo hi (> lo hi))
-          (%ty (logandc2 bits +k-int+) nil nil)
+          (kinds-ty (logandc2 bits +k-int+))
           (%ty bits lo hi))
       ;; a class describes the +k-other+ part (with simple vectors or strings
       ;; for the class of arrays of any rank, see VEC-TY)
-      (%ty bits nil nil (and cls (logtest bits +k-other+)
-                             (zerop (logandc2 bits (logior +k-other+ +k-svec+ +k-string+)))
-                             (or (= bits +k-other+) (anyrank-class-p cls))
-                             cls))))
+      (let ((cls (and cls (logtest bits +k-other+)
+                      (zerop (logandc2 bits (logior +k-other+ +k-svec+ +k-string+)))
+                      (or (= bits +k-other+) (anyrank-class-p cls))
+                      cls)))
+        (if cls (%ty bits nil nil cls) (kinds-ty bits)))))
 
 (defvar *ty-top* (%ty +k-all+ nil nil))
 (defvar *ty-bottom* (%ty 0 nil nil))
