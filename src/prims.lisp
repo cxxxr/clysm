@@ -722,7 +722,11 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defun inline-fixnum-pair-code (ta tb x y slow)
   "Code branching to SLOW unless the eqref locals TA and TB hold fixnums,
 leaving them in the i32 locals X and Y."
-  `((:local.get ,ta) (:ref.test :i31) (:local.get ,tb) (:ref.test :i31) :i32.and :i32.eqz (:hint 0) (:br_if ,slow)
+  `(;; (one branch for each operand: after a branch on its own test the
+    ;; engine knows the operand an i31 and the extraction has no test of its own;
+    ;; the AND of the two tests made a flag of each and tested each again)
+    (:local.get ,ta) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
+    (:local.get ,tb) (:ref.test :i31) :i32.eqz (:hint 0) (:br_if ,slow)
     ;; (characters are i31s outside the fixnum range)
     (:local.get ,ta) (:ref.cast! :i31) :i31.get_s (:local.tee ,x) (:i32.const ,+char-tag+) :i32.add
     (:local.get ,tb) (:ref.cast! :i31) :i31.get_s (:local.tee ,y) (:i32.const ,+char-tag+) :i32.add :i32.or
