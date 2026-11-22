@@ -1706,11 +1706,40 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 
 (defun define-standard-helpers ()
   ;; (:callsym k): (sym, a1..ak) -> eqref, calling through the function cell
-  (setf *helpers* (remove-helpers-of-kinds '(:callsym :cellcall)))
+  (setf *helpers* (remove-helpers-of-kinds '(:callsym :cellcall :hdr-locate)))
   ;; (:cellcall k): (a1..ak, sym) -> eqref, the call of the symbol's function
   ;; as a call site makes it (null with an exit pending, which the caller
   ;; tests): for the calls that are rarely made (the other arm of a guarded
   ;; direct call), six octets where the call is
+  ;; (:hdr-locate KIND): (array, subscript) -> (storage, index), for the
+  ;; inline AREF and CHAR of an object that is no simple vector or string: a
+  ;; one-dimensional array header (a fill pointer, adjustable, displaced)
+  ;; over storage of KIND with the subscript below its dimension gives its
+  ;; storage and the index there; anything else null (the caller's slow
+  ;; call).  Out of line: 40 octets less at each access of an array of
+  ;; unknown type, and the engine inlines it where such arrays are used.
+  (dolist (kind '(:vector :string))
+    (let ((kind kind))
+      (push (list (list :hdr-locate kind)
+                  (let ((tn (list :hdr-locate-type kind)))
+                    (unless (gethash tn *extra-types*)
+                      (setf (gethash tn *extra-types*) t)
+                      (add-type *m* tn `(:func (:eqref :i32) ((:ref :null ,kind) :i32))))
+                    tn)
+                  '((m (:ref :null :mdarray)) (s :eqref))
+                  (lambda ()
+                    `((:block fail nil
+                        (:local.get 0) (:ref.test :mdarray) :i32.eqz (:br_if fail)
+                        (:local.get 0) (:ref.cast! :mdarray) (:local.tee m)
+                        (:struct.get :mdarray 7) (:local.get 1) :i32.le_u (:br_if fail)
+                        (:local.get m) (:struct.get :mdarray 0) (:local.tee s) (:ref.test ,kind) :i32.eqz
+                        (:br_if fail)
+                        (:local.get s) (:ref.cast! ,kind)
+                        (:local.get m) (:struct.get :mdarray 3) (:ref.cast :i31) :i31.get_s
+                        (:local.get 1) :i32.add
+                        :return)
+                      (:ref.null ,kind) (:i32.const 0))))
+            *helpers*)))
   (loop for k from 0 to +max-fixed-args+
         do (let ((k k))
              (push (list (list :cellcall k)

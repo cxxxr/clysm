@@ -683,8 +683,11 @@ may be: a bignum beyond 64 bits within the range, an array of another rank)."
                       ,(cond ((and (= flo +most-negative-fixnum+) (= fhi +most-positive-fixnum+))
                               `(,(obj) (:ref.cast :i31) :i31.get_s (:local.set ,v) ,@(fixnum-test-instrs v)))
                              ((> flo fhi) '((:i32.const 0)))
-                             (t `(,(obj) (:ref.cast :i31) :i31.get_s (:local.tee ,v) (:i32.const ,flo) :i32.ge_s
-                                  (:local.get ,v) (:i32.const ,fhi) :i32.le_s :i32.and)))
+                             ;; (one unsigned comparison of the distance from
+                             ;; the lower bound: below it, the difference wraps)
+                             (t `(,(obj) (:ref.cast :i31) :i31.get_s
+                                  ,@(unless (zerop flo) `((:i32.const ,flo) :i32.sub))
+                                  (:i32.const ,(- fhi flo)) :i32.le_u)))
                       ,(cond ((not big) '((:i32.const 0)))
                              ((and (null lo) (null hi)) `(,(obj) (:call :int-box-p)))
                              (t
