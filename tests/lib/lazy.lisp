@@ -3,4 +3,3 @@
 ;;; to the standard error output.  Its modules are .js files (with a package.json
 ;;; of "type": "module" beside them), which TypeScript pairs with their .d.ts.
 (js:library-options :lazy t :output :error :extension ".js")
-(js:export "say" (lambda (text) (write-line text) (finish-output) nil) :type "(text: string) => null")

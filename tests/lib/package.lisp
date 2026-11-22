@@ -50,6 +50,11 @@ export type Places = Place[];" :entry "places")
 (js:export "Counter" *counter*)
 ;; the same class under another name, and exports named as the helpers of a lazy library's modules
 (js:export "Tally" *counter*)
+;; a class of no export of its own name, under two
+(let ((hidden (js:define-class "Hidden" :type "declare class Hidden { readonly hidden: true }"
+                               :constructor (lambda (this) (js:set this "hidden" t)))))
+  (js:export "First" hidden)
+  (js:export "Second" hidden))
 (js:export "library" (lambda () "a function named library") :type "() => string")
 (js:export "classes" "a constant named classes" :type "string")
 
@@ -89,3 +94,7 @@ export type Places = Place[];" :entry "places")
 (js:export "firstPlace" (lambda (places) (js:get places 0)) :entry "places"
            :type "(places: Places) => Place")
 (js:export "placesVersion" 2 :entry "places" :type "number")
+;; (an entry's export named as the binding its eager module had)
+(js:export "lib" "a constant named lib" :entry "places" :type "string")
+;; written to the standard output: on the standard error, with :output :error
+(js:export "say" (lambda (text) (write-line text) (finish-output) nil) :type "(text: string) => null")

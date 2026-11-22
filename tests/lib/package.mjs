@@ -33,7 +33,8 @@ assert.equal(places.placesVersion, 2);
 assert.equal(typeof lib.PlaceError, 'function');
 assert.equal(lib.PlaceError.name, 'PlaceError');
 // the entry has its own exports and not those of the library
-assert.deepEqual(Object.keys(places).sort(), ['firstPlace', 'placesVersion']);
+assert.deepEqual(Object.keys(places).sort(), ['firstPlace', 'lib', 'placesVersion']);
+assert.equal(places.lib, 'a constant named lib');
 assert.equal(lib.firstPlace, undefined);
 if (lazy) {
   assert.equal(Object.hasOwn(lib, 'default'), false);
@@ -47,6 +48,8 @@ assert.equal(c.count, 5);
 assert.ok(c instanceof lib.Counter);
 assert.equal(lib.Tally, lib.Counter);
 assert.equal(new lib.Tally(1).add(1), 2);
+assert.equal(lib.First, lib.Second);
+assert.equal(new lib.First().hidden, true);
 assert.equal(lib.library(), 'a function named library');
 assert.equal(lib.classes, 'a constant named classes');
 const d = lib.Counter.of(10);
@@ -98,8 +101,6 @@ assert.match(placesDts, /import type \{ Place \} from '\.\/package\.js';\nexport
 assert.match(placesDts, /export declare const firstPlace: \(places: Places\) => Place;/);
 assert.doesNotMatch(placesDts, /Counter/);
 
-if (lazy) {
-  assert.ok(loaded().instance);
-  lib.say('to the standard error');
-}
+if (lazy) assert.ok(loaded().instance);
+lib.say('to the standard error');
 console.log(`lib: package (${mode}) ok`);
