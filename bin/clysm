@@ -30,6 +30,11 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="${NODE:-node}"
+# The young generation may grow to semi-spaces of 256 MB (the engine's default
+# is 64; CLYSM_NURSERY_MB names another size): see host/run.mjs, which gives
+# it to the worker a compiled program runs in; the main thread, where the REPL
+# image runs, takes it from the command line.
+NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"
 # The compiler runs on SBCL, whose heap is 1 GB (or 8 GB, as it was built) unless it is told:
 # a large program (a system of some hundred files, with --shake) needs more than 1 GB.
 # CLYSM_SBCL_HEAP_MB names another size.
@@ -102,23 +107,23 @@ case "$cmd" in
     out="$ROOT/build/run-$$.wasm"
     sbcl --dynamic-space-size "$SBCL_HEAP" --script "$ROOT/tools/build.lisp" "$out" $files >/dev/null 2>"$out.log" || { cat "$out.log" >&2; rm -f "$out.log"; exit 1; }
     rm -f "$out.log"
-    status=0; "$NODE" "$ROOT/host/run.mjs" "$out" "$@" || status=$?
+    status=0; "$NODE" $NURSERY "$ROOT/host/run.mjs" "$out" "$@" || status=$?
     rm -f "$out"; exit $status ;;
-  repl)   if [ "$1" = "--interp" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$(interp_image)" "$@"; fi
+  repl)   if [ "$1" = "--interp" ]; then shift; exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$(interp_image)" "$@"; fi
           img="$(repl_image)"; heap_image "$img"
-          exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+          exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$@" ;;
   script) img="$(repl_image)"; heap_image "$img"
-          exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+          exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$@" ;;
   eval)   img="$(repl_image)"; heap_image "$img"
-          if [ "$1" = "--no-userinit" ]; then shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" --no-userinit --eval "$@"; fi
-          exec "$NODE" "$ROOT/host/run.mjs" "$img" --eval "$@" ;;
+          if [ "$1" = "--no-userinit" ]; then shift; exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" --no-userinit --eval "$@"; fi
+          exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" --eval "$@" ;;
   swank)  port=4005
           while [ $# -gt 0 ]; do
             case "$1" in --port) port="$2"; shift 2;; *) echo "clysm swank: unknown option $1" >&2; exit 1;; esac
           done
           img="$(repl_image)"; heap_image "$img"
-          CLYSM_SWANK_PORT="$port" exec "$NODE" "$ROOT/host/run.mjs" "$img" "$ROOT/contrib/swank/start.lisp" ;;
-  exec)   img="$1"; shift; exec "$NODE" "$ROOT/host/run.mjs" "$img" "$@" ;;
+          CLYSM_SWANK_PORT="$port" exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$ROOT/contrib/swank/start.lisp" ;;
+  exec)   img="$1"; shift; exec "$NODE" $NURSERY "$ROOT/host/run.mjs" "$img" "$@" ;;
   test)   exec "$NODE" "$ROOT/bin/clysm.mjs" test "$@" ;;
   image-interp) interp_image ;;
   image-native) repl_image ;;

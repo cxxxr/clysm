@@ -543,6 +543,15 @@ function installNetClient(port, sab) {
 const selfPath = fileURLToPath(import.meta.url);
 const NET_BUFFER_BYTES = 16 + NET_DATA_BYTES;
 const stackMb = () => Number(process.env.CLYSM_STACK_MB || 1024);
+// The young generation may grow to semi-spaces of 256 MB (CLYSM_NURSERY_MB;
+// the engine's default is 64): it grows only while what it holds survives,
+// and data that lives for a while (lists being built, a cache) is then
+// copied once or not at all instead of twice by scavenges that also lose
+// the order of the lists ("Allocation, garbage collection and the engine's
+// flags" in docs/INTERNALS.md).  A worker is given it here (the young
+// generation is three semi-spaces); the main thread's heap is made before
+// this file runs, so bin/clysm gives node --max-semi-space-size.
+const nurseryMb = () => Number(process.env.CLYSM_NURSERY_MB || 256);
 
 async function inMainThread() {
   const env = process.env;
@@ -675,7 +684,8 @@ if (isMainThread && process.argv[1] === selfPath) {
     const netBuffer = new SharedArrayBuffer(NET_BUFFER_BYTES);
     const worker = new Worker(selfPath, {
       workerData: { ...data, netBuffer },
-      resourceLimits: { stackSizeMb: stackMb(), maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096) },
+      resourceLimits: { stackSizeMb: stackMb(), maxOldGenerationSizeMb: Number(process.env.CLYSM_HEAP_MB || 4096),
+                        maxYoungGenerationSizeMb: 3 * nurseryMb() },
       stdin: false,
     });
     makeNetServer(worker, netBuffer);

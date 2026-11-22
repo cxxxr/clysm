@@ -6278,7 +6278,8 @@ since 2026-11-21 also `s-ring`, data of medium lifetime, 6.7 times SBCL):
   small tree walk in 20 or in 38 ms. Flags were compared with interleaved
   runs, the best of four to six of each.
 
-The engine's defaults were kept; each alternative was measured against them
+The engine's defaults were kept (until 2026-11-22: the young generation's
+limit, below); each alternative was measured against them
 (ratio of geometric means, below 1 is faster):
 
 | Flag | Allocation probes | `suite` | `gabriel` | Surviving data |
@@ -6325,6 +6326,85 @@ generation through `resourceLimits.maxYoungGenerationSizeMb`.
 Measurements of large live data on this machine also depend on the other
 processes: two benchmark slots share one 32 MB L3 cache, and the same walk
 takes 33 or 276 ms.
+
+**The young generation's limit is 256 MB a semi-space** (2026-11-22; the
+engine's is 64). What the measurements above did not try: `--minor-ms` and
+the semi-space flags were given on the command line with the other
+defaults, and a larger young generation only through
+`--scavenger-max-new-space-capacity-mb=64` (128 MB). Measured this time,
+with `--trace-gc` to split the collector from the program:
+
+* `s-build-list` is all collection (30 scavenges, 800 of 920 ms: the
+  program's own part is 100 ms); `s-ring` is 270 ms of collection in 1400,
+  the rest the walk of lists whose conses the scavenger interleaved
+  (above).
+  SBCL here collects every 54 MB (`bytes-consed-between-gcs`), but its
+  conses are half the size, so the same program fills V8's 64 MB twice as
+  often with objects twice as large to copy, twice each.
+* The size of the semi-spaces, for a compiled program (a worker:
+  `resourceLimits.maxYoungGenerationSizeMb`, three semi-spaces) in
+  `bench/alloc.lisp`, time against the default's (geometric mean, and the
+  two items): 128 MB 1.21 of the time of 256 (`s-build-list` 551 against
+  204 ms, `s-ring` 264 against 107), 512 MB 0.96 (`s-ring` 78), 1 GB no
+  better than 512. With 256 MB the items that make garbage that dies young
+  are the same when they run after the young generation has grown
+  (the file with its `s-` items first: 0.99–1.03 each).
+* The young generation grows only while what is in it survives (by the
+  engine's factor of 2 when what survived since the last growth is more
+  than its size): `bench/suite.lisp`, `gabriel`, `programs`, `library`,
+  `control`, `holdout` are the same within 1% as compiled programs
+  (0.993–1.006 with 256 MB, three rounds each) and in the image
+  (`suite` 0.99, `gabriel` 0.99, `library` 1.00 of the time with 64 MB).
+* **`--semi-space-growth-factor=4`** (it can be set while the program
+  runs, in the main thread too) reaches the limit sooner: a new process
+  builds the list in 243 instead of 387 ms and the ring in 178 instead of
+  257. Not kept: a script that loads libraries then has a young
+  generation of 256 MB where 64 would have done, and touching it for the
+  first time is 100000 page faults (`bench/apps.lisp` in the image 1.10 of
+  the time, `a-cl-json-decode` 87 → 108 ms, 820 instead of 400 MB
+  resident; with the factor of 2 and the limit of 256 MB, 1.01 and 405 MB).
+* **`--min-semi-space-size`** (16 MB: `clysm eval t` 65 → 61 ms, the two
+  scavenges that copy the heap image's objects are not run) makes the same
+  scripts slower (`bench/apps.lisp` 1.065, 555 MB resident) and was not
+  kept; 8 MB does nothing for start-up.
+* **`--initial-old-space-size=256`, `--initial-heap-size=512`** (no full
+  collection while the heap is small): `bench/alloc.lisp` 1.00 and 1.05,
+  `bench/suite.lisp` 1.01. Not kept.
+* On the command line of `node`, `--max-semi-space-size` and
+  `--min-semi-space-size` cost nothing at start-up (`clysm eval t` 60.7 and
+  62.0 ms, best of 25, in a worker 88.2 and 87.4); `--minor-ms` costs 6 ms
+  in the main thread and 26 ms in a worker.
+
+So `host/run.mjs` gives a program's worker a young generation of three
+semi-spaces of 256 MB, and `bin/clysm` (and `bin/clysm.mjs`) start `node`
+with `--max-semi-space-size=256` for the REPL image, which runs in the
+main thread, whose heap exists before `host/run.mjs` runs
+(`tools/bench-lem.sh` and `tools/bench-startup.sh`, which start the image
+themselves, do the same). `CLYSM_NURSERY_MB` names another size (64: the
+engine's). What it costs: a program much of whose data survives is given
+more memory (the self-hosted compiler compiling `bench/suite.lisp`: 1.2 GB
+resident instead of 0.8, in the same time, 4.0–4.2 s), and its longest
+scavenge is longer (that compilation: 197 ms instead of 59; building the
+list: 110 instead of 57), since a scavenge copies what survived of a young
+generation four times the size. Data that lives long is still copied
+twice, so a program that keeps everything (the compiler) gains nothing;
+data that dies before 256 MB more have been allocated is not copied at all.
+Against main, interleaved in one slot through the tools, two or three rounds
+(time against SBCL's; with the changes to the list functions below):
+`bench/alloc.lisp` 1.36–1.39 → 0.96–0.98 (`s-build-list` 3.9 → 1.2, `s-ring`
+9.3 → 1.7, `s-build-hash` 0.71–0.93 → 0.59–0.63, `s-build-strings`
+1.02–1.12 → 0.90–0.93; in `clysm script` the same: 0.72 of the time),
+`gabriel` 0.86–0.88 → 0.86–0.87, `suite` 0.71 → 0.70, `library` 0.74–0.75 →
+0.73–0.74, `programs` 0.79 → 0.78–0.80, `control` 0.71–0.72 → 0.73,
+`holdout` 0.76–0.77 → 0.76–0.77, `io` 0.70–0.71 → 0.70–0.72, Lem 1.03–1.09 →
+1.05–1.08, `bench/apps.lisp` 1.21–1.23 → 1.21–1.23, start-up 4.10–4.15 →
+4.10–4.21 (`clysm eval t` 78–79 ms in both, the machine being loaded),
+`tools/bench-libs.sh` 1.07–1.08 → 1.09–1.11: the self-hosted compiler is
+2–4% slower (`l-selfhost-compile` 4.82–4.91 → 5.00–5.01 s; alone, three
+rounds, 3.93–4.19 → 4.02–4.22 s), the cost of 100000 page faults more.
+With semi-spaces of 128 MB it is not slower and takes 0.92 GB, and the
+ring is 264 ms instead of 107 (780 with the engine's 64 MB), the list 551
+instead of 204 (684): the choice for a machine short of memory.
 
 `--minor-ms` would help programs that build large data, but code whose
 garbage all dies young (`b-deriv`, the common case) is 25% slower with it
