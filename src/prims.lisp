@@ -3781,6 +3781,14 @@ locals KEYS FILL BK B BITS Y."
     (:local.get v)
     (:local.get v) (:struct.get :si17 4) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.add :ref.i31
     (:struct.set :si17 4)))
+ ;;; Separate insertion from the larger EQUAL store helper so its existing
+;;; entry path remains below V8's 640-byte inlining limit.
+(defhelper :ht-insert :eeei-e ((v (:ref :null :si17)) (hash :i32) (keys (:ref :null :vector))
+                              (fill :i32) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32))
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.set v)
+  '(:local.get 3) '(:local.set hash)
+  (ht-add-code 1 2)
+  '(:local.get 2))
 ;;; (SETF GETHASH) of a fixnum, a character or a symbol (as :HT-GET):
 ;;; the value stored in the entry of KEY, or a new entry made when there is
 ;;; room for one (as %HT-ADD); null (the call site calls the function) for
@@ -4044,8 +4052,7 @@ not a string (left to EQUAL)."
   '(:if nil nil
        ((:local.get v) (:struct.get :si17 5) (:ref.cast! :vector)
         (:local.get i) (:i32.const 1) :i32.shl (:i32.const 1) :i32.add (:local.get 2) (:array.set :vector) (:local.get 2) :return))
-  (ht-add-code 1 2)
-  '(:local.get 2))
+  '(:local.get v) '(:local.get 1) '(:local.get 2) '(:local.get hash) '(:return_call :ht-insert))
 (defprim clysm-sys::%ht-get-equal (h key slow) :value
   (let ((done (gensym "HTGETS")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-get-equal) (:br_on_non_null ,done) ,@slow))))

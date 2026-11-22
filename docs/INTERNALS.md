@@ -6980,6 +6980,16 @@ What makes the code fast:
   (56 -> 57 ms); it did not ensure distinct boxes. Typed-element and
   dynamic single-float tests pass, including mixed types and signed zero.
 
+* **Inlining budget after interleaving (2026-11-23).** Encoded helper
+  bodies in the probe module: `:ht-get` 106 bytes, `:ht-put` 435,
+  `:ht-put-id` 483. `:ht-put-equal` grew to 677 (650 before), which
+  exceeds the host's 640-byte V8 limit. Its new-entry path is now a
+  separate 255-byte `:ht-insert`; the store helper is 453 bytes. Existing
+  entries retain the cached-key path. Hash-model and equal-table tests
+  pass. TurboFan disassembly of interleaved MAPHASH still contains both
+  bounds checks (for 2I and 2I+1); adjacency alone did not deliver the
+  predicted single check. Keep that distinction in performance claims.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
