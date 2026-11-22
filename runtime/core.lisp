@@ -849,8 +849,19 @@ MAPL: the value is the first list)."
 ;;; the caches of call sites that have been used: they are emptied here,
 ;;; and so compare no epoch at each call
 (defvar *gf-sites* nil)
+;;; the cells of the discriminating functions compared with their generic
+;;; functions (%GF-DISC-ARM, clos.lisp): they are compared again
+(defvar *gf-discs* nil)
 (defun %bump-clos-epoch ()
   (setq *clos-epoch* (%fx+ *clos-epoch* 1))
+  (let ((discs *gf-discs*))
+    (when discs
+      (setq *gf-discs* nil)
+      (dolist (c discs)
+        (%set-svref c 0 nil)
+        ;; (the classes; the functions of the methods defined before the
+        ;; unit stay, for the calls under way)
+        (do ((i (the fixnum (%svref c 2)) (%fx+ i 1))) ((%fx>= i (%svlength c))) (%set-svref c i 0)))))
   ;; (an emptied site leaves the list, and is noted again when it is filled:
   ;; loading a program adds methods one by one, each emptying the sites)
   (let ((sites *gf-sites*))
