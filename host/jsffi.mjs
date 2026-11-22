@@ -16,10 +16,69 @@ const jspi = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.
 // A Lisp function called from JavaScript returns this object (made by
 // runtime/js.lisp) when it signals an error that it does not handle: the
 // call throws the Error in it.
+// (what was thrown may be undefined: JS:THROW of a value of JavaScript)
 function lispResult(r) {
-  if (r !== null && typeof r === 'object' && r.__clysm_failure__ !== undefined) throw r.__clysm_failure__;
+  if (r !== null && typeof r === 'object' && Object.hasOwn(r, '__clysm_failure__')) throw r.__clysm_failure__;
   return r;
 }
+
+// Classes of JS:DEFINE-CLASS (runtime/js.lisp).  The class is made here from
+// SPEC (its name, the class it extends, the names of its members); its
+// constructor and members call the Lisp functions that the library gives it
+// (defineClass).  The modules of a lazy library (bin/clysm library) make
+// its classes before it is loaded, with LOAD: the first use of such a class
+// loads the library, whose JS:DEFINE-CLASS then gives the class its functions.
+const implementation = Symbol.for('clysm.class');
+
+export function makeClass(spec, load = null, classes = {}) {
+  const functions = () => {
+    if (!C[implementation] && load) load();
+    if (!C[implementation]) throw new Error(`the class ${spec.name} has no functions: its Lisp library did not define it`);
+    return C[implementation];
+  };
+  const base = spec.extends == null ? null : (classes[spec.extends] ?? globalThis[spec.extends]);
+  if (spec.extends != null && typeof base !== 'function') throw new Error(`the class ${spec.name} extends ${spec.extends}, which is no class`);
+  const positions = spec.superArguments;
+  // (named as the class: what an error's stack and the console say)
+  const C = base
+    ? { [spec.name]: class extends base {
+        constructor(...args) {
+          super(...(positions ? positions.map((i) => args[i]) : []));
+          const init = functions().init;
+          if (init) init(this, ...args);
+        } } }[spec.name]
+    : { [spec.name]: class {
+        constructor(...args) {
+          const init = functions().init;
+          if (init) init(this, ...args);
+        } } }[spec.name];
+  for (const name of spec.methods) {
+    Object.defineProperty(C.prototype, name, {
+      value: { [name](...args) { return functions().methods[name](this, ...args); } }[name],
+      writable: true, configurable: true });
+  }
+  for (const name of spec.getters) {
+    Object.defineProperty(C.prototype, name, {
+      get() { return functions().getters[name](this); }, configurable: true });
+  }
+  for (const name of spec.static) {
+    Object.defineProperty(C, name, {
+      value: { [name](...args) { return functions().static[name](...args); } }[name],
+      writable: true, configurable: true });
+  }
+  return C;
+}
+
+// JS:DEFINE-CLASS: the class SPEC names, made by a module of the library
+// before it was loaded (LIBRARY.made) or made now, given its functions.
+function defineClass(spec, functions, library) {
+  library.defined ??= {};
+  const C = library.made?.[spec.name] ?? makeClass(spec, null, library.defined);
+  C[implementation] = functions;
+  library.defined[spec.name] = C;
+  return C;
+}
+globalThis.__clysm_define_class ??= defineClass;
 
 const utf16 = new TextDecoder('utf-16le', { ignoreBOM: true });
 

@@ -23,6 +23,8 @@
 //   import    the function that (js:import "specifier") calls; by default
 //             the specifier is resolved from the working directory
 //   fs        the file system (by default node:fs)
+//   classes   the classes of JS:DEFINE-CLASS, by name, that the modules of a
+//             lazy library made before loading it (they get their functions)
 //   debug     the bytes of the names and places of the module's functions
 //             (NAME.wasm.debug, which bin/clysm library writes beside
 //             NAME.wasm and which is read from there when SOURCE is a path
@@ -150,8 +152,12 @@ function instantiate(module, options, debug = null) {
   const instance = new WebAssembly.Instance(module, imports);
   state.instance = instance;
   const exportsObject = {};
-  const saved = globalThis.__clysm_exports;
+  // what the library says of itself (JS:EXPORT, JS:DEFINE-CLASS, JS:DECLARE-TYPES,
+  // JS:LIBRARY-OPTIONS), and the classes its modules made before it was loaded
+  const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {} };
+  const saved = globalThis.__clysm_exports, savedLibrary = globalThis.__clysm_library;
   globalThis.__clysm_exports = exportsObject;
+  globalThis.__clysm_library = library;
   try {
     instance.exports._start();
   } catch (e) {
@@ -162,11 +168,13 @@ function instantiate(module, options, debug = null) {
     throw e;
   } finally {
     globalThis.__clysm_exports = saved;
+    globalThis.__clysm_library = savedLibrary;
   }
   state.flush();
   return {
     instance,
     exports: exportsObject,
+    library,
     // a stack trace with the Lisp frames named by file and line
     mapStack: state.mapStack,
     // read and evaluate Lisp forms (in an image that has the evaluator: a

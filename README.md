@@ -85,6 +85,13 @@ import { outline } from './dist/outline.mjs';
 outline(source);              // a Lisp error is thrown as an Error named LispError
 ```
 
+A library can be a whole package of JavaScript: constants and classes
+(`js:define-class`, extending `Error` too) are exported as well, `js:throw`
+throws a value of JavaScript as it is, the `.d.ts` has the types the program
+declares, `:entry` gives an export a module of its own (a subpath of the
+package), and a lazy library loads at its first use
+(docs/INTERNALS.md, "A package of JavaScript").
+
 The module loads in the caller's thread (Node.js, Electron's main process)
 or, for deep recursion, in a worker (`host/worker.mjs`). Stack traces name
 Lisp functions by file and line. `--shake` leaves out the functions the

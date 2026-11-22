@@ -1551,6 +1551,66 @@ resolved from the working directory; `(js:import "@ruby/prism")` with
 `import()`, waiting with `js:await`; `(js:module "name")` is the module given
 to the loader as `{ modules: { name: ... } }`.
 
+#### A package of JavaScript
+
+A library can be what a package of JavaScript exports, with nothing of
+JavaScript written for it (`tests/lib/package.lisp`):
+
+```lisp
+(js:declare-types "export interface Place { kind: 'line'; line: number }")
+(js:export "version" 113 :type "number")              ; a constant
+(defparameter *place-error*
+  (js:define-class "PlaceError" :extends "Error" :super-arguments '(1)
+    :constructor (lambda (this reason message)
+                   (declare (ignore message))
+                   (js:set this "name" "PlaceError")
+                   (js:set this "reason" reason))
+    :type "declare class PlaceError extends Error {
+  readonly reason: string;
+  constructor(reason: string, message: string);
+}"))
+(js:export "PlaceError" *place-error*)
+(js:export "parseLine"
+           (lambda (text)
+             (or (parse-line text)
+                 (js:throw (js:new *place-error* "not-a-line" "not a line"))))
+           :type "(text: string) => Place")
+(js:export "firstPlace" #'first-place :entry "places" :type "(places: Place[]) => Place")
+```
+
+- `JS:EXPORT` exports any value: a function, a constant (converted by
+  `JS:TO-JS` once) or a class. `:entry` puts it in a module of its own,
+  `ENTRY.mjs` beside `NAME.mjs` (with `ENTRY.d.ts`), for a package's
+  subpath (`"./places"` of its `exports`); the instance is the same.
+- `JS:DEFINE-CLASS` makes a class of JavaScript whose constructor, methods,
+  getters and static functions are Lisp functions (the methods and getters
+  are given the object first). It may extend a global class (`"Error"`) or
+  one defined before; `:super-arguments` are the positions of the
+  constructor's arguments given to the constructor it extends. `new` and
+  `instanceof` work from JavaScript and from Lisp (`JS:NEW` of the class).
+- `JS:THROW` throws a value of JavaScript out of the call that JavaScript
+  made, as it is: an Error of its own class, or `new Error(message)` as
+  JavaScript code would have thrown it. In Lisp it is a `JS:JS-ERROR`,
+  which a handler can take. What a function of JavaScript throws (or a
+  promise rejects with) and no Lisp handler takes leaves the call from
+  JavaScript the same way: the caller gets the very value that was thrown
+  (`undefined` and `false` too), not a LispError. A Lisp error that no
+  handler takes is still a LispError.
+- `JS:DECLARE-TYPES` adds declarations (interfaces, types) to the `.d.ts`
+  of the library or of an entry; `:type` of an export or a class is its own
+  declaration there.
+- `(js:library-options :lazy t)` makes the modules lazy: importing one loads
+  nothing. `NAME.library.mjs` loads the module at the first call of an
+  export or the first use of a class (`loadSync`, in the calling thread);
+  the constants are written into the modules, and the classes are made
+  there before the library is loaded, which then gives them their
+  functions. `useLibrary(module, options)` of `NAME.library.mjs` gives,
+  before that, another module of the same exports (a build with more of
+  them, for tests) or options of `load()`. `:output :error` sends what
+  Lisp writes to its standard output to the process's standard error (a
+  program whose standard output is a protocol). A lazy library's modules
+  have no `create` or `default`.
+
 `tests/lib/run.sh` builds `tests/lib/demo.lisp` as a library and calls it
 from JavaScript.
 
