@@ -10,6 +10,7 @@
 # With SHAKE=1 they are compiled with --shake (the functions nothing refers
 # to are left out).
 cd "$(dirname "$0")/.." || exit 1
+NURSERY="--max-semi-space-size=${CLYSM_NURSERY_MB:-256}"   # as bin/clysm starts the image
 mkdir -p build/tests
 pass=0; fail=0; failed=""
 for f in ${@:-tests/cases/*.lisp}; do
@@ -21,9 +22,9 @@ for f in ${@:-tests/cases/*.lisp}; do
     sbcl --script "$f" > "build/tests/$name.exp" 2>/dev/null
   fi
   if [ -n "$NATIVE" ]; then
-    timeout 120 node host/run.mjs "$(bin/clysm image-native)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
+    timeout 120 node $NURSERY host/run.mjs "$(bin/clysm image-native)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
   elif [ -n "$INTERP" ]; then
-    timeout 60 node host/run.mjs "$(bin/clysm image-interp)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
+    timeout 60 node $NURSERY host/run.mjs "$(bin/clysm image-interp)" "$f" > "build/tests/$name.out" 2> "build/tests/$name.err"
   else
     if [ -n "$SELFHOST" ]; then
       compile="node host/run.mjs build/clysmc.wasm"

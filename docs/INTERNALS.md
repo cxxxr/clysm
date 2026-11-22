@@ -7709,6 +7709,111 @@ With semi-spaces of 128 MB it is not slower and takes 0.92 GB, and the
 ring is 264 ms instead of 107 (780 with the engine's 64 MB), the list 551
 instead of 204 (684): the choice for a machine short of memory.
 
+**The growth past 64 MB is earned** (2026-11-23, compiled programs). The
+engine grows the young generation when what survived since it last grew is
+more than its size, however little of each scavenge that is: the
+self-hosted compiler, whose scavenges of 64 MB keep 7–30%, ended with
+semi-spaces of 256 MB that saved it no copying (what it keeps lives long:
+the part kept does not fall when the space doubles, 0.05–0.27 at 128 MB,
+0.09–0.30 at 256) and cost 0.4 GB, 100000 page faults and scavenges of 197
+ms. Growing pays when what a scavenge keeps dies soon after (the ring:
+0.48 kept at 64 MB, 0.24 at 128, 0.14 at 256) or when it keeps nearly all.
+`nurseryControl` in `host/run.mjs` decides that from the scavenges
+themselves: `v8.GCProfiler` records the heap before and after each
+collection, and for each scavenge of semi-spaces of 64 MB or more the part
+kept is what is left in the young generation and what the old one gained,
+over what there was. `--semi-space-growth-factor`, which the engine reads
+at each growth and which can be set while the program runs, is 1 (nothing
+grows; on the command line the engine makes it 2) or 2: growth as the
+engine decides until two scavenges at the present size have been seen,
+then while they keep 80% or more, or 15% or more unless the last growth
+was of no use (the part kept is more than 0.7 of what it was at the size
+before), which holds until they keep 25 points more than then.
+
+Nothing of the program's own thread can run it: a compiled program never
+returns to its event loop, and no JavaScript runs at a collection.
+Measured: `worker.getHeapStatistics()` from the main thread is answered
+only when the worker's event loop turns (0 samples in 1.5 s of a busy
+worker); the host functions the program calls are no clock (the compiler
+makes 3.8 million calls of `identity_hash`, none in its first four
+seconds, when the young generation grows). What does run in a busy worker
+is a message of the inspector: the main thread, 250 ms after it started
+the worker (`superviseNursery`; a short program never loads the
+inspector), opens a session of the `NodeWorker` domain and every 50 ms
+sends the worker `Runtime.evaluate` of the call, which the worker handles
+at its next stack check (0.1–0.9 ms later, at times some hundred). No
+domain of the debugger is enabled, and `bench/suite.lisp` runs in the same
+time with and without it (1.000). The profiler is on only while the
+semi-spaces are of 32 MB or more, and, once there is nothing to decide
+(the limit reached, or no growth for four scavenges), only while the old
+generation gains a tenth of a semi-space between two runs and one run in
+twenty: recording the heap at every scavenge was 5% of the time of a
+program whose garbage dies young in semi-spaces of 64 MB (`a-list-churn`
+70 → 75 ms). `CLYSM_NURSERY_ADAPT=0` leaves the engine alone,
+`CLYSM_NURSERY_TRACE=1` prints each decision.
+
+Interleaved in one slot (the machine loaded; engine's 64 MB, the limit of
+256 MB alone, and with the control): the self-hosted compiler on
+`bench/suite.lisp` 4.85–4.91 s and 0.81 GB, 4.91–5.04 s and 1.18 GB,
+4.80–4.89 s and 0.81 GB (214000 page faults, as with 64 MB); in
+`bench/alloc.lisp`, `s-ring` 460–490, 98–107, 98–146 ms, `s-build-list`
+632–664, 202–226, 294–477 ms (369 in the last version; SBCL 163–190: its
+list of one repetition, 192 MB, is all alive at each scavenge until it is
+dropped, which the control cannot tell from data that stays, so it grows
+later than the engine alone, which had 256 MB in time for the second
+repetition), the items of garbage that dies young the same;
+`bench/alloc.lisp` against SBCL 1.36–1.39 on main, 0.96–0.98 with the
+limit alone, 1.07 with the control.
+
+The image in the main thread (`clysm script`, the REPL) has the limit of
+256 MB without the control: nothing can interrupt the main thread to run
+it (a worker that did would have to be started with the image: 30 ms),
+and there `bench/apps.lisp`, Lem and start-up were the same with 64 and
+256 MB. Every entry that starts the image itself passes the same
+`--max-semi-space-size` as `bin/clysm`: `tools/run-tests.sh`,
+`tests/ansi/run.sh`, `make repl`, `tools/bench-lem.sh`,
+`tools/bench-startup.sh` (a `node host/run.mjs IMAGE` typed by hand has
+the engine's 64 MB). **Pauses**: the longest scavenge copies what survived
+of one semi-space, about 1 ms a megabyte, so `CLYSM_NURSERY_MB` is also
+the bound of the pause: 64 is the engine's (scavenges of at most 57–59 ms
+measured where 256 MB gave 110–197), and a smaller one shortens them in
+proportion at the cost of the table above (`--max-semi-space-size=8`:
+1.35–1.5 on the allocation probes). In the
+browser and in Electron the engine's default stays: a page cannot set the
+flag, and `ui/electron/main.js` passes `jsFlags` of the application's
+options to `js-flags` for whoever wants another (not measured there: Lem's
+comparator, in Node.js, is the same with 64 and 256 MB).
+
+**Start-up: the scavenges of the heap image** (2026-11-23; not changed).
+`clysm eval t` runs six scavenges, five of them copying the objects of the
+heap image as it is restored (12 MB; 1–7 ms each, 10–15 of 65 ms). They
+are born in the young generation (a `struct.new` of Wasm allocates there;
+nothing a module or the host can say makes the engine allocate them old:
+`--single-generation` is read when the heap is made and the code the
+engine generates allocates young inline), so each is copied twice whenever
+it is scavenged, and what can be saved is only what a short process never
+gets to: copies put off until after it has ended. Two ways were measured,
+best and median of 31 `clysm eval t` in a slot, and `bench/apps.lisp` in
+the image:
+
+| | `clysm eval t` | `bench/apps.lisp`, resident |
+|---|---|---|
+| as it is | 63.6, 69.9 ms | 1.00, 411 MB |
+| `--semi-space-growth-factor=4` set by `host/run.mjs` until the image is loaded, then 2 | 62.3, 67.0 | |
+| 8 | 64.1, 68.4 | 0.98, 411 MB |
+| 16 (two scavenges instead of six) | 61.8, 64.8 | 1.00, 551 MB |
+| 32 | 61.9, 66.2 | |
+| `--min-semi-space-size=16` on the command line (above) | 60.9, 64.9 | 1.065, 555 MB |
+
+The factor can be set at run time and set back, but the young generation
+it leaves is twice as large as it would have been (16 MB instead of 8)
+with 12 MB in it that count as survivors at the next scavenge, and a
+script that then loads libraries reaches semi-spaces of 128 MB instead of
+64: 2–5 ms of 65 for 140 MB. A scavenge the engine is not asked for cannot
+be avoided without a larger space, and a larger space cannot be given
+back (the engine shrinks it only when idle), so `host/run.mjs` is as it
+was.
+
 **Lists and sequences of a few elements** (2026-11-22; 40 probes of the
 functions that make a list, a vector or a string, on arguments of 3 to 15
 elements held in variables: SBCL folds `(length (copy-seq "literal"))` and
