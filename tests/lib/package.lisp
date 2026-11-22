@@ -135,3 +135,31 @@ export type Places = Place[];" :entry "places")
 (js:export "JSON" "json" :type "string")
 (js:export "process" "process" :type "string")
 (js:export "Hidden" 123 :type "number")
+
+;; Values as JavaScript has them: JS:GET-RAW, JS:CALL-RAW, JS:FUNCALL-RAW, JS:RAW-FUNCTION.
+(flet ((kind (v) (string-downcase (symbol-name (js:typeof v)))))
+  (js:export "rawKinds"
+             (lambda (o f)
+               (list (kind (js:get-raw o "u")) (kind (js:get-raw o "n")) (kind (js:get-raw o "f"))
+                     (kind (js:call-raw o "itself")) (kind (js:funcall-raw f))
+                     ;; a callback given its arguments unconverted
+                     (js:funcall f (js:raw-function (lambda (x) (kind x))))))
+             :type "(o: object, f: (callback?: (x: unknown) => string) => unknown) => string[]")
+  ;; a part of a long text parsed where it is: the text and the part stay JavaScript's
+  (js:export "parsePart"
+             (lambda (text start end)
+               (js:call (js:global "JSON") "parse" (js:call-raw text "slice" start end)))
+             :raw t :type "(text: string, start: number, end: number) => unknown"))
+(js:export "awaitKind"
+           (lambda (promise) (string-downcase (symbol-name (js:typeof (js:await-raw promise)))))
+           :async t :type "(promise: Promise<unknown>) => Promise<string>")
+(js:export "awaitLisp" (lambda () (js:await-raw (js:async (lambda () 42)))) :async t
+           :type "() => Promise<number>")
+(js:export "awaitLispObject"
+           (lambda () (js:js-value-p (js:await-raw (js:call (js:global "Promise") "resolve" (js:to-js (make-hash-table))))))
+           :async t :type "() => Promise<boolean>")
+(js:export "thrownKind"
+           (lambda (f)
+             (handler-case (progn (js:funcall f) "nothing")
+               (js:js-error (e) (string-downcase (symbol-name (js:typeof (js:js-error-thrown e)))))))
+           :type "(f: () => unknown) => string")

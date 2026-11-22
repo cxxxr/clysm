@@ -126,6 +126,16 @@ assert.equal(lib.protoData.enabled, undefined);
 assert.equal(lib.JSON, 'json');
 assert.equal(lib.process, 'process');
 assert.equal(lib.Hidden, 123);
+assert.deepEqual(lib.rawKinds({ u: undefined, n: null, f: false, itself() { return false; } },
+                              (callback) => (callback ? callback(undefined) : false)),
+                 ['undefined', 'null', 'boolean', 'boolean', 'boolean', 'undefined']);
+assert.deepEqual(lib.parsePart(`x${'y'.repeat(100000)}{"a":[1,2]}z`, 100001, 100012), { a: [1, 2] });
+assert.equal(await lib.awaitKind(Promise.resolve(undefined)), 'undefined');
+assert.equal(await lib.awaitKind(Promise.resolve(false)), 'boolean');
+assert.equal(await lib.awaitLisp(), 42);
+assert.equal(await lib.awaitLispObject(), true);
+assert.equal(lib.thrownKind(() => { throw undefined; }), 'undefined');
+assert.equal(lib.thrownKind(() => { throw false; }), 'boolean');
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 console.log(`lib: package (${mode}) ok`);

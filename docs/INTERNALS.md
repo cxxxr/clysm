@@ -1601,6 +1601,11 @@ JavaScript written for it (`tests/lib/package.lisp`):
   of JavaScript whose `JS:TYPEOF` tells `undefined`, `null` and `false`
   apart, and a long string that Lisp reads a part of with `JS:CALL` of its
   methods (`indexOf`, `slice`) without having it copied.
+- `JS:GET-RAW`, `JS:CALL-RAW`, `JS:FUNCALL-RAW` and `JS:AWAIT-RAW` give the value as
+  JavaScript has it, and a function of `JS:RAW-FUNCTION` given to
+  JavaScript (a callback, a listener) is given its arguments so: a text
+  handed on, or read a part of (`(js:call-raw text "slice" start end)`),
+  stays JavaScript's.
 - `JS:DECLARE-TYPES` adds declarations (interfaces, types) to the `.d.ts`
   of the library or of an entry; `:type` of an export or a class is its own
   declaration there.
