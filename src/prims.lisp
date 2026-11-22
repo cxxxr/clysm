@@ -5431,14 +5431,20 @@ modules made at run time define these helpers each time)."
   '(:local.get p) '(:local.get 2) '(:struct.set :package 7) '(:local.get 2))
 
 (defhelper :identity-hash :e-i ((h :i32))
-  ;; instances cache the host's identity hash in their third field
+  ;; an instance (a structure, an object of a class) keeps its identity hash
+  ;; in its third field: the next number of a counter that the image and the
+  ;; modules compiled in it share (:IH-NEXT, never 0), given when it is first
+  ;; asked.  (It was the host's identity hash, as for the other objects
+  ;; below: a call to the host and a new entry in its table of identities,
+  ;; some 300 ns, for each structure first put in an EQ table.)
   '(:local.get 0) '(:ref.test :instance)
   '(:if nil nil
         ((:local.get 0) (:ref.cast :instance) (:struct.get :instance 2) (:local.tee h)
          (:if nil nil ((:local.get h) :return))
-         (:local.get 0) (:ref.cast :instance)
-         (:local.get 0) :extern.convert_any (:call :host-identity-hash) (:local.tee h)
-         (:struct.set :instance 2)
+         (:global.get :ih-next) (:i32.const 1) :i32.add (:i32.const #x1FFFFFFF) :i32.and (:local.tee h)
+         :i32.eqz (:if nil nil ((:i32.const 1) (:local.set h)))
+         (:local.get h) (:global.set :ih-next)
+         (:local.get 0) (:ref.cast :instance) (:local.get h) (:struct.set :instance 2)
          (:local.get h) :return))
   ;; other objects: the host's hash, the last one kept (a GETHASH then a
   ;; PUTHASH of the same key ask once)
