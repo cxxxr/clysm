@@ -5885,6 +5885,101 @@ What makes the code fast:
   the helpers replace).
 
 
+* **The same items, second pass (2026-11-23): the machine code.** The
+  TurboFan code of the loops was read (`node --print-wasm-code
+  host/run.mjs FILE.wasm`, the function found by its name).
+  - *The entries of a hash table.* `maphash` left by `return-from` (the
+    loop unrolled four times by V8) is twelve instructions an entry: the
+    count and the bounds of the key vector, the key, the deleted marker,
+    the bounds of the value vector, the value, the test. `%with-ht-vectors`
+    and `loop`'s `hash-keys` bound the two vectors with `(the
+    simple-vector ...)` and the count with `(the fixnum ...)`, a test and
+    an error path each at the entry of the loop; they are now
+    `%ht-keys-vector`, `%ht-vals-vector` and `%ht-fill-count`
+    (`src/prims.lisp`), a field read whose type the inference knows
+    (rules in `src/types.lisp`). The vectors must stay variables of the
+    vector's Wasm type: read with `%ht-ref` (an `eqref`), `%svref` cast the
+    value vector at each entry (a null test, an i31 test and a compare of
+    the map inside the loop: V8 does not hoist a cast that is under a
+    branch) and the loop was slower than before (165 → 171 ms).
+    `maphash` left by `return-from`, 3 million times over 8 entries: 165
+    → 153 ms (SBCL 93-98); `maphash` summing 8 entries 376 → 362 (270-283);
+    `loop`, `with-hash-table-iterator` within the noise (16-18 ms against
+    12). What is left is not the entry of the loop (estimated at 3 ns
+    above: wrong) but the two bounds tests and the generic `+`.
+  - *A list read from its end, again.* `%do-region`'s loop over the chunks
+    was a `tagbody` of four tags (the two nested loops by hand, so that a
+    `return` in the body leaves the macro's block); a `tagbody` of several
+    tags is a loop around a dispatch on the tag, which every element went
+    through. It is two `%do` (the `do` without a block): `count-if-not
+    :from-end :key` of 5000 elements 105-108 → 75-85 ms (SBCL 68-71),
+    `reduce :from-end` the same way. Of the 80, 37 is `%list-chunks` (the
+    whole count read forwards is 27: the walk is the same, the rest is the
+    4.4 KB of vectors and their stores) and 44 the loop (25 for the same
+    loop written by hand over the chunks). Not gained: the chunk read from
+    a variable of the vector's type instead of `%vref` (75-85 both ways).
+  - *MAP, EVERY, SOME, MAP-INTO of a list and a vector, measured and not
+    built.* The call site's loop reads each sequence through a cursor (a
+    test of list or storage, then of the storage's kind, at each element).
+    Loops written by hand for the two kinds, 10 million elements: `(map
+    'vector #'+ list vector)` 43-45 → 31 ms (SBCL with the types declared
+    24-26), `map-into` of a vector and a list 33-36 → 25 (11-12), `every
+    #'<=` 26-28 → 19-20 (28); `map 'list` of one vector is already faster
+    through the cursor (32-33 against 34-39). Cursors that read a simple
+    vector from a variable of its Wasm type, chosen by a kind code, with no
+    copy of the loop: 43 → 38-43, 33-36 → 31-36, `every` 26 → 28, `map
+    'list #'cons` of a list and a string 58 → 70: not kept. The gain is
+    only there with a copy of the loop (and of the function written in
+    place, which is inline in it) for each pair of kinds, four or five
+    copies at every call of `map` with two sequences, where a function
+    holding several inline loops already ran slower (`p-seq-vector`
+    above); it would take `v-map-every` from 1.11 to about 0.98 once warm
+    and 1.35 to about 1.25 as the benchmark runs it. Not built.
+  - *TYPECASE: what each kind costs, and a kind field.* `classify` of
+    `bench/programs.lisp` on twelve objects of one kind, 36 million calls
+    (ms, SBCL in brackets): a fixnum 101 [89], a character 121 [108], a
+    string 114 [109], a simple vector 121 [114], a cons 115 [105], NIL 120
+    [106], a symbol 138 [117], a double 141 [106], a bignum 169 [97], an
+    instance 176 [117], a closure 191 [110], a single float 210 [96], a
+    ratio 214 [127]; the call alone 35. So the kinds found by the first
+    four tests of `%type-code` are within 5-13% of SBCL, and each test
+    after them is 0.33 ns (12 ms here): the kinds at the end of the chain
+    (7 to 11 tests) are 1.3-2.2 times SBCL. `ref.test` then `br_if` and
+    `br_on_cast` are the same machine code, so only the number of tests
+    counts. Three ways to have fewer, estimated from these numbers on the
+    mix of `p-typecase` (1.26):
+    (1) *A kind field.* The structs would be subtypes of one struct whose
+    first field is an i32 kind (arrays cannot be: they stay `ref.test`):
+    i31, array, cons, then one test of the supertype and a load. The late
+    kinds would cost what a symbol does now (about 130): `p-typecase` -12%
+    (1.26 → 1.10), `v-typecase-deftype` less (its late kinds are
+    instances: 176 → 130 for 6 of 17 objects, -8%). Against it: the field
+    is 8 octets more in every closure, instance, symbol, ratio and double
+    (a single float and a bignum have room), every `struct.get` index of
+    the runtime moves by one, and with the cons included the cost is the
+    one measured for the identity hash in a cons (`s-build-list` 1.31,
+    `a-list-churn` 1.22, `bench/gabriel.lisp` 1.06). Not built.
+    (2) *The kinds a TYPECASE names first, in the order of its clauses*,
+    the others by the helper: `p-typecase` -6.5% (floats 7-11 tests → 3-4,
+    a bignum 9 → 2; a cons 3 → 8, a ratio the whole chain and a call).
+    (3) *The number types under one empty supertype* tested after the
+    cons: a double 7 → 5 tests, a single float 11 → 7, a bignum 9 → 6, a
+    ratio 10 → 8, and one more for NIL, symbols and instances (+3% for
+    them): `p-typecase` -5%.
+    None reaches SBCL (a lowtag test and a jump table over widetags), and
+    (2) and (3) move the cost onto the kinds real programs dispatch on
+    most (symbols, structures); the chain is left as it is.
+  The files (the commit before and this one alternately on one slot, two
+  rounds; one for `programs`): `bench/control.lisp` 0.755 → 0.735
+  (`t-return-maphash` 51 → 48 ms, 1.65 → 1.55), `bench/library.lisp` 0.73
+  → 0.705 (every item 0-6% faster, also those these changes do not
+  reach: the runs, not the code; `v-hash-iterate` 9 and 10 ms),
+  `bench/programs.lisp` 0.78 → 0.795 (`p-hash-misc` 61 → 61, `p-word-count`
+  79 → 70; unrelated items ±10% both ways); in a script `library` 1.13 →
+  1.14 of the compiled file (three rounds, no item beyond ±7%). The REPL
+  image is 2 KB smaller (8,896,821 → 8,894,748 bytes), the module of one
+  export 116 bytes larger (932,551).
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
