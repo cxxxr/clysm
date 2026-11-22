@@ -92,8 +92,11 @@ const declarationOf = (k, f, ownNamed = new Set(), declared = new Set(), names =
     // its declaration names it so throughout)
     const taken = names.has(spec.name);
     const local = taken ? `__clysm_${spec.name}` : spec.name;
+    // (not in a string literal, nor as a member's name after a dot)
+    const word = new RegExp(`(?<![\\w$.])${spec.name.replace(/\$/g, '\\$')}(?![\\w$])`, 'g');
     const renamed = taken
-      ? text.replace(new RegExp(`(?<![\\w$])${spec.name.replace(/\$/g, '\\$')}(?![\\w$])`, 'g'), local)
+      ? text.split(/('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)/)
+          .map((part, i) => (i % 2 === 1 ? part : part.replace(word, local))).join('')
       : text;
     return `${first ? `${renamed}\n` : ''}export { ${local} as ${k} };`;
   }

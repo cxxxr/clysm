@@ -51,7 +51,7 @@ export type Places = Place[];" :entry "places")
 ;; the same class under another name, and exports named as the helpers of a lazy library's modules
 (js:export "Tally" *counter*)
 ;; a class of no export of its own name, under two
-(let ((hidden (js:define-class "Hidden" :type "declare class Hidden { readonly hidden: true; again(): Hidden }"
+(let ((hidden (js:define-class "Hidden" :type "declare class Hidden { readonly hidden: true; readonly kind: 'Hidden'; again(): Hidden }"
                                :methods (list "again" (lambda (this) this))
                                :constructor (lambda (this) (js:set this "hidden" t)))))
   (js:export "First" hidden)

@@ -1614,7 +1614,12 @@ JavaScript written for it (`tests/lib/package.lisp`):
   them, for tests) or options of `load()`. `:output :error` sends what
   Lisp writes to its standard output to the process's standard error (a
   program whose standard output is a protocol). A lazy library's modules
-  have no `create` or `default`.
+  have no `create` or `default`. A constant is a copy there, not the value
+  the loaded library has: an object that Lisp changes later is better a
+  function's value.
+- A class's declaration (`:type`) names what it extends; a class it
+  extends that the library does not export is declared with
+  `JS:DECLARE-TYPES`.
 
 `tests/lib/run.sh` builds `tests/lib/demo.lisp` as a library and calls it
 from JavaScript.
