@@ -72,3 +72,15 @@
 (print (b-use-pick))
 (defun b-pick (v k) (list :new (length v) k))
 (print (b-use-pick))
+;; a small function defined before a batch and again by a later form of the
+;; batch: the callers between the two have a copy of the first definition,
+;; which the second ends
+(defun b-twice-defined (x) (list :first x))
+(defmacro b-end-batch () nil)
+(b-end-batch)
+(defun b-caller (n) (b-twice-defined n))
+(defun b-loop-caller (n) (let ((s nil)) (dotimes (i n s) (setq s (b-twice-defined i)))))
+(print (list (b-caller 1) (b-loop-caller 3)))
+(defun b-twice-defined (x) (list :second x x))
+(b-end-batch)
+(print (list (b-caller 1) (b-loop-caller 3)))

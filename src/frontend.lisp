@@ -858,7 +858,9 @@ when it may be copied into callers compiled later, else NIL."
                        (locally (declare (notinline ,op)) (,op ,@temps))))))))))
     ;; a small function of another form of the batch (defined before this
     ;; one): a copy guarded by the comparison with its definition in the module
-    (when (and rec (batch-guarded-p op))
+    ;; (not of a later form: the source recorded is then that of a
+    ;; definition before the batch, whose copy is guarded by its own closure)
+    (when (and rec (batch-guarded-p op) (< (gethash op *batch-forms*) *batch-form-index*))
       (let* ((temps (loop for nil in (cdr form) collect (gensym "ARG")))
              (copy (inline-lambda-application op (first rec) (second rec) temps (cdr form))))
         (return-from live-inline-call
