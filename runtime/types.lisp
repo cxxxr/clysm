@@ -466,6 +466,17 @@ answered here; the rest by %TYPEP-CELL."
                           (%typep-cell ,x ,cell))
                          (t nil))))))))
 
+  (defun %typep-storage-code (et)
+    "The kind of storage (%STORAGE-KIND) of the simple vectors of element type
+ET, when ET is written as the element type of a kind; else NIL."
+    (cond ((eq et t) 0) ((eq et 'character) 1) ((eq et 'bit) 2)
+          ((eq et 'fixnum) 11) ((eq et 'single-float) 15) ((eq et 'double-float) 16)
+          ((and (consp et) (consp (cdr et)) (null (cddr et)))
+           (cond ((eq (car et) 'unsigned-byte)
+                  (cond ((eql (cadr et) 8) 4) ((eql (cadr et) 16) 7) ((eql (cadr et) 32) 10) ((eql (cadr et) 64) 13)))
+                 ((eq (car et) 'signed-byte)
+                  (cond ((eql (cadr et) 8) 5) ((eql (cadr et) 16) 8) ((eql (cadr et) 32) 11) ((eql (cadr et) 64) 14)))))))
+
   (defun %typep-expansion (x type &optional (depth 0))
     "A form testing the variable X for the constant type specifier TYPE; a
 (%typep X 'TYPE) form when the test is left to TYPEP.  DEPTH counts the DEFTYPE
@@ -552,8 +563,19 @@ expansions on the way: a type defined in terms of itself, such as
                       default))
                  ((array simple-array)
                   (if (null (cddr args))
-                      `(%array-type-match ,x ',(if args (car args) '*) ',(if (cdr args) (cadr args) '*)
-                                          ,(eq head 'simple-array))
+                      (let* ((et (if args (car args) '*)) (dims (if (cdr args) (cadr args) '*))
+                             (general `(%array-type-match ,x ',et ',dims ,(eq head 'simple-array)))
+                             (code (and (eq head 'simple-array) (equal dims '(*)) (%typep-storage-code et))))
+                        ;; a simple vector of a kind of storage, (SIMPLE-ARRAY
+                        ;; (UNSIGNED-BYTE 8) (*)): the kind of the object,
+                        ;; one test (the general test finds the element
+                        ;; type of the object and compares it with the
+                        ;; type's, 90 ns; an array with a header is left to it)
+                        (if code
+                            `(if (%mdarray-p ,x)
+                                 ,general
+                                 ,(if (eql code 4) `(%bytes-p ,x) `(eql (%storage-kind ,x) ,code)))
+                            general))
                       default))
                  ((complex function values base-string simple-base-string) default)
                  (otherwise
