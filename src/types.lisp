@@ -863,10 +863,14 @@ NIL: the vector holds COUNT nodes, each followed by what is noted about it
 (defun node-type (node)
   "The type noted for NODE in *NODE-TYPES*, or NIL.  (That of a constant
 is the type of its value, which is not noted.)"
-  (node-note node *node-types* *node-types*))
+  (if (and (consp node) (eq (car node) :const))
+      (const-ty (second node))
+      (node-note node *node-types* *node-types*)))
 
 (defun set-node-type (node ty)
-  (set-node-note node *node-types* *node-types* ty))
+  (if (and (consp node) (eq (car node) :const))
+      ty
+      (set-node-note node *node-types* *node-types* ty)))
 
 (defun clear-node-type (node)
   (let ((lv (node-key-lvar node)))
