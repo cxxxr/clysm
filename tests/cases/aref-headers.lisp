@@ -60,6 +60,10 @@
 (defun fix (x) (declare (fixnum x)) (1+ x))
 (defun idx (x) (declare (type (integer 0 255) x)) (- 255 x))
 (print (list (in-0-100 0) (in-0-100 100) (in-m5-5 -5) (in-m5-5 5) (in-m5-5 0) (fix -3) (idx 0) (idx 255)))
-(print (mapcar (lambda (f v) (try (lambda () (funcall f v))))
-               (list #'in-0-100 #'in-0-100 #'in-0-100 #'in-0-100 #'in-m5-5 #'in-m5-5 #'in-m5-5 #'fix #'fix #'idx #'idx #'idx)
-               (list -1 101 #\a 1.0 -6 6 (expt 2 40) 'a 1.5 256 -1 (- (expt 2 31)))))
+;; (a value outside the range: a TYPE-ERROR in compiled code; the evaluator
+;; does not check declarations, and gives what the function computes)
+(print (every (lambda (f v unchecked)
+                (member (try (lambda () (funcall f v))) (list :type-error unchecked)))
+              (list #'in-0-100 #'in-0-100 #'in-0-100 #'in-0-100 #'in-m5-5 #'in-m5-5 #'in-m5-5 #'fix #'fix #'idx #'idx #'idx)
+              (list -1 101 #\a 1.0 -6 6 (expt 2 40) 'a 1.5 256 -1 (- (expt 2 31)))
+              (list -2 202 :type-error 2.0 4 16 1099511627786 :type-error 2.5 -1 256 2147483903)))

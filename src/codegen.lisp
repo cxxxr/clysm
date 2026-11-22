@@ -2128,17 +2128,35 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
                              (coerce-function-code (cg fnode)))
                          (mapcar #'cg args) mv tail)))
 
+(defparameter *small-caller-nodes* 40
+  "A function of at most this many nodes keeps the symbol's case of FUNCALL in
+its code (COERCE-FUNCTION-CODE).")
+
 (defun coerce-function-code (code)
   "CODE pushes a function designator; push the function, a (ref $closure):
-a closure is taken as it is and the function of a symbol read from it at the
-call site; only other objects (an error) go to the helper."
-  ;; (the symbol's function cell was read here too: 23 octets more at each
-  ;; FUNCALL of a value of unknown type; the engine inlines the helper where
-  ;; a symbol is called often)
-  (let ((l (gensym "FN")))
-    `((:block ,l (:ref :closure)
-        ,@code (:br_on_cast ,l :eqref (:ref :closure))
-        (:call :coerce-function)))))
+a closure is taken as it is; the function of a symbol is read from it by the
+helper :COERCE-FUNCTION (23 octets less at each FUNCALL of a value of unknown
+type; the engine inlines the helper where a symbol is called often), which
+signals the error for other objects.  In a small function the symbol's
+function cell is read in place: its size is far from what stops the engine
+inlining it, and V8 lets a function grow by inlining to five times its own
+size, so that a short higher-order function (MAPCAR written by hand) with
+the shorter code no longer had the targets of its FUNCALL inlined
+(k-higher-order: MY-MAP 175 -> 150 octets, its budget 875 -> 750, the
+inlining stopped two octets short)."
+  (let ((l (gensym "FN")) (lam (and *fs* (fstate-lam *fs*))))
+    (if (and (lam-p lam) (<= (count-nodes (lam-body lam) *small-caller-nodes*) *small-caller-nodes*))
+        (let ((slow (gensym "SLOW")) (tmp (new-local)))
+          `((:block ,l (:ref :closure)
+              ,@code (:local.tee ,tmp) (:br_on_cast ,l :eqref (:ref :closure)) :drop
+              (:block ,slow :eqref
+                (:local.get ,tmp) (:br_on_cast_fail ,slow :eqref (:ref :symbol))
+                (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
+                (:local.get ,tmp))
+              (:call :coerce-function))))
+        `((:block ,l (:ref :closure)
+            ,@code (:br_on_cast ,l :eqref (:ref :closure))
+            (:call :coerce-function))))))
 
 (defvar *spec-self* nil
   "While an entry version of a function is compiled: (lam sig name), its
