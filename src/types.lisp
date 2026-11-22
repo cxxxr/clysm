@@ -86,11 +86,25 @@
                        (ty-cls a)
                        (union-array-class a b)))))))
 
+(defun struct-class-includes-p (child parent)
+  "The structure class named CHILD includes (:INCLUDE, directly or not) the
+one named PARENT, as its description known at compile time says
+(runtime/struct.lisp)."
+  (and child (symbolp child) parent (symbolp parent)
+       (let ((d (get child 'clysm-sys::%struct-description)))
+         (and (consp d) (null (car d)) (member parent (nth 7 d)) t))))
+
 (defun ty-intersect (a b)
   (mkty (logand (ty-bits a) (ty-bits b))
         (cond ((null (ty-lo a)) (ty-lo b)) ((null (ty-lo b)) (ty-lo a)) (t (max (ty-lo a) (ty-lo b))))
         (cond ((null (ty-hi a)) (ty-hi b)) ((null (ty-hi b)) (ty-hi a)) (t (min (ty-hi a) (ty-hi b))))
-        (or (ty-cls b) (ty-cls a))))
+        ;; (an object of a structure class that is found to be of one the
+        ;; class includes, by an accessor or a predicate of that one, is
+        ;; still of its class)
+        (let ((ca (ty-cls a)) (cb (ty-cls b)))
+          (cond ((null cb) ca)
+                ((and ca (struct-class-includes-p ca cb)) ca)
+                (t cb)))))
 
 (defun ty-remove (ty mask) (mkty (logandc2 (ty-bits ty) mask) (ty-lo ty) (ty-hi ty)))
 

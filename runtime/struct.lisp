@@ -287,8 +287,12 @@
            ;; (for a structure of a slot vector or of typed slots: its depth only)
            (fields (and (null seq-kind) (+ (cond (field-rep size) (big-rep 32) (t 0))
                                            (* 64 depth))))
+           ;; (the last: the structures it includes, the nearest first; the
+           ;; compiler takes an object known to be of the structure for one
+           ;; of each of them, STRUCT-CLASS-INCLUDES-P in src/types.lisp)
            (desc (list seq-kind all-slots size names fields depth
-                       (cond (kinds :typed) (field-rep :fields) (big-rep :big) (t :vector))))
+                       (cond (kinds :typed) (field-rep :fields) (big-rep :big) (t :vector))
+                       (and include (null seq-kind) (cons include (nth 7 include-desc)))))
            (class-slots (mapcar (lambda (s) (subseq s 0 4)) all-slots))
            (predicate (and named predicate))
            (keyvars (mapcar (lambda (s) (declare (ignore s)) (gensym "SLOT")) all-slots)))
