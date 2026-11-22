@@ -6970,6 +6970,16 @@ What makes the code fast:
   storage is still needed. Avoid repeating this without eliminating those
   loads or changing how the first entry is allocated.
 
+* **Single floats at EQL call sites (2026-11-23).** The bit comparison
+  moves from `:eql-gen` to the small `:eql` helper, avoiding the call to
+  the general numeric cases. Signed zero still compares by bits.
+  Five alternating runs on one slot, twenty million comparisons of two
+  independently read single-float boxes (both builds print `distinct: T`):
+  65, 66, 66, 64, 63 -> 43, 43, 46, 42, 43 ms. Best 63 -> 42 ms,
+  median 65 -> 43 ms. A prior probe using literal floats was inconclusive
+  (56 -> 57 ms); it did not ensure distinct boxes. Typed-element and
+  dynamic single-float tests pass, including mixed types and signed zero.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL

@@ -1,0 +1,11 @@
+;;; Boxed singles, including signed zero, mixed types and unequal values.
+(declaim (notinline compare-values))
+(defun compare-values (a b) (eql a b))
+(let ((a (read-from-string "1.5")) (b (read-from-string "1.5"))
+      (c (read-from-string "2.5")) (p (read-from-string "0.0"))
+      (n (read-from-string "-0.0")))
+  (print (list (compare-values a b) (compare-values a c)
+               (compare-values a 1.5d0) (compare-values a 1)
+               (compare-values 1 a) (compare-values a #\a)
+               (compare-values p n) (compare-values p 0.0)
+               (compare-values n -0.0))))
