@@ -238,7 +238,7 @@ const __clysm_defaults = ${embeddedOptions};
 // The module, in base64 (${fs.statSync(wasmPath).size} bytes).
 const __clysm_module = new WebAssembly.Module(__clysm_bytes('${embedded}'));
 const __clysm_lib = __clysm_load(__clysm_module, __clysm_defaults);
-export const create = (options) => Promise.resolve(__clysm_load(__clysm_module, { ...__clysm_defaults, ...options }));` : `import { load as __clysm_load } from './clysm/lib.mjs';
+export const create = async (options) => __clysm_load(__clysm_module, { ...__clysm_defaults, ...options });` : `import { load as __clysm_load } from './clysm/lib.mjs';
 
 ${outputOptions}const __clysm_url = new URL('./${name}.wasm', import.meta.url);
 const __clysm_lib = await __clysm_load(__clysm_url, __clysm_defaults);

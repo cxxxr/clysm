@@ -82,7 +82,11 @@ export function loadSync(source, options = {}) {
     globalThis.__clysm_library = savedLibrary;
   }
   flush();
-  return { instance, exports: exportsObject, library, mapStack: state.mapStack };
+  return {
+    instance, exports: exportsObject, library, mapStack: state.mapStack,
+    // read and evaluate Lisp forms (in a module that has the evaluator: compiled with --eval-string)
+    eval(source) { return instance.exports.eval_string(source); },
+  };
 }
 
 // The bytes of a module written as base64 (what the modules of an embedded library hold).
