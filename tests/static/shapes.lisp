@@ -17,3 +17,8 @@
 ;;; constants that are instances: one object each, however often referred to
 (defun origin-tag () '#.(geom-util::make-tag :origin))
 (defun tags () '(#.(geom-util::make-tag :a) 1 "x" #.(geom-util::make-tag :b)))
+
+;;; Plain literal lists that look like the cells of the objects above when
+;;; they are compiled ((NIL), or a list whose last cons is one): the cells
+;;; are changed when the program runs, these are not.
+(defun plain-lists () (list '(nil) '(1 2 nil) '((nil))))

@@ -6934,6 +6934,14 @@ What makes the code fast:
   checks EVAL and COMPILE against the actual objects in their source,
   distinct literals from source LOAD, and equality after COMPILE-FILE.
   It passes in both whole-program and native script modes.
+  The cells of `clysm build` (the cons that holds an object made when the
+  program runs, `constant-node`) are quoted conses that the program's code
+  changes, and all are `(nil)` when compiled: coalesced, every such object
+  of a program was one cell, shared with the last cons of each literal list
+  ending in NIL (the descriptor of a dispatch tree became a dotted list:
+  `make test-static` died in `%gf-disc-valid-p`). They are registered
+  (`*static-cell-conses*`) and `const-global` keeps each its own cons;
+  `tests/static` prints such lists and compares the objects.
 
 * **Adjacent hash entries (2026-11-23; experiment, reverted below).** Keys and values occupy cells
   2I and 2I+1 of one vector. Chain links and saved lookup indices still

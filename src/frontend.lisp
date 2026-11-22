@@ -744,6 +744,12 @@ where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
 ;;; (SYS::%FASL-REF, as in a fasl).
 
 (defvar *static-literal-cells* nil "A program built in the image: object -> its cell (an EQ table).")
+(defvar *static-cell-conses* nil
+  "A program built in the image: the cells of *STATIC-LITERAL-CELLS* (an EQ
+table).  Each is a quoted cons that the program's code changes (RPLACA,
+RPLACD) and all look alike, (NIL), when they are compiled: CONST-GLOBAL
+must keep each one a cons of its own, and none may be the last cons of
+another literal list that ends with NIL.")
 (defvar *static-pending-forms* nil
   "A program built in the image: toplevel forms to put before the one being converted, last first.")
 (defvar *static-literal-counter* 0)
@@ -803,6 +809,7 @@ where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
       (let ((cell (gethash obj *static-literal-cells*)) (c (gensym "CELL")))
         (unless cell
           (setq cell (setf (gethash obj *static-literal-cells*) (list nil)))
+          (setf (gethash cell *static-cell-conses*) t)
           (push `(rplacd ',cell ,(static-literal-builder obj cell)) *static-pending-forms*))
         (convert `(let ((,c ',cell)) (or (car ,c) (funcall (cdr ,c)))) (make-cenv)))
       `(:const ,obj)))

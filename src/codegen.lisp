@@ -170,8 +170,11 @@ runtime (:STRING-HASH in src/prims.lisp)."
     ;; Only in a module compiled from files (a whole program, a library:
     ;; CLHS 3.2.4.4 allows it of COMPILE-FILE; code loaded or evaluated in
     ;; the image is live, above, and keeps each literal), and not in the
-    ;; runtime's own code, which keeps state in quoted conses.
+    ;; runtime's own code, which keeps state in quoted conses; nor is the
+    ;; cell of an object made when the program runs (CONSTANT-NODE), which
+    ;; the program's code changes: each is its own cons.
     (when (and (consp obj) (not (gethash obj table))
+               (not (and *static-cell-conses* (gethash obj *static-cell-conses*)))
                *fs* (lam-p (fstate-lam *fs*)) (lam-program-p (fstate-lam *fs*)))
       (let* ((key (list :cons (const-init-code (car obj)) (const-init-code (cdr obj))))
              (same (gethash key *const-string-table*)))
