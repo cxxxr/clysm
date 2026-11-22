@@ -82,6 +82,10 @@ node tests/lib/print-only.mjs build/lib-test/print-only.mjs || exit 1
 bin/clysm library --shake tests/lib/throw-message.lisp -o build/lib-test/throw-message.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/throw-message.mjs build/lib-test/throw-message.mjs || exit 1
+# conditions from another Wasm instance remain JS errors; local round trips retain identity
+bin/clysm library --shake tests/lib/error-owners.lisp -o build/lib-test/error-owners.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/error-owners.mjs build/lib-test/error-owners.wasm || exit 1
 # application definitions initialized during compilation, with exports at load time
 bin/clysm library --shake --preinit-through tests/lib/preinit-definitions.lisp \
   tests/lib/preinit-definitions.lisp tests/lib/preinit-exports.lisp \

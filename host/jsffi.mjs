@@ -1,11 +1,20 @@
 // JavaScript FFI imports shared by the Node.js and browser hosts.
 // JS values cross the boundary as externref; Lisp wraps them in $foreign structs.
+// Libraries may load different copies of this host. Share provenance across
+// those copies, without changing the thrown Error or keeping it alive.
+const errorOwners = globalThis[Symbol.for('clysm.errorOwners')] ??= new WeakMap();
 class JsError {
-  constructor(e) { this.__clysm_js_error = String((e && e.message) || e); this.value = e; }
+  constructor(e, state) {
+    this.__clysm_js_error = String((e && e.message) || e);
+    this.value = e;
+    // A condition belongs to its originating instance's packages and classes.
+    // Another instance must see the Error as JS:JS-ERROR, not unwrap that heap.
+    this.lispCondition = state && errorOwners.get(e) === state ? e.lispCondition : undefined;
+  }
 }
-function boxError(e) {
+function boxError(e, state) {
   if (e instanceof WebAssembly.Exception) throw e;
-  return new JsError(e);
+  return new JsError(e, state);
 }
 
 // JavaScript Promise Integration: a Lisp function called through
@@ -105,7 +114,7 @@ const runtimeHelpers = {
   // function, SIGNAL or ERROR and the handler; the Lisp frames are named after
   // their functions (without the numbers that tell apart functions of the same
   // name; a library's functions are named from a file of their own)
-  makeFailure(message, type, condition, mapStack, nameFrames) {
+  makeFailure(message, type, condition, mapStack, nameFrames, owner) {
     const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
     const error = new Error(message);
     Error.stackTraceLimit = old;
@@ -126,6 +135,8 @@ const runtimeHelpers = {
     error.name = 'LispError';
     error.lispType = type;
     error.lispCondition = condition;
+    // Register only errors created here, never inspect arbitrary thrown values.
+    if (owner) errorOwners.set(error, owner);
     return { __clysm_failure__: error };
   },
   // the head of a compiled file (misc.lisp): "LENGTH-OF-HEAD WASM-SIZE FILE-SIZE", or null
@@ -176,6 +187,10 @@ const runtimeHelpers = {
 globalThis.__clysm_runtime ??= runtimeHelpers;
 
 export function makeJsImports(state) {
+  // Use this host copy's helper even if an older library installed the global
+  // helpers first. The closure identifies the heap without exposing it to Lisp.
+  const makeFailure = (message, type, condition) =>
+    runtimeHelpers.makeFailure(message, type, condition, state.mapStack, state.nameFrames, state);
   let promisingApply = null;
   // strings and octets cross through the memory the module exports
   const memory = () => state.instance.exports.memory;
@@ -205,10 +220,10 @@ export function makeJsImports(state) {
       // a JavaScript exception is returned as a JsError box, which the Lisp
       // side turns into a Lisp error (Lisp non-local exits pass through)
       apply: (f, t, a) => {
-        try { return Reflect.apply(f, t, a); } catch (e) { return boxError(e); }
+        try { return Reflect.apply(f, t, a); } catch (e) { return boxError(e, state); }
       },
       construct: (f, a) => {
-        try { return Reflect.construct(f, a); } catch (e) { return boxError(e); }
+        try { return Reflect.construct(f, a); } catch (e) { return boxError(e, state); }
       },
       array: () => [],
       push: (a, v) => { a.push(v); },
@@ -249,7 +264,7 @@ export function makeJsImports(state) {
       // (the Lisp side calls it only inside a function of wrap_async_fn)
       await: jspi
         ? new WebAssembly.Suspending(async (promise) => {
-            try { return await promise; } catch (e) { return boxError(e); }
+            try { return await promise; } catch (e) { return boxError(e, state); }
           })
         : () => new JsError('this JavaScript engine cannot suspend WebAssembly (JSPI)'),
       // a function that returns a promise; the Lisp function runs as a
@@ -279,13 +294,15 @@ export function makeJsImports(state) {
       },
       // what the host gives the Lisp side: 0 the modules of (js:module name),
       // 1 the function of (js:import specifier), 2 that of (js:require specifier),
-      // 3 the host's mapStack, 4 its nameFrames (host/common.mjs installSourceMap)
+      // 3 the host's mapStack, 4 its nameFrames (host/common.mjs installSourceMap),
+      // 5 the error factory bound to this instance
       host: (k) => {
         if (k === 0) return (state.jsModules ??= {});
         if (k === 1) return state.importer || ((specifier) => import(specifier));
         if (k === 2) return state.require;
         if (k === 3) return state.mapStack;
         if (k === 4) return state.nameFrames;
+        if (k === 5) return makeFailure;
         return undefined;
       },
       // a string of the code units at the start of the memory: INFO is their

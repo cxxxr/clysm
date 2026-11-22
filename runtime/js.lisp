@@ -121,8 +121,9 @@ called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
     (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
       (when (eql (%js-typeof msg) 4)
         (let* ((value (%js-get r (%js-string "value")))
-               (condition (and (member (%js-typeof value) '(5 6))
-                               (%js-get value (%js-string "lispCondition")))))
+               ;; The host only exposes a condition originating in this
+               ;; instance. Foreign LispErrors remain JavaScript exceptions.
+               (condition (%js-get r (%js-string "lispCondition"))))
           (if (and condition (eql (%js-typeof condition) 9))
               (error (%js-unwrap-lisp condition))
               (error 'js:js-error
@@ -278,7 +279,7 @@ Content-Security-Policy forbids."
   (js:get (js:global "__clysm_runtime") name))
 
 (%defvar-host *js-make-failure*
-  (%js-helper "makeFailure")
+  (%js-host 5)
   "Makes the JavaScript Error for a Lisp condition (its stack has the Lisp frames
 of the place where it was signalled), in the object that tells the host to throw it.")
 
@@ -290,9 +291,7 @@ of the place where it was signalled), in the object that tells the host to throw
   (js:funcall *js-make-failure*
               (%condition-message condition)
               (%condition-type-string condition)
-              (%js-wrap-lisp condition)
-              (%js-host 3)
-              (%js-host 4)))
+              (%js-wrap-lisp condition)))
 
 (defvar *js-raw-functions* nil
   "The functions given their arguments as JavaScript has them (JS:EXPORT's
