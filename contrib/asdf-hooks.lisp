@@ -123,15 +123,16 @@ named BEFORE (at the end without it)."
 ;;; which runs the files in order, and the loads of the others do nothing.
 ;;; Only systems whose components are plain Lisp source files (in modules,
 ;;; with static files) without around-compile hooks are made so, and not in
-;;; an image that records its modules for a heap image.  Opt-in:
-;;; (setf asdf::*clysm-system-fasls* t).
+;;; an image that records its modules for a heap image.  On by default, but
+;;; not for systems being developed (:AUTO, *CLYSM-SYSTEM-FASLS*); off:
+;;; (setf asdf::*clysm-system-fasls* nil) or CLYSM_SYSTEM_FASLS=0.
 
 (defvar *clysm-system-fasls*
   (let ((v (uiop:getenv "CLYSM_SYSTEM_FASLS")))
-    (cond ((equal v "1") t) ((equal v "auto") :auto) (t nil)))
+    (cond ((equal v "1") t) ((equal v "0") nil) (t :auto)))
   "Whether systems are made into system fasls (see above): T, :AUTO (but
 not those being developed: see CLYSM-SYSTEM-FASL-FILES-1) or NIL.
-CLYSM_SYSTEM_FASLS=1, auto or 0 in the environment.")
+:AUTO by default; CLYSM_SYSTEM_FASLS=1 or 0 in the environment: T or NIL.")
 (defvar *clysm-system-fasl-modes* nil
   "((name . mode)...): T, :AUTO or NIL for the system NAME, instead of *CLYSM-SYSTEM-FASLS*.")
 (defvar *clysm-system-fasls-loaded* nil "The names of the systems loaded from their system fasls.")
