@@ -6789,6 +6789,122 @@ What makes the code fast:
   image is 2 KB smaller (8,896,821 → 8,894,748 bytes), the module of one
   export 116 bytes larger (932,551).
 
+* **Equality, hashing and type dispatch, third pass (2026-11-23).** What
+  was changed, with the item it was measured on (ms; SBCL in brackets):
+  - *TYPECASE and TYPEP without a kind code* (`%typecase-fused-form`,
+    runtime/types.lisp). A `typecase` by the kind computed `%type-code`
+    (a chain of tests ending in a number) and then tested each clause's
+    mask of kinds, with the full test for the kinds that need one: the
+    code read from `--print-wasm-code` was the chain, a shift of 1 by the
+    code, and a `test`/`jnz` per clause before the object's own. The
+    clauses' tests are now decided for each of the 18 kinds when the form
+    is expanded (`%tcf-subst` puts T or NIL for each `%kind-in` and
+    simplifies), and the tests that tell the kinds apart branch straight
+    to what is left for theirs: the body of the first clause all objects
+    of the kind are of, after the full tests of the clauses before it that
+    some are of (first matching clause wins, as before: only the tests
+    that the kind decides are gone). A fixnum goes from the test of the
+    i31 to its clause; arms that several kinds share are written once
+    (a block the kinds jump to, where `%kind-is` tells the type
+    inference what the object is); a kind whose arm is that of the
+    objects no test finds is not tested unless two tests of other arms
+    follow it; the layout and class list of the clauses of class names
+    are read in the instance's arm only. `typep` of a type of several
+    kinds (`%typep-by-code-p`) is such a `typecase` of one clause, and
+    `vectorp` and `arrayp` have compiler macros that are too (`vectorp`
+    called a helper testing the kinds of storage one after the other:
+    3.3 million tests of mixed objects 150 → 44 ms [19]). `%type-code`
+    itself, where it is still used (the kinds only it tells apart), tests
+    the object for null once and uses `br_on_cast` for the final types
+    (V8 kept a null test before each `ref.test` and materialised the
+    result of each compare with `setz`/`movzx`/`test`). `p-typecase`
+    1.24 → 0.96 (88 → 68 [71]), `v-typecase-deftype` 1.22 → 0.93 (118 →
+    90 [97]), an `etypecase` of six clauses 92 → 80 [96], `(typep x
+    '(and number (not integer)))` 58 → 48 [35]. In a script `p-typecase`
+    103 → 83, `p-typep-misc` 127 → 101, `v-typecase-deftype` 123 → 95.
+    The inliner converted the test of a declared type of a copied
+    function's argument outside any function (`inline-checked-arg`,
+    src/inline.lisp): a block in the test's expansion belonged to no
+    function and an exit to it was a non-local exit to nowhere (the
+    program ended silently); it is converted as code of the caller.
+  - *Similar literal lists are one object.* `const-global`
+    (src/codegen.lisp) makes one global for conses whose car and cdr are
+    the same constants, in the code of programs (not the runtime's own,
+    which keeps state in quoted conses: with it there, `typep` of
+    `structure-object` was true of a package), as SBCL's `compile-file`
+    does and CLHS 3.2.4.4 allows; strings were shared already. `equal`,
+    `tree-equal` and `equalp` of two such literals are settled by EQ:
+    `p-equal` 1.23 → 0.88 (92 → 66 [75]). A program that changes a quoted
+    list now changes every literal similar to it.
+  - *TREE-EQUAL with `:test #'equal`* is `equal` of the trees (the same
+    descent; a cons against an atom is false for both), with `#'eql` the
+    loop without a test: `v-equal-trees` 1.13 → 0.54 (161 → 76 [142];
+    200 lists of five elements, 5000 times, 284 → 68 [244]).
+  - *SXHASH of a single float, an integer beyond the fixnums and a ratio*
+    in the Wasm helper (`:sxhash-fast`, `:integer-hash`; they called
+    `%sxhash`, then `%number-hash`, which called itself for the parts of
+    a ratio): 2 million of a bignum 200 → 104 [96], of a ratio 239 → 95
+    [95]; `v-sxhash` 1.05 → 0.84 (118 → 94 [112]).
+  - *EQUALP of vectors.* A simple vector is told apart before the numbers
+    in `equalp`, and `%equalp-arrays` reads a vector with a fill pointer
+    or adjustable over simple storage through its header's fields (it
+    called `vectorp`, `length`, `%array-storage`, `%array-total-offset`
+    for each side); symbols among the elements are not given to the
+    recursive call. A vector of four against one (1 million) 380 → 349
+    [304], a vector with a fill pointer against a simple one 212 → 183
+    [90], a list holding a vector 176 → 166 [153]; `v-equalp-mixed` 1.19
+    → 1.14 (148 → 141 [124]).
+  The files, this tree and the one before alternately on one slot (two
+  rounds, best of each; times SBCL): `bench/library.lisp` 0.683 → 0.656,
+  `bench/programs.lisp` 0.692 → 0.683, `bench/suite.lisp` 0.662 → 0.652,
+  `bench/control.lisp` 0.651 → 0.651; in a script `library` 1.149 →
+  1.124 of the compiled file and `programs` 1.102 → 1.080;
+  `bench/apps.lisp` 1.128 → 1.104 (`a-yason-parse` 110 → 96 [88]),
+  `tools/bench-libs.sh` 1.031 → 1.038 and Lem's actions 1.059 → 1.044
+  (both within the noise). Nothing slower beyond what two runs of one
+  build differ by (±8% on items of 10-40 ms).
+  *Still behind SBCL, with what it would take.*
+  `v-hash-iterate` (1.29, 9 ms) and `t-return-maphash` (1.39): the loop
+  is as short as two arrays allow, a bounds test for the key and one for
+  the value at each entry (V8 removes neither; the fill count is a local
+  already). One vector holding key and value side by side (entry I at 2I
+  and 2I+1) would make it one bounds test and one cache line an entry,
+  and is a change of every helper of hash tables; not built.
+  `p-typep-misc` (1.16): single tests in a loop over eleven mixed
+  objects, 1.1 ns a test against 0.45 (`(typep x 'node)` 59 [15],
+  `(typep x '(integer 0 *))` 39 [16], `listp` 39 [15]): each is one or
+  two `ref.test` already, the rest is the loop (the generic `incf` of the
+  sum, the `dolist`'s test) around it.
+  `v-equalp-mixed` (1.14): `equalp` of two structures 286 [161] (the
+  helper `:sinst-equalp` calls `equalp` through its function for each
+  pair of fields that are not EQ: a fixnum against a float, two
+  strings); the same test written into the helper for numbers and
+  strings would take about half of it.
+  `v-hash-equalp` (1.15, 15 ms) and `p-hash-misc` (1.13): `equalp`
+  tables of vectors hash and compare in Lisp (`%equalp-hash`, 18 [12]
+  for 40000 stores); `make-hash-table` three times 55 [39]; `push` onto
+  `(gethash symbol table)` with a `remhash` every hundredth 110 [75],
+  which is the conses and two helper calls. *Measured and not kept:*
+  `(incf (gethash k h))` and `(push x (gethash k h))` finding the entry
+  once (a probe, a read and a store at the index instead of `gethash`
+  then `(setf gethash)`): the `push` loop 99 → 92, but the three calls
+  it takes are calls into another module for code loaded in the image,
+  where a string key then misses the `equal` helper at the call site
+  (`p-word-count` in a script 69 → 117).
+  `p-calc` (1.14): not `intern` any more (300 000 of a one-character
+  name in the keyword package 63 [72], the tokenizer 174 [237]); it is
+  the evaluator, 39 [23], whose division makes a ratio at each step
+  (`:ratio-op`, see `b-ratio`), and the parser's reads of a special
+  variable, 35 [28].
+  `b-hash` (1.07-1.10): 200 000 `gethash` of fixnums ten times 177
+  [206], the stores 68 [60]: the growth of the vectors.
+  `eql` of two single floats that are not EQ is 71 [33] for 2 million
+  (`:eql`, then `:eql-gen`); `tree-equal` without a test of two fresh
+  lists 142 [110].
+  The REPL image is 106 KB smaller (8,596,251 → 8,490,379 bytes: the
+  clauses of the runtime's `typecase`s no longer test a kind code each),
+  the module of one export 3.5 KB larger (907,414 → 910,925).
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL

@@ -636,26 +636,41 @@ of them that push a value known to be a fixnum as its i32 followed by
 ;; (sys::%type-code x): the kind of X (the helper :TYPE-CODE), a fixnum
 (defprim clysm-sys::%type-code (x) :value
   ;; (inline: the call of the helper cost more than the tests; arrays and
-  ;; structures apart first, by the abstract heap types)
+  ;; structures apart first, by the abstract heap types.  The object is
+  ;; tested for null once, so that the engine leaves the null test out of
+  ;; each type test after it, and the tests of the final types are
+  ;; BR_ON_CAST, a compare of the map and a branch: REF.TEST then BR_IF left
+  ;; the result of the compare in a register and tested that)
   (let ((o (new-local)) (v (new-local :i32)) (done (gensym "KIND")))
-    (flet ((chain (pairs)
-             (loop for (code test) in pairs
-                   append `((:i32.const ,code) (:local.get ,o)
-                            ,@(if (eq (car test) :global.get) (list test :ref.eq) (list test))
-                            (:br_if ,done) :drop))))
+    (let ((code `((:local.get ,o) (:call :type-code) (:br ,done))))
+      (loop for (kind . types) in (reverse '((2 :cons) (3) (4 :symbol) (5 :instance) (8 :double) (9 :closure)
+                                             (10 :ibox :bignum) (11 :ratio) (12 :single)))
+            do (let ((l (gensym "K")))
+                 (setf code
+                       (if types
+                           `((:block ,l :eqref
+                               ,@(loop for ty in types
+                                       append `((:local.get ,o) (:br_on_cast ,l :eqref (:ref ,ty)) :drop))
+                               ,@code)
+                             :drop (:i32.const ,kind) (:br ,done))
+                           `((:local.get ,o) ,@(nil-code) :ref.eq (:if nil nil ((:i32.const ,kind) (:br ,done)))
+                             ,@code)))))
       `(,@x (:local.set ,o)
         (:block ,done :i32
           (:local.get ,o) (:ref.test :i31)
           (:if nil nil ((:local.get ,o) (:ref.cast :i31) :i31.get_s (:local.set ,v)
                         (:i32.const 1) (:i32.const 0) (:local.get ,v) (:i32.const ,+char-tag+) :i32.ge_s :select
                         (:br ,done)))
+          (:local.get ,o) :ref.is_null (:hint 0) (:if nil nil ((:i32.const 17) (:br ,done)))
           (:local.get ,o) (:ref.test :array)
-          (:if nil nil (,@(chain '((6 (:ref.test :string)) (7 (:ref.test :vector))))
-                        (:local.get ,o) (:call :type-code) (:br ,done)))
-          ,@(chain `((2 (:ref.test :cons)) (3 ,(car (nil-code))) (4 (:ref.test :symbol)) (5 (:ref.test :instance))
-                     (8 (:ref.test :double)) (9 (:ref.test :closure)) (10 (:call :int-box-p))
-                     (11 (:ref.test :ratio)) (12 (:ref.test :single))))
-          (:local.get ,o) (:call :type-code))
+          (:if nil nil ((:block str :eqref
+                          (:block vec :eqref
+                            (:local.get ,o) (:br_on_cast str :eqref (:ref :string))
+                            (:br_on_cast vec :eqref (:ref :vector))
+                            (:call :type-code) (:br ,done))
+                          :drop (:i32.const 7) (:br ,done))
+                        :drop (:i32.const 6) (:br ,done)))
+          ,@code)
         :ref.i31))))
 ;; (sys::%kind-in x code mask): CODE (X's %TYPE-CODE) is one of the bits of
 ;; the constant MASK; X is only there for the type inference, which knows
@@ -663,6 +678,15 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defprim clysm-sys::%kind-in (x c m) :test
   (declare (ignore x))
   `((:i32.const 1) ,@(idx-code c) :i32.shl ,@(idx-code m) :i32.and (:i32.const 0) :i32.ne))
+;; (sys::%kind-is x mask): true; where a TYPECASE jumps to (runtime/types.lisp,
+;; %TYPECASE-FUSED-FORM) it tells the type inference that X is of the kinds
+;; of the constant MASK
+(defprim clysm-sys::%kind-is (x m) :test
+  (declare (ignore x m))
+  `((:i32.const 1)))
+;; an array of Wasm (a string, a simple vector, a specialized vector, the
+;; digits of a bignum): the abstract type, one test for all of them
+(defprim clysm-sys::%wasm-array-p (x) :test `(,@x (:ref.test :array)))
 ;; INTEGERP as a test the compiler decides from the type of X (src/typed.lisp)
 ;; where it can: the check of a value given to a variable of an integer type
 (defprim clysm-sys::%integerp (x) :test `(,@x (:call :integerp)))
@@ -3561,25 +3585,44 @@ the $string in local STR into the i32 local H."
 ;;; SXHASH of X to DEPTH (%SXHASH) for the usual objects without a call:
 ;;; fixnums, characters, symbols, simple strings, lists and doubles (as
 ;;; %NUMBER-HASH); other objects call %SXHASH.
-(defhelper :sxhash-fast :ei-e ((b :i64) (x :i32))
+;;; (also single floats, as the double they are equal to, integers beyond the
+;;; fixnums and ratios of integers: %NUMBER-HASH without its calls)
+(defhelper :sxhash-fast :ei-e ((b :i64) (x :i32) (d :f64) (r (:ref :null :ratio)))
   '(:local.get 0) '(:ref.test :i31)
   '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const 536870911) :i32.and :ref.i31 :return))
   '(:local.get 0) '(:ref.test :symbol)
   '(:if nil nil ((:local.get 0) (:ref.cast! :symbol) (:struct.get :symbol 5) :ref.i31 :return))
   '(:local.get 0) '(:ref.test :string) '(:if nil nil ((:local.get 0) (:call :string-hash) :return))
   '(:local.get 0) '(:ref.test :cons) '(:if nil nil ((:local.get 0) (:local.get 1) (:call :equal-list-hash) :return))
-  '(:local.get 0) '(:ref.test :double)
+  `(:block other nil
+     (:block flo nil
+       (:local.get 0) (:ref.test :double)
+       (:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) (:local.set d) (:br flo)))
+       (:local.get 0) (:ref.test :single)
+       (:if nil nil ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 (:local.set d) (:br flo)))
+       (:br other))
+     (:local.get d) :i64.reinterpret_f64 (:local.tee b)
+     (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
+     (:local.get b) (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and :i32.wrap_i64 :i32.xor (:local.set x)
+     ,@(scramble-code 'x)
+     (:local.get b) (:i64.const 26) :i64.shr_u (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
+     (:local.get x) :i32.xor (:local.set x)
+     ,@(scramble-code 'x)
+     (:local.get x) :ref.i31 :return)
+  '(:local.get 0) '(:ref.test :ibox) '(:local.get 0) '(:ref.test :bignum) :i32.or
+  '(:if nil nil ((:local.get 0) (:return_call :bignum-hash)))
+  '(:local.get 0) '(:ref.test :ratio)
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64 (:local.tee b)
-         (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
-         (:local.get b) (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and :i32.wrap_i64 :i32.xor (:local.set x)
-         ,@(scramble-code 'x)
-         (:local.get b) (:i64.const 26) :i64.shr_u (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
-         (:local.get x) :i32.xor (:local.set x)
-         ,@(scramble-code 'x)
+        ((:local.get 0) (:ref.cast! :ratio) (:local.tee r) (:struct.get :ratio 0) (:call :integer-hash) (:local.set x)
+         ,@(hash-mix-code 'x '((:local.get r) (:struct.get :ratio 1) (:call :integer-hash)))
          (:local.get x) :ref.i31 :return))
   '(:local.get 0) '(:local.get 1) :ref.i31
   `(:global.get ,(sym-global 'clysm-sys::%sxhash)) '(:call (:callsym 2)))
+;; %NUMBER-HASH of an integer, as an i32
+(defhelper :integer-hash :e-i ()
+  '(:local.get 0) '(:ref.test :i31)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const 536870911) :i32.and :return))
+  '(:local.get 0) '(:call :bignum-hash) '(:ref.cast! :i31) :i31.get_s)
 (defprim clysm-sys::%sxhash-fast (x depth) :value `(,@x ,@(idx-code depth) (:call :sxhash-fast)))
 ;;; Hash tables (runtime/hash.lisp): the entry whose key is EQ to KEY, of
 ;;; hash HASH, in the table whose slot vector is SV; its index or -1.  The

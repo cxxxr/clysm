@@ -163,6 +163,21 @@ runtime (:STRING-HASH in src/prims.lisp)."
       (let ((name (new-const-global `((:i32.const ,(length obj)) (:array.new_default :string)))))
         (push (cons name obj) *data-strings*)
         (return-from const-global (setf (gethash obj table) name))))
+    ;; A list equal to one made already (its car and its cdr are the same
+    ;; constants) is that one: literals that are similar in one compilation
+    ;; are one object (as the strings are; SBCL's fasl dumper does the
+    ;; same), so that EQUAL, TREE-EQUAL and EQUALP of them are settled by EQ.
+    ;; Not in the runtime's own code (a function without a SAFETY: see
+    ;; CONVERT-LAMBDA), which keeps state in quoted conses.
+    (when (and (consp obj) (not (gethash obj table))
+               *fs* (lam-p (fstate-lam *fs*)) (lam-safety (fstate-lam *fs*)))
+      (let* ((key (list :cons (const-init-code (car obj)) (const-init-code (cdr obj))))
+             (same (gethash key *const-string-table*)))
+        (if same
+            (return-from const-global (setf (gethash obj table) same))
+            (let ((name (new-const-global `(,@(second key) ,@(third key) (:struct.new :cons)))))
+              (setf (gethash key *const-string-table*) name)
+              (return-from const-global (setf (gethash obj table) name))))))
     (or (gethash obj table)
         (setf (gethash obj table)
               (new-const-global
