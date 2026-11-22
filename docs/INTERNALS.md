@@ -6969,6 +6969,22 @@ What makes the code fast:
   bounds checks (for 2I and 2I+1); adjacency alone did not deliver the
   predicted single check. Keep that distinction in performance claims.
 
+* **Hash layout tradeoffs and iteration offsets (2026-11-23).** Against
+  the same equality improvements with separate key/value vectors, three
+  alternating runs of the probes give three-table construction/insertion
+  50 -> 41 ms with interleaving. MAPHASH is 9 -> 9 ms; explicit iterator
+  14 -> 15, LOOP keys/values 13 -> 14, LOOP values 12 -> 14, early return
+  46 -> 44 ms. One fewer allocation is useful, but iteration is not a
+  demonstrated improvement. Longer iteration probes (100 repetitions,
+  three interleaved rounds; baseline 2878b0c / retained interleaving /
+  experimental direct cell offsets): MAPHASH 99 / 93 / 99 ms, explicit
+  iterator 147 / 157 / 152, LOOP key/value 143 / 149 / 154, LOOP values
+  137 / 137 / 142, early-return MAPHASH 490 / 456 / 462. Direct offsets
+  remove repeated index scaling but give no consistent gain: not kept.
+  Splitting insertion out of the EQUAL store helper, three alternating
+  rounds, changes equal-list stores 44 -> 40 ms and reads 43 -> 45 ms;
+  the code-size reduction is established, these small time changes are not.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
