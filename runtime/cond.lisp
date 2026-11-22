@@ -481,7 +481,14 @@ the restarts are associated with the condition being signaled."
 ;;; signalling
 ;;; ------------------------------------------------------------
 
-(defvar *handler-clusters* nil)
+(defun %make-handler-frames (n old)
+  (let ((new (%make-simple-vector n nil)) (m (if old (%svlength old) 0)))
+    (do ((i 0 (+ i 1))) ((>= i n) new)
+      (%set-svref new i (if (< i m) (%svref old i) (vector nil nil nil))))))
+;;; the number of handler frames in use, and the frames (see below)
+(defvar *handler-clusters* 0)
+(declaim (type fixnum *handler-clusters*))
+(defvar *handler-frames* (%make-handler-frames 16 nil))
 (defvar *break-on-signals* nil)
 (defvar *debugger-hook* nil)
 (defvar *invoke-debugger-hook* nil)
@@ -509,16 +516,51 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
                                      :format-control "Bad condition designator ~S"
                                      :format-arguments (list datum)))))
 
-;;; *HANDLER-CLUSTERS* is a chain of simple vectors, innermost first:
-;;;   #(next types kind function...)
-;;; NEXT is the enclosing cluster, TYPES a simple vector of type specifiers.
-;;; A HANDLER-BIND cluster has KIND = T and one function per type, or, when
-;;; its handlers are all LAMBDA forms, KIND = :ONE and one function of the
-;;; index of the type and the condition (making one closure on entry instead
-;;; of one for each handler).  A
-;;; HANDLER-CASE cluster has no functions: it is the tag of the %CATCH around
-;;; the form, and SIGNAL stores the number of the chosen clause in KIND before
-;;; it throws the condition to it.
+;;; The handlers in effect are the first *HANDLER-CLUSTERS* elements of the
+;;; simple vector *HANDLER-FRAMES*, the innermost last.  A frame is a simple
+;;; vector #(types clause function) that stays in its place: HANDLER-BIND and
+;;; HANDLER-CASE fill the frame at the current depth and bind
+;;; *HANDLER-CLUSTERS* to one more, so that entering one allocates nothing and
+;;; stores no new object into an old one (a store of a young object into an
+;;; old one takes the slow path of the engine's write barrier: a cluster
+;;; made at each entry and bound to the variable cost that).  Each slot is
+;;; stored only when it holds another object (a loop finds its own there).
+;;; TYPES is a constant of the form:
+;;;   #(T type)          HANDLER-BIND of one handler: FUNCTION takes the condition
+;;;   #(:ONE type...)    HANDLER-BIND: FUNCTION takes the index of the type and
+;;;                      the condition (one closure for all the handlers)
+;;;   #(NIL type...)     HANDLER-CASE: the frame is the tag of the %CATCH around
+;;;                      the form, and SIGNAL stores the index of the chosen
+;;;                      clause in CLAUSE before it throws the condition to it
+;;;   an integer I       (made by SIGNAL around the call of a handler, which
+;;;                      runs with the handlers outside its own) the frames
+;;;                      below this one down to I are skipped
+;;;   (frames . depth)   the handlers continue in another vector (those around
+;;;                      a computation of JS:ASYNC-FUNCTION, which has frames
+;;;                      of its own: another computation runs while it waits)
+
+(defun %grow-handler-frames (d)
+  (let ((new (%make-handler-frames (* 2 (+ d 8)) *handler-frames*)))
+    (setq *handler-frames* new)
+    (%svref new d)))
+
+;;; the frame at DEPTH with TYPES in it: the helper :HANDLER-FRAME of
+;;; src/prims.lisp (the frames' vector, the frame or %GROW-HANDLER-FRAMES,
+;;; and the store of TYPES unless they are there)
+(defun %handler-frame (depth types) (%handler-frame depth types))
+
+(defun %call-handler (function index condition depth below)
+  ;; the handler runs with the handlers below its own frame
+  (%handler-frame depth below)
+  (let ((*handler-clusters* (+ depth 1)))
+    (if index (funcall function index condition) (funcall function condition))))
+
+(defun %linked-handler-frames ()
+  "Frames for a computation that can be suspended, whose first frame continues
+with the handlers in effect now."
+  (let ((frames (%make-handler-frames 8 nil)))
+    (%set-svref (%svref frames 0) 0 (cons *handler-frames* *handler-clusters*))
+    frames))
 
 (defun %condition-of-type-p (condition type)
   (if (symbolp type)
@@ -534,26 +576,20 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
 ;;; the body of SIGNAL, also expanded in ERROR and WARN: the frames between
 ;;; the signalling function and the handler make a transfer of control slower
 (defmacro %signal-condition (condition)
-  `(let ((cluster *handler-clusters*))
-    (do () ((null cluster))
-      (let* ((next (%svref cluster 0)) (types (%svref cluster 1)) (n (length types)))
-        (case (%svref cluster 2)
-          ((t)
-            (do ((i 0 (+ i 1))) ((>= i n))
-              (when (%condition-of-type-p ,condition (%svref types i))
-                (let ((*handler-clusters* next))
-                  (funcall (%svref cluster (+ i 3)) ,condition)))))
-          (:one
-            (do ((i 0 (+ i 1))) ((>= i n))
-              (when (%condition-of-type-p ,condition (%svref types i))
-                (let ((*handler-clusters* next))
-                  (funcall (%svref cluster 3) i ,condition)))))
-          (t
-            (do ((i 0 (+ i 1))) ((>= i n))
-              (when (%condition-of-type-p ,condition (%svref types i))
-                (%set-svref cluster 2 i)
-                (%throw cluster ,condition)))))
-        (setq cluster next)))))
+  `(let ((depth *handler-clusters*) (frames *handler-frames*))
+    (do ((i depth)) ((<= i 0))
+      (setq i (- i 1))
+      (let* ((frame (%svref frames i)) (types (%svref frame 0)))
+        (cond ((fixnump types) (setq i types))
+              ((consp types) (setq frames (car types) i (cdr types)))
+              (t
+               (let ((n (%svlength types)) (kind (%svref types 0)))
+                 (do ((k 1 (+ k 1))) ((>= k n))
+                   (when (%condition-of-type-p ,condition (%svref types k))
+                     (cond ((eq kind t) (%call-handler (%svref frame 2) nil ,condition depth i))
+                           (kind (%call-handler (%svref frame 2) (- k 1) ,condition depth i))
+                           (t (%set-svref frame 1 (- k 1))
+                              (%throw frame ,condition))))))))))))
 
 (defun %throw (tag value) (%throw tag value))
 
@@ -636,33 +672,53 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
 
 ;;; handler macros
 
+(defun %reuse-closure (old new) (declare (ignore old)) new)
+
 (defmacro handler-bind (bindings &body body)
   (flet ((lambda-form-p (f)
            (and (consp f)
                 (or (eq (car f) 'lambda)
                     (and (eq (car f) 'function) (consp (cdr f)) (consp (cadr f))
                          (eq (car (cadr f)) 'lambda))))))
-    (if (and (cdr bindings) (every #'lambda-form-p (mapcar #'cadr bindings)))
-        (let ((i (gensym "I")) (c (gensym "C")) (k -1))
-          `(let ((*handler-clusters*
-                   (vector *handler-clusters* ',(apply #'vector (mapcar #'car bindings)) :one
-                           (lambda (,i ,c)
-                             (case ,i
-                               ,@(mapcar (lambda (b)
-                                           (let ((f (cadr b)))
-                                             `(,(setq k (+ k 1))
-                                               (funcall ,(if (eq (car f) 'function) f `(function ,f)) ,c))))
-                                         bindings))))))
-             ,@body))
-        `(let ((*handler-clusters*
-                 (vector *handler-clusters* ',(apply #'vector (mapcar #'car bindings)) t
-                         ,@(mapcar #'cadr bindings))))
-           ,@body))))
+    (if (null bindings)
+        `(progn ,@body)
+        (let* ((depth (gensym "DEPTH")) (frame (gensym "FRAME")) (fn (gensym "FN"))
+               (i (gensym "I")) (c (gensym "C")) (k -1) (temps '())
+               (function
+                 ;; one handler: its function; more: one function of the
+                 ;; index of the type and the condition (one closure on
+                 ;; entry instead of one for each handler)
+                 (if (null (cdr bindings))
+                     (cadr (car bindings))
+                     `(lambda (,i ,c)
+                        (case ,i
+                          ,@(mapcar (lambda (b)
+                                      (let ((f (cadr b)))
+                                        `(,(setq k (+ k 1))
+                                          (funcall ,(cond ((not (lambda-form-p f))
+                                                           ;; (evaluated on entry)
+                                                           (let ((g (gensym "H")))
+                                                             (push (list g f) temps)
+                                                             g))
+                                                          ((eq (car f) 'function) f)
+                                                          (t `(function ,f)))
+                                                   ,c))))
+                                    bindings))))))
+          ;; (the closure of the frame is used again when it is of this
+          ;; function with the same captured cells and values: a loop that
+          ;; binds handlers makes none)
+          `(let* ((,depth *handler-clusters*)
+                  (,frame (%handler-frame ,depth ',(apply #'vector (if (cdr bindings) :one t) (mapcar #'car bindings))))
+                  ,@(reverse temps)
+                  (,fn (%reuse-closure (%svref ,frame 2) ,function)))
+             (if (eq ,fn (%svref ,frame 2)) nil (%set-svref ,frame 2 ,fn))
+             (let ((*handler-clusters* (+ ,depth 1)))
+               ,@body))))))
 
 (defmacro handler-case (form &rest clauses)
   (let* ((no-error (find :no-error clauses :key #'car))
          (clauses (remove :no-error clauses :key #'car))
-         (block (gensym "HC")) (cvar (gensym "C")) (cluster (gensym "CLUSTER")))
+         (block (gensym "HC")) (cvar (gensym "C")) (cluster (gensym "CLUSTER")) (depth (gensym "DEPTH")))
     (cond (no-error
            (let ((normal (gensym "NORMAL")))
              `(block ,normal
@@ -673,7 +729,7 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
                         ,@clauses)))))))
           ((null clauses) form)
           (t
-           ;; the cluster is the tag of the %CATCH: SIGNAL throws the
+           ;; the frame is the tag of the %CATCH: SIGNAL throws the
            ;; condition to it after storing the clause number in it
            (let ((bodies (mapcar (lambda (c)
                                    (let ((var (car (cadr c))) (body (cddr c)))
@@ -682,15 +738,16 @@ the condition, called by INVOKE-DEBUGGER after *DEBUGGER-HOOK* and
                                          `(locally ,@body))))
                                  clauses)))
              `(block ,block
-                (let* ((,cluster (vector *handler-clusters* ',(apply #'vector (mapcar #'car clauses)) nil))
+                (let* ((,depth *handler-clusters*)
+                       (,cluster (%handler-frame ,depth ',(apply #'vector nil (mapcar #'car clauses))))
                        (,cvar (%catch ,cluster
                                 (return-from ,block
-                                  (let ((*handler-clusters* ,cluster)) ,form)))))
+                                  (let ((*handler-clusters* (+ ,depth 1))) ,form)))))
                   (declare (ignorable ,cvar))
                   ,(if (null (cdr bodies))
                        (car bodies)
                        (let ((i -1))
-                         `(case (%svref ,cluster 2)
+                         `(case (%svref ,cluster 1)
                             ,@(mapcar (lambda (b) (list (if (cdr (member b bodies)) (setq i (+ i 1)) t) b))
                                       bodies)))))))))))
 

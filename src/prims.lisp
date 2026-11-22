@@ -1112,6 +1112,36 @@ bounds of the array either way."
 (defprim clysm-sys::%set-svref (v i x) :value
   (let ((tmp (new-local)))
     `(,@v (:ref.cast :vector) ,@(idx-code i) ,@x (:local.tee ,tmp) (:array.set :vector) (:local.get ,tmp))))
+;; (%reuse-closure OLD (lambda ...)): the closure of the LAMBDA form, which is
+;; OLD when that is a closure of the same function over the same cells and
+;; values (HANDLER-BIND: the closure it made the last time is in the handler
+;; frame, and a loop makes none; a store of a new closure into the old frame
+;; would take the slow path of the engine's write barrier each time)
+(defprim clysm-sys::%handler-frame (depth types) :value `(,@depth ,@types (:call :handler-frame)))
+(defprim clysm-sys::%reuse-closure (old new) :value
+  (let* ((last (car (last new)))
+         (type (and (consp last) (eq (car last) :struct.new) (second last)))
+         (n (and type (loop for k from 1 to +clo-env-max+ when (eq type (envclo-type k)) return k))))
+    (if (null n)
+        `(,@old :drop ,@new)
+        (let ((code (new-local '(:ref :null :code))) (name (new-local)) (tmp (new-local))
+              (o (new-local `(:ref :null ,type)))
+              (fvs (loop repeat n collect (new-local)))
+              (done (gensym "REUSED")) (make (gensym "MAKE")))
+          `(,@(butlast new)
+            ,@(loop for l in (reverse fvs) collect `(:local.set ,l))
+            (:local.set ,name) (:local.set ,code)
+            (:block ,done :eqref
+              (:block ,make nil
+                ,@old (:local.tee ,tmp) (:ref.test ,type) :i32.eqz (:br_if ,make)
+                (:local.get ,tmp) (:ref.cast! ,type) (:local.tee ,o) (:struct.get ,type ,+clo-code+)
+                (:local.get ,code) :ref.eq :i32.eqz (:br_if ,make)
+                ,@(loop for l in fvs for i from 2
+                        append `((:local.get ,o) (:struct.get ,type ,i) (:local.get ,l) :ref.eq :i32.eqz (:br_if ,make)))
+                (:local.get ,o) (:br ,done))
+              (:local.get ,code) :ref.as_non_null (:local.get ,name)
+              ,@(loop for l in fvs collect `(:local.get ,l))
+              (:struct.new ,type)))))))
 (defprim clysm-sys::%make-bytes (n) :value `(,@(idx-code n) (:array.new_default :bytes)))
 (defprim clysm-sys::%bytes-length (v) :value `(,@v (:ref.cast :bytes) :array.len :ref.i31))
 (defprim clysm-sys::%bytes-ref (v i) :value `(,@v (:ref.cast :bytes) ,@(idx-code i) (:array.get_u :bytes) :ref.i31))
@@ -4797,6 +4827,23 @@ f64s in locals DA and DB (it may branch to SLOW)."
        (:local.get vals) (:ref.test :cons)
        (:if nil nil ((:local.get vals) (:ref.cast :cons) (:struct.get :cons 1) (:local.set vals)))
        (:br again))))
+
+;;; The handler frame at the depth (a fixnum) with the types (a constant
+;;; vector) in it: runtime/cond.lisp.  A function of the module, not code
+;;; at every HANDLER-BIND and HANDLER-CASE (the engine copies it into the
+;;; hot ones).
+(defhelper :handler-frame :ee-e ((fs (:ref :null :vector)) (d :i32) (f (:ref :null :vector)))
+  `(:global.get ,(sym-global 'clysm-sys::*handler-frames*)) `(:struct.get :symbol ,+sym-value+)
+  '(:ref.cast! :vector) '(:local.set fs)
+  '(:local.get 0) '(:ref.cast! :i31) :i31.get_s '(:local.tee d)
+  '(:local.get fs) :array.len :i32.lt_u '(:hint 1)
+  `(:if nil (:ref :null :vector)
+        ((:local.get fs) (:local.get d) (:array.get :vector) (:ref.cast! :vector))
+        ((:local.get 0) (:global.get ,(sym-global 'clysm-sys::%grow-handler-frames)) (:call (:callsym 1))
+         (:ref.cast! :vector)))
+  '(:local.tee f) '(:i32.const 0) '(:array.get :vector) '(:local.get 1) :ref.eq
+  '(:if nil nil nil ((:local.get f) (:i32.const 0) (:local.get 1) (:array.set :vector)))
+  '(:local.get f))
 
 ;;; catch tags
 (defhelper :check-catch-tag :e-v ((sp :i32))

@@ -351,7 +351,11 @@ arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
     (%set-bstack (make-array 64))
     (%set-bsp 0)
     (unwind-protect
-         (let ((*js-computation* computation))
+         ;; (handler frames of its own: the code outside goes on with
+         ;; its frames while this computation waits)
+         (let* ((*js-computation* computation)
+                (*handler-frames* (%linked-handler-frames))
+                (*handler-clusters* 1))
            (%js-run closure args t))
       (%unbind-to 0)
       (%set-bstack (svref computation 1))
