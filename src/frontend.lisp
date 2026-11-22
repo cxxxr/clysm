@@ -2830,7 +2830,9 @@ NIL when there is nothing it could call."
                                                                 (t nil))
                                                           (svref m 6)))
                                                   methods)
-                                          checks comb shape keys-cell core-cell)
+                                          checks comb shape keys-cell core-cell
+                                          ;; (made in the image for a dead tree: SYS::%GF-DISC-REGENERATE)
+                                          (eql (svref u 3) -1))
                     (svref cells 2) (+ 3 nfns))
               (cons `(clysm-sys::%static-lambda ,dsym
                        (lambda ,vars

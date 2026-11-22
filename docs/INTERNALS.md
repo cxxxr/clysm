@@ -5594,6 +5594,19 @@ What makes the code fast:
   `&rest` parameter that is only measured or taken apart, kept as the
   arguments.
 
+  *Script-mode short-combination recursion* (2026-11-23, verified again
+  after the handoff). `MODE=script tools/bench.sh bench/clos.lisp` on
+  `1b02cb3` fails after `c-gf-lambda-lists`. A bisection of recent main
+  finds `e07f4a4` as the first bad commit; its parent passes the regression
+  program. APPEND/NCONC trees failed their comparison because those
+  combinations lack `:identity-with-one-argument`. A dead tree was
+  regenerated after 500 calls, and the regenerated tree eventually selected
+  itself as its replacement. `04a79e5` accepts the unary identity of APPEND
+  and NCONC and marks regenerated descriptors so that a failed replacement
+  stays on its fallback. The fixed script completes all 18 benchmarks.
+  `tests/cases/clos-dispatch-short-combinations.lisp` exercises repeated
+  calls, combinations, and later method changes.
+
   Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
   making of the spread trees, the constructors' `:after` paths: nine
   entries each with its other part), the shaken module of one export
