@@ -36,7 +36,9 @@ export function makeClass(spec, load = null, classes = {}) {
     if (!C[implementation]) throw new Error(`the class ${spec.name} has no functions: its Lisp library did not define it`);
     return C[implementation];
   };
-  const base = spec.extends == null ? null : (classes[spec.extends] ?? globalThis[spec.extends]);
+  // (own properties alone: a class named constructor or toString is no function of Object)
+  const base = spec.extends == null ? null
+    : Object.hasOwn(classes, spec.extends) ? classes[spec.extends] : globalThis[spec.extends];
   if (spec.extends != null && typeof base !== 'function') throw new Error(`the class ${spec.name} extends ${spec.extends}, which is no class`);
   const positions = spec.superArguments;
   // (named as the class: what an error's stack and the console say)
@@ -73,7 +75,8 @@ export function makeClass(spec, load = null, classes = {}) {
 // before it was loaded (LIBRARY.made) or made now, given its functions.
 function defineClass(spec, functions, library) {
   library.defined ??= {};
-  const C = library.made?.[spec.name] ?? makeClass(spec, null, library.defined);
+  const made = library.made && Object.hasOwn(library.made, spec.name) ? library.made[spec.name] : null;
+  const C = made ?? makeClass(spec, null, library.defined);
   C[implementation] = functions;
   library.defined[spec.name] = C;
   return C;

@@ -55,6 +55,9 @@ export type Places = Place[];" :entry "places")
                                :constructor (lambda (this) (js:set this "hidden" t)))))
   (js:export "First" hidden)
   (js:export "Second" hidden))
+;; a class named as a property of Object, exported under a name that is no identifier
+(js:export "to-string" (js:define-class "toString" :constructor (lambda (this) (js:set this "made" t))
+                                       :type "declare class toString { readonly made: true }"))
 (js:export "library" (lambda () "a function named library") :type "() => string")
 (js:export "classes" "a constant named classes" :type "string")
 
