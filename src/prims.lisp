@@ -326,36 +326,80 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                                  t)
                          nil)))))))
 
+(defun fused-i32-range (node &optional top)
+  "Bounds of an addition/subtraction tree when its leaves are fixnums,
+or NIL if an intermediate result could overflow signed i32."
+  (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+         (multiple-value-bind (op a b) (fused-operands node)
+           (when (member op '(:add :sub))
+             (let ((ra (fused-i32-range a)) (rb (fused-i32-range b)))
+               (when (and ra rb)
+                 (let ((lo (if (eq op :add) (+ (car ra) (car rb)) (- (car ra) (cdr rb))))
+                       (hi (if (eq op :add) (+ (cdr ra) (cdr rb)) (- (cdr ra) (car rb)))))
+                   (when (and (<= (- (expt 2 31)) lo) (< hi (expt 2 31)))
+                     (cons lo hi))))))))
+        ((eq (car node) :const)
+         (let ((v (second node)))
+           (when (and (integerp v) (<= (- +char-tag+) v (1- +char-tag+))) (cons v v))))
+        (t (cons (- +char-tag+) (1- +char-tag+)))))
+
+(defun fused-i32-code (node fail &optional top)
+  "An i32 tree proved bounded by FUSED-I32-RANGE, checking its eqref leaves."
+  (if (and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+      (multiple-value-bind (op a b) (fused-operands node)
+        (let ((ca (fused-i32-code a fail)) (cb (fused-i32-code b fail)))
+          `(,@ca ,@cb ,(ecase op (:add :i32.add) (:sub :i32.sub)))))
+      (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
+        (ecase kind
+          (:const `((:i32.const ,(second leaf))))
+          (:eqref
+           (let ((x (new-local :i32)) (e (first locs)))
+             `((:local.get ,e) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+               (:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
+               (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+               (:br_if ,fail) (:local.get ,x))))))))
+
 (defun fused-code (node rep &optional target)
-  "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
-its type is a fixnum), the generic code when that fails.  When its operands
+  "NODE (a fused tree) computed in i64, or i32 for bounded sums of fixnums,
+and left as REP (:eqref, or :i32 when its type is a fixnum); the generic
+code when that fails. When its operands
 may be doubles (operands of unknown type, with a double among the operands
 of each operation), the tree is tried in f64 too, before the generic code.
 With TARGET, (B . F) the locals of an unboxed double variable: nothing is
 left, the value is stored there."
   (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (r (new-local :i64)))
     (multiple-value-bind (leaves i64-code generic recs) (fused-parts node)
-      `(,@leaves
-        (:block ,done ,(if target nil rep)
-          (:block ,fail nil
-            ,@(funcall i64-code fail)
-            ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
-                  `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
-                  `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-                    (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
+      (let ((small (and (every (lambda (rec) (member (second rec) '(:eqref :const))) recs)
+                        (fused-i32-range node t))))
+        `(,@leaves
+          (:block ,done ,(if target nil rep)
+            (:block ,fail nil
+              ,@(if small (let ((*fused-rest* recs)) (fused-i32-code node fail t))
+                    (funcall i64-code fail))
+              ,@(cond (small (unless (eq rep :i32)
+                               (if (ty-fixnum-p (node-ty node)) '(:ref.i31)
+                                   (let ((v (new-local :i32)))
+                                     `((:local.tee ,v) (:i32.const ,+char-tag+) :i32.add
+                                       (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                                       (:if nil :eqref ((:local.get ,v) :ref.i31)
+                                            ((:local.get ,v) (:call :box-i32))))))))
+                      ((or (eq rep :i32) (ty-fixnum-p (node-ty node)))
+                       `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31))))
+                      (t `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                           (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int))))))
+              ,@(when target `((:local.set ,(car target))))
+              (:br ,done))
+            ,@(when (eq rep :eqref)
+                (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
+                  (when code
+                    `((:block ,fail2 nil ,@code
+                        ,@(if target
+                              `((:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)))
+                              '((:struct.new :double)))
+                        (:br ,done))))))
+            ,@generic
             ,@(when target `((:local.set ,(car target))))
-            (:br ,done))
-          ,@(when (eq rep :eqref)
-              (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
-                (when code
-                  `((:block ,fail2 nil ,@code
-                      ,@(if target
-                            `((:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)))
-                            '((:struct.new :double)))
-                      (:br ,done))))))
-          ,@generic
-          ,@(when target `((:local.set ,(car target))))
-          ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
+            ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node)))))))))
 
 ;;; A tree known to give an integer within 64 bits wanted as an i64 (a
 ;;; LOGAND with a mask, a MOD by a constant) whose operands are not all of
@@ -636,26 +680,41 @@ of them that push a value known to be a fixnum as its i32 followed by
 ;; (sys::%type-code x): the kind of X (the helper :TYPE-CODE), a fixnum
 (defprim clysm-sys::%type-code (x) :value
   ;; (inline: the call of the helper cost more than the tests; arrays and
-  ;; structures apart first, by the abstract heap types)
+  ;; structures apart first, by the abstract heap types.  The object is
+  ;; tested for null once, so that the engine leaves the null test out of
+  ;; each type test after it, and the tests of the final types are
+  ;; BR_ON_CAST, a compare of the map and a branch: REF.TEST then BR_IF left
+  ;; the result of the compare in a register and tested that)
   (let ((o (new-local)) (v (new-local :i32)) (done (gensym "KIND")))
-    (flet ((chain (pairs)
-             (loop for (code test) in pairs
-                   append `((:i32.const ,code) (:local.get ,o)
-                            ,@(if (eq (car test) :global.get) (list test :ref.eq) (list test))
-                            (:br_if ,done) :drop))))
+    (let ((code `((:local.get ,o) (:call :type-code) (:br ,done))))
+      (loop for (kind . types) in (reverse '((2 :cons) (3) (4 :symbol) (5 :instance) (8 :double) (9 :closure)
+                                             (10 :ibox :bignum) (11 :ratio) (12 :single)))
+            do (let ((l (gensym "K")))
+                 (setf code
+                       (if types
+                           `((:block ,l :eqref
+                               ,@(loop for ty in types
+                                       append `((:local.get ,o) (:br_on_cast ,l :eqref (:ref ,ty)) :drop))
+                               ,@code)
+                             :drop (:i32.const ,kind) (:br ,done))
+                           `((:local.get ,o) ,@(nil-code) :ref.eq (:if nil nil ((:i32.const ,kind) (:br ,done)))
+                             ,@code)))))
       `(,@x (:local.set ,o)
         (:block ,done :i32
           (:local.get ,o) (:ref.test :i31)
           (:if nil nil ((:local.get ,o) (:ref.cast :i31) :i31.get_s (:local.set ,v)
                         (:i32.const 1) (:i32.const 0) (:local.get ,v) (:i32.const ,+char-tag+) :i32.ge_s :select
                         (:br ,done)))
+          (:local.get ,o) :ref.is_null (:hint 0) (:if nil nil ((:i32.const 17) (:br ,done)))
           (:local.get ,o) (:ref.test :array)
-          (:if nil nil (,@(chain '((6 (:ref.test :string)) (7 (:ref.test :vector))))
-                        (:local.get ,o) (:call :type-code) (:br ,done)))
-          ,@(chain `((2 (:ref.test :cons)) (3 ,(car (nil-code))) (4 (:ref.test :symbol)) (5 (:ref.test :instance))
-                     (8 (:ref.test :double)) (9 (:ref.test :closure)) (10 (:call :int-box-p))
-                     (11 (:ref.test :ratio)) (12 (:ref.test :single))))
-          (:local.get ,o) (:call :type-code))
+          (:if nil nil ((:block str :eqref
+                          (:block vec :eqref
+                            (:local.get ,o) (:br_on_cast str :eqref (:ref :string))
+                            (:br_on_cast vec :eqref (:ref :vector))
+                            (:call :type-code) (:br ,done))
+                          :drop (:i32.const 7) (:br ,done))
+                        :drop (:i32.const 6) (:br ,done)))
+          ,@code)
         :ref.i31))))
 ;; (sys::%kind-in x code mask): CODE (X's %TYPE-CODE) is one of the bits of
 ;; the constant MASK; X is only there for the type inference, which knows
@@ -663,6 +722,15 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defprim clysm-sys::%kind-in (x c m) :test
   (declare (ignore x))
   `((:i32.const 1) ,@(idx-code c) :i32.shl ,@(idx-code m) :i32.and (:i32.const 0) :i32.ne))
+;; (sys::%kind-is x mask): true; where a TYPECASE jumps to (runtime/types.lisp,
+;; %TYPECASE-FUSED-FORM) it tells the type inference that X is of the kinds
+;; of the constant MASK
+(defprim clysm-sys::%kind-is (x m) :test
+  (declare (ignore x m))
+  `((:i32.const 1)))
+;; an array of Wasm (a string, a simple vector, a specialized vector, the
+;; digits of a bignum): the abstract type, one test for all of them
+(defprim clysm-sys::%wasm-array-p (x) :test `(,@x (:ref.test :array)))
 ;; INTEGERP as a test the compiler decides from the type of X (src/typed.lisp)
 ;; where it can: the check of a value given to a variable of an integer type
 (defprim clysm-sys::%integerp (x) :test `(,@x (:call :integerp)))
@@ -717,17 +785,17 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defprim clysm-sys::%cdr (x) :value `(,@x (:ref.cast :cons) (:struct.get :cons 1)))
 (defprim rplaca (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:local.tee ,tmp) (:call :check-cons) ,@v (:struct.set :cons 0) (:local.get ,tmp))))
+    `(,@c (:local.tee ,tmp) (:ref.cast :cons) ,@v (:struct.set :cons 0) (:local.get ,tmp))))
 (defprim rplacd (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:local.tee ,tmp) (:call :check-cons) ,@v (:struct.set :cons 1) (:local.get ,tmp))))
+    `(,@c (:local.tee ,tmp) (:ref.cast :cons) ,@v (:struct.set :cons 1) (:local.get ,tmp))))
 ;; (setf car) helpers: return the new value
 (defprim clysm-sys::%setcar (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:call :check-cons) ,@v (:local.tee ,tmp) (:struct.set :cons 0) (:local.get ,tmp))))
+    `(,@c (:ref.cast :cons) ,@v (:local.tee ,tmp) (:struct.set :cons 0) (:local.get ,tmp))))
 (defprim clysm-sys::%setcdr (c v) :value
   (let ((tmp (new-local)))
-    `(,@c (:call :check-cons) ,@v (:local.tee ,tmp) (:struct.set :cons 1) (:local.get ,tmp))))
+    `(,@c (:ref.cast :cons) ,@v (:local.tee ,tmp) (:struct.set :cons 1) (:local.get ,tmp))))
 
 ;;; ------------------------------------------------------------
 ;;; Fixnum / numbers
@@ -1988,6 +2056,13 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   ;; both numbers of the same boxed type?
   '(:local.get 0) '(:ref.test :i31) '(:local.get 1) '(:ref.test :i31) :i32.or
   '(:if nil nil ((:i32.const 0) :return))
+  ;; Keep singles in the small helper that V8 inlines at EQL call sites.
+  ;; Compare bits, as for doubles: signed zeros remain distinct.
+  '(:local.get 0) '(:ref.test :single)
+  '(:if nil nil
+        ((:local.get 1) (:ref.test :single) :i32.eqz (:if nil nil ((:i32.const 0) :return))
+         (:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32
+         (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq :return))
   '(:local.get 0) '(:ref.test :cons) '(:local.get 0) '(:ref.test :symbol) :i32.or
   '(:if nil nil ((:i32.const 0) :return))
   '(:local.get 0) '(:local.get 1) '(:return_call :eql-gen))
@@ -2007,11 +2082,6 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
          (:local.get 1) (:ref.cast! :ibox) (:struct.get :ibox 0) :i64.eq :return))
   '(:local.get 0) '(:ref.test :bignum)
   '(:if nil nil ((:local.get 1) (:ref.test :bignum) :i32.eqz (:if nil nil ((:i32.const 0) :return))))
-  '(:local.get 0) '(:ref.test :single)
-  '(:if nil nil
-        ((:local.get 1) (:ref.test :single) :i32.eqz (:if nil nil ((:i32.const 0) :return))
-         (:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32
-         (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq :return))
   '(:local.get 0) '(:ref.test :ibox) '(:local.get 0) '(:ref.test :bignum) :i32.or '(:local.get 0) '(:ref.test :ratio) :i32.or
   '(:local.get 0) '(:call :complexp) :i32.or :i32.eqz
   '(:if nil nil ((:i32.const 0) :return))
@@ -3561,25 +3631,44 @@ the $string in local STR into the i32 local H."
 ;;; SXHASH of X to DEPTH (%SXHASH) for the usual objects without a call:
 ;;; fixnums, characters, symbols, simple strings, lists and doubles (as
 ;;; %NUMBER-HASH); other objects call %SXHASH.
-(defhelper :sxhash-fast :ei-e ((b :i64) (x :i32))
+;;; (also single floats, as the double they are equal to, integers beyond the
+;;; fixnums and ratios of integers: %NUMBER-HASH without its calls)
+(defhelper :sxhash-fast :ei-e ((b :i64) (x :i32) (d :f64) (r (:ref :null :ratio)))
   '(:local.get 0) '(:ref.test :i31)
   '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const 536870911) :i32.and :ref.i31 :return))
   '(:local.get 0) '(:ref.test :symbol)
   '(:if nil nil ((:local.get 0) (:ref.cast! :symbol) (:struct.get :symbol 5) :ref.i31 :return))
   '(:local.get 0) '(:ref.test :string) '(:if nil nil ((:local.get 0) (:call :string-hash) :return))
   '(:local.get 0) '(:ref.test :cons) '(:if nil nil ((:local.get 0) (:local.get 1) (:call :equal-list-hash) :return))
-  '(:local.get 0) '(:ref.test :double)
+  `(:block other nil
+     (:block flo nil
+       (:local.get 0) (:ref.test :double)
+       (:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) (:local.set d) (:br flo)))
+       (:local.get 0) (:ref.test :single)
+       (:if nil nil ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 (:local.set d) (:br flo)))
+       (:br other))
+     (:local.get d) :i64.reinterpret_f64 (:local.tee b)
+     (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
+     (:local.get b) (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and :i32.wrap_i64 :i32.xor (:local.set x)
+     ,@(scramble-code 'x)
+     (:local.get b) (:i64.const 26) :i64.shr_u (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
+     (:local.get x) :i32.xor (:local.set x)
+     ,@(scramble-code 'x)
+     (:local.get x) :ref.i31 :return)
+  '(:local.get 0) '(:ref.test :ibox) '(:local.get 0) '(:ref.test :bignum) :i32.or
+  '(:if nil nil ((:local.get 0) (:return_call :bignum-hash)))
+  '(:local.get 0) '(:ref.test :ratio)
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64 (:local.tee b)
-         (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
-         (:local.get b) (:i64.const 52) :i64.shr_u (:i64.const #x7FF) :i64.and :i32.wrap_i64 :i32.xor (:local.set x)
-         ,@(scramble-code 'x)
-         (:local.get b) (:i64.const 26) :i64.shr_u (:i64.const #x3FFFFFF) :i64.and :i32.wrap_i64
-         (:local.get x) :i32.xor (:local.set x)
-         ,@(scramble-code 'x)
+        ((:local.get 0) (:ref.cast! :ratio) (:local.tee r) (:struct.get :ratio 0) (:call :integer-hash) (:local.set x)
+         ,@(hash-mix-code 'x '((:local.get r) (:struct.get :ratio 1) (:call :integer-hash)))
          (:local.get x) :ref.i31 :return))
   '(:local.get 0) '(:local.get 1) :ref.i31
   `(:global.get ,(sym-global 'clysm-sys::%sxhash)) '(:call (:callsym 2)))
+;; %NUMBER-HASH of an integer, as an i32
+(defhelper :integer-hash :e-i ()
+  '(:local.get 0) '(:ref.test :i31)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const 536870911) :i32.and :return))
+  '(:local.get 0) '(:call :bignum-hash) '(:ref.cast! :i31) :i31.get_s)
 (defprim clysm-sys::%sxhash-fast (x depth) :value `(,@x ,@(idx-code depth) (:call :sxhash-fast)))
 ;;; Hash tables (runtime/hash.lisp): the entry whose key is EQ to KEY, of
 ;;; hash HASH, in the table whose slot vector is SV; its index or -1.  The
@@ -3685,7 +3774,10 @@ any object in an EQ table, an instance, a list or a string in an EQL table
 local H (an eqref), -1 when there is none; null is returned for another key
 or object."
   (progn
-    `((:local.get ,h) (:ref.test :instance) :i32.eqz (:if nil nil ((:ref.null :eq) :return))
+    ;; (the test of the table's own struct type, which its map answers:
+    ;; the test of $instance, a supertype, read two more words of the map
+    ;; at every GETHASH)
+    `((:local.get ,h) (:ref.test :si17) :i32.eqz (:if nil nil ((:ref.null :eq) :return))
       (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 0)
       (:global.get ,(sym-global 'clysm-sys::*hash-table-class*)) (:struct.get :symbol ,+sym-value+) :ref.eq
       :i32.eqz (:if nil nil ((:ref.null :eq) :return))
@@ -3705,7 +3797,7 @@ or object."
   '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
 (defun ht-table-test-code (h fail)
   "Code doing FAIL unless the parameter H is a hash table."
-  `((:local.get ,h) (:ref.test :instance) :i32.eqz (:if nil nil ,fail)
+  `((:local.get ,h) (:ref.test :si17) :i32.eqz (:if nil nil ,fail)
     (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 0)
     (:global.get ,(sym-global 'clysm-sys::*hash-table-class*)) (:struct.get :symbol ,+sym-value+) :ref.eq
     :i32.eqz (:if nil nil ,fail)))
@@ -3733,6 +3825,12 @@ locals KEYS FILL BK B BITS Y."
     (:local.get v)
     (:local.get v) (:struct.get :si17 4) (:ref.cast! :i31) :i31.get_s (:i32.const 1) :i32.add :ref.i31
     (:struct.set :si17 4)))
+(defhelper :ht-insert :eeei-e ((v (:ref :null :si17)) (hash :i32) (keys (:ref :null :vector))
+                              (fill :i32) (bk (:ref :null :limbs)) (b :i32) (bits :i32) (y :i32))
+  '(:local.get 0) '(:ref.cast! :si17) '(:local.set v)
+  '(:local.get 3) '(:local.set hash)
+  (ht-add-code 1 2)
+  '(:local.get 2))
 ;;; (SETF GETHASH) of a fixnum, a character or a symbol (as :HT-GET):
 ;;; the value stored in the entry of KEY, or a new entry made when there is
 ;;; room for one (as %HT-ADD); null (the call site calls the function) for
@@ -3846,6 +3944,41 @@ ASCII letter)."
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
   '(:local.get h))
+;;; Hash the first four elements of a simple vector, exactly as the Lisp
+;;; function. Character vectors (including empty vectors) must hash like
+;;; strings, so they retain the general vector path.
+(defhelper :equalp-vector-hash :ei-e ((v (:ref :null :vector)) (n :i32) (h :i32) (i :i32) (e :eqref) (r :eqref) (x :i32))
+  '(:local.get 0) '(:ref.cast! :vector) '(:local.tee v) :array.len '(:local.tee n) '(:local.set h)
+  `(:block slow nil
+     (:local.get 1) (:i32.const 0) :i32.le_s (:br_if slow)
+     (:local.get n) :i32.eqz (:br_if slow)
+     (:local.get v) (:i32.const 0) (:array.get :vector) (:local.tee e) (:ref.test :i31)
+     (:if nil nil ((:local.get e) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.ge_s (:br_if slow)))
+     (:local.get n) (:i32.const 4) :i32.gt_u (:if nil nil ((:i32.const 4) (:local.set n)))
+     (:loop elements nil
+       (:local.get i) (:local.get n) :i32.ge_u (:if nil nil ((:local.get h) :ref.i31 :return))
+       (:local.get v) (:local.get i) (:array.get :vector) (:local.set e)
+       (:block hashed nil
+         (:local.get e) (:ref.test :i31)
+         (:if nil nil
+              ((:local.get e) (:ref.cast! :i31) :i31.get_s (:local.tee x) (:i32.const ,+char-tag+) :i32.lt_s
+               (:if nil nil ((:local.get x) (:i32.const 536870911) :i32.and (:local.set x) (:br hashed)))))
+         (:local.get e) (:ref.test :symbol)
+         (:if nil nil ((:local.get e) (:ref.cast! :symbol) (:struct.get :symbol 5) (:local.set x) (:br hashed)))
+         (:local.get e) (:ref.test :string)
+         (:if nil nil ((:local.get e) (:call :equalp-string-hash) (:local.tee x) (:i32.const 0) :i32.ge_s (:br_if hashed)))
+         (:local.get e) (:ref.test :vector)
+         (:if nil nil
+              ((:local.get e) (:local.get 1) (:i32.const 1) :i32.sub (:call :equalp-vector-hash) (:local.set r))
+              ((:local.get e) (:local.get 1) (:i32.const 1) :i32.sub :ref.i31
+               ,@(lisp-call-instrs 'clysm-sys::%equalp-hash 2) (:local.set r)))
+         (:local.get r) :ref.is_null (:if nil nil ((:ref.null :eq) :return))
+         (:local.get r) (:ref.cast! :i31) :i31.get_s (:local.set x))
+       ,@(hash-mix-code 'h '((:local.get x)))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i) (:br elements)))
+  '(:local.get 0) '(:local.get 1) :ref.i31 (lisp-call-instrs 'clysm-sys::%equalp-vector-hash 2))
+(defprim clysm-sys::%equalp-simple-vector-hash (x depth) :value
+  `(,@x ,@(idx-code depth) (:call :equalp-vector-hash)))
 ;;; The index of the entry of the simple string KEY of hash HASH
 ;;; (:EQUALP-STRING-HASH) in the EQUALP table whose slot vector is V, or -1;
 ;;; -2 when a key of the same hash is not a simple string or has a
@@ -3961,8 +4094,7 @@ not a string (left to EQUAL)."
   '(:if nil nil
        ((:local.get v) (:struct.get :si17 6) (:ref.cast! :vector)
         (:local.get i) (:local.get 2) (:array.set :vector) (:local.get 2) :return))
-  (ht-add-code 1 2)
-  '(:local.get 2))
+  '(:local.get v) '(:local.get 1) '(:local.get 2) '(:local.get hash) '(:return_call :ht-insert))
 (defprim clysm-sys::%ht-get-equal (h key slow) :value
   (let ((done (gensym "HTGETS")))
     `((:block ,done :eqref ,@h ,@key (:call :ht-get-equal) (:br_on_non_null ,done) ,@slow))))
@@ -8335,6 +8467,42 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
 ;; (runtime/types.lisp %EQUALP-INSTANCES then compares them slot by slot).
 ;; The count of the fields selects where the comparisons start: field N-1,
 ;; then down to field 0.
+ ;;; Common unequal structure fields, kept in one helper rather than copied
+;;; into every arm of :SINST-EQUALP. Only fixnums are converted to double:
+;;; large integers and ratios retain EQUALP's exact numeric comparison.
+(defun equalp-small-number-code (x d fail)
+  `((:block number nil
+      (:local.get ,x) (:ref.test :i31)
+      (:if nil nil
+           ((:local.get ,x) (:ref.cast! :i31) :i31.get_s (:local.tee c1)
+            (:i32.const ,+char-tag+) :i32.ge_s (:br_if ,fail)
+            (:local.get c1) :f64.convert_i32_s (:local.set ,d) (:br number)))
+      (:local.get ,x) (:ref.test :double)
+      (:if nil nil ((:local.get ,x) (:ref.cast! :double) (:struct.get :double 0) (:local.set ,d) (:br number)))
+      (:local.get ,x) (:ref.test :single) :i32.eqz (:br_if ,fail)
+      (:local.get ,x) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 (:local.set ,d))))
+(defhelper :equalp-field :ee-e ((da :f64) (db :f64) (c1 :i32) (c2 :i32) (i :i32) (n :i32)
+                               (a (:ref :null :string)) (b (:ref :null :string)))
+  `(:block slow nil
+     (:block notnumbers nil
+       ,@(equalp-small-number-code 0 'da 'notnumbers)
+       ,@(equalp-small-number-code 1 'db 'notnumbers)
+       (:local.get da) (:local.get db) :f64.eq
+       (:if nil :eqref ,(t-code) ,(nil-code)) :return)
+     (:local.get 0) (:ref.test :string) (:local.get 1) (:ref.test :string) :i32.and :i32.eqz (:br_if slow)
+     (:local.get 0) (:ref.cast! :string) (:local.tee a) :array.len (:local.set n)
+     (:local.get 1) (:ref.cast! :string) (:local.tee b) :array.len (:local.get n) :i32.ne
+     (:if nil nil (,@(nil-code) :return))
+     (:loop chars nil
+       (:local.get i) (:local.get n) :i32.ge_u (:if nil nil (,@(t-code) :return))
+       (:local.get a) (:local.get i) (:array.get :string) (:local.tee c1)
+       (:local.get b) (:local.get i) (:array.get :string) (:local.tee c2) :i32.ne
+       (:if nil nil
+            ((:local.get c1) (:local.get c2) :i32.or (:i32.const 128) :i32.ge_u (:br_if slow)
+             ,@(ascii-upcase-code 'c1) ,@(ascii-upcase-code 'c2)
+             (:local.get c1) (:local.get c2) :i32.ne (:if nil nil (,@(nil-code) :return))))
+       (:local.get i) (:i32.const 1) :i32.add (:local.set i) (:br chars)))
+  '(:local.get 0) '(:local.get 1) (lisp-call-instrs 'equalp 2))
 (defhelper :sinst-equalp :ee-e ((n :i32) (x :eqref) (y :eqref) (r :eqref) (sv (:ref :null :vector)))
   '(:local.get 0) '(:ref.test :sfield) '(:local.get 1) '(:ref.test :sfield) :i32.and :i32.eqz
   '(:if nil nil ((:i32.const 0) :ref.i31 :return))
@@ -8375,7 +8543,7 @@ baseline compiler, which compiles IMAGE_LOAD, does not inline calls."
                             (:local.get 1) (:ref.cast ,ty) (:struct.get ,ty ,(sinst-field j)) (:local.tee y)
                             :ref.eq :i32.eqz
                             (:if nil nil
-                                 ((:local.get x) (:local.get y) ,@(lisp-call-instrs 'equalp 2) (:local.tee r)
+                                 ((:local.get x) (:local.get y) (:call :equalp-field) (:local.tee r)
                                   :ref.is_null (:if nil nil ((:ref.null :eq) :return))
                                   (:local.get r) ,@(nil-code) :ref.eq
                                   (:if nil nil (,@(nil-code) :return))))))))

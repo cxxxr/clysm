@@ -54,8 +54,9 @@
 (print (sort (list "b" "A" "c") #'string-lessp))
 (print (search '(2 3) '(1 2 3 4)))
 (print (search #(b) #(a b c)))
-(print (tailp (cddr '(1 2 3)) '(1 2 3)))
-(print (ldiff '(1 2 3 4) (cddr '(1 2 3 4))))
+;; Distinct lists here: COMPILE-FILE may coalesce similar quoted literals.
+(print (tailp (cddr (list 1 2 3)) (list 1 2 3)))
+(print (ldiff (list 1 2 3 4) (cddr (list 1 2 3 4))))
 (let ((l '(1 2 3 4))) (print (ldiff l (cddr l))))
 (print (last '(1 2 3 4) 2))
 (print (butlast '(1 2 3 4)))

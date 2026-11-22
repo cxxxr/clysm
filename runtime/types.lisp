@@ -117,16 +117,39 @@
              ((%mdarray-p ,x) (or (%mdarray-fill ,x) (%mdarray-dim1 ,x)))
              (t (length ,x))))))
 
+(defmacro %equalp-view ((x data off len) &body body)
+  ;; DATA, OFF and LEN (variables) set to the storage, the offset and the
+  ;; length of X when it is a simple vector or string, or a vector whose
+  ;; header is over one (a fill pointer, adjustable); else LEN stays -1
+  `(progn
+     (cond ((%simple-vector-p ,x) (setq ,len (%svlength ,x)))
+           ((%simple-string-p ,x) (setq ,len (%string-length ,x)))
+           ((and (%mdarray-p ,x) (not (eql 0 (%mdarray-dim1 ,x))))
+            (let ((d (%mdarray-data ,x)) (o (%mdarray-offset ,x)))
+              (when (and (or (%simple-vector-p d) (%simple-string-p d)) (fixnump o))
+                (let ((f (%mdarray-fill ,x)))
+                  (setq ,data d ,off o ,len (if (fixnump f) f (%mdarray-dim1 ,x))))))))
+     ,@body))
+
 (defun %equalp-arrays (a b)
-  (cond ((and (%simple-vector-p a) (%simple-vector-p b))
-         (let ((n (%svlength a)))
-           (declare (fixnum n))
-           (and (eql n (%svlength b))
-                (dotimes (i n t)
-                  (let ((x (%svref a i)) (y (%svref b i)))
-                    (unless (or (eq x y) (equalp x y)) (return nil)))))))
-        ((and (%simple-string-p a) (%simple-string-p b)) (%equalp-strings a b))
-        ((%equalp-vector-p a)
+  (let ((da a) (db b) (oa 0) (ob 0) (na -1) (nb -1))
+    (declare (fixnum oa ob na nb))
+    (%equalp-view (a da oa na)
+      (%equalp-view (b db ob nb)
+        (cond ((or (%fx< na 0) (%fx< nb 0)) (%equalp-arrays-general a b))
+              ((not (%fx= na nb)) nil)
+              ((%simple-vector-p da)
+               (if (%simple-vector-p db)
+                   (dotimes (i na t)
+                     (let ((x (%svref da (%fx+ i oa))) (y (%svref db (%fx+ i ob))))
+                       (unless (or (eq x y) (and (not (symbolp x)) (equalp x y))) (return nil))))
+                   ;; (a vector of characters and a string)
+                   (%equalp-vector-region da oa db ob na)))
+              ((and (eq da a) (eq db b) (%simple-string-p da) (%simple-string-p db)) (%equalp-strings a b))
+              (t (%equalp-vector-region da oa db ob na)))))))
+
+(defun %equalp-arrays-general (a b)
+  (cond ((%equalp-vector-p a)
          (and (%equalp-vector-p b)
               (let ((n (%equalp-vector-length a)))
                 (declare (fixnum n))
@@ -172,13 +195,15 @@
   ;; as EQUAL; other instances only when EQ)
   (cond ((not (%instancep b)) nil)
         ((not (eq (%instance-layout a) (%instance-layout b))) nil)
-        ((structurep a)
-         (if (pathnamep a)
-             (equal a b)
-             (let ((r (%sinst-equalp a b)))
-               (if (eql r 0) (%equalp-slots a b) r))))
         ((hash-table-p a) (%equalp-hash-tables a b))
-        (t nil)))
+        ((pathnamep a) (equal a b))
+        (t
+         ;; (a structure of field slots: by the helper, which answers 0 for
+         ;; anything else)
+         (let ((r (%sinst-equalp a b)))
+           (cond ((not (eql r 0)) r)
+                 ((structurep a) (%equalp-slots a b))
+                 (t nil))))))
 
 (defun %equalp-slots (a b)
   ;; structures A and B of one class, slot by slot
@@ -211,9 +236,14 @@
                          ((%single-float-p b) (= (float (the fixnum a) 1d0) (float (the single-float b) 1d0)))
                          (t (%equalp-numbers a b)))))
           ((symbolp a) (return nil))
+          ((%simple-vector-p a) (return (%equalp-arrays a b)))
           ((%double-float-p a)
            (return (cond ((%double-float-p b) (= (the double-float a) (the double-float b)))
                          ((fixnump b) (= (the double-float a) (float (the fixnum b) 1d0)))
+                         (t (%equalp-numbers a b)))))
+          ((%single-float-p a)
+           (return (cond ((%single-float-p b) (= (the single-float a) (the single-float b)))
+                         ((fixnump b) (= (float (the single-float a) 1d0) (float (the fixnum b) 1d0)))
                          (t (%equalp-numbers a b)))))
           ((%instancep a) (return (%equalp-instances a b)))
           ((%mdarray-p a) (return (%equalp-arrays a b)))
@@ -744,12 +774,194 @@ one."
              (<= 3 (%logcount18 any) 12)
              (or (logbitp 13 any) (logbitp 14 any) (>= (%logcount18 any) 5)))))))
 
+;;; TYPECASE by the kind, fused (runtime/boot.lisp, %TYPECASE-FORM): the
+;;; clauses' tests (%TYPEP-CODE-TEST: of the kind code C by %KIND-IN, and
+;;; a full test for the kinds that need one) are decided for each kind when
+;;; the form is expanded, and the tests that tell the kinds apart branch to
+;;; what is left for theirs -- the body of the first clause all objects of
+;;; the kind are of, after the full tests of the clauses before it that some
+;;; are of.  No kind code is computed and no clause tested for a kind it
+;;; does not hold: a fixnum goes from its test to its clause.
+;;;   (block out
+;;;     (block body-2 (block body-1
+;;;       (block arm-b (block arm-a          ; arms that several kinds share
+;;;         (cond ((%i31p k) (if (fixnump k) <arm of 0> <arm of 1>))
+;;;               ((%wasm-array-p k) (cond ((%simple-string-p k) <6>) ((%simple-vector-p k) <7>) (t <slow>)))
+;;;               ((consp k) <2>) ((null k) <3>) ((symbolp k) <4>) ... (t <slow>)))
+;;;         (cond (full-test (return-from body-1 nil)) (t (return-from body-2 nil))))  ; arm-a
+;;;       ...)
+;;;       (return-from out (progn . body-1)))
+;;;     (return-from out (progn . body-2)))
+;;; An arm that is one jump is written where the kind is found, and so is an
+;;; arm of one kind.  A kind whose arm is that of the objects no test finds
+;;; (kind 17) is not tested at all: a TYPECASE of FIXNUM, CONS and T tests
+;;; for those two.  (%KIND-IS K MASK) is true, and tells the compiler the
+;;; type of K in an arm or a body that is reached by a jump.  TYPEP of a
+;;; type of several kinds is such a TYPECASE of one clause.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %tcf-simplify (form)
+    (if (atom form)
+        form
+        (case (car form)
+          (and (let ((args nil))
+                 (dolist (a (cdr form))
+                   (cond ((eq a t))
+                         ((null a) (return-from %tcf-simplify nil))
+                         (t (push a args))))
+                 (cond ((null args) t)
+                       ((null (cdr args)) (car args))
+                       (t `(and ,@(nreverse args))))))
+          (or (let ((args nil))
+                (dolist (a (cdr form))
+                  (cond ((null a))
+                        ((eq a t) (push t args) (return))
+                        (t (push a args))))
+                (cond ((null args) nil)
+                      ((null (cdr args)) (car args))
+                      (t `(or ,@(nreverse args))))))
+          (if (cond ((eq (second form) t) (third form))
+                    ((null (second form)) (fourth form))
+                    (t form)))
+          (t form))))
+
+  (defun %tcf-subst (form c v lay cpl)
+    "FORM for an object of the kind V: the tests of the kind code C decided,
+the layout and the list of classes (LAY, CPL) NIL for what is no instance."
+    (cond ((and lay (not (eql v 5)) (or (eq form lay) (eq form cpl))) nil)
+          ((atom form) form)
+          ((eq (car form) 'quote) form)
+          ((and (eq (car form) '%kind-in) (consp (cddr form)) (eq (third form) c))
+           (if (logbitp v (fourth form)) t nil))
+          (t (let ((new nil) (l form))
+               (loop (when (atom l) (return))
+                     (push (%tcf-subst (car l) c v lay cpl) new)
+                     (setq l (cdr l)))
+               (%tcf-simplify (nreconc new l))))))
+
+  (defun %tcf-mentions-p (x form)
+    (cond ((eq form x) t)
+          ((atom form) nil)
+          (t (or (%tcf-mentions-p x (car form)) (%tcf-mentions-p x (cdr form))))))
+
+  (defun %typecase-fused-form (k c code-clauses bindings fail)
+    "The TYPECASE of the variable K whose clauses, with their tests of the
+kind code C (a variable no longer bound), are CODE-CLAUSES; BINDINGS: those
+of the layout and its list of classes, or NIL; FAIL: the clause of ETYPECASE."
+    (let* ((lay (car (first bindings))) (cpl (car (second bindings)))
+           (out (gensym "TYPECASE"))
+           (labels (mapcar (lambda (cl) (declare (ignore cl)) (gensym "BODY")) code-clauses))
+           (fail-label (gensym "NONE"))
+           (arms (make-array 18))
+           (distinct nil))                ; (arm kinds...) of the arms that are no single jump
+      (dotimes (v 18)
+        (let ((arm nil) (sure nil))
+          (loop for cl in code-clauses for label in labels
+                do (let ((test (%tcf-subst (car cl) c v lay cpl)))
+                     (cond ((null test))
+                           ((eq test t) (push `(t (return-from ,label nil)) arm) (setq sure t) (return))
+                           (t (push `(,test (return-from ,label nil)) arm)))))
+          (unless sure (push `(t (return-from ,fail-label nil)) arm))
+          (setq arm (nreverse arm))
+          (setf (svref arms v) arm)
+          (when (cdr arm)
+            (let ((e (assoc arm distinct :test #'equal)))
+              (if e (nconc e (list v)) (push (list arm v) distinct))))))
+      (setq distinct (nreverse distinct))
+      (let ((shared (mapcar (lambda (e) (list (car e) (gensym "ARM") (cdr e)))
+                            (remove-if (lambda (e) (null (cddr e))) distinct))))
+        (labels ((mask (kinds) (let ((m 0)) (dolist (v kinds m) (setq m (logior m (ash 1 v))))))
+                 (arm-code (arm kinds)
+                   ;; the tests of an arm, with the layout for an instance
+                   (let ((code `(cond ,@arm)))
+                     (if (and lay (member 5 kinds) (%tcf-mentions-p lay arm))
+                         `(let* ((,lay ,(%tcf-subst (second (first bindings)) c 5 nil nil))
+                                 (,cpl ,(%tcf-subst (second (second bindings)) c 5 nil nil)))
+                            ,code)
+                         code)))
+                 (leaf (v)
+                   (let* ((arm (svref arms v)) (s (assoc arm shared :test #'equal)))
+                     (cond ((null (cdr arm)) (second (first arm)))
+                           (s `(return-from ,(second s) nil))
+                           (t (arm-code arm (list v))))))
+                 (slow (kinds)
+                   ;; the kinds that only the kind code tells apart
+                   (let ((groups nil))
+                     (dolist (v kinds)
+                       (let* ((code (leaf v)) (e (assoc code groups :test #'equal)))
+                         (if e (nconc e (list v)) (push (list code v) groups))))
+                     (setq groups (nreverse groups))
+                     (if (null (cdr groups))
+                         (car (first groups))
+                         `(let ((,c (%type-code ,k)))
+                            (cond ,@(loop for (g . more) on groups
+                                          collect (if more
+                                                      `((%kind-in ,k ,c ,(mask (cdr g))) ,(car g))
+                                                      `(t ,(car g))))))))))
+          ;; The tests in the order of the kinds' frequency (as %TYPE-CODE's).
+          ;; A kind whose arm is that of the objects left at the end (kind
+          ;; 17) needs no test, it gets there by failing the others; it is
+          ;; tested all the same while two tests or more of other arms
+          ;; follow, which its objects then do not go through.
+          (let* ((rest (leaf 17))
+                 (arrays (let ((other (if (equal (leaf 14) rest)
+                                          rest
+                                          (slow '(14 17)))))
+                           `(,@(unless (equal (leaf 6) other) `(((%simple-string-p ,k) ,(leaf 6))))
+                             ,@(unless (equal (leaf 7) other) `(((%simple-vector-p ,k) ,(leaf 7))))
+                             (t ,other))))
+                 ;; (test arm differs-from-the-rest)
+                 (entries
+                   (list (list `(%i31p ,k)
+                               (if (equal (leaf 0) (leaf 1)) (leaf 0) `(if (fixnump ,k) ,(leaf 0) ,(leaf 1)))
+                               (not (and (equal (leaf 0) rest) (equal (leaf 1) rest))))
+                         (list `(%wasm-array-p ,k)
+                               (if (cdr arrays) `(cond ,@arrays) (second (first arrays)))
+                               (not (and (null (cdr arrays)) (equal (second (first arrays)) rest))))
+                         (list `(consp ,k) (leaf 2) (not (equal (leaf 2) rest)))
+                         (list `(symbolp ,k) (leaf 4) (not (equal (leaf 4) rest)))
+                         (list `(%instancep ,k) (leaf 5) (not (equal (leaf 5) rest)))
+                         (list `(%double-float-p ,k) (leaf 8) (not (equal (leaf 8) rest)))
+                         (list `(functionp ,k) (leaf 9) (not (equal (leaf 9) rest)))
+                         (list `(%bignump ,k) (leaf 10) (not (equal (leaf 10) rest)))
+                         (list `(%ratiop ,k) (leaf 11) (not (equal (leaf 11) rest)))
+                         (list `(%single-float-p ,k) (leaf 12) (not (equal (leaf 12) rest)))
+                         (list `(%mdarray-p ,k) (leaf 15) (not (equal (leaf 15) rest)))
+                         (list `(%packagep ,k) (leaf 16) (not (equal (leaf 16) rest)))
+                         (list `(%complexp ,k) (leaf 13) (not (equal (leaf 13) rest)))))
+                 (kept (let ((after 0) (r nil))
+                         (dolist (e (reverse entries) r)
+                           (when (or (third e) (>= after 2)) (push e r))
+                           (when (third e) (setq after (+ after 1))))))
+                 (clauses (mapcan (lambda (e)
+                                    (if (and (eq (car (first e)) 'symbolp) (not (equal (leaf 3) (leaf 4))))
+                                        ;; (NIL is a symbol for the test of symbols: told apart before it)
+                                        (list `((null ,k) ,(leaf 3)) (list (first e) (second e)))
+                                        (list (list (first e) (second e)))))
+                                  kept))
+                 (form `(cond ,@clauses
+                              ,@(unless (or (equal (leaf 3) rest)
+                                            (find 'symbolp kept :key (lambda (e) (car (first e)))))
+                                  ;; (the test of symbols left out: NIL alone)
+                                  `(((null ,k) ,(leaf 3))))
+                              (t ,rest))))
+            (dolist (s shared)
+              (setq form `(progn (block ,(second s) ,form)
+                                 (if (%kind-is ,k ,(mask (third s))) ,(arm-code (first s) (third s)) nil))))
+            (loop for cl in code-clauses for label in labels
+                  do (setq form `(progn (block ,label ,form)
+                                        (return-from ,out (progn ,@(cdr cl))))))
+            `(block ,out
+               (block ,fail-label ,form)
+               ,@(if fail (cdr (first fail)) (list nil)))))))))
+
 (define-compiler-macro typep (&whole form x type &optional env)
   (if (and (null env) (consp type) (eq (car type) 'quote) (consp (cdr type)) (null (cddr type)))
       (let ((ty (cadr type)))
         (if (%typep-by-code-p ty)
             (let ((g (if (symbolp x) x (gensym))) (c (gensym "CODE")))
-              (let ((e `(let ((,c (%type-code ,g))) ,(%typep-code-test g c ty))))
+              ;; (as a TYPECASE of one clause: the tests of the kinds that
+              ;; are of the type, or may be, and no kind code)
+              (let ((e (%typecase-fused-form g c (list (list (%typep-code-test g c ty) t)) nil nil)))
                 (if (symbolp x) e `(let ((,g ,x)) ,e))))
         (if (symbolp x)
             (let ((e (%typep-expansion x ty)))
@@ -759,11 +971,28 @@ one."
                 (if (and (consp e) (eq (car e) '%typep)) form `(let ((,g ,x)) ,e)))))))
       form))
 
+;; VECTORP and ARRAYP in code compiled after this file: by the kind (the
+;; functions test the kinds of storage one after the other, in a helper)
+(define-compiler-macro vectorp (x)
+  (let ((g (if (symbolp x) x (gensym))) (c (gensym "CODE")))
+    (let ((e (%typecase-fused-form
+              g c `(((or (%kind-in ,g ,c ,(%type-code-bits 6 7 14))
+                         (and (%kind-in ,g ,c ,(%type-code-bits 15)) (%header-vector-p ,g)))
+                     t))
+              nil nil)))
+      (if (symbolp x) e `(let ((,g ,x)) ,e)))))
+(define-compiler-macro arrayp (x)
+  (let ((g (if (symbolp x) x (gensym))) (c (gensym "CODE")))
+    (let ((e (%typecase-fused-form g c `(((%kind-in ,g ,c ,(%type-code-bits 6 7 14 15)) t)) nil nil)))
+      (if (symbolp x) e `(let ((,g ,x)) ,e)))))
+
 (defun %typep (x type) (typep x type))
 
 ;; (the primitives as functions, for FUNCALL and the evaluator)
 (defun %type-code (x) (%type-code x))
 (defun %kind-in (x c mask) (declare (ignore x)) (logbitp c mask))
+(defun %kind-is (x mask) (declare (ignore x mask)) t)
+(defun %wasm-array-p (x) (%wasm-array-p x))
 
 ;;; The type cell of a symbol: (class-or-nil . name).  %SET-FIND-CLASS keeps
 ;;; the class in it up to date, so a compiled test of a class or structure

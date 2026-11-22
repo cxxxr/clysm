@@ -736,6 +736,10 @@ surely not of them (for the branch where the test is false)."
     (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
       (multiple-value-bind (in out) (type-code-mask-tys (ty-lo m))
         (list (list 0 in out))))))
+(def-ti-test clysm-sys::%kind-is (a)
+  (let ((m (second a)))
+    (when (and (ty-int-p m) (ty-lo m) (eql (ty-lo m) (ty-hi m)))
+      (list (list 0 (type-code-mask-tys (ty-lo m)) *ty-top*)))))
 (def-ti-test clysm-sys::fixnump (a) (list (list 0 *ty-fixnum* *ty-top*)))
 
 ;;; ------------------------------------------------------------
@@ -751,6 +755,11 @@ surely not of them (for the branch where the test is false)."
 (defvar *ti-exits* nil "blk/tb -> exit record")
 (defvar *ti-uwps* nil "active unwind-protect cleanups: (depth . assigned-lvars)")
 (defvar *ti-depth* 0)
+(defvar *ti-aliases* nil
+  "(copy-slot . root-slot)...: variables bound by a LET to another variable of the
+function, neither assigned while the binding lasts (LET-ALIASES): what a test
+learns of either holds of the other (ENDP's compiler macro binds its
+argument; the list variable of a DO is then a cons in the body).")
 (defvar *ti-analyzed* (make-hash-table :test 'eq))
 (defvar *ti-let-vars* nil)
 
@@ -1084,7 +1093,7 @@ value, keeps its type, so that the code after is not taken to be unreachable)."
   (unless (gethash lam *ti-analyzed*)
     (setf (gethash lam *ti-analyzed*) t)
     (let ((*ti-lam* lam) (*ti-slots* (make-hash-table :test 'eq)) (*ti-nslots* 0) (*ti-let-vars* nil)
-          (*ti-lvar-log* nil)
+          (*ti-lvar-log* nil) (*ti-aliases* nil)
           (*ti-regions* nil) (*ti-exits* (make-hash-table :test 'eq)) (*ti-uwps* nil) (*ti-depth* 0))
       (let ((params (append (lam-req lam)
                             (loop for (lv nil sv) in (lam-opt lam) collect lv when sv collect sv)
@@ -1157,7 +1166,8 @@ value, keeps its type, so that the code after is not taken to be unreachable)."
     (:progn (let ((ty (mkty +k-null+))) (dolist (n (cdr node) ty) (setf ty (ti n)))))
     (:let (let ((tys (loop for b in (second node) collect (ti (cdr b)))))
             (loop for b in (second node) for ty in tys do (ti-bind (car b) ty))
-            (ti (third node))))
+            (let ((*ti-aliases* (if (eq *env* :bottom) *ti-aliases* (let-aliases node))))
+              (ti (third node)))))
     (:mvbind (destructuring-bind (lvars vnode body) (cdr node)
                (let ((ty (ti vnode)) (mvs (mv-types vnode)))
                  (loop for lv in lvars for i from 0
@@ -1444,7 +1454,42 @@ with them, replacing the node types of the widened iterations."
           do (when (> k 0) (setf *env* (env-copy (svref new k))))
              (dolist (f forms) (ti f)))))
 
+(defun let-aliases (node)
+  "*TI-ALIASES* for the body of the LET NODE."
+  (let ((new nil) (assigned :unknown))
+    (dolist (bd (second node))
+      (let ((v (car bd)) (init (cdr bd)))
+        (when (and (eq (car init) :lref) (not (lvar-mutated v)) (ti-slot v) (ti-slot (second init))
+                   (not (eq v (second init))))
+          ;; Most copies are of immutable variables: no walk is needed.
+          ;; Otherwise include later initializers, which may change the source.
+          (when (and (lvar-mutated (second init)) (eq assigned :unknown))
+            (setf assigned (assigned-lvars node)))
+          (unless (and (lvar-mutated (second init)) (member (second init) assigned))
+            (let* ((source (ti-slot (second init)))
+                   (root (or (cdr (assoc source *ti-aliases*)) source)))
+              (push (cons (ti-slot v) root) new))))))
+    (if new (append new *ti-aliases*) *ti-aliases*)))
+
 (defun ti-cond (node)
+  "TI-COND-1, with each outcome shared by unchanged LET copies."
+  (multiple-value-bind (et ef) (ti-cond-1 node)
+    ;; All edges name the root directly: intersect into it, then copy its
+    ;; type back. No hash lookups, reversed lists, or copies of equal types
+    ;; at every test (a large cost in the compiler running in the image).
+    (when *ti-aliases*
+      (dolist (e (if (eq et ef) (list et) (list et ef)))
+        (unless (eq e :bottom)
+          (dolist (al *ti-aliases*)
+            (let ((a (svref e (cdr al))) (b (svref e (car al))))
+              (unless (eq a b)
+                (let ((new (if (ty-equal a b) a (ty-intersect a b))))
+                  (unless (ty-bottom-p new) (setf (svref e (cdr al)) new))))))
+          (dolist (al *ti-aliases*)
+            (setf (svref e (car al)) (svref e (cdr al)))))))
+    (values et ef)))
+
+(defun ti-cond-1 (node)
   "Analyze NODE as a test; returns the environments when it is true and false.
 They are the caller's own (it stores into them), and the environment on entry
 is one of them where it can be (not a copy of it: the copies of the
@@ -1480,7 +1525,13 @@ each IF): the callers set *ENV* next."
                      (setf *env* :bottom)
                      (note-ty (third body) *ty-top*) (note-ty (second body) *ty-top*)
                      (values (env-njoin at bt) bf))))
-               (let ((ty (ti node))) (declare (ignore ty)) (values *env* (env-copy *env*))))))
+               ;; any other LET: its body is the test
+               (let ((tys (loop for bd in b collect (ti (cdr bd)))))
+                 (loop for bd in b for ty in tys do (ti-bind (car bd) ty))
+                 (if (eq *env* :bottom)
+                     (values :bottom :bottom)
+                     (let ((*ti-aliases* (let-aliases node)))
+                       (ti-cond body)))))))
         (:lref (let ((ty (ti node)) (k (ti-slot (second node))))
                  (declare (ignore ty))
                  (if k

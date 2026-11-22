@@ -22,4 +22,8 @@
   (setf (symbol-function 'tolerance) (lambda () 1/10))
   (format t " ~S~%" (geom-util:within-tolerance-p 1/100))
   (format t "error: ~A~%" (handler-case (shape "cube") (error (e) e)))
+  ;; the objects made when the program runs are each their own, and the
+  ;; literal lists that end as their cells began are as they were written
+  (format t "literals ~S ~S ~S ~S~%" (plain-lists) (eq (origin-tag) (first (tags)))
+          (eq (first (tags)) (fourth (tags))) (equal (geom-util::octets) (geom-util::home)))
   #+clysm-static (format t "static~%"))

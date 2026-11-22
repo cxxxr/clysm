@@ -84,9 +84,7 @@
 (defun apply (f &rest args)
   (apply f (apply #'list* args)))
 
-;;; strict end-of-list test: a non-NIL atom where a list was expected is an error
-(defmacro %endp (x)
-  `(cond ((consp ,x) nil) ((null ,x) t) (t (%type-error ,x 'list))))
+;;; (%ENDP, the strict end-of-list test, is in boot.lisp)
 
 ;;; ------------------------------------------------------------
 ;;; Early error support (replaced by the condition system later)
@@ -573,13 +571,21 @@ test is not one a hash table has."
           ((or (consp x) (consp y)) (return nil))
           (t (return (eql x y))))))
 
-;; without keywords, or with :TEST alone: no keyword list
+;; without keywords, or with :TEST alone: no keyword list; #'EQUAL as the
+;; test is EQUAL of the trees (which goes down the conses the same way and
+;; compares the leaves, a cons against an atom being false for both) and
+;; #'EQL the loop without a test
 (define-compiler-macro tree-equal (&whole form a b &rest keys)
   (cond ((null keys) `(%tree-equal-eql ,a ,b))
         ((and (eq (car keys) :test) (consp (cdr keys)) (null (cddr keys)))
-         (let ((x (gensym "A")) (y (gensym "B")))
-           `(let ((,x ,a) (,y ,b))
-              (%tree-equal-test ,x ,y (%test-fn ,(cadr keys) nil)))))
+         (let* ((test (cadr keys))
+                (name (and (consp test) (member (car test) '(function quote)) (consp (cdr test))
+                           (null (cddr test)) (cadr test))))
+           (cond ((eq name 'equal) `(equal ,a ,b))
+                 ((eq name 'eql) `(%tree-equal-eql ,a ,b))
+                 (t (let ((x (gensym "A")) (y (gensym "B")))
+                      `(let ((,x ,a) (,y ,b))
+                         (%tree-equal-test ,x ,y (%test-fn ,test nil))))))))
         (t form)))
 
 ;;; mapping

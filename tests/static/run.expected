@@ -11,4 +11,5 @@ tags :ORIGIN T (:A 1 "x" :B)
 found AREA 49
 within NIL T
 error: no shape "cube"
+literals ((NIL) (1 2 NIL) ((NIL))) NIL NIL NIL
 static

@@ -116,6 +116,13 @@ the declarations (when forms follow it)."
           ((and (stringp (car body)) (cdr body)) (%split-doc-decls (cdr body)))
           (t (values nil body)))))
 
+;;; strict end-of-list test: a non-NIL atom where a list was expected is an
+;;; error.  X is a variable: the tests are of the variable itself, which is
+;;; then known to be a cons where the test was false (ENDP binds its argument,
+;;; and what is learnt is of that binding only).
+(defmacro %endp (x)
+  `(cond ((consp ,x) nil) ((null ,x) t) (t (%type-error ,x 'list))))
+
 (defmacro dolist ((var list &optional result) &body body)
   (let ((l (gensym "LIST")) (top (gensym "TOP")))
     (multiple-value-bind (decls forms) (%split-decls body)
@@ -777,7 +784,9 @@ variable, so it may be evaluated after a variable is read."
            (fail (when exhaustive `((t (%etypecase-failure ,k '(or ,@(mapcar #'car clauses))))))))
       (multiple-value-bind (c code-clauses bindings) (%typecase-code-clauses k clauses exhaustive)
         (let ((body (if c
-                        `(let* ((,c (%type-code ,k)) ,@bindings) (cond ,@code-clauses ,@fail))
+                        (if (fboundp '%typecase-fused-form)
+                            (funcall '%typecase-fused-form k c code-clauses bindings fail)
+                            `(let* ((,c (%type-code ,k)) ,@bindings) (cond ,@code-clauses ,@fail)))
                         `(cond ,@(%case-cond-clauses k clauses exhaustive t) ,@fail))))
           (if var body `(let ((,k ,key)) ,body)))))))
 

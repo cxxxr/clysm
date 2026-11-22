@@ -5427,6 +5427,273 @@ What makes the code fast:
   method with a keyword: the general path with the list of initargs).
   `tests/cases/clos-dispatch-regenerate.lisp` is the test of the remade
   trees (three files compiled and loaded in turn).
+  *Trees for generic functions with `&optional`, `&rest` and `&key`*
+  (2026-11-23). A generic function whose methods are functions of at most
+  four *spread* arguments (`%fast-shape`: the required ones, the optional
+  ones with the unbound marker for those not given, the list of the rest)
+  has a discriminating function too, of the spread arguments
+  (`%ct-ll-shape`, `%ct-unit-shape`; the descriptor of the cells has the
+  shape, and `%gf-disc-valid-p` compares it and the number of optional
+  parameters). A call site of any number of arguments the lambda list
+  admits passes them spread (`%gf-unit-site`: the markers, `(list ...)` of
+  the arguments after the positional ones), so one function serves every
+  entry shape; the tree is over the required arguments as before and a leaf
+  calls the methods' functions of the spread arguments directly
+  (`%spread-method-forms` gives them the names of the unit, and for a
+  method with `call-next-method` the function of the next method, the cell
+  and the spread arguments, `+method-static+`). The keyword arguments are
+  checked in the leaf, only when the call has some: against the keywords of
+  the generic function, read from a cell when the tree is compared (0: no
+  `&key`, `:any`: `&allow-other-keys`), and those of the leaf's methods,
+  which are constants of the leaf (`%gf-disc-check-keys`: one pass with
+  `eq`; `%check-more-keys` for the errors and `:allow-other-keys`); the
+  comparison of the tree includes the keywords of each method. A call that
+  leaves the tree calls the generic function's own function of the spread
+  arguments (`+gf-core+`, in a cell), not the generic function with the
+  arguments made a list again. Two things found with Lem's and cl-ppcre's
+  generic functions: a *function* argument had no kind in the trees
+  (`cl-ppcre:scan` of a scanner fell out of its tree 220,000 times in the
+  redisplay probe), now `compiled-function` (a function whose name is not
+  an instance: a generic function is of its own class); and in the image a
+  call with constant keywords of a generic function with `&key` stays the
+  call of its keyed main function (`%gf-keyed-entry`: no list is made and
+  the methods search none), which the tree's list of keyword arguments
+  does not beat (six million calls with two keywords: 66 ms the keyed
+  entry, 156 the tree, in a script; a whole program has no keyed entry
+  for a generic function, and there the tree is the faster, below). A dead tree
+  is replaced by one made in the image only while the generic function
+  still takes the arguments the tree's callers pass (`%gf-disc-same-shape-p`:
+  a generic function defined again with `&key` in place of `&optional`
+  would take the marker for a list). Measured (interleaved with main on
+  one slot, best of 4 to 8; ms):
+
+  | | main | now | SBCL |
+  |---|---|---|---|
+  | `c-gf-lambda-lists` | 140 | 89 | 119 |
+  | `(render o)`, `&optional` not given, 6M calls | 58 | 35 | 56 |
+  | `(render o 2)` | 62 | 34 | 70 |
+  | `(configure o)`, `&key` and a `:before` method | 60 | 31 | 67 |
+  | `(configure o :size 3)` | 130 | 84 | 92 |
+  | `(configure o :color t :size 2)` | 183 | 125 | 137 |
+  | `(gather o 1 2 3)`, `&rest` and `call-next-method` | 97 | 62 | 51 |
+  | `(kw o :color t :size 2)`, two methods with `&key` | 162 | 110 | 137 |
+  | `(kw o k 2)`, the keyword in a variable | 109 | 73 | 76 |
+
+  In a script the same probes take 0.56–0.72 of their time (those with
+  constant keywords are the same code as before), `c-gf-lambda-lists`
+  128–133 → 100–108 ms; `bench/clos.lisp` 0.96–0.99 of its time compiled
+  and in a script, `programs` 0.99, `suite`, `holdout`, `closures` and
+  `functional` 0.97–1.01 (four interleaved rounds each; no item moved by
+  more than the spread of two runs of the same pair). What `gather` still
+  spends is the three conses of its rest list and `length` of it, a call
+  (SBCL counts the arguments of a `&rest` list that is only measured,
+  without making it). `tests/cases/clos-dispatch-lambda-lists.lisp`.
+
+  *`make-instance` of a class with `:after` methods* (2026-11-23). A class
+  whose applicable methods of `initialize-instance` and `shared-initialize`
+  are the standard ones and `:after` methods (the usual way to finish an
+  instance) took the general path: the list of initargs, the search of it
+  for every slot, the effective methods through their caches. Its
+  constructor now has the plans of a plain class and, in slot 14, the
+  functions of the `:after` methods in the order they run
+  (`%creation-afters`: the method's function of the spread arguments —
+  the instance, T for `shared-initialize`, the list of the initargs — or
+  the method function itself for a method that has none): the slots are
+  filled from the template and the arguments as for a plain class, the
+  list of the initargs is made once (those given, then the default
+  initargs in order, each evaluated once), and the functions are called
+  with it. The keys of the call are checked once, when the constructor is
+  computed, against the class's valid initargs, which include the
+  keywords of these methods (a key that no slot takes has no slot in the
+  plan). With no initform or default initarg to evaluate, the entry of
+  the number of arguments does it without a loop over the plans (slot 16;
+  `%ctor-make-instance-N/other`, out of the entry so that the entry stays
+  small enough for the engine to inline: with the code in the entry
+  `c-make-instance-plain` was 7% slower); otherwise
+  `%ctor-make-instance-afters`. A `:before`, `:around` or primary method
+  of the class, a metaclass, a method on `allocate-instance` or
+  `make-instance` leave the constructor's path as before (the constructor
+  is computed again at any change of a method: `*ctor-generation*`).
+  Measured (four million calls; ms, main → now, SBCL in parentheses,
+  interleaved with main on one slot): a class with
+  `initialize-instance :after ((a account) &key (bonus 0))` and three
+  initargs given 319 → 117 (220); a class of one slot with an empty
+  method with `&key` 190 → 69 (78), with `&rest initargs` 198 → 84 (56),
+  with `&key (bonus 0)` given 236 → 107 (71: the list of the initargs and
+  the method's search of it); two instances of a class with default
+  initargs, an initform that conses and an `:after` method 631 → 276
+  (337); a subclass with a `shared-initialize :after` method besides 555
+  → 182 (225); two classes given at run time 619 → 205 (323). `p-clos-app` 54 → 30 ms (SBCL
+  50: 1.19 → 0.60). Made the instance in the call site first (the
+  template copied and the methods called from there): the same times for
+  these classes, and every site of a plain class 3–7% slower for its
+  larger code (`b-make-instance` 37 → 39, `c-make-instance-plain` 28 →
+  30): not kept. `tests/cases/make-instance-afters.lisp`.
+  Not done, measured by hand before: the slot vector built in place
+  instead of the copy of the template (23 → 16 ms for five million
+  instances of one slot) needs the class's slots where the call is
+  compiled and a comparison of them at run time, as the trees have.
+
+  *The test for a hash table at `gethash`* (2026-11-23; found in the
+  profile of Lem's redisplay, whose `char-width` is three `gethash` of a
+  character). The helpers of `gethash`, `(setf gethash)` and `remhash`
+  tested `$instance` and then cast to the table's own type (`$si17`): two
+  walks of the map's supertypes. They test `$si17` (then the class, as
+  before). Probes of a table of characters, of fixnums and of symbols and
+  `incf` of `gethash` (interleaved with main, two runs of four rounds):
+  0.94 and 0.99, 0.87 and 0.87, 0.94 and 0.91, 0.93 and 0.92 of their time; `b-hash` and `p-hash-*` the same within the
+  runs' spread (0.99–1.05 in single comparisons).
+
+  *Lem, counted* (2026-11-23; a probe typing the benchmark's text sixty
+  times with a redisplay after each key, 2.1 s). Of the discriminating
+  functions called at least four times since the last definition 53 use
+  their tree, 5 one remade in the image (`window-redraw`,
+  `convert-modeline-element`, the two display areas, `variable-value-aux`)
+  and 2 count (`create-matcher-aux`, under 500 calls); with the function
+  kind above no generic function falls out of its tree more than some
+  hundred times in the probe (`variable-value-aux` 506). No `make-instance`
+  takes the general path (`%make-instance-of` is not called once in the
+  probe). CLOS is not where the redisplay's time is: every function of
+  the dispatch, the constructors, `slot-value` and the initialization
+  together are 50 ms of 2159 (2.3%; `initialize-point-slot-values` 17,
+  `%ctor-make-instance` 7), `print-object` none. By self time:
+  `control-char` 20% (the `gethash` of a character inlined in it: its
+  ticks are on the loads of the table's fields and the type tests of the
+  key, see the test above), `icon-code-p` 6.5%, `char-width` 4.3%,
+  `string-width` 2.7%, `separate-objects-by-width` 2.4%, `subseq` 2.2%,
+  `split-string-by-character-type` 2.2%, `eastasian-code-p` 2.2%, then
+  some sixty functions under 2% each. `tools/bench-lem.sh` against main:
+  geometric mean 1.03, 1.07, 1.01, 1.00 on main and 0.95, 1.01, 1.04, 1.06
+  now (four interleaved rounds on the held-out input): the same.
+  `l-type-redisplay` 39–48 → 38–45 ms (SBCL 28–32), `l-syntax-scan`
+  174–181 → 178–187 (147), `l-line-down` 121–134 → 117–127,
+  `l-type-autodoc` 173–182 → 164–171, `l-search` 18–21 → 20–24 (not
+  explained; SBCL 29). `bench/apps.lisp` 1.14 and 1.11 on main, 1.16 and
+  1.15 now (two rounds; `a-esrap` reads 88 or 103–111 ms, the other items within 4%).
+
+  *The ordinary call, looked at again* (2026-11-23; `tools/iprof.py`, the
+  ticks of `node --prof` on the code of `--print-wasm-code`). Probes of
+  five million calls each (ms, Clysm against SBCL): `funcall` of a
+  closure without and with a variable 88 / 154 and 93 / 142, a known
+  global function not inlined 118 / 175, a keyword call 97 / 236, `apply`
+  of `+` 24 / 24, `floor` of two values 85 / 84, `fib` 15 / 61, a closure
+  over a list by a higher-order function 158 / 177. The test for a
+  pending exit after a call is one compare with the null in the root
+  register and a branch never taken (fused), and is already left out for
+  a known function that cannot exit (`lam-may-exit-p`); nothing was found
+  to remove there, nor in the prologue (the stack check, as SBCL has
+  none; `--no-wasm-stack-checks` was measured before). What `b-call`
+  (1.10) has over SBCL is one item: `(rfun 1 2 3)` of `(defun rfun (&rest
+  xs) (length xs))`, 368 ms against 133 for five million: three conses
+  and the call of `length`, then of `length-of-list`, where SBCL takes
+  the number of arguments and makes no list (a `&rest` list used only by
+  `length`, `car`, `nth` or `apply` is not made: "rest conversion");
+  `(length list)` alone is 190 against 134. The loop of `length-of-list`
+  put in `length` itself (no second call for a list) was slower
+  (`z-rest-length` 383 → 444, the others the same): not kept. Not done: a
+  `&rest` parameter that is only measured or taken apart, kept as the
+  arguments.
+
+  *Script-mode short-combination recursion* (2026-11-23, verified again
+  after the handoff). `MODE=script tools/bench.sh bench/clos.lisp` on
+  `1b02cb3` fails after `c-gf-lambda-lists`. A bisection of recent main
+  finds `e07f4a4` as the first bad commit; its parent passes the regression
+  program. APPEND/NCONC trees failed their comparison because those
+  combinations lack `:identity-with-one-argument`. A dead tree was
+  regenerated after 500 calls, and the regenerated tree eventually selected
+  itself as its replacement. `04a79e5` accepts the unary identity of APPEND
+  and NCONC and marks regenerated descriptors so that a failed replacement
+  stays on its fallback. The fixed script completes all 18 benchmarks.
+  `tests/cases/clos-dispatch-short-combinations.lisp` exercises repeated
+  calls, combinations, and later method changes.
+
+  *Short rest lists kept as elements* (2026-11-23). The inliner can copy
+  functions of required parameters and `&rest` when the rest list does not
+  escape: at most eight rest arguments and 60 IR nodes (30 for ordinary
+  functions). `scalarize-lists` also recognizes local LIST bindings. Each
+  element is evaluated once, left to right, into its own variable; list
+  cursors become indices. LENGTH, CAR, CDR tests, NTH (including a variable
+  index), DOLIST and APPLY at a statically known cursor use those elements.
+  Invalid NTH indices retain the ordinary NTH path; a type-error datum is
+  reconstructed on the error path, rather than replaced with NIL. Captured,
+  special, declared, escaped or destructively modified lists retain their
+  representation. `tests/cases/rest-list-elements.lisp`
+  covers ordering, aliases, cursor mutation, closures, escaping lists,
+  nested loops and variable indices.
+
+  This is call-site scalar replacement, not a new rest-argument ABI:
+  indirect calls, large consumers, more than eight arguments, and lists
+  passed through generic dispatch still allocate. APPLY can avoid making
+  its own list while its callee still builds one. In particular the
+  `gather` generic-function probe with CALL-NEXT-METHOD remains future work.
+  Two interleaved base/new rounds on slot 2, best of two processes each
+  (`04a79e5` as base; milliseconds): `b-call` 119/117 -> 62/66;
+  60 million calls of rest LENGTH 396/400 -> 28/27, CAR 160/163 -> 27/26,
+  DOLIST sum 346/345 -> 270/266. APPLY forwarding to another rest consumer
+  is unchanged (354/337 -> 357/345). In that combined probe, LENGTH of an
+  ordinary preexisting list regresses 203/203 -> 236/227. Its Wasm and the
+  LENGTH helpers are unchanged apart from ordering and labels; alone it
+  does not reproduce the slowdown (234/216 -> 222/225 ms). Keep
+  that observed regression with the result, rather than claiming every
+  list operation benefits.
+
+  *Keyed constructor after-methods* (2026-11-23). `%creation-afters`
+  instantiates each method's existing `+method-keyed-maker+` against the
+  constructor's actual keys. When every applicable after-method supports
+  that ABI, slot 7 of the after-plan holds the two lists of keyed functions.
+  Fixed constructor entries whose slot 16 is current pass the original
+  argument values in four slots, with a shared vector for values beyond
+  the fourth, rather than making and searching an initarg plist. Absent
+  keywords, supplied-p parameters, repeated keys and method ordering retain
+  their existing keyed-method semantics. Constructors with default initargs
+  or nonconstant initforms, and method sets requiring an actual rest list,
+  retain the list path. Method changes invalidate the plan as before.
+  `tests/cases/make-instance-keyed-afters.lisp` covers both ABIs, original
+  argument values after slot mutation, duplicates, defaults and replacement.
+
+  The loops are in `%ctor-make-instance-N/KEYED-AFTERS`, not in `/OTHER`:
+  putting them inline first slowed the default-initarg probe 265-270 ->
+  300-305 ms and dynamic classes 211-215 -> 231-233. Separating the helper
+  recovered those costs and improved the keyword target further. Two
+  interleaved rounds on slot 2, four million instances: the one-slot class
+  with a keyword 107/109 -> 69/65 ms (SBCL 80/85); empty &KEY 67/68 ->
+  63/62; the &REST fallback 83/82 -> 75/77; the default-initarg probe
+  270/288 -> 263/271; plain classes 31/31 -> 31/30. These small changes
+  should not be read more precisely than the spread of the runs.
+
+  For both new optimizations together against `04a79e5`, the geometric
+  means of Clysm's time per item (new/base, two interleaved rounds) are:
+  suite 1.003/1.018, CLOS 0.986/0.993, programs 0.969/0.972. Against SBCL
+  they are suite 0.628/0.616, CLOS 0.698/0.692, programs 0.689/0.679.
+  These are limited call-site optimizations; the generic-function rest
+  list and the generic constructor path are not eliminated.
+
+  *Continuation validation and sizes* (2026-11-23). The final script-mode
+  CLOS run completes all 18 items. Full ANSI is 21931/21932, with only
+  SUBTYPEP-COMPLEX.8. The compiled, interpreted, native-image and self-hosted
+  case suites each pass 120/121: PROCESS fails on both the base and new
+  code in this sandbox (a direct Node subprocess control reports
+  `spawnSync sh EPERM`). Thus `make test-all` cannot be reported green in
+  this environment. Its remaining components were run individually:
+  test-lib, ASDF and the self-host compiler build pass, and all case modes
+  have only that process failure. No test was disabled.
+
+  Relative to `04a79e5`, the shaken one-export module is 908284 -> 908947
+  bytes (+663, below the 970000-byte budget), the REPL image 8631272 ->
+  8681448 (+50176, 0.58%). The generic rest probe remains 61/60 -> 60/62 ms
+  (SBCL 53): removing its list needs scalar arguments across the guarded
+  dispatch and next-method boundary, not just an inline consumer.
+
+  Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
+  making of the spread trees, the constructors' `:after` paths: nine
+  entries each with its other part), the shaken module of one export
+  907,414 → 908,284. `make test-all` and the ANSI tests (21931 of 21932)
+  as before.
+
+  `tools/iprof.py` (new) does the method of the rounds before in one
+  command: `run` a module (or the image with a file) under `node --prof
+  --print-wasm-code`, `top` for the functions by ticks, `show NAME [MIN]`
+  for the code of one with the ticks of each instruction.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm
@@ -6542,6 +6809,483 @@ What makes the code fast:
   1.14 of the compiled file (three rounds, no item beyond ±7%). The REPL
   image is 2 KB smaller (8,896,821 → 8,894,748 bytes), the module of one
   export 116 bytes larger (932,551).
+
+* **Equality, hashing and type dispatch, third pass (2026-11-23).** What
+  was changed, with the item it was measured on (ms; SBCL in brackets):
+  - *TYPECASE and TYPEP without a kind code* (`%typecase-fused-form`,
+    runtime/types.lisp). A `typecase` by the kind computed `%type-code`
+    (a chain of tests ending in a number) and then tested each clause's
+    mask of kinds, with the full test for the kinds that need one: the
+    code read from `--print-wasm-code` was the chain, a shift of 1 by the
+    code, and a `test`/`jnz` per clause before the object's own. The
+    clauses' tests are now decided for each of the 18 kinds when the form
+    is expanded (`%tcf-subst` puts T or NIL for each `%kind-in` and
+    simplifies), and the tests that tell the kinds apart branch straight
+    to what is left for theirs: the body of the first clause all objects
+    of the kind are of, after the full tests of the clauses before it that
+    some are of (first matching clause wins, as before: only the tests
+    that the kind decides are gone). A fixnum goes from the test of the
+    i31 to its clause; arms that several kinds share are written once
+    (a block the kinds jump to, where `%kind-is` tells the type
+    inference what the object is); a kind whose arm is that of the
+    objects no test finds is not tested unless two tests of other arms
+    follow it; the layout and class list of the clauses of class names
+    are read in the instance's arm only. `typep` of a type of several
+    kinds (`%typep-by-code-p`) is such a `typecase` of one clause, and
+    `vectorp` and `arrayp` have compiler macros that are too (`vectorp`
+    called a helper testing the kinds of storage one after the other:
+    3.3 million tests of mixed objects 150 → 44 ms [19]). `%type-code`
+    itself, where it is still used (the kinds only it tells apart), tests
+    the object for null once and uses `br_on_cast` for the final types
+    (V8 kept a null test before each `ref.test` and materialised the
+    result of each compare with `setz`/`movzx`/`test`). `p-typecase`
+    1.24 → 0.96 (88 → 68 [71]), `v-typecase-deftype` 1.22 → 0.93 (118 →
+    90 [97]), an `etypecase` of six clauses 92 → 80 [96], `(typep x
+    '(and number (not integer)))` 58 → 48 [35]. In a script `p-typecase`
+    103 → 83, `p-typep-misc` 127 → 101, `v-typecase-deftype` 123 → 95.
+    The inliner converted the test of a declared type of a copied
+    function's argument outside any function (`inline-checked-arg`,
+    src/inline.lisp): a block in the test's expansion belonged to no
+    function and an exit to it was a non-local exit to nowhere (the
+    program ended silently); it is converted as code of the caller.
+  - *Similar literal lists are one object.* `const-global`
+    (src/codegen.lisp) makes one global for conses whose car and cdr are
+    the same constants, in the code of programs (not the runtime's own,
+    which keeps state in quoted conses: with it there, `typep` of
+    `structure-object` was true of a package), as SBCL's `compile-file`
+    does and CLHS 3.2.4.4 allows; strings were shared already. `equal`,
+    `tree-equal` and `equalp` of two such literals are settled by EQ:
+    `p-equal` 1.23 → 0.88 (92 → 66 [75]). A program that changes a quoted
+    list now changes every literal similar to it.
+  - *TREE-EQUAL with `:test #'equal`* is `equal` of the trees (the same
+    descent; a cons against an atom is false for both), with `#'eql` the
+    loop without a test: `v-equal-trees` 1.13 → 0.54 (161 → 76 [142];
+    200 lists of five elements, 5000 times, 284 → 68 [244]).
+  - *SXHASH of a single float, an integer beyond the fixnums and a ratio*
+    in the Wasm helper (`:sxhash-fast`, `:integer-hash`; they called
+    `%sxhash`, then `%number-hash`, which called itself for the parts of
+    a ratio): 2 million of a bignum 200 → 104 [96], of a ratio 239 → 95
+    [95]; `v-sxhash` 1.05 → 0.84 (118 → 94 [112]).
+  - *EQUALP of vectors.* A simple vector is told apart before the numbers
+    in `equalp`, and `%equalp-arrays` reads a vector with a fill pointer
+    or adjustable over simple storage through its header's fields (it
+    called `vectorp`, `length`, `%array-storage`, `%array-total-offset`
+    for each side); symbols among the elements are not given to the
+    recursive call. A vector of four against one (1 million) 380 → 349
+    [304], a vector with a fill pointer against a simple one 212 → 183
+    [90], a list holding a vector 176 → 166 [153]; `v-equalp-mixed` 1.19
+    → 1.14 (148 → 141 [124]).
+  The files, this tree and the one before alternately on one slot (two
+  rounds, best of each; times SBCL): `bench/library.lisp` 0.683 → 0.656,
+  `bench/programs.lisp` 0.692 → 0.683, `bench/suite.lisp` 0.662 → 0.652,
+  `bench/control.lisp` 0.651 → 0.651; in a script `library` 1.149 →
+  1.124 of the compiled file and `programs` 1.102 → 1.080;
+  `bench/apps.lisp` 1.128 → 1.104 (`a-yason-parse` 110 → 96 [88]),
+  `tools/bench-libs.sh` 1.031 → 1.038 and Lem's actions 1.059 → 1.044
+  (both within the noise). Nothing slower beyond what two runs of one
+  build differ by (±8% on items of 10-40 ms).
+  *Still behind SBCL, with what it would take.*
+  `v-hash-iterate` (1.29, 9 ms) and `t-return-maphash` (1.39): the loop
+  is as short as two arrays allow, a bounds test for the key and one for
+  the value at each entry (V8 removes neither; the fill count is a local
+  already). One vector holding key and value side by side (entry I at 2I
+  and 2I+1) would make it one bounds test and one cache line an entry,
+  and is a change of every helper of hash tables; not built.
+  `p-typep-misc` (1.16): single tests in a loop over eleven mixed
+  objects, 1.1 ns a test against 0.45 (`(typep x 'node)` 59 [15],
+  `(typep x '(integer 0 *))` 39 [16], `listp` 39 [15]): each is one or
+  two `ref.test` already, the rest is the loop (the generic `incf` of the
+  sum, the `dolist`'s test) around it.
+  `v-equalp-mixed` (1.14): `equalp` of two structures 286 [161] (the
+  helper `:sinst-equalp` calls `equalp` through its function for each
+  pair of fields that are not EQ: a fixnum against a float, two
+  strings); the same test written into the helper for numbers and
+  strings would take about half of it.
+  `v-hash-equalp` (1.15, 15 ms) and `p-hash-misc` (1.13): `equalp`
+  tables of vectors hash and compare in Lisp (`%equalp-hash`, 18 [12]
+  for 40000 stores); `make-hash-table` three times 55 [39]; `push` onto
+  `(gethash symbol table)` with a `remhash` every hundredth 110 [75],
+  which is the conses and two helper calls. *Measured and not kept:*
+  `(incf (gethash k h))` and `(push x (gethash k h))` finding the entry
+  once (a probe, a read and a store at the index instead of `gethash`
+  then `(setf gethash)`): the `push` loop 99 → 92, but the three calls
+  it takes are calls into another module for code loaded in the image,
+  where a string key then misses the `equal` helper at the call site
+  (`p-word-count` in a script 69 → 117).
+  `p-calc` (1.14): not `intern` any more (300 000 of a one-character
+  name in the keyword package 63 [72], the tokenizer 174 [237]); it is
+  the evaluator, 39 [23], whose division makes a ratio at each step
+  (`:ratio-op`, see `b-ratio`), and the parser's reads of a special
+  variable, 35 [28].
+  `b-hash` (1.07-1.10): 200 000 `gethash` of fixnums ten times 177
+  [206], the stores 68 [60]: the growth of the vectors.
+  `eql` of two single floats that are not EQ is 71 [33] for 2 million
+  (`:eql`, then `:eql-gen`); `tree-equal` without a test of two fresh
+  lists 142 [110].
+  The REPL image is 106 KB smaller (8,596,251 → 8,490,379 bytes: the
+  clauses of the runtime's `typecase`s no longer test a kind code each),
+  the module of one export 3.5 KB larger (907,414 → 910,925).
+
+* **Literal identity at source compilation boundaries (2026-11-23).**
+  Cons coalescing is gated by the lambda's program provenance, recorded
+  when the frontend creates it, rather than by its optimization policy.
+  Runtime literals stay distinct; live compilation returns the original
+  object before considering coalescing. `literal-cons-identity.lisp`
+  checks EVAL and COMPILE against the actual objects in their source,
+  distinct literals from source LOAD, and equality after COMPILE-FILE.
+  It passes in both whole-program and native script modes.
+  The cells of `clysm build` (the cons that holds an object made when the
+  program runs, `constant-node`) are quoted conses that the program's code
+  changes, and all are `(nil)` when compiled: coalesced, every such object
+  of a program was one cell, shared with the last cons of each literal list
+  ending in NIL (the descriptor of a dispatch tree became a dotted list:
+  `make test-static` died in `%gf-disc-valid-p`). They are registered
+  (`*static-cell-conses*`) and `const-global` keeps each its own cons;
+  `tests/static` prints such lists and compares the objects.
+
+* **Adjacent hash entries (2026-11-23; experiment, reverted below).** Keys and values occupy cells
+  2I and 2I+1 of one vector. Chain links and saved lookup indices still
+  count entries; the former value-vector field holds capacity. Growth,
+  compaction, package lookup, all Wasm probes, iteration and heap-image
+  rehashing use the same layout. This saves one vector allocation per
+  nonempty table. Image version 7 rejects images with the old layout.
+  Initial compiled hash tests, native hash tests and the 1,505 ANSI hash,
+  iteration and package tests pass. The first `v-hash-iterate` measurement
+  is 10 ms: no demonstrated speedup yet; repeated comparisons follow below.
+
+* **EQUALP structure fields and vector hashes in Wasm (2026-11-23).**
+  The structure helper calls one shared field helper for fixnums, single
+  and double floats, and ASCII strings. Large integers, ratios, Unicode
+  case differences and other objects use ordinary EQUALP. The vector hash
+  loop handles fixnums, symbols, ASCII strings and nested simple vectors;
+  empty and character-leading vectors keep the string-compatible path.
+  Three alternating runs of the same precompiled probes on one slot:
+  structure comparison 253 -> 204 ms (best), vector stores 18 -> 17 ms,
+  vector lookups 20 -> 20 ms. The latter changes are within noise.
+  Four equality/hash regression files pass, including exact large integer
+  comparisons, Unicode and vector/string keys. The probe module shrinks
+  3,082 bytes because field fallback code is shared.
+
+* **Empty hash-table prototypes, measured and not kept (2026-11-23).**
+  Four empty tables (one per test) were copied by a Wasm helper loading
+  their 17 fields into a fresh struct with a fresh identity hash. Generic
+  construction replaced requested options; constant-test construction
+  only replaced size. The three-table creation/insertion probe, three
+  alternating runs on one slot: ordinary 46, 56, 42 ms; copies 104, 44,
+  47 ms. Best 42 -> 44 ms, no gain, and the probe module grew 5,246 bytes.
+  Hash-model and native tests passed. Reverted: copying the fields adds
+  loads where initialization already has constants; allocating first-entry
+  storage is still needed. Avoid repeating this without eliminating those
+  loads or changing how the first entry is allocated.
+
+* **Single floats at EQL call sites (2026-11-23).** The bit comparison
+  moves from `:eql-gen` to the small `:eql` helper, avoiding the call to
+  the general numeric cases. Signed zero still compares by bits.
+  Five alternating runs on one slot, twenty million comparisons of two
+  independently read single-float boxes (both builds print `distinct: T`):
+  65, 66, 66, 64, 63 -> 43, 43, 46, 42, 43 ms. Best 63 -> 42 ms,
+  median 65 -> 43 ms. A prior probe using literal floats was inconclusive
+  (56 -> 57 ms); it did not ensure distinct boxes. Typed-element and
+  dynamic single-float tests pass, including mixed types and signed zero.
+
+* **Inlining budget after interleaving (2026-11-23).** Encoded helper
+  bodies in the probe module: `:ht-get` 106 bytes, `:ht-put` 435,
+  `:ht-put-id` 483. `:ht-put-equal` grew to 677 (650 before), which
+  exceeds the host's 640-byte V8 limit. Its new-entry path is now a
+  separate 255-byte `:ht-insert`; the store helper is 453 bytes. Existing
+  entries retain the cached-key path. Hash-model and equal-table tests
+  pass. TurboFan disassembly of interleaved MAPHASH still contains both
+  bounds checks (for 2I and 2I+1); adjacency alone did not deliver the
+  predicted single check. Keep that distinction in performance claims.
+
+* **Hash layout tradeoffs and iteration offsets (2026-11-23).** Against
+  the same equality improvements with separate key/value vectors, three
+  alternating runs of the probes give three-table construction/insertion
+  50 -> 41 ms with interleaving. MAPHASH is 9 -> 9 ms; explicit iterator
+  14 -> 15, LOOP keys/values 13 -> 14, LOOP values 12 -> 14, early return
+  46 -> 44 ms. One fewer allocation is useful, but iteration is not a
+  demonstrated improvement. Longer iteration probes (100 repetitions,
+  three interleaved rounds; baseline 2878b0c / interleaving candidate /
+  experimental direct cell offsets): MAPHASH 99 / 93 / 99 ms, explicit
+  iterator 147 / 157 / 152, LOOP key/value 143 / 149 / 154, LOOP values
+  137 / 137 / 142, early-return MAPHASH 490 / 456 / 462. Direct offsets
+  remove repeated index scaling but give no consistent gain: not kept.
+  Splitting insertion out of the EQUAL store helper, three alternating
+  rounds, changes equal-list stores 44 -> 40 ms and reads 43 -> 45 ms;
+  the code-size reduction is established, these small time changes are not.
+
+* **Interleaving rejected on real applications (2026-11-23).** The
+  retained tree uses separate key/value vectors and image version 6.
+  Four alternating rounds against 2878b0c put ESRAP 83 -> 97 ms and Yason
+  parsing 91 -> 107 ms with interleaving. An isolated comparison retaining
+  the equality changes and the small EQUAL store helper confirms the
+  layout's cost (two alternating rounds): interleaved ESRAP 100, 101 ms,
+  separate vectors 86, 91; Yason 109, 118 versus 99, 102. SBCL times in
+  those rounds are essentially unchanged. Keeping insertion in the larger
+  store helper does not recover the loss (ESRAP 97, 100; Yason 121, 125).
+  The reduced allocation in the construction probe does not compensate
+  for the application regressions or remove the two bounds checks. The
+  representation, package accesses, iterators and heap-image changes are
+  reverted. The small store helper and EQUALP/EQL improvements remain.
+
+* **Retained tree against 2878b0c (2026-11-23).** Two alternating
+  baseline/new rounds on one benchmark slot, each using the scripts'
+  best of three runs; four rounds for script mode because early CLOS
+  timings were bimodal. Geometric means from each item's best measured
+  time (Clysm/SBCL): library 0.663 -> 0.652, control 0.657 -> 0.626,
+  programs 0.679 -> 0.677, suite 0.639 -> 0.641, apps 1.096 -> 1.117,
+  libraries 1.028 -> 1.016, Lem with the supplied input 1.054 -> 1.019.
+  Script/compiled: library 1.120 -> 1.120, programs 1.085 -> 1.090.
+  Clysm-only time ratios, new/baseline, are respectively 0.990, 0.963,
+  1.041, 1.030, 1.043, 1.017, 0.959; script library 1.003 and programs
+  1.004. Small aggregate differences are not established speedups.
+  No retained broad-suite item is slower by more than 15% in these
+  best-time comparisons. `v-hash-iterate` is 9 -> 10 ms compiled
+  (9 -> 9 script); longer focused iteration probes are unchanged.
+  `t-return-maphash` 45 -> 45, `v-equalp-mixed` 134 -> 128,
+  `v-hash-equalp` 15 -> 15, Lem redisplay 43 -> 42 ms. Three alternating
+  focused rounds confirm structure EQUALP 253 -> 196 ms; simple-vector
+  hash stores 17 -> 16 and reads 18 -> 19 remain noise. Three-table
+  construction/insertion is 50 -> 51 ms. The retained EQUAL store helper
+  is 438 bytes, with a 243-byte insertion helper. The one-export module
+  shrinks 910,925 -> 907,730 bytes (budget unchanged at 970,000), and
+  the REPL image 8,490,379 -> 8,476,185. Library/ASDF checks and the
+  self-hosted compiler build pass. The process test is blocked by this
+  sandbox's Node `spawnSync` returning EPERM even with exit status 0;
+  the same failure reproduces on 2878b0c and cached main 1b02cb3e.
+  Final compiled, interpreted, native-script and self-hosted test runs
+  each pass 118/119 files, with only that process failure. `make test-all`
+  stops there; its remaining components were run separately. Full ANSI
+  passes 21,931/21,932, with only the known SUBTYPEP-COMPLEX.8 failure.
+* **Lists and mapping, third pass (2026-11-23): checked casts where a
+  cons is certain, and loops per kind of sequence.** Instruction-level
+  profiles (`node --prof --prof-sampling-interval=100` with
+  `--print-wasm-code`, the ticks placed on the TurboFan listing) and
+  `--trace-gc` of the list items still behind SBCL.
+  - *CAR and CDR of a value known not to be NIL* (`typed-access-code`,
+    `src/typed.lisp`): after `(null x)` was false, `(car x)` was a test
+    of cons, the field on one arm and the call of the helper (which
+    signals) on the other; V8 keeps that call as a path that returns, and
+    knows nothing of `x` after it. It is a `br_on_cast` over the helper's
+    call followed by `unreachable` (the helper signals the error of type
+    LIST and does not return; a plain checked cast would say CONS), after
+    which the engine drops the casts of the later reads of the same
+    variable.
+    `browse-match` of `g-browse` (three clauses that read `(car pat)`,
+    `(car dat)`, `(cdr dat)` after two `null` tests): 162-164 → 116-118 ms
+    (SBCL 139-140: 1.20 → 0.87). `rplaca`, `rplacd` and the SETFs of CAR
+    and CDR checked their cons with a call of `:check-cons`; they are the
+    checked cast `ref.cast :cons` (`g-destru` 80 → 74 ms, 1.07 → 1.00).
+  - *`%endp` of the variable itself.* LOOP's `for x in` tested its list
+    with `(endp g)`, whose compiler macro binds its argument: what the
+    test learnt was of that binding, and `(car g)`, `(cdr g)` tested the
+    cons again with the helper's call behind. LOOP uses `%endp` of its own
+    variable (the macro is in `runtime/boot.lisp` now, before
+    `loop.lisp`): `loop for x in l always`, 8 elements, 16 → 12 ms for
+    1.5 million (SBCL 4), `maximize` 70 → 61 (19).
+  - *LOOP's NCONC, and APPEND of a fresh `(list ...)`*, called `last` of
+    the tail before linking each list and `last` of the list after it:
+    the tail variable is the last cons so far, as for COLLECT, and the
+    list is followed to its end in place (no call). `nconc (list i i)`
+    188-203 → 141-154 ms (SBCL 93), `for (a . b) in ... append (list a b)`
+    61-67 → 47 (26), `collect ... into` with `append ... into` 85-95 →
+    66 (47). `p-loop-macros` itself is within the noise (its time is the
+    sum and collect clauses, already at or below SBCL: each clause kind
+    alone is 0.4-1.0 of SBCL except these and `always`/`maximize` over a
+    constant list of 8, 3-4 times: the entry of the loop, 6 ns).
+  - *MAP, MAP-INTO, EVERY, SOME, NOTANY, NOTEVERY of `#'name` over two
+    sequences (and MAP to a vector of one): a loop for each mix of kinds*
+    (`%kind-loops-expansion`, `runtime/seq.lisp`): lists and simple
+    vectors in any mix, two simple strings, and the cursor loop for the
+    rest, chosen by tests of the kinds at the call site. This is the
+    design measured and not built before (above) because of the call
+    site's size; what is different: only for `#'name` (the call copied
+    into each loop is a primitive or a direct call, not a lambda's body),
+    so a site is five or six short loops. As out-of-line local functions
+    (`flet` with `notinline`, which needed a mark on the function for
+    `local-inlinable-p`) the same loops ran no faster than inline and the
+    module was 50 KB larger for the two uses in the runtime (each local
+    function has an entry, a closure constant and its locals); inline
+    they are 9 KB there. Ten thousand elements, 100 times, ms before →
+    after (SBCL): `map-into` a vector from a vector and a list 28-30 →
+    15-16 (12), from itself 14-15 → 9-10 (8), `some #'>` of a vector and
+    a list 17-18 → 12-13 (10), `every #'<=` of a list and a vector 14-16
+    → 12-13 (26), `map 'vector #'+` of a list and a vector 33-37 → 32-34
+    (32); `map 'list #'cons` of a list and a string unchanged (66-72, SBCL
+    38: allocation). `v-map-every` 0.92 of its time with 100 repetitions
+    of its body, 0.94-1.00 as the benchmark runs it (10 repetitions: a fifth
+    of its ticks are in Liftoff's code of the function and 20% in the
+    collector, see Tiering of the engine).
+  - *Not gained, with the reason.*
+    `v-mapping` (1.6): of 360 ticks, 177 are the TurboFan code of the
+    function, 32 Liftoff's, 80-100 the collector. Each form alone, 120
+    repetitions (ms, SBCL): `mapc` of a lambda over two lists 10 (9),
+    `mapcar #'+` 29 (26), `mapcar #'cons` 37 (28), `mapcan` of one list
+    18 (13), of two 30 (24), `mapcar` of a lambda over three 34 (22). The
+    lambda is inline (no closure, no call), the end tests are one
+    `ref.test` a list, the tail's store has no write barrier on its path
+    (a test of the page's flag, not taken for young objects); what is
+    left an element is the allocation (five stores for a cons of 32
+    octets, SBCL three for 16), a load-use stall on the car of the second
+    list (the lists are 160 KB each and the young generation moves them),
+    and `(+ x y z)` as two i64 additions with their overflow tests.
+    The young generation's size decides the rest: with semi-spaces of 2
+    or 4 MB (`CLYSM_NURSERY_MB`) `v-mapping` is 31-32 ms instead of 38-45
+    (the nursery stays in the second-level cache), but `bench/alloc.lisp`
+    is then 2.07 times slower (`s-ring` 8.6, `s-build-list` 4.4) and
+    `suite` and `library` 1.03: not a setting to change.
+    `a-list-churn`, `s-build-list`, `s-ring` (1.2-1.4): allocation and
+    scavenges only (`s-build-list`: 1336 of 2027 ticks in the collector;
+    `s-ring`: `length` of lists the scavenger moved, 623 of 1628); the
+    floor of 32-octet conses.
+    `g-traverse` (1.13): `travers` spends its ticks on the map compare
+    after the first load of each node and each cons of the list of sons
+    (cache misses on 120- and 32-octet objects); `g-dderiv`, `b-deriv`
+    (1.1): allocation and 10% in the collector, the rest `get`/`getf`
+    and the `call_ref` of the property's function. Property lists as a
+    hash for hot symbols were not tried: the lists here are of one or two
+    properties.
+    `i-format-justify` (1.2): flat, no function above 8% (the
+    justification's padding, the string streams, the pretty printer's
+    queue for the logical block; 13% in the engine's runtime).
+    `p-queens`, `d-triangle`: one function each, bounds checks (see
+    "`d-triangle`, instruction by instruction").
+    `v-find-list-key` (1.15-1.2): 161 of 440 ticks are `%list-chunks`
+    (the lists read from their end), as measured before.
+  Interleaved with the commit before on one slot (`bench/*.lisp`
+  compiled, best of 5 rounds, time against the base's): `gabriel` 0.94-0.96
+  (`g-browse` 0.72, `g-destru` 0.93, `g-takl` 0.88-0.90), `alloc` 0.97,
+  `holdout` 0.98, `control` 0.99, `programs`, `suite`, `io` 1.00,
+  `declared` 1.01, `library` 0.99-1.015 (two runs of 5 and 8 rounds: no
+  item differs twice); in `clysm script` `gabriel` 0.98 (`g-browse`
+  0.80), `suite` 1.00, `programs` 0.97-1.02, `library` 1.02 (one run of 3
+  rounds, the machine loaded). The REPL image is 30 KB smaller (8,596,609
+  → 8,566,898 bytes: the cast is shorter than the test, the two arms and
+  the helper's call), a compiled program 2-5 KB larger (the kind loops of
+  the runtime's two `every` of two sequences), the module of one export
+  106 bytes (907,414 → 907,520).
+
+* **COERCE directly into the result storage (2026-11-23).** The general
+  sequence path, after checking whether the source already has the requested
+  type, used `%seq-to-list`, copied that list, then passed it to
+  `%make-sequence-from-list`. It now parses the result type with
+  `%seq-type-spec`, checks any specified length, and calls
+  `%coerce-to-storage` for a vector result. List results use `%seq-to-list`;
+  the result-type check remains for types the parser cannot describe exactly.
+  This removes an intermediate list for a list source and two for a vector
+  source, and reuses the direct simple-vector/string filling paths. Existing
+  matching objects still return unchanged; fill pointers, displacement,
+  specialized element types and length mismatches retain their checks.
+  Against `a0be620`, interleaved on one benchmark slot, the first three
+  rounds of `bench/library.lisp` give `v-coerce-general` 121 -> 86 ms
+  (median per build, 0.71 of its time); five rounds with the other list
+  changes give 130 -> 91 ms. The tests are in `coerce-storage.lisp`.
+
+* **Refinements through LET copies (2026-11-23).** Type inference records
+  copies whose source and destination cannot change while the binding is
+  active. The source must also be unchanged by the other initializers:
+  `(let ((v x) (ignored (setq x nil))) ...)` is not an alias. Boxed and
+  special variables are excluded. Each copy records the environment slot
+  of its root, so a test's two environments are refined into the roots,
+  then back out to the copies; chains and siblings share what a predicate
+  establishes. A lexical LET
+  used as a test analyzes its body as a test. This carries ENDP's cons
+  refinement out of the temporary introduced by its compiler macro.
+  `compound-test-p` and `branch-code` also see through lexical LETs;
+  `cg-let` binds their variables before emitting the body's branches.
+  The earlier exception for single-list loop end tests remains: this does
+  not turn every effect IF into branches (the negative result above).
+  Three interleaved rounds against `a0be620`: a two-list ENDP loop
+  472 -> 387 ms (0.82); a single-list XOR loop 482 -> 499 and a tail
+  recursive one 545 -> 548, within the spread. Pure scans and copies
+  inside DOLIST, five rounds, gained only 1-4%; this is not a universal
+  10-25% list-loop improvement. Without the lexical LET branch generation,
+  the recursive probe regressed from 548 to 619 ms; the compiler's known
+  cons still needed a cast after the materialized boolean. The regression
+  cases in `let-refinement.lisp` include initializer/body mutation,
+  closures, cleanup, GO, copied tests, and improper lists.
+  Compile-time cost matters too: recording variables rather than slots,
+  scanning every copy's body for assignments, and intersecting equal types
+  at every test made in-image compilation about twice as slow in an initial
+  three-round probe. Root slots remove the hash lookups and reverse-list
+  allocation; immutable originals need no assignment scan; equal type
+  objects are reused. With three warmups followed by ten compilations of
+  `bench/suite.lisp`, five interleaved processes per build: baseline 1654 ms,
+  revised 1614 ms (medians; individual processes 1522-2024 and 1491-3342 ms).
+  The small difference is not a claimed compiler speedup; the large
+  regression of the first implementation is gone.
+
+* **Integer elements of literal LOOP lists (2026-11-23).** For a quoted
+  proper list of integers, LOOP records the minimum and maximum of the
+  elements on its generated CAR expression. Only that read is trusted:
+  the iteration variable has no new declaration, since the body may
+  assign it a different type. Explicit loop declarations still apply.
+  A BY function may return a different list, so this applies only to the
+  default CDR step. The macro's scan stops after 256 conses, leaving larger,
+  circular, dotted and mixed-type literals to the existing code. This removes
+  redundant integer checks and lets MAXIMIZE keep its maximum unboxed.
+  Five interleaved rounds, the same build with and without this change:
+  eight-element `always` 14 -> 10 ms, `maximize` 65 -> 48 ms. This
+  reduces the cost of short loops but does not eliminate their fixed
+  entry cost or bring them to SBCL's time. Tried first and not kept:
+  an ordinary THE of the inferred range checked the range at each read,
+  making `always` 15 -> 17 and `maximize` 70 -> 82 ms. The trusted THE
+  applies only to the compiler-generated read of the immutable literal,
+  not to any user expression or the loop body.
+
+* **Bounded sums of fixnums use i32 (2026-11-23).** `fused-i32-range`
+  computes bounds for every intermediate addition/subtraction assuming
+  fixnum leaves. If all intermediates fit signed i32 and the leaves are
+  constants or boxed values, `fused-code` checks the leaves and emits i32
+  operations without an overflow test after each addition. The final
+  fixnum range check is inline; an i32 outside the fixnums is boxed by
+  `box-i32`. Other values use the existing double/generic fallback from
+  the already evaluated operands. Wider trees and unboxed i64/dual leaves
+  retain the i64 path. This covers three- and four-operand sums and
+  differences without depending on MAPCAR or the source of their operands.
+  `bounded-sums.lisp` exercises fixnum/i32/i64 boundaries, bignums, ratios,
+  floats, complex numbers, characters, and evaluation order on errors.
+  Five interleaved rounds with this change disabled/enabled in otherwise
+  identical builds: three-list MAPCAR 39 -> 35 ms (0.90), all mapping
+  probes 0.965 geometric mean. Three rounds of other files give
+  `programs` 0.994, `library` 1.011, `arith` 0.938. The combined
+  `v-mapping` benchmark remains about the same: allocation dominates.
+  Substitution is a counterexample: in those diagnostic library runs,
+  `v-substitute` is 74 -> 85 ms; the combined build against `a0be620`
+  is 72.5 -> 78.5 over eight rounds. Calling `box-i32` even for a
+  fixnum result was tried first and not kept (`v-mapping` 42 -> 44 ms);
+  the retained path boxes a fixnum inline.
+
+* **The four list changes together (2026-11-23, final build).** Node.js
+  24.21.0, SBCL 2.6.0.debian; eight interleaved rounds per build against
+  `a0be620`, holding a benchmark-slot lock throughout, alternating which
+  build runs first. These are medians of process times; geometric means
+  use all nonzero items of each file. The compiler-cost cleanup and the
+  restriction on LOOP's BY clauses are included.
+
+  | File | Items | New/base geometric mean |
+  |---|---:|---:|
+  | suite | 24 | 0.995 |
+  | library | 32 | 1.000 |
+  | gabriel | 10 | 0.995 |
+  | programs | 63 | 0.991 |
+  | arith | 13 | 0.968 |
+
+  `v-coerce-general` 127 -> 91 ms (SBCL 107 in one reference run),
+  `p-typecase` 91.5 -> 73.5, `p-loop-macros` 66 -> 67. The combined
+  `v-mapping` remains allocation-limited and is slower, 34 -> 37 ms,
+  despite the isolated three-list sum's improvement. Other increases
+  above 4%: `b-sieve` 36 -> 37.5, `v-coerce-num` 21 -> 22.5,
+  `v-remove` 103 -> 108, `v-search-mismatch` 25 -> 26.5, `v-sort`
+  89 -> 94, `v-substitute` 73 -> 76.5, `v-typep-class` 135.5 -> 141,
+  `a-int-funcs` 108.5 -> 113. These modest changes are reported without
+  claiming they exceed run-to-run noise; earlier 7-10% regressions in
+  `p-json`, `p-wrap` and `a-mixed-poly` did not recur in the final set.
+  The module of one export is 905,872 bytes against 907,520; the REPL
+  image 8,541,468 against 8,567,288 (the baseline rebuilt in a source
+  snapshot, whose path metadata is slightly different). No size budget
+  or engine flags were changed. The full ANSI run is 21931/21932, only
+  the known SUBTYPEP-COMPLEX.8 failure, with no crashes.
 
 ### Declared code, and SBCL at its best policy
 
