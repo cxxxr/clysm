@@ -628,7 +628,7 @@ call AFTER-SHAKE with M, before the objects are written."
             (handler-case (ph-run-runtime m init prologue runtime-tops drop)
               ;; (the module is then shaken as it was before)
               (error (e)
-                (when seg (error e))
+                (when (or seg *preinit-through*) (error e))
                 (format *error-output* "~&; warning: the runtime's state could not be made when compiling, ~
                                         the module runs its toplevel forms: ~A~%" e)
                 (shake-module m :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))

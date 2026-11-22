@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const { default: { exports: lib } } = await import(pathToFileURL(path.resolve(process.argv[2])).href);
+assert.equal(lib.answer(), 42);
+assert.equal(lib.initializations(), 11);
+assert.equal(lib.host(), Math.PI);
+lib.change(9);
+assert.equal(lib.answer(), 9);
+console.log('lib: preinitialized definitions ok');

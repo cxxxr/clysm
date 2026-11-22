@@ -1063,6 +1063,8 @@ it is compiled, instead of by the runtime's toplevel forms: called with the
 module and *PREINIT-PARTS*.")
 (defvar *runtime-top-count* nil
   "The number of toplevel functions of the runtime, once compiled (when *PREINIT-FUNCTION* is used).")
+(defvar *preinit-through* nil
+  "NIL, or the last source file whose toplevel forms run when compiling a shaken program.")
 (defvar *preinit-parts* nil
   "(PROLOGUE RUNTIME-TOPS PROGRAM-TOPS): the code of the start function, in parts.")
 (defvar *preinit-root* nil "The directory of Clysm (for host/run.mjs).")
@@ -1454,6 +1456,7 @@ module compiled in it), and :IMAGE-OBJECTS, :IMAGE-MUTABLES and
             (format nil "0.1.~A (~A)" count commit))))))
 
 (defun compile-program (files &key (output "out.wasm") runtime-dir ((:shake *shake*) *shake*)
+                                   ((:preinit-through *preinit-through*) nil)
                                    ((:shake-symbols *shake-symbols*) *shake-symbols*)
                                    ((:shake-why *shake-why-file*) nil)
                                    ((:eval-string *eval-string*) *eval-string*)
@@ -1472,7 +1475,16 @@ run time (INTERN, READ, EVAL of new code).  With SHAKE-SYMBOLS (and SHAKE),
 the symbols that nothing refers to are left out too: the program must not
 look up by name (INTERN, FIND-SYMBOL, READ) a symbol that its code does not
 refer to.  With SHAKE-WHY (a file), the size of each kept function and what kept it are written there
-(WRITE-SHAKE-WHY).  Returns the number of bytes written."
+(WRITE-SHAKE-WHY).  PREINIT-THROUGH names a source file in FILES: with SHAKE
+on the SBCL compiler, run the program's toplevel forms through that file
+when compiling, and save their heap with the runtime's.  Later files run
+when the module loads.  Returns the number of bytes written."
+  (when *preinit-through*
+    (unless (and *shake* *preinit-function* runtime-dir)
+      (error "PREINIT-THROUGH requires --shake and the SBCL compiler with its runtime"))
+    (setf *preinit-through* (truename *preinit-through*))
+    (unless (find *preinit-through* files :key #'truename :test #'equal)
+      (error "PREINIT-THROUGH must name one of the program's source files")))
   (reset-compiler)
   (setf *runtime-top-count* nil *preinit-parts* nil *preinit-table-check* nil)
   (let* ((runtime-prefix (and *shake* runtime-dir
@@ -1526,7 +1538,12 @@ main function and whether the form is a DEFGENERIC.")
         ;; methods stay as they are, so that a program without generic
         ;; functions of its own carries no dispatch)
         (clysm-sys::*gf-unit* (clysm-sys::%make-gf-unit)))
-    (dolist (f files) (compile-source-file f))
+    (dolist (f files)
+      (compile-source-file f)
+      (when (and *preinit-through* (equal (truename f) *preinit-through*))
+        (gf-unit-flush (make-cenv))
+        (flush-toplevel)
+        (setf *runtime-top-count* (length *toplevel-lams*))))
     (gf-unit-flush (make-cenv)))
   (let ((bytes (let ((*shake-why* (and *shake-why-file* (make-hash-table :test 'equal)))
                       (*func-body-sizes* (and *shake-why-file* (make-hash-table :test 'equal)))
