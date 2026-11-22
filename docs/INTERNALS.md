@@ -445,18 +445,27 @@ frames in between are still in use by the code that signalled. A
 computation of `js:async-function` has frames of its own (the code outside
 goes on, with its frames, while the computation waits), whose first frame
 continues with the frames and depth around it (TYPES is `(frames . depth)`);
-a thread starts with none. `restart-case` is built the same way
-around its cluster: entering it makes one simple vector, `#(next clauses
-chosen restarts function...)` in the chain `*restart-clusters*`, where
+a thread starts with none. `restart-case` is built the same way:
+its frame `#(clauses chosen restarts function...)` is the one at the depth
+`*restart-clusters*` of the vector `*restart-frames*` (the helper
+`:restart-frame`), and the tag of its `%catch`, where
 CLAUSES is a constant vector that names the restarts and says where their
-report, interactive and test functions are; the restart objects are made
+report, interactive and test functions are (each stored in the frame only
+when it is another object than the frame holds, a closure being the one
+the frame holds when its function, cells and values are the same); the
+restart objects are made
 only when they are asked for (`compute-restarts`, `find-restart` of one of
 its names, a condition associated with them: `%cluster-restarts`), and
-`invoke-restart` stores the number of the clause in CHOSEN. It made a
-restart structure for each clause, a list of them and a cons, and set the
-tag of each: `v-restart-nosignal` (a `restart-case` of two restarts and a
-`with-simple-restart` that are not used) took 2.0 times SBCL's time, 1.3
-now. `assert` and `check-type` establish
+`invoke-restart` stores the number of the clause in CHOSEN. The list of
+restart objects a frame holds is emptied when the frame is entered again,
+so a restart object kept from an earlier use of the frame is not among the
+active ones (`invoke-restart` of it signals a `control-error`). Entering
+made a restart structure for each clause, a list of them and a cons, and set
+the tag of each (`v-restart-nosignal`, a `restart-case` of two restarts and
+a `with-simple-restart` that are not used: 2.0 times SBCL's time), then one
+vector bound to the chain `*restart-clusters*` (1.3, then 0.93 with the
+other work), and with the frames nothing but the closure of a report
+function whose variables changed: see "Restart frames" under Performance. `assert` and `check-type` establish
 their restarts only when the assertion fails (in the expansion, after the
 test).
 
@@ -3195,6 +3204,19 @@ What is not as fast as intended, and why:
   (`handler-case` 3.9 -> 3.2 ns: its casts need no checks).
   Signalling is as before (`t-error-3-calls` 27 -> 24 ms, `v-cerror-warn`
   78 -> 82).
+* **Restart frames** (2026-11-22). `restart-case`, `restart-bind` and
+  `with-simple-restart` on the model of the handler frames above: the
+  depth `*restart-clusters*` and the frames of `*restart-frames*`, nine
+  slots each (a `restart-case` of more than six report, interactive and
+  test functions gets a wider frame, `%wide-restart-frame`), instead of a
+  vector made at each entry and stored into the old symbol. Per entry
+  (interleaved on one slot): a `restart-case` of two restarts around a
+  call 6.4 -> 3.7 ns, `with-simple-restart` with a format argument that
+  changes (its report closure is made each time and stored into the
+  frame) 8.6 -> 5.5; `v-restart-nosignal` 66 -> 50 ms (SBCL 70),
+  `v-restarts` (restarts invoked) the same. The compiled code of the
+  REPL image is 10 KB larger (a `restart-case` site stores each of its
+  functions with the comparison).
 * **Grown vectors: measured, not kept** (2026-11-22). A vector grown by `vector-push-extend` made with
   `array.new_default`, the old elements copied and only the rest filled
   with NIL (instead of `array.new` filled with NIL, then the copy) was 1.10
@@ -3355,6 +3377,65 @@ What is not as fast as intended, and why:
   rounds of the three builds interleaved on one slot: `holdout` 80.7 ->
   81.9 (geometric mean of the times, ms), `library` 62.2 -> 62.1,
   `functional` 25.6 -> 24.9, `programs` 52.1 -> 51.4.
+* **Immutable fields for a closure's variables: evaluated, not done**
+  (2026-11-22). The fields of the `$envcloN` types are mutable for two
+  writers: LABELS (the closures of functions that refer to each other are
+  made first and stored into each other's fields) and the loader of heap
+  images, which makes every object empty and fills it in a second pass
+  (`:make-env-closure`, `:closure-env-set`). Immutable fields would let
+  V8 keep a variable's value, and what it knows of its type, across the
+  calls of a function. What that is worth was measured first with the
+  same information given to the engine another way: every variable of
+  the environment that a function refers to more than once read into a
+  local at its entry (a throwaway change of `setup-free-vars`).
+  `bench/closures.lisp` 1.008 of the time, `bench/functional.lisp` 1.047
+  (`f-equal-hash` 1.27, `f-cc-interp` 1.08), `bench/gabriel.lisp` 1.012:
+  nothing to gain outside loops (reading a field again after a call costs
+  what reading the frame does, and the type tests it repeats are few
+  outside loops; in loops the rule above has them), and the eager reads
+  cost. Against that, the change needs a second family of closure types
+  or environments in vectors for the closures LABELS patches, and a loader
+  of heap images that makes closures after the objects in their fields
+  (in dependency order, the only objects of an image that could not be
+  made empty). Not done; the closure types are as they were.
+* **`read-char` and `peek-char` of a file in a loop** (2026-11-22;
+  `fs-fast-char-code`, `inline-char-payload`). The inline code tested at
+  each character that the stream is an instance with enough slots whose
+  FAST slot holds a `$fsbuf` (null, fixnum and map of each: seventeen
+  instructions of the fifty a `read-char` loop ran per character), the
+  values of the loop were loaded from and stored to the frame at every
+  iteration (ten moves), and the character was compared with NIL twice
+  (the `or` around the inline code, then the program's own test).
+  Now: (1) the stream, as an instance, and the `$fsbuf` found the last
+  time the code ran in this call are kept in three locals, and when the
+  stream is the same and its FAST slot still holds that buffer (the slot
+  is cleared by `unread-char` and `close`) the type tests are not made
+  again; (2) the call that reads other streams and characters is inside
+  the primitive (`sys::%fs-fast-char-or`), its result not compared with
+  NIL on the fast path, and the branches to it are hinted unlikely; (3)
+  the calls of `:check-char` in an inline character comparison (`char=`
+  of a value of unknown type, which only signal) are hinted unlikely too:
+  with (2) and (3) V8 keeps the loop's values in registers
+  (`--print-wasm-code`: no moves at the loop's head). The hints of (2)
+  alone, tried before the others, changed nothing. A `read-char` loop
+  over a 56 K file, with the open and the close: 127 -> 107 us (SBCL 58:
+  1.8 against 1.0 ns a character), `peek-char` and `read-char` 203 -> 183
+  (SBCL 107). What is left is about 35 instructions a character against
+  the load, add and store of the position that both must do: the bounds
+  test of the octets, null tests of the buffer and of the octets, the
+  slot's comparison, the character made and tested again by the program's
+  `char=`.
+* **The store of the count of values at each return: measured again, not
+  changed** (2026-11-22; see "Multiple values" for the measurement of
+  2026-11-20). With the code of today (faster elsewhere, so the store's
+  share could have grown), the named functions of the benchmark files
+  compiled without the store of 1 into `mv-count` at their returns (an
+  upper bound of any convention that leaves it out; the runtime as it is),
+  five interleaved rounds on one slot: `bench/suite.lisp` 0.998 (`b-call`
+  116 -> 113 ms, `b-deriv` 143 -> 143), `bench/gabriel.lisp` 1.008
+  (`g-browse` 165 -> 165). Nothing differs from the earlier result: the
+  store is one write of a global whose value the engine keeps across no
+  call anyway.
 * **Calls between modules** (fasl or REPL code into the runtime, or into
   another file's module) go through the function cell into another Wasm
   instance. Measured with `--no-wasm-inlining` (2026-11), a direct `call`
