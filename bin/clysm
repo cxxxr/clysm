@@ -11,7 +11,7 @@
 #                                         kept function and what kept it to REPORT; --eval-string
 #                                         keeps the reader and evaluator for the host's eval_string
 #                                         (a module without --shake always has them)
-#   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--eval FORM]... [-o OUT.wasm] [FILE...]
+#   clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]
 #                                         build an application into ONE module with the runtime:
 #                                         the ASDF systems NAME (found as (require :asdf) and
 #                                         Quicklisp find them, or defined by FILE.asd) with the
@@ -20,6 +20,8 @@
 #                                         systems are loaded into the REPL image that compiles
 #                                         them, so macros and EVAL-WHEN work as in COMPILE-FILE;
 #                                         --load: a file loaded there first (where the systems are)
+#                                         --asdf: ASDF and UIOP are part of the program;
+#                                         --shake: without the functions nothing refers to
 #                                         (see docs/INTERNALS.md, "Applications in one module")
 #   clysm run FILE... [-- ARGS]           compile and run on Node.js
 #   clysm repl [--interp] [--no-userinit] start the REPL (runs in Wasm; each form is compiled

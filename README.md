@@ -94,6 +94,9 @@ systems:
   `#'name`, and the calls of functions declaimed `notinline`;
 * the program has no compiler: `eval` interprets, `compile` returns an
   interpreted function, and systems are not loaded when it runs;
+* `--shake` leaves out the functions that nothing of the program refers
+  to, as for `clysm compile` (the program must not call functions by names
+  it makes when it runs, nor `eval` forms kept as data);
 * ASDF and UIOP are in the program when a system depends on one of them or
   with `--asdf` (2.8 MB more); the program's ASDF knows the systems built in
   as loaded (`asdf:find-system`, `asdf:system-relative-pathname` answer).

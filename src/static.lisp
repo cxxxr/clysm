@@ -78,10 +78,13 @@ keeps what THUNK changes."
   (with-open-file (s (concatenate 'string root "tools/runtime-files.lisp"))
     (mapcar (lambda (f) (concatenate 'string root "runtime/" f ".lisp")) (read s))))
 
-(defun static-open (root)
+(defun static-open (root &key shake)
   "Begin a program built in this image: the runtime (the files of the Clysm
 installation ROOT, a directory name) is compiled.  The program, for
-STATIC-ADD-FILE, STATIC-ADD-FORM and STATIC-FINISH."
+STATIC-ADD-FILE, STATIC-ADD-FORM and STATIC-FINISH.  SHAKE: the functions
+that nothing of the program refers to are left out of its module, as with
+`clysm compile --shake` (without the heap made beforehand, src/preinit.lisp,
+which the compiler on SBCL makes)."
   (when *static-build* (error "A program is being built in this image already."))
   (let* ((vars *static-state-variables*)
          (live (mapcar (lambda (v) (cons v (and (boundp v) (symbol-value v)))) vars))
@@ -118,6 +121,11 @@ STATIC-ADD-FILE, STATIC-ADD-FORM and STATIC-FINISH."
                  *static-literal-counter* 0
                  clysm-sys::*gf-unit* nil clysm-sys::*proclaimed-safety* 1)
            (reset-compiler)
+           (when shake
+             (setq *shake* t
+                   ;; (as COMPILE-PROGRAM: no typed copies of the runtime's
+                   ;; large functions of five required parameters or more)
+                   *runtime-copy-limit* (list "runtime/" 5 300)))
            (setf (svref build 2)
                  (mapcar (lambda (v) (cons v (symbol-value v))) *static-sink-variables*))
            (let ((*read-package* (find-target-package "SYSTEM")))
@@ -200,6 +208,7 @@ again (ASDF): what it does at compile time is not done."
           ;; (the functions named by *LIVE-DUMP* are printed, as when code
           ;; compiled into the image defines them)
           (let ((bytes (let ((*keep-instructions* (or *keep-instructions* (and *live-dump* t)))
+                             (clysm-wasm::*runtime-hint-limit* (and *shake* (cons "runtime/" 800)))
                              (*built-module-hook* (and *live-dump* #'dump-live-functions)))
                          (build-module))))
             (with-open-file (o output :direction :output :element-type '(unsigned-byte 8)
@@ -250,7 +259,7 @@ versions and definition files, which programs ask for)."
                          :source-file ,(let ((f (ignore-errors (asdf-call "SYSTEM-SOURCE-FILE" system))))
                                          (and f (namestring f)))))))
 
-(defun static-build (&key systems files forms asds loads asdf output
+(defun static-build (&key systems files forms asds loads asdf shake output
                           (root (namestring (clysm-sys::%clysm-root))) (verbose t))
   "Build the program of the ASDF systems SYSTEMS (names; with the systems
 they depend on), the source FILES and the toplevel FORMS (strings, read in
@@ -279,7 +288,7 @@ one of them), which knows its systems as loaded."
     (let* ((included (and systems (static-system-closure systems)))
            (count 0) (seen nil)
            (asdf (or asdf (and (intersection '("asdf" "uiop") included :test #'string=) t)))
-           (build (progn (note "compiling the runtime") (static-open root))))
+           (build (progn (note "compiling the runtime") (static-open root :shake shake))))
       (unwind-protect
            (progn
              (when asdf
@@ -332,13 +341,14 @@ one of them), which knows its systems as loaded."
 
 (defun static-build-main (args)
   "The command `clysm build`: [--system NAME]... [--eval FORM]... [-o OUT.wasm] FILE..."
-  (let ((systems nil) (files nil) (forms nil) (asds nil) (loads nil) (asdf nil) (output "a.wasm"))
+  (let ((systems nil) (files nil) (forms nil) (asds nil) (loads nil) (asdf nil) (shake nil) (output "a.wasm"))
     (loop while args
           do (let ((a (pop args)))
                (cond ((string= a "--system") (push (pop args) systems))
                      ((string= a "--asd") (push (pop args) asds))
                      ((string= a "--load") (push (pop args) loads))
                      ((string= a "--asdf") (setq asdf t))
+                     ((string= a "--shake") (setq shake t))
                      ((string= a "--eval") (push (pop args) forms))
                      ((string= a "-o") (setq output (pop args)))
                      (t (push a files)))))
@@ -347,8 +357,8 @@ one of them), which knows its systems as loaded."
                             (clysm-sys::%backtrace 12)
                             (clysm-sys::%exit 1))))
       (unless (or systems files forms)
-        (format *error-output* "usage: clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--eval FORM]... [-o OUT.wasm] [FILE...]~%")
+        (format *error-output* "usage: clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--shake] [--eval FORM]... [-o OUT.wasm] [FILE...]~%")
         (clysm-sys::%exit 2))
       (static-build :systems (nreverse systems) :files (nreverse files) :forms (nreverse forms)
-                    :asds (nreverse asds) :loads (nreverse loads) :asdf asdf :output output))
+                    :asds (nreverse asds) :loads (nreverse loads) :asdf asdf :shake shake :output output))
     (clysm-sys::%exit 0)))

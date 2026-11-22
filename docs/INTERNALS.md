@@ -8843,8 +8843,19 @@ application of two systems and a file: macros and a function of
 `make-load-form` and their identity), a method on another system's generic
 function, `intern` at run time and a `notinline` function redefined.
 
-Next: `--shake` for such a program (the module carries all of the runtime
-and of the systems); the keyed entry for keyword calls of generic functions
+**`--shake`** leaves the functions that nothing refers to out of the built
+module (`shake-module`, as `clysm compile --shake` in the compiler compiled
+by itself: without the heap made beforehand, `src/preinit.lisp`, which
+only the compiler on SBCL has): `tests/hello.lisp` 5.25 -> 3.90 MB,
+`tests/static`'s application 5.33 -> 3.98 MB, the seven systems of
+`bench/libs.lisp` with the benchmarks 9.10 -> 7.61 MB (the build 11 -> 18
+s). The contract is that of `--shake`: of the library benchmarks only
+Alexandria's own tests fail it (rt evaluates the forms of the tests, kept
+as data, when it runs: the functions they name are not referred to by
+code).
+
+Next: the heap of a shaken built program made beforehand (preinit in the
+image); the keyed entry for keyword calls of generic functions
 in `clysm compile` too (the layouts of the generic functions the program
 itself defines are known when the call is compiled); a heap image of the
 built program for its start (the toplevel forms of all its files run at each
