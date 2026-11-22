@@ -6406,6 +6406,67 @@ With semi-spaces of 128 MB it is not slower and takes 0.92 GB, and the
 ring is 264 ms instead of 107 (780 with the engine's 64 MB), the list 551
 instead of 204 (684): the choice for a machine short of memory.
 
+**Lists and sequences of a few elements** (2026-11-22; 40 probes of the
+functions that make a list, a vector or a string, on arguments of 3 to 15
+elements held in variables: SBCL folds `(length (copy-seq "literal"))` and
+does not allocate at all, which reads as 5–7 times). Garbage that dies
+young costs what it did (a cons 2 ns), so what could be gained was the work
+around the allocation:
+
+| | before | after | SBCL |
+|---|---|---|---|
+| `(make-list 8 :initial-element x)` | 70 ms | 36 | 26 |
+| `(butlast l)` (8 elements) | 111 | 68 | 48 |
+| `(coerce vector 'list)` (8) | 87 | 55 | 37 |
+| `(coerce list 'string)` (4) | 43 | 34 | 19 |
+| `(reverse string)` (15) | 116 | 51 | 42 |
+| `(subseq vector 2 6)` | 49 | 39 | 30 |
+| `(copy-seq vector)` (8) | 55 | 47 | 40 |
+| `(loop for x in l append (list x i))` (3) | 78 | 53 | 27 |
+| `(string-upcase string)` (15) | 95 | 80 | 31 |
+
+(3 million calls each.) `make-list` and `butlast` counted with generic
+arithmetic (their count is now a fixnum, and `butlast` builds its list in
+order in one pass after the length); `reverse`, `subseq` and `coerce` went
+through the storage's element type and its code for a simple vector or
+string (`%vector-like`, `%vref`, `%vset` per element) and now read and
+write those two kinds directly; `%copy-elements` copies fewer than 16
+elements of a simple vector in a loop (`array.copy` of references is a
+call of the engine's runtime: 19 ns for 8 elements against 8); `loop`'s
+`append` copied each list with `copy-list` and then walked the copy for
+its last cons, and now copies onto the tail in one pass
+(`%loop-append-after`), and links a list made by `(list ...)` in the
+clause, which is fresh, without copying it; `string-upcase` and
+`string-downcase` have no call in their loop while the characters are
+below 128 (`%string-case-rest` does the rest). The mapping functions
+written at a call site (`%mapfun-expansion`) and `mapcar` itself made a
+header cons for each list they built, which SBCL allocates on the stack:
+they now test the tail (NIL or the last cons) as `loop`'s `collect` does,
+one cons less per call (`b-deriv`, whose `mapcar`s are over two or three
+arguments, 149 → 145 ms, `g-dderiv` 142 → 137, `v-mapping` 34 → 33; the
+module 2.8 KB smaller). `v-seq-copying` (vectors of 20000 elements, which are
+large objects) is 5% slower, 75 → 79 ms over six rounds, for a reason not
+found: apart, `reverse` of such a simple vector is 108 → 88 ms for 2000,
+of an adjustable one (the same code as before) 112 → 125, `copy-seq`
+77 → 80. Still slower and left: `set-difference` of 8 and
+3 elements 2.0 (the set table's set-up), `fill` of 16 elements 2.5 (the
+keywords and the storage of the array), `string-upcase` 2.5 (the string is
+filled with zeros, then written: 26 ns for 15 characters), `loop ... when
+(oddp x) collect` 1.6.
+
+The other listed items are not allocation (instruction-level profiles,
+ticks of `--prof` placed on `--print-wasm-code`'s listing): `a-list-churn`
+is 14 instructions a cons in a loop the engine unrolled four times (the
+bump allocation, the header's two words, the fields, the test of the
+list), equal to SBCL's time when run alone (68 against 72 ms; 16 of them
+collection); `g-traverse` spends its ticks on the first read of each node
+and of each cons of its list of sons (the cache: the objects are 120 and
+32 octets); `p-vector-push` is 45 of 140 ms in `:add` (its sum passes 2^29
+and is a boxed integer from then on) and 32 in growing the vector (arrays
+of 512 KB are large objects); `b-deriv` and `g-browse` are one function
+each (`deriv`, with 15% of the time in scavenges of a young generation of
+1 MB; `browse-match`, 5%).
+
 `--minor-ms` would help programs that build large data, but code whose
 garbage all dies young (`b-deriv`, the common case) is 25% slower with it
 whatever the size of the young generation, and it cannot be set from

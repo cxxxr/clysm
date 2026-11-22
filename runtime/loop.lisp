@@ -371,8 +371,22 @@ the default value of its type (and no declaration when there is none)."
              `(let ((c (cons ,form nil)))
                 (if ,tail (setf (cdr ,tail) c) (setq ,var c))
                 (setq ,tail c)))
-            ((%lkw-in kw '("APPEND" "APPENDING" "NCONC" "NCONCING"))
-             `(let ((c ,(if (%lkw-in kw '("APPEND" "APPENDING")) `(copy-list ,form) form)))
+            ((and (%lkw-in kw '("APPEND" "APPENDING")) (consp form) (eq (car form) 'list))
+             ;; (a list made by LIST is fresh: it is linked, not copied)
+             `(let ((c ,form))
+                (when c
+                  (if ,var (setf (cdr (last ,tail)) c) (setq ,var c))
+                  (setq ,tail (last c)))))
+            ((%lkw-in kw '("APPEND" "APPENDING"))
+             ;; (after the first list, each is copied onto the tail in one
+             ;; pass: %LOOP-APPEND-AFTER returns the last cons of the copy)
+             `(let ((c ,form))
+                (when c
+                  (if ,var
+                      (setq ,tail (%loop-append-after (last ,tail) c))
+                      (progn (setq ,var (copy-list c)) (setq ,tail (last ,var)))))))
+            ((%lkw-in kw '("NCONC" "NCONCING"))
+             `(let ((c ,form))
                 (when c
                   (if ,var (setf (cdr (last ,tail)) c) (setq ,var c))
                   (setq ,tail (last c)))))
