@@ -129,3 +129,8 @@ export type Places = Place[];" :entry "places")
   (js:export "unconverted" f :raw t :type "(x: unknown) => string"))
 ;; a constant of a key __proto__
 (js:export "protoData" (js:call (js:global "JSON") "parse" "{\"__proto__\":{\"enabled\":true}}") :type "object")
+
+;; exports named as what the modules use (JSON, process), and as a class exported under other names
+(js:export "JSON" "json" :type "string")
+(js:export "process" "process" :type "string")
+(js:export "Hidden" 123 :type "number")

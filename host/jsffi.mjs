@@ -30,6 +30,11 @@ function lispResult(r) {
 // loads the library, whose JS:DEFINE-CLASS then gives the class its functions.
 const implementation = Symbol.for('clysm.class');
 
+// What the modules of a library (bin/clysm library) call, imported under names of their own: an
+// export of the library may be named JSON or process.
+export const jsonConstant = (text) => JSON.parse(text);
+export const writeToStderr = (text) => process.stderr.write(text);
+
 export function makeClass(spec, load = null, classes = {}) {
   // (a name of a class of JavaScript: the registries are objects whose keys are the names)
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spec.name) || spec.name === '__proto__') {
