@@ -7997,8 +7997,68 @@ in local V and the index in local K; else branch to FAIL."
   '(:local.get 0) `(:global.get ,(sym-global 'clysm-sys::%isqrt-big)) '(:call (:callsym 1)))
 (defprim isqrt (n) :value `(,@n (:call :isqrt)))
 
+;;; Binary GCD of magnitudes through 128 bits, without temporary integers.
+(defun wide-ctz-code (lo hi)
+  `((:local.get ,lo) :i64.eqz
+    (:if nil :i64 ((:local.get ,hi) :i64.ctz (:i64.const 64) :i64.add)
+                  ((:local.get ,lo) :i64.ctz))))
+(defun wide-shr-code (lo hi sh)
+  `((:local.get ,sh) (:i64.const 64) :i64.ge_u
+    (:if nil nil
+      ((:local.get ,hi) (:local.get ,sh) (:i64.const 64) :i64.sub :i64.shr_u (:local.set ,lo)
+       (:i64.const 0) (:local.set ,hi))
+      ((:local.get ,sh) :i64.eqz :i32.eqz
+       (:if nil nil
+         ((:local.get ,lo) (:local.get ,sh) :i64.shr_u
+          (:local.get ,hi) (:i64.const 64) (:local.get ,sh) :i64.sub :i64.shl :i64.or (:local.set ,lo)
+          (:local.get ,hi) (:local.get ,sh) :i64.shr_u (:local.set ,hi)))))))
+(defhelper :gcd-wide :ee-e ((s :i32) (al :i64) (ah :i64) (bl :i64) (bh :i64)
+                           (m (:ref :null :limbs)) (sh :i64) (common :i64) (w :i64))
+  `(:block fail nil
+     ,@(wide-decode-code 0 's 'al 'ah 'm 'fail)
+     ,@(wide-decode-code 1 's 'bl 'bh 'm 'fail)
+     (:local.get al) (:local.get ah) :i64.or :i64.eqz
+     (:if nil nil ((:i32.const 0) (:local.get bl) (:local.get bh) (:return_call :wide-int)))
+     (:local.get bl) (:local.get bh) :i64.or :i64.eqz
+     (:if nil nil ((:i32.const 0) (:local.get al) (:local.get ah) (:return_call :wide-int)))
+     ,@(wide-ctz-code 'al 'ah) (:local.set sh)
+     ,@(wide-ctz-code 'bl 'bh) (:local.set common)
+     (:local.get sh) (:local.get common) (:local.get sh) (:local.get common) :i64.lt_u
+     :select (:local.set common)
+     ,@(wide-shr-code 'al 'ah 'sh)
+     ,@(wide-ctz-code 'bl 'bh) (:local.set sh)
+     ,@(wide-shr-code 'bl 'bh 'sh)
+     (:block done nil
+       (:loop again nil
+         (:local.get ah) (:local.get bh) :i64.or :i64.eqz
+         (:if nil nil ((:local.get al) (:local.get bl) (:call :gcd64) (:local.set al) (:br done)))
+         (:local.get al) (:local.get bl) :i64.eq (:local.get ah) (:local.get bh) :i64.eq
+         :i32.and (:br_if done)
+         (:local.get ah) (:local.get bh) :i64.lt_u
+         (:local.get ah) (:local.get bh) :i64.eq (:local.get al) (:local.get bl) :i64.lt_u :i32.and :i32.or
+         (:if nil nil
+           ((:local.get al) (:local.set w) (:local.get bl) (:local.set al) (:local.get w) (:local.set bl)
+            (:local.get ah) (:local.set w) (:local.get bh) (:local.set ah) (:local.get w) (:local.set bh)))
+         (:local.get ah) (:local.get bh) :i64.sub
+         (:local.get al) (:local.get bl) :i64.lt_u :i64.extend_i32_u :i64.sub (:local.set ah)
+         (:local.get al) (:local.get bl) :i64.sub (:local.set al)
+         ,@(wide-ctz-code 'al 'ah) (:local.set sh)
+         ,@(wide-shr-code 'al 'ah 'sh)
+         (:br again)))
+     (:local.get common) (:i64.const 64) :i64.ge_u
+     (:if nil nil
+       ((:local.get al) (:local.get common) (:i64.const 64) :i64.sub :i64.shl (:local.set ah)
+        (:i64.const 0) (:local.set al))
+       ((:local.get common) :i64.eqz :i32.eqz
+        (:if nil nil
+          ((:local.get ah) (:local.get common) :i64.shl
+           (:local.get al) (:i64.const 64) (:local.get common) :i64.sub :i64.shr_u :i64.or (:local.set ah)
+           (:local.get al) (:local.get common) :i64.shl (:local.set al)))))
+     (:i32.const 0) (:local.get al) (:local.get ah) (:return_call :wide-int))
+  (car (nil-code)))
+
 ;;; GCD of integers within 64 bits (Euclid)
-(defhelper :gcd :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (tt :i64))
+(defhelper :gcd :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (tt :i64) (tt-ref :eqref))
   `(:block slow nil
      ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
      ,@(num-decode-code 1 'xb nil 'ka 'slow nil)
@@ -8009,6 +8069,9 @@ in local V and the index in local K; else branch to FAIL."
      ;; the binary algorithm of the rationals (:gcd64): a step is a
      ;; subtraction and a shift, where Euclid's is a division
      (:local.get xa) (:local.get xb) (:call :gcd64) (:call :i64-int) :return)
+  '(:local.get 0) '(:local.get 1) '(:call :gcd-wide) '(:local.tee tt-ref)
+  (car (nil-code)) :ref.eq :i32.eqz
+  '(:if nil nil ((:local.get tt-ref) :return))
   '(:local.get 0) '(:local.get 1) `(:global.get ,(sym-global 'clysm-sys::%gcd-big)) '(:call (:callsym 2)))
 (defprim clysm-sys::%gcd (a b) :value `(,@a ,@b (:call :gcd)))
 
