@@ -179,7 +179,7 @@ the default value of its type (and no declaration when there is none)."
              (%loop-bind-pattern s var)
              (if (%lkw kw "IN")
                  (progn
-                   (%loop-end-test s `(endp ,g))
+                   (%loop-end-test s `(%endp ,g))
                    (dolist (f (%loop-destructure-setq var `(car ,g))) (%loop-pre s f)))
                  (progn
                    (%loop-end-test s `(atom ,g))
@@ -189,7 +189,7 @@ the default value of its type (and no declaration when there is none)."
              (%loop-step s `(setq ,g ,(cond (step-op `(,step-op ,g))
                                              (step-fn `(funcall ,step-fn ,g))
                                              (t `(cdr ,g)))))
-             (%loop-step-test s (if (%lkw kw "IN") `(endp ,g) `(atom ,g)))))
+             (%loop-step-test s (if (%lkw kw "IN") `(%endp ,g) `(atom ,g)))))
           ((%lkw kw "ACROSS")
            ;; a simple string or a simple vector is read inline (the element
            ;; read of an array of unknown type is inline for a simple vector
@@ -319,13 +319,13 @@ the default value of its type (and no declaration when there is none)."
                                                                 ((%lkw-in what '("PRESENT-SYMBOL" "PRESENT-SYMBOLS")) :present)
                                                                 (t :all))))
            (%loop-add-binding s var nil)
-           (%loop-end-test s `(endp ,g))
+           (%loop-end-test s `(%endp ,g))
            (%loop-pre s `(setq ,var (car ,g)))
            (%loop-step s `(setq ,g (cdr ,g))))
           ((%lkw-in what '("ELEMENT" "ELEMENTS"))
            (%loop-add-binding s g `(coerce ,obj 'list))
            (%loop-bind-pattern s var)
-           (%loop-end-test s `(endp ,g))
+           (%loop-end-test s `(%endp ,g))
            (dolist (f (%loop-destructure-setq var `(car ,g))) (%loop-pre s f))
            (%loop-step s `(setq ,g (cdr ,g))))
           (t (error "LOOP: unknown BEING clause ~S" what))))))
@@ -371,25 +371,25 @@ the default value of its type (and no declaration when there is none)."
              `(let ((c (cons ,form nil)))
                 (if ,tail (setf (cdr ,tail) c) (setq ,var c))
                 (setq ,tail c)))
-            ((and (%lkw-in kw '("APPEND" "APPENDING")) (consp form) (eq (car form) 'list))
-             ;; (a list made by LIST is fresh: it is linked, not copied)
+            ((or (%lkw-in kw '("NCONC" "NCONCING"))
+                 ;; (a list made by LIST is fresh: it is linked, not copied)
+                 (and (%lkw-in kw '("APPEND" "APPENDING")) (consp form) (eq (car form) 'list)))
+             ;; (TAIL is the last cons so far, as for COLLECT: the list is
+             ;; linked to it and followed to its last cons here, no call)
              `(let ((c ,form))
                 (when c
-                  (if ,var (setf (cdr (last ,tail)) c) (setq ,var c))
-                  (setq ,tail (last c)))))
+                  (if ,tail (setf (cdr ,tail) c) (setq ,var c))
+                  (when (consp c)
+                    (setq ,tail c)
+                    (%do () ((atom (cdr ,tail))) (setq ,tail (cdr ,tail)))))))
             ((%lkw-in kw '("APPEND" "APPENDING"))
              ;; (after the first list, each is copied onto the tail in one
              ;; pass: %LOOP-APPEND-AFTER returns the last cons of the copy)
              `(let ((c ,form))
                 (when c
-                  (if ,var
-                      (setq ,tail (%loop-append-after (last ,tail) c))
+                  (if ,tail
+                      (setq ,tail (%loop-append-after ,tail c))
                       (progn (setq ,var (copy-list c)) (setq ,tail (last ,var)))))))
-            ((%lkw-in kw '("NCONC" "NCONCING"))
-             `(let ((c ,form))
-                (when c
-                  (if ,var (setf (cdr (last ,tail)) c) (setq ,var c))
-                  (setq ,tail (last c)))))
             ((eq kind :count) `(when ,form (setq ,var (+ ,var 1))))
             ((eq kind :sum) `(setq ,var (+ ,var ,form)))
             ((eq kind :max) `(let ((v ,form)) (when (or (null ,tail) (> v ,var)) (setq ,var v ,tail t))))
