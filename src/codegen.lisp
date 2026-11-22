@@ -2030,7 +2030,20 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
               ;; kept across the call; V8 otherwise spills the variables of
               ;; a loop whose error branch calls it on every iteration)
               (let ((*call-noreturn* (and (gethash sym *ti-noreturn*) t)))
-                (call-closure-code (fdef-code sym) arg-codes mv tail)))))))
+                (if (and (<= (length args) +max-fixed-args+)
+                         (or *call-noreturn* (member sym *cold-functions*)))
+                    ;; (a function that signals: through the helper that
+                    ;; calls a symbol's function, the call being rare and
+                    ;; a function's size deciding whether the engine
+                    ;; inlines it)
+                    (progn
+                      (setf (gethash sym *called-functions*) t)
+                      (maybe-checked-call
+                       tail
+                       `(,@(apply #'append arg-codes)
+                         (:global.get ,(sym-global sym))
+                         (,(if tail :return_call :call) (:cellcall ,(length args))))))
+                    (call-closure-code (fdef-code sym) arg-codes mv tail))))))))
 
 ;;; In the image, a call with constant keywords of a global function that has
 ;;; keyword parameters passes the arguments in the fixed slots of the
@@ -2086,6 +2099,22 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
       (return-from cg-funcall
         (direct-call-code lam `(,@(var-get-code (second fnode)) (:ref.cast! :closure))
                           (mapcar #'cg args) tail args))))
+  ;; a constant symbol: its function cell, as a call of the function by its
+  ;; name does; of a function of this module (the other arm of a guarded
+  ;; direct call, %BATCH-CELL-CALL: rarely run), through the helper
+  (when (and (eq (car fnode) :const) (symbolp (second fnode)) (second fnode)
+             (not (keywordp (second fnode))))
+    (let ((sym (second fnode)) (n (length args)))
+      (return-from cg-funcall
+        (if (and (<= n +max-fixed-args+) (gethash sym *global-defuns*))
+            (progn
+              (setf (gethash sym *called-functions*) t)
+              (maybe-checked-call
+               tail
+               `(,@(loop for a in args append (cg a))
+                 (:global.get ,(sym-global sym))
+                 (,(if tail :return_call :call) (:cellcall ,n)))))
+            (call-closure-code (fdef-code sym) (mapcar #'cg args) mv tail)))))
   (if (eq (car fnode) :lambda)
       (let ((lam (second fnode)))
         (if (lam-accepts-p lam (length args))
@@ -2100,14 +2129,13 @@ supplying it (or NIL).  Returns NIL when the call cannot be laid out statically.
   "CODE pushes a function designator; push the function, a (ref $closure):
 a closure is taken as it is and the function of a symbol read from it at the
 call site; only other objects (an error) go to the helper."
-  (let ((l (gensym "FN")) (slow (gensym "SLOW")) (tmp (new-local)))
+  ;; (the symbol's function cell was read here too: 23 octets more at each
+  ;; FUNCALL of a value of unknown type; the engine inlines the helper where
+  ;; a symbol is called often)
+  (let ((l (gensym "FN")))
     `((:block ,l (:ref :closure)
-        ,@code (:local.tee ,tmp) (:br_on_cast ,l :eqref (:ref :closure)) :drop
-        (:block ,slow :eqref
-          (:local.get ,tmp) (:br_on_cast_fail ,slow :eqref (:ref :symbol))
-          (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
-          (:local.get ,tmp))
-        (:call :coerce-function) :ref.as_non_null))))
+        ,@code (:br_on_cast ,l :eqref (:ref :closure))
+        (:call :coerce-function)))))
 
 (defvar *spec-self* nil
   "While an entry version of a function is compiled: (lam sig name), its
@@ -3151,7 +3179,11 @@ buffer), with no list or argument vector; else the generic way."
                               ;; that name in a shaken program, as
                               ;; SYS:%WEAK-SYMBOL; the class keeps the name and
                               ;; its properties)
-                              (cg `(:call find-class (:wasm :eqref () ((:global.get (:sym ,name) :weak)))))
+                              ;; (through the helper that calls a symbol's
+                              ;; function: a third of the code at each access
+                              ;; of a structure, and a function's size decides
+                              ;; whether the engine inlines it)
+                              `((:global.get ,(sym-global name) :weak) ,@(lisp-call-instrs 'find-class 1))
                               (cg (second node)))))))
       `((:block ,l :eqref
           (:global.get ,g) (:br_on_non_null ,l)
