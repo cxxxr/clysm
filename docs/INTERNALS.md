@@ -4833,6 +4833,25 @@ What makes the code fast:
   `%gf-disc-valid-p` compares the combination, its order and its
   definition. `c-short-combination` 1.14 → 0.97 (38 → 32
   ms); `bench/clos.lisp` 0.72.
+  *`make-instance` at the call site* (2026-11-23). A call with a constant
+  class and up to six constant keywords makes the instance itself when the
+  constructor says that it is a copy of its template with each argument
+  stored in one slot (`%ctor-plans`: no initform or default initarg to
+  evaluate, only the standard methods; slot 12 of the constructor holds
+  `*ctor-generation*` then, slot 13 the slots of the arguments): the
+  template is copied and the arguments stored inline, without the call of
+  `%ctor-make-instance-N` and its loops over the plans; anything else calls
+  it as before. By hand, five million instances of a class of one slot: 55
+  ms through the constructor, 23 copying the template inline, 16 with the
+  slot vector made in place (which needs the class's slots where the call is
+  compiled: not done), a structure 13, SBCL 41. `b-make-instance` 1.39 →
+  0.97 (56 → 36 ms), `c-make-instance` 0.86. Unchanged: a class that is
+  not a constant (`c-make-instance-plain` 1.16: the search of the site's
+  constructors) and a class with a method on `initialize-instance` or
+  `shared-initialize` (`p-clos-app`, whose `account` has an `:after`
+  method with a keyword: the general path with the list of initargs).
+  `tests/cases/clos-dispatch-regenerate.lisp` is the test of the remade
+  trees (three files compiled and loaded in turn).
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm

@@ -4669,7 +4669,11 @@ MAKE-LOAD-FORM ordering), then the form, objects replaced by references."
 ;;; initforms (INITFORM-PLAN: #(location function ...), in slot order).
 ;;; ------------------------------------------------------------
 
-(defun %make-ctor (name keys) (vector -1 name keys nil nil nil nil nil nil nil nil nil))
+;;; (12: *CTOR-GENERATION* while an instance is a copy of the template with
+;;; each argument stored in one slot, 13: the slots of the arguments; the
+;;; call site then makes the instance itself, see the compiler macro of
+;;; MAKE-INSTANCE)
+(defun %make-ctor (name keys) (vector -1 name keys nil nil nil nil nil nil nil nil nil -1 nil))
 
 (defun %constant-initform-p (form)
   "True when the initform FORM always has the same value (which an
@@ -4710,7 +4714,18 @@ a constant (%CONSTANT-INITFORM-P)."
     (setf (svref ctor 8) template
           (svref ctor 9) (coerce (nreverse args) 'simple-vector)
           (svref ctor 10) (coerce (nreverse forms) 'simple-vector)
-          (svref ctor 11) (coerce (nreverse dplan) 'simple-vector))))
+          (svref ctor 11) (coerce (nreverse dplan) 'simple-vector))
+    ;; nothing to call, and each argument goes to one slot: the call site
+    ;; copies the template and stores the arguments
+    (when (> (length ctor) 13)
+      (let* ((ap (svref ctor 9)) (n (length (svref ctor 2))) (locs (make-array n :initial-element nil)))
+        (do ((i 0 (+ i 2))) ((>= i (length ap)))
+          (let ((k (svref ap i)))
+            (setf (svref locs k) (if (svref locs k) :many (svref ap (+ i 1))))))
+        (if (and (eql (length (svref ctor 10)) 0) (eql (length (svref ctor 11)) 0)
+                 (every #'fixnump locs))
+            (setf (svref ctor 13) locs (svref ctor 12) (svref ctor 0))
+            (setf (svref ctor 12) -1))))))
 
 (defun %ctor-update (ctor)
   "Recompute CTOR's plan; NIL when the fast path does not apply."
@@ -4723,6 +4738,7 @@ a constant (%CONSTANT-INITFORM-P)."
          ;; the valid initargs then (NIL for a class without initargs)
          (fast (and standard (svref mi 1))))
     (setf (svref ctor 0) *ctor-generation*)
+    (when (> (length ctor) 13) (setf (svref ctor 12) -1))
     (setf (svref ctor 6) (if (and mi (svref mi 6)) class nil))
     (setf (svref ctor 7)
           (and mi (not (member :allow-other-keys keys))
@@ -4875,13 +4891,29 @@ a constant (%CONSTANT-INITFORM-P)."
         ((and (consp class) (eq (car class) 'quote) (consp (cdr class)) (symbolp (cadr class)))
          (let ((keys nil) (vals nil))
            (do ((l initargs (cddr l))) ((null l)) (push (car l) keys) (push (cadr l) vals))
-           `(,(case (length vals)
-                (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
-                (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (5 '%ctor-make-instance-5)
-                (6 '%ctor-make-instance-6) (7 '%ctor-make-instance-7) (8 '%ctor-make-instance-8)
-                (t '%ctor-make-instance))
-             (load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))
-             ,@(reverse vals))))
+           (let ((entry (case (length vals)
+                          (0 '%ctor-make-instance-0) (1 '%ctor-make-instance-1) (2 '%ctor-make-instance-2)
+                          (3 '%ctor-make-instance-3) (4 '%ctor-make-instance-4) (5 '%ctor-make-instance-5)
+                          (6 '%ctor-make-instance-6) (7 '%ctor-make-instance-7) (8 '%ctor-make-instance-8)
+                          (t '%ctor-make-instance)))
+                 (ctor `(load-time-value (%make-ctor ',(cadr class) ',(reverse keys)))))
+             (if (> (length vals) 6)
+                 `(,entry ,ctor ,@(reverse vals))
+                 ;; The instance is made here when it is a copy of the
+                 ;; constructor's template with the arguments stored (no
+                 ;; initform or default initarg to evaluate, only the
+                 ;; standard methods: %CTOR-PLANS says so, slot 12): no
+                 ;; call, no loop over the plans.  A circle of one slot
+                 ;; 55 -> 25 ms for five million (SBCL 41).
+                 (let ((c (gensym "CTOR")) (sl (gensym "SLOTS")) (locs (gensym "LOCS"))
+                       (vars (mapcar (lambda (v) (declare (ignore v)) (gensym "V")) vals)) (i -1))
+                   `(let* ((,c ,ctor) ,@(mapcar #'list vars (reverse vals)))
+                      (if (and (eq (%svref ,c 12) *ctor-generation*) (null *track-instance-hook*))
+                          (let ((,sl (%copy-simple-vector (%svref ,c 8))) (,locs (%svref ,c 13)))
+                            (declare (ignorable ,locs))
+                            ,@(mapcar (lambda (v) (setq i (+ i 1)) `(%set-svref ,sl (%svref ,locs ,i) ,v)) vars)
+                            (%make-instance (%svref ,c 3) ,sl))
+                          (,entry ,c ,@vars))))))))
         ;; (a constant that is not a quoted symbol: a class object, an error)
         ((or (and (atom class) (or (not (symbolp class)) (constantp class)))
              (and (consp class) (eq (car class) 'quote))
