@@ -607,7 +607,7 @@ module ENTRY of the library (its own by default; see JS:EXPORT)."
            (js:object "text" text "entry" (or entry :undefined)))
   nil)
 
-(defun js:library-options (&key lazy (output :output) (extension ".mjs") embed)
+(defun js:library-options (&key lazy (output :output) (extension ".mjs") embed compression)
   "How the library is loaded by the modules bin/clysm library writes.  With
 LAZY, importing a module of the library does not load it: the first call of
 an export, or the first use of one of its classes, does, in the calling
@@ -621,8 +621,14 @@ NAME.d.mts).  With EMBED, the modules hold the module's bytes, and load it
 with the host of host/web/lib.mjs, which imports no module of Node.js: a
 library for a page, a browser's worker or Electron's renderer (and Node.js
 too), which has no files, processes or command line.  :OUTPUT :ERROR is then
-console.error."
+console.error.  COMPRESSION may be :GZIP with EMBED: the bytes are compressed
+before encoding, and decompressed synchronously by the bundled web loader."
+  (unless (member compression '(nil :gzip))
+    (error "JS:LIBRARY-OPTIONS: COMPRESSION is NIL or :GZIP"))
+  (when (and compression (not embed))
+    (error "JS:LIBRARY-OPTIONS: COMPRESSION requires EMBED"))
   (let ((options (js:get (%js-library) "options")))
+    (js:set options "compression" (if compression "gzip" :null))
     (js:set options "embed" (if embed t :false))
     (js:set options "extension" extension)
     (js:set options "lazy" (if lazy t :false))
