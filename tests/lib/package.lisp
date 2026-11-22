@@ -48,6 +48,10 @@ export type Places = Place[];" :entry "places")
   static of(n: number): Counter;
 }"))
 (js:export "Counter" *counter*)
+;; the same class under another name, and exports named as the helpers of a lazy library's modules
+(js:export "Tally" *counter*)
+(js:export "library" (lambda () "a function named library") :type "() => string")
+(js:export "classes" "a constant named classes" :type "string")
 
 ;; A subclass of a class of the library.
 (js:export "LineError"
