@@ -953,6 +953,15 @@ and the host's identity hash for the nodes that lead to no variable.
 (The types that are only kinds, no range and no class, are one object for
 each set of kinds, `kinds-ty`: 50 MB less allocated, 3187 -> 3123 ms.)
 
+All of the above against the tree before it (`tools/bench-libs.sh`, the
+best of three, twice, in turn on one slot, 2026-11-23): the compiler in
+Wasm 4025, 3751 -> 2713, 2543 ms, on SBCL 2519, 2500 -> 2181, 2159,
+`l-selfhost-compile` 1.60, 1.50 -> 1.24, 1.18; the other items of
+`bench/libs.lisp` and of `tools/bench-startup.sh` as before. First builds
+in the image (the best of six): cl-ppcre 1503 -> 1391 ms, alexandria 693
+-> 681 (the modules made in the image are not encoded early). The REPL
+image 8875825 -> 8930905 octets with all of it.
+
 **Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
 `case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the
 dispatch of `map-subnodes`, `ti-1` and `emit-instr` on the kind of a node
