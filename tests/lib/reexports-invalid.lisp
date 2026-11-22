@@ -1,0 +1,10 @@
+;; The generator loads this module afresh for each malformed declaration.
+(let ((mode (js:get (js:get (js:global "process") "env") "CLYSM_REEXPORT_TEST")))
+  (js:export "own" 1 :entry "public")
+  (js:reexport (cond ((equal mode "duplicate") "own")
+                    ((equal mode "invalid-name") "not a name")
+                    ((equal mode "reserved") "__clysm_library")
+                    ((equal mode "empty") #())
+                    (t "next"))
+               :from (if (equal mode "invalid-from") 17 "./implementation.js")
+               :entry (if (equal mode "invalid-entry") "../escape" "public")))
