@@ -10,6 +10,10 @@ node tests/lib/run.mjs build/lib-test/demo.mjs || exit 1
 bin/clysm library --shake-symbols tests/lib/symbols.lisp -o build/lib-test/symbols.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/symbols.mjs build/lib-test/symbols.mjs || exit 1
+# a package whose original symbol table becomes empty
+bin/clysm library --shake-symbols tests/lib/empty-symbols.lisp -o build/lib-test/empty-symbols.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/empty-symbols.mjs build/lib-test/empty-symbols.mjs || exit 1
 # the messages of unhandled errors written without the printer (--shake):
 # those of tests/lib/messages.expected, which a module with the printer writes
 bin/clysm library --shake tests/lib/messages.lisp -o build/lib-test/messages.wasm > build/lib-test.log 2>&1 \
