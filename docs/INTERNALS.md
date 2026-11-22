@@ -2186,6 +2186,19 @@ JavaScript written for it (`tests/lib/package.lisp`):
   the value thrown to JavaScript is unchanged. Without `:message` the
   fallback remains the Lisp printed representation of the value. Direct
   calls with `:message` can be shaken without retaining the Lisp printer.
+- `clysm library --shake --preinit-through definitions.lisp definitions.lisp exports.lisp -o lib.wasm`
+  initializes the runtime and the application's definitions through the named
+  source file during compilation. Their heap is embedded in the module;
+  later files still run each time the module loads. This lets the shaker
+  remove helpers used only to build packages, classes, and initial data.
+  This option requires the SBCL compiler and `--shake`. The boundary must
+  name one of the input source files. Initialization before it should be
+  deterministic and independent of the host: its side effects happen at
+  build time and may happen more than once as the shaker computes reachability.
+  Put `JS:EXPORT`, `JS:LIBRARY-OPTIONS`, `JS:DECLARE-TYPES`, and other host
+  interactions after the boundary. JavaScript objects cannot be saved in
+  the heap. Without this option, application initialization remains at
+  module load time.
 - `:raw t` (of `JS:EXPORT` and `JS:DEFINE-CLASS`) gives a function its
   arguments as JavaScript has them, not converted by `JS:TO-LISP`: values
   of JavaScript whose `JS:TYPEOF` tells `undefined`, `null` and `false`

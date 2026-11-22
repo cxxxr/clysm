@@ -82,6 +82,31 @@ node tests/lib/print-only.mjs build/lib-test/print-only.mjs || exit 1
 bin/clysm library --shake tests/lib/throw-message.lisp -o build/lib-test/throw-message.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/throw-message.mjs build/lib-test/throw-message.mjs || exit 1
+# application definitions initialized during compilation, with exports at load time
+bin/clysm library --shake --preinit-through tests/lib/preinit-definitions.lisp \
+  tests/lib/preinit-definitions.lisp tests/lib/preinit-exports.lisp \
+  -o build/lib-test/preinit.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/preinit.mjs build/lib-test/preinit.mjs > build/lib-test/preinit.out 2>&1 || { cat build/lib-test/preinit.out; exit 1; }
+if [ "$(cat build/lib-test/preinit.out)" != 'lib: preinitialized definitions ok' ]; then
+  echo 'lib: preinitialized forms ran again at load time'; cat build/lib-test/preinit.out; exit 1
+fi
+cat build/lib-test/preinit.out
+if bin/clysm compile --preinit-through tests/lib/preinit-definitions.lisp \
+  tests/lib/preinit-definitions.lisp -o build/lib-test/preinit-bad.wasm > build/lib-test.log 2>&1; then
+  echo 'lib: preinitialization without --shake was accepted'; exit 1
+fi
+if bin/clysm compile --shake --preinit-through tests/lib/preinit-exports.lisp \
+  tests/lib/preinit-definitions.lisp -o build/lib-test/preinit-bad.wasm > build/lib-test.log 2>&1; then
+  echo 'lib: a preinitialization boundary outside the input files was accepted'; exit 1
+fi
+# Explicit preinitialization must fail, rather than defer it to module load,
+# when the subprocess that builds its heap cannot run.
+if NODE=/bin/false bin/clysm compile --shake --preinit-through tests/lib/preinit-definitions.lisp \
+  tests/lib/preinit-definitions.lisp tests/lib/preinit-exports.lisp \
+  -o build/lib-test/preinit-bad.wasm > build/lib-test.log 2>&1; then
+  echo 'lib: failed explicit preinitialization silently fell back'; exit 1
+fi
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
