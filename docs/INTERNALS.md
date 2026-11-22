@@ -3982,7 +3982,10 @@ What makes the code fast:
   a box and a bignum); a heap image keeps its form (sign, limbs, value),
   read into either type (`:make-big`). A list of 300 000 squares made
   and summed (`f-sq-list` of the probes): 109 -> 61 ms; `f-generators`
-  0.93.
+  0.93. Slower with it: `b-ratio` (sums of ratios of bignums), 1.12 times
+  its time while `%gcd-big`'s helpers (`:int64-op`, `:int-neg`,
+  `:int-limbs`, `:integerp`, `%bignump`) went through the four helpers
+  above, 1.07 with the two types tested in them; the rest was not found.
 * **A sum stepped by a boxed integer** (2026-11-23). The step of an
   accumulator (above) took its helper when the value was not a fixnum; a
   box is now added inline after the fixnum's tests (`ref.test $ibox`, its
