@@ -635,6 +635,18 @@ of the squares is zero, subnormal or not finite, or the result not a single)."
                    (typed-store-code node nil))
                   ((eq name 'clysm-sys::%replace) (replace-copy-code node))
                   ;; a character known to be one: stored without the check
+                  ;; the character (CODE-CHAR fixnum): its code is stored as
+                  ;; it is (no character is made of it and taken apart again;
+                  ;; the value, seldom used, is made after the store)
+                  ((and (eq name 'clysm-sys::%set-schar) (= (length args) 3)
+                        (let ((v (third args)))
+                          (and (eq (car v) :prim) (eq (node-op-name v) 'code-char)
+                               (= (length (cddr v)) 1) (fx-arg-p (third v)))))
+                   (let ((tmp (new-local :i32)))
+                     `(,@(cg (first args)) (:ref.cast :string)
+                       ,@(if (fx-arg-p (second args)) (cg-rep (second args) :i32) (idx-code (cg (second args))))
+                       ,@(cg-rep (third (third args)) :i32) (:local.tee ,tmp) (:array.set :string)
+                       (:local.get ,tmp) (:i32.const ,+char-tag+) :i32.add :ref.i31)))
                   ((and (eq name 'clysm-sys::%set-schar) (= (length args) 3)
                         (ty-only-p (node-ty (third args)) +k-char+))
                    (let ((tmp (new-local)))
