@@ -29,6 +29,28 @@ node tests/lib/clos.mjs build/lib-test/clos.mjs || exit 1
 bin/clysm library --shake tests/lib/nodispatch.lisp -o build/lib-test/nodispatch.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/nodispatch.mjs build/lib-test/nodispatch.mjs || exit 1
+# what a package of JavaScript exports, as one module and as a lazy one (tests/lib/package.lisp)
+bin/clysm library --shake tests/lib/package.lisp -o build/lib-test/package/package.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/package.mjs build/lib-test/package eager > build/lib-test/eager.out 2> build/lib-test/eager.err || { cat build/lib-test/eager.out build/lib-test/eager.err; exit 1; }
+cat build/lib-test/eager.out
+if grep -q 'to the standard error' build/lib-test/eager.err || ! grep -qx 'to the standard error' build/lib-test/eager.out; then
+  echo "lib: what the library writes to its standard output is not on the standard output"; exit 1
+fi
+bin/clysm library --shake tests/lib/to-error.lisp tests/lib/package.lisp -o build/lib-test/to-error/package.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/package.mjs build/lib-test/to-error eager > build/lib-test/to-error.out 2> build/lib-test/to-error.err || { cat build/lib-test/to-error.out build/lib-test/to-error.err; exit 1; }
+if ! grep -qx 'to the standard error' build/lib-test/to-error.err || grep -q 'to the standard error' build/lib-test/to-error.out; then
+  echo "lib: what the library of :output :error writes to its standard output is not on the standard error output"; exit 1
+fi
+bin/clysm library --shake tests/lib/lazy.lisp tests/lib/package.lisp -o build/lib-test/lazy/package.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+echo '{ "type": "module" }' > build/lib-test/lazy/package.json
+node tests/lib/package.mjs build/lib-test/lazy lazy > build/lib-test/lazy.out 2> build/lib-test/lazy.err || { cat build/lib-test/lazy.out build/lib-test/lazy.err; exit 1; }
+cat build/lib-test/lazy.out
+if ! grep -qx 'to the standard error' build/lib-test/lazy.err || grep -q 'to the standard error' build/lib-test/lazy.out; then
+  echo "lib: what the lazy library writes to its standard output is not on the standard error output"; exit 1
+fi
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

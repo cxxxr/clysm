@@ -10,7 +10,8 @@
            "TO-LISP" "TO-JS" "ARRAY" "OBJECT" "JS-VALUE-P"
            "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P" "ASYNC" "AWAIT-ALL"
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
-           "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"))
+           "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
+           "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -92,10 +93,15 @@ vector OCTETS from START to END."
 (define-condition js:js-error (error)
   ((value :initarg :value :reader js:js-error-value)
    (name :initarg :name :initform nil :reader js:js-error-name)
-   (message :initarg :message :initform "" :reader js:js-error-message))
+   (message :initarg :message :initform "" :reader js:js-error-message)
+   ;; what was thrown, as JavaScript has it (not converted: undefined, null
+   ;; and false are told apart), or NIL when not known
+   (thrown :initarg :thrown :initform nil))
   (:documentation "A JavaScript exception thrown by a function called through
-the JS package, or the rejection of a promise awaited by JS:AWAIT.  VALUE is
-what was thrown (usually an Error), NAME and MESSAGE its name and message."))
+the JS package, the rejection of a promise awaited by JS:AWAIT, or the value
+given to JS:THROW.  VALUE is what was thrown (usually an Error), NAME and
+MESSAGE its name and message.  When no Lisp handler takes it, the call from
+JavaScript that it leaves throws what was thrown, as it was."))
 (%define-condition-message js:js-error (c)
   "JavaScript error: ~@[~A: ~]~A" (%condition-slot c 'name) (%condition-slot c 'message))
 
@@ -113,6 +119,7 @@ called from JavaScript), otherwise a JS:JS-ERROR."
               (error (%js-unwrap-lisp condition))
               (error 'js:js-error
                      :value (js:to-lisp value)
+                     :thrown value
                      :name (and (member (%js-typeof value) '(5 6))
                                 (let ((name (%js-get value (%js-string "name"))))
                                   (and (eql (%js-typeof name) 4) (js:to-lisp name))))
@@ -263,6 +270,10 @@ stack, the binding stack and depth outside it, and its own depth while it waits.
 of the place where it was signalled), in the object that tells the host to throw it.")
 
 (defun %js-failure (condition)
+  ;; (a JavaScript exception that went through Lisp leaves it as it came)
+  (let ((thrown (and (typep condition 'js:js-error) (%condition-slot condition 'thrown))))
+    (when thrown
+      (return-from %js-failure (js:object "__clysm_failure__" thrown))))
   (js:funcall *js-make-failure*
               (%condition-message condition)
               (%condition-type-string condition)
@@ -270,12 +281,27 @@ of the place where it was signalled), in the object that tells the host to throw
               (%js-host 3)
               (%js-host 4)))
 
+(defvar *js-raw-functions* nil
+  "The functions given their arguments as JavaScript has them (JS:EXPORT's
+:RAW): an EQ table of them, made with the first.")
+
+(defun %js-raw-function (function)
+  "A function of its own that calls FUNCTION, and that JavaScript gives its
+arguments unconverted (FUNCTION itself, exported or given elsewhere, is not)."
+  (let ((raw (lambda (&rest arguments) (apply function arguments))))
+    (setf (gethash raw (or *js-raw-functions*
+                           (setq *js-raw-functions* (make-hash-table :test 'eq))))
+          t)
+    raw))
+
 (defun %js-run (closure args async)
   (let* ((f (%js-unwrap-lisp closure))
+         (raw (and *js-raw-functions* (gethash f *js-raw-functions*)))
          (n (js:to-lisp (%js-get args (%js-string "length"))))
          (lisp-args (let ((r nil))
                       (dotimes (i n (nreverse r))
-                        (push (js:to-lisp (%js-get args (%js-number (%to-double i)))) r))))
+                        (let ((a (%js-get args (%js-number (%to-double i)))))
+                          (push (if raw a (js:to-lisp a)) r)))))
          (*js-running* t)
          (*js-can-await* async))
     (block run
@@ -451,18 +477,122 @@ JS:AWAIT (so it is called where JS:CAN-AWAIT-P is true)."
                     (js:set (js:global) "__clysm_exports" o)
                     o))))))
 
-(defun js:export (name function &key async type)
-  "Export FUNCTION to JavaScript as NAME (a string) in the exports of the
-library (host/lib.mjs).  JavaScript calls it with its arguments converted by
-JS:TO-LISP and gets its value converted by JS:TO-JS; an error that it does
-not handle is thrown as a JavaScript Error.  With ASYNC, it returns a promise
-and may wait with JS:AWAIT.  TYPE is its TypeScript type for the generated
-.d.ts (by default (...args: any[]) => any, or a Promise of any)."
-  (let ((f (if async (js:async-function function) (js:to-js function))))
-    (when type (js:set f "clysmType" type))
-    (when async (js:set f "clysmAsync" t))
-    (js:set (%js-exports) name f)
+(%defvar-host *js-library* nil
+  "What a library says of itself for the files bin/clysm library writes: its
+exports, the types they name, its classes and how it is loaded.")
+
+(defun %js-library ()
+  (or *js-library*
+      (let ((o (%js-get (%js-global) (%js-string "__clysm_library"))))
+        (setq *js-library*
+              (if (eql (%js-typeof o) 5)
+                  o
+                  ;; not loaded as a library: the same in an object of its own
+                  (let ((o (js:object "exports" (js:object) "declarations" (js:array)
+                                      "classes" (js:object) "options" (js:object))))
+                    (js:set (js:global) "__clysm_library" o)
+                    o))))))
+
+(defun js:export (name value &key async type entry raw)
+  "Export VALUE to JavaScript as NAME (a string) in the exports of the
+library (host/lib.mjs).  A function is called with its arguments converted
+by JS:TO-LISP and gives its value converted by JS:TO-JS; an error that it
+does not handle is thrown as a JavaScript Error (a JS:JS-ERROR as what was
+thrown).  With ASYNC, it returns a promise and may wait with JS:AWAIT.
+Another value is converted by JS:TO-JS once: a constant, or a class of
+JS:DEFINE-CLASS.  TYPE is its TypeScript type for the generated .d.ts (by
+default (...args: any[]) => any, or a Promise of any, for a function).
+ENTRY names the module of the library that exports it (ENTRY.mjs beside
+NAME.mjs), by default the library's own (NAME.mjs).  With RAW, a function
+is given its arguments as JavaScript has them, not converted: values of
+JavaScript (JS:JS-VALUE-P) for which JS:TYPEOF tells undefined, null and
+false apart, and a long string that Lisp reads a part of (JS:CALL of its
+methods) without having it copied; JS:TO-LISP converts one."
+  (when (and raw (functionp value)) (setq value (%js-raw-function value)))
+  (let ((v (cond (async (js:async-function value))
+                 (t (js:to-js value)))))
+    (when (and type (functionp value)) (js:set v "clysmType" type))
+    (when async (js:set v "clysmAsync" t))
+    (js:set (js:get (%js-library) "exports") name
+            (js:object "type" (or type :undefined) "async" (if async t :false)
+                       "entry" (or entry :undefined)))
+    (js:set (%js-exports) name v)
     name))
+
+(defun js:throw (value)
+  "Throw the JavaScript VALUE (an Error, usually) from the call of an export
+or of a callback that Lisp runs: the call of JavaScript gets it as it is.  In
+Lisp it is a JS:JS-ERROR, which a handler can take."
+  (let* ((value (js:to-js value))
+         (object (member (%js-typeof value) '(5 6)))
+         (name (and object (js:get value "name")))
+         (message (and object (js:get value "message"))))
+    (error 'js:js-error :value (js:to-lisp value) :thrown value
+                        :name (and (stringp name) name)
+                        :message (if (stringp message) message (princ-to-string (js:to-lisp value))))))
+
+(defun js:declare-types (text &key entry)
+  "Add TEXT, TypeScript declarations (interfaces, types), to the .d.ts of the
+module ENTRY of the library (its own by default; see JS:EXPORT)."
+  (js:call (js:get (%js-library) "declarations") "push"
+           (js:object "text" text "entry" (or entry :undefined)))
+  nil)
+
+(defun js:library-options (&key lazy (output :output) (extension ".mjs"))
+  "How the library is loaded by the modules bin/clysm library writes.  With
+LAZY, importing a module of the library does not load it: the first call of
+an export, or the first use of one of its classes, does, in the calling
+thread and at once (the constants are written into the modules).  OUTPUT is
+where what Lisp writes to the standard output goes: :OUTPUT (the standard
+output of the process) or :ERROR (its standard error, for a program whose
+standard output is a protocol).  EXTENSION is that of the modules: \".js\"
+for a package whose package.json says \"type\": \"module\", where TypeScript
+finds NAME.d.ts for an import of NAME.js (for NAME.mjs it looks for
+NAME.d.mts)."
+  (let ((options (js:get (%js-library) "options")))
+    (js:set options "extension" extension)
+    (js:set options "lazy" (if lazy t :false))
+    (js:set options "output" (string-downcase (symbol-name output))))
+  nil)
+
+(defun %js-plist-object (plist what)
+  "A JavaScript object of the names and Lisp functions of PLIST, for WHAT."
+  (let ((o (js:object)))
+    (do ((l plist (cddr l))) ((null l) o)
+      (unless (and (stringp (car l)) (functionp (cadr l)))
+        (error "~A: ~S is not a name (a string) and a function" what (list (car l) (cadr l))))
+      (js:set o (car l) (cadr l)))))
+
+(defun js:define-class (name &key extends super-arguments constructor methods getters
+                                   static type raw)
+  "A JavaScript class NAME (a string), whose constructor and methods are Lisp
+functions, and which a library exports with JS:EXPORT.  EXTENDS names the
+class it extends: a global (\"Error\") or a class of JS:DEFINE-CLASS
+defined before.  SUPER-ARGUMENTS are the positions of the arguments of the
+constructor given to the constructor of that class (for an Error, the one of
+its message).  CONSTRUCTOR is called with the new object and the arguments,
+after it.  METHODS and GETTERS are plists of names and functions called with
+the object and the arguments; STATIC a plist of the class's own functions.
+TYPE is its TypeScript declaration for the .d.ts (\"declare class NAME
+...\"; by default one that says nothing of its members).  With RAW, the
+functions are given their arguments unconverted (see JS:EXPORT)."
+  (when raw
+    (flet ((raw (f) (if (functionp f) (%js-raw-function f) f))
+           (raw-plist (plist) (loop for (n f) on plist by #'cddr collect n collect (if (functionp f) (%js-raw-function f) f))))
+      (setq constructor (raw constructor)
+            methods (raw-plist methods) getters (raw-plist getters) static (raw-plist static))))
+  (let ((spec (js:object "name" name "extends" (or extends :null)
+                         "superArguments" (if super-arguments (coerce super-arguments 'vector) :null)
+                         "methods" (coerce (loop for (n) on methods by #'cddr collect n) 'vector)
+                         "getters" (coerce (loop for (n) on getters by #'cddr collect n) 'vector)
+                         "static" (coerce (loop for (n) on static by #'cddr collect n) 'vector)
+                         "type" (or type :undefined)))
+        (implementation (js:object "init" (or constructor :undefined)
+                                   "methods" (%js-plist-object methods "JS:DEFINE-CLASS's methods")
+                                   "getters" (%js-plist-object getters "JS:DEFINE-CLASS's getters")
+                                   "static" (%js-plist-object static "JS:DEFINE-CLASS's static functions"))))
+    (js:set (js:get (%js-library) "classes") name spec)
+    (js:funcall (js:global "__clysm_define_class") spec implementation (%js-library))))
 
 (defun %foreign-type-name (x) (js:typeof x))
 
