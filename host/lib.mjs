@@ -23,6 +23,8 @@
 //   import    the function that (js:import "specifier") calls; by default
 //             the specifier is resolved from the working directory
 //   fs        the file system (by default node:fs)
+//   location  the URL the module is from, which JS:LIBRARY-LOCATION gives (by
+//             default that of SOURCE, when it is a path or a URL)
 //   classes   the classes of JS:DEFINE-CLASS, by name, that the modules of a
 //             lazy library made before loading it (they get their functions)
 //   debug     the bytes of the names and places of the module's functions
@@ -154,7 +156,8 @@ function instantiate(module, options, debug = null) {
   const exportsObject = {};
   // what the library says of itself (JS:EXPORT, JS:DEFINE-CLASS, JS:DECLARE-TYPES,
   // JS:LIBRARY-OPTIONS), and the classes its modules made before it was loaded
-  const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {} };
+  const library = { exports: {}, declarations: [], classes: {}, options: {}, made: options.classes ?? {},
+                    location: options.location ?? null };
   const saved = globalThis.__clysm_exports, savedLibrary = globalThis.__clysm_library;
   globalThis.__clysm_exports = exportsObject;
   globalThis.__clysm_library = library;
@@ -197,7 +200,13 @@ export async function load(source, options = {}) {
   const module = source instanceof WebAssembly.Module
     ? source
     : await WebAssembly.compile(await bytesOf(source));
-  return instantiate(module, options, debugFileOf(source));
+  return instantiate(module, withLocation(source, options), debugFileOf(source));
+}
+
+// (the file the module was read from, as a file: URL: JS:LIBRARY-LOCATION)
+function withLocation(source, options) {
+  if (options.location !== undefined || !(source instanceof URL || typeof source === 'string')) return options;
+  return { ...options, location: (source instanceof URL ? source : pathToFileURL(path.resolve(source))).href };
 }
 
 // The same, synchronously (for CommonJS callers).
@@ -209,5 +218,5 @@ export function loadSync(source, options = {}) {
       : source;
     module = new WebAssembly.Module(bytes);
   }
-  return instantiate(module, options, debugFileOf(source));
+  return instantiate(module, withLocation(source, options), debugFileOf(source));
 }

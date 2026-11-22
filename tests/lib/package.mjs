@@ -151,6 +151,8 @@ assert.equal(await lib.awaitLisp(), 42);
 assert.equal(await lib.awaitLispObject(), true);
 assert.equal(lib.thrownKind(() => { throw undefined; }), 'undefined');
 assert.equal(lib.thrownKind(() => { throw false; }), 'boolean');
+// where the module was read from (an embedded one, given as bytes, has no place)
+assert.equal(lib.location(), embedded ? null : pathToFileURL(path.join(dir, 'package.wasm')).href);
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');
 if (embedded) {

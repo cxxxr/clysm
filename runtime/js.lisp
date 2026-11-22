@@ -12,7 +12,8 @@
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
            "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"
-           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW" "JS-ERROR-THROWN"))
+           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION" "AWAIT-RAW" "JS-ERROR-THROWN"
+           "LIBRARY-LOCATION"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -565,6 +566,14 @@ Lisp it is a JS:JS-ERROR, which a handler can take."
     (error 'js:js-error :value (js:to-lisp value) :thrown value
                         :name (and (stringp name) name)
                         :message (if (stringp message) message (princ-to-string (js:to-lisp value))))))
+
+(defun js:library-location ()
+  "The URL (a string) of the file the library's module was loaded from
+\(host/lib.mjs: a path or a URL, as a file: URL), or NIL when it was given as
+bytes or a module (an embedded library) and no `location` with them.  What
+ships beside the module is found from it."
+  (let ((location (js:get (%js-library) "location")))
+    (and (stringp location) location)))
 
 (defun js:declare-types (text &key entry)
   "Add TEXT, TypeScript declarations (interfaces, types), to the .d.ts of the
