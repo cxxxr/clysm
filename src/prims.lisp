@@ -326,36 +326,80 @@ FAIL); NIL when the tree is not of that kind (*FUSED-REST* is then spent)."
                                  t)
                          nil)))))))
 
+(defun fused-i32-range (node &optional top)
+  "Bounds of an addition/subtraction tree when its leaves are fixnums,
+or NIL if an intermediate result could overflow signed i32."
+  (cond ((and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+         (multiple-value-bind (op a b) (fused-operands node)
+           (when (member op '(:add :sub))
+             (let ((ra (fused-i32-range a)) (rb (fused-i32-range b)))
+               (when (and ra rb)
+                 (let ((lo (if (eq op :add) (+ (car ra) (car rb)) (- (car ra) (cdr rb))))
+                       (hi (if (eq op :add) (+ (cdr ra) (cdr rb)) (- (cdr ra) (car rb)))))
+                   (when (and (<= (- (expt 2 31)) lo) (< hi (expt 2 31)))
+                     (cons lo hi))))))))
+        ((eq (car node) :const)
+         (let ((v (second node)))
+           (when (and (integerp v) (<= (- +char-tag+) v (1- +char-tag+))) (cons v v))))
+        (t (cons (- +char-tag+) (1- +char-tag+)))))
+
+(defun fused-i32-code (node fail &optional top)
+  "An i32 tree proved bounded by FUSED-I32-RANGE, checking its eqref leaves."
+  (if (and (fusable-op-node-p node) (or top (not (ty-int64-p (node-ty node)))))
+      (multiple-value-bind (op a b) (fused-operands node)
+        (let ((ca (fused-i32-code a fail)) (cb (fused-i32-code b fail)))
+          `(,@ca ,@cb ,(ecase op (:add :i32.add) (:sub :i32.sub)))))
+      (destructuring-bind (leaf kind &rest locs) (pop *fused-rest*)
+        (ecase kind
+          (:const `((:i32.const ,(second leaf))))
+          (:eqref
+           (let ((x (new-local :i32)) (e (first locs)))
+             `((:local.get ,e) (:ref.test :i31) :i32.eqz (:br_if ,fail)
+               (:local.get ,e) (:ref.cast! :i31) :i31.get_s (:local.tee ,x)
+               (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u
+               (:br_if ,fail) (:local.get ,x))))))))
+
 (defun fused-code (node rep &optional target)
-  "NODE (a fused tree) computed in i64 and left as REP (:eqref, or :i32 when
-its type is a fixnum), the generic code when that fails.  When its operands
+  "NODE (a fused tree) computed in i64, or i32 for bounded sums of fixnums,
+and left as REP (:eqref, or :i32 when its type is a fixnum); the generic
+code when that fails. When its operands
 may be doubles (operands of unknown type, with a double among the operands
 of each operation), the tree is tried in f64 too, before the generic code.
 With TARGET, (B . F) the locals of an unboxed double variable: nothing is
 left, the value is stored there."
   (let ((done (gensym "FUSED")) (fail (gensym "SLOW")) (fail2 (gensym "SLOWF")) (r (new-local :i64)))
     (multiple-value-bind (leaves i64-code generic recs) (fused-parts node)
-      `(,@leaves
-        (:block ,done ,(if target nil rep)
-          (:block ,fail nil
-            ,@(funcall i64-code fail)
-            ,@(if (or (eq rep :i32) (ty-fixnum-p (node-ty node)))
-                  `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31)))
-                  `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
-                    (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int)))))
+      (let ((small (and (every (lambda (rec) (member (second rec) '(:eqref :const))) recs)
+                        (fused-i32-range node t))))
+        `(,@leaves
+          (:block ,done ,(if target nil rep)
+            (:block ,fail nil
+              ,@(if small (let ((*fused-rest* recs)) (fused-i32-code node fail t))
+                    (funcall i64-code fail))
+              ,@(cond (small (unless (eq rep :i32)
+                               (if (ty-fixnum-p (node-ty node)) '(:ref.i31)
+                                   (let ((v (new-local :i32)))
+                                     `((:local.tee ,v) (:i32.const ,+char-tag+) :i32.add
+                                       (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
+                                       (:if nil :eqref ((:local.get ,v) :ref.i31)
+                                            ((:local.get ,v) (:call :box-i32))))))))
+                      ((or (eq rep :i32) (ty-fixnum-p (node-ty node)))
+                       `(:i32.wrap_i64 ,@(when (eq rep :eqref) '(:ref.i31))))
+                      (t `((:local.tee ,r) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
+                           (:if nil :eqref ((:local.get ,r) :i32.wrap_i64 :ref.i31) ((:local.get ,r) (:call :i64-int))))))
+              ,@(when target `((:local.set ,(car target))))
+              (:br ,done))
+            ,@(when (eq rep :eqref)
+                (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
+                  (when code
+                    `((:block ,fail2 nil ,@code
+                        ,@(if target
+                              `((:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)))
+                              '((:struct.new :double)))
+                        (:br ,done))))))
+            ,@generic
             ,@(when target `((:local.set ,(car target))))
-            (:br ,done))
-          ,@(when (eq rep :eqref)
-              (let ((code (let ((*fused-rest* recs)) (fused-f64-code node fail2 t))))
-                (when code
-                  `((:block ,fail2 nil ,@code
-                      ,@(if target
-                            `((:local.set ,(cdr target)) (:ref.null :eq) (:local.set ,(car target)))
-                            '((:struct.new :double)))
-                      (:br ,done))))))
-          ,@generic
-          ,@(when target `((:local.set ,(car target))))
-          ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node))))))))
+            ,@(when (eq rep :i32) (unbox-rep-code :i32 (node-ty node)))))))))
 
 ;;; A tree known to give an integer within 64 bits wanted as an i64 (a
 ;;; LOGAND with a mask, a MOD by a constant) whose operands are not all of
