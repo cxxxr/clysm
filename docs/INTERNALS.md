@@ -950,6 +950,8 @@ are the whole program's. Both hosts gain, so the ratio moves less than
 the times: 1.26 -> 1.17. What is the compiler's own in the remaining
 difference: the scavenges (2.4 GB allocated, 240 MB alive at the end),
 and the host's identity hash for the nodes that lead to no variable.
+(The types that are only kinds, no range and no class, are one object for
+each set of kinds, `kinds-ty`: 50 MB less allocated, 3187 -> 3123 ms.)
 
 **Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
 `case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the
