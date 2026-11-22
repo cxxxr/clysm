@@ -279,7 +279,7 @@ Content-Security-Policy forbids."
   (js:get (js:global "__clysm_runtime") name))
 
 (%defvar-host *js-make-failure*
-  (%js-helper "makeFailure")
+  (%js-host 5)
   "Makes the JavaScript Error for a Lisp condition (its stack has the Lisp frames
 of the place where it was signalled), in the object that tells the host to throw it.")
 
@@ -291,9 +291,7 @@ of the place where it was signalled), in the object that tells the host to throw
   (js:funcall *js-make-failure*
               (%condition-message condition)
               (%condition-type-string condition)
-              (%js-wrap-lisp condition)
-              (%js-host 3)
-              (%js-host 4)))
+              (%js-wrap-lisp condition)))
 
 (defvar *js-raw-functions* nil
   "The functions given their arguments as JavaScript has them (JS:EXPORT's

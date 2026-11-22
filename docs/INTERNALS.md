@@ -2036,8 +2036,13 @@ is `LispError`, `lispType` the type of the condition, `lispCondition` the
 condition, and its `stack` begins with the Lisp functions active where the
 condition was signalled (the frames of the Wasm name section, without the
 numbers that tell apart functions of the same name). If Lisp code further
-out called that JavaScript through `js:call`, it gets the original condition
-back, so `handler-case` around it sees the condition itself.
+out in the same Wasm instance called that JavaScript through `js:call`, it
+gets the original condition back, so `handler-case` sees the condition
+itself. Another instance receives a `js:js-error` with the original
+JavaScript Error and message: the condition belongs to its originating
+heap's packages and classes. This also applies to promise rejections and
+to libraries using independently installed copies of the host. Relaying
+the JavaScript Error preserves its identity.
 
 `(js:await promise)` waits until a promise is settled and returns its value
 (a rejection is a Lisp error), suspending the WebAssembly stack with

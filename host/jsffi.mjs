@@ -26,15 +26,8 @@ const jspi = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.
 // runtime/js.lisp) when it signals an error that it does not handle: the
 // call throws the Error in it.
 // (what was thrown may be undefined: JS:THROW of a value of JavaScript)
-function lispResult(r, state) {
-  if (r !== null && typeof r === 'object' && Object.hasOwn(r, '__clysm_failure__')) {
-    const error = r.__clysm_failure__;
-    if (error !== null && (typeof error === 'object' || typeof error === 'function')
-        && Object.hasOwn(error, 'lispCondition') && !errorOwners.has(error)) {
-      errorOwners.set(error, state);
-    }
-    throw error;
-  }
+function lispResult(r) {
+  if (r !== null && typeof r === 'object' && Object.hasOwn(r, '__clysm_failure__')) throw r.__clysm_failure__;
   return r;
 }
 
@@ -121,7 +114,7 @@ const runtimeHelpers = {
   // function, SIGNAL or ERROR and the handler; the Lisp frames are named after
   // their functions (without the numbers that tell apart functions of the same
   // name; a library's functions are named from a file of their own)
-  makeFailure(message, type, condition, mapStack, nameFrames) {
+  makeFailure(message, type, condition, mapStack, nameFrames, owner) {
     const old = Error.stackTraceLimit; Error.stackTraceLimit = 100;
     const error = new Error(message);
     Error.stackTraceLimit = old;
@@ -142,6 +135,8 @@ const runtimeHelpers = {
     error.name = 'LispError';
     error.lispType = type;
     error.lispCondition = condition;
+    // Register only errors created here, never inspect arbitrary thrown values.
+    if (owner) errorOwners.set(error, owner);
     return { __clysm_failure__: error };
   },
   // the head of a compiled file (misc.lisp): "LENGTH-OF-HEAD WASM-SIZE FILE-SIZE", or null
@@ -192,6 +187,10 @@ const runtimeHelpers = {
 globalThis.__clysm_runtime ??= runtimeHelpers;
 
 export function makeJsImports(state) {
+  // Use this host copy's helper even if an older library installed the global
+  // helpers first. The closure identifies the heap without exposing it to Lisp.
+  const makeFailure = (message, type, condition) =>
+    runtimeHelpers.makeFailure(message, type, condition, state.mapStack, state.nameFrames, state);
   let promisingApply = null;
   // strings and octets cross through the memory the module exports
   const memory = () => state.instance.exports.memory;
@@ -260,7 +259,7 @@ export function makeJsImports(state) {
           }
           throw e;
         }
-        return lispResult(r, state);
+        return lispResult(r);
       },
       // (the Lisp side calls it only inside a function of wrap_async_fn)
       await: jspi
@@ -274,7 +273,7 @@ export function makeJsImports(state) {
         const ex = state.instance.exports;
         if (!jspi) {
           const bsp = ex.get_bsp();
-          try { return Promise.resolve(lispResult(ex.lisp_apply_async(closure, args), state)); }
+          try { return Promise.resolve(lispResult(ex.lisp_apply_async(closure, args))); }
           catch (e) {
             if (!(e instanceof WebAssembly.Exception)) ex.lisp_recover(bsp);
             return Promise.reject(e);
@@ -288,20 +287,22 @@ export function makeJsImports(state) {
         let recovered = false;
         const p = promisingApply(closure, args);
         if (ex.get_bstack() !== stack) { ex.lisp_recover(-1); recovered = true; }
-        return p.then((r) => lispResult(r, state), (e) => {
+        return p.then(lispResult, (e) => {
           if (!recovered && !(e instanceof WebAssembly.Exception)) ex.lisp_recover(-1);
           throw e;
         });
       },
       // what the host gives the Lisp side: 0 the modules of (js:module name),
       // 1 the function of (js:import specifier), 2 that of (js:require specifier),
-      // 3 the host's mapStack, 4 its nameFrames (host/common.mjs installSourceMap)
+      // 3 the host's mapStack, 4 its nameFrames (host/common.mjs installSourceMap),
+      // 5 the error factory bound to this instance
       host: (k) => {
         if (k === 0) return (state.jsModules ??= {});
         if (k === 1) return state.importer || ((specifier) => import(specifier));
         if (k === 2) return state.require;
         if (k === 3) return state.mapStack;
         if (k === 4) return state.nameFrames;
+        if (k === 5) return makeFailure;
         return undefined;
       },
       // a string of the code units at the start of the memory: INFO is their
