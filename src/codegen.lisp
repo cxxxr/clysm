@@ -156,14 +156,12 @@ runtime (:STRING-HASH in src/prims.lisp)."
               (new-const-global
                (typecase obj
                  (integer (if (typep obj '(signed-byte 64))
-                              ;; within 64 bits: the value, no limbs (as :i64-int makes them)
-                              `((:i32.const ,(if (minusp obj) 1 0)) (:ref.null :limbs) (:i64.const ,obj)
-                                (:struct.new :bignum))
+                              ;; within 64 bits: the box of the value (as :i64-int makes them)
+                              `((:i64.const ,obj) (:struct.new :ibox))
                               (let ((digits (bignum-digits (abs obj))))
                                 `((:i32.const ,(if (minusp obj) 1 0))
                                   ,@(loop for d in digits collect `(:i32.const ,d))
                                   (:array.new_fixed :limbs ,(length digits))
-                                  (:i64.const 0)
                                   (:struct.new :bignum)))))
                  (string (string-array-code obj))
                  (cons `(,@(const-init-code (car obj)) ,@(const-init-code (cdr obj)) (:struct.new :cons)))
@@ -688,7 +686,7 @@ may be: a bignum beyond 64 bits within the range, an array of another rank)."
                              (t `(,(obj) (:ref.cast :i31) :i31.get_s (:local.tee ,v) (:i32.const ,flo) :i32.ge_s
                                   (:local.get ,v) (:i32.const ,fhi) :i32.le_s :i32.and)))
                       ,(cond ((not big) '((:i32.const 0)))
-                             ((and (null lo) (null hi)) `(,(obj) (:ref.test :bignum)))
+                             ((and (null lo) (null hi)) `(,(obj) (:call :int-box-p)))
                              (t
                               ;; a bignum within 64 bits: its value
                               (let ((w (new-local :i64))
@@ -696,11 +694,11 @@ may be: a bignum beyond 64 bits within the range, an array of another rank)."
                                     (lhi (and hi (< hi (1- (expt 2 63))) hi)))
                                 ;; (beyond 64 bits: within the range unless it is bounded within them)
                                 (when (or (null llo) (null lhi)) (setf exact nil))
-                                `(,(obj) (:ref.test :bignum)
+                                `(,(obj) (:call :int-box-p)
                                   (:if nil :i32
-                                       (,(obj) (:ref.cast :bignum) (:struct.get :bignum 1) :ref.is_null
+                                       (,(obj) (:ref.test :ibox)
                                         (:if nil :i32
-                                             (,(obj) (:ref.cast :bignum) (:struct.get :bignum 2) (:local.set ,w)
+                                             (,(obj) (:ref.cast :ibox) (:struct.get :ibox 0) (:local.set ,w)
                                               ,@(if llo `((:local.get ,w) (:i64.const ,llo) :i64.ge_s) '((:i32.const 1)))
                                               ,@(if lhi `((:local.get ,w) (:i64.const ,lhi) :i64.le_s) '((:i32.const 1)))
                                               :i32.and)

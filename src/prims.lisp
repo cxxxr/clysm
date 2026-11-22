@@ -627,7 +627,7 @@ of them that push a value known to be a fixnum as its i32 followed by
 ;; code of the function that calls it needs nothing for the exits it may make)
 (defprim clysm-sys::%signal-type-error (x type) :value
   `(,@x ,@type ,@(lisp-call-instrs 'clysm-sys::%type-error 2) :unreachable))
-(defprim clysm-sys::%bignump (x) :test `(,@x (:ref.test :bignum)))
+(defprim clysm-sys::%bignump (x) :test `(,@x (:call :int-box-p)))
 ;; (sys::%untyped x): X, of a type the compiler does not know (the test of
 ;; a declared parameter's type, which the declaration would decide)
 (defprim clysm-sys::%untyped (x) :value x)
@@ -651,7 +651,7 @@ of them that push a value known to be a fixnum as its i32 followed by
           (:if nil nil (,@(chain '((6 (:ref.test :string)) (7 (:ref.test :vector))))
                         (:local.get ,o) (:call :type-code) (:br ,done)))
           ,@(chain `((2 (:ref.test :cons)) (3 ,(car (nil-code))) (4 (:ref.test :symbol)) (5 (:ref.test :instance))
-                     (8 (:ref.test :double)) (9 (:ref.test :closure)) (10 (:ref.test :bignum))
+                     (8 (:ref.test :double)) (9 (:ref.test :closure)) (10 (:call :int-box-p))
                      (11 (:ref.test :ratio)) (12 (:ref.test :single))))
           (:local.get ,o) (:call :type-code))
         :ref.i31))))
@@ -678,7 +678,7 @@ of them that push a value known to be a fixnum as its i32 followed by
 (defprim clysm-sys::double-float-p (x) :test `(,@x (:ref.test :double)))
 (defprim clysm-sys::single-float-p (x) :test `(,@x (:ref.test :single)))
 (defprim clysm-sys::ratiop (x) :test `(,@x (:ref.test :ratio)))
-(defprim clysm-sys::bignump (x) :test `(,@x (:ref.test :bignum)))
+(defprim clysm-sys::bignump (x) :test `(,@x (:call :int-box-p)))
 (defprim clysm-sys::%bytes-p (x) :test `(,@x (:ref.test :bytes)))
 (defprim clysm-sys::%bits-p (x) :test `(,@x (:ref.test :bits)))
 (defprim clysm-sys::%f64vec-p (x) :test `(,@x (:ref.test :f64vec)))
@@ -1774,7 +1774,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   '(:local.get 0) '(:ref.test :vector) '(:if nil nil ((:i32.const 7) :return))
   '(:local.get 0) '(:ref.test :double) '(:if nil nil ((:i32.const 8) :return))
   '(:local.get 0) '(:ref.test :closure) '(:if nil nil ((:i32.const 9) :return))
-  '(:local.get 0) '(:ref.test :bignum) '(:if nil nil ((:i32.const 10) :return))
+  '(:local.get 0) '(:call :int-box-p) '(:if nil nil ((:i32.const 10) :return))
   '(:local.get 0) '(:ref.test :ratio) '(:if nil nil ((:i32.const 11) :return))
   '(:local.get 0) '(:ref.test :single) '(:if nil nil ((:i32.const 12) :return))
   '(:local.get 0) '(:ref.test :complex-d) '(:if nil nil ((:i32.const 13) :return))
@@ -1898,19 +1898,20 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
         ((:local.get 1) (:ref.test :double) :i32.eqz (:if nil nil ((:i32.const 0) :return))
          (:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64
          (:local.get 1) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64 :i64.eq :return))
-  '(:local.get 0) '(:ref.test :bignum)
+  '(:local.get 0) '(:ref.test :ibox)
   '(:if nil nil
-        ((:local.get 1) (:ref.test :bignum) :i32.eqz (:if nil nil ((:i32.const 0) :return))
-         ;; integers within 64 bits: the values
-         (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee wa) :i64.eqz :i32.eqz
-         (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee wb) :i64.eqz :i32.eqz :i32.and
-         (:if nil nil ((:local.get wa) (:local.get wb) :i64.eq :return))))
+        (;; integers within 64 bits: the values (a bignum of digits is no such integer)
+         (:local.get 1) (:ref.test :ibox) :i32.eqz (:if nil nil ((:i32.const 0) :return))
+         (:local.get 0) (:ref.cast! :ibox) (:struct.get :ibox 0)
+         (:local.get 1) (:ref.cast! :ibox) (:struct.get :ibox 0) :i64.eq :return))
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil nil ((:local.get 1) (:ref.test :bignum) :i32.eqz (:if nil nil ((:i32.const 0) :return))))
   '(:local.get 0) '(:ref.test :single)
   '(:if nil nil
         ((:local.get 1) (:ref.test :single) :i32.eqz (:if nil nil ((:i32.const 0) :return))
          (:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32
          (:local.get 1) (:ref.cast! :single) (:struct.get :single 0) :i32.reinterpret_f32 :i32.eq :return))
-  '(:local.get 0) '(:ref.test :bignum) '(:local.get 0) '(:ref.test :ratio) :i32.or
+  '(:local.get 0) '(:call :int-box-p) '(:local.get 0) '(:ref.test :ratio) :i32.or
   '(:local.get 0) '(:call :complexp) :i32.or :i32.eqz
   '(:if nil nil ((:i32.const 0) :return))
   '(:local.get 0) '(:local.get 1) (car (lisp-call-instrs 'clysm-sys::%eql-boxed 2))
@@ -1925,29 +1926,27 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   '(:local.get 0) '(:ref.test :i31)
   `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add
                  (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :return))
-  '(:local.get 0) '(:ref.test :bignum)
-  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz
+  '(:local.get 0) '(:call :int-box-p)
+  '(:if nil nil ((:local.get 0) (:call :box-value) :i64.eqz :i32.eqz
                  (:if nil nil ((:i32.const 1) :return))
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null
+                 (:local.get 0) (:call :big-limbs) :ref.is_null
                  (:if nil nil ((:i32.const 1) :return))
                  ;; within 63 bits: one digit, or two with the top bit clear
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len)
+                 (:local.get 0) (:call :big-limbs) (:call :mag-len)
                  (:i32.const 2) :i32.lt_u (:if nil nil ((:i32.const 1) :return))
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len) (:i32.const 2) :i32.eq
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:ref.cast! :limbs) (:i32.const 1)
+                 (:local.get 0) (:call :big-limbs) (:call :mag-len) (:i32.const 2) :i32.eq
+                 (:local.get 0) (:call :big-limbs) (:ref.cast! :limbs) (:i32.const 1)
                  (:array.get :limbs) (:i32.const 0) :i32.ge_s :i32.and :return))
   '(:i32.const 0))
 
 (defhelper :wide-i64 :e-l ((r :i64))
-  ;; the value of an integer within 64 bits (a bignum, or a fixnum), else -2^63
+  ;; the value of an integer within 64 bits (its box, or a fixnum), else -2^63
+  '(:local.get 0) '(:ref.test :ibox)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :ibox) (:struct.get :ibox 0) :return))
   '(:local.get 0) '(:ref.test :bignum)
-  `(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee r) :i64.eqz :i32.eqz
-                 (:if nil nil ((:local.get r) :return))
-                 ;; (more than two digits: beyond 64 bits, or the generic code decides)
-                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null :i32.eqz
-                 (:if nil nil
-                      ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :array.len
-                       (:i32.const 2) :i32.gt_u (:if nil nil ((:i64.const ,(- (expt 2 63))) :return))))))
+  `(:if nil nil (;; (more than two digits: beyond 64 bits, or the generic code decides)
+                 (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :array.len
+                 (:i32.const 2) :i32.gt_u (:if nil nil ((:i64.const ,(- (expt 2 63))) :return))))
   '(:local.get 0) '(:call :small-int-p)
   `(:if nil nil ((:local.get 0) (:call :int-i64) :return))
   `(:i64.const ,(- (expt 2 63))))
@@ -1955,8 +1954,8 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defhelper :int-i64 :e-l ((m (:ref :null :limbs)) (i :i32) (r :i64))
   '(:local.get 0) '(:ref.test :i31)
   '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s :return))
-  '(:local.get 0) '(:ref.cast! :bignum) '(:struct.get :bignum 2) '(:local.tee r) :i64.eqz :i32.eqz
-  '(:if nil nil ((:local.get r) :return))
+  '(:local.get 0) '(:ref.test :ibox)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :ibox) (:struct.get :ibox 0) :return))
   '(:local.get 0) '(:ref.cast! :bignum) '(:struct.get :bignum 1) '(:local.tee m) :ref.is_null
   '(:if nil nil ((:i64.const 0) :return))
   '(:local.get m) :array.len '(:local.set i)
@@ -1967,7 +1966,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
        (:local.get r) (:i64.const ,+limb-bits+) :i64.shl
        (:local.get m) (:local.get i) (:array.get :limbs) :i64.extend_i32_u :i64.or (:local.set r)
        (:br again)))
-  '(:local.get 0) '(:ref.cast! :bignum) '(:struct.get :bignum 0)
+  '(:local.get 0) '(:call :big-sign)
   '(:if nil :i64 ((:i64.const 0) (:local.get r) :i64.sub) ((:local.get r))))
 
 (defhelper :box-i32 :i-e ()
@@ -1976,17 +1975,43 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   '(:if nil nil ((:local.get 0) :ref.i31 :return))
   '(:local.get 0) :i64.extend_i32_s '(:call :i64-int))
 
+;;; An integer that is not a fixnum is the box of a value within 64 bits
+;;; ($ibox: the i64 alone, 24 octets) or a bignum of digits ($bignum: sign and
+;;; limbs).  :int-box-p: one of the two; :box-value: the value of a box, 0
+;;; for a bignum; :big-limbs: the limbs of a bignum, null for a box;
+;;; :big-sign: 1 for a negative integer; :make-big: what a heap image holds
+;;; as (sign limbs value).
+(defhelper :int-box-p :e-i ()
+  '(:local.get 0) '(:ref.test :ibox) '(:local.get 0) '(:ref.test :bignum) :i32.or)
+(defhelper :box-value :e-l ()
+  '(:local.get 0) '(:ref.test :ibox)
+  '(:if nil :i64 ((:local.get 0) (:ref.cast! :ibox) (:struct.get :ibox 0))
+        ((:local.get 0) (:ref.cast :bignum) :drop (:i64.const 0))))
+(defhelper :big-limbs :e-m ()
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil (:ref :null :limbs) ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1))
+        ((:local.get 0) (:ref.cast :ibox) :drop (:ref.null :limbs))))
+(defhelper :big-sign :e-i ()
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil :i32 ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0))
+        ((:local.get 0) (:ref.cast :ibox) (:struct.get :ibox 0) (:i64.const 0) :i64.lt_s)))
+(defhelper :make-big :iml-e ()
+  '(:local.get 1) :ref.is_null
+  '(:if nil nil ((:local.get 2) (:struct.new :ibox) :return))
+  '(:local.get 0) '(:local.get 1) '(:struct.new :bignum))
+
 (defhelper :i64-int :l-e ()
-  ;; a fixnum, or a bignum holding the value (its limbs are made when needed)
+  ;; a fixnum, or the box of the value ($ibox, 24 octets)
   `(:local.get 0) `(:i64.const ,+char-tag+) :i64.add `(:i64.const ,(* 2 +char-tag+)) :i64.lt_u
   '(:if nil nil ((:local.get 0) :i32.wrap_i64 :ref.i31 :return))
-  '(:local.get 0) '(:i64.const 0) :i64.lt_s '(:ref.null :limbs) '(:local.get 0) '(:struct.new :bignum))
+  '(:local.get 0) '(:struct.new :ibox))
 
-;;; the limbs of a bignum built by :i64-int
-(defhelper :bignum-limbs :e-e ((b (:ref :null :bignum)) (m :i64) (tt :i64) (n :i32) (a (:ref :null :limbs)) (i :i32))
-  '(:local.get 0) '(:ref.cast :bignum) '(:local.tee b) '(:struct.get :bignum 1) '(:local.tee a) :ref.is_null :i32.eqz
-  '(:if nil nil ((:local.get a) :ref.as_non_null :return))
-  '(:local.get b) '(:struct.get :bignum 2) '(:local.tee m) '(:i64.const 0) :i64.lt_s
+;;; the limbs of an integer that is not a fixnum: a bignum's, or those of the
+;;; value of a box (made at each call: the box has no place for them)
+(defhelper :bignum-limbs :e-e ((m :i64) (tt :i64) (n :i32) (a (:ref :null :limbs)) (i :i32))
+  '(:local.get 0) '(:ref.test :bignum)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.as_non_null :return))
+  '(:local.get 0) '(:ref.cast :ibox) '(:struct.get :ibox 0) '(:local.tee m) '(:i64.const 0) :i64.lt_s
   '(:if nil :i64 ((:i64.const 0) (:local.get m) :i64.sub) ((:local.get m))) '(:local.tee m) '(:local.set tt)
   `(:block done nil
      (:loop again nil
@@ -2002,7 +2027,6 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
        (:local.get m) (:i64.const ,+limb-bits+) :i64.shr_u (:local.set m)
        (:local.get i) (:i32.const 1) :i32.add (:local.set i)
        (:br again)))
-  '(:local.get b) '(:local.get a) '(:struct.set :bignum 1)
   '(:local.get a) :ref.as_non_null)
 
 ;;; OP: 0 + 1 - 2 * 3 logand 4 logior 5 logxor 6 truncate 7 rem 8 compare 9 ash.
@@ -2017,10 +2041,10 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
                (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :i32.eqz
                (:if nil nil (,@(nil-code) :return))
                (:local.get v) :i64.extend_i32_s (:local.set ,dst) (:br ok))
-             (:local.get ,param) (:ref.test :bignum) :i32.eqz (:if nil nil (,@(nil-code) :return))
-             (:local.get ,param) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,dst) :i64.eqz :i32.eqz
+             (:local.get ,param) (:call :int-box-p) :i32.eqz (:if nil nil (,@(nil-code) :return))
+             (:local.get ,param) (:call :box-value) (:local.tee ,dst) :i64.eqz :i32.eqz
              (:br_if ok)
-             (:local.get ,param) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee m) :ref.is_null
+             (:local.get ,param) (:call :big-limbs) (:local.tee m) :ref.is_null
              (:br_if ok)
              (:local.get ,param) (:call :small-int-p) :i32.eqz (:if nil nil (,@(nil-code) :return))
              (:local.get ,param) (:call :int-i64) (:local.set ,dst)))
@@ -2085,7 +2109,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 
 (defun low64-of-big-code (p)
   "The low 64 bits (two's complement) of parameter P, a bignum of digits."
-  `((:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 1) (:ref.cast! :limbs) (:local.tee m) :array.len
+  `((:local.get ,p) (:call :big-limbs) (:ref.cast! :limbs) (:local.tee m) :array.len
     (:local.set n)
     (:local.get n) (:if nil :i64 ((:local.get m) (:i32.const 0) (:array.get :limbs) :i64.extend_i32_u) ((:i64.const 0)))
     (:local.get n) (:i32.const 1) :i32.gt_u
@@ -2093,7 +2117,7 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
          ((:i64.const 0)))
     :i64.or (:local.set w)
     (:i64.const 0) (:local.get w) :i64.sub (:local.get w)
-    (:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 0) :select))
+    (:local.get ,p) (:call :big-sign) :select))
 (defhelper :logand2 :ee-e ((v :i32) (xa :i64) (xb :i64) (ka :i32) (w :i64) (m (:ref :null :limbs)) (n :i32))
   `(:block slow nil
      ,@(num-decode-code 0 'xa nil 'ka 'slow nil)
@@ -2103,8 +2127,8 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   ;; low digits, no bignum made
   (loop for (p q) in '((0 1) (1 0))
         collect `(:block no nil
-                   (:local.get ,p) (:ref.test :bignum) :i32.eqz (:br_if no)
-                   (:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 1) :ref.is_null (:br_if no)
+                   (:local.get ,p) (:call :int-box-p) :i32.eqz (:br_if no)
+                   (:local.get ,p) (:call :big-limbs) :ref.is_null (:br_if no)
                    ,@(num-decode-code q 'xb nil 'ka 'no nil)
                    (:local.get xb) (:i64.const 0) :i64.lt_s (:br_if no)
                    ,@(low64-of-big-code p) (:local.get xb) :i64.and (:return_call :i64-int)))
@@ -2138,9 +2162,9 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:local.tee v)
                  (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.lt_u
                  (:if nil nil ((:local.get v) (:i32.const 1) :i32.and :i32.eqz :return))))
-  '(:local.get 0) '(:ref.test :bignum)
-  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz :i32.eqz
-                 (:if nil nil ((:local.get w) :i32.wrap_i64 (:i32.const 1) :i32.and :i32.eqz :return))))
+  '(:local.get 0) '(:ref.test :ibox)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :ibox) (:struct.get :ibox 0) :i32.wrap_i64 (:i32.const 1) :i32.and
+                 :i32.eqz :return))
   '(:local.get 0) `(:global.get ,(sym-global 'evenp)) '(:call (:callsym 1))
   (car (nil-code)) :ref.eq :i32.eqz)
 (defprim evenp (a) :test `(,@a (:call :evenp)))
@@ -2281,10 +2305,10 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
      (:local.get 1) (:if nil :i64 ((:i64.const 0) (:local.get w) :i64.sub) ((:local.get w)))
      (:call :i64-int) :return)
   '(:local.get n) '(:local.get m) :array.len :i32.eq
-  '(:if nil nil ((:local.get 1) (:local.get m) (:i64.const 0) (:struct.new :bignum) :return))
+  '(:if nil nil ((:local.get 1) (:local.get m) (:struct.new :bignum) :return))
   '(:local.get n) '(:array.new_default :limbs) '(:local.tee r)
   '(:i32.const 0) '(:local.get m) '(:i32.const 0) '(:local.get n) '(:array.copy :limbs :limbs)
-  '(:local.get 1) '(:local.get r) '(:i64.const 0) '(:struct.new :bignum))
+  '(:local.get 1) '(:local.get r) '(:struct.new :bignum))
 (defprim clysm-sys::%make-integer (sign mag) :value
   `(,@mag ,@sign (:ref.cast :i31) :i31.get_s (:call :make-int)))
 
@@ -2302,14 +2326,14 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defhelper :int-neg :e-i ()
   '(:local.get 0) '(:ref.test :i31)
   '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const 0) :i32.lt_s :return))
-  '(:local.get 0) '(:ref.cast :bignum) '(:struct.get :bignum 0))
+  '(:local.get 0) '(:call :big-sign))
 (defprim clysm-sys::%int-sign (x) :value `(,@x (:call :int-neg) :ref.i31))
 
 (defhelper :integerp :e-i ()
   '(:local.get 0) '(:ref.test :i31)
   `(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s (:i32.const ,+char-tag+) :i32.add
                  (:i32.const ,(* 2 +char-tag+)) :i32.lt_u :return))
-  '(:local.get 0) '(:ref.test :bignum))
+  '(:local.get 0) '(:call :int-box-p))
 
 ;;; compare magnitudes: -1, 0, 1
 (defhelper :mag-cmp :ee-i ((a (:ref :null :limbs)) (b (:ref :null :limbs)) (la :i32) (lb :i32) (x :i32) (y :i32))
@@ -2378,15 +2402,15 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   ;; structs (a sum of more than two digits needs no normalizing)
   `(:block notbig nil
      (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.and :i32.eqz (:br_if notbig)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee ma) :ref.is_null (:br_if notbig)
-     (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.tee mb) :ref.is_null (:br_if notbig)
+     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.set ma)
+     (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.set mb)
      (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0) (:local.set sa)
      (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 0) (:local.get 2) :i32.xor (:local.set sb)
      (:local.get sa) (:local.get sb) :i32.eq
      (:if nil nil
           ((:local.get ma) (:local.get mb) (:call :mag-add) (:local.tee ma) (:ref.cast! :limbs) :array.len
            (:i32.const 2) :i32.gt_u
-           (:if nil nil ((:local.get sa) (:local.get ma) (:ref.cast! :limbs) (:i64.const 0) (:struct.new :bignum)
+           (:if nil nil ((:local.get sa) (:local.get ma) (:ref.cast! :limbs) (:struct.new :bignum)
                          :return))
            (:local.get ma) (:local.get sa) (:return_call :make-int)))
      (:local.get ma) (:local.get mb) (:call :mag-cmp) (:local.tee c) :i32.eqz
@@ -2397,15 +2421,12 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
   ;; a bignum of digits and an integer within 64 bits (as the second
   ;; operand, or the first in a sum): the small one is not made digits
   `(:block general nil
-     (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.and
-     (:local.get 2) :i32.eqz :i32.and
+     (:local.get 1) (:ref.test :bignum) (:local.get 2) :i32.eqz :i32.and
      (:if nil nil
           (;; a sum with the small one first: the other way round
-           (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz
-           (:local.get 1) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.and
+           (:local.get 0) (:ref.test :bignum) :i32.eqz
            (:if nil nil ((:local.get 1) (:local.get 0) (:i32.const 0) (:return_call :big-add)))))
      (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if general)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz (:br_if general)
      ,@(num-decode-code 1 'w nil 'k 'general nil)
      ;; B's sign for the operation; |B| as an unsigned i64
      (:local.get w) (:i64.const 0) :i64.lt_s (:local.get 2) :i32.xor (:local.set sb)
@@ -3007,7 +3028,7 @@ sums LO (low halves) and HI (high halves)."
      (:local.get d) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get d) :i64.sub (:local.set d)))
      (:local.get d) :i64.eqz (:br_if fail)
      (:local.get d) (:i64.const ,(expt 2 +limb-bits+)) :i64.ge_u (:br_if fail)
-     (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if fail)
+     (:local.get 0) (:call :int-box-p) :i32.eqz (:br_if fail)
      (:local.get 0) (:call :int-limbs) (:ref.cast! :limbs) (:local.tee m) :array.len (:local.set n)
      (:block done nil
        (:loop again nil
@@ -3017,7 +3038,7 @@ sums LO (low halves) and HI (high halves)."
          (:local.get m) (:local.get n) (:array.get :limbs) :i64.extend_i32_u :i64.or
          (:local.get d) :i64.rem_u (:local.set rem)
          (:br again)))
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0)
+     (:local.get 0) (:call :big-sign)
      (:if nil :i64 ((:i64.const 0) (:local.get rem) :i64.sub) ((:local.get rem)))
      (:call :i64-int) :return)
   (car (nil-code)))
@@ -4273,8 +4294,8 @@ within 64 bits (and not -2^63), else a branch to FAIL.  Uses the locals EE and V
          ((:local.get ee) (:ref.cast! :i31) :i31.get_s (:local.tee v)
           (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,fail)
           (:local.get v) :i64.extend_i32_s (:local.set ,x))
-         ((:local.get ee) (:ref.test :bignum) :i32.eqz (:br_if ,fail)
-          (:local.get ee) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,x) :i64.eqz (:br_if ,fail)
+         ((:local.get ee) (:ref.test :ibox) :i32.eqz (:br_if ,fail)
+          (:local.get ee) (:ref.cast! :ibox) (:struct.get :ibox 0) (:local.set ,x)
           (:local.get ,x) (:i64.const ,(- (expt 2 63))) :i64.eq (:br_if ,fail)))))
 
 (defun rat-decode-code (p n d fail)
@@ -4466,9 +4487,9 @@ anything else branches to SLOW.  Uses the i32 local V."
              ((:local.get ,p) (:ref.cast! :i31) :i31.get_s (:local.tee v)
               (:i32.const ,+char-tag+) :i32.add (:i32.const ,(* 2 +char-tag+)) :i32.ge_u (:br_if ,slow)
               (:local.get v) :i64.extend_i32_s (:local.set ,x) (:i32.const 0) (:local.set ,k) (:br ,done)))
-        (:local.get ,p) (:ref.test :bignum)
+        (:local.get ,p) (:ref.test :ibox)
         (:if nil nil
-             ((:local.get ,p) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee ,x) :i64.eqz (:br_if ,slow)
+             ((:local.get ,p) (:ref.cast! :ibox) (:struct.get :ibox 0) (:local.set ,x)
               (:i32.const 0) (:local.set ,k) (:br ,done)))
         ,@(when floats
             `((:local.get ,p) (:ref.test :double)
@@ -4523,7 +4544,7 @@ anything else branches to SLOW.  Uses the i32 local V."
   '(:if nil nil ((:local.get m) (:i32.const 3) (:local.get hi) (:i64.const 32) :i64.shr_u :i32.wrap_i64
                  (:array.set :limbs)))
   '(:local.get 0) '(:local.get 1) :i64.xor '(:i64.const 0) :i64.lt_s
-  '(:local.get m) '(:i64.const 0) '(:struct.new :bignum))
+  '(:local.get m) '(:struct.new :bignum))
 
 ;;; A + B, A - B, A * B of two i64s, of any size: the generic code of a fused
 ;;; tree whose operands are i64s (a product beyond 64 bits made at once, no
@@ -4762,9 +4783,9 @@ f64s in locals DA and DB (it may branch to SLOW)."
          (:if nil nil ((:i32.const 0) (:local.get x) :i32.sub :ref.i31 :return))))
   '(:local.get 0) '(:ref.test :double)
   '(:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :f64.neg (:struct.new :double) :return))
-  '(:local.get 0) '(:ref.test :bignum)
+  '(:local.get 0) '(:call :int-box-p)
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz
+        ((:local.get 0) (:call :box-value) (:local.tee w) :i64.eqz
          (:local.get w) (:i64.const ,(- (expt 2 63))) :i64.eq :i32.or :i32.eqz
          (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:call :i64-int) :return))))
   '(:local.get 0)
@@ -4781,7 +4802,7 @@ f64s in locals DA and DB (it may branch to SLOW)."
     `(,@(fixnum-pair-code `((:local.get x) (:local.get y) ,(if (eq iop :i64.lt_s) :i32.lt_s :i32.eq) :return))
       ;; integers of which one is a bignum of digits: signs, then digits
       (:block notbig nil
-        (:local.get 0) (:ref.test :bignum) (:local.get 1) (:ref.test :bignum) :i32.or :i32.eqz (:br_if notbig)
+        (:local.get 0) (:call :int-box-p) (:local.get 1) (:call :int-box-p) :i32.or :i32.eqz (:br_if notbig)
         (:local.get 0) (:call :integerp) (:local.get 1) (:call :integerp) :i32.and :i32.eqz (:br_if notbig)
         (:local.get 0) (:local.get 1) ,@(lisp-call-instrs 'clysm-sys::%int-cmp-big 2) (:ref.cast :i31) :i31.get_s
         ,@(if (eq iop :i64.lt_s) '((:i32.const 0) :i32.lt_s) '(:i32.eqz)) :return)
@@ -5251,8 +5272,8 @@ modules made at run time define these helpers each time)."
                  (:if nil nil ((:local.get v) :f64.convert_i32_s :return))))
   '(:local.get 0) '(:ref.test :single)
   '(:if nil nil ((:local.get 0) (:ref.cast! :single) (:struct.get :single 0) :f64.promote_f32 :return))
-  '(:local.get 0) '(:ref.test :bignum)
-  '(:if nil nil ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz :i32.eqz
+  '(:local.get 0) '(:call :int-box-p)
+  '(:if nil nil ((:local.get 0) (:call :box-value) (:local.tee w) :i64.eqz :i32.eqz
                  (:if nil nil ((:local.get w) :f64.convert_i64_s :return))))
   ;; a ratio of integers that convert exactly: one correctly rounded division
   `(:block slow nil
@@ -5261,8 +5282,8 @@ modules made at run time define these helpers each time)."
              append `((:block ok nil
                         (:local.get 0) (:ref.cast! :ratio) (:struct.get :ratio ,field) (:local.tee ee) (:ref.test :i31)
                         (:if nil nil ((:local.get ee) (:ref.cast! :i31) :i31.get_s :i64.extend_i32_s (:local.set w) (:br ok)))
-                        (:local.get ee) (:ref.test :bignum) :i32.eqz (:br_if slow)
-                        (:local.get ee) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) :i64.eqz (:br_if slow)
+                        (:local.get ee) (:call :int-box-p) :i32.eqz (:br_if slow)
+                        (:local.get ee) (:call :box-value) (:local.tee w) :i64.eqz (:br_if slow)
                         (:local.get w) (:i64.const ,(expt 2 53)) :i64.add (:i64.const ,(expt 2 54)) :i64.gt_u (:br_if slow))
                       (:local.get w) :f64.convert_i64_s (:local.set ,(if (= field 0) 'dn 'dd))))
      (:local.get dn) (:local.get dd) :f64.div :return)
@@ -5558,8 +5579,8 @@ through."
     `(,@v (:ref.cast :limbs) ,@(idx-code i) ,@x (:local.tee ,tmp) (:ref.cast :i31) :i31.get_s
       (:array.set :limbs) (:local.get ,tmp))))
 (defprim clysm-sys::%make-bignum (sign mag) :value
-  `(,@sign (:ref.cast :i31) :i31.get_s ,@mag (:ref.cast :limbs) (:i64.const 0) (:struct.new :bignum)))
-(defprim clysm-sys::%bignum-sign (b) :value `(,@b (:ref.cast :bignum) (:struct.get :bignum 0) :ref.i31))
+  `(,@sign (:ref.cast :i31) :i31.get_s ,@mag (:ref.cast :limbs) (:struct.new :bignum)))
+(defprim clysm-sys::%bignum-sign (b) :value `(,@b (:call :big-sign) :ref.i31))
 (defprim clysm-sys::%bignum-mag (b) :value `(,@b (:call :bignum-limbs)))
 
 (defprim clysm-sys::%make-ratio (n d) :value `(,@n ,@d (:struct.new :ratio)))
@@ -7071,12 +7092,12 @@ in local V and the index in local K; else branch to FAIL."
 ;;; The hash of a bignum: over the base 2^32 digits of its magnitude, h := (31 h
 ;;; + digit) mod 2^28 starting from the sign (the same value whether the
 ;;; integer holds its value or limbs; nothing is allocated)
-(defhelper :bignum-hash :e-e ((b (:ref :null :bignum)) (h :i32) (w :i64) (m (:ref :null :limbs)) (i :i32) (n :i32))
-  '(:local.get 0) '(:ref.cast :bignum) '(:local.tee b) '(:struct.get :bignum 0) '(:local.set h)
-  '(:local.get b) '(:struct.get :bignum 2) '(:local.tee w) :i64.eqz
+(defhelper :bignum-hash :e-e ((b :eqref) (h :i32) (w :i64) (m (:ref :null :limbs)) (i :i32) (n :i32))
+  '(:local.get 0) '(:local.tee b) '(:call :big-sign) '(:local.set h)
+  '(:local.get b) '(:call :box-value) '(:local.tee w) :i64.eqz
   `(:if nil nil
         (;; limbs
-         (:local.get b) (:struct.get :bignum 1) (:local.tee m) :ref.is_null (:if nil nil ((:local.get h) :ref.i31 :return))
+         (:local.get b) (:call :big-limbs) (:local.tee m) :ref.is_null (:if nil nil ((:local.get h) :ref.i31 :return))
          (:local.get m) :array.len (:local.set n)
          (:block done nil
            (:loop again nil
@@ -7186,7 +7207,7 @@ in local V and the index in local K; else branch to FAIL."
 ;;; the simple string BUF (a scratch buffer): the index of the first, or -1
 ;;; when they may not fit.  Within 64 bits: divisions of an i64 by 10;
 ;;; beyond: a copy of the magnitude divided in place by 10^9, as above.
-(defhelper :int-decimal-into :ee-e ((buf (:ref :null :string)) (b (:ref :null :bignum))
+(defhelper :int-decimal-into :ee-e ((buf (:ref :null :string)) (b :eqref)
                                     (m (:ref :null :limbs)) (src (:ref :null :limbs))
                                     (n :i32) (pos :i32) (i :i32) (k :i32) (r :i32) (small :i32)
                                     (v :i64) (q :i64) (rem :i64) (cur :i64))
@@ -7195,8 +7216,8 @@ in local V and the index in local K; else branch to FAIL."
   '(:if nil nil
     ((:local.get 0) (:ref.cast :i31) :i31.get_s :i64.extend_i32_s (:local.set v)
      (:i32.const 1) (:local.set small))
-    ((:local.get 0) (:ref.cast :bignum) (:local.tee b) (:struct.get :bignum 1) :ref.is_null
-     (:if nil nil ((:local.get b) (:struct.get :bignum 2) (:local.set v)
+    ((:local.get 0) (:local.tee b) (:call :big-limbs) :ref.is_null
+     (:if nil nil ((:local.get b) (:ref.cast :ibox) (:struct.get :ibox 0) (:local.set v)
                    (:i32.const 1) (:local.set small)))))
   ;; within 64 bits: V, its magnitude as an unsigned i64
   '(:local.get small)
@@ -7212,7 +7233,7 @@ in local V and the index in local K; else branch to FAIL."
        (:local.get q) (:local.tee v) :i64.eqz :i32.eqz (:br_if again))
      (:local.get pos) :ref.i31 :return))
   ;; limbs
-  '(:local.get b) '(:struct.get :bignum 1) '(:ref.cast! :limbs) '(:local.tee src) '(:call :mag-len) '(:local.set n)
+  '(:local.get b) '(:call :big-limbs) '(:ref.cast! :limbs) '(:local.tee src) '(:call :mag-len) '(:local.set n)
   '(:local.get n) '(:i32.const 10) :i32.mul '(:local.get pos) :i32.gt_u
   '(:if nil nil ((:i32.const -1) :ref.i31 :return))
   '(:local.get n) '(:array.new_default :limbs) '(:local.set m)
@@ -7301,9 +7322,9 @@ in local V and the index in local K; else branch to FAIL."
         ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :i64.reinterpret_f64 (:i64.const 0) :i64.ge_s
          (:if nil nil ((:local.get 0) :return))
          (:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :f64.abs (:struct.new :double) :return))
-  '(:local.get 0) '(:ref.test :bignum)
+  '(:local.get 0) '(:call :int-box-p)
   `(:if nil nil
-        ((:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) (:local.tee w) (:i64.const 0) :i64.gt_s
+        ((:local.get 0) (:call :box-value) (:local.tee w) (:i64.const 0) :i64.gt_s
          (:if nil nil ((:local.get 0) :return))
          (:local.get w) :i64.eqz (:local.get w) (:i64.const ,(- (expt 2 63))) :i64.eq :i32.or :i32.eqz
          (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:call :i64-int) :return))))
@@ -7418,12 +7439,12 @@ in local V and the index in local K; else branch to FAIL."
                                 (u1 :i64) (u0 :i64) (d :i64) (s :i64) (dh :i64) (dl :i64) (q1 :i64) (q0 :i64)
                                 (rhat :i64) (u21 :i64) (sx :i64) (w :i64) (wr :i64) (wt :i64) (wt2 :i64))
   `(:block fail nil
-     (:local.get 0) (:ref.test :bignum) :i32.eqz (:br_if fail)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 2) :i64.eqz :i32.eqz (:br_if fail)
+     (:local.get 0) (:call :int-box-p) :i32.eqz (:br_if fail)
+     (:local.get 0) (:call :box-value) :i64.eqz :i32.eqz (:br_if fail)
      ,@(num-decode-code 1 'xb nil 'ka 'fail nil)
      (:local.get xb) :i64.eqz (:br_if fail)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:local.set m)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 1) (:call :mag-len) (:local.tee n)
+     (:local.get 0) (:call :big-limbs) (:local.set m)
+     (:local.get 0) (:call :big-limbs) (:call :mag-len) (:local.tee n)
      (:i32.const 4) :i32.gt_u (:br_if fail)
      (:local.get n) (:i32.const 2) :i32.lt_u (:br_if fail)
      ;; the magnitude (below 2^127) as (u1, u0)
@@ -7447,7 +7468,7 @@ in local V and the index in local K; else branch to FAIL."
      (:i64.const 62) :i64.shr_u :i64.eqz :i32.eqz (:br_if fail)
      (:local.get u21) (:local.get s) :i64.shr_u (:local.set wr)
      (:i64.const 1) (:local.set sx)
-     (:local.get 0) (:ref.cast! :bignum) (:struct.get :bignum 0)
+     (:local.get 0) (:call :big-sign)
      (:if nil nil ((:i64.const -1) (:local.set sx) (:i64.const 0) (:local.get wr) :i64.sub (:local.set wr)))
      (:local.get sx) (:local.get xb) :i64.xor (:i64.const 0) :i64.lt_s
      (:if nil nil ((:i64.const 0) (:local.get w) :i64.sub (:local.set w)))
@@ -7525,7 +7546,7 @@ in local V and the index in local K; else branch to FAIL."
 (defparameter *checked-cast-types*
   '((:i31 . fixnum) (:cons . cons) (:symbol . symbol) (:string . simple-string)
     (:vector . simple-vector) (:instance . structure-object) (:mdarray . array)
-    (:double . double-float) (:single . single-float) (:bignum . integer) (:ratio . ratio)
+    (:double . double-float) (:single . single-float) (:bignum . integer) (:ibox . integer) (:ratio . ratio)
     (:complex . complex) (:complex-d . (complex double-float)) (:complex-s . (complex single-float))
     (:package . package) (:bytes . (simple-array (unsigned-byte 8) (*)))
     (:bits . simple-bit-vector) (:f64vec . (simple-array double-float (*))) (:foreign . t)
@@ -7672,8 +7693,8 @@ the closure in local 0 is of that type; then VECTOR-CODE when it is an
   `(,@s (:ref.cast :symbol) (:struct.get :symbol ,+sym-function+)))
 (defprim clysm-sys::%instance-raw-hash (x) :value `(,@x (:ref.cast :instance) (:struct.get :instance 2) :ref.i31))
 (defprim clysm-sys::%limbs-p (x) :test `(,@x (:ref.test :limbs)))
-(defprim clysm-sys::%bignum-raw-limbs (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 1)))
-(defprim clysm-sys::%bignum-raw-sign (x) :value `(,@x (:ref.cast :bignum) (:struct.get :bignum 0) :ref.i31))
+(defprim clysm-sys::%bignum-raw-limbs (x) :value `(,@x (:call :big-limbs)))
+(defprim clysm-sys::%bignum-raw-sign (x) :value `(,@x (:call :big-sign) :ref.i31))
 (defprim clysm-sys::%mdarray-field (a i) :value
   ;; the raw field I (0-7) of the array header A (5, 6 and 7 are integers)
   (let ((m (new-local '(:ref :null :mdarray))) (k (new-local :i32)))
@@ -7708,7 +7729,7 @@ the closure in local 0 is of that type; then VECTOR-CODE when it is an
 (defprim clysm-sys::%img-put-double (buf pos x) :value
   (img-put-i64-code buf pos `(,@x (:ref.cast :double) (:struct.get :double 0) :i64.reinterpret_f64)))
 (defprim clysm-sys::%img-put-bignum-value (buf pos x) :value
-  (img-put-i64-code buf pos `(,@x (:ref.cast :bignum) (:struct.get :bignum 2))))
+  (img-put-i64-code buf pos `(,@x (:call :box-value))))
 (defprim clysm-sys::%img-put-single (buf pos x) :value
   `(,@buf (:ref.cast :limbs) ,@(idx-code pos) ,@x (:ref.cast :single) (:struct.get :single 0)
     :i32.reinterpret_f32 (:array.set :limbs) ,@(nil-code)))
@@ -7835,7 +7856,7 @@ local LIMIT, incrementing it."
             (:double (done '((:call :img-i64) :f64.reinterpret_i64 (:struct.new :double))))
             (:single (done '((:call :img-word) :f32.reinterpret_i32 (:struct.new :single))))
             (:bignum (done '((:call :img-word) (:call :img-ref) (:ref.cast :null :limbs) (:call :img-i64)
-                             (:struct.new :bignum))))
+                             (:call :make-big))))
             (:ratio (done '((:call :img-ref) (:call :img-ref) (:struct.new :ratio))))
             (:complex (done '((:call :img-ref) (:call :img-ref) (:struct.new :complex))))
             (:complex-d (done '((:call :img-i64) :f64.reinterpret_i64 (:call :img-i64) :f64.reinterpret_i64
