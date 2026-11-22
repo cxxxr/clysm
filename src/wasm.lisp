@@ -208,9 +208,177 @@ wrapped as (:sub supers final-p def). Field = (storage-type mutable-p)."
     (setf (gethash name (wasm-module-func-table m)) f)
     f))
 
+;;; The size of a function's code decides what V8 inlines: no function of
+;;; more than 500 octets (--wasm-inlining-max-size), one of N octets only at
+;;; a call made N/2 times before its caller is optimized, and a caller may
+;;; grow to five times its own size at most (7000 octets).  So the code that
+;;; never runs, which the engine does not compile, still costs: ADD-FUNC
+;;; leaves it out (PRUNE-DEAD-CODE), in one pass over the instructions:
+;;; * what follows an unconditional branch, a return, a tail call or
+;;;   UNREACHABLE in its list of instructions, and what follows a block that
+;;;   cannot be left at its end (it ends that way and nothing branches to its
+;;;   label; an UNREACHABLE takes its place, since the validation takes the
+;;;   end of a block for reachable): the call of the function after a
+;;;   structure's field read that cannot fail, the rest of a form after a
+;;;   tail call or a RETURN-FROM;
+;;; * a block that nothing branches to: its instructions;
+;;; * (i32.const C) before i32.eqz, a BR_IF or an IF without a label: the
+;;;   constant, the branch or the arm taken (a test the types decided);
+;;; * (local.set X) (local.get X): a local.tee, nothing when X is not used
+;;;   elsewhere; ref.i31 (ref.cast i31): no cast; a fixnum constant made an
+;;;   i31 and read back: the constant.
+;;; (Not done: a block whose last instruction is its only branch to itself
+;;; without that branch.  A branch leaves what is on the stack below its
+;;; operands, the end of a block does not.)
+(defparameter *prune-dead-code* t)
+(defun prune-dead-code (body)
+  "BODY (a list of instructions) without the code that cannot be reached
+and with the tests of constants decided; BODY itself when nothing changes."
+  (let ((scopes nil)                    ; (label . branches to it) of the enclosing blocks, innermost first
+        (uses nil))
+    (labels ((use (label)
+               (let ((s (if (integerp label)
+                            (nth label scopes)
+                            (find label scopes :key #'car))))
+                 ;; (the number of branches, or T for more than one)
+                 (when s (setf (cdr s) (if (null (cdr s)) 1 t)))))
+             ;; the instructions of LIST up to the first that ends them, and
+             ;; whether there is one
+             (walk-list (list)
+               (let ((out nil) (changed nil))
+                 (do ((l list (cdr l))) ((null l))
+                   (let ((ins (car l)) (c (const-on-top out)))
+                     (cond
+                       ;; (local.set X) (local.get X): a local.tee, or nothing
+                       ;; when X is not used elsewhere
+                       ((and (consp ins) (eq (car ins) :local.get) (consp (car out))
+                             (eq (car (car out)) :local.set) (equal (second (car out)) (second ins)))
+                        (setq changed t)
+                        (if (eql (gethash (second ins) (local-uses)) 2)
+                            (pop out)
+                            (setf (car out) (list :local.tee (second ins)))))
+                       ;; ref.i31 (ref.cast i31): no cast; a fixnum constant
+                       ;; made an i31 and read back: the constant
+                       ((and (equal ins '(:ref.cast! :i31)) (eq (car out) :ref.i31))
+                        (setq changed t))
+                       ((and (eq ins :i31.get_s) (eq (car out) :ref.i31)
+                             (let ((k (cadr out)))
+                               (and (consp k) (eq (car k) :i32.const) (integerp (second k))
+                                    (<= (- (expt 2 30)) (second k) (1- (expt 2 30))))))
+                        (pop out)
+                        (setq changed t))
+                       ;; a test of a constant: (i32.const C) i32.eqz, and
+                       ;; (i32.const C) before a BR_IF or an IF without a
+                       ;; label (which nothing branches to): the branch
+                       ;; taken, or the arm, alone
+                       ((and c (eq ins :i32.eqz))
+                        (setq out (cons (list :i32.const (if (zerop c) 1 0)) (drop-const out)) changed t))
+                       ((and c (consp ins) (eq (car ins) :br_if))
+                        (setq out (drop-const out) changed t)
+                        (unless (zerop c)
+                          (use (second ins))
+                          (push (list :br (second ins)) out)
+                          (return-from walk-list (values (nreverse out) t))))
+                       ((and c (consp ins) (eq (car ins) :if) (null (second ins))
+                             (not (and (consp (third ins)) (eq (car (third ins)) :type))))
+                        (setq out (drop-const out) changed t)
+                        (multiple-value-bind (arm ends) (walk-list (if (zerop c) (fifth ins) (fourth ins)))
+                          (setq out (revappend arm out))
+                          (when ends
+                            (when (and (cdr l) (consp (car out))
+                                       (member (car (car out)) '(:block :loop :if :try_table)))
+                              (push :unreachable out))
+                            (return-from walk-list (values (nreverse out) t)))))
+                       (t
+                        (multiple-value-bind (new ends splice) (walk ins)
+                          (unless (eq new ins) (setq changed t))
+                          (if splice
+                              (setq out (revappend new out) new (car out))
+                              (push new out))
+                          (when ends
+                            (when (cdr l)
+                              (setq changed t)
+                              ;; (the code after a block is reachable for the
+                              ;; validation, whatever the block ends with)
+                              (when (and (consp new) (member (car new) '(:block :loop :if :try_table)))
+                                (push :unreachable out)))
+                            (return-from walk-list (values (if changed (nreverse out) list) t))))))))
+                 (values (if changed (nreverse out) list) nil)))
+             ;; the number of instructions using each local, counted when
+             ;; first asked
+             (local-uses ()
+               (or uses
+                   (let ((h (make-hash-table :test 'equal)))
+                     (labels ((count-uses (x)
+                                (when (consp x)
+                                  (if (member (car x) '(:local.get :local.set :local.tee))
+                                      (incf (gethash (second x) h 0))
+                                      (do ((l x (cdr l))) ((atom l))
+                                        (when (consp (car l)) (count-uses (car l))))))))
+                       (dolist (i body) (count-uses i)))
+                     (setq uses h))))
+             ;; OUT (the instructions before, latest first) ends with an
+             ;; (i32.const C), a hint for the branch after it aside: C
+             (const-on-top (out)
+               (let ((top (if (and (consp (car out)) (eq (car (car out)) :hint)) (cadr out) (car out))))
+                 (and (consp top) (eq (car top) :i32.const) (integerp (second top)) (second top))))
+             (drop-const (out)
+               (if (and (consp (car out)) (eq (car (car out)) :hint)) (cddr out) (cdr out)))
+             (walk (ins)
+               (if (atom ins)
+                   (values ins (if (member ins '(:unreachable :return :throw_ref)) t nil))
+                   (case (car ins)
+                     ((:br :return_call :return_call_ref :throw :return :unreachable) (when (eq (car ins) :br) (use (second ins)))
+                      (values ins t))
+                     ((:br_if :br_on_null :br_on_non_null :br_on_cast :br_on_cast_fail)
+                      (use (second ins)) (values ins nil))
+                     (:br_table (dolist (l (cdr ins)) (use l)) (values ins t))
+                     (:block
+                      (let ((scope (cons (second ins) nil)) (label (second ins)))
+                        (push scope scopes)
+                        (multiple-value-bind (b ends) (walk-list (cdddr ins))
+                          (pop scopes)
+                          ;; a block nothing branches to: its instructions
+                          ;; (not one whose last instruction is its only
+                          ;; branch: a branch leaves what is on the stack
+                          ;; below its operands, the end of a block does not)
+                          (if (and (null (cdr scope))
+                                   (not (and (consp (third ins)) (eq (car (third ins)) :type))))
+                              (values b ends t)
+                              (values (if (eq b (cdddr ins)) ins (list* :block label (third ins) b))
+                                      (and ends (not (cdr scope))))))))
+                     (:loop
+                      (push (cons (second ins) nil) scopes)
+                      (multiple-value-bind (b ends) (walk-list (cdddr ins))
+                        (pop scopes)
+                        (values (if (eq b (cdddr ins)) ins (list* :loop (second ins) (third ins) b)) ends)))
+                     (:if
+                      (let ((scope (cons (second ins) nil)))
+                        (push scope scopes)
+                        (multiple-value-bind (th ends1) (walk-list (fourth ins))
+                          (multiple-value-bind (el ends2) (walk-list (fifth ins))
+                            (pop scopes)
+                            (values (if (and (eq th (fourth ins)) (eq el (fifth ins)))
+                                        ins
+                                        (list* :if (second ins) (third ins) th (and (cddddr ins) (list el))))
+                                    (and ends1 ends2 (cddddr ins) (not (cdr scope))))))))
+                     (:try_table
+                      (dolist (c (fourth ins)) (use (car (last c))))
+                      (let ((scope (cons (second ins) nil)))
+                        (push scope scopes)
+                        (multiple-value-bind (b ends) (walk-list (cddddr ins))
+                          (pop scopes)
+                          (values (if (eq b (cddddr ins))
+                                      ins
+                                      (list* :try_table (second ins) (third ins) (fourth ins) b))
+                                  (and ends (not (cdr scope)))))))
+                     (t (values ins nil))))))
+      (values (walk-list body)))))
+
 (defun add-func (m name type &key locals local-names body export param-names display)
   (let ((f (%make-wasm-func :name name :type type :locals locals :local-names local-names :display display
-                            :params-names param-names :body body :export export)))
+                            :params-names param-names :body (if *prune-dead-code* (prune-dead-code body) body)
+                            :export export)))
     (setf (gethash name (wasm-module-func-index-table m))
           (+ (fill-pointer (wasm-module-imports m)) (fill-pointer (wasm-module-funcs m))))
     (vector-push-extend f (wasm-module-funcs m))
