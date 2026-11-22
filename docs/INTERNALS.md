@@ -3986,6 +3986,21 @@ What makes the code fast:
   its time while `%gcd-big`'s helpers (`:int64-op`, `:int-neg`,
   `:int-limbs`, `:integerp`, `%bignump`) went through the four helpers
   above, 1.07 with the two types tested in them; the rest was not found.
+* **`a-esrap` and the accumulators** (2026-11-23, a regression looked
+  for and not found). A bisection of wave 39 gave `a-esrap` 92 ms before
+  the rule "one update by a known integer is enough" and 112 after it.
+  Compiling esrap with its dependencies makes 82 accumulators, none of
+  them by that rule and none in esrap's own code (the steps by one value
+  are in Quicklisp's tar reader, Alexandria's `mean` and `variance`,
+  `count-leaves`, and the `reduce` of the benchmark's own form: 3000
+  steps a run); esrap's system fasl differs by 87 octets across that
+  commit. The item (two runs of 46 ms) takes one of two times, about 92
+  and about 110 ms, on the same build from one batch of runs to the next
+  (aafd89a: 111, 108, 92; wave 39: 111, 93, 96; this branch: 109, 91,
+  106, best of four to six each), so two builds measured in different
+  batches differ by 20% for nothing. With ten runs in the process
+  instead of two, five rounds alternately: aafd89a 462–490 ms, wave 39
+  447–471, this branch 433–468.
 * **A sum stepped by a boxed integer** (2026-11-23). The step of an
   accumulator (above) took its helper when the value was not a fixnum; a
   box is now added inline after the fixnum's tests (`ref.test $ibox`, its
@@ -4036,6 +4051,11 @@ What makes the code fast:
   `functional`, `arith`, `clos`, `closures` 0.995–1.006
   (`c-cnm-function` 23 -> 28, `p-print-object` 31 -> 35 the slower
   ones). 800 was worse for the one item tried (`r-mapc-go` 269 -> 349).
+  On real code, the same build with 500 and 640 alternately: Lem on the
+  held-out input 0.953 (every item 0.88–0.98, `l-type-redisplay` 41 -> 36
+  ms, `l-type-autodoc` 163 -> 154), `bench/apps.lisp` 0.96
+  (`a-cl-json-decode` 87 -> 74, `a-esrap` 109 -> 103), `bench/libs.lisp`
+  1.01 (`l-babel` 87 -> 92, the others the same).
   A host that cannot set the flag (a browser) copies fewer of those
   functions. Against the commit before (the box and its step), with the
   flag in both: `suite`, `control`, `programs`, `gabriel`, `library`
