@@ -14,7 +14,7 @@
 ;;; the calls between its files still see a redefinition
 (push (merge-pathnames "twofiles/" (uiop:pathname-directory-pathname *load-truename*))
       asdf:*central-registry*)
-(setf asdf::*clysm-system-fasls* t)           ; (opt-in)
+(setf asdf::*clysm-system-fasls* t)           ; (every qualifying system)
 (asdf:load-system "twofiles" :force t)
 (format t "~A ~A~%" (twofiles:total 10) (symbol-value (find-symbol "*LOADS*" "TWOFILES")))
 (asdf:clear-system "twofiles")
@@ -24,7 +24,7 @@
 (eval '(defun twofiles:g (x) (- x)))
 (eval '(defun twofiles:h (x) (* x 100)))
 (format t "~A ~A~%" (twofiles:total 10) (twofiles:f 3))
-(setf asdf::*clysm-system-fasls* nil)
+(setf asdf::*clysm-system-fasls* :auto)
 
 ;;; a system fasl made as the files are compiled and loaded: the compile-time
 ;;; side effects of each file happen once, a macro of one file calls a
@@ -69,7 +69,7 @@
   (asdf:load-system "sysfasl")
   (format t "~S ~A ~A ~A~%" (funcall (find-symbol "USE" "SYSFASL")) *sysfasl-ct* (symbol-value (find-symbol "*LOADS*" "SYSFASL"))
           (and (member "sysfasl" asdf::*clysm-system-fasls-loaded* :test #'string=) t))
-  (setf asdf::*clysm-system-fasls* nil))
+  (setf asdf::*clysm-system-fasls* :auto))
 
 ;;; :AUTO: a system whose file changes after its system fasl was made is
 ;;; being developed: compiled file by file from then on (only the changed
@@ -102,4 +102,4 @@
     (asdf::clysm-system-fasl-reset "sysdev")
     (build "reset")
     (build "again"))
-  (setf asdf::*clysm-system-fasls* nil))
+  (setf asdf::*clysm-system-fasls* :auto))
