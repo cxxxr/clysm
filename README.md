@@ -46,6 +46,7 @@ $ bin/clysm repl                          # the REPL image is built on first use
 $ bin/clysm run tests/hello.lisp          # compile with the runtime and run on Node.js
 $ bin/clysm compile prog.lisp -o prog.wasm
 $ bin/clysm exec prog.wasm                # run a compiled module
+$ bin/clysm build --system my-app --eval '(my-app:main)' -o app.wasm   # an application with its ASDF systems, one module
 $ bin/clysm script file.lisp              # LOAD a file in the REPL image
 $ bin/clysm eval '(expt 2 100)'           # evaluate a form in the REPL image
 $ bin/clysm test --system my-tests t/*.lisp   # test programs, in parallel (--watch)
@@ -60,6 +61,42 @@ Libraries are loaded from an existing Quicklisp installation:
 (ql:quickload :cl-ppcre)
 (ppcre:split "\\s+" "compiled to WebAssembly")   ; => ("compiled" "to" "WebAssembly")
 ```
+
+**An application in one module.** `clysm build` compiles ASDF systems
+(with the systems they depend on, from Quicklisp or anywhere ASDF finds
+them), then files of the program, then its entry point, into one module
+together with the runtime, as a whole program: the calls between the
+systems and into the runtime are direct calls that the engine inlines, and
+the compiler sees the types and classes of everything. Loaded from fasls,
+each system is a module of its own, and no call between modules is inlined;
+built this way `bench/libs.lisp` is 0.79 times SBCL's time instead of 1.00
+and Lem's benchmarks 0.90 instead of 1.05
+([docs/INTERNALS.md](docs/INTERNALS.md#applications-in-one-module-clysm-build)).
+
+```
+$ bin/clysm build --system cl-ppcre --system my-app --eval '(my-app:main)' -o app.wasm
+$ bin/clysm exec app.wasm ARGS
+$ bin/clysm build --asd ./my-app.asd --system my-app main.lisp -o app.wasm   # a system defined here, and a file
+$ bin/clysm build --load setup.lisp --system my-app -o app.wasm              # setup.lisp tells ASDF where the systems are
+```
+
+The REPL image does the build: ASDF loads the systems into it as ever, and
+each source file is compiled into the program just before it is loaded, so
+macros, `eval-when`, reader macros, `#.` and what earlier files defined work
+as for `compile-file`. What the files do when they are loaded happens when
+the program starts, in the same order. The files given after the systems
+are compiled and not loaded (the program's own code; `#+clysm-static` reads
+only there), and the `--eval` forms run last. Differences from loading the
+systems:
+* a call of a function is bound to its definition in the program, as within
+  a file given to `compile-file`: redefining a function when the program runs
+  (`setf fdefinition`) reaches the calls through `funcall`, `apply` and
+  `#'name`, and the calls of functions declaimed `notinline`;
+* the program has no compiler: `eval` interprets, `compile` returns an
+  interpreted function, and systems are not loaded when it runs;
+* ASDF and UIOP are in the program when a system depends on one of them or
+  with `--asdf` (2.8 MB more); the program's ASDF knows the systems built in
+  as loaded (`asdf:find-system`, `asdf:system-relative-pathname` answer).
 
 JavaScript is called through the `JS` package. `js:await` waits for a
 promise, using JavaScript Promise Integration; any number of computations

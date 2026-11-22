@@ -53,8 +53,8 @@
 
 #-clysm
 (defmacro clysm-sys::%host-define-compiler-macro (name ll &body body)
-  `(setf (gethash ',(compiler-macro-key name) *compiler-macros*)
-         (host-compile ',(make-host-macro-expander name ll body))))
+  `(table-put '*compiler-macros* ',(compiler-macro-key name)
+              (host-compile ',(make-host-macro-expander name ll body))))
 
 
 ;;; DEFSTRUCT accessors are compiled inline (as compiler macros) at call sites
@@ -70,12 +70,12 @@
                         `(clysm-sys::%struct-iref ,obj (load-time-value (find-class ',name)) ,idx ,fields)
                         `(clysm-sys::%struct-ref ,obj (load-time-value (find-class ',name)) ,idx
                                                  ,@(when fields (list fields)))))))
-    (setf (gethash acc *compiler-macros*)
+    (table-put '*compiler-macros* acc
           (lambda (form env)
             (declare (ignore env))
             (if (and (consp (cdr form)) (null (cddr form))) (ref (second form)) form)))
     (when writable
-      (setf (gethash (setf-function-symbol acc) *compiler-macros*)
+      (table-put '*compiler-macros* (setf-function-symbol acc)
             (lambda (form env)
               (if (and (consp (cdr form)) (consp (cddr form)) (null (cdddr form)))
                   (let ((form (list (first form)
@@ -107,7 +107,7 @@ it is one that compiled reads trust (runtime/struct.lisp)."
         val)))
 
 (defun register-struct-predicate-inline (predicate name &optional fields)
-  (setf (gethash predicate *compiler-macros*)
+  (table-put '*compiler-macros* predicate
         (lambda (form env)
           (declare (ignore env))
           (if (and (consp (cdr form)) (null (cddr form)))
@@ -126,11 +126,14 @@ it is one that compiled reads trust (runtime/struct.lisp)."
   (let ((value (cond ((or (numberp form) (characterp form) (stringp form) (keywordp form)
                           (null form) (eq form t))
                       (list form))
-                     ((and (consp form) (eq (car form) 'quote)) (list (second form)))
+                     ((and (consp form) (eq (car form) 'quote)
+                           ;; (not an object only a fasl can hold: a program built in the image)
+                           (or (not *static-build*) (plain-constant-p (second form))))
+                      (list (second form)))
                      (t nil))))
     (if value
-        `(setf (gethash ',sym *initial-symbol-values*) ',value)
-        `(remhash ',sym *initial-symbol-values*))))
+        `(table-put '*initial-symbol-values* ',sym ',value)
+        `(table-remove '*initial-symbol-values* ',sym))))
 
 ;;; When the compiler runs inside a Clysm image these host macros are needed
 ;;; there too; install them at load time (see the #-clysm definitions above).
@@ -143,16 +146,19 @@ it is one that compiled reads trust (runtime/struct.lisp)."
             `(handler-case
                  (let ((value ,value-form))
                    (clysm-sys::%compile-time-constant ',sym value)
+                   ;; (not while a program is built in this image: the
+                   ;; variable is defined when its file is loaded, a constant)
                    ,@(unless (eq (symbol-package sym) (find-package :cl))
-                       `((proclaim '(special ,sym))
-                         (setf (symbol-value ',sym) value))))
+                       `((unless *static-build*
+                           (proclaim '(special ,sym))
+                           (setf (symbol-value ',sym) value)))))
                (error () (clysm-sys::%compile-time-special ',sym))))))
   (setf (macro-function 'clysm-sys::%host-define-compiler-macro)
         (lambda (form env)
           (declare (ignore env))
           (destructuring-bind (name ll &rest body) (cdr form)
-            `(setf (gethash ',(compiler-macro-key name) *compiler-macros*)
-                   (host-compile ',(make-host-macro-expander name ll body))))))
+            `(table-put '*compiler-macros* ',(compiler-macro-key name)
+                        (host-compile ',(make-host-macro-expander name ll body))))))
   (setf (macro-function 'clysm-sys::%host-inline-struct-accessor)
         (lambda (form env)
           (declare (ignore env))
@@ -164,8 +170,10 @@ it is one that compiled reads trust (runtime/struct.lisp)."
                  (value (cond ((or (numberp vform) (characterp vform) (stringp vform) (keywordp vform)
                                    (null vform) (eq vform t))
                                (list vform))
-                              ((and (consp vform) (eq (car vform) 'quote)) (list (second vform)))
+                              ((and (consp vform) (eq (car vform) 'quote)
+                                    (or (not *static-build*) (plain-constant-p (second vform))))
+                               (list (second vform)))
                               (t nil))))
             (if value
-                `(setf (gethash ',sym *initial-symbol-values*) ',value)
-                `(remhash ',sym *initial-symbol-values*))))))
+                `(table-put '*initial-symbol-values* ',sym ',value)
+                `(table-remove '*initial-symbol-values* ',sym))))))

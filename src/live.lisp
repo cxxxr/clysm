@@ -77,6 +77,11 @@ modules for SAVE-IMAGE (a module of a fasl may be loaded into one that does).")
 (defun live-compile-forms (forms)
   "Compile FORMS into a module linked with the running image.
 Returns (values bytes constants-vector direct-closures)."
+  (if *static-state-p*
+      (call-in-live-state (lambda () (live-compile-forms-1 forms)))
+      (live-compile-forms-1 forms)))
+
+(defun live-compile-forms-1 (forms)
   (let* ((*live-mode* t)
         (*live-packages* t)
         (*read-package* *package*)
@@ -480,6 +485,11 @@ holds several files (SYS::%COMPILE-FILES, a system's files in one module):
 a call from one file to a function another file defines is a guarded direct
 call, as between the forms of a batch of LOAD (*BATCH-FORMS*, the index of
 a form being that of its file: UNIT-BEGIN-FILE)."
+  (if *static-state-p*
+      (call-in-live-state (lambda () (call-with-compilation-unit-1 thunk files)))
+      (call-with-compilation-unit-1 thunk files)))
+
+(defun call-with-compilation-unit-1 (thunk files)
   (let ((*live-mode* t) (*live-packages* t) (*warnings* nil)
         (*batch-forms* (and files (make-hash-table :test 'eq)))
         (*batch-unknown-calls* (and files (make-hash-table :test 'eq)))
@@ -595,6 +605,11 @@ exports of its segment modules (\"u:...\")."
 
 (defun call-in-unit (state thunk)
   "Call THUNK in the unit of STATE (UNIT-OPEN), which keeps what it changes."
+  (if *static-state-p*
+      (call-in-live-state (lambda () (call-in-unit-1 state thunk)))
+      (call-in-unit-1 state thunk)))
+
+(defun call-in-unit-1 (state thunk)
   (progv (mapcar #'car state) (mapcar #'cdr state)
     (unwind-protect (funcall thunk)
       (dolist (c state) (setf (cdr c) (symbol-value (car c)))))))

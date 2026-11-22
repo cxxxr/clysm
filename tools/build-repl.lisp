@@ -26,7 +26,7 @@
         (setf (gethash "CLYSM-SYS" *target-packages*) (find-package :clysm-sys))
         (push "CLYSM-SYS" (gethash "SYSTEM" *target-nicknames*))
         (dolist (f '("src/package" "src/wasm" "src/reader" "src/layout" "src/frontend" "src/types" "src/inline" "src/codegen"
-                     "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "lib/live-image"))
+                     "src/prims" "src/typed" "src/driver" "src/hostenv" "src/live" "src/static" "lib/live-image"))
           (compile-source-file (rpath (concatenate 'string f ".lisp"))))
         ;; the compiler's own functions get fewer copies of others: V8
         ;; compiles them when they are first called, and a first DEFUN

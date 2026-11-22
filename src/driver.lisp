@@ -117,10 +117,23 @@ modules compiled in it import (*LIVE-IMPORTED-HELPERS*).")
     (setf *current-toplevel* (make-lam :id (incf *lam-counter*) :name nil :toplevel t)))
   *current-toplevel*)
 
+(defun emit-pending-forms ()
+  "The toplevel forms that the form just converted needs before it (a
+program built in the image: the functions that make its literal objects,
+CONSTANT-NODE), into the same toplevel function."
+  (loop while *static-pending-forms*
+        do (let ((forms (reverse *static-pending-forms*))
+                 (*toplevel-batch* most-positive-fixnum) (*toplevel-max-weight* most-positive-fixnum))
+             (setq *static-pending-forms* nil)
+             (dolist (f forms)
+               (let ((*current-lam* *current-toplevel*))
+                 (push (convert f (make-cenv)) *toplevel-nodes*))))))
+
 (defun emit-toplevel-form (form env)
   (let* ((lam (ensure-toplevel-lam))
          (*current-lam* lam)
          (node (convert form env)))
+    (when *static-pending-forms* (emit-pending-forms))
     (incf *toplevel-weight* (toplevel-weight node *toplevel-max-weight*))
     (push node *toplevel-nodes*)))
 
@@ -162,7 +175,18 @@ that may not be done twice.")
   (setf form (substitute-host-functions form))
   (let ((*package* *read-package*))
     (handler-bind ((warning #'muffle-warning))
-      (host-eval-form form))))
+      (if *static-image*
+          ;; (a program built in this image: the form is evaluated as
+          ;; COMPILE-FILE evaluates it, and may change the package)
+          (let ((package nil))
+            (call-in-live-state (lambda ()
+                                  ;; (the compiler's functions the form calls name
+                                  ;; packages as they are here)
+                                  (let ((*live-packages* t)) (host-eval-form form))
+                                  (setq package *package*)))
+            (when (and (packagep package) (not (eq package *read-package*)))
+              (setq *read-package* package)))
+          (host-eval-form form)))))
 
 (defparameter *toplevel-operators*
   '(progn eval-when locally macrolet symbol-macrolet defmacro in-package defpackage declaim))
@@ -172,7 +196,9 @@ that may not be done twice.")
   ;; (using host macros), then processed for the target.
   (when (and compile-time-too
              (not (and (consp form) (member (car form) *toplevel-operators*))))
-    (host-eval form)
+    ;; (a file of the runtime compiled in an image of that runtime: what the
+    ;; form defines is there)
+    (unless (member *static-image* '(:runtime :loaded)) (host-eval form))
     (setf compile-time-too nil))
   (loop
     (unless (consp form)
@@ -219,6 +245,17 @@ that may not be done twice.")
       ((in-package defpackage)
        (when *live-mode*
          (return (emit-toplevel-form form env)))
+       ;; a program built in this image: the form is evaluated here, as
+       ;; COMPILE-FILE does, and the program runs it as it is (the packages
+       ;; of the program are the image's: SYMBOL-TARGET-PACKAGE-NAME)
+       (when (eq *static-image* :user)
+         (host-eval form)
+         (return (emit-toplevel-form form env)))
+       ;; (a file that is loaded in the image, :LOADED: its packages are there)
+       (when (eq *static-image* :loaded)
+         (when (eq (car form) 'in-package)
+           (setf *read-package* (or (find-package (second form)) *read-package*)))
+         (return (emit-toplevel-form form env)))
        (when (eq (car form) 'defpackage)
          (process-defpackage form env)
          (return))
@@ -226,6 +263,14 @@ that may not be done twice.")
          (setf *read-package* pkg)
          (return (emit-toplevel-form `(clysm-sys::%in-package ,(target-package-name pkg)) env))))
       (declaim (dolist (d (cdr form)) (compile-time-proclaim d))
+               ;; (a program built in this image: the image's compiler knows
+               ;; the proclamation too, as after COMPILE-FILE)
+               (when (eq *static-image* :user)
+                 (call-in-live-state
+                  (lambda ()
+                    (let ((*live-mode* t) (*live-packages* t))
+                      (dolist (d (cdr form))
+                        (unless (and (consp d) (eq (car d) 'optimize)) (compile-time-proclaim d)))))))
                (return (emit-toplevel-form `(clysm-sys::%proclaim-list ',(cdr form)) env)))
       (clysm-sys::%defun (return (process-defun form env nil)))
       (clysm-sys::%note-compiler-macro
@@ -263,20 +308,29 @@ that may not be done twice.")
       (t (loop for (spec . vars) in (type-decl-specs (list d))
                do (dolist (v vars) (when (and v (symbolp v)) (setf (gethash v *var-types*) spec))))))))
 
-(defun clysm-sys::%compile-time-special (sym) (setf (gethash sym *specials*) t))
+(defun clysm-sys::%compile-time-special (sym) (table-put '*specials* sym t))
 (defun clysm-sys::%compile-time-constant (sym value)
-  (setf (gethash sym *specials*) t)
-  (setf (gethash sym *constants*) (list value)))
+  (table-put '*specials* sym t)
+  ;; (a program built in this image: the constant is the program's; the
+  ;; image has it when the file is loaded, as after COMPILE-FILE)
+  (table-put '*constants* sym (list value) (and *static-build* t)))
 (defun clysm-sys::%host-macro-function (sym) (gethash sym *macros*))
 
 (defun process-defmacro (form env)
+  ;; (a file that is loaded in the image that builds the program, :LOADED:
+  ;; its macros are the image's)
+  (when (eq *static-image* :loaded)
+    (destructuring-bind (name ll &rest body) (cdr form)
+      (return-from process-defmacro (emit-target-macro name ll body env))))
   (destructuring-bind (name ll &rest body) (cdr form)
     (let* ((expander-form (make-host-macro-expander name ll body))
            (fn (global-macro-expander expander-form)))
       (setf (gethash name *macros*) fn)
       ;; non-CL symbols also become host macros, so that host-evaluated
       ;; code (macro bodies, eval-when) can use them
-      (unless (eq (symbol-package name) (find-package :cl))
+      (unless (or (eq (symbol-package name) (find-package :cl))
+                  ;; (the image that builds the program has the macros of its runtime)
+                  (eq *static-image* :runtime))
         (setf (macro-function name) fn))
       ;; target side: install a macro function at load time.  Until the
       ;; runtime has defined DESTRUCTURING-BIND, definitions are deferred.
@@ -393,6 +447,7 @@ destructuring-bind (defined by the runtime)."
                 ((get sym 'clysm-sys::%inline-expansion)
                  (remprop sym 'clysm-sys::%inline-expansion)
                  (emit-toplevel-form `(remprop ',sym 'clysm-sys::%inline-expansion) env)))))
+      (when *static-pending-forms* (emit-pending-forms))
       (push `(:defun ,sym ,fnode) *toplevel-nodes*)
       ;; a small function defined at top level in the image: later calls may
       ;; contain a copy of its body (LIVE-INLINE-CALL)
@@ -687,14 +742,14 @@ whose type then flows), transitively; not those that only signal an error
            (<= (form-size body *runtime-inline-max-size*) *runtime-inline-max-size*)
            (list* 'lambda ll body)))))
 
-(defun compile-source-forms (s path env note)
+(defun compile-source-forms (s path env note &optional (reader (lambda (s) (target-read s nil s))))
   (let ((line-of (or (ignore-errors (source-line-finder path)) (constantly nil)))
         (file (source-file-name path))
         (*current-source* nil))
     (loop
       (let* ((pos (ignore-errors (file-position s)))
              (line (ignore-errors (funcall line-of pos)))
-             (form (target-read s nil s)))
+             (form (funcall reader s)))
         (when (eq form s) (return))
         (setf *current-source* (and line (cons file line)))
         (when (and *record-definitions* pos) (record-definition form path pos))
@@ -710,7 +765,8 @@ whose type then flows), transitively; not those that only signal an error
 
 (defun symbol-target-package-name (sym)
   (let ((p (symbol-package sym)))
-    (and p (gethash p *host->target-name*))))
+    (and p (or (gethash p *host->target-name*)
+               (and *image-packages* (image-target-package p))))))
 
 ;;; A symbol whose name is of at most 255 characters of codes below 256 (all
 ;;; but a few) is a global made empty ((:STRUCT.NEW_DEFAULT :SYMBOL)), whose
@@ -964,6 +1020,10 @@ module and *PREINIT-PARTS*.")
 (defvar *shake-why-file* nil
   "NIL, or the file that BUILD-MODULE writes WRITE-SHAKE-WHY's report to.")
 
+(defvar *built-module-hook* nil
+  "A function called with the module of a program when its functions are
+compiled, before it is encoded (STATIC-FINISH: *LIVE-DUMP*).")
+
 (defun build-module (&key (entry "_start"))
   (let ((*m* (make-wasm-module
               ;; (a shaken program's functions are walked and rewritten after)
@@ -1069,6 +1129,8 @@ module and *PREINIT-PARTS*.")
       (dolist (g (reverse *misc-globals*))
         (destructuring-bind (name type mutable init) g
           (add-global *m* name type mutable init)))
+      ;; (a program built in the image: the packages of its symbols)
+      (when *image-packages* (dolist (s syms) (symbol-target-package-name s)))
       ;; symbol table: #(sym pkgindex external-p ...) and package table
       (let* ((pkgs (remove-duplicates
                     (loop for k being the hash-values of *host->target-name* collect k) :test #'string=))
@@ -1134,6 +1196,7 @@ module and *PREINIT-PARTS*.")
           (funcall *preinit-function* *m* *preinit-parts* #'after-shake)
           (progn (shake-module *m* :drop-symbols *shake-symbols* :keep-globals '(:symtab :pkgtab :strtab))
                  (after-shake *m*))))
+    (when *built-module-hook* (funcall *built-module-hook* *m*))
     (order-functions-by-use *m*)
     (prog1 (let ((bytes (encode-module *m*)))
              ;; (the places of the functions in the table are those that
@@ -1189,18 +1252,28 @@ REPL image, 59000 were the conses of constant lists."
       (dolist (g *closure-globals*) (walk (third g) pinned))
       (dolist (g *misc-globals*) (walk (fourth g) pinned))
       (dolist (c consts) (walk (third c) uses)))
+    ;; (each instruction is put in its place once: copying the initializer
+    ;; of the rest of a list into that of each cons before it took time and
+    ;; space in the square of the length, 4 GB for a list of some ten
+    ;; thousand elements)
     (let ((inlined (make-hash-table :test 'equal)) (out nil))
-      (labels ((subst-init (init)
-                 (loop for i in init
-                       for v = (and (consp i) (eq (car i) :global.get) (consp (cdr i))
-                                    (gethash (second i) inlined))
-                       if v append v else collect i)))
+      (flet ((subst-init (init)
+               (let ((r nil) (stack nil) (l init))
+                 (loop
+                   (cond (l (let* ((i (pop l))
+                                   (v (and (consp i) (eq (car i) :global.get) (consp (cdr i))
+                                           (gethash (second i) inlined))))
+                              (if v
+                                  (progn (when l (push l stack)) (setq l (car v)))
+                                  (push i r))))
+                         (stack (setq l (pop stack)))
+                         (t (return (nreverse r))))))))
         (dolist (c consts)
           (destructuring-bind (name type init) c
-            (let ((init (subst-init init)))
-              (if (and (not (gethash name pinned)) (eql (gethash name uses) 1))
-                  (setf (gethash name inlined) init)
-                  (push (list name type init) out))))))
+            (if (and (not (gethash name pinned)) (eql (gethash name uses) 1))
+                ;; (in a list: an initializer may be empty)
+                (setf (gethash name inlined) (list init))
+                (push (list name type (subst-init init)) out)))))
       (nreverse out))))
 
 (defun with-build-section (bytes)

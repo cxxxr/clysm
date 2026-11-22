@@ -1,5 +1,5 @@
 # Clysm — Common Lisp on WebAssembly GC
-.PHONY: all test test-all test-lib test-system test-downstream npm test-ui test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
+.PHONY: all test test-all test-lib test-static test-system test-downstream npm test-ui test-asdf test-quicklisp test-mcclim test-swank test-threads repl selfhost fixpoint web ansi clean
 
 all: build/clysm-native.wasm
 
@@ -44,6 +44,10 @@ test-ui:
 test-lib:
 	tests/lib/run.sh
 
+# an application of ASDF systems built into one module (bin/clysm build)
+test-static:
+	tests/static/run.sh
+
 # bin/clysm test with an ASDF system and its dependencies (from Quicklisp)
 test-system:
 	tests/system/run.sh
@@ -73,7 +77,8 @@ fixpoint: selfhost
 	node host/run.mjs build/clysmc2.wasm build/clysmc3.wasm $(SRCS)
 	cmp build/clysmc2.wasm build/clysmc3.wasm && echo "fixed point reached"
 
-test-all: test test-lib test-asdf selfhost
+test-all: test test-lib test-asdf test-static selfhost
+	STATIC=1 tools/run-tests.sh
 	INTERP=1 tools/run-tests.sh
 	NATIVE=1 tools/run-tests.sh
 	SELFHOST=1 tools/run-tests.sh

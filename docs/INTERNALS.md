@@ -8637,6 +8637,183 @@ system definitions with the feature `:clysm` (and without `:sbcl`), and
 looks in `contrib/` before the source registry and Quicklisp. Compiling
 takes about 2 seconds for the runtime plus the program's own code.
 
+### Applications in one module (`clysm build`)
+
+Libraries loaded from fasls were the last broad area behind SBCL, and the
+cause was measured (see "V8 inlines no call into another module"): a call
+from a library's module into the runtime's, or into another system's, is a
+`call_ref` of about 2.3 ns that the engine cannot inline, and what was tried
+inside the model of loading (copies of leaf functions, direct imported
+entries) did not pay. `clysm build` is the other route: the systems of an
+application are compiled **with the runtime into one module, as a whole
+program** (direct calls, copies of small functions, the type inference and
+the dispatch over all of it).
+
+```
+clysm build [--system NAME]... [--asd FILE.asd]... [--load FILE]... [--asdf] [--eval FORM]... [-o OUT.wasm] [FILE...]
+```
+
+**What existed, and why it was not enough.** `clysm compile FILE...` (and
+`--system` of `bin/clysm.mjs test`, `tools/system-files.lisp`) compiles the
+files of a system on SBCL, the cross compiler evaluating what the files do
+at compile time *on SBCL*, in mirrored packages (`CLYSM-T/NAME`), with its
+own reader. That holds for plain code and breaks on what real systems do
+when they are compiled: cl-ppcre does not compile (`(declaim
+#.*standard-optimize-settings*)`: the variable is the target's), nor does
+anything that uses a reader macro, a readtable, `#+`/`#-` of features of the
+target's image, ASDF's `:around-compile`, a macro that calls a function of
+the implementation, or a literal that is not a list, vector, string, number
+or symbol; and the files are found by a list, not by the plan ASDF makes.
+The heap image links the modules of an image into one (`linkHeapImage`,
+Lem's desktop application), but not with the runtime: the linked module
+holds the modules of the fasls, the image's own module stays apart, and the
+functions the linked code calls in it remain imports (and the calls between
+files remain calls through the function cells): the engine has two modules
+and inlines nothing across them. (Read from `host/link.mjs`; not measured
+separately, Lem's desktop build needing Electron.)
+
+**The design: the compiler of the REPL image, in a second state**
+(`src/static.lisp`). The image that builds is the REPL image, where ASDF,
+Quicklisp, `compile-file` and the systems' compile-time worlds already
+work. ASDF loads the systems into it as ever (from their fasls, compiling
+those that are missing), and *each source file is compiled into the program
+just before ASDF's load-op of it* (`perform :before` in
+`contrib/asdf-hooks.lisp`, which calls `*static-file-hook*`; within the
+file's `:around-compile` hook): then the files before it are loaded and it
+is not, which is the state `compile-file` compiled it in. The file is read
+by the image's reader (its readtable, `*package*`, `#.`, `#+`), its toplevel
+forms are processed by the whole-program driver (`process-toplevel`), and
+what they evaluate at compile time (`eval-when`, `defmacro`, `in-package`,
+`defpackage`, `declaim`) is evaluated in the image as `compile-file` does.
+* The compiler's state of a whole program (the tables of `reset-compiler`,
+  the state of the code generator, the mode: `*static-state-variables*`) is
+  bound while a file is compiled into the program (`call-in-static-state`)
+  and *unbound* around everything the image itself compiles or evaluates
+  meanwhile (`call-in-live-state`, `src/frontend.lisp`: `host-eval`, the
+  expanders of macros, `live-compile-forms`, the units of `compile-file`),
+  since both are the same compiler. What a form evaluated in the image
+  records for the compiler (a constant, a compiler macro, the inline
+  accessors of a `defstruct`, a special proclamation) goes to the tables of
+  both (`table-put`).
+* The packages of the program are the image's own (`*image-packages*`,
+  `src/reader.lisp`): no mirror, so a symbol a macro interns is the
+  program's.
+* The runtime's files are compiled first, as for any whole program, without
+  evaluating their compile-time forms again (`*static-image*` is
+  `:runtime`: the image is that runtime) and without the image's macros
+  (what the files say alone, as on SBCL): `tests/hello.lisp` built this way
+  is the module `clysm compile` makes but for the order of some functions
+  (5.248 against 5.245 MB), and the 116 files of `tests/cases` pass
+  (`STATIC=1 tools/run-tests.sh`, part of `make test-all`).
+* The files given after the systems are the program's own: compiled, not
+  loaded (their `defun`s are defined in the image after each file, for the
+  macros of the next, as `clysm compile` does on SBCL); `#+clysm-static`
+  reads there. The `--eval` forms are compiled last.
+* **Literal objects.** A whole program holds numbers, characters, symbols,
+  strings, conses, simple vectors and arrays as globals. Libraries have
+  other constants (a vector of octets or a hash table read with `#.`, a
+  pathname, an instance with `make-load-form`, a list that contains
+  itself): `constant-node` makes such a one a cell whose car is the object
+  once made and whose cdr the function that makes it, set by a toplevel
+  form put before the one being compiled (`emit-pending-forms`): an
+  instance, structure or hash table by its `make-load-form`, the objects in
+  those forms the same way; anything else read from its text as a fasl
+  writes it. Each object is made once, when first referred to, and is the
+  same object at every reference.
+* **ASDF in the program** (`--asdf`, or when a system depends on `asdf` or
+  `uiop`: Lem asks `asdf:system-relative-pathname` when it is loaded):
+  `third_party/asdf/asdf.lisp` is compiled into the program as a file that
+  is loaded in the image and cannot be evaluated again (`:loaded`: no
+  compile-time evaluation, the image's macros), after the forms the REPL
+  image runs when it starts (the features of the host, the default
+  directory); then a form registers the systems of the program (and the
+  systems their definition files are named after) as immutable, with
+  version and definition file. 2.8 MB.
+* Two things found on the way are in the whole-program compiler for all:
+  `inline-single-use-constants` copied the initializer of the rest of a
+  list into each cons before it (the square of the length: 4 GB and no end
+  for Babel's tables of ten thousand entries; now each instruction is
+  placed once), and `long-constant-p` and `const-global` recursed along
+  the cdr of a list (the engine's stack); both walk a list in a loop now.
+
+**What differs from loading the systems.** A call is bound to the
+definition in the program, as in a file given to `compile-file` (CLHS
+3.2.2.3 allows it within a file; here it holds across files and systems):
+a redefinition when the program runs reaches `funcall`, `apply`, `#'name`
+through the cell, and functions declaimed `notinline`. A method added, a
+class redefined, a special variable set work as ever. The program has no
+compiler (`eval` interprets). A file's compile-time forms are evaluated
+once more than by `compile-file` and `load` when its fasl is also compiled
+in the same run. A system loaded into the image before the build is not in
+the program (a warning says so).
+
+**A call with keywords of a generic function** was the one case found where
+the whole program was slower than the image: `(ppcre:scan scanner string
+:start s :end e)` in `do-matches` made a vector of the eight arguments for
+the generic entry at each call, where code compiled in the image calls the
+keyed entry of the function, its layout tested (`live-keyed-call-code`,
+`*live-key-layout-hook*`). The program's files are now compiled with that
+hook (the layout of the function as it is in the image, tested when the
+call runs): `a-ppcre-tokens` built 57 -> 49 ms (46 loaded from fasls).
+`clysm compile` on SBCL has no image to ask and still makes the vector.
+
+**Measured** (2026-11-23, `MODE=static tools/bench-libs.sh FILE` and
+`MODE=static tools/bench-lem.sh FILE` against the same without `MODE`, on
+one slot, alternately, two rounds of three runs; times SBCL's):
+
+| | loaded from fasls | one module |
+|---|---|---|
+| `bench/libs.lisp`, geometric mean | 1.00, 1.00 | 0.79, 0.79 |
+| `l-alexandria-tests` | 0.26 | 0.07 |
+| `l-alexandria-utils` | 1.26, 1.32 | 1.20, 1.16 |
+| `l-split-sequence` | 1.21, 1.21 | 0.99, 1.04 |
+| `l-ppcre-scan` | 1.18, 1.21 | 1.21, 1.12 |
+| `l-ppcre-replace` | 1.38, 1.41 | 1.47, 1.43 |
+| `l-babel` | 1.51, 1.43 | 1.68, 1.73 |
+| `bench/apps.lisp`, geometric mean | 1.06, 1.16 (1.17, 1.15 in a quieter run) | 1.07, 1.07 (1.04, 1.08) |
+| `a-esrap` | 1.67, 1.48 (1.76, 1.63) | 1.39, 1.37 |
+| `a-yason-parse` | 1.18, 1.35 | 1.13, 1.11 |
+| `a-cl-json-decode` | 1.17, 1.45 | 1.33, 1.35 (1.14, 1.23) |
+| `a-ppcre-tokens` | 1.00, 1.05 | 1.19, 1.16 |
+| Lem (`tools/bench-lem.sh`), geometric mean | 1.03, 1.09 (1.05) | 0.92, 0.90 (0.86 in the quieter run) |
+| `l-line-down`, `l-page-down` | 1.24, 1.25 | 1.00-1.10, 0.98-1.06 |
+| `l-string-width` | 1.16, 1.10 | 0.82, 0.79 |
+| `l-type-redisplay` | 1.41, 1.97 | 1.25, 1.29 |
+| `l-syntax-scan` | 1.27, 1.23 | 1.32, 1.31 |
+
+(The machine was busy with tests during the second run; the first, in
+parentheses, had the keyword calls not yet fixed.) What calls the runtime
+and other systems much gains (Alexandria, split-sequence, esrap, yason,
+Lem's buffer and redisplay code: 0.6 to 0.9 of the time). **What is slower
+built than loaded**, and not explained: `l-babel` (108-123 ms against
+99-110; its decoders are loops within one function, and a probe of each
+part read `octets-to-string` 48 against 40 ms), `l-ppcre-replace` and
+`a-ppcre-tokens` by 5-15%, `l-syntax-scan` by 5%: code that is closures
+calling closures inside one system, which has nothing to gain from the
+module, in a module of 20000 functions instead of 2000. The functions
+compared were the same Wasm but for the names; the share of small functions
+(V8's inlining budget) is 59-61% in these modules, so it is not that.
+
+Building: `bench/libs.lisp`'s seven systems (76 files) 11 s, of which the
+runtime 3 s; Lem's benchmark (41 systems, 397 files, with ASDF) 80-105 s
+and a module of 31 MB; a small program 3.4 s (`clysm compile` on SBCL takes
+about 2 s). The REPL image is 59 KB larger (`src/static.lisp` and the
+constants' code: 8.596 -> 8.655 MB); the shaken module of one export
+(`tests/lib/one.max-bytes`) is unchanged, the mode adding nothing to
+programs not built with it. `tests/static/` (`make test-static`) builds an
+application of two systems and a file: macros and a function of
+`eval-when` across systems, a reader macro, `defconstant`s made by a macro,
+`#.` constants (a hash table, octets, a pathname, instances with
+`make-load-form` and their identity), a method on another system's generic
+function, `intern` at run time and a `notinline` function redefined.
+
+Next: `--shake` for such a program (the module carries all of the runtime
+and of the systems); the keyed entry for keyword calls of generic functions
+in `clysm compile` too (the layouts of the generic functions the program
+itself defines are known when the call is compiled); a heap image of the
+built program for its start (the toplevel forms of all its files run at each
+start); the module in a browser page (`host/web`).
+
 ### Where functions are, in stack traces
 
 The compiler records the file and line of each toplevel form, and the

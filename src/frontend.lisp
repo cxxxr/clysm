@@ -111,6 +111,59 @@ says otherwise.  COMPILE-FILE binds it around a file, as SBCL's policy.")
 (defvar *struct-constructors* (make-hash-table :test 'eq)
   "In the image: the name of a constructor of a structure -> the name of the structure.")
 
+;;; A program compiled as a whole in the image that builds it
+;;; (src/static.lisp): the compiler has two states there, the image's own
+;;; (code compiled into the image: what the program's macros and EVAL-WHEN
+;;; forms run) and that of the program being built.
+(defvar *static-image* nil
+  "While a program is compiled as a whole in the image that builds it:
+:RUNTIME for the files the image itself is made of (what they define at
+compile time is in effect in the image already), :LOADED for a file that is
+loaded in the image and cannot be evaluated again (ASDF), :USER for the others.")
+(defvar *static-build* nil
+  "The program being built in this image: #(static-state live-state sink ...),
+the states ((variable . value) ...) (src/static.lisp).")
+(defvar *static-state-p* nil "True while the state of *STATIC-BUILD*'s program is bound.")
+
+(defun call-in-live-state (thunk)
+  "Call THUNK with the compiler in the image's own state: where it is when
+no program is being built, or when the state of the program built is not
+bound.  The program's state is kept, and bound again after (THUNK may have
+added to the program: a system loaded by a form evaluated at compile time)."
+  (if (not *static-state-p*)
+      (funcall thunk)
+      (let ((static (svref *static-build* 0)) (live (svref *static-build* 1)))
+        (dolist (c static) (setf (cdr c) (symbol-value (car c))))
+        (multiple-value-prog1
+            (progv (mapcar #'car live) (mapcar #'cdr live)
+              (unwind-protect (funcall thunk)
+                (dolist (c live) (setf (cdr c) (symbol-value (car c))))))
+          (dolist (c static) (set (car c) (cdr c)))))))
+
+(defun table-put (variable key value &optional program-only)
+  "Set KEY in the table that is the value of VARIABLE, and in that of the
+program being built in this image (the form that records KEY was evaluated
+in the image's state: an EVAL-WHEN of the program); with PROGRAM-ONLY, or
+for a file of the runtime (what it records is the image's already), only in
+the program's."
+  (let ((table (symbol-value variable))
+        (sink (and *static-build* (cdr (assoc variable (svref *static-build* 2))))))
+    (cond ((or (null sink) (eq sink table)) (setf (gethash key table) value))
+          (t
+           (unless (or program-only (member (svref *static-build* 3) '(:runtime :loaded)))
+             (setf (gethash key table) value))
+           (setf (gethash key sink) value)))
+    value))
+
+(defun table-remove (variable key)
+  "As TABLE-PUT: KEY is no longer in the tables."
+  (let ((table (symbol-value variable))
+        (sink (and *static-build* (cdr (assoc variable (svref *static-build* 2))))))
+    (unless (and sink (not (eq sink table)) (member (svref *static-build* 3) '(:runtime :loaded)))
+      (remhash key table))
+    (when sink (remhash key sink))
+    nil))
+
 (defvar *live-macro-hook* nil "symbol -> macro function or NIL")
 (defvar *live-special-hook* nil "symbol -> true if proclaimed special")
 (defvar *live-constant-hook* nil "symbol -> (values value constantp)")
@@ -635,9 +688,126 @@ where it is used by a (LOCALLY (DECLARE (INLINE FIND-CHUNK)) ...)).")
 ;;; Conversion
 ;;; ------------------------------------------------------------
 
+;;; The constants of a whole program are globals of the module, made of
+;;; numbers, characters, symbols, strings, conses, simple vectors and arrays
+;;; (CONST-GLOBAL).  A program built in the image (src/static.lisp) may have
+;;; any object that a fasl can hold as a constant (a vector of octets, a hash
+;;; table, a pathname, a list that contains itself: read by #. or made by a
+;;; macro of a library): such a one is made when the program starts, read
+;;; from its text as a fasl writes it or by its MAKE-LOAD-FORM.
+
+(defun plain-constant-p (obj)
+  "OBJ can be a constant of a whole program as it is (CONST-GLOBAL)."
+  (let ((seen nil))
+    (labels ((enter (x)
+               ;; true if X is being walked (a cycle); it is then noted
+               (unless seen (setq seen (make-hash-table :test 'eq)))
+               (case (gethash x seen)
+                 (:open (return-from plain-constant-p nil))
+                 (:done nil)
+                 (t (setf (gethash x seen) :open) t)))
+             (walk (x)
+               (cond ((or (symbolp x) (numberp x) (characterp x)) t)
+                     ((consp x)
+                      (let ((cells nil))
+                        (do ((l x (cdr l)))
+                            ((atom l) (walk l))
+                          (unless (enter l) (return))
+                          (push l cells)
+                          (walk (car l)))
+                        (dolist (c cells) (setf (gethash c seen) :done))))
+                     ((stringp x) (or (simple-string-p x) (return-from plain-constant-p nil)))
+                     ((simple-vector-p x)
+                      (when (enter x)
+                        (dotimes (i (length x)) (walk (svref x i)))
+                        (setf (gethash x seen) :done)))
+                     ((simple-bit-vector-p x) t)
+                     ((and (arrayp x) (not (vectorp x)) (eq (array-element-type x) t)
+                           (not (adjustable-array-p x)))
+                      (when (enter x)
+                        (dotimes (i (array-total-size x)) (walk (row-major-aref x i)))
+                        (setf (gethash x seen) :done)))
+                     (t (return-from plain-constant-p nil)))))
+      (walk obj)
+      t)))
+
+;;; Such a constant is a cell (a cons, which the module holds) whose car is
+;;; the object once it is made and whose cdr is the function that makes it,
+;;; set by a toplevel form put before the one being compiled
+;;; (*STATIC-PENDING-FORMS*): the object is made when it is first referred
+;;; to, once, and every reference of the program to the same object is to
+;;; that one.  An instance, a structure or a hash table is made by its
+;;; MAKE-LOAD-FORM (the objects in its forms the same way); anything else is
+;;; read from its text as a fasl writes it, the instances in it by reference
+;;; (SYS::%FASL-REF, as in a fasl).
+
+(defvar *static-literal-cells* nil "A program built in the image: object -> its cell (an EQ table).")
+(defvar *static-pending-forms* nil
+  "A program built in the image: toplevel forms to put before the one being converted, last first.")
+(defvar *static-literal-counter* 0)
+
+(defun static-literal-builder (obj cell)
+  "The form of a function of no arguments that makes OBJ, puts it in CELL and returns it."
+  (if (clysm-sys::%externalizable-p obj)
+      (multiple-value-bind (creation init)
+          (let ((r nil)) (call-in-live-state (lambda () (setq r (multiple-value-list (make-load-form obj)))))
+            (values (first r) (second r)))
+        (let ((o (gensym "OBJECT")))
+          `(lambda ()
+             (let ((,o ,creation))
+               (rplaca ',cell ,o)
+               ,@(when init (list init))
+               ,o))))
+      (let* ((inner (clysm-sys::%literal-objects obj nil))
+             (numbers (mapcar (lambda (y) (declare (ignore y)) (incf *static-literal-counter*)) inner))
+             (memo (make-hash-table :test 'eq)))
+        (labels ((copy (x)
+                   (cond ((clysm-sys::%externalizable-p x)
+                          (clysm-sys::%make-fasl-marker "static" (nth (position x inner) numbers)))
+                         ((consp x)
+                          (or (gethash x memo)
+                              (let ((c (cons nil nil)))
+                                (setf (gethash x memo) c)
+                                ;; (along the list in a loop)
+                                (do ((l x (cdr l)) (tail c))
+                                    (nil)
+                                  (setf (car tail) (copy (car l)))
+                                  (let ((next (cdr l)))
+                                    (cond ((and (consp next) (not (gethash next memo)))
+                                           (let ((n (cons nil nil)))
+                                             (setf (gethash next memo) n (cdr tail) n tail n)))
+                                          (t (setf (cdr tail) (copy next)) (return)))))
+                                c)))
+                         ((simple-vector-p x)
+                          (or (gethash x memo)
+                              (let ((v (make-array (length x))))
+                                (setf (gethash x memo) v)
+                                (dotimes (i (length x) v) (setf (svref v i) (copy (svref x i)))))))
+                         (t x))))
+          (let ((text (let ((printed (if inner (copy obj) obj)))
+                        (clysm-sys::%call-with-fasl-syntax (lambda () (prin1-to-string printed))))))
+            `(lambda ()
+               ,@(loop for y in inner for n in numbers
+                       collect `(clysm-sys::%fasl-set "static" ,n ',y))
+               (car (rplaca ',cell
+                            (clysm-sys::%call-with-fasl-syntax
+                             (lambda () (values (read-from-string ,text))))))))))))
+
+(defun constant-node (obj env)
+  "The node of the constant OBJ."
+  (declare (ignorable env))
+  (if (and (member *static-image* '(:user :loaded)) (not (or (symbolp obj) (numberp obj) (characterp obj)))
+           (not (plain-constant-p obj)))
+      (let ((cell (gethash obj *static-literal-cells*)) (c (gensym "CELL")))
+        (unless cell
+          (setq cell (setf (gethash obj *static-literal-cells*) (list nil)))
+          (push `(rplacd ',cell ,(static-literal-builder obj cell)) *static-pending-forms*))
+        (convert `(let ((,c ',cell)) (or (car ,c) (funcall (cdr ,c)))) (make-cenv)))
+      `(:const ,obj)))
+
 (defun convert (form env)
   (cond ((symbolp form) (convert-symbol form env))
-        ((atom form) `(:const ,form))
+        ((atom form) (constant-node form env))
         ((consp (car form))
          (if (eq (caar form) 'lambda)
              (convert-lambda-application form env)
@@ -683,7 +853,11 @@ character, symbol or string, or a list or simple vector of them (to DEPTH)."
                                ;; (a constant that a fasl cannot write, a
                                ;; package...: COMPILE-FILE would leave the
                                ;; form as source, compiled at every load)
-                               (if (printable-constant-p v 3)
+                               (if (and (printable-constant-p v 3)
+                                        ;; (a program built in the image: as a
+                                        ;; constant of its own files, above)
+                                        (or (not *static-image*)
+                                            (numberp v) (characterp v) (symbolp v) (stringp v)))
                                    `(:const ,v)
                                    `(:sref ,sym))))
                             (t (unless (special-var-p sym)
@@ -1397,7 +1571,7 @@ the system.)"
 (defun convert-special (form env)
   (let ((op (car form)))
     (ecase op
-      (quote `(:const ,(second form)))
+      (quote (constant-node (second form) env))
       (function (convert-function-designator (second form) env))
       (if (destructuring-bind (test then &optional else) (cdr form)
             `(:if ,(convert-value test env) ,(convert then env) ,(convert else env))))
@@ -1631,7 +1805,7 @@ leaving quoted data alone."
   (setf lambda-form (substitute-host-functions lambda-form))
   (let ((*package* (find-package :clysm)))
     (handler-bind ((warning #'muffle-warning))
-      (compile nil lambda-form))))
+      (call-in-live-state (lambda () (compile nil lambda-form))))))
 
 (defun local-macro-expander (lambda-form)
   "The expander of a local macro (MACROLET) made of LAMBDA-FORM.  In Clysm
@@ -1640,7 +1814,8 @@ its own, which made compiling a form with a LOOP (whose expansion has a
 MACROLET of LOOP-FINISH) twice as long."
   #-clysm (host-compile lambda-form)
   #+clysm (let ((*package* (find-package :clysm)))
-            (eval `(function ,(substitute-host-functions lambda-form)))))
+            (call-in-live-state
+             (lambda () (eval `(function ,(substitute-host-functions lambda-form)))))))
 
 (defparameter *macro-compile-after* 8
   "How many expansions of a global macro defined in the image (DEFMACRO in
