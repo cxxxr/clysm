@@ -103,6 +103,10 @@ const placesDts = fs.readFileSync(path.join(dir, 'places.d.ts'), 'utf8');
 assert.match(placesDts, /import type \{ Place \} from '\.\/package\.js';\nexport type Places = Place\[\];/);
 assert.match(placesDts, /export declare const firstPlace: \(places: Places\) => Place;/);
 assert.doesNotMatch(placesDts, /Counter/);
+assert.match(fs.readFileSync(path.join(dir, 'types.d.ts'), 'utf8'), /export interface Point \{ x: number \}/);
+assert.ok(fs.existsSync(path.join(dir, `types${ext}`)));
+assert.equal(new lib.Widget(3).n, 3);
+assert.match(dts, /export declare class Widget \{\n  constructor\(\.\.\.args: any\[\]\);/);
 
 if (lazy) assert.ok(loaded().instance);
 lib.say('to the standard error');

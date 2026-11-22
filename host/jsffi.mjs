@@ -31,9 +31,10 @@ function lispResult(r) {
 const implementation = Symbol.for('clysm.class');
 
 export function makeClass(spec, load = null, classes = {}) {
+  // (its own: a class that extends one of another library would find that one's)
   const functions = () => {
-    if (!C[implementation] && load) load();
-    if (!C[implementation]) throw new Error(`the class ${spec.name} has no functions: its Lisp library did not define it`);
+    if (!Object.hasOwn(C, implementation) && load) load();
+    if (!Object.hasOwn(C, implementation)) throw new Error(`the class ${spec.name} has no functions: its Lisp library did not define it`);
     return C[implementation];
   };
   // (own properties alone: a class named constructor or toString is no function of Object)

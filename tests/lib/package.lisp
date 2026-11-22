@@ -97,6 +97,9 @@ export type Places = Place[];" :entry "places")
 (js:export "firstPlace" (lambda (places) (js:get places 0)) :entry "places"
            :type "(places: Places) => Place")
 (js:export "placesVersion" 2 :entry "places" :type "number")
+;; an entry of types alone, and a class of no declaration of its own
+(js:declare-types "export interface Point { x: number }" :entry "types")
+(js:export "Widget" (js:define-class "Widget" :constructor (lambda (this n) (js:set this "n" n))))
 ;; (an entry's export named as the binding its eager module had)
 (js:export "lib" "a constant named lib" :entry "places" :type "string")
 ;; written to the standard output: on the standard error, with :output :error

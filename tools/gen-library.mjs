@@ -53,6 +53,8 @@ const classOf = (k, v) => {
   return name === undefined ? null : info.classes[name];
 };
 
+// The declaration of a class of no TYPE: any arguments, any members.
+const fallbackDeclaration = (name) => `declare class ${name} {\n  constructor(...args: any[]);\n  [key: string]: any;\n}`;
 const typeOf = (k, f) => {
   const given = info.exports[k]?.type ?? (typeof f === 'function' ? f.clysmType : undefined);
   if (given) return given;
@@ -70,7 +72,7 @@ const declarationsOfExports = (mine) => {
 const declarationOf = (k, f, declared) => {
   const spec = classOf(k, f);
   if (spec) {
-    const text = spec.type ? spec.type.trim() : `declare class ${spec.name} {\n  [key: string]: any;\n}`;
+    const text = spec.type ? spec.type.trim() : fallbackDeclaration(spec.name);
     if (spec.name === k) return `export ${text}`;
     const first = !declared.has(spec.name);
     declared.add(spec.name);
@@ -90,7 +92,7 @@ const unnamedClasses = (mine) => {
     const spec = identifier.test(k) ? null : classOf(k, f);
     if (spec && !declared.has(spec.name)) {
       declared.add(spec.name);
-      texts.push(`${spec.type ? spec.type.trim() : `declare class ${spec.name} {\n  [key: string]: any;\n}`}\n`);
+      texts.push(`${spec.type ? spec.type.trim() : fallbackDeclaration(spec.name)}\n`);
     }
   }
   return texts.join('');
@@ -98,7 +100,9 @@ const unnamedClasses = (mine) => {
 
 // The modules of the entries (JS:EXPORT's ENTRY), each with the exports
 // given to it: those of no entry are NAME.mjs's.
-const entryNames = [...new Set(named.map(([k]) => entryOf(k)).filter((e) => e !== null))];
+// (an entry of declarations alone, a subpath of types, is one too)
+const entryNames = [...new Set([...named.map(([k]) => entryOf(k)), ...info.declarations.map((d) => d.entry ?? null)]
+  .filter((e) => e !== null))];
 for (const e of entryNames) {
   if (!identifier.test(e.replace(/-/g, '_')) || e === name) throw new Error(`the entry ${JSON.stringify(e)} is no name of a module beside ${name}.mjs`);
 }
