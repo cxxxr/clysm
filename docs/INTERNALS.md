@@ -6926,6 +6926,15 @@ What makes the code fast:
   clauses of the runtime's `typecase`s no longer test a kind code each),
   the module of one export 3.5 KB larger (907,414 → 910,925).
 
+* **Literal identity at source compilation boundaries (2026-11-23).**
+  Cons coalescing is gated by the lambda's program provenance, recorded
+  when the frontend creates it, rather than by its optimization policy.
+  Runtime literals stay distinct; live compilation returns the original
+  object before considering coalescing. `literal-cons-identity.lisp`
+  checks EVAL and COMPILE against the actual objects in their source,
+  distinct literals from source LOAD, and equality after COMPILE-FILE.
+  It passes in both whole-program and native script modes.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL

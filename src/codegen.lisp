@@ -167,10 +167,12 @@ runtime (:STRING-HASH in src/prims.lisp)."
     ;; constants) is that one: literals that are similar in one compilation
     ;; are one object (as the strings are; SBCL's fasl dumper does the
     ;; same), so that EQUAL, TREE-EQUAL and EQUALP of them are settled by EQ.
-    ;; Not in the runtime's own code (a function without a SAFETY: see
-    ;; CONVERT-LAMBDA), which keeps state in quoted conses.
+    ;; Only in a module compiled from files (a whole program, a library:
+    ;; CLHS 3.2.4.4 allows it of COMPILE-FILE; code loaded or evaluated in
+    ;; the image is live, above, and keeps each literal), and not in the
+    ;; runtime's own code, which keeps state in quoted conses.
     (when (and (consp obj) (not (gethash obj table))
-               *fs* (lam-p (fstate-lam *fs*)) (lam-safety (fstate-lam *fs*)))
+               *fs* (lam-p (fstate-lam *fs*)) (lam-program-p (fstate-lam *fs*)))
       (let* ((key (list :cons (const-init-code (car obj)) (const-init-code (cdr obj))))
              (same (gethash key *const-string-table*)))
         (if same
