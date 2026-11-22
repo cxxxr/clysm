@@ -11,7 +11,8 @@
            "AWAIT" "ASYNC-FUNCTION" "CAN-AWAIT-P" "ASYNC" "AWAIT-ALL"
            "JS-ERROR" "JS-ERROR-VALUE" "JS-ERROR-NAME" "JS-ERROR-MESSAGE" "EXPORT"
            "MODULE" "REQUIRE" "IMPORT" "TO-OCTETS" "FROM-OCTETS"
-           "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"))
+           "THROW" "DEFINE-CLASS" "DECLARE-TYPES" "LIBRARY-OPTIONS"
+           "GET-RAW" "CALL-RAW" "FUNCALL-RAW" "RAW-FUNCTION"))
 
 (defun js:js-value-p (x) (%foreignp x))
 
@@ -106,9 +107,13 @@ JavaScript that it leaves throws what was thrown, as it was."))
   "JavaScript error: ~@[~A: ~]~A" (%condition-slot c 'name) (%condition-slot c 'message))
 
 (defun %js-result (r)
+  "The value R of a call, converted (JS:TO-LISP), after %JS-RESULT-RAW."
+  (js:to-lisp (%js-result-raw r)))
+
+(defun %js-result-raw (r)
   "Signal a Lisp error for a JavaScript exception boxed by the host's apply:
 the original condition if it is the Error of a Lisp error (a Lisp function
-called from JavaScript), otherwise a JS:JS-ERROR."
+called from JavaScript), otherwise a JS:JS-ERROR.  Otherwise R, unconverted."
   (when (eql (%js-typeof r) 5)
     (let ((msg (%js-get r (%js-string "__clysm_js_error"))))
       (when (eql (%js-typeof msg) 4)
@@ -124,7 +129,7 @@ called from JavaScript), otherwise a JS:JS-ERROR."
                                 (let ((name (%js-get value (%js-string "name"))))
                                   (and (eql (%js-typeof name) 4) (js:to-lisp name))))
                      :message (js:to-lisp msg)))))))
-  (js:to-lisp r))
+  r)
 
 (defun js:call (object method &rest args)
   (let ((o (js:to-js object)))
@@ -132,6 +137,25 @@ called from JavaScript), otherwise a JS:JS-ERROR."
 
 (defun js:funcall (function &rest args)
   (%js-result (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
+
+;;; The same, giving the value as JavaScript has it (not converted by
+;;; JS:TO-LISP): a value of JavaScript (JS:JS-VALUE-P), for which JS:TYPEOF
+;;; tells undefined, null and false apart, and a string that stays
+;;; JavaScript's (a long text handed on, or read a part of, without being
+;;; copied into Lisp).
+
+(defun js:get-raw (object key)
+  "The property KEY of OBJECT, as JavaScript has it (see JS:GET)."
+  (%js-get (js:to-js object) (js:to-js key)))
+
+(defun js:call-raw (object method &rest args)
+  "JS:CALL, giving the value as JavaScript has it."
+  (let ((o (js:to-js object)))
+    (%js-result-raw (%js-apply (%js-get o (js:to-js method)) o (%js-args args)))))
+
+(defun js:funcall-raw (function &rest args)
+  "JS:FUNCALL, giving the value as JavaScript has it."
+  (%js-result-raw (%js-apply (js:to-js function) (%js-special 1) (%js-args args))))
 
 ;;; A name written as a literal string (a property, a method, a global) is a
 ;;; string of Lisp, and made a string of JavaScript at every call: reading a
@@ -170,6 +194,12 @@ called from JavaScript), otherwise a JS:JS-ERROR."
 
 (define-compiler-macro js:call (&whole form object method &rest args)
   (if (stringp method) `(js:call ,object (%js-literal-name ,method) ,@args) form))
+
+(define-compiler-macro js:get-raw (&whole form object key)
+  (if (stringp key) `(js:get-raw ,object (%js-literal-name ,key)) form))
+
+(define-compiler-macro js:call-raw (&whole form object method &rest args)
+  (if (stringp method) `(js:call-raw ,object (%js-literal-name ,method) ,@args) form))
 
 (define-compiler-macro js:global (&whole form &optional name)
   (if (stringp name) `(js:global (%js-literal-name ,name)) form))
@@ -284,6 +314,13 @@ of the place where it was signalled), in the object that tells the host to throw
 (defvar *js-raw-functions* nil
   "The functions given their arguments as JavaScript has them (JS:EXPORT's
 :RAW): an EQ table of them, made with the first.")
+
+(defun js:raw-function (function)
+  "A function that calls FUNCTION, to give JavaScript (an argument of
+JS:CALL, a listener, a callback): JavaScript gives it its arguments as
+JavaScript has them, not converted by JS:TO-LISP.  FUNCTION itself, given to
+JavaScript, still has its arguments converted."
+  (%js-raw-function function))
 
 (defun %js-raw-function (function)
   "A function of its own that calls FUNCTION, and that JavaScript gives its

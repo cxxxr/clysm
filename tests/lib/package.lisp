@@ -135,3 +135,18 @@ export type Places = Place[];" :entry "places")
 (js:export "JSON" "json" :type "string")
 (js:export "process" "process" :type "string")
 (js:export "Hidden" 123 :type "number")
+
+;; Values as JavaScript has them: JS:GET-RAW, JS:CALL-RAW, JS:FUNCALL-RAW, JS:RAW-FUNCTION.
+(flet ((kind (v) (string-downcase (symbol-name (js:typeof v)))))
+  (js:export "rawKinds"
+             (lambda (o f)
+               (list (kind (js:get-raw o "u")) (kind (js:get-raw o "n")) (kind (js:get-raw o "f"))
+                     (kind (js:call-raw o "itself")) (kind (js:funcall-raw f))
+                     ;; a callback given its arguments unconverted
+                     (js:funcall f (js:raw-function (lambda (x) (kind x))))))
+             :type "(o: object, f: (callback?: (x: unknown) => string) => unknown) => string[]")
+  ;; a part of a long text parsed where it is: the text and the part stay JavaScript's
+  (js:export "parsePart"
+             (lambda (text start end)
+               (js:call (js:global "JSON") "parse" (js:call-raw text "slice" start end)))
+             :raw t :type "(text: string, start: number, end: number) => unknown"))
