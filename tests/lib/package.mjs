@@ -99,6 +99,7 @@ assert.match(dts, /export declare const parseLine: \(text: string\) => Place;/);
 assert.match(dts, /export declare class Counter \{\n  constructor\(start\?: number\);/);
 assert.match(dts, /export declare class PlaceError extends Error \{/);
 assert.match(dts, /export \{ Counter as Tally \};/);
+assert.match(dts, /export declare const Typed: \{ new \(n: number\): \{ n: number \}; readonly kind: 'typed' \};/);
 const placesDts = fs.readFileSync(path.join(dir, 'places.d.ts'), 'utf8');
 assert.match(placesDts, /import type \{ Place \} from '\.\/package\.js';\nexport type Places = Place\[\];/);
 assert.match(placesDts, /export declare const firstPlace: \(places: Places\) => Place;/);

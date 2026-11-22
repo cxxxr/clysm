@@ -119,3 +119,6 @@ export type Places = Place[];" :entry "places")
                                   :constructor (lambda (this value) (js:set this "kind" (string-downcase (symbol-name (js:typeof value)))))
                                   :methods (list "same" (lambda (this value) (declare (ignore this)) value))
                                   :type "declare class Box { readonly kind: string; same<T>(value: T): T }"))
+
+;; a class exported with a type of its own
+(js:export "Typed" (js:define-class "Typed") :type "{ new (n: number): { n: number }; readonly kind: 'typed' }")

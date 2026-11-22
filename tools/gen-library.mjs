@@ -71,7 +71,8 @@ const declarationsOfExports = (mine) => {
 };
 const declarationOf = (k, f, declared) => {
   const spec = classOf(k, f);
-  if (spec) {
+  // (a type JS:EXPORT gave a class is its declaration: that of the class itself is not needed)
+  if (spec && !info.exports[k]?.type) {
     const text = spec.type ? spec.type.trim() : fallbackDeclaration(spec.name);
     if (spec.name === k) return `export ${text}`;
     const first = !declared.has(spec.name);
@@ -89,7 +90,7 @@ const unnamedClasses = (mine) => {
   const declared = new Set(mine.map(([k, f]) => classOf(k, f)?.name).filter(Boolean));
   const texts = [];
   for (const [k, f] of entries) {
-    const spec = identifier.test(k) ? null : classOf(k, f);
+    const spec = identifier.test(k) || info.exports[k]?.type ? null : classOf(k, f);
     if (spec && !declared.has(spec.name)) {
       declared.add(spec.name);
       texts.push(`${spec.type ? spec.type.trim() : fallbackDeclaration(spec.name)}\n`);
@@ -214,7 +215,7 @@ export interface LoadOptions {
   require?: (specifier: string) => unknown;
 }
 ${declarationsOf(null)}${unnamedClasses(own)}export interface Exports {
-${entries.map(([k, f]) => `  ${identifier.test(k) ? k : JSON.stringify(k)}: ${entryOf(k) !== null && identifier.test(k) ? `typeof import('./${entryOf(k)}.js').${k}` : classOf(k, f) ? `typeof ${classOf(k, f).name}` : typeOf(k, f)};`).join('\n')}
+${entries.map(([k, f]) => `  ${identifier.test(k) ? k : JSON.stringify(k)}: ${entryOf(k) !== null && identifier.test(k) ? `typeof import('./${entryOf(k)}.js').${k}` : classOf(k, f) && !info.exports[k]?.type ? `typeof ${classOf(k, f).name}` : typeOf(k, f)};`).join('\n')}
 }
 export interface Library {
   instance: WebAssembly.Instance;

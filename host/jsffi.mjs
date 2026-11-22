@@ -31,6 +31,10 @@ function lispResult(r) {
 const implementation = Symbol.for('clysm.class');
 
 export function makeClass(spec, load = null, classes = {}) {
+  // (a name of a class of JavaScript: the registries are objects whose keys are the names)
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spec.name) || spec.name === '__proto__') {
+    throw new Error(`a class of a Lisp library is named as a class of JavaScript: not ${JSON.stringify(spec.name)}`);
+  }
   // (its own: a class that extends one of another library would find that one's)
   const functions = () => {
     if (!Object.hasOwn(C, implementation) && load) load();
