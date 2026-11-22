@@ -1147,14 +1147,29 @@ the depth of copies, one more."
                ,@(when decls `((declare ,@decls)))
                (block ,name ,@forms))))))))
 
+(defvar *program-inline-expansions* nil
+  "In a whole program, once its runtime is compiled (FINISH-RUNTIME): symbol
+-> the source (LAMBDA lambda-list . body) of a function of the program
+declaimed INLINE whose lambda list has more than required parameters
+(PROCESS-DEFUN).  The copies of functions of required parameters are made of
+their nodes (src/inline.lisp), which the others are not: a call of such a
+function is the copy of its source, as in code compiled in the image, so
+that the types of the arguments given and of the value reach it (Babel's
+DECODING-ERROR, &OPTIONAL, in each arm of its decoders: without the copy
+the code point of every arm was boxed).")
+
 (defun inline-expansion-call (form)
   "FORM, a call of a function with an inline expansion, as a copy of its body, or NIL."
   (let* ((op (car form))
-         (src (and *live-mode* (symbolp op) (< *inline-expansion-depth* 3)
+         (src (and (symbolp op) (< *inline-expansion-depth* 3)
                    (not (member op *local-notinline*))
-                   (or (member op *local-inline*)
-                       (and (not (gethash op *notinline*)) (not (get op 'clysm-sys::%notinline))))
-                   (get op 'clysm-sys::%inline-expansion))))
+                   (if *live-mode*
+                       (and (or (member op *local-inline*)
+                                (and (not (gethash op *notinline*)) (not (get op 'clysm-sys::%notinline))))
+                            (get op 'clysm-sys::%inline-expansion))
+                       (and *program-inline-expansions*
+                            (not (gethash op *notinline*))
+                            (gethash op *program-inline-expansions*))))))
     (when (and (consp src) (eq (car src) 'lambda) (consp (cdr src)))
       (inline-lambda-application op (second src) (cddr src) (cdr form) (cdr form) '*inline-expansion-depth*))))
 

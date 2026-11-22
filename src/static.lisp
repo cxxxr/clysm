@@ -43,6 +43,7 @@
     *fasl-guard-globals* *fasl-guards-set* *fasl-guards-pending* *live-constants* *helpers*
     *current-lam* *catch-clones* *direct-closures*
     *static-literal-cells* *static-pending-forms* *static-literal-counter*
+    *program-inline-expansions* *inline-expansion-depth*
     ;; (the mode)
     *static-state-p* *static-image* *live-mode* *live-packages* *image-packages*
     *live-macro-hook* *live-special-hook* *live-constant-hook* *live-var-type-hook*
