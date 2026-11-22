@@ -3685,7 +3685,10 @@ any object in an EQ table, an instance, a list or a string in an EQL table
 local H (an eqref), -1 when there is none; null is returned for another key
 or object."
   (progn
-    `((:local.get ,h) (:ref.test :instance) :i32.eqz (:if nil nil ((:ref.null :eq) :return))
+    ;; (the test of the table's own struct type, which its map answers:
+    ;; the test of $instance, a supertype, read two more words of the map
+    ;; at every GETHASH)
+    `((:local.get ,h) (:ref.test :si17) :i32.eqz (:if nil nil ((:ref.null :eq) :return))
       (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 0)
       (:global.get ,(sym-global 'clysm-sys::*hash-table-class*)) (:struct.get :symbol ,+sym-value+) :ref.eq
       :i32.eqz (:if nil nil ((:ref.null :eq) :return))
@@ -3705,7 +3708,7 @@ or object."
   '(:ref.cast! :vector) '(:local.get i) '(:array.get :vector))
 (defun ht-table-test-code (h fail)
   "Code doing FAIL unless the parameter H is a hash table."
-  `((:local.get ,h) (:ref.test :instance) :i32.eqz (:if nil nil ,fail)
+  `((:local.get ,h) (:ref.test :si17) :i32.eqz (:if nil nil ,fail)
     (:local.get ,h) (:ref.cast! :instance) (:struct.get :instance 0)
     (:global.get ,(sym-global 'clysm-sys::*hash-table-class*)) (:struct.get :symbol ,+sym-value+) :ref.eq
     :i32.eqz (:if nil nil ,fail)))

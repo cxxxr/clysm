@@ -5406,6 +5406,183 @@ What makes the code fast:
   method with a keyword: the general path with the list of initargs).
   `tests/cases/clos-dispatch-regenerate.lisp` is the test of the remade
   trees (three files compiled and loaded in turn).
+  *Trees for generic functions with `&optional`, `&rest` and `&key`*
+  (2026-11-23). A generic function whose methods are functions of at most
+  four *spread* arguments (`%fast-shape`: the required ones, the optional
+  ones with the unbound marker for those not given, the list of the rest)
+  has a discriminating function too, of the spread arguments
+  (`%ct-ll-shape`, `%ct-unit-shape`; the descriptor of the cells has the
+  shape, and `%gf-disc-valid-p` compares it and the number of optional
+  parameters). A call site of any number of arguments the lambda list
+  admits passes them spread (`%gf-unit-site`: the markers, `(list ...)` of
+  the arguments after the positional ones), so one function serves every
+  entry shape; the tree is over the required arguments as before and a leaf
+  calls the methods' functions of the spread arguments directly
+  (`%spread-method-forms` gives them the names of the unit, and for a
+  method with `call-next-method` the function of the next method, the cell
+  and the spread arguments, `+method-static+`). The keyword arguments are
+  checked in the leaf, only when the call has some: against the keywords of
+  the generic function, read from a cell when the tree is compared (0: no
+  `&key`, `:any`: `&allow-other-keys`), and those of the leaf's methods,
+  which are constants of the leaf (`%gf-disc-check-keys`: one pass with
+  `eq`; `%check-more-keys` for the errors and `:allow-other-keys`); the
+  comparison of the tree includes the keywords of each method. A call that
+  leaves the tree calls the generic function's own function of the spread
+  arguments (`+gf-core+`, in a cell), not the generic function with the
+  arguments made a list again. Two things found with Lem's and cl-ppcre's
+  generic functions: a *function* argument had no kind in the trees
+  (`cl-ppcre:scan` of a scanner fell out of its tree 220,000 times in the
+  redisplay probe), now `compiled-function` (a function whose name is not
+  an instance: a generic function is of its own class); and in the image a
+  call with constant keywords of a generic function with `&key` stays the
+  call of its keyed main function (`%gf-keyed-entry`: no list is made and
+  the methods search none), which the tree's list of keyword arguments
+  does not beat (six million calls with two keywords: 66 ms the keyed
+  entry, 156 the tree, in a script; a whole program has no keyed entry
+  for a generic function, and there the tree is the faster, below). A dead tree
+  is replaced by one made in the image only while the generic function
+  still takes the arguments the tree's callers pass (`%gf-disc-same-shape-p`:
+  a generic function defined again with `&key` in place of `&optional`
+  would take the marker for a list). Measured (interleaved with main on
+  one slot, best of 4 to 8; ms):
+
+  | | main | now | SBCL |
+  |---|---|---|---|
+  | `c-gf-lambda-lists` | 140 | 89 | 119 |
+  | `(render o)`, `&optional` not given, 6M calls | 58 | 35 | 56 |
+  | `(render o 2)` | 62 | 34 | 70 |
+  | `(configure o)`, `&key` and a `:before` method | 60 | 31 | 67 |
+  | `(configure o :size 3)` | 130 | 84 | 92 |
+  | `(configure o :color t :size 2)` | 183 | 125 | 137 |
+  | `(gather o 1 2 3)`, `&rest` and `call-next-method` | 97 | 62 | 51 |
+  | `(kw o :color t :size 2)`, two methods with `&key` | 162 | 110 | 137 |
+  | `(kw o k 2)`, the keyword in a variable | 109 | 73 | 76 |
+
+  In a script the same probes take 0.56–0.72 of their time (those with
+  constant keywords are the same code as before), `c-gf-lambda-lists`
+  128–133 → 100–108 ms; `bench/clos.lisp` 0.96–0.99 of its time compiled
+  and in a script, `programs` 0.99, `suite`, `holdout`, `closures` and
+  `functional` 0.97–1.01 (four interleaved rounds each; no item moved by
+  more than the spread of two runs of the same pair). What `gather` still
+  spends is the three conses of its rest list and `length` of it, a call
+  (SBCL counts the arguments of a `&rest` list that is only measured,
+  without making it). `tests/cases/clos-dispatch-lambda-lists.lisp`.
+
+  *`make-instance` of a class with `:after` methods* (2026-11-23). A class
+  whose applicable methods of `initialize-instance` and `shared-initialize`
+  are the standard ones and `:after` methods (the usual way to finish an
+  instance) took the general path: the list of initargs, the search of it
+  for every slot, the effective methods through their caches. Its
+  constructor now has the plans of a plain class and, in slot 14, the
+  functions of the `:after` methods in the order they run
+  (`%creation-afters`: the method's function of the spread arguments —
+  the instance, T for `shared-initialize`, the list of the initargs — or
+  the method function itself for a method that has none): the slots are
+  filled from the template and the arguments as for a plain class, the
+  list of the initargs is made once (those given, then the default
+  initargs in order, each evaluated once), and the functions are called
+  with it. The keys of the call are checked once, when the constructor is
+  computed, against the class's valid initargs, which include the
+  keywords of these methods (a key that no slot takes has no slot in the
+  plan). With no initform or default initarg to evaluate, the entry of
+  the number of arguments does it without a loop over the plans (slot 16;
+  `%ctor-make-instance-N/other`, out of the entry so that the entry stays
+  small enough for the engine to inline: with the code in the entry
+  `c-make-instance-plain` was 7% slower); otherwise
+  `%ctor-make-instance-afters`. A `:before`, `:around` or primary method
+  of the class, a metaclass, a method on `allocate-instance` or
+  `make-instance` leave the constructor's path as before (the constructor
+  is computed again at any change of a method: `*ctor-generation*`).
+  Measured (four million calls; ms, main → now, SBCL in parentheses,
+  interleaved with main on one slot): a class with
+  `initialize-instance :after ((a account) &key (bonus 0))` and three
+  initargs given 319 → 117 (220); a class of one slot with an empty
+  method with `&key` 190 → 69 (78), with `&rest initargs` 198 → 84 (56),
+  with `&key (bonus 0)` given 236 → 107 (71: the list of the initargs and
+  the method's search of it); two instances of a class with default
+  initargs, an initform that conses and an `:after` method 631 → 276
+  (337); a subclass with a `shared-initialize :after` method besides 555
+  → 182 (225); two classes given at run time 619 → 205 (323). `p-clos-app` 54 → 30 ms (SBCL
+  50: 1.19 → 0.60). Made the instance in the call site first (the
+  template copied and the methods called from there): the same times for
+  these classes, and every site of a plain class 3–7% slower for its
+  larger code (`b-make-instance` 37 → 39, `c-make-instance-plain` 28 →
+  30): not kept. `tests/cases/make-instance-afters.lisp`.
+  Not done, measured by hand before: the slot vector built in place
+  instead of the copy of the template (23 → 16 ms for five million
+  instances of one slot) needs the class's slots where the call is
+  compiled and a comparison of them at run time, as the trees have.
+
+  *The test for a hash table at `gethash`* (2026-11-23; found in the
+  profile of Lem's redisplay, whose `char-width` is three `gethash` of a
+  character). The helpers of `gethash`, `(setf gethash)` and `remhash`
+  tested `$instance` and then cast to the table's own type (`$si17`): two
+  walks of the map's supertypes. They test `$si17` (then the class, as
+  before). Probes of a table of characters, of fixnums and of symbols and
+  `incf` of `gethash` (interleaved with main, two runs of four rounds):
+  0.94 and 0.99, 0.87 and 0.87, 0.94 and 0.91, 0.93 and 0.92 of their time; `b-hash` and `p-hash-*` the same within the
+  runs' spread (0.99–1.05 in single comparisons).
+
+  *Lem, counted* (2026-11-23; a probe typing the benchmark's text sixty
+  times with a redisplay after each key, 2.1 s). Of the discriminating
+  functions called at least four times since the last definition 53 use
+  their tree, 5 one remade in the image (`window-redraw`,
+  `convert-modeline-element`, the two display areas, `variable-value-aux`)
+  and 2 count (`create-matcher-aux`, under 500 calls); with the function
+  kind above no generic function falls out of its tree more than some
+  hundred times in the probe (`variable-value-aux` 506). No `make-instance`
+  takes the general path (`%make-instance-of` is not called once in the
+  probe). CLOS is not where the redisplay's time is: every function of
+  the dispatch, the constructors, `slot-value` and the initialization
+  together are 50 ms of 2159 (2.3%; `initialize-point-slot-values` 17,
+  `%ctor-make-instance` 7), `print-object` none. By self time:
+  `control-char` 20% (the `gethash` of a character inlined in it: its
+  ticks are on the loads of the table's fields and the type tests of the
+  key, see the test above), `icon-code-p` 6.5%, `char-width` 4.3%,
+  `string-width` 2.7%, `separate-objects-by-width` 2.4%, `subseq` 2.2%,
+  `split-string-by-character-type` 2.2%, `eastasian-code-p` 2.2%, then
+  some sixty functions under 2% each. `tools/bench-lem.sh` against main:
+  geometric mean 1.03, 1.07, 1.01, 1.00 on main and 0.95, 1.01, 1.04, 1.06
+  now (four interleaved rounds on the held-out input): the same.
+  `l-type-redisplay` 39–48 → 38–45 ms (SBCL 28–32), `l-syntax-scan`
+  174–181 → 178–187 (147), `l-line-down` 121–134 → 117–127,
+  `l-type-autodoc` 173–182 → 164–171, `l-search` 18–21 → 20–24 (not
+  explained; SBCL 29). `bench/apps.lisp` 1.14 and 1.11 on main, 1.16 and
+  1.15 now (two rounds; `a-esrap` reads 88 or 103–111 ms, the other items within 4%).
+
+  *The ordinary call, looked at again* (2026-11-23; `tools/iprof.py`, the
+  ticks of `node --prof` on the code of `--print-wasm-code`). Probes of
+  five million calls each (ms, Clysm against SBCL): `funcall` of a
+  closure without and with a variable 88 / 154 and 93 / 142, a known
+  global function not inlined 118 / 175, a keyword call 97 / 236, `apply`
+  of `+` 24 / 24, `floor` of two values 85 / 84, `fib` 15 / 61, a closure
+  over a list by a higher-order function 158 / 177. The test for a
+  pending exit after a call is one compare with the null in the root
+  register and a branch never taken (fused), and is already left out for
+  a known function that cannot exit (`lam-may-exit-p`); nothing was found
+  to remove there, nor in the prologue (the stack check, as SBCL has
+  none; `--no-wasm-stack-checks` was measured before). What `b-call`
+  (1.10) has over SBCL is one item: `(rfun 1 2 3)` of `(defun rfun (&rest
+  xs) (length xs))`, 368 ms against 133 for five million: three conses
+  and the call of `length`, then of `length-of-list`, where SBCL takes
+  the number of arguments and makes no list (a `&rest` list used only by
+  `length`, `car`, `nth` or `apply` is not made: "rest conversion");
+  `(length list)` alone is 190 against 134. The loop of `length-of-list`
+  put in `length` itself (no second call for a list) was slower
+  (`z-rest-length` 383 → 444, the others the same): not kept. Not done: a
+  `&rest` parameter that is only measured or taken apart, kept as the
+  arguments.
+
+  Sizes of the round: the REPL image 8,596,135 → 8,629,564 bytes (the
+  making of the spread trees, the constructors' `:after` paths: nine
+  entries each with its other part), the shaken module of one export
+  907,414 → 908,284. `make test-all` and the ANSI tests (21931 of 21932)
+  as before.
+
+  `tools/iprof.py` (new) does the method of the rounds before in one
+  command: `run` a module (or the image with a file) under `node --prof
+  --print-wasm-code`, `top` for the functions by ticks, `show NAME [MIN]`
+  for the code of one with the ticks of each instruction.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm

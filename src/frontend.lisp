@@ -2312,21 +2312,35 @@ arguments."
 unit are there to be looked at."
     (and (boundp 'clysm-sys::*native-eval-hook*) (symbol-value 'clysm-sys::*native-eval-hook*) t))
 
-  (defun clysm-sys::%ct-live-gf (name n)
-    "The metaobject of the generic function NAME defined in the image, when it
-has N required parameters and no others, or NIL."
+  (defun clysm-sys::%ct-ll-shape (ll)
+    "(nreq nopt more) of the lambda list LL of a method when the generic
+function may have a tree: its methods are functions of at most four
+arguments, the required ones or the spread ones (SYS::%FAST-SHAPE)."
+    (let ((n (clysm-sys::%fast-arity ll)))
+      (if n
+          (list n 0 0)
+          (let ((s (clysm-sys::%fast-shape ll)))
+            (and s (<= (+ (first s) (second s) (third s)) 4) (<= (first s) 4) s)))))
+
+  (defun clysm-sys::%ct-live-gf (name)
+    "The metaobject of the generic function NAME defined in the image and its
+shape (nreq nopt more), when its methods are functions of at most four
+(spread) arguments, or NIL."
     (and (clysm-sys::%ct-live-p) (fboundp name) (not (macro-function name)) (not (special-operator-p name))
          (let ((info (clysm-sys::%gf-info (fdefinition name))))
            (and info
-                (eq (clysm-sys::%svref (clysm-sys::%gf-slot info clysm-sys::+gf-cache+) 1) n)
-                (eql (clysm-sys::%gf-slot info clysm-sys::+gf-nreq+) n)
-                info))))
+                (let ((nreq (clysm-sys::%gf-slot info clysm-sys::+gf-nreq+))
+                      (nopt (clysm-sys::%gf-slot info clysm-sys::+gf-nopt+))
+                      (more (if (clysm-sys::%gf-slot info clysm-sys::+gf-restp+) 1 0)))
+                  (and (integerp nreq) (integerp nopt) (<= 1 nreq 4) (<= (+ nreq nopt more) 4)
+                       (eql (clysm-sys::%svref (clysm-sys::%gf-slot info clysm-sys::+gf-cache+) 1) (+ nreq nopt more))
+                       (values info (list nreq nopt more))))))))
 
   (defun clysm-sys::%ct-live-methods (info n)
     "The methods of the generic function INFO as (qualifiers specializers
-kind), KIND :PLAIN (its function of the arguments is known), :NEXT (that of
-the next method, a cell and the arguments) or NIL; :BAD when a specializer
-cannot be named here."
+kind keys), KIND :PLAIN (its function of the arguments is known), :NEXT (that of
+the next method, a cell and the arguments) or NIL, KEYS the keywords it
+accepts (or :ANY); :BAD when a specializer cannot be named here."
     (let ((r nil) (top (find-class t)))
       (dolist (m (clysm-sys::%gf-slot info clysm-sys::+gf-methods+) (nreverse r))
         (let ((specs (mapcar (lambda (s)
@@ -2343,33 +2357,65 @@ cannot be named here."
           (push (list (clysm-sys::%method-qualifiers m) specs
                       (cond ((clysm-sys::%method-extra m clysm-sys::+method-static+) :next)
                             ((clysm-sys::%method-extra m clysm-sys::+method-fast-function+) :plain)
-                            (t nil)))
+                            (t nil))
+                      (clysm-sys::%instance-ref m 6))
                 r)))))
+
+  (defun clysm-sys::%ct-unit-shape (recs)
+    "The shape that the methods RECS of the unit all have, or NIL."
+    (let ((s (clysm-sys::%ct-ll-shape (third (car recs)))))
+      (and s (every (lambda (r) (equal (clysm-sys::%ct-ll-shape (third r)) s)) recs) s)))
 
   (defun clysm-sys::%gf-unit-site (form)
     "The call FORM of a generic function with methods in the unit, or defined
 before with methods whose functions are known, as a call of its
-discriminating function, or NIL."
+discriminating function, or NIL.  With optional or rest/keyword parameters
+the function takes the spread arguments: the required ones, the optional
+ones (the unbound marker for those not given) and the list of the rest."
     (let* ((u clysm-sys::*gf-unit*) (name (car form))
-           (n (do ((l (cdr form) (cdr l)) (i 0 (+ i 1))) ((atom l) (if (null l) i -1)))))
-      (when (and u (<= 1 n 4) (symbolp name) name)
-        (let ((recs (gethash name (svref u 0))))
-          (when (and (if recs
-                         (every (lambda (r) (eql (clysm-sys::%fast-arity (third r)) n)) recs)
-                         (let ((info (clysm-sys::%ct-live-gf name n)))
-                           (and info
-                                (some (lambda (m) (or (clysm-sys::%method-extra m clysm-sys::+method-fast-function+)
-                                                      (clysm-sys::%method-extra m clysm-sys::+method-static+)))
-                                      (clysm-sys::%gf-slot info clysm-sys::+gf-methods+)))))
+           (k (do ((l (cdr form) (cdr l)) (i 0 (+ i 1))) ((atom l) (if (null l) i -1)))))
+      (when (and u (<= 1 k 16) (symbolp name) name)
+        (let* ((recs (gethash name (svref u 0)))
+               (shape (if recs
+                          (clysm-sys::%ct-unit-shape recs)
+                          (multiple-value-bind (info s) (clysm-sys::%ct-live-gf name)
+                            (and info
+                                 (some (lambda (m) (or (clysm-sys::%method-extra m clysm-sys::+method-fast-function+)
+                                                       (clysm-sys::%method-extra m clysm-sys::+method-static+)))
+                                       (clysm-sys::%gf-slot info clysm-sys::+gf-methods+))
+                                 s)))))
+          (when (and shape
+                     (>= k (first shape))
+                     (or (eql (third shape) 1) (<= k (+ (first shape) (second shape))))
+                     ;; In the image a call with constant keywords of a
+                     ;; generic function with &KEY passes them in the slots
+                     ;; of its keyed main function (SYS::%GF-KEYED-ENTRY: no
+                     ;; list, and the methods do not search one), which is
+                     ;; faster than the tree's list of them: 66 against 156
+                     ;; ms for six million calls with two keywords.
+                     (not (and (clysm-sys::%ct-live-p)
+                               (eql (third shape) 1)
+                               (let ((rest (nthcdr (+ (first shape) (second shape)) (cdr form))))
+                                 (and rest
+                                      (do ((l rest (cddr l))) ((null l) t)
+                                        (unless (and (keywordp (car l)) (consp (cdr l))) (return nil)))))
+                               (if recs
+                                   (some (lambda (r) (member '&key (third r))) recs)
+                                   (let ((info (clysm-sys::%ct-live-gf name)))
+                                     (and info (clysm-sys::%gf-slot info clysm-sys::+gf-keyp+))))))
                      (symbol-package name)
                      (not (member (package-name (symbol-package name)) '("COMMON-LISP" "SYSTEM" "CLYSM" "KEYWORD")
                                   :test #'string=)))
             (let* ((e (assoc name (svref u 2)))
                    (d (if e (cdr e) (let ((s (make-symbol "DISCRIMINATOR"))) (push (cons name s) (svref u 2)) s)))
-                   (vars (let ((r nil)) (dotimes (i n r) (push (gensym "A") r)))))
+                   (vars (let ((r nil)) (dotimes (i k r) (push (gensym "A") r))))
+                   (npos (+ (first shape) (second shape))))
               `(let ,(mapcar #'list vars (cdr form))
                  (if (clysm-sys::%static-known-p ,d)
-                     (clysm-sys::%static-call ,d ,@vars)
+                     (clysm-sys::%static-call ,d ,@(subseq vars 0 (min k npos))
+                                              ,@(make-list (max 0 (- npos k)) :initial-element '(clysm-sys::%unbound-marker))
+                                              ,@(when (eql (third shape) 1)
+                                                  (list (if (> k npos) `(list ,@(nthcdr npos vars)) nil))))
                      ,(clysm-sys::%gf-unit-fallback name vars)))))))))
 
   (defun clysm-sys::%gf-unit-fallback (name vars)
@@ -2408,7 +2454,10 @@ unit converted so far call; KNOWN tells whether a symbol of
       (bignum (clysm-sys::%bignump :x) (bignum integer rational real number) 1208925819614629174706176)
       (ratio (clysm-sys::%ratiop :x) (ratio rational real number) 1/2)
       (string (and (stringp :x) (not (clysm-sys::%simple-string-p :x))) (string vector array sequence) :class)
-      (complex (complexp :x) (complex number) :class)))
+      (complex (complexp :x) (complex number) :class)
+      ;; (a function that is not a generic function or another funcallable instance)
+      (compiled-function (and (functionp :x) (not (clysm-sys::%instancep (clysm-sys::%closure-name :x))))
+       (compiled-function function) :class)))
 
   ;; a group of kinds with one test
   (defun clysm-sys::%ct-kind-groups ()
@@ -2504,12 +2553,21 @@ here and compared with EQ, else NIL."
 function NAME from the methods of the unit U and those defined before, or
 NIL when there is nothing it could call."
     (let* ((recs (gethash name (svref u 0)))
-           (n (if recs
-                  (clysm-sys::%fast-arity (third (car recs)))
-                  (do ((i 1 (+ i 1))) ((> i 4) nil) (when (clysm-sys::%ct-live-gf name i) (return i)))))
-           (info (and n (clysm-sys::%ct-live-gf name n)))
+           (live-shape nil)
+           (info (multiple-value-bind (i s) (clysm-sys::%ct-live-gf name) (setq live-shape s) i))
+           ;; (nreq nopt more): the tree is over the NREQ required arguments,
+           ;; N of them, and its functions take the spread ones
+           (shape (if recs (clysm-sys::%ct-unit-shape recs) live-shape))
+           (n (first shape))
+           (spreadp (and shape (not (and (eql (second shape) 0) (eql (third shape) 0)))))
            (methods nil) (fsyms nil) (index 0) (nfns 0)
-           (vars (let ((r nil)) (dotimes (i (or n 0) r) (push (gensym "A") r))))
+           (vars (let ((r nil)) (dotimes (i (if shape (+ (first shape) (second shape) (third shape)) 0) r) (push (gensym "A") r))))
+           ;; the cell of the keywords of the generic function itself (0: its
+           ;; keyword arguments are not checked), after those of the functions
+           (keys-cell nil)
+           ;; the cell of the generic function's own function of the spread
+           ;; arguments, for the calls that the tree does not take
+           (core-cell nil)
            (disc (gensym "DISC")) (tree (gensym "TREE")) (cells-var (gensym "CELLS")) (state (gensym "STATE"))
            (checks nil) (class-cells nil) (nclasses 0) (leaves 0) (tails nil) (tail-forms nil)
            ;; NIL (the standard method combination) or (operator . options)
@@ -2527,10 +2585,10 @@ NIL when there is nothing it could call."
         (unless (and (member (car comb) '(+ append list max min nconc and or progn))
                      (member (cdr comb) '(nil (:most-specific-first) (:most-specific-last)) :test #'equal))
           (return-from clysm-sys::%gf-disc-form nil)))
+      (when (and info recs (not (equal shape live-shape))) (setq info nil))
       (unless (and n (<= 1 n 4) (<= (length recs) 40)) (return-from clysm-sys::%gf-disc-form nil))
-      ;; METHODS: #(qualifiers specializers symbol function-index kind cell)
+      ;; METHODS: #(qualifiers specializers symbol function-index kind cell keys)
       (dolist (r recs)
-        (unless (eql (clysm-sys::%fast-arity (third r)) n) (return-from clysm-sys::%gf-disc-form nil))
         (let ((specs (mapcar (lambda (s)
                                (cond ((and (consp s) (eq (car s) 'eql) (consp (cdr s)) (null (cddr s)))
                                       (or (clysm-sys::%ct-eql-spec s) (return-from clysm-sys::%gf-disc-form nil)))
@@ -2541,7 +2599,10 @@ NIL when there is nothing it could call."
           (unless (eql (length specs) n) (return-from clysm-sys::%gf-disc-form nil))
           (push (vector (first r) specs sym (and sym index)
                         (cond ((null sym) nil) ((string= (symbol-name sym) "NEXT-METHOD") :next) (t :plain))
-                        nil)
+                        nil
+                        (multiple-value-bind (nreq nopt restp keyp keys aokp) (clysm-sys::%ll-info (third r))
+                          (declare (ignore nreq nopt restp))
+                          (cond (aokp :any) (keyp keys) (t nil))))
                 methods)
           (when sym (push sym fsyms) (setq index (+ index 1)))))
       (setq fsyms (nreverse fsyms))
@@ -2551,9 +2612,11 @@ NIL when there is nothing it could call."
           (when (eq live :bad) (return-from clysm-sys::%gf-disc-form nil))
           (dolist (l live)
             (unless (find-if (lambda (m) (and (equal (svref m 0) (first l)) (equal (svref m 1) (second l)))) methods)
-              (push (vector (first l) (second l) nil nil (third l) (and (third l) (+ 3 nfns))) methods)
+              (push (vector (first l) (second l) nil nil (third l) (and (third l) (+ 3 nfns)) (fourth l)) methods)
               (when (third l) (setq nfns (+ nfns 1)))))))
       (unless (and methods (<= (length methods) 40)) (return-from clysm-sys::%gf-disc-form nil))
+      (when (eql (third shape) 1) (setq keys-cell (+ 3 nfns) nfns (+ nfns 1)))
+      (when spreadp (setq core-cell (+ 3 nfns) nfns (+ nfns 1)))
       (labels ((spec (m p) (nth p (svref m 1)))
                (class-specs (ms p)
                  (let ((r nil))
@@ -2662,6 +2725,22 @@ NIL when there is nothing it could call."
                                              (lambda (vs) (around-call as vs)))))))
                      (let ((form (around-call around vars)))
                        (setq leaves (+ leaves 1))
+                       (when keys-cell
+                         ;; the keyword arguments of a call with some are
+                         ;; checked against the keywords of the generic
+                         ;; function (in its cell) and of these methods
+                         (let ((more (car (last vars))) (g (gensym "KEYS"))
+                               (mkeys (let ((r nil))
+                                        (dolist (m ms (nreverse r))
+                                          (let ((k (svref m 6)))
+                                            (when (eq k :any) (return :any))
+                                            (dolist (x k) (pushnew x r)))))))
+                           (setq form `(progn
+                                         (when ,more
+                                           (let ((,g (clysm-sys::%svref ,cells-var ,keys-cell)))
+                                             (unless (eq ,g 0)
+                                               (clysm-sys::%gf-disc-check-keys ',name ,g ',mkeys ,more))))
+                                         ,form))))
                        (list `(return-from ,disc ,form))))))
                (build (p ms keys)
                  ;; the forms dispatching on the arguments from P on, among
@@ -2748,23 +2827,30 @@ NIL when there is nothing it could call."
                                                     (list (svref m 0) (svref m 1)
                                                           (cond ((svref m 2) (svref m 3))
                                                                 ((svref m 5) (cons (svref m 5) (svref m 4)))
-                                                                (t nil))))
+                                                                (t nil))
+                                                          (svref m 6)))
                                                   methods)
-                                          checks comb)
+                                          checks comb shape keys-cell core-cell)
                     (svref cells 2) (+ 3 nfns))
               (cons `(clysm-sys::%static-lambda ,dsym
                        (lambda ,vars
                          (block ,disc
                            (let* ((,cells-var ',cells) (,state (clysm-sys::%svref ,cells-var 0)))
                              (if (eq ,state t)
-                                 (block ,tree ,@forms)
+                                 (progn
+                                   (block ,tree ,@forms)
+                                   ,@(when core-cell
+                                       `((return-from ,disc
+                                           (funcall (the function (clysm-sys::%svref ,cells-var ,core-cell)) ,@vars)))))
                                  (unless (eq ,state :dead)
                                    ;; (a function made later for other methods)
                                    (when (functionp ,state)
                                      (return-from ,disc (funcall (the function ,state) ,@vars)))
                                    (clysm-sys::%gf-disc-arm ,cells-var
                                                  (lambda () (vector ,@(mapcar (lambda (s) `(clysm-sys::%static-function ,s)) fsyms)))))))
-                           ,(clysm-sys::%gf-unit-fallback name vars))))
+                           ,(if spreadp
+                                `(clysm-sys::%gf-disc-spread-fallback ',name ,@shape (list ,@vars))
+                                (clysm-sys::%gf-unit-fallback name vars)))))
                     (mapcar (lambda (tf)
                               (destructuring-bind (sym vs body) tf
                                 `(clysm-sys::%static-lambda ,sym
