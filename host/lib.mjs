@@ -197,10 +197,13 @@ async function bytesOf(source) {
 // Load a compiled module: SOURCE is a path, a file: URL, the bytes, or a
 // WebAssembly.Module.  Returns { instance, exports, eval }.
 export async function load(source, options = {}) {
+  // (where it is from, before anything is waited for: a relative path is of this directory)
+  const located = withLocation(source, options);
+  const debug = debugFileOf(source);
   const module = source instanceof WebAssembly.Module
     ? source
     : await WebAssembly.compile(await bytesOf(source));
-  return instantiate(module, withLocation(source, options), debugFileOf(source));
+  return instantiate(module, located, debug);
 }
 
 // (the file the module was read from, as a file: URL: JS:LIBRARY-LOCATION)
