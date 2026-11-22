@@ -206,18 +206,18 @@ now (the oldest binding of a symbol on the binding stack holds it)."
   "True if the hash of a key of the hash table H depends on its identity."
   (let ((kind (%ht h +ht-kind+)) (keys (%ht h +ht-keys+)))
     (dotimes (i (%ht h +ht-fill+) nil)
-      (let ((k (%svref keys i)))
+      (let ((k (%ht-key-ref keys i)))
         (unless (or (eq k +deleted+) (fixnump k) (characterp k) (symbolp k)
                     (and (> kind 0) (numberp k))
                     (and (> kind 1) (stringp k)))
           (return t))))))
 
 (defun %ht-rehash (h)
-  (let ((keys (%ht h +ht-keys+)) (vals (%ht h +ht-vals+)) (fill (%ht h +ht-fill+)))
-    (%ht-init-storage h (max 8 (%svlength keys)))
+  (let ((keys (%ht h +ht-keys+)) (fill (%ht h +ht-fill+)))
+    (%ht-init-storage h (max 8 (%ht h +ht-capacity+)))
     (dotimes (i fill)
-      (let ((k (%svref keys i)))
-        (unless (eq k +deleted+) (%ht-put h k (%svref vals i)))))))
+      (let ((k (%ht-key-ref keys i)))
+        (unless (eq k +deleted+) (%ht-put h k (%ht-value-ref keys i)))))))
 
 (defun save-image (file function)
   "Write the heap to FILE, from which a host can start this image again
@@ -317,7 +317,7 @@ now (the oldest binding of a symbol on the binding stack holds it)."
           (setq order (nreverse order))
           (setq *img-buf* (%make-limbs 1000000) *img-fill* 0)
           (%img-halves #x494D #x4C43)       ; magic "CLMI"
-          (%img-word 6)                     ; version (+img-version+)
+          (%img-word 7)                     ; version (+img-version+)
           (%img-word (length base))
           (%img-word (- next (length base)))
           (%img-word fillable)

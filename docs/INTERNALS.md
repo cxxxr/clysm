@@ -6935,6 +6935,16 @@ What makes the code fast:
   distinct literals from source LOAD, and equality after COMPILE-FILE.
   It passes in both whole-program and native script modes.
 
+* **Adjacent hash entries (2026-11-23).** Keys and values occupy cells
+  2I and 2I+1 of one vector. Chain links and saved lookup indices still
+  count entries; the former value-vector field holds capacity. Growth,
+  compaction, package lookup, all Wasm probes, iteration and heap-image
+  rehashing use the same layout. This saves one vector allocation per
+  nonempty table. Image version 7 rejects images with the old layout.
+  Initial compiled hash tests, native hash tests and the 1,505 ANSI hash,
+  iteration and package tests pass. The first `v-hash-iterate` measurement
+  is 10 ms: no demonstrated speedup yet; repeated comparisons follow below.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
