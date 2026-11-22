@@ -12,7 +12,10 @@
   name owner captured mutated special (refs 0) ignorable
   (type nil)    ; union of the types of its values (types.lisp)
   (decl nil)    ; a declared type specifier (trusted)
-  (rep nil))    ; :f64 / :i32 when held unboxed in a local of that type
+  (rep nil)     ; :f64 / :i32 when held unboxed in a local of that type
+  ;; the types of the nodes that name it (NODE-TYPE in types.lisp), for each
+  ;; table of node types: (table count (node . type)...)...
+  (ntys nil))
 
 (defvar *current-source* nil
   "(FILE . LINE) of the toplevel form being compiled, or NIL: where the
