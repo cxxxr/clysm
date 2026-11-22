@@ -126,7 +126,10 @@ The universal value type is `(ref null eq)`.
   I); `%instance-ref` is for instances known to have a slot vector. A
   structure class keeps its included structures by depth in
   `+class-inherits+`, so `typep` and the accessors of an included structure
-  test in constant time (`inherits-depth-check-code`); a structure's
+  test in constant time (`inherits-depth-check-code`); the description of
+  a structure known at compile time ends with the names of the structures
+  it includes, so that an object known to be of it is known to be of each
+  of them (`struct-class-includes-p`); a structure's
   *shape* (slot count + 64 × depth) is a compile-time constant given to the
   accessors and predicates.
 * **closures** — see below. **foreign objects** — `struct { externref }` wrapper.
@@ -201,8 +204,17 @@ function whose layout the compiler finds (`*live-key-layout-hook*`, or a
 definition in the same compilation) compares the layout of the symbol's
 current function and calls its main function the same way, or makes the
 list for its `entryA` when the function has changed (`live-apply-code`). `funcall` of an object not known to be a
-function tests at the call site for a closure, then for a symbol whose
-function cell is set; only other objects go to the `:coerce-function` helper.
+function tests at the call site for a closure; other objects go to the
+`:coerce-function` helper, which reads the function cell of a symbol
+(`coerce-function-code`; the symbol's case was at the call site too, 23
+octets more at each `funcall`: see "The size of a function's code" under
+Performance). `funcall` of a constant symbol is the call of the function by
+its name. The calls that are rarely made — the other arm of a guarded
+direct call, a call of `error`, `warn`, `signal` or of a function that
+never returns — pass their arguments and the symbol to the helper
+`(:cellcall k)`, which reads the function cell and tail-calls the entry
+(six octets at the call site instead of 33; it returns null with an exit
+pending as the call does, unlike `(:callsym k)`, which throws it).
 
 A function of 5 to 12 required parameters only (`+max-req-layout-args+`)
 has its main function, which takes them as Wasm parameters, in the `kmain`
@@ -5432,6 +5444,149 @@ What makes the code fast:
   fields, so V8's exact-map case hits) would cost the padding of every
   small structure and does not fit the typed structures (`TS-...` types
   extend `$siK` field by field); estimated gain on esrap under 6%.
+* **The size of a function's code, and what the engine inlines**
+  (2026-11-22; real libraries as system fasls: esrap, cl-ppcre, Lem).
+  V8 decides what to inline by the size in octets of the callee's code as
+  the module has it (`src/wasm/inlining-tree.h`, `--trace-wasm-inlining`):
+  no function of more than 500 octets (`--wasm-inlining-max-size`), one of
+  N octets only at a call counted N/2 times when its caller is optimized,
+  and a caller grows to five times its size at most, 7000 octets at most (a
+  larger one by a tenth). The code that never runs counts like the rest,
+  and the compiler left much of it: esrap's `result-position` (a slot
+  read, a `functionp` test, a call and a slot write) was 565 octets and
+  `successful-parse-production` 656, neither ever inlined, of which a
+  quarter was the code after field reads that cannot fail (the call of
+  the accessor's function, with the class found for it). With `--wasm-inlining-max-size=1000`
+  esrap ran 9% faster and cl-ppcre's tokens up to 15%, which showed what
+  the size cost. What is done about it:
+  * `prune-dead-code` (`src/wasm.lisp`, on every function added to a
+    module) leaves out what follows a branch, a return, a tail call or
+    `unreachable`, and what follows a block that cannot be left at its
+    end; puts the instructions of a block that nothing branches to in its
+    place; decides `(i32.const C)` before `i32.eqz`, `br_if` and an `if`
+    without a label (the tests the types decided: `(if (i32.const 1) ...)`
+    three deep where a declared type was already known); and makes
+    `local.set X local.get
+    X` a `local.tee` or nothing. A whole program is 4.4% smaller by it
+    alone (`bench/closures.lisp` with the runtime: 5,422,808 → 5,186,229
+    octets).
+    (The validation takes the code after a block for reachable whatever
+    the block ends with, so an `unreachable` takes the place of what is
+    cut there; and a block whose last instruction is its only branch to
+    itself cannot lose that branch, since a branch drops what is on the
+    stack below its operands and the end of a block does not.
+    `CLYSM_EAGER_VALIDATION=1` makes the host validate every function of
+    every module when it is made, which is how such code is found: the
+    engine otherwise validates a function when it first runs.)
+  * The class of a structure in an accessor, a predicate or a constructor
+    (`(load-time-value (find-class 'name))`, about 47 octets at each:
+    the call of `find-class` through its symbol with the test for a
+    pending exit) is found through the helper that calls a symbol's
+    function (about 23).
+  * The other arm of a guarded direct call (the function was redefined)
+    was `funcall` of the constant symbol as of any object, 60 octets and
+    more: it passes the arguments and the symbol to `(:cellcall k)` (see
+    Calling convention), as do the calls of `error`, `warn`, `signal` and
+    of the functions that never return; `sys::%type-error` is no longer
+    copied into its callers by the code compiled in the image (`(error
+    'type-error :datum x
+    :expected-type 'list)` with its five arguments, 100 octets at the end
+    test of each `dolist`: `cold-function-p` in `live-inline-call`, as the
+    whole-program inliner had it).
+  * `funcall` of an object of unknown type tests for a closure in place
+    and leaves a symbol to the helper (14 octets instead of 37).
+  * `#'f` of a function of another file of the system was `(fdefinition
+    'f)` in place, a call of `sys::%function-name-symbol` (1.2-1.9% of
+    esrap's profile by itself) and `symbol-function` with its tests for a
+    macro, some 300 octets: it reads the function cell (`function-cell-node`).
+  * The compiler knows the structures a structure includes (the last
+    element of its description, `struct-class-includes-p` in
+    `src/types.lisp`): an object found to be of a structure by an
+    accessor, a predicate or a constructor stays of it when an accessor
+    or a predicate of an included structure sees it (`ty-intersect` took
+    the class of the last one, so `(successful-parse-%production r)`
+    then `(result-detail r)` then `(setf (successful-parse-%production
+    r) ...)` tested the class three times, with three classes found), its
+    accessors read the field through the Wasm type of the object's own
+    structure (the engine's test of an object's exact type is one
+    comparison, of a supertype three loads more) with no test of the
+    class, and its predicates are decided (`known-test-result`).
+  esrap's functions, before and after, in octets: `result-position` 565
+  → 321, `successful-parse-production` 656 → 270, `find-chunk` 516 →
+  317, `result-unsatisfied-predicate-p` 799 → 438, the lambda of
+  `compile-sequence` 1688 → 967, `rule/transform` 7853 → 4502; the code
+  of its module 547 → 476 KB. The REPL image 8,875,824 → 8,285,631
+  octets (its heap image 11.06 → 10.46 MB), the one-export module 925,558
+  → 883,485, the self-hosted compiler 9,171,099 → 8,512,478.
+  Interleaved with the build before on one slot (the best of two rounds
+  of three runs each): `tools/bench-libs.sh bench/apps.lisp` `a-esrap` 99
+  → 90 ms (1.77 → 1.61 times SBCL), `a-ppcre-tokens` 46 → 41 (1.18 →
+  1.05), the others within 3% (`a-yason-parse` 113 → 120 there, 98 for
+  both when it runs alone eight times: the order of warming up); esrap
+  loaded alone 51 → 44 ms (SBCL 30); cl-ppcre alone, its tokens 23.0 or
+  26.5 (it has two speeds) → 19.5-21.0 ms, a scan, a replacement and an
+  alternation the same; `tools/bench-libs.sh` `l-selfhost-compile` 4038
+  → 3781 ms (1.60 → 1.49 times SBCL: the compiler itself is 7% smaller),
+  `l-alexandria-tests` 74 → 67, `l-ppcre-replace` 178 → 176 and
+  `l-ppcre-scan` 118 → 119 (cl-ppcre's time is in its matchers' calls of
+  each other, below). Lem's comparator on the held-out file, four
+  rounds: 0.92, 0.93, 1.00 and 1.04 of the time before
+  (`l-forms-forward` 144-156 → 134-144 and `l-type-autodoc` 171-195 →
+  161-175 in every round; `l-type-redisplay` 32-53 → 37-46, its noise).
+  `bench/closures.lisp` 0.97 and 1.00 of the time (`k-generators` 100 →
+  84; `k-higher-order` 137 → 150 in two comparisons of three and
+  `k-church` 26 → 29 with the shorter `funcall`, which a chain of closures
+  called through undeclared variables does not show, 51 against 52 ms:
+  what the engine inlines of the recursive `my-map` changed),
+  `functional` 1.00 and 0.97 (`f-pipeline` 43 → 50 in one pair of
+  rounds), `suite` 1.00, `programs` 0.99 and 1.00 (`p-struct-tree` 80 →
+  73, `p-struct-float` 54 → 49); in a script `closures` 1.02,
+  `functional` 0.99, `suite` 1.00, `programs` 1.01 (`p-struct-float` 68 →
+  51; its first benchmark, `p-cnm-args`, 35-54 for both).
+  Measured and not done (the probes of `build/p` of that branch):
+  * *The engine's flags.* On the code before: `--no-wasm-inlining` 1.2-1.5
+    times the time (esrap 495 → 600 hundreds of microseconds, tokens 230
+    → 335), `--experimental-wasm-assume-ref-cast-succeeds` (every cast
+    free: an upper bound, not a mode to run in) esrap 0.93, tokens 0.85,
+    scan 0.97, `--no-wasm-stack-checks` 0.97, a larger
+    `--wasm-inlining-budget` nothing, `--wasm-inlining-call-indirect`
+    nothing. After the changes `--wasm-inlining-max-size=1000` gains 3%
+    on esrap and nothing on cl-ppcre, so the defaults stay.
+  * *The entry in the closure* (one load less before `call_ref`). The
+    chain a call through a closure waits for is the closure's `$code`,
+    the entry, V8's `WasmInternalFunction`, its call target and the code
+    pointer table (five loads from the closure, the instance in
+    parallel); the entry in the closure object would take one of them
+    and cost 8 octets a closure for each arity kept there. A chain of
+    eight closures each calling the next (declared `function`, cl-ppcre's
+    shape) takes 48 ms for 3 million walks against SBCL's 29, 42 with
+    every cast free: the call itself, not what precedes it, is the
+    difference (the first instructions of the functions called, where a
+    mispredicted indirect call lands, have 10-12% of the ticks of both
+    libraries, the chain before `call_ref` 4-6%).
+  * *The cast of a closure.* `ref.cast $closure` of a closure with free
+    variables (a subtype) is the engine's slow path: the map, its type
+    information, the supertype at depth 0. It is 13.5% of the ticks in
+    cl-ppcre's matchers (each reads `next-fn`, declared `function`, from
+    its closure and casts it), 5.4% in esrap with the `functionp` tests
+    of its lazy productions. A field of the closure typed `(ref
+    $closure)` would need closure types by the kinds of their fields,
+    which the entries of a function, heap images and the operations on
+    closures of any shape would all have to know; testing the final
+    types one after the other (`br_on_cast` of `$envclo1`, `$envclo2`,
+    ...) is a comparison each and no load, but 6 octets each at every
+    call. Not done; the first is what would remove the cost.
+  * *The type tests of included structures.* A list of 1000 structures
+    of two structures including a third, walked with the accessors and a
+    predicate of the included one (`build/p/clo.lisp`), takes 88 ms for
+    20 000 walks against SBCL's 20: at each access `ref.test $siN` of an
+    object with more slots (the slow path), the layout compared, then the
+    slot vector's length and its element at the structure's depth. Final
+    types for the instances (`$sfN`, tested exactly before `$siN`) would
+    take the engine's slow path away where the including structures are
+    known. But esrap compiled at `(safety 0)` (no test of the class at
+    all, a bare cast) is not faster (50-54 ms against 46), so its time
+    is not there, and nothing else measured here walks such lists.
 * **Large strings, design note (not done)**: a string is an `(array (mut
   i32))`, four bytes a character, so one of more than 32 768 characters is
   a large object for V8 (over 128 KB), allocated in pages of its own:
@@ -6595,7 +6750,12 @@ image) profile a program with the V8 CPU profiler; `tools/dump-func.lisp FILE
 NAME...` prints the Wasm generated for functions. For code compiled in the
 image (a fasl, the REPL, `load`), `(setq clysm::*live-dump* '("NAME" ...))`
 prints the Wasm of the functions of those names to `*trace-output*` as they
-are compiled (`compile-file` the file again to see them).
+are compiled (`compile-file` the file again to see them). With
+`CLYSM_EAGER_VALIDATION=1` the host leaves the engine's lazy validation
+off, so that a module with a function that does not validate is refused
+when it is made, not when that function first runs (after a change of the
+code generator: the image, the fasls of some systems and the tests loaded
+with it).
 
 ### Start-up and loading
 
