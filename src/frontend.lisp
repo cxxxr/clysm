@@ -831,7 +831,12 @@ when it may be copied into callers compiled later, else NIL."
                   ;; unless it has a loop)
                   *current-lam* (or (lam-parent *current-lam*) *live-toplevel-loop-p*)
                   (not (gethash op *notinline*)) (not (member op *local-notinline*))
-                  (not (get op 'clysm-sys::%notinline))))
+                  (not (get op 'clysm-sys::%notinline))
+                  ;; (not a function that signals, SYS::%TYPE-ERROR: its
+                  ;; call is on a path not expected to be taken, where a
+                  ;; copy, ERROR with its arguments, only makes the code
+                  ;; larger; as INLINE-CANDIDATE)
+                  (not (cold-function-p op))))
          (rec (and ok *live-inline-ok* *live-inline-closure-hook*
                    (gethash op *live-inline-sources*))))
     (when (and ok (not rec) (< *live-inline-depth* *fasl-inline-max-depth*)
@@ -1340,12 +1345,26 @@ unboxed (PARAM-CHECK-CODE)."
 
 (defun lambda-form-p (x) (and (consp x) (eq (car x) 'lambda)))
 
+(defun function-cell-node (sym)
+  "The node of the function that SYM, the name of a function defined in the
+module, has when the code runs: its function cell, read in place (the
+helper signals UNDEFINED-FUNCTION when it is empty).  (FDEFINITION of the
+name was a call of SYS::%FUNCTION-NAME-SYMBOL and SYMBOL-FUNCTION's tests
+for a macro, some 300 octets at each #'F of a function of another file of
+the system.)"
+  (let ((l (gensym "FCELL")))
+    `(:the function
+           (:wasm :eqref ()
+                  ((:block ,l :eqref
+                     (:global.get ,(sym-global sym)) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
+                     (:global.get ,(sym-global sym)) (:call :fdefinition)))))))
+
 (defun convert-function-designator (spec env)
   (cond ((symbolp spec)
          (let ((fe (env-lookup-fun env spec)))
            (cond ((and fe (eq (first fe) :fun)) `(:lref ,(note-ref (fun-lvar (third fe)))))
                  ;; (a function of another form of a batch: its current definition)
-                 ((batch-guarded-p spec) (convert `(fdefinition ',spec) env))
+                 ((batch-guarded-p spec) (function-cell-node spec))
                  (t `(:fref ,spec)))))
         ((and (consp spec) (eq (car spec) 'setf))
          (let ((fe (env-lookup-fun env spec)))

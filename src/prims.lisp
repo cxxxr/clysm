@@ -1348,9 +1348,13 @@ includes the class C, at depth D, by the vector of included structures its
 constructor put in its slot vector (LAYOUT-INHERITS); FALLBACK (code pushing
 an i32) when that is empty (a structure made otherwise: a heap image's)."
   (let ((iv (new-local '(:ref :null :vector))) (n (new-local :i32)))
-    `((:local.get ,s) (:struct.get ,ty 1) (:local.tee ,iv) :array.len (:local.tee ,n) (:i32.const ,d) :i32.gt_u
-      (:if nil :i32 ((:local.get ,iv) (:i32.const ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
-           ((:local.get ,n) :i32.eqz (:if nil :i32 ,fallback ((:i32.const 0))))))))
+    (if (equal fallback '((:i32.const 0)))
+        `((:local.get ,s) (:struct.get ,ty 1) (:local.tee ,iv) :array.len (:i32.const ,d) :i32.gt_u
+          (:if nil :i32 ((:local.get ,iv) (:i32.const ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
+               ((:i32.const 0))))
+        `((:local.get ,s) (:struct.get ,ty 1) (:local.tee ,iv) :array.len (:local.tee ,n) (:i32.const ,d) :i32.gt_u
+          (:if nil :i32 ((:local.get ,iv) (:i32.const ,d) (:array.get :vector) (:local.get ,c) :ref.eq)
+               ((:local.get ,n) :i32.eqz (:if nil :i32 ,fallback ((:i32.const 0)))))))))
 
 (defun inherits-depth-check-code (l c d &optional (other '((:i32.const 0))))
   "Code pushing 1 when the layout (local L, not C) includes C, whose index in
@@ -1702,7 +1706,31 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 
 (defun define-standard-helpers ()
   ;; (:callsym k): (sym, a1..ak) -> eqref, calling through the function cell
-  (setf *helpers* (remove-helpers-of-kinds '(:callsym)))
+  (setf *helpers* (remove-helpers-of-kinds '(:callsym :cellcall)))
+  ;; (:cellcall k): (a1..ak, sym) -> eqref, the call of the symbol's function
+  ;; as a call site makes it (null with an exit pending, which the caller
+  ;; tests): for the calls that are rarely made (the other arm of a guarded
+  ;; direct call), six octets where the call is
+  (loop for k from 0 to +max-fixed-args+
+        do (let ((k k))
+             (push (list (list :cellcall k)
+                         (let ((tn (list :callsym-type k)))
+                           (unless (gethash tn *extra-types*)
+                             (setf (gethash tn *extra-types*) t)
+                             (add-type *m* tn `(:func (,@(make-list k :initial-element :eqref) (:ref :symbol))
+                                                      (:eqref))))
+                           tn)
+                         '((clo (:ref :null :closure)))
+                         (lambda ()
+                           (let ((l (gensym)))
+                             `((:block ,l (:ref :closure)
+                                 (:local.get ,k) (:struct.get :symbol ,+sym-function+) (:br_on_non_null ,l)
+                                 (:local.get ,k) (:call :undefined-function))
+                               (:local.tee clo) :ref.as_non_null
+                               ,@(loop for i below k collect `(:local.get ,i))
+                               (:local.get clo) ,@(clo-field-code k)
+                               (:return_call_ref ,(fixed-entry-type k))))))
+                   *helpers*)))
   (loop for k from 0 to +max-fixed-args+
         do (let ((k k))
              (push (list (list :callsym k)
@@ -1877,6 +1905,14 @@ to the code (FUNCALL ARM J) for J; DEFAULT for any other value."
 (defhelper :coerce-function :e-clo ()
   `(:block fail :eqref
      (:local.get 0) (:br_on_cast_fail fail :eqref (:ref :closure)) :return)
+  :drop
+  ;; (a symbol with a function: its function cell)
+  `(:block fail2 :eqref
+     (:block fn (:ref :closure)
+       (:local.get 0) (:br_on_cast_fail fail2 :eqref (:ref :symbol))
+       (:struct.get :symbol ,+sym-function+) (:br_on_non_null fn)
+       (:local.get 0) (:br fail2))
+     :return)
   :drop
   `(:block fail2 :eqref
      (:local.get 0) (:br_on_cast_fail fail2 :eqref (:ref :symbol))
