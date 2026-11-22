@@ -339,7 +339,8 @@ converts to a double exactly, so only bignums and ratios need it."
       (setq n (truncate n g) d (truncate d g)))
     (if (eql d 1) n (%make-ratio n d))))
 
-(defun %exact-quotient (a b) (if (eql b 1) a (values (%int-truncate a b))))
+(defun %exact-quotient (a b)
+  (if (eql b 1) a (or (%int-exact-small a b) (values (%int-truncate a b)))))
 (defun %ratio-add (a b)
   ;; Knuth 4.5.1: the gcds are taken of the (small) common factors only
   (let* ((na (numerator a)) (da (denominator a)) (nb (numerator b)) (db (denominator b))
