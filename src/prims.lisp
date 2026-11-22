@@ -111,7 +111,7 @@ operations can all be done after the leaves."
     (ecase kind
       (:const nil)
       (:dual (let ((lv (second node)))
-               `((:local.get ,(cdr (get-loc lv))) (:local.set ,(first locs))
+               `(,@(dual-b-code lv) (:local.set ,(first locs))
                  (:local.get ,(dual-local lv)) (:local.set ,(second locs)))))
       (:fdiv (typed-float-divmod node :pair nil (cons (first locs) (second locs))))
       (:i64 `(,@(cg-rep node :i64) (:local.set ,(first locs))))
@@ -4747,6 +4747,87 @@ f64s in locals DA and DB (it may branch to SLOW)."
 ;;; operand.  :acc-add64 gives the sum when both are integers within 64 bits
 ;;; and it is one (no integer is made), else -2^63, and :acc-add then gives
 ;;; the generic sum.
+;;; An accumulator that holds an unboxed double (typed.lisp: its eqref local is
+;;; the mark, an i31 that is no fixnum and no character, and its f64 local the
+;;; value).  :acc-f64: the accumulator as a double (the i64 of parameter 1
+;;; when the eqref of parameter 0 is null, the f64 of parameter 2 when it is
+;;; the mark, the value of a double) or a NaN when it is none of them;
+;;; :acc-f64-of: a double or a fixnum as a double, a NaN for anything else.
+(defhelper :acc-f64 :eld-d ()
+  '(:local.get 0) :ref.is_null
+  '(:if nil nil ((:local.get 1) :f64.convert_i64_s :return))
+  '(:local.get 0) `(:i32.const ,(- (* 2 +char-tag+))) :ref.i31 :ref.eq
+  '(:if nil nil ((:local.get 2) :return))
+  '(:local.get 0) '(:ref.test :double)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :return))
+  '(:f64.const 0) '(:f64.const 0) :f64.div)
+(defhelper :acc-f64-of :e-d ()
+  '(:local.get 0) '(:ref.test :double)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :double) (:struct.get :double 0) :return))
+  '(:local.get 0) '(:call :fixnump)
+  '(:if nil nil ((:local.get 0) (:ref.cast! :i31) :i31.get_s :f64.convert_i32_s :return))
+  '(:f64.const 0) '(:f64.const 0) :f64.div)
+
+;;; The step of such an accumulator that stays or becomes an unboxed double:
+;;; the sum (difference) of the accumulator (parameters 0 to 2, as :acc-f64)
+;;; and parameter 3 when that is a double, or a fixnum added to a double; a
+;;; NaN otherwise (integers stay integers), as for a sum that is not finite.
+;;; :acc-demote: the eqref of the accumulator, its unboxed double an object.
+(macrolet ((fstep (name op)
+             `(defhelper ,name :elde-d ((a :f64))
+                '(:local.get 3) '(:ref.test :double)
+                '(:if nil nil ((:local.get 0) (:local.get 1) (:local.get 2) (:call :acc-f64)
+                               (:local.get 3) (:ref.cast! :double) (:struct.get :double 0) ,op :return))
+                '(:local.get 0) `(:i32.const ,(- (* 2 +char-tag+))) :ref.i31 :ref.eq
+                '(:local.get 0) '(:ref.test :double) :i32.or '(:local.get 3) '(:call :fixnump) :i32.and
+                '(:if nil nil ((:local.get 0) (:local.get 1) (:local.get 2) (:call :acc-f64)
+                               (:local.get 3) (:ref.cast! :i31) :i31.get_s :f64.convert_i32_s ,op :return))
+                '(:f64.const 0) '(:f64.const 0) :f64.div)))
+  (fstep :acc-fadd :f64.add)
+  (fstep :acc-fsub :f64.sub))
+;;; The step of an accumulator that may hold an unboxed double, when its
+;;; inline code did not take it (parameters as :acc-fadd's): the new eqref of
+;;; the accumulator.  The mark: the sum is a double, its bits in the global
+;;; :acc-bits; null: an integer within 64 bits, there too; else the object
+;;; of the generic sum.  (One call and one result, so that the step is no
+;;; longer than that of an accumulator of integers: a longer one kept V8 from
+;;; copying small functions into their callers.)
+(macrolet ((slow-step (name op fop fstep step64 gen)
+             `(defhelper ,name :elde-e ((r :f64) (w :i64) (e :eqref) (y :i64))
+                ;; first, with no call (the engine copies this helper into
+                ;; the loops that take it often): the box of an integer
+                ;; added to the i64, a double to the unboxed double
+                `(:block notbox nil
+                   (:local.get 0) :ref.is_null :i32.eqz (:br_if notbox)
+                   (:local.get 3) (:ref.test :ibox) :i32.eqz (:br_if notbox)
+                   (:local.get 3) (:ref.cast! :ibox) (:struct.get :ibox 0) (:local.set y)
+                   ,@(i64-checked-op-code ,op 1 'y 'w 'notbox)
+                   (:local.get w) (:global.set :acc-bits) (:ref.null :eq) :return)
+                ;; (what is neither is hinted unlikely: the calls below
+                ;; then stay out of the way of the loop's registers)
+                `(:block notf nil
+                   (:local.get 0) (:i32.const ,(- (* 2 +char-tag+))) :ref.i31 :ref.eq :i32.eqz (:hint 0) (:br_if notf)
+                   (:local.get 3) (:ref.test :double) :i32.eqz (:hint 0) (:br_if notf)
+                   (:local.get 2) (:local.get 3) (:ref.cast! :double) (:struct.get :double 0) ,,fop (:local.tee r)
+                   (:local.get r) :f64.sub (:f64.const 0) :f64.ne (:hint 0) (:br_if notf)
+                   (:local.get r) :i64.reinterpret_f64 (:global.set :acc-bits)
+                   (:local.get 0) :return)
+                '(:local.get 0) '(:local.get 1) '(:local.get 2) '(:local.get 3) '(:call ,fstep) '(:local.tee r)
+                '(:local.get r) :f64.sub '(:f64.const 0) :f64.eq
+                `(:if nil nil ((:local.get r) :i64.reinterpret_f64 (:global.set :acc-bits)
+                               (:i32.const ,(- (* 2 +char-tag+))) :ref.i31 :return))
+                '(:local.get 0) '(:local.get 2) '(:call :acc-demote) '(:local.set e)
+                '(:local.get e) '(:local.get 1) '(:local.get 3) '(:call ,step64) '(:local.tee w)
+                `(:i64.const ,(- (expt 2 63))) :i64.ne
+                '(:if nil nil ((:local.get w) (:global.set :acc-bits) (:ref.null :eq) :return))
+                '(:local.get e) '(:local.get 1) '(:local.get 3) '(:return_call ,gen))))
+  (slow-step :acc-step :add :f64.add :acc-fadd :acc-add64 :acc-add)
+  (slow-step :acc-step-sub :sub :f64.sub :acc-fsub :acc-sub64 :acc-sub))
+(defhelper :acc-demote :ed-e ()
+  '(:local.get 0) `(:i32.const ,(- (* 2 +char-tag+))) :ref.i31 :ref.eq
+  '(:if nil nil ((:local.get 1) (:struct.new :double) :return))
+  '(:local.get 0))
+
 (macrolet ((acc (name64 name op gen)
              `(progn
                 (defhelper ,name64 :ele-l ((a :i64) (y :i64) (r :i64))

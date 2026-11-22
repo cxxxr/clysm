@@ -943,7 +943,10 @@ that a shaken module has.)"
   "The globals of the :IDENTITY-HASH helper: the last object it hashed with the
 host's identity hash, and that hash."
   (add-global *m* :ih-key :eqref t '((:ref.null :eq)))
-  (add-global *m* :ih-hash :i32 t '((:i32.const 0))))
+  (add-global *m* :ih-hash :i32 t '((:i32.const 0)))
+  ;; the i64 (or the bits of the f64) that the helper :acc-step leaves for
+  ;; the step of an accumulator that called it (typed.lisp, DUAL-LSET-CODE)
+  (add-global *m* :acc-bits :i64 t '((:i64.const 0))))
 
 (defvar *preinit-function* nil
   "NIL, or the function (src/preinit.lisp, loaded with the compiler on SBCL)

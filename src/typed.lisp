@@ -1616,7 +1616,7 @@ doubles, else the generic comparison; or NIL."
         (when p
           (flet ((operand (n bl vl)
                    (if (dual-lref-p n)
-                       `((:local.get ,(cdr (get-loc (second n)))) (:local.set ,bl)
+                       `(,@(dual-b-code (second n)) (:local.set ,bl)
                          (:local.get ,(dual-local (second n))) (:local.set ,vl))
                        `(,@(cg n) (:local.set ,bl)))))
             `(,@(operand a ba va) ,@(operand b bb vb)
@@ -2042,6 +2042,26 @@ eqref), the local of the remainder and its representation; or NIL."
 ;;; bits takes the generic operation, whose result goes to the eqref local.
 
 (defvar *dual-vars* (make-hash-table :test 'eq) "lvar -> index of its i64 local")
+(defvar *dual-fvars* (make-hash-table :test 'eq)
+  "lvar -> index of the f64 local of an integer accumulator that may hold an
+unboxed double: its eqref local is then the mark (DUAL-MARK-CODE) and the
+f64 local the value.  A sum of doubles that starts from 0 allocates nothing
+at its steps (DUAL-LSET-CODE); every other use makes the double an object
+first (DUAL-B-CODE, DUAL-MATERIALIZE-CODE).")
+(defun dual-f (lv) (and (dual-local lv) (gethash lv *dual-fvars*)))
+(defun dual-mark-code ()
+  "The eqref of an accumulator whose value is its f64 local: an i31 below the
+fixnums (characters are above them)."
+  `((:i32.const ,(- (* 2 +char-tag+))) :ref.i31))
+(defun dual-b-code (lv)
+  "The eqref local of the accumulator LV (null: the value is its i64), an
+unboxed double made an object first."
+  (let ((b (cdr (get-loc lv))) (f (dual-f lv)))
+    (if f
+        `((:local.get ,b) ,@(dual-mark-code) :ref.eq
+          (:if nil nil ((:local.get ,f) (:struct.new :double) (:local.set ,b)))
+          (:local.get ,b))
+        `((:local.get ,b)))))
 (defvar *dual-uses-lam* nil "the function whose variables *DUAL-USES* describes")
 (defvar *dual-uses* (make-hash-table :test 'eq)
   "lvar -> (arithmetic assignments . other uses) in the function being compiled")
@@ -2205,8 +2225,13 @@ an accumulator when its assignments are integer arithmetic."
                       (and (or (null ty) (= (ty-bits ty) +k-all+) (and (logtest (ty-bits ty) +k-int+) (ty-only-p ty +k-number+)))
                            ;; (one such update is enough: the others take the general code)
                            (> (svref uses 2) 0) (> (+ (svref uses 4) (svref uses 5)) 0) (< (svref uses 3) (svref uses 2)))))))
-      (setf (gethash lv *dual-vars*) (new-local :i64))
-      (remhash lv *dual-vars*)))
+      (progn
+        (setf (gethash lv *dual-vars*) (new-local :i64))
+        ;; (one that may hold a double: an f64 local too, see *DUAL-FVARS*)
+        (if (or param (and (lvar-type lv) (ty-only-p (lvar-type lv) +k-int+)))
+            (remhash lv *dual-fvars*)
+            (setf (gethash lv *dual-fvars*) (new-local :f64))))
+      (progn (remhash lv *dual-vars*) (remhash lv *dual-fvars*))))
 
 ;;; Doubles of unknown type.  A LET variable bound to arithmetic that may give
 ;;; a double (a speculative tree, prims.lisp) and used as an operand of
@@ -2387,13 +2412,21 @@ the value of NODE: B null when F holds it."
 (defun dual-local (lv)
   (and (null (lvar-rep lv)) (not (boxed-p lv)) (gethash lv *dual-vars*)))
 
-(defun dual-materialize-code (b v)
+(defun dual-materialize-code (b v &optional f)
   "The integer of the pair of locals B (eqref) and V (i64); one beyond the
 fixnums is kept in B (a fixnum is not: B stays null, and the next update
 reads the i64 without a test of B's object)."
   (let ((ok (gensym "DUAL")))
     `((:block ,ok (:ref :eq)
-        (:local.get ,b) (:br_on_non_null ,ok)
+        ,@(if f
+              ;; (F: the f64 local of an accumulator that may hold an
+              ;; unboxed double, B then the mark: the double is made and kept)
+              (let ((nn (gensym "DUALB")))
+                `((:block ,nn nil
+                    (:local.get ,b) :ref.is_null (:br_if ,nn)
+                    (:local.get ,b) (:local.get ,f) (:call :acc-demote) (:local.tee ,b)
+                    :ref.as_non_null (:br ,ok))))
+              `((:local.get ,b) (:br_on_non_null ,ok)))
         (:local.get ,v) (:i64.const ,+char-tag+) :i64.add (:i64.const ,(* 2 +char-tag+)) :i64.lt_u
         (:if nil :eqref
              ((:local.get ,v) :i32.wrap_i64 :ref.i31)
@@ -2401,7 +2434,7 @@ reads the i64 without a test of B's object)."
         :ref.as_non_null))))
 
 (defun dual-get-code (lv)
-  (dual-materialize-code (cdr (get-loc lv)) (dual-local lv)))
+  (dual-materialize-code (cdr (get-loc lv)) (dual-local lv) (dual-f lv)))
 
 (defun dual-pair-i64-code (b v fail)
   ;; (the i64 holds the value most often; hinted so, the decoding of the
@@ -2514,14 +2547,14 @@ operation); NIL otherwise.  EFFECT: no value is left."
                           (:if nil nil ,fast
                                (,@(cg-effect (list :let bindings (list :lset lv else)))
                                 ,@(guard-else-epilogue g)))))
-                  ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v)))))))))
+                  ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v (dual-f lv))))))))))
     ;; a guarded copy of other code whose value is an integer within 64 bits
     (when (and v (eq (car (get-loc lv)) :local) (not *no-fuse*))
       (let ((gif (guarded-copy-if expr)))
         (when (and gif (int64-copy-p gif))
           (return-from dual-lset-code
             `(,@(cg-dual-i64 expr (cdr (get-loc lv)) v)
-              ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v)))))))
+              ,@(unless effect (dual-materialize-code (cdr (get-loc lv)) v (dual-f lv))))))))
     ;; an unboxed double variable
     (when (and (fdual-local lv) (eq (car (get-loc lv)) :local) (spec-able-p expr))
       (let ((b (cdr (get-loc lv))) (f (fdual-local lv)))
@@ -2552,26 +2585,47 @@ operation); NIL otherwise.  EFFECT: no value is left."
                    ;; the other operand is a variable that may hold an
                    ;; unboxed double (its f64 local, a null eqref)
                    (xf (and (fdual-lref-p (first other)) (fdual-local (second (first other)))))
-                   (xb (and xf (cdr (get-loc (second (first other)))))))
+                   (xb (and xf (cdr (get-loc (second (first other))))))
+                   ;; the accumulator may hold an unboxed double: its f64
+                   ;; local, a copy of it, the result of a step in f64
+                   (f (dual-f lv)) (lf (and f (new-local :f64))) (fr (new-local :f64))
+                   (fop (if sub :f64.sub :f64.add))
+                   ;; (the accumulator's locals as they are: its mark is
+                   ;; not made an object here)
+                   (raw-dual `((:local.get ,b) (:local.set ,lb) (:local.get ,v) (:local.set ,lv64)
+                               ,@(when f `((:local.get ,f) (:local.set ,lf)))))
+                   ;; the sum FR is the accumulator's unboxed double
+                   (f-store `((:local.get ,fr) (:local.set ,f) ,@(dual-mark-code) (:local.set ,b)
+                              ,@(unless effect `((:local.get ,fr) (:struct.new :double)))))
+                   (not-finite `((:local.get ,fr) (:local.get ,fr) :f64.sub (:f64.const 0) :f64.ne (:hint 0))))
               (return-from dual-lset-code
                 ;; (the leaves in their order; a variable's unboxed double
                 ;; is read after the accumulator, which it cannot change)
-                `(,@(if xf (fused-leaf-eval-code dual) leaves)
+                `(,@(if xf
+                        raw-dual
+                        (loop for rec in recs
+                              append (if (eq rec dual) raw-dual (fused-leaf-eval-code rec))))
                   (:block ,done ,(if effect nil :eqref)
                     ;; an unboxed double added to an accumulator that holds
                     ;; a double (a sum of doubles that started from 0): in
                     ;; f64, before the double is made an object for the
                     ;; other paths
                     ,@(when xf
-                        (let ((nd (gensym "NOTD")) (fr (new-local :f64)))
+                        (let ((nd (gensym "NOTD")))
                           `((:block ,nd nil
                               (:local.get ,xb) :ref.is_null :i32.eqz (:br_if ,nd)
-                              (:local.get ,lb) (:ref.test :double) :i32.eqz (:br_if ,nd)
-                              (:local.get ,lb) (:ref.cast! :double) (:struct.get :double 0) (:local.get ,xf)
-                              ,(if sub :f64.sub :f64.add) (:local.tee ,fr)
-                              (:local.get ,fr) :f64.sub (:f64.const 0) :f64.ne (:hint 0) (:br_if ,nd)
-                              (:local.get ,fr) (:struct.new :double)
-                              ,@(if effect `((:local.set ,b)) `((:local.tee ,b) :ref.as_non_null))
+                              ,@(if f
+                                    ;; (whatever number the accumulator is, as a
+                                    ;; double; a NaN for what is none)
+                                    `((:local.get ,lb) (:local.get ,lv64) (:local.get ,lf) (:call :acc-f64))
+                                    `((:local.get ,lb) (:ref.test :double) :i32.eqz (:br_if ,nd)
+                                      (:local.get ,lb) (:ref.cast! :double) (:struct.get :double 0)))
+                              (:local.get ,xf) ,fop (:local.set ,fr)
+                              ,@not-finite (:br_if ,nd)
+                              ,@(if f
+                                    f-store
+                                    `((:local.get ,fr) (:struct.new :double)
+                                      ,@(if effect `((:local.set ,b)) `((:local.tee ,b) :ref.as_non_null))))
                               (:br ,done)))))
                     ,@(when xf (fused-leaf-eval-code other))
                     (:block ,lean nil
@@ -2599,6 +2653,7 @@ operation); NIL otherwise.  EFFECT: no value is left."
                     ;; sizes, products): its value added here, after the
                     ;; fixnum's tests failed, before any call
                     ,@(let ((nb (gensym "NOTBOX")) (y (new-local :i64)) (w (new-local :i64)))
+                        (progn                     ; (also in :acc-step, for the engine's copies of it)
                         `((:block ,nb nil
                             (:local.get ,lb) :ref.is_null :i32.eqz (:br_if ,nb)
                             (:local.get ,lx) (:ref.test :ibox) :i32.eqz (:br_if ,nb)
@@ -2606,21 +2661,45 @@ operation); NIL otherwise.  EFFECT: no value is left."
                             ,@(i64-checked-op-code (if sub :sub :add) lv64 y w nb)
                             (:local.get ,w) (:local.set ,v) (:ref.null :eq) (:local.set ,b)
                             ,@(unless effect (dual-materialize-code b v))
-                            (:br ,done))))
-                    ;; (a double, as the sum of doubles from 0 has at each
-                    ;; step: the generic sum at once)
-                    (:local.get ,lx) (:ref.test :double)
-                    (:if nil :i64
-                         ((:i64.const ,(- (expt 2 63))))
-                         ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
-                          (:call ,(if sub :acc-sub64 :acc-add64))))
-                    (:local.tee ,r)
-                    (:i64.const ,(- (expt 2 63))) :i64.ne
-                    (:if nil nil
-                         ((:local.get ,r) (:local.set ,v) (:ref.null :eq) (:local.set ,b))
-                         ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
-                          (:call ,(if sub :acc-sub :acc-add)) (:local.set ,b)))
-                    ,@(unless effect (dual-materialize-code b v)))))))
+                            (:br ,done)))))
+                    ;; an accumulator that holds an unboxed double, stepped
+                    ;; by a double: in f64, nothing made and nothing called
+                    ,@(when f
+                        (let ((nf (gensym "NOTF")))
+                          `((:block ,nf nil
+                              (:local.get ,lb) ,@(dual-mark-code) :ref.eq :i32.eqz (:br_if ,nf)
+                              (:local.get ,lx) (:ref.test :double) :i32.eqz (:br_if ,nf)
+                              (:local.get ,lf) (:local.get ,lx) (:ref.cast! :double) (:struct.get :double 0)
+                              ,fop (:local.set ,fr)
+                              ,@not-finite (:br_if ,nf)
+                              ,@f-store
+                              (:br ,done)))))
+                    ,@(if f
+                          ;; the rest in one call (a double added to an
+                          ;; integer or to a double that is an object, a
+                          ;; fixnum to an unboxed double, the generic sum):
+                          ;; :acc-step gives the accumulator's new eqref,
+                          ;; its number in :acc-bits when that is null or
+                          ;; the mark
+                          `((:local.get ,lb) (:local.get ,lv64) (:local.get ,lf) (:local.get ,lx)
+                            (:call ,(if sub :acc-step-sub :acc-step)) (:local.tee ,b) :ref.is_null
+                            (:if nil nil
+                                 ((:global.get :acc-bits) (:local.set ,v))
+                                 ((:local.get ,b) ,@(dual-mark-code) :ref.eq
+                                  (:if nil nil ((:global.get :acc-bits) :f64.reinterpret_i64 (:local.set ,f))))))
+                          ;; (without the f64 local: a double takes the generic sum at once)
+                          `((:local.get ,lx) (:ref.test :double)
+                            (:if nil :i64
+                                 ((:i64.const ,(- (expt 2 63))))
+                                 ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
+                                  (:call ,(if sub :acc-sub64 :acc-add64))))
+                            (:local.tee ,r)
+                            (:i64.const ,(- (expt 2 63))) :i64.ne
+                            (:if nil nil
+                                 ((:local.get ,r) (:local.set ,v) (:ref.null :eq) (:local.set ,b))
+                                 ((:local.get ,lb) (:local.get ,lv64) (:local.get ,lx)
+                                  (:call ,(if sub :acc-sub :acc-add)) (:local.set ,b)))))
+                    ,@(unless effect (dual-materialize-code b v f)))))))
           `(,@leaves
             (:block ,done nil
               (:block ,fail nil
@@ -2633,4 +2712,4 @@ operation); NIL otherwise.  EFFECT: no value is left."
                     `((:block ,fail2 nil ,@code (:struct.new :double) (:local.set ,b) (:br ,done)))))
               ,@generic
               (:local.set ,b))
-            ,@(unless effect (dual-materialize-code b v))))))))
+            ,@(unless effect (dual-materialize-code b v (dual-f lv)))))))))
