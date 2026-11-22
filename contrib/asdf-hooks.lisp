@@ -126,8 +126,14 @@ named BEFORE (at the end without it)."
 ;;; an image that records its modules for a heap image.  Opt-in:
 ;;; (setf asdf::*clysm-system-fasls* t).
 
-(defvar *clysm-system-fasls* (equal (uiop:getenv "CLYSM_SYSTEM_FASLS") "1")
-  "Make and load system fasls (see above); off by default (CLYSM_SYSTEM_FASLS=1: on).")
+(defvar *clysm-system-fasls*
+  (let ((v (uiop:getenv "CLYSM_SYSTEM_FASLS")))
+    (cond ((equal v "1") t) ((equal v "auto") :auto) (t nil)))
+  "Whether systems are made into system fasls (see above): T, :AUTO (but
+not those being developed: see CLYSM-SYSTEM-FASL-FILES-1) or NIL.
+CLYSM_SYSTEM_FASLS=1, auto or 0 in the environment.")
+(defvar *clysm-system-fasl-modes* nil
+  "((name . mode)...): T, :AUTO or NIL for the system NAME, instead of *CLYSM-SYSTEM-FASLS*.")
 (defvar *clysm-system-fasls-loaded* nil "The names of the systems loaded from their system fasls.")
 (defvar *clysm-system-fasl-state* (make-hash-table :test 'eq)
   "system -> :LOADED when it is loaded from its system fasl in this image, or
@@ -140,15 +146,41 @@ is :BROKEN when a file failed to compile into it.")
 (defun clysm-system-fasl-files (system)
   "The source files of SYSTEM, if it is made into a system fasl, and the
 pathname of the fasl; else NIL."
-  (when (and *clysm-system-fasls* (typep system 'system) (eq (type-of system) 'system)
-             (not (sys::%getenv "CLYSM_SAVE_IMAGE")))
-    (let ((e (gethash system *clysm-system-fasl-files*)))
-      (unless (and e (eq (car e) (component-children system)))
-        (setq e (list* (component-children system) (ignore-errors (clysm-system-fasl-files-1 system))))
-        (setf (gethash system *clysm-system-fasl-files*) e))
-      (values (cadr e) (cddr e)))))
+  (let ((mode (and (typep system 'system) (clysm-system-fasl-mode system))))
+    (when (and mode (eq (type-of system) 'system) (not (sys::%getenv "CLYSM_SAVE_IMAGE")))
+      (let ((e (gethash system *clysm-system-fasl-files*)))
+        (unless (and e (eq (first e) (component-children system)) (eq (second e) mode))
+          (setq e (list* (component-children system) mode
+                         (ignore-errors (clysm-system-fasl-files-1 system mode))))
+          (setf (gethash system *clysm-system-fasl-files*) e))
+        (values (caddr e) (cdddr e))))))
 
-(defun clysm-system-fasl-files-1 (system)
+(defun clysm-system-fasl-mode (system)
+  (let ((e (assoc (component-name system) *clysm-system-fasl-modes* :test #'string=)))
+    (if e (cdr e) *clysm-system-fasls*)))
+
+(defun clysm-dev-pathname (sysfasl) (make-pathname :type "dev" :defaults sysfasl))
+
+(defun clysm-system-fasl-reset (system)
+  "Make SYSTEM (a system designator) be made into a system fasl again: forget
+that it is being developed or that its system fasl failed to be made, and
+the system fasl (it is made again when the system is next compiled)."
+  (let* ((system (find-system system)) (*clysm-system-fasls* t) (*clysm-system-fasl-modes* nil))
+    (remhash system *clysm-system-fasl-files*)
+    (let ((sysfasl (cdr (clysm-system-fasl-files-1 system :any))))
+      (remhash system *clysm-system-fasl-files*)
+      (when sysfasl
+        (dolist (p (list (clysm-dev-pathname sysfasl) (clysm-broken-pathname sysfasl)
+                         (make-pathname :type "files" :defaults sysfasl) sysfasl))
+          (when (probe-file p) (delete-file p)))
+        t))))
+
+(defun clysm-system-fasl-files-1 (system mode)
+  "(files . system-fasl) of CLYSM-SYSTEM-FASL-FILES, or NIL.  MODE :AUTO:
+not for a system being developed, one of whose files changed since its
+system fasl was made (noted in NAME--system.dev, which
+CLYSM-SYSTEM-FASL-RESET deletes), whose files are compiled one by one from
+then on, as a change to one would compile all again."
   (let ((files nil))
     (labels ((ok (c)
                (or (let ((f (component-if-feature c))) (and f (not (uiop:featurep f))))
@@ -172,13 +204,29 @@ pathname of the fasl; else NIL."
                                          :type "fasl" :defaults fasl)))
                (broken (probe-file (clysm-broken-pathname sysfasl))))
           ;; (not after it failed to be made, unless a file changed since)
-          (unless (and broken
+          (unless (and broken (not (eq mode :any))
                        (let ((date (file-write-date broken)) (asd (system-source-file system)))
                          (and (or (null asd) (not (probe-file asd)) (<= (file-write-date asd) date))
                               (every (lambda (c) (let ((src (component-pathname c)))
                                                    (or (not (probe-file src)) (<= (file-write-date src) date))))
                                      files))))
-            (cons files sysfasl)))))))
+            (unless (and (eq mode :auto) (clysm-system-developed-p files sysfasl))
+              (cons files sysfasl))))))))
+
+(defun clysm-system-developed-p (files sysfasl)
+  "Whether the system of FILES is being developed: noted so, or one of its
+files is newer than its system fasl (which is deleted then)."
+  (let ((dev (clysm-dev-pathname sysfasl)) (list-file (make-pathname :type "files" :defaults sysfasl)))
+    (or (probe-file dev)
+        (let ((date (and (probe-file list-file) (probe-file sysfasl) (file-write-date sysfasl))))
+          (when (and date (some (lambda (c) (let ((src (component-pathname c)))
+                                              (and (probe-file src) (> (file-write-date src) date))))
+                                files))
+            (ignore-errors
+             (with-open-file (out dev :direction :output :if-exists :supersede)
+               (write-line "a file of this system changed after its system fasl was made" out))
+             (delete-file list-file) (delete-file sysfasl))
+            t)))))
 
 (defvar *clysm-system-fasl-valid* (make-hash-table :test 'eq)
   "system -> (ASDF session . CLYSM-SYSTEM-FASL-VALID-P), as it was found in that session.")
