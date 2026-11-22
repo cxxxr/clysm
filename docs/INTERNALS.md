@@ -7136,6 +7136,22 @@ What makes the code fast:
   the runtime's two `every` of two sequences), the module of one export
   106 bytes (907,414 → 907,520).
 
+* **COERCE directly into the result storage (2026-11-23).** The general
+  sequence path, after checking whether the source already has the requested
+  type, used `%seq-to-list`, copied that list, then passed it to
+  `%make-sequence-from-list`. It now parses the result type with
+  `%seq-type-spec`, checks any specified length, and calls
+  `%coerce-to-storage` for a vector result. List results use `%seq-to-list`;
+  the result-type check remains for types the parser cannot describe exactly.
+  This removes an intermediate list for a list source and two for a vector
+  source, and reuses the direct simple-vector/string filling paths. Existing
+  matching objects still return unchanged; fill pointers, displacement,
+  specialized element types and length mismatches retain their checks.
+  Against `a0be620`, interleaved on one benchmark slot, the first three
+  rounds of `bench/library.lisp` give `v-coerce-general` 121 -> 86 ms
+  (median per build, 0.71 of its time); five rounds with the other list
+  changes give 130 -> 91 ms. The tests are in `coerce-storage.lisp`.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL
