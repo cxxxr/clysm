@@ -762,32 +762,53 @@ store writes it and clears the eqref local).")
 ;;; a call to the host and an entry in the host's table of identities on
 ;;; Clysm (a third of the inference's time went there; a new entry is 0.3 to
 ;;; 2 microseconds as that table grows), and an address that the collector
-;;; changes on SBCL.  The nodes that name a variable (a reference, an
-;;; assignment, the LET that binds it first: 44% of all nodes) keep theirs in
-;;; the variable instead, in a short list (node . value)... for each table:
-;;; (key count (node . value)...), where KEY names the table (the table
-;;; itself for the types; the tables of the copies of a function for given
-;;; types, codegen.lisp, are dropped with the copy: DROP-LVAR-NODE-TYPES).
-;;; The first +LVAR-NODE-NOTES-MAX+ nodes of a variable are there, the others
-;;; in the table as before.
-(defconstant +lvar-node-notes-max+ 16)
+;;; changes on SBCL.  A node that names a variable (a reference, an
+;;; assignment, the LET that binds it first), or whose first part does
+;;; (NODE-KEY-LVAR: (car x), (if (null x) ...); 71% of the lookups with the
+;;; former), keeps its notes in the variable instead: a record (key count .
+;;; vector) for each table, where KEY names the table (the table itself for
+;;; the types; the tables of the copies of a function for given types,
+;;; codegen.lisp, are dropped with the copy: DROP-LVAR-NODE-TYPES) and the
+;;; vector holds the nodes, each followed by its note.  The first
+;;; +LVAR-NODE-NOTES-MAX+ nodes of a variable are there, the others in the
+;;; table as before, with the nodes that lead to no variable (constants,
+;;; calls of constants).  Nodes are not changed in a way that changes the
+;;; variable they lead to once something is noted about them (checked with
+;;; every note kept in a table too, over a compilation of the runtime).
+(defconstant +lvar-node-notes-max+ 24)
 
-(declaim (inline node-key-lvar lvar-node-record node-note-entry))
+(declaim (inline lvar-node-record))
 (defun node-key-lvar (node)
-  "The variable that keeps what is noted about NODE, or NIL."
-  (and (consp node)
-       (let ((lv (case (car node)
-                   ((:lref :lset) (second node))
-                   (:let (let ((b (second node))) (and (consp b) (consp (car b)) (car (car b))))))))
-         (and (lvar-p lv) lv))))
+  "The variable that keeps what is noted about NODE, or NIL: the variable
+that NODE names, or the one that its first part does (the first argument
+of a call or of a primitive, the test of an IF, the first form of a PROGN,
+the form of a THE), to three parts down: (car x), (if (null x) ...),
+(+ (car x) 1)."
+  (let ((depth 0))
+    (declare (fixnum depth))
+    (loop
+      (unless (consp node) (return nil))
+      (case (car node)
+        ((:lref :lset) (let ((lv (second node))) (return (and (lvar-p lv) lv))))
+        (:let (let* ((b (second node)) (lv (and (consp b) (consp (car b)) (car (car b)))))
+                (return (and (lvar-p lv) lv))))
+        ((:prim :call :lcall :the) (setq node (third node)))
+        ((:if :progn) (setq node (second node)))
+        (t (return nil)))
+      (when (> (setq depth (+ depth 1)) 3) (return nil)))))
 
-(defun node-note-entry (node alist)
-  "(ASSOC NODE ALIST :TEST #'EQ)."
-  (do ((l alist (cdr l))) ((null l) nil)
-    (when (eq (car (car l)) node) (return (car l)))))
+(defun node-note-index (node rec)
+  "The index of NODE's value in the vector of the record REC, or -1."
+  (let ((vec (cddr rec)) (n (* 2 (the fixnum (cadr rec)))))
+    (declare (simple-vector vec) (fixnum n))
+    (do ((i 0 (+ i 2))) ((>= i n) -1)
+      (declare (fixnum i))
+      (when (eq (svref vec i) node) (return (+ i 1))))))
 
 (defun lvar-node-record (lv key)
-  "The record (key count . alist) of LV for the table named by KEY, or NIL."
+  "The record (key count . vector) of LV for the table named by KEY, or
+NIL: the vector holds COUNT nodes, each followed by what is noted about it
+(a vector, not a list: its elements are together in memory)."
   (do ((r (lvar-ntys lv) (cdr r))) ((null r) nil)
     (when (eq (car (car r)) key) (return (car r)))))
 
@@ -797,8 +818,9 @@ store writes it and clears the eqref local).")
     (if lv
         (let ((rec (lvar-node-record lv key)))
           (and rec
-               (let ((e (node-note-entry node (cddr rec))))
-                 (cond (e (cdr e))
+               (let ((i (node-note-index node rec)))
+                 (declare (fixnum i))
+                 (cond ((>= i 0) (svref (cddr rec) i))
                        ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (values (gethash node table)))
                        (t nil)))))
         (values (gethash node table)))))
@@ -808,17 +830,28 @@ store writes it and clears the eqref local).")
     (if lv
         (let ((rec (lvar-node-record lv key)))
           (if rec
-              (let ((e (node-note-entry node (cddr rec))))
-                (cond (e (setf (cdr e) value))
-                      ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (setf (gethash node table) value))
-                      (t (setf (cddr rec) (cons (cons node value) (cddr rec))
-                               (cadr rec) (1+ (the fixnum (cadr rec))))
+              (let ((i (node-note-index node rec)) (count (cadr rec)) (vec (cddr rec)))
+                (declare (fixnum i count) (simple-vector vec))
+                (cond ((>= i 0) (setf (svref vec i) value))
+                      ((>= count +lvar-node-notes-max+) (setf (gethash node table) value))
+                      (t (when (>= (* 2 count) (length vec))
+                           (let ((new (make-array (min (* 2 +lvar-node-notes-max+) (* 2 (length vec)))
+                                                  :initial-element nil)))
+                             (replace new vec)
+                             (setf vec new (cddr rec) new)))
+                         (setf (svref vec (* 2 count)) node
+                               (svref vec (+ (* 2 count) 1)) value
+                               (cadr rec) (+ count 1))
                          value)))
-              (progn (push (list key 1 (cons node value)) (lvar-ntys lv)) value)))
+              (let ((vec (make-array 6 :initial-element nil)))
+                (setf (svref vec 0) node (svref vec 1) value)
+                (push (list* key 1 vec) (lvar-ntys lv))
+                value)))
         (setf (gethash node table) value))))
 
 (defun node-type (node)
-  "The type noted for NODE in *NODE-TYPES*, or NIL."
+  "The type noted for NODE in *NODE-TYPES*, or NIL.  (That of a constant
+is the type of its value, which is not noted.)"
   (node-note node *node-types* *node-types*))
 
 (defun set-node-type (node ty)
@@ -829,8 +862,9 @@ store writes it and clears the eqref local).")
     (if lv
         (let ((rec (lvar-node-record lv *node-types*)))
           (when rec
-            (let ((e (node-note-entry node (cddr rec))))
-              (cond (e (setf (cdr e) nil))
+            (let ((i (node-note-index node rec)))
+              (declare (fixnum i))
+              (cond ((>= i 0) (setf (svref (cddr rec) i) nil))
                     ((>= (the fixnum (cadr rec)) +lvar-node-notes-max+) (remhash node *node-types*))))))
         (remhash node *node-types*))))
 

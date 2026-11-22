@@ -806,9 +806,31 @@ two images (but the image's id and the marks of time):
   `cold-branch-p` and `arm-recurses` count their entries themselves and
   are emptied at the same points as before (their answers can depend on
   when they are asked: whether a called function was found never to
-  return). Not done for the other nodes (`:prim` 19%, `:const` 15%, `:if`
-  8%): they have nothing cheap to hash in them; an id in every node would
-  need the nodes to be something else than lists.
+  return). The other nodes have nothing cheap to hash in them, and an id
+  in every node would need the nodes to be something else than lists (the
+  compiler builds and takes them apart as lists in several hundred
+  places). Second step (2026-11-23): a node whose first part leads to a
+  variable keeps its notes in that variable too (`node-key-lvar` follows
+  the first argument of a `:prim` or `:call`, the test of an `:if`, the
+  first form of a `:progn`, to three parts down: `(car x)`, `(if (null x)
+  ...)`), and a variable's record is a vector of up to 24 nodes with their
+  notes, not a list. 71% of the 3.3 million lookups are then answered by a
+  variable, 26% by the tables (constants 16%: 518000) and 3% are of nodes
+  past the 24 of their variable. That a node never comes to lead to
+  another variable after something was noted about it (which would lose
+  the note) was checked by keeping every note in a table as well and
+  comparing each answer, over a compilation of the runtime: none differed;
+  and the output is the same octets (the same checks as above).
+  `identity_hash` 411 -> 253 ms in a profile on a busy machine;
+  `l-selfhost-compile` 3122 -> 3069 ms (the minimum of eight, medians
+  3201 -> 3131), the compiler on SBCL unchanged (2505 and 2537).
+  Not kept: the type of a `:const` node taken from its value where it is
+  asked instead of noted (518000 lookups less). It is the type that would
+  be noted, but a constant that the inference never visited then has its
+  type instead of none, and the code generated differs in places (a
+  library shaken with its symbols 21 octets smaller, the compiler and the
+  REPL image different): not the same output, so left for a change that
+  is measured as one of the generated code.
 * **An instance's identity hash is a number from a counter** (runtime:
   the `:identity-hash` helper, src/prims.lisp). A structure or an object of
   a class keeps its hash in its third field; it was the host's identity
