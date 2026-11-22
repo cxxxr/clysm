@@ -254,6 +254,22 @@ analysis removes the allocation of `new Circle(...)` in `b-make-instance`
 altogether, where `make-instance` goes through the initialization protocol
 of CLOS. The other benchmarks are in the output of `tools/bench-ts.sh`.
 
+**Size and memory.** Every module carries the Common Lisp runtime;
+`--shake` (and `--shake-symbols`) leaves out what the program does not
+reach. Measured on 2026-11-23; peak RSS of the process, where `node -e 0`
+takes 43 MB:
+
+| Module | Size | `gzip -9` | Peak RSS |
+|---|---|---|---|
+| `tests/hello.lisp`, `clysm compile` | 5.2 MB | 1.40 MB | 136 MB |
+| the same, `--shake` | 2.9 MB | 0.84 MB | 87 MB |
+| a library of one export (`clysm library --shake-symbols`), imported by Node.js | 1.25 MB | 0.38 MB | 62 MB, 0.04 s to import and call |
+| the REPL image, with the compiler | 8.6 MB (+ a heap image of 10.8 MB) | 2.2 MB (+ 3.0 MB) | 129 MB |
+
+Hello keeps the printer and `format`, which it uses; a library that does
+not print leaves them out. More in
+[docs/INTERNALS.md](docs/INTERNALS.md#size-and-start-up).
+
 **System fasls.** ASDF compiles each system of plain Lisp files into one
 fasl of one module (`NAME--system.fasl` in the fasl cache, instead of a fasl
 for each file) as it compiles and loads the system's files, so calls between

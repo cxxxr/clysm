@@ -6933,15 +6933,33 @@ upper bound above says that test is cheap where it is not the whole loop.
 
 ### Size and start-up
 
-A whole program carries the runtime: `tests/hello.lisp` is 4.3 MB (1.25 MB
-with gzip; the tests after calls for a pending exit, "Non-local exits",
+Measured on 2026-11-23 (sizes of the `.wasm`; peak RSS by `/usr/bin/time`,
+best of three; `node -e 0` takes 43 MB and 0.01 s):
+
+| Module | Size | `gzip -9` | Peak RSS |
+|---|---|---|---|
+| `tests/hello.lisp` (`clysm compile`, run by `clysm exec`) | 5.2 MB | 1.40 MB | 136 MB |
+| the same, `--shake` | 2.9 MB | 0.84 MB | 87 MB |
+| the same, `--shake-symbols` | 2.9 MB | 0.84 MB | |
+| a library of one export, `(+ a b)` (`clysm library`, imported by Node.js) | 4.9 MB | 1.28 MB | 121 MB (0.16 s) |
+| the same, `--shake-symbols` | 1.25 MB | 0.38 MB | 62 MB (0.04 s) |
+| the REPL image with the compiler (`build/clysm-native.wasm`, `clysm eval t`) | 8.6 MB | 2.2 MB | 129 MB |
+| its heap image (`build/clysm-native.img`) | 10.8 MB | 3.0 MB | |
+
+Hello keeps the printer and `format`, which it uses; the library uses
+neither, so a shaken module leaves them out (see below). `clysm exec` runs
+the module in a worker thread with a large stack, which a library imported
+by a program does not have.
+
+A whole program carries the runtime: `tests/hello.lisp` was 4.3 MB when
+`--shake` was written (1.25 MB with gzip; the tests after calls for a pending exit, "Non-local exits",
 account for 8% of it). With `--shake` (`bin/clysm compile --shake`, `bin/clysm library
 --shake`) the global functions that nothing refers to by name are left out
 (`shake-module` in `src/wasm.lisp`): the definition of each function is a
 small Wasm function `(:install SYMBOL N)`, kept only when the symbol is
 reached from the exports, the start function or the initializer of a reached
 global, and the functions and globals that are then unreachable are dropped.
-Hello becomes 3.6 MB, and a library starts in about 50 ms
+Hello became 3.6 MB (2.9 now, with the work below), and a library started in about 50 ms
 instead of 65 (12 ms to compile the module, the rest the toplevel forms of
 the runtime). Every symbol stays, so `intern` and `read` work, but a function
 called only by a name made at run time (`(funcall (intern ...))`, `eval` of
