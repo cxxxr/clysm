@@ -3553,7 +3553,7 @@ to FAIL.  M is a local for limbs."
 
 ;;; The remainder of truncating integer A by integer B when |B| < 2^32 (not
 ;;; 0) and A is a bignum, digit by digit without a quotient; NIL otherwise.
-(defhelper :int-rem-small :ee-e ((v :i32) (d :i64) (ka :i32) (m (:ref :null :limbs)) (n :i32) (rem :i64))
+(defhelper :int-rem-small :ee-e ((v :i32) (d :i64) (ka :i32) (m (:ref :null :limbs)) (n :i32) (rem :i64) (mid :i64))
   `(:block fail nil
      ,@(num-decode-code 1 'd nil 'ka 'fail nil)
      (:local.get d) (:i64.const 0) :i64.lt_s (:if nil nil ((:i64.const 0) (:local.get d) :i64.sub (:local.set d)))
@@ -3561,6 +3561,26 @@ to FAIL.  M is a local for limbs."
      (:local.get d) (:i64.const ,(expt 2 +limb-bits+)) :i64.ge_u (:br_if fail)
      (:local.get 0) (:ref.test :ibox) (:local.get 0) (:ref.test :bignum) :i32.or :i32.eqz (:br_if fail)
      (:local.get 0) (:call :int-limbs) (:ref.cast! :limbs) (:local.tee m) :array.len (:local.set n)
+     ;; For a divisor through 2^16, 48-bit chunks fit with the remainder
+     ;; in one unsigned i64: two divisions consume three array digits.
+     (:local.get d) (:i64.const 65536) :i64.le_u
+     (:if nil nil
+       ((:block chunks-done nil
+          (:loop chunks nil
+            (:local.get n) (:i32.const 3) :i32.lt_u (:br_if chunks-done)
+            (:local.get n) (:i32.const 3) :i32.sub (:local.set n)
+            (:local.get m) (:local.get n) (:i32.const 1) :i32.add (:array.get :limbs)
+            :i64.extend_i32_u (:local.set mid)
+            (:local.get rem) (:i64.const 48) :i64.shl
+            (:local.get m) (:local.get n) (:i32.const 2) :i32.add (:array.get :limbs)
+            :i64.extend_i32_u (:i64.const 16) :i64.shl :i64.or
+            (:local.get mid) (:i64.const 16) :i64.shr_u :i64.or
+            (:local.get d) :i64.rem_u (:local.set rem)
+            (:local.get rem) (:i64.const 48) :i64.shl
+            (:local.get mid) (:i64.const 65535) :i64.and (:i64.const 32) :i64.shl :i64.or
+            (:local.get m) (:local.get n) (:array.get :limbs) :i64.extend_i32_u :i64.or
+            (:local.get d) :i64.rem_u (:local.set rem)
+            (:br chunks)))))
      (:block done nil
        (:loop again nil
          (:local.get n) :i32.eqz (:br_if done)
