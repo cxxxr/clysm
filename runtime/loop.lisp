@@ -153,6 +153,17 @@ the default value of its type (and no declaration when there is none)."
       (%loop-step s `(when ,form (go ,(%ls s 11))))))
   (defun %loop-step (s form) (setf (%ls s 4) (cons form (%ls s 4))))
 
+  (defun %loop-list-element-type (form)
+    "The integer range of a quoted list's elements, without assuming a type
+for the iteration variable (the body may assign it). Bound the scan so
+large or circular constants do not add unbounded macroexpansion work."
+    (when (and (consp form) (eq (car form) 'quote) (consp (cdr form)) (null (cddr form)))
+      (do ((l (cadr form) (cdr l)) (fuel 256 (1- fuel)) (lo nil) (hi nil))
+          ((or (atom l) (= fuel 0)) (and (null l) lo `(integer ,lo ,hi)))
+        (unless (integerp (car l)) (return nil))
+        (setq lo (if lo (min lo (car l)) (car l))
+              hi (if hi (max hi (car l)) (car l))))))
+
   (defun %loop-parse-for (s &optional group-steps later)
     ;; GROUP-STEPS: the step list when the group of FOR clauses joined by AND
     ;; started; LATER: this is not the first clause of the group
@@ -180,7 +191,15 @@ the default value of its type (and no declaration when there is none)."
              (if (%lkw kw "IN")
                  (progn
                    (%loop-end-test s `(%endp ,g))
-                   (dolist (f (%loop-destructure-setq var `(car ,g))) (%loop-pre s f)))
+                   ;; BY may leave the literal entirely and return arbitrary
+                   ;; elements. Only the default CDR step proves this range.
+                   (let ((type (and (symbolp var) (not step-fn) (not step-op)
+                                    (%loop-list-element-type list-form))))
+                     (dolist (f (%loop-destructure-setq
+                                 var (if type
+                                         `(locally (declare (optimize (safety 0))) (the ,type (car ,g)))
+                                         `(car ,g))))
+                       (%loop-pre s f))))
                  (progn
                    (%loop-end-test s `(atom ,g))
                    (dolist (f (%loop-destructure-setq var g)) (%loop-pre s f))))

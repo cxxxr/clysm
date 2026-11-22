@@ -7207,6 +7207,24 @@ What makes the code fast:
   The small difference is not a claimed compiler speedup; the large
   regression of the first implementation is gone.
 
+* **Integer elements of literal LOOP lists (2026-11-23).** For a quoted
+  proper list of integers, LOOP records the minimum and maximum of the
+  elements on its generated CAR expression. Only that read is trusted:
+  the iteration variable has no new declaration, since the body may
+  assign it a different type. Explicit loop declarations still apply.
+  A BY function may return a different list, so this applies only to the
+  default CDR step. The macro's scan stops after 256 conses, leaving larger,
+  circular, dotted and mixed-type literals to the existing code. This removes
+  redundant integer checks and lets MAXIMIZE keep its maximum unboxed.
+  Five interleaved rounds, the same build with and without this change:
+  eight-element `always` 14 -> 10 ms, `maximize` 65 -> 48 ms. This
+  reduces the cost of short loops but does not eliminate their fixed
+  entry cost or bring them to SBCL's time. Tried first and not kept:
+  an ordinary THE of the inferred range checked the range at each read,
+  making `always` 15 -> 17 and `maximize` 70 -> 82 ms. The trusted THE
+  applies only to the compiler-generated read of the immutable literal,
+  not to any user expression or the loop body.
+
 ### Declared code, and SBCL at its best policy
 
 The files above are undeclared code at SBCL's default policy, where SBCL

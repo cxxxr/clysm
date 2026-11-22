@@ -1,0 +1,11 @@
+;;; A BY function need not return a tail of the original literal list.
+(defun change-kind (l) (if (integerp (car l)) '("other") nil))
+(print (loop for x in '(1 2) by #'change-kind collect x))
+(print (loop for x in '(1 2) by (lambda (l) (if (integerp (car l)) '(1/2) nil)) collect x))
+(print (loop for x in '(1 2 3 4) by #'cddr collect x))
+(print (loop repeat 2 for x in '(1 2) by #'list collect x))
+(print (loop for x in '(2 5 1 4) do (setq x 1/2) sum x))
+(print (loop for x of-type integer in '(1 2 3) sum x))
+(print (loop for x in '(536870911 536870912 -536870913) collect (1+ x)))
+(print (loop for x in '(1 a 2) collect x))
+(print (handler-case (loop for x in '(1 2 . 3) collect x) (type-error () :bad)))
