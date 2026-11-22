@@ -1430,6 +1430,18 @@ with DEFCLASS whose superclasses include a structure class)."
     (if (and k (< -1 k 17))
         `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field k)))
         `(,@x ,@i (:call :instance-ref)))))
+;; the count of entries filled in the key and value vectors of a hash table
+;; (+HT-FILL+ of runtime/hash.lisp), which the table keeps a fixnum: the
+;; type inference knows it (src/types.lisp), so a loop over the entries
+;; tests no type
+(defprim clysm-sys::%ht-fill-count (x) :value
+  `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 7))))
+;; the key vector and the value vector of a hash table, known a
+;; simple vector to the type inference: cast here, once, not at each element
+(defprim clysm-sys::%ht-keys-vector (x) :value
+  `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 2)) (:ref.cast :vector)))
+(defprim clysm-sys::%ht-vals-vector (x) :value
+  `(,@x (:ref.cast! :si17) (:struct.get :si17 ,(sinst-field 3)) (:ref.cast :vector)))
 (defprim clysm-sys::%ht-set! (x i v) :value
   (let ((k (struct-iref-index i)) (tmp (new-local)))
     (if (and k (< -1 k 17))

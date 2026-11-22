@@ -648,8 +648,10 @@ filled up to FILL (DEL is +DELETED+), or -1."
 of entries filled in them and +DELETED+, which iterating over the entries in
 place needs: the vectors are only replaced when an entry is added, which is
 not allowed while iterating."
-  `(let ((,keys (the simple-vector (%ht ,h +ht-keys+))) (,vals (the simple-vector (%ht ,h +ht-vals+)))
-         (,fill (the fixnum (%ht ,h +ht-fill+))) (,del +deleted+))
+  ;; (the vectors and the count as the table holds them, of types the
+  ;; inference knows: %HT-KEYS-VECTOR, %HT-FILL-COUNT in src/prims.lisp)
+  `(let ((,keys (%ht-keys-vector ,h)) (,vals (%ht-vals-vector ,h))
+         (,fill (%ht-fill-count ,h)) (,del +deleted+))
      (declare (ignorable ,vals))
      ,@body))
 
