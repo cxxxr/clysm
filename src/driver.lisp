@@ -965,10 +965,9 @@ module and *PREINIT-PARTS*.")
   "NIL, or the file that BUILD-MODULE writes WRITE-SHAKE-WHY's report to.")
 
 (defun build-module (&key (entry "_start"))
-  (let ((*m* (make-wasm-module))
-        (*eager-func-uses* t)
-        ;; (a shaken program's functions are walked and rewritten after)
-        (*encode-early* (not (or *shake* *shake-why-file* *keep-instructions*))))
+  (let ((*m* (make-wasm-module
+              ;; (a shaken program's functions are walked and rewritten after)
+              :early (if (or *shake* *shake-why-file* *keep-instructions*) :uses :program))))
     (loop for (name def) in *type-defs* do (add-type *m* name def))
     (setf (wasm-module-base-types *m*) (length *type-defs*))
     (loop for (name type mod field) in *imports* do (add-import-func *m* name type mod field))
