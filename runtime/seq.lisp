@@ -3420,7 +3420,14 @@ does the same: a test or predicate is called with two."
           ((eq ty 'function) (%coerce-to-function x))
           ((typep x type) x)
           ((or (listp x) (vectorp x))
-           (%make-sequence-from-list type (copy-list (%seq-to-list x))))
+           ;; Convert directly to the requested storage.  Going through a
+           ;; copied list allocated a cons per element even for vectors.
+           (multiple-value-bind (kind et len exact) (%seq-type-spec type)
+             (when (and len (/= len (length x)))
+               (error 'type-error :datum x :expected-type type))
+             (%check-result-type
+              (if (eq kind :list) (%seq-to-list x) (%coerce-to-storage x et type))
+              type exact)))
           (t (%coerce-error x type)))))
 
 ;;; (coerce x 'TYPE) with one of the usual constant types calls the function

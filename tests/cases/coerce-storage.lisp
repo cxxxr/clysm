@@ -1,0 +1,18 @@
+(deftype four-ints () '(simple-array (signed-byte 32) (4)))
+(deftype nonempty-list () 'cons)
+(dolist (x (list nil '(1 2 3 4) #(1 2 3 4) "abcd"
+                 (make-array 6 :initial-contents '(1 2 3 4 5 6) :fill-pointer 4)
+                 (make-array 4 :displaced-to #(0 1 2 3 4 5) :displaced-index-offset 1)))
+  (dolist (ty '(list cons null nonempty-list
+               (vector t) (vector t 4) (vector *) (simple-vector 4)
+               (simple-array t (*)) (simple-array t (3))
+               (simple-array character (*)) (vector character 4)
+               four-ints (vector (signed-byte 32))))
+    (print (handler-case (coerce x ty) (type-error () :bad)))))
+(print (let ((x '(1 2))) (eq (coerce x '(cons integer)) x)))
+(print (let ((x "abc")) (eq (coerce x '(simple-array character (*))) x)))
+(print (loop for x in '(2 5 1 4) maximize x))
+(print (loop for x in '(2 5 1 4) do (setq x 1/2) sum x))
+(print (loop for x in '(536870911 536870912 -536870913) collect (1+ x)))
+(print (loop for x in '(1 a 2) collect x))
+(print (handler-case (loop for x in '(1 2 . 3) collect x) (type-error () :bad)))
