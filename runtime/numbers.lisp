@@ -100,6 +100,8 @@ three products of halves, A1 B1, A0 B0 and (A1 + A0)(B1 + B0)."
   "Returns (values quotient remainder) of integers."
   (let ((q (%int64-op a b 6)))
     (when q (return-from %int-truncate (values q (%int64-op a b 7)))))
+  (multiple-value-bind (q r) (%int-div-small a b)
+    (when q (return-from %int-truncate (values q r))))
   (when (eql b 0) (error 'division-by-zero :operation 'truncate :operands (list a b)))
   (let ((sa (%int-sign a)) (sb (%int-sign b)) (ma (%int-mag a)) (mb (%int-mag b)))
     (if (%fx= (%mag-length mb) 1)

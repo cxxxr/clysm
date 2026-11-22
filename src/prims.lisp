@@ -3575,6 +3575,34 @@ to FAIL.  M is a local for limbs."
   (car (nil-code)))
 (defprim clysm-sys::%int-rem-small (a b) :value `(,@a ,@b (:call :int-rem-small)))
 
+;;; Up to four digits divided by one digit, with quotient limbs in locals.
+;;; The result goes straight to WIDE-INT; no divisor or quotient arrays.
+(defhelper :int-div-small :ee-e ((s :i32) (sb :i32) (v :i32) (ka :i32)
+                                (lo :i64) (hi :i64) (d :i64) (rem :i64) (cur :i64)
+                                (q :i64) (ql :i64) (qh :i64) (m (:ref :null :limbs)))
+  `(:block fail nil
+     ,@(wide-decode-code 0 's 'lo 'hi 'm 'fail)
+     ,@(num-decode-code 1 'd nil 'ka 'fail nil)
+     (:local.get d) (:i64.const 0) :i64.lt_s (:local.set sb)
+     (:local.get sb) (:if nil nil ((:i64.const 0) (:local.get d) :i64.sub (:local.set d)))
+     (:local.get d) :i64.eqz (:br_if fail)
+     (:local.get d) (:i64.const #x100000000) :i64.ge_u (:br_if fail)
+     ,@(loop for (half shift dst) in '((hi 32 qh) (hi 0 qh) (lo 32 ql) (lo 0 ql)) append
+        `((:local.get rem) (:i64.const 32) :i64.shl
+          (:local.get ,half) ,@(if (= shift 32) '((:i64.const 32) :i64.shr_u)
+                                 '((:i64.const #xffffffff) :i64.and))
+          :i64.or (:local.tee cur) (:local.get d) :i64.div_u (:local.set q)
+          (:local.get cur) (:local.get q) (:local.get d) :i64.mul :i64.sub (:local.set rem)
+          ,@(if (= shift 32) `((:local.get q) (:i64.const 32) :i64.shl (:local.set ,dst))
+                 `((:local.get ,dst) (:local.get q) :i64.or (:local.set ,dst)))))
+     (:global.get :mv-buf) (:i32.const 0)
+     (:local.get s) (:if nil :i64 ((:i64.const 0) (:local.get rem) :i64.sub) ((:local.get rem)))
+     (:call :i64-int) (:array.set :vector)
+     (:i32.const 2) (:global.set :mv-count)
+     (:local.get s) (:local.get sb) :i32.xor (:local.get ql) (:local.get qh) (:return_call :wide-int))
+  (car (nil-code)))
+(defprim clysm-sys::%int-div-small (a b) :mv `(,@a ,@b (:call :int-div-small)))
+
 ;;; Lehmer's gcd (Knuth 4.5.2, Algorithm L; the form of CPython's
 ;;; _PyLong_GCD): integers A >= B >= 0 are reduced, about a digit of each at
 ;;; a time, by the quotients the leading 60 bits give, while those are
