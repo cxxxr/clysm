@@ -876,12 +876,47 @@ scavenger has laid out (encoding 0.45 s against 0.15; a walk of fresh
 instructions is 5 ns an instruction, of scavenged ones 40: no scavenge at
 all, a young generation of 1 GB, makes `wasm-func-uses` 41 ms instead of
 242, but the process is no faster for it, it pays in page faults); and the
-identity hashes of the remaining nodes (0.2 s). `case` of a symbol is a
-chain of comparisons in Clysm and a jump table in SBCL: the dispatch of
-`map-subnodes`, `ti-1` and `emit-instr` on the kind of a node is up to 40
-comparisons (not measured apart). Next: the functions encoded as they are
-compiled (no instruction list kept: fewer live conses, no cold walk), and
-a `case` of many symbols compiled as a search by the symbols' hashes.
+identity hashes of the remaining nodes (0.2 s). Next: the functions
+encoded as they are compiled (no instruction list kept: fewer live conses,
+no cold walk).
+
+**Tried and not kept: a `case` of many keys as a `br_table` (2026-11-23).**
+`case` is a chain of `eql` tests in Clysm and a jump table in SBCL, and the
+dispatch of `map-subnodes`, `ti-1` and `emit-instr` on the kind of a node
+has up to 40 keys. Implemented: a special form `(%switch index arm...)`
+(an IR node `:switch`: the arm numbered by the index, a `br_table` in
+nested blocks, typed as an i32 when its arms are integers), and `case` /
+`ecase` of eight keys or more that are all symbols, all characters or all
+fixnums expanding to the number of the clause found by a `%switch` (for
+symbols on the low bits of the symbol's hash, which is the hash of its
+name and known when the code is compiled, each arm comparing the one or
+two keys of that hash; for characters and fixnums on the value less the
+smallest key) and then either a balanced tree of `if`s on that number,
+with the clauses as its leaves (they stay arms of `if`s: tail calls, typed
+values), or a second `%switch` with the clauses as arms. All tests of
+tests/cases passed with it. A dispatch (a call of a function that is one
+`case` returning a constant, keys drawn in a pseudo-random order and then
+in a fixed cycle; ns for the call and the loop around it, best of three,
+on a benchmark slot):
+
+| keys | chain, cycle | search, cycle | chain, random | tree, random | two tables, random | SBCL |
+|---|---|---|---|---|---|---|
+| 8 symbols | 6.0 | 6.0–6.3 | 5.0 | 16.5 | 17.0 | 3.7–4.3 |
+| 16 symbols | 6.0–6.3 | 6.0–6.3 | 5.3 | 15.5 | 16.2 | 4.7 |
+| 24 symbols | 6.3 | 6.0–6.3 | 6.0 | 15.5 | 16.7 | 4.3–4.7 |
+| 40 symbols | 7.0 | 6.0–6.3 | 7.0 | 17.0 | 19.0 | 4.7–5.0 |
+| 40 characters | 7.0–7.3 | 6.0–6.3 | 7.0–7.7 | 15.0 | 15.8 | 4.0–4.3 |
+| 40 fixnums | 7.0 | 6.0–6.3 | 6.7–7.7 | 14.5 | 15.5 | 4.3–4.7 |
+
+The chain costs 0.03–0.05 ns a key (V8 compiles it to a compare with the
+symbol's global and a branch for each key, and the processor predicts the
+one branch that is taken): 40 keys are 1 ns more than 8, which is all a
+table could save, and it saves it only when the keys come in an order the
+predictor of indirect branches learns. When they do not (the order of a
+linear congruence here), the `br_table`s are mispredicted indirect jumps,
+9 to 12 ns for the dispatch, and the chain is 2 to 3 times faster than
+the search. So the chain stays; the code was removed.
+
 
 **Loading a source file compiles consecutive definitions into one module**
 (`%load-batch`, `runtime/eval.lisp`): a `defun`, `defmethod` or
