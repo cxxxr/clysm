@@ -67,6 +67,10 @@ fi
 bin/clysm library --shake tests/lib/print-only.lisp -o build/lib-test/print-only.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }
 node tests/lib/print-only.mjs build/lib-test/print-only.mjs || exit 1
+# an explicit fallback message without retaining the Lisp printer
+bin/clysm library --shake tests/lib/throw-message.lisp -o build/lib-test/throw-message.wasm > build/lib-test.log 2>&1 \
+  || { cat build/lib-test.log; exit 1; }
+node tests/lib/throw-message.mjs build/lib-test/throw-message.mjs || exit 1
 # the size of a module of one export (tests/lib/one.lisp)
 bin/clysm library --shake tests/lib/one.lisp -o build/lib-test/one.wasm > build/lib-test.log 2>&1 \
   || { cat build/lib-test.log; exit 1; }

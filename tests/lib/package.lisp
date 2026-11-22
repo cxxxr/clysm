@@ -90,6 +90,15 @@ export type Places = Place[];" :entry "places")
                                           ((equal kind "false") :false)
                                           (t 7))))
            :type "(kind: string) => never")
+(defvar *throw-function* #'js:throw)
+(js:export "defaultThrowMessage"
+           (lambda (value)
+             (handler-case (js:throw value)
+               (js:js-error (e) (js:js-error-message e)))) :raw t)
+(js:export "indirectThrowMessage"
+           (lambda (value message)
+             (handler-case (funcall *throw-function* value :message (js:to-lisp message))
+               (js:js-error (e) (js:js-error-message e)))) :raw t)
 (js:export "awaitThrough" (lambda (f) (js:await (js:funcall f))) :async t
            :type "(f: () => Promise<unknown>) => Promise<unknown>")
 ;; a Lisp error is still a LispError
