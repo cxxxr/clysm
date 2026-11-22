@@ -474,18 +474,63 @@ documentation string may appear among the declarations."
              (setq doc t body (cdr body)))
             (t (return (values decls body)))))))
 
-(defun %make-interpreted-function (name ll body env block-name)
+(defvar *eval-closures* t
+  "True when the body of an interpreted function is made closures at its second call (%CC-BODY).")
+
+(defun %make-interpreted-function (name ll body env block-name &optional code-cell)
   (multiple-value-bind (decls forms) (%function-body-parts body)
     (let* ((body-forms (if block-name `((block ,block-name ,@forms)) forms))
-           (f (lambda (&rest args) (%apply-interpreted ll decls body-forms env args))))
+           ;; (the body made closures when the function is called again: %CC-BODY)
+           (code (or code-cell (list nil)))
+           ;; (required parameters only, none special: bound without the
+           ;; walk of the lambda list and the frame that restores specials)
+           (simple (and (dolist (x ll t)
+                          (when (or (not (symbolp x)) (member x lambda-list-keywords) (%special-p x))
+                            (return nil)))
+                        (dolist (d decls t)
+                          (when (and (consp d) (eq (car d) 'special)) (return nil)))))
+           ;; (one function for both, with the same free variables: the
+           ;; functions of a generic function made by interpreted code are
+           ;; put together into one closure, %MAKE-GF-CLOSURE, which takes
+           ;; them to have the same layout)
+           (f (lambda (&rest args)
+                (if simple
+                    (%apply-interpreted-simple ll body-forms env args code)
+                    (%apply-interpreted ll decls body-forms env args code)))))
       (%set-closure-name f name)
       f)))
 
-(defun %apply-interpreted (ll decls body env args)
+(defun %run-interpreted-body (body env code)
+  "Evaluate the forms BODY of a function in ENV, the environment of a call
+of it: by %EVAL the first time, then by the closures made of them (%CC-BODY,
+kept in the cell CODE)."
+  ;; (the first call is evaluated: a function called once, a local function
+  ;; made again each time its FLET is evaluated)
+  (let ((c (car code)))
+    (cond ((functionp c) (funcall c env))
+          ((or (null c) (not *eval-closures*))
+           (setf (car code) :called)
+           (%eval-body body env))
+          (t (setq c (%cc-body body env))
+             (setf (car code) c)
+             (funcall (the function c) env)))))
+
+(defun %apply-interpreted-simple (ll body env args code)
+  (let ((new-env env) (rest args))
+    (dolist (sym ll)
+      (when (null rest)
+        (error 'simple-program-error :format-control "too few arguments" :format-arguments nil))
+      (setq new-env (cons (list* :var sym (list (car rest))) new-env))
+      (setq rest (cdr rest)))
+    (when rest
+      (error 'simple-program-error :format-control "too many arguments: ~S" :format-arguments (list args)))
+    (%run-interpreted-body body new-env code)))
+
+(defun %apply-interpreted (ll decls body env args code)
   ;; special parameters are bound as soon as they are processed, so that
   ;; later init forms see the bindings; SAVED restores them on exit
   (let ((saved nil))
-    (unwind-protect (%apply-interpreted-1 ll decls body env args
+    (unwind-protect (%apply-interpreted-1 ll decls body env args code
                                           (lambda (sym val)
                                             (push (if (boundp sym) (list sym (symbol-value sym)) (list sym))
                                                   saved)
@@ -495,7 +540,7 @@ documentation string may appear among the declarations."
           (setq saved (cdr saved))
           (if (cdr e) (set (car e) (cadr e)) (makunbound (car e))))))))
 
-(defun %apply-interpreted-1 (ll decls body env args bind-special)
+(defun %apply-interpreted-1 (ll decls body env args code bind-special)
   (let ((new-env env) (state :req) (keys-seen nil) (rest-args args)
         (aok nil))
     (labels ((bind (sym val)
@@ -546,7 +591,293 @@ documentation string may appear among the declarations."
       (dolist (d decls)
         (when (and (consp d) (eq (car d) 'special))
           (dolist (s (cdr d)) (push (list :special s) new-env))))
-      (%eval-body body new-env))))
+      (%run-interpreted-body body new-env code))))
+
+;;; ------------------------------------------------------------
+;;; the body of an interpreted function as closures
+;;; ------------------------------------------------------------
+;;;
+;;; %EVAL walks a form each time it is evaluated: it finds what the operator
+;;; is, looks the variables up by name in the environment, and expands the
+;;; macros again (a backquote, DESTRUCTURING-BIND, COND: a third of the time
+;;; of a macro's expander that is interpreted).  The body of an interpreted
+;;; function is made closures when the function is called a second time (%CC: a
+;;; function of the environment for each form, the macros expanded once, a
+;;; lexical variable found by its place in the environment), and they are
+;;; called from then on.  The environment is the same list as %EVAL's, with
+;;; the same entries, so that a form %CC does not take apart is evaluated by
+;;; %EVAL in it (%CC-FALLBACK: the forms that bind special variables or
+;;; local functions and macros, symbol macros, PROGV...), and the static
+;;; environment that %CC works with is the environment of that call
+;;; itself, extended with entries of the same kinds in the same order as the
+;;; closures will push: a function's environment has the same shape at every
+;;; call.  *EVAL-CLOSURES* NIL evaluates the bodies with %EVAL as before.
+
+(defun %cc-fallback (form)
+  (lambda (env) (%eval form env)))
+
+(defun %cc-body (forms senv)
+  (cond ((null forms) (lambda (env) (declare (ignore env)) nil))
+        ((null (cdr forms)) (%cc (car forms) senv))
+        ((null (cddr forms))
+         (let ((a (%cc (car forms) senv)) (b (%cc (cadr forms) senv)))
+           (declare (function a b))
+           (lambda (env) (funcall a env) (funcall b env))))
+        (t (let ((first (mapcar (lambda (f) (%cc f senv)) (butlast forms)))
+                 (last (%cc (car (last forms)) senv)))
+             (declare (function last))
+             (lambda (env)
+               (dolist (c first) (funcall (the function c) env))
+               (funcall last env))))))
+
+(defun %cc-position (entry senv)
+  (let ((i 0))
+    (declare (fixnum i))
+    (do ((l senv (cdr l))) ((null l) nil)
+      (when (eq (car l) entry) (return i))
+      (setq i (+ i 1)))))
+
+(defun %cc-symbol (sym senv)
+  (if (or (null sym) (eq sym t) (keywordp sym))
+      (lambda (env) (declare (ignore env)) sym)
+      (let ((e (%env-var senv sym)))
+        (cond ((null e)
+               (if (get sym '%symbol-macro)
+                   (%cc-fallback sym)
+                   (lambda (env) (declare (ignore env)) (symbol-value sym))))
+              ((eq (car e) :var)
+               (let ((i (%cc-position e senv)))
+                 (declare (fixnum i))
+                 (case i
+                   (0 (lambda (env) (car (cddr (car env)))))
+                   (1 (lambda (env) (car (cddr (cadr env)))))
+                   (2 (lambda (env) (car (cddr (caddr env)))))
+                   (t (lambda (env) (car (cddr (nth i env))))))))
+              ((eq (car e) :special)
+               (lambda (env) (declare (ignore env)) (symbol-value sym)))
+              (t (%cc-fallback sym))))))
+
+(defun %cc-simple-bindings-p (bindings body)
+  "Whether a LET, LET* or MULTIPLE-VALUE-BIND of BINDINGS (variables, or
+(variable form)) with BODY binds lexical variables only and declares
+nothing special."
+  (and (dolist (b bindings t)
+         (let ((sym (if (consp b) (car b) b)))
+           (when (or (not (symbolp sym)) (%special-p sym)) (return nil))))
+       (dolist (d (%decls-of body) t)
+         (when (and (consp d) (eq (car d) 'special)) (return nil)))))
+
+(defun %cc-let (form senv sequential)
+  (let ((bindings (cadr form)) (body (cddr form)))
+    (if (not (%cc-simple-bindings-p bindings body))
+        (%cc-fallback form)
+        (let ((syms nil) (inits nil) (new senv))
+          (dolist (b bindings)
+            (let ((sym (if (consp b) (car b) b)))
+              (push sym syms)
+              (push (if (and (consp b) (cdr b)) (%cc (cadr b) (if sequential new senv)) nil) inits)
+              (push (list :var sym) new)))
+          (setq syms (nreverse syms) inits (nreverse inits))
+          (let ((code (multiple-value-bind (decls forms) (%decls-of body)
+                        (declare (ignore decls))
+                        (%cc-body forms new))))
+            (declare (function code))
+            (cond ((null syms) code)
+                  ((null (cdr syms))
+                   (let ((sym (car syms)) (init (car inits)))
+                     (lambda (env)
+                       (funcall code (cons (list* :var sym (list (if init (funcall (the function init) env) nil)))
+                                           env)))))
+                  (sequential
+                   (lambda (env)
+                     (let ((new env))
+                       (do ((s syms (cdr s)) (i inits (cdr i))) ((null s))
+                         (setq new (cons (list* :var (car s)
+                                                (list (if (car i) (funcall (the function (car i)) new) nil)))
+                                         new)))
+                       (funcall code new))))
+                  (t
+                   (lambda (env)
+                     (let ((new env))
+                       (do ((s syms (cdr s)) (i inits (cdr i))) ((null s))
+                         (setq new (cons (list* :var (car s)
+                                                (list (if (car i) (funcall (the function (car i)) env) nil)))
+                                         new)))
+                       (funcall code new))))))))))
+
+(defun %cc-setq (form senv)
+  (let ((pairs (cdr form)))
+    (cond ((null pairs) (lambda (env) (declare (ignore env)) nil))
+          ((cddr pairs)
+           (%cc-body (let ((r nil))
+                       (do ((p pairs (cddr p))) ((null p) (nreverse r))
+                         (push (list 'setq (car p) (cadr p)) r)))
+                     senv))
+          (t (let* ((sym (car pairs)) (e (%env-var senv sym)))
+               (cond ((or (and e (eq (car e) :smacro)) (and (null e) (get sym '%symbol-macro)))
+                      (%cc-fallback form))
+                     ((and e (eq (car e) :var))
+                      (let ((i (%cc-position e senv)) (v (%cc (cadr pairs) senv)))
+                        (declare (fixnum i) (function v))
+                        (lambda (env) (setf (car (cddr (nth i env))) (funcall v env)))))
+                     (t (let ((v (%cc (cadr pairs) senv)))
+                          (declare (function v))
+                          (lambda (env) (set sym (funcall v env)))))))))))
+
+(defun %cc-call (op args senv)
+  "A call of the global function OP."
+  (let ((n (length args)) (cs (mapcar (lambda (a) (%cc a senv)) args)))
+    (case n
+      (0 (lambda (env) (declare (ignore env)) (funcall (symbol-function op))))
+      (1 (let ((a (car cs)))
+           (declare (function a))
+           (lambda (env) (funcall (symbol-function op) (funcall a env)))))
+      (2 (let ((a (car cs)) (b (cadr cs)))
+           (declare (function a b))
+           (lambda (env) (funcall (symbol-function op) (funcall a env) (funcall b env)))))
+      (3 (let ((a (car cs)) (b (cadr cs)) (c (caddr cs)))
+           (declare (function a b c))
+           (lambda (env) (funcall (symbol-function op) (funcall a env) (funcall b env) (funcall c env)))))
+      (t (lambda (env)
+           (let ((r nil))
+             (dolist (c cs) (push (funcall (the function c) env) r))
+             (apply (symbol-function op) (nreverse r))))))))
+
+(defun %cc-tagbody (form senv)
+  (let* ((body (cdr form)) (new senv) (i 0) (entries nil))
+    (dolist (x body)
+      (when (or (symbolp x) (integerp x))
+        (setq i (+ i 1))
+        (push (cons x i) entries)
+        (push (list :tag x) new)))
+    (setq entries (nreverse entries))
+    (let ((segments (let ((r (list nil)))
+                      (dolist (x body)
+                        (if (or (symbolp x) (integerp x))
+                            (push nil r)
+                            (push (%cc x new) (car r))))
+                      (coerce (mapcar #'reverse (reverse r)) 'simple-vector))))
+      (lambda (env)
+        (let ((tag (list 'tagbody)) (new env) (n (length segments)))
+          (dolist (e entries) (push (list* :tag (car e) tag (cdr e)) new))
+          (let ((pc 0))
+            (loop
+              (let ((result (catch tag
+                              (do ((k pc (+ k 1))) ((>= k n) :done)
+                                (dolist (c (svref segments k)) (funcall (the function c) new))))))
+                (if (eq result :done)
+                    (return nil)
+                    (setq pc result))))))))))
+
+(defun %cc-compound (op form senv)
+  (case op
+    (quote (let ((v (cadr form))) (lambda (env) (declare (ignore env)) v)))
+    (if (let ((c (%cc (cadr form) senv)) (a (%cc (caddr form) senv)) (b (%cc (cadddr form) senv)))
+          (declare (function c a b))
+          (lambda (env) (if (funcall c env) (funcall a env) (funcall b env)))))
+    (progn (%cc-body (cdr form) senv))
+    (setq (%cc-setq form senv))
+    (let (%cc-let form senv nil))
+    (let* (%cc-let form senv t))
+    (function
+     (let ((spec (cadr form)))
+       (cond ((symbolp spec)
+              (if (%env-fun senv spec)
+                  (%cc-fallback form)
+                  (lambda (env) (declare (ignore env)) (fdefinition spec))))
+             ((and (consp spec) (eq (car spec) 'lambda))
+              ;; (the closures of its body are those of every function made here)
+              (let ((cell (list nil)) (ll (cadr spec)) (body (cddr spec)))
+                (lambda (env) (%make-interpreted-function nil ll body env nil cell))))
+             (t (%cc-fallback form)))))
+    (block
+     (let* ((name (cadr form))
+            (code (%cc-body (cddr form) (cons (list :block name) senv))))
+       (declare (function code))
+       (lambda (env)
+         (let ((tag (list name)))
+           (catch tag (funcall code (cons (list* :block name tag) env)))))))
+    (return-from
+     (let ((e (%env-lookup senv :block (cadr form))))
+       (if (null e)
+           (%cc-fallback form)
+           (let ((i (%cc-position e senv)) (v (%cc (caddr form) senv)))
+             (declare (fixnum i) (function v))
+             (lambda (env) (throw (cddr (nth i env)) (funcall v env)))))))
+    (tagbody (%cc-tagbody form senv))
+    (go (let ((e (dolist (x senv nil)
+                   (when (and (eq (car x) :tag) (eql (cadr x) (cadr form))) (return x)))))
+          (if (null e)
+              (%cc-fallback form)
+              (let ((i (%cc-position e senv)))
+                (declare (fixnum i))
+                (lambda (env) (let ((x (nth i env))) (throw (caddr x) (cdddr x))))))))
+    ((catch %catch)
+     (let ((tag (%cc (cadr form) senv)) (code (%cc-body (cddr form) senv)))
+       (declare (function tag code))
+       (lambda (env) (catch (funcall tag env) (funcall code env)))))
+    (throw (let ((tag (%cc (cadr form) senv)) (v (%cc (caddr form) senv)))
+             (declare (function tag v))
+             (lambda (env) (throw (funcall tag env) (funcall v env)))))
+    (unwind-protect
+         (let ((code (%cc (cadr form) senv)) (cleanup (%cc-body (cddr form) senv)))
+           (declare (function code cleanup))
+           (lambda (env) (unwind-protect (funcall code env) (funcall cleanup env)))))
+    (multiple-value-prog1
+        (let ((code (%cc (cadr form) senv)) (rest (%cc-body (cddr form) senv)))
+          (declare (function code rest))
+          (lambda (env) (multiple-value-prog1 (funcall code env) (funcall rest env)))))
+    (multiple-value-call
+        (let ((f (%cc (cadr form) senv)) (cs (mapcar (lambda (a) (%cc a senv)) (cddr form))))
+          (declare (function f))
+          (lambda (env)
+            (let ((fn (funcall f env)) (args nil))
+              (dolist (c cs) (setq args (append args (multiple-value-list (funcall (the function c) env)))))
+              (apply fn args)))))
+    (multiple-value-bind
+          (let ((vars (cadr form)) (body (cdddr form)))
+            (if (not (%cc-simple-bindings-p vars body))
+                (%cc-fallback form)
+                (let* ((value (%cc (caddr form) senv))
+                       (new (let ((n senv)) (dolist (v vars n) (push (list :var v) n))))
+                       (code (multiple-value-bind (decls forms) (%decls-of body)
+                               (declare (ignore decls))
+                               (%cc-body forms new))))
+                  (declare (function value code))
+                  (lambda (env)
+                    (let ((vals (multiple-value-list (funcall value env))) (new env))
+                      (dolist (v vars)
+                        (setq new (cons (list* :var v (list (car vals))) new))
+                        (setq vals (cdr vals)))
+                      (funcall code new)))))))
+    (the (%cc (caddr form) senv))
+    (locally
+        (multiple-value-bind (decls forms) (%decls-of (cdr form))
+          (if (dolist (d decls nil) (when (and (consp d) (eq (car d) 'special)) (return t)))
+              (%cc-fallback form)
+              (%cc-body forms senv))))
+    (eval-when (if (or (member :execute (cadr form)) (member 'eval (cadr form)))
+                   (%cc-body (cddr form) senv)
+                   (lambda (env) (declare (ignore env)) nil)))
+    ;; (the other forms that %EVAL-COMPOUND knows: evaluated by it)
+    ((flet labels macrolet symbol-macrolet load-time-value progv %defun named-lambda declaim)
+     (%cc-fallback form))
+    (otherwise
+     (let ((m (get op '%macro-function)))
+       (if m
+           (%cc (funcall *macroexpand-hook* m form senv) senv)
+           (%cc-call op (cdr form) senv))))))
+
+(defun %cc (form senv)
+  "A function of an environment that evaluates FORM in it, for the
+environments of the shape of SENV (see above)."
+  (cond ((symbolp form) (%cc-symbol form senv))
+        ((atom form) (lambda (env) (declare (ignore env)) form))
+        (t (let ((op (car form)))
+             (cond ((not (symbolp op)) (%cc-fallback form))
+                   ;; (a local function or macro)
+                   ((%env-fun senv op) (%cc-fallback form))
+                   (t (%cc-compound op form senv)))))))
 
 ;;; ------------------------------------------------------------
 ;;; compile, load
