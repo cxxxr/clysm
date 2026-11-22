@@ -1782,6 +1782,7 @@ the name as a constant variable), as the forms of a file compiled by the host."
   (gensyms (make-hash-table :test 'eq)) ; *FASL-GENSYMS* of the fasl
   (load-gensyms (make-hash-table))      ; *FASL-LOAD-GENSYMS* of the loads
   (notes nil)                           ; %NOTE-SOURCE entries, reversed
+  (broken nil)                          ; true: no fasl can be made of it
   (files nil))                          ; what loads each file, reversed
 
 (defun %system-unit-open ()
@@ -1792,9 +1793,15 @@ the name as a constant variable), as the forms of a file compiled by the host."
                          prefix))))
 
 (defun %su-text (su x)
-  "X written as in the fasl of SU."
+  "X written as in the fasl of SU, and whether it is written readably."
   (let ((*fasl-gensyms* (%su-gensyms su)) (*fasl-symbol-numbers* (make-hash-table :test 'eq)))
-    (with-output-to-string (out) (%cf-write x out))))
+    (let ((bin (and (%fasl-consts-place x) (%fasl-bin-encode x))))
+      (if bin
+          (values (format nil "!~D;~A~%" (length bin) bin) t)
+          (values (with-output-to-string (out) (%cf-write x out))
+                  (or (not (%fasl-consts-place x))
+                      (%call-with-fasl-syntax
+                       (lambda () (handler-case (progn (prin1-to-string x) t) (error () nil))))))))))
 
 (defun %forms-have-fasl-ref-p (forms)
   "Whether FORMS have an object made by a MAKE-LOAD-FORM in them."
@@ -1861,7 +1868,15 @@ warnings-p failure-p), as COMPILE-FILE."
                                                 (%call-with-world-lock
                                                  (lambda () (funcall (nth 7 *native-unit-hooks*)
                                                                      (mapcar #'second group))))
-                                              (list octets (%su-text su (list '%fasl-segment 0 vector 0 0))))
+                                              ;; (objects that cannot be written, from the
+                                              ;; expansion of a macro: the source forms are
+                                              ;; loaded, as COMPILE-FILE writes them, and the
+                                              ;; system fasl is not made)
+                                              (multiple-value-bind (text ok)
+                                                  (%su-text su (list '%fasl-segment 0 vector 0 0))
+                                                (if ok
+                                                    (list octets text)
+                                                    (progn (setf (%su-broken su) t) nil))))
                                           (error () nil))
                                         (%su-text su `(progn ,@(mapcan (lambda (e) (copy-list (third e))) group))))
                                     loads)

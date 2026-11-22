@@ -552,10 +552,16 @@ unit -> the name of the export of the module of a segment that defines it.")
 (defvar *unit-exports* (list 0) "(the number of exports of segment modules made so far)")
 (defvar *unit-export-prefix* "u:" "The beginning of the names of the exports of the unit's segment modules.")
 
+(defvar *unit-index* nil
+  "In a unit compiled file by file: #(index of the first function of the
+unit's module not yet in a segment module, then for each of *LIVE-CONSTANTS*,
+*CLOSURE-GLOBALS* and *MISC-GLOBALS* a table name -> entry and the list when
+it was last filled).")
+
 (defparameter *unit-state-variables*
   (append '(*live-mode* *live-packages* *warnings* *batch-forms* *batch-unknown-calls*
             *batch-no-direct* *batch-form-index* *m* *unit-env* *unit-segments* *unit-castfns*
-            *unit-owners* *unit-export-prefix*)
+            *unit-owners* *unit-export-prefix* *unit-index*)
           (mapcar #'car *codegen-state-bindings*)))
 
 (defun unit-open (prefix)
@@ -565,7 +571,9 @@ exports of its segment modules (\"u:...\")."
   (let ((state nil))
     (call-with-compilation-unit
      (lambda ()
-       (let ((*unit-owners* (make-hash-table :test 'equal)) (*unit-export-prefix* prefix))
+       (let ((*unit-owners* (make-hash-table :test 'equal)) (*unit-export-prefix* prefix)
+             (*unit-index* (vector 0 (make-hash-table :test 'equal) nil (make-hash-table :test 'equal) nil
+                                   (make-hash-table :test 'equal) nil)))
          (setq state (mapcar (lambda (v) (cons v (symbol-value v))) *unit-state-variables*))))
      t)
     state))
@@ -575,6 +583,13 @@ exports of its segment modules (\"u:...\")."
   (progv (mapcar #'car state) (mapcar #'cdr state)
     (unwind-protect (funcall thunk)
       (dolist (c state) (setf (cdr c) (symbol-value (car c)))))))
+
+(defun unit-index-table (i list)
+  "The table of the entries of LIST (*UNIT-INDEX* at I), with those pushed since."
+  (let* ((index *unit-index*) (table (svref index i)) (head (svref index (1+ i))))
+    (loop for l on list until (eq l head) do (setf (gethash (car (car l)) table) (car l)))
+    (setf (svref index (1+ i)) list)
+    table))
 
 (defun unit-export-name ()
   (format nil "~A~D" *unit-export-prefix* (incf (car *unit-exports*))))
@@ -587,19 +602,26 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
   (let* ((um *m*) (owners *unit-owners*)
          (all (reverse *unit-segments*))
          (tops (loop for k in segs append (nth k all)))
-         (own (loop for f across (wasm-module-funcs um)
+         (index *unit-index*)
+         (funcs (wasm-module-funcs um))
+         (last (reduce #'max segs))
+         ;; (the functions after those of the segments before: each is
+         ;; looked at once in the unit, the tables are filled with what is new)
+         (own (loop for i from (svref index 0) below (fill-pointer funcs)
+                    for f = (aref funcs i)
                     when (and (member (wasm-func-segment f) segs)
                               (not (assoc (wasm-func-name f) *helpers* :test #'equal))
                               (not (gethash (wasm-func-name f) owners)))
                       collect f))
          (own-names (make-hash-table :test 'equal))
-         (consts (make-hash-table :test 'equal))
-         (closures (make-hash-table :test 'equal)) (misc (make-hash-table :test 'equal))
+         (consts (unit-index-table 1 *live-constants*))
+         (closures (unit-index-table 3 *closure-globals*))
+         (misc (unit-index-table 5 *misc-globals*))
          (fimports nil) (gimports nil) (defined nil) (castfns nil))
+    (loop while (and (< (svref index 0) (fill-pointer funcs))
+                     (<= (wasm-func-segment (aref funcs (svref index 0))) last))
+          do (incf (svref index 0)))
     (flet ((symp (name) (and (consp name) (eq (car name) :sym))))
-      (dolist (c *live-constants*) (setf (gethash (car c) consts) c))
-      (dolist (g *closure-globals*) (setf (gethash (first g) closures) g))
-      (dolist (g *misc-globals*) (setf (gethash (first g) misc) g))
       (dolist (f own) (setf (gethash (wasm-func-name f) own-names) t))
       ;; what the functions and the initializers of the closures defined
       ;; here refer to: functions and globals of other segments
@@ -640,14 +662,23 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
         (setq castfns (define-checked-casts :lazy t))
         (progn
           (dolist (f own) (adopt-func *m* f))
-          (loop for name being the hash-keys of (wasm-module-declared-refs um)
-                when (func-defined-p *m* name) do (declare-func-ref *m* name))
+          (let ((refs (wasm-module-declared-refs um)))
+            (dolist (f own) (when (gethash (wasm-func-name f) refs) (declare-func-ref *m* (wasm-func-name f))))
+            (loop for (name) in fimports when (gethash name refs) do (declare-func-ref *m* name)))
           ;; (the unit's first form sets SYS::*FASL-UNIT-RUNNER*: not used here)
           (add-func *m* :unit-dispatch :ee-e :body (nil-code))
-          (add-called-helpers castfns))
+          ;; (the helpers that the initializers of the closures and other
+          ;; globals defined here call: not those of the whole unit)
+          (let ((*closure-globals* (loop for n in defined when (gethash n closures) collect (gethash n closures)))
+                (*misc-globals* (loop for n in defined when (gethash n misc) collect (gethash n misc))))
+            (add-called-helpers castfns)))
         ;; the globals: the symbols set from the vector, the constants,
         ;; closures and others that this segment uses first (exported)
-        (let ((used (make-hash-table :test 'equal)) (queue nil))
+        ;; (the helpers may have made constants)
+        (setq consts (unit-index-table 1 *live-constants*)
+              closures (unit-index-table 3 *closure-globals*)
+              misc (unit-index-table 5 *misc-globals*))
+        (let ((used (make-hash-table :test 'equal)) (queue nil) (new-owners nil))
           (loop for f across (wasm-module-funcs *m*) do (push (wasm-func-refs f) queue))
           (dolist (n defined) (push (list (cons :global n)) queue))
           ;; (and what the initializers of the closures refer to)
@@ -662,11 +693,13 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
                  (export-global (name)
                    (let ((e (unit-export-name)))
                      (add-export *m* e :global name)
-                     (setf (gethash name owners) e))))
+                     (push (cons name e) new-owners))))
             (let ((ssyms (loop for n being the hash-keys of used
                                when (and (symp n) (not (global-defined-p *m* n))) collect (second n)))
-                  (sconsts (remove-if-not (lambda (c) (new-p (car c))) (reverse *live-constants*)))
-                  (sclosures (remove-if-not (lambda (g) (new-p (first g))) (reverse *closure-globals*))))
+                  (sconsts (loop for n being the hash-keys of used
+                                 when (and (gethash n consts) (new-p n)) collect (gethash n consts)))
+                  (sclosures (loop for n being the hash-keys of used
+                                   when (and (gethash n closures) (new-p n)) collect (gethash n closures))))
               (dolist (s ssyms) (add-global *m* (list :sym s) '(:ref :symbol) t '((:global.get :nil-symbol))))
               (dolist (c sconsts)
                 (if (simple-vector-p (cdr c))
@@ -677,7 +710,8 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
                 (add-global *m* (first g) '(:ref :null :closure) t '((:ref.null :closure)))
                 (setf (gethash (first g) (wasm-module-nonnull-globals *m*)) t)
                 (export-global (first g)))
-              (dolist (g (reverse *misc-globals*))
+              (dolist (g (loop for n being the hash-keys of used
+                               when (gethash n misc) collect (gethash n misc)))
                 (when (new-p (first g))
                   (destructuring-bind (name type mutable init) g
                     (add-global *m* name type mutable init)
@@ -702,13 +736,17 @@ segments before them.  Returns (values octets vector), the objects for its RUN."
                                                    (:if nil nil ((:call :exit-pending-p) (:br_if pend)))))
                                   (:local.get result) :return)
                                 (:ref.null :eq)))
-              (add-called-helpers castfns)
+              (let ((*closure-globals* sclosures) (*misc-globals* nil))
+                (add-called-helpers castfns))
               ;; ("u": the host keeps the exports of the module)
               (add-export *m* "u" :func :run)
               (dolist (f own)
                 (let ((e (unit-export-name)))
                   (add-export *m* e :func (wasm-func-name f))
-                  (setf (gethash (wasm-func-name f) owners) e)))
-              (remove-unreachable-functions *m*)
-              (values (encode-module *m*)
-                      (coerce (append ssyms (mapcar #'cdr sconsts)) 'simple-vector)))))))))
+                  (push (cons (wasm-func-name f) e) new-owners)))
+              ;; (no unreachable functions to remove: the segments' own are
+              ;; exported, the helpers were added as called)
+              (let ((octets (encode-module *m*)))
+                ;; (the owners once the module is made)
+                (loop for (name . e) in new-owners do (setf (gethash name owners) e))
+                (values octets (coerce (append ssyms (mapcar #'cdr sconsts)) 'simple-vector))))))))))

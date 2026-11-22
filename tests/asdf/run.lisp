@@ -30,6 +30,14 @@
 ;;; side effects of each file happen once, a macro of one file calls a
 ;;; function of the file before; a file changed makes it again
 (defvar *sysfasl-ct* 0)
+;; (the files of the first build are loaded by modules, not their source forms)
+(defvar *sysfasl-sources* 0)
+(let ((load-file #'sys::%system-load-file))
+  (setf (fdefinition 'sys::%system-load-file)
+        (lambda (su k)
+          (dolist (l (car (nth k (reverse (sys::%su-files su)))))
+            (unless (consp l) (incf *sysfasl-sources*)))
+          (funcall load-file su k))))
 (defun sysfasl-copy (from to &optional (replace nil))
   (let ((text (uiop:read-file-string from)))
     (when replace (setq text (uiop:frob-substrings text (list (car replace)) (cdr replace))))
@@ -42,7 +50,8 @@
   (push dir asdf:*central-registry*)
   (setf asdf::*clysm-system-fasls* t)
   (asdf:load-system "sysfasl")
-  (format t "~S ~A ~A~%" (funcall (find-symbol "USE" "SYSFASL")) *sysfasl-ct* (symbol-value (find-symbol "*LOADS*" "SYSFASL")))
+  (format t "~S ~A ~A sources ~A~%" (funcall (find-symbol "USE" "SYSFASL")) *sysfasl-ct*
+          (symbol-value (find-symbol "*LOADS*" "SYSFASL")) *sysfasl-sources*)
   (asdf:clear-system "sysfasl")
   (setq asdf::*clysm-system-fasls-loaded* nil)
   (asdf:load-system "sysfasl")

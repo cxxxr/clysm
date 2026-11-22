@@ -1,4 +1,5 @@
 (in-package :sysfasl)
 (eval-when (:compile-toplevel) (incf (symbol-value (find-symbol "*SYSFASL-CT*" "CL-USER"))))
-(defun use () (list (scaled 3) (twice (pt-x (origin))) (scale 2) +k+))
+(defvar *lit* (let ((p (literal-pt))) p))
+(defun use () (list (scaled 3) (twice (pt-x (origin))) (scale 2) +k+ (pt-y *lit*)))
 (incf *loads*)

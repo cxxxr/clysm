@@ -4,3 +4,5 @@
 (defmacro scaled (x) (scale x))
 (defmacro twice (form) `(list ,form ,form))
 (defun origin () (make-pt :x 1 :y 2))
+;; (an object of a class whose MAKE-LOAD-FORM the file before defines, in an expansion)
+(defmacro literal-pt () (make-pt :x 3 :y 4))

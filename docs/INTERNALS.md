@@ -2173,7 +2173,19 @@ REPL, by `trace`, by a later file) is still seen; a call of a function of a
 later file goes through its symbol. Only systems whose components are plain
 Lisp source files (in modules, with static files) without around-compile
 hooks qualify, and not in an image that records its modules for a heap
-image (`CLYSM_SAVE_IMAGE`). A file that fails to compile into the unit (an
+image (`CLYSM_SAVE_IMAGE`). A segment module is made from what is new
+since the last one (`*unit-index*`: the functions after those already in a
+module, the constants, closures and other globals pushed since), the
+helpers it calls are those of its own functions and globals, and the
+locals of a function are coalesced once for both of its encodings
+(`wasm-func-coalesced`), so the work of a file does not grow with the
+files before it; whether a system fasl is up to date is found once in an
+ASDF session (`*clysm-system-fasl-valid*`: ASDF asks for every file, Lem's
+1142 times). Objects that cannot be written in a fasl (an instance made by
+a macro's expansion, whose `make-load-form` the compiler does not see:
+log4cl's `make-logger`) make the segment load from its source forms, as
+`compile-file` writes them, and the system is not made into a system fasl.
+A file that fails to compile into the unit (an
 error, ASDF's `retry` or `accept`) leaves it: the files after it are
 compiled to fasls of their own, and `NAME--system.broken` keeps the system
 from being tried again until a file or the `.asd` changes. The methods are
