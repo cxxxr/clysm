@@ -300,7 +300,10 @@ can then pass their arguments in its slots.")
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %note-key-layout (name ll defgeneric-p)
-    (let ((hook (and (boundp '*note-key-layout-hook*) (symbol-value '*note-key-layout-hook*)))
+    (let ((hook (or (and (boundp '*note-key-layout-hook*) (symbol-value '*note-key-layout-hook*))
+                    ;; (the compiler of whole programs on its host, for the
+                    ;; program's files: src/driver.lisp)
+                    (and (boundp '%program-key-layout-hook) (symbol-value '%program-key-layout-hook))))
           (shape (%fast-shape ll)))
       (when (and hook (symbolp name) shape (eql (third shape) 1))
         (let ((keys (nth-value 4 (%ll-info ll))))

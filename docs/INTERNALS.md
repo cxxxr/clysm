@@ -8755,7 +8755,17 @@ keyed entry of the function, its layout tested (`live-keyed-call-code`,
 `*live-key-layout-hook*`). The program's files are now compiled with that
 hook (the layout of the function as it is in the image, tested when the
 call runs): `a-ppcre-tokens` built 57 -> 49 ms (46 loaded from fasls).
-`clysm compile` on SBCL has no image to ask and still makes the vector.
+`clysm compile` on SBCL had no image to ask and made the vector too: it
+now notes the layouts that the program's own `defgeneric` and `defmethod`
+forms give when they are expanded (`sys::%note-key-layout` calls
+`%program-key-layout-hook`, bound by `compile-program-1` around the
+program's files; the runtime's generic functions are not noted, its code
+is as before) and compiles such calls the same way: `c-gf-lambda-lists`
+1.30, 1.20 -> 0.88, 0.95 times SBCL (the build before and after
+alternately, two rounds), a generic function of two methods called with
+`:start` and `:end` 3 million times twice 329-347 -> 231-254 ms;
+`bench/clos.lisp` 0.72, 0.71 -> 0.72, 0.70 and `bench/programs.lisp` 0.69,
+0.70 -> 0.69, 0.70 (the rest unchanged).
 
 **Measured** (2026-11-23, `MODE=static tools/bench-libs.sh FILE` and
 `MODE=static tools/bench-lem.sh FILE` against the same without `MODE`, on
