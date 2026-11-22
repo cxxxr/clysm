@@ -34,3 +34,16 @@
 (print (masked-sum -1 1 2))
 (print (masked-sum (1- (expt 2 64)) 1073741823 1))
 (print (masked-sum (expt 2 65) -5 1/2))
+
+;;; an accumulator beside a logical operation that cannot reach 2^63 (no
+;;; unsigned state in the function) and beside one that can
+(defun small-mask (n big)
+  (let ((s 0))
+    (dotimes (i n) (setq s (logand s #xFFFFFF)) (incf s (+ i big)) (setq s (logxor s (logand i 7))))
+    s))
+(defun wide-xor (n x)
+  (let ((s 1))
+    (dotimes (i n) (setq s (logand s #xFFFF)) (setq s (logxor (* s 65537) x)) (incf s i))
+    s))
+(print (list (small-mask 10 5) (small-mask 3 (expt 2 63)) (small-mask 3 (1- (expt 2 64))) (small-mask 2 -7)))
+(print (list (wide-xor 5 3) (wide-xor 5 (expt 2 63)) (wide-xor 4 (1- (expt 2 64))) (wide-xor 3 -1) (wide-xor 3 (expt 2 70))))
