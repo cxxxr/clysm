@@ -919,9 +919,13 @@ fixnum, the code pushing it as an i32 and the code pushing it as an object
   "CODE pushes a value: push its character payload, checked inline (the
 helper signals the type error)."
   (let ((tmp (new-local)) (v (new-local :i32)))
-    `(,@code (:local.tee ,tmp) (:ref.test :i31)
+    ;; (the calls, which only signal, hinted out of the way: without the
+    ;; hints the values of a loop that compares characters were kept in the
+    ;; frame around them)
+    `(,@code (:local.tee ,tmp) (:ref.test :i31) (:hint 1)
       (:if nil :i32
            ((:local.get ,tmp) (:ref.cast! :i31) :i31.get_s (:local.tee ,v) (:i32.const ,+char-tag+) :i32.ge_s
+            (:hint 1)
             (:if nil :i32 ((:local.get ,v)) ((:local.get ,tmp) (:call :check-char))))
            ((:local.get ,tmp) (:call :check-char))))))
 (defprim char= (a b) :test
@@ -6702,11 +6706,18 @@ rounded to odd (Schubfach's rop)."
 ;; true it is read (READ-CHAR), otherwise only looked at (PEEK-CHAR).  The
 ;; slot indices are those checked by stream.lisp when it is loaded.
 (defparameter *fs-slot-fast* 14)
-(defprim clysm-sys::%fs-fast-char (s advance) :value
+(defun fs-fast-char-code (s advance &optional fallback)
   ;; a file: its FAST slot holds its $fsbuf (a type that only file streams
-  ;; hold); a string input stream: its layout and FAST :STRING
+  ;; hold); a string input stream: its layout and FAST :STRING.
+  ;; The stream, as an instance, and the $fsbuf found the last time this
+  ;; code ran in the call are kept in three locals (null at first): when the
+  ;; stream is the same and its FAST slot still holds that $fsbuf (it is
+  ;; taken out by UNREAD-CHAR and CLOSE), the tests of the stream's and the
+  ;; buffer's types are not made again, ten instructions of a READ-CHAR
+  ;; loop's fifty.
   (let* ((o (new-local)) (sl (new-local '(:ref :null :vector))) (p (new-local :i32)) (b (new-local :i32))
          (f (new-local)) (fb (new-local '(:ref :null :fsbuf))) (no (gensym "NO")) (out (gensym "OUT"))
+         (cs (new-local)) (ci (new-local '(:ref :null :instance))) (have (gensym "HAVE"))
          ;; ADVANCE is T or NIL at the call site: decided here
          (adv (cond ((equal advance (nil-code)) :no) ((equal advance (t-code)) :yes) (t :test)))
          (step-file `((:local.get ,fb) (:local.get ,p) (:i32.const 1) :i32.add (:struct.set :fsbuf 1)))
@@ -6719,30 +6730,46 @@ rounded to odd (Schubfach's rop)."
                (:test `(,@advance ,@(nil-code) :ref.eq (:if nil nil nil ,step))))))
     `((:block ,out :eqref
         (:block ,no nil
-          ,@s (:local.tee ,o) (:ref.test :instance) :i32.eqz (:br_if ,no)
-          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
-          :array.len (:i32.const ,*fs-slot-fast*) :i32.le_u (:br_if ,no)
-          (:local.get ,sl) (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:local.tee ,f)
-          (:ref.test :fsbuf)
-          (:if nil nil
-               ((:local.get ,f) (:ref.cast! :fsbuf) (:local.tee ,fb) (:struct.get :fsbuf 1) (:local.tee ,p)
-                (:local.get ,fb) (:struct.get :fsbuf 2) :i32.ge_s (:br_if ,no)
-                (:local.get ,fb) (:struct.get :fsbuf 0) (:local.get ,p) (:array.get_u :bytes)
-                (:local.tee ,b) (:i32.const 128) :i32.ge_u (:br_if ,no)
-                ,@(maybe step-file)
-                (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out)))
-          ;; a string input stream of a simple string (FAST is :STRING)
-          (:local.get ,f) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz (:br_if ,no)
-          (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
-          (:global.get ,(sym-global 'clysm-sys::*string-stream-layout*)) (:struct.get :symbol ,+sym-value+)
-          :ref.eq :i32.eqz (:br_if ,no)
-          (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
-          (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
-          :i32.ge_s (:br_if ,no)
-          ,@(maybe step-string)
-          (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
-          (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
-        ,@(nil-code))))))
+          (:block ,have nil
+            ,@s (:local.tee ,o) (:local.get ,cs) :ref.eq
+            (:if nil nil
+                 ((:local.get ,ci) (:struct.get :instance 1) (:local.tee ,sl)
+                  :array.len (:i32.const ,*fs-slot-fast*) :i32.le_u (:br_if ,no)
+                  (:local.get ,sl) (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:local.get ,fb) :ref.eq
+                  (:br_if ,have)))
+            (:local.get ,o) (:ref.test :instance) :i32.eqz (:br_if ,no)
+            (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 1) (:local.tee ,sl)
+            :array.len (:i32.const ,*fs-slot-fast*) :i32.le_u (:br_if ,no)
+            (:local.get ,sl) (:i32.const ,*fs-slot-fast*) (:array.get :vector) (:local.tee ,f)
+            (:ref.test :fsbuf)
+            (:if nil nil
+                 ((:local.get ,f) (:ref.cast! :fsbuf) (:local.set ,fb)
+                  (:local.get ,o) (:local.set ,cs) (:local.get ,o) (:ref.cast! :instance) (:local.set ,ci)
+                  (:br ,have)))
+            ;; a string input stream of a simple string (FAST is :STRING)
+            (:local.get ,f) (:global.get ,(sym-global :string)) :ref.eq :i32.eqz (:br_if ,no)
+            (:local.get ,o) (:ref.cast! :instance) (:struct.get :instance 0)
+            (:global.get ,(sym-global 'clysm-sys::*string-stream-layout*)) (:struct.get :symbol ,+sym-value+)
+            :ref.eq :i32.eqz (:br_if ,no)
+            (:local.get ,sl) (:i32.const 3) (:array.get :vector) (:ref.cast :i31) :i31.get_s (:local.tee ,p)
+            (:local.get ,sl) (:i32.const 4) (:array.get :vector) (:ref.cast :i31) :i31.get_s
+            :i32.ge_s (:br_if ,no)
+            ,@(maybe step-string)
+            (:local.get ,sl) (:i32.const 2) (:array.get :vector) (:ref.cast :string) (:local.get ,p)
+            (:array.get :string) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
+          (:local.get ,fb) (:struct.get :fsbuf 1) (:local.tee ,p)
+          (:local.get ,fb) (:struct.get :fsbuf 2) :i32.ge_s (:hint 0) (:br_if ,no)
+          (:local.get ,fb) (:struct.get :fsbuf 0) (:local.get ,p) (:array.get_u :bytes)
+          (:local.tee ,b) (:i32.const 128) :i32.ge_u (:hint 0) (:br_if ,no)
+          ,@(maybe step-file)
+          (:local.get ,b) (:i32.const ,+char-tag+) :i32.add :ref.i31 (:br ,out))
+        ;; (the call that reads any other stream or character)
+        ,@(or fallback (nil-code)))))))
+(defprim clysm-sys::%fs-fast-char (s advance) :value (fs-fast-char-code s advance))
+;; (%fs-fast-char-or S ADVANCE FORM): as (or (%fs-fast-char S ADVANCE) FORM),
+;; FORM being evaluated where the stream or the character is not of the fast
+;; kind (the character of the fast path is not compared with NIL)
+(defprim clysm-sys::%fs-fast-char-or (s advance fallback) :value (fs-fast-char-code s advance fallback))
 
 ;; the index of the first octet BYTE of the simple (unsigned-byte 8) vector
 ;; BYTES between START and END, or END
