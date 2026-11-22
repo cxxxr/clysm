@@ -599,6 +599,13 @@ async function runProgram(data, port, netBuffer) {
     // the functions that a heap image's image names (its compilationHints
     // section: see training below) are compiled with the module
     v8.setFlagsFromString('--experimental-wasm-compilation-hints');
+    // the engine copies a function into its callers when its body is at
+    // most 500 octets; the step of an integer accumulator is 130 octets
+    // longer than the fixnum addition it was (its paths for a boxed integer
+    // and an unboxed double), so the functions that were just within the
+    // limit stay within it (docs/INTERNALS.md, "Sums of values of unknown
+    // type"; CLYSM_WASM_INLINE_MAX=500 is the engine's own)
+    v8.setFlagsFromString('--wasm-inlining-max-size=' + (process.env.CLYSM_WASM_INLINE_MAX || '640'));
         // the stacks of computations that can wait (JSPI, the threads of
     // runtime/thread.lisp) as deep as the worker's own (they are limited by
     // --stack-size too, which, set now, leaves the limit of the thread's
