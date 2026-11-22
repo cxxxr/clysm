@@ -1702,6 +1702,18 @@ F on the elements I; with more sequences runs GENERAL."
 (defun %reduce-other (f seq) (reduce f seq))
 
 (defun fill (seq item &key (start 0) end)
+  ;; the whole of a simple vector, or of a simple string with a character
+  (when (and (eql start 0) (null end))
+    (cond ((%simple-vector-p seq)
+           (let ((n (%svlength seq)))
+             (declare (fixnum n))
+             (dotimes (i n) (%set-svref seq i item))
+             (return-from fill seq)))
+          ((and (%simple-string-p seq) (characterp item))
+           (let ((n (%string-length seq)))
+             (declare (fixnum n))
+             (dotimes (i n) (%set-schar seq i item))
+             (return-from fill seq)))))
   (if (listp seq)
       ;; one pass over the list (its length is only needed for an error)
       (let ((l seq) (n (if (and (fixnump end) (fixnump start)) (- end start) -1)))

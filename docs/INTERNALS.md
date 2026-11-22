@@ -7860,7 +7860,13 @@ of an adjustable one (the same code as before) 112 → 125, `copy-seq`
 3 elements 2.0 (the set table's set-up), `fill` of 16 elements 2.5 (the
 keywords and the storage of the array), `string-upcase` 2.5 (the string is
 filled with zeros, then written: 26 ns for 15 characters), `loop ... when
-(oddp x) collect` 1.6.
+(oddp x) collect` 1.6. Since (2026-11-23): `(%set-schar s i (code-char n))`
+of a fixnum N stores N as it is (`src/typed.lisp`: the character was made,
+an `i31` with its tag, and taken apart again, three shifts a character in
+the engine's code), `string-upcase` 80 → 65–68 ms (SBCL 29–33); `fill` of
+the whole of a simple vector, or of a simple string with a character, is
+a loop over it before the keywords' bounds are looked at, 35 → 21 ms
+(SBCL 12–14).
 
 The other listed items are not allocation (instruction-level profiles,
 ticks of `--prof` placed on `--print-wasm-code`'s listing): `a-list-churn`
