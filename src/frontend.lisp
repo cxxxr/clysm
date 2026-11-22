@@ -2063,7 +2063,13 @@ converted so far call (the end of a unit, or of a part of it)."
     "#(methods classes sites count): name -> ((qualifiers specializers
 lambda-list function-symbol...) ...), name -> (index . superclasses), and
 ((name . symbol) ...) of the discriminating functions to make."
-    (vector (make-hash-table :test 'eq) (make-hash-table :test 'eq) nil 0))
+    (vector (make-hash-table :test 'eq) (make-hash-table :test 'eq) nil 0 (make-hash-table :test 'eq)))
+
+  (defun clysm-sys::%gf-unit-note-combination (name combination)
+    "Note the method combination (name . options), or NIL, that a DEFGENERIC
+of the unit gives the generic function NAME."
+    (let ((u clysm-sys::*gf-unit*))
+      (when (and u (symbolp name)) (setf (gethash name (svref u 4)) combination))))
 
   (defun clysm-sys::%gf-unit-note-method (name quals specs ll &optional nextp)
     "Note a method that the unit defines; returns the symbol its function is
@@ -2291,7 +2297,22 @@ NIL when there is nothing it could call."
            (methods nil) (fsyms nil) (index 0) (nfns 0)
            (vars (let ((r nil)) (dotimes (i (or n 0) r) (push (gensym "A") r))))
            (disc (gensym "DISC")) (tree (gensym "TREE")) (cells-var (gensym "CELLS")) (state (gensym "STATE"))
-           (checks nil) (class-cells nil) (nclasses 0) (leaves 0) (tails nil) (tail-forms nil))
+           (checks nil) (class-cells nil) (nclasses 0) (leaves 0) (tails nil) (tail-forms nil)
+           ;; NIL (the standard method combination) or (operator . options)
+           ;; of a short one: from the DEFGENERIC of the unit, else from the
+           ;; generic function defined before
+           (comb (multiple-value-bind (c found) (gethash name (svref u 4))
+                   (cond (found c)
+                         (info (let ((mc (clysm-sys::%gf-slot info clysm-sys::+gf-combination+)))
+                                 (if (eq (clysm-sys::%instance-ref mc 0) 'standard)
+                                     nil
+                                     (cons (clysm-sys::%instance-ref mc 0) (clysm-sys::%instance-ref mc 1)))))
+                         (t nil)))))
+      (when (and comb (equal comb '(standard))) (setq comb nil))
+      (when comb
+        (unless (and (member (car comb) '(+ append list max min nconc and or progn))
+                     (member (cdr comb) '(nil (:most-specific-first) (:most-specific-last)) :test #'equal))
+          (return-from clysm-sys::%gf-disc-form nil)))
       (unless (and n (<= 1 n 4) (<= (length recs) 40)) (return-from clysm-sys::%gf-disc-form nil))
       ;; METHODS: #(qualifiers specializers symbol function-index kind cell)
       (dolist (r recs)
@@ -2370,12 +2391,18 @@ NIL when there is nothing it could call."
                        (primary nil) (before nil) (after nil) (around nil))
                    (dolist (m sorted)
                      (let ((q (svref m 0)))
-                       (cond ((null q) (push m primary))
+                       (cond ((equal q '(:around)) (push m around))
+                             (comb (if (equal q (list (car comb))) (push m primary) (return-from leaf nil)))
+                             ((null q) (push m primary))
                              ((equal q '(:before)) (push m before))
                              ((equal q '(:after)) (push m after))
-                             ((equal q '(:around)) (push m around))
                              (t (return-from leaf nil)))))
                    (setq primary (nreverse primary) before (nreverse before) around (nreverse around))
+                   ;; (a short combination: every primary method is called, none with a next method)
+                   (when comb
+                     (when (or (some #'nextp primary) (notevery (lambda (m) (svref m 4)) primary))
+                       (return-from leaf nil))
+                     (when (equal (cdr comb) '(:most-specific-last)) (setq primary (reverse primary))))
                    (when (or (null primary) (some #'nextp before) (some #'nextp after))
                      (return-from leaf nil))
                    ;; the functions of the methods that are called must be
@@ -2395,16 +2422,21 @@ NIL when there is nothing it could call."
                                   (tail (cons :primary ps) (lambda (vs) (primary-call ps vs)))
                                   (fn (car ps))))
                             (core-call (args)
-                              (cond ((and (null before) (null after)) (primary-call primary args))
+                              (cond (comb
+                                     (if (and (null (cdr primary)) (not (eq (car comb) 'list)))
+                                         (call (car primary) args)
+                                         `(,(car comb) ,@(mapcar (lambda (m) (call m args)) primary))))
+                                    ((and (null before) (null after)) (primary-call primary args))
                                     ((null after)
                                      `(progn ,@(mapcar (lambda (m) (call m args)) before) ,(primary-call primary args)))
                                     (t `(progn ,@(mapcar (lambda (m) (call m args)) before)
                                                (multiple-value-prog1 ,(primary-call primary args)
                                                  ,@(mapcar (lambda (m) (call m args)) after))))))
                             (core-fn ()
-                              (if (and (null before) (null after))
-                                  (primary-fn primary)
-                                  (tail (list :core before primary after) #'core-call)))
+                              (cond ((and comb (null (cdr primary)) (not (eq (car comb) 'list))) (fn (car primary)))
+                                    (comb (tail (list :core before primary after) #'core-call))
+                                    ((and (null before) (null after)) (primary-fn primary))
+                                    (t (tail (list :core before primary after) #'core-call))))
                             (around-call (as args)
                               (cond ((null as) (core-call args))
                                     ((not (nextp (car as))) (call (car as) args))
@@ -2504,7 +2536,7 @@ NIL when there is nothing it could call."
                                                                 ((svref m 5) (cons (svref m 5) (svref m 4)))
                                                                 (t nil))))
                                                   methods)
-                                          checks)
+                                          checks comb)
                     (svref cells 2) (+ 3 nfns))
               (cons `(clysm-sys::%static-lambda ,dsym
                        (lambda ,vars

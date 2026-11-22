@@ -4785,13 +4785,54 @@ What makes the code fast:
   `case` is itself a chain of comparisons: a `br_table` there was not
   tried, the chain of 40 being at SBCL's time already). Not done:
   generic functions with `&optional`, `&rest` or `&key` parameters
-  (`c-gf-lambda-lists` 1.18), other method combinations
-  (`c-short-combination` 1.14), `(setf name)` generic functions, and
+  (`c-gf-lambda-lists` 1.12-1.18: their methods are functions of the
+  spread arguments and their calls go through entries by the number of
+  arguments), long method combinations, `(setf name)` generic functions, and
   `make-instance` (`b-make-instance` 1.39, `c-make-instance-plain` 1.21:
   the constructor copies a template and runs three plans in loops; with
   the class known in the unit the instance could be made by code that
   stores each slot, compared with the class's plan as the trees are with
   the methods).
+  Since (the same day, three commits):
+  *The making of the trees is the compiler's*: `%make-gf-unit`,
+  `%gf-unit-note-method`, `%gf-unit-site`, `%gf-unit-flush`, `%gf-disc-form`
+  and the `%ct-` functions are at the end of `src/frontend.lisp` (in the
+  runtime every program carried their names); the runtime's macros call
+  them only in a unit (`*gf-unit*` is bound by the compiler alone), and a
+  check of a built-in kind carries its sample object. The runtime keeps
+  what runs: `%gf-disc-arm`, `%gf-disc-valid-p`, `%gf-disc-regenerate`. The
+  shaken module of one export is 808 bytes over main (933,372 → 934,180;
+  it was +2,147), the REPL image 8,973,515 bytes.
+  *A dead tree is replaced in the image.* A unit compiled before a later
+  one added a method to the same generic function kept the earlier way of
+  calling for good. Where the compiler is in the image
+  (`*native-eval-hook*`), the state of such a function becomes -500 and
+  counts the calls up; then `%gf-disc-regenerate` compiles a discriminating
+  function from the generic function as it is (`%gf-disc-form` with an
+  empty unit: every method through a cell), which the function calls from
+  then on (its state is that function; one for a name and epoch, kept in
+  the property `%gf-disc-replacement`, at most six for a name;
+  `%bump-clos-epoch` starts over). In Lem's scenario
+  (`tools/bench-lem.sh`), of the discriminating functions called at least
+  four times since the last definition, 39 were live and 6 dead (four
+  generic functions: `window-redraw`, `convert-modeline-element`, two of
+  the display areas; cl-ppcre's `create-matcher-aux`); now 43 are live, 4
+  call a remade one and 2 (`create-matcher-aux`, called fewer than 500
+  times) count. The times are the same: Lem 1.00 and 1.01 before, 1.00 and
+  1.01 after, `bench/apps.lisp` 1.17 and 1.18 before, 1.17 and 1.17 after
+  (two interleaved rounds against main): what Lem's actions and these
+  libraries spend in the dispatch of generic functions that are not
+  readers is too little to show.
+  *Short method combinations.* `defgeneric` notes the method combination
+  of the unit's generic function (`%gf-unit-note-combination`; that of a
+  generic function defined before is read from it); with `+`, `append`,
+  `list`, `max`, `min`, `nconc`, `and`, `or` or `progn` (and no option but
+  the order) a leaf is the operator applied to the direct calls of the
+  primary methods in that order, one method alone being called without it
+  (not `list`), inside the `:around` methods as above;
+  `%gf-disc-valid-p` compares the combination, its order and its
+  definition. `c-short-combination` 1.14 → 0.97 (38 → 32
+  ms); `bench/clos.lisp` 0.72.
 * **Non-local exits** (`handler-case`, `restart-case`, `catch`/`throw`,
   `return-from` and `go` out of closures, `error` under a handler any
   number of calls away) are returns with a pending exit, not Wasm
